@@ -1,0 +1,661 @@
+#include "mainwindow.h"
+
+
+#include "QPainter"
+#include "QLineEdit"
+#include <QAction>
+#include <QMenu>
+#include <QMenuBar>
+#include <QToolBar>
+#include <QStatusBar>
+#include <QDir>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QDirIterator>
+#include "ui/cpsdbatchdialog.h"
+#include "ui/psdbatchworker.h"
+#include "ui/cmodeltreepanel.h"
+#include "ui/cparampanel.h"
+#include "ui/cmotionpanel.h"
+#include "live2d/LAppDefine.hpp"
+#include "live2d/LAppLive2DManager.hpp"
+#include "live2d/LAppModel.hpp"
+#include <QThread>
+#include <QProgressDialog>
+#include <QTimer>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <windowsx.h>
+#endif
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+
+{
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
+    this->setAcceptDrops(true);
+    this->resize(1400, 900);
+    this->setWindowTitle("live2d2psd");
+    m_openglwindows=nullptr;
+    createActions();
+    setupUI();
+
+    // 启动时显示占位提示
+    m_placeholder = new QLabel(
+        "<div style='text-align:center;'>"
+        "<p style='font-size:36px; color:#2B5EA8; font-weight:300; margin-bottom:8px;'>live2d2psd</p>"
+        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json 文件</p>"
+        "<p style='font-size:12px; color:#353A50; margin-top:16px;'>Ctrl+O 打开文件 &nbsp;|&nbsp; 拖拽导入</p>"
+        "</div>", this);
+    m_placeholder->setAlignment(Qt::AlignCenter);
+    m_placeholder->setTextFormat(Qt::RichText);
+    setCentralWidget(m_placeholder);
+}
+
+MainWindow::~MainWindow()
+{
+
+
+
+    if(m_openglwindows!=nullptr){
+        m_openglwindows->makeCurrent();
+        delete m_openglwindows;
+    }
+    if(m_headless!=nullptr){ delete m_headless; }
+
+    CTreeManage::ReleaseInstance();
+
+}
+
+
+
+
+
+
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    qDebug() << "MainWindow::dragEnterEvent";
+    // 对于要拖出的窗口或控件setDragEnabled(true)
+    // 对于要拖入的窗口或控件setAcceptDrops(true)
+    // 拖拽进入时是否可拖入的判断
+    auto list = event->mimeData()->urls();
+    if (list.size() == 0) {
+        event->ignore();
+        return;
+    }
+    QMutableListIterator<QUrl> urlFiles(list);
+    for (urlFiles.toFront(); urlFiles.hasNext();) {
+        auto item = urlFiles.next();
+        if (item.path().endsWith(".model3.json")) {
+            event->acceptProposedAction();
+            return;
+        }
+    }
+    event->ignore();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    QList<QUrl> urls = event->mimeData()->urls();
+
+
+
+    for( QUrl url : urls ){
+
+
+
+    }
+
+    qDebug() << "MainWindow::dropEvent";
+    // 释放鼠标
+    auto list = event->mimeData()->urls();
+    QMutableListIterator<QUrl> urlFiles(list);
+    bool bAccept = list.size() > 0;
+    for (urlFiles.toFront(); urlFiles.hasNext();) {
+        auto item = urlFiles.next();
+        bAccept = true;
+        QRegularExpression regex("^" + QRegularExpression::escape("/"));
+        qDebug() << "path:" << item.path().replace(regex,"");
+        qDebug() << "fileName:" << item.fileName();
+
+        QString fileName = item.path().replace(regex,"");
+        if( fileName!="") {
+            if(m_openglwindows == nullptr){
+                RestDock(fileName);
+            }else{
+                auto reply = QMessageBox::question(this, "提示",
+                    "已加载模型，是否关闭当前模型并打开新模型？",
+                    QMessageBox::Yes | QMessageBox::No);
+                if(reply == QMessageBox::Yes){
+                    CloseModel();
+                    RestDock(fileName);
+                }
+            }
+            break;
+        }
+        else{
+            QMessageBox::about(this,"请拖入model3.json文件","请拖入model3.json文件");
+
+        }
+
+
+    }
+    if (bAccept)
+        event->accept();
+    else
+        event->ignore();
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void MainWindow::on_actionOpen_triggered()
+{
+    QString fileName = CFileOption::GetDigModleFile(this);
+    if(fileName.isEmpty()) return;
+
+    if(m_openglwindows == nullptr){
+        RestDock(fileName);
+    } else {
+        auto reply = QMessageBox::question(this, "提示",
+            "已加载模型，是否关闭当前模型并打开新模型？",
+            QMessageBox::Yes | QMessageBox::No);
+        if(reply == QMessageBox::Yes){
+            CloseModel();
+            RestDock(fileName);
+        }
+    }
+}
+
+void MainWindow::on_actionpsdPrint_triggered()
+{
+    if(m_openglwindows != nullptr){
+        QString fileName = CFileOption::GetSvaePsdFile(this);
+        if(!fileName.isEmpty()){
+            CPsdPrintDialog* dialg = new  CPsdPrintDialog(this);
+            dialg->SetName(fileName);
+            dialg->exec();
+            if(dialg->m_IsPrint){
+                // 设置快照模式
+                LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+                LAppModel* model = (mgr && mgr->GetModelNum() > 0) ? mgr->GetModel(0) : nullptr;
+                if(model && dialg->m_IsSnapshot) model->SetSnapshotMode(true);
+
+                if(dialg->m_IsTexExtract){
+                    m_openglwindows->do_TextureExtract(fileName, dialg->m_IsAll, dialg->m_IsFenZu);
+                } else {
+                    m_openglwindows->do_OffSeceen(fileName, dialg->m_IsAll, dialg->m_IsFenZu);
+                }
+
+                // 恢复快照模式
+                if(model) model->SetSnapshotMode(false);
+            }
+            delete dialg;
+        }
+
+    }else{
+        QMessageBox::about(this,"请将模型拖入","请将模型拖入");
+    }
+}
+
+
+void MainWindow::on_actionBatchPsd_triggered()
+{
+    // 1. 选择输入文件夹
+    QString inDir = CFileOption::GetSelectDirectory(this);
+    if(inDir.isEmpty()) return;
+
+    // 2. 遍历查找所有 *.model3.json
+    QStringList modelFiles;
+    QDirIterator it(inDir, QStringList() << "*.model3.json", QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) modelFiles << it.next();
+
+    if(modelFiles.isEmpty()){
+        QMessageBox::information(this, "提示", "未找到任何 model3.json 文件");
+        return;
+    }
+
+    // 3. 弹出选择界面，允许勾选需要导出的文件
+    CPsdBatchDialog dlg(this);
+    dlg.setFileList(modelFiles);
+    if(dlg.exec() != QDialog::Accepted) return;
+    QStringList selected = dlg.getSelectedFiles();
+    if(selected.isEmpty()){
+        QMessageBox::information(this, "提示", "未选择任何文件");
+        return;
+    }
+
+    // 4. 选择输出文件夹
+    QString outDir = CFileOption::GetSelectDirectory(this);
+    if(outDir.isEmpty()) return;
+
+    bool isAll = dlg.isAllChecked();
+    bool isFenzu = dlg.isFenzuChecked();
+    bool isTexExtract = dlg.isTexExtractChecked();
+
+    // 5. 后台线程顺序导出（避免在主线程执行长循环）
+    QThread* thread = new QThread(this);
+    auto* worker = new PsdBatchWorker();
+    worker->moveToThread(thread);
+    worker->setTask(selected, outDir, isAll, isFenzu, isTexExtract);
+
+    // 进度对话框
+    QProgressDialog* progress = new QProgressDialog("正在批量导出...", "取消", 0, selected.size(), this);
+    progress->setWindowModality(Qt::ApplicationModal);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    progress->setValue(0);
+
+    connect(progress, &QProgressDialog::canceled, worker, &PsdBatchWorker::cancel);
+    connect(worker, &PsdBatchWorker::progress, this, [progress](int cur, int total, const QString& name){
+        progress->setMaximum(total);
+        progress->setValue(cur-1);
+        progress->setLabelText(QString("正在导出 %1/%2: %3").arg(cur).arg(total).arg(name));
+        QCoreApplication::processEvents();
+    });
+
+    // 请求导出信号 -> 在主线程中执行实际导出（GL上下文限制）
+    connect(worker, &PsdBatchWorker::requestExport, this, &MainWindow::doExportOne, Qt::QueuedConnection);
+    // 每个导出结束 -> 通知worker继续
+    connect(this, &MainWindow::oneExportFinished, worker, &PsdBatchWorker::onOneExportFinished, Qt::QueuedConnection);
+
+    // 线程生命周期管理
+    connect(thread, &QThread::started, worker, &PsdBatchWorker::start);
+    connect(worker, &PsdBatchWorker::finished, this, [this, thread, worker, progress, outDir](){
+        progress->setValue(progress->maximum());
+        progress->close();
+        progress->deleteLater();
+        worker->deleteLater();
+        thread->quit();
+        thread->wait();
+        thread->deleteLater();
+        QMessageBox::information(this, "批量导出", "导出完成");
+        QDesktopServices::openUrl(QUrl::fromLocalFile(outDir));
+    });
+
+    thread->start();
+}
+
+void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract)
+{
+    // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
+    if(m_openglwindows){
+        bool wasActive = m_openglwindows->m_timer.isActive();
+        if (wasActive) m_openglwindows->m_timer.stop();
+        m_openglwindows->do_ModelChange(modelPath);
+        if (isTexExtract) {
+            m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu);
+        } else {
+            m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu);
+        }
+        if (wasActive) m_openglwindows->m_timer.start(1000/60);
+        // 通知批量工作器继续
+        emit oneExportFinished();
+        return;
+    }
+
+    // 2) 若无窗口，则使用隐藏的离屏导出实例（只初始化一次）
+    if(!m_headless){
+        m_headless = new OpengGlForm();
+        m_headless->setAttribute(Qt::WA_DontShowOnScreen);
+        m_headless->resize(1,1);
+        // 初始化需要一个初始文件名
+        m_headless->SetInitOpenName(modelPath);
+        m_headless->show();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    }else{
+        m_headless->do_ModelChange(modelPath);
+    }
+    if (isTexExtract) {
+        m_headless->do_TextureExtractSilent(outPath, isAll, isFenzu);
+    } else {
+        m_headless->do_OffSeceenSilent(outPath, isAll, isFenzu);
+    }
+    // 通知批量工作器继续
+    emit oneExportFinished();
+}
+
+
+
+
+
+
+
+void MainWindow::on_actionCloseModel_triggered()
+{
+    CloseModel();
+}
+
+void MainWindow::CloseModel()
+{
+    if(!m_openglwindows) return;
+
+    // 停止渲染定时器
+    m_openglwindows->m_timer.stop();
+
+    // 删除 Dock 面板
+    if(m_treePanel)   { removeDockWidget(m_treePanel);   delete m_treePanel;   m_treePanel = nullptr; }
+    if(m_paramPanel)  { removeDockWidget(m_paramPanel);  delete m_paramPanel;  m_paramPanel = nullptr; }
+    if(m_motionPanel) { removeDockWidget(m_motionPanel); delete m_motionPanel; m_motionPanel = nullptr; }
+
+    // 隐藏面板切换按钮
+    m_btnToggleTree->setVisible(false);
+    m_btnToggleParam->setVisible(false);
+    m_btnToggleMotion->setVisible(false);
+
+    // 释放 MOC3 解析树
+    CTreeManage::ReleaseInstance();
+
+    // 释放批量导出上下文
+    if(m_headless) { delete m_headless; m_headless = nullptr; }
+
+    // 删除 GL 控件（触发 LAppDelegate 完整清理）
+    m_openglwindows->makeCurrent();
+    delete m_openglwindows;
+    m_openglwindows = nullptr;
+
+    // 显示占位提示
+    m_placeholder = new QLabel(
+        "<div style='text-align:center;'>"
+        "<p style='font-size:36px; color:#2B5EA8; font-weight:300; margin-bottom:8px;'>live2d2psd</p>"
+        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json 文件</p>"
+        "<p style='font-size:12px; color:#353A50; margin-top:16px;'>Ctrl+O 打开文件 &nbsp;|&nbsp; 拖拽导入</p>"
+        "</div>", this);
+    m_placeholder->setAlignment(Qt::AlignCenter);
+    m_placeholder->setTextFormat(Qt::RichText);
+    setCentralWidget(m_placeholder);
+
+    statusBar()->showMessage("模型已关闭");
+}
+
+void MainWindow::RestDock(const QString &name)
+{
+    // 清理占位控件
+    if(m_placeholder) { delete m_placeholder; m_placeholder = nullptr; }
+
+
+    CModelJson modeljson;
+    modeljson.Parse(name);
+    QString moc = modeljson.m_parentPath  + modeljson.m_moc;
+    CTreeManage::InitOpenLive2d(moc);
+
+    m_openglwindows = new OpengGlForm();
+    m_openglwindows->SetInitOpenName(name);
+
+
+    m_openglwindows->setFocusPolicy(Qt::StrongFocus);
+    this->setCentralWidget(m_openglwindows);
+
+
+    CCidJson* cid = new CCidJson();
+    cid->Parse(modeljson.m_parentPath+modeljson.m_DisplayInfo);
+    qDebug() << modeljson.m_parentPath+modeljson.m_DisplayInfo;
+
+    // 创建模型结构树面板（左侧）
+    m_treePanel = new CModelTreePanel(this);
+    addDockWidget(Qt::LeftDockWidgetArea, m_treePanel);
+    m_treePanel->BuildTree();
+
+    // 创建参数滑条面板（右侧）
+    // 注意：参数面板需要等模型加载完成后才能获取参数
+    // 使用 singleShot 确保 GL 初始化完成
+    m_paramPanel = new CParamPanel(this);
+    addDockWidget(Qt::RightDockWidgetArea, m_paramPanel);
+
+    // 创建动作/表情面板（底部）
+    m_motionPanel = new CMotionPanel(this);
+    addDockWidget(Qt::BottomDockWidgetArea, m_motionPanel);
+
+    // 延迟构建参数和动作列表（等 GL 初始化完成）
+    QTimer::singleShot(200, this, [this](){
+        if(m_paramPanel) m_paramPanel->BuildParams();
+        if(m_motionPanel) m_motionPanel->BuildLists();
+    });
+
+    // 面板切换按钮 ↔ Dock 面板双向同步
+    m_btnToggleTree->setVisible(true);
+    m_btnToggleParam->setVisible(true);
+    m_btnToggleMotion->setVisible(true);
+
+    connect(m_btnToggleTree, &QPushButton::toggled, m_treePanel, &QDockWidget::setVisible);
+    connect(m_btnToggleParam, &QPushButton::toggled, m_paramPanel, &QDockWidget::setVisible);
+    connect(m_btnToggleMotion, &QPushButton::toggled, m_motionPanel, &QDockWidget::setVisible);
+
+    connect(m_treePanel, &QDockWidget::visibilityChanged, m_btnToggleTree, &QPushButton::setChecked);
+    connect(m_paramPanel, &QDockWidget::visibilityChanged, m_btnToggleParam, &QPushButton::setChecked);
+    connect(m_motionPanel, &QDockWidget::visibilityChanged, m_btnToggleMotion, &QPushButton::setChecked);
+
+    // 信号连接：树面板 → OpenGL
+    connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
+    connect(m_treePanel, &CModelTreePanel::WarpSelected, m_openglwindows, &OpengGlForm::do_ShowWarp);
+
+    // 信号连接：参数面板 → OpenGL
+    connect(m_paramPanel, &CParamPanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
+
+    // 信号连接：OpenGL → 树面板高亮
+    connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_treePanel, &CModelTreePanel::HighlightMesh);
+
+    // 信号连接：动作面板 → 模型
+    connect(m_motionPanel, &CMotionPanel::PlayMotion, this, [](const QString& group, int no){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->StartMotion(group.toUtf8().constData(), no, LAppDefine::PriorityForce);
+        }
+    });
+
+    connect(m_motionPanel, &CMotionPanel::ApplyExpression, this, [](const QString& name){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetExpression(name.toUtf8().constData());
+        }
+    });
+
+    connect(m_motionPanel, &CMotionPanel::AutoEyeBlinkChanged, this, [](bool enabled){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetAutoEyeBlink(enabled);
+        }
+    });
+
+    connect(m_motionPanel, &CMotionPanel::AutoBreathChanged, this, [](bool enabled){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetAutoBreath(enabled);
+        }
+    });
+
+    delete cid;
+}
+
+void MainWindow::createActions()
+{
+    myOpenAction = new QAction(tr("打开模型"), this);
+    myOpenAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_O));
+    myOpenAction->setStatusTip(tr("选择 model3.json 文件打开"));
+    connect(myOpenAction, &QAction::triggered, this, &MainWindow::on_actionOpen_triggered);
+
+    myAction = new QAction(tr("输出psd"), this);
+    myBatchAction = new QAction(tr("批量导出psd"), this);
+    myAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
+    myBatchAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M));
+    myAction->setStatusTip(tr("输出psd"));
+    myBatchAction->setStatusTip(tr("批量导出psd"));
+
+    connect(myAction, &QAction::triggered, this, &MainWindow::on_actionpsdPrint_triggered);
+    connect(myBatchAction, &QAction::triggered, this, &MainWindow::on_actionBatchPsd_triggered);
+
+    myCloseAction = new QAction(tr("关闭模型"), this);
+    myCloseAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
+    myCloseAction->setStatusTip(tr("关闭当前模型"));
+    connect(myCloseAction, &QAction::triggered, this, &MainWindow::on_actionCloseModel_triggered);
+}
+
+void MainWindow::setupUI()
+{
+    // 标题栏（上排）
+    m_titleBar = addToolBar("titlebar");
+    m_titleBar->setMovable(false);
+    m_titleBar->setFloatable(false);
+    m_titleBar->setObjectName("titleBar");
+    m_titleBar->setFixedHeight(32);
+
+    QLabel* iconLabel = new QLabel(this);
+    iconLabel->setPixmap(QPixmap(":/logo.ico").scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    iconLabel->setFixedSize(24, 24);
+    iconLabel->setAlignment(Qt::AlignCenter);
+    m_titleBar->addWidget(iconLabel);
+
+    QLabel* titleLabel = new QLabel("live2d2psd", this);
+    titleLabel->setObjectName("titleLabel");
+    m_titleBar->addWidget(titleLabel);
+
+    QWidget* spacer = new QWidget(this);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_titleBar->addWidget(spacer);
+
+    m_btnMin = new QPushButton("—", this);
+    m_btnMax = new QPushButton("□", this);
+    m_btnClose = new QPushButton("×", this);
+    m_btnMin->setObjectName("winBtnMin");
+    m_btnMax->setObjectName("winBtnMax");
+    m_btnClose->setObjectName("winBtnClose");
+    m_btnMin->setFixedSize(40, 28);
+    m_btnMax->setFixedSize(40, 28);
+    m_btnClose->setFixedSize(40, 28);
+    m_titleBar->addWidget(m_btnMin);
+    m_titleBar->addWidget(m_btnMax);
+    m_titleBar->addWidget(m_btnClose);
+
+    m_titleBar->installEventFilter(this);
+
+    addToolBarBreak();
+
+    connect(m_btnMin, &QPushButton::clicked, this, &QWidget::showMinimized);
+    connect(m_btnMax, &QPushButton::clicked, this, [this](){
+        if(isMaximized()){
+            showNormal();
+            m_btnMax->setText("□");
+        } else {
+            showMaximized();
+            m_btnMax->setText("❐");
+        }
+    });
+    connect(m_btnClose, &QPushButton::clicked, this, &QWidget::close);
+
+    // 工具栏（下排）
+    QToolBar *mainToolBar = addToolBar(tr("主工具栏"));
+    mainToolBar->setMovable(false);
+    mainToolBar->setFloatable(false);
+    mainToolBar->addAction(myOpenAction);
+    mainToolBar->addSeparator();
+    mainToolBar->addAction(myAction);
+    mainToolBar->addAction(myBatchAction);
+    mainToolBar->addSeparator();
+    mainToolBar->addAction(myCloseAction);
+
+    // 设置状态栏
+    statusBar()->showMessage(tr("就绪"));
+
+    // 面板切换按钮（状态栏左侧）
+    m_btnToggleTree = new QPushButton("模型结构", this);
+    m_btnToggleParam = new QPushButton("参数控制", this);
+    m_btnToggleMotion = new QPushButton("动作/表情", this);
+    m_btnToggleTree->setCheckable(true);
+    m_btnToggleParam->setCheckable(true);
+    m_btnToggleMotion->setCheckable(true);
+    m_btnToggleTree->setChecked(true);
+    m_btnToggleParam->setChecked(true);
+    m_btnToggleMotion->setChecked(true);
+    m_btnToggleTree->setFlat(true);
+    m_btnToggleParam->setFlat(true);
+    m_btnToggleMotion->setFlat(true);
+    // 未创建面板前先隐藏
+    m_btnToggleTree->setVisible(false);
+    m_btnToggleParam->setVisible(false);
+    m_btnToggleMotion->setVisible(false);
+    statusBar()->addPermanentWidget(m_btnToggleTree);
+    statusBar()->addPermanentWidget(m_btnToggleParam);
+    statusBar()->addPermanentWidget(m_btnToggleMotion);
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    if(eventType == "windows_generic_MSG"){
+        MSG* msg = static_cast<MSG*>(message);
+        if(msg->message == WM_NCHITTEST){
+            QPoint pos = mapFromGlobal(QCursor::pos());
+
+            const int border = 5;
+            int w = width(), h = height();
+
+            // 边缘缩放
+            bool left   = pos.x() < border;
+            bool right  = pos.x() > w - border;
+            bool top    = pos.y() < border;
+            bool bottom = pos.y() > h - border;
+
+            if(top && left)     { *result = HTTOPLEFT;     return true; }
+            if(top && right)    { *result = HTTOPRIGHT;    return true; }
+            if(bottom && left)  { *result = HTBOTTOMLEFT;  return true; }
+            if(bottom && right) { *result = HTBOTTOMRIGHT; return true; }
+            if(left)            { *result = HTLEFT;        return true; }
+            if(right)           { *result = HTRIGHT;       return true; }
+            if(top)             { *result = HTTOP;         return true; }
+            if(bottom)          { *result = HTBOTTOM;      return true; }
+
+            // 标题栏拖拽由 eventFilter 处理
+        }
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+bool MainWindow::eventFilter(QObject* obj, QEvent* event)
+{
+    if(obj == m_titleBar && event->type() == QEvent::MouseButtonPress){
+        QMouseEvent* me = static_cast<QMouseEvent*>(event);
+        if(me->button() == Qt::LeftButton){
+            QWidget* child = m_titleBar->childAt(me->pos());
+            if(!child || !qobject_cast<QPushButton*>(child)){
+#ifdef Q_OS_WIN
+                ReleaseCapture();
+                SendMessage((HWND)winId(), WM_NCLBUTTONDOWN, HTCAPTION, 0);
+#endif
+                return true;
+            }
+        }
+    }
+    if(obj == m_titleBar && event->type() == QEvent::MouseButtonDblClick){
+        QMouseEvent* me = static_cast<QMouseEvent*>(event);
+        if(me->button() == Qt::LeftButton){
+            QWidget* child = m_titleBar->childAt(me->pos());
+            if(!child || !qobject_cast<QPushButton*>(child)){
+                if(isMaximized()){
+                    showNormal();
+                    m_btnMax->setText("□");
+                } else {
+                    showMaximized();
+                    m_btnMax->setText("❐");
+                }
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(obj, event);
+}

@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/">
+        <file>awesomeface.png</file>
+        <file>container2.png</file>
+        <file>container2_specular.png</file>
+        <file>lighting_maps_specular_color.png</file>
+        <file>logo.ico</file>
+        <file>matrix.jpg</file>
+        <file>read.png</file>
+        <file>wall.jpg</file>
+    </qresource>
+</RCC>

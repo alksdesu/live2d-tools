@@ -1,0 +1,30 @@
+# Build outputs
+softwareEnv/
+build/
+debug/
+release/
+
+# IDE / editor / AI
+.vs/
+.vscode/
+*.pro.user
+CLAUDE.md
+
+# qmake generated
+Makefile
+Makefile.Debug
+Makefile.Release
+.qmake.stash
+*_resource.rc
+
+# Compiled objects
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

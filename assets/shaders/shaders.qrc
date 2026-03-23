@@ -1,0 +1,18 @@
+<RCC>
+    <qresource prefix="/">
+        <file>atr.frag</file>
+        <file>atr.vert</file>
+        <file>light.frag</file>
+        <file>light.vert</file>
+        <file>shader_mesh.frag</file>
+        <file>shader_mesh.vert</file>
+        <file>shader_meshPoint_circle.frag</file>
+        <file>shader_meshPoint_circle.vert</file>
+        <file>drawshape.frag</file>
+        <file>drawshape.vert</file>
+        <file>shader_warp.frag</file>
+        <file>shader_warp.vert</file>
+        <file>shader_rotation.vert</file>
+        <file>shader_rotation.frag</file>
+    </qresource>
+</RCC>
