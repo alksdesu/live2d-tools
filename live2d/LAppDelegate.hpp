@@ -6,6 +6,8 @@
 #include <QOpenGLWidget>
 #include "QOpenGLContext"
 #include "QEvent"
+#include <QMap>
+#include <vector>
 #include "opengl/coffscreenmap.h"
 #include "live2d/LAppModel.hpp"
 #include "opengl/cselectstruct.h"
@@ -13,6 +15,7 @@
 #include "opengl/coffscreenlive.h"
 #include <QCoreApplication>
 #include "opengl/cpsdwritelist.h"
+#include <QSet>
 
 class LAppView;
 class LAppTextureManager;
@@ -51,6 +54,23 @@ public:
     bool m_IsPrintALl;
     bool m_IsPrintFenzu;
     CReadOpengl read;
+
+    // 可见性控制：隐藏的 drawable 名称集合
+    QSet<QString> m_hiddenDrawables;
+
+    // 背景色
+    float m_clearColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    void SetClearColor(float r, float g, float b, float a = 1.0f){
+        m_clearColor[0] = r; m_clearColor[1] = g;
+        m_clearColor[2] = b; m_clearColor[3] = a;
+    }
+
+    // 变形器拖拽：冻结非目标 drawable 的顶点
+    QSet<QString> m_dragTargetDrawables;       // 目标 drawable（跟着参数动）
+    bool m_isDraggingDeformer = false;
+    QMap<int, std::vector<float>> m_savedVertices; // 非目标 drawable 的顶点快照
+    void StartDeformerDrag();   // Ctrl+按下时调用
+    void StopDeformerDrag();    // 松手时调用
     void StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu);
     void StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts);
 

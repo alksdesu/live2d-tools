@@ -63,7 +63,27 @@ void CCidJson::Parse(QString fileName)
         }
     }
 
+    // 解析 Deformers（部分模型可能包含）
+    if(qt.contains("Deformers")){
+        QJsonArray deformers = qt["Deformers"].toArray();
+        for(int i = 0; i < deformers.size(); i++){
+            QJsonObject dO = deformers[i].toObject();
+            m_DeformersIdToName.insert(dO["Id"].toString(), dO["Name"].toString());
+        }
+    }
 
-
-
+    // 解析 CombinedParameters（融合变形参数组）
+    if(qt.contains("CombinedParameters")){
+        QJsonArray combined = qt["CombinedParameters"].toArray();
+        for(int i = 0; i < combined.size(); i++){
+            QJsonArray group = combined[i].toArray();
+            QVector<QString> paramIds;
+            for(int j = 0; j < group.size(); j++){
+                QString id = group[j].toString();
+                paramIds.append(id);
+                m_CombinedParamSet.insert(id);
+            }
+            m_CombinedParameters.append(paramIds);
+        }
+    }
 }

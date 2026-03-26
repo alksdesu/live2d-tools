@@ -60,6 +60,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
     ResourcesPath = QCoreApplication::applicationDirPath()+"/Resources/";
     m_IsPrintALl =false;
     m_IsPrintFenzu=false;
+    m_hiddenDrawables.clear();
 
     _IsOffScreen =false;
 
@@ -187,7 +188,7 @@ void LAppDelegate::paint()
 {
 
     LAppPal::UpdateTime();
-    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+    glClearColor(m_clearColor[0], m_clearColor[1], m_clearColor[2], m_clearColor[3]);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glClearDepth(1.0);
     _view->Render();
@@ -423,4 +424,39 @@ void LAppDelegate::ChangeScene(const QString &modelJsonName)
 }
 
 //通过文件直接打开，如果已经打开场景就
+
+void LAppDelegate::StartDeformerDrag()
+{
+    m_isDraggingDeformer = true;
+    m_savedVertices.clear();
+    // 保存所有非目标 drawable 的当前顶点
+    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+    if(!mgr || mgr->GetModelNum() <= 0) return;
+    auto* model = mgr->GetModel(0)->GetModel();
+    int drawCount = model->GetDrawableCount();
+    for(int i = 0; i < drawCount; i++){
+        QString name(model->GetDrawableId(i)->GetString().GetRawString());
+        if(m_dragTargetDrawables.contains(name)) continue;
+        int vCount = model->GetDrawableVertexCount(i);
+        if(vCount <= 0) continue;
+        auto* verts = model->GetDrawableVertexPositions(i);
+        std::vector<float> buf(vCount * 2);
+        for(int v = 0; v < vCount; v++){
+            buf[v * 2]     = verts[v].X;
+            buf[v * 2 + 1] = verts[v].Y;
+        }
+        m_savedVertices[i] = std::move(buf);
+    }
+}
+
+void LAppDelegate::StopDeformerDrag()
+{
+    m_isDraggingDeformer = false;
+    m_savedVertices.clear();
+    // 恢复参数
+    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+    if(mgr && mgr->GetModelNum() > 0){
+        mgr->GetModel(0)->StopDeformerDrag();
+    }
+}
 

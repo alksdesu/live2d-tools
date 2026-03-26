@@ -8,6 +8,7 @@
 #include "CubismShader_OpenGLES2.hpp"
 #include <float.h>
 #include "framework/Type/csmRectF.hpp"
+#include "live2d/LAppDelegate.hpp"
 
 // #ifdef CSM_TARGET_WIN_GL
 // #include <Windows.h>
@@ -1068,6 +1069,14 @@ void CubismShader_OpenGLES2::SetVertexAttributes(const CubismModel& model, const
 {
     // 頂点位置属性の設定
     const csmFloat32* vertexArray = model.GetDrawableVertices(index);
+
+    // 变形器拖拽：非目标 drawable 用冻结的顶点快照
+    auto* delegate = LAppDelegate::GetInstance();
+    if(delegate->m_isDraggingDeformer && !delegate->IsOffScreen()
+       && delegate->m_savedVertices.contains(index)){
+        vertexArray = delegate->m_savedVertices[index].data();
+    }
+
     glEnableVertexAttribArray(shaderSet->AttributePositionLocation);
     glVertexAttribPointer(shaderSet->AttributePositionLocation, 2, GL_FLOAT, GL_FALSE, sizeof(csmFloat32) * 2, vertexArray);
 

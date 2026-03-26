@@ -17,9 +17,16 @@
 #include "ui/cmodeltreepanel.h"
 #include "ui/cparampanel.h"
 #include "ui/cmotionpanel.h"
+#include "ui/cphysicspanel.h"
+#include "ui/cblendshapepanel.h"
+#include "ui/ctexturepanel.h"
+#include "ui/para/ccidjson.h"
 #include "live2d/LAppDefine.hpp"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
+#include "live2d/LAppTextureManager.hpp"
+#include <framework/CubismFramework.hpp>
+#include <framework/Id/CubismIdManager.hpp>
 #include <QThread>
 #include <QProgressDialog>
 #include <QTimer>
@@ -62,6 +69,7 @@ MainWindow::~MainWindow()
         delete m_openglwindows;
     }
     if(m_headless!=nullptr){ delete m_headless; }
+    if(m_cidJson!=nullptr){ delete m_cidJson; }
 
     CTreeManage::ReleaseInstance();
 
@@ -352,11 +360,20 @@ void MainWindow::CloseModel()
     if(m_treePanel)   { removeDockWidget(m_treePanel);   delete m_treePanel;   m_treePanel = nullptr; }
     if(m_paramPanel)  { removeDockWidget(m_paramPanel);  delete m_paramPanel;  m_paramPanel = nullptr; }
     if(m_motionPanel) { removeDockWidget(m_motionPanel); delete m_motionPanel; m_motionPanel = nullptr; }
+    if(m_physicsPanel) { removeDockWidget(m_physicsPanel); delete m_physicsPanel; m_physicsPanel = nullptr; }
+    if(m_blendShapePanel) { removeDockWidget(m_blendShapePanel); delete m_blendShapePanel; m_blendShapePanel = nullptr; }
+    if(m_texturePanel) { removeDockWidget(m_texturePanel); delete m_texturePanel; m_texturePanel = nullptr; }
 
     // 隐藏面板切换按钮
     m_btnToggleTree->setVisible(false);
     m_btnToggleParam->setVisible(false);
     m_btnToggleMotion->setVisible(false);
+    m_btnTogglePhysics->setVisible(false);
+    m_btnToggleBlend->setVisible(false);
+    m_btnToggleTexture->setVisible(false);
+
+    // 释放显示名称映射
+    if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
 
     // 释放 MOC3 解析树
     CTreeManage::ReleaseInstance();
@@ -391,7 +408,7 @@ void MainWindow::RestDock(const QString &name)
 
     CModelJson modeljson;
     modeljson.Parse(name);
-    QString moc = modeljson.m_parentPath  + modeljson.m_moc;
+    QString moc = modeljson.m_parentPath + "/" + modeljson.m_moc;
     CTreeManage::InitOpenLive2d(moc);
 
     m_openglwindows = new OpengGlForm();
@@ -402,53 +419,130 @@ void MainWindow::RestDock(const QString &name)
     this->setCentralWidget(m_openglwindows);
 
 
-    CCidJson* cid = new CCidJson();
-    cid->Parse(modeljson.m_parentPath+modeljson.m_DisplayInfo);
-    qDebug() << modeljson.m_parentPath+modeljson.m_DisplayInfo;
+    if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
+    m_cidJson = new CCidJson();
+    m_cidJson->Parse(modeljson.m_parentPath + "/" + modeljson.m_DisplayInfo);
+    qDebug() << modeljson.m_parentPath + "/" + modeljson.m_DisplayInfo;
 
     // 创建模型结构树面板（左侧）
     m_treePanel = new CModelTreePanel(this);
     addDockWidget(Qt::LeftDockWidgetArea, m_treePanel);
-    m_treePanel->BuildTree();
+    m_treePanel->BuildTree(moc, m_cidJson);
 
-    // 创建参数滑条面板（右侧）
-    // 注意：参数面板需要等模型加载完成后才能获取参数
-    // 使用 singleShot 确保 GL 初始化完成
+    // 右侧面板：参数控制 + 物理设置（tabify）
     m_paramPanel = new CParamPanel(this);
     addDockWidget(Qt::RightDockWidgetArea, m_paramPanel);
 
-    // 创建动作/表情面板（底部）
+    m_physicsPanel = new CPhysicsPanel(this);
+    addDockWidget(Qt::RightDockWidgetArea, m_physicsPanel);
+    tabifyDockWidget(m_paramPanel, m_physicsPanel);
+    m_paramPanel->raise();
+
+    // 底部面板：动作/表情 + 融合变形 + 纹理（tabify）
     m_motionPanel = new CMotionPanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_motionPanel);
 
+    m_blendShapePanel = new CBlendShapePanel(this);
+    addDockWidget(Qt::BottomDockWidgetArea, m_blendShapePanel);
+    tabifyDockWidget(m_motionPanel, m_blendShapePanel);
+
+    m_texturePanel = new CTexturePanel(this);
+    addDockWidget(Qt::BottomDockWidgetArea, m_texturePanel);
+    tabifyDockWidget(m_blendShapePanel, m_texturePanel);
+
+    m_motionPanel->raise();
+
+    // 加载物理设置（立即，不需要 GL）
+    if(m_physicsPanel && !modeljson.m_Physics.isEmpty()){
+        m_physicsPanel->LoadPhysics(modeljson.m_parentPath + "/" + modeljson.m_Physics);
+    }
+
+    // 加载融合变形信息（立即，不需要 GL）
+    if(m_blendShapePanel){
+        m_blendShapePanel->BuildBlendShapes(moc, m_cidJson);
+    }
+
     // 延迟构建参数和动作列表（等 GL 初始化完成）
-    QTimer::singleShot(200, this, [this](){
-        if(m_paramPanel) m_paramPanel->BuildParams();
+    QString posePath = modeljson.m_Pose.isEmpty() ? QString() : (modeljson.m_parentPath + "/" + modeljson.m_Pose);
+    QTimer::singleShot(200, this, [this, posePath](){
+        const QSet<QString>* bsParams = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
+        if(m_paramPanel) m_paramPanel->BuildParams(m_cidJson, bsParams);
         if(m_motionPanel) m_motionPanel->BuildLists();
+        // Pose 切换
+        if(m_motionPanel && !posePath.isEmpty()){
+            m_motionPanel->BuildPoseGroups(posePath);
+        }
+        // 加载纹理（GL 初始化后 TextureManager 才有数据）
+        if(m_texturePanel){
+            LAppTextureManager* texMgr = LAppDelegate::GetInstance()->GetTextureManager();
+            if(texMgr) m_texturePanel->LoadTextures(texMgr->GetModelTex());
+        }
+        // 恢复背景色设置到新 delegate
+        applyBgColor();
     });
+
+    // 参数面板实时同步定时器（200ms 间隔，低频避免性能问题）
+    QTimer* syncTimer = new QTimer(m_paramPanel);
+    connect(syncTimer, &QTimer::timeout, m_paramPanel, &CParamPanel::SyncFromModel);
+    syncTimer->start(200);
 
     // 面板切换按钮 ↔ Dock 面板双向同步
     m_btnToggleTree->setVisible(true);
     m_btnToggleParam->setVisible(true);
     m_btnToggleMotion->setVisible(true);
+    m_btnTogglePhysics->setVisible(true);
+    m_btnToggleBlend->setVisible(true);
+    m_btnToggleTexture->setVisible(true);
 
-    connect(m_btnToggleTree, &QPushButton::toggled, m_treePanel, &QDockWidget::setVisible);
-    connect(m_btnToggleParam, &QPushButton::toggled, m_paramPanel, &QDockWidget::setVisible);
-    connect(m_btnToggleMotion, &QPushButton::toggled, m_motionPanel, &QDockWidget::setVisible);
-
-    connect(m_treePanel, &QDockWidget::visibilityChanged, m_btnToggleTree, &QPushButton::setChecked);
-    connect(m_paramPanel, &QDockWidget::visibilityChanged, m_btnToggleParam, &QPushButton::setChecked);
-    connect(m_motionPanel, &QDockWidget::visibilityChanged, m_btnToggleMotion, &QPushButton::setChecked);
+    auto wireToggle = [](QPushButton* btn, QDockWidget* dock){
+        QObject::connect(btn, &QPushButton::toggled, dock, &QDockWidget::setVisible);
+        QObject::connect(dock, &QDockWidget::visibilityChanged, btn, &QPushButton::setChecked);
+    };
+    wireToggle(m_btnToggleTree, m_treePanel);
+    wireToggle(m_btnToggleParam, m_paramPanel);
+    wireToggle(m_btnToggleMotion, m_motionPanel);
+    wireToggle(m_btnTogglePhysics, m_physicsPanel);
+    wireToggle(m_btnToggleBlend, m_blendShapePanel);
+    wireToggle(m_btnToggleTexture, m_texturePanel);
 
     // 信号连接：树面板 → OpenGL
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
     connect(m_treePanel, &CModelTreePanel::WarpSelected, m_openglwindows, &OpengGlForm::do_ShowWarp);
+    connect(m_treePanel, &CModelTreePanel::ShowDeformers, m_openglwindows, &OpengGlForm::do_ShowDeformers);
+    connect(m_treePanel, &CModelTreePanel::ShowDeformerMeshes, m_openglwindows, &OpengGlForm::do_ShowDeformerMeshes);
+    connect(m_treePanel, &CModelTreePanel::DeformerDragParamsChanged, m_openglwindows, &OpengGlForm::do_SetDeformerDragParams);
 
     // 信号连接：参数面板 → OpenGL
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
+    connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
 
     // 信号连接：OpenGL → 树面板高亮
     connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_treePanel, &CModelTreePanel::HighlightMesh);
+
+    // 信号连接：树面板可见性 → OpenGL 渲染控制
+    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_openglwindows, &OpengGlForm::do_SetVisibility);
+
+    // 信号连接：物理面板 → 模型
+    connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetPhysicsGravity(x, y);
+        }
+    });
+    connect(m_physicsPanel, &CPhysicsPanel::WindChanged, this, [](float x, float y){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetPhysicsWind(x, y);
+        }
+    });
+
+    // 信号连接：物理组拖拽参数
+    connect(m_physicsPanel, &CPhysicsPanel::PhysicsDragParamsChanged, this, [](const QStringList& ids, const QStringList& types){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetPhysicsDragParams(ids, types);
+        }
+    });
 
     // 信号连接：动作面板 → 模型
     connect(m_motionPanel, &CMotionPanel::PlayMotion, this, [](const QString& group, int no){
@@ -479,7 +573,49 @@ void MainWindow::RestDock(const QString &name)
         }
     });
 
-    delete cid;
+    connect(m_motionPanel, &CMotionPanel::PhysicsChanged, this, [](bool enabled){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetAutoPhysics(enabled);
+        }
+    });
+
+    connect(m_motionPanel, &CMotionPanel::MouseFollowChanged, this, [](bool enabled){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetEnableMouseFollow(enabled);
+            if(!enabled){
+                mgr->GetModel(0)->SetDragging(0.0f, 0.0f);
+            }
+        }
+    });
+
+    // Pose 切换
+    connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QString& showId, const QStringList& hideIds){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(!mgr || mgr->GetModelNum() <= 0) return;
+        LAppModel* model = mgr->GetModel(0);
+        auto* cubismModel = model->GetModel();
+        // 显示选中的 Part
+        Csm::CubismIdHandle showPartId = Csm::CubismFramework::GetIdManager()->GetId(showId.toUtf8().constData());
+        cubismModel->SetPartOpacity(showPartId, 1.0f);
+        // 隐藏其他 Part
+        for(const QString& hideId : hideIds){
+            Csm::CubismIdHandle hid = Csm::CubismFramework::GetIdManager()->GetId(hideId.toUtf8().constData());
+            cubismModel->SetPartOpacity(hid, 0.0f);
+        }
+    });
+
+}
+
+void MainWindow::applyBgColor()
+{
+    LAppDelegate* delegate = LAppDelegate::GetInstance();
+    switch(m_bgState){
+    case 0: delegate->SetClearColor(1.0f, 1.0f, 1.0f); if(m_bgAction) m_bgAction->setText("背景: 白"); break;
+    case 1: delegate->SetClearColor(0.0f, 0.0f, 0.0f); if(m_bgAction) m_bgAction->setText("背景: 黑"); break;
+    case 2: delegate->SetClearColor(0.5f, 0.5f, 0.5f); if(m_bgAction) m_bgAction->setText("背景: 灰"); break;
+    }
 }
 
 void MainWindow::createActions()
@@ -567,6 +703,25 @@ void MainWindow::setupUI()
     mainToolBar->addAction(myBatchAction);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myCloseAction);
+    mainToolBar->addSeparator();
+
+    // 重置视图
+    QAction* resetViewAction = new QAction("重置视图", this);
+    resetViewAction->setShortcut(QKeySequence(Qt::Key_Home));
+    resetViewAction->setStatusTip("重置模型视图（缩放和位置）");
+    mainToolBar->addAction(resetViewAction);
+    connect(resetViewAction, &QAction::triggered, this, [this](){
+        if(m_openglwindows) m_openglwindows->do_ResetView();
+    });
+
+    // 背景色切换
+    m_bgAction = new QAction("背景: 白", this);
+    m_bgAction->setStatusTip("切换背景色（白/黑/灰）");
+    mainToolBar->addAction(m_bgAction);
+    connect(m_bgAction, &QAction::triggered, this, [this](){
+        m_bgState = (m_bgState + 1) % 3;
+        applyBgColor();
+    });
 
     // 设置状态栏
     statusBar()->showMessage(tr("就绪"));
@@ -585,12 +740,33 @@ void MainWindow::setupUI()
     m_btnToggleParam->setFlat(true);
     m_btnToggleMotion->setFlat(true);
     // 未创建面板前先隐藏
+    m_btnTogglePhysics = new QPushButton("物理设置", this);
+    m_btnToggleBlend = new QPushButton("融合变形", this);
+    m_btnToggleTexture = new QPushButton("纹理", this);
+    m_btnTogglePhysics->setCheckable(true);
+    m_btnToggleBlend->setCheckable(true);
+    m_btnToggleTexture->setCheckable(true);
+    m_btnTogglePhysics->setChecked(true);
+    m_btnToggleBlend->setChecked(true);
+    m_btnToggleTexture->setChecked(true);
+    m_btnTogglePhysics->setFlat(true);
+    m_btnToggleBlend->setFlat(true);
+    m_btnToggleTexture->setFlat(true);
+
+    // 未创建面板前先隐藏
     m_btnToggleTree->setVisible(false);
     m_btnToggleParam->setVisible(false);
     m_btnToggleMotion->setVisible(false);
+    m_btnTogglePhysics->setVisible(false);
+    m_btnToggleBlend->setVisible(false);
+    m_btnToggleTexture->setVisible(false);
+
     statusBar()->addPermanentWidget(m_btnToggleTree);
     statusBar()->addPermanentWidget(m_btnToggleParam);
     statusBar()->addPermanentWidget(m_btnToggleMotion);
+    statusBar()->addPermanentWidget(m_btnTogglePhysics);
+    statusBar()->addPermanentWidget(m_btnToggleBlend);
+    statusBar()->addPermanentWidget(m_btnToggleTexture);
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)

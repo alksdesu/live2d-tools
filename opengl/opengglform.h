@@ -57,6 +57,12 @@ public slots:
     void on_timeout();
     void do_setPoint(float x,float y);
     void do_change_para_value(const QString& name,float value,bool IsInit);
+    void do_SetVisibility(const QString& name, const QString& type, bool visible);
+    void do_ShowDeformers(const QStringList& names);
+    void do_ShowDeformerMeshes(const QStringList& artMeshNames);
+    void do_SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
+                                  const QList<float>& maxVals, const QList<float>& defaultVals);
+    void do_ResetView();
 
 
 signals:

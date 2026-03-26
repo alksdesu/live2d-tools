@@ -4,25 +4,20 @@
 
 void CDrawWarp::ClaVetIndex()
 {
-
-    int rsize = rows;
-    int lsize = columns;
-
-    int l = columns +1;
-    vetIndex.resize(rsize*lsize*4,0);//顶点个数
+    // Live2D 网格布局：columns 是 X 方向，rows 是 Y 方向
+    // 顶点按行优先存储：index = x + y * (columns + 1)
+    // 网格有 columns * rows 个 quad
+    int stride = columns + 1; // 每行顶点数
+    vetIndex.resize(columns * rows * 4, 0);
     int num = 0;
-    for(int i = 0 ;i < rsize;i++){
-         for(int j = 0 ;j < lsize;j++){
-            vetIndex[num++] = i  + j* l;
-
-            vetIndex[num++] = i  + (j+1)* l;
-            vetIndex[num++] = (i+1)  + (j+1)* l;
-            vetIndex[num++] = (i+1)  + j* l;
-         }
+    for(int y = 0; y < rows; y++){
+        for(int x = 0; x < columns; x++){
+            vetIndex[num++] = x     + y     * stride;
+            vetIndex[num++] = x     + (y+1) * stride;
+            vetIndex[num++] = (x+1) + (y+1) * stride;
+            vetIndex[num++] = (x+1) + y     * stride;
+        }
     }
-
-
-
 }
 
 CDrawWarp::CDrawWarp()
@@ -61,6 +56,11 @@ void CDrawWarp::Init(CWarpNode* node)
     this->columns = node->GetColumns();
     this->curWarp = node->GetCurKeyForm();
     ClaVetIndex();
+}
+
+void CDrawWarp::UpdatePositions(CWarpNode* node)
+{
+    this->curWarp = node->GetCurKeyForm();
 }
 void CDrawWarp::InitTest(int i,CWarpNode* node)
 {

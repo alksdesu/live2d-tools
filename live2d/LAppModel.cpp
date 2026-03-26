@@ -19,6 +19,11 @@
 #include "LAppPal.hpp"
 #include "LAppTextureManager.hpp"
 #include "LAppDelegate.hpp"
+#include "LAppView.hpp"
+#include "live2dstruct/ctreemanage.h"
+#include <QFile>
+#include <QTextStream>
+#include <QCoreApplication>
 
 using namespace Live2D::Cubism::Framework;
 using namespace Live2D::Cubism::Framework::DefaultParameterId;
@@ -425,7 +430,7 @@ void LAppModel::Update()
        _breath->UpdateParameters(_model, deltaTimeSeconds);
     }
 
-    if (_physics != NULL)
+    if (_physics != NULL && _autoPhysics)
     {
         _physics->Evaluate(_model, deltaTimeSeconds);
     }
@@ -434,6 +439,23 @@ void LAppModel::Update()
     if (_pose != NULL)
     {
         _pose->UpdateParameters(_model, deltaTimeSeconds);
+    }
+
+    // Part 可见性覆盖
+    if(!_hiddenPartIds.isEmpty()){
+        for(const QString& partId : _hiddenPartIds){
+            CubismIdHandle id = CubismFramework::GetIdManager()->GetId(partId.toUtf8().constData());
+            _model->SetPartOpacity(id, 0.0f);
+        }
+    }
+
+    // 变形器拖拽参数覆盖（在所有效果之后、Update 之前强制设置）
+    if(!_deformerDragParamIds.isEmpty() && _deformerDragActive){
+        for(int i = 0; i < _deformerDragParamIds.size(); i++){
+            if(!m_mapParaToIndex.contains(_deformerDragParamIds[i])) continue;
+            int idx = m_mapParaToIndex[_deformerDragParamIds[i]];
+            _model->SetParameterValue(idx, _deformerDragValues[i]);
+        }
     }
 
     _model->Update();
@@ -714,4 +736,204 @@ QRectF LAppModel::GetCurModelRectF()
     }
 
     return poly.boundingRect();
+}
+
+void LAppModel::SetPhysicsGravity(float x, float y)
+{
+    if(_physics){
+        auto opt = _physics->GetOptions();
+        opt.Gravity.X = x;
+        opt.Gravity.Y = y;
+        _physics->SetOptions(opt);
+    }
+}
+
+void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types)
+{
+    _physicsDragParamIds = paramIds;
+    _physicsDragTypes = types;
+}
+
+void LAppModel::ApplyPhysicsDrag(float dx, float dy)
+{
+    if(_physicsDragParamIds.isEmpty()) return;
+    for(int i = 0; i < _physicsDragParamIds.size(); i++){
+        const CubismId* paramId = CubismFramework::GetIdManager()->GetId(_physicsDragParamIds[i].toUtf8().constData());
+        float value = 0;
+        QString type = (i < _physicsDragTypes.size()) ? _physicsDragTypes[i] : "X";
+        if(type == "X") value = dx * 30.0f;
+        else if(type == "Y") value = dy * 30.0f;
+        else if(type == "Angle") value = (dx + dy) * 15.0f;
+        _model->AddParameterValue(paramId, value);
+    }
+}
+
+void LAppModel::SetPhysicsWind(float x, float y)
+{
+    if(_physics){
+        auto opt = _physics->GetOptions();
+        opt.Wind.X = x;
+        opt.Wind.Y = y;
+        _physics->SetOptions(opt);
+    }
+}
+
+void LAppModel::SetPartVisible(const QString& partId, bool visible)
+{
+    if(visible){
+        _hiddenPartIds.remove(partId);
+        CubismIdHandle id = CubismFramework::GetIdManager()->GetId(partId.toUtf8().constData());
+        _model->SetPartOpacity(id, 1.0f);
+    } else {
+        _hiddenPartIds.insert(partId);
+    }
+}
+
+void LAppModel::SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
+                                       const QList<float>& maxVals, const QList<float>& defaultVals)
+{
+    _deformerDragParamIds = paramIds;
+    _deformerDragMinVals = minVals;
+    _deformerDragMaxVals = maxVals;
+    _deformerDragDefaultVals = defaultVals;
+}
+
+void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
+{
+    if(_deformerDragParamIds.isEmpty()) return;
+
+    _deformerDragActive = true;
+    _deformerDragValues.resize(_deformerDragParamIds.size());
+    for(int i = 0; i < _deformerDragParamIds.size(); i++){
+        float minV = _deformerDragMinVals[i];
+        float maxV = _deformerDragMaxVals[i];
+        float range = maxV - minV;
+        float input = (i % 2 == 0) ? viewX : viewY;
+        float value = minV + (input + 1.0f) * 0.5f * range;
+        _deformerDragValues[i] = qBound(minV, value, maxV);
+    }
+
+    // 同步更新 C2DTree 的参数，让变形器线条跟着动
+    C2DTree* tree = CTreeManage::GetInstance();
+    for(int i = 0; i < _deformerDragParamIds.size(); i++){
+        tree->SetParaValue(_deformerDragParamIds[i], _deformerDragValues[i]);
+    }
+    LAppDelegate::GetInstance()->GetView()->UpdateWarpPositions();
+}
+
+void LAppModel::ProbeParamsForArtMeshes(const QStringList& artMeshNames)
+{
+    _deformerDragParamIds.clear();
+    _deformerDragMinVals.clear();
+    _deformerDragMaxVals.clear();
+    _deformerDragDefaultVals.clear();
+
+    if(artMeshNames.isEmpty()) return;
+
+    // 找到目标 ArtMesh 的 drawable 索引
+    QVector<int> targetIndices;
+    QVector<int> allIndices;
+    int drawCount = _model->GetDrawableCount();
+    QSet<QString> targetSet(artMeshNames.begin(), artMeshNames.end());
+    for(int i = 0; i < drawCount; i++){
+        QString name(_model->GetDrawableId(i)->GetString().GetRawString());
+        allIndices.append(i);
+        if(targetSet.contains(name)){
+            targetIndices.append(i);
+        }
+    }
+    if(targetIndices.isEmpty()) return;
+
+    // 保存当前参数快照
+    int paramCount = _model->GetParameterCount();
+    QVector<float> savedValues(paramCount);
+    for(int i = 0; i < paramCount; i++){
+        savedValues[i] = _model->GetParameterValue(i);
+    }
+
+    // 记录所有 drawable 的基准顶点（只取第一个顶点做快速比较）
+    _model->Update();
+    QVector<QPair<float,float>> baseFirstVert(drawCount);
+    for(int di = 0; di < drawCount; di++){
+        if(_model->GetDrawableVertexCount(di) > 0){
+            auto* v = _model->GetDrawableVertexPositions(di);
+            baseFirstVert[di] = {v[0].X, v[0].Y};
+        }
+    }
+
+    // 逐个参数微扰测试
+    struct ParamScore { int idx; bool affectsTarget; int totalAffected; };
+    QVector<ParamScore> candidates;
+
+    for(int p = 0; p < paramCount; p++){
+        float minV = _model->GetParameterMinimumValue(p);
+        float maxV = _model->GetParameterMaximumValue(p);
+        float curV = savedValues[p];
+        float testV = (curV < (minV + maxV) * 0.5f) ? maxV : minV;
+
+        for(int i = 0; i < paramCount; i++)
+            _model->SetParameterValue(i, savedValues[i]);
+        _model->SetParameterValue(p, testV);
+        _model->Update();
+
+        // 检查目标是否变化
+        bool affectsTarget = false;
+        for(int di : targetIndices){
+            if(_model->GetDrawableVertexCount(di) > 0){
+                auto* v = _model->GetDrawableVertexPositions(di);
+                float dx = v[0].X - baseFirstVert[di].first;
+                float dy = v[0].Y - baseFirstVert[di].second;
+                if(dx * dx + dy * dy > 1e-10f){
+                    affectsTarget = true;
+                    break;
+                }
+            }
+        }
+        if(!affectsTarget) continue;
+
+        // 计算该参数影响了多少个 drawable
+        int totalAffected = 0;
+        for(int di = 0; di < drawCount; di++){
+            if(_model->GetDrawableVertexCount(di) > 0){
+                auto* v = _model->GetDrawableVertexPositions(di);
+                float dx = v[0].X - baseFirstVert[di].first;
+                float dy = v[0].Y - baseFirstVert[di].second;
+                if(dx * dx + dy * dy > 1e-10f) totalAffected++;
+            }
+        }
+        candidates.append({p, true, totalAffected});
+    }
+
+    // 恢复参数
+    for(int i = 0; i < paramCount; i++)
+        _model->SetParameterValue(i, savedValues[i]);
+    _model->Update();
+
+    // 过滤：只保留局部参数（影响不超过 50% 的 drawable）
+    int threshold = drawCount / 2;
+    QVector<ParamScore> localParams;
+    for(const auto& c : candidates){
+        if(c.totalAffected <= threshold)
+            localParams.append(c);
+    }
+    // 如果没有局部参数，退而取影响面最小的几个
+    if(localParams.isEmpty() && !candidates.isEmpty()){
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const ParamScore& a, const ParamScore& b){ return a.totalAffected < b.totalAffected; });
+        for(int i = 0; i < qMin(candidates.size(), 4); i++)
+            localParams.append(candidates[i]);
+    }
+
+    // 按影响面从小到大排序，最多取4个
+    std::sort(localParams.begin(), localParams.end(),
+              [](const ParamScore& a, const ParamScore& b){ return a.totalAffected < b.totalAffected; });
+    int limit = qMin(localParams.size(), 4);
+    for(int i = 0; i < limit; i++){
+        int p = localParams[i].idx;
+        QString id(_model->GetParameterId(p)->GetString().GetRawString());
+        _deformerDragParamIds << id;
+        _deformerDragMinVals << _model->GetParameterMinimumValue(p);
+        _deformerDragMaxVals << _model->GetParameterMaximumValue(p);
+        _deformerDragDefaultVals << _model->GetParameterDefaultValue(p);
+    }
 }

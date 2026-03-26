@@ -334,6 +334,41 @@ void LAppView::ShowWarp(const QString &warpName)
     }
 }
 
+void LAppView::ShowWarps(const QStringList& names)
+{
+    // 先隐藏全部
+    for(auto itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor){
+        itor.value()->SetDraw(false);
+    }
+    // 显示指定的
+    for(const QString& name : names){
+        if(m_drawWarpMap.contains(name)){
+            m_drawWarpMap[name]->SetDraw(true);
+        }
+    }
+}
+
+void LAppView::HideAllWarps()
+{
+    for(auto itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor){
+        itor.value()->SetDraw(false);
+    }
+}
+
+void LAppView::UpdateWarpPositions()
+{
+    // 重新从 C2DTree 获取最新的变形器位置
+    std::vector<C2DTreeNode*> nodes = CTreeManage::GetInstance()->GetWarpKeys();
+    for(auto* node : nodes){
+        if(auto* warp = dynamic_cast<CWarpNode*>(node)){
+            if(m_drawWarpMap.contains(warp->getName())){
+                CDrawWarp* dw = (CDrawWarp*)m_drawWarpMap[warp->getName()];
+                dw->UpdatePositions(warp);
+            }
+        }
+    }
+}
+
 
 float LAppView::GetSpriteAlpha(int assign) const
 {

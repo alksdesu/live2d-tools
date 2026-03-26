@@ -49,9 +49,32 @@ public:
 
     void SetAutoEyeBlink(bool v) { _autoEyeBlink = v; }
     void SetAutoBreath(bool v) { _autoBreath = v; }
+    void SetAutoPhysics(bool v) { _autoPhysics = v; }
+    bool GetAutoPhysics() const { return _autoPhysics; }
     void SetEnableMouseFollow(bool v) { _enableMouseFollow = v; }
     bool GetEnableMouseFollow() const { return _enableMouseFollow; }
     void SetSnapshotMode(bool v) { _snapshotMode = v; }
+
+    // 物理参数控制
+    void SetPhysicsGravity(float x, float y);
+    void SetPhysicsWind(float x, float y);
+
+    // 物理组拖拽：设置拖拽驱动的参数列表
+    void SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types);
+    void ApplyPhysicsDrag(float dx, float dy);
+
+    // Part 可见性控制
+    void SetPartVisible(const QString& partId, bool visible);
+    const QSet<QString>& GetHiddenPartIds() const { return _hiddenPartIds; }
+
+    // 变形器拖拽
+    void SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
+                               const QList<float>& maxVals, const QList<float>& defaultVals);
+    void ApplyDeformerDrag(float viewX, float viewY);
+    void StopDeformerDrag() { _deformerDragActive = false; }
+    const QStringList& GetDeformerDragParamIds() const { return _deformerDragParamIds; }
+    // 运行时探测：找到影响指定 ArtMesh 的参数
+    void ProbeParamsForArtMeshes(const QStringList& artMeshNames);
 
 protected:
     void DoDraw();
@@ -97,6 +120,20 @@ private:
     QMap<QString,int> m_mapParaToIndex;
     bool _autoEyeBlink = true;
     bool _autoBreath = true;
+    bool _autoPhysics = true;
     bool _enableMouseFollow = false;
     bool _snapshotMode = false;
+
+    // 物理拖拽参数
+    QStringList _physicsDragParamIds;
+    QStringList _physicsDragTypes;
+
+    // 变形器拖拽参数
+    QStringList _deformerDragParamIds;
+    QList<float> _deformerDragMinVals, _deformerDragMaxVals, _deformerDragDefaultVals;
+    QList<float> _deformerDragValues; // 当前拖拽值
+    bool _deformerDragActive = false;
+
+    // Part 可见性控制
+    QSet<QString> _hiddenPartIds;
 };

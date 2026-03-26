@@ -66,7 +66,7 @@ void CDrawMesh::Draw(const QMatrix4x4 &projection)
                 outerColor = QVector4D(0.0,1.0,0.0,1.0);
             }
             else{
-                outerColor = QVector4D(0.0,0.0,0.0,1.0);
+                outerColor = QVector4D(0.3f,0.7f,1.0f,0.6f);
             }
             DrawPoint(poins[i]->GetPoint());
         }
@@ -74,7 +74,7 @@ void CDrawMesh::Draw(const QMatrix4x4 &projection)
             outerColor = QVector4D(0.0,1.0,0.0,1.0);//绿色
         }
         else{
-            outerColor = QVector4D(0.0,0.0,0.0,1.0);
+            outerColor = QVector4D(0.3f,0.7f,1.0f,0.6f);
         }
 
         for(int i = 0 ;i <line.size() ;i++){

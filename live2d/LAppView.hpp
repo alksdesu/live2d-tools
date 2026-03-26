@@ -63,6 +63,9 @@ public:
     void AddRotationKey(CRotationNode* node);
     void InitWrapAndRotation();
     void ShowWarp(const QString& warpName);
+    void ShowWarps(const QStringList& names);
+    void HideAllWarps();
+    void UpdateWarpPositions();
 private:
     //这里可以
     TouchManager* _touchManager;                 ///< タッチマネージャー

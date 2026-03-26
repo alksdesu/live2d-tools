@@ -1,17 +1,21 @@
 #include "opengglform.h"
 #include "edit/cmeshmap.h"
+#include <QSurfaceFormat>
 
 
 OpengGlForm::OpengGlForm(QWidget *par):QOpenGLWidget(par)
 {
+    // MSAA 抗锯齿
+    QSurfaceFormat fmt = format();
+    fmt.setSamples(4);
+    setFormat(fmt);
+
     constexpr int frame = 60;
     constexpr int fps = 1000 / frame;
-    m_timer.start(fps);//
+    m_timer.start(fps);
     connect(&m_timer,SIGNAL(timeout()),this,SLOT(on_timeout()));
 
-
     setMouseTracking(true);
-
 }
 
 OpengGlForm::~OpengGlForm()
@@ -166,6 +170,73 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
     view->InitWrapAndRotation();
 }
 
+void OpengGlForm::do_ShowDeformers(const QStringList& names)
+{
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(names.isEmpty()){
+        view->HideAllWarps();
+    } else {
+        view->ShowWarps(names);
+    }
+}
+
+void OpengGlForm::do_ShowDeformerMeshes(const QStringList& artMeshNames)
+{
+    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+    if(!mgr || mgr->GetModelNum() <= 0) return;
+    LAppModel* model = mgr->GetModel(0);
+    CMeshMap* map = model->GetModel()->GetMeshMap();
+    if(!map) return;
+
+    // 设置拖拽目标 drawable 列表
+    LAppDelegate::GetInstance()->m_dragTargetDrawables.clear();
+    if(artMeshNames.isEmpty()){
+        map->HideAll();
+    } else {
+        map->SetShowMultiple(artMeshNames);
+        for(const QString& name : artMeshNames){
+            LAppDelegate::GetInstance()->m_dragTargetDrawables.insert(name);
+        }
+    }
+}
+
+void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
+                                            const QList<float>& maxVals, const QList<float>& defaultVals)
+{
+    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+    if(mgr && mgr->GetModelNum() > 0){
+        mgr->GetModel(0)->SetDeformerDragParams(paramIds, minVals, maxVals, defaultVals);
+    }
+}
+
+void OpengGlForm::do_ResetView()
+{
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
+    QMatrix4x4 identity;
+    identity.setToIdentity();
+    view->SetViewMatrix(identity);
+    m_config.SetScalefactor(1.0f);
+}
+
+void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, bool visible)
+{
+    if(type == "part"){
+        // Part 通过 LAppModel 的隐藏列表控制（每帧 Update 中强制设 opacity=0）
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0){
+            mgr->GetModel(0)->SetPartVisible(name, visible);
+        }
+    } else {
+        // artmesh 通过渲染循环中跳过
+        if(visible){
+            LAppDelegate::GetInstance()->m_hiddenDrawables.remove(name);
+        } else {
+            LAppDelegate::GetInstance()->m_hiddenDrawables.insert(name);
+        }
+    }
+    qDebug() << "[Visibility]" << type << name << (visible ? "show" : "hide");
+}
+
 void OpengGlForm::do_ModelChange(const QString& fileName)
 {
     if(m_ceditstate.IsContins(CEditState::ModelOpen)){
@@ -211,12 +282,25 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
     m_ceditstate.AddState(CEditState::MousePress);
     m_config.SetLastPos(QVector2D(pos));
 
-    if(!m_ceditstate.IsContins(CEditState::ViewMove)){
+    // 右键拖拽视图
+    if(event->button() == Qt::RightButton){
+        m_ceditstate.AddState(CEditState::ViewMove);
+        return;
+    }
 
-        QString str = view->GetSelectMesh(QVector2D(pos),false);
-        if(str!=""){
-            //qDebug() << str;
-            emit SendSelectMesh(str);//发送槽
+    if(!m_ceditstate.IsContins(CEditState::ViewMove)){
+        bool ctrlHeld = event->modifiers() & Qt::ControlModifier;
+        if(ctrlHeld && !LAppDelegate::GetInstance()->m_dragTargetDrawables.isEmpty()){
+            // Ctrl+左键按下：冻结非目标 drawable 顶点
+            LAppDelegate::GetInstance()->StartDeformerDrag();
+        } else if(!ctrlHeld){
+            QString str = view->GetSelectMesh(QVector2D(pos),false);
+            if(!str.isEmpty()){
+                emit SendSelectMesh(str);
+            } else {
+                emit SendSelectMesh("");
+                view->HideAllWarps();
+            }
         }
     }
 
@@ -227,54 +311,76 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
 
 void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
-
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(0,0),QVector2D(0,0));
     m_ceditstate.RemoveState(CEditState::MousePress);
+
+    // 停止变形器拖拽
+    if(LAppDelegate::GetInstance()->m_isDraggingDeformer){
+        LAppDelegate::GetInstance()->StopDeformerDrag();
+    }
+
+    // 右键释放时退出视图移动
+    if(event->button() == Qt::RightButton){
+        m_ceditstate.RemoveState(CEditState::ViewMove);
+    }
 }
 
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
 
-    if(m_ceditstate.IsContins(CEditState::MousePress)){
-        //qDebug() << "鼠标按下";
-        if(m_ceditstate.IsContins(CEditState::ViewMove)){
+    // 计算归一化鼠标坐标 [-1, 1]
+    float viewX = (float)event->pos().x() / (float)width() * 2.0f - 1.0f;
+    float viewY = -((float)event->pos().y() / (float)height() * 2.0f - 1.0f);
 
+    if(m_ceditstate.IsContins(CEditState::MousePress)){
+        if(m_ceditstate.IsContins(CEditState::ViewMove)){
             LAppView* view = LAppDelegate::GetInstance()->GetView();
             QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
-            QVector4D last =  QVector4D(m_config.GetLastPos()); ;
-            QVector4D delta =  (curPos - last); // 计算鼠标移动的距离
+            QVector4D last =  QVector4D(m_config.GetLastPos());
+            QVector4D delta =  (curPos - last);
             QMatrix4x4 temp = view->GetViewMatrix();
             QMatrix4x4 move;
-            move.setToIdentity();//偏移矩阵
+            move.setToIdentity();
             move.translate(delta.x(), delta.y(), 0);
-            temp = temp *   move;
+            temp = temp * move;
             view->SetViewMatrix(temp);
-
         }else{
-            LAppView* view = LAppDelegate::GetInstance()->GetView();
-            QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
-            view->GetMouseSelectRect()->SetStartAndEndPos(m_config.GetLastPos(),QVector2D(curPos));
-
+            // Ctrl+左键拖拽 → 驱动选中变形器绑定的参数
+            bool ctrlHeld = event->modifiers() & Qt::ControlModifier;
+            if(ctrlHeld){
+                LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+                if(mgr && mgr->GetModelNum() > 0){
+                    LAppModel* model = mgr->GetModel(0);
+                    if(!model->GetDeformerDragParamIds().isEmpty()){
+                        model->ApplyDeformerDrag(viewX, viewY);
+                    } else {
+                        // 无绑定参数时 fallback 到标准面部跟随
+                        model->SetDragging(viewX, viewY);
+                    }
+                }
+            } else {
+                LAppView* view = LAppDelegate::GetInstance()->GetView();
+                QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
+                view->GetMouseSelectRect()->SetStartAndEndPos(m_config.GetLastPos(),QVector2D(curPos));
+            }
         }
     }
     else {
-
         if(!m_ceditstate.IsContins(CEditState::ViewMove)){
             LAppView* view = LAppDelegate::GetInstance()->GetView();
             QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
             view->GetSelectMesh(QVector2D(curPos),true);
         }
 
-        // 鼠标跟随：将坐标传给模型的 drag manager
+        // 鼠标跟随 + 物理拖拽
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(mgr && mgr->GetModelNum() > 0){
             LAppModel* model = mgr->GetModel(0);
             if(model->GetEnableMouseFollow()){
-                float viewX = (float)event->pos().x() / (float)width() * 2.0f - 1.0f;
-                float viewY = -((float)event->pos().y() / (float)height() * 2.0f - 1.0f);
                 model->SetDragging(viewX, viewY);
             }
+            model->ApplyPhysicsDrag(viewX, viewY);
         }
     }
 

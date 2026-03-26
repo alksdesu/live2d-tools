@@ -7,6 +7,10 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QSplitter>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -54,6 +58,13 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     exprLayout->addWidget(applyBtn);
     splitter->addWidget(exprWidget);
 
+    // Pose 区域
+    m_poseWidget = new QWidget();
+    QVBoxLayout* poseLayout = new QVBoxLayout(m_poseWidget);
+    poseLayout->addWidget(new QLabel("Pose 切换"));
+    m_poseWidget->setVisible(false); // 没有 pose 数据时隐藏
+    splitter->addWidget(m_poseWidget);
+
     connect(applyBtn, &QPushButton::clicked, this, [this](){
         int row = m_exprList->currentRow();
         if(row >= 0 && row < m_exprNames.size()){
@@ -76,12 +87,20 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_eyeBlinkCb->setChecked(true);
     m_breathCb = new QCheckBox("自动呼吸");
     m_breathCb->setChecked(true);
+    m_mouseFollowCb = new QCheckBox("鼠标追踪");
+    m_mouseFollowCb->setChecked(false);
+    m_physicsCb = new QCheckBox("物理模拟");
+    m_physicsCb->setChecked(true);
     optLayout->addWidget(m_eyeBlinkCb);
     optLayout->addWidget(m_breathCb);
+    optLayout->addWidget(m_mouseFollowCb);
+    optLayout->addWidget(m_physicsCb);
     mainLayout->addLayout(optLayout);
 
     connect(m_eyeBlinkCb, &QCheckBox::toggled, this, &CMotionPanel::AutoEyeBlinkChanged);
     connect(m_breathCb, &QCheckBox::toggled, this, &CMotionPanel::AutoBreathChanged);
+    connect(m_mouseFollowCb, &QCheckBox::toggled, this, &CMotionPanel::MouseFollowChanged);
+    connect(m_physicsCb, &QCheckBox::toggled, this, &CMotionPanel::PhysicsChanged);
 
     setWidget(wrapper);
 }
@@ -126,4 +145,68 @@ void CMotionPanel::BuildLists()
         m_exprList->addItem(name);
         m_exprNames.append(name);
     }
+
+    if(m_motionEntries.isEmpty()) m_motionList->addItem("(此模型无动作定义)");
+    if(m_exprNames.isEmpty()) m_exprList->addItem("(此模型无表情定义)");
+}
+
+void CMotionPanel::BuildPoseGroups(const QString& poseJsonPath)
+{
+    m_poseGroups.clear();
+    // 清除 poseWidget 中旧的 combo
+    QLayout* layout = m_poseWidget->layout();
+    while(layout->count() > 1){ // 保留标签
+        QLayoutItem* item = layout->takeAt(1);
+        if(item->widget()) delete item->widget();
+        delete item;
+    }
+
+    if(poseJsonPath.isEmpty()){
+        m_poseWidget->setVisible(false);
+        return;
+    }
+
+    QFile file(poseJsonPath);
+    if(!file.open(QIODevice::ReadOnly)){
+        m_poseWidget->setVisible(false);
+        return;
+    }
+
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    file.close();
+    QJsonArray groups = doc.object()["Groups"].toArray();
+    if(groups.isEmpty()){
+        m_poseWidget->setVisible(false);
+        return;
+    }
+
+    for(int g = 0; g < groups.size(); g++){
+        QJsonArray group = groups[g].toArray();
+        if(group.size() < 2) continue; // 只有一个选项没意义
+
+        PoseGroup pg;
+        QComboBox* combo = new QComboBox();
+        for(int i = 0; i < group.size(); i++){
+            QString partId = group[i].toObject()["Id"].toString();
+            pg.partIds << partId;
+            combo->addItem(QString("组%1: %2").arg(g + 1).arg(partId), partId);
+        }
+        pg.combo = combo;
+        m_poseGroups.append(pg);
+        layout->addWidget(combo);
+
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, g](int index){
+            if(g >= m_poseGroups.size()) return;
+            const PoseGroup& pg = m_poseGroups[g];
+            QStringList hideIds;
+            QString showId;
+            for(int i = 0; i < pg.partIds.size(); i++){
+                if(i == index) showId = pg.partIds[i];
+                else hideIds << pg.partIds[i];
+            }
+            emit PosePartChanged(showId, hideIds);
+        });
+    }
+
+    m_poseWidget->setVisible(!m_poseGroups.isEmpty());
 }

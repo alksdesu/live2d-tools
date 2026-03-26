@@ -13,6 +13,10 @@
 class CModelTreePanel;
 class CParamPanel;
 class CMotionPanel;
+class CPhysicsPanel;
+class CBlendShapePanel;
+class CTexturePanel;
+class CCidJson;
 
 class MainWindow : public QMainWindow
 {
@@ -55,11 +59,25 @@ private:
     CModelTreePanel* m_treePanel = nullptr;
     CParamPanel* m_paramPanel = nullptr;
     CMotionPanel* m_motionPanel = nullptr;
+    CPhysicsPanel* m_physicsPanel = nullptr;
+    CBlendShapePanel* m_blendShapePanel = nullptr;
+    CTexturePanel* m_texturePanel = nullptr;
+
+    // 背景色状态
+    int m_bgState = 0;
+    QAction* m_bgAction = nullptr;
+    void applyBgColor();
 
     // 面板切换按钮
     QPushButton* m_btnToggleTree = nullptr;
     QPushButton* m_btnToggleParam = nullptr;
     QPushButton* m_btnToggleMotion = nullptr;
+    QPushButton* m_btnTogglePhysics = nullptr;
+    QPushButton* m_btnToggleBlend = nullptr;
+    QPushButton* m_btnToggleTexture = nullptr;
+
+    // 显示名称映射（持久化到模型关闭）
+    CCidJson* m_cidJson = nullptr;
 
 signals:
     void oneExportFinished();

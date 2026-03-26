@@ -18,6 +18,7 @@ public:
     virtual ~CDrawWarp();
     void InitTest(int i,CWarpNode* node);
     void Init(CWarpNode* node);
+    void UpdatePositions(CWarpNode* node);
     void SetColor(QVector3D color){
         this->color = color;
     }

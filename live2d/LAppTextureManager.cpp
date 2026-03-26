@@ -98,6 +98,7 @@ void LAppTextureManager::ReleaseTextures()
     }
 
     _textures.Clear();
+    m_modelTex.clear();
 }
 
 void LAppTextureManager::ReleaseTexture(Csm::csmUint32 textureId)

@@ -41,6 +41,7 @@ void CModelJson::Parse(const QString &fileName)
 
 
     m_Physics = FileReferences["Physics"].toString();
+    m_Pose = FileReferences["Pose"].toString();
 
     QJsonArray  Expressions = FileReferences["Expressions"].toArray();
     for(int i = 0 ;i < Expressions.size() ;i++){

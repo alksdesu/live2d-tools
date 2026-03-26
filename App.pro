@@ -67,6 +67,9 @@ SOURCES += \
     ui/cmodeltreepanel.cpp \
     ui/cparampanel.cpp \
     ui/cmotionpanel.cpp \
+    ui/cphysicspanel.cpp \
+    ui/cblendshapepanel.cpp \
+    ui/ctexturepanel.cpp \
     live2dstruct/tree/c2dtree.cpp \
     live2dstruct/tree/c2dtreenode.cpp \
     live2dstruct/csectiontable.cpp \
@@ -235,6 +238,9 @@ HEADERS += \
     ui/theme.h \
     ui/cparampanel.h \
     ui/cmotionpanel.h \
+    ui/cphysicspanel.h \
+    ui/cblendshapepanel.h \
+    ui/ctexturepanel.h \
     live2dstruct/tree/c2dtree.h \
     live2dstruct/tree/c2dtreenode.h \
     live2dstruct/csectiontable.h \

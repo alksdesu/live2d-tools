@@ -17,6 +17,8 @@ public:
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
     void SetShow(const QString& artName);
+    void SetShowMultiple(const QStringList& artNames);
+    void HideAll();
     QString SetOver(const QPointF& point,bool IsOver);
 
     CDrawMesh* GetDrawMesh(const QString& name){

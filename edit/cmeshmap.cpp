@@ -30,6 +30,21 @@ void CMeshMap::SetShow(const QString &artName)
         }
     }
 }
+void CMeshMap::SetShowMultiple(const QStringList& artNames)
+{
+    QSet<QString> nameSet(artNames.begin(), artNames.end());
+    for(auto it = m_vetDrawMesh.begin(); it != m_vetDrawMesh.end(); ++it){
+        it.value()->SetShow(nameSet.contains(it.key()));
+    }
+}
+
+void CMeshMap::HideAll()
+{
+    for(auto it = m_vetDrawMesh.begin(); it != m_vetDrawMesh.end(); ++it){
+        it.value()->SetShow(false);
+    }
+}
+
 QString CMeshMap::SetOver(const QPointF &point, bool IsOver)
 {
     QString re="";
