@@ -20,6 +20,7 @@ public:
     bool m_IsAll;
     bool m_IsTexExtract;
     bool m_IsSnapshot;
+    bool m_IsCubismCompat;
 
 private slots:
     void on_pushButton_clicked();   // 确定
@@ -31,6 +32,7 @@ private:
     QCheckBox* m_checkFenzu{nullptr};
     QCheckBox* m_checkTexExtract{nullptr};
     QCheckBox* m_checkSnapshot{nullptr};
+    QCheckBox* m_checkCubism{nullptr};
     QPushButton* m_okBtn{nullptr};
     QPushButton* m_cancelBtn{nullptr};
 };

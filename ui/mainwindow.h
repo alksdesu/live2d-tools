@@ -32,13 +32,16 @@ private slots:
     void on_actionpsdPrint_triggered();
     void on_actionBatchPsd_triggered();
     void on_actionCloseModel_triggered();
-    void doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu, bool isTexExtract = false);
+    void on_actionCmo3Export_triggered();
+    void doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu, bool isTexExtract = false, bool cubismCompat = false);
 
 
 
 private:
     void RestDock(const QString& name);
     void CloseModel();
+    void OpenModelWithConfirm(const QString& jsonPath);
+    QString ResolveMocToJson(const QString& mocPath);
 
 
 
@@ -50,6 +53,9 @@ private:
     QAction *myAction;  // 输出psd
     QAction *myBatchAction; // 批量导出psd
     QAction *myCloseAction; // 关闭模型
+    QAction *myCmo3Action = nullptr; // 导出 cmo3 工程
+    QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
+    QString m_currentModelDir;
     void createActions();
     void setupUI();
     OpengGlForm* m_headless = nullptr; // 后台离屏导出上下文
@@ -80,7 +86,7 @@ private:
     CCidJson* m_cidJson = nullptr;
 
 signals:
-    void oneExportFinished();
+    void oneExportFinished(bool ok, const QString& outPath);
 
 private:
     QToolBar* m_titleBar = nullptr;

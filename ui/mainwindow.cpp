@@ -21,6 +21,9 @@
 #include "ui/cblendshapepanel.h"
 #include "ui/ctexturepanel.h"
 #include "ui/para/ccidjson.h"
+#include "std/cmodeljsonwriter.h"
+#include "cmo3/ccmo3builder.h"
+#include <QFileDialog>
 #include "live2d/LAppDefine.hpp"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
@@ -51,7 +54,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_placeholder = new QLabel(
         "<div style='text-align:center;'>"
         "<p style='font-size:36px; color:#2B5EA8; font-weight:300; margin-bottom:8px;'>live2d2psd</p>"
-        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json 文件</p>"
+        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json / .moc3 文件</p>"
         "<p style='font-size:12px; color:#353A50; margin-top:16px;'>Ctrl+O 打开文件 &nbsp;|&nbsp; 拖拽导入</p>"
         "</div>", this);
     m_placeholder->setAlignment(Qt::AlignCenter);
@@ -83,19 +86,11 @@ MainWindow::~MainWindow()
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
-    qDebug() << "MainWindow::dragEnterEvent";
-    // 对于要拖出的窗口或控件setDragEnabled(true)
-    // 对于要拖入的窗口或控件setAcceptDrops(true)
-    // 拖拽进入时是否可拖入的判断
-    auto list = event->mimeData()->urls();
-    if (list.size() == 0) {
-        event->ignore();
-        return;
-    }
-    QMutableListIterator<QUrl> urlFiles(list);
-    for (urlFiles.toFront(); urlFiles.hasNext();) {
-        auto item = urlFiles.next();
-        if (item.path().endsWith(".model3.json")) {
+    const auto list = event->mimeData()->urls();
+    for (const QUrl& url : list) {
+        const QString path = url.toLocalFile();
+        if (path.endsWith(".model3.json", Qt::CaseInsensitive) ||
+            path.endsWith(".moc3", Qt::CaseInsensitive)) {
             event->acceptProposedAction();
             return;
         }
@@ -105,55 +100,68 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
-    QList<QUrl> urls = event->mimeData()->urls();
-
-
-
-    for( QUrl url : urls ){
-
-
-
-    }
-
-    qDebug() << "MainWindow::dropEvent";
-    // 释放鼠标
-    auto list = event->mimeData()->urls();
-    QMutableListIterator<QUrl> urlFiles(list);
-    bool bAccept = list.size() > 0;
-    for (urlFiles.toFront(); urlFiles.hasNext();) {
-        auto item = urlFiles.next();
-        bAccept = true;
-        QRegularExpression regex("^" + QRegularExpression::escape("/"));
-        qDebug() << "path:" << item.path().replace(regex,"");
-        qDebug() << "fileName:" << item.fileName();
-
-        QString fileName = item.path().replace(regex,"");
-        if( fileName!="") {
-            if(m_openglwindows == nullptr){
-                RestDock(fileName);
-            }else{
-                auto reply = QMessageBox::question(this, "提示",
-                    "已加载模型，是否关闭当前模型并打开新模型？",
-                    QMessageBox::Yes | QMessageBox::No);
-                if(reply == QMessageBox::Yes){
-                    CloseModel();
-                    RestDock(fileName);
-                }
+    const auto list = event->mimeData()->urls();
+    for (const QUrl& url : list) {
+        const QString path = url.toLocalFile();
+        if (path.endsWith(".model3.json", Qt::CaseInsensitive)) {
+            OpenModelWithConfirm(path);
+            event->accept();
+            return;
+        }
+        if (path.endsWith(".moc3", Qt::CaseInsensitive)) {
+            const QString jsonPath = ResolveMocToJson(path);
+            if (!jsonPath.isEmpty()) {
+                OpenModelWithConfirm(jsonPath);
             }
-            break;
+            event->accept();
+            return;
         }
-        else{
-            QMessageBox::about(this,"请拖入model3.json文件","请拖入model3.json文件");
-
-        }
-
-
     }
-    if (bAccept)
-        event->accept();
-    else
-        event->ignore();
+    QMessageBox::about(this, "提示", "请拖入 .model3.json 或 .moc3 文件");
+    event->ignore();
+}
 
+void MainWindow::OpenModelWithConfirm(const QString &jsonPath)
+{
+    if (m_openglwindows == nullptr) {
+        RestDock(jsonPath);
+        return;
+    }
+    auto reply = QMessageBox::question(this, "提示",
+        "已加载模型，是否关闭当前模型并打开新模型？",
+        QMessageBox::Yes | QMessageBox::No);
+    if (reply == QMessageBox::Yes) {
+        CloseModel();
+        RestDock(jsonPath);
+    }
+}
+
+QString MainWindow::ResolveMocToJson(const QString &mocPath)
+{
+    QString error;
+    QString jsonPath = CModelJsonWriter::GenerateFor(mocPath, &error);
+    if (!jsonPath.isEmpty()) {
+        return jsonPath;
+    }
+
+    // 同名 json 已存在但未引用该 moc：询问是否覆盖重新生成
+    const QString targetPath = CModelJsonWriter::TargetJsonPath(mocPath);
+    if (QFileInfo::exists(targetPath)) {
+        auto reply = QMessageBox::question(this, "提示",
+            QString("同名配置已存在但未引用该 moc3：\n%1\n是否覆盖重新生成？").arg(targetPath),
+            QMessageBox::Yes | QMessageBox::No);
+        if (reply == QMessageBox::Yes) {
+            jsonPath = CModelJsonWriter::GenerateFor(mocPath, &error, true);
+            if (!jsonPath.isEmpty()) {
+                return jsonPath;
+            }
+        } else {
+            return QString();
+        }
+    }
+
+    QMessageBox::warning(this, "打开 moc3 失败", error);
+    return QString();
 }
 
 
@@ -177,17 +185,11 @@ void MainWindow::on_actionOpen_triggered()
     QString fileName = CFileOption::GetDigModleFile(this);
     if(fileName.isEmpty()) return;
 
-    if(m_openglwindows == nullptr){
-        RestDock(fileName);
-    } else {
-        auto reply = QMessageBox::question(this, "提示",
-            "已加载模型，是否关闭当前模型并打开新模型？",
-            QMessageBox::Yes | QMessageBox::No);
-        if(reply == QMessageBox::Yes){
-            CloseModel();
-            RestDock(fileName);
-        }
+    if (fileName.endsWith(".moc3", Qt::CaseInsensitive)) {
+        fileName = ResolveMocToJson(fileName);
+        if (fileName.isEmpty()) return;
     }
+    OpenModelWithConfirm(fileName);
 }
 
 void MainWindow::on_actionpsdPrint_triggered()
@@ -205,9 +207,9 @@ void MainWindow::on_actionpsdPrint_triggered()
                 if(model && dialg->m_IsSnapshot) model->SetSnapshotMode(true);
 
                 if(dialg->m_IsTexExtract){
-                    m_openglwindows->do_TextureExtract(fileName, dialg->m_IsAll, dialg->m_IsFenZu);
+                    m_openglwindows->do_TextureExtract(fileName, dialg->m_IsAll, dialg->m_IsFenZu, dialg->m_IsCubismCompat);
                 } else {
-                    m_openglwindows->do_OffSeceen(fileName, dialg->m_IsAll, dialg->m_IsFenZu);
+                    m_openglwindows->do_OffSeceen(fileName, dialg->m_IsAll, dialg->m_IsFenZu, dialg->m_IsCubismCompat);
                 }
 
                 // 恢复快照模式
@@ -221,6 +223,56 @@ void MainWindow::on_actionpsdPrint_triggered()
     }
 }
 
+
+void MainWindow::on_actionCmo3Export_triggered()
+{
+    if(m_currentMoc.isEmpty() || m_openglwindows == nullptr){
+        QMessageBox::about(this, "请将模型拖入", "请先打开一个模型");
+        return;
+    }
+
+    const QString defaultName = QFileInfo(m_currentMoc).completeBaseName() + ".cmo3";
+    const QString outPath = QFileDialog::getSaveFileName(
+        this, "导出 cmo3 工程", defaultName, "Cubism 工程 (*.cmo3)");
+    if(outPath.isEmpty()) return;
+
+    const auto answer = QMessageBox::question(this, "导出 cmo3 工程",
+        "将从 moc3 运行时数据恢复 Cubism Editor 工程。\n\n"
+        "以下信息在 moc3 中不存在，无法恢复：\n"
+        "· 变形器路径整理、画师备注\n"
+        "· 原始 PSD 关联（贴图以每网格图层重建）\n"
+        "· 参数分组的折叠状态等编辑器偏好\n\n"
+        "是否继续？",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if(answer != QMessageBox::Yes) return;
+
+    statusBar()->showMessage("正在生成 cmo3 工程…");
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    cmo3::CCmo3Builder::Options options;
+    options.mocPath = m_currentMoc;
+    options.outPath = outPath;
+    {
+        const QDir dir(m_currentModelDir);
+        const QStringList cdis = dir.entryList({ "*.cdi3.json" }, QDir::Files);
+        if(!cdis.isEmpty()) options.cdiPath = dir.filePath(cdis.first());
+        const QStringList physics = dir.entryList({ "*.physics3.json" }, QDir::Files);
+        if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
+    }
+
+    QString error;
+    const bool ok = cmo3::CCmo3Builder::Build(options, &error);
+    QApplication::restoreOverrideCursor();
+
+    if(ok){
+        statusBar()->showMessage("cmo3 导出完成: " + outPath, 8000);
+        QMessageBox::information(this, "导出完成",
+            "已生成 Cubism Editor 工程：\n" + outPath);
+    } else {
+        statusBar()->showMessage("cmo3 导出失败", 8000);
+        QMessageBox::warning(this, "导出失败", error);
+    }
+}
 
 void MainWindow::on_actionBatchPsd_triggered()
 {
@@ -255,12 +307,13 @@ void MainWindow::on_actionBatchPsd_triggered()
     bool isAll = dlg.isAllChecked();
     bool isFenzu = dlg.isFenzuChecked();
     bool isTexExtract = dlg.isTexExtractChecked();
+    bool isCubism = dlg.isCubismChecked();
 
     // 5. 后台线程顺序导出（避免在主线程执行长循环）
     QThread* thread = new QThread(this);
     auto* worker = new PsdBatchWorker();
     worker->moveToThread(thread);
-    worker->setTask(selected, outDir, isAll, isFenzu, isTexExtract);
+    worker->setTask(selected, outDir, isAll, isFenzu, isTexExtract, isCubism);
 
     // 进度对话框
     QProgressDialog* progress = new QProgressDialog("正在批量导出...", "取消", 0, selected.size(), this);
@@ -284,7 +337,7 @@ void MainWindow::on_actionBatchPsd_triggered()
 
     // 线程生命周期管理
     connect(thread, &QThread::started, worker, &PsdBatchWorker::start);
-    connect(worker, &PsdBatchWorker::finished, this, [this, thread, worker, progress, outDir](){
+    connect(worker, &PsdBatchWorker::finished, this, [this, thread, worker, progress, outDir](const QStringList& failedFiles){
         progress->setValue(progress->maximum());
         progress->close();
         progress->deleteLater();
@@ -292,28 +345,36 @@ void MainWindow::on_actionBatchPsd_triggered()
         thread->quit();
         thread->wait();
         thread->deleteLater();
-        QMessageBox::information(this, "批量导出", "导出完成");
+        if (failedFiles.isEmpty()) {
+            QMessageBox::information(this, "批量导出", "导出完成");
+        } else {
+            QMessageBox::warning(this, "批量导出",
+                QString("导出完成，但以下 %1 个文件写入失败：\n%2")
+                    .arg(failedFiles.size())
+                    .arg(failedFiles.join("\n")));
+        }
         QDesktopServices::openUrl(QUrl::fromLocalFile(outDir));
     });
 
     thread->start();
 }
 
-void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract)
+void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract, bool cubismCompat)
 {
     // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
     if(m_openglwindows){
         bool wasActive = m_openglwindows->m_timer.isActive();
         if (wasActive) m_openglwindows->m_timer.stop();
         m_openglwindows->do_ModelChange(modelPath);
+        bool ok;
         if (isTexExtract) {
-            m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu);
+            ok = m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
         } else {
-            m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu);
+            ok = m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
         }
         if (wasActive) m_openglwindows->m_timer.start(1000/60);
         // 通知批量工作器继续
-        emit oneExportFinished();
+        emit oneExportFinished(ok, outPath);
         return;
     }
 
@@ -329,13 +390,14 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
     }else{
         m_headless->do_ModelChange(modelPath);
     }
+    bool ok;
     if (isTexExtract) {
-        m_headless->do_TextureExtractSilent(outPath, isAll, isFenzu);
+        ok = m_headless->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
     } else {
-        m_headless->do_OffSeceenSilent(outPath, isAll, isFenzu);
+        ok = m_headless->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
     }
     // 通知批量工作器继续
-    emit oneExportFinished();
+    emit oneExportFinished(ok, outPath);
 }
 
 
@@ -374,6 +436,8 @@ void MainWindow::CloseModel()
 
     // 释放显示名称映射
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
+    m_currentMoc.clear();
+    m_currentModelDir.clear();
 
     // 释放 MOC3 解析树
     CTreeManage::ReleaseInstance();
@@ -390,7 +454,7 @@ void MainWindow::CloseModel()
     m_placeholder = new QLabel(
         "<div style='text-align:center;'>"
         "<p style='font-size:36px; color:#2B5EA8; font-weight:300; margin-bottom:8px;'>live2d2psd</p>"
-        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json 文件</p>"
+        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json / .moc3 文件</p>"
         "<p style='font-size:12px; color:#353A50; margin-top:16px;'>Ctrl+O 打开文件 &nbsp;|&nbsp; 拖拽导入</p>"
         "</div>", this);
     m_placeholder->setAlignment(Qt::AlignCenter);
@@ -409,6 +473,8 @@ void MainWindow::RestDock(const QString &name)
     CModelJson modeljson;
     modeljson.Parse(name);
     QString moc = modeljson.m_parentPath + "/" + modeljson.m_moc;
+    m_currentMoc = moc;
+    m_currentModelDir = modeljson.m_parentPath;
     CTreeManage::InitOpenLive2d(moc);
 
     m_openglwindows = new OpengGlForm();
@@ -464,7 +530,7 @@ void MainWindow::RestDock(const QString &name)
 
     // 延迟构建参数和动作列表（等 GL 初始化完成）
     QString posePath = modeljson.m_Pose.isEmpty() ? QString() : (modeljson.m_parentPath + "/" + modeljson.m_Pose);
-    QTimer::singleShot(200, this, [this, posePath](){
+    QTimer::singleShot(200, this, [this, posePath, moc](){
         const QSet<QString>* bsParams = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
         if(m_paramPanel) m_paramPanel->BuildParams(m_cidJson, bsParams);
         if(m_motionPanel) m_motionPanel->BuildLists();
@@ -472,10 +538,10 @@ void MainWindow::RestDock(const QString &name)
         if(m_motionPanel && !posePath.isEmpty()){
             m_motionPanel->BuildPoseGroups(posePath);
         }
-        // 加载纹理（GL 初始化后 TextureManager 才有数据）
+        // 加载纹理（GL 初始化后 TextureManager 才有数据）；moc 用于 UV 线框解析
         if(m_texturePanel){
             LAppTextureManager* texMgr = LAppDelegate::GetInstance()->GetTextureManager();
-            if(texMgr) m_texturePanel->LoadTextures(texMgr->GetModelTex());
+            if(texMgr) m_texturePanel->LoadTextures(texMgr->GetModelTex(), moc);
         }
         // 恢复背景色设置到新 delegate
         applyBgColor();
@@ -518,6 +584,13 @@ void MainWindow::RestDock(const QString &name)
 
     // 信号连接：OpenGL → 树面板高亮
     connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_treePanel, &CModelTreePanel::HighlightMesh);
+
+    // 信号连接：纹理面板点击图集 → 树面板 + 主视图 + 面板自身高亮同步
+    connect(m_texturePanel, &CTexturePanel::AtlasMeshPicked, m_treePanel, &CModelTreePanel::HighlightMesh);
+    connect(m_texturePanel, &CTexturePanel::AtlasMeshPicked, m_openglwindows, &OpengGlForm::do_ShowMesh);
+    // 反向：主视图点击 mesh → 纹理面板高亮
+    connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_texturePanel, &CTexturePanel::HighlightMesh);
+    connect(m_treePanel, &CModelTreePanel::MeshSelected, m_texturePanel, &CTexturePanel::HighlightMesh);
 
     // 信号连接：树面板可见性 → OpenGL 渲染控制
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_openglwindows, &OpengGlForm::do_SetVisibility);
@@ -622,7 +695,7 @@ void MainWindow::createActions()
 {
     myOpenAction = new QAction(tr("打开模型"), this);
     myOpenAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_O));
-    myOpenAction->setStatusTip(tr("选择 model3.json 文件打开"));
+    myOpenAction->setStatusTip(tr("选择 model3.json 或 moc3 文件打开"));
     connect(myOpenAction, &QAction::triggered, this, &MainWindow::on_actionOpen_triggered);
 
     myAction = new QAction(tr("输出psd"), this);
@@ -639,6 +712,11 @@ void MainWindow::createActions()
     myCloseAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
     myCloseAction->setStatusTip(tr("关闭当前模型"));
     connect(myCloseAction, &QAction::triggered, this, &MainWindow::on_actionCloseModel_triggered);
+
+    myCmo3Action = new QAction(tr("导出cmo3工程"), this);
+    myCmo3Action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    myCmo3Action->setStatusTip(tr("将当前 moc3 恢复为 Cubism Editor 可编辑工程"));
+    connect(myCmo3Action, &QAction::triggered, this, &MainWindow::on_actionCmo3Export_triggered);
 }
 
 void MainWindow::setupUI()
@@ -701,6 +779,7 @@ void MainWindow::setupUI()
     mainToolBar->addSeparator();
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
+    mainToolBar->addAction(myCmo3Action);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myCloseAction);
     mainToolBar->addSeparator();

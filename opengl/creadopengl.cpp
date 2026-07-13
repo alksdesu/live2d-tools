@@ -71,127 +71,25 @@ void CReadOpengl::Write(const QString &strFileName, int width, int height)
 
 
 
-QPair<QImage*,GLubyte*> CReadOpengl::GetImage(int x, int y, int width, int height)
+QImage* CReadOpengl::GetImage(int x, int y, int width, int height)
 {
-
-    GLint readType, readFormat;
-    GLubyte *pixels;
-    glGetIntegerv ( GL_IMPLEMENTATION_COLOR_READ_TYPE, &readType );
-    glGetIntegerv ( GL_IMPLEMENTATION_COLOR_READ_FORMAT, &readFormat );
-    unsigned int bytesPerPixel = 0;
-    switch ( readType )
-    {
-    case GL_UNSIGNED_BYTE:
-    case GL_BYTE:
-        switch ( readFormat )
-        {
-        case GL_RGBA:
-            bytesPerPixel = 4;
-            break;
-        case GL_RGB:
-        case GL_RGB_INTEGER:
-            bytesPerPixel = 3;
-            break;
-        case GL_RG:
-        case GL_RG_INTEGER:
-        case GL_LUMINANCE_ALPHA:
-            bytesPerPixel = 2;
-            break;
-        case GL_RED:
-        case GL_RED_INTEGER:
-        case GL_ALPHA:
-        case GL_LUMINANCE:
-            bytesPerPixel = 1;
-            break;
-        default:
-            // Undetected format/error
-            break;
-        }
-        break;
-    case GL_FLOAT:
-    case GL_UNSIGNED_INT:
-    case GL_INT:
-        switch ( readFormat )
-        {
-        case GL_RGBA:
-        case GL_RGBA_INTEGER:
-            bytesPerPixel = 16;
-            break;
-        case GL_RGB:
-        case GL_RGB_INTEGER:
-            bytesPerPixel = 12;
-            break;
-        case GL_RG:
-        case GL_RG_INTEGER:
-            bytesPerPixel = 8;
-            break;
-        case GL_RED:
-        case GL_RED_INTEGER:
-        case GL_DEPTH_COMPONENT:
-            bytesPerPixel = 4;
-            break;
-        default:
-            // Undetected format/error
-            break;
-        }
-        break;
-    case GL_HALF_FLOAT:
-    case GL_UNSIGNED_SHORT:
-    case GL_SHORT:
-        switch ( readFormat )
-        {
-        case GL_RGBA:
-        case GL_RGBA_INTEGER:
-            bytesPerPixel = 8;
-            break;
-        case GL_RGB:
-        case GL_RGB_INTEGER:
-            bytesPerPixel = 6;
-            break;
-        case GL_RG:
-        case GL_RG_INTEGER:
-            bytesPerPixel = 4;
-            break;
-        case GL_RED:
-        case GL_RED_INTEGER:
-            bytesPerPixel = 2;
-            break;
-        default:
-            // Undetected format/error
-            break;
-        }
-        break;
-    case GL_FLOAT_32_UNSIGNED_INT_24_8_REV: // GL_DEPTH_STENCIL
-        bytesPerPixel = 8;
-        break;
-        // GL_RGBA, GL_RGBA_INTEGER format
-    case GL_UNSIGNED_INT_2_10_10_10_REV:
-    case GL_UNSIGNED_INT_10F_11F_11F_REV: // GL_RGB format
-    case GL_UNSIGNED_INT_5_9_9_9_REV: // GL_RGB format
-    case GL_UNSIGNED_INT_24_8: // GL_DEPTH_STENCIL format
-        bytesPerPixel = 4;
-        break;
-    case GL_UNSIGNED_SHORT_4_4_4_4: // GL_RGBA format
-    case GL_UNSIGNED_SHORT_5_5_5_1: // GL_RGBA format
-    case GL_UNSIGNED_SHORT_5_6_5: // GL_RGB format
-        bytesPerPixel = 2;
-        break;
-    default:
-        break;
-        // Undetected type/error
+    // QImage 自持像素内存，避免外部缓冲的所有权问题；
+    // RGBA8888 每像素 4 字节，scanline 无 padding，glReadPixels 可直写 bits()
+    QImage* image = new QImage();
+    if (width <= 0 || height <= 0) {
+        return image; // 空图像，下游按 zero-size 跳过
     }
-    pixels = ( GLubyte* ) malloc( width * height * bytesPerPixel );
 
-    glReadBuffer ( GL_COLOR_ATTACHMENT0 );
-    //glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(x, y, width, height, GLenum(GL_RGBA),GLenum(GL_UNSIGNED_BYTE), pixels);//将读出的像素保存在m_pBGRBuf中。
+    *image = QImage(width, height, QImage::Format_RGBA8888);
+    if (image->isNull()) {
+        qWarning("CReadOpengl::GetImage: 分配 %dx%d 图像失败", width, height);
+        return image;
+    }
 
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(x, y, width, height, GLenum(GL_RGBA), GLenum(GL_UNSIGNED_BYTE), image->bits());
 
-    QImage* image = new  QImage(pixels, width, height, QImage::Format_RGBA8888);
-
-
-
-    return QPair<QImage*,GLubyte*>(image,pixels);
+    return image;
 }
 
 
@@ -266,15 +164,7 @@ COffScreenNode CReadOpengl::GetScreenNode(CubismModel &model, const int index, c
     }
 
 
-    //UpdateBuffer(width,height);
-    QPair<QImage*,GLubyte*> np =  GetImage(c.m_rect.x(),c.m_rect.y(),c.m_rect.width(),c.m_rect.height());
-
-
-    c.m_image = np.first;
-    c.m_imagebyte = np.second;
-
-
-
+    c.m_image = GetImage(c.m_rect.x(),c.m_rect.y(),c.m_rect.width(),c.m_rect.height());
 
 
 

@@ -12,25 +12,42 @@ CPsdWriteList::~CPsdWriteList()
     }
 }
 
-void CPsdWriteList::CreatePsd(const QString &name, int w, int h)
+void CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismCompat)
 {
+    m_cubismCompat = cubismCompat;
+    m_nameUse.clear();
     m_list = new CPsdList();
-    m_list->SetPsd(name,w,h);
+    m_list->SetPsd(name,w,h,cubismCompat);
 }
 
-void CPsdWriteList::WritePsd()
+// Cubism 导入时同名图层会关联错乱，兼容模式下对重名追加序号后缀
+QString CPsdWriteList::UniqueName(const QString &name)
 {
-    m_list->CreatePsd();
+    if (!m_cubismCompat) {
+        return name;
+    }
+    int& count = m_nameUse[name];
+    ++count;
+    if (count == 1) {
+        return name;
+    }
+    return name + QString(" #%1").arg(count);
+}
+
+bool CPsdWriteList::WritePsd()
+{
+    bool ok = m_list->CreatePsd();
     delete m_list;
     m_list= nullptr;
+    return ok;
 }
 
 void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const QImage &image)
 {
-    if(rect.width() > 0 && rect.height() > 0){
-        m_list->AddLayer(layerName,image,rect);
+    if(rect.width() > 0 && rect.height() > 0 && !image.isNull()){
+        m_list->AddLayer(UniqueName(layerName),image,rect);
     }else{
-        qDebug("CPsdWriteList::AddLayer skip zero-size: %s", layerName.toUtf8().constData());
+        qDebug("CPsdWriteList::AddLayer skip empty: %s", layerName.toUtf8().constData());
     }
 }
 
@@ -38,10 +55,10 @@ void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const 
                              uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                              bool isPremultiplied)
 {
-    if(rect.width() > 0 && rect.height() > 0){
-        m_list->AddLayer(layerName, image, rect, opacity, blendModeKey, isClipped, isPremultiplied);
+    if(rect.width() > 0 && rect.height() > 0 && !image.isNull()){
+        m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied);
     }else{
-        qDebug("CPsdWriteList::AddLayer skip zero-size: %s", layerName.toUtf8().constData());
+        qDebug("CPsdWriteList::AddLayer skip empty: %s", layerName.toUtf8().constData());
     }
 }
 
@@ -56,7 +73,7 @@ void CPsdWriteList::AddGroupStart(const QString &groupName)
 void CPsdWriteList::AddGroupEnd()
 {
     QString name = m_groupNameStack.isEmpty() ? QString("Group") : m_groupNameStack.takeLast();
-    QByteArray utf8Text = name.toUtf8();
+    QByteArray utf8Text = UniqueName(name).toUtf8();
     m_list->AddGroupEnd(utf8Text.constData());
 }
 

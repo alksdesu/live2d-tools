@@ -20,8 +20,8 @@ public:
     CPsdWriteList();
     ~CPsdWriteList();
 
-    void CreatePsd(const QString& name,int w,int h);
-    void WritePsd();
+    void CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
+    bool WritePsd();
     void AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
     void AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
                   uint8_t opacity, uint32_t blendModeKey, bool isClipped,
@@ -31,6 +31,7 @@ public:
     void ClosePsd(){
         partNameToName.clear();
         m_groupNameStack.clear();
+        m_nameUse.clear();
     }
 
 
@@ -56,11 +57,14 @@ public:
 private:
     int  Sort(QList<C2DTreeNode*> &part);
     void SetLogSort(QList<C2DTreeNode*> &part);
+    QString UniqueName(const QString& name);
 
 
 private:
     CPsdList* m_list;
     QMap<QString,int > m_sort;
+    QHash<QString,int> m_nameUse;
+    bool m_cubismCompat = false;
     const QString m_nameGroupStart = "&Group&Start&";
     const QString m_nameGroupEnd ="&Group&End&";
 

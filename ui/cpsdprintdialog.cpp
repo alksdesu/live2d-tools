@@ -14,6 +14,7 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
     m_IsAll = false;
     m_IsTexExtract = false;
     m_IsSnapshot = false;
+    m_IsCubismCompat = false;
 
     auto* layout = new QVBoxLayout(this);
 
@@ -29,10 +30,12 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
     m_checkFenzu = new QCheckBox("按分组导出", this);
     m_checkTexExtract = new QCheckBox("原始纹理提取（无变形，高质量）", this);
     m_checkSnapshot = new QCheckBox("使用当前参数（禁用自动效果）", this);
+    m_checkCubism = new QCheckBox("Cubism 可导入模式（sRGB / 图层名去重）", this);
     layout->addWidget(m_checkAll);
     layout->addWidget(m_checkFenzu);
     layout->addWidget(m_checkTexExtract);
     layout->addWidget(m_checkSnapshot);
+    layout->addWidget(m_checkCubism);
     // 原始纹理提取模式下快照无意义
     connect(m_checkTexExtract, &QCheckBox::toggled, this, [this](bool checked){
         m_checkSnapshot->setDisabled(checked);
@@ -59,6 +62,7 @@ void CPsdPrintDialog::on_pushButton_clicked()
     m_IsAll = (m_checkAll ? m_checkAll->isChecked() : false);
     m_IsTexExtract = (m_checkTexExtract ? m_checkTexExtract->isChecked() : false);
     m_IsSnapshot = (m_checkSnapshot ? m_checkSnapshot->isChecked() : false);
+    m_IsCubismCompat = (m_checkCubism ? m_checkCubism->isChecked() : false);
     accept();
 }
 

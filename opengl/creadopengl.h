@@ -26,7 +26,7 @@ public:
 
     void WriteONE(const QString& fileName,int width ,int height);
     void Write(const QString& fileName,int width ,int height);
-    QPair<QImage*,GLubyte*>   GetImage(int x,int y ,int width, int height);
+    QImage*   GetImage(int x,int y ,int width, int height);
     //void UpdateBuffer(int width, int height);
     void PrintImage(int width, int height);
 

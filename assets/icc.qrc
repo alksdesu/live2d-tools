@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/icc">
+        <file>sRGB.icc</file>
+    </qresource>
+</RCC>

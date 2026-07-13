@@ -12,7 +12,7 @@ public:
         QString caption = "Open File";
 
         // 设置文件选择模式，这里设置为选择单个文件
-        QString filter = "model Files (*.model3.json)";
+        QString filter = "Live2D 模型 (*.model3.json *.moc3);;model3.json (*.model3.json);;moc3 (*.moc3)";
 
         // 设置默认的文件名
         //QString fileName = QFileDialog::getOpenFileName(this, caption, m_CurFilePath, filter);

@@ -1,4 +1,5 @@
 #include "cpsdlist.h"
+#include <QFile>
 
 CPsdList::CPsdList() {
     m_canvasWidth = 0;
@@ -15,7 +16,7 @@ CPsdList::~CPsdList()
     }
 }
 
-void CPsdList::SetPsd(const QString &name, int w, int h)
+void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
 {
 
     m_canvasWidth = w;
@@ -23,6 +24,18 @@ void CPsdList::SetPsd(const QString &name, int w, int h)
     m_docname = name;
     document = CreateExportDocument(&allocator, m_canvasWidth, m_canvasHeight, m_bitsPerChannel, m_colorMode);
 
+    if (cubismCompat) {
+        // Cubism 导入要求 sRGB 色彩配置
+        QFile iccFile(":/icc/sRGB.icc");
+        if (iccFile.open(QIODevice::ReadOnly)) {
+            QByteArray icc = iccFile.readAll();
+            if (!icc.isEmpty()) {
+                psd::SetICCProfile(document, &allocator, icc.data(), static_cast<uint32_t>(icc.size()));
+            }
+        } else {
+            qWarning("CPsdList::SetPsd: 无法读取内置 sRGB ICC 资源");
+        }
+    }
 }
 
 void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &rect)
@@ -125,18 +138,21 @@ void CPsdList::AddGroupEnd(const char* groupName)
     delete[] point;
 }
 
-void CPsdList::CreatePsd()
+bool CPsdList::CreatePsd()
 {
 
     NativeFile file(&allocator);
 
     if (!file.OpenWrite(m_docname.toStdWString().c_str()))
     {
-        qDebug("不能打开文件 CPsdList::CreatePsd");
-        return ;
+        qWarning("CPsdList::CreatePsd 打开文件失败: %s", m_docname.toUtf8().constData());
+        DestroyExportDocument(document, &allocator);
+        document = nullptr;
+        return false;
     }
     WriteDocument(document, &allocator, &file);
     DestroyExportDocument(document, &allocator);
     document =nullptr;
     file.Close();
+    return true;
 }

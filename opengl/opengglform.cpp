@@ -37,7 +37,25 @@ void OpengGlForm::on_timeout()
     update();
 }
 
-void OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu)
+bool OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu,bool cubismCompat)
+{
+    bool ok = do_OffSeceenSilent(fileName,IsALl,IsFenzu,cubismCompat);
+
+    if (!fileName.isEmpty()) {
+        if (ok) {
+            QMessageBox::about(this,"psd","保存成功");
+            QFileInfo fileInfo(fileName);
+            QString directoryPath = fileInfo.absoluteDir().path();
+            QDesktopServices::openUrl(QUrl::fromLocalFile(directoryPath));
+        } else {
+            QMessageBox::warning(this,"psd",
+                QString("导出失败，无法写入文件：\n%1\n请检查磁盘空间、路径权限或文件是否被占用").arg(fileName));
+        }
+    }
+    return ok;
+}
+
+bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat)
 {
     if(IsALl){
         m_ceditstate.AddState(CEditState::PrintAllPsd);
@@ -52,73 +70,42 @@ void OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu)
         m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
     }
 
-
+    bool ok = false;
     if (!fileName.isEmpty()) {
         makeCurrent();
-        LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu);
-        doneCurrent();
-        resizeGL(this->width(),this->height());
-
-// #ifdef QT_NO_DEBUG
-//          qDebug() << "Release mode";
-//            load.Run(curOpenModelName);
-
-// #else
-//        qDebug() << "Debug mode";
-// #endif
-        QMessageBox::about(this,"psd","保存成功");
-        QFileInfo fileInfo(fileName);
-        QString directoryPath = fileInfo.absoluteDir().path();
-        QDesktopServices::openUrl(QUrl::fromLocalFile(directoryPath));
-    }
-
-    m_ceditstate.RemoveState(CEditState::PrintAllPsd);
-    m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
-
-}
-
-void OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu)
-{
-    if(IsALl){
-        m_ceditstate.AddState(CEditState::PrintAllPsd);
-    }
-    else{
-        m_ceditstate.RemoveState(CEditState::PrintAllPsd);
-    }
-    if(IsFenzu){
-        m_ceditstate.AddState(CEditState::PrintFenzuPsd);
-    }
-    else{
-        m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
-    }
-
-    if (!fileName.isEmpty()) {
-        makeCurrent();
-        LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu);
+        ok = LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat);
         doneCurrent();
         resizeGL(this->width(),this->height());
     }
 
     m_ceditstate.RemoveState(CEditState::PrintAllPsd);
     m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
+    return ok;
 }
 
-void OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool isFenzu)
+bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
 {
+    bool ok = do_TextureExtractSilent(fileName, isAll, isFenzu, cubismCompat);
     if (!fileName.isEmpty()) {
-        LAppDelegate::GetInstance()->StartTextureExtraction(fileName, isAll, isFenzu);
-        QMessageBox::about(this, "psd", "保存成功（原始纹理提取）");
-        QFileInfo fileInfo(fileName);
-        QString directoryPath = fileInfo.absoluteDir().path();
-        QDesktopServices::openUrl(QUrl::fromLocalFile(directoryPath));
+        if (ok) {
+            QMessageBox::about(this, "psd", "保存成功（原始纹理提取）");
+            QFileInfo fileInfo(fileName);
+            QString directoryPath = fileInfo.absoluteDir().path();
+            QDesktopServices::openUrl(QUrl::fromLocalFile(directoryPath));
+        } else {
+            QMessageBox::warning(this, "psd",
+                QString("导出失败，无法写入文件：\n%1\n请检查磁盘空间、路径权限或文件是否被占用").arg(fileName));
+        }
     }
+    return ok;
 }
 
-void OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu)
+bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
 {
     if (!fileName.isEmpty()) {
-        LAppDelegate::GetInstance()->StartTextureExtraction(fileName, isAll, isFenzu);
+        return LAppDelegate::GetInstance()->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat);
     }
+    return false;
 }
 
 void OpengGlForm::do_ShowMesh(const QString &artName)

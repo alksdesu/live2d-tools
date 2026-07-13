@@ -13,14 +13,14 @@ class CPsdList
 public:
     CPsdList();
     ~CPsdList();
-    void SetPsd(const QString& name,int w,int h);
+    void SetPsd(const QString& name,int w,int h,bool cubismCompat = false);
     void AddLayer(const QString& name,const QImage& image,const QRect& rect);
     void AddLayer(const QString& name, const QImage& image, const QRect& rect,
                   uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                   bool isPremultiplied = false);
     void AddGroupStart();
     void AddGroupEnd(const char* name);
-    void CreatePsd();
+    bool CreatePsd();
 
 private:
     unsigned int m_canvasWidth;

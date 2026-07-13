@@ -20,6 +20,8 @@ struct ExportLayer
 	int32_t bottom;
 	int32_t right;
 	char* name;
+	uint16_t* utf16Name;        // Unicode layer name for the 'luni' block (UTF-16 code units, no terminator)
+	uint32_t utf16NameLength;   // number of UTF-16 code units in utf16Name
 	void* channelData[MAX_CHANNEL_COUNT];
 	uint32_t channelSize[MAX_CHANNEL_COUNT];
 	uint16_t channelCompression[MAX_CHANNEL_COUNT];

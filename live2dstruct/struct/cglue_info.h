@@ -21,11 +21,11 @@ public:
 
     CGlue_info(CReader& bytes,const Offset& glueInfo, int i) {
         bytes.seek(glueInfo.weights+i*4);
-        weights = bytes.readInt();
+        weights = bytes.readFloat();
         bytes.seek(glueInfo.position_indices+i*4);
         position_indices = bytes.readInt();
     }
-    int weights;
+    float weights;
     int position_indices;
 };
 }

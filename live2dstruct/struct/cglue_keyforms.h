@@ -13,10 +13,10 @@ public:
         }
     };
 
-    int intensities;
+    float intensities;
     CGlue_keyforms(CReader& bytes,const Offset& glueKeyforms, int i) {
         bytes.seek(glueKeyforms.intensities+i*4);
-        intensities = bytes.readInt();
+        intensities = bytes.readFloat();
     }
 
 

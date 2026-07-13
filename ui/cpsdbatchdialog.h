@@ -18,6 +18,7 @@ public:
     bool isAllChecked() const;
     bool isFenzuChecked() const;
     bool isTexExtractChecked() const;
+    bool isCubismChecked() const;
 
 private slots:
     void onSelectAll();
@@ -31,6 +32,7 @@ private:
     QCheckBox* m_checkAll{nullptr};
     QCheckBox* m_checkFenzu{nullptr};
     QCheckBox* m_checkTexExtract{nullptr};
+    QCheckBox* m_checkCubism{nullptr};
     QPushButton* m_btnAll{nullptr};
     QPushButton* m_btnNone{nullptr};
     QPushButton* m_btnInvert{nullptr};

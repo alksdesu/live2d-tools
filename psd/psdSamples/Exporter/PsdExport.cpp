@@ -74,6 +74,95 @@ namespace
 
 	// ---------------------------------------------------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------------------------------------------------
+	// Decodes a UTF-8 string into UTF-16 code units (with surrogate pairs) for the 'luni' layer name block.
+	// Invalid byte sequences are replaced with U+FFFD. Returns nullptr for empty input.
+	static uint16_t* CreateUTF16String(Allocator* allocator, const char* utf8, uint32_t* outLength)
+	{
+		const size_t byteCount = strlen(utf8);
+		*outLength = 0u;
+		if (byteCount == 0u)
+		{
+			return nullptr;
+		}
+
+		// UTF-16 code unit count never exceeds UTF-8 byte count
+		uint16_t* buffer = memoryUtil::AllocateArray<uint16_t>(allocator, byteCount);
+		uint32_t length = 0u;
+
+		size_t i = 0u;
+		while (i < byteCount)
+		{
+			const uint8_t b0 = static_cast<uint8_t>(utf8[i]);
+			uint32_t codePoint = 0xFFFDu;
+			size_t sequenceLength = 1u;
+
+			if (b0 < 0x80u)
+			{
+				codePoint = b0;
+			}
+			else if ((b0 & 0xE0u) == 0xC0u && i + 1u < byteCount)
+			{
+				const uint8_t b1 = static_cast<uint8_t>(utf8[i + 1u]);
+				if ((b1 & 0xC0u) == 0x80u)
+				{
+					codePoint = ((b0 & 0x1Fu) << 6u) | (b1 & 0x3Fu);
+					sequenceLength = 2u;
+				}
+			}
+			else if ((b0 & 0xF0u) == 0xE0u && i + 2u < byteCount)
+			{
+				const uint8_t b1 = static_cast<uint8_t>(utf8[i + 1u]);
+				const uint8_t b2 = static_cast<uint8_t>(utf8[i + 2u]);
+				if ((b1 & 0xC0u) == 0x80u && (b2 & 0xC0u) == 0x80u)
+				{
+					codePoint = ((b0 & 0x0Fu) << 12u) | ((b1 & 0x3Fu) << 6u) | (b2 & 0x3Fu);
+					sequenceLength = 3u;
+				}
+			}
+			else if ((b0 & 0xF8u) == 0xF0u && i + 3u < byteCount)
+			{
+				const uint8_t b1 = static_cast<uint8_t>(utf8[i + 1u]);
+				const uint8_t b2 = static_cast<uint8_t>(utf8[i + 2u]);
+				const uint8_t b3 = static_cast<uint8_t>(utf8[i + 3u]);
+				if ((b1 & 0xC0u) == 0x80u && (b2 & 0xC0u) == 0x80u && (b3 & 0xC0u) == 0x80u)
+				{
+					codePoint = ((b0 & 0x07u) << 18u) | ((b1 & 0x3Fu) << 12u) | ((b2 & 0x3Fu) << 6u) | (b3 & 0x3Fu);
+					sequenceLength = 4u;
+				}
+			}
+
+			if (codePoint >= 0x10000u)
+			{
+				const uint32_t v = codePoint - 0x10000u;
+				buffer[length++] = static_cast<uint16_t>(0xD800u + (v >> 10u));
+				buffer[length++] = static_cast<uint16_t>(0xDC00u + (v & 0x3FFu));
+			}
+			else
+			{
+				buffer[length++] = static_cast<uint16_t>(codePoint);
+			}
+
+			i += sequenceLength;
+		}
+
+		*outLength = length;
+		return buffer;
+	}
+
+
+	// ---------------------------------------------------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------------------------------------------------
+	// 'luni' block: signature(4) + key(4) + length(4) + [charCount(4) + UTF-16BE data], data padded to 4 bytes
+	static uint32_t GetLuniBlockLength(ExportLayer* layer)
+	{
+		const uint32_t dataLength = 4u + layer->utf16NameLength * 2u;
+		const uint32_t paddedDataLength = bitUtil::RoundUpToMultiple(dataLength, 4u);
+		return 4u + 4u + 4u + paddedDataLength;
+	}
+
+
+	// ---------------------------------------------------------------------------------------------------------------------
+	// ---------------------------------------------------------------------------------------------------------------------
 	static uint16_t GetChannelCount(ExportLayer* layer)
 	{
 		uint16_t count = 0u;
@@ -163,10 +252,16 @@ namespace
 	{
 		const uint8_t nameLength = static_cast<uint8_t>(strlen(layer->name));
 		const uint32_t paddedNameLength = bitUtil::RoundUpToMultiple(nameLength + 1u, 4u);
-		
+
 		// includes the lengths of the layer mask data and layer blending ranges data
 		//4 + 4 + 4 + 4 ·Ö±ðÎªÇ©Ãû£¬ key, length ,data
 		uint32_t length = (4u + 4u + paddedNameLength) + 4 + 8 +4;
+
+		if (layer->utf16Name)
+		{
+			length += GetLuniBlockLength(layer);
+		}
+
 		return length;
 	}
 
@@ -384,6 +479,8 @@ void DestroyExportDocument(ExportDocument*& document, Allocator* allocator)
 	for (unsigned int i = 0u; i < document->layerCount; ++i)
 	{
 		DestroyString(allocator, document->layers[i].name);
+		memoryUtil::FreeArray(allocator, document->layers[i].utf16Name);
+		document->layers[i].utf16Name = nullptr;
 
 		for (unsigned int j = 0u; j < ExportLayer::MAX_CHANNEL_COUNT; ++j)
 		{
@@ -487,6 +584,7 @@ unsigned int AddLayer(ExportDocument* document, Allocator* allocator, const char
 
 	ExportLayer* layer = document->layers + index;
 	layer->name = CreateString(allocator, name);
+	layer->utf16Name = CreateUTF16String(allocator, name, &layer->utf16NameLength);
 	layer->type = layerType::ANY;
 	layer->IsEmptyChannel = false;
 	layer->opacity = 255u;
@@ -502,6 +600,7 @@ unsigned int AddLayerGroupStart(ExportDocument* document, Allocator* allocator, 
 
 	ExportLayer* layer = document->layers + index;
 	layer->name = CreateString(allocator, name);
+	layer->utf16Name = CreateUTF16String(allocator, name, &layer->utf16NameLength);
 	layer->type = layerType::SECTION_DIVIDER;
 	layer->IsEmptyChannel = true;
 	layer->opacity = 255u;
@@ -518,6 +617,7 @@ unsigned int AddLayerGroupEnd(ExportDocument* document, Allocator* allocator, co
 
 	ExportLayer* layer = document->layers + index;
 	layer->name = CreateString(allocator, name);
+	layer->utf16Name = CreateUTF16String(allocator, name, &layer->utf16NameLength);
 	layer->type = layerType::OPEN_FOLDER;
 	layer->IsEmptyChannel = true;
 	layer->opacity = 255u;
@@ -1365,6 +1465,28 @@ void WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 		const uint32_t lengthExt = 4;
 		fileUtil::WriteToFileBE(writer, lengthExt);
 		fileUtil::WriteToFileBE(writer, layer->type);
+
+		// 'luni' Unicode layer name: readers prefer it over the pascal name, fixing non-ASCII names
+		if (layer->utf16Name)
+		{
+			fileUtil::WriteToFileBE(writer, util::Key<'8', 'B', 'I', 'M'>::VALUE);
+			fileUtil::WriteToFileBE(writer, util::Key<'l', 'u', 'n', 'i'>::VALUE);
+
+			const uint32_t dataLength = 4u + layer->utf16NameLength * 2u;
+			const uint32_t paddedDataLength = bitUtil::RoundUpToMultiple(dataLength, 4u);
+			fileUtil::WriteToFileBE(writer, paddedDataLength);
+
+			fileUtil::WriteToFileBE(writer, layer->utf16NameLength);
+			for (uint32_t c = 0u; c < layer->utf16NameLength; ++c)
+			{
+				fileUtil::WriteToFileBE(writer, layer->utf16Name[c]);
+			}
+			for (uint32_t p = dataLength; p < paddedDataLength; ++p)
+			{
+				const uint8_t zero = 0u;
+				fileUtil::WriteToFileBE(writer, zero);
+			}
+		}
 	}
 
 	// per-layer data

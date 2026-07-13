@@ -39,12 +39,12 @@ public:
     //改变模型
     void do_ModelChange(const QString& name);
     //进行离开屏幕渲染打印出psd文件
-    void do_OffSeceen(const QString& name,bool IsALl,bool IsFenzu);
+    bool do_OffSeceen(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
     // 批量导出静默版本（不弹窗、不自动打开文件夹）
-    void do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu);
+    bool do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
     // 原始纹理提取导出（不需要OpenGL渲染）
-    void do_TextureExtract(const QString& name, bool isAll, bool isFenzu);
-    void do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu);
+    bool do_TextureExtract(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
+    bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
     const QString& GetCurrentModelJson() const { return m_currentModelJson; }
 
     //点击对应的art 显示对应的mesh网格

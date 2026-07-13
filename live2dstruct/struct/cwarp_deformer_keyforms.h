@@ -20,7 +20,7 @@ public:
     int keyform_position_sources_begin_indices;
     CWarp_deformer_keyforms(CReader& bytes,const Offset& warpDeformerKeyforms, int i) {
         bytes.seek(warpDeformerKeyforms.opacities + i*4);
-        opacities = bytes.readInt();
+        opacities = bytes.readFloat();
 
         bytes.seek(warpDeformerKeyforms.keyform_position_sources_begin_indices + i*4);
         keyform_position_sources_begin_indices = bytes.readInt();

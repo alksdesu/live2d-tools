@@ -18,14 +18,14 @@ public:
 
     CBlend_shape_constraint_values(CReader& bytes,const Offset& drawOrderGroups, int i) {
         bytes.seek(drawOrderGroups.keys + i*4);
-        keys = bytes.readInt();
+        keys = bytes.readFloat();
 
         bytes.seek(drawOrderGroups.weights + i*4);
-        weights = bytes.readInt();
+        weights = bytes.readFloat();
     }
 
-    int keys;
-    int weights;
+    float keys;
+    float weights;
 
 };
 }

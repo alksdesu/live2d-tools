@@ -16,10 +16,12 @@ CPsdBatchDialog::CPsdBatchDialog(QWidget *parent)
     m_checkAll = new QCheckBox("导出所有图层", this);
     m_checkFenzu = new QCheckBox("按分组导出", this);
     m_checkTexExtract = new QCheckBox("原始纹理提取", this);
+    m_checkCubism = new QCheckBox("Cubism 可导入模式", this);
     auto* optRow = new QHBoxLayout();
     optRow->addWidget(m_checkAll);
     optRow->addWidget(m_checkFenzu);
     optRow->addWidget(m_checkTexExtract);
+    optRow->addWidget(m_checkCubism);
     optRow->addStretch(1);
     layout->addLayout(optRow);
 
@@ -85,6 +87,11 @@ bool CPsdBatchDialog::isFenzuChecked() const
 bool CPsdBatchDialog::isTexExtractChecked() const
 {
     return m_checkTexExtract && m_checkTexExtract->isChecked();
+}
+
+bool CPsdBatchDialog::isCubismChecked() const
+{
+    return m_checkCubism && m_checkCubism->isChecked();
 }
 
 void CPsdBatchDialog::onSelectAll()

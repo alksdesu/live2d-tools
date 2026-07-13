@@ -256,7 +256,7 @@ CPsdWriteList *LAppDelegate::GetCPsdWriteList()
 }
 
 
-void LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool IsFenzu)
+bool LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool IsFenzu,bool cubismCompat)
 {
     m_IsPrintALl =IsALl;
     m_IsPrintFenzu=IsFenzu;
@@ -270,30 +270,32 @@ void LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool Is
     QString strmoc=modelr->GetModelSetting()->GetModelFileName();
     cpsdwriteList->SetCidName(strhome+"/"+strcid);
     cpsdwriteList->SetMocName(strhome+"/"+strmoc);
-    cpsdwriteList->CreatePsd(name,width,height);
+    cpsdwriteList->CreatePsd(name,width,height,cubismCompat);
     coffscreen.CreateOffscreenSurface(width,height);
     coffscreen.BeginDraw();
     SetIsOffset(true);//开始渲染
     SetOffsetWidthANDHeight(width,height);
     InitOffset(width,height);
     paint();
-    cpsdwriteList->WritePsd();//创建psd，
-    cpsdwriteList->ClosePsd();//然后关闭
+    bool ok = cpsdwriteList->WritePsd();
+    cpsdwriteList->ClosePsd();
     coffscreen.EndDraw();
     coffscreen.DestroyOffscreenSurface();
 
     delete cpsdwriteList;
+    cpsdwriteList = nullptr;
     m_IsPrintALl =false;
     m_IsPrintFenzu=false;
+    return ok;
 }
 
-void LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts)
+bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat)
 {
     LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
     LAppModel* model = live2DManager->GetModel(0);
     if (!model) {
         qWarning("StartTextureExtraction: 没有加载模型");
-        return;
+        return false;
     }
 
     QString homeDir = model->GetModelHomeDir().GetRawString();
@@ -317,7 +319,7 @@ void LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     CTextureExtractor extractor;
     if (!extractor.LoadAtlases(atlasPaths)) {
         qWarning("StartTextureExtraction: 纹理加载失败");
-        return;
+        return false;
     }
 
     // 解析 moc3
@@ -338,7 +340,7 @@ void LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
 
     // 创建 PSD
     CPsdWriteList writer;
-    writer.CreatePsd(psdPath, canvasW, canvasH);
+    writer.CreatePsd(psdPath, canvasW, canvasH, cubismCompat);
 
     if (groupByParts) {
         // 使用 C2DTree 构建 Part 层级
@@ -412,8 +414,9 @@ void LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
         }
     }
 
-    writer.WritePsd();
+    bool ok = writer.WritePsd();
     writer.ClosePsd();
+    return ok;
 }
 
 void LAppDelegate::ChangeScene(const QString &modelJsonName)

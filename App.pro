@@ -202,6 +202,11 @@ SOURCES += \
     edit\ctriangl.cpp \
     std\cfileoption.cpp \
     std\cmodeljson.cpp \
+    std\cmodeljsonwriter.cpp \
+    cmo3\ccaffarchive.cpp \
+    cmo3\cxsxmlwriter.cpp \
+    cmo3\ccmo3entities.cpp \
+    cmo3\ccmo3builder.cpp \
 
 HEADERS += \
     CPrecompileHead.h \
@@ -422,6 +427,12 @@ HEADERS += \
     edit\ctriangl.h \
     std\cfileoption.h \
     std\cmodeljson.h \
+    std\cmodeljsonwriter.h \
+    cmo3\ccaffarchive.h \
+    cmo3\cxsxmlwriter.h \
+    cmo3\ccmo3ids.h \
+    cmo3\ccmo3entities.h \
+    cmo3\ccmo3builder.h \
 
 
 
@@ -448,6 +459,7 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 
 RESOURCES += \
     assets/images/images.qrc\
-    assets/shaders/shaders.qrc
+    assets/shaders/shaders.qrc\
+    assets/icc.qrc
 
 

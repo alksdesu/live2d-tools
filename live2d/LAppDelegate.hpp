@@ -71,8 +71,8 @@ public:
     QMap<int, std::vector<float>> m_savedVertices; // 非目标 drawable 的顶点快照
     void StartDeformerDrag();   // Ctrl+按下时调用
     void StopDeformerDrag();    // 松手时调用
-    void StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu);
-    void StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts);
+    bool StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu,bool cubismCompat = false);
+    bool StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat = false);
 
 
 

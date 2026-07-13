@@ -2,9 +2,9 @@
 
 COffScreenMap::COffScreenMap() {}
 
-void COffScreenMap::AddImageAndRect(const QString &name, QImage *image, const QRect &rect, unsigned char *imagebyte)
+void COffScreenMap::AddImageAndRect(const QString &name, QImage *image, const QRect &rect)
 {
-    COffScreenNode node(image,rect,imagebyte);
+    COffScreenNode node(image,rect);
     m_map.insert(name,node);
 }
 
