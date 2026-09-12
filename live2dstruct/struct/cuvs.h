@@ -22,8 +22,8 @@ public:
         }
 
     }
-    float GetData(int index){
-        return uvs[index];
+    float GetData(int index) const {
+        return index >= 0 && index < static_cast<int>(uvs.size()) ? uvs[index] : 0.0f;
     }
 
 };

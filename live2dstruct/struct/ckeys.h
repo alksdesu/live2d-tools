@@ -23,8 +23,8 @@ public:
             values[i] = bytes.readFloat();
         }
     }
-    float GetData(int index){
-        return values[index];
+    float GetData(int index) const {
+        return index >= 0 && index < static_cast<int>(values.size()) ? values[index] : 0.0f;
     }
 
 };

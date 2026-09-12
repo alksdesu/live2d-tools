@@ -22,8 +22,8 @@ public:
             xys[i] = bytes.readFloat();
         }
     }
-    float GetData(int index){
-        return xys[index];
+    float GetData(int index) const {
+        return index >= 0 && index < static_cast<int>(xys.size()) ? xys[index] : 0.0f;
     }
 
 

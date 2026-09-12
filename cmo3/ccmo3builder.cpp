@@ -21,6 +21,11 @@ namespace {
 
 const QString kNoDebug = QStringLiteral("(no debug info)");
 
+bool validSlice(int begin, int count, int size)
+{
+    return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
+}
+
 // keyform 绑定链：一个绑定源 = 参数索引 + 该参数上的 key 值序列
 struct SBindingChain {
     struct SBinding {
@@ -159,8 +164,10 @@ SBindingChain Generator::chainFor(int keyformBindingSourceIndex) const
     const CKeyform_bindings* kb = m_table.keyform_bindings[keyformBindingSourceIndex];
     const int begin = kb->parameter_binding_index_sources_begin_indices;
     const int count = kb->parameter_binding_index_sources_counts;
+    if (!validSlice(begin, count, m_table.parameter_binding_indices.size())) return chain;
     for (int i = 0; i < count; ++i) {
         const int pbIndex = m_table.parameter_binding_indices[begin + i]->binding_sources_indices;
+        if (!validSlice(pbIndex, 1, m_table.parameter_bindings.size())) continue;
         // parameter_bindings 表与参数的对应关系：参数的 parameter_binding_sources_begin_indices 起始连续段
         SBindingChain::SBinding binding;
         for (int p = 0; p < m_table.parameters.size(); ++p) {
@@ -172,6 +179,8 @@ SBindingChain Generator::chainFor(int keyformBindingSourceIndex) const
             }
         }
         const CParameter_bindings* pb = m_table.parameter_bindings[pbIndex];
+        if (!validSlice(pb->keys_sources_begin_indices, pb->keys_sources_counts,
+                        static_cast<int>(m_table.keys->values.size()))) continue;
         for (int k = 0; k < pb->keys_sources_counts; ++k) {
             binding.keys.append(m_table.keys->GetData(pb->keys_sources_begin_indices + k));
         }
@@ -465,6 +474,13 @@ void Generator::writeArtMeshEntities()
         const int vertexCount = mesh->vertex_counts;
         const int keyformCount = mesh->keyform_sources_counts;
         const int layerIdx = m_layerOfMesh.value(i, -1);
+        if (vertexCount <= 0 || vertexCount > 1000000 || keyformCount <= 0 ||
+            !validSlice(mesh->keyform_sources_begin_indices, keyformCount, m_table.art_mesh_keyforms.size()) ||
+            !validSlice(mesh->uv_sources_begin_indices, vertexCount * 2, static_cast<int>(m_table.uvs->uvs.size())) ||
+            !validSlice(mesh->position_index_sources_begin_indices, mesh->position_index_sources_counts,
+                        static_cast<int>(m_table.position_indices->indices.size()))) {
+            continue;
+        }
 
         // keyform form guid 池
         QVector<QString> formGuidIds;
@@ -553,9 +569,12 @@ void Generator::writeArtMeshEntities()
                   deformerTargetId(mesh->parent_deformer_indices));
         // 裁剪列表
         QVector<int> maskIndices;
-        for (int mi = 0; mi < mesh->drawable_mask_sources_counts; ++mi) {
-            maskIndices.append(m_table.drawable_masks[
-                mesh->drawable_mask_sources_begin_indices + mi]->art_mesh_sources_indices);
+        if (validSlice(mesh->drawable_mask_sources_begin_indices, mesh->drawable_mask_sources_counts,
+                       m_table.drawable_masks.size())) {
+            for (int mi = 0; mi < mesh->drawable_mask_sources_counts; ++mi) {
+                maskIndices.append(m_table.drawable_masks[
+                    mesh->drawable_mask_sources_begin_indices + mi]->art_mesh_sources_indices);
+            }
         }
         m_xml.BeginCArrayList(QStringLiteral("clipGuidList"), maskIndices.size());
         for (int maskIdx : maskIndices) {
@@ -679,6 +698,11 @@ void Generator::writeWarpDeformerEntities()
         const CDeformers* deformer = m_table.deformers[d];
 
         const int keyformCount = warp->keyform_sources_counts;
+        if (warp->rows < 0 || warp->columns < 0 || warp->rows > 1000 || warp->columns > 1000) continue;
+        const int gridVerts = (warp->columns + 1) * (warp->rows + 1);
+        if (gridVerts <= 0 || gridVerts > 1000000 ||
+            !validSlice(warp->keyform_sources_begin_indices, keyformCount,
+                        m_table.warp_deformer_keyforms.size())) continue;
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
@@ -712,7 +736,6 @@ void Generator::writeWarpDeformerEntities()
         m_xml.B(QStringLiteral("isQuadTransform"), warp->is_quad_source);
 
         m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
-        const int gridVerts = (warp->columns + 1) * (warp->rows + 1);
         for (int k = 0; k < keyformCount; ++k) {
             const CWarp_deformer_keyforms* kf = m_table.warp_deformer_keyforms[
                 warp->keyform_sources_begin_indices + k];
@@ -777,6 +800,8 @@ void Generator::writeRotationDeformerEntities()
         const CDeformers* deformer = m_table.deformers[d];
 
         const int keyformCount = rot->keyform_sources_counts;
+        if (keyformCount <= 0 || !validSlice(rot->keyform_sources_begin_indices, keyformCount,
+                                             m_table.rotation_deformer_keyforms.size())) continue;
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
@@ -861,6 +886,10 @@ void Generator::writeGlueEntities()
     for (int g = 0; g < m_table.glue.size(); ++g) {
         const CGlue* glue = m_table.glue[g];
         const int keyformCount = glue->keyform_sources_counts;
+        if (keyformCount <= 0 ||
+            !validSlice(glue->keyform_sources_begin_indices, keyformCount, m_table.glue_keyforms.size()) ||
+            !validSlice(glue->glue_info_sources_begin_indices, glue->glue_info_sources_counts,
+                        m_table.glue_info.size())) continue;
 
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
@@ -1261,7 +1290,10 @@ bool Generator::Run(QString* outError)
     // 普通 part
     for (int i = 0; i < m_table.parts.size(); ++i) {
         const CParts* part = m_table.parts[i];
-        const int keyformCount = qMax(1, part->keyform_sources_counts);
+        const bool hasPartKeyforms = part->keyform_sources_counts > 0 &&
+            validSlice(part->keyform_sources_begin_indices, part->keyform_sources_counts,
+                       m_table.part_keyforms.size());
+        const int keyformCount = hasPartKeyforms ? part->keyform_sources_counts : 1;
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
@@ -1297,7 +1329,7 @@ bool Generator::Run(QString* outError)
         m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
         for (int k = 0; k < keyformCount; ++k) {
             int drawOrder = 500;
-            if (part->keyform_sources_counts > 0) {
+            if (hasPartKeyforms) {
                 drawOrder = qRound(m_table.part_keyforms[
                     part->keyform_sources_begin_indices + k]->draw_orders);
             }

@@ -25,8 +25,8 @@ public:
 
 
     }
-    short GetData(int index){
-        return indices[index];
+    short GetData(int index) const {
+        return index >= 0 && index < static_cast<int>(indices.size()) ? indices[index] : 0;
     }
 
 };
