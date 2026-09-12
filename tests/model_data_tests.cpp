@@ -230,6 +230,10 @@ private slots:
         QString error;
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"parameters":{"ParamAngleX":"bad"}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1e100})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"parameters":{"ParamAngleX":1e100}})", &session, &error));
         QVERIFY(!error.isEmpty());
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableOpacity":{"Body":2}})", &session, &error));
@@ -237,6 +241,8 @@ private slots:
             R"({"version":1,"drawableDrawOrder":{"Body":1.5}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"view":{"scale":0}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"view":{"x":1e100}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableKeyformPositions":{"Body":[[0,"bad"]]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(

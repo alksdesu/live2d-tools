@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <cmath>
+#include <limits>
 
 namespace live2dstruct {
 
@@ -34,6 +35,15 @@ bool readNumber(const QJsonValue& value, double* number)
 {
     if (!value.isDouble()) return false;
     *number = value.toDouble();
+    return std::isfinite(*number);
+}
+
+bool readFloat(const QJsonValue& value, float* number)
+{
+    double parsed = 0.0;
+    if (!readNumber(value, &parsed) || parsed < -std::numeric_limits<float>::max() ||
+        parsed > std::numeric_limits<float>::max()) return false;
+    *number = static_cast<float>(parsed);
     return std::isfinite(*number);
 }
 }
@@ -96,6 +106,10 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         setError(error, QStringLiteral("会话版本不是整数"));
         return false;
     }
+    if (versionValue < 0.0 || versionValue > static_cast<double>(std::numeric_limits<int>::max())) {
+        setError(error, QStringLiteral("会话版本超出范围"));
+        return false;
+    }
     const int parsedVersion = static_cast<int>(versionValue);
     if (parsedVersion != 1) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
@@ -124,12 +138,12 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error) ||
         !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
-        double value = 0.0;
-        if (!readNumber(parameterObject.value(key), &value)) {
+        float value = 0.0f;
+        if (!readFloat(parameterObject.value(key), &value)) {
             setError(error, QStringLiteral("参数值不是有限数字：%1").arg(key));
             return false;
         }
-        result.parameters.insert(key, static_cast<float>(value));
+        result.parameters.insert(key, value);
     }
     for (const QString& key : visibilityObject.keys()) {
         if (!visibilityObject.value(key).isBool()) {
@@ -186,12 +200,12 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             const QJsonArray positionArray = keyformValue.toArray();
             positions.reserve(positionArray.size());
             for (const QJsonValue& positionValue : positionArray) {
-                double value = 0.0;
-                if (!readNumber(positionValue, &value)) {
+                float value = 0.0f;
+                if (!readFloat(positionValue, &value)) {
                     setError(error, QStringLiteral("关键形位置不是有限数字：%1").arg(key));
                     return false;
                 }
-                positions.append(static_cast<float>(value));
+                positions.append(value);
             }
             keyforms.append(positions);
         }
@@ -210,6 +224,12 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     if ((!view.value(QStringLiteral("x")).isUndefined() && !readNumber(view.value(QStringLiteral("x")), &x)) ||
         (!view.value(QStringLiteral("y")).isUndefined() && !readNumber(view.value(QStringLiteral("y")), &y))) {
         setError(error, QStringLiteral("视图位置值无效"));
+        return false;
+    }
+    if (scale > static_cast<double>(std::numeric_limits<float>::max()) ||
+        std::abs(x) > static_cast<double>(std::numeric_limits<float>::max()) ||
+        std::abs(y) > static_cast<double>(std::numeric_limits<float>::max())) {
+        setError(error, QStringLiteral("视图数值超出范围"));
         return false;
     }
     result.viewScale = static_cast<float>(scale);
