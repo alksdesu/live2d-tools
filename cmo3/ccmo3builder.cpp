@@ -568,6 +568,19 @@ void Generator::writeArtMeshEntities()
                         static_cast<int>(m_table.position_indices->indices.size())) || !keyformPositionsValid) {
             continue;
         }
+        bool rawIndicesValid = mesh->position_index_sources_counts >= 3 &&
+            mesh->position_index_sources_counts % 3 == 0;
+        if (rawIndicesValid) {
+            for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
+                const short index = m_table.position_indices->indices[
+                    mesh->position_index_sources_begin_indices + t];
+                if (index < 0 || index >= vertexCount || index > 32767) {
+                    rawIndicesValid = false;
+                    break;
+                }
+            }
+        }
+        if (!rawIndicesValid) continue;
 
         // keyform form guid 池
         QVector<QString> formGuidIds;
