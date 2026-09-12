@@ -15,16 +15,23 @@ class CPhysicsPanel : public QDockWidget
 public:
     explicit CPhysicsPanel(QWidget *parent = nullptr);
     void LoadPhysics(const QString& physicsPath);
+    bool SavePhysics(const QString& path = QString());
 
 signals:
     void GravityChanged(float x, float y);
     void WindChanged(float x, float y);
+    void PhysicsConfigChanged();
+    void PhysicsSaved(const QString& path);
     // 选择物理组后发射输入参数列表，用于鼠标拖拽驱动
     void PhysicsDragParamsChanged(const QStringList& paramIds, const QStringList& types);
 
 private:
     void showGroupDetail(int row);
     void emitDragParams(int row);
+    void updateInputCell(int row, int column);
+    void updateOutputCell(int row, int column);
+    void updateVertexCell(int row, int column);
+    void updateForceDocument();
 
     QLabel* m_fpsLabel;
     QTableWidget* m_groupTable;
@@ -48,6 +55,9 @@ private:
     // 解析后的数据
     QJsonArray m_physicsSettings;
     QJsonArray m_physicsDictionary;
+    QJsonObject m_physicsDocument;
+    QString m_physicsPath;
+    bool m_updating = false;
 };
 
 #endif // CPHYSICSPANEL_H

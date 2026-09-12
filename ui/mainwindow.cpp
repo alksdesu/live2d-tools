@@ -1032,6 +1032,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged, this,
             [markSessionDirty](const QString&, int, const QVector<float>&){ markSessionDirty(); });
+    connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, markSessionDirty);
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){

@@ -7,6 +7,11 @@
 #include <QJsonDocument>
 #include <QSplitter>
 #include <QDebug>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QSaveFile>
+#include <cmath>
 
 CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     : QDockWidget("物理设置", parent)
@@ -19,6 +24,10 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     m_fpsLabel = new QLabel("计算FPS: -", wrapper);
     m_fpsLabel->setObjectName(QStringLiteral("physicsFpsLabel"));
     mainLayout->addWidget(m_fpsLabel);
+    auto* saveButton = new QPushButton(QStringLiteral("保存物理配置"), wrapper);
+    saveButton->setObjectName(QStringLiteral("savePhysicsButton"));
+    mainLayout->addWidget(saveButton);
+    connect(saveButton, &QPushButton::clicked, this, [this](){ SavePhysics(); });
 
     // 重力/风力控制
     QGroupBox* forceBox = new QGroupBox("力场控制", wrapper);
@@ -57,6 +66,10 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
                 float wy = m_windY->value() / 100.0f;
                 emit WindChanged(wx, wy);
             }
+            if (!m_updating) {
+                updateForceDocument();
+                emit PhysicsConfigChanged();
+            }
         });
     };
     connectSlider(m_gravityX, m_gravityXLabel, true, true);
@@ -69,6 +82,7 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     QVBoxLayout* groupLayout = new QVBoxLayout(groupBox);
 
     m_groupTable = new QTableWidget(0, 3, groupBox);
+    m_groupTable->setObjectName(QStringLiteral("physicsGroupTable"));
     m_groupTable->setHorizontalHeaderLabels({"ID", "名称", "输出数"});
     m_groupTable->horizontalHeader()->setStretchLastSection(true);
     m_groupTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -104,34 +118,46 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
 
     // 输入设置
     m_inputTable = new QTableWidget(0, 4, wrapper);
+    m_inputTable->setObjectName(QStringLiteral("physicsInputTable"));
     m_inputTable->setHorizontalHeaderLabels({"参数", "类型", "影响度", "反转"});
     m_inputTable->horizontalHeader()->setStretchLastSection(true);
-    m_inputTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_inputTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                  QAbstractItemView::SelectedClicked);
     m_inputTable->verticalHeader()->setVisible(false);
     detailSplitter->addWidget(m_inputTable);
 
     // 输出设置
     m_outputTable = new QTableWidget(0, 5, wrapper);
+    m_outputTable->setObjectName(QStringLiteral("physicsOutputTable"));
     m_outputTable->setHorizontalHeaderLabels({"参数", "类型", "影响度", "倍率", "反转"});
     m_outputTable->horizontalHeader()->setStretchLastSection(true);
-    m_outputTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_outputTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                   QAbstractItemView::SelectedClicked);
     m_outputTable->verticalHeader()->setVisible(false);
     detailSplitter->addWidget(m_outputTable);
 
     // 摆锤参数
     m_vertexTable = new QTableWidget(0, 5, wrapper);
+    m_vertexTable->setObjectName(QStringLiteral("physicsVertexTable"));
     m_vertexTable->setHorizontalHeaderLabels({"序号", "长度", "摆幅度", "反应速度", "收敛速度"});
     m_vertexTable->horizontalHeader()->setStretchLastSection(true);
-    m_vertexTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_vertexTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                   QAbstractItemView::SelectedClicked);
     m_vertexTable->verticalHeader()->setVisible(false);
     detailSplitter->addWidget(m_vertexTable);
 
     mainLayout->addWidget(detailSplitter);
     setWidget(wrapper);
+    connect(m_inputTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateInputCell);
+    connect(m_outputTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateOutputCell);
+    connect(m_vertexTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateVertexCell);
 }
 
 void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
 {
+    m_physicsPath = physicsPath;
+    m_physicsDocument = {};
+    m_updating = true;
     m_groupTable->setRowCount(0);
     m_inputTable->setRowCount(0);
     m_outputTable->setRowCount(0);
@@ -140,14 +166,19 @@ void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
     QFile file(physicsPath);
     if(!file.open(QIODevice::ReadOnly | QIODevice::Text)){
         qDebug() << "[PhysicsPanel] Failed to open" << physicsPath;
+        m_updating = false;
         return;
     }
 
     QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
     file.close();
-    if(doc.isNull()) return;
+    if(doc.isNull() || !doc.isObject()) {
+        m_updating = false;
+        return;
+    }
 
     QJsonObject root = doc.object();
+    m_physicsDocument = root;
     QJsonObject meta = root["Meta"].toObject();
 
     // FPS
@@ -205,6 +236,128 @@ void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
         m_groupTable->selectRow(0);
         showGroupDetail(0);
     }
+    m_updating = false;
+}
+
+void CPhysicsPanel::updateForceDocument()
+{
+    if (m_physicsDocument.isEmpty()) return;
+    QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
+    QJsonObject forces = meta.value(QStringLiteral("EffectiveForces")).toObject();
+    QJsonObject gravity;
+    gravity.insert(QStringLiteral("X"), m_gravityX->value() / 100.0);
+    gravity.insert(QStringLiteral("Y"), m_gravityY->value() / 100.0);
+    QJsonObject wind;
+    wind.insert(QStringLiteral("X"), m_windX->value() / 100.0);
+    wind.insert(QStringLiteral("Y"), m_windY->value() / 100.0);
+    forces.insert(QStringLiteral("Gravity"), gravity);
+    forces.insert(QStringLiteral("Wind"), wind);
+    meta.insert(QStringLiteral("EffectiveForces"), forces);
+    m_physicsDocument.insert(QStringLiteral("Meta"), meta);
+}
+
+bool CPhysicsPanel::SavePhysics(const QString& path)
+{
+    QString target = path.isEmpty() ? m_physicsPath : path;
+    if (target.isEmpty()) {
+        target = QFileDialog::getSaveFileName(this, QStringLiteral("保存物理配置"), QString(),
+                                              QStringLiteral("Physics (*.physics3.json);;JSON (*.json)"));
+    }
+    if (target.isEmpty() || m_physicsDocument.isEmpty()) return false;
+    updateForceDocument();
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    QSaveFile file(target);
+    const QByteArray data = QJsonDocument(m_physicsDocument).toJson(QJsonDocument::Indented);
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+        QMessageBox::warning(this, QStringLiteral("保存物理配置失败"), target);
+        return false;
+    }
+    m_physicsPath = target;
+    emit PhysicsSaved(target);
+    return true;
+}
+
+void CPhysicsPanel::updateInputCell(int row, int column)
+{
+    const int groupRow = m_groupTable->currentRow();
+    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || (column != 2 && column != 3)) return;
+    QJsonObject setting = m_physicsSettings[groupRow].toObject();
+    QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
+    if (row >= inputs.size()) return;
+    if (row < 0 || row >= inputs.size() || !m_inputTable->item(row, column)) return;
+    QJsonObject input = inputs[row].toObject();
+    if (column == 2) {
+        bool ok = false;
+        const double value = m_inputTable->item(row, column)->text().toDouble(&ok);
+        if (!ok || !std::isfinite(value) || value < 0.0 || value > 1.0) {
+            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
+        }
+        input.insert(QStringLiteral("Weight"), value);
+    } else {
+        const QString text = m_inputTable->item(row, column)->text().trimmed().toLower();
+        if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) input.insert(QStringLiteral("Reflect"), true);
+        else if (text == QStringLiteral("否") || text == QStringLiteral("false") || text == QStringLiteral("0")) input.insert(QStringLiteral("Reflect"), false);
+        else { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
+    }
+    inputs[row] = input;
+    setting.insert(QStringLiteral("Input"), inputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::updateOutputCell(int row, int column)
+{
+    const int groupRow = m_groupTable->currentRow();
+    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || (column != 2 && column != 3 && column != 4)) return;
+    const int detailRow = row;
+    QJsonObject setting = m_physicsSettings[groupRow].toObject();
+    QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
+    if (detailRow < 0 || detailRow >= outputs.size() || !m_outputTable->item(detailRow, column)) return;
+    QJsonObject output = outputs[detailRow].toObject();
+    if (column == 2 || column == 3) {
+        bool ok = false;
+        const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
+        if (!ok || !std::isfinite(value) || (column == 2 && (value < 0.0 || value > 1.0))) {
+            m_updating = true; showGroupDetail(row); m_updating = false; return;
+        }
+        output.insert(column == 2 ? QStringLiteral("Weight") : QStringLiteral("Scale"), value);
+    } else {
+        const QString text = m_outputTable->item(detailRow, column)->text().trimmed().toLower();
+        if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) output.insert(QStringLiteral("Reflect"), true);
+        else if (text == QStringLiteral("否") || text == QStringLiteral("false") || text == QStringLiteral("0")) output.insert(QStringLiteral("Reflect"), false);
+        else { m_updating = true; showGroupDetail(row); m_updating = false; return; }
+    }
+    outputs[detailRow] = output;
+    setting.insert(QStringLiteral("Output"), outputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::updateVertexCell(int row, int column)
+{
+    if (m_updating || row < 0 || (column < 1 || column > 4)) return;
+    const int groupRow = m_groupTable->currentRow();
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || !m_vertexTable->item(row, column)) return;
+    QJsonObject setting = m_physicsSettings[groupRow].toObject();
+    QJsonArray vertices = setting.value(QStringLiteral("Vertices")).toArray();
+    const int vertexIndex = row + 1;
+    if (vertexIndex >= vertices.size()) return;
+    bool ok = false;
+    const double value = m_vertexTable->item(row, column)->text().toDouble(&ok);
+    if (!ok || !std::isfinite(value) || value < 0.0 || (column == 2 && value > 1.0)) {
+        m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
+    }
+    QJsonObject vertex = vertices[vertexIndex].toObject();
+    const QString key = column == 1 ? QStringLiteral("Radius") : column == 2 ? QStringLiteral("Mobility")
+                         : column == 3 ? QStringLiteral("Delay") : QStringLiteral("Acceleration");
+    vertex.insert(key, value);
+    vertices[vertexIndex] = vertex;
+    setting.insert(QStringLiteral("Vertices"), vertices);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    emit PhysicsConfigChanged();
 }
 
 void CPhysicsPanel::showGroupDetail(int row)
