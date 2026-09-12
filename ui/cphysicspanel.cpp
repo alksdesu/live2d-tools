@@ -68,6 +68,7 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
             }
             if (!m_updating) {
                 updateForceDocument();
+                m_dirty = true;
                 emit PhysicsConfigChanged();
             }
         });
@@ -157,6 +158,7 @@ void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
 {
     m_physicsPath = physicsPath;
     m_physicsDocument = {};
+    m_dirty = false;
     m_updating = true;
     m_groupTable->setRowCount(0);
     m_inputTable->setRowCount(0);
@@ -273,6 +275,7 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
         return false;
     }
     m_physicsPath = target;
+    m_dirty = false;
     emit PhysicsSaved(target);
     return true;
 }
@@ -303,6 +306,7 @@ void CPhysicsPanel::updateInputCell(int row, int column)
     setting.insert(QStringLiteral("Input"), inputs);
     m_physicsSettings[groupRow] = setting;
     m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
     emit PhysicsConfigChanged();
 }
 
@@ -332,6 +336,7 @@ void CPhysicsPanel::updateOutputCell(int row, int column)
     setting.insert(QStringLiteral("Output"), outputs);
     m_physicsSettings[groupRow] = setting;
     m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
     emit PhysicsConfigChanged();
 }
 
@@ -357,6 +362,7 @@ void CPhysicsPanel::updateVertexCell(int row, int column)
     setting.insert(QStringLiteral("Vertices"), vertices);
     m_physicsSettings[groupRow] = setting;
     m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
     emit PhysicsConfigChanged();
 }
 

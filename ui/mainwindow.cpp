@@ -243,6 +243,13 @@ void MainWindow::on_actionCmo3Export_triggered()
         return;
     }
     if (!ConfirmExportReady(QStringLiteral("cmo3 导出"))) return;
+    if (m_physicsPanel && m_physicsPanel->HasUnsavedChanges()) {
+        const auto savePhysics = QMessageBox::question(
+            this, QStringLiteral("物理配置未保存"),
+            QStringLiteral("导出 cmo3 前需要保存当前物理配置，是否现在保存？"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (savePhysics != QMessageBox::Yes || !m_physicsPanel->SavePhysics()) return;
+    }
 
     const QString defaultName = QFileInfo(m_currentMoc).completeBaseName() + ".cmo3";
     const QString outPath = QFileDialog::getSaveFileName(
@@ -614,18 +621,23 @@ void MainWindow::on_actionCloseModel_triggered()
 
 bool MainWindow::ConfirmCloseWithUnsavedChanges()
 {
-    if (!m_sessionDirty) return true;
+    const bool physicsDirty = m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
+    if (!m_sessionDirty && !physicsDirty) return true;
     QMessageBox prompt(this);
     prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
     prompt.setText(QStringLiteral("当前模型有未保存的编辑。"));
-    prompt.setInformativeText(QStringLiteral("关闭前是否保存工作会话？"));
+    prompt.setInformativeText(physicsDirty
+        ? QStringLiteral("关闭前是否保存工作会话和物理配置？")
+        : QStringLiteral("关闭前是否保存工作会话？"));
     QPushButton* save = prompt.addButton(QStringLiteral("保存"), QMessageBox::AcceptRole);
     prompt.addButton(QStringLiteral("放弃"), QMessageBox::DestructiveRole);
     prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
     prompt.exec();
     if (prompt.clickedButton() == save) {
-        on_actionSaveSession_triggered();
-        return !m_sessionDirty;
+        if (m_sessionDirty) on_actionSaveSession_triggered();
+        const bool sessionSaved = !m_sessionDirty;
+        const bool physicsSaved = !physicsDirty || (m_physicsPanel && m_physicsPanel->SavePhysics());
+        return sessionSaved && physicsSaved;
     }
     return prompt.buttonRole(prompt.clickedButton()) == QMessageBox::DestructiveRole;
 }
@@ -1034,7 +1046,15 @@ void MainWindow::RestDock(const QString &name)
     connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged, this,
             [markSessionDirty](const QString&, int, const QVector<float>&){ markSessionDirty(); });
-    connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, markSessionDirty);
+    connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, [this](){
+        if (m_applyingSession) return;
+        setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+        statusBar()->showMessage(QStringLiteral("有未保存的物理配置"));
+    });
+    connect(m_physicsPanel, &CPhysicsPanel::PhysicsSaved, this, [this](const QString&){
+        if (!m_sessionDirty) setWindowTitle(QStringLiteral("live2d2psd"));
+        statusBar()->showMessage(QStringLiteral("物理配置已保存"), 5000);
+    });
     connect(m_paramPanel, &CParamPanel::HistoryChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
     connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
 

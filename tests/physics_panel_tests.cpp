@@ -30,6 +30,7 @@ private slots:
 
         CPhysicsPanel panel;
         panel.LoadPhysics(path);
+        QVERIFY(!panel.HasUnsavedChanges());
         auto* input = panel.findChild<QTableWidget*>(QStringLiteral("physicsInputTable"));
         auto* output = panel.findChild<QTableWidget*>(QStringLiteral("physicsOutputTable"));
         auto* vertex = panel.findChild<QTableWidget*>(QStringLiteral("physicsVertexTable"));
@@ -43,11 +44,13 @@ private slots:
 
         input->item(0, 2)->setText(QStringLiteral("0.8"));
         QCOMPARE(input->item(0, 2)->text(), QStringLiteral("0.8"));
+        QVERIFY(panel.HasUnsavedChanges());
         input->item(0, 2)->setText(QStringLiteral("2.0"));
         QVERIFY(input->item(0, 2)->text() != QStringLiteral("2.0"));
         output->item(0, 3)->setText(QStringLiteral("2.5"));
         vertex->item(0, 2)->setText(QStringLiteral("0.75"));
         QVERIFY(panel.SavePhysics());
+        QVERIFY(!panel.HasUnsavedChanges());
 
         QFile saved(path);
         QVERIFY(saved.open(QIODevice::ReadOnly));

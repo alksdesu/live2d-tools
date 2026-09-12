@@ -16,6 +16,7 @@ public:
     explicit CPhysicsPanel(QWidget *parent = nullptr);
     void LoadPhysics(const QString& physicsPath);
     bool SavePhysics(const QString& path = QString());
+    bool HasUnsavedChanges() const { return m_dirty; }
 
 signals:
     void GravityChanged(float x, float y);
@@ -58,6 +59,7 @@ private:
     QJsonObject m_physicsDocument;
     QString m_physicsPath;
     bool m_updating = false;
+    bool m_dirty = false;
 };
 
 #endif // CPHYSICSPANEL_H
