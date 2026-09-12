@@ -12,6 +12,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonParseError>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QSaveFile>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -75,6 +79,23 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_poseWidget = new QWidget();
     QVBoxLayout* poseLayout = new QVBoxLayout(m_poseWidget);
     poseLayout->addWidget(new QLabel("Pose 切换"));
+    auto* poseTools = new QHBoxLayout();
+    m_addPosePartButton = new QPushButton(QStringLiteral("添加 Part"), m_poseWidget);
+    m_removePosePartButton = new QPushButton(QStringLiteral("删除 Part"), m_poseWidget);
+    m_savePoseButton = new QPushButton(QStringLiteral("保存 Pose"), m_poseWidget);
+    m_addPosePartButton->setEnabled(false);
+    m_removePosePartButton->setEnabled(false);
+    m_savePoseButton->setEnabled(false);
+    poseTools->addWidget(m_addPosePartButton);
+    poseTools->addWidget(m_removePosePartButton);
+    poseTools->addWidget(m_savePoseButton, 1);
+    poseLayout->addLayout(poseTools);
+    connect(m_addPosePartButton, &QPushButton::clicked, this, &CMotionPanel::AddPosePart);
+    connect(m_removePosePartButton, &QPushButton::clicked, this, &CMotionPanel::RemovePosePart);
+    connect(m_savePoseButton, &QPushButton::clicked, this, [this](){
+        QString error;
+        if (!SavePose(&error)) QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), error);
+    });
     m_poseWidget->setVisible(false); // 没有 pose 数据时隐藏
     splitter->addWidget(m_poseWidget);
 
@@ -196,7 +217,14 @@ void CMotionPanel::BuildLists()
 
 bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 {
+    m_poseJsonPath = poseJsonPath;
+    m_poseDocument = {};
     m_poseGroups.clear();
+    m_activePoseGroup = -1;
+    m_savePoseButton->setText(QStringLiteral("保存 Pose"));
+    m_addPosePartButton->setEnabled(false);
+    m_removePosePartButton->setEnabled(false);
+    m_savePoseButton->setEnabled(false);
     // 清除 poseWidget 中旧的 combo
     QLayout* layout = m_poseWidget->layout();
     while(layout->count() > 1){ // 保留标签
@@ -225,6 +253,7 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         if (error) *error = QStringLiteral("Pose 配置 JSON 无效：%1").arg(parseError.errorString());
         return false;
     }
+    m_poseDocument = doc.object();
     QJsonArray groups = doc.object()["Groups"].toArray();
     if(groups.isEmpty()){
         m_poseWidget->setVisible(false);
@@ -261,6 +290,9 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 
         connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, poseIndex](int index){
             if(poseIndex >= m_poseGroups.size()) return;
+            m_activePoseGroup = poseIndex;
+            m_addPosePartButton->setEnabled(true);
+            m_removePosePartButton->setEnabled(m_poseGroups[poseIndex].partIds.size() > 1);
             const PoseGroup& pg = m_poseGroups[poseIndex];
             QStringList hideIds;
             QString showId;
@@ -288,5 +320,77 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
     }
 
     m_poseWidget->setVisible(!m_poseGroups.isEmpty());
+    m_savePoseButton->setEnabled(!m_poseGroups.isEmpty());
+    if (!m_poseGroups.isEmpty()) {
+        m_activePoseGroup = 0;
+        m_addPosePartButton->setEnabled(true);
+        m_removePosePartButton->setEnabled(m_poseGroups[0].partIds.size() > 1);
+    }
     return true;
+}
+
+bool CMotionPanel::SavePose(QString* error)
+{
+    if (m_poseJsonPath.isEmpty() || m_poseDocument.isEmpty()) {
+        if (error) *error = QStringLiteral("没有可保存的 Pose 配置");
+        return false;
+    }
+    QJsonArray groups;
+    for (const PoseGroup& group : m_poseGroups) {
+        QJsonArray entries;
+        for (int i = 0; i < group.partIds.size(); ++i) {
+            QJsonObject entry;
+            entry.insert(QStringLiteral("Id"), group.partIds[i]);
+            if (i < group.links.size() && !group.links[i].isEmpty()) {
+                QJsonArray links;
+                for (const QString& link : group.links[i]) links.append(link);
+                entry.insert(QStringLiteral("Link"), links);
+            }
+            entries.append(entry);
+        }
+        groups.append(entries);
+    }
+    m_poseDocument.insert(QStringLiteral("Groups"), groups);
+    const QByteArray data = QJsonDocument(m_poseDocument).toJson(QJsonDocument::Indented);
+    QSaveFile file(m_poseJsonPath);
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+        if (error) *error = QStringLiteral("无法写入文件：%1").arg(file.errorString());
+        return false;
+    }
+    m_savePoseButton->setText(QStringLiteral("已保存 Pose"));
+    return true;
+}
+
+void CMotionPanel::AddPosePart()
+{
+    if (m_activePoseGroup < 0 || m_activePoseGroup >= m_poseGroups.size()) return;
+    bool accepted = false;
+    const QString partId = QInputDialog::getText(this, QStringLiteral("添加 Pose Part"),
+                                                  QStringLiteral("Part ID"), QLineEdit::Normal,
+                                                  QString(), &accepted).trimmed();
+    if (!accepted || partId.isEmpty()) return;
+    PoseGroup& group = m_poseGroups[m_activePoseGroup];
+    if (group.partIds.contains(partId)) {
+        QMessageBox::information(this, QStringLiteral("添加 Pose Part"), QStringLiteral("该 Part 已在当前组中"));
+        return;
+    }
+    group.partIds.append(partId);
+    group.links.append(QStringList());
+    group.combo->addItem(partId, partId);
+    group.combo->setCurrentIndex(group.combo->count() - 1);
+    m_removePosePartButton->setEnabled(group.partIds.size() > 1);
+    m_savePoseButton->setText(QStringLiteral("保存 Pose"));
+}
+
+void CMotionPanel::RemovePosePart()
+{
+    if (m_activePoseGroup < 0 || m_activePoseGroup >= m_poseGroups.size()) return;
+    PoseGroup& group = m_poseGroups[m_activePoseGroup];
+    const int index = group.combo->currentIndex();
+    if (index < 0 || index >= group.partIds.size() || group.partIds.size() <= 1) return;
+    group.partIds.removeAt(index);
+    if (index < group.links.size()) group.links.removeAt(index);
+    group.combo->removeItem(index);
+    m_removePosePartButton->setEnabled(group.partIds.size() > 1);
+    m_savePoseButton->setText(QStringLiteral("保存 Pose"));
 }

@@ -8,8 +8,10 @@
 #include <QSlider>
 #include <QVBoxLayout>
 #include <QLineEdit>
+#include <QJsonObject>
 
 class QLabel;
+class QPushButton;
 
 class CMotionPanel : public QDockWidget
 {
@@ -61,6 +63,16 @@ private:
         QComboBox* combo;
     };
     QVector<PoseGroup> m_poseGroups;
+    QString m_poseJsonPath;
+    QJsonObject m_poseDocument;
+    QPushButton* m_savePoseButton = nullptr;
+    QPushButton* m_addPosePartButton = nullptr;
+    QPushButton* m_removePosePartButton = nullptr;
+    int m_activePoseGroup = -1;
+
+    bool SavePose(QString* error = nullptr);
+    void AddPosePart();
+    void RemovePosePart();
 };
 
 #endif // CMOTIONPANEL_H
