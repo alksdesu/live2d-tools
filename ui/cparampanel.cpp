@@ -101,6 +101,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         float minVal = cubismModel->GetParameterMinimumValue(modelIdx);
         float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
         float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
+        float initialVal = qBound(minVal, cubismModel->GetParameterValue(modelIdx), maxVal);
 
         QWidget* rowWidget = new QWidget(m_container);
         QHBoxLayout* row = new QHBoxLayout(rowWidget);
@@ -133,7 +134,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         slider->setRange(0, 1000);
         int sliderDefault = 0;
         if(maxVal > minVal){
-            sliderDefault = static_cast<int>((defVal - minVal) / (maxVal - minVal) * 1000.0f);
+            sliderDefault = qBound(0, qRound((initialVal - minVal) * 1000.0f / (maxVal - minVal)), 1000);
         }
         slider->setValue(sliderDefault);
         row->addWidget(slider);
@@ -142,7 +143,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         spinBox->setRange(minVal, maxVal);
         spinBox->setDecimals(3);
         spinBox->setSingleStep((maxVal - minVal) > 0 ? (maxVal - minVal) / 100.0 : 1.0);
-        spinBox->setValue(defVal);
+        spinBox->setValue(initialVal);
         spinBox->setFixedWidth(92);
         row->addWidget(spinBox);
 
@@ -157,7 +158,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         pr.paramId = paramId;
         pr.modelIndex = modelIdx;
         m_rows.append(pr);
-        m_lastValues.insert(paramId, defVal);
+        m_lastValues.insert(paramId, initialVal);
 
         int idx = m_rows.size() - 1;
         connect(slider, &QSlider::sliderPressed, this, [this, idx](){
