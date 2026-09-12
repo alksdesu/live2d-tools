@@ -669,12 +669,15 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
 
             //混合方式，改一下
 
-            DrawMeshOpenGL(*GetModel(), drawableIndex,LAppDelegate::GetInstance()->m_IsPrintALl);
+            const csmFloat32 opacityOverride = LAppDelegate::GetInstance()->m_drawableOpacityOverrides.value(drawName, -1.0f);
+            DrawMeshOpenGL(*GetModel(), drawableIndex,LAppDelegate::GetInstance()->m_IsPrintALl, opacityOverride);
             if(LAppDelegate::GetInstance()->IsOffScreen()){
 
                 COffScreenNode node =  LAppDelegate::GetInstance()->read.GetScreenNode(*GetModel(), drawableIndex,GetMvpMatrix().GetArray(),_rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3],false);
+                const csmFloat32 effectiveOpacity = opacityOverride >= 0.0f ? opacityOverride :
+                    GetModel()->GetDrawableOpacityAll(drawableIndex, LAppDelegate::GetInstance()->m_IsPrintALl);
                 const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f,
-                    GetModel()->GetDrawableOpacityAll(drawableIndex, LAppDelegate::GetInstance()->m_IsPrintALl) * 255.0f,
+                    effectiveOpacity * 255.0f,
                     255.0f));
                 LAppDelegate::GetInstance()->GetCPsdWriteList()->AddLayer(
                     drawName, node.m_rect, *node.m_image, opacity,
@@ -770,13 +773,16 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
             }
             SetClippingContextBufferForDraw(clipContext);
             IsCulling(GetModel()->GetDrawableCulling(drawableIndex) != 0);
-            DrawMeshOpenGL(*GetModel(), drawableIndex,LAppDelegate::GetInstance()->m_IsPrintALl);
+            const csmFloat32 opacityOverride = LAppDelegate::GetInstance()->m_drawableOpacityOverrides.value(drawName, -1.0f);
+            DrawMeshOpenGL(*GetModel(), drawableIndex,LAppDelegate::GetInstance()->m_IsPrintALl, opacityOverride);
 
             if(LAppDelegate::GetInstance()->IsOffScreen()){
 
                 COffScreenNode node =  LAppDelegate::GetInstance()->read.GetScreenNode(*GetModel(), drawableIndex,GetMvpMatrix().GetArray(),_rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3],false);
+                const csmFloat32 effectiveOpacity = opacityOverride >= 0.0f ? opacityOverride :
+                    GetModel()->GetDrawableOpacityAll(drawableIndex, LAppDelegate::GetInstance()->m_IsPrintALl);
                 const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f,
-                    GetModel()->GetDrawableOpacityAll(drawableIndex, LAppDelegate::GetInstance()->m_IsPrintALl) * 255.0f,
+                    effectiveOpacity * 255.0f,
                     255.0f));
                 LAppDelegate::GetInstance()->GetCPsdWriteList()->AddLayer(
                     drawName, node.m_rect, *node.m_image, opacity,
@@ -818,7 +824,7 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
 
 }
 
-void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll)
+void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride)
 {
 
 #ifdef CSM_TARGET_WIN_GL
@@ -846,7 +852,7 @@ void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
         CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForMask(this, model, index);
     }
     else{
-        CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForDraw(this, model, index,IsAll);
+        CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForDraw(this, model, index,IsAll, opacityOverride);
     }
 
     // ポリゴンメッシュを描画する

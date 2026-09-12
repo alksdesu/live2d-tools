@@ -2,6 +2,7 @@
 #define CMODELSESSION_H
 
 #include <QMap>
+#include <QHash>
 #include <QByteArray>
 #include <QPointF>
 #include <QString>
@@ -14,6 +15,7 @@ struct CModelSession
     QString sourceMoc;
     QMap<QString, float> parameters;
     QMap<QString, bool> visibility;
+    QHash<QString, float> drawableOpacity;
     float viewScale = 1.0f;
     QPointF viewPosition;
 

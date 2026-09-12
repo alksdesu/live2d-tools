@@ -273,6 +273,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
     }
     options.hiddenIds = m_document.HiddenIds();
+    options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -307,6 +308,7 @@ void MainWindow::on_actionSaveSession_triggered()
     if (m_treePanel) {
         session.visibility = m_treePanel->VisibilityState();
     }
+    session.drawableOpacity = m_document.DrawableOpacityOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
@@ -341,6 +343,10 @@ void MainWindow::on_actionLoadSession_triggered()
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
         if (m_paramPanel) m_paramPanel->ApplyValues(session.parameters);
         if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
+        for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
+            m_document.SetDrawableOpacity(it.key(), it.value());
+            if (m_openglwindows) m_openglwindows->do_SetDrawableOpacity(it.key(), it.value());
+        }
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
         statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
@@ -849,6 +855,8 @@ void MainWindow::RestDock(const QString &name)
         else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) m_document.SetDeformerVisible(name, visible);
     });
     connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, m_treePanel, &CModelTreePanel::SetVisibility);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged,
+            m_openglwindows, &OpengGlForm::do_SetDrawableOpacity);
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){

@@ -36,7 +36,7 @@ public:
      * @param[in]   model                 ->  描画対象のモデル
      * @param[in]   index                 ->  描画対象のメッシュのインデックス
      */
-    void SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index,bool IsAll);
+    void SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride = -1.0f);
 
     /**
      * @brief   マスク用のシェーダプログラムの一連のセットアップを実行する
@@ -191,4 +191,3 @@ private:
 
 }}}}
 //------------ LIVE2D NAMESPACE ------------
-

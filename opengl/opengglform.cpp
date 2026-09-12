@@ -1,6 +1,7 @@
 #include "opengglform.h"
 #include "edit/cmeshmap.h"
 #include <QSurfaceFormat>
+#include <cmath>
 
 
 OpengGlForm::OpengGlForm(QWidget *par):QOpenGLWidget(par)
@@ -237,6 +238,12 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
         }
     }
     qDebug() << "[Visibility]" << type << name << (visible ? "show" : "hide");
+}
+
+void OpengGlForm::do_SetDrawableOpacity(const QString& name, float opacity)
+{
+    if (name.isEmpty() || !std::isfinite(opacity)) return;
+    LAppDelegate::GetInstance()->m_drawableOpacityOverrides.insert(name, qBound(0.0f, opacity, 1.0f));
 }
 
 void OpengGlForm::do_ModelChange(const QString& fileName)

@@ -3,6 +3,8 @@
 
 #include <QString>
 #include <QSet>
+#include <QHash>
+#include <QHash>
 
 namespace live2dstruct {
 class CSectionTable;
@@ -23,6 +25,7 @@ public:
         QString cdiPath;                 // 可选 .cdi3.json（显示名映射）
         QString physicsPath;             // 可选 .physics3.json
         QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
+        QHash<QString, float> drawableOpacityOverrides;
     };
 
     // 全流程执行；失败时 outError 带原因

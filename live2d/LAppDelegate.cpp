@@ -61,6 +61,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
     m_IsPrintALl =false;
     m_IsPrintFenzu=false;
     m_hiddenDrawables.clear();
+    m_drawableOpacityOverrides.clear();
 
     _IsOffScreen =false;
 
@@ -99,6 +100,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
 
 void LAppDelegate::Release()
 {
+    m_drawableOpacityOverrides.clear();
     delete _textureManager;
     delete _view;
     LAppLive2DManager::ReleaseInstance();
@@ -416,7 +418,8 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
                         if (displayName.isEmpty()) displayName = meshName;
 
                         uint32_t blendKey = CTextureExtractor::BlendModeToPsd(el->drawableFlags);
-                        uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, el->opacity * 255.0f, 255.0f));
+                        const float opacity = m_drawableOpacityOverrides.value(el->name, el->opacity);
+                        uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f));
 
                         writer.AddLayer(displayName, el->canvasRect, el->image,
                                        opacityByte, blendKey, !el->maskIndices.isEmpty(), false);
@@ -441,7 +444,8 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
             if (displayName.isEmpty()) displayName = el.name;
 
             uint32_t blendKey = CTextureExtractor::BlendModeToPsd(el.drawableFlags);
-            uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, el.opacity * 255.0f, 255.0f));
+            const float opacity = m_drawableOpacityOverrides.value(el.name, el.opacity);
+            uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f));
 
             writer.AddLayer(displayName, el.canvasRect, el.image,
                            opacityByte, blendKey, !el.maskIndices.isEmpty(), false);
@@ -456,6 +460,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
 void LAppDelegate::ChangeScene(const QString &modelJsonName)
 {
 
+    m_drawableOpacityOverrides.clear();
     LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
     live2DManager->ChangeSceneFileName(modelJsonName);
 }

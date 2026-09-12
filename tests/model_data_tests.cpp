@@ -106,6 +106,7 @@ private slots:
         source.sourceMoc = QStringLiteral("/tmp/Model.moc3");
         source.parameters.insert(QStringLiteral("ParamAngleX"), -12.5f);
         source.visibility.insert(QStringLiteral("artmesh|Body"), false);
+        source.drawableOpacity.insert(QStringLiteral("Body"), 0.42f);
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -115,6 +116,7 @@ private slots:
         QCOMPARE(decoded.sourceMoc, source.sourceMoc);
         QCOMPARE(decoded.parameters, source.parameters);
         QCOMPARE(decoded.visibility, source.visibility);
+        QCOMPARE(decoded.drawableOpacity, source.drawableOpacity);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 
@@ -125,6 +127,7 @@ private slots:
         live2dstruct::CModelSession loaded;
         QVERIFY2(live2dstruct::CModelSession::Load(path, &loaded, &error), qPrintable(error));
         QCOMPARE(loaded.parameters, source.parameters);
+        QCOMPARE(loaded.drawableOpacity, source.drawableOpacity);
     }
 
 };

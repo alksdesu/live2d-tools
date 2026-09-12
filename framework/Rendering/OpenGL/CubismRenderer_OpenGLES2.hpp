@@ -233,7 +233,7 @@ protected:
      * @param[in]   index       ->  描画対象のメッシュのインデックス
      *
      */
-    void DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll);
+    void DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride = -1.0f);
 
 #ifdef CSM_TARGET_ANDROID_ES2
 public:
@@ -296,4 +296,3 @@ private:
 
 }}}}
 //------------ LIVE2D NAMESPACE ------------
-

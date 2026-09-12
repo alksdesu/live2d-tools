@@ -612,7 +612,7 @@ void Generator::writeArtMeshEntities()
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject(); // ACForm
             m_xml.I(QStringLiteral("drawOrder"), qRound(kf->draw_orders));
-            m_xml.F(QStringLiteral("opacity"), kf->opacities);
+            m_xml.F(QStringLiteral("opacity"), m_opt.drawableOpacityOverrides.value(mesh->ids, kf->opacities));
             m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
             m_xml.EndObject(); // ACDrawableForm
             // keyform positions：原始局部值（父变形器坐标系 / 挂根时为像素画布系換算）

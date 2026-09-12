@@ -797,7 +797,7 @@ void CubismShader_OpenGLES2::GenerateShaders()
     _shaderSets[18]->UniformScreenColorLocation = glGetUniformLocation(_shaderSets[18]->ShaderProgram, "u_screenColor");
 }
 
-void CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index,bool IsAll)
+void CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride)
 {
     if (_shaderSets.GetSize() == 0)
     {
@@ -876,7 +876,8 @@ void CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2*
 
     // ユニフォーム変数設定
 
-    CubismRenderer::CubismTextureColor baseColor = renderer->GetModelColorWithOpacity(model.GetDrawableOpacityAll(index,IsAll));
+    const csmFloat32 opacity = opacityOverride >= 0.0f ? opacityOverride : model.GetDrawableOpacityAll(index,IsAll);
+    CubismRenderer::CubismTextureColor baseColor = renderer->GetModelColorWithOpacity(opacity);
     CubismRenderer::CubismTextureColor multiplyColor = model.GetMultiplyColor(index);
     CubismRenderer::CubismTextureColor screenColor = model.GetScreenColor(index);
     SetColorUniformVariables(renderer, model, index, shaderSet, baseColor, multiplyColor, screenColor);

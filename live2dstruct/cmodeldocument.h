@@ -5,6 +5,7 @@
 #include <QString>
 #include <QVector>
 #include <QSet>
+#include <QHash>
 
 namespace live2dstruct {
 
@@ -92,6 +93,9 @@ public:
     bool SetPartVisible(const QString& id, bool visible);
     bool SetDeformerVisible(const QString& id, bool visible);
     bool SetDrawableVisible(const QString& id, bool visible);
+    bool SetDrawableOpacity(const QString& id, float opacity);
+    float DrawableOpacity(const CModelDrawable& drawable) const;
+    const QHash<QString, float>& DrawableOpacityOverrides() const { return m_drawableOpacityOverrides; }
     QSet<QString> HiddenIds() const;
 
     QVector<CModelDiagnostic> Validate() const;
@@ -104,6 +108,7 @@ private:
     QVector<CModelPart> m_parts;
     QVector<CModelDeformer> m_deformers;
     QVector<CModelDrawable> m_drawables;
+    QHash<QString, float> m_drawableOpacityOverrides;
 };
 
 }
