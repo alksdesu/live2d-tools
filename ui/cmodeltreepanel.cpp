@@ -15,7 +15,7 @@ using namespace live2dstruct;
 static void initTree(QTreeWidget* tree, QObject* parent)
 {
     tree->header()->setVisible(false);
-    tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     tree->setIndentation(16);
     tree->setAnimated(true);
     tree->setRootIsDecorated(true);
@@ -40,7 +40,29 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
     initTree(m_deformerTree, this);
     m_tabWidget->addTab(m_deformerTree, "变形器");
 
-    setWidget(m_tabWidget);
+    auto* wrapper = new QWidget(this);
+    auto* layout = new QVBoxLayout(wrapper);
+    m_search = new QLineEdit(wrapper);
+    m_search->setPlaceholderText(QStringLiteral("搜索名称或 ID"));
+    m_search->setClearButtonEnabled(true);
+    layout->addWidget(m_search);
+    layout->addWidget(m_tabWidget, 1);
+    setWidget(wrapper);
+
+    connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text){
+        const QString query = text.trimmed().toLower();
+        const auto filter = [&query](QTreeWidgetItem* item, auto&& filterRef) -> bool {
+            bool match = item->text(0).toLower().contains(query) ||
+                         item->data(0, Qt::UserRole).toString().toLower().contains(query);
+            for (int i = 0; i < item->childCount(); ++i) match = filterRef(item->child(i), filterRef) || match;
+            item->setHidden(!query.isEmpty() && !match);
+            if (match && !query.isEmpty()) item->setExpanded(true);
+            return match;
+        };
+        for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+            for (int i = 0; i < tree->topLevelItemCount(); ++i) filter(tree->topLevelItem(i), filter);
+        }
+    });
 
     // 部件树点击
     connect(m_partTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int){

@@ -5,6 +5,7 @@
 #include <QTreeWidget>
 #include <QTabWidget>
 #include <QMap>
+#include <QLineEdit>
 
 class CCidJson;
 
@@ -40,6 +41,7 @@ private:
     QStringList collectDeformerNames(QTreeWidgetItem* item);
 
     QTabWidget* m_tabWidget;
+    QLineEdit* m_search = nullptr;
     QTreeWidget* m_partTree;
     QTreeWidget* m_deformerTree;
     QMap<QString, QTreeWidgetItem*> m_nameToPartItem;
