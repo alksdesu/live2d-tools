@@ -16,6 +16,7 @@
 struct CAtlasMeshUv {
     QString name;               // art mesh ID
     int textureNo;              // 所属图集索引
+    float drawOrder = 0.0f;     // 默认 keyform 绘制顺序
     QVector<QPointF> points;    // 顶点（图集像素坐标）
     QVector<int> triangles;     // 三角形顶点索引（3 个一组）
     QPainterPath outline;       // 三角形边缘合并路径（绘制用）

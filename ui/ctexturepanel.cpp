@@ -11,6 +11,8 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QDebug>
+#include <cmath>
+#include <limits>
 
 using namespace live2dstruct;
 
@@ -254,6 +256,7 @@ void CTexturePanel::HighlightMesh(const QString& meshName)
 
 void CTexturePanel::buildUvMeshes(const QString& mocPath)
 {
+    m_meshes.clear();
     CReader reader(mocPath);
     CSectionTable table(reader);
     if (!table.IsValid() || !table.count_info || !table.uvs || !table.position_indices) {
@@ -266,7 +269,8 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
 
     for (int i = 0; i < meshCount; ++i) {
         CArt_meshes* mesh = table.art_meshes[i];
-        if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000) continue;
+        if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000 ||
+            mesh->vertex_counts > std::numeric_limits<int>::max() / 2) continue;
         const int uvSize = static_cast<int>(table.uvs->uvs.size());
         const int uvCount = mesh->vertex_counts * 2;
         if (mesh->uv_sources_begin_indices < 0 || mesh->uv_sources_begin_indices > uvSize ||
@@ -280,6 +284,11 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
         CAtlasMeshUv uv;
         uv.name = mesh->ids;
         uv.textureNo = mesh->texture_nos;
+        if (mesh->keyform_sources_begin_indices >= 0 &&
+            mesh->keyform_sources_begin_indices < table.art_mesh_keyforms.size()) {
+            const float drawOrder = table.art_mesh_keyforms[mesh->keyform_sources_begin_indices]->draw_orders;
+            if (std::isfinite(drawOrder)) uv.drawOrder = drawOrder;
+        }
 
         const QString& atlasPath = m_textures.value(uv.textureNo);
         QImage probe(atlasPath);
@@ -289,9 +298,18 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
 
         const float* uvPtr = &table.uvs->uvs[mesh->uv_sources_begin_indices];
         uv.points.reserve(mesh->vertex_counts);
+        bool uvValid = true;
         for (int v = 0; v < mesh->vertex_counts; ++v) {
-            uv.points.append(QPointF(uvPtr[v * 2] * w, uvPtr[v * 2 + 1] * h));
+            const float u = uvPtr[v * 2];
+            const float vCoord = uvPtr[v * 2 + 1];
+            if (!std::isfinite(u) || !std::isfinite(vCoord) || u < -0.001f || u > 1.001f ||
+                vCoord < -0.001f || vCoord > 1.001f) {
+                uvValid = false;
+                break;
+            }
+            uv.points.append(QPointF(u * w, vCoord * h));
         }
+        if (!uvValid) continue;
 
         const short* idxPtr = &table.position_indices->indices[mesh->position_index_sources_begin_indices];
         const int idxCount = mesh->position_index_sources_counts;
@@ -318,6 +336,9 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
 
         m_meshes.append(uv);
     }
+    std::stable_sort(m_meshes.begin(), m_meshes.end(), [](const CAtlasMeshUv& left, const CAtlasMeshUv& right) {
+        return left.drawOrder < right.drawOrder;
+    });
 }
 
 void CTexturePanel::rebuildScene(int texKey)
