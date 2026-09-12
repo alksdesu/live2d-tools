@@ -10,7 +10,7 @@ TARGET = live2d2psd
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
-RC_ICONS = assets\images\logo.ico
+RC_ICONS = assets/images/logo.ico
 
 
 # Windows大对象支持
@@ -124,95 +124,95 @@ SOURCES += \
     opengl/creadopengl.cpp \
     ui/para/ccidjson.cpp \
     main.cpp \
-    ui\mainwindow.cpp \
-    framework\CubismCdiJson.cpp\
-    framework\CubismDefaultParameterId.cpp\
-    framework\CubismFramework.cpp\
-    framework\CubismModelSettingJson.cpp\
-    framework\Effect\CubismBreath.cpp\
-    framework\Effect\CubismEyeBlink.cpp\
-    framework\Effect\CubismPose.cpp\
-    framework\Id\CubismId.cpp\
-    framework\Id\CubismIdManager.cpp\
-    framework\Math\CubismMath.cpp\
-    framework\Math\CubismMatrix44.cpp\
-    framework\Math\CubismModelMatrix.cpp\
-    framework\Math\CubismTargetPoint.cpp\
-    framework\Math\CubismVector2.cpp\
-    framework\Math\CubismViewMatrix.cpp\
-    framework\Model\CubismMoc.cpp\
-    framework\Model\CubismModel.cpp\
-    framework\Model\CubismModelUserData.cpp\
-    framework\Model\CubismModelUserDataJson.cpp\
-    framework\Model\CubismUserModel.cpp\
-    framework\Motion\ACubismMotion.cpp\
-    framework\Motion\CubismExpressionMotion.cpp\
-    framework\Motion\CubismExpressionMotionManager.cpp\
-    framework\Motion\CubismMotion.cpp\
-    framework\Motion\CubismMotionJson.cpp\
-    framework\Motion\CubismMotionManager.cpp\
-    framework\Motion\CubismMotionQueueEntry.cpp\
-    framework\Motion\CubismMotionQueueManager.cpp\
-    framework\Physics\CubismPhysics.cpp\
-    framework\Physics\CubismPhysicsJson.cpp\
-    framework\Rendering\CubismClippingManager.tpp\
-    framework\Rendering\CubismRenderer.cpp\
-    framework\Rendering\OpenGL\CubismOffscreenSurface_OpenGLES2.cpp\
-    framework\Rendering\OpenGL\CubismRenderer_OpenGLES2.cpp\
-    framework\Rendering\OpenGL\CubismShader_OpenGLES2.cpp\
-    framework\Type\csmRectF.cpp\
-    framework\Type\csmString.cpp\
-    framework\Utils\CubismDebug.cpp\
-    framework\Utils\CubismJson.cpp\
-    framework\Utils\CubismString.cpp\
-    live2d\LAppAllocator.cpp\
-    live2d\LAppDefine.cpp\
-    live2d\LAppDelegate.cpp\
-    live2d\LAppLive2DManager.cpp\
-    live2d\LAppModel.cpp\
-    live2d\LAppPal.cpp\
-    live2d\LAppSprite.cpp\
-    live2d\LAppTextureManager.cpp\
-    live2d\LAppView.cpp\
-    live2d\LAppWavFileHandler.cpp\
-    live2d\TouchManager.cpp\
-    psd\psdSamples\Exporter\PsdExport.cpp\
-    psd\psdSamples\ImageUtil\PsdDecompressRle.cpp\
-    psd\psdSamples\ImageUtil\PsdInterleave.cpp\
-    psd\psdSamples\ImageUtil\PsdLayerCanvasCopy.cpp\
-    psd\psdSamples\Interfaces\PsdAllocator.cpp\
-    psd\psdSamples\Interfaces\PsdFile.cpp\
-    psd\psdSamples\Interfaces\PsdMallocAllocator.cpp\
-    psd\psdSamples\Interfaces\PsdNativeFile.cpp\
-    psd\psdSamples\Parser\PsdParseColorModeDataSection.cpp\
-    psd\psdSamples\Parser\PsdParseDocument.cpp\
-    psd\psdSamples\Parser\PsdParseImageDataSection.cpp\
-    psd\psdSamples\Parser\PsdParseImageResourcesSection.cpp\
-    psd\psdSamples\Parser\PsdParseLayerMaskSection.cpp\
-    psd\psdSamples\PsdPch.cpp\
-    psd\psdSamples\Types\PsdBlendMode.cpp\
-    psd\psdSamples\Types\PsdColorMode.cpp\
-    psd\psdSamples\Util\PsdBitUtil.inl\
-    psd\psdSamples\Util\PsdEndianConversion.inl\
-    psd\psdSamples\Util\PsdFixedSizeString.cpp\
-    psd\psdSamples\Util\PsdMemoryUtil.inl\
-    psd\psdSamples\Util\PsdSyncFileReader.cpp\
-    psd\psdSamples\Util\PsdSyncFileUtil.inl\
-    psd\psdSamples\Util\PsdSyncFileWriter.cpp\
-    psd\psdSamples\Util\PsdUnionCast.inl\
-    psd\psdSamples\Zip\Psdminiz.c\
-    psd\psdSrc\PsdSamples.cpp\
-    psd\psdSrc\PsdTgaExporter.cpp\
-    edit\cdrawmesh.cpp \
-    edit\cdrawrect.cpp \
-    edit\ctriangl.cpp \
-    std\cfileoption.cpp \
-    std\cmodeljson.cpp \
-    std\cmodeljsonwriter.cpp \
-    cmo3\ccaffarchive.cpp \
-    cmo3\cxsxmlwriter.cpp \
-    cmo3\ccmo3entities.cpp \
-    cmo3\ccmo3builder.cpp \
+    ui/mainwindow.cpp \
+    framework/CubismCdiJson.cpp\
+    framework/CubismDefaultParameterId.cpp\
+    framework/CubismFramework.cpp\
+    framework/CubismModelSettingJson.cpp\
+    framework/Effect/CubismBreath.cpp\
+    framework/Effect/CubismEyeBlink.cpp\
+    framework/Effect/CubismPose.cpp\
+    framework/Id/CubismId.cpp\
+    framework/Id/CubismIdManager.cpp\
+    framework/Math/CubismMath.cpp\
+    framework/Math/CubismMatrix44.cpp\
+    framework/Math/CubismModelMatrix.cpp\
+    framework/Math/CubismTargetPoint.cpp\
+    framework/Math/CubismVector2.cpp\
+    framework/Math/CubismViewMatrix.cpp\
+    framework/Model/CubismMoc.cpp\
+    framework/Model/CubismModel.cpp\
+    framework/Model/CubismModelUserData.cpp\
+    framework/Model/CubismModelUserDataJson.cpp\
+    framework/Model/CubismUserModel.cpp\
+    framework/Motion/ACubismMotion.cpp\
+    framework/Motion/CubismExpressionMotion.cpp\
+    framework/Motion/CubismExpressionMotionManager.cpp\
+    framework/Motion/CubismMotion.cpp\
+    framework/Motion/CubismMotionJson.cpp\
+    framework/Motion/CubismMotionManager.cpp\
+    framework/Motion/CubismMotionQueueEntry.cpp\
+    framework/Motion/CubismMotionQueueManager.cpp\
+    framework/Physics/CubismPhysics.cpp\
+    framework/Physics/CubismPhysicsJson.cpp\
+    framework/Rendering/CubismClippingManager.tpp\
+    framework/Rendering/CubismRenderer.cpp\
+    framework/Rendering/OpenGL/CubismOffscreenSurface_OpenGLES2.cpp\
+    framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp\
+    framework/Rendering/OpenGL/CubismShader_OpenGLES2.cpp\
+    framework/Type/csmRectF.cpp\
+    framework/Type/csmString.cpp\
+    framework/Utils/CubismDebug.cpp\
+    framework/Utils/CubismJson.cpp\
+    framework/Utils/CubismString.cpp\
+    live2d/LAppAllocator.cpp\
+    live2d/LAppDefine.cpp\
+    live2d/LAppDelegate.cpp\
+    live2d/LAppLive2DManager.cpp\
+    live2d/LAppModel.cpp\
+    live2d/LAppPal.cpp\
+    live2d/LAppSprite.cpp\
+    live2d/LAppTextureManager.cpp\
+    live2d/LAppView.cpp\
+    live2d/LAppWavFileHandler.cpp\
+    live2d/TouchManager.cpp\
+    psd/psdSamples/Exporter/PsdExport.cpp\
+    psd/psdSamples/ImageUtil/PsdDecompressRle.cpp\
+    psd/psdSamples/ImageUtil/PsdInterleave.cpp\
+    psd/psdSamples/ImageUtil/PsdLayerCanvasCopy.cpp\
+    psd/psdSamples/Interfaces/PsdAllocator.cpp\
+    psd/psdSamples/Interfaces/PsdFile.cpp\
+    psd/psdSamples/Interfaces/PsdMallocAllocator.cpp\
+    psd/psdSamples/Interfaces/PsdNativeFile.cpp\
+    psd/psdSamples/Parser/PsdParseColorModeDataSection.cpp\
+    psd/psdSamples/Parser/PsdParseDocument.cpp\
+    psd/psdSamples/Parser/PsdParseImageDataSection.cpp\
+    psd/psdSamples/Parser/PsdParseImageResourcesSection.cpp\
+    psd/psdSamples/Parser/PsdParseLayerMaskSection.cpp\
+    psd/psdSamples/PsdPch.cpp\
+    psd/psdSamples/Types/PsdBlendMode.cpp\
+    psd/psdSamples/Types/PsdColorMode.cpp\
+    psd/psdSamples/Util/PsdBitUtil.inl\
+    psd/psdSamples/Util/PsdEndianConversion.inl\
+    psd/psdSamples/Util/PsdFixedSizeString.cpp\
+    psd/psdSamples/Util/PsdMemoryUtil.inl\
+    psd/psdSamples/Util/PsdSyncFileReader.cpp\
+    psd/psdSamples/Util/PsdSyncFileUtil.inl\
+    psd/psdSamples/Util/PsdSyncFileWriter.cpp\
+    psd/psdSamples/Util/PsdUnionCast.inl\
+    psd/psdSamples/Zip/Psdminiz.c\
+    psd/psdSrc/PsdSamples.cpp\
+    psd/psdSrc/PsdTgaExporter.cpp\
+    edit/cdrawmesh.cpp \
+    edit/cdrawrect.cpp \
+    edit/ctriangl.cpp \
+    std/cfileoption.cpp \
+    std/cmodeljson.cpp \
+    std/cmodeljsonwriter.cpp \
+    cmo3/ccaffarchive.cpp \
+    cmo3/cxsxmlwriter.cpp \
+    cmo3/ccmo3entities.cpp \
+    cmo3/ccmo3builder.cpp \
 
 HEADERS += \
     live2dstruct/cdraworder.h \
@@ -301,150 +301,150 @@ HEADERS += \
     opengl/ctextureextractor.h \
     opengl/cselectstruct.h \
     opengl/cshader.h \
-    opengl\opengglform.h \
+    opengl/opengglform.h \
     ui/cpsdbatchdialog.h \
     ui/psdbatchworker.h \
     psd/cpsdlist.h \
     opengl/creadopengl.h \
     ui/para/ccidjson.h \
-    ui\mainwindow.h \
-    framework\CubismCdiJson.hpp\
-    framework\CubismDefaultParameterId.hpp\
-    framework\CubismFramework.hpp\
-    framework\CubismFrameworkConfig.hpp\
-    framework\CubismJsonHolder.hpp\
-    framework\CubismModelSettingJson.hpp\
-    framework\Effect\CubismBreath.hpp\
-    framework\Effect\CubismEyeBlink.hpp\
-    framework\Effect\CubismPose.hpp\
-    framework\ICubismAllocator.hpp\
-    framework\ICubismModelSetting.hpp\
-    framework\Id\CubismId.hpp\
-    framework\Id\CubismIdManager.hpp\
-    framework\Live2DCubismCore.hpp\
-    framework\Math\CubismMath.hpp\
-    framework\Math\CubismMatrix44.hpp\
-    framework\Math\CubismModelMatrix.hpp\
-    framework\Math\CubismTargetPoint.hpp\
-    framework\Math\CubismVector2.hpp\
-    framework\Math\CubismViewMatrix.hpp\
-    framework\Model\CubismMoc.hpp\
-    framework\Model\CubismModel.hpp\
-    framework\Model\CubismModelUserData.hpp\
-    framework\Model\CubismModelUserDataJson.hpp\
-    framework\Model\CubismUserModel.hpp\
-    framework\Motion\ACubismMotion.hpp\
-    framework\Motion\CubismExpressionMotion.hpp\
-    framework\Motion\CubismExpressionMotionManager.hpp\
-    framework\Motion\CubismMotion.hpp\
-    framework\Motion\CubismMotionInternal.hpp\
-    framework\Motion\CubismMotionJson.hpp\
-    framework\Motion\CubismMotionManager.hpp\
-    framework\Motion\CubismMotionQueueEntry.hpp\
-    framework\Motion\CubismMotionQueueManager.hpp\
-    framework\Physics\CubismPhysics.hpp\
-    framework\Physics\CubismPhysicsInternal.hpp\
-    framework\Physics\CubismPhysicsJson.hpp\
-    framework\Rendering\CubismClippingManager.hpp\
-    framework\Rendering\CubismRenderer.hpp\
-    framework\Rendering\OpenGL\CubismOffscreenSurface_OpenGLES2.hpp\
-    framework\Rendering\OpenGL\CubismRenderer_OpenGLES2.hpp\
-    framework\Rendering\OpenGL\CubismShader_OpenGLES2.hpp\
-    framework\Type\csmMap.hpp\
-    framework\Type\csmRectF.hpp\
-    framework\Type\csmString.hpp\
-    framework\Type\csmVector.hpp\
-    framework\Type\CubismBasicType.hpp\
-    framework\Utils\CubismDebug.hpp\
-    framework\Utils\CubismJson.hpp\
-    framework\Utils\CubismString.hpp\
-    core\Live2DCubismCore.h\
-    framework\Rendering\CubismClippingManager.hpp\
-    live2d\LAppAllocator.hpp\
-    live2d\LAppDefine.hpp\
-    live2d\LAppDelegate.hpp\
-    live2d\LAppLive2DManager.hpp\
-    live2d\LAppModel.hpp\
-    live2d\LAppPal.hpp\
-    live2d\LAppSprite.hpp\
-    live2d\LAppTextureManager.hpp\
-    live2d\LAppView.hpp\
-    live2d\LAppWavFileHandler.hpp\
-    live2d\TouchManager.hpp\
-    std\stb_image.h\
-    psd\psdSamples\Exporter\PsdExport.h\
-    psd\psdSamples\Exporter\PsdExportChannel.h\
-    psd\psdSamples\Exporter\PsdExportColorMode.h\
-    psd\psdSamples\Exporter\PsdExportDocument.h\
-    psd\psdSamples\Exporter\PsdExportLayer.h\
-    psd\psdSamples\Exporter\PsdExportMetaDataAttribute.h\
-    psd\psdSamples\ImageUtil\PsdDecompressRle.h\
-    psd\psdSamples\ImageUtil\PsdInterleave.h\
-    psd\psdSamples\ImageUtil\PsdLayerCanvasCopy.h\
-    psd\psdSamples\Interfaces\PsdAllocator.h\
-    psd\psdSamples\Interfaces\PsdFile.h\
-    psd\psdSamples\Interfaces\PsdMallocAllocator.h\
-    psd\psdSamples\Interfaces\PsdNativeFile.h\
-    psd\psdSamples\Parser\PsdParseColorModeDataSection.h\
-    psd\psdSamples\Parser\PsdParseDocument.h\
-    psd\psdSamples\Parser\PsdParseImageDataSection.h\
-    psd\psdSamples\Parser\PsdParseImageResourcesSection.h\
-    psd\psdSamples\Parser\PsdParseLayerMaskSection.h\
-    psd\psdSamples\Platform\PsdAssert.h\
-    psd\psdSamples\Platform\PsdCompilerMacros.h\
-    psd\psdSamples\Platform\PsdLog.h\
-    psd\psdSamples\Platform\PsdNamespace.h\
-    psd\psdSamples\Platform\PsdPlatform.h\
-    psd\psdSamples\Platform\PsdTypes.h\
-    psd\psdSamples\Psd.h\
-    psd\psdSamples\PsdDocumentation.h\
-    psd\psdSamples\Psdinttypes.h\
-    psd\psdSamples\Psdispod.h\
-    psd\psdSamples\Psdisunsigned.h\
-    psd\psdSamples\PsdPch.h\
-    psd\psdSamples\Psdstdint.h\
-    psd\psdSamples\Sections\PsdColorModeDataSection.h\
-    psd\psdSamples\Sections\PsdImageDataSection.h\
-    psd\psdSamples\Sections\PsdImageResourcesSection.h\
-    psd\psdSamples\Sections\PsdLayerMaskSection.h\
-    psd\psdSamples\Types\PsdAlphaChannel.h\
-    psd\psdSamples\Types\PsdBlendMode.h\
-    psd\psdSamples\Types\PsdChannel.h\
-    psd\psdSamples\Types\PsdColorMode.h\
-    psd\psdSamples\Types\PsdCompressionType.h\
-    psd\psdSamples\Types\PsdDocument.h\
-    psd\psdSamples\Types\PsdImageResourceType.h\
-    psd\psdSamples\Types\PsdLayer.h\
-    psd\psdSamples\Types\PsdLayerMask.h\
-    psd\psdSamples\Types\PsdLayerType.h\
-    psd\psdSamples\Types\PsdPlanarImage.h\
-    psd\psdSamples\Types\PsdSection.h\
-    psd\psdSamples\Types\PsdVectorMask.h\
-    psd\psdSamples\Util\PsdBitUtil.h\
-    psd\psdSamples\Util\PsdEndianConversion.h\
-    psd\psdSamples\Util\PsdFixedSizeString.h\
-    psd\psdSamples\Util\PsdKey.h\
-    psd\psdSamples\Util\PsdMemoryUtil.h\
-    psd\psdSamples\Util\PsdSyncFileReader.h\
-    psd\psdSamples\Util\PsdSyncFileUtil.h\
-    psd\psdSamples\Util\PsdSyncFileWriter.h\
-    psd\psdSamples\Util\PsdUnionCast.h\
-    psd\psdSamples\Zip\Psdminiz.h\
-    psd\psdSrc\PsdDebug.h\
-    psd\psdSrc\PsdTgaExporter.h\
-    psd\psdSamples\PsdChannelType.h\
-    psd\psdSamples\PsdThumbnail.h\
-    edit\cdrawmesh.h \
-    edit\cdrawrect.h \
-    edit\ctriangl.h \
-    std\cfileoption.h \
-    std\cmodeljson.h \
-    std\cmodeljsonwriter.h \
-    cmo3\ccaffarchive.h \
-    cmo3\cxsxmlwriter.h \
-    cmo3\ccmo3ids.h \
-    cmo3\ccmo3entities.h \
-    cmo3\ccmo3builder.h \
+    ui/mainwindow.h \
+    framework/CubismCdiJson.hpp\
+    framework/CubismDefaultParameterId.hpp\
+    framework/CubismFramework.hpp\
+    framework/CubismFrameworkConfig.hpp\
+    framework/CubismJsonHolder.hpp\
+    framework/CubismModelSettingJson.hpp\
+    framework/Effect/CubismBreath.hpp\
+    framework/Effect/CubismEyeBlink.hpp\
+    framework/Effect/CubismPose.hpp\
+    framework/ICubismAllocator.hpp\
+    framework/ICubismModelSetting.hpp\
+    framework/Id/CubismId.hpp\
+    framework/Id/CubismIdManager.hpp\
+    framework/Live2DCubismCore.hpp\
+    framework/Math/CubismMath.hpp\
+    framework/Math/CubismMatrix44.hpp\
+    framework/Math/CubismModelMatrix.hpp\
+    framework/Math/CubismTargetPoint.hpp\
+    framework/Math/CubismVector2.hpp\
+    framework/Math/CubismViewMatrix.hpp\
+    framework/Model/CubismMoc.hpp\
+    framework/Model/CubismModel.hpp\
+    framework/Model/CubismModelUserData.hpp\
+    framework/Model/CubismModelUserDataJson.hpp\
+    framework/Model/CubismUserModel.hpp\
+    framework/Motion/ACubismMotion.hpp\
+    framework/Motion/CubismExpressionMotion.hpp\
+    framework/Motion/CubismExpressionMotionManager.hpp\
+    framework/Motion/CubismMotion.hpp\
+    framework/Motion/CubismMotionInternal.hpp\
+    framework/Motion/CubismMotionJson.hpp\
+    framework/Motion/CubismMotionManager.hpp\
+    framework/Motion/CubismMotionQueueEntry.hpp\
+    framework/Motion/CubismMotionQueueManager.hpp\
+    framework/Physics/CubismPhysics.hpp\
+    framework/Physics/CubismPhysicsInternal.hpp\
+    framework/Physics/CubismPhysicsJson.hpp\
+    framework/Rendering/CubismClippingManager.hpp\
+    framework/Rendering/CubismRenderer.hpp\
+    framework/Rendering/OpenGL/CubismOffscreenSurface_OpenGLES2.hpp\
+    framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp\
+    framework/Rendering/OpenGL/CubismShader_OpenGLES2.hpp\
+    framework/Type/csmMap.hpp\
+    framework/Type/csmRectF.hpp\
+    framework/Type/csmString.hpp\
+    framework/Type/csmVector.hpp\
+    framework/Type/CubismBasicType.hpp\
+    framework/Utils/CubismDebug.hpp\
+    framework/Utils/CubismJson.hpp\
+    framework/Utils/CubismString.hpp\
+    core/Live2DCubismCore.h\
+    framework/Rendering/CubismClippingManager.hpp\
+    live2d/LAppAllocator.hpp\
+    live2d/LAppDefine.hpp\
+    live2d/LAppDelegate.hpp\
+    live2d/LAppLive2DManager.hpp\
+    live2d/LAppModel.hpp\
+    live2d/LAppPal.hpp\
+    live2d/LAppSprite.hpp\
+    live2d/LAppTextureManager.hpp\
+    live2d/LAppView.hpp\
+    live2d/LAppWavFileHandler.hpp\
+    live2d/TouchManager.hpp\
+    std/stb_image.h\
+    psd/psdSamples/Exporter/PsdExport.h\
+    psd/psdSamples/Exporter/PsdExportChannel.h\
+    psd/psdSamples/Exporter/PsdExportColorMode.h\
+    psd/psdSamples/Exporter/PsdExportDocument.h\
+    psd/psdSamples/Exporter/PsdExportLayer.h\
+    psd/psdSamples/Exporter/PsdExportMetaDataAttribute.h\
+    psd/psdSamples/ImageUtil/PsdDecompressRle.h\
+    psd/psdSamples/ImageUtil/PsdInterleave.h\
+    psd/psdSamples/ImageUtil/PsdLayerCanvasCopy.h\
+    psd/psdSamples/Interfaces/PsdAllocator.h\
+    psd/psdSamples/Interfaces/PsdFile.h\
+    psd/psdSamples/Interfaces/PsdMallocAllocator.h\
+    psd/psdSamples/Interfaces/PsdNativeFile.h\
+    psd/psdSamples/Parser/PsdParseColorModeDataSection.h\
+    psd/psdSamples/Parser/PsdParseDocument.h\
+    psd/psdSamples/Parser/PsdParseImageDataSection.h\
+    psd/psdSamples/Parser/PsdParseImageResourcesSection.h\
+    psd/psdSamples/Parser/PsdParseLayerMaskSection.h\
+    psd/psdSamples/Platform/PsdAssert.h\
+    psd/psdSamples/Platform/PsdCompilerMacros.h\
+    psd/psdSamples/Platform/PsdLog.h\
+    psd/psdSamples/Platform/PsdNamespace.h\
+    psd/psdSamples/Platform/PsdPlatform.h\
+    psd/psdSamples/Platform/PsdTypes.h\
+    psd/psdSamples/Psd.h\
+    psd/psdSamples/PsdDocumentation.h\
+    psd/psdSamples/Psdinttypes.h\
+    psd/psdSamples/Psdispod.h\
+    psd/psdSamples/Psdisunsigned.h\
+    psd/psdSamples/PsdPch.h\
+    psd/psdSamples/Psdstdint.h\
+    psd/psdSamples/Sections/PsdColorModeDataSection.h\
+    psd/psdSamples/Sections/PsdImageDataSection.h\
+    psd/psdSamples/Sections/PsdImageResourcesSection.h\
+    psd/psdSamples/Sections/PsdLayerMaskSection.h\
+    psd/psdSamples/Types/PsdAlphaChannel.h\
+    psd/psdSamples/Types/PsdBlendMode.h\
+    psd/psdSamples/Types/PsdChannel.h\
+    psd/psdSamples/Types/PsdColorMode.h\
+    psd/psdSamples/Types/PsdCompressionType.h\
+    psd/psdSamples/Types/PsdDocument.h\
+    psd/psdSamples/Types/PsdImageResourceType.h\
+    psd/psdSamples/Types/PsdLayer.h\
+    psd/psdSamples/Types/PsdLayerMask.h\
+    psd/psdSamples/Types/PsdLayerType.h\
+    psd/psdSamples/Types/PsdPlanarImage.h\
+    psd/psdSamples/Types/PsdSection.h\
+    psd/psdSamples/Types/PsdVectorMask.h\
+    psd/psdSamples/Util/PsdBitUtil.h\
+    psd/psdSamples/Util/PsdEndianConversion.h\
+    psd/psdSamples/Util/PsdFixedSizeString.h\
+    psd/psdSamples/Util/PsdKey.h\
+    psd/psdSamples/Util/PsdMemoryUtil.h\
+    psd/psdSamples/Util/PsdSyncFileReader.h\
+    psd/psdSamples/Util/PsdSyncFileUtil.h\
+    psd/psdSamples/Util/PsdSyncFileWriter.h\
+    psd/psdSamples/Util/PsdUnionCast.h\
+    psd/psdSamples/Zip/Psdminiz.h\
+    psd/psdSrc/PsdDebug.h\
+    psd/psdSrc/PsdTgaExporter.h\
+    psd/psdSamples/PsdChannelType.h\
+    psd/psdSamples/PsdThumbnail.h\
+    edit/cdrawmesh.h \
+    edit/cdrawrect.h \
+    edit/ctriangl.h \
+    std/cfileoption.h \
+    std/cmodeljson.h \
+    std/cmodeljsonwriter.h \
+    cmo3/ccaffarchive.h \
+    cmo3/cxsxmlwriter.h \
+    cmo3/ccmo3ids.h \
+    cmo3/ccmo3entities.h \
+    cmo3/ccmo3builder.h \
 
 
 
