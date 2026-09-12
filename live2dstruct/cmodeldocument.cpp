@@ -315,13 +315,33 @@ bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)
 
 bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents)
 {
-    const QHash<QString, int> previous = m_deformerParentOverrides;
+    QHash<QString, int> candidate = m_deformerParentOverrides;
     for (auto it = parents.cbegin(); it != parents.cend(); ++it) {
-        if (!SetDeformerParentIndex(it.key(), it.value())) {
-            m_deformerParentOverrides = previous;
+        int deformerIndex = -1;
+        for (int i = 0; i < m_deformers.size(); ++i) {
+            if (m_deformers[i].id == it.key()) { deformerIndex = i; break; }
+        }
+        const int parentIndex = it.value();
+        if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
+            (parentIndex >= 0 && m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
             return false;
         }
+        candidate.insert(it.key(), parentIndex);
     }
+    const auto parentOf = [&candidate, this](int index) {
+        if (index < 0 || index >= m_deformers.size()) return -1;
+        return candidate.value(m_deformers[index].id, m_deformers[index].parentDeformerIndex);
+    };
+    for (auto it = parents.cbegin(); it != parents.cend(); ++it) {
+        int current = it.value();
+        QSet<int> visited;
+        while (current >= 0) {
+            if (current >= m_deformers.size() || visited.contains(current)) return false;
+            visited.insert(current);
+            current = parentOf(current);
+        }
+    }
+    m_deformerParentOverrides = candidate;
     return true;
 }
 

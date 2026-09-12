@@ -229,6 +229,11 @@ private slots:
                                                     {secondDeformerId, deformerIndex}}));
         QCOMPARE(document.DeformerParentIndex(deformerId), parentDeformerIndex);
         QCOMPARE(document.DeformerParentIndex(secondDeformerId), secondOriginalParent);
+        QVERIFY(document.SetDeformerParentIndices({{deformerId, -1}, {secondDeformerId, deformerIndex}}));
+        QCOMPARE(document.DeformerParentIndex(deformerId), -1);
+        QCOMPARE(document.DeformerParentIndex(secondDeformerId), deformerIndex);
+        QVERIFY(document.SetDeformerParentIndices({{secondDeformerId, secondOriginalParent},
+                                                   {deformerId, parentDeformerIndex}}));
         QVERIFY(document.ExecuteEdit({deformerId, QStringLiteral("warp"), live2dstruct::CModelEdit::DeformerParent,
                                        parentDeformerIndex, originalParent}));
         QCOMPARE(document.DeformerParentIndex(deformerId), originalParent);
