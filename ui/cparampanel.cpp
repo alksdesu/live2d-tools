@@ -1,6 +1,7 @@
 #include "cparampanel.h"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
+#include "live2dstruct/cmodeldocument.h"
 #include "ui/para/ccidjson.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -62,6 +63,29 @@ CParamPanel::CParamPanel(QWidget *parent)
     setWidget(wrapper);
 }
 
+void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
+{
+    m_document = document;
+}
+
+void CParamPanel::ApplyExternalValue(const QString& paramId, float value)
+{
+    auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&paramId](const ParamRow& row){ return row.paramId == paramId; });
+    if (rowIt != m_rows.cend()) {
+        ParamRow& row = m_rows[static_cast<int>(rowIt - m_rows.cbegin())];
+        value = qBound(row.minVal, value, row.maxVal);
+        const int sliderValue = row.maxVal > row.minVal
+            ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        QSignalBlocker sliderBlocker(row.slider);
+        QSignalBlocker spinBlocker(row.spinBox);
+        row.slider->setValue(sliderValue);
+        row.spinBox->setValue(value);
+        m_userLocked.insert(static_cast<int>(rowIt - m_rows.cbegin()));
+    }
+    m_lastValues.insert(paramId, value);
+    emit ParamChanged(paramId, value, false);
+}
+
 void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapeParams)
 {
     m_rows.clear();
@@ -104,6 +128,10 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
         float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
         float initialVal = qBound(minVal, cubismModel->GetParameterValue(modelIdx), maxVal);
+        if (m_document) {
+            if (m_document->ParameterValues().contains(paramId)) initialVal = m_document->ParameterValue(paramId);
+            else m_document->SetParameterValue(paramId, initialVal);
+        }
 
         QWidget* rowWidget = new QWidget(m_container);
         QHBoxLayout* row = new QHBoxLayout(rowWidget);
@@ -314,7 +342,6 @@ QMap<QString, float> CParamPanel::CurrentValues() const
 
 void CParamPanel::ApplyValues(const QMap<QString, float>& values)
 {
-    m_replaying = true;
     for (int i = 0; i < m_rows.size(); ++i) {
         ParamRow& row = m_rows[i];
         if (!values.contains(row.paramId)) continue;
@@ -330,9 +357,9 @@ void CParamPanel::ApplyValues(const QMap<QString, float>& values)
         row.spinBox->setValue(value);
         m_lastValues.insert(row.paramId, value);
         m_userLocked.insert(i);
+        if (m_document) m_document->SetParameterValue(row.paramId, value);
         emit ParamChanged(row.paramId, value, false);
     }
-    m_replaying = false;
     ClearHistory();
 }
 
@@ -369,7 +396,7 @@ void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
     const float before = m_lastValues.value(row.paramId, value);
     m_lastValues.insert(row.paramId, value);
     emit ParamChanged(row.paramId, value, false);
-    if (record && !m_replaying && !qFuzzyCompare(before + 1.0f, value + 1.0f)) {
+    if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) {
         PushEdit(row.paramId, before, value);
     }
 }
@@ -377,72 +404,76 @@ void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
 void CParamPanel::PushEdit(const QString& paramId, float before, float after)
 {
     if (qFuzzyCompare(before + 1.0f, after + 1.0f)) return;
-    if (m_historyIndex < m_history.size()) m_history.resize(m_historyIndex);
-    if (!m_history.isEmpty() && m_historyIndex == m_history.size()) {
-        Edit& last = m_history.last();
-        if (last.paramId == paramId && qFuzzyCompare(last.after + 1.0f, before + 1.0f)) {
-            last.after = after;
-            EmitHistoryState();
-            return;
-        }
+    if (m_document) {
+        const live2dstruct::CModelEdit command{paramId, QStringLiteral("parameter"),
+                                               live2dstruct::CModelEdit::ParameterValue, before, after};
+        if (!m_document->ExecuteEdit(command)) return;
     }
-    m_history.push_back({paramId, before, after});
-    m_historyIndex = m_history.size();
     EmitHistoryState();
 }
 
 void CParamPanel::EmitHistoryState()
 {
-    emit HistoryChanged(m_historyIndex > 0, m_historyIndex < m_history.size());
+    if (!m_document) {
+        emit HistoryChanged(false, false);
+        return;
+    }
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
+void CParamPanel::SyncHistoryState()
+{
+    EmitHistoryState();
 }
 
 void CParamPanel::ClearHistory()
 {
-    m_history.clear();
-    m_historyIndex = 0;
+    if (m_document) m_document->ClearEditHistory();
     EmitHistoryState();
 }
 
 void CParamPanel::Undo()
 {
-    if (m_historyIndex <= 0) return;
-    const Edit edit = m_history[m_historyIndex - 1];
-    m_replaying = true;
-    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.paramId; });
+    if (!m_document) return;
+    live2dstruct::CModelEdit pending;
+    if (!m_document->PeekUndoEdit(&pending) || pending.field != live2dstruct::CModelEdit::ParameterValue) return;
+    live2dstruct::CModelEdit edit;
+    if (!m_document->UndoEdit(&edit) || edit.field != live2dstruct::CModelEdit::ParameterValue) return;
+    const float value = edit.before.toFloat();
+    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.name; });
     const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
     if (rowIndex >= 0 && rowIndex < m_rows.size()) {
         ParamRow& row = m_rows[rowIndex];
-        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((edit.before - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
         QSignalBlocker sliderBlocker(row.slider);
         QSignalBlocker spinBlocker(row.spinBox);
         row.slider->setValue(sliderValue);
-        row.spinBox->setValue(edit.before);
-        m_lastValues.insert(edit.paramId, edit.before);
-        emit ParamChanged(edit.paramId, edit.before, false);
+        row.spinBox->setValue(value);
+        m_lastValues.insert(edit.name, value);
+        emit ParamChanged(edit.name, value, false);
     }
-    m_replaying = false;
-    --m_historyIndex;
     EmitHistoryState();
 }
 
 void CParamPanel::Redo()
 {
-    if (m_historyIndex >= m_history.size()) return;
-    const Edit edit = m_history[m_historyIndex];
-    m_replaying = true;
-    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.paramId; });
+    if (!m_document) return;
+    live2dstruct::CModelEdit pending;
+    if (!m_document->PeekRedoEdit(&pending) || pending.field != live2dstruct::CModelEdit::ParameterValue) return;
+    live2dstruct::CModelEdit edit;
+    if (!m_document->RedoEdit(&edit) || edit.field != live2dstruct::CModelEdit::ParameterValue) return;
+    const float value = edit.after.toFloat();
+    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.name; });
     const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
     if (rowIndex >= 0 && rowIndex < m_rows.size()) {
         ParamRow& row = m_rows[rowIndex];
-        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((edit.after - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
         QSignalBlocker sliderBlocker(row.slider);
         QSignalBlocker spinBlocker(row.spinBox);
         row.slider->setValue(sliderValue);
-        row.spinBox->setValue(edit.after);
-        m_lastValues.insert(edit.paramId, edit.after);
-        emit ParamChanged(edit.paramId, edit.after, false);
+        row.spinBox->setValue(value);
+        m_lastValues.insert(edit.name, value);
+        emit ParamChanged(edit.name, value, false);
     }
-    m_replaying = false;
-    ++m_historyIndex;
     EmitHistoryState();
 }

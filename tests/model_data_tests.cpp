@@ -135,6 +135,19 @@ private slots:
         QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), currentDrawOrder + 2);
         QVERIFY(!document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::Opacity,
                                        0.2f, 1.5f}));
+        const auto& parameter = document.Parameters().first();
+        const float parameterBefore = parameter.defaultValue;
+        const float parameterAfter = qFuzzyCompare(parameterBefore + 1.0f, parameter.maximum + 1.0f)
+            ? parameter.minimum : parameter.maximum;
+        QVERIFY(document.ExecuteEdit({parameter.id, QStringLiteral("parameter"), live2dstruct::CModelEdit::ParameterValue,
+                                       parameterBefore, parameterAfter}));
+        QCOMPARE(document.ParameterValue(parameter.id), parameterAfter);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.ParameterValue(parameter.id), parameterBefore);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.ParameterValue(parameter.id), parameterAfter);
+        QVERIFY(!document.ExecuteEdit({parameter.id, QStringLiteral("parameter"), live2dstruct::CModelEdit::ParameterValue,
+                                       parameterAfter, parameter.maximum + 1.0f}));
         document.ClearEditHistory();
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(!document.CanRedoEdit());

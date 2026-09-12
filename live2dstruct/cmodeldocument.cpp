@@ -39,6 +39,7 @@ void CModelDocument::Clear()
     m_drawOrderGroups.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
+    m_parameterValues.clear();
     ClearEditHistory();
 }
 
@@ -187,6 +188,26 @@ bool CModelDocument::SetPartVisible(const QString& id, bool visible)
     return false;
 }
 
+bool CModelDocument::SetParameterValue(const QString& id, float value)
+{
+    if (!std::isfinite(value)) return false;
+    for (const CModelParameter& parameter : m_parameters) {
+        if (parameter.id != id) continue;
+        if (value < parameter.minimum || value > parameter.maximum) return false;
+        m_parameterValues.insert(id, value);
+        return true;
+    }
+    return false;
+}
+
+float CModelDocument::ParameterValue(const QString& id) const
+{
+    for (const CModelParameter& parameter : m_parameters) {
+        if (parameter.id == id) return m_parameterValues.value(id, parameter.defaultValue);
+    }
+    return 0.0f;
+}
+
 bool CModelDocument::SetDeformerVisible(const QString& id, bool visible)
 {
     for (CModelDeformer& deformer : m_deformers) {
@@ -260,6 +281,10 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         if (!std::isfinite(number) || std::floor(number) != number || number < 0.0 || number > 1000.0) return false;
         return SetDrawableDrawOrder(edit.name, static_cast<int>(number));
     }
+    if (edit.field == CModelEdit::ParameterValue) {
+        if (edit.type != QLatin1String("parameter") || !value.canConvert<float>()) return false;
+        return SetParameterValue(edit.name, value.toFloat());
+    }
     return false;
 }
 
@@ -277,6 +302,20 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
     }
     m_editHistory.append(edit);
     m_editIndex = m_editHistory.size();
+    return true;
+}
+
+bool CModelDocument::PeekUndoEdit(CModelEdit* edit) const
+{
+    if (m_editIndex <= 0) return false;
+    if (edit) *edit = m_editHistory[m_editIndex - 1];
+    return true;
+}
+
+bool CModelDocument::PeekRedoEdit(CModelEdit* edit) const
+{
+    if (m_editIndex >= m_editHistory.size()) return false;
+    if (edit) *edit = m_editHistory[m_editIndex];
     return true;
 }
 

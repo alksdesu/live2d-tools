@@ -397,6 +397,49 @@ bool MainWindow::ConfirmExportReady(const QString& operation)
     return true;
 }
 
+void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward)
+{
+    const QVariant& value = forward ? edit.after : edit.before;
+    if (edit.field == live2dstruct::CModelEdit::ParameterValue) {
+        const float parameterValue = value.toFloat();
+        if (m_paramPanel) m_paramPanel->ApplyExternalValue(edit.name, parameterValue);
+        else if (m_openglwindows) m_openglwindows->do_change_para_value(edit.name, parameterValue, false);
+    } else if (edit.field == live2dstruct::CModelEdit::Visibility) {
+        const bool visible = value.toBool();
+        if (m_treePanel) {
+            m_syncingVisibility = true;
+            m_treePanel->SetVisibility(edit.name, edit.type, visible);
+            m_syncingVisibility = false;
+        } else if (m_openglwindows) {
+            m_openglwindows->do_SetVisibility(edit.name, edit.type, visible);
+        }
+    } else if (edit.field == live2dstruct::CModelEdit::Opacity) {
+        const float opacity = value.toFloat();
+        if (m_openglwindows) m_openglwindows->do_SetDrawableOpacity(edit.name, opacity);
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
+        const int drawOrder = value.toInt();
+        if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(edit.name, drawOrder);
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    }
+    if (m_paramPanel) m_paramPanel->SyncHistoryState();
+    if (m_inspectorPanel) m_inspectorPanel->SyncHistoryState();
+}
+
+void MainWindow::UndoDocumentEdit()
+{
+    live2dstruct::CModelEdit edit;
+    if (!m_document.UndoEdit(&edit)) return;
+    ApplyDocumentEditToUi(edit, false);
+}
+
+void MainWindow::RedoDocumentEdit()
+{
+    live2dstruct::CModelEdit edit;
+    if (!m_document.RedoEdit(&edit)) return;
+    ApplyDocumentEditToUi(edit, true);
+}
+
 void MainWindow::on_actionBatchPsd_triggered()
 {
     // 1. 选择输入文件夹
@@ -776,6 +819,7 @@ void MainWindow::RestDock(const QString &name)
 
     // 右侧面板：参数控制 + 物理设置（tabify）
     m_paramPanel = new CParamPanel(this);
+    m_paramPanel->SetDocument(&m_document);
     addDockWidget(Qt::RightDockWidgetArea, m_paramPanel);
     connect(m_paramPanel, &CParamPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
         m_historySource = HistorySource::Parameters;
@@ -819,14 +863,8 @@ void MainWindow::RestDock(const QString &name)
             statusBar()->showMessage(QStringLiteral("有未保存的属性修改"));
         }
     });
-    connect(m_undoAction, &QAction::triggered, this, [this](){
-        if (m_historySource == HistorySource::Inspector && m_inspectorPanel) m_inspectorPanel->Undo();
-        else if (m_paramPanel) m_paramPanel->Undo();
-    });
-    connect(m_redoAction, &QAction::triggered, this, [this](){
-        if (m_historySource == HistorySource::Inspector && m_inspectorPanel) m_inspectorPanel->Redo();
-        else if (m_paramPanel) m_paramPanel->Redo();
-    });
+    connect(m_undoAction, &QAction::triggered, this, &MainWindow::UndoDocumentEdit);
+    connect(m_redoAction, &QAction::triggered, this, &MainWindow::RedoDocumentEdit);
 
     m_diagnosticsPanel = new CModelDiagnosticsPanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_diagnosticsPanel);

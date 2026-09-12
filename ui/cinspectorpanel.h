@@ -23,6 +23,7 @@ public:
     void SetSelection(const QString& name, const QString& type);
     void SetSelections(const QStringList& names, const QStringList& types);
     void ClearSelection();
+    void RefreshSelection();
 
 public slots:
     void Undo();

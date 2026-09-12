@@ -97,7 +97,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue };
     QString name;
     QString type;
     Field field = Visibility;
@@ -115,6 +115,9 @@ public:
     const QString& SourcePath() const { return m_sourcePath; }
     const QSize& CanvasPixels() const { return m_canvasPixels; }
     const QVector<CModelParameter>& Parameters() const { return m_parameters; }
+    bool SetParameterValue(const QString& id, float value);
+    float ParameterValue(const QString& id) const;
+    const QHash<QString, float>& ParameterValues() const { return m_parameterValues; }
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
@@ -129,6 +132,8 @@ public:
     float DrawableDrawOrder(const CModelDrawable& drawable) const;
     const QHash<QString, int>& DrawableDrawOrderOverrides() const { return m_drawableDrawOrderOverrides; }
     bool ExecuteEdit(const CModelEdit& edit);
+    bool PeekUndoEdit(CModelEdit* edit = nullptr) const;
+    bool PeekRedoEdit(CModelEdit* edit = nullptr) const;
     bool UndoEdit(CModelEdit* edit = nullptr);
     bool RedoEdit(CModelEdit* edit = nullptr);
     void ClearEditHistory();
@@ -149,6 +154,7 @@ private:
     QVector<CModelDrawOrderGroup> m_drawOrderGroups;
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
+    QHash<QString, float> m_parameterValues;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;
 

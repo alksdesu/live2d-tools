@@ -272,6 +272,12 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_idLabel->setText(QStringLiteral("%1 个对象").arg(names.size()));
 }
 
+void CInspectorPanel::RefreshSelection()
+{
+    if (m_selectionNames.size() > 1) SetSelections(m_selectionNames, m_selectionTypes);
+    else if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
+}
+
 void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
@@ -327,6 +333,8 @@ void CInspectorPanel::SyncHistoryState()
 void CInspectorPanel::Undo()
 {
     if (!m_document) return;
+    live2dstruct::CModelEdit pending;
+    if (!m_document->PeekUndoEdit(&pending) || pending.field == live2dstruct::CModelEdit::ParameterValue) return;
     live2dstruct::CModelEdit edit;
     if (!m_document->UndoEdit(&edit)) return;
     EmitEdit(edit, false);
@@ -336,6 +344,8 @@ void CInspectorPanel::Undo()
 void CInspectorPanel::Redo()
 {
     if (!m_document) return;
+    live2dstruct::CModelEdit pending;
+    if (!m_document->PeekRedoEdit(&pending) || pending.field == live2dstruct::CModelEdit::ParameterValue) return;
     live2dstruct::CModelEdit edit;
     if (!m_document->RedoEdit(&edit)) return;
     EmitEdit(edit, true);

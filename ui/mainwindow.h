@@ -52,6 +52,9 @@ private:
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
+    void UndoDocumentEdit();
+    void RedoDocumentEdit();
+    void ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward);
 
 
 
