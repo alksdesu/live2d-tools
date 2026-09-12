@@ -82,6 +82,23 @@ void C2DTree::AddEdge(C2DTreeNode *father, C2DTreeNode *child)
 }
 //现在的目标区分那些参数和那些关键帧进行了绑定
 void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
+    const auto parentChainValid = [](int index, const QVector<int>& parents) {
+        if (index < 0 || index >= parents.size()) return false;
+        QVector<bool> visited(parents.size(), false);
+        int current = index;
+        while (current >= 0) {
+            if (current >= parents.size() || visited[current]) return false;
+            visited[current] = true;
+            current = parents[current];
+        }
+        return true;
+    };
+    QVector<int> partParents;
+    partParents.reserve(sectionTable.parts.size());
+    for (const CParts* part : sectionTable.parts) partParents.append(part->parent_part_indices);
+    QVector<int> deformerParents;
+    deformerParents.reserve(sectionTable.deformers.size());
+    for (const CDeformers* deformer : sectionTable.deformers) deformerParents.append(deformer->parent_deformer_indices);
     //初始化参数
     //QList<C2DTreeNode*> parametersBindTree;
     //一个参数上面有二个关键帧，能分别控制
@@ -149,7 +166,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     partRoot.push_back(partutilList[i]);
                 }
                 else {
-                    if (parentIndeices >= 0 && parentIndeices < partutilList.size())
+                    if (parentIndeices >= 0 && parentIndeices < partutilList.size() && parentChainValid(i, partParents))
                         AddEdge(partutilList[parentIndeices],partutilList[i]);
                 }
             }
@@ -183,7 +200,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 }
                 //这里会被part添加
                 if(deformers->parent_part_indices != -1){
-                    if (deformers->parent_part_indices >= 0 && deformers->parent_part_indices < partutilList.size())
+                    if (deformers->parent_part_indices >= 0 && deformers->parent_part_indices < partutilList.size() &&
+                        parentChainValid(deformers->parent_part_indices, partParents))
                         AddEdge(partutilList[deformers->parent_part_indices],treeNode);
                 }
                 deformutilList.push_back(treeNode);//添加所有的变形器
@@ -204,7 +222,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     deformRoot.push_back(deformutilList[i]);
                 }
                 else {
-                    if (defparent >= 0 && defparent < deformutilList.size())
+                    if (defparent >= 0 && defparent < deformutilList.size() && parentChainValid(i, deformerParents))
                         AddEdge(deformutilList[defparent],deformutilList[i]);
                 }
             }
