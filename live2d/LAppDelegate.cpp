@@ -260,18 +260,44 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool Is
 {
     m_IsPrintALl =IsALl;
     m_IsPrintFenzu=IsFenzu;
-    cpsdwriteList = new CPsdWriteList();//要设置默认的帧缓冲，这样读取的时候才会读取默认位置
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
+    if (!Live2DManager || Live2DManager->GetModelNum() == 0) {
+        m_IsPrintALl = false;
+        m_IsPrintFenzu = false;
+        return false;
+    }
     LAppModel* modelr = Live2DManager->GetModel(0);
+    if (!modelr) {
+        m_IsPrintALl = false;
+        m_IsPrintFenzu = false;
+        return false;
+    }
+    if (!modelr->GetModel()) {
+        m_IsPrintALl = false;
+        m_IsPrintFenzu = false;
+        return false;
+    }
     int width =  modelr->GetModel()->GetCanvasWidthPixel();
     int height =  modelr->GetModel()->GetCanvasHeightPixel();
+    if (width <= 0 || height <= 0) {
+        m_IsPrintALl = false;
+        m_IsPrintFenzu = false;
+        return false;
+    }
+    cpsdwriteList = new CPsdWriteList();//要设置默认的帧缓冲，这样读取的时候才会读取默认位置
     QString strhome = modelr->GetModelHomeDir().GetRawString();
     QString strcid =modelr->GetModelSetting()->GetDisplayInfoFileName();
     QString strmoc=modelr->GetModelSetting()->GetModelFileName();
     cpsdwriteList->SetCidName(strhome+"/"+strcid);
     cpsdwriteList->SetMocName(strhome+"/"+strmoc);
     cpsdwriteList->CreatePsd(name,width,height,cubismCompat);
-    coffscreen.CreateOffscreenSurface(width,height);
+    if (!coffscreen.CreateOffscreenSurface(width,height)) {
+        delete cpsdwriteList;
+        cpsdwriteList = nullptr;
+        m_IsPrintALl = false;
+        m_IsPrintFenzu = false;
+        return false;
+    }
     coffscreen.BeginDraw();
     SetIsOffset(true);//开始渲染
     SetOffsetWidthANDHeight(width,height);
