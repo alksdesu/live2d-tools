@@ -698,6 +698,25 @@ void LAppModel::SetExpression(const csmChar* expressionID)
     }
 }
 
+bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QString& path)
+{
+    if (expressionId.isEmpty() || path.isEmpty()) return false;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    const QByteArray data = file.readAll();
+    if (file.error() != QFileDevice::NoError || data.isEmpty() ||
+        data.size() > std::numeric_limits<csmSizeInt>::max()) return false;
+    const QByteArray nameBytes = expressionId.toUtf8();
+    ACubismMotion* replacement = LoadExpression(
+        reinterpret_cast<const csmByte*>(data.constData()),
+        static_cast<csmSizeInt>(data.size()), nameBytes.constData());
+    if (!replacement) return false;
+    const csmString key(nameBytes.constData());
+    if (_expressions[key] != NULL) ACubismMotion::Delete(_expressions[key]);
+    _expressions[key] = replacement;
+    return true;
+}
+
 void LAppModel::SetRandomExpression()
 {
     if (_expressions.GetSize() == 0)

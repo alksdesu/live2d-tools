@@ -31,6 +31,7 @@ public:
     void StopAllMotions();
     Csm::CubismMotionQueueEntryHandle StartRandomMotion(const Csm::csmChar* group, Csm::csmInt32 priority, Csm::ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
     void SetExpression(const Csm::csmChar* expressionID);
+    bool ReloadExpressionFromFile(const QString& expressionId, const QString& path);
     void SetRandomExpression();
     virtual void MotionEventFired(const Live2D::Cubism::Framework::csmString& eventValue);
     virtual Csm::csmBool HitTest(const Csm::csmChar* hitAreaName, Csm::csmFloat32 x, Csm::csmFloat32 y);

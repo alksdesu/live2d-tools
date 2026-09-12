@@ -103,6 +103,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Pose 选择通过运行时 Part 可见性覆盖生效，避免下一帧 Pose 更新覆盖手动切换。
 - Pose 的 Link 关系会随选项一起切换，主 Part 与联动 Part 保持一致。
 - Pose 面板支持组内 Part 添加/删除、Link 保留和 QSaveFile 原子保存，合法的 FadeInTime 等根字段会原样保留。
+- 表情面板支持 exp3 参数值与 Add/Multiply/Overwrite 编辑，保存后热重载当前表达式并校验有限值。
 - 动作预览支持循环播放和 25%–200% 速度控制，速度只作用于动作时间，不改变物理、眨眼和呼吸时间步。
 - WAV 口型驱动对短时间步、空 PCM、非法通道和空目标缓冲安全返回，避免 RMS 除零和空指针。
 - WAV 解析器校验 RIFF/fmt/data chunk 边界、通道、采样率、位深、块对齐和文件大小，截断文件不会越界读取。

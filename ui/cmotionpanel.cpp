@@ -16,6 +16,11 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QSaveFile>
+#include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QTableWidget>
+#include <QHeaderView>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -72,7 +77,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     exprLayout->addWidget(m_exprList);
     QPushButton* applyBtn = new QPushButton("✦ 应用");
     applyBtn->setObjectName("primaryBtn");
+    m_editExpressionButton = new QPushButton(QStringLiteral("编辑表情"), exprWidget);
+    m_editExpressionButton->setEnabled(false);
     exprLayout->addWidget(applyBtn);
+    exprLayout->addWidget(m_editExpressionButton);
     splitter->addWidget(exprWidget);
 
     // Pose 区域
@@ -101,16 +109,21 @@ CMotionPanel::CMotionPanel(QWidget *parent)
 
     connect(applyBtn, &QPushButton::clicked, this, [this](){
         int row = m_exprList->currentRow();
-        if(row >= 0 && row < m_exprNames.size()){
-            emit ApplyExpression(m_exprNames[row]);
+        if(row >= 0 && row < m_exprEntries.size()){
+            emit ApplyExpression(m_exprEntries[row].name);
         }
     });
 
     connect(m_exprList, &QListWidget::itemDoubleClicked, this, [this](){
         int row = m_exprList->currentRow();
-        if(row >= 0 && row < m_exprNames.size()){
-            emit ApplyExpression(m_exprNames[row]);
+        if(row >= 0 && row < m_exprEntries.size()){
+            emit ApplyExpression(m_exprEntries[row].name);
         }
+    });
+
+    connect(m_editExpressionButton, &QPushButton::clicked, this, &CMotionPanel::EditSelectedExpression);
+    connect(m_exprList, &QListWidget::currentRowChanged, this, [this](int row){
+        m_editExpressionButton->setEnabled(row >= 0 && row < m_exprEntries.size());
     });
 
     connect(m_motionSearch, &QLineEdit::textChanged, this, [this](const QString& text){
@@ -173,7 +186,8 @@ void CMotionPanel::BuildLists()
     m_motionList->clear();
     m_exprList->clear();
     m_motionEntries.clear();
-    m_exprNames.clear();
+    m_exprEntries.clear();
+    m_editExpressionButton->setEnabled(false);
 
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(!mgr || mgr->GetModelNum() == 0) return;
@@ -208,11 +222,18 @@ void CMotionPanel::BuildLists()
         const char* name = setting->GetExpressionName(i);
         if (!name || !*name) continue;
         m_exprList->addItem(name);
-        m_exprNames.append(name);
+        ExpressionEntry entry;
+        entry.name = QString::fromUtf8(name);
+        const char* fileName = setting->GetExpressionFileName(i);
+        if (fileName && *fileName) {
+            const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
+            entry.path = QDir(home).filePath(QString::fromUtf8(fileName));
+        }
+        m_exprEntries.append(entry);
     }
 
     if(m_motionEntries.isEmpty()) m_motionList->addItem("(此模型无动作定义)");
-    if(m_exprNames.isEmpty()) m_exprList->addItem("(此模型无表情定义)");
+    if(m_exprEntries.isEmpty()) m_exprList->addItem("(此模型无表情定义)");
 }
 
 bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
@@ -400,4 +421,122 @@ void CMotionPanel::RemovePosePart()
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));
     m_poseDirty = true;
     emit PoseConfigChanged();
+}
+
+void CMotionPanel::EditSelectedExpression()
+{
+    const int expressionIndex = m_exprList->currentRow();
+    if (expressionIndex < 0 || expressionIndex >= m_exprEntries.size()) return;
+    const ExpressionEntry entry = m_exprEntries.at(expressionIndex);
+    if (entry.path.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("编辑表情失败"), QStringLiteral("当前表情没有有效文件路径"));
+        return;
+    }
+
+    QFile file(entry.path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, QStringLiteral("编辑表情失败"), file.errorString());
+        return;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument source = QJsonDocument::fromJson(file.readAll(), &parseError);
+    file.close();
+    if (parseError.error != QJsonParseError::NoError || !source.isObject()) {
+        QMessageBox::warning(this, QStringLiteral("编辑表情失败"),
+                             QStringLiteral("Expression JSON 无效：%1").arg(parseError.errorString()));
+        return;
+    }
+    const QJsonObject root = source.object();
+    const QJsonValue parametersValue = root.value(QStringLiteral("Parameters"));
+    if (!parametersValue.isArray()) {
+        QMessageBox::warning(this, QStringLiteral("编辑表情失败"), QStringLiteral("Expression 缺少 Parameters 数组"));
+        return;
+    }
+    const QJsonArray sourceParameters = parametersValue.toArray();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("编辑表情：%1").arg(entry.name));
+    dialog.resize(560, 420);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* table = new QTableWidget(&dialog);
+    table->setColumnCount(3);
+    table->setHorizontalHeaderLabels({QStringLiteral("参数 ID"), QStringLiteral("值"), QStringLiteral("Blend")});
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    table->verticalHeader()->setVisible(false);
+    table->setRowCount(sourceParameters.size());
+    const QStringList blendTypes = {QStringLiteral("Add"), QStringLiteral("Multiply"), QStringLiteral("Overwrite")};
+    for (int row = 0; row < sourceParameters.size(); ++row) {
+        const QJsonValue parameterValue = sourceParameters.at(row);
+        if (!parameterValue.isObject()) {
+            QMessageBox::warning(this, QStringLiteral("编辑表情失败"),
+                                 QStringLiteral("Expression 参数 %1 不是对象").arg(row));
+            return;
+        }
+        const QJsonObject parameter = parameterValue.toObject();
+        const QString id = parameter.value(QStringLiteral("Id")).toString();
+        const QJsonValue value = parameter.value(QStringLiteral("Value"));
+        if (id.isEmpty() || !value.isDouble() || !std::isfinite(value.toDouble())) {
+            QMessageBox::warning(this, QStringLiteral("编辑表情失败"),
+                                 QStringLiteral("Expression 参数 %1 无效").arg(row));
+            return;
+        }
+        auto* idItem = new QTableWidgetItem(id);
+        idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
+        table->setItem(row, 0, idItem);
+        table->setItem(row, 1, new QTableWidgetItem(QString::number(value.toDouble(), 'g', 9)));
+        auto* blend = new QComboBox(table);
+        const QString blendType = parameter.value(QStringLiteral("Blend")).toString(QStringLiteral("Add"));
+        if (!blendTypes.contains(blendType)) {
+            QMessageBox::warning(this, QStringLiteral("编辑表情失败"),
+                                 QStringLiteral("Expression 参数 %1 的 Blend 无效").arg(row));
+            return;
+        }
+        blend->addItems(blendTypes);
+        blend->setCurrentText(blendType);
+        table->setCellWidget(row, 2, blend);
+    }
+    layout->addWidget(table);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QJsonArray parameters = sourceParameters;
+    QSet<QString> ids;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        const QString id = table->item(row, 0) ? table->item(row, 0)->text().trimmed() : QString();
+        bool ok = false;
+        const double value = table->item(row, 1) ? table->item(row, 1)->text().toDouble(&ok) : 0.0;
+        auto* blend = qobject_cast<QComboBox*>(table->cellWidget(row, 2));
+        if (id.isEmpty() || ids.contains(id) || !ok || !std::isfinite(value) || !blend) {
+            QMessageBox::warning(this, QStringLiteral("保存表情失败"),
+                                 QStringLiteral("第 %1 行的参数值或 ID 无效").arg(row + 1));
+            return;
+        }
+        ids.insert(id);
+        QJsonObject parameter = parameters.at(row).toObject();
+        parameter.insert(QStringLiteral("Id"), id);
+        parameter.insert(QStringLiteral("Value"), value);
+        parameter.insert(QStringLiteral("Blend"), blend->currentText());
+        parameters[row] = parameter;
+    }
+
+    QJsonObject updated = root;
+    updated.insert(QStringLiteral("Parameters"), parameters);
+    const QByteArray data = QJsonDocument(updated).toJson(QJsonDocument::Indented);
+    QSaveFile output(entry.path);
+    if (!output.open(QIODevice::WriteOnly) || output.write(data) != data.size() || !output.commit()) {
+        QMessageBox::warning(this, QStringLiteral("保存表情失败"), output.errorString());
+        return;
+    }
+
+    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+    LAppModel* model = mgr && mgr->GetModelNum() > 0 ? mgr->GetModel(0) : nullptr;
+    if (!model || !model->ReloadExpressionFromFile(entry.name, entry.path)) {
+        QMessageBox::warning(this, QStringLiteral("表情已保存但运行时刷新失败"),
+                             QStringLiteral("下次重新打开模型后会读取新配置"));
+    }
 }

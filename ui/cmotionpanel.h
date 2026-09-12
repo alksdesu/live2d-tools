@@ -44,6 +44,7 @@ private:
     QListWidget* m_exprList;
     QLineEdit* m_motionSearch = nullptr;
     QLineEdit* m_exprSearch = nullptr;
+    QPushButton* m_editExpressionButton = nullptr;
     QCheckBox* m_eyeBlinkCb;
     QCheckBox* m_breathCb;
     QCheckBox* m_mouseFollowCb;
@@ -58,7 +59,11 @@ private:
         int no;
     };
     QVector<MotionEntry> m_motionEntries;
-    QVector<QString> m_exprNames;
+    struct ExpressionEntry {
+        QString name;
+        QString path;
+    };
+    QVector<ExpressionEntry> m_exprEntries;
 
     // Pose 组数据：每组是一个互斥 Part 列表
     struct PoseGroup {
@@ -77,6 +82,7 @@ private:
 
     void AddPosePart();
     void RemovePosePart();
+    void EditSelectedExpression();
 };
 
 #endif // CMOTIONPANEL_H
