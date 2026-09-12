@@ -629,6 +629,14 @@ const csmInt32* CubismModel::GetDrawableDrawOrders() const
 
 QVector<int> CubismModel::GetSortedDrawableIndices(const QHash<QString, int>& overrides) const
 {
+    return GetSortedDrawableIndices(overrides, {}, {});
+}
+
+QVector<int> CubismModel::GetSortedDrawableIndices(
+    const QHash<QString, int>& overrides,
+    const QHash<QString, int>& groupIndices,
+    const QVector<live2dstruct::CDrawableOrderGroup>& groups) const
+{
     const csmInt32* drawOrders = GetDrawableDrawOrders();
     const csmInt32* renderOrders = GetDrawableRenderOrders();
     QVector<live2dstruct::CDrawableOrder> entries;
@@ -640,7 +648,8 @@ QVector<int> CubismModel::GetSortedDrawableIndices(const QHash<QString, int>& ov
                         drawOrders ? drawOrders[index] : 0,
                         renderOrders ? renderOrders[index] : index});
     }
-    return live2dstruct::ResolveDrawableOrder(entries, drawOrders ? overrides : QHash<QString, int>());
+    return live2dstruct::ResolveDrawableOrder(entries, drawOrders ? overrides : QHash<QString, int>(),
+                                              groupIndices, groups);
 }
 
 csmInt32 CubismModel::GetDrawableCount() const

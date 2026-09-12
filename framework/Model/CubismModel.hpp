@@ -12,6 +12,9 @@
 #include <QMap>
 #include <QHash>
 
+namespace live2dstruct {
+struct CDrawableOrderGroup;
+}
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -118,6 +121,9 @@ public:
     const csmInt32*     GetDrawableRenderOrders() const;
     const csmInt32*     GetDrawableDrawOrders() const;
     QVector<int> GetSortedDrawableIndices(const QHash<QString, int>& overrides = {}) const;
+    QVector<int> GetSortedDrawableIndices(const QHash<QString, int>& overrides,
+                                         const QHash<QString, int>& groupIndices,
+                                         const QVector<live2dstruct::CDrawableOrderGroup>& groups) const;
     csmInt32            GetDrawableTextureIndices(csmInt32 drawableIndex) const;
     csmInt32            GetDrawableTextureIndex(csmInt32 drawableIndex) const;
     csmInt32            GetDrawableVertexIndexCount(csmInt32 drawableIndex) const;

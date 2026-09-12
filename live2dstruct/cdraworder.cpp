@@ -4,12 +4,16 @@
 namespace live2dstruct {
 
 QVector<int> ResolveDrawableOrder(const QVector<CDrawableOrder>& drawables,
-                                  const QHash<QString, int>& overrides)
+                                  const QHash<QString, int>& overrides,
+                                  const QHash<QString, int>& groupIndices,
+                                  const QVector<CDrawableOrderGroup>& groups)
 {
     QVector<int> indices;
     QVector<int> effectiveOrders;
+    QVector<int> groupOrders;
     indices.reserve(drawables.size());
     effectiveOrders.reserve(drawables.size());
+    groupOrders.reserve(drawables.size());
     bool hasEdits = false;
     for (int i = 0; i < drawables.size(); ++i) {
         indices.append(i);
@@ -17,12 +21,29 @@ QVector<int> ResolveDrawableOrder(const QVector<CDrawableOrder>& drawables,
         const int order = overrideIt == overrides.cend()
             ? drawables[i].drawOrder : qBound(0, overrideIt.value(), 1000);
         effectiveOrders.append(order);
+        groupOrders.append(groupIndices.value(drawables[i].id, -1));
         hasEdits = hasEdits || order != drawables[i].drawOrder;
     }
 
     std::stable_sort(indices.begin(), indices.end(), [&](int left, int right) {
-        if (hasEdits && effectiveOrders[left] != effectiveOrders[right])
-            return effectiveOrders[left] < effectiveOrders[right];
+        if (hasEdits) {
+            const int leftGroup = groupOrders[left];
+            const int rightGroup = groupOrders[right];
+            const bool leftGrouped = leftGroup >= 0 && leftGroup < groups.size();
+            const bool rightGrouped = rightGroup >= 0 && rightGroup < groups.size();
+            if (leftGrouped || rightGrouped) {
+                const auto groupAnchor = [&](int group) {
+                    return groups[group].minimumDrawOrder;
+                };
+                const int leftAnchor = leftGrouped ? groupAnchor(leftGroup) : effectiveOrders[left];
+                const int rightAnchor = rightGrouped ? groupAnchor(rightGroup) : effectiveOrders[right];
+                if (leftAnchor != rightAnchor) return leftAnchor < rightAnchor;
+                if (leftGrouped != rightGrouped) return leftGrouped;
+                if (leftGrouped && leftGroup != rightGroup) return leftGroup < rightGroup;
+            }
+            if (effectiveOrders[left] != effectiveOrders[right])
+                return effectiveOrders[left] < effectiveOrders[right];
+        }
         return drawables[left].renderOrder < drawables[right].renderOrder;
     });
     return indices;

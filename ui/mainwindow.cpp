@@ -719,6 +719,19 @@ void MainWindow::RestDock(const QString &name)
 
     m_openglwindows = new OpengGlForm();
     m_openglwindows->SetInitOpenName(name);
+    QHash<QString, int> groupIndices;
+    QVector<live2dstruct::CDrawableOrderGroup> groups;
+    groups.reserve(m_document.DrawOrderGroups().size());
+    for (int groupIndex = 0; groupIndex < m_document.DrawOrderGroups().size(); ++groupIndex) {
+        const auto& sourceGroup = m_document.DrawOrderGroups()[groupIndex];
+        groups.append({sourceGroup.minimumDrawOrder, sourceGroup.maximumDrawOrder});
+        if (!sourceGroup.objectsValid || sourceGroup.minimumDrawOrder != sourceGroup.maximumDrawOrder) continue;
+        for (const auto& object : sourceGroup.objects) {
+            if (object.type != 0 || object.index < 0 || object.index >= m_document.Drawables().size()) continue;
+            groupIndices.insert(m_document.Drawables()[object.index].id, groupIndex);
+        }
+    }
+    m_openglwindows->SetDrawOrderGroups(groupIndices, groups);
 
 
     m_openglwindows->setFocusPolicy(Qt::StrongFocus);

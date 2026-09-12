@@ -381,7 +381,8 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     QHash<QString, const ExtractedLayer*> layersById;
     for (const ExtractedLayer& layer : layers) layersById.insert(layer.name, &layer);
     QVector<int> sortedIndices;
-    for (int index : runtimeModel->GetSortedDrawableIndices(m_drawableDrawOrderOverrides)) {
+    for (int index : runtimeModel->GetSortedDrawableIndices(
+             m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups)) {
         const auto id = runtimeModel->GetDrawableId(index);
         if (id && layersById.contains(QString::fromUtf8(id->GetString().GetRawString()))) sortedIndices.append(index);
     }

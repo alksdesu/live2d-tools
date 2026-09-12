@@ -246,6 +246,15 @@ void OpengGlForm::PublishRenderOrder(const QStringList& names)
     emit RenderOrderChanged(names);
 }
 
+void OpengGlForm::SetDrawOrderGroups(
+    const QHash<QString, int>& groupIndices,
+    const QVector<live2dstruct::CDrawableOrderGroup>& groups)
+{
+    auto* delegate = LAppDelegate::GetInstance();
+    delegate->m_drawableOrderGroupIndices = groupIndices;
+    delegate->m_drawOrderGroups = groups;
+}
+
 void OpengGlForm::do_SetDrawableOpacity(const QString& name, float opacity)
 {
     if (name.isEmpty() || !std::isfinite(opacity)) return;

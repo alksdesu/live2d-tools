@@ -15,8 +15,16 @@ struct CDrawableOrder
     int renderOrder = 0;
 };
 
+struct CDrawableOrderGroup
+{
+    int minimumDrawOrder = 0;
+    int maximumDrawOrder = 0;
+};
+
 QVector<int> ResolveDrawableOrder(const QVector<CDrawableOrder>& drawables,
-                                  const QHash<QString, int>& overrides = {});
+                                  const QHash<QString, int>& overrides = {},
+                                  const QHash<QString, int>& groupIndices = {},
+                                  const QVector<CDrawableOrderGroup>& groups = {});
 
 struct CLayerOrderItem
 {

@@ -15,6 +15,7 @@
 #include "opengl/coffscreenlive.h"
 #include <QCoreApplication>
 #include "opengl/cpsdwritelist.h"
+#include "live2dstruct/cdraworder.h"
 #include <QSet>
 #include <QHash>
 
@@ -60,6 +61,8 @@ public:
     QSet<QString> m_hiddenDrawables;
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
+    QHash<QString, int> m_drawableOrderGroupIndices;
+    QVector<live2dstruct::CDrawableOrderGroup> m_drawOrderGroups;
 
     // 背景色
     float m_clearColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};

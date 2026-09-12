@@ -559,7 +559,9 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
 
     const csmInt32 drawableCount = GetModel()->GetDrawableCount();
     const QVector<int> drawableOrder = GetModel()->GetSortedDrawableIndices(
-        LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides);
+        LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides,
+        LAppDelegate::GetInstance()->m_drawableOrderGroupIndices,
+        LAppDelegate::GetInstance()->m_drawOrderGroups);
     _sortedDrawableIndexList.Resize(drawableCount);
     for (csmInt32 i = 0; i < drawableCount; ++i) _sortedDrawableIndexList[i] = drawableOrder[i];
     QStringList names;

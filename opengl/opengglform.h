@@ -69,6 +69,8 @@ public slots:
     void do_ResetView();
     void SetViewState(float scale, const QVector2D& position);
     void PublishRenderOrder(const QStringList& names);
+    void SetDrawOrderGroups(const QHash<QString, int>& groupIndices,
+                            const QVector<live2dstruct::CDrawableOrderGroup>& groups);
 
 
 signals:
