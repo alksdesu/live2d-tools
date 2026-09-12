@@ -6,7 +6,6 @@
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
-#include <functional>
 
 namespace live2dstruct {
 
@@ -251,18 +250,6 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
 
     QSet<QString> partIds;
     QVector<int> partStates(m_parts.size(), 0);
-    std::function<void(int)> visitPart = [&](int index) {
-        if (!inRange(index, m_parts.size())) return;
-        if (partStates[index] == 1) {
-            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("part_cycle"),
-                                 QStringLiteral("Part 父子关系存在循环"), index});
-            return;
-        }
-        if (partStates[index] == 2) return;
-        partStates[index] = 1;
-        visitPart(m_parts[index].parentIndex);
-        partStates[index] = 2;
-    };
     for (int i = 0; i < m_parts.size(); ++i) {
         const CModelPart& part = m_parts[i];
         if (part.id.isEmpty() || partIds.contains(part.id)) {
@@ -274,34 +261,47 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("part_parent"),
                                  QStringLiteral("Part 父索引越界"), i});
         }
-        visitPart(i);
+        if (partStates[i] != 0) continue;
+        QVector<int> path;
+        int current = i;
+        while (inRange(current, m_parts.size()) && partStates[current] == 0) {
+            partStates[current] = 1;
+            path.append(current);
+            current = m_parts[current].parentIndex;
+        }
+        if (inRange(current, m_parts.size()) && partStates[current] == 1) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("part_cycle"),
+                                 QStringLiteral("Part 父子关系存在循环"), current});
+        }
+        for (int member : path) partStates[member] = 2;
     }
 
     QVector<int> states(m_deformers.size(), 0);
-    std::function<void(int)> visit = [&](int index) {
-        if (!inRange(index, m_deformers.size())) return;
-        if (states[index] == 1) {
-            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_cycle"),
-                                 QStringLiteral("Deformer 父子关系存在循环"), index});
-            return;
-        }
-        if (states[index] == 2) return;
-        states[index] = 1;
-        const int parent = m_deformers[index].parentDeformerIndex;
-        if (parent != -1 && !inRange(parent, m_deformers.size())) {
-            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent"),
-                                 QStringLiteral("Deformer 父索引越界"), index});
-        } else {
-            visit(parent);
-        }
-        states[index] = 2;
-    };
     for (int i = 0; i < m_deformers.size(); ++i) {
         if (m_deformers[i].parentPartIndex != -1 && !inRange(m_deformers[i].parentPartIndex, m_parts.size())) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_part"),
                                  QStringLiteral("Deformer 所属 Part 越界"), i});
         }
-        visit(i);
+        if (states[i] != 0) continue;
+        QVector<int> path;
+        int current = i;
+        while (inRange(current, m_deformers.size()) && states[current] == 0) {
+            states[current] = 1;
+            path.append(current);
+            const int parent = m_deformers[current].parentDeformerIndex;
+            if (parent != -1 && !inRange(parent, m_deformers.size())) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent"),
+                                     QStringLiteral("Deformer 父索引越界"), current});
+                current = -1;
+                break;
+            }
+            current = parent;
+        }
+        if (inRange(current, m_deformers.size()) && states[current] == 1) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_cycle"),
+                                 QStringLiteral("Deformer 父子关系存在循环"), current});
+        }
+        for (int member : path) states[member] = 2;
     }
 
     QSet<QString> drawableIds;
