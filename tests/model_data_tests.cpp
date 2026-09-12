@@ -133,6 +133,41 @@ private slots:
         QCOMPARE(loaded.drawableDrawOrder, source.drawableDrawOrder);
     }
 
+    void sessionRejectsInvalidValues()
+    {
+        live2dstruct::CModelSession session;
+        QString error;
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"parameters":{"ParamAngleX":"bad"}})", &session, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableOpacity":{"Body":2}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableDrawOrder":{"Body":1.5}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"view":{"scale":0}})", &session, &error));
+        QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &session, &error));
+        QCOMPARE(session.viewScale, 1.0f);
+    }
+
+    void sessionSaveFailureLeavesExistingFile()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath(QStringLiteral("state.json"));
+        QFile existing(path);
+        QVERIFY(existing.open(QIODevice::WriteOnly));
+        QVERIFY(existing.write("old-state") > 0);
+        existing.close();
+
+        live2dstruct::CModelSession session;
+        session.sourceMoc = QStringLiteral("/tmp/model.moc3");
+        QString error;
+        QVERIFY(!session.Save(temp.path(), &error));
+        QVERIFY(existing.open(QIODevice::ReadOnly));
+        QCOMPARE(existing.readAll(), QByteArray("old-state"));
+    }
+
 };
 
 QTEST_GUILESS_MAIN(ModelDataTests)

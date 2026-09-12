@@ -1,8 +1,10 @@
 #include "cmodelsession.h"
 
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <cmath>
 
 namespace live2dstruct {
 
@@ -10,6 +12,28 @@ namespace {
 void setError(QString* error, const QString& value)
 {
     if (error) *error = value;
+}
+
+bool readObject(const QJsonObject& root, const QString& key, QJsonObject* object, QString* error)
+{
+    const QJsonValue value = root.value(key);
+    if (value.isUndefined()) {
+        *object = {};
+        return true;
+    }
+    if (!value.isObject()) {
+        setError(error, QStringLiteral("会话字段类型错误：%1").arg(key));
+        return false;
+    }
+    *object = value.toObject();
+    return true;
+}
+
+bool readNumber(const QJsonValue& value, double* number)
+{
+    if (!value.isDouble()) return false;
+    *number = value.toDouble();
+    return std::isfinite(*number);
 }
 }
 
@@ -51,38 +75,96 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const QJsonObject root = document.object();
-    const int parsedVersion = root.value(QStringLiteral("version")).toInt(1);
-    if (parsedVersion < 1 || parsedVersion > 1) {
+    double versionValue = 1.0;
+    if (!root.value(QStringLiteral("version")).isUndefined() &&
+        (!readNumber(root.value(QStringLiteral("version")), &versionValue) || std::floor(versionValue) != versionValue)) {
+        setError(error, QStringLiteral("会话版本不是整数"));
+        return false;
+    }
+    const int parsedVersion = static_cast<int>(versionValue);
+    if (parsedVersion != 1) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
-    result.sourceMoc = root.value(QStringLiteral("sourceMoc")).toString();
-    const QJsonObject parameterObject = root.value(QStringLiteral("parameters")).toObject();
-    for (const QString& key : parameterObject.keys()) result.parameters.insert(key, static_cast<float>(parameterObject.value(key).toDouble()));
-    const QJsonObject visibilityObject = root.value(QStringLiteral("visibility")).toObject();
-    for (const QString& key : visibilityObject.keys()) result.visibility.insert(key, visibilityObject.value(key).toBool());
-    const QJsonObject opacityObject = root.value(QStringLiteral("drawableOpacity")).toObject();
-    for (const QString& key : opacityObject.keys()) result.drawableOpacity.insert(key, static_cast<float>(opacityObject.value(key).toDouble()));
-    const QJsonObject drawOrderObject = root.value(QStringLiteral("drawableDrawOrder")).toObject();
-    for (const QString& key : drawOrderObject.keys()) result.drawableDrawOrder.insert(key, drawOrderObject.value(key).toInt());
-    const QJsonObject view = root.value(QStringLiteral("view")).toObject();
-    result.viewScale = static_cast<float>(view.value(QStringLiteral("scale")).toDouble(1.0));
-    result.viewPosition = QPointF(view.value(QStringLiteral("x")).toDouble(), view.value(QStringLiteral("y")).toDouble());
+    const QJsonValue sourceMoc = root.value(QStringLiteral("sourceMoc"));
+    if (!sourceMoc.isUndefined() && !sourceMoc.isString()) {
+        setError(error, QStringLiteral("会话字段类型错误：sourceMoc"));
+        return false;
+    }
+    result.sourceMoc = sourceMoc.toString();
+
+    QJsonObject parameterObject;
+    QJsonObject visibilityObject;
+    QJsonObject opacityObject;
+    QJsonObject drawOrderObject;
+    if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
+        !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
+        !readObject(root, QStringLiteral("drawableOpacity"), &opacityObject, error) ||
+        !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error)) return false;
+    for (const QString& key : parameterObject.keys()) {
+        double value = 0.0;
+        if (!readNumber(parameterObject.value(key), &value)) {
+            setError(error, QStringLiteral("参数值不是有限数字：%1").arg(key));
+            return false;
+        }
+        result.parameters.insert(key, static_cast<float>(value));
+    }
+    for (const QString& key : visibilityObject.keys()) {
+        if (!visibilityObject.value(key).isBool()) {
+            setError(error, QStringLiteral("可见性值类型错误：%1").arg(key));
+            return false;
+        }
+        result.visibility.insert(key, visibilityObject.value(key).toBool());
+    }
+    for (const QString& key : opacityObject.keys()) {
+        double value = 0.0;
+        if (!readNumber(opacityObject.value(key), &value) || value < 0.0 || value > 1.0) {
+            setError(error, QStringLiteral("透明度超出范围：%1").arg(key));
+            return false;
+        }
+        result.drawableOpacity.insert(key, static_cast<float>(value));
+    }
+    for (const QString& key : drawOrderObject.keys()) {
+        double value = 0.0;
+        if (!readNumber(drawOrderObject.value(key), &value) || std::floor(value) != value || value < 0.0 || value > 1000.0) {
+            setError(error, QStringLiteral("绘制顺序超出范围：%1").arg(key));
+            return false;
+        }
+        result.drawableDrawOrder.insert(key, static_cast<int>(value));
+    }
+    QJsonObject view;
+    if (!readObject(root, QStringLiteral("view"), &view, error)) return false;
+    double scale = 1.0;
+    if (!view.value(QStringLiteral("scale")).isUndefined() &&
+        (!readNumber(view.value(QStringLiteral("scale")), &scale) || scale <= 0.0)) {
+        setError(error, QStringLiteral("视图缩放值无效"));
+        return false;
+    }
+    double x = 0.0;
+    double y = 0.0;
+    if ((!view.value(QStringLiteral("x")).isUndefined() && !readNumber(view.value(QStringLiteral("x")), &x)) ||
+        (!view.value(QStringLiteral("y")).isUndefined() && !readNumber(view.value(QStringLiteral("y")), &y))) {
+        setError(error, QStringLiteral("视图位置值无效"));
+        return false;
+    }
+    result.viewScale = static_cast<float>(scale);
+    result.viewPosition = QPointF(x, y);
     *session = result;
     return true;
 }
 
 bool CModelSession::Save(const QString& path, QString* error) const
 {
-    QFile file(path);
+    QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         setError(error, QStringLiteral("无法写入会话：%1").arg(path));
         return false;
     }
-    if (file.write(ToJson()) < 0) {
+    const QByteArray data = ToJson();
+    if (file.write(data) != data.size() || !file.commit()) {
         setError(error, QStringLiteral("写入会话失败：%1").arg(path));
         return false;
     }
@@ -96,7 +178,12 @@ bool CModelSession::Load(const QString& path, CModelSession* session, QString* e
         setError(error, QStringLiteral("无法读取会话：%1").arg(path));
         return false;
     }
-    return FromJson(file.readAll(), session, error);
+    const QByteArray data = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        setError(error, QStringLiteral("读取会话失败：%1").arg(path));
+        return false;
+    }
+    return FromJson(data, session, error);
 }
 
 }
