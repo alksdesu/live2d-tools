@@ -172,6 +172,12 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         float minVal = cubismModel->GetParameterMinimumValue(modelIdx);
         float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
         float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
+        if (!std::isfinite(minVal) || !std::isfinite(maxVal) || minVal > maxVal) {
+            minVal = 0.0f;
+            maxVal = 1.0f;
+        }
+        if (!std::isfinite(defVal)) defVal = minVal;
+        defVal = qBound(minVal, defVal, maxVal);
         float initialVal = qBound(minVal, cubismModel->GetParameterValue(modelIdx), maxVal);
         if (m_document) {
             if (m_document->ParameterValues().contains(paramId)) initialVal = m_document->ParameterValue(paramId);
