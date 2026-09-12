@@ -12,6 +12,7 @@
 #include <QMap>
 
 class CCidJson;
+class QToolButton;
 namespace live2dstruct { class CModelDocument; }
 
 class CParamPanel : public QDockWidget
@@ -46,6 +47,7 @@ private:
         QWidget* widget = nullptr;
         QSlider* slider;
         QDoubleSpinBox* spinBox;
+        QToolButton* resetButton;
         QLabel* valueLabel;
         float minVal;
         float maxVal;

@@ -216,10 +216,17 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         spinBox->setFixedWidth(92);
         row->addWidget(spinBox);
 
+        QToolButton* resetButton = new QToolButton(rowWidget);
+        resetButton->setText(QStringLiteral("↺"));
+        resetButton->setToolTip(QStringLiteral("恢复默认值 %1").arg(QString::number(defVal, 'f', 3)));
+        resetButton->setFixedWidth(28);
+        row->addWidget(resetButton);
+
         ParamRow pr;
         pr.widget = rowWidget;
         pr.slider = slider;
         pr.spinBox = spinBox;
+        pr.resetButton = resetButton;
         pr.valueLabel = nullptr;
         pr.minVal = minVal;
         pr.maxVal = maxVal;
@@ -230,6 +237,19 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         m_lastValues.insert(paramId, initialVal);
 
         int idx = m_rows.size() - 1;
+        connect(resetButton, &QToolButton::clicked, this, [this, idx](){
+            if (idx < 0 || idx >= m_rows.size()) return;
+            ParamRow& r = m_rows[idx];
+            const int sliderValue = r.maxVal > r.minVal
+                ? qBound(0, qRound((r.defaultVal - r.minVal) * 1000.0f / (r.maxVal - r.minVal)), 1000)
+                : 0;
+            QSignalBlocker sliderBlocker(r.slider);
+            QSignalBlocker spinBlocker(r.spinBox);
+            r.slider->setValue(sliderValue);
+            r.spinBox->setValue(r.defaultVal);
+            m_userLocked.insert(idx);
+            ApplyValue(idx, r.defaultVal, true);
+        });
         connect(slider, &QSlider::sliderPressed, this, [this, idx](){
             m_userDragging.insert(idx);
             m_dragStarts.insert(idx, m_lastValues.value(m_rows[idx].paramId));
