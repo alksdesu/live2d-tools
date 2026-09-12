@@ -8,7 +8,9 @@
 #include "LAppLive2DManager.hpp"
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef Q_OS_WIN
 #include <io.h>
+#endif
 
 #include <framework/Rendering/CubismRenderer.hpp>
 #include "LAppPal.hpp"
@@ -119,8 +121,7 @@ void LAppLive2DManager::OnDrag(csmFloat32 x, csmFloat32 y) const
     for (csmUint32 i = 0; i < _models.GetSize(); i++)
     {
         LAppModel* model = GetModel(i);
-
-        model->SetDragging(x, y);
+        if (model) model->SetDragging(x, y);
     }
 }
 
@@ -133,6 +134,7 @@ void LAppLive2DManager::OnTap(csmFloat32 x, csmFloat32 y)
 
     for (csmUint32 i = 0; i < _models.GetSize(); i++)
     {
+        if (!_models[i]) continue;
         if (_models[i]->HitTest(HitAreaNameHead, x, y))
         {
             if (DebugLogEnable)
@@ -156,25 +158,29 @@ void LAppLive2DManager::OnUpdate(CubismMatrix44& projection) const
 {
 
     csmUint32 modelCount = _models.GetSize();
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
     for (csmUint32 i = 0; i < modelCount; ++i)
     {
         LAppModel* model = GetModel(i);
-        LAppDelegate::GetInstance()->GetView()->PreModelDraw(*model);//设置离屏渲染缓冲帧
+        if (!model) continue;
+        if (view) view->PreModelDraw(*model);//设置离屏渲染缓冲帧
         model->Update();
         model->Draw(projection);
-        LAppDelegate::GetInstance()->GetView()->PostModelDraw(*model);//删除离屏渲染缓冲区
+        if (view) view->PostModelDraw(*model);//删除离屏渲染缓冲区
 
     }
 }
 
 void LAppLive2DManager::NextScene()
 {
+    if (GetModelDirSize() <= 0) return;
     csmInt32 no = (_sceneIndex + 1) % GetModelDirSize();
     ChangeScene(no);
 }
 
 void LAppLive2DManager::ChangeScene(Csm::csmInt32 index)
 {
+    if (index < 0 || index >= GetModelDirSize()) return;
     _sceneIndex = index;
     if (DebugLogEnable)
     {
@@ -220,11 +226,12 @@ void LAppLive2DManager::ChangeScene(Csm::csmInt32 index)
         _models[1]->GetModelMatrix()->TranslateX(0.2f);
 #endif
 
-        LAppDelegate::GetInstance()->GetView()->SwitchRenderingTarget(useRenderTarget);
+        LAppView* view = LAppDelegate::GetInstance()->GetView();
+        if (view) view->SwitchRenderingTarget(useRenderTarget);
 
         // 別レンダリング先を選択した際の背景クリア色
         float clearColor[3] = { 1.0f, 1.0f, 1.0f };
-        LAppDelegate::GetInstance()->GetView()->SetRenderTargetClearColor(clearColor[0], clearColor[1], clearColor[2]);
+        if (view) view->SetRenderTargetClearColor(clearColor[0], clearColor[1], clearColor[2]);
     }
 }
 
@@ -236,7 +243,7 @@ void LAppLive2DManager::ChangeSceneFileName(const QString &modelJsonName)
         return;
     }
     QString modelPath = fileInfo.absolutePath()+"/"; // 获取绝对路径
-    qDebug(modelPath.toStdString().c_str());
+    qDebug().noquote() << modelPath;
     QString fileName =    fileInfo.fileName();
 
     ReleaseAllModel();
@@ -244,9 +251,10 @@ void LAppLive2DManager::ChangeSceneFileName(const QString &modelJsonName)
     _models[0]->LoadAssets(modelPath.toStdString().c_str(), fileName.toStdString().c_str());
 
     LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_None;
-    LAppDelegate::GetInstance()->GetView()->SwitchRenderingTarget(useRenderTarget);
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if (view) view->SwitchRenderingTarget(useRenderTarget);
     float clearColor[3] = { 1.0f, 1.0f, 1.0f };
-    LAppDelegate::GetInstance()->GetView()->SetRenderTargetClearColor(clearColor[0], clearColor[1], clearColor[2]);
+    if (view) view->SetRenderTargetClearColor(clearColor[0], clearColor[1], clearColor[2]);
 }
 
 csmUint32 LAppLive2DManager::GetModelNum() const
@@ -256,6 +264,7 @@ csmUint32 LAppLive2DManager::GetModelNum() const
 
 void LAppLive2DManager::SetViewMatrix(CubismMatrix44* m)
 {
+    if (!_viewMatrix || !m) return;
     for (int i = 0; i < 16; i++) {
         _viewMatrix->GetArray()[i] = m->GetArray()[i];
     }
