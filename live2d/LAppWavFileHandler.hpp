@@ -148,7 +148,13 @@ private:
          * @brief コンストラクタ
          */
         ByteReader() : _fileByte(NULL), _fileSize(0), _readOffset(0)
+        , _valid(true)
         { }
+
+        bool CanRead(Csm::csmUint32 size) const
+        {
+            return _readOffset <= _fileSize && size <= _fileSize - _readOffset;
+        }
 
         /**
          * @brief 8ビット読み込み
@@ -156,6 +162,7 @@ private:
          */
         Csm::csmUint8 Get8()
         {
+            if (!CanRead(1)) { _valid = false; return 0; }
             const Csm::csmUint8 ret = _fileByte[_readOffset];
             _readOffset++;
             return ret;
@@ -167,6 +174,7 @@ private:
          */
         Csm::csmUint16 Get16LittleEndian()
         {
+            if (!CanRead(2)) { _valid = false; return 0; }
             const Csm::csmUint16 ret = (_fileByte[_readOffset + 1] << 8) | _fileByte[_readOffset];
             _readOffset += 2;
             return ret;
@@ -178,6 +186,7 @@ private:
          */
         Csm::csmUint32 Get24LittleEndian()
         {
+            if (!CanRead(3)) { _valid = false; return 0; }
             const Csm::csmUint32 ret =
                 (_fileByte[_readOffset + 2] << 16) | (_fileByte[_readOffset + 1] << 8)
                 | _fileByte[_readOffset];
@@ -191,6 +200,7 @@ private:
          */
         Csm::csmUint32 Get32LittleEndian()
         {
+            if (!CanRead(4)) { _valid = false; return 0; }
             const Csm::csmUint32 ret =
                 (_fileByte[_readOffset + 3] << 24) | (_fileByte[_readOffset + 2] << 16)
                 | (_fileByte[_readOffset + 1] << 8) | _fileByte[_readOffset];
@@ -208,8 +218,9 @@ private:
         {
             Csm::csmChar getSignature[4] = { 0, 0, 0, 0 };
             const Csm::csmChar* referenceString = reference.GetRawString();
-            if (reference.GetLength() != 4)
+            if (reference.GetLength() != 4 || !CanRead(4))
             {
+                _valid = false;
                 return false;
             }
             for (Csm::csmUint32 signatureOffset = 0; signatureOffset < 4; signatureOffset++)
@@ -223,6 +234,7 @@ private:
         Csm::csmByte* _fileByte; ///< ロードしたファイルのバイト列
         Csm::csmSizeInt _fileSize; ///< ファイルサイズ
         Csm::csmUint32 _readOffset; ///< ファイル参照位置
+        Csm::csmBool _valid;
     } _byteReader;
 
     Csm::csmByte* _rawData; ///< 正規化される前のバイト列
