@@ -211,16 +211,22 @@ void CMotionPanel::BuildPoseGroups(const QString& poseJsonPath)
         QComboBox* combo = new QComboBox();
         for(int i = 0; i < group.size(); i++){
             QString partId = group[i].toObject()["Id"].toString();
+            if(partId.isEmpty()) continue;
             pg.partIds << partId;
             combo->addItem(QString("组%1: %2").arg(g + 1).arg(partId), partId);
         }
+        if (pg.partIds.size() < 2) {
+            delete combo;
+            continue;
+        }
         pg.combo = combo;
         m_poseGroups.append(pg);
+        const int poseIndex = m_poseGroups.size() - 1;
         layout->addWidget(combo);
 
-        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, g](int index){
-            if(g >= m_poseGroups.size()) return;
-            const PoseGroup& pg = m_poseGroups[g];
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, poseIndex](int index){
+            if(poseIndex >= m_poseGroups.size()) return;
+            const PoseGroup& pg = m_poseGroups[poseIndex];
             QStringList hideIds;
             QString showId;
             for(int i = 0; i < pg.partIds.size(); i++){
