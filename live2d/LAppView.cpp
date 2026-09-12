@@ -70,6 +70,7 @@ void LAppView::Initialize()
 void LAppView::Render()
 {
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
+    if (!Live2DManager) return;
     Live2DManager->SetViewMatrix(_viewMatrix);//这里是视图模型
     int modelCount = Live2DManager->GetModelNum();
     if(modelCount > 0){
@@ -101,7 +102,9 @@ void LAppView::InitializeSprite()
     int width, height;
     width = LAppDelegate::GetInstance()->width();
     height = LAppDelegate::GetInstance()->height();
+    if (width <= 0 || height <= 0) return;
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
+    if (!Live2DManager) return;
     int modelCount = Live2DManager->GetModelNum();
     if(modelCount > 0){
         LAppModel* model =Live2DManager->GetModel(0);
@@ -157,11 +160,14 @@ QString LAppView::GetSelectMesh(const QVector2D &pos, bool IsOver)
 {
     QString re="";
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
+    if (!Live2DManager) return re;
     int modelCount = Live2DManager->GetModelNum();
     if(modelCount > 0){
         LAppModel* modle =Live2DManager->GetModel(0);
+        if (!modle || !modle->GetModel() || !modle->GetModelMatrix()) return re;
         CMeshMap* map = modle->GetModel()->GetMeshMap();
-        QMatrix4x4 temp = Live2DManager->GetModel(0)->GetModelMatrix()->GetQMatrix44().inverted();//获取模型矩阵
+        if (!map) return re;
+        QMatrix4x4 temp = modle->GetModelMatrix()->GetQMatrix44().inverted();//获取模型矩阵
         QVector4D moldePos = temp * QVector4D(pos,0,1.0f);//已经知道模型位置
         re = map->SetOver(QPointF(moldePos.x(),moldePos.y()),IsOver);
     }
@@ -175,6 +181,7 @@ QVector4D LAppView::GetWorldPoint(int posX, int posY)
     width = LAppDelegate::GetInstance()->width();
     height = LAppDelegate::GetInstance()->height();
 
+    if (width <= 0.0f || height <= 0.0f) return {};
     float x=(2.0f*posX)/width-1.0f;
     float y=1.0f-(2.0f*posY) / height;
     float z=0.0f;
@@ -194,11 +201,11 @@ QMatrix4x4 LAppView::GetProjectionView()
 QMatrix4x4 LAppView::GetMVP(){
     QMatrix4x4 tempPro = m_projection->GetQMatrix44();
     QMatrix4x4 view = _viewMatrix->GetQMatrix44();
-    int num = LAppLive2DManager::GetInstance()->GetModelNum();
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     QMatrix4x4 modle;
-    if(num>0){
-        modle = LAppLive2DManager::GetInstance()->GetModel(0)->GetModelMatrix()->GetQMatrix44();
-
+    if(manager && manager->GetModelNum() > 0){
+        LAppModel* model = manager->GetModel(0);
+        if (model && model->GetModelMatrix()) modle = model->GetModelMatrix()->GetQMatrix44();
     }
 
     return tempPro*view * modle;

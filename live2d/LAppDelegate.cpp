@@ -452,7 +452,7 @@ void LAppDelegate::StartDeformerDrag()
     m_savedVertices.clear();
     // 保存所有非目标 drawable 的当前顶点
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    if(!mgr || mgr->GetModelNum() <= 0) return;
+    if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || !mgr->GetModel(0)->GetModel()) return;
     auto* model = mgr->GetModel(0)->GetModel();
     int drawCount = model->GetDrawableCount();
     for(int i = 0; i < drawCount; i++){
@@ -476,7 +476,7 @@ void LAppDelegate::StopDeformerDrag()
     m_savedVertices.clear();
     // 恢复参数
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    if(mgr && mgr->GetModelNum() > 0){
+    if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
         mgr->GetModel(0)->StopDeformerDrag();
     }
 }
