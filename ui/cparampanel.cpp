@@ -5,6 +5,7 @@
 #include "ui/para/ccidjson.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QToolButton>
@@ -58,19 +59,21 @@ CParamPanel::CParamPanel(QWidget *parent)
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 
-    auto* buttonRow = new QHBoxLayout();
+    auto* buttonRow = new QGridLayout();
+    buttonRow->setHorizontalSpacing(6);
+    buttonRow->setVerticalSpacing(6);
     QPushButton* resetBtn = new QPushButton("重置全部", wrapper);
     resetBtn->setObjectName("primaryBtn");
     connect(resetBtn, &QPushButton::clicked, this, &CParamPanel::ResetAll);
-    buttonRow->addWidget(resetBtn);
+    buttonRow->addWidget(resetBtn, 0, 0);
     auto* copyBtn = new QPushButton(QStringLiteral("复制参数"), wrapper);
     auto* pasteBtn = new QPushButton(QStringLiteral("粘贴参数"), wrapper);
     auto* savePresetBtn = new QPushButton(QStringLiteral("保存预设"), wrapper);
     auto* loadPresetBtn = new QPushButton(QStringLiteral("载入预设"), wrapper);
-    buttonRow->addWidget(copyBtn);
-    buttonRow->addWidget(pasteBtn);
-    buttonRow->addWidget(savePresetBtn);
-    buttonRow->addWidget(loadPresetBtn);
+    buttonRow->addWidget(copyBtn, 0, 1);
+    buttonRow->addWidget(pasteBtn, 1, 0);
+    buttonRow->addWidget(savePresetBtn, 1, 1);
+    buttonRow->addWidget(loadPresetBtn, 2, 0, 1, 2);
     mainLayout->addLayout(buttonRow);
     connect(copyBtn, &QPushButton::clicked, this, &CParamPanel::CopyValues);
     connect(pasteBtn, &QPushButton::clicked, this, &CParamPanel::PasteValues);

@@ -2,6 +2,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -86,7 +87,10 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_vertexTable->setMinimumHeight(120);
     m_vertexTable->setMaximumHeight(280);
     auto* keyformTools = new QWidget(content);
-    auto* keyformToolsLayout = new QHBoxLayout(keyformTools);
+    auto* keyformToolsLayout = new QGridLayout(keyformTools);
+    keyformToolsLayout->setContentsMargins(0, 0, 0, 0);
+    keyformToolsLayout->setHorizontalSpacing(6);
+    keyformToolsLayout->setVerticalSpacing(6);
     keyformToolsLayout->setContentsMargins(0, 0, 0, 0);
     m_mirrorHorizontal = new QPushButton(QStringLiteral("水平镜像"), keyformTools);
     m_mirrorVertical = new QPushButton(QStringLiteral("垂直镜像"), keyformTools);
@@ -118,16 +122,13 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
-    keyformToolsLayout->addWidget(m_mirrorHorizontal);
-    keyformToolsLayout->addWidget(m_mirrorVertical);
-    keyformToolsLayout->addWidget(m_interpolatePrevious);
-    keyformToolsLayout->addWidget(m_copyToNext);
-    keyformToolsLayout->addWidget(m_resetKeyform);
-    keyformToolsLayout->addWidget(m_copyKeyform);
-    keyformToolsLayout->addWidget(m_pasteKeyform);
-    keyformToolsLayout->addWidget(m_autoTriangulate);
-    keyformToolsLayout->addWidget(m_copyTopology);
-    keyformToolsLayout->addWidget(m_pasteTopology);
+    const QList<QPushButton*> keyformButtons = {
+        m_mirrorHorizontal, m_mirrorVertical, m_interpolatePrevious, m_copyToNext,
+        m_resetKeyform, m_copyKeyform, m_pasteKeyform, m_autoTriangulate,
+        m_copyTopology, m_pasteTopology
+    };
+    for (int i = 0; i < keyformButtons.size(); ++i)
+        keyformToolsLayout->addWidget(keyformButtons[i], i / 2, i % 2);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
