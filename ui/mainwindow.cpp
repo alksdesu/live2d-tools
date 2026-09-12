@@ -1243,16 +1243,11 @@ void MainWindow::RestDock(const QString &name)
     // Pose 切换
     connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QString& showId, const QStringList& hideIds){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || !mgr->GetModel(0)->GetModel()) return;
+        if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || showId.isEmpty()) return;
         LAppModel* model = mgr->GetModel(0);
-        auto* cubismModel = model->GetModel();
-        // 显示选中的 Part
-        Csm::CubismIdHandle showPartId = Csm::CubismFramework::GetIdManager()->GetId(showId.toUtf8().constData());
-        cubismModel->SetPartOpacity(showPartId, 1.0f);
-        // 隐藏其他 Part
-        for(const QString& hideId : hideIds){
-            Csm::CubismIdHandle hid = Csm::CubismFramework::GetIdManager()->GetId(hideId.toUtf8().constData());
-            cubismModel->SetPartOpacity(hid, 0.0f);
+        model->SetPartVisible(showId, true);
+        for(const QString& hideId : hideIds) {
+            if (!hideId.isEmpty()) model->SetPartVisible(hideId, false);
         }
     });
 
