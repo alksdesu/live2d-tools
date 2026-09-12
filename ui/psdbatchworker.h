@@ -31,7 +31,7 @@ private:
     int m_index = 0;
     bool m_cancelled = false;
     QStringList m_failedFiles;
+    QStringList m_outputNames;
 };
 
 #endif // PSDBATCHWORKER_H
-
