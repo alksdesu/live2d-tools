@@ -284,6 +284,7 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
     options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();
     options.drawableKeyformPositionOverrides = m_document.DrawableKeyformPositionOverrides();
+    options.drawableIndexOverrides = m_document.DrawableIndexOverrides();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -327,6 +328,7 @@ void MainWindow::on_actionSaveSession_triggered()
     session.drawableOpacity = m_document.DrawableOpacityOverrides();
     session.drawableDrawOrder = m_document.DrawableDrawOrderOverrides();
     session.drawableKeyformPositions = m_document.DrawableKeyformPositionOverrides();
+    session.drawableIndices = m_document.DrawableIndexOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
@@ -387,6 +389,10 @@ void MainWindow::on_actionLoadSession_triggered()
             for (int keyformIndex = 0; keyformIndex < meshIt.value().size(); ++keyformIndex) {
                 m_document.SetDrawableKeyformPositions(meshIt.key(), keyformIndex, meshIt.value().at(keyformIndex));
             }
+        }
+        for (auto indexIt = session.drawableIndices.cbegin(); indexIt != session.drawableIndices.cend(); ++indexIt) {
+            if (!m_document.SetDrawableIndices(indexIt.key(), indexIt.value())) continue;
+            if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(indexIt.key(), indexIt.value());
         }
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
@@ -456,6 +462,10 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(edit.name, drawOrder);
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
+        if (m_openglwindows) m_openglwindows->do_SetDrawableKeyformPositions(edit.name, edit.index, value.value<QVector<float>>());
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
+        if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(edit.name, value.value<QVector<quint16>>());
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     }
     if (m_paramPanel) m_paramPanel->SyncHistoryState();
@@ -1054,6 +1064,8 @@ void MainWindow::RestDock(const QString &name)
             });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableKeyformPositions);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableIndicesChanged,
+            m_openglwindows, &OpengGlForm::do_SetDrawableIndices);
     const auto markSessionDirty = [this]() {
         if (m_applyingSession) return;
         m_sessionDirty = true;

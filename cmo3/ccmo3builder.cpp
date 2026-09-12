@@ -666,10 +666,23 @@ void Generator::writeArtMeshEntities()
 
         // indices
         QVector<int> indices;
-        indices.reserve(mesh->position_index_sources_counts);
-        for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
-            indices.append(m_table.position_indices->indices[
-                mesh->position_index_sources_begin_indices + t]);
+        const auto overrideIt = m_opt.drawableIndexOverrides.constFind(mesh->ids);
+        bool useOverride = overrideIt != m_opt.drawableIndexOverrides.cend() &&
+            !overrideIt.value().isEmpty() && overrideIt.value().size() % 3 == 0;
+        if (useOverride) {
+            indices.reserve(overrideIt.value().size());
+            for (quint16 index : overrideIt.value()) {
+                if (index >= vertexCount) { useOverride = false; break; }
+                indices.append(static_cast<int>(index));
+            }
+        }
+        if (!useOverride) {
+            indices.clear();
+            indices.reserve(mesh->position_index_sources_counts);
+            for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
+                indices.append(m_table.position_indices->indices[
+                    mesh->position_index_sources_begin_indices + t]);
+            }
         }
         m_xml.IntArray(QStringLiteral("indices"), indices);
 

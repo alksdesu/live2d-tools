@@ -164,6 +164,10 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
                          it != LAppDelegate::GetInstance()->m_meshOverlayPositions.cend(); ++it) {
                         meshMap->SetMeshPositions(it.key(), it.value());
                     }
+                    for (auto it = LAppDelegate::GetInstance()->m_meshIndexOverrides.cbegin();
+                         it != LAppDelegate::GetInstance()->m_meshIndexOverrides.cend(); ++it) {
+                        meshMap->SetMeshIndices(it.key(), it.value());
+                    }
                 }
             }
         }
@@ -298,6 +302,17 @@ void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyfor
     CMeshMap* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap();
     if (!meshMap) return;
     meshMap->SetMeshPositions(name, positions);
+}
+
+void OpengGlForm::do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices)
+{
+    if (name.isEmpty() || indices.isEmpty() || indices.size() % 3 != 0) return;
+    LAppDelegate::GetInstance()->m_meshIndexOverrides.insert(name, indices);
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
+    CMeshMap* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap();
+    if (!meshMap || meshMap->SetMeshIndices(name, indices)) return;
+    LAppDelegate::GetInstance()->m_meshIndexOverrides.remove(name);
 }
 
 void OpengGlForm::do_ModelChange(const QString& fileName)

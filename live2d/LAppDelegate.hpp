@@ -65,6 +65,7 @@ public:
     QHash<QString, int> m_drawableOrderGroupIndices;
     QVector<live2dstruct::CDrawableOrderGroup> m_drawOrderGroups;
     QHash<QString, QVector<float>> m_meshOverlayPositions;
+    QHash<QString, QVector<quint16>> m_meshIndexOverrides;
 
     // 背景色
     float m_clearColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};

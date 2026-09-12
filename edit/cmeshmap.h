@@ -14,6 +14,7 @@ public:
     }
     void SetRenderOrder(const QStringList& names);
     bool SetMeshPositions(const QString& name, const QVector<float>& positions);
+    bool SetMeshIndices(const QString& name, const QVector<quint16>& indices);
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
     void SetShow(const QString& artName);

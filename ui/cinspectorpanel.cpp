@@ -22,6 +22,7 @@
 #include <QJsonParseError>
 #include <QMessageBox>
 #include <cmath>
+#include <algorithm>
 
 namespace {
 QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
@@ -94,6 +95,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_resetKeyform = new QPushButton(QStringLiteral("重置当前形"), keyformTools);
     m_copyKeyform = new QPushButton(QStringLiteral("复制关键形"), keyformTools);
     m_pasteKeyform = new QPushButton(QStringLiteral("粘贴关键形"), keyformTools);
+    m_autoTriangulate = new QPushButton(QStringLiteral("自动三角剖分"), keyformTools);
     m_mirrorHorizontal->setObjectName(QStringLiteral("mirrorHorizontal"));
     m_mirrorVertical->setObjectName(QStringLiteral("mirrorVertical"));
     m_interpolatePrevious->setObjectName(QStringLiteral("interpolatePreviousKeyform"));
@@ -101,6 +103,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_resetKeyform->setObjectName(QStringLiteral("resetKeyform"));
     m_copyKeyform->setObjectName(QStringLiteral("copyKeyform"));
     m_pasteKeyform->setObjectName(QStringLiteral("pasteKeyform"));
+    m_autoTriangulate->setObjectName(QStringLiteral("autoTriangulate"));
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -108,6 +111,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_resetKeyform->setEnabled(false);
     m_copyKeyform->setEnabled(false);
     m_pasteKeyform->setEnabled(false);
+    m_autoTriangulate->setEnabled(false);
     keyformToolsLayout->addWidget(m_mirrorHorizontal);
     keyformToolsLayout->addWidget(m_mirrorVertical);
     keyformToolsLayout->addWidget(m_interpolatePrevious);
@@ -115,6 +119,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     keyformToolsLayout->addWidget(m_resetKeyform);
     keyformToolsLayout->addWidget(m_copyKeyform);
     keyformToolsLayout->addWidget(m_pasteKeyform);
+    keyformToolsLayout->addWidget(m_autoTriangulate);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -155,6 +160,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_resetKeyform, &QPushButton::clicked, this, [this](){ ResetCurrentKeyform(); });
     connect(m_copyKeyform, &QPushButton::clicked, this, [this](){ CopyCurrentKeyform(); });
     connect(m_pasteKeyform, &QPushButton::clicked, this, [this](){ PasteCurrentKeyform(); });
+    connect(m_autoTriangulate, &QPushButton::clicked, this, [this](){ AutoTriangulate(); });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -302,6 +308,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_resetKeyform->setEnabled(false);
     m_copyKeyform->setEnabled(false);
     m_pasteKeyform->setEnabled(false);
+    m_autoTriangulate->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -548,6 +555,127 @@ void CInspectorPanel::CopyCurrentKeyform()
     QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
 }
 
+void CInspectorPanel::AutoTriangulate()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> positions = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    const QVector<quint16> before = m_document->DrawableIndices(m_selectionName);
+    if (keyformIndex < 0 || positions.size() < 6 || positions.size() % 2 != 0 || before.isEmpty()) return;
+    const int pointCount = positions.size() / 2;
+    if (pointCount > 65535) {
+        QMessageBox::warning(this, QStringLiteral("自动三角剖分失败"), QStringLiteral("顶点数量超过 moc3 的索引范围"));
+        return;
+    }
+
+    struct Point { double x; double y; };
+    struct Triangle { int a; int b; int c; };
+    QVector<Point> points;
+    points.reserve(pointCount + 3);
+    double minX = positions[0];
+    double maxX = positions[0];
+    double minY = positions[1];
+    double maxY = positions[1];
+    for (int i = 0; i < pointCount; ++i) {
+        const double x = positions[i * 2];
+        const double y = positions[i * 2 + 1];
+        if (!std::isfinite(x) || !std::isfinite(y)) return;
+        points.append({x, y});
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+    }
+    const double span = std::max({maxX - minX, maxY - minY, 1.0});
+    const double centerX = (minX + maxX) * 0.5;
+    const double centerY = (minY + maxY) * 0.5;
+    points.append({centerX - 32.0 * span, centerY - span});
+    points.append({centerX, centerY + 32.0 * span});
+    points.append({centerX + 32.0 * span, centerY - span});
+
+    const auto orientation = [&points](const Point& a, const Point& b, const Point& c) {
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    };
+    const auto containsCircumcircle = [&points, &orientation, span](const Triangle& triangle, const Point& point) {
+        const Point& a = points[triangle.a];
+        const Point& b = points[triangle.b];
+        const Point& c = points[triangle.c];
+        const double d = 2.0 * orientation(a, b, c);
+        if (std::fabs(d) < 1e-12) return false;
+        const double aa = a.x * a.x + a.y * a.y;
+        const double bb = b.x * b.x + b.y * b.y;
+        const double cc = c.x * c.x + c.y * c.y;
+        const double ux = (aa * (b.y - c.y) + bb * (c.y - a.y) + cc * (a.y - b.y)) / d;
+        const double uy = (aa * (c.x - b.x) + bb * (a.x - c.x) + cc * (b.x - a.x)) / d;
+        const double dx = point.x - ux;
+        const double dy = point.y - uy;
+        const double radiusSquared = (a.x - ux) * (a.x - ux) + (a.y - uy) * (a.y - uy);
+        return dx * dx + dy * dy <= radiusSquared + 1e-9 * span * span;
+    };
+
+    QVector<Triangle> triangles;
+    triangles.append({pointCount, pointCount + 1, pointCount + 2});
+    for (int pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+        QSet<int> badIndices;
+        for (int i = 0; i < triangles.size(); ++i) {
+            if (containsCircumcircle(triangles[i], points[pointIndex])) badIndices.insert(i);
+        }
+        if (badIndices.isEmpty()) continue;
+        QHash<QString, int> edgeCounts;
+        QHash<QString, QPair<int, int>> edgePairs;
+        const auto addEdge = [&edgeCounts, &edgePairs](int first, int second) {
+            const int a = std::min(first, second);
+            const int b = std::max(first, second);
+            const QString key = QString::number(a) + QLatin1Char(':') + QString::number(b);
+            edgeCounts[key] = edgeCounts.value(key, 0) + 1;
+            edgePairs.insert(key, qMakePair(a, b));
+        };
+        for (int index : badIndices) {
+            const Triangle& triangle = triangles[index];
+            addEdge(triangle.a, triangle.b);
+            addEdge(triangle.b, triangle.c);
+            addEdge(triangle.c, triangle.a);
+        }
+        QVector<Triangle> kept;
+        kept.reserve(triangles.size());
+        for (int i = 0; i < triangles.size(); ++i) if (!badIndices.contains(i)) kept.append(triangles[i]);
+        triangles = kept;
+        for (auto edgeIt = edgeCounts.cbegin(); edgeIt != edgeCounts.cend(); ++edgeIt) {
+            if (edgeIt.value() != 1) continue;
+            const QPair<int, int> edge = edgePairs.value(edgeIt.key());
+            Triangle triangle{edge.first, edge.second, pointIndex};
+            if (orientation(points[triangle.a], points[triangle.b], points[triangle.c]) < 0.0)
+                std::swap(triangle.a, triangle.b);
+            if (std::fabs(orientation(points[triangle.a], points[triangle.b], points[triangle.c])) > 1e-12)
+                triangles.append(triangle);
+        }
+    }
+
+    QVector<quint16> after;
+    QSet<QString> seen;
+    for (const Triangle& triangle : triangles) {
+        if (triangle.a >= pointCount || triangle.b >= pointCount || triangle.c >= pointCount) continue;
+        if (std::fabs(orientation(points[triangle.a], points[triangle.b], points[triangle.c])) < 1e-12) continue;
+        const QString key = QString::number(triangle.a) + QLatin1Char(':') + QString::number(triangle.b) + QLatin1Char(':') + QString::number(triangle.c);
+        if (seen.contains(key)) continue;
+        seen.insert(key);
+        after.append(static_cast<quint16>(triangle.a));
+        after.append(static_cast<quint16>(triangle.b));
+        after.append(static_cast<quint16>(triangle.c));
+    }
+    if (after.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("自动三角剖分失败"), QStringLiteral("顶点无法形成有效三角形"));
+        return;
+    }
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::MeshIndices,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    emit DrawableIndicesChanged(m_selectionName, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::PasteCurrentKeyform()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
@@ -618,6 +746,7 @@ void CInspectorPanel::ClearSelection()
     m_resetKeyform->setEnabled(false);
     m_copyKeyform->setEnabled(false);
     m_pasteKeyform->setEnabled(false);
+    m_autoTriangulate->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -637,6 +766,8 @@ void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forwar
         emit DrawableDrawOrderChanged(edit.name, value.toInt());
     } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
         emit DrawableKeyformPositionsChanged(edit.name, edit.index, value.value<QVector<float>>());
+    } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
+        emit DrawableIndicesChanged(edit.name, value.value<QVector<quint16>>());
     }
     if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
@@ -753,6 +884,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_resetKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_copyKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_pasteKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
+            m_autoTriangulate->setEnabled(unlocked && drawable.vertexCount >= 3 && !drawable.keyforms.isEmpty());
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();

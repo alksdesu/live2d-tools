@@ -19,6 +19,12 @@ bool CMeshMap::SetMeshPositions(const QString& name, const QVector<float>& posit
     return mesh && mesh->SetPositions(positions);
 }
 
+bool CMeshMap::SetMeshIndices(const QString& name, const QVector<quint16>& indices)
+{
+    CDrawMesh* mesh = m_vetDrawMesh.value(name, nullptr);
+    return mesh && mesh->SetIndices(indices);
+}
+
 void CMeshMap::clear()
 {
     for (QMap<QString, CDrawMesh*>::iterator i = m_vetDrawMesh.begin(); i != m_vetDrawMesh.end(); ++i) {

@@ -101,6 +101,36 @@ private slots:
         QVERIFY(mainXml);
         QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(value).toUtf8()));
     }
+
+    void buildUsesIndexOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const auto meshIt = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+                                         [](const live2dstruct::CModelDrawable& mesh){ return mesh.indices.size() >= 3; });
+        QVERIFY(meshIt != document.Drawables().cend());
+        const QString meshId = meshIt->id;
+        QVector<quint16> indices = meshIt->indices;
+        std::swap(indices[0], indices[1]);
+        QVERIFY(document.SetDrawableIndices(meshId, indices));
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Wanko-indices.cmo3"));
+        options.drawableIndexOverrides = document.DrawableIndexOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* mainXml = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(mainXml);
+        QVERIFY(mainXml->content.contains(QStringLiteral("<int-array xs.n=\"indices\"").toUtf8()));
+        const QByteArray expectedPrefix = QStringLiteral(">%1 %2 %3 ").arg(indices[0]).arg(indices[1]).arg(indices[2]).toUtf8();
+        QVERIFY(mainXml->content.contains(expectedPrefix));
+    }
 };
 
 QTEST_GUILESS_MAIN(Cmo3Tests)

@@ -183,6 +183,29 @@ bool CTrianglMesh::SetPositions(const QVector<float>& positions)
     return true;
 }
 
+bool CTrianglMesh::SetIndices(const QVector<quint16>& indices)
+{
+    if (indices.isEmpty() || indices.size() % 3 != 0 || indices.size() > 3000000) return false;
+    for (quint16 index : indices) {
+        if (index >= vetPosPoint.size() || index > 32767) return false;
+    }
+    for (CEdge* edge : vetEdge) delete edge;
+    for (CTriangl* triangle : vetTriangl) delete triangle;
+    vetEdge.clear();
+    vetTriangl.clear();
+    for (int i = 0; i < indices.size(); i += 3) {
+        const int a = static_cast<int>(indices[i]);
+        const int b = static_cast<int>(indices[i + 1]);
+        const int c = static_cast<int>(indices[i + 2]);
+        vetTriangl.push_back(new CTriangl(a, b, c));
+        vetEdge.push_back(new CEdge(a, b));
+        vetEdge.push_back(new CEdge(a, c));
+        vetEdge.push_back(new CEdge(b, c));
+    }
+    normalizing();
+    return true;
+}
+
 void CTrianglMesh::DeleteEdge(int satat, int end)
 {
 
@@ -323,5 +346,4 @@ QMatrix4x4 CTrianglMesh::cvMatToQMatrix4x4(const cv::Mat &mat)
 
     return qMatrix;
 }
-
 

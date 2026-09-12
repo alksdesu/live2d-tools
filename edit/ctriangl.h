@@ -45,6 +45,7 @@ public:
     void normalizing();
     bool AddPoint(const QVector2D& pos);
     bool SetPositions(const QVector<float>& positions);
+    bool SetIndices(const QVector<quint16>& indices);
     void DeleteEdge(int satat,int end);
     const short* GetEBOIndex() const;
     const int GetEBOSize()const ;

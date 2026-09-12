@@ -108,6 +108,11 @@ bool CDrawMesh::SetPositions(const QVector<float>& positions)
     return mesh && mesh->SetPositions(positions);
 }
 
+bool CDrawMesh::SetIndices(const QVector<quint16>& indices)
+{
+    return mesh && mesh->SetIndices(indices);
+}
+
 //世界坐标系
 void CDrawMesh::SetSelect(const QRectF &rect)
 {
@@ -215,5 +220,4 @@ void CDrawMesh::DrawMesh(const CTrianglMesh& mesh)
 
 
 }
-
 

@@ -42,6 +42,7 @@ signals:
     void DrawableOpacityChanged(const QString& name, float opacity);
     void DrawableDrawOrderChanged(const QString& name, int drawOrder);
     void DrawableKeyformPositionsChanged(const QString& name, int keyformIndex, const QVector<float>& positions);
+    void DrawableIndicesChanged(const QString& name, const QVector<quint16>& indices);
     void HistoryChanged(bool canUndo, bool canRedo);
 
 private:
@@ -53,6 +54,7 @@ private:
     void InterpolatePreviousKeyform();
     void CopyKeyformToNext();
     void ResetCurrentKeyform();
+    void AutoTriangulate();
     void CopyCurrentKeyform();
     void PasteCurrentKeyform();
     bool IsLocked(const QString& type, const QString& name) const;
@@ -80,6 +82,7 @@ private:
     QPushButton* m_resetKeyform = nullptr;
     QPushButton* m_copyKeyform = nullptr;
     QPushButton* m_pasteKeyform = nullptr;
+    QPushButton* m_autoTriangulate = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QSet<QString> m_lockedKeys;

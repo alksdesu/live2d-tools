@@ -81,6 +81,13 @@ QByteArray CModelSession::ToJson() const
         keyformObject.insert(meshIt.key(), keyforms);
     }
     root.insert(QStringLiteral("drawableKeyformPositions"), keyformObject);
+    QJsonObject indexObject;
+    for (auto meshIt = drawableIndices.cbegin(); meshIt != drawableIndices.cend(); ++meshIt) {
+        QJsonArray values;
+        for (quint16 index : meshIt.value()) values.append(static_cast<int>(index));
+        indexObject.insert(meshIt.key(), values);
+    }
+    root.insert(QStringLiteral("drawableIndices"), indexObject);
     QJsonObject view;
     view.insert(QStringLiteral("scale"), static_cast<double>(viewScale));
     view.insert(QStringLiteral("x"), viewPosition.x());
@@ -144,12 +151,14 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject opacityObject;
     QJsonObject drawOrderObject;
     QJsonObject keyformObject;
+    QJsonObject indexObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
         !readObject(root, QStringLiteral("locked"), &lockedObject, error) ||
         !readObject(root, QStringLiteral("drawableOpacity"), &opacityObject, error) ||
         !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error) ||
-        !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error)) return false;
+        !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error) ||
+        !readObject(root, QStringLiteral("drawableIndices"), &indexObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         float value = 0.0f;
         if (!readFloat(parameterObject.value(key), &value)) {
@@ -223,6 +232,31 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             keyforms.append(positions);
         }
         result.drawableKeyformPositions.insert(key, keyforms);
+    }
+    constexpr int kMaxIndexMeshes = 100000;
+    constexpr int kMaxIndicesPerMesh = 3000000;
+    if (indexObject.size() > kMaxIndexMeshes) {
+        setError(error, QStringLiteral("索引覆盖网格数量超出限制"));
+        return false;
+    }
+    for (const QString& key : indexObject.keys()) {
+        const QJsonValue meshValue = indexObject.value(key);
+        if (!meshValue.isArray() || meshValue.toArray().isEmpty() || meshValue.toArray().size() % 3 != 0 ||
+            meshValue.toArray().size() > kMaxIndicesPerMesh) {
+            setError(error, QStringLiteral("索引覆盖数组类型或数量错误：%1").arg(key));
+            return false;
+        }
+        QVector<quint16> indices;
+        indices.reserve(meshValue.toArray().size());
+        for (const QJsonValue& value : meshValue.toArray()) {
+            double number = 0.0;
+            if (!readNumber(value, &number) || std::floor(number) != number || number < 0.0 || number > 65535.0) {
+                setError(error, QStringLiteral("索引覆盖值无效：%1").arg(key));
+                return false;
+            }
+            indices.append(static_cast<quint16>(number));
+        }
+        result.drawableIndices.insert(key, indices);
     }
     QJsonObject view;
     if (!readObject(root, QStringLiteral("view"), &view, error)) return false;

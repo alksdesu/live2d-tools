@@ -41,6 +41,7 @@ void CModelDocument::Clear()
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
     m_drawableKeyformPositionOverrides.clear();
+    m_drawableIndexOverrides.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
 }
@@ -240,6 +241,27 @@ bool CModelDocument::SetDrawableKeyformPositions(const QString& id, int keyformI
     return false;
 }
 
+QVector<quint16> CModelDocument::DrawableIndices(const QString& id) const
+{
+    if (m_drawableIndexOverrides.contains(id)) return m_drawableIndexOverrides.value(id);
+    for (const CModelDrawable& drawable : m_drawables) {
+        if (drawable.id == id) return drawable.indices;
+    }
+    return {};
+}
+
+bool CModelDocument::SetDrawableIndices(const QString& id, const QVector<quint16>& indices)
+{
+    for (const CModelDrawable& drawable : m_drawables) {
+        if (drawable.id != id) continue;
+        if (indices.isEmpty() || indices.size() % 3 != 0 || indices.size() > 3000000) return false;
+        for (quint16 index : indices) if (index >= drawable.vertexCount) return false;
+        m_drawableIndexOverrides.insert(id, indices);
+        return true;
+    }
+    return false;
+}
+
 bool CModelDocument::SetDeformerVisible(const QString& id, bool visible)
 {
     for (CModelDeformer& deformer : m_deformers) {
@@ -338,6 +360,10 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     if (edit.field == CModelEdit::KeyformPositions) {
         if (edit.type != QLatin1String("artmesh") || !value.canConvert<QVector<float>>()) return false;
         return SetDrawableKeyformPositions(edit.name, edit.index, value.value<QVector<float>>());
+    }
+    if (edit.field == CModelEdit::MeshIndices) {
+        if (edit.type != QLatin1String("artmesh") || !value.canConvert<QVector<quint16>>()) return false;
+        return SetDrawableIndices(edit.name, value.value<QVector<quint16>>());
     }
     return false;
 }
@@ -647,6 +673,29 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             if (!finite) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_override_nan"),
                                      QStringLiteral("关键形覆盖包含非有限数值：%1").arg(meshIt.key()), -1});
+                break;
+            }
+        }
+    }
+    for (auto indexIt = m_drawableIndexOverrides.cbegin(); indexIt != m_drawableIndexOverrides.cend(); ++indexIt) {
+        const CModelDrawable* drawable = nullptr;
+        for (const CModelDrawable& candidate : m_drawables) {
+            if (candidate.id == indexIt.key()) { drawable = &candidate; break; }
+        }
+        if (!drawable) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_override_id"),
+                                 QStringLiteral("索引覆盖引用了不存在的 ArtMesh：%1").arg(indexIt.key()), -1});
+            continue;
+        }
+        if (indexIt.value().isEmpty() || indexIt.value().size() % 3 != 0 || indexIt.value().size() > 3000000) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_override_count"),
+                                 QStringLiteral("索引覆盖数量无效：%1").arg(indexIt.key()), -1});
+            continue;
+        }
+        for (quint16 index : indexIt.value()) {
+            if (index >= drawable->vertexCount) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_override_range"),
+                                     QStringLiteral("索引覆盖越界：%1").arg(indexIt.key()), -1});
                 break;
             }
         }

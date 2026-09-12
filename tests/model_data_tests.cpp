@@ -166,6 +166,17 @@ private slots:
         QCOMPARE(document.DrawableKeyformPositions(id, 0), keyformAfter);
         QVERIFY(!document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::KeyformPositions,
                                        QVariant::fromValue(keyformAfter), QVariant::fromValue(QVector<float>(1, 0.0f)), 0}));
+        const QVector<quint16> indexBefore = document.DrawableIndices(id);
+        QVERIFY(indexBefore.size() >= 3);
+        QVector<quint16> indexAfter = indexBefore;
+        std::swap(indexAfter[0], indexAfter[1]);
+        QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::MeshIndices,
+                                       QVariant::fromValue(indexBefore), QVariant::fromValue(indexAfter)}));
+        QCOMPARE(document.DrawableIndices(id), indexAfter);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DrawableIndices(id), indexBefore);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DrawableIndices(id), indexAfter);
         document.ClearEditHistory();
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(!document.CanRedoEdit());
@@ -196,6 +207,7 @@ private slots:
         source.drawableOpacity.insert(QStringLiteral("Body"), 0.42f);
         source.drawableDrawOrder.insert(QStringLiteral("Body"), 720);
         source.drawableKeyformPositions.insert(QStringLiteral("Body"), {{0.0f, 1.0f, 2.0f, 3.0f}, {4.0f, 5.0f}});
+        source.drawableIndices.insert(QStringLiteral("Body"), {0, 1, 2});
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -210,6 +222,7 @@ private slots:
         QCOMPARE(decoded.drawableOpacity, source.drawableOpacity);
         QCOMPARE(decoded.drawableDrawOrder, source.drawableDrawOrder);
         QCOMPARE(decoded.drawableKeyformPositions, source.drawableKeyformPositions);
+        QCOMPARE(decoded.drawableIndices, source.drawableIndices);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 
@@ -259,6 +272,10 @@ private slots:
             R"({"version":1,"locked":{"artmesh|Body":"bad"}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"sourceDigest":"bad"})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableIndices":{"Body":[0,1]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableIndices":{"Body":[0,"bad",2]}})", &session, &error));
         QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &session, &error));
         QCOMPARE(session.viewScale, 1.0f);
         QVERIFY(session.drawableKeyformPositions.isEmpty());
