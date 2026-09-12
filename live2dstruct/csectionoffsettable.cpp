@@ -81,6 +81,15 @@ CSectionOffsetTable::~CSectionOffsetTable()
     delete glue;
     delete glue_info;
     delete glue_keyforms;
+    delete blend_shape_constraint_indices;
+    delete blend_shape_constraint_values;
+    delete blend_shape_constraints;
+    delete blend_shape_keyform_bindings;
+    delete blend_shape_parameter_bindings;
+    delete blend_shapes_art_meshes;
+    delete blend_shapes_warp_deformers;
+    delete keyform_multiply_colors;
+    delete keyform_screen_colors;
 
 }
 
