@@ -2,6 +2,7 @@
 #define CMODELSESSION_H
 
 #include <QMap>
+#include <QByteArray>
 #include <QPointF>
 #include <QString>
 
