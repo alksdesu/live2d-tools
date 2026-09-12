@@ -274,6 +274,21 @@ void OpengGlForm::do_SetDeformerDrawableVisibility(const QStringList& artMeshNam
     }
 }
 
+void OpengGlForm::ClearEditorOverrides()
+{
+    auto* delegate = LAppDelegate::GetInstance();
+    if (!delegate) return;
+    delegate->m_hiddenDrawables.clear();
+    delegate->m_hiddenDeformerDrawables.clear();
+    delegate->m_drawableOpacityOverrides.clear();
+    delegate->m_drawableDrawOrderOverrides.clear();
+    delegate->m_meshOverlayPositions.clear();
+    delegate->m_meshIndexOverrides.clear();
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    if (manager && manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel())
+        manager->GetModel(0)->GetModel()->InitMesh();
+}
+
 void OpengGlForm::PublishRenderOrder(const QStringList& names)
 {
     if (names == m_lastRenderOrder) return;

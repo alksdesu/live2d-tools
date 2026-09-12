@@ -373,7 +373,19 @@ void MainWindow::on_actionLoadSession_triggered()
     auto apply = [this, sourceMoc, session]() {
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
         m_applyingSession = true;
-        if (m_paramPanel) m_paramPanel->ApplyValues(session.parameters);
+        QString resetError;
+        if (!m_document.Load(m_currentMoc, &resetError)) {
+            m_applyingSession = false;
+            statusBar()->showMessage(QStringLiteral("会话基线恢复失败：%1").arg(resetError), 8000);
+            return;
+        }
+        m_openglwindows->ClearEditorOverrides();
+        if (m_inspectorPanel) m_inspectorPanel->SetDocument(&m_document);
+        if (m_paramPanel) {
+            m_paramPanel->SetDocument(&m_document);
+            m_paramPanel->ResetAll();
+            m_paramPanel->ApplyValues(session.parameters);
+        }
         m_document.ClearLocked();
         for (auto it = session.locked.cbegin(); it != session.locked.cend(); ++it) {
             const int separator = it.key().indexOf(QLatin1Char('|'));
