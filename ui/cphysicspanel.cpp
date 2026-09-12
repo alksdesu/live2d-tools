@@ -323,14 +323,14 @@ void CPhysicsPanel::updateOutputCell(int row, int column)
         bool ok = false;
         const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
         if (!ok || !std::isfinite(value) || (column == 2 && (value < 0.0 || value > 1.0))) {
-            m_updating = true; showGroupDetail(row); m_updating = false; return;
+            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
         }
         output.insert(column == 2 ? QStringLiteral("Weight") : QStringLiteral("Scale"), value);
     } else {
         const QString text = m_outputTable->item(detailRow, column)->text().trimmed().toLower();
         if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) output.insert(QStringLiteral("Reflect"), true);
         else if (text == QStringLiteral("否") || text == QStringLiteral("false") || text == QStringLiteral("0")) output.insert(QStringLiteral("Reflect"), false);
-        else { m_updating = true; showGroupDetail(row); m_updating = false; return; }
+        else { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
     }
     outputs[detailRow] = output;
     setting.insert(QStringLiteral("Output"), outputs);
