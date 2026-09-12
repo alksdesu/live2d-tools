@@ -1,4 +1,5 @@
 #include "cpsdlist.h"
+#include "psd/psdSamples/Exporter/PsdExportDocument.h"
 #include <QFile>
 #include <limits>
 
@@ -20,13 +21,13 @@ CPsdList::~CPsdList()
 
 void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
 {
-
     m_docname = name;
-    if (w <= 0 || h <= 0 || name.isEmpty()) return;
     if (document) {
         DestroyExportDocument(document, &allocator);
         document = nullptr;
     }
+    m_failed = w <= 0 || h <= 0 || name.isEmpty();
+    if (m_failed) return;
     m_canvasWidth = static_cast<unsigned int>(w);
     m_canvasHeight = static_cast<unsigned int>(h);
     document = CreateExportDocument(&allocator, m_canvasWidth, m_canvasHeight, m_bitsPerChannel, m_colorMode);
@@ -45,6 +46,15 @@ void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
     }
 }
 
+bool CPsdList::CanAppendLayer()
+{
+    if (!document || m_failed) return false;
+    if (document->layerCount < ExportDocument::MAX_LAYER_COUNT) return true;
+    m_failed = true;
+    qWarning("PSD 图层及分组记录超过上限 %u", ExportDocument::MAX_LAYER_COUNT);
+    return false;
+}
+
 void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &rect)
 {
     AddLayer(name, image, rect, 255, 0x6E6F726D /*'norm'*/, false, false);
@@ -54,7 +64,7 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
                         uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                         bool isPremultiplied)
 {
-    if (!document || image.isNull() || rect.width() <= 0 || rect.height() <= 0) return;
+    if (image.isNull() || rect.width() <= 0 || rect.height() <= 0 || !CanAppendLayer()) return;
     int width = rect.width();
     int height = rect.height();
     const qint64 pixelCount = static_cast<qint64>(width) * height;
@@ -134,7 +144,7 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
 
 void CPsdList::AddGroupStart()
 {
-    if (!document) return;
+    if (!CanAppendLayer()) return;
     const unsigned int groupStart = psd::AddLayerGroupStart(document, &allocator, "</Layer group>");
 
     uint8_t* point = new uint8_t[1];
@@ -148,7 +158,7 @@ void CPsdList::AddGroupStart()
 
 void CPsdList::AddGroupEnd(const char* groupName)
 {
-    if (!document) return;
+    if (!CanAppendLayer()) return;
     const unsigned int groupEnd = psd::AddLayerGroupEnd(document, &allocator, groupName);
 
     uint8_t* point = new uint8_t[1];
@@ -161,7 +171,7 @@ void CPsdList::AddGroupEnd(const char* groupName)
 
 bool CPsdList::CreatePsd()
 {
-    if (!document) return false;
+    if (!document || m_failed) return false;
 
     NativeFile file(&allocator);
 

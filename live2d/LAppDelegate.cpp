@@ -16,11 +16,7 @@
 #include "opengl/ctextureextractor.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "live2dstruct/csectiontable.h"
-#include "live2dstruct/tree/c2dtree.h"
-#include "live2dstruct/tree/cartmeshnode.h"
-#include "live2dstruct/tree/cpartsnode.h"
 #include "ui/para/ccidjson.h"
-#include <functional>
 
 
 using namespace Csm;
@@ -380,78 +376,41 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     CPsdWriteList writer;
     writer.CreatePsd(psdPath, canvasW, canvasH, cubismCompat);
 
+    CubismModel* runtimeModel = model->GetModel();
+    if (!runtimeModel) return false;
+    QHash<QString, const ExtractedLayer*> layersById;
+    for (const ExtractedLayer& layer : layers) layersById.insert(layer.name, &layer);
+    QVector<int> sortedIndices;
+    for (int index : runtimeModel->GetSortedDrawableIndices(m_drawableDrawOrderOverrides)) {
+        const auto id = runtimeModel->GetDrawableId(index);
+        if (id && layersById.contains(QString::fromUtf8(id->GetString().GetRawString()))) sortedIndices.append(index);
+    }
+    const auto writeLayer = [&](int index) {
+        const auto id = runtimeModel->GetDrawableId(index);
+        if (!id) return;
+        const auto* layer = layersById.value(QString::fromUtf8(id->GetString().GetRawString()), nullptr);
+        if (!layer) return;
+        QString displayName = cid.getPartName(layer->name);
+        if (displayName.isEmpty()) displayName = layer->name;
+        const float opacity = m_drawableOpacityOverrides.value(layer->name, layer->opacity);
+        writer.AddLayer(displayName, layer->canvasRect, layer->image,
+                        static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f)),
+                        CTextureExtractor::BlendModeToPsd(layer->drawableFlags),
+                        !layer->maskIndices.isEmpty(), false);
+    };
+
     if (groupByParts) {
-        // 使用 C2DTree 构建 Part 层级
         writer.SetMocName(mocPath);
         writer.SetCidName(cidPath);
-
-        // 构建 mesh name → 提取结果的映射
-        QMap<QString, const ExtractedLayer*> layerMap;
-        for (const ExtractedLayer& l : layers) {
-            layerMap.insert(l.name, &l);
+        const auto order = writer.GetSortDrawableIndexList(sortedIndices, runtimeModel);
+        const auto& names = writer.GetArtToName();
+        for (int i = 0; i < order.size(); ++i) {
+            if (order[i].second == CPsdWriteList::GroupStart) writer.AddGroupStart(names[i]);
+            else if (order[i].second == CPsdWriteList::GroupEnd) writer.AddGroupEnd();
+            else writeLayer(order[i].first);
         }
-
-        // 获取排序后的 drawable 列表（复用现有分组逻辑）
-        // 需要构建一个 sortedDrawableIndexList（按渲染顺序）
-        QVector<int> sortedIndices;
-        for (int i = 0; i < layers.size(); ++i) {
-            sortedIndices.append(layers[i].meshIndex);
-        }
-
-        // 利用已有的 C2DTree 分组排序
-        live2dstruct::C2DTree tree(sectionTable);
-        QMap<QString, int> weightMap;
-        QMap<QString, int> nameToMeshIdx;
-        for (int i = 0; i < layers.size(); ++i) {
-            weightMap.insert(layers[i].name, i);
-            nameToMeshIdx.insert(layers[i].name, i);
-        }
-
-        // 递归遍历 partRoot 写入 PSD
-        // 使用 lambda 递归
-        std::function<void(QList<live2dstruct::C2DTreeNode*>&)> writeTree;
-        writeTree = [&](QList<live2dstruct::C2DTreeNode*>& nodes) {
-            for (auto* node : nodes) {
-                if (dynamic_cast<live2dstruct::CArtMeshNode*>(node)) {
-                    QString meshName = node->getName();
-                    if (layerMap.contains(meshName)) {
-                        const ExtractedLayer* el = layerMap[meshName];
-                        QString displayName = cid.getPartName(meshName);
-                        if (displayName.isEmpty()) displayName = meshName;
-
-                        uint32_t blendKey = CTextureExtractor::BlendModeToPsd(el->drawableFlags);
-                        const float opacity = m_drawableOpacityOverrides.value(el->name, el->opacity);
-                        uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f));
-
-                        writer.AddLayer(displayName, el->canvasRect, el->image,
-                                       opacityByte, blendKey, !el->maskIndices.isEmpty(), false);
-                    }
-                } else if (dynamic_cast<live2dstruct::CPartsNode*>(node)) {
-                    QString partName = node->getName();
-                    QString displayName = cid.getPartName(partName);
-                    if (displayName.isEmpty()) displayName = partName;
-
-                    writer.AddGroupStart(displayName);
-                    writeTree(node->getChilds());
-                    writer.AddGroupEnd();
-                }
-            }
-        };
-
-        writeTree(tree.getPartRoot());
     } else {
-        // 扁平模式：按索引顺序输出所有图层
-        for (const ExtractedLayer& el : layers) {
-            QString displayName = cid.getPartName(el.name);
-            if (displayName.isEmpty()) displayName = el.name;
-
-            uint32_t blendKey = CTextureExtractor::BlendModeToPsd(el.drawableFlags);
-            const float opacity = m_drawableOpacityOverrides.value(el.name, el.opacity);
-            uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f));
-
-            writer.AddLayer(displayName, el.canvasRect, el.image,
-                           opacityByte, blendKey, !el.maskIndices.isEmpty(), false);
-        }
+        for (int index : sortedIndices) writeLayer(index);
     }
 
     bool ok = writer.WritePsd();

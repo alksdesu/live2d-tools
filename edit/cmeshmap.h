@@ -11,9 +11,7 @@ public:
     void insert(const QString& name,CDrawMesh* drawMesh){
         m_vetDrawMesh.insert(name,drawMesh);
     }
-    void insertReaderSort(const QString& name){
-        m_readerSort.push_back(name);
-    };
+    void SetRenderOrder(const QStringList& names);
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
     void SetShow(const QString& artName);

@@ -558,30 +558,16 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
 
 
     const csmInt32 drawableCount = GetModel()->GetDrawableCount();
-    const csmInt32* renderOrder = GetModel()->GetDrawableRenderOrders();
-
-    // インデックスを描画順でソート
-    std::vector<csmInt32> drawableOrder;
-    drawableOrder.reserve(drawableCount);
-    for (csmInt32 i = 0; i < drawableCount; ++i) drawableOrder.push_back(i);
-    const auto orderOf = [renderOrder](csmInt32 index) {
-        return renderOrder ? renderOrder[index] : index;
-    };
-    const auto overrideOrder = [this](csmInt32 index) {
-        const CubismIdHandle id = GetModel()->GetDrawableId(index);
-        if (!id) return -1;
-        const QString name(id->GetString().GetRawString());
-        const auto& overrides = LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides;
-        return overrides.contains(name) ? qBound(0, overrides.value(name), 1000) : -1;
-    };
-    std::stable_sort(drawableOrder.begin(), drawableOrder.end(), [&](csmInt32 left, csmInt32 right){
-        const int leftOverride = overrideOrder(left);
-        const int rightOverride = overrideOrder(right);
-        const int leftOrder = leftOverride >= 0 ? leftOverride : orderOf(left);
-        const int rightOrder = rightOverride >= 0 ? rightOverride : orderOf(right);
-        return leftOrder < rightOrder;
-    });
+    const QVector<int> drawableOrder = GetModel()->GetSortedDrawableIndices(
+        LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides);
+    _sortedDrawableIndexList.Resize(drawableCount);
     for (csmInt32 i = 0; i < drawableCount; ++i) _sortedDrawableIndexList[i] = drawableOrder[i];
+    QStringList names;
+    for (int index : drawableOrder) {
+        const auto id = GetModel()->GetDrawableId(index);
+        if (id) names.append(QString::fromUtf8(id->GetString().GetRawString()));
+    }
+    GetModel()->GetMeshMap()->SetRenderOrder(names);
 
 
     if(LAppDelegate::GetInstance()->IsOffScreen() && LAppDelegate::GetInstance()->m_IsPrintFenzu){

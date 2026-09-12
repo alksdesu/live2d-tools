@@ -50,7 +50,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 ## 当前证据
 
 - 基线分支 `main`：`b1bf663`。实施分支 `codex/editor-upgrade`。
-- 本机 macOS，没有现成 Qt；正在安装 Qt Base，先建立无需 Live2D Core 的 C++ 测试。
+- 本机 macOS 27 已安装 Qt 6.8.3。CMake 数据层与排序测试可独立运行，不依赖 Live2D Core/OpenGL。
 - 尚未验证 Windows GUI、PSD 在 Photoshop 中的回读或 cmo3 在 Cubism Editor 中的回读。
 
 ## 本轮已落地
@@ -59,6 +59,10 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Qt 工作台已接入空状态、最近模型、画布工具栏、结构树、参数搜索、参数历史撤销/重做、Inspector 和模型诊断面板。
 - 融合变形滑条按参数真实范围工作；结构树递归消费端带环检测；CMake 数据层测试可在无 OpenGL 环境运行。
 - Inspector 可编辑 ArtMesh 可见性和透明度，状态会进入实时预览、PSD/cmo3 导出及会话文件。
-- Inspector 可编辑 ArtMesh 绘制顺序，渲染器以稳定排序应用到预览和 PSD，cmo3/会话同步保存。
-- Windows CMake 配置包含 cmo3 CAFF/XML/PNG 回归测试，实际执行需 Windows + Qt 环境。
+- 绘制顺序不再混用 draw order 数值与 render order 排名；同值按 Core 排名处理，未编辑时完整保留 Core 原生顺序。预览、鼠标选取、渲染 PSD 和纹理提取 PSD 共用排序入口。
+- PSD 分组只合并连续的 Part 图层；交错时拆分文件夹，避免重新分组改变叠放顺序。过滤无效索引后，图层名称与记录同步生成；父级循环和深层级不会导致递归溢出。
+- Draw Order Group 的组内/组外编辑语义尚未实现完整支持，含组模型的编辑仍使用全局数值排序；cmo3 的组结构还原也未完成，不能据此宣称与 Cubism 完整兼容。
+- CMake 的 model_data、draw_order 两个测试目标均通过普通构建及 AddressSanitizer/UndefinedBehaviorSanitizer 检查，涵盖四个内置模型、交错分组、非法索引、循环父级、一万层嵌套。运行时代码另通过语法检查。
+- PSD 写入器增加 7000 条记录容量保护，普通图层和分组均计入上限，超限返回失败且不打开目标文件。Windows 的 psd_tests 覆盖三条超限入口、目标文件保留及写入器重置；本机仅完成语法检查，尚未执行该目标。
+- CMake 补齐 cmo3 测试所需的模型解析和 miniz 链接依赖。已在 macOS 直接链接 Qt Framework 执行 Wanko 的 cmo3 生成/CAFF 回读测试，检查 main.xml 与 PNG 条目；Qt 6.8.3 的 CMake 链接信息引用本机 SDK 缺失的 AGL，常规 cmo3 CTest 暂仍限定 Windows。
 - 仍需在 Windows + Cubism Editor/Photoshop 环境验证 GUI、OpenGL、PSD 与 cmo3 实际回读，并继续实现可保存编辑文档、网格/关键形编辑和完整动画时间轴。

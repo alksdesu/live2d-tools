@@ -9,6 +9,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL Test)
 
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
+    live2dstruct/cdraworder.cpp
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodelsession.cpp
     std/cmodeljson.cpp
@@ -22,6 +23,11 @@ if(MSVC)
     target_compile_options(model_data PUBLIC /utf-8)
 endif()
 
+add_library(psd_zip STATIC psd/psdSamples/Zip/Psdminiz.c)
+set_source_files_properties(psd/psdSamples/Zip/Psdminiz.c PROPERTIES LANGUAGE CXX)
+target_include_directories(psd_zip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(psd_zip PROPERTIES AUTOMOC OFF)
+
 add_library(cmo3_data STATIC
     cmo3/ccaffarchive.cpp
     cmo3/ccmo3entities.cpp
@@ -30,7 +36,8 @@ add_library(cmo3_data STATIC
     opengl/ctextureextractor.cpp
 )
 target_include_directories(cmo3_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(cmo3_data PUBLIC Qt6::Core Qt6::Gui)
+target_link_libraries(cmo3_data PUBLIC model_data Qt6::Core Qt6::Gui)
+target_link_libraries(cmo3_data PRIVATE psd_zip)
 
 add_library(ui_inspector STATIC
     ui/cinspectorpanel.cpp
@@ -46,7 +53,30 @@ if(BUILD_TESTING)
     target_link_libraries(model_data_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_data_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_data COMMAND model_data_tests)
+    add_executable(draw_order_tests tests/draw_order_tests.cpp)
+    target_link_libraries(draw_order_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(draw_order_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME draw_order COMMAND draw_order_tests)
     if(WIN32)
+        add_library(psd_data STATIC
+            psd/cpsdlist.cpp
+            psd/psdSamples/Exporter/PsdExport.cpp
+            psd/psdSamples/ImageUtil/PsdDecompressRle.cpp
+            psd/psdSamples/Interfaces/PsdAllocator.cpp
+            psd/psdSamples/Interfaces/PsdFile.cpp
+            psd/psdSamples/Interfaces/PsdMallocAllocator.cpp
+            psd/psdSamples/Interfaces/PsdNativeFile.cpp
+            psd/psdSamples/Util/PsdSyncFileWriter.cpp
+        )
+        target_include_directories(psd_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui PRIVATE psd_zip)
+        if(MSVC)
+            target_compile_options(psd_data PUBLIC /utf-8)
+        endif()
+        add_executable(psd_tests tests/psd_tests.cpp)
+        target_link_libraries(psd_tests PRIVATE psd_data Qt6::Test)
+        add_test(NAME psd COMMAND psd_tests)
+
         add_executable(cmo3_tests tests/cmo3_tests.cpp)
         target_link_libraries(cmo3_tests PRIVATE cmo3_data Qt6::Test)
         target_compile_definitions(cmo3_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

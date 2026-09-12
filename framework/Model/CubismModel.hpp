@@ -10,6 +10,7 @@
 #include "framework/Id/CubismId.hpp"
 #include "edit/cmeshmap.h"
 #include <QMap>
+#include <QHash>
 
 
 namespace Live2D { namespace Cubism { namespace Framework {
@@ -115,6 +116,8 @@ public:
     csmInt32            GetDrawableCount() const;
     CubismIdHandle      GetDrawableId(csmInt32 drawableIndex) const;
     const csmInt32*     GetDrawableRenderOrders() const;
+    const csmInt32*     GetDrawableDrawOrders() const;
+    QVector<int> GetSortedDrawableIndices(const QHash<QString, int>& overrides = {}) const;
     csmInt32            GetDrawableTextureIndices(csmInt32 drawableIndex) const;
     csmInt32            GetDrawableTextureIndex(csmInt32 drawableIndex) const;
     csmInt32            GetDrawableVertexIndexCount(csmInt32 drawableIndex) const;

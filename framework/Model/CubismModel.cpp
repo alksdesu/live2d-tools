@@ -9,6 +9,7 @@
 #include "framework/Rendering/CubismRenderer.hpp"
 #include "framework/Id/CubismId.hpp"
 #include "framework/Id/CubismIdManager.hpp"
+#include "live2dstruct/cdraworder.h"
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -103,30 +104,13 @@ void CubismModel::InitMesh()
     }
 
 
-    const csmInt32* renderOrder = GetDrawableRenderOrders();
-    // インデックスを描画順でソート
-    std::vector<int> sortedDrawableIndexList;
-    sortedDrawableIndexList.resize(drawableCount,0);
-    if (!renderOrder) return;
-    std::vector<bool> seenOrder(drawableCount, false);
-    for (csmInt32 i = 0; i < drawableCount; ++i)
-    {
-        const csmInt32 order = renderOrder[i];
-        if (order < 0 || order >= drawableCount || seenOrder[order]) continue;
-        sortedDrawableIndexList[order] = i;
-        seenOrder[order] = true;
-    }
-
-    for(int index = 0 ;index < drawableCount;index++){
-        if (!seenOrder[index]) continue;
-        int ind = sortedDrawableIndexList[index];
+    QStringList names;
+    for (int ind : GetSortedDrawableIndices()) {
         const CubismIdHandle drawableId = GetDrawableId(ind);
         if (!drawableId) continue;
-        QString drawName(drawableId->GetString().GetRawString());
-
-        m_vetDrawMesh.insertReaderSort(drawName);
-
+        names.append(QString::fromUtf8(drawableId->GetString().GetRawString()));
     }
+    m_vetDrawMesh.SetRenderOrder(names);
 
 
 }
@@ -636,6 +620,27 @@ const csmInt32* CubismModel::GetDrawableRenderOrders() const
 {
     const csmInt32* renderOrders = Core::csmGetDrawableRenderOrders(_model);
     return renderOrders;
+}
+
+const csmInt32* CubismModel::GetDrawableDrawOrders() const
+{
+    return Core::csmGetDrawableDrawOrders(_model);
+}
+
+QVector<int> CubismModel::GetSortedDrawableIndices(const QHash<QString, int>& overrides) const
+{
+    const csmInt32* drawOrders = GetDrawableDrawOrders();
+    const csmInt32* renderOrders = GetDrawableRenderOrders();
+    QVector<live2dstruct::CDrawableOrder> entries;
+    const int count = GetDrawableCount();
+    entries.reserve(count);
+    for (int index = 0; index < count; ++index) {
+        const CubismIdHandle id = GetDrawableId(index);
+        entries.append({id ? QString::fromUtf8(id->GetString().GetRawString()) : QString(),
+                        drawOrders ? drawOrders[index] : 0,
+                        renderOrders ? renderOrders[index] : index});
+    }
+    return live2dstruct::ResolveDrawableOrder(entries, drawOrders ? overrides : QHash<QString, int>());
 }
 
 csmInt32 CubismModel::GetDrawableCount() const

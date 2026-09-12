@@ -23,6 +23,8 @@ public:
     bool CreatePsd();
 
 private:
+    bool CanAppendLayer();
+    bool m_failed = false;
     unsigned int m_canvasWidth;
     unsigned int m_canvasHeight;
     unsigned int m_bitsPerChannel;

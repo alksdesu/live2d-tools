@@ -22,7 +22,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Model structure tree (Part / ArtMesh / Deformer hierarchy) with click-to-highlight
 - Searchable multi-select structure tree with visibility controls and a Cubism-style Inspector/diagnostics view
 - Inspector edits for ArtMesh visibility and opacity are applied to preview, PSD and cmo3 export
-- Inspector draw-order edits are applied with stable ordering to preview, PSD, cmo3 and sessions
+- Inspector draw-order edits use drawable order values, with native render order breaking ties; preview, picking and PSD share the same ordering, and overrides are saved to cmo3/sessions. Editing models with Draw Order Groups remains incomplete.
 - Searchable and collapsible parameter groups with undo/redo history
 - Versioned editor sessions (parameters, visibility and camera) with recent-model shortcuts and persistent workspace layout/theme
 - Texture atlas viewer: zoom/pan, UV wireframe overlay, click the atlas to locate an ArtMesh (three-way linkage with the tree and main view), PNG export
@@ -31,7 +31,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 
 - Two layer modes:
   - **All layers** — every drawable flattened in render order
-  - **Grouped** — Part hierarchy preserved as PSD layer groups
+  - **Grouped** — contiguous layers follow the Part hierarchy; interleaved Parts are split into multiple folders to preserve layer stacking
 - **Parameter snapshot export** — export the pose currently set via sliders, with automatic effects disabled
 - **Texture extraction mode** — extract original textures without deformation, for high-quality asset ripping
 - **Cubism-importable mode** — embeds an sRGB ICC profile, Unicode layer names (luni) and deduplicated layer names, so the exported PSD can be imported back into Cubism Editor
@@ -137,7 +137,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 模型结构树查看（Part / ArtMesh / Deformer 层级），点击高亮对应网格
 - 结构树支持名称/ID 搜索、多选和可见性控制，Inspector 显示几何、Keyform、绘制顺序、混合/剔除、蒙版等信息，模型检查面板报告结构错误
 - Inspector 可直接修改 ArtMesh 可见性和透明度，结果同步到实时预览、PSD 与 cmo3 导出
-- Inspector 可修改 ArtMesh 绘制顺序，结果同步到预览、PSD、cmo3 和工作会话
+- Inspector 绘制顺序编辑按 draw order 数值排序，同值沿用 Core 前后关系；预览、选取、PSD 共用排序，覆盖值保存至 cmo3 和工作会话。含 Draw Order Group 模型的编辑语义尚未完整支持。
 - 参数分组可折叠，支持名称/ID 搜索、撤销/重做；可保存和载入版本化工作会话（参数、可见性、视图）
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
 - 纹理图集查看：缩放/平移、UV 线框叠加、点击图集反查 ArtMesh（与结构树/主视图三方联动）、导出 PNG
@@ -146,7 +146,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 
 - 两种图层模式：
   - **全部图层** — 按渲染顺序平铺所有 drawable
-  - **按分组导出** — 保留 Part 层级结构为 PSD 图层组
+  - **按分组导出** — 连续图层按 Part 层级分组；前后顺序交错的 Part 拆成多个文件夹，保留图层叠放顺序
 - **参数快照导出** — 用当前滑条调整的姿态导出，禁用自动效果
 - **纹理提取模式** — 直接提取原始纹理，无变形，适合高质量素材提取
 - **Cubism 可导入模式** — 嵌入 sRGB ICC 配置、Unicode 图层名（luni）、图层名去重，保证导出的 PSD 能再导回 Cubism Editor

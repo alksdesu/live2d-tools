@@ -3,10 +3,7 @@
 #include "psd/cpsdlist.h"
 #include <QVector>
 #include <QList>
-#include "live2dstruct/tree/c2dtree.h"
-#include "live2dstruct/tree/c2dtreenode.h"
-#include "live2dstruct/csectiontable.h"
-#include "live2dstruct/util/cfilereader.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "ui/para/ccidjson.h"
 #include <QPair>
 #include "framework/Model/CubismModel.hpp"
@@ -56,20 +53,13 @@ public:
 
 
 private:
-    int  Sort(QList<C2DTreeNode*> &part);
-    void SetLogSort(QList<C2DTreeNode*> &part);
     QString UniqueName(const QString& name);
 
 
 private:
     CPsdList* m_list;
-    QMap<QString,int > m_sort;
     QHash<QString,int> m_nameUse;
     bool m_cubismCompat = false;
-    const QString m_nameGroupStart = "&Group&Start&";
-    const QString m_nameGroupEnd ="&Group&End&";
-
-    QVector<QString> m_logsort;
     QVector<QString> partNameToName;
     QVector<QString> m_groupNameStack;
 

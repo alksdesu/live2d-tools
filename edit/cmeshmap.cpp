@@ -2,6 +2,17 @@
 
 CMeshMap::CMeshMap() {}
 
+void CMeshMap::SetRenderOrder(const QStringList& names)
+{
+    m_readerSort.clear();
+    QSet<QString> seen;
+    for (const QString& name : names) {
+        if (seen.contains(name) || !m_vetDrawMesh.value(name, nullptr)) continue;
+        seen.insert(name);
+        m_readerSort.append(name);
+    }
+}
+
 void CMeshMap::clear()
 {
     for (QMap<QString, CDrawMesh*>::iterator i = m_vetDrawMesh.begin(); i != m_vetDrawMesh.end(); ++i) {
