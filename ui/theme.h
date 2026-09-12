@@ -22,6 +22,8 @@ inline QString globalStyleSheet(bool dark = false)
         {QStringLiteral("@accentHover@"), QStringLiteral("#0B63D9")},
         {QStringLiteral("@accentSoft@"), QStringLiteral("#E8F1FF")},
         {QStringLiteral("@danger@"), QStringLiteral("#D92D20")},
+        {QStringLiteral("@dangerSoft@"), QStringLiteral("#FDE8E7")},
+        {QStringLiteral("@accentText@"), QStringLiteral("#FFFFFF")},
         {QStringLiteral("@focus@"), QStringLiteral("#8DBBFF")},
         {QStringLiteral("@radius@"), QStringLiteral("8px")},
         {QStringLiteral("@radiusSmall@"), QStringLiteral("6px")},
@@ -39,6 +41,7 @@ inline QString globalStyleSheet(bool dark = false)
         token.insert(QStringLiteral("@textSubtle@"), QStringLiteral("#8994A3"));
         token.insert(QStringLiteral("@accentSoft@"), QStringLiteral("#173B70"));
         token.insert(QStringLiteral("@focus@"), QStringLiteral("#5B9DFF"));
+        token.insert(QStringLiteral("@dangerSoft@"), QStringLiteral("#52211F"));
     }
 
     QString style = QStringLiteral(R"(
@@ -112,7 +115,7 @@ QPushButton:disabled {
 
 QPushButton#primaryBtn {
     background: @accent@;
-    color: #FFFFFF;
+    color: @accentText@;
     border-color: @accent@;
     font-weight: 600;
 }
@@ -175,6 +178,12 @@ QLabel#canvasMeta, QLabel#inspectorEmpty {
     color: @textSubtle@;
 }
 
+QLabel#physicsFpsLabel {
+    color: @text@;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
 QLabel#inspectorEmpty {
     padding: 8px;
 }
@@ -225,7 +234,7 @@ QPushButton#winBtnMin:hover, QPushButton#winBtnMax:hover {
 }
 
 QPushButton#winBtnClose:hover {
-    background: #FDE8E7;
+    background: @dangerSoft@;
     color: @danger@;
 }
 
@@ -451,7 +460,7 @@ QDialog, QMessageBox {
 }
 QToolTip {
     background: @text@;
-    color: #FFFFFF;
+    color: @accentText@;
     border: none;
     border-radius: @radiusSmall@;
     padding: 6px 8px;

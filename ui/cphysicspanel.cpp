@@ -17,7 +17,7 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
 
     // FPS
     m_fpsLabel = new QLabel("计算FPS: -", wrapper);
-    m_fpsLabel->setStyleSheet("font-weight: bold; margin-bottom: 4px;");
+    m_fpsLabel->setObjectName(QStringLiteral("physicsFpsLabel"));
     mainLayout->addWidget(m_fpsLabel);
 
     // 重力/风力控制
