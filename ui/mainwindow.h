@@ -22,6 +22,7 @@ class CTexturePanel;
 class CInspectorPanel;
 class CModelDiagnosticsPanel;
 class CCidJson;
+class QCloseEvent;
 
 class MainWindow : public QMainWindow
 {
@@ -46,7 +47,8 @@ private slots:
 
 private:
     void RestDock(const QString& name);
-    void CloseModel();
+    bool CloseModel();
+    bool ConfirmCloseWithUnsavedChanges();
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
@@ -123,5 +125,6 @@ protected:
     virtual void dropEvent(QDropEvent *event) override;
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
     bool eventFilter(QObject* obj, QEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 };
 #endif // MAINWINDOW_H

@@ -45,6 +45,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
+#include <QCloseEvent>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
@@ -142,8 +143,7 @@ void MainWindow::OpenModelWithConfirm(const QString &jsonPath)
         "已加载模型，是否关闭当前模型并打开新模型？",
         QMessageBox::Yes | QMessageBox::No);
     if (reply == QMessageBox::Yes) {
-        CloseModel();
-        RestDock(jsonPath);
+        if (CloseModel()) RestDock(jsonPath);
     }
 }
 
@@ -546,6 +546,24 @@ void MainWindow::on_actionCloseModel_triggered()
     CloseModel();
 }
 
+bool MainWindow::ConfirmCloseWithUnsavedChanges()
+{
+    if (!m_sessionDirty) return true;
+    QMessageBox prompt(this);
+    prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
+    prompt.setText(QStringLiteral("当前模型有未保存的编辑。"));
+    prompt.setInformativeText(QStringLiteral("关闭前是否保存工作会话？"));
+    QPushButton* save = prompt.addButton(QStringLiteral("保存"), QMessageBox::AcceptRole);
+    prompt.addButton(QStringLiteral("放弃"), QMessageBox::DestructiveRole);
+    prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+    prompt.exec();
+    if (prompt.clickedButton() == save) {
+        on_actionSaveSession_triggered();
+        return !m_sessionDirty;
+    }
+    return prompt.buttonRole(prompt.clickedButton()) == QMessageBox::DestructiveRole;
+}
+
 QWidget* MainWindow::createEmptyState()
 {
     QWidget* page = new QWidget(this);
@@ -604,9 +622,10 @@ QWidget* MainWindow::createEmptyState()
     return page;
 }
 
-void MainWindow::CloseModel()
+bool MainWindow::CloseModel()
 {
-    if(!m_openglwindows) return;
+    if (!m_openglwindows) return true;
+    if (!ConfirmCloseWithUnsavedChanges()) return false;
 
     // 停止渲染定时器
     m_openglwindows->m_timer.stop();
@@ -660,6 +679,13 @@ void MainWindow::CloseModel()
     setCentralWidget(m_placeholder);
 
     statusBar()->showMessage("模型已关闭");
+    return true;
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (CloseModel()) event->accept();
+    else event->ignore();
 }
 
 void MainWindow::RestDock(const QString &name)
