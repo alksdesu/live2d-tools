@@ -4,6 +4,7 @@
 #include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <cmath>
 
 namespace live2dstruct {
@@ -54,6 +55,17 @@ QByteArray CModelSession::ToJson() const
     QJsonObject drawOrderObject;
     for (auto it = drawableDrawOrder.cbegin(); it != drawableDrawOrder.cend(); ++it) drawOrderObject.insert(it.key(), it.value());
     root.insert(QStringLiteral("drawableDrawOrder"), drawOrderObject);
+    QJsonObject keyformObject;
+    for (auto meshIt = drawableKeyformPositions.cbegin(); meshIt != drawableKeyformPositions.cend(); ++meshIt) {
+        QJsonArray keyforms;
+        for (const QVector<float>& positions : meshIt.value()) {
+            QJsonArray values;
+            for (float value : positions) values.append(static_cast<double>(value));
+            keyforms.append(values);
+        }
+        keyformObject.insert(meshIt.key(), keyforms);
+    }
+    root.insert(QStringLiteral("drawableKeyformPositions"), keyformObject);
     QJsonObject view;
     view.insert(QStringLiteral("scale"), static_cast<double>(viewScale));
     view.insert(QStringLiteral("x"), viewPosition.x());
@@ -100,10 +112,12 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject visibilityObject;
     QJsonObject opacityObject;
     QJsonObject drawOrderObject;
+    QJsonObject keyformObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
         !readObject(root, QStringLiteral("drawableOpacity"), &opacityObject, error) ||
-        !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error)) return false;
+        !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error) ||
+        !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         double value = 0.0;
         if (!readNumber(parameterObject.value(key), &value)) {
@@ -134,6 +148,42 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             return false;
         }
         result.drawableDrawOrder.insert(key, static_cast<int>(value));
+    }
+    constexpr int kMaxKeyformMeshes = 100000;
+    constexpr int kMaxKeyformsPerMesh = 10000;
+    constexpr int kMaxPositionsPerKeyform = 2000000;
+    if (keyformObject.size() > kMaxKeyformMeshes) {
+        setError(error, QStringLiteral("关键形网格数量超出限制"));
+        return false;
+    }
+    for (const QString& key : keyformObject.keys()) {
+        const QJsonValue meshValue = keyformObject.value(key);
+        if (!meshValue.isArray() || meshValue.toArray().size() > kMaxKeyformsPerMesh) {
+            setError(error, QStringLiteral("关键形数组类型或数量错误：%1").arg(key));
+            return false;
+        }
+        QVector<QVector<float>> keyforms;
+        const QJsonArray keyformArray = meshValue.toArray();
+        keyforms.reserve(keyformArray.size());
+        for (const QJsonValue& keyformValue : keyformArray) {
+            if (!keyformValue.isArray() || keyformValue.toArray().size() > kMaxPositionsPerKeyform) {
+                setError(error, QStringLiteral("关键形位置数组类型或数量错误：%1").arg(key));
+                return false;
+            }
+            QVector<float> positions;
+            const QJsonArray positionArray = keyformValue.toArray();
+            positions.reserve(positionArray.size());
+            for (const QJsonValue& positionValue : positionArray) {
+                double value = 0.0;
+                if (!readNumber(positionValue, &value)) {
+                    setError(error, QStringLiteral("关键形位置不是有限数字：%1").arg(key));
+                    return false;
+                }
+                positions.append(static_cast<float>(value));
+            }
+            keyforms.append(positions);
+        }
+        result.drawableKeyformPositions.insert(key, keyforms);
     }
     QJsonObject view;
     if (!readObject(root, QStringLiteral("view"), &view, error)) return false;

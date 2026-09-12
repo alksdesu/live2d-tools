@@ -275,6 +275,7 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.hiddenIds = m_document.HiddenIds();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
     options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();
+    options.drawableKeyformPositionOverrides = m_document.DrawableKeyformPositionOverrides();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -311,6 +312,7 @@ void MainWindow::on_actionSaveSession_triggered()
     }
     session.drawableOpacity = m_document.DrawableOpacityOverrides();
     session.drawableDrawOrder = m_document.DrawableDrawOrderOverrides();
+    session.drawableKeyformPositions = m_document.DrawableKeyformPositionOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
@@ -353,6 +355,11 @@ void MainWindow::on_actionLoadSession_triggered()
         for (auto it = session.drawableDrawOrder.cbegin(); it != session.drawableDrawOrder.cend(); ++it) {
             m_document.SetDrawableDrawOrder(it.key(), it.value());
             if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(it.key(), it.value());
+        }
+        for (auto meshIt = session.drawableKeyformPositions.cbegin(); meshIt != session.drawableKeyformPositions.cend(); ++meshIt) {
+            for (int keyformIndex = 0; keyformIndex < meshIt.value().size(); ++keyformIndex) {
+                m_document.SetDrawableKeyformPositions(meshIt.key(), keyformIndex, meshIt.value().at(keyformIndex));
+            }
         }
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));

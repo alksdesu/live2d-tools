@@ -89,6 +89,7 @@ private:
     QString deformerTargetId(int parentDeformerIndex) const;
     int partParentIndex(int partIndex) const;
     int objectPartIndex(int parentPartIndex) const;
+    QVector<float> meshKeyformPositions(const CArt_meshes* mesh, int keyformIndex) const;
 
     // ---- main 段 ----
     void writeMain();
@@ -359,6 +360,29 @@ int Generator::objectPartIndex(int parentPartIndex) const
 {
     return parentPartIndex >= 0 && parentPartIndex < m_partParentIndices.size()
         ? parentPartIndex : -1;
+}
+
+QVector<float> Generator::meshKeyformPositions(const CArt_meshes* mesh, int keyformIndex) const
+{
+    if (!mesh || keyformIndex < 0 || keyformIndex >= mesh->keyform_sources_counts) return {};
+    const auto overrideIt = m_opt.drawableKeyformPositionOverrides.constFind(mesh->ids);
+    if (overrideIt != m_opt.drawableKeyformPositionOverrides.cend() && keyformIndex < overrideIt->size()) {
+        const QVector<float>& positions = overrideIt->at(keyformIndex);
+        if (positions.size() == mesh->vertex_counts * 2) return positions;
+    }
+    if (!validSlice(mesh->keyform_sources_begin_indices, mesh->keyform_sources_counts,
+                    m_table.art_mesh_keyforms.size())) return {};
+    const CArt_mesh_keyforms* keyform = m_table.art_mesh_keyforms[
+        mesh->keyform_sources_begin_indices + keyformIndex];
+    if (!validSlice(keyform->keyform_position_sources_begin_indices, mesh->vertex_counts * 2,
+                    static_cast<int>(m_table.keyform_positions->xys.size()))) return {};
+    QVector<float> positions;
+    positions.reserve(mesh->vertex_counts * 2);
+    for (int v = 0; v < mesh->vertex_counts * 2; ++v) {
+        positions.append(m_table.keyform_positions->GetData(
+            keyform->keyform_position_sources_begin_indices + v));
+    }
+    return positions;
 }
 
 QString Generator::writeKeyformGrid(const SBindingChain& chain, const QVector<QString>& formGuidIds)
@@ -671,11 +695,11 @@ void Generator::writeArtMeshEntities()
             // keyform positions：原始局部值（父变形器坐标系 / 挂根时为像素画布系換算）
             QVector<float> positions;
             positions.reserve(vertexCount * 2);
-            const int posBegin = kf->keyform_position_sources_begin_indices;
+            const QVector<float> sourcePositions = meshKeyformPositions(mesh, k);
             const bool onCanvas = (mesh->parent_deformer_indices < 0);
             for (int v = 0; v < vertexCount; ++v) {
-                const float mx = m_table.keyform_positions->GetData(posBegin + v * 2);
-                const float my = m_table.keyform_positions->GetData(posBegin + v * 2 + 1);
+                const float mx = sourcePositions[v * 2];
+                const float my = sourcePositions[v * 2 + 1];
                 if (onCanvas) {
                     positions.append((mx + ox) * ppu);
                     positions.append((oy - my) * ppu);
@@ -691,14 +715,12 @@ void Generator::writeArtMeshEntities()
 
         // 顶层 positions（默认 keyform，画布像素坐标）
         {
-            const CArt_mesh_keyforms* kf0 = m_table.art_mesh_keyforms[
-                mesh->keyform_sources_begin_indices];
             QVector<float> pixelPositions;
             pixelPositions.reserve(vertexCount * 2);
-            const int posBegin = kf0->keyform_position_sources_begin_indices;
+            const QVector<float> sourcePositions = meshKeyformPositions(mesh, 0);
             for (int v = 0; v < vertexCount; ++v) {
-                const float mx = m_table.keyform_positions->GetData(posBegin + v * 2);
-                const float my = m_table.keyform_positions->GetData(posBegin + v * 2 + 1);
+                const float mx = sourcePositions[v * 2];
+                const float my = sourcePositions[v * 2 + 1];
                 pixelPositions.append((mx + ox) * ppu);
                 pixelPositions.append((oy - my) * ppu);
             }

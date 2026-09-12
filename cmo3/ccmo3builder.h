@@ -4,7 +4,7 @@
 #include <QString>
 #include <QSet>
 #include <QHash>
-#include <QHash>
+#include <QVector>
 
 namespace live2dstruct {
 class CSectionTable;
@@ -27,6 +27,7 @@ public:
         QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
         QHash<QString, float> drawableOpacityOverrides;
         QHash<QString, int> drawableDrawOrderOverrides;
+        QHash<QString, QVector<QVector<float>>> drawableKeyformPositionOverrides;
     };
 
     // 全流程执行；失败时 outError 带原因

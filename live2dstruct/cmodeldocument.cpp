@@ -40,6 +40,7 @@ void CModelDocument::Clear()
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
+    m_drawableKeyformPositionOverrides.clear();
     ClearEditHistory();
 }
 
@@ -208,6 +209,36 @@ float CModelDocument::ParameterValue(const QString& id) const
     return 0.0f;
 }
 
+QVector<float> CModelDocument::DrawableKeyformPositions(const QString& id, int keyformIndex) const
+{
+    if (keyformIndex < 0) return {};
+    const auto overrideIt = m_drawableKeyformPositionOverrides.constFind(id);
+    if (overrideIt != m_drawableKeyformPositionOverrides.cend() && keyformIndex < overrideIt->size()) {
+        return overrideIt->at(keyformIndex);
+    }
+    for (const CModelDrawable& drawable : m_drawables) {
+        if (drawable.id != id || keyformIndex >= drawable.keyforms.size()) continue;
+        return drawable.keyforms.at(keyformIndex).positions;
+    }
+    return {};
+}
+
+bool CModelDocument::SetDrawableKeyformPositions(const QString& id, int keyformIndex,
+                                                 const QVector<float>& positions)
+{
+    if (keyformIndex < 0) return false;
+    for (const CModelDrawable& drawable : m_drawables) {
+        if (drawable.id != id || keyformIndex >= drawable.keyforms.size()) continue;
+        if (positions.size() != drawable.vertexCount * 2) return false;
+        for (float value : positions) if (!std::isfinite(value)) return false;
+        auto& overrides = m_drawableKeyformPositionOverrides[id];
+        if (overrides.size() < drawable.keyforms.size()) overrides.resize(drawable.keyforms.size());
+        overrides[keyformIndex] = positions;
+        return true;
+    }
+    return false;
+}
+
 bool CModelDocument::SetDeformerVisible(const QString& id, bool visible)
 {
     for (CModelDeformer& deformer : m_deformers) {
@@ -284,6 +315,10 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     if (edit.field == CModelEdit::ParameterValue) {
         if (edit.type != QLatin1String("parameter") || !value.canConvert<float>()) return false;
         return SetParameterValue(edit.name, value.toFloat());
+    }
+    if (edit.field == CModelEdit::KeyformPositions) {
+        if (edit.type != QLatin1String("artmesh") || !value.canConvert<QVector<float>>()) return false;
+        return SetDrawableKeyformPositions(edit.name, edit.index, value.value<QVector<float>>());
     }
     return false;
 }

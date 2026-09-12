@@ -148,6 +148,20 @@ private slots:
         QCOMPARE(document.ParameterValue(parameter.id), parameterAfter);
         QVERIFY(!document.ExecuteEdit({parameter.id, QStringLiteral("parameter"), live2dstruct::CModelEdit::ParameterValue,
                                        parameterAfter, parameter.maximum + 1.0f}));
+        QVERIFY(!drawable.keyforms.isEmpty());
+        const QVector<float> keyformBefore = document.DrawableKeyformPositions(id, 0);
+        QVERIFY(keyformBefore.size() == drawable.vertexCount * 2);
+        QVector<float> keyformAfter = keyformBefore;
+        keyformAfter[0] += 0.125f;
+        QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::KeyformPositions,
+                                       QVariant::fromValue(keyformBefore), QVariant::fromValue(keyformAfter), 0}));
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), keyformAfter);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), keyformBefore);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), keyformAfter);
+        QVERIFY(!document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::KeyformPositions,
+                                       QVariant::fromValue(keyformAfter), QVariant::fromValue(QVector<float>(1, 0.0f)), 0}));
         document.ClearEditHistory();
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(!document.CanRedoEdit());
@@ -175,6 +189,7 @@ private slots:
         source.visibility.insert(QStringLiteral("artmesh|Body"), false);
         source.drawableOpacity.insert(QStringLiteral("Body"), 0.42f);
         source.drawableDrawOrder.insert(QStringLiteral("Body"), 720);
+        source.drawableKeyformPositions.insert(QStringLiteral("Body"), {{0.0f, 1.0f, 2.0f, 3.0f}, {4.0f, 5.0f}});
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -186,6 +201,7 @@ private slots:
         QCOMPARE(decoded.visibility, source.visibility);
         QCOMPARE(decoded.drawableOpacity, source.drawableOpacity);
         QCOMPARE(decoded.drawableDrawOrder, source.drawableDrawOrder);
+        QCOMPARE(decoded.drawableKeyformPositions, source.drawableKeyformPositions);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 
@@ -198,6 +214,7 @@ private slots:
         QCOMPARE(loaded.parameters, source.parameters);
         QCOMPARE(loaded.drawableOpacity, source.drawableOpacity);
         QCOMPARE(loaded.drawableDrawOrder, source.drawableDrawOrder);
+        QCOMPARE(loaded.drawableKeyformPositions, source.drawableKeyformPositions);
     }
 
     void sessionRejectsInvalidValues()
@@ -213,8 +230,13 @@ private slots:
             R"({"version":1,"drawableDrawOrder":{"Body":1.5}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"view":{"scale":0}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableKeyformPositions":{"Body":[[0,"bad"]]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableKeyformPositions":{"Body":"bad"}})", &session, &error));
         QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &session, &error));
         QCOMPARE(session.viewScale, 1.0f);
+        QVERIFY(session.drawableKeyformPositions.isEmpty());
     }
 
     void sessionSaveFailureLeavesExistingFile()

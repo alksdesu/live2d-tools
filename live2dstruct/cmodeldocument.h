@@ -97,12 +97,13 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, KeyformPositions };
     QString name;
     QString type;
     Field field = Visibility;
     QVariant before;
     QVariant after;
+    int index = -1;
 };
 
 class CModelDocument
@@ -118,6 +119,11 @@ public:
     bool SetParameterValue(const QString& id, float value);
     float ParameterValue(const QString& id) const;
     const QHash<QString, float>& ParameterValues() const { return m_parameterValues; }
+    QVector<float> DrawableKeyformPositions(const QString& id, int keyformIndex) const;
+    bool SetDrawableKeyformPositions(const QString& id, int keyformIndex, const QVector<float>& positions);
+    const QHash<QString, QVector<QVector<float>>>& DrawableKeyformPositionOverrides() const {
+        return m_drawableKeyformPositionOverrides;
+    }
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
@@ -155,6 +161,7 @@ private:
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, float> m_parameterValues;
+    QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;
 

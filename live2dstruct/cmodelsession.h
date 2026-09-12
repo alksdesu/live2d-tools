@@ -6,6 +6,7 @@
 #include <QByteArray>
 #include <QPointF>
 #include <QString>
+#include <QVector>
 
 namespace live2dstruct {
 
@@ -17,6 +18,7 @@ struct CModelSession
     QMap<QString, bool> visibility;
     QHash<QString, float> drawableOpacity;
     QHash<QString, int> drawableDrawOrder;
+    QHash<QString, QVector<QVector<float>>> drawableKeyformPositions;
     float viewScale = 1.0f;
     QPointF viewPosition;
 
