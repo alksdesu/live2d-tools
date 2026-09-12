@@ -525,6 +525,10 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                 break;
             }
         }
+        if (!drawable.indices.isEmpty() && drawable.indices.size() % 3 != 0) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_triangle_count"),
+                                 QStringLiteral("ArtMesh 索引数量不是三角形的倍数"), i});
+        }
         for (int mask : drawable.maskIndices) {
             if (!inRange(mask, m_drawables.size())) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_range"),
@@ -543,6 +547,13 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_missing"),
                                  QStringLiteral("ArtMesh 缺少三角形索引"), i});
         }
+        for (float uv : drawable.uvs) {
+            if (!std::isfinite(uv)) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("uv_nan"),
+                                     QStringLiteral("ArtMesh UV 包含非有限数值"), i});
+                break;
+            }
+        }
         if (!std::isfinite(drawable.opacity) || drawable.opacity < -0.001f || drawable.opacity > 1.001f) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("opacity_range"),
                                  QStringLiteral("ArtMesh 默认透明度超出 0 到 1 范围"), i});
@@ -556,6 +567,15 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             if (!std::isfinite(keyform.opacity) || !std::isfinite(keyform.drawOrder)) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_nan"),
                                      QStringLiteral("关键形包含非有限数值"), i});
+                break;
+            }
+            bool finitePositions = true;
+            for (float value : keyform.positions) {
+                if (!std::isfinite(value)) { finitePositions = false; break; }
+            }
+            if (!finitePositions) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_position_nan"),
+                                     QStringLiteral("关键形顶点包含非有限数值"), i});
                 break;
             }
         }
@@ -646,7 +666,8 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_range"),
                                  QStringLiteral("Draw Order Group 范围无效"), i});
         }
-        if (group.objectCount < 0 || group.totalObjectCount < group.objectCount || !group.objectsValid) {
+        if (group.objectCount < 0 || group.totalObjectCount < group.objectCount ||
+            group.objectCount != group.objects.size() || !group.objectsValid) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_objects"),
                                  QStringLiteral("Draw Order Group 成员切片无效"), i});
             continue;
