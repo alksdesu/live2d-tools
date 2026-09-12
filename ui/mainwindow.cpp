@@ -962,7 +962,9 @@ void MainWindow::RestDock(const QString &name)
 
     // 加载物理设置（立即，不需要 GL）
     if(m_physicsPanel && !modeljson.m_Physics.isEmpty()){
-        m_physicsPanel->LoadPhysics(modeljson.m_parentPath + "/" + modeljson.m_Physics);
+        QString physicsError;
+        if (!m_physicsPanel->LoadPhysics(modeljson.m_parentPath + "/" + modeljson.m_Physics, &physicsError))
+            statusBar()->showMessage(physicsError, 8000);
     }
 
     // 加载融合变形信息（立即，不需要 GL）
@@ -984,7 +986,9 @@ void MainWindow::RestDock(const QString &name)
         if(m_motionPanel) m_motionPanel->BuildLists();
         // Pose 切换
         if(m_motionPanel && !posePath.isEmpty()){
-            m_motionPanel->BuildPoseGroups(posePath);
+            QString poseError;
+            if (!m_motionPanel->BuildPoseGroups(posePath, &poseError))
+                statusBar()->showMessage(poseError, 8000);
         }
         // 加载纹理（GL 初始化后 TextureManager 才有数据）；moc 用于 UV 线框解析
         if(m_texturePanel){

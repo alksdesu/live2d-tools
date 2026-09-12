@@ -154,7 +154,7 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     connect(m_vertexTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateVertexCell);
 }
 
-void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
+bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
 {
     m_physicsPath = physicsPath;
     m_physicsDocument = {};
@@ -169,17 +169,25 @@ void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
     if(!file.open(QIODevice::ReadOnly | QIODevice::Text)){
         qDebug() << "[PhysicsPanel] Failed to open" << physicsPath;
         m_updating = false;
-        return;
+        if (error) *error = QStringLiteral("无法打开物理配置：%1").arg(file.errorString());
+        return false;
     }
 
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
     file.close();
-    if(doc.isNull() || !doc.isObject()) {
+    if(parseError.error != QJsonParseError::NoError || doc.isNull() || !doc.isObject()) {
         m_updating = false;
-        return;
+        if (error) *error = QStringLiteral("物理配置 JSON 无效：%1").arg(parseError.errorString());
+        return false;
     }
 
     QJsonObject root = doc.object();
+    if (!root.value(QStringLiteral("PhysicsSettings")).isArray()) {
+        m_updating = false;
+        if (error) *error = QStringLiteral("物理配置缺少 PhysicsSettings 数组");
+        return false;
+    }
     m_physicsDocument = root;
     QJsonObject meta = root["Meta"].toObject();
 
@@ -239,6 +247,7 @@ void CPhysicsPanel::LoadPhysics(const QString& physicsPath)
         showGroupDetail(0);
     }
     m_updating = false;
+    return true;
 }
 
 void CPhysicsPanel::updateForceDocument()

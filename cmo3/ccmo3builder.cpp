@@ -27,6 +27,34 @@ bool validSlice(int begin, int count, int size)
     return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
 }
 
+bool validatePhysicsFile(const QString& path, QString* error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) *error = QStringLiteral("无法打开 physics3 文件：%1").arg(file.errorString());
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error) *error = QStringLiteral("physics3 JSON 无效：%1").arg(parseError.errorString());
+        return false;
+    }
+    const QJsonValue settings = document.object().value(QStringLiteral("PhysicsSettings"));
+    if (!settings.isArray()) {
+        if (error) *error = QStringLiteral("physics3 缺少 PhysicsSettings 数组");
+        return false;
+    }
+    const QJsonArray groups = settings.toArray();
+    for (int i = 0; i < groups.size(); ++i) {
+        if (!groups.at(i).isObject()) {
+            if (error) *error = QStringLiteral("physics3 的物理组 %1 不是对象").arg(i);
+            return false;
+        }
+    }
+    return true;
+}
+
 // keyform 绑定链：一个绑定源 = 参数索引 + 该参数上的 key 值序列
 struct SBindingChain {
     struct SBinding {
@@ -1512,6 +1540,8 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         if (outError) *outError = QStringLiteral("moc3 解析失败: %1").arg(opt.mocPath);
         return false;
     }
+
+    if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, outError)) return false;
 
     // 纹理图集定位：moc3 同目录 model3.json 或 textures/ 推断
     QVector<QString> atlasPaths;

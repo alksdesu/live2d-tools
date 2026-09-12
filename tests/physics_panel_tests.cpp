@@ -11,6 +11,26 @@ class PhysicsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void rejectsInvalidJson()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath(QStringLiteral("broken.physics3.json"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("{broken") > 0);
+        file.close();
+
+        CPhysicsPanel panel;
+        QString error;
+        QVERIFY(!panel.LoadPhysics(path, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!panel.HasUnsavedChanges());
+        auto* groups = panel.findChild<QTableWidget*>(QStringLiteral("physicsGroupTable"));
+        QVERIFY(groups);
+        QCOMPARE(groups->rowCount(), 0);
+    }
+
     void editsAndSavesPhysics()
     {
         QTemporaryDir temp;

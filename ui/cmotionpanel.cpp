@@ -194,7 +194,7 @@ void CMotionPanel::BuildLists()
     if(m_exprNames.isEmpty()) m_exprList->addItem("(此模型无表情定义)");
 }
 
-void CMotionPanel::BuildPoseGroups(const QString& poseJsonPath)
+bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 {
     m_poseGroups.clear();
     // 清除 poseWidget 中旧的 combo
@@ -207,21 +207,28 @@ void CMotionPanel::BuildPoseGroups(const QString& poseJsonPath)
 
     if(poseJsonPath.isEmpty()){
         m_poseWidget->setVisible(false);
-        return;
+        return true;
     }
 
     QFile file(poseJsonPath);
     if(!file.open(QIODevice::ReadOnly)){
         m_poseWidget->setVisible(false);
-        return;
+        if (error) *error = QStringLiteral("无法打开 Pose 配置：%1").arg(file.errorString());
+        return false;
     }
 
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
     file.close();
+    if (parseError.error != QJsonParseError::NoError || doc.isNull() || !doc.isObject()) {
+        m_poseWidget->setVisible(false);
+        if (error) *error = QStringLiteral("Pose 配置 JSON 无效：%1").arg(parseError.errorString());
+        return false;
+    }
     QJsonArray groups = doc.object()["Groups"].toArray();
     if(groups.isEmpty()){
         m_poseWidget->setVisible(false);
-        return;
+        return true;
     }
 
     for(int g = 0; g < groups.size(); g++){
@@ -259,4 +266,5 @@ void CMotionPanel::BuildPoseGroups(const QString& poseJsonPath)
     }
 
     m_poseWidget->setVisible(!m_poseGroups.isEmpty());
+    return true;
 }

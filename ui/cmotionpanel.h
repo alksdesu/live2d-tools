@@ -17,7 +17,7 @@ class CMotionPanel : public QDockWidget
 public:
     explicit CMotionPanel(QWidget *parent = nullptr);
     void BuildLists();
-    void BuildPoseGroups(const QString& poseJsonPath);
+    bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
 
     bool isAutoEyeBlink() const { return m_eyeBlinkCb->isChecked(); }
     bool isAutoBreath() const { return m_breathCb->isChecked(); }

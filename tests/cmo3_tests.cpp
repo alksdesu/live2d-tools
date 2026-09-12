@@ -13,6 +13,26 @@ class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void rejectsInvalidPhysicsJson()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString physicsPath = temp.filePath(QStringLiteral("broken.physics3.json"));
+        QFile file(physicsPath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("{broken") > 0);
+        file.close();
+
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        options.outPath = temp.filePath(QStringLiteral("broken.cmo3"));
+        options.physicsPath = physicsPath;
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY(error.contains(QStringLiteral("physics3 JSON")));
+        QVERIFY(!QFileInfo::exists(options.outPath));
+    }
+
     void buildAndReadArchive()
     {
         QTemporaryDir temp;

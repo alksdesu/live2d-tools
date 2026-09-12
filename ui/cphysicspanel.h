@@ -14,7 +14,7 @@ class CPhysicsPanel : public QDockWidget
     Q_OBJECT
 public:
     explicit CPhysicsPanel(QWidget *parent = nullptr);
-    void LoadPhysics(const QString& physicsPath);
+    bool LoadPhysics(const QString& physicsPath, QString* error = nullptr);
     bool SavePhysics(const QString& path = QString());
     bool HasUnsavedChanges() const { return m_dirty; }
 
