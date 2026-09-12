@@ -141,6 +141,7 @@ void CAtlasView::mouseReleaseEvent(QMouseEvent* event)
 CTexturePanel::CTexturePanel(QWidget *parent)
     : QDockWidget("纹理", parent)
 {
+    setObjectName(QStringLiteral("texturePanel"));
     QWidget* wrapper = new QWidget(this);
     wrapper->setObjectName(QStringLiteral("texturePanelRoot"));
     wrapper->setObjectName("texPanelRoot");

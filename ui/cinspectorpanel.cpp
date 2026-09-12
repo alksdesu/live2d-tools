@@ -20,6 +20,7 @@ QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
 CInspectorPanel::CInspectorPanel(QWidget* parent)
     : QDockWidget(QStringLiteral("属性"), parent)
 {
+    setObjectName(QStringLiteral("inspectorPanel"));
     auto* content = new QWidget(this);
     auto* layout = new QVBoxLayout(content);
     layout->setContentsMargins(12, 12, 12, 12);

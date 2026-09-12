@@ -17,6 +17,7 @@ using namespace Live2D::Cubism::Framework;
 CMotionPanel::CMotionPanel(QWidget *parent)
     : QDockWidget("动作/表情", parent)
 {
+    setObjectName(QStringLiteral("motionPanel"));
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 

@@ -12,6 +12,7 @@
 CModelDiagnosticsPanel::CModelDiagnosticsPanel(QWidget* parent)
     : QDockWidget(QStringLiteral("模型检查"), parent)
 {
+    setObjectName(QStringLiteral("diagnosticsPanel"));
     auto* content = new QWidget(this);
     auto* layout = new QVBoxLayout(content);
     layout->setContentsMargins(12, 12, 12, 12);

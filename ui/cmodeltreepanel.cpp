@@ -25,6 +25,7 @@ static void initTree(QTreeWidget* tree, QObject* parent)
 CModelTreePanel::CModelTreePanel(QWidget *parent)
     : QDockWidget("模型结构", parent)
 {
+    setObjectName(QStringLiteral("modelTreePanel"));
     m_tabWidget = new QTabWidget(this);
 
     m_partTree = new QTreeWidget(m_tabWidget);

@@ -15,6 +15,7 @@ using namespace live2dstruct;
 CBlendShapePanel::CBlendShapePanel(QWidget *parent)
     : QDockWidget("融合变形", parent)
 {
+    setObjectName(QStringLiteral("blendShapePanel"));
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 

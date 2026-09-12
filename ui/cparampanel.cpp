@@ -19,6 +19,7 @@ using namespace Live2D::Cubism::Framework;
 CParamPanel::CParamPanel(QWidget *parent)
     : QDockWidget("参数控制", parent)
 {
+    setObjectName(QStringLiteral("paramPanel"));
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 

@@ -11,6 +11,7 @@
 CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     : QDockWidget("物理设置", parent)
 {
+    setObjectName(QStringLiteral("physicsPanel"));
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 
