@@ -155,6 +155,37 @@ private slots:
         QVERIFY(mainXml);
         QVERIFY(mainXml->content.contains(QStringLiteral("clipGuidList").toUtf8()));
     }
+
+    void buildUsesDeformerParentOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        int child = -1;
+        int parent = -1;
+        for (int i = 0; i < document.Deformers().size(); ++i) {
+            for (int j = 0; j < document.Deformers().size(); ++j) {
+                if (i != j && document.Deformers()[i].parentPartIndex == document.Deformers()[j].parentPartIndex &&
+                    document.DeformerParentIndex(document.Deformers()[i].id) != j) {
+                    child = i;
+                    parent = j;
+                    break;
+                }
+            }
+            if (child >= 0) break;
+        }
+        QVERIFY(child >= 0);
+        QVERIFY(document.SetDeformerParentIndex(document.Deformers()[child].id, parent));
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Mark-deformer-parent.cmo3"));
+        options.deformerParentOverrides = document.DeformerParentOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        QVERIFY(QFileInfo::exists(options.outPath));
+    }
 };
 
 QTEST_GUILESS_MAIN(Cmo3Tests)

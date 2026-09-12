@@ -31,6 +31,7 @@ public:
         QHash<QString, QVector<QVector<float>>> drawableKeyformPositionOverrides;
         QHash<QString, QVector<quint16>> drawableIndexOverrides;
         QHash<QString, QVector<int>> drawableMaskIndexOverrides;
+        QHash<QString, int> deformerParentOverrides;
     };
 
     // 全流程执行；失败时 outError 带原因

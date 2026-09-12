@@ -197,6 +197,32 @@ private slots:
         QCOMPARE(document.DrawableMaskIndices(id), masksBefore);
         QVERIFY(!document.SetDrawableMaskIndices(id, {0, 0}));
         QVERIFY(!document.SetDrawableMaskIndices(id, {selfIndex}));
+        int deformerIndex = -1;
+        int parentDeformerIndex = -1;
+        for (int i = 0; i < document.Deformers().size(); ++i) {
+            for (int j = 0; j < document.Deformers().size(); ++j) {
+                if (i != j && document.Deformers()[i].parentPartIndex == document.Deformers()[j].parentPartIndex &&
+                    document.DeformerParentIndex(document.Deformers()[i].id) != j) {
+                    deformerIndex = i;
+                    parentDeformerIndex = j;
+                    break;
+                }
+            }
+            if (deformerIndex >= 0) break;
+        }
+        QVERIFY(deformerIndex >= 0);
+        const QString deformerId = document.Deformers()[deformerIndex].id;
+        const int originalParent = document.DeformerParentIndex(deformerId);
+        QVERIFY(document.SetDeformerParentIndex(deformerId, parentDeformerIndex));
+        QCOMPARE(document.DeformerParentIndex(deformerId), parentDeformerIndex);
+        QVERIFY(!document.SetDeformerParentIndex(deformerId, deformerIndex));
+        QVERIFY(document.ExecuteEdit({deformerId, QStringLiteral("warp"), live2dstruct::CModelEdit::DeformerParent,
+                                       parentDeformerIndex, originalParent}));
+        QCOMPARE(document.DeformerParentIndex(deformerId), originalParent);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DeformerParentIndex(deformerId), parentDeformerIndex);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DeformerParentIndex(deformerId), originalParent);
         document.ClearEditHistory();
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(!document.CanRedoEdit());
@@ -229,6 +255,7 @@ private slots:
         source.drawableKeyformPositions.insert(QStringLiteral("Body"), {{0.0f, 1.0f, 2.0f, 3.0f}, {4.0f, 5.0f}});
         source.drawableIndices.insert(QStringLiteral("Body"), {0, 1, 2});
         source.drawableMaskIndices.insert(QStringLiteral("Body"), {3, 4});
+        source.deformerParentIndices.insert(QStringLiteral("Warp1"), 2);
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -245,6 +272,7 @@ private slots:
         QCOMPARE(decoded.drawableKeyformPositions, source.drawableKeyformPositions);
         QCOMPARE(decoded.drawableIndices, source.drawableIndices);
         QCOMPARE(decoded.drawableMaskIndices, source.drawableMaskIndices);
+        QCOMPARE(decoded.deformerParentIndices, source.deformerParentIndices);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 

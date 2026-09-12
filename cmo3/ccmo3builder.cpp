@@ -87,6 +87,7 @@ private:
                                  const QString& parentPartGuidId, const QString& gridId,
                                  int extensionCount);
     QString deformerTargetId(int parentDeformerIndex) const;
+    int effectiveDeformerParentIndex(int deformerIndex) const;
     int partParentIndex(int partIndex) const;
     int objectPartIndex(int parentPartIndex) const;
     QVector<float> meshKeyformPositions(const CArt_meshes* mesh, int keyformIndex) const;
@@ -348,6 +349,14 @@ QString Generator::deformerTargetId(int parentDeformerIndex) const
         return m_deformerIds[parentDeformerIndex].guid;
     }
     return m_deformerRootGuidId;
+}
+
+int Generator::effectiveDeformerParentIndex(int deformerIndex) const
+{
+    if (deformerIndex < 0 || deformerIndex >= m_table.deformers.size()) return -1;
+    const auto it = m_opt.deformerParentOverrides.constFind(m_table.deformers[deformerIndex]->ids);
+    if (it == m_opt.deformerParentOverrides.cend()) return m_table.deformers[deformerIndex]->parent_deformer_indices;
+    return it.value() >= 0 && it.value() < m_table.deformers.size() && it.value() != deformerIndex ? it.value() : -1;
 }
 
 int Generator::partParentIndex(int partIndex) const
@@ -788,6 +797,7 @@ void Generator::writeWarpDeformerEntities()
         const int d = m_deformerIndexOfWarp.value(w, -1);
         if (d < 0) continue;
         const CDeformers* deformer = m_table.deformers[d];
+        const int parentDeformer = effectiveDeformerParentIndex(d);
 
         const int keyformCount = warp->keyform_sources_counts;
         if (warp->rows < 0 || warp->columns < 0 || warp->rows > 1000 || warp->columns > 1000) continue;
@@ -814,7 +824,7 @@ void Generator::writeWarpDeformerEntities()
         }
         const SBindingChain chain = chainFor(deformer->keyform_binding_sources_indices);
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
-        const QString coordTypeId = (deformer->parent_deformer_indices >= 0)
+        const QString coordTypeId = (parentDeformer >= 0)
                                         ? m_coordDeformerLocal : m_coordCanvas;
 
         m_warpSourceIds[w] = m_xml.AllocId();
@@ -831,7 +841,7 @@ void Generator::writeWarpDeformerEntities()
         m_xml.Attribute(QStringLiteral("idstr"), deformer->ids);
         m_xml.EndObject();
         m_xml.Ref(QStringLiteral("CDeformerGuid"), QStringLiteral("targetDeformerGuid"),
-                  deformerTargetId(deformer->parent_deformer_indices));
+                  deformerTargetId(parentDeformer));
         m_xml.EndObject(); // ACDeformerSource
 
         m_xml.I(QStringLiteral("col"), warp->columns);
@@ -859,7 +869,7 @@ void Generator::writeWarpDeformerEntities()
             QVector<float> positions;
             positions.reserve(gridVerts * 2);
             const int posBegin = kf->keyform_position_sources_begin_indices;
-            const bool onCanvas = (deformer->parent_deformer_indices < 0);
+            const bool onCanvas = (parentDeformer < 0);
             const CCanvas_info* canvas = m_table.canvas_info;
             for (int v = 0; v < gridVerts; ++v) {
                 const float mx = m_table.keyform_positions->GetData(posBegin + v * 2);
@@ -901,6 +911,7 @@ void Generator::writeRotationDeformerEntities()
         const int d = m_deformerIndexOfRotation.value(r, -1);
         if (d < 0) continue;
         const CDeformers* deformer = m_table.deformers[d];
+        const int parentDeformer = effectiveDeformerParentIndex(d);
 
         const int keyformCount = rot->keyform_sources_counts;
         if (keyformCount <= 0 || !validSlice(rot->keyform_sources_begin_indices, keyformCount,
@@ -913,7 +924,7 @@ void Generator::writeRotationDeformerEntities()
         }
         const SBindingChain chain = chainFor(deformer->keyform_binding_sources_indices);
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
-        const QString coordTypeId = (deformer->parent_deformer_indices >= 0)
+        const QString coordTypeId = (parentDeformer >= 0)
                                         ? m_coordDeformerLocal : m_coordCanvas;
 
         m_rotationSourceIds[r] = m_xml.AllocId();
@@ -930,7 +941,7 @@ void Generator::writeRotationDeformerEntities()
         m_xml.Attribute(QStringLiteral("idstr"), deformer->ids);
         m_xml.EndObject();
         m_xml.Ref(QStringLiteral("CDeformerGuid"), QStringLiteral("targetDeformerGuid"),
-                  deformerTargetId(deformer->parent_deformer_indices));
+                  deformerTargetId(parentDeformer));
         m_xml.EndObject(); // ACDeformerSource
 
         m_xml.B(QStringLiteral("useBoneUi_testImpl"), true);
@@ -938,7 +949,7 @@ void Generator::writeRotationDeformerEntities()
         for (int k = 0; k < keyformCount; ++k) {
             const CRotation_deformer_keyforms* kf = m_table.rotation_deformer_keyforms[
                 rot->keyform_sources_begin_indices + k];
-            const bool onCanvas = (deformer->parent_deformer_indices < 0);
+            const bool onCanvas = (parentDeformer < 0);
             float px = kf->origin_x;
             float py = kf->origin_y;
             if (onCanvas) {

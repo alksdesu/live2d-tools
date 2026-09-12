@@ -43,6 +43,7 @@ void CModelDocument::Clear()
     m_drawableKeyformPositionOverrides.clear();
     m_drawableIndexOverrides.clear();
     m_drawableMaskIndexOverrides.clear();
+    m_deformerParentOverrides.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
 }
@@ -281,6 +282,36 @@ QVector<int> CModelDocument::DrawableMaskIndices(const QString& id) const
     return {};
 }
 
+int CModelDocument::DeformerParentIndex(const QString& id) const
+{
+    if (m_deformerParentOverrides.contains(id)) return m_deformerParentOverrides.value(id);
+    for (const CModelDeformer& deformer : m_deformers) {
+        if (deformer.id == id) return deformer.parentDeformerIndex;
+    }
+    return -1;
+}
+
+bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)
+{
+    int deformerIndex = -1;
+    for (int i = 0; i < m_deformers.size(); ++i) {
+        if (m_deformers[i].id == id) { deformerIndex = i; break; }
+    }
+    if (deformerIndex < 0) return false;
+    if (parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex) return false;
+    if (parentIndex >= 0 && m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex) return false;
+    QVector<int> states(m_deformers.size(), 0);
+    int current = parentIndex;
+    while (current >= 0) {
+        if (current >= m_deformers.size() || states[current] == 1) return false;
+        if (current == deformerIndex) return false;
+        states[current] = 1;
+        current = DeformerParentIndex(m_deformers[current].id);
+    }
+    m_deformerParentOverrides.insert(id, parentIndex);
+    return true;
+}
+
 bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int>& maskIndices)
 {
     for (int drawableIndex = 0; drawableIndex < m_drawables.size(); ++drawableIndex) {
@@ -403,6 +434,11 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     if (edit.field == CModelEdit::MaskIndices) {
         if (edit.type != QLatin1String("artmesh") || !value.canConvert<QVector<int>>()) return false;
         return SetDrawableMaskIndices(edit.name, value.value<QVector<int>>());
+    }
+    if (edit.field == CModelEdit::DeformerParent) {
+        if (edit.type != QLatin1String("warp") && edit.type != QLatin1String("rotation")) return false;
+        if (!value.canConvert<int>()) return false;
+        return SetDeformerParentIndex(edit.name, value.toInt());
     }
     return false;
 }
@@ -779,6 +815,30 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                 break;
             }
             unique.insert(maskIndex);
+        }
+    }
+    for (auto parentIt = m_deformerParentOverrides.cbegin(); parentIt != m_deformerParentOverrides.cend(); ++parentIt) {
+        int deformerIndex = -1;
+        for (int i = 0; i < m_deformers.size(); ++i) {
+            if (m_deformers[i].id == parentIt.key()) { deformerIndex = i; break; }
+        }
+        const int parentIndex = parentIt.value();
+        if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
+            (parentIndex >= 0 && m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent_override"),
+                                 QStringLiteral("变形器父级覆盖无效：%1").arg(parentIt.key()), -1});
+            continue;
+        }
+        QSet<int> visited;
+        int current = parentIndex;
+        while (current >= 0 && current < m_deformers.size()) {
+            if (current == deformerIndex || visited.contains(current)) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent_cycle"),
+                                     QStringLiteral("变形器父级覆盖形成循环：%1").arg(parentIt.key()), -1});
+                break;
+            }
+            visited.insert(current);
+            current = DeformerParentIndex(m_deformers[current].id);
         }
     }
     for (const QString& key : m_lockedKeys) {

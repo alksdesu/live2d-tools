@@ -98,7 +98,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, KeyformPositions, MeshIndices, MaskIndices };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, KeyformPositions, MeshIndices, MaskIndices, DeformerParent };
     QString name;
     QString type;
     Field field = Visibility;
@@ -128,6 +128,9 @@ public:
     }
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
+    int DeformerParentIndex(const QString& id) const;
+    bool SetDeformerParentIndex(const QString& id, int parentIndex);
+    const QHash<QString, int>& DeformerParentOverrides() const { return m_deformerParentOverrides; }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
     QVector<quint16> DrawableIndices(const QString& id) const;
     bool SetDrawableIndices(const QString& id, const QVector<quint16>& indices);
@@ -176,6 +179,7 @@ private:
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;
     QHash<QString, QVector<quint16>> m_drawableIndexOverrides;
     QHash<QString, QVector<int>> m_drawableMaskIndexOverrides;
+    QHash<QString, int> m_deformerParentOverrides;
     QSet<QString> m_lockedKeys;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;

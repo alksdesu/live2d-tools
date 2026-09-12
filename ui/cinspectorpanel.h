@@ -78,6 +78,7 @@ private:
     QDoubleSpinBox* m_opacitySpin = nullptr;
     QSpinBox* m_drawOrderSpin = nullptr;
     QComboBox* m_keyformCombo = nullptr;
+    QComboBox* m_deformerParentCombo = nullptr;
     QTableWidget* m_vertexTable = nullptr;
     QPushButton* m_mirrorHorizontal = nullptr;
     QPushButton* m_mirrorVertical = nullptr;
@@ -92,6 +93,7 @@ private:
     QPushButton* m_editMasks = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
+    bool m_updatingDeformerParent = false;
     QSet<QString> m_lockedKeys;
     QLabel* m_geometryLabel = nullptr;
     QLabel* m_textureLabel = nullptr;

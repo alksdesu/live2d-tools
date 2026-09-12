@@ -59,6 +59,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_idLabel = new QLabel(content);
     m_parentLabel = new QLabel(content);
     m_deformerLabel = new QLabel(content);
+    m_deformerParentCombo = new QComboBox(content);
+    m_deformerParentCombo->setObjectName(QStringLiteral("deformerParentSelector"));
+    m_deformerParentCombo->setEnabled(false);
     m_visibilityLabel = new QLabel(content);
     m_visibilityCheck = new QCheckBox(QStringLiteral("显示"), content);
     m_opacitySpin = new QDoubleSpinBox(content);
@@ -147,6 +150,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("ID"), m_idLabel);
     form->addRow(QStringLiteral("所属 Part"), m_parentLabel);
     form->addRow(QStringLiteral("父变形器"), m_deformerLabel);
+    form->addRow(QStringLiteral("编辑父变形器"), m_deformerParentCombo);
     form->addRow(QStringLiteral("可见 / 启用"), m_visibilityLabel);
     form->addRow(QStringLiteral("编辑可见性"), m_visibilityCheck);
     form->addRow(QStringLiteral("编辑透明度"), m_opacitySpin);
@@ -181,6 +185,23 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_copyTopology, &QPushButton::clicked, this, [this](){ CopyTopology(); });
     connect(m_pasteTopology, &QPushButton::clicked, this, [this](){ PasteTopology(); });
     connect(m_editMasks, &QPushButton::clicked, this, [this](){ EditMasks(); });
+    connect(m_deformerParentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
+        if (m_updatingDeformerParent || !m_document || m_selectionName.isEmpty() ||
+            (m_selectionType != QLatin1String("warp") && m_selectionType != QLatin1String("rotation")) ||
+            IsLocked(m_selectionType, m_selectionName) || index < 0) return;
+        const int before = m_document->DeformerParentIndex(m_selectionName);
+        const int after = m_deformerParentCombo->itemData(index).toInt();
+        if (before == after) return;
+        const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
+                                               live2dstruct::CModelEdit::DeformerParent,
+                                               before, after};
+        if (!m_document->ExecuteEdit(command)) {
+            showModelObject(m_selectionName, m_selectionType);
+            return;
+        }
+        emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+        showModelObject(m_selectionName, m_selectionType);
+    });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -332,6 +353,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
     m_editMasks->setEnabled(false);
+    m_deformerParentCombo->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -840,6 +862,7 @@ void CInspectorPanel::ClearSelection()
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
     m_editMasks->setEnabled(false);
+    m_deformerParentCombo->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -969,6 +992,10 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_blendLabel->setText(QStringLiteral("—"));
     m_maskLabel->setText(QStringLiteral("—"));
     m_keyformLabel->setText(QStringLiteral("—"));
+    m_updatingDeformerParent = true;
+    m_deformerParentCombo->clear();
+    m_deformerParentCombo->setEnabled(false);
+    m_updatingDeformerParent = false;
     const bool unlocked = !IsLocked(type, name);
     m_visibilityCheck->setEnabled(unlocked);
     m_opacitySpin->setEnabled(false);
@@ -1046,7 +1073,24 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
         for (const auto& deformer : m_document->Deformers()) {
             if (deformer.id != name) continue;
             m_parentLabel->setText(indexValue(deformer.parentPartIndex));
-            m_deformerLabel->setText(indexValue(deformer.parentDeformerIndex, QStringLiteral("无")));
+            m_deformerLabel->setText(indexValue(m_document->DeformerParentIndex(name), QStringLiteral("无")));
+            m_updatingDeformerParent = true;
+            m_deformerParentCombo->clear();
+            m_deformerParentCombo->addItem(QStringLiteral("无（根级）"), -1);
+            for (int parentIndex = 0; parentIndex < m_document->Deformers().size(); ++parentIndex) {
+                const auto& candidate = m_document->Deformers()[parentIndex];
+                if (candidate.id == name || candidate.parentPartIndex != deformer.parentPartIndex) continue;
+                m_deformerParentCombo->addItem(candidate.id, parentIndex);
+            }
+            const int parentIndex = m_document->DeformerParentIndex(name);
+            for (int comboIndex = 0; comboIndex < m_deformerParentCombo->count(); ++comboIndex) {
+                if (m_deformerParentCombo->itemData(comboIndex).toInt() == parentIndex) {
+                    m_deformerParentCombo->setCurrentIndex(comboIndex);
+                    break;
+                }
+            }
+            m_deformerParentCombo->setEnabled(unlocked);
+            m_updatingDeformerParent = false;
             m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(deformer.visible ? QStringLiteral("是") : QStringLiteral("否"),
                                                                     deformer.enabled ? QStringLiteral("是") : QStringLiteral("否")));
             m_updatingVisibility = true;

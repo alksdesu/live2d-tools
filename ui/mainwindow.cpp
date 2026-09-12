@@ -286,6 +286,7 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.drawableKeyformPositionOverrides = m_document.DrawableKeyformPositionOverrides();
     options.drawableIndexOverrides = m_document.DrawableIndexOverrides();
     options.drawableMaskIndexOverrides = m_document.DrawableMaskIndexOverrides();
+    options.deformerParentOverrides = m_document.DeformerParentOverrides();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -331,6 +332,7 @@ void MainWindow::on_actionSaveSession_triggered()
     session.drawableKeyformPositions = m_document.DrawableKeyformPositionOverrides();
     session.drawableIndices = m_document.DrawableIndexOverrides();
     session.drawableMaskIndices = m_document.DrawableMaskIndexOverrides();
+    session.deformerParentIndices = m_document.DeformerParentOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
@@ -398,6 +400,8 @@ void MainWindow::on_actionLoadSession_triggered()
         }
         for (auto maskIt = session.drawableMaskIndices.cbegin(); maskIt != session.drawableMaskIndices.cend(); ++maskIt)
             m_document.SetDrawableMaskIndices(maskIt.key(), maskIt.value());
+        for (auto parentIt = session.deformerParentIndices.cbegin(); parentIt != session.deformerParentIndices.cend(); ++parentIt)
+            m_document.SetDeformerParentIndex(parentIt.key(), parentIt.value());
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
@@ -473,6 +477,8 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(edit.name, value.value<QVector<quint16>>());
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MaskIndices) {
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::DeformerParent) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     }
     if (m_paramPanel) m_paramPanel->SyncHistoryState();

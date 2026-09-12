@@ -96,6 +96,10 @@ QByteArray CModelSession::ToJson() const
         maskObject.insert(meshIt.key(), values);
     }
     root.insert(QStringLiteral("drawableMaskIndices"), maskObject);
+    QJsonObject deformerParentObject;
+    for (auto it = deformerParentIndices.cbegin(); it != deformerParentIndices.cend(); ++it)
+        deformerParentObject.insert(it.key(), it.value());
+    root.insert(QStringLiteral("deformerParentIndices"), deformerParentObject);
     QJsonObject view;
     view.insert(QStringLiteral("scale"), static_cast<double>(viewScale));
     view.insert(QStringLiteral("x"), viewPosition.x());
@@ -161,6 +165,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject keyformObject;
     QJsonObject indexObject;
     QJsonObject maskObject;
+    QJsonObject deformerParentObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
         !readObject(root, QStringLiteral("locked"), &lockedObject, error) ||
@@ -168,7 +173,8 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error) ||
         !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error) ||
         !readObject(root, QStringLiteral("drawableIndices"), &indexObject, error) ||
-        !readObject(root, QStringLiteral("drawableMaskIndices"), &maskObject, error)) return false;
+        !readObject(root, QStringLiteral("drawableMaskIndices"), &maskObject, error) ||
+        !readObject(root, QStringLiteral("deformerParentIndices"), &deformerParentObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         float value = 0.0f;
         if (!readFloat(parameterObject.value(key), &value)) {
@@ -293,6 +299,20 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             unique.insert(masks.last());
         }
         result.drawableMaskIndices.insert(key, masks);
+    }
+    constexpr int kMaxDeformerParents = 100000;
+    if (deformerParentObject.size() > kMaxDeformerParents) {
+        setError(error, QStringLiteral("变形器父级覆盖数量超出限制"));
+        return false;
+    }
+    for (const QString& key : deformerParentObject.keys()) {
+        double number = 0.0;
+        if (!readNumber(deformerParentObject.value(key), &number) || std::floor(number) != number ||
+            number < -1.0 || number > static_cast<double>(std::numeric_limits<int>::max())) {
+            setError(error, QStringLiteral("变形器父级覆盖值无效：%1").arg(key));
+            return false;
+        }
+        result.deformerParentIndices.insert(key, static_cast<int>(number));
     }
     QJsonObject view;
     if (!readObject(root, QStringLiteral("view"), &view, error)) return false;
