@@ -285,6 +285,7 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();
     options.drawableKeyformPositionOverrides = m_document.DrawableKeyformPositionOverrides();
     options.drawableIndexOverrides = m_document.DrawableIndexOverrides();
+    options.drawableMaskIndexOverrides = m_document.DrawableMaskIndexOverrides();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -329,6 +330,7 @@ void MainWindow::on_actionSaveSession_triggered()
     session.drawableDrawOrder = m_document.DrawableDrawOrderOverrides();
     session.drawableKeyformPositions = m_document.DrawableKeyformPositionOverrides();
     session.drawableIndices = m_document.DrawableIndexOverrides();
+    session.drawableMaskIndices = m_document.DrawableMaskIndexOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
@@ -394,6 +396,9 @@ void MainWindow::on_actionLoadSession_triggered()
             if (!m_document.SetDrawableIndices(indexIt.key(), indexIt.value())) continue;
             if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(indexIt.key(), indexIt.value());
         }
+        for (auto maskIt = session.drawableMaskIndices.cbegin(); maskIt != session.drawableMaskIndices.cend(); ++maskIt)
+            m_document.SetDrawableMaskIndices(maskIt.key(), maskIt.value());
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
         m_applyingSession = false;
@@ -466,6 +471,8 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
         if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(edit.name, value.value<QVector<quint16>>());
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::MaskIndices) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     }
     if (m_paramPanel) m_paramPanel->SyncHistoryState();
@@ -1078,6 +1085,8 @@ void MainWindow::RestDock(const QString &name)
     connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged, this,
             [markSessionDirty](const QString&, int, const QVector<float>&){ markSessionDirty(); });
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableMaskIndicesChanged, this,
+            [markSessionDirty](const QString&, const QVector<int>&){ markSessionDirty(); });
     connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, [this](){
         if (m_applyingSession) return;
         setWindowTitle(QStringLiteral("live2d2psd · 未保存"));

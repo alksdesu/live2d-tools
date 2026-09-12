@@ -647,8 +647,11 @@ void Generator::writeArtMeshEntities()
                   deformerTargetId(mesh->parent_deformer_indices));
         // 裁剪列表
         QVector<int> maskIndices;
-        if (validSlice(mesh->drawable_mask_sources_begin_indices, mesh->drawable_mask_sources_counts,
-                       m_table.drawable_masks.size())) {
+        const auto maskOverrideIt = m_opt.drawableMaskIndexOverrides.constFind(mesh->ids);
+        if (maskOverrideIt != m_opt.drawableMaskIndexOverrides.cend()) {
+            maskIndices = maskOverrideIt.value();
+        } else if (validSlice(mesh->drawable_mask_sources_begin_indices, mesh->drawable_mask_sources_counts,
+                              m_table.drawable_masks.size())) {
             for (int mi = 0; mi < mesh->drawable_mask_sources_counts; ++mi) {
                 maskIndices.append(m_table.drawable_masks[
                     mesh->drawable_mask_sources_begin_indices + mi]->art_mesh_sources_indices);

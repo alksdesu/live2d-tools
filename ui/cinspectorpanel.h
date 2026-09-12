@@ -43,6 +43,7 @@ signals:
     void DrawableDrawOrderChanged(const QString& name, int drawOrder);
     void DrawableKeyformPositionsChanged(const QString& name, int keyformIndex, const QVector<float>& positions);
     void DrawableIndicesChanged(const QString& name, const QVector<quint16>& indices);
+    void DrawableMaskIndicesChanged(const QString& name, const QVector<int>& maskIndices);
     void HistoryChanged(bool canUndo, bool canRedo);
 
 private:
@@ -59,6 +60,7 @@ private:
     void PasteTopology();
     void CopyCurrentKeyform();
     void PasteCurrentKeyform();
+    void EditMasks();
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -87,6 +89,7 @@ private:
     QPushButton* m_autoTriangulate = nullptr;
     QPushButton* m_copyTopology = nullptr;
     QPushButton* m_pasteTopology = nullptr;
+    QPushButton* m_editMasks = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QSet<QString> m_lockedKeys;

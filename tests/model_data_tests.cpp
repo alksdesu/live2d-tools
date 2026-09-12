@@ -180,6 +180,23 @@ private slots:
         QCOMPARE(document.DrawableIndices(id), indexBefore);
         QVERIFY(document.RedoEdit());
         QCOMPARE(document.DrawableIndices(id), indexAfter);
+        int selfIndex = -1;
+        for (int i = 0; i < document.Drawables().size(); ++i) if (document.Drawables()[i].id == id) { selfIndex = i; break; }
+        QVERIFY(selfIndex >= 0);
+        const int maskIndex = selfIndex == 0 ? 1 : 0;
+        const QVector<int> masksBefore = document.DrawableMaskIndices(id);
+        const QVector<int> masksAfter = {maskIndex};
+        QVERIFY(document.SetDrawableMaskIndices(id, masksAfter));
+        QCOMPARE(document.DrawableMaskIndices(id), masksAfter);
+        QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::MaskIndices,
+                                       QVariant::fromValue(masksAfter), QVariant::fromValue(masksBefore)}));
+        QCOMPARE(document.DrawableMaskIndices(id), masksBefore);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DrawableMaskIndices(id), masksAfter);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DrawableMaskIndices(id), masksBefore);
+        QVERIFY(!document.SetDrawableMaskIndices(id, {0, 0}));
+        QVERIFY(!document.SetDrawableMaskIndices(id, {selfIndex}));
         document.ClearEditHistory();
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(!document.CanRedoEdit());
@@ -211,6 +228,7 @@ private slots:
         source.drawableDrawOrder.insert(QStringLiteral("Body"), 720);
         source.drawableKeyformPositions.insert(QStringLiteral("Body"), {{0.0f, 1.0f, 2.0f, 3.0f}, {4.0f, 5.0f}});
         source.drawableIndices.insert(QStringLiteral("Body"), {0, 1, 2});
+        source.drawableMaskIndices.insert(QStringLiteral("Body"), {3, 4});
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -226,6 +244,7 @@ private slots:
         QCOMPARE(decoded.drawableDrawOrder, source.drawableDrawOrder);
         QCOMPARE(decoded.drawableKeyformPositions, source.drawableKeyformPositions);
         QCOMPARE(decoded.drawableIndices, source.drawableIndices);
+        QCOMPARE(decoded.drawableMaskIndices, source.drawableMaskIndices);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 
@@ -246,6 +265,7 @@ private slots:
         QCOMPARE(loaded.drawableOpacity, source.drawableOpacity);
         QCOMPARE(loaded.drawableDrawOrder, source.drawableDrawOrder);
         QCOMPARE(loaded.drawableKeyformPositions, source.drawableKeyformPositions);
+        QCOMPARE(loaded.drawableMaskIndices, source.drawableMaskIndices);
     }
 
     void sessionRejectsInvalidValues()
@@ -279,6 +299,10 @@ private slots:
             R"({"version":1,"drawableIndices":{"Body":[0,1]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableIndices":{"Body":[0,"bad",2]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableMaskIndices":{"Body":[1,1]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableMaskIndices":{"Body":[-1]}})", &session, &error));
         QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &session, &error));
         QCOMPARE(session.viewScale, 1.0f);
         QVERIFY(session.drawableKeyformPositions.isEmpty());

@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QCryptographicHash>
+#include <QSet>
 #include <cmath>
 #include <limits>
 
@@ -88,6 +89,13 @@ QByteArray CModelSession::ToJson() const
         indexObject.insert(meshIt.key(), values);
     }
     root.insert(QStringLiteral("drawableIndices"), indexObject);
+    QJsonObject maskObject;
+    for (auto meshIt = drawableMaskIndices.cbegin(); meshIt != drawableMaskIndices.cend(); ++meshIt) {
+        QJsonArray values;
+        for (int index : meshIt.value()) values.append(index);
+        maskObject.insert(meshIt.key(), values);
+    }
+    root.insert(QStringLiteral("drawableMaskIndices"), maskObject);
     QJsonObject view;
     view.insert(QStringLiteral("scale"), static_cast<double>(viewScale));
     view.insert(QStringLiteral("x"), viewPosition.x());
@@ -152,13 +160,15 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject drawOrderObject;
     QJsonObject keyformObject;
     QJsonObject indexObject;
+    QJsonObject maskObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
         !readObject(root, QStringLiteral("locked"), &lockedObject, error) ||
         !readObject(root, QStringLiteral("drawableOpacity"), &opacityObject, error) ||
         !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error) ||
         !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error) ||
-        !readObject(root, QStringLiteral("drawableIndices"), &indexObject, error)) return false;
+        !readObject(root, QStringLiteral("drawableIndices"), &indexObject, error) ||
+        !readObject(root, QStringLiteral("drawableMaskIndices"), &maskObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         float value = 0.0f;
         if (!readFloat(parameterObject.value(key), &value)) {
@@ -257,6 +267,32 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             indices.append(static_cast<quint16>(number));
         }
         result.drawableIndices.insert(key, indices);
+    }
+    constexpr int kMaxMaskMeshes = 100000;
+    constexpr int kMaxMasksPerMesh = 10000;
+    if (maskObject.size() > kMaxMaskMeshes) {
+        setError(error, QStringLiteral("蒙版覆盖网格数量超出限制"));
+        return false;
+    }
+    for (const QString& key : maskObject.keys()) {
+        const QJsonValue meshValue = maskObject.value(key);
+        if (!meshValue.isArray() || meshValue.toArray().size() > kMaxMasksPerMesh) {
+            setError(error, QStringLiteral("蒙版覆盖数组类型或数量错误：%1").arg(key));
+            return false;
+        }
+        QVector<int> masks;
+        QSet<int> unique;
+        for (const QJsonValue& value : meshValue.toArray()) {
+            double number = 0.0;
+            if (!readNumber(value, &number) || std::floor(number) != number || number < 0.0 ||
+                number > static_cast<double>(std::numeric_limits<int>::max()) || unique.contains(static_cast<int>(number))) {
+                setError(error, QStringLiteral("蒙版覆盖值无效：%1").arg(key));
+                return false;
+            }
+            masks.append(static_cast<int>(number));
+            unique.insert(masks.last());
+        }
+        result.drawableMaskIndices.insert(key, masks);
     }
     QJsonObject view;
     if (!readObject(root, QStringLiteral("view"), &view, error)) return false;

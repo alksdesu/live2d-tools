@@ -22,6 +22,7 @@ struct CModelSession
     QHash<QString, int> drawableDrawOrder;
     QHash<QString, QVector<QVector<float>>> drawableKeyformPositions;
     QHash<QString, QVector<quint16>> drawableIndices;
+    QHash<QString, QVector<int>> drawableMaskIndices;
     float viewScale = 1.0f;
     QPointF viewPosition;
 

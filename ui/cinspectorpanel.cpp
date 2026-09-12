@@ -12,6 +12,9 @@
 #include <QSpinBox>
 #include <QSet>
 #include <QTableWidget>
+#include <QListWidget>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QHeaderView>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -69,6 +72,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_drawOrderLabel = new QLabel(content);
     m_blendLabel = new QLabel(content);
     m_maskLabel = new QLabel(content);
+    m_editMasks = new QPushButton(QStringLiteral("编辑蒙版"), content);
+    m_editMasks->setObjectName(QStringLiteral("editMasks"));
+    m_editMasks->setEnabled(false);
     m_keyformLabel = new QLabel(content);
     m_keyformCombo = new QComboBox(content);
     m_keyformCombo->setObjectName(QStringLiteral("keyformSelector"));
@@ -122,6 +128,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
+    m_editMasks->setEnabled(false);
     const QList<QPushButton*> keyformButtons = {
         m_mirrorHorizontal, m_mirrorVertical, m_interpolatePrevious, m_copyToNext,
         m_resetKeyform, m_copyKeyform, m_pasteKeyform, m_autoTriangulate,
@@ -149,6 +156,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("绘制顺序"), m_drawOrderLabel);
     form->addRow(QStringLiteral("混合 / 剔除"), m_blendLabel);
     form->addRow(QStringLiteral("Clipping"), m_maskLabel);
+    form->addRow(QStringLiteral("蒙版关系"), m_editMasks);
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
@@ -172,6 +180,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_autoTriangulate, &QPushButton::clicked, this, [this](){ AutoTriangulate(); });
     connect(m_copyTopology, &QPushButton::clicked, this, [this](){ CopyTopology(); });
     connect(m_pasteTopology, &QPushButton::clicked, this, [this](){ PasteTopology(); });
+    connect(m_editMasks, &QPushButton::clicked, this, [this](){ EditMasks(); });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -322,6 +331,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
+    m_editMasks->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -829,6 +839,7 @@ void CInspectorPanel::ClearSelection()
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
+    m_editMasks->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -850,6 +861,8 @@ void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forwar
         emit DrawableKeyformPositionsChanged(edit.name, edit.index, value.value<QVector<float>>());
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
         emit DrawableIndicesChanged(edit.name, value.value<QVector<quint16>>());
+    } else if (edit.field == live2dstruct::CModelEdit::MaskIndices) {
+        emit DrawableMaskIndicesChanged(edit.name, value.value<QVector<int>>());
     }
     if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
@@ -867,6 +880,49 @@ void CInspectorPanel::SyncHistoryState()
         return;
     }
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
+void CInspectorPanel::EditMasks()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("编辑 Clipping Mask"));
+    dialog.resize(320, 420);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(new QLabel(QStringLiteral("选择用于裁剪当前 ArtMesh 的蒙版："), &dialog));
+    auto* list = new QListWidget(&dialog);
+    const QVector<int> current = m_document->DrawableMaskIndices(m_selectionName);
+    QSet<int> selected;
+    for (int index : current) selected.insert(index);
+    const auto& drawables = m_document->Drawables();
+    for (int index = 0; index < drawables.size(); ++index) {
+        if (drawables[index].id == m_selectionName) continue;
+        auto* item = new QListWidgetItem(drawables[index].id, list);
+        item->setData(Qt::UserRole, index);
+        item->setCheckState(selected.contains(index) ? Qt::Checked : Qt::Unchecked);
+    }
+    layout->addWidget(list, 1);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QVector<int> after;
+    for (int row = 0; row < list->count(); ++row) {
+        const QListWidgetItem* item = list->item(row);
+        if (item->checkState() == Qt::Checked) after.append(item->data(Qt::UserRole).toInt());
+    }
+    if (after == current) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::MaskIndices,
+                                           QVariant::fromValue(current), QVariant::fromValue(after)};
+    if (!m_document->ExecuteEdit(command)) return;
+    emit DrawableMaskIndicesChanged(m_selectionName, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    showModelObject(m_selectionName, m_selectionType);
 }
 
 void CInspectorPanel::Undo()
@@ -969,6 +1025,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_autoTriangulate->setEnabled(unlocked && drawable.vertexCount >= 3 && !drawable.keyforms.isEmpty());
             m_copyTopology->setEnabled(unlocked && !drawable.indices.isEmpty());
             m_pasteTopology->setEnabled(unlocked && drawable.vertexCount > 0);
+            m_editMasks->setEnabled(unlocked);
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();

@@ -131,6 +131,30 @@ private slots:
         const QByteArray expectedPrefix = QStringLiteral(">%1 %2 %3 ").arg(indices[0]).arg(indices[1]).arg(indices[2]).toUtf8();
         QVERIFY(mainXml->content.contains(expectedPrefix));
     }
+
+    void buildUsesMaskOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        QVERIFY(document.Drawables().size() > 1);
+        const QString meshId = document.Drawables().at(1).id;
+        QVERIFY(document.SetDrawableMaskIndices(meshId, {0}));
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Wanko-masks.cmo3"));
+        options.drawableMaskIndexOverrides = document.DrawableMaskIndexOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* mainXml = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(mainXml);
+        QVERIFY(mainXml->content.contains(QStringLiteral("clipGuidList").toUtf8()));
+    }
 };
 
 QTEST_GUILESS_MAIN(Cmo3Tests)
