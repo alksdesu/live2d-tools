@@ -272,7 +272,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         indices.reserve(meshValue.toArray().size());
         for (const QJsonValue& value : meshValue.toArray()) {
             double number = 0.0;
-            if (!readNumber(value, &number) || std::floor(number) != number || number < 0.0 || number > 65535.0) {
+            if (!readNumber(value, &number) || std::floor(number) != number || number < 0.0 || number > 32767.0) {
                 setError(error, QStringLiteral("索引覆盖值无效：%1").arg(key));
                 return false;
             }

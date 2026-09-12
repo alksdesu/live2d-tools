@@ -685,7 +685,7 @@ void Generator::writeArtMeshEntities()
         if (useOverride) {
             indices.reserve(overrideIt.value().size());
             for (quint16 index : overrideIt.value()) {
-                if (index >= vertexCount) { useOverride = false; break; }
+                if (index >= vertexCount || index > 32767) { useOverride = false; break; }
                 indices.append(static_cast<int>(index));
             }
         }

@@ -344,6 +344,8 @@ private slots:
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableIndices":{"Body":[0,"bad",2]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableIndices":{"Body":[32768,1,2]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableMaskIndices":{"Body":[1,1]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableMaskIndices":{"Body":[-1]}})", &session, &error));
