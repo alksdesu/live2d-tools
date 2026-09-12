@@ -7,6 +7,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QPushButton>
+#include <QSignalSpy>
 
 class InspectorHistoryTests : public QObject
 {
@@ -102,7 +103,8 @@ private slots:
         }
         auto* copyToNext = panel.findChild<QPushButton*>("copyKeyformToNext");
         auto* resetKeyform = panel.findChild<QPushButton*>("resetKeyform");
-        QVERIFY(copyToNext && resetKeyform);
+        auto* autoTriangulate = panel.findChild<QPushButton*>("autoTriangulate");
+        QVERIFY(copyToNext && resetKeyform && autoTriangulate);
         if (copyToNext->isEnabled() && keyformSelector->count() > 1) {
             const QVector<float> nextBefore = document.DrawableKeyformPositions(id, 1);
             const QVector<float> current = document.DrawableKeyformPositions(id, 0);
@@ -119,6 +121,18 @@ private slots:
             QCOMPARE(document.DrawableKeyformPositions(id, 1), current);
             keyformSelector->setCurrentIndex(0);
         }
+        const QVector<quint16> topologyBefore = document.DrawableIndices(id);
+        QSignalSpy topologyChanges(&panel, &CInspectorPanel::DrawableIndicesChanged);
+        autoTriangulate->click();
+        QVERIFY(topologyChanges.count() > 0);
+        const QVector<quint16> topologyAfter = document.DrawableIndices(id);
+        QVERIFY(!topologyAfter.isEmpty() && topologyAfter.size() % 3 == 0);
+        QVERIFY(topologyAfter != topologyBefore);
+        panel.Undo();
+        QCOMPARE(document.DrawableIndices(id), topologyBefore);
+        panel.Redo();
+        QCOMPARE(document.DrawableIndices(id), topologyAfter);
+        panel.ClearHistory();
 
         const QString secondId = document.Drawables().at(1).id;
         const float secondOpacity = document.DrawableOpacity(document.Drawables().at(1));
