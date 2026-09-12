@@ -8,6 +8,7 @@
 #include <QSlider>
 #include <QLabel>
 #include <QDebug>
+#include <QHash>
 
 using namespace live2dstruct;
 
@@ -42,6 +43,12 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
     int bsWarpCount = sec.blend_shapes_warp_deformers.size();
     int constraintCount = sec.blend_shape_constraints.size();
     int paramCount = sec.parameters.size();
+    QHash<QString, QPair<float, float>> parameterRanges;
+    QHash<QString, float> parameterDefaults;
+    for (const auto* parameter : sec.parameters) {
+        parameterRanges.insert(parameter->ids, qMakePair(parameter->min_values, parameter->max_values));
+        parameterDefaults.insert(parameter->ids, parameter->default_values);
+    }
 
     // 从 blend_shape_constraints 直接获取 blend shape 关联的参数
     for(int i = 0; i < constraintCount; i++){
@@ -139,8 +146,15 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
             sl->setContentsMargins(0,0,0,0);
             QSlider* slider = new QSlider(Qt::Horizontal);
             slider->setRange(0, 1000);
-            slider->setValue(0);
-            QLabel* valLabel = new QLabel("0.00");
+            const auto range = parameterRanges.value(paramId, qMakePair(0.0f, 1.0f));
+            const float minValue = range.first;
+            const float maxValue = range.second;
+            const float defaultValue = parameterDefaults.value(paramId, minValue);
+            const int defaultSliderValue = maxValue > minValue
+                ? qBound(0, qRound((defaultValue - minValue) * 1000.0f / (maxValue - minValue)), 1000)
+                : 0;
+            slider->setValue(defaultSliderValue);
+            QLabel* valLabel = new QLabel(QString::number(defaultValue, 'f', 2));
             valLabel->setFixedWidth(40);
             sl->addWidget(slider);
             sl->addWidget(valLabel);
@@ -148,8 +162,10 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
             m_tree->setItemWidget(item, 1, sliderWidget);
 
             QString pid = paramId;
-            connect(slider, &QSlider::valueChanged, this, [this, pid, valLabel](int val){
-                float realVal = val / 1000.0f; // blend shape 范围通常 0-1
+            connect(slider, &QSlider::valueChanged, this, [this, pid, valLabel, minValue, maxValue](int val){
+                const float realVal = maxValue > minValue
+                    ? minValue + (maxValue - minValue) * val / 1000.0f
+                    : minValue;
                 valLabel->setText(QString::number(realVal, 'f', 2));
                 emit ParamChanged(pid, realVal, false);
             });
