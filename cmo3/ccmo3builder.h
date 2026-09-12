@@ -2,6 +2,7 @@
 #define CCMO3BUILDER_H
 
 #include <QString>
+#include <QSet>
 
 namespace live2dstruct {
 class CSectionTable;
@@ -21,6 +22,7 @@ public:
         QString modelName;               // 模型显示名（默认取文件名）
         QString cdiPath;                 // 可选 .cdi3.json（显示名映射）
         QString physicsPath;             // 可选 .physics3.json
+        QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
     };
 
     // 全流程执行；失败时 outError 带原因

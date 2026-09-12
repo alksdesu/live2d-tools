@@ -555,7 +555,7 @@ void Generator::writeArtMeshEntities()
         // CArtMeshSource
         m_xml.BeginObject(QStringLiteral("CArtMeshSource"), QString(), m_meshSourceIds[i]);
         m_xml.BeginObject(QStringLiteral("ACDrawableSource"), QStringLiteral("super"));
-        writeControllableHeader(displayName(mesh->ids), mesh->is_visible,
+        writeControllableHeader(displayName(mesh->ids), mesh->is_visible && !m_opt.hiddenIds.contains(mesh->ids),
                                 (mesh->parent_part_indices >= 0)
                                     ? m_partIds[mesh->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 1);
@@ -718,7 +718,7 @@ void Generator::writeWarpDeformerEntities()
         m_warpSourceIds[w] = m_xml.AllocId();
         m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_warpSourceIds[w]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
-        writeControllableHeader(displayName(deformer->ids), deformer->is_visible,
+        writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
                                 (deformer->parent_part_indices >= 0)
                                     ? m_partIds[deformer->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 0);
@@ -817,7 +817,7 @@ void Generator::writeRotationDeformerEntities()
         m_rotationSourceIds[r] = m_xml.AllocId();
         m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_rotationSourceIds[r]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
-        writeControllableHeader(displayName(deformer->ids), deformer->is_visible,
+        writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
                                 (deformer->parent_part_indices >= 0)
                                     ? m_partIds[deformer->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 0);
@@ -1305,7 +1305,7 @@ bool Generator::Run(QString* outError)
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
 
         m_xml.BeginObject(QStringLiteral("CPartSource"), QString(), m_partIds[i].source);
-        writeControllableHeader(displayName(part->ids), part->is_visible,
+        writeControllableHeader(displayName(part->ids), part->is_visible && !m_opt.hiddenIds.contains(part->ids),
                                 (part->parent_part_indices >= 0)
                                     ? m_partIds[part->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 0);

@@ -274,6 +274,15 @@ void MainWindow::on_actionCmo3Export_triggered()
         const QStringList physics = dir.entryList({ "*.physics3.json" }, QDir::Files);
         if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
     }
+    if (m_treePanel) {
+        const QMap<QString, bool> visibility = m_treePanel->VisibilityState();
+        for (auto it = visibility.cbegin(); it != visibility.cend(); ++it) {
+            if (!it.value()) {
+                const int separator = it.key().indexOf(QLatin1Char('|'));
+                options.hiddenIds.insert(separator >= 0 ? it.key().mid(separator + 1) : it.key());
+            }
+        }
+    }
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
