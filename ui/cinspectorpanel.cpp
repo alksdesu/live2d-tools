@@ -1,7 +1,9 @@
 #include "cinspectorpanel.h"
 #include "live2dstruct/cmodeldocument.h"
 #include <QFormLayout>
+#include <QCheckBox>
 #include <QLabel>
+#include <QSignalBlocker>
 #include <QSet>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -37,6 +39,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_parentLabel = new QLabel(content);
     m_deformerLabel = new QLabel(content);
     m_visibilityLabel = new QLabel(content);
+    m_visibilityCheck = new QCheckBox(QStringLiteral("显示"), content);
     m_geometryLabel = new QLabel(content);
     m_textureLabel = new QLabel(content);
     m_drawOrderLabel = new QLabel(content);
@@ -55,6 +58,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("所属 Part"), m_parentLabel);
     form->addRow(QStringLiteral("父变形器"), m_deformerLabel);
     form->addRow(QStringLiteral("可见 / 启用"), m_visibilityLabel);
+    form->addRow(QStringLiteral("编辑可见性"), m_visibilityCheck);
     form->addRow(QStringLiteral("几何"), m_geometryLabel);
     form->addRow(QStringLiteral("纹理"), m_textureLabel);
     form->addRow(QStringLiteral("绘制顺序"), m_drawOrderLabel);
@@ -64,10 +68,18 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     layout->addLayout(form);
     layout->addStretch(1);
     setWidget(content);
+    connect(m_visibilityCheck, &QCheckBox::toggled, this, [this](bool visible){
+        if (m_updatingVisibility || !m_document || m_selectionName.isEmpty()) return;
+        bool changed = false;
+        if (m_selectionType == QLatin1String("part")) changed = m_document->SetPartVisible(m_selectionName, visible);
+        else if (m_selectionType == QLatin1String("warp") || m_selectionType == QLatin1String("rotation")) changed = m_document->SetDeformerVisible(m_selectionName, visible);
+        else if (m_selectionType == QLatin1String("artmesh")) changed = m_document->SetDrawableVisible(m_selectionName, visible);
+        if (changed) emit VisibilityChanged(m_selectionName, m_selectionType, visible);
+    });
     ClearSelection();
 }
 
-void CInspectorPanel::SetDocument(const live2dstruct::CModelDocument* document)
+void CInspectorPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
     m_document = document;
     if (m_selectionName.isEmpty()) ClearSelection();
@@ -90,6 +102,10 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_selectionName.clear();
     m_selectionType.clear();
     m_emptyLabel->setVisible(true);
+    m_updatingVisibility = true;
+    m_visibilityCheck->setChecked(false);
+    m_visibilityCheck->setEnabled(false);
+    m_updatingVisibility = false;
     m_emptyLabel->setText(QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围").arg(names.size()));
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -137,6 +153,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_blendLabel->setText(QStringLiteral("—"));
     m_maskLabel->setText(QStringLiteral("—"));
     m_keyformLabel->setText(QStringLiteral("—"));
+    m_visibilityCheck->setEnabled(true);
 
     if (type == QLatin1String("artmesh")) {
         for (const auto& drawable : m_document->Drawables()) {
@@ -145,6 +162,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_deformerLabel->setText(indexValue(drawable.parentDeformerIndex, QStringLiteral("无")));
             m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(drawable.visible ? QStringLiteral("是") : QStringLiteral("否"),
                                                                     drawable.enabled ? QStringLiteral("是") : QStringLiteral("否")));
+            m_updatingVisibility = true;
+            m_visibilityCheck->setChecked(drawable.visible);
+            m_updatingVisibility = false;
             m_geometryLabel->setText(QStringLiteral("%1 顶点，%2 索引").arg(drawable.vertexCount).arg(drawable.indices.size()));
             m_textureLabel->setText(drawable.textureIndex < 0 ? QStringLiteral("无") : QString::number(drawable.textureIndex));
             const QString blend = drawable.blendMode == 1 ? QStringLiteral("ADD")
@@ -164,6 +184,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_parentLabel->setText(indexValue(part.parentIndex));
             m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(part.visible ? QStringLiteral("是") : QStringLiteral("否"),
                                                                     part.enabled ? QStringLiteral("是") : QStringLiteral("否")));
+            m_updatingVisibility = true;
+            m_visibilityCheck->setChecked(part.visible);
+            m_updatingVisibility = false;
             return;
         }
     } else {
@@ -173,6 +196,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_deformerLabel->setText(indexValue(deformer.parentDeformerIndex, QStringLiteral("无")));
             m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(deformer.visible ? QStringLiteral("是") : QStringLiteral("否"),
                                                                     deformer.enabled ? QStringLiteral("是") : QStringLiteral("否")));
+            m_updatingVisibility = true;
+            m_visibilityCheck->setChecked(deformer.visible);
+            m_updatingVisibility = false;
             if (deformer.type == live2dstruct::CModelDeformer::Warp) {
                 m_geometryLabel->setText(QStringLiteral("Warp %1 × %2").arg(deformer.columns).arg(deformer.rows));
             } else {

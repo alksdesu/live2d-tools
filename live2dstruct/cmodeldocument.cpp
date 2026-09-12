@@ -143,6 +143,45 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
     return true;
 }
 
+bool CModelDocument::SetPartVisible(const QString& id, bool visible)
+{
+    for (CModelPart& part : m_parts) {
+        if (part.id != id) continue;
+        part.visible = visible;
+        return true;
+    }
+    return false;
+}
+
+bool CModelDocument::SetDeformerVisible(const QString& id, bool visible)
+{
+    for (CModelDeformer& deformer : m_deformers) {
+        if (deformer.id != id) continue;
+        deformer.visible = visible;
+        return true;
+    }
+    return false;
+}
+
+bool CModelDocument::SetDrawableVisible(const QString& id, bool visible)
+{
+    for (CModelDrawable& drawable : m_drawables) {
+        if (drawable.id != id) continue;
+        drawable.visible = visible;
+        return true;
+    }
+    return false;
+}
+
+QSet<QString> CModelDocument::HiddenIds() const
+{
+    QSet<QString> hidden;
+    for (const CModelPart& part : m_parts) if (!part.visible) hidden.insert(part.id);
+    for (const CModelDeformer& deformer : m_deformers) if (!deformer.visible) hidden.insert(deformer.id);
+    for (const CModelDrawable& drawable : m_drawables) if (!drawable.visible) hidden.insert(drawable.id);
+    return hidden;
+}
+
 QVector<CModelDiagnostic> CModelDocument::Validate() const
 {
     QVector<CModelDiagnostic> diagnostics;

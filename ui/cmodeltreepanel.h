@@ -20,6 +20,7 @@ public:
 public slots:
     void HighlightMesh(const QString& artName);
     void ApplyVisibilityState(const QMap<QString, bool>& state);
+    void SetVisibility(const QString& name, const QString& type, bool visible);
 
 signals:
     void ObjectSelected(const QString& name, const QString& type);

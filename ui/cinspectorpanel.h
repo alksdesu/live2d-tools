@@ -8,6 +8,7 @@ class CModelDocument;
 }
 
 class QLabel;
+class QCheckBox;
 
 class CInspectorPanel : public QDockWidget
 {
@@ -15,15 +16,18 @@ class CInspectorPanel : public QDockWidget
 public:
     explicit CInspectorPanel(QWidget* parent = nullptr);
 
-    void SetDocument(const live2dstruct::CModelDocument* document);
+    void SetDocument(live2dstruct::CModelDocument* document);
     void SetSelection(const QString& name, const QString& type);
     void SetSelections(const QStringList& names, const QStringList& types);
     void ClearSelection();
 
+signals:
+    void VisibilityChanged(const QString& name, const QString& type, bool visible);
+
 private:
     void showModelObject(const QString& name, const QString& type);
 
-    const live2dstruct::CModelDocument* m_document = nullptr;
+    live2dstruct::CModelDocument* m_document = nullptr;
     QString m_selectionName;
     QString m_selectionType;
     QLabel* m_emptyLabel = nullptr;
@@ -32,6 +36,8 @@ private:
     QLabel* m_parentLabel = nullptr;
     QLabel* m_deformerLabel = nullptr;
     QLabel* m_visibilityLabel = nullptr;
+    QCheckBox* m_visibilityCheck = nullptr;
+    bool m_updatingVisibility = false;
     QLabel* m_geometryLabel = nullptr;
     QLabel* m_textureLabel = nullptr;
     QLabel* m_drawOrderLabel = nullptr;

@@ -272,15 +272,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         const QStringList physics = dir.entryList({ "*.physics3.json" }, QDir::Files);
         if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
     }
-    if (m_treePanel) {
-        const QMap<QString, bool> visibility = m_treePanel->VisibilityState();
-        for (auto it = visibility.cbegin(); it != visibility.cend(); ++it) {
-            if (!it.value()) {
-                const int separator = it.key().indexOf(QLatin1Char('|'));
-                options.hiddenIds.insert(separator >= 0 ? it.key().mid(separator + 1) : it.key());
-            }
-        }
-    }
+    options.hiddenIds = m_document.HiddenIds();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -851,6 +843,12 @@ void MainWindow::RestDock(const QString &name)
 
     // 信号连接：树面板可见性 → OpenGL 渲染控制
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_openglwindows, &OpengGlForm::do_SetVisibility);
+    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, [this](const QString& name, const QString& type, bool visible){
+        if (type == QLatin1String("part")) m_document.SetPartVisible(name, visible);
+        else if (type == QLatin1String("artmesh")) m_document.SetDrawableVisible(name, visible);
+        else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) m_document.SetDeformerVisible(name, visible);
+    });
+    connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, m_treePanel, &CModelTreePanel::SetVisibility);
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){

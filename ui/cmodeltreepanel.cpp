@@ -502,6 +502,45 @@ void CModelTreePanel::ApplyVisibilityState(const QMap<QString, bool>& state)
     }
 }
 
+void CModelTreePanel::SetVisibility(const QString& name, const QString& type, bool visible)
+{
+    const auto updateItem = [visible](QTreeWidgetItem* item, auto&& updateRef) -> void {
+        if (!item) return;
+        item->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+        for (int i = 0; i < item->childCount(); ++i) updateRef(item->child(i), updateRef);
+    };
+    m_updatingChecks = true;
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) tree->blockSignals(true);
+    if (type == QLatin1String("part")) {
+        updateItem(m_nameToPartItem.value(name, nullptr), updateItem);
+        updateItem(m_nameToDeformerItem.value(name, nullptr), updateItem);
+    } else if (type == QLatin1String("artmesh")) {
+        if (m_nameToPartItem.contains(name)) m_nameToPartItem.value(name)->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+        if (m_nameToDeformerItem.contains(name)) m_nameToDeformerItem.value(name)->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+    } else {
+        updateItem(m_nameToPartItem.value(name, nullptr), updateItem);
+        updateItem(m_nameToDeformerItem.value(name, nullptr), updateItem);
+    }
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) tree->blockSignals(false);
+    m_updatingChecks = false;
+
+    const auto emitItem = [this](QTreeWidgetItem* item, auto&& emitRef) -> void {
+        if (!item) return;
+        const QString itemType = item->data(0, Qt::UserRole + 1).toString();
+        const QString itemName = item->data(0, Qt::UserRole).toString();
+        if ((itemType == QLatin1String("part") || itemType == QLatin1String("artmesh")) && !itemName.isEmpty())
+            emit VisibilityChanged(itemName, itemType, item->checkState(0) == Qt::Checked);
+        for (int i = 0; i < item->childCount(); ++i) emitRef(item->child(i), emitRef);
+    };
+    if (type == QLatin1String("artmesh")) {
+        if (m_nameToPartItem.contains(name)) emitItem(m_nameToPartItem.value(name), emitItem);
+        if (m_nameToDeformerItem.contains(name)) emitItem(m_nameToDeformerItem.value(name), emitItem);
+    } else {
+        if (m_nameToPartItem.contains(name)) emitItem(m_nameToPartItem.value(name), emitItem);
+        if (m_nameToDeformerItem.contains(name)) emitItem(m_nameToDeformerItem.value(name), emitItem);
+    }
+}
+
 QStringList CModelTreePanel::collectDeformerNames(QTreeWidgetItem* item)
 {
     QStringList result;

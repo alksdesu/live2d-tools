@@ -4,6 +4,7 @@
 #include <QSize>
 #include <QString>
 #include <QVector>
+#include <QSet>
 
 namespace live2dstruct {
 
@@ -88,6 +89,10 @@ public:
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
+    bool SetPartVisible(const QString& id, bool visible);
+    bool SetDeformerVisible(const QString& id, bool visible);
+    bool SetDrawableVisible(const QString& id, bool visible);
+    QSet<QString> HiddenIds() const;
 
     QVector<CModelDiagnostic> Validate() const;
 
