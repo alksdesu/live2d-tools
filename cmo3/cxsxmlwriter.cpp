@@ -1,5 +1,8 @@
 #include "cxsxmlwriter.h"
-#include <charconv>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <sstream>
 
 namespace cmo3 {
 
@@ -240,10 +243,11 @@ void CXsXmlWriter::GuidObject(const QString& className, const QString& uuid, con
 
 QString CXsXmlWriter::FormatFloat(float value)
 {
-    // 最短往返表示；整数值补 ".0" 对齐 Java Float.toString 风格
-    char buf[32];
-    const auto res = std::to_chars(buf, buf + sizeof(buf), value);
-    QString s = QString::fromLatin1(buf, static_cast<int>(res.ptr - buf));
+    // 保持 float 往返精度；整数值补 ".0" 对齐 Java Float.toString 风格
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
+    QString s = QString::fromStdString(stream.str());
     if (!s.contains(QLatin1Char('.')) && !s.contains(QLatin1Char('e')) &&
         !s.contains(QLatin1Char('n')) && !s.contains(QLatin1Char('i'))) {
         s += QLatin1String(".0");

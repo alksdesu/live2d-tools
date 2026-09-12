@@ -32,7 +32,8 @@ PSD_NAMESPACE_BEGIN
 
 
 void PrintLayer(Layer* layers) {
-	OutputDebugStringA(layers->name.c_str());
+	if (!layers) return;
+	printf("%s\n", layers->name.c_str());
 	printf("top = %d", layers->top);
 	printf("left = %d", layers->left);
 	printf("bottom = %d", layers->bottom);

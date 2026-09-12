@@ -2,7 +2,6 @@
 // See LICENSE.txt for licensing details (2-clause BSD License: https://opensource.org/licenses/BSD-2-Clause)
 
 #pragma once
-#include <windows.h>
 #include <iostream>
 #include "psd/psdSamples/Platform/PsdNamespace.h"
 PSD_NAMESPACE_BEGIN

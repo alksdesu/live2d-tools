@@ -1,4 +1,4 @@
-QT       += core gui opengl  gui-private network
+QT       += core gui network
 greaterThan(QT_MAJOR_VERSION, 5): QT += openglwidgets
 greaterThan(QT_MAJOR_VERSION, 5): QT += core5compat
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
@@ -453,14 +453,15 @@ HEADERS += \
 INCLUDEPATH += $$PWD/opencv/include \
 
 
-LIBS += $$PWD/windows/x86_64/Live2DCubismCore.lib
+win32: LIBS += $$PWD/windows/x86_64/Live2DCubismCore.lib
+macx: LIBS += -framework OpenGL
 win32: LIBS += -luser32
 
 
 
-CONFIG(debug, debug|release) {
+win32:CONFIG(debug, debug|release) {
     LIBS += $$PWD/opencv/x64/vc16/lib/opencv_world4100d.lib
-} else {
+} else:win32 {
     LIBS += $$PWD/opencv/x64/vc16/lib/opencv_world4100.lib
 }
 

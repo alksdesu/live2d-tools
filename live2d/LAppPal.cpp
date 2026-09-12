@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <framework/Model/CubismMoc.hpp>
 #include "LAppDefine.hpp"
 #include <QDebug>
@@ -25,7 +26,7 @@ double LAppPal::s_deltaTime = 0.0;
 
 csmByte* LAppPal::LoadFileAsBytes(const string filePath, csmSizeInt* outSize)
 {
-
+    if (!outSize) return nullptr;
 
     // 创建QFile对象
     QFile file(filePath.c_str());
@@ -38,7 +39,7 @@ csmByte* LAppPal::LoadFileAsBytes(const string filePath, csmSizeInt* outSize)
 
     // 获取文件大小
     qint64 size = file.size();
-    if (size <= 0) {
+    if (size <= 0 || size > std::numeric_limits<csmSizeInt>::max()) {
         qDebug() << "File is empty or an error occurred.";
         file.close();
         return nullptr;
@@ -81,13 +82,18 @@ void LAppPal::UpdateTime()
 
 void LAppPal::PrintLog(const csmChar* format, ...)
 {
+    if (!format) return;
     va_list args;
     csmChar buf[256];
     va_start(args, format);
-    vsnprintf_s(buf, sizeof(buf), format, args); // 標準出力でレンダリング
+#if defined(_MSC_VER)
+    vsnprintf_s(buf, sizeof(buf), _TRUNCATE, format, args);
+#else
+    std::vsnprintf(buf, sizeof(buf), format, args);
+#endif
 #ifdef CSM_DEBUG_MEMORY_LEAKING
 // メモリリークチェック時は大量の標準出力がはしり重いのでprintfを利用する
-    std::printf(buf);
+    std::printf("%s", buf);
 #else
     std::cout << buf;
 #endif
@@ -96,10 +102,15 @@ void LAppPal::PrintLog(const csmChar* format, ...)
 
 void LAppPal::PrintLogLn(const Csm::csmChar* format, ...)
 {
+    if (!format) return;
     va_list args;
     csmChar buf[256];
     va_start(args, format);
-    vsnprintf_s(buf, sizeof(buf), format, args); // 標準出力でレンダリング
+#if defined(_MSC_VER)
+    vsnprintf_s(buf, sizeof(buf), _TRUNCATE, format, args);
+#else
+    std::vsnprintf(buf, sizeof(buf), format, args);
+#endif
 #ifdef CSM_DEBUG_MEMORY_LEAKING
     // メモリリークチェック時は大量の標準出力がはしり重いのでprintfを利用する
     std::printf("%s\n", buf);

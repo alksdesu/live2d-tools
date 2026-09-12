@@ -9,9 +9,112 @@
 #include "psd/psdSamples/Util/PsdMemoryUtil.h"
 #include "psd/psdSamples/Platform/PsdLog.h"
 #include "psd/psdSamples/Psdinttypes.h"
+#include <cstdio>
+#include <cwchar>
+#include <limits>
+#if !PSD_USE_MSVC
+#include <sys/types.h>
+#endif
 
 
 PSD_NAMESPACE_BEGIN
+
+#if !PSD_USE_MSVC
+
+namespace {
+struct PortableOperation {
+    bool success;
+};
+
+bool ToUtf8Path(const wchar_t* source, char* target, size_t targetSize)
+{
+    if (!source || !target || targetSize == 0) return false;
+    const wchar_t* cursor = source;
+    mbstate_t state{};
+    const size_t converted = ::wcsrtombs(target, &cursor, targetSize - 1, &state);
+    if (converted == static_cast<size_t>(-1)) return false;
+    target[converted] = '\0';
+    return true;
+}
+}
+
+NativeFile::NativeFile(Allocator* allocator)
+    : File(allocator)
+    , m_file(nullptr)
+{
+}
+
+bool NativeFile::DoOpenRead(const wchar_t* filename)
+{
+    char path[4096];
+    if (!ToUtf8Path(filename, path, sizeof(path))) return false;
+    m_file = std::fopen(path, "rb");
+    return m_file != nullptr;
+}
+
+bool NativeFile::DoOpenWrite(const wchar_t* filename)
+{
+    char path[4096];
+    if (!ToUtf8Path(filename, path, sizeof(path))) return false;
+    m_file = std::fopen(path, "wb");
+    return m_file != nullptr;
+}
+
+bool NativeFile::DoClose(void)
+{
+    FILE* file = static_cast<FILE*>(m_file);
+    m_file = nullptr;
+    return !file || std::fclose(file) == 0;
+}
+
+File::ReadOperation NativeFile::DoRead(void* buffer, uint32_t count, uint64_t position)
+{
+    FILE* file = static_cast<FILE*>(m_file);
+    bool success = file && position <= static_cast<uint64_t>(std::numeric_limits<off_t>::max()) &&
+        ::fseeko(file, static_cast<off_t>(position), SEEK_SET) == 0 && std::fread(buffer, 1, count, file) == count;
+    return new PortableOperation{success};
+}
+
+bool NativeFile::DoWaitForRead(File::ReadOperation& operation)
+{
+    auto* result = static_cast<PortableOperation*>(operation);
+    if (!result) return false;
+    const bool success = result->success;
+    delete result;
+    operation = nullptr;
+    return success;
+}
+
+File::WriteOperation NativeFile::DoWrite(const void* buffer, uint32_t count, uint64_t position)
+{
+    FILE* file = static_cast<FILE*>(m_file);
+    bool success = file && position <= static_cast<uint64_t>(std::numeric_limits<off_t>::max()) &&
+        ::fseeko(file, static_cast<off_t>(position), SEEK_SET) == 0 && std::fwrite(buffer, 1, count, file) == count;
+    return new PortableOperation{success};
+}
+
+bool NativeFile::DoWaitForWrite(File::WriteOperation& operation)
+{
+    auto* result = static_cast<PortableOperation*>(operation);
+    if (!result) return false;
+    const bool success = result->success;
+    delete result;
+    operation = nullptr;
+    return success;
+}
+
+uint64_t NativeFile::DoGetSize(void) const
+{
+    FILE* file = static_cast<FILE*>(m_file);
+    if (!file) return 0;
+    const off_t current = ::ftello(file);
+    if (current < 0 || ::fseeko(file, 0, SEEK_END) != 0) return 0;
+    const off_t end = ::ftello(file);
+    ::fseeko(file, current, SEEK_SET);
+    return end < 0 ? 0 : static_cast<uint64_t>(end);
+}
+
+#else
 
 // ---------------------------------------------------------------------------------------------------------------------
 // ---------------------------------------------------------------------------------------------------------------------
@@ -179,5 +282,7 @@ uint64_t NativeFile::DoGetSize(void) const
 
 	return static_cast<uint64_t>(size.QuadPart);
 }
+
+#endif
 
 PSD_NAMESPACE_END
