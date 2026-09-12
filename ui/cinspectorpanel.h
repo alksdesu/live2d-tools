@@ -28,6 +28,7 @@ public slots:
     void Undo();
     void Redo();
     void ClearHistory();
+    void SyncHistoryState();
 
 signals:
     void VisibilityChanged(const QString& name, const QString& type, bool visible);

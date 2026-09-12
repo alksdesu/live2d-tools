@@ -925,11 +925,26 @@ void MainWindow::RestDock(const QString &name)
     // 信号连接：树面板可见性 → OpenGL 渲染控制
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_openglwindows, &OpengGlForm::do_SetVisibility);
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, [this](const QString& name, const QString& type, bool visible){
-        if (type == QLatin1String("part")) m_document.SetPartVisible(name, visible);
-        else if (type == QLatin1String("artmesh")) m_document.SetDrawableVisible(name, visible);
-        else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) m_document.SetDeformerVisible(name, visible);
+        if (m_syncingVisibility) return;
+        bool found = false;
+        bool before = visible;
+        if (type == QLatin1String("part")) {
+            for (const auto& part : m_document.Parts()) if (part.id == name) { before = part.visible; found = true; break; }
+        } else if (type == QLatin1String("artmesh")) {
+            for (const auto& drawable : m_document.Drawables()) if (drawable.id == name) { before = drawable.visible; found = true; break; }
+        } else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) {
+            for (const auto& deformer : m_document.Deformers()) if (deformer.id == name) { before = deformer.visible; found = true; break; }
+        }
+        if (!found || before == visible) return;
+        const live2dstruct::CModelEdit command{name, type, live2dstruct::CModelEdit::Visibility, before, visible};
+        if (m_document.ExecuteEdit(command) && m_inspectorPanel) m_inspectorPanel->SyncHistoryState();
     });
-    connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, m_treePanel, &CModelTreePanel::SetVisibility);
+    connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, this,
+            [this](const QString& name, const QString& type, bool visible){
+                m_syncingVisibility = true;
+                if (m_treePanel) m_treePanel->SetVisibility(name, type, visible);
+                m_syncingVisibility = false;
+            });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableOpacity);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged,

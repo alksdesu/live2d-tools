@@ -315,6 +315,15 @@ void CInspectorPanel::ClearHistory()
     emit HistoryChanged(false, false);
 }
 
+void CInspectorPanel::SyncHistoryState()
+{
+    if (!m_document) {
+        emit HistoryChanged(false, false);
+        return;
+    }
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::Undo()
 {
     if (!m_document) return;
