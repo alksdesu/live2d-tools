@@ -33,7 +33,7 @@
 
 - [x] 可保存/重载的 ModelDocument、命令/撤销/重做、选区、脏状态、会话恢复。
 - [x] Inspector：ID/名称、Part/Deformer、可见/锁定、绘制顺序、透明度、混合、蒙版、顶点信息。
-- [x] 多选、独显、锁定、搜索、批量编辑、复制粘贴。
+- [x] 多选、独显、锁定、搜索、批量编辑、复制粘贴、同 Part Deformer 父级调整。
 - [ ] 参数创建/删除/元数据/分组/颜色、XY 联动、关键形标记/网格和绑定验证。
 - [x] 关键形复制/粘贴/插值/镜像；Blend Shape 参数编辑和保存。
 - [ ] ArtMesh 顶点移动/增删/合并、三角剖分、自动网格、复制、对称编辑。
@@ -78,6 +78,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Inspector 支持 ArtMesh 自动三角剖分；索引覆盖进入文档命令栈、实时网格、会话和 cmo3，非法索引会回退原始拓扑。
 - Inspector 支持 ArtMesh 拓扑剪贴板复制/粘贴，跨网格粘贴会校验顶点数和索引范围。
 - Inspector 支持 Clipping Mask 多选编辑；蒙版关系进入文档命令栈、session、诊断和 cmo3 `clipGuidList`。
+- Inspector 支持同 Part Warp/Rotation Deformer 父级调整；关系进入文档命令栈、session、环检测和 cmo3 `targetDeformerGuid`。
 - PSD 纹理提取与 cmo3 贴图重建也消费同一索引覆盖；拓扑异常或超出运行时索引范围时回退原始三角形。
 - 结构树支持多选批量属性编辑和对象锁定；锁定状态同步到 Inspector 与 session，树节点初始可见性来自 moc3。
 - 结构树上下文菜单支持独显选中对象和显示全部对象；会沿用可见性事件链同步到预览、文档与会话。
