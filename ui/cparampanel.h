@@ -38,6 +38,8 @@ public slots:
     void ApplyValues(const QMap<QString, float>& values);
     void CopyValues();
     void PasteValues();
+    void SavePreset();
+    void LoadPreset();
 
 private:
     struct ParamRow {
@@ -63,6 +65,7 @@ private:
     live2dstruct::CModelDocument* m_document = nullptr;
 
     void ApplyValue(int rowIndex, float value, bool record);
+    void ApplyValuesInternal(const QMap<QString, float>& values, bool record);
     void PushEdit(const QString& paramId, float before, float after);
     void EmitHistoryState();
 };

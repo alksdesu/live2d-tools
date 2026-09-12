@@ -12,11 +12,44 @@
 #include <QClipboard>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QFile>
+#include <QSaveFile>
 #include <algorithm>
 #include <iterator>
 #include <cmath>
 
 using namespace Live2D::Cubism::Framework;
+
+namespace {
+bool parseParameterPreset(const QByteArray& data, QMap<QString, float>* values, QString* error)
+{
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error) *error = parseError.errorString();
+        return false;
+    }
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("format")).toString() != QStringLiteral("live2d2psd-parameters-v1")) {
+        if (error) *error = QStringLiteral("参数预设格式不受支持");
+        return false;
+    }
+    QMap<QString, float> parsed;
+    for (const QString& key : object.keys()) {
+        if (key == QStringLiteral("format")) continue;
+        const QJsonValue value = object.value(key);
+        if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+            if (error) *error = QStringLiteral("参数值无效：%1").arg(key);
+            return false;
+        }
+        parsed.insert(key, static_cast<float>(value.toDouble()));
+    }
+    if (values) *values = parsed;
+    return true;
+}
+}
 
 CParamPanel::CParamPanel(QWidget *parent)
     : QDockWidget("参数控制", parent)
@@ -32,11 +65,17 @@ CParamPanel::CParamPanel(QWidget *parent)
     buttonRow->addWidget(resetBtn);
     auto* copyBtn = new QPushButton(QStringLiteral("复制参数"), wrapper);
     auto* pasteBtn = new QPushButton(QStringLiteral("粘贴参数"), wrapper);
+    auto* savePresetBtn = new QPushButton(QStringLiteral("保存预设"), wrapper);
+    auto* loadPresetBtn = new QPushButton(QStringLiteral("载入预设"), wrapper);
     buttonRow->addWidget(copyBtn);
     buttonRow->addWidget(pasteBtn);
+    buttonRow->addWidget(savePresetBtn);
+    buttonRow->addWidget(loadPresetBtn);
     mainLayout->addLayout(buttonRow);
     connect(copyBtn, &QPushButton::clicked, this, &CParamPanel::CopyValues);
     connect(pasteBtn, &QPushButton::clicked, this, &CParamPanel::PasteValues);
+    connect(savePresetBtn, &QPushButton::clicked, this, &CParamPanel::SavePreset);
+    connect(loadPresetBtn, &QPushButton::clicked, this, &CParamPanel::LoadPreset);
 
     m_search = new QLineEdit(wrapper);
     m_search->setPlaceholderText("搜索参数名称或 ID");
@@ -342,12 +381,18 @@ QMap<QString, float> CParamPanel::CurrentValues() const
 
 void CParamPanel::ApplyValues(const QMap<QString, float>& values)
 {
+    ApplyValuesInternal(values, false);
+}
+
+void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool record)
+{
     for (int i = 0; i < m_rows.size(); ++i) {
         ParamRow& row = m_rows[i];
         if (!values.contains(row.paramId)) continue;
         const float requested = values.value(row.paramId);
         if (!std::isfinite(requested)) continue;
         const float value = qBound(row.minVal, requested, row.maxVal);
+        const float before = m_lastValues.value(row.paramId, row.defaultVal);
         const int sliderValue = row.maxVal > row.minVal
             ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
             : 0;
@@ -359,8 +404,10 @@ void CParamPanel::ApplyValues(const QMap<QString, float>& values)
         m_userLocked.insert(i);
         if (m_document) m_document->SetParameterValue(row.paramId, value);
         emit ParamChanged(row.paramId, value, false);
+        if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) PushEdit(row.paramId, before, value);
     }
-    ClearHistory();
+    if (record) EmitHistoryState();
+    else ClearHistory();
 }
 
 void CParamPanel::CopyValues()
@@ -375,18 +422,48 @@ void CParamPanel::CopyValues()
 void CParamPanel::PasteValues()
 {
     const QString text = QApplication::clipboard()->text();
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
-        document.object().value(QStringLiteral("format")).toString() != QStringLiteral("live2d2psd-parameters-v1")) return;
     QMap<QString, float> values;
-    const QJsonObject object = document.object();
-    for (const QString& key : object.keys()) {
-        if (key == QStringLiteral("format") || !object.value(key).isDouble()) continue;
-        const double value = object.value(key).toDouble();
-        if (std::isfinite(value)) values.insert(key, static_cast<float>(value));
+    if (parseParameterPreset(text.toUtf8(), &values, nullptr)) ApplyValues(values);
+}
+
+void CParamPanel::SavePreset()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("保存参数预设"), QString(),
+        QStringLiteral("Live2D 参数预设 (*.live2d-parameters.json);;JSON (*.json)"));
+    if (path.isEmpty()) return;
+    QJsonObject object;
+    object.insert(QStringLiteral("format"), QStringLiteral("live2d2psd-parameters-v1"));
+    const QMap<QString, float> values = CurrentValues();
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        object.insert(it.key(), static_cast<double>(it.value()));
     }
-    ApplyValues(values);
+    QSaveFile file(path);
+    const QByteArray data = QJsonDocument(object).toJson(QJsonDocument::Indented);
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+        QMessageBox::warning(this, QStringLiteral("保存参数预设失败"), path);
+        return;
+    }
+}
+
+void CParamPanel::LoadPreset()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("载入参数预设"), QString(),
+        QStringLiteral("Live2D 参数预设 (*.live2d-parameters.json);;JSON (*.json)"));
+    if (path.isEmpty()) return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, QStringLiteral("载入参数预设失败"), path);
+        return;
+    }
+    QMap<QString, float> values;
+    QString error;
+    if (!parseParameterPreset(file.readAll(), &values, &error)) {
+        QMessageBox::warning(this, QStringLiteral("载入参数预设失败"), error);
+        return;
+    }
+    ApplyValuesInternal(values, true);
 }
 
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
