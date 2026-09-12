@@ -38,8 +38,9 @@ Csm::csmBool LAppWavFileHandler::Update(Csm::csmFloat32 deltaTimeSeconds)
     Csm::csmFloat32 rms;
 
     // データロード前/ファイル末尾に達した場合は更新しない
-    if ((_pcmData == NULL)
-        || (_sampleOffset >= _wavFileInfo._samplesPerChannel))
+    if ((_pcmData == NULL) || (_wavFileInfo._numberOfChannels == 0) ||
+        (_wavFileInfo._samplingRate == 0) || (_sampleOffset >= _wavFileInfo._samplesPerChannel) ||
+        !std::isfinite(deltaTimeSeconds) || deltaTimeSeconds < 0.0f)
     {
         _lastRms = 0.0f;
         return false;
@@ -51,6 +52,11 @@ Csm::csmBool LAppWavFileHandler::Update(Csm::csmFloat32 deltaTimeSeconds)
     if (goalOffset > _wavFileInfo._samplesPerChannel)
     {
         goalOffset = _wavFileInfo._samplesPerChannel;
+    }
+
+    if (goalOffset <= _sampleOffset)
+    {
+        return false;
     }
 
     // RMS計測
@@ -110,6 +116,8 @@ Csm::csmVector<Csm::csmFloat32> LAppWavFileHandler::GetPcmData() const
 {
     Csm::csmVector<Csm::csmFloat32> buffer;
 
+    if (_pcmData == NULL || _wavFileInfo._numberOfChannels == 0) return buffer;
+
     for (Csm::csmUint32 sampleCount = 0; sampleCount < _wavFileInfo._samplesPerChannel; sampleCount++)
     {
         for (Csm::csmUint32 channelCount = 0; channelCount < _wavFileInfo._numberOfChannels; channelCount++)
@@ -123,6 +131,7 @@ Csm::csmVector<Csm::csmFloat32> LAppWavFileHandler::GetPcmData() const
 
 void LAppWavFileHandler::GetPcmDataChannel(Csm::csmFloat32* dst, Csm::csmUint32 useChannel) const
 {
+    if (_pcmData == NULL || dst == NULL || useChannel >= _wavFileInfo._numberOfChannels) return;
     for (Csm::csmUint32 sampleCount = 0; sampleCount < _wavFileInfo._samplesPerChannel; sampleCount++)
     {
         dst[sampleCount] = _pcmData[useChannel][sampleCount];
@@ -132,6 +141,8 @@ void LAppWavFileHandler::GetPcmDataChannel(Csm::csmFloat32* dst, Csm::csmUint32 
 Csm::csmFloat32 LAppWavFileHandler::NormalizePcmSample(Csm::csmUint32 bitsPerSample, Csm::csmByte* data, Csm::csmUint32 dataSize)
 {
     Csm::csmInt32 pcm32;
+
+    if (data == NULL) return 0.0f;
 
     // 32ビット幅に拡張してから-1～1の範囲に丸める
     switch (bitsPerSample)
