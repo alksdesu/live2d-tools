@@ -110,6 +110,7 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
 
     CReader reader(mocPath);
     CSectionTable sec(reader);
+    if (!sec.IsValid()) return;
 
     int partCount = sec.parts.size();
     int deformerCount = sec.deformers.size();

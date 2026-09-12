@@ -54,10 +54,11 @@ public:
 
     CSectionTable(CReader& bytes);
     ~CSectionTable();
+    bool IsValid() const { return m_valid; }
 
-    CSectionOffsetTable* sectionOffsetTable;
-    CCount_info* count_info;
-    CCanvas_info* canvas_info;
+    CSectionOffsetTable* sectionOffsetTable = nullptr;
+    CCount_info* count_info = nullptr;
+    CCanvas_info* canvas_info = nullptr;
     QVector<CParts*> parts;
     QVector<CDeformers*> deformers;
     QVector<CWarp_deformers*> warp_deformers;//变形
@@ -68,13 +69,13 @@ public:
     QVector<CWarp_deformer_keyforms*> warp_deformer_keyforms;
     QVector<CRotation_deformer_keyforms*> rotation_deformer_keyforms;
     QVector<CArt_mesh_keyforms*> art_mesh_keyforms;
-    CKeyform_positions* keyform_positions;
+    CKeyform_positions* keyform_positions = nullptr;
     QVector<CParameter_binding_indices*> parameter_binding_indices;
     QVector<CKeyform_bindings*> keyform_bindings;
     QVector<CParameter_bindings*> parameter_bindings;
-    CKeys* keys;
-    CUvs* uvs;
-    CPosition_indices* position_indices;
+    CKeys* keys = nullptr;
+    CUvs* uvs = nullptr;
+    CPosition_indices* position_indices = nullptr;
     QVector<CDrawable_masks*> drawable_masks;
     QVector<CDraw_order_groups*> draw_order_groups;
     QVector<CDraw_order_group_objects*> draw_order_group_objects;
@@ -94,6 +95,9 @@ public:
 
     QVector<CKeyform_multiply_colors*> keyform_multiply_colors;
     QVector<CKeyform_screen_colors*> keyform_screen_colors;
+
+private:
+    bool m_valid = false;
 
 
 };

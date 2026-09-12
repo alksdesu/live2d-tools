@@ -6,6 +6,7 @@
  */
 
 #include "LAppModel.hpp"
+#include "opengl/cmeshbounds.h"
 
 #include <framework/CubismModelSettingJson.hpp>
 #include <framework/Motion/CubismMotion.hpp>
@@ -770,18 +771,13 @@ csmBool LAppModel::HasMocConsistencyFromFile(const csmChar* mocFileName)
 
 QRectF LAppModel::GetCurModelRectF()
 {
-    QPolygonF poly;
-
-    int count = _model->GetDrawableCount();
-    for(int i = 0 ;i < count;i++){
-        int size = _model->GetDrawableVertexIndexCount(i);
-        const float* pos =  _model->GetDrawableVertices(i);
-        for(int j = 0 ;j < size ;j+=2){
-            poly.push_back(QPointF(pos[j],pos[j+1]));
-        }
+    if (!_model) return {};
+    QRectF result;
+    for (int i = 0; i < _model->GetDrawableCount(); ++i) {
+        result = result.united(MeshBounds::Model(_model->GetDrawableVertices(i),
+                                               _model->GetDrawableVertexCount(i)));
     }
-
-    return poly.boundingRect();
+    return result;
 }
 
 void LAppModel::SetPhysicsGravity(float x, float y)
@@ -861,6 +857,7 @@ void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
 
     // 同步更新 C2DTree 的参数，让变形器线条跟着动
     C2DTree* tree = CTreeManage::GetInstance();
+    if (!tree) return;
     for(int i = 0; i < _deformerDragParamIds.size(); i++){
         tree->SetParaValue(_deformerDragParamIds[i], _deformerDragValues[i]);
     }

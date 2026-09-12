@@ -152,7 +152,7 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
     }
     //修改当前参数对应的
     C2DTree* tree = CTreeManage::GetInstance();
-    tree->SetParaValue(name,value);
+    if (tree) tree->SetParaValue(name,value);
     LAppView* view= LAppDelegate::GetInstance()->GetView();
     view->InitWrapAndRotation();
 }
@@ -513,5 +513,4 @@ void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 
     }
 }
-
 

@@ -2,6 +2,7 @@
 #include "live2dstruct/csectiontable.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <QDebug>
 
 using namespace live2dstruct;
@@ -26,9 +27,14 @@ bool CTextureExtractor::LoadAtlases(const QVector<QString>& atlasPaths)
 
 QSize CTextureExtractor::GetCanvasPixelSize(const CCanvas_info* canvasInfo)
 {
-    int w = static_cast<int>(canvasInfo->width * canvasInfo->pixels_per_unit);
-    int h = static_cast<int>(canvasInfo->height * canvasInfo->pixels_per_unit);
-    return QSize(w, h);
+    if (!canvasInfo) return {};
+    const double w = canvasInfo->width;
+    const double h = canvasInfo->height;
+    if (!std::isfinite(w) || !std::isfinite(h) || w <= 0 || h <= 0 ||
+        w > std::numeric_limits<int>::max() || h > std::numeric_limits<int>::max()) {
+        return {};
+    }
+    return QSize(qRound(w), qRound(h));
 }
 
 uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)

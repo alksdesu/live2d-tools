@@ -36,6 +36,7 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
 
     CReader reader(mocPath);
     CSectionTable sec(reader);
+    if (!sec.IsValid()) return;
 
     int bsArtMeshCount = sec.blend_shapes_art_meshes.size();
     int bsWarpCount = sec.blend_shapes_warp_deformers.size();

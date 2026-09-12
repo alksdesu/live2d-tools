@@ -3,9 +3,32 @@ namespace live2dstruct {
 
 
 CSectionTable::CSectionTable(CReader&  bytes)  {//数据,以及数据起始位位置
+    if (!bytes.IsValid() || !bytes.IsMoc3()) return;
     sectionOffsetTable = new CSectionOffsetTable(bytes);
     count_info = new CCount_info(bytes,*(sectionOffsetTable->count_info));
     canvas_info = new CCanvas_info(bytes,*(sectionOffsetTable->canvas_info));
+    const auto validCount = [](int value) { return value >= 0 && value <= 1000000; };
+    if (!validCount(count_info->parts) || !validCount(count_info->deformers) ||
+        !validCount(count_info->warp_deformers) || !validCount(count_info->rotation_deformers) ||
+        !validCount(count_info->art_meshes) || !validCount(count_info->parameters) ||
+        !validCount(count_info->keyform_positions) || !validCount(count_info->uvs) ||
+        !validCount(count_info->position_indices) ||
+        !validCount(count_info->part_keyforms) || !validCount(count_info->warp_deformer_keyforms) ||
+        !validCount(count_info->rotation_deformer_keyforms) || !validCount(count_info->art_mesh_keyforms) ||
+        !validCount(count_info->parameter_binding_indices) || !validCount(count_info->keyform_bindings) ||
+        !validCount(count_info->parameter_bindings) || !validCount(count_info->keys) ||
+        !validCount(count_info->drawable_masks) || !validCount(count_info->draw_order_groups) ||
+        !validCount(count_info->draw_order_group_objects) || !validCount(count_info->glue) ||
+        !validCount(count_info->glue_info) || !validCount(count_info->glue_keyforms) ||
+        !validCount(count_info->blend_shape_constraint_indices) ||
+        !validCount(count_info->blend_shape_constraint_values) ||
+        !validCount(count_info->blend_shape_constraints) ||
+        !validCount(count_info->blend_shape_keyform_bindings) ||
+        !validCount(count_info->blend_shape_parameter_bindings) ||
+        !validCount(count_info->blend_shapes_art_meshes) ||
+        !validCount(count_info->blend_shapes_warp_deformers) ||
+        !validCount(count_info->keyform_multiply_colors) ||
+        !validCount(count_info->keyform_screen_colors)) return;
     for (int i = 0 ;i < count_info->parts;i++){
         parts.push_back(new CParts(bytes,*(sectionOffsetTable->parts),i));
     }
@@ -170,6 +193,8 @@ CSectionTable::CSectionTable(CReader&  bytes)  {//数据,以及数据起始位�
 
     }
 
+    m_valid = bytes.IsValid();
+
 }
 
 CSectionTable::~CSectionTable()
@@ -295,6 +320,16 @@ CSectionTable::~CSectionTable()
         delete glue_keyforms[i];
     }
     glue_keyforms.clear();
+
+    for (auto* item : blend_shape_constraint_indices) delete item;
+    for (auto* item : blend_shape_constraint_values) delete item;
+    for (auto* item : blend_shape_constraints) delete item;
+    for (auto* item : blend_shape_keyform_bindings) delete item;
+    for (auto* item : blend_shape_parameter_bindings) delete item;
+    for (auto* item : blend_shapes_art_meshes) delete item;
+    for (auto* item : blend_shapes_warp_deformers) delete item;
+    for (auto* item : keyform_multiply_colors) delete item;
+    for (auto* item : keyform_screen_colors) delete item;
 
 
 

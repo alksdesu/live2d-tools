@@ -268,7 +268,7 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
 {
     CReader reader(mocPath);
     CSectionTable table(reader);
-    if (!table.count_info || !table.uvs || !table.position_indices) {
+    if (!table.IsValid() || !table.count_info || !table.uvs || !table.position_indices) {
         qWarning("CTexturePanel: moc3 解析失败，UV 线框不可用");
         return;
     }

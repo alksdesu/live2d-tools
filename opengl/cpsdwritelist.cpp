@@ -90,6 +90,12 @@ QVector<QPair<int,CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndex
     cid->Parse(m_CidPath);
     CReader* reader = new  CReader(m_mocName);
     CSectionTable* sectionTable = new CSectionTable(*reader);
+    if (!sectionTable->IsValid()) {
+        delete reader;
+        delete sectionTable;
+        delete cid;
+        return {};
+    }
     C2DTree* tree = new C2DTree(*sectionTable);
     int size = sortedDrawableIndexList.size();
 

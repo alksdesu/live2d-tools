@@ -54,12 +54,12 @@ public:
     void PreDraw();
 
 private:
-    GLuint      _renderTexture;         ///< レンダリングターゲットとしてのアドレス
-    GLuint      _colorBuffer;           ///< 描画の際使用するテクスチャとしてのアドレス
-    GLint       _oldFBO;                ///< 旧フレームバッファ
-    int   _bufferWidth;           ///< Create時に指定された幅
-    int   _bufferHeight;          ///< Create時に指定された高さ
-    bool _isColorBufferInherited;    ///< 引数によって設定されたカラーバッファか？
+    GLuint      _renderTexture = 0;         ///< レンダリングターゲットとしてのアドレス
+    GLuint      _colorBuffer = 0;           ///< 描画の際使用するテクスチャとしてのアドレス
+    GLint       _oldFBO = 0;                ///< 旧フレームバッファ
+    int   _bufferWidth = 0;           ///< Create時に指定された幅
+    int   _bufferHeight = 0;          ///< Create時に指定された高さ
+    bool _isColorBufferInherited = false;    ///< 引数によって設定されたカラーバッファか？
 
 
 

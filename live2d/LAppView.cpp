@@ -308,7 +308,9 @@ void LAppView::AddRotationKey(CRotationNode *node)
 void LAppView::InitWrapAndRotation()
 {
 
-    std::vector<C2DTreeNode*> m_mapWarpNode =  CTreeManage::GetInstance()->GetWarpKeys();
+    C2DTree* tree = CTreeManage::GetInstance();
+    if (!tree) return;
+    std::vector<C2DTreeNode*> m_mapWarpNode = tree->GetWarpKeys();
     for(int i = 0 ;i < m_mapWarpNode.size() ;i++){
         if(dynamic_cast<CWarpNode*>(m_mapWarpNode[i])){
             CWarpNode* wrap = (CWarpNode*)m_mapWarpNode[i];
@@ -358,7 +360,9 @@ void LAppView::HideAllWarps()
 void LAppView::UpdateWarpPositions()
 {
     // 重新从 C2DTree 获取最新的变形器位置
-    std::vector<C2DTreeNode*> nodes = CTreeManage::GetInstance()->GetWarpKeys();
+    C2DTree* tree = CTreeManage::GetInstance();
+    if (!tree) return;
+    std::vector<C2DTreeNode*> nodes = tree->GetWarpKeys();
     for(auto* node : nodes){
         if(auto* warp = dynamic_cast<CWarpNode*>(node)){
             if(m_drawWarpMap.contains(warp->getName())){

@@ -35,6 +35,7 @@ OBJECTS_DIR = $${OUTPUTDIR}/objs
 DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
+    opengl/cmeshbounds.cpp \
     edit/cdrawobject.cpp \
     edit/cdrawrotation.cpp \
     edit/cdrawwarp.cpp \
@@ -209,6 +210,7 @@ SOURCES += \
     cmo3\ccmo3builder.cpp \
 
 HEADERS += \
+    opengl/cmeshbounds.h \
     CPrecompileHead.h \
     edit/cdrawobject.h \
     edit/cdrawrotation.h \

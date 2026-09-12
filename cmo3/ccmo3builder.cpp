@@ -1340,7 +1340,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
 
     CReader reader(opt.mocPath);
     CSectionTable table(reader);
-    if (!table.count_info || !table.canvas_info || !table.uvs || !table.position_indices) {
+    if (!table.IsValid() || !table.count_info || !table.canvas_info || !table.uvs || !table.position_indices) {
         if (outError) *outError = QStringLiteral("moc3 解析失败: %1").arg(opt.mocPath);
         return false;
     }

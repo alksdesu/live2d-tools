@@ -1,4 +1,5 @@
 #include "creadopengl.h"
+#include "cmeshbounds.h"
 
 CReadOpengl::CReadOpengl() {
 
@@ -101,88 +102,20 @@ void CReadOpengl::PrintImage(int width, int height)
 
 COffScreenNode CReadOpengl::GetScreenNode(CubismModel &model, const int index, const float *mvp, int width, int height, bool IsPrint)
 {
-
-    const float* vertexArray = model.GetDrawableVertices(index);
-    const int size = model.GetDrawableVertexIndexCount(index);
-
-    float data[16]  ;
-    for(int i = 0 ;i < 4;i++){
-        data[i*4] = mvp[i];
-        data[i*4+1] = mvp[i+4];
-        data[i*4+2] = mvp[i+4+4];
-        data[i*4+3] = mvp[i+4+4+4];
+    QMatrix4x4 transform;
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            transform(row, column) = mvp[column * 4 + row];
+        }
     }
-    QMatrix4x4 qmvp(data);
-
-    QMatrix4x4 view;//最后变换的矩阵
-    QRectF rect(0,0,width,height);
-    view.viewport(rect);
-
-
-    QPolygonF poly;
-    QVector3D homogeneousPoint;
-    QVector3D transformedPoint;
-    for(int i = 0 ; i< size;i+=2){
-        homogeneousPoint.setX(vertexArray[i]);
-        homogeneousPoint.setY(vertexArray[i+1]);
-        homogeneousPoint.setZ(0);
-        transformedPoint =view.map(qmvp.map(homogeneousPoint));
-        poly.push_back(transformedPoint.toPointF());
-    }
-
-    QRectF f = poly.boundingRect();
-    COffScreenNode   c;
-    //解决办法
-    c.m_rect = f.toRect();
-    if(IsPrint){
-        PrintImage(width,height);
-    }
-
-    //对rect进行裁剪，小于的变成0
-
-    if(c.m_rect.x() < 0){
-        //int newWidth =c.m_rect.width() + c.m_rect.x();
-        //c.m_rect.setWidth(newWidth);
-        c.m_rect.setX(0);
-    }
-
-    if(c.m_rect.y() < 0){
-        //int newHeight =c.m_rect.height() + c.m_rect.y();
-        //c.m_rect.setHeight(newHeight);
-        c.m_rect.setY(0);
-    }
-
-    if((c.m_rect.y() + c.m_rect.height()) > height){
-
-        int newHeight = c.m_rect.height() -  ((c.m_rect.y() + c.m_rect.height()) - height);
-        c.m_rect.setHeight(newHeight);
-    }
-    if((c.m_rect.x() + c.m_rect.width()) > width){
-
-        int newWidth =c.m_rect.width() -  ((c.m_rect.x() + c.m_rect.width()) - width);
-        c.m_rect.setWidth(newWidth);
-    }
-
-
-    c.m_image = GetImage(c.m_rect.x(),c.m_rect.y(),c.m_rect.width(),c.m_rect.height());
-
-
-
-    // QMatrix4x4 matrix(-1, 0, 0,width,
-    //                   0,-1, 0,height,
-    //                   0, 0, 1,0,
-    //                   0, 0, 0,1);
-
-    // 创建一个单位矩阵
-    //图片是被翻转过，所以
-
-    return c;
+    const QRect rect = MeshBounds::Viewport(model.GetDrawableVertices(index),
+        model.GetDrawableVertexCount(index), [&](float x, float y) {
+            const QVector3D point = transform.map(QVector3D(x, y, 0));
+            return QPointF(point.x(), point.y());
+        }, QSize(width, height));
+    if (IsPrint) PrintImage(width, height);
+    return COffScreenNode(GetImage(rect.x(), rect.y(), rect.width(), rect.height()), rect);
 }
-
-
-
-
-
 
 void CReadOpengl::BeginDraw(GLint restoreFBO){
 

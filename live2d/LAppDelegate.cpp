@@ -325,6 +325,10 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     // 解析 moc3
     live2dstruct::CReader reader(mocPath);
     live2dstruct::CSectionTable sectionTable(reader);
+    if (!sectionTable.IsValid()) {
+        qWarning("StartTextureExtraction: moc3 解析失败: %s", reader.Error().toUtf8().constData());
+        return false;
+    }
 
     // 获取画布尺寸
     QSize canvasSize = CTextureExtractor::GetCanvasPixelSize(sectionTable.canvas_info);
@@ -462,4 +466,3 @@ void LAppDelegate::StopDeformerDrag()
         mgr->GetModel(0)->StopDeformerDrag();
     }
 }
-

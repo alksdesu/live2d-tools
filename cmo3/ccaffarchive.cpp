@@ -25,7 +25,11 @@ public:
         return r;
     }
 
-    quint8 U8()  { return static_cast<quint8>(Raw(1).value(0)); }
+    quint8 U8()
+    {
+        const QByteArray bytes = Raw(1);
+        return bytes.isEmpty() ? 0 : static_cast<quint8>(bytes.at(0));
+    }
     quint8 EU8() { return U8() ^ static_cast<quint8>(m_key & 0xFF); }
 
     quint16 U16()

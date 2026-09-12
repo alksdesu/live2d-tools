@@ -3,6 +3,7 @@
 
 #pragma once
 #include "psd/psdSamples/Platform/PsdNamespace.h"
+#include "psd/psdSamples/Platform/PsdCompilerMacros.h"
 
 
 PSD_PUSH_WARNING_LEVEL(0)

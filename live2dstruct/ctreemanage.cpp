@@ -35,7 +35,9 @@ void CTreeManage::Init()
     if(m_Tree == nullptr){
         CReader* reader =  new  CReader(InitName);
         CSectionTable* sectionTable = new CSectionTable(*reader);
-        m_Tree = new C2DTree(*sectionTable);
+        if (sectionTable->IsValid()) {
+            m_Tree = new C2DTree(*sectionTable);
+        }
         delete reader;
         delete sectionTable;
     }
