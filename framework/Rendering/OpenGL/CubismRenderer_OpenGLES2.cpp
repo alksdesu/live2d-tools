@@ -704,12 +704,7 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
 
             QString drawName(GetModel()->GetDrawableId(drawableIndex)->GetString().GetRawString());
 
-            // 用户可见性控制：跳过隐藏的 drawable（仅预览，不影响导出）
-            if(!LAppDelegate::GetInstance()->IsOffScreen()){
-                if(LAppDelegate::GetInstance()->m_hiddenDrawables.contains(drawName)){
-                    continue;
-                }
-            }
+            if(LAppDelegate::GetInstance()->m_hiddenDrawables.contains(drawName)) continue;
 
             if(!LAppDelegate::GetInstance()->m_IsPrintALl){
                 if (!GetModel()->GetDrawableDynamicFlagIsVisible(drawableIndex))
