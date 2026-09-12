@@ -197,6 +197,13 @@ private slots:
         QCOMPARE(document.DrawableMaskIndices(id), masksBefore);
         QVERIFY(!document.SetDrawableMaskIndices(id, {0, 0}));
         QVERIFY(!document.SetDrawableMaskIndices(id, {selfIndex}));
+        QVERIFY(document.SetDrawableMaskIndices(id, masksAfter));
+        QVERIFY(document.SetDrawableMaskInverted(id, true));
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(document.SetDrawableMaskInverted(id, false));
+        QVERIFY(!document.DrawableMaskInverted(id));
+        QVERIFY(document.SetDrawableMaskIndices(id, {}));
+        QVERIFY(!document.SetDrawableMaskInverted(id, true));
         int deformerIndex = -1;
         int parentDeformerIndex = -1;
         for (int i = 0; i < document.Deformers().size(); ++i) {
@@ -256,6 +263,7 @@ private slots:
         source.drawableIndices.insert(QStringLiteral("Body"), {0, 1, 2});
         source.drawableMaskIndices.insert(QStringLiteral("Body"), {3, 4});
         source.deformerParentIndices.insert(QStringLiteral("Warp1"), 2);
+        source.drawableMaskInverted.insert(QStringLiteral("Body"), true);
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -273,6 +281,7 @@ private slots:
         QCOMPARE(decoded.drawableIndices, source.drawableIndices);
         QCOMPARE(decoded.drawableMaskIndices, source.drawableMaskIndices);
         QCOMPARE(decoded.deformerParentIndices, source.deformerParentIndices);
+        QCOMPARE(decoded.drawableMaskInverted, source.drawableMaskInverted);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 
@@ -294,6 +303,7 @@ private slots:
         QCOMPARE(loaded.drawableDrawOrder, source.drawableDrawOrder);
         QCOMPARE(loaded.drawableKeyformPositions, source.drawableKeyformPositions);
         QCOMPARE(loaded.drawableMaskIndices, source.drawableMaskIndices);
+        QCOMPARE(loaded.drawableMaskInverted, source.drawableMaskInverted);
     }
 
     void sessionRejectsInvalidValues()
@@ -331,6 +341,8 @@ private slots:
             R"({"version":1,"drawableMaskIndices":{"Body":[1,1]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableMaskIndices":{"Body":[-1]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableMaskInverted":{"Body":"yes"}})", &session, &error));
         QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &session, &error));
         QCOMPARE(session.viewScale, 1.0f);
         QVERIFY(session.drawableKeyformPositions.isEmpty());

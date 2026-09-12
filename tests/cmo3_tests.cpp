@@ -141,6 +141,7 @@ private slots:
         QVERIFY(document.Drawables().size() > 1);
         const QString meshId = document.Drawables().at(1).id;
         QVERIFY(document.SetDrawableMaskIndices(meshId, {0}));
+        QVERIFY(document.SetDrawableMaskInverted(meshId, true));
 
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
@@ -148,6 +149,7 @@ private slots:
         options.mocPath = mocPath;
         options.outPath = temp.filePath(QStringLiteral("Wanko-masks.cmo3"));
         options.drawableMaskIndexOverrides = document.DrawableMaskIndexOverrides();
+        options.drawableMaskInverted = document.DrawableMaskInvertedOverrides();
         QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
         cmo3::CCaffArchive archive;
         QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));

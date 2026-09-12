@@ -91,6 +91,7 @@ private:
     QPushButton* m_copyTopology = nullptr;
     QPushButton* m_pasteTopology = nullptr;
     QPushButton* m_editMasks = nullptr;
+    QCheckBox* m_maskInvertedCheck = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     bool m_updatingDeformerParent = false;

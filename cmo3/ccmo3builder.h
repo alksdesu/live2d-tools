@@ -32,6 +32,7 @@ public:
         QHash<QString, QVector<quint16>> drawableIndexOverrides;
         QHash<QString, QVector<int>> drawableMaskIndexOverrides;
         QHash<QString, int> deformerParentOverrides;
+        QHash<QString, bool> drawableMaskInverted;
     };
 
     // 全流程执行；失败时 outError 带原因

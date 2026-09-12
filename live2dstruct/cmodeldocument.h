@@ -98,7 +98,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, KeyformPositions, MeshIndices, MaskIndices, DeformerParent };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent };
     QString name;
     QString type;
     Field field = Visibility;
@@ -138,6 +138,9 @@ public:
     QVector<int> DrawableMaskIndices(const QString& id) const;
     bool SetDrawableMaskIndices(const QString& id, const QVector<int>& maskIndices);
     const QHash<QString, QVector<int>>& DrawableMaskIndexOverrides() const { return m_drawableMaskIndexOverrides; }
+    bool DrawableMaskInverted(const QString& id) const;
+    bool SetDrawableMaskInverted(const QString& id, bool inverted);
+    const QHash<QString, bool>& DrawableMaskInvertedOverrides() const { return m_drawableMaskInvertedOverrides; }
     const QVector<CModelDrawOrderGroup>& DrawOrderGroups() const { return m_drawOrderGroups; }
     bool SetPartVisible(const QString& id, bool visible);
     bool SetDeformerVisible(const QString& id, bool visible);
@@ -180,6 +183,7 @@ private:
     QHash<QString, QVector<quint16>> m_drawableIndexOverrides;
     QHash<QString, QVector<int>> m_drawableMaskIndexOverrides;
     QHash<QString, int> m_deformerParentOverrides;
+    QHash<QString, bool> m_drawableMaskInvertedOverrides;
     QSet<QString> m_lockedKeys;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;

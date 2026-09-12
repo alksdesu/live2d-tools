@@ -44,6 +44,7 @@ void CModelDocument::Clear()
     m_drawableIndexOverrides.clear();
     m_drawableMaskIndexOverrides.clear();
     m_deformerParentOverrides.clear();
+    m_drawableMaskInvertedOverrides.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
 }
@@ -328,6 +329,22 @@ bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int
     return false;
 }
 
+bool CModelDocument::DrawableMaskInverted(const QString& id) const
+{
+    return m_drawableMaskInvertedOverrides.value(id, false);
+}
+
+bool CModelDocument::SetDrawableMaskInverted(const QString& id, bool inverted)
+{
+    for (const CModelDrawable& drawable : m_drawables) {
+        if (drawable.id != id) continue;
+        if (DrawableMaskIndices(id).isEmpty() && inverted) return false;
+        m_drawableMaskInvertedOverrides.insert(id, inverted);
+        return true;
+    }
+    return false;
+}
+
 bool CModelDocument::SetDeformerVisible(const QString& id, bool visible)
 {
     for (CModelDeformer& deformer : m_deformers) {
@@ -439,6 +456,10 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         if (edit.type != QLatin1String("warp") && edit.type != QLatin1String("rotation")) return false;
         if (!value.canConvert<int>()) return false;
         return SetDeformerParentIndex(edit.name, value.toInt());
+    }
+    if (edit.field == CModelEdit::MaskInverted) {
+        if (edit.type != QLatin1String("artmesh") || !value.canConvert<bool>()) return false;
+        return SetDrawableMaskInverted(edit.name, value.toBool());
     }
     return false;
 }
@@ -839,6 +860,22 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             }
             visited.insert(current);
             current = DeformerParentIndex(m_deformers[current].id);
+        }
+    }
+    for (auto invertIt = m_drawableMaskInvertedOverrides.cbegin(); invertIt != m_drawableMaskInvertedOverrides.cend(); ++invertIt) {
+        bool found = false;
+        for (const CModelDrawable& drawable : m_drawables) {
+            if (drawable.id != invertIt.key()) continue;
+            found = true;
+            if (invertIt.value() && DrawableMaskIndices(drawable.id).isEmpty()) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_inverted_empty"),
+                                     QStringLiteral("没有 Clipping mask 时不能启用反向蒙版：%1").arg(invertIt.key()), -1});
+            }
+            break;
+        }
+        if (!found) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_inverted_id"),
+                                 QStringLiteral("反向蒙版覆盖引用了不存在的 ArtMesh：%1").arg(invertIt.key()), -1});
         }
     }
     for (const QString& key : m_lockedKeys) {

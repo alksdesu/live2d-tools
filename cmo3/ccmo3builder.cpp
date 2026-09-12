@@ -673,7 +673,8 @@ void Generator::writeArtMeshEntities()
             }
         }
         m_xml.EndList();
-        m_xml.B(QStringLiteral("invertClippingMask"), false);
+        const bool invertMask = m_opt.drawableMaskInverted.value(mesh->ids, false);
+        m_xml.B(QStringLiteral("invertClippingMask"), invertMask && !maskIndices.isEmpty());
         m_xml.EndObject(); // ACDrawableSource
 
         // indices

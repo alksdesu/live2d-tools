@@ -100,6 +100,10 @@ QByteArray CModelSession::ToJson() const
     for (auto it = deformerParentIndices.cbegin(); it != deformerParentIndices.cend(); ++it)
         deformerParentObject.insert(it.key(), it.value());
     root.insert(QStringLiteral("deformerParentIndices"), deformerParentObject);
+    QJsonObject maskInvertedObject;
+    for (auto it = drawableMaskInverted.cbegin(); it != drawableMaskInverted.cend(); ++it)
+        maskInvertedObject.insert(it.key(), it.value());
+    root.insert(QStringLiteral("drawableMaskInverted"), maskInvertedObject);
     QJsonObject view;
     view.insert(QStringLiteral("scale"), static_cast<double>(viewScale));
     view.insert(QStringLiteral("x"), viewPosition.x());
@@ -166,6 +170,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject indexObject;
     QJsonObject maskObject;
     QJsonObject deformerParentObject;
+    QJsonObject maskInvertedObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
         !readObject(root, QStringLiteral("locked"), &lockedObject, error) ||
@@ -174,7 +179,8 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error) ||
         !readObject(root, QStringLiteral("drawableIndices"), &indexObject, error) ||
         !readObject(root, QStringLiteral("drawableMaskIndices"), &maskObject, error) ||
-        !readObject(root, QStringLiteral("deformerParentIndices"), &deformerParentObject, error)) return false;
+        !readObject(root, QStringLiteral("deformerParentIndices"), &deformerParentObject, error) ||
+        !readObject(root, QStringLiteral("drawableMaskInverted"), &maskInvertedObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         float value = 0.0f;
         if (!readFloat(parameterObject.value(key), &value)) {
@@ -313,6 +319,13 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             return false;
         }
         result.deformerParentIndices.insert(key, static_cast<int>(number));
+    }
+    for (const QString& key : maskInvertedObject.keys()) {
+        if (!maskInvertedObject.value(key).isBool()) {
+            setError(error, QStringLiteral("反向蒙版值类型错误：%1").arg(key));
+            return false;
+        }
+        result.drawableMaskInverted.insert(key, maskInvertedObject.value(key).toBool());
     }
     QJsonObject view;
     if (!readObject(root, QStringLiteral("view"), &view, error)) return false;

@@ -78,6 +78,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_editMasks = new QPushButton(QStringLiteral("编辑蒙版"), content);
     m_editMasks->setObjectName(QStringLiteral("editMasks"));
     m_editMasks->setEnabled(false);
+    m_maskInvertedCheck = new QCheckBox(QStringLiteral("反向蒙版"), content);
+    m_maskInvertedCheck->setObjectName(QStringLiteral("maskInverted"));
+    m_maskInvertedCheck->setEnabled(false);
     m_keyformLabel = new QLabel(content);
     m_keyformCombo = new QComboBox(content);
     m_keyformCombo->setObjectName(QStringLiteral("keyformSelector"));
@@ -132,6 +135,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
     m_editMasks->setEnabled(false);
+    m_maskInvertedCheck->setEnabled(false);
+    m_maskInvertedCheck->setChecked(false);
     const QList<QPushButton*> keyformButtons = {
         m_mirrorHorizontal, m_mirrorVertical, m_interpolatePrevious, m_copyToNext,
         m_resetKeyform, m_copyKeyform, m_pasteKeyform, m_autoTriangulate,
@@ -161,6 +166,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("混合 / 剔除"), m_blendLabel);
     form->addRow(QStringLiteral("Clipping"), m_maskLabel);
     form->addRow(QStringLiteral("蒙版关系"), m_editMasks);
+    form->addRow(QStringLiteral("蒙版模式"), m_maskInvertedCheck);
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
@@ -185,6 +191,20 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_copyTopology, &QPushButton::clicked, this, [this](){ CopyTopology(); });
     connect(m_pasteTopology, &QPushButton::clicked, this, [this](){ PasteTopology(); });
     connect(m_editMasks, &QPushButton::clicked, this, [this](){ EditMasks(); });
+    connect(m_maskInvertedCheck, &QCheckBox::toggled, this, [this](bool inverted){
+        if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") ||
+            m_selectionName.isEmpty() || IsLocked(m_selectionType, m_selectionName)) return;
+        const bool before = m_document->DrawableMaskInverted(m_selectionName);
+        if (before == inverted) return;
+        const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                               live2dstruct::CModelEdit::MaskInverted, before, inverted};
+        if (!m_document->ExecuteEdit(command)) {
+            showModelObject(m_selectionName, m_selectionType);
+            return;
+        }
+        emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+        showModelObject(m_selectionName, m_selectionType);
+    });
     connect(m_deformerParentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingDeformerParent || !m_document || m_selectionName.isEmpty() ||
             (m_selectionType != QLatin1String("warp") && m_selectionType != QLatin1String("rotation")) ||
@@ -353,6 +373,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
     m_editMasks->setEnabled(false);
+    m_maskInvertedCheck->setEnabled(false);
+    m_maskInvertedCheck->setChecked(false);
     m_deformerParentCombo->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
@@ -1053,6 +1075,10 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_copyTopology->setEnabled(unlocked && !drawable.indices.isEmpty());
             m_pasteTopology->setEnabled(unlocked && drawable.vertexCount > 0);
             m_editMasks->setEnabled(unlocked);
+            m_updatingVisibility = true;
+            m_maskInvertedCheck->setChecked(m_document->DrawableMaskInverted(name));
+            m_maskInvertedCheck->setEnabled(unlocked && !m_document->DrawableMaskIndices(name).isEmpty());
+            m_updatingVisibility = false;
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();
