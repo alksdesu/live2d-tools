@@ -96,6 +96,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_copyKeyform = new QPushButton(QStringLiteral("复制关键形"), keyformTools);
     m_pasteKeyform = new QPushButton(QStringLiteral("粘贴关键形"), keyformTools);
     m_autoTriangulate = new QPushButton(QStringLiteral("自动三角剖分"), keyformTools);
+    m_copyTopology = new QPushButton(QStringLiteral("复制拓扑"), keyformTools);
+    m_pasteTopology = new QPushButton(QStringLiteral("粘贴拓扑"), keyformTools);
     m_mirrorHorizontal->setObjectName(QStringLiteral("mirrorHorizontal"));
     m_mirrorVertical->setObjectName(QStringLiteral("mirrorVertical"));
     m_interpolatePrevious->setObjectName(QStringLiteral("interpolatePreviousKeyform"));
@@ -104,6 +106,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_copyKeyform->setObjectName(QStringLiteral("copyKeyform"));
     m_pasteKeyform->setObjectName(QStringLiteral("pasteKeyform"));
     m_autoTriangulate->setObjectName(QStringLiteral("autoTriangulate"));
+    m_copyTopology->setObjectName(QStringLiteral("copyTopology"));
+    m_pasteTopology->setObjectName(QStringLiteral("pasteTopology"));
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -112,6 +116,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_copyKeyform->setEnabled(false);
     m_pasteKeyform->setEnabled(false);
     m_autoTriangulate->setEnabled(false);
+    m_copyTopology->setEnabled(false);
+    m_pasteTopology->setEnabled(false);
     keyformToolsLayout->addWidget(m_mirrorHorizontal);
     keyformToolsLayout->addWidget(m_mirrorVertical);
     keyformToolsLayout->addWidget(m_interpolatePrevious);
@@ -120,6 +126,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     keyformToolsLayout->addWidget(m_copyKeyform);
     keyformToolsLayout->addWidget(m_pasteKeyform);
     keyformToolsLayout->addWidget(m_autoTriangulate);
+    keyformToolsLayout->addWidget(m_copyTopology);
+    keyformToolsLayout->addWidget(m_pasteTopology);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -161,6 +169,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_copyKeyform, &QPushButton::clicked, this, [this](){ CopyCurrentKeyform(); });
     connect(m_pasteKeyform, &QPushButton::clicked, this, [this](){ PasteCurrentKeyform(); });
     connect(m_autoTriangulate, &QPushButton::clicked, this, [this](){ AutoTriangulate(); });
+    connect(m_copyTopology, &QPushButton::clicked, this, [this](){ CopyTopology(); });
+    connect(m_pasteTopology, &QPushButton::clicked, this, [this](){ PasteTopology(); });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -309,6 +319,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_copyKeyform->setEnabled(false);
     m_pasteKeyform->setEnabled(false);
     m_autoTriangulate->setEnabled(false);
+    m_copyTopology->setEnabled(false);
+    m_pasteTopology->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -676,6 +688,73 @@ void CInspectorPanel::AutoTriangulate()
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
+void CInspectorPanel::CopyTopology()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
+    const QVector<quint16> indices = m_document->DrawableIndices(m_selectionName);
+    if (indices.isEmpty() || indices.size() % 3 != 0) return;
+    QJsonArray values;
+    for (quint16 index : indices) values.append(static_cast<int>(index));
+    int vertexCount = 0;
+    for (const auto& drawable : m_document->Drawables()) {
+        if (drawable.id == m_selectionName) { vertexCount = drawable.vertexCount; break; }
+    }
+    QJsonObject object;
+    object.insert(QStringLiteral("format"), QStringLiteral("live2d2psd-topology-v1"));
+    object.insert(QStringLiteral("vertexCount"), vertexCount);
+    object.insert(QStringLiteral("indices"), values);
+    QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
+}
+
+void CInspectorPanel::PasteTopology()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const QVector<quint16> before = m_document->DrawableIndices(m_selectionName);
+    int vertexCount = 0;
+    for (const auto& drawable : m_document->Drawables()) {
+        if (drawable.id == m_selectionName) { vertexCount = drawable.vertexCount; break; }
+    }
+    if (vertexCount <= 0) return;
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(QApplication::clipboard()->text().toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("剪贴板不是有效的拓扑数据"));
+        return;
+    }
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("format")).toString() != QStringLiteral("live2d2psd-topology-v1")) {
+        QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("剪贴板格式不受支持"));
+        return;
+    }
+    if (object.value(QStringLiteral("vertexCount")).toInt() != vertexCount) {
+        QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("目标网格的顶点数量不同"));
+        return;
+    }
+    const QJsonArray values = object.value(QStringLiteral("indices")).toArray();
+    if (values.isEmpty() || values.size() % 3 != 0 || values.size() > 3000000) {
+        QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("三角形索引数量无效"));
+        return;
+    }
+    QVector<quint16> after;
+    after.reserve(values.size());
+    for (const QJsonValue& value : values) {
+        const double number = value.toDouble(-1.0);
+        if (!value.isDouble() || std::floor(number) != number || number < 0.0 || number >= vertexCount || number > 65535.0) {
+            QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("索引超出目标网格范围"));
+            return;
+        }
+        after.append(static_cast<quint16>(number));
+    }
+    if (after == before) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::MeshIndices,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    emit DrawableIndicesChanged(m_selectionName, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::PasteCurrentKeyform()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
@@ -747,6 +826,8 @@ void CInspectorPanel::ClearSelection()
     m_copyKeyform->setEnabled(false);
     m_pasteKeyform->setEnabled(false);
     m_autoTriangulate->setEnabled(false);
+    m_copyTopology->setEnabled(false);
+    m_pasteTopology->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -885,6 +966,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_copyKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_pasteKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_autoTriangulate->setEnabled(unlocked && drawable.vertexCount >= 3 && !drawable.keyforms.isEmpty());
+            m_copyTopology->setEnabled(unlocked && !drawable.indices.isEmpty());
+            m_pasteTopology->setEnabled(unlocked && drawable.vertexCount > 0);
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();

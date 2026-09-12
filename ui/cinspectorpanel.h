@@ -55,6 +55,8 @@ private:
     void CopyKeyformToNext();
     void ResetCurrentKeyform();
     void AutoTriangulate();
+    void CopyTopology();
+    void PasteTopology();
     void CopyCurrentKeyform();
     void PasteCurrentKeyform();
     bool IsLocked(const QString& type, const QString& name) const;
@@ -83,6 +85,8 @@ private:
     QPushButton* m_copyKeyform = nullptr;
     QPushButton* m_pasteKeyform = nullptr;
     QPushButton* m_autoTriangulate = nullptr;
+    QPushButton* m_copyTopology = nullptr;
+    QPushButton* m_pasteTopology = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QSet<QString> m_lockedKeys;
