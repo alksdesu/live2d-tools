@@ -120,6 +120,18 @@ private slots:
         QCOMPARE(document.DrawableKeyformPositions(id, 0), transformBefore);
         panel.Redo();
         QCOMPARE(document.DrawableKeyformPositions(id, 0), transformAfter);
+        const QVector<float> rotateBefore = transformAfter;
+        scaleVertices->setValue(1.0);
+        rotationVertices->setValue(90.0);
+        vertexTable->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+        transformVertices->click();
+        const QVector<float> rotateAfter = document.DrawableKeyformPositions(id, 0);
+        const float rotateCenterX = (rotateBefore[0] + rotateBefore[2]) * 0.5f;
+        const float rotateCenterY = (rotateBefore[1] + rotateBefore[3]) * 0.5f;
+        QCOMPARE(rotateAfter[0], rotateCenterX - (rotateBefore[1] - rotateCenterY));
+        QCOMPARE(rotateAfter[1], rotateCenterY + (rotateBefore[0] - rotateCenterX));
+        panel.Undo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), rotateBefore);
         auto* mirrorHorizontal = panel.findChild<QPushButton*>("mirrorHorizontal");
         QVERIFY(mirrorHorizontal && mirrorHorizontal->isEnabled());
         const QVector<float> mirrorBefore = document.DrawableKeyformPositions(id, 0);
