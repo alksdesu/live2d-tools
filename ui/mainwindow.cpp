@@ -53,9 +53,16 @@ MainWindow::MainWindow(QWidget *parent)
     this->setAcceptDrops(true);
     this->resize(1400, 900);
     this->setWindowTitle("live2d2psd");
+    QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    if (settings.contains(QStringLiteral("windowGeometry"))) {
+        restoreGeometry(settings.value(QStringLiteral("windowGeometry")).toByteArray());
+    }
     m_openglwindows=nullptr;
     createActions();
     setupUI();
+    if (settings.contains(QStringLiteral("windowState"))) {
+        restoreState(settings.value(QStringLiteral("windowState")).toByteArray());
+    }
 
     // 启动时显示占位提示
     m_placeholder = createEmptyState();
@@ -64,8 +71,9 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-
-
+    QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
+    settings.setValue(QStringLiteral("windowState"), saveState());
 
     if(m_openglwindows!=nullptr){
         m_openglwindows->makeCurrent();
