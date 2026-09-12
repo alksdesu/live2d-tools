@@ -64,6 +64,7 @@ private:
     QWidget* createEmptyState();
     OpengGlForm* m_headless = nullptr; // 后台离屏导出上下文
     QWidget* m_placeholder = nullptr;
+    QWidget* m_canvasHost = nullptr;
     live2dstruct::CModelDocument m_document;
 
     // Dock 面板

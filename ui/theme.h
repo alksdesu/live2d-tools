@@ -148,6 +148,24 @@ QLabel#emptyHint {
     line-height: 1.4em;
 }
 
+QFrame#canvasToolbar {
+    background: @surface@;
+    border-bottom: 1px solid @border@;
+}
+
+QLabel#canvasTitle {
+    color: @text@;
+    font-weight: 600;
+}
+
+QLabel#canvasMeta, QLabel#inspectorEmpty {
+    color: @textSubtle@;
+}
+
+QLabel#inspectorEmpty {
+    padding: 8px;
+}
+
 QPushButton#winBtnMin, QPushButton#winBtnMax, QPushButton#winBtnClose {
     background: transparent;
     border: none;

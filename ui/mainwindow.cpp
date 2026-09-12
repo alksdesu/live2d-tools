@@ -38,6 +38,7 @@
 #include <QApplication>
 #include <QVBoxLayout>
 #include <QFrame>
+#include <QFileInfo>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
@@ -488,6 +489,10 @@ void MainWindow::CloseModel()
     m_openglwindows->makeCurrent();
     delete m_openglwindows;
     m_openglwindows = nullptr;
+    if (m_canvasHost) {
+        delete m_canvasHost;
+        m_canvasHost = nullptr;
+    }
 
     m_document.Clear();
     m_placeholder = createEmptyState();
@@ -520,7 +525,33 @@ void MainWindow::RestDock(const QString &name)
 
 
     m_openglwindows->setFocusPolicy(Qt::StrongFocus);
-    this->setCentralWidget(m_openglwindows);
+    m_canvasHost = new QWidget(this);
+    auto* canvasLayout = new QVBoxLayout(m_canvasHost);
+    canvasLayout->setContentsMargins(0, 0, 0, 0);
+    canvasLayout->setSpacing(0);
+    auto* canvasToolbar = new QFrame(m_canvasHost);
+    canvasToolbar->setObjectName("canvasToolbar");
+    auto* canvasToolbarLayout = new QHBoxLayout(canvasToolbar);
+    canvasToolbarLayout->setContentsMargins(14, 8, 14, 8);
+    canvasToolbarLayout->setSpacing(10);
+    auto* canvasTitle = new QLabel(QFileInfo(name).fileName(), canvasToolbar);
+    canvasTitle->setObjectName("canvasTitle");
+    auto* canvasMeta = new QLabel("预览", canvasToolbar);
+    canvasMeta->setObjectName("canvasMeta");
+    auto* canvasSpacer = new QWidget(canvasToolbar);
+    canvasSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto* resetCanvas = new QPushButton("重置视图", canvasToolbar);
+    resetCanvas->setToolTip("恢复模型缩放和位置（Home）");
+    connect(resetCanvas, &QPushButton::clicked, this, [this](){
+        if (m_openglwindows) m_openglwindows->do_ResetView();
+    });
+    canvasToolbarLayout->addWidget(canvasTitle);
+    canvasToolbarLayout->addWidget(canvasMeta);
+    canvasToolbarLayout->addWidget(canvasSpacer);
+    canvasToolbarLayout->addWidget(resetCanvas);
+    canvasLayout->addWidget(canvasToolbar);
+    canvasLayout->addWidget(m_openglwindows, 1);
+    this->setCentralWidget(m_canvasHost);
 
 
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
