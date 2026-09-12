@@ -87,6 +87,8 @@ private:
                                  const QString& parentPartGuidId, const QString& gridId,
                                  int extensionCount);
     QString deformerTargetId(int parentDeformerIndex) const;
+    int partParentIndex(int partIndex) const;
+    int objectPartIndex(int parentPartIndex) const;
 
     // ---- main 段 ----
     void writeMain();
@@ -108,6 +110,7 @@ private:
     // xs.id 索引（与 moc3 各表下标对齐）
     QVector<SParamIds> m_paramIds;
     QVector<SPartIds> m_partIds;
+    QVector<int> m_partParentIndices;
     QVector<SDeformerIds> m_deformerIds;        // 与 deformers 表对齐
     QVector<QString> m_meshGuidIds;             // 与 art_meshes 表对齐
     QVector<QString> m_meshSourceIds;           // CArtMeshSource xs.id
@@ -346,6 +349,18 @@ QString Generator::deformerTargetId(int parentDeformerIndex) const
     return m_deformerRootGuidId;
 }
 
+int Generator::partParentIndex(int partIndex) const
+{
+    return partIndex >= 0 && partIndex < m_partParentIndices.size()
+        ? m_partParentIndices[partIndex] : -1;
+}
+
+int Generator::objectPartIndex(int parentPartIndex) const
+{
+    return parentPartIndex >= 0 && parentPartIndex < m_partParentIndices.size()
+        ? parentPartIndex : -1;
+}
+
 QString Generator::writeKeyformGrid(const SBindingChain& chain, const QVector<QString>& formGuidIds)
 {
     // 先写 KeyformBindingSource 需要的 grid id（自引用 _gridSource）
@@ -427,6 +442,31 @@ void Generator::writeControllableHeader(const QString& localName, bool isVisible
 
 void Generator::writePartEntities()
 {
+    m_partParentIndices.resize(m_table.parts.size());
+    for (int i = 0; i < m_table.parts.size(); ++i) {
+        const int parent = m_table.parts[i]->parent_part_indices;
+        m_partParentIndices[i] = parent >= 0 && parent < m_table.parts.size() && parent != i ? parent : -1;
+    }
+    QVector<int> states(m_partParentIndices.size(), 0);
+    for (int start = 0; start < m_partParentIndices.size(); ++start) {
+        if (states[start] != 0) continue;
+        QVector<int> path;
+        int current = start;
+        while (current >= 0 && states[current] == 0) {
+            states[current] = 1;
+            path.append(current);
+            current = m_partParentIndices[current];
+        }
+        if (current >= 0 && states[current] == 1) {
+            int member = current;
+            do {
+                const int parent = m_partParentIndices[member];
+                m_partParentIndices[member] = -1;
+                member = parent;
+            } while (member != current);
+        }
+        for (int member : path) states[member] = 2;
+    }
     // 先分配全部 id（父子引用需要）
     m_partIds.resize(m_table.parts.size());
     for (int i = 0; i < m_table.parts.size(); ++i) {
@@ -436,7 +476,7 @@ void Generator::writePartEntities()
                          m_table.parts[i]->ids);
     }
 
-    // 根 Part（moc3 没有显式根，综合所有 parent==-1 的部件挂到虚拟根）
+    // 根 Part（moc3 没有显式根，综合无效父级的部件挂到虚拟根）
     m_rootPartSourceId = m_xml.AllocId();
     m_rootPartGuidId = m_xml.AllocId();
     m_rootPartFormGuidId = m_xml.AllocId();
@@ -446,7 +486,7 @@ void Generator::writePartEntities()
 
     // 子 guid 归属登记（drawable/deformer 写出时再补，先记 part 树结构）
     for (int i = 0; i < m_table.parts.size(); ++i) {
-        const int parent = m_table.parts[i]->parent_part_indices;
+        const int parent = m_partParentIndices[i];
         if (parent >= 0 && parent < m_partIds.size()) {
             m_partIds[parent].childGuidRefs.append(m_partIds[i].guid);
             m_partIds[parent].childGuidTags.append(QStringLiteral("CPartGuid"));
@@ -569,8 +609,8 @@ void Generator::writeArtMeshEntities()
         m_xml.BeginObject(QStringLiteral("CArtMeshSource"), QString(), m_meshSourceIds[i]);
         m_xml.BeginObject(QStringLiteral("ACDrawableSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(mesh->ids), mesh->is_visible && !m_opt.hiddenIds.contains(mesh->ids),
-                                (mesh->parent_part_indices >= 0 && mesh->parent_part_indices < m_partIds.size())
-                                    ? m_partIds[mesh->parent_part_indices].guid : m_rootPartGuidId,
+                                objectPartIndex(mesh->parent_part_indices) >= 0
+                                    ? m_partIds[objectPartIndex(mesh->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 1);
         m_xml.Ref(QStringLiteral("CTextureInputExtension"), QString(), texExtId);
         m_xml.EndList();   // _extensions
@@ -688,7 +728,7 @@ void Generator::writeArtMeshEntities()
         m_xml.EndObject(); // CArtMeshSource
 
         // 挂到父 part 的 childGuids
-        const int parentPart = mesh->parent_part_indices;
+        const int parentPart = objectPartIndex(mesh->parent_part_indices);
         if (parentPart >= 0 && parentPart < m_partIds.size()) {
             m_partIds[parentPart].childGuidRefs.append(m_meshGuidIds[i]);
             m_partIds[parentPart].childGuidTags.append(QStringLiteral("CDrawableGuid"));
@@ -743,8 +783,8 @@ void Generator::writeWarpDeformerEntities()
         m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_warpSourceIds[w]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
-                                (deformer->parent_part_indices >= 0 && deformer->parent_part_indices < m_partIds.size())
-                                    ? m_partIds[deformer->parent_part_indices].guid : m_rootPartGuidId,
+                                objectPartIndex(deformer->parent_part_indices) >= 0
+                                    ? m_partIds[objectPartIndex(deformer->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 0);
         m_xml.EndList();   // _extensions
         m_xml.EndObject(); // ACParameterControllableSource
@@ -800,7 +840,7 @@ void Generator::writeWarpDeformerEntities()
         m_xml.EndList();
         m_xml.EndObject(); // CWarpDeformerSource
 
-        const int parentPart = deformer->parent_part_indices;
+        const int parentPart = objectPartIndex(deformer->parent_part_indices);
         if (parentPart >= 0 && parentPart < m_partIds.size()) {
             m_partIds[parentPart].childGuidRefs.append(m_deformerIds[d].guid);
             m_partIds[parentPart].childGuidTags.append(QStringLiteral("CDeformerGuid"));
@@ -842,8 +882,8 @@ void Generator::writeRotationDeformerEntities()
         m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_rotationSourceIds[r]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
-                                (deformer->parent_part_indices >= 0 && deformer->parent_part_indices < m_partIds.size())
-                                    ? m_partIds[deformer->parent_part_indices].guid : m_rootPartGuidId,
+                                objectPartIndex(deformer->parent_part_indices) >= 0
+                                    ? m_partIds[objectPartIndex(deformer->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 0);
         m_xml.EndList();
         m_xml.EndObject();
@@ -897,7 +937,7 @@ void Generator::writeRotationDeformerEntities()
         m_xml.F(QStringLiteral("baseAngle"), rot->base_angles);
         m_xml.EndObject(); // CRotationDeformerSource
 
-        const int parentPart = deformer->parent_part_indices;
+        const int parentPart = objectPartIndex(deformer->parent_part_indices);
         if (parentPart >= 0 && parentPart < m_partIds.size()) {
             m_partIds[parentPart].childGuidRefs.append(m_deformerIds[d].guid);
             m_partIds[parentPart].childGuidTags.append(QStringLiteral("CDeformerGuid"));
@@ -1241,19 +1281,19 @@ bool Generator::Run(QString* outError)
         QVector<QString> rootChildRefs;
         QVector<QString> rootChildTags;
         for (int i = 0; i < m_table.parts.size(); ++i) {
-            if (m_table.parts[i]->parent_part_indices < 0) {
+            if (partParentIndex(i) < 0) {
                 rootChildRefs.append(m_partIds[i].guid);
                 rootChildTags.append(QStringLiteral("CPartGuid"));
             }
         }
         for (int i = 0; i < m_table.art_meshes.size(); ++i) {
-            if (m_table.art_meshes[i]->parent_part_indices < 0) {
+            if (objectPartIndex(m_table.art_meshes[i]->parent_part_indices) < 0) {
                 rootChildRefs.append(m_meshGuidIds[i]);
                 rootChildTags.append(QStringLiteral("CDrawableGuid"));
             }
         }
         for (int d = 0; d < m_table.deformers.size(); ++d) {
-            if (m_table.deformers[d]->parent_part_indices < 0) {
+            if (objectPartIndex(m_table.deformers[d]->parent_part_indices) < 0) {
                 rootChildRefs.append(m_deformerIds[d].guid);
                 rootChildTags.append(QStringLiteral("CDeformerGuid"));
             }
@@ -1331,8 +1371,8 @@ bool Generator::Run(QString* outError)
 
         m_xml.BeginObject(QStringLiteral("CPartSource"), QString(), m_partIds[i].source);
         writeControllableHeader(displayName(part->ids), part->is_visible && !m_opt.hiddenIds.contains(part->ids),
-                                (part->parent_part_indices >= 0 && part->parent_part_indices < m_partIds.size())
-                                    ? m_partIds[part->parent_part_indices].guid : m_rootPartGuidId,
+                                partParentIndex(i) >= 0
+                                    ? m_partIds[partParentIndex(i)].guid : m_rootPartGuidId,
                                 gridId, 0);
         m_xml.EndList();
         m_xml.EndObject(); // ACParameterControllableSource
