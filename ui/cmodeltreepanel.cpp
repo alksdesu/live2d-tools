@@ -148,7 +148,55 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
             for (QTreeWidgetItem* selectedItem : selected) allLocked = allLocked && selectedItem->data(0, Qt::UserRole + 2).toBool();
             QMenu menu(tree);
             QAction* lockAction = menu.addAction(allLocked ? QStringLiteral("解锁选中对象") : QStringLiteral("锁定选中对象"));
-            if (menu.exec(tree->viewport()->mapToGlobal(position)) != lockAction) return;
+            QAction* soloAction = menu.addAction(QStringLiteral("独显选中对象"));
+            QAction* showAllAction = menu.addAction(QStringLiteral("显示全部对象"));
+            QAction* chosenAction = menu.exec(tree->viewport()->mapToGlobal(position));
+            if (chosenAction == soloAction || chosenAction == showAllAction) {
+                QSet<QString> selectedKeys;
+                for (QTreeWidgetItem* selectedItem : selected) {
+                    selectedKeys.insert(selectedItem->data(0, Qt::UserRole + 1).toString() + QLatin1Char('|') +
+                                        selectedItem->data(0, Qt::UserRole).toString());
+                }
+                QSet<QString> changedKeys;
+                const bool showAll = chosenAction == showAllAction;
+                const auto updateTree = [&](QTreeWidget* targetTree, auto&& updateRef) -> void {
+                    const auto updateItem = [&](QTreeWidgetItem* item, auto&& itemRef) -> void {
+                        const QString type = item->data(0, Qt::UserRole + 1).toString();
+                        const QString name = item->data(0, Qt::UserRole).toString();
+                        const QString key = type + QLatin1Char('|') + name;
+                        bool keepVisible = showAll || selectedKeys.contains(key);
+                        for (QTreeWidgetItem* parent = item->parent(); parent && !keepVisible; parent = parent->parent()) {
+                            const QString parentKey = parent->data(0, Qt::UserRole + 1).toString() + QLatin1Char('|') +
+                                                      parent->data(0, Qt::UserRole).toString();
+                            keepVisible = selectedKeys.contains(parentKey);
+                        }
+                        if (!type.isEmpty() && !name.isEmpty()) {
+                            const bool visible = keepVisible;
+                            if (item->checkState(0) != (visible ? Qt::Checked : Qt::Unchecked)) changedKeys.insert(key);
+                            item->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+                        }
+                        for (int i = 0; i < item->childCount(); ++i) itemRef(item->child(i), itemRef);
+                    };
+                    for (int i = 0; i < targetTree->topLevelItemCount(); ++i) updateItem(targetTree->topLevelItem(i), updateItem);
+                };
+                m_updatingChecks = true;
+                m_partTree->blockSignals(true);
+                m_deformerTree->blockSignals(true);
+                updateTree(m_partTree, updateTree);
+                updateTree(m_deformerTree, updateTree);
+                m_partTree->blockSignals(false);
+                m_deformerTree->blockSignals(false);
+                m_updatingChecks = false;
+                for (const QString& key : changedKeys) {
+                    const int separator = key.indexOf(QLatin1Char('|'));
+                    if (separator <= 0) continue;
+                    const QString type = key.left(separator);
+                    const QString name = key.mid(separator + 1);
+                    emit VisibilityChanged(name, type, showAll || selectedKeys.contains(key));
+                }
+                return;
+            }
+            if (chosenAction != lockAction) return;
             for (QTreeWidgetItem* selectedItem : selected) {
                 const QString name = selectedItem->data(0, Qt::UserRole).toString();
                 const QString type = selectedItem->data(0, Qt::UserRole + 1).toString();
