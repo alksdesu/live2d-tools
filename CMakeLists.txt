@@ -32,6 +32,7 @@ target_link_libraries(cmo3_data PUBLIC Qt6::Core Qt6::Gui)
 
 add_library(ui_inspector STATIC
     ui/cinspectorpanel.cpp
+    ui/cmodeldiagnosticspanel.cpp
     ui/cparampanel.cpp
 )
 target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

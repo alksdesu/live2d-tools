@@ -21,6 +21,7 @@
 #include "ui/cblendshapepanel.h"
 #include "ui/ctexturepanel.h"
 #include "ui/cinspectorpanel.h"
+#include "ui/cmodeldiagnosticspanel.h"
 #include "ui/para/ccidjson.h"
 #include "std/cmodeljsonwriter.h"
 #include "cmo3/ccmo3builder.h"
@@ -460,6 +461,7 @@ void MainWindow::CloseModel()
     if(m_blendShapePanel) { removeDockWidget(m_blendShapePanel); delete m_blendShapePanel; m_blendShapePanel = nullptr; }
     if(m_texturePanel) { removeDockWidget(m_texturePanel); delete m_texturePanel; m_texturePanel = nullptr; }
     if(m_inspectorPanel) { removeDockWidget(m_inspectorPanel); delete m_inspectorPanel; m_inspectorPanel = nullptr; }
+    if(m_diagnosticsPanel) { removeDockWidget(m_diagnosticsPanel); delete m_diagnosticsPanel; m_diagnosticsPanel = nullptr; }
 
     // 隐藏面板切换按钮
     m_btnToggleTree->setVisible(false);
@@ -469,6 +471,7 @@ void MainWindow::CloseModel()
     m_btnToggleBlend->setVisible(false);
     m_btnToggleTexture->setVisible(false);
     m_btnToggleInspector->setVisible(false);
+    m_btnToggleDiagnostics->setVisible(false);
 
     // 释放显示名称映射
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
@@ -556,6 +559,12 @@ void MainWindow::RestDock(const QString &name)
     tabifyDockWidget(m_paramPanel, m_inspectorPanel);
     m_inspectorPanel->SetDocument(&m_document);
 
+    m_diagnosticsPanel = new CModelDiagnosticsPanel(this);
+    addDockWidget(Qt::BottomDockWidgetArea, m_diagnosticsPanel);
+    tabifyDockWidget(m_texturePanel, m_diagnosticsPanel);
+    m_diagnosticsPanel->SetDocument(&m_document);
+    m_diagnosticsPanel->hide();
+
     m_motionPanel->raise();
 
     // 加载物理设置（立即，不需要 GL）
@@ -600,6 +609,7 @@ void MainWindow::RestDock(const QString &name)
     m_btnToggleBlend->setVisible(true);
     m_btnToggleTexture->setVisible(true);
     m_btnToggleInspector->setVisible(true);
+    m_btnToggleDiagnostics->setVisible(true);
 
     auto wireToggle = [](QPushButton* btn, QDockWidget* dock){
         QObject::connect(btn, &QPushButton::toggled, dock, &QDockWidget::setVisible);
@@ -612,6 +622,7 @@ void MainWindow::RestDock(const QString &name)
     wireToggle(m_btnToggleBlend, m_blendShapePanel);
     wireToggle(m_btnToggleTexture, m_texturePanel);
     wireToggle(m_btnToggleInspector, m_inspectorPanel);
+    wireToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
 
     // 信号连接：树面板 → OpenGL
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
@@ -866,18 +877,22 @@ void MainWindow::setupUI()
     m_btnToggleBlend = new QPushButton("融合变形", this);
     m_btnToggleTexture = new QPushButton("纹理", this);
     m_btnToggleInspector = new QPushButton("属性", this);
+    m_btnToggleDiagnostics = new QPushButton("检查", this);
     m_btnTogglePhysics->setCheckable(true);
     m_btnToggleBlend->setCheckable(true);
     m_btnToggleTexture->setCheckable(true);
     m_btnToggleInspector->setCheckable(true);
+    m_btnToggleDiagnostics->setCheckable(true);
     m_btnTogglePhysics->setChecked(true);
     m_btnToggleBlend->setChecked(true);
     m_btnToggleTexture->setChecked(true);
     m_btnToggleInspector->setChecked(true);
+    m_btnToggleDiagnostics->setChecked(false);
     m_btnTogglePhysics->setFlat(true);
     m_btnToggleBlend->setFlat(true);
     m_btnToggleTexture->setFlat(true);
     m_btnToggleInspector->setFlat(true);
+    m_btnToggleDiagnostics->setFlat(true);
 
     // 未创建面板前先隐藏
     m_btnToggleTree->setVisible(false);
@@ -887,6 +902,7 @@ void MainWindow::setupUI()
     m_btnToggleBlend->setVisible(false);
     m_btnToggleTexture->setVisible(false);
     m_btnToggleInspector->setVisible(false);
+    m_btnToggleDiagnostics->setVisible(false);
 
     statusBar()->addPermanentWidget(m_btnToggleTree);
     statusBar()->addPermanentWidget(m_btnToggleParam);
@@ -895,6 +911,7 @@ void MainWindow::setupUI()
     statusBar()->addPermanentWidget(m_btnToggleBlend);
     statusBar()->addPermanentWidget(m_btnToggleTexture);
     statusBar()->addPermanentWidget(m_btnToggleInspector);
+    statusBar()->addPermanentWidget(m_btnToggleDiagnostics);
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)

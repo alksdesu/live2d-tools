@@ -36,6 +36,7 @@ DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
     ui/cinspectorpanel.cpp \
+    ui/cmodeldiagnosticspanel.cpp \
     opengl/cmeshbounds.cpp \
     live2dstruct/cmodeldocument.cpp \
     edit/cdrawobject.cpp \
@@ -213,6 +214,7 @@ SOURCES += \
 
 HEADERS += \
     ui/cinspectorpanel.h \
+    ui/cmodeldiagnosticspanel.h \
     opengl/cmeshbounds.h \
     live2dstruct/cmodeldocument.h \
     CPrecompileHead.h \
