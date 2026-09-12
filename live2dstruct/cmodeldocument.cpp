@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QSet>
 #include <QtGlobal>
+#include <cmath>
 #include <functional>
 
 namespace live2dstruct {
@@ -168,6 +169,11 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_range"),
                                  QStringLiteral("参数范围或默认值无效"), i});
         }
+        if (!std::isfinite(parameter.minimum) || !std::isfinite(parameter.maximum) ||
+            !std::isfinite(parameter.defaultValue)) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_nan"),
+                                 QStringLiteral("参数包含非有限数值"), i});
+        }
     }
 
     QSet<QString> partIds;
@@ -265,6 +271,22 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         if (drawable.vertexCount > 0 && drawable.indices.isEmpty()) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_missing"),
                                  QStringLiteral("ArtMesh 缺少三角形索引"), i});
+        }
+        if (!std::isfinite(drawable.opacity) || drawable.opacity < 0.0f || drawable.opacity > 1.0f) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("opacity_range"),
+                                 QStringLiteral("ArtMesh 默认透明度超出 0 到 1 范围"), i});
+        }
+        for (const CModelKeyform& keyform : drawable.keyforms) {
+            if (!keyform.positions.isEmpty() && keyform.positions.size() != drawable.vertexCount * 2) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_position_count"),
+                                     QStringLiteral("关键形顶点数量与 ArtMesh 不一致"), i});
+                break;
+            }
+            if (!std::isfinite(keyform.opacity) || !std::isfinite(keyform.drawOrder)) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_nan"),
+                                     QStringLiteral("关键形包含非有限数值"), i});
+                break;
+            }
         }
     }
     return diagnostics;
