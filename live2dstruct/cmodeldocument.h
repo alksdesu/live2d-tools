@@ -6,6 +6,7 @@
 #include <QVector>
 #include <QSet>
 #include <QHash>
+#include <QVariant>
 
 namespace live2dstruct {
 
@@ -94,6 +95,16 @@ struct CModelDrawOrderGroup
     QVector<CModelDrawOrderGroupObject> objects;
 };
 
+struct CModelEdit
+{
+    enum Field { Visibility, Opacity, DrawOrder };
+    QString name;
+    QString type;
+    Field field = Visibility;
+    QVariant before;
+    QVariant after;
+};
+
 class CModelDocument
 {
 public:
@@ -117,6 +128,12 @@ public:
     bool SetDrawableDrawOrder(const QString& id, int drawOrder);
     float DrawableDrawOrder(const CModelDrawable& drawable) const;
     const QHash<QString, int>& DrawableDrawOrderOverrides() const { return m_drawableDrawOrderOverrides; }
+    bool ExecuteEdit(const CModelEdit& edit);
+    bool UndoEdit(CModelEdit* edit = nullptr);
+    bool RedoEdit(CModelEdit* edit = nullptr);
+    void ClearEditHistory();
+    bool CanUndoEdit() const { return m_editIndex > 0; }
+    bool CanRedoEdit() const { return m_editIndex < m_editHistory.size(); }
     QSet<QString> HiddenIds() const;
 
     QVector<CModelDiagnostic> Validate() const;
@@ -132,6 +149,10 @@ private:
     QVector<CModelDrawOrderGroup> m_drawOrderGroups;
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
+    QVector<CModelEdit> m_editHistory;
+    int m_editIndex = 0;
+
+    bool ApplyEdit(const CModelEdit& edit, bool forward);
 };
 
 }

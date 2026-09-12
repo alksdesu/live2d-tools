@@ -39,6 +39,7 @@ void CModelDocument::Clear()
     m_drawOrderGroups.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
+    ClearEditHistory();
 }
 
 bool CModelDocument::Load(const QString& mocPath, QString* error)
@@ -236,6 +237,73 @@ bool CModelDocument::SetDrawableDrawOrder(const QString& id, int drawOrder)
 float CModelDocument::DrawableDrawOrder(const CModelDrawable& drawable) const
 {
     return m_drawableDrawOrderOverrides.value(drawable.id, static_cast<int>(qBound(0.0f, drawable.drawOrder, 1000.0f)));
+}
+
+bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
+{
+    const QVariant& value = forward ? edit.after : edit.before;
+    if (edit.field == CModelEdit::Visibility) {
+        const bool visible = value.toBool();
+        if (edit.type == QLatin1String("part")) return SetPartVisible(edit.name, visible);
+        if (edit.type == QLatin1String("warp") || edit.type == QLatin1String("rotation")) return SetDeformerVisible(edit.name, visible);
+        if (edit.type == QLatin1String("artmesh")) return SetDrawableVisible(edit.name, visible);
+        return false;
+    }
+    if (edit.field == CModelEdit::Opacity) {
+        if (edit.type != QLatin1String("artmesh") || !value.canConvert<float>()) return false;
+        const float opacity = value.toFloat();
+        return std::isfinite(opacity) && opacity >= 0.0f && opacity <= 1.0f && SetDrawableOpacity(edit.name, opacity);
+    }
+    if (edit.field == CModelEdit::DrawOrder) {
+        if (edit.type != QLatin1String("artmesh") || !value.canConvert<int>()) return false;
+        const double number = value.toDouble();
+        if (!std::isfinite(number) || std::floor(number) != number || number < 0.0 || number > 1000.0) return false;
+        return SetDrawableDrawOrder(edit.name, static_cast<int>(number));
+    }
+    return false;
+}
+
+bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
+{
+    if (edit.name.isEmpty() || edit.before == edit.after) return false;
+    if (!ApplyEdit(edit, true)) return false;
+    if (m_editIndex < m_editHistory.size()) m_editHistory.resize(m_editIndex);
+    if (!m_editHistory.isEmpty() && m_editIndex == m_editHistory.size()) {
+        CModelEdit& last = m_editHistory.last();
+        if (last.name == edit.name && last.type == edit.type && last.field == edit.field && last.after == edit.before) {
+            last.after = edit.after;
+            return true;
+        }
+    }
+    m_editHistory.append(edit);
+    m_editIndex = m_editHistory.size();
+    return true;
+}
+
+bool CModelDocument::UndoEdit(CModelEdit* edit)
+{
+    if (m_editIndex <= 0) return false;
+    const CModelEdit command = m_editHistory[m_editIndex - 1];
+    if (!ApplyEdit(command, false)) return false;
+    --m_editIndex;
+    if (edit) *edit = command;
+    return true;
+}
+
+bool CModelDocument::RedoEdit(CModelEdit* edit)
+{
+    if (m_editIndex >= m_editHistory.size()) return false;
+    const CModelEdit command = m_editHistory[m_editIndex];
+    if (!ApplyEdit(command, true)) return false;
+    ++m_editIndex;
+    if (edit) *edit = command;
+    return true;
+}
+
+void CModelDocument::ClearEditHistory()
+{
+    m_editHistory.clear();
+    m_editIndex = 0;
 }
 
 QSet<QString> CModelDocument::HiddenIds() const

@@ -101,6 +101,45 @@ private slots:
         QVERIFY(!document.HiddenIds().contains(deformerId));
     }
 
+    void documentEditHistory()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        const auto& drawable = document.Drawables().first();
+        const bool beforeVisible = drawable.visible;
+        const QString id = drawable.id;
+        QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::Visibility,
+                                       beforeVisible, !beforeVisible}));
+        QVERIFY(document.CanUndoEdit());
+        QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(document.Drawables().first().visible, !beforeVisible);
+
+        live2dstruct::CModelEdit applied;
+        QVERIFY(document.UndoEdit(&applied));
+        QCOMPARE(applied.name, id);
+        QCOMPARE(applied.field, live2dstruct::CModelEdit::Visibility);
+        QCOMPARE(document.Drawables().first().visible, beforeVisible);
+        QVERIFY(document.CanRedoEdit());
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.Drawables().first().visible, !beforeVisible);
+
+        const int currentDrawOrder = qRound(document.DrawableDrawOrder(document.Drawables().first()));
+        QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::DrawOrder,
+                                       currentDrawOrder, currentDrawOrder + 1}));
+        QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::DrawOrder,
+                                       currentDrawOrder + 1, currentDrawOrder + 2}));
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), currentDrawOrder);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), currentDrawOrder + 2);
+        QVERIFY(!document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::Opacity,
+                                       0.2f, 1.5f}));
+        document.ClearEditHistory();
+        QVERIFY(!document.CanUndoEdit());
+        QVERIFY(!document.CanRedoEdit());
+    }
+
     void modelJsonCanBeReused()
     {
         CModelJson model;

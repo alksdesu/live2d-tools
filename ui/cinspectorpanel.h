@@ -2,11 +2,10 @@
 #define CINSPECTORPANEL_H
 
 #include <QDockWidget>
-#include <QVariant>
-#include <QVector>
 
 namespace live2dstruct {
 class CModelDocument;
+struct CModelEdit;
 }
 
 class QLabel;
@@ -38,9 +37,7 @@ signals:
 
 private:
     void showModelObject(const QString& name, const QString& type);
-    void PushEdit(const QString& name, const QString& type, int field,
-                  const QVariant& before, const QVariant& after);
-    void ApplyEdit(const QString& name, const QString& type, int field, const QVariant& value);
+    void EmitEdit(const live2dstruct::CModelEdit& edit, bool forward);
 
     live2dstruct::CModelDocument* m_document = nullptr;
     QString m_selectionName;
@@ -63,17 +60,6 @@ private:
     QLabel* m_blendLabel = nullptr;
     QLabel* m_maskLabel = nullptr;
     QLabel* m_keyformLabel = nullptr;
-    struct Edit {
-        enum Field { Visibility, Opacity, DrawOrder };
-        QString name;
-        QString type;
-        int field = Visibility;
-        QVariant before;
-        QVariant after;
-    };
-    QVector<Edit> m_history;
-    int m_historyIndex = 0;
-    bool m_replaying = false;
 };
 
 #endif

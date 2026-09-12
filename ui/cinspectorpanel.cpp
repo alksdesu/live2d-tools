@@ -98,12 +98,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                     continue;
                 }
                 if (before == visible) continue;
-                bool changed = false;
-                if (type == QLatin1String("part")) changed = m_document->SetPartVisible(name, visible);
-                else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) changed = m_document->SetDeformerVisible(name, visible);
-                else if (type == QLatin1String("artmesh")) changed = m_document->SetDrawableVisible(name, visible);
-                if (changed) {
-                    if (!m_replaying) PushEdit(name, type, Edit::Visibility, before, visible);
+                const live2dstruct::CModelEdit command{name, type, live2dstruct::CModelEdit::Visibility, before, visible};
+                if (m_document->ExecuteEdit(command)) {
                     emit VisibilityChanged(name, type, visible);
                 }
             }
@@ -119,12 +115,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
             for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = drawable.visible; break; }
         }
         if (before == visible) return;
-        bool changed = false;
-        if (m_selectionType == QLatin1String("part")) changed = m_document->SetPartVisible(m_selectionName, visible);
-        else if (m_selectionType == QLatin1String("warp") || m_selectionType == QLatin1String("rotation")) changed = m_document->SetDeformerVisible(m_selectionName, visible);
-        else if (m_selectionType == QLatin1String("artmesh")) changed = m_document->SetDrawableVisible(m_selectionName, visible);
-        if (changed) {
-            if (!m_replaying) PushEdit(m_selectionName, m_selectionType, Edit::Visibility, before, visible);
+        const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
+                                               live2dstruct::CModelEdit::Visibility, before, visible};
+        if (m_document->ExecuteEdit(command)) {
             emit VisibilityChanged(m_selectionName, m_selectionType, visible);
         }
     });
@@ -138,8 +131,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                 for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { before = m_document->DrawableOpacity(drawable); break; }
                 const float after = static_cast<float>(value);
                 if (qFuzzyCompare(before + 1.0f, after + 1.0f)) continue;
-                if (m_document->SetDrawableOpacity(name, after)) {
-                    if (!m_replaying) PushEdit(name, QLatin1String("artmesh"), Edit::Opacity, before, after);
+                const live2dstruct::CModelEdit command{name, QLatin1String("artmesh"),
+                                                       live2dstruct::CModelEdit::Opacity, before, after};
+                if (m_document->ExecuteEdit(command)) {
                     emit DrawableOpacityChanged(name, after);
                 }
             }
@@ -149,9 +143,11 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         float before = static_cast<float>(value);
         for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = m_document->DrawableOpacity(drawable); break; }
         if (qFuzzyCompare(before + 1.0f, static_cast<float>(value) + 1.0f)) return;
-        if (m_document->SetDrawableOpacity(m_selectionName, static_cast<float>(value))) {
-            if (!m_replaying) PushEdit(m_selectionName, m_selectionType, Edit::Opacity, before, static_cast<float>(value));
-            emit DrawableOpacityChanged(m_selectionName, static_cast<float>(value));
+        const float after = static_cast<float>(value);
+        const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
+                                               live2dstruct::CModelEdit::Opacity, before, after};
+        if (m_document->ExecuteEdit(command)) {
+            emit DrawableOpacityChanged(m_selectionName, after);
         }
     });
     connect(m_drawOrderSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value){
@@ -163,8 +159,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                 int before = value;
                 for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { before = qRound(m_document->DrawableDrawOrder(drawable)); break; }
                 if (before == value) continue;
-                if (m_document->SetDrawableDrawOrder(name, value)) {
-                    if (!m_replaying) PushEdit(name, QLatin1String("artmesh"), Edit::DrawOrder, before, value);
+                const live2dstruct::CModelEdit command{name, QLatin1String("artmesh"),
+                                                       live2dstruct::CModelEdit::DrawOrder, before, value};
+                if (m_document->ExecuteEdit(command)) {
                     emit DrawableDrawOrderChanged(name, value);
                 }
             }
@@ -174,8 +171,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         int before = value;
         for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = qRound(m_document->DrawableDrawOrder(drawable)); break; }
         if (before == value) return;
-        if (m_document->SetDrawableDrawOrder(m_selectionName, value)) {
-            if (!m_replaying) PushEdit(m_selectionName, m_selectionType, Edit::DrawOrder, before, value);
+        const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
+                                               live2dstruct::CModelEdit::DrawOrder, before, value};
+        if (m_document->ExecuteEdit(command)) {
             emit DrawableDrawOrderChanged(m_selectionName, value);
         }
     });
@@ -298,70 +296,41 @@ void CInspectorPanel::ClearSelection()
     }
 }
 
-void CInspectorPanel::PushEdit(const QString& name, const QString& type, int field,
-                               const QVariant& before, const QVariant& after)
+void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forward)
 {
-    if (before == after) return;
-    if (m_historyIndex < m_history.size()) m_history.resize(m_historyIndex);
-    if (!m_history.isEmpty() && m_historyIndex == m_history.size()) {
-        Edit& last = m_history.last();
-        if (last.name == name && last.type == type && last.field == field && last.after == before) {
-            last.after = after;
-            emit HistoryChanged(true, false);
-            return;
-        }
-    }
-    m_history.append({name, type, field, before, after});
-    m_historyIndex = m_history.size();
-    emit HistoryChanged(true, false);
-}
-
-void CInspectorPanel::ApplyEdit(const QString& name, const QString& type, int field, const QVariant& value)
-{
-    if (!m_document) return;
-    if (field == Edit::Visibility) {
-        const bool visible = value.toBool();
-        if ((type == QLatin1String("part") && m_document->SetPartVisible(name, visible)) ||
-            ((type == QLatin1String("warp") || type == QLatin1String("rotation")) && m_document->SetDeformerVisible(name, visible)) ||
-            (type == QLatin1String("artmesh") && m_document->SetDrawableVisible(name, visible)))
-            emit VisibilityChanged(name, type, visible);
-    } else if (field == Edit::Opacity) {
-        const float opacity = value.toFloat();
-        if (m_document->SetDrawableOpacity(name, opacity)) emit DrawableOpacityChanged(name, opacity);
-    } else if (field == Edit::DrawOrder) {
-        const int drawOrder = value.toInt();
-        if (m_document->SetDrawableDrawOrder(name, drawOrder)) emit DrawableDrawOrderChanged(name, drawOrder);
+    const QVariant& value = forward ? edit.after : edit.before;
+    if (edit.field == live2dstruct::CModelEdit::Visibility) {
+        emit VisibilityChanged(edit.name, edit.type, value.toBool());
+    } else if (edit.field == live2dstruct::CModelEdit::Opacity) {
+        emit DrawableOpacityChanged(edit.name, value.toFloat());
+    } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
+        emit DrawableDrawOrderChanged(edit.name, value.toInt());
     }
     if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
 
 void CInspectorPanel::ClearHistory()
 {
-    m_history.clear();
-    m_historyIndex = 0;
+    if (m_document) m_document->ClearEditHistory();
     emit HistoryChanged(false, false);
 }
 
 void CInspectorPanel::Undo()
 {
-    if (m_historyIndex <= 0) return;
-    const Edit edit = m_history[m_historyIndex - 1];
-    m_replaying = true;
-    ApplyEdit(edit.name, edit.type, edit.field, edit.before);
-    m_replaying = false;
-    --m_historyIndex;
-    emit HistoryChanged(m_historyIndex > 0, m_historyIndex < m_history.size());
+    if (!m_document) return;
+    live2dstruct::CModelEdit edit;
+    if (!m_document->UndoEdit(&edit)) return;
+    EmitEdit(edit, false);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
 void CInspectorPanel::Redo()
 {
-    if (m_historyIndex >= m_history.size()) return;
-    const Edit edit = m_history[m_historyIndex];
-    m_replaying = true;
-    ApplyEdit(edit.name, edit.type, edit.field, edit.after);
-    m_replaying = false;
-    ++m_historyIndex;
-    emit HistoryChanged(m_historyIndex > 0, m_historyIndex < m_history.size());
+    if (!m_document) return;
+    live2dstruct::CModelEdit edit;
+    if (!m_document->RedoEdit(&edit)) return;
+    EmitEdit(edit, true);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
 void CInspectorPanel::showModelObject(const QString& name, const QString& type)
