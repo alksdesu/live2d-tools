@@ -22,6 +22,7 @@ public:
 
     void CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
     bool WritePsd();
+    static uint32_t CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mode);
     void AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
     void AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
                   uint8_t opacity, uint32_t blendModeKey, bool isClipped,

@@ -673,7 +673,13 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
             if(LAppDelegate::GetInstance()->IsOffScreen()){
 
                 COffScreenNode node =  LAppDelegate::GetInstance()->read.GetScreenNode(*GetModel(), drawableIndex,GetMvpMatrix().GetArray(),_rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3],false);
-                LAppDelegate::GetInstance()->GetCPsdWriteList()->AddLayer(drawName,node.m_rect,*(node.m_image));
+                const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f,
+                    GetModel()->GetDrawableOpacityAll(drawableIndex, LAppDelegate::GetInstance()->m_IsPrintALl) * 255.0f,
+                    255.0f));
+                LAppDelegate::GetInstance()->GetCPsdWriteList()->AddLayer(
+                    drawName, node.m_rect, *node.m_image, opacity,
+                    CPsdWriteList::CubismBlendModeToPsd(GetModel()->GetDrawableBlendMode(drawableIndex)),
+                    clipContext != NULL, false);
                 node.Clear();//清除数据
                 LAppDelegate::GetInstance()->read.UpdateFrame(LAppDelegate::GetInstance()->getTexFrame(),_rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3]);
                 //单独打印出来没有问题
@@ -774,7 +780,13 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
             if(LAppDelegate::GetInstance()->IsOffScreen()){
 
                 COffScreenNode node =  LAppDelegate::GetInstance()->read.GetScreenNode(*GetModel(), drawableIndex,GetMvpMatrix().GetArray(),_rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3],false);
-                LAppDelegate::GetInstance()->GetCPsdWriteList()->AddLayer(drawName,node.m_rect,*(node.m_image));
+                const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f,
+                    GetModel()->GetDrawableOpacityAll(drawableIndex, LAppDelegate::GetInstance()->m_IsPrintALl) * 255.0f,
+                    255.0f));
+                LAppDelegate::GetInstance()->GetCPsdWriteList()->AddLayer(
+                    drawName, node.m_rect, *node.m_image, opacity,
+                    CPsdWriteList::CubismBlendModeToPsd(GetModel()->GetDrawableBlendMode(drawableIndex)),
+                    clipContext != NULL, false);
                 node.Clear();//清除数据
                 LAppDelegate::GetInstance()->read.UpdateFrame(LAppDelegate::GetInstance()->getTexFrame(),_rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3]);
 
