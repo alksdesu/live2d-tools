@@ -58,5 +58,6 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - moc3 读取、顶点包围盒、纹理画布尺寸、透明度和 PSD 混合/蒙版元数据已有回归测试或防御性校验。
 - Qt 工作台已接入空状态、最近模型、画布工具栏、结构树、参数搜索、参数历史撤销/重做、Inspector 和模型诊断面板。
 - 融合变形滑条按参数真实范围工作；结构树递归消费端带环检测；CMake 数据层测试可在无 OpenGL 环境运行。
+- Inspector 可编辑 ArtMesh 可见性和透明度，状态会进入实时预览、PSD/cmo3 导出及会话文件。
 - Windows CMake 配置包含 cmo3 CAFF/XML/PNG 回归测试，实际执行需 Windows + Qt 环境。
 - 仍需在 Windows + Cubism Editor/Photoshop 环境验证 GUI、OpenGL、PSD 与 cmo3 实际回读，并继续实现可保存编辑文档、网格/关键形编辑和完整动画时间轴。

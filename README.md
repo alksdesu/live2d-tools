@@ -21,6 +21,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Play motions, switch expressions, toggle auto eye-blink / breathing, Pose switching
 - Model structure tree (Part / ArtMesh / Deformer hierarchy) with click-to-highlight
 - Searchable multi-select structure tree with visibility controls and a Cubism-style Inspector/diagnostics view
+- Inspector edits for ArtMesh visibility and opacity are applied to preview, PSD and cmo3 export
 - Searchable and collapsible parameter groups with undo/redo history
 - Versioned editor sessions (parameters, visibility and camera) with recent-model shortcuts and persistent workspace layout/theme
 - Texture atlas viewer: zoom/pan, UV wireframe overlay, click the atlas to locate an ArtMesh (three-way linkage with the tree and main view), PNG export
@@ -134,6 +135,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 播放动作、切换表情，支持自动眨眼和呼吸开关，Pose 切换
 - 模型结构树查看（Part / ArtMesh / Deformer 层级），点击高亮对应网格
 - 结构树支持名称/ID 搜索、多选和可见性控制，Inspector 显示几何、Keyform、绘制顺序、混合/剔除、蒙版等信息，模型检查面板报告结构错误
+- Inspector 可直接修改 ArtMesh 可见性和透明度，结果同步到实时预览、PSD 与 cmo3 导出
 - 参数分组可折叠，支持名称/ID 搜索、撤销/重做；可保存和载入版本化工作会话（参数、可见性、视图）
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
 - 纹理图集查看：缩放/平移、UV 线框叠加、点击图集反查 ArtMesh（与结构树/主视图三方联动）、导出 PNG
