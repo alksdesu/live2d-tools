@@ -70,6 +70,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - CModelDocument 现在保留 moc3 的 Draw Order Group 范围和成员索引，并在模型检查中报告无效类型、越界和重复成员；这为后续组内编辑提供数据基础。
 - PSD 分组只合并连续的 Part 图层；交错时拆分文件夹，避免重新分组改变叠放顺序。过滤无效索引后，图层名称与记录同步生成；父级循环和深层级不会导致递归溢出。
 - 明确最小值等于最大值的 Draw Order Group 已支持组块内排序，编辑不会穿透到其他组；根组、动态范围组和 cmo3 的组结构还原仍未完整支持，不能据此宣称与 Cubism 完整兼容。
+- 动态 Draw Order Group 现在也会注册成员索引，参数化绘制顺序编辑可按组范围排序；cmo3 结构还原仍未完整支持。
 - CMake 的 model_data、draw_order、inspector_history 和 cmo3 测试目标均通过普通构建及 AddressSanitizer/UndefinedBehaviorSanitizer 检查，涵盖四个内置模型、交错分组、非法索引、循环父级、一万层嵌套、Inspector 属性回放和 CAFF 回读。运行时代码另通过语法检查。
 - PSD 写入器增加 7000 条记录容量保护，普通图层和分组均计入上限，超限返回失败且不打开目标文件。Windows 的 psd_tests 覆盖三条超限入口、目标文件保留及写入器重置；本机仅完成语法检查，尚未执行该目标。
 - CMake 补齐 cmo3 测试所需的模型解析和 miniz 链接依赖；cmo3 回归测试现已跨平台注册，检查 Wanko 的 main.xml 与 PNG 条目。macOS qmake 的最终链接仍受 Qt 6.8.3 预编译包强制引用 AGL 影响，当前 SDK 已不再提供该框架。
