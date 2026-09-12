@@ -49,6 +49,17 @@ private slots:
         }
         QVERIFY(itemCount > 0);
 
+        QTreeWidgetItem* firstItem = trees.first()->topLevelItem(0);
+        QVERIFY(firstItem);
+        const QString firstKey = firstItem->data(0, Qt::UserRole + 1).toString() + QLatin1Char('|') +
+            firstItem->data(0, Qt::UserRole).toString();
+        panel.ApplyLockedState({{firstKey, true}});
+        QVERIFY(panel.LockedState().contains(firstKey));
+        QVERIFY(!(firstItem->flags() & Qt::ItemIsUserCheckable));
+        panel.ApplyLockedState({});
+        QVERIFY(panel.LockedState().isEmpty());
+        QVERIFY(firstItem->flags() & Qt::ItemIsUserCheckable);
+
         QTreeWidget* partTree = trees.first();
         QVERIFY(partTree->topLevelItemCount() > 0);
         partTree->topLevelItem(0)->setSelected(true);

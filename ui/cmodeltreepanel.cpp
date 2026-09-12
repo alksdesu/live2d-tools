@@ -9,6 +9,8 @@
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
+#include <QMenu>
+#include <QFont>
 
 using namespace live2dstruct;
 
@@ -131,6 +133,32 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
 
     connect(m_partTree, &QTreeWidget::itemChanged, this, &CModelTreePanel::onPartItemChanged);
     connect(m_deformerTree, &QTreeWidget::itemChanged, this, &CModelTreePanel::onDeformerItemChanged);
+
+    const auto installLockMenu = [this](QTreeWidget* tree) {
+        tree->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tree, &QTreeWidget::customContextMenuRequested, this, [this, tree](const QPoint& position) {
+            QTreeWidgetItem* item = tree->itemAt(position);
+            if (!item) return;
+            if (!item->isSelected()) {
+                tree->clearSelection();
+                item->setSelected(true);
+            }
+            const QList<QTreeWidgetItem*> selected = tree->selectedItems();
+            bool allLocked = !selected.isEmpty();
+            for (QTreeWidgetItem* selectedItem : selected) allLocked = allLocked && selectedItem->data(0, Qt::UserRole + 2).toBool();
+            QMenu menu(tree);
+            QAction* lockAction = menu.addAction(allLocked ? QStringLiteral("解锁选中对象") : QStringLiteral("锁定选中对象"));
+            if (menu.exec(tree->viewport()->mapToGlobal(position)) != lockAction) return;
+            for (QTreeWidgetItem* selectedItem : selected) {
+                const QString name = selectedItem->data(0, Qt::UserRole).toString();
+                const QString type = selectedItem->data(0, Qt::UserRole + 1).toString();
+                setItemLocked(selectedItem, !allLocked);
+                emit ObjectLockChanged(name, type, !allLocked);
+            }
+        });
+    };
+    installLockMenu(m_partTree);
+    installLockMenu(m_deformerTree);
 }
 
 void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
@@ -460,6 +488,52 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
     m_deformerTree->blockSignals(false);
     m_deformerTree->expandToDepth(1);
 
+}
+
+void CModelTreePanel::setItemLocked(QTreeWidgetItem* item, bool locked)
+{
+    if (!item) return;
+    Qt::ItemFlags flags = item->flags();
+    if (locked) flags &= ~Qt::ItemIsUserCheckable;
+    else flags |= Qt::ItemIsUserCheckable;
+    item->setFlags(flags);
+    item->setData(0, Qt::UserRole + 2, locked);
+    QFont font = item->font(0);
+    font.setStrikeOut(locked);
+    item->setFont(0, font);
+    item->setToolTip(0, locked ? QStringLiteral("已锁定") : QString());
+}
+
+QMap<QString, bool> CModelTreePanel::LockedState() const
+{
+    QMap<QString, bool> state;
+    const auto collect = [&state](QTreeWidgetItem* item, auto&& collectRef) -> void {
+        const QString type = item->data(0, Qt::UserRole + 1).toString();
+        const QString id = item->data(0, Qt::UserRole).toString();
+        if (item->data(0, Qt::UserRole + 2).toBool() && !type.isEmpty() && !id.isEmpty()) {
+            state.insert(type + QLatin1Char('|') + id, true);
+        }
+        for (int i = 0; i < item->childCount(); ++i) collectRef(item->child(i), collectRef);
+    };
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) collect(tree->topLevelItem(i), collect);
+    }
+    return state;
+}
+
+void CModelTreePanel::ApplyLockedState(const QMap<QString, bool>& state)
+{
+    const auto apply = [this, &state](QTreeWidgetItem* item, auto&& applyRef) -> void {
+        const QString type = item->data(0, Qt::UserRole + 1).toString();
+        const QString id = item->data(0, Qt::UserRole).toString();
+        const QString key = type + QLatin1Char('|') + id;
+        const bool locked = state.value(key, false);
+        setItemLocked(item, locked);
+        for (int i = 0; i < item->childCount(); ++i) applyRef(item->child(i), applyRef);
+    };
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) apply(tree->topLevelItem(i), apply);
+    }
 }
 
 QMap<QString, bool> CModelTreePanel::VisibilityState() const

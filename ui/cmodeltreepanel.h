@@ -16,10 +16,12 @@ public:
     explicit CModelTreePanel(QWidget *parent = nullptr);
     void BuildTree(const QString& mocPath, CCidJson* cid);
     QMap<QString, bool> VisibilityState() const;
+    QMap<QString, bool> LockedState() const;
 
 public slots:
     void HighlightMesh(const QString& artName);
     void ApplyVisibilityState(const QMap<QString, bool>& state);
+    void ApplyLockedState(const QMap<QString, bool>& state);
     void SetVisibility(const QString& name, const QString& type, bool visible);
 
 signals:
@@ -31,6 +33,7 @@ signals:
     void ShowDeformerMeshes(const QStringList& artMeshNames);
     void DeformerDragParamsChanged(const QStringList& paramIds, const QList<float>& minVals, const QList<float>& maxVals, const QList<float>& defaultVals);
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
+    void ObjectLockChanged(const QString& name, const QString& type, bool locked);
 
 private:
     void setupPartTree(QTreeWidget* tree);
@@ -38,6 +41,7 @@ private:
     void onPartItemChanged(QTreeWidgetItem* item, int column);
     void onDeformerItemChanged(QTreeWidgetItem* item, int column);
     void setChildrenChecked(QTreeWidgetItem* item, Qt::CheckState state);
+    void setItemLocked(QTreeWidgetItem* item, bool locked);
 
     // 从节点收集所有子变形器名称
     QStringList collectDeformerNames(QTreeWidgetItem* item);

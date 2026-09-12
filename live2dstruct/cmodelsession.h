@@ -16,6 +16,7 @@ struct CModelSession
     QString sourceMoc;
     QMap<QString, float> parameters;
     QMap<QString, bool> visibility;
+    QMap<QString, bool> locked;
     QHash<QString, float> drawableOpacity;
     QHash<QString, int> drawableDrawOrder;
     QHash<QString, QVector<QVector<float>>> drawableKeyformPositions;

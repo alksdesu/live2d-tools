@@ -41,6 +41,7 @@ void CModelDocument::Clear()
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
     m_drawableKeyformPositionOverrides.clear();
+    m_lockedKeys.clear();
     ClearEditHistory();
 }
 
@@ -289,6 +290,24 @@ bool CModelDocument::SetDrawableDrawOrder(const QString& id, int drawOrder)
 float CModelDocument::DrawableDrawOrder(const CModelDrawable& drawable) const
 {
     return m_drawableDrawOrderOverrides.value(drawable.id, static_cast<int>(qBound(0.0f, drawable.drawOrder, 1000.0f)));
+}
+
+void CModelDocument::SetLocked(const QString& type, const QString& id, bool locked)
+{
+    if (type.isEmpty() || id.isEmpty()) return;
+    const QString key = type + QLatin1Char('|') + id;
+    if (locked) m_lockedKeys.insert(key);
+    else m_lockedKeys.remove(key);
+}
+
+void CModelDocument::ClearLocked()
+{
+    m_lockedKeys.clear();
+}
+
+bool CModelDocument::IsLocked(const QString& type, const QString& id) const
+{
+    return m_lockedKeys.contains(type + QLatin1Char('|') + id);
 }
 
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)

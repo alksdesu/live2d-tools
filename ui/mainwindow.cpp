@@ -309,6 +309,7 @@ void MainWindow::on_actionSaveSession_triggered()
     session.parameters = currentValues;
     if (m_treePanel) {
         session.visibility = m_treePanel->VisibilityState();
+        session.locked = m_treePanel->LockedState();
     }
     session.drawableOpacity = m_document.DrawableOpacityOverrides();
     session.drawableDrawOrder = m_document.DrawableDrawOrderOverrides();
@@ -347,6 +348,14 @@ void MainWindow::on_actionLoadSession_triggered()
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
         m_applyingSession = true;
         if (m_paramPanel) m_paramPanel->ApplyValues(session.parameters);
+        m_document.ClearLocked();
+        for (auto it = session.locked.cbegin(); it != session.locked.cend(); ++it) {
+            const int separator = it.key().indexOf(QLatin1Char('|'));
+            if (separator <= 0 || separator >= it.key().size() - 1) continue;
+            m_document.SetLocked(it.key().left(separator), it.key().mid(separator + 1), it.value());
+        }
+        if (m_treePanel) m_treePanel->ApplyLockedState(session.locked);
+        if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
         if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
         for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
             m_document.SetDrawableOpacity(it.key(), it.value());
@@ -862,6 +871,7 @@ void MainWindow::RestDock(const QString &name)
     addDockWidget(Qt::RightDockWidgetArea, m_inspectorPanel);
     tabifyDockWidget(m_paramPanel, m_inspectorPanel);
     m_inspectorPanel->SetDocument(&m_document);
+    m_inspectorPanel->SetLockedState(m_document.LockedKeys());
     connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
         m_historySource = HistorySource::Inspector;
         if (m_undoAction) m_undoAction->setEnabled(canUndo);
@@ -991,6 +1001,17 @@ void MainWindow::RestDock(const QString &name)
                 m_syncingVisibility = true;
                 if (m_treePanel) m_treePanel->SetVisibility(name, type, visible);
                 m_syncingVisibility = false;
+            });
+    connect(m_treePanel, &CModelTreePanel::ObjectLockChanged, this,
+            [this](const QString& name, const QString& type, bool locked){
+                m_document.SetLocked(type, name, locked);
+                if (m_treePanel) m_treePanel->ApplyLockedState(m_treePanel->LockedState());
+                if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
+                if (!m_applyingSession) {
+                    m_sessionDirty = true;
+                    setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+                    statusBar()->showMessage(QStringLiteral("有未保存的锁定状态"));
+                }
             });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableOpacity);

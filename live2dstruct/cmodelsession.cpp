@@ -49,6 +49,9 @@ QByteArray CModelSession::ToJson() const
     QJsonObject visibilityObject;
     for (auto it = visibility.cbegin(); it != visibility.cend(); ++it) visibilityObject.insert(it.key(), it.value());
     root.insert(QStringLiteral("visibility"), visibilityObject);
+    QJsonObject lockedObject;
+    for (auto it = locked.cbegin(); it != locked.cend(); ++it) lockedObject.insert(it.key(), it.value());
+    root.insert(QStringLiteral("locked"), lockedObject);
     QJsonObject opacityObject;
     for (auto it = drawableOpacity.cbegin(); it != drawableOpacity.cend(); ++it) opacityObject.insert(it.key(), static_cast<double>(it.value()));
     root.insert(QStringLiteral("drawableOpacity"), opacityObject);
@@ -110,11 +113,13 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
 
     QJsonObject parameterObject;
     QJsonObject visibilityObject;
+    QJsonObject lockedObject;
     QJsonObject opacityObject;
     QJsonObject drawOrderObject;
     QJsonObject keyformObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
+        !readObject(root, QStringLiteral("locked"), &lockedObject, error) ||
         !readObject(root, QStringLiteral("drawableOpacity"), &opacityObject, error) ||
         !readObject(root, QStringLiteral("drawableDrawOrder"), &drawOrderObject, error) ||
         !readObject(root, QStringLiteral("drawableKeyformPositions"), &keyformObject, error)) return false;
@@ -132,6 +137,13 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             return false;
         }
         result.visibility.insert(key, visibilityObject.value(key).toBool());
+    }
+    for (const QString& key : lockedObject.keys()) {
+        if (!lockedObject.value(key).isBool()) {
+            setError(error, QStringLiteral("锁定值类型错误：%1").arg(key));
+            return false;
+        }
+        result.locked.insert(key, lockedObject.value(key).toBool());
     }
     for (const QString& key : opacityObject.keys()) {
         double value = 0.0;

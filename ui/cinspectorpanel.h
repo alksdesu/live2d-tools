@@ -2,6 +2,7 @@
 #define CINSPECTORPANEL_H
 
 #include <QDockWidget>
+#include <QSet>
 #include <QVector>
 
 namespace live2dstruct {
@@ -28,6 +29,7 @@ public:
     void SetSelections(const QStringList& names, const QStringList& types);
     void ClearSelection();
     void RefreshSelection();
+    void SetLockedState(const QSet<QString>& lockedKeys);
 
 public slots:
     void Undo();
@@ -48,6 +50,7 @@ private:
     void RebuildKeyformTable();
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
+    bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
     QString m_selectionName;
@@ -69,6 +72,7 @@ private:
     QPushButton* m_mirrorVertical = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
+    QSet<QString> m_lockedKeys;
     QLabel* m_geometryLabel = nullptr;
     QLabel* m_textureLabel = nullptr;
     QLabel* m_drawOrderLabel = nullptr;

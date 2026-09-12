@@ -138,6 +138,10 @@ public:
     bool SetDrawableDrawOrder(const QString& id, int drawOrder);
     float DrawableDrawOrder(const CModelDrawable& drawable) const;
     const QHash<QString, int>& DrawableDrawOrderOverrides() const { return m_drawableDrawOrderOverrides; }
+    void SetLocked(const QString& type, const QString& id, bool locked);
+    void ClearLocked();
+    bool IsLocked(const QString& type, const QString& id) const;
+    const QSet<QString>& LockedKeys() const { return m_lockedKeys; }
     bool ExecuteEdit(const CModelEdit& edit);
     bool PeekUndoEdit(CModelEdit* edit = nullptr) const;
     bool PeekRedoEdit(CModelEdit* edit = nullptr) const;
@@ -163,6 +167,7 @@ private:
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, float> m_parameterValues;
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;
+    QSet<QString> m_lockedKeys;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;
 
