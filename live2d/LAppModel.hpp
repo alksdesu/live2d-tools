@@ -61,6 +61,7 @@ public:
     // 物理参数控制
     void SetPhysicsGravity(float x, float y);
     void SetPhysicsWind(float x, float y);
+    bool ReloadPhysicsFromFile(const QString& path);
 
     // 物理组拖拽：设置拖拽驱动的参数列表
     void SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types);

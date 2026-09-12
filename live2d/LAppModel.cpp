@@ -26,6 +26,7 @@
 #include <QTextStream>
 #include <QCoreApplication>
 #include <cmath>
+#include <limits>
 
 using namespace Live2D::Cubism::Framework;
 using namespace Live2D::Cubism::Framework::DefaultParameterId;
@@ -820,6 +821,22 @@ void LAppModel::SetPhysicsGravity(float x, float y)
         opt.Gravity.Y = y;
         _physics->SetOptions(opt);
     }
+}
+
+bool LAppModel::ReloadPhysicsFromFile(const QString& path)
+{
+    if (path.isEmpty()) return false;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const QByteArray data = file.readAll();
+    if (file.error() != QFileDevice::NoError || data.isEmpty() ||
+        data.size() > std::numeric_limits<csmSizeInt>::max()) return false;
+    CubismPhysics* replacement = CubismPhysics::Create(
+        reinterpret_cast<const csmByte*>(data.constData()), static_cast<csmSizeInt>(data.size()));
+    if (!replacement) return false;
+    CubismPhysics::Delete(_physics);
+    _physics = replacement;
+    return true;
 }
 
 void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types)

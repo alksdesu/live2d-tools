@@ -1103,7 +1103,13 @@ void MainWindow::RestDock(const QString &name)
         setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
         statusBar()->showMessage(QStringLiteral("有未保存的物理配置"));
     });
-    connect(m_physicsPanel, &CPhysicsPanel::PhysicsSaved, this, [this](const QString&){
+    connect(m_physicsPanel, &CPhysicsPanel::PhysicsSaved, this, [this](const QString& path){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        LAppModel* model = (mgr && mgr->GetModelNum() > 0) ? mgr->GetModel(0) : nullptr;
+        if (model && !model->ReloadPhysicsFromFile(path)) {
+            statusBar()->showMessage(QStringLiteral("物理配置已保存，但运行时重载失败"), 8000);
+            return;
+        }
         if (!m_sessionDirty) setWindowTitle(QStringLiteral("live2d2psd"));
         statusBar()->showMessage(QStringLiteral("物理配置已保存"), 5000);
     });
