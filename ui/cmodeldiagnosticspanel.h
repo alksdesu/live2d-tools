@@ -17,9 +17,10 @@ public:
     explicit CModelDiagnosticsPanel(QWidget* parent = nullptr);
     void SetDocument(const live2dstruct::CModelDocument* document);
 
-private:
+public slots:
     void Refresh();
 
+private:
     const live2dstruct::CModelDocument* m_document = nullptr;
     QLabel* m_summary = nullptr;
     QListWidget* m_list = nullptr;

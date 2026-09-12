@@ -1029,11 +1029,14 @@ void MainWindow::RestDock(const QString &name)
         statusBar()->showMessage(QStringLiteral("有未保存的模型编辑"));
     };
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, markSessionDirty);
+    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged, this,
             [markSessionDirty](const QString&, int, const QVector<float>&){ markSessionDirty(); });
     connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, markSessionDirty);
+    connect(m_paramPanel, &CParamPanel::HistoryChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
+    connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){
