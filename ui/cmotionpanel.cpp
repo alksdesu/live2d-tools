@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QLabel>
+#include <QSlider>
 #include <QSplitter>
 #include <QFile>
 #include <QJsonDocument>
@@ -114,16 +115,34 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_mouseFollowCb->setChecked(false);
     m_physicsCb = new QCheckBox("物理模拟");
     m_physicsCb->setChecked(true);
+    m_loopCb = new QCheckBox(QStringLiteral("动作循环"));
+    m_speedSlider = new QSlider(Qt::Horizontal, wrapper);
+    m_speedSlider->setRange(25, 200);
+    m_speedSlider->setValue(100);
+    m_speedSlider->setToolTip(QStringLiteral("动作播放速度：25%–200%"));
+    m_speedLabel = new QLabel(QStringLiteral("100%"), wrapper);
+    m_speedLabel->setMinimumWidth(42);
     optLayout->addWidget(m_eyeBlinkCb);
     optLayout->addWidget(m_breathCb);
     optLayout->addWidget(m_mouseFollowCb);
     optLayout->addWidget(m_physicsCb);
+    optLayout->addWidget(m_loopCb);
+    optLayout->addWidget(new QLabel(QStringLiteral("速度"), wrapper));
+    optLayout->addWidget(m_speedSlider, 1);
+    optLayout->addWidget(m_speedLabel);
     mainLayout->addLayout(optLayout);
 
     connect(m_eyeBlinkCb, &QCheckBox::toggled, this, &CMotionPanel::AutoEyeBlinkChanged);
     connect(m_breathCb, &QCheckBox::toggled, this, &CMotionPanel::AutoBreathChanged);
     connect(m_mouseFollowCb, &QCheckBox::toggled, this, &CMotionPanel::MouseFollowChanged);
     connect(m_physicsCb, &QCheckBox::toggled, this, &CMotionPanel::PhysicsChanged);
+    connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
+        emit MotionPlaybackChanged(m_speedSlider->value() / 100.0f, loop);
+    });
+    connect(m_speedSlider, &QSlider::valueChanged, this, [this](int value){
+        m_speedLabel->setText(QStringLiteral("%1%").arg(value));
+        emit MotionPlaybackChanged(value / 100.0f, m_loopCb->isChecked());
+    });
 
     setWidget(wrapper);
 }

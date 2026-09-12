@@ -5,8 +5,11 @@
 #include <QListWidget>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QSlider>
 #include <QVBoxLayout>
 #include <QLineEdit>
+
+class QLabel;
 
 class CMotionPanel : public QDockWidget
 {
@@ -27,6 +30,7 @@ signals:
     void AutoBreathChanged(bool enabled);
     void MouseFollowChanged(bool enabled);
     void PhysicsChanged(bool enabled);
+    void MotionPlaybackChanged(float speed, bool loop);
     void PosePartChanged(const QString& showPartId, const QStringList& hidePartIds);
 
 private:
@@ -38,6 +42,9 @@ private:
     QCheckBox* m_breathCb;
     QCheckBox* m_mouseFollowCb;
     QCheckBox* m_physicsCb;
+    QCheckBox* m_loopCb;
+    QSlider* m_speedSlider;
+    QLabel* m_speedLabel;
     QWidget* m_poseWidget;
 
     struct MotionEntry {

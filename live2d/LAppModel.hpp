@@ -51,6 +51,8 @@ public:
     void SetAutoEyeBlink(bool v) { _autoEyeBlink = v; }
     void SetAutoBreath(bool v) { _autoBreath = v; }
     void SetAutoPhysics(bool v) { _autoPhysics = v; }
+    void SetMotionSpeed(float v);
+    void SetMotionLoop(bool v);
     bool GetAutoPhysics() const { return _autoPhysics; }
     void SetEnableMouseFollow(bool v) { _enableMouseFollow = v; }
     bool GetEnableMouseFollow() const { return _enableMouseFollow; }
@@ -124,6 +126,8 @@ private:
     bool _autoPhysics = true;
     bool _enableMouseFollow = false;
     bool _snapshotMode = false;
+    float _motionSpeed = 1.0f;
+    bool _motionLoop = false;
 
     // 物理拖拽参数
     QStringList _physicsDragParamIds;

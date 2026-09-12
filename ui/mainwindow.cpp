@@ -1153,6 +1153,14 @@ void MainWindow::RestDock(const QString &name)
         }
     });
 
+    connect(m_motionPanel, &CMotionPanel::MotionPlaybackChanged, this, [](float speed, bool loop){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
+            mgr->GetModel(0)->SetMotionSpeed(speed);
+            mgr->GetModel(0)->SetMotionLoop(loop);
+        }
+    });
+
     connect(m_motionPanel, &CMotionPanel::MouseFollowChanged, this, [](bool enabled){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){

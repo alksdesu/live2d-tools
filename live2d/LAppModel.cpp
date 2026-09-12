@@ -433,7 +433,7 @@ void LAppModel::Update()
     // 动作更新（不自动播放随机动作，由 UI 触发）
     if (!_motionManager->IsFinished())
     {
-        motionUpdated = _motionManager->UpdateMotion(_model, deltaTimeSeconds);
+        motionUpdated = _motionManager->UpdateMotion(_model, deltaTimeSeconds * _motionSpeed);
     }
 
     _model->SaveParameters();
@@ -594,7 +594,27 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
     {
         LAppPal::PrintLogLn("[APP]start motion: [%s_%d]", group, no);
     }
+    if (motion) {
+        CubismMotion* cubismMotion = static_cast<CubismMotion*>(motion);
+        cubismMotion->IsLoop(_motionLoop);
+    }
     return  _motionManager->StartMotionPriority(motion, autoDelete, priority);
+}
+
+void LAppModel::SetMotionSpeed(float value)
+{
+    if (!std::isfinite(value)) return;
+    if (value < 0.25f) value = 0.25f;
+    if (value > 2.0f) value = 2.0f;
+    _motionSpeed = value;
+}
+
+void LAppModel::SetMotionLoop(bool value)
+{
+    _motionLoop = value;
+    for (csmMap<csmString, ACubismMotion*>::const_iterator iter = _motions.Begin(); iter != _motions.End(); ++iter) {
+        if (iter->Second) static_cast<CubismMotion*>(iter->Second)->IsLoop(value);
+    }
 }
 
 CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
