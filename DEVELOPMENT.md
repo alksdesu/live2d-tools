@@ -80,6 +80,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Inspector 支持 ArtMesh 拓扑剪贴板复制/粘贴，跨网格粘贴会校验顶点数和索引范围。
 - Inspector 支持 Clipping Mask 多选编辑；蒙版关系进入文档命令栈、session、诊断和 cmo3 `clipGuidList`。
 - Inspector 支持同 Part Warp/Rotation Deformer 父级调整；关系进入文档命令栈、session、环检测和 cmo3 `targetDeformerGuid`。
+- 物理配置保存成功后先创建新 Cubism Physics 实例再替换运行时实例，失败时保留旧实例。
 - PSD 纹理提取与 cmo3 贴图重建也消费同一索引覆盖；拓扑异常或超出运行时索引范围时回退原始三角形。
 - 结构树支持多选批量属性编辑和对象锁定；锁定状态同步到 Inspector 与 session，树节点初始可见性来自 moc3。
 - 结构树上下文菜单支持独显选中对象和显示全部对象；会沿用可见性事件链同步到预览、文档与会话。
