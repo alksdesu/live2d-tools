@@ -561,6 +561,84 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         }
     }
 
+    for (auto it = m_parameterValues.cbegin(); it != m_parameterValues.cend(); ++it) {
+        bool found = false;
+        for (const CModelParameter& parameter : m_parameters) {
+            if (parameter.id != it.key()) continue;
+            found = true;
+            if (!std::isfinite(it.value()) || it.value() < parameter.minimum || it.value() > parameter.maximum) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_override_range"),
+                                     QStringLiteral("参数覆盖值无效：%1").arg(it.key()), -1});
+            }
+            break;
+        }
+        if (!found) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_override_id"),
+                                 QStringLiteral("参数覆盖引用了不存在的参数：%1").arg(it.key()), -1});
+        }
+    }
+    for (auto it = m_drawableOpacityOverrides.cbegin(); it != m_drawableOpacityOverrides.cend(); ++it) {
+        bool found = false;
+        for (const CModelDrawable& drawable : m_drawables) if (drawable.id == it.key()) { found = true; break; }
+        if (!found) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("opacity_override_id"),
+                                 QStringLiteral("透明度覆盖引用了不存在的 ArtMesh：%1").arg(it.key()), -1});
+        } else if (!std::isfinite(it.value()) || it.value() < 0.0f || it.value() > 1.0f) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("opacity_override_range"),
+                                 QStringLiteral("透明度覆盖值无效：%1").arg(it.key()), -1});
+        }
+    }
+    for (auto it = m_drawableDrawOrderOverrides.cbegin(); it != m_drawableDrawOrderOverrides.cend(); ++it) {
+        bool found = false;
+        for (const CModelDrawable& drawable : m_drawables) if (drawable.id == it.key()) { found = true; break; }
+        if (!found) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_override_id"),
+                                 QStringLiteral("绘制顺序覆盖引用了不存在的 ArtMesh：%1").arg(it.key()), -1});
+        } else if (it.value() < 0 || it.value() > 1000) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_override_range"),
+                                 QStringLiteral("绘制顺序覆盖值无效：%1").arg(it.key()), -1});
+        }
+    }
+    for (auto meshIt = m_drawableKeyformPositionOverrides.cbegin();
+         meshIt != m_drawableKeyformPositionOverrides.cend(); ++meshIt) {
+        const CModelDrawable* drawable = nullptr;
+        for (const CModelDrawable& candidate : m_drawables) {
+            if (candidate.id == meshIt.key()) { drawable = &candidate; break; }
+        }
+        if (!drawable) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_override_id"),
+                                 QStringLiteral("关键形覆盖引用了不存在的 ArtMesh：%1").arg(meshIt.key()), -1});
+            continue;
+        }
+        if (meshIt.value().size() > drawable->keyforms.size()) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_override_count"),
+                                 QStringLiteral("关键形覆盖数量超出 ArtMesh：%1").arg(meshIt.key()), -1});
+            continue;
+        }
+        for (const QVector<float>& positions : meshIt.value()) {
+            if (positions.isEmpty()) continue;
+            if (positions.size() != drawable->vertexCount * 2) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_override_position_count"),
+                                     QStringLiteral("关键形覆盖顶点数量无效：%1").arg(meshIt.key()), -1});
+                break;
+            }
+            bool finite = true;
+            for (float value : positions) if (!std::isfinite(value)) { finite = false; break; }
+            if (!finite) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_override_nan"),
+                                     QStringLiteral("关键形覆盖包含非有限数值：%1").arg(meshIt.key()), -1});
+                break;
+            }
+        }
+    }
+    for (const QString& key : m_lockedKeys) {
+        const int separator = key.indexOf(QLatin1Char('|'));
+        if (separator <= 0 || separator >= key.size() - 1) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("locked_key"),
+                                 QStringLiteral("锁定键格式无效"), -1});
+        }
+    }
+
     for (int i = 0; i < m_drawOrderGroups.size(); ++i) {
         const CModelDrawOrderGroup& group = m_drawOrderGroups[i];
         if (group.minimumDrawOrder < 0 || group.maximumDrawOrder > 1000 ||
