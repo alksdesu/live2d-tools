@@ -19,6 +19,7 @@ public:
 
 public slots:
     void Refresh();
+    void ExportReport();
 
 private:
     const live2dstruct::CModelDocument* m_document = nullptr;
