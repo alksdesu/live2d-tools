@@ -363,6 +363,8 @@ void CPhysicsPanel::updateVertexCell(int row, int column)
 void CPhysicsPanel::showGroupDetail(int row)
 {
     if(row < 0 || row >= m_physicsSettings.size()) return;
+    const bool wasUpdating = m_updating;
+    m_updating = true;
 
     QJsonObject setting = m_physicsSettings[row].toObject();
 
@@ -407,6 +409,7 @@ void CPhysicsPanel::showGroupDetail(int row)
         m_vertexTable->setItem(row, 4, new QTableWidgetItem(QString::number(v["Acceleration"].toDouble(), 'f', 2)));
     }
     m_vertexTable->resizeColumnsToContents();
+    m_updating = wasUpdating;
 }
 
 void CPhysicsPanel::emitDragParams(int row)

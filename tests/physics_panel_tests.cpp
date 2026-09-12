@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QSignalSpy>
 
 class PhysicsPanelTests : public QObject
 {
@@ -36,6 +37,9 @@ private slots:
         QCOMPARE(input->rowCount(), 1);
         QCOMPARE(output->rowCount(), 1);
         QCOMPARE(vertex->rowCount(), 1);
+        QSignalSpy configChanges(&panel, &CPhysicsPanel::PhysicsConfigChanged);
+        panel.LoadPhysics(path);
+        QCOMPARE(configChanges.count(), 0);
 
         input->item(0, 2)->setText(QStringLiteral("0.8"));
         QCOMPARE(input->item(0, 2)->text(), QStringLiteral("0.8"));
