@@ -267,6 +267,11 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
     }
     if (target.isEmpty() || m_physicsDocument.isEmpty()) return false;
     updateForceDocument();
+    QString validationError;
+    if (!ValidateDocument(&validationError)) {
+        QMessageBox::warning(this, QStringLiteral("保存物理配置失败"), validationError);
+        return false;
+    }
     m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
     QSaveFile file(target);
     const QByteArray data = QJsonDocument(m_physicsDocument).toJson(QJsonDocument::Indented);
@@ -277,6 +282,66 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
     m_physicsPath = target;
     m_dirty = false;
     emit PhysicsSaved(target);
+    return true;
+}
+
+bool CPhysicsPanel::ValidateDocument(QString* error) const
+{
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    const auto numberInRange = [](const QJsonObject& object, const QString& key,
+                                  double minimum, double maximum) {
+        const QJsonValue value = object.value(key);
+        if (value.isUndefined()) return true;
+        if (!value.isDouble()) return false;
+        const double number = value.toDouble();
+        return std::isfinite(number) && number >= minimum && number <= maximum;
+    };
+    const QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
+    const QJsonObject forces = meta.value(QStringLiteral("EffectiveForces")).toObject();
+    for (const QString& forceName : {QStringLiteral("Gravity"), QStringLiteral("Wind")}) {
+        const QJsonObject force = forces.value(forceName).toObject();
+        if (!numberInRange(force, QStringLiteral("X"), -100000.0, 100000.0) ||
+            !numberInRange(force, QStringLiteral("Y"), -100000.0, 100000.0))
+            return fail(QStringLiteral("力场数值无效：%1").arg(forceName));
+    }
+    const QJsonValue settingsValue = m_physicsDocument.value(QStringLiteral("PhysicsSettings"));
+    if (!settingsValue.isArray()) return fail(QStringLiteral("PhysicsSettings 必须是数组"));
+    const QJsonArray settings = settingsValue.toArray();
+    for (int groupIndex = 0; groupIndex < settings.size(); ++groupIndex) {
+        const QJsonValue groupValue = settings.at(groupIndex);
+        if (!groupValue.isObject()) return fail(QStringLiteral("物理组 %1 不是对象").arg(groupIndex));
+        const QJsonObject group = groupValue.toObject();
+        const QJsonValue inputsValue = group.value(QStringLiteral("Input"));
+        if (!inputsValue.isUndefined() && !inputsValue.isArray()) return fail(QStringLiteral("物理组 %1 的 Input 无效").arg(groupIndex));
+        for (const QJsonValue& inputValue : inputsValue.toArray()) {
+            if (!inputValue.isObject() || !numberInRange(inputValue.toObject(), QStringLiteral("Weight"), 0.0, 1.0))
+                return fail(QStringLiteral("物理组 %1 的输入权重无效").arg(groupIndex));
+        }
+        const QJsonValue outputsValue = group.value(QStringLiteral("Output"));
+        if (!outputsValue.isUndefined() && !outputsValue.isArray()) return fail(QStringLiteral("物理组 %1 的 Output 无效").arg(groupIndex));
+        for (const QJsonValue& outputValue : outputsValue.toArray()) {
+            if (!outputValue.isObject()) return fail(QStringLiteral("物理组 %1 的输出无效").arg(groupIndex));
+            const QJsonObject output = outputValue.toObject();
+            if (!numberInRange(output, QStringLiteral("Weight"), 0.0, 1.0) ||
+                !numberInRange(output, QStringLiteral("Scale"), -100000.0, 100000.0))
+                return fail(QStringLiteral("物理组 %1 的输出数值无效").arg(groupIndex));
+        }
+        const QJsonValue verticesValue = group.value(QStringLiteral("Vertices"));
+        if (!verticesValue.isUndefined() && !verticesValue.isArray()) return fail(QStringLiteral("物理组 %1 的 Vertices 无效").arg(groupIndex));
+        const QJsonArray vertices = verticesValue.toArray();
+        for (const QJsonValue& vertexValue : vertices) {
+            if (!vertexValue.isObject()) return fail(QStringLiteral("物理组 %1 的摆锤无效").arg(groupIndex));
+            const QJsonObject vertex = vertexValue.toObject();
+            if (!numberInRange(vertex, QStringLiteral("Radius"), 0.0, 100000.0) ||
+                !numberInRange(vertex, QStringLiteral("Mobility"), 0.0, 1.0) ||
+                !numberInRange(vertex, QStringLiteral("Delay"), 0.0, 100000.0) ||
+                !numberInRange(vertex, QStringLiteral("Acceleration"), 0.0, 100000.0))
+                return fail(QStringLiteral("物理组 %1 的摆锤数值无效").arg(groupIndex));
+        }
+    }
     return true;
 }
 

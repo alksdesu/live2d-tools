@@ -33,6 +33,7 @@ private:
     void updateOutputCell(int row, int column);
     void updateVertexCell(int row, int column);
     void updateForceDocument();
+    bool ValidateDocument(QString* error) const;
 
     QLabel* m_fpsLabel;
     QTableWidget* m_groupTable;
