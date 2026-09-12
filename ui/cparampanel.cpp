@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <algorithm>
 #include <iterator>
+#include <cmath>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -317,7 +318,9 @@ void CParamPanel::ApplyValues(const QMap<QString, float>& values)
     for (int i = 0; i < m_rows.size(); ++i) {
         ParamRow& row = m_rows[i];
         if (!values.contains(row.paramId)) continue;
-        const float value = qBound(row.minVal, values.value(row.paramId), row.maxVal);
+        const float requested = values.value(row.paramId);
+        if (!std::isfinite(requested)) continue;
+        const float value = qBound(row.minVal, requested, row.maxVal);
         const int sliderValue = row.maxVal > row.minVal
             ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
             : 0;
@@ -352,7 +355,9 @@ void CParamPanel::PasteValues()
     QMap<QString, float> values;
     const QJsonObject object = document.object();
     for (const QString& key : object.keys()) {
-        if (key != QStringLiteral("format")) values.insert(key, static_cast<float>(object.value(key).toDouble()));
+        if (key == QStringLiteral("format") || !object.value(key).isDouble()) continue;
+        const double value = object.value(key).toDouble();
+        if (std::isfinite(value)) values.insert(key, static_cast<float>(value));
     }
     ApplyValues(values);
 }
