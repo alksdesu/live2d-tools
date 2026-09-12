@@ -7,6 +7,7 @@ CPsdList::CPsdList() {
     m_canvasHeight = 0;
     m_bitsPerChannel = 8;
     m_colorMode = exportColorMode::RGB;
+    document = nullptr;
 
 }
 
@@ -20,10 +21,14 @@ CPsdList::~CPsdList()
 void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
 {
 
-    m_canvasWidth = w;
-    m_canvasHeight = h;
     m_docname = name;
-    if (m_canvasWidth <= 0 || m_canvasHeight <= 0) return;
+    if (w <= 0 || h <= 0 || name.isEmpty()) return;
+    if (document) {
+        DestroyExportDocument(document, &allocator);
+        document = nullptr;
+    }
+    m_canvasWidth = static_cast<unsigned int>(w);
+    m_canvasHeight = static_cast<unsigned int>(h);
     document = CreateExportDocument(&allocator, m_canvasWidth, m_canvasHeight, m_bitsPerChannel, m_colorMode);
 
     if (cubismCompat) {
