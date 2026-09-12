@@ -82,13 +82,22 @@ void CubismModel::InitMesh()
         QString drawName(drawableId->GetString().GetRawString());
 
         int indexCount = GetDrawableVertexIndexCount(index);//点的数量
-        const short* indexArray = reinterpret_cast<const short*>(GetDrawableVertexIndices(index));//Indices
+        const csmUint16* rawIndexArray = GetDrawableVertexIndices(index);
+        const short* indexArray = reinterpret_cast<const short*>(rawIndexArray);//Indices
         int drawableVertexCount = GetDrawableVertexCount(index);
 
         const float* vertexArray =reinterpret_cast<const float*>(GetDrawableVertices(index)) ;//pos
         const float* uvArray = reinterpret_cast<const float*>(GetDrawableVertexUvs(index));//Uv
         if (indexCount < 3 || indexCount % 3 != 0 || indexCount > 3000000 ||
             drawableVertexCount <= 0 || drawableVertexCount > 1000000 || !indexArray || !vertexArray || !uvArray) continue;
+        bool indicesValid = true;
+        for (int i = 0; i < indexCount; ++i) {
+            if (rawIndexArray[i] >= drawableVertexCount || rawIndexArray[i] > 32767) {
+                indicesValid = false;
+                break;
+            }
+        }
+        if (!indicesValid) continue;
         CDrawMesh* drawMesh = new CDrawMesh(indexCount,indexArray,drawableVertexCount*2,uvArray,vertexArray);
         m_vetDrawMesh.insert(drawName,drawMesh);
     }
