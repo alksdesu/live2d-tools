@@ -428,6 +428,8 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         const int drawOrder = value.toInt();
         if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(edit.name, drawOrder);
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     }
     if (m_paramPanel) m_paramPanel->SyncHistoryState();
     if (m_inspectorPanel) m_inspectorPanel->SyncHistoryState();
@@ -1005,6 +1007,8 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged, this, markSessionDirty);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged, this,
+            [markSessionDirty](const QString&, int, const QVector<float>&){ markSessionDirty(); });
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){

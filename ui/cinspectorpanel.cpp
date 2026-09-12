@@ -2,11 +2,14 @@
 #include "live2dstruct/cmodeldocument.h"
 #include <QFormLayout>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSet>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -55,6 +58,22 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_blendLabel = new QLabel(content);
     m_maskLabel = new QLabel(content);
     m_keyformLabel = new QLabel(content);
+    m_keyformCombo = new QComboBox(content);
+    m_keyformCombo->setObjectName(QStringLiteral("keyformSelector"));
+    m_keyformCombo->setEnabled(false);
+    m_vertexTable = new QTableWidget(content);
+    m_vertexTable->setObjectName(QStringLiteral("keyformVertexTable"));
+    m_vertexTable->setColumnCount(3);
+    m_vertexTable->setHorizontalHeaderLabels({QStringLiteral("顶点"), QStringLiteral("X"), QStringLiteral("Y")});
+    m_vertexTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_vertexTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_vertexTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_vertexTable->verticalHeader()->setVisible(false);
+    m_vertexTable->setSelectionBehavior(QAbstractItemView::SelectItems);
+    m_vertexTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                   QAbstractItemView::SelectedClicked);
+    m_vertexTable->setMinimumHeight(120);
+    m_vertexTable->setMaximumHeight(280);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -76,9 +95,17 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("混合 / 剔除"), m_blendLabel);
     form->addRow(QStringLiteral("Clipping"), m_maskLabel);
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
+    form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
+    form->addRow(QStringLiteral("顶点位置"), m_vertexTable);
     layout->addLayout(form);
     layout->addStretch(1);
     setWidget(content);
+    connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int){
+        if (!m_updatingKeyform) RebuildKeyformTable();
+    });
+    connect(m_vertexTable, &QTableWidget::cellChanged, this, [this](int row, int column){
+        if (!m_updatingKeyform) ApplyKeyformCellEdit(row, column);
+    });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -209,6 +236,11 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_selectionNames = names;
     m_selectionTypes = types;
     m_emptyLabel->setVisible(true);
+    m_updatingKeyform = true;
+    m_keyformCombo->clear();
+    m_keyformCombo->setEnabled(false);
+    m_vertexTable->setRowCount(0);
+    m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
     bool anyVisible = false;
@@ -278,6 +310,65 @@ void CInspectorPanel::RefreshSelection()
     else if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
 
+void CInspectorPanel::RebuildKeyformTable()
+{
+    m_updatingKeyform = true;
+    m_vertexTable->setRowCount(0);
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() || keyformIndex < 0) {
+        m_vertexTable->setEnabled(false);
+        m_updatingKeyform = false;
+        return;
+    }
+    const QVector<float> positions = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    if (positions.isEmpty() || positions.size() % 2 != 0) {
+        m_vertexTable->setEnabled(false);
+        m_updatingKeyform = false;
+        return;
+    }
+    m_vertexTable->setRowCount(positions.size() / 2);
+    for (int row = 0; row < m_vertexTable->rowCount(); ++row) {
+        auto* indexItem = new QTableWidgetItem(QString::number(row));
+        indexItem->setFlags(indexItem->flags() & ~Qt::ItemIsEditable);
+        m_vertexTable->setItem(row, 0, indexItem);
+        m_vertexTable->setItem(row, 1, new QTableWidgetItem(QString::number(positions[row * 2], 'f', 6)));
+        m_vertexTable->setItem(row, 2, new QTableWidgetItem(QString::number(positions[row * 2 + 1], 'f', 6)));
+    }
+    m_vertexTable->setEnabled(true);
+    m_updatingKeyform = false;
+}
+
+void CInspectorPanel::ApplyKeyformCellEdit(int row, int column)
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        (column != 1 && column != 2) || row < 0 || row >= m_vertexTable->rowCount()) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    if (keyformIndex < 0 || before.size() != m_vertexTable->rowCount() * 2) return;
+    bool ok = false;
+    const double parsed = m_vertexTable->item(row, column)->text().toDouble(&ok);
+    if (!ok || !std::isfinite(parsed)) {
+        m_updatingKeyform = true;
+        m_vertexTable->item(row, column)->setText(QString::number(before[row * 2 + column - 1], 'f', 6));
+        m_updatingKeyform = false;
+        return;
+    }
+    QVector<float> after = before;
+    after[row * 2 + column - 1] = static_cast<float>(parsed);
+    if (qFuzzyCompare(before[row * 2 + column - 1] + 1.0f, after[row * 2 + column - 1] + 1.0f)) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex};
+    if (!m_document->ExecuteEdit(command)) {
+        m_updatingKeyform = true;
+        m_vertexTable->item(row, column)->setText(QString::number(before[row * 2 + column - 1], 'f', 6));
+        m_updatingKeyform = false;
+        return;
+    }
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
@@ -295,6 +386,11 @@ void CInspectorPanel::ClearSelection()
     m_drawOrderSpin->setValue(0);
     m_drawOrderSpin->setEnabled(false);
     m_updatingVisibility = false;
+    m_updatingKeyform = true;
+    m_keyformCombo->clear();
+    m_keyformCombo->setEnabled(false);
+    m_vertexTable->setRowCount(0);
+    m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
@@ -311,6 +407,8 @@ void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forwar
         emit DrawableOpacityChanged(edit.name, value.toFloat());
     } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
         emit DrawableDrawOrderChanged(edit.name, value.toInt());
+    } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
+        emit DrawableKeyformPositionsChanged(edit.name, edit.index, value.value<QVector<float>>());
     }
     if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
@@ -377,6 +475,12 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_visibilityCheck->setEnabled(true);
     m_opacitySpin->setEnabled(false);
     m_drawOrderSpin->setEnabled(false);
+    m_updatingKeyform = true;
+    m_keyformCombo->clear();
+    m_keyformCombo->setEnabled(false);
+    m_vertexTable->setRowCount(0);
+    m_vertexTable->setEnabled(false);
+    m_updatingKeyform = false;
 
     if (type == QLatin1String("artmesh")) {
         for (const auto& drawable : m_document->Drawables()) {
@@ -405,6 +509,14 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_blendLabel->setText(QStringLiteral("%1 / %2").arg(blend, drawable.culling ? QStringLiteral("启用") : QStringLiteral("关闭")));
             m_maskLabel->setText(drawable.maskIndices.isEmpty() ? QStringLiteral("无") : QString::number(drawable.maskIndices.size()));
             m_keyformLabel->setText(QString::number(drawable.keyforms.size()));
+            m_updatingKeyform = true;
+            for (int keyformIndex = 0; keyformIndex < drawable.keyforms.size(); ++keyformIndex) {
+                m_keyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
+            }
+            m_keyformCombo->setEnabled(!drawable.keyforms.isEmpty());
+            if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
+            m_updatingKeyform = false;
+            RebuildKeyformTable();
             return;
         }
     } else if (type == QLatin1String("part")) {

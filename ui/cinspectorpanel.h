@@ -2,6 +2,7 @@
 #define CINSPECTORPANEL_H
 
 #include <QDockWidget>
+#include <QVector>
 
 namespace live2dstruct {
 class CModelDocument;
@@ -12,6 +13,8 @@ class QLabel;
 class QCheckBox;
 class QDoubleSpinBox;
 class QSpinBox;
+class QComboBox;
+class QTableWidget;
 
 class CInspectorPanel : public QDockWidget
 {
@@ -35,11 +38,14 @@ signals:
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
     void DrawableOpacityChanged(const QString& name, float opacity);
     void DrawableDrawOrderChanged(const QString& name, int drawOrder);
+    void DrawableKeyformPositionsChanged(const QString& name, int keyformIndex, const QVector<float>& positions);
     void HistoryChanged(bool canUndo, bool canRedo);
 
 private:
     void showModelObject(const QString& name, const QString& type);
     void EmitEdit(const live2dstruct::CModelEdit& edit, bool forward);
+    void RebuildKeyformTable();
+    void ApplyKeyformCellEdit(int row, int column);
 
     live2dstruct::CModelDocument* m_document = nullptr;
     QString m_selectionName;
@@ -55,7 +61,10 @@ private:
     QCheckBox* m_visibilityCheck = nullptr;
     QDoubleSpinBox* m_opacitySpin = nullptr;
     QSpinBox* m_drawOrderSpin = nullptr;
+    QComboBox* m_keyformCombo = nullptr;
+    QTableWidget* m_vertexTable = nullptr;
     bool m_updatingVisibility = false;
+    bool m_updatingKeyform = false;
     QLabel* m_geometryLabel = nullptr;
     QLabel* m_textureLabel = nullptr;
     QLabel* m_drawOrderLabel = nullptr;

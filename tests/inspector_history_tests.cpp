@@ -2,8 +2,10 @@
 #include "live2dstruct/cmodeldocument.h"
 #include <QtTest>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
+#include <QTableWidget>
 
 class InspectorHistoryTests : public QObject
 {
@@ -49,6 +51,21 @@ private slots:
         QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), initialDrawOrder);
         panel.Redo();
         QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), changedDrawOrder);
+
+        auto* keyformSelector = panel.findChild<QComboBox*>("keyformSelector");
+        auto* vertexTable = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(keyformSelector && vertexTable);
+        QVERIFY(keyformSelector->count() > 0);
+        QVERIFY(vertexTable->rowCount() > 0);
+        const QVector<float> keyformBefore = document.DrawableKeyformPositions(id, 0);
+        QVERIFY(!keyformBefore.isEmpty());
+        const float editedX = keyformBefore.first() + 0.5f;
+        vertexTable->item(0, 1)->setText(QString::number(editedX, 'f', 6));
+        QVERIFY(qAbs(document.DrawableKeyformPositions(id, 0).first() - editedX) < 0.00001f);
+        panel.Undo();
+        QVERIFY(qAbs(document.DrawableKeyformPositions(id, 0).first() - keyformBefore.first()) < 0.00001f);
+        panel.Redo();
+        QVERIFY(qAbs(document.DrawableKeyformPositions(id, 0).first() - editedX) < 0.00001f);
 
         const QString secondId = document.Drawables().at(1).id;
         const float secondOpacity = document.DrawableOpacity(document.Drawables().at(1));
