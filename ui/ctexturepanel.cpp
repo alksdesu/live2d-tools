@@ -213,6 +213,7 @@ void CTexturePanel::LoadTextures(const QMap<int, QString>& texMap, const QString
 {
     m_textures = texMap;
     m_meshes.clear();
+    m_runtimeRenderOrder.clear();
     m_selectedMesh.clear();
     m_currentTexKey = -1;
     m_selector->clear();
@@ -252,6 +253,16 @@ void CTexturePanel::HighlightMesh(const QString& meshName)
         break;
     }
     if (m_overlay) m_overlay->SetSelected(meshName);
+}
+
+void CTexturePanel::SetRenderOrder(const QStringList& orderedNames)
+{
+    QMap<QString, int> next;
+    for (int i = 0; i < orderedNames.size(); ++i) {
+        if (!next.contains(orderedNames[i])) next.insert(orderedNames[i], i);
+    }
+    if (next == m_runtimeRenderOrder) return;
+    m_runtimeRenderOrder = next;
 }
 
 void CTexturePanel::buildUvMeshes(const QString& mocPath)
@@ -392,6 +403,8 @@ void CTexturePanel::showTexture(int selectorIndex)
 QString CTexturePanel::hitTest(const QPointF& scenePos) const
 {
     // 重心坐标点内测试；后添加的 mesh 渲染顺序靠上，倒序遍历优先命中上层
+    QString hit;
+    int hitOrder = -1;
     for (int m = m_meshes.size() - 1; m >= 0; --m) {
         const CAtlasMeshUv& mesh = m_meshes[m];
         if (mesh.textureNo != m_currentTexKey) continue;
@@ -410,11 +423,16 @@ QString CTexturePanel::hitTest(const QPointF& scenePos) const
             const double w1 = ((c.y() - a.y()) * (scenePos.x() - c.x()) + (a.x() - c.x()) * (scenePos.y() - c.y())) / d;
             const double w2 = 1.0 - w0 - w1;
             if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
-                return mesh.name;
+                const int order = m_runtimeRenderOrder.value(mesh.name, m);
+                if (order >= hitOrder) {
+                    hit = mesh.name;
+                    hitOrder = order;
+                }
+                break;
             }
         }
     }
-    return QString();
+    return hit;
 }
 
 void CTexturePanel::onSceneClicked(const QPointF& scenePos)

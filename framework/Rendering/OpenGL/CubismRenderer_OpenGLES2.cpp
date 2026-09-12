@@ -568,6 +568,10 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
         if (id) names.append(QString::fromUtf8(id->GetString().GetRawString()));
     }
     GetModel()->GetMeshMap()->SetRenderOrder(names);
+    if (const QWidget* window = LAppDelegate::GetInstance()->GetWindow()) {
+        QMetaObject::invokeMethod(const_cast<QWidget*>(window), "PublishRenderOrder",
+                                  Qt::DirectConnection, Q_ARG(QStringList, names));
+    }
 
 
     if(LAppDelegate::GetInstance()->IsOffScreen() && LAppDelegate::GetInstance()->m_IsPrintFenzu){

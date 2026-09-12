@@ -60,6 +60,7 @@ public:
 
     // 外部选中联动：高亮该 mesh 并切换到其所属图集
     void HighlightMesh(const QString& meshName);
+    void SetRenderOrder(const QStringList& orderedNames);
 
 signals:
     // 点击图集命中 ArtMesh（用于联动树面板与主视图高亮）
@@ -92,6 +93,7 @@ private:
     QVector<CAtlasMeshUv> m_meshes;     // 全部 mesh 的 UV 网格
     int m_currentTexKey = -1;
     QString m_selectedMesh;
+    QMap<QString, int> m_runtimeRenderOrder;
 };
 
 #endif // CTEXTUREPANEL_H

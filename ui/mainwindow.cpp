@@ -906,6 +906,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_texturePanel, &CTexturePanel::AtlasMeshPicked, m_openglwindows, &OpengGlForm::do_ShowMesh);
     // 反向：主视图点击 mesh → 纹理面板高亮
     connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_texturePanel, &CTexturePanel::HighlightMesh);
+    connect(m_openglwindows, &OpengGlForm::RenderOrderChanged, m_texturePanel, &CTexturePanel::SetRenderOrder);
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_texturePanel, &CTexturePanel::HighlightMesh);
 
     // 信号连接：树面板可见性 → OpenGL 渲染控制

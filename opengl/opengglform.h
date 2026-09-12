@@ -68,10 +68,12 @@ public slots:
                                   const QList<float>& maxVals, const QList<float>& defaultVals);
     void do_ResetView();
     void SetViewState(float scale, const QVector2D& position);
+    void PublishRenderOrder(const QStringList& names);
 
 
 signals:
     void SendSelectMesh(const QString& artName);
+    void RenderOrderChanged(const QStringList& names);
 
 protected:
     void initializeGL() override;
@@ -93,6 +95,7 @@ protected:
 
     CEditState m_ceditstate;
     CSettingConfig m_config;
+    QStringList m_lastRenderOrder;
     std::vector<C2DTreeNode*> m_mapWarpNode;
     QString m_currentModelJson;
 

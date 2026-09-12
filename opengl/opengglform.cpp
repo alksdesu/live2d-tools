@@ -239,6 +239,13 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
     qDebug() << "[Visibility]" << type << name << (visible ? "show" : "hide");
 }
 
+void OpengGlForm::PublishRenderOrder(const QStringList& names)
+{
+    if (names == m_lastRenderOrder) return;
+    m_lastRenderOrder = names;
+    emit RenderOrderChanged(names);
+}
+
 void OpengGlForm::do_SetDrawableOpacity(const QString& name, float opacity)
 {
     if (name.isEmpty() || !std::isfinite(opacity)) return;
