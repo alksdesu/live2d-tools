@@ -334,6 +334,10 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     QSize canvasSize = CTextureExtractor::GetCanvasPixelSize(sectionTable.canvas_info);
     int canvasW = canvasSize.width();
     int canvasH = canvasSize.height();
+    if (canvasW <= 0 || canvasH <= 0) {
+        qWarning("StartTextureExtraction: 画布尺寸无效");
+        return false;
+    }
 
     // 提取所有图层
     QVector<ExtractedLayer> layers = extractor.ExtractAll(&sectionTable, includeHidden);
