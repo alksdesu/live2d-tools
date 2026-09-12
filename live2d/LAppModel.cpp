@@ -25,6 +25,7 @@
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
+#include <cmath>
 
 using namespace Live2D::Cubism::Framework;
 using namespace Live2D::Cubism::Framework::DefaultParameterId;
@@ -411,6 +412,7 @@ void LAppModel::ReleaseExpressions()
 
 void LAppModel::Update()
 {
+    if (!_model) return;
     // 快照模式：只应用已保存的参数，跳过所有自动效果
     if (_snapshotMode) {
         _model->LoadParameters();
@@ -502,7 +504,7 @@ void LAppModel::Update()
 
 void LAppModel::UpdateParaValue(const QString &parId, float value,bool IsInit)
 {
-    if(!m_mapParaToIndex.contains(parId)) return;
+    if(!_model || !std::isfinite(value) || !m_mapParaToIndex.contains(parId)) return;
     int Id = m_mapParaToIndex[parId];
 
     // 先恢复干净的快照，修改目标参数，再保存回去
@@ -519,6 +521,8 @@ void LAppModel::UpdateParaValue(const QString &parId, float value,bool IsInit)
 
 CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt32 no, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
 {
+    if (!_modelSetting || !_motionManager || !group || no < 0 || no >= _modelSetting->GetMotionCount(group))
+        return InvalidMotionQueueEntryHandleValue;
     if (priority == PriorityForce)
     {
         _motionManager->SetReservePriority(priority);
@@ -595,6 +599,7 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
 
 CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
 {
+    if (!_modelSetting || !group) return InvalidMotionQueueEntryHandleValue;
     if (_modelSetting->GetMotionCount(group) == 0)
     {
         return InvalidMotionQueueEntryHandleValue;
@@ -635,6 +640,7 @@ void LAppModel::Draw(CubismMatrix44& matrix)
 
 csmBool LAppModel::HitTest(const csmChar* hitAreaName, csmFloat32 x, csmFloat32 y)
 {
+    if (!_model || !_modelSetting || !hitAreaName) return false;
     // 透明時は当たり判定なし。
     if (_opacity < 1)
     {
@@ -654,6 +660,7 @@ csmBool LAppModel::HitTest(const csmChar* hitAreaName, csmFloat32 x, csmFloat32 
 
 void LAppModel::SetExpression(const csmChar* expressionID)
 {
+    if (!_expressionManager || !expressionID) return;
     ACubismMotion* motion = _expressions[expressionID];
     if (_debugMode)
     {
@@ -787,7 +794,7 @@ QRectF LAppModel::GetCurModelRectF()
 
 void LAppModel::SetPhysicsGravity(float x, float y)
 {
-    if(_physics){
+    if(_physics && std::isfinite(x) && std::isfinite(y)){
         auto opt = _physics->GetOptions();
         opt.Gravity.X = x;
         opt.Gravity.Y = y;
@@ -803,7 +810,7 @@ void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringL
 
 void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 {
-    if(_physicsDragParamIds.isEmpty()) return;
+    if(!_model || _physicsDragParamIds.isEmpty() || !std::isfinite(dx) || !std::isfinite(dy)) return;
     for(int i = 0; i < _physicsDragParamIds.size(); i++){
         const CubismId* paramId = CubismFramework::GetIdManager()->GetId(_physicsDragParamIds[i].toUtf8().constData());
         float value = 0;
@@ -817,7 +824,7 @@ void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 
 void LAppModel::SetPhysicsWind(float x, float y)
 {
-    if(_physics){
+    if(_physics && std::isfinite(x) && std::isfinite(y)){
         auto opt = _physics->GetOptions();
         opt.Wind.X = x;
         opt.Wind.Y = y;
@@ -827,6 +834,7 @@ void LAppModel::SetPhysicsWind(float x, float y)
 
 void LAppModel::SetPartVisible(const QString& partId, bool visible)
 {
+    if (!_model) return;
     if(visible){
         _hiddenPartIds.remove(partId);
         CubismIdHandle id = CubismFramework::GetIdManager()->GetId(partId.toUtf8().constData());
@@ -839,15 +847,27 @@ void LAppModel::SetPartVisible(const QString& partId, bool visible)
 void LAppModel::SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                        const QList<float>& maxVals, const QList<float>& defaultVals)
 {
-    _deformerDragParamIds = paramIds;
-    _deformerDragMinVals = minVals;
-    _deformerDragMaxVals = maxVals;
-    _deformerDragDefaultVals = defaultVals;
+    _deformerDragParamIds.clear();
+    _deformerDragMinVals.clear();
+    _deformerDragMaxVals.clear();
+    _deformerDragDefaultVals.clear();
+    const int count = qMin(paramIds.size(), qMin(minVals.size(), qMin(maxVals.size(), defaultVals.size())));
+    for (int i = 0; i < count; ++i) {
+        if (paramIds[i].isEmpty() || !std::isfinite(minVals[i]) || !std::isfinite(maxVals[i]) ||
+            !std::isfinite(defaultVals[i]) || minVals[i] > maxVals[i]) continue;
+        _deformerDragParamIds.append(paramIds[i]);
+        _deformerDragMinVals.append(minVals[i]);
+        _deformerDragMaxVals.append(maxVals[i]);
+        _deformerDragDefaultVals.append(qBound(minVals[i], defaultVals[i], maxVals[i]));
+    }
 }
 
 void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
 {
-    if(_deformerDragParamIds.isEmpty()) return;
+    if(!_model || _deformerDragParamIds.isEmpty() ||
+       _deformerDragParamIds.size() != _deformerDragMinVals.size() ||
+       _deformerDragParamIds.size() != _deformerDragMaxVals.size() ||
+       !std::isfinite(viewX) || !std::isfinite(viewY)) return;
 
     _deformerDragActive = true;
     _deformerDragValues.resize(_deformerDragParamIds.size());
@@ -876,7 +896,7 @@ void LAppModel::ProbeParamsForArtMeshes(const QStringList& artMeshNames)
     _deformerDragMaxVals.clear();
     _deformerDragDefaultVals.clear();
 
-    if(artMeshNames.isEmpty()) return;
+    if(!_model || artMeshNames.isEmpty()) return;
 
     // 找到目标 ArtMesh 的 drawable 索引
     QVector<int> targetIndices;
