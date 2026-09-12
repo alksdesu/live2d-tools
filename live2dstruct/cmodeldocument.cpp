@@ -328,10 +328,10 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
     if (edit.name.isEmpty() || edit.before == edit.after) return false;
     if (!ApplyEdit(edit, true)) return false;
     if (m_editIndex < m_editHistory.size()) m_editHistory.resize(m_editIndex);
-    if (!m_editHistory.isEmpty() && m_editIndex == m_editHistory.size()) {
+    if (edit.coalesce && !m_editHistory.isEmpty() && m_editIndex == m_editHistory.size()) {
         CModelEdit& last = m_editHistory.last();
         if (last.name == edit.name && last.type == edit.type && last.field == edit.field &&
-            last.index == edit.index && last.after == edit.before) {
+            last.index == edit.index && last.coalesce && last.after == edit.before) {
             last.after = edit.after;
             return true;
         }

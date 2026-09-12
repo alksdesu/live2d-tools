@@ -6,6 +6,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QPushButton>
 
 class InspectorHistoryTests : public QObject
 {
@@ -66,6 +67,23 @@ private slots:
         QVERIFY(qAbs(document.DrawableKeyformPositions(id, 0).first() - keyformBefore.first()) < 0.00001f);
         panel.Redo();
         QVERIFY(qAbs(document.DrawableKeyformPositions(id, 0).first() - editedX) < 0.00001f);
+        auto* mirrorHorizontal = panel.findChild<QPushButton*>("mirrorHorizontal");
+        QVERIFY(mirrorHorizontal && mirrorHorizontal->isEnabled());
+        const QVector<float> mirrorBefore = document.DrawableKeyformPositions(id, 0);
+        float minX = mirrorBefore.first();
+        float maxX = minX;
+        for (int i = 0; i < mirrorBefore.size(); i += 2) {
+            minX = qMin(minX, mirrorBefore[i]);
+            maxX = qMax(maxX, mirrorBefore[i]);
+        }
+        const float mirrorCenter = (minX + maxX) * 0.5f;
+        mirrorHorizontal->click();
+        const QVector<float> mirrorAfter = document.DrawableKeyformPositions(id, 0);
+        QVERIFY(qAbs(mirrorAfter.first() - (2.0f * mirrorCenter - mirrorBefore.first())) < 0.00001f);
+        panel.Undo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), mirrorBefore);
+        panel.Redo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), mirrorAfter);
 
         const QString secondId = document.Drawables().at(1).id;
         const float secondOpacity = document.DrawableOpacity(document.Drawables().at(1));

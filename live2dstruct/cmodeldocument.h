@@ -104,6 +104,7 @@ struct CModelEdit
     QVariant before;
     QVariant after;
     int index = -1;
+    bool coalesce = true;
 };
 
 class CModelDocument

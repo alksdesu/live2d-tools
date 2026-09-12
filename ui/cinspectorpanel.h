@@ -15,6 +15,7 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QComboBox;
 class QTableWidget;
+class QPushButton;
 
 class CInspectorPanel : public QDockWidget
 {
@@ -46,6 +47,7 @@ private:
     void EmitEdit(const live2dstruct::CModelEdit& edit, bool forward);
     void RebuildKeyformTable();
     void ApplyKeyformCellEdit(int row, int column);
+    void MirrorKeyform(bool horizontal);
 
     live2dstruct::CModelDocument* m_document = nullptr;
     QString m_selectionName;
@@ -63,6 +65,8 @@ private:
     QSpinBox* m_drawOrderSpin = nullptr;
     QComboBox* m_keyformCombo = nullptr;
     QTableWidget* m_vertexTable = nullptr;
+    QPushButton* m_mirrorHorizontal = nullptr;
+    QPushButton* m_mirrorVertical = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QLabel* m_geometryLabel = nullptr;
