@@ -7,6 +7,20 @@ set(CMAKE_AUTOMOC ON)
 include(CTest)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL Test)
 
+if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
+    if(CMAKE_OSX_SYSROOT)
+        set(_live2d_macos_sdk "${CMAKE_OSX_SYSROOT}")
+    else()
+        execute_process(COMMAND xcrun --sdk macosx --show-sdk-path
+                        OUTPUT_VARIABLE _live2d_macos_sdk OUTPUT_STRIP_TRAILING_WHITESPACE)
+    endif()
+    if(NOT EXISTS "${_live2d_macos_sdk}/System/Library/Frameworks/AGL.framework")
+        get_target_property(_wrap_opengl_links WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+        list(FILTER _wrap_opengl_links EXCLUDE REGEX "(^|[ /])AGL($|\\.framework$)")
+        set_property(TARGET WrapOpenGL::WrapOpenGL PROPERTY INTERFACE_LINK_LIBRARIES "${_wrap_opengl_links}")
+    endif()
+endif()
+
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
     live2dstruct/cdraworder.cpp
@@ -57,6 +71,12 @@ if(BUILD_TESTING)
     target_link_libraries(draw_order_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(draw_order_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME draw_order COMMAND draw_order_tests)
+    add_executable(inspector_history_tests tests/inspector_history_tests.cpp)
+    target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp)
+    target_link_libraries(inspector_history_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(inspector_history_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME inspector_history COMMAND inspector_history_tests)
+    set_tests_properties(inspector_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(WIN32)
         add_library(psd_data STATIC
             psd/cpsdlist.cpp

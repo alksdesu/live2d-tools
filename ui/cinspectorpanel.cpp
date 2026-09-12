@@ -81,21 +81,43 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     setWidget(content);
     connect(m_visibilityCheck, &QCheckBox::toggled, this, [this](bool visible){
         if (m_updatingVisibility || !m_document || m_selectionName.isEmpty()) return;
+        bool before = visible;
+        if (m_selectionType == QLatin1String("part")) {
+            for (const auto& part : m_document->Parts()) if (part.id == m_selectionName) { before = part.visible; break; }
+        } else if (m_selectionType == QLatin1String("warp") || m_selectionType == QLatin1String("rotation")) {
+            for (const auto& deformer : m_document->Deformers()) if (deformer.id == m_selectionName) { before = deformer.visible; break; }
+        } else if (m_selectionType == QLatin1String("artmesh")) {
+            for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = drawable.visible; break; }
+        }
+        if (before == visible) return;
         bool changed = false;
         if (m_selectionType == QLatin1String("part")) changed = m_document->SetPartVisible(m_selectionName, visible);
         else if (m_selectionType == QLatin1String("warp") || m_selectionType == QLatin1String("rotation")) changed = m_document->SetDeformerVisible(m_selectionName, visible);
         else if (m_selectionType == QLatin1String("artmesh")) changed = m_document->SetDrawableVisible(m_selectionName, visible);
-        if (changed) emit VisibilityChanged(m_selectionName, m_selectionType, visible);
+        if (changed) {
+            if (!m_replaying) PushEdit(m_selectionName, m_selectionType, Edit::Visibility, before, visible);
+            emit VisibilityChanged(m_selectionName, m_selectionType, visible);
+        }
     });
     connect(m_opacitySpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value){
         if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
-        if (m_document->SetDrawableOpacity(m_selectionName, static_cast<float>(value)))
+        float before = static_cast<float>(value);
+        for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = m_document->DrawableOpacity(drawable); break; }
+        if (qFuzzyCompare(before + 1.0f, static_cast<float>(value) + 1.0f)) return;
+        if (m_document->SetDrawableOpacity(m_selectionName, static_cast<float>(value))) {
+            if (!m_replaying) PushEdit(m_selectionName, m_selectionType, Edit::Opacity, before, static_cast<float>(value));
             emit DrawableOpacityChanged(m_selectionName, static_cast<float>(value));
+        }
     });
     connect(m_drawOrderSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value){
         if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
-        if (m_document->SetDrawableDrawOrder(m_selectionName, value))
+        int before = value;
+        for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = qRound(m_document->DrawableDrawOrder(drawable)); break; }
+        if (before == value) return;
+        if (m_document->SetDrawableDrawOrder(m_selectionName, value)) {
+            if (!m_replaying) PushEdit(m_selectionName, m_selectionType, Edit::DrawOrder, before, value);
             emit DrawableDrawOrderChanged(m_selectionName, value);
+        }
     });
     ClearSelection();
 }
@@ -163,6 +185,72 @@ void CInspectorPanel::ClearSelection()
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         label->clear();
     }
+}
+
+void CInspectorPanel::PushEdit(const QString& name, const QString& type, int field,
+                               const QVariant& before, const QVariant& after)
+{
+    if (before == after) return;
+    if (m_historyIndex < m_history.size()) m_history.resize(m_historyIndex);
+    if (!m_history.isEmpty() && m_historyIndex == m_history.size()) {
+        Edit& last = m_history.last();
+        if (last.name == name && last.type == type && last.field == field && last.after == before) {
+            last.after = after;
+            emit HistoryChanged(true, false);
+            return;
+        }
+    }
+    m_history.append({name, type, field, before, after});
+    m_historyIndex = m_history.size();
+    emit HistoryChanged(true, false);
+}
+
+void CInspectorPanel::ApplyEdit(const QString& name, const QString& type, int field, const QVariant& value)
+{
+    if (!m_document) return;
+    if (field == Edit::Visibility) {
+        const bool visible = value.toBool();
+        if ((type == QLatin1String("part") && m_document->SetPartVisible(name, visible)) ||
+            ((type == QLatin1String("warp") || type == QLatin1String("rotation")) && m_document->SetDeformerVisible(name, visible)) ||
+            (type == QLatin1String("artmesh") && m_document->SetDrawableVisible(name, visible)))
+            emit VisibilityChanged(name, type, visible);
+    } else if (field == Edit::Opacity) {
+        const float opacity = value.toFloat();
+        if (m_document->SetDrawableOpacity(name, opacity)) emit DrawableOpacityChanged(name, opacity);
+    } else if (field == Edit::DrawOrder) {
+        const int drawOrder = value.toInt();
+        if (m_document->SetDrawableDrawOrder(name, drawOrder)) emit DrawableDrawOrderChanged(name, drawOrder);
+    }
+    if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
+}
+
+void CInspectorPanel::ClearHistory()
+{
+    m_history.clear();
+    m_historyIndex = 0;
+    emit HistoryChanged(false, false);
+}
+
+void CInspectorPanel::Undo()
+{
+    if (m_historyIndex <= 0) return;
+    const Edit edit = m_history[m_historyIndex - 1];
+    m_replaying = true;
+    ApplyEdit(edit.name, edit.type, edit.field, edit.before);
+    m_replaying = false;
+    --m_historyIndex;
+    emit HistoryChanged(m_historyIndex > 0, m_historyIndex < m_history.size());
+}
+
+void CInspectorPanel::Redo()
+{
+    if (m_historyIndex >= m_history.size()) return;
+    const Edit edit = m_history[m_historyIndex];
+    m_replaying = true;
+    ApplyEdit(edit.name, edit.type, edit.field, edit.after);
+    m_replaying = false;
+    ++m_historyIndex;
+    emit HistoryChanged(m_historyIndex > 0, m_historyIndex < m_history.size());
 }
 
 void CInspectorPanel::showModelObject(const QString& name, const QString& type)

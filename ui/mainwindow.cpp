@@ -357,6 +357,10 @@ void MainWindow::on_actionLoadSession_triggered()
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
         m_applyingSession = false;
+        if (m_inspectorPanel) m_inspectorPanel->ClearHistory();
+        m_historySource = HistorySource::None;
+        if (m_undoAction) m_undoAction->setEnabled(false);
+        if (m_redoAction) m_redoAction->setEnabled(false);
         m_sessionDirty = false;
         setWindowTitle(QStringLiteral("live2d2psd"));
         statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
@@ -761,6 +765,7 @@ void MainWindow::RestDock(const QString &name)
     m_paramPanel = new CParamPanel(this);
     addDockWidget(Qt::RightDockWidgetArea, m_paramPanel);
     connect(m_paramPanel, &CParamPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
+        m_historySource = HistorySource::Parameters;
         if (m_undoAction) m_undoAction->setEnabled(canUndo);
         if (m_redoAction) m_redoAction->setEnabled(canRedo);
         if (canUndo) {
@@ -769,8 +774,6 @@ void MainWindow::RestDock(const QString &name)
             statusBar()->showMessage(QStringLiteral("有未保存的参数修改"));
         }
     });
-    connect(m_undoAction, &QAction::triggered, m_paramPanel, &CParamPanel::Undo);
-    connect(m_redoAction, &QAction::triggered, m_paramPanel, &CParamPanel::Redo);
 
     m_physicsPanel = new CPhysicsPanel(this);
     addDockWidget(Qt::RightDockWidgetArea, m_physicsPanel);
@@ -793,6 +796,24 @@ void MainWindow::RestDock(const QString &name)
     addDockWidget(Qt::RightDockWidgetArea, m_inspectorPanel);
     tabifyDockWidget(m_paramPanel, m_inspectorPanel);
     m_inspectorPanel->SetDocument(&m_document);
+    connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
+        m_historySource = HistorySource::Inspector;
+        if (m_undoAction) m_undoAction->setEnabled(canUndo);
+        if (m_redoAction) m_redoAction->setEnabled(canRedo);
+        if (canUndo && !m_applyingSession) {
+            m_sessionDirty = true;
+            setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+            statusBar()->showMessage(QStringLiteral("有未保存的属性修改"));
+        }
+    });
+    connect(m_undoAction, &QAction::triggered, this, [this](){
+        if (m_historySource == HistorySource::Inspector && m_inspectorPanel) m_inspectorPanel->Undo();
+        else if (m_paramPanel) m_paramPanel->Undo();
+    });
+    connect(m_redoAction, &QAction::triggered, this, [this](){
+        if (m_historySource == HistorySource::Inspector && m_inspectorPanel) m_inspectorPanel->Redo();
+        else if (m_paramPanel) m_paramPanel->Redo();
+    });
 
     m_diagnosticsPanel = new CModelDiagnosticsPanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_diagnosticsPanel);
