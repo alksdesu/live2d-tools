@@ -144,7 +144,6 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     setObjectName(QStringLiteral("texturePanel"));
     QWidget* wrapper = new QWidget(this);
     wrapper->setObjectName(QStringLiteral("texturePanelRoot"));
-    wrapper->setObjectName("texPanelRoot");
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
     mainLayout->setContentsMargins(8, 8, 8, 8);
     mainLayout->setSpacing(6);
