@@ -21,6 +21,7 @@ public:
 
 signals:
     void PlayMotion(const QString& group, int no);
+    void StopMotions();
     void ApplyExpression(const QString& name);
     void AutoEyeBlinkChanged(bool enabled);
     void AutoBreathChanged(bool enabled);

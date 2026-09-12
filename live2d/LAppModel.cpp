@@ -605,6 +605,11 @@ CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, 
     return StartMotion(group, no, priority, onFinishedMotionHandler);
 }
 
+void LAppModel::StopAllMotions()
+{
+    if (_motionManager) _motionManager->StopAllMotions();
+}
+
 void LAppModel::DoDraw()
 {
     if (_model == NULL)

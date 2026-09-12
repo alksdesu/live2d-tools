@@ -1065,6 +1065,11 @@ void MainWindow::RestDock(const QString &name)
         }
     });
 
+    connect(m_motionPanel, &CMotionPanel::StopMotions, this, [](){
+        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)) mgr->GetModel(0)->StopAllMotions();
+    });
+
     connect(m_motionPanel, &CMotionPanel::ApplyExpression, this, [](const QString& name){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(mgr && mgr->GetModelNum() > 0){

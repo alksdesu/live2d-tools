@@ -28,6 +28,7 @@ public:
     void UpdateParaValue(const QString& parId,float value,bool IsInit);
     void Draw(Csm::CubismMatrix44& matrix);
     Csm::CubismMotionQueueEntryHandle StartMotion(const Csm::csmChar* group, Csm::csmInt32 no, Csm::csmInt32 priority, Csm::ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
+    void StopAllMotions();
     Csm::CubismMotionQueueEntryHandle StartRandomMotion(const Csm::csmChar* group, Csm::csmInt32 priority, Csm::ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
     void SetExpression(const Csm::csmChar* expressionID);
     void SetRandomExpression();

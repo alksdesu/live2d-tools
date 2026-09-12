@@ -35,7 +35,9 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     motionLayout->addWidget(m_motionList);
     QPushButton* playBtn = new QPushButton("▶ 播放");
     playBtn->setObjectName("primaryBtn");
+    QPushButton* stopBtn = new QPushButton("■ 停止");
     motionLayout->addWidget(playBtn);
+    motionLayout->addWidget(stopBtn);
     splitter->addWidget(motionWidget);
 
     connect(playBtn, &QPushButton::clicked, this, [this](){
@@ -44,6 +46,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
             emit PlayMotion(m_motionEntries[row].group, m_motionEntries[row].no);
         }
     });
+    connect(stopBtn, &QPushButton::clicked, this, &CMotionPanel::StopMotions);
 
     connect(m_motionList, &QListWidget::itemDoubleClicked, this, [this](){
         int row = m_motionList->currentRow();
