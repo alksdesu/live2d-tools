@@ -125,8 +125,10 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
         if (validSlice(source->position_index_sources_begin_indices, source->position_index_sources_counts,
                        static_cast<int>(table.position_indices->indices.size()))) {
             for (int i = 0; i < source->position_index_sources_counts; ++i) {
-                drawable.indices.append(static_cast<quint16>(table.position_indices->indices[
-                    source->position_index_sources_begin_indices + i]));
+                const short rawIndex = table.position_indices->indices[
+                    source->position_index_sources_begin_indices + i];
+                if (rawIndex < 0 || rawIndex >= source->vertex_counts) continue;
+                drawable.indices.append(static_cast<quint16>(rawIndex));
             }
         }
         if (validSlice(source->drawable_mask_sources_begin_indices, source->drawable_mask_sources_counts,
