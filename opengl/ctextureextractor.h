@@ -5,6 +5,7 @@
 #include <QRect>
 #include <QString>
 #include <QVector>
+#include <QHash>
 
 namespace live2dstruct {
 class CSectionTable;
@@ -38,7 +39,8 @@ public:
     /// @param table 已解析的 moc3 数据
     /// @param includeHidden 是否包括隐藏图层
     /// @return 按 mesh 索引顺序排列的提取结果
-    QVector<ExtractedLayer> ExtractAll(live2dstruct::CSectionTable* table, bool includeHidden);
+    QVector<ExtractedLayer> ExtractAll(live2dstruct::CSectionTable* table, bool includeHidden,
+                                       const QHash<QString, QVector<quint16>>* indexOverrides = nullptr);
 
     /// 获取画布像素尺寸
     static QSize GetCanvasPixelSize(const live2dstruct::CCanvas_info* canvasInfo);

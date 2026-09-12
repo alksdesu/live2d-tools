@@ -370,7 +370,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     }
 
     // 提取所有图层
-    QVector<ExtractedLayer> layers = extractor.ExtractAll(&sectionTable, includeHidden);
+    QVector<ExtractedLayer> layers = extractor.ExtractAll(&sectionTable, includeHidden, &m_meshIndexOverrides);
 
     // 解析 CDI 显示名称
     CCidJson cid;

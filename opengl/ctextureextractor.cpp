@@ -46,7 +46,8 @@ uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)
     }
 }
 
-QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool includeHidden)
+QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool includeHidden,
+                                                      const QHash<QString, QVector<quint16>>* indexOverrides)
 {
     QVector<ExtractedLayer> results;
     if (!table || !table->IsValid() || !table->count_info || !table->uvs ||
@@ -91,13 +92,30 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         const int uvSize = static_cast<int>(table->uvs->uvs.size());
         const int indexSize = static_cast<int>(table->position_indices->indices.size());
         if (uvBegin < 0 || uvCount < 0 || uvBegin > uvSize || uvCount > uvSize - uvBegin ||
-            idxBegin < 0 || idxCount < 0 || idxBegin > indexSize || idxCount > indexSize - idxBegin) {
+            idxBegin < 0 || idxCount < 3 || idxCount % 3 != 0 || idxBegin > indexSize || idxCount > indexSize - idxBegin) {
             continue;
         }
 
         // 准备 UV 数据指针
         const float* uvPtr = &table->uvs->uvs[uvBegin];
+        QVector<short> overrideIndices;
         const short* idxPtr = &table->position_indices->indices[idxBegin];
+        if (indexOverrides) {
+            const auto overrideIt = indexOverrides->constFind(mesh->ids);
+            if (overrideIt != indexOverrides->cend() && !overrideIt.value().isEmpty() &&
+                overrideIt.value().size() % 3 == 0 && overrideIt.value().size() <= 3000000) {
+                bool validOverride = true;
+                overrideIndices.reserve(overrideIt.value().size());
+                for (quint16 index : overrideIt.value()) {
+                    if (index >= mesh->vertex_counts || index > 32767) { validOverride = false; break; }
+                    overrideIndices.append(static_cast<short>(index));
+                }
+                if (validOverride) {
+                    idxPtr = overrideIndices.constData();
+                    idxCount = overrideIndices.size();
+                }
+            }
+        }
         bool indicesValid = true;
         for (int t = 0; t < idxCount; ++t) {
             if (idxPtr[t] < 0 || idxPtr[t] >= mesh->vertex_counts) {

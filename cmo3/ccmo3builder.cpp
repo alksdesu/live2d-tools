@@ -1520,7 +1520,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         if (outError) *outError = QStringLiteral("纹理图集加载失败");
         return false;
     }
-    QVector<ExtractedLayer> extracted = extractor.ExtractAll(&table, true);
+    QVector<ExtractedLayer> extracted = extractor.ExtractAll(&table, true, &opt.drawableIndexOverrides);
 
     Generator generator(opt, table, extracted);
     return generator.Run(outError);
