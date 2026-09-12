@@ -606,7 +606,7 @@ void CInspectorPanel::AutoTriangulate()
     points.append({centerX, centerY + 32.0 * span});
     points.append({centerX + 32.0 * span, centerY - span});
 
-    const auto orientation = [&points](const Point& a, const Point& b, const Point& c) {
+    const auto orientation = [](const Point& a, const Point& b, const Point& c) {
         return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     };
     const auto containsCircumcircle = [&points, &orientation, span](const Triangle& triangle, const Point& point) {
