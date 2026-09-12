@@ -62,9 +62,13 @@ struct CModelDrawable
     int parentDeformerIndex = -1;
     int textureIndex = -1;
     int flags = 0;
+    int blendMode = 0;
+    bool culling = true;
     int vertexCount = 0;
     bool visible = true;
     bool enabled = true;
+    float opacity = 1.0f;
+    float drawOrder = 0.0f;
     QVector<float> uvs;
     QVector<quint16> indices;
     QVector<int> maskIndices;

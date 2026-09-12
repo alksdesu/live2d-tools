@@ -88,6 +88,8 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
         drawable.parentDeformerIndex = source->parent_deformer_indices;
         drawable.textureIndex = source->texture_nos;
         drawable.flags = source->drawable_flags;
+        drawable.blendMode = source->drawable_flags & 0x3;
+        drawable.culling = (source->drawable_flags & 0x4) == 0;
         drawable.vertexCount = source->vertex_counts;
         drawable.visible = source->is_visible;
         drawable.enabled = source->is_enabled;
@@ -120,6 +122,10 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
                 CModelKeyform keyform;
                 keyform.opacity = sourceKeyform->opacities;
                 keyform.drawOrder = sourceKeyform->draw_orders;
+                if (i == 0) {
+                    drawable.opacity = keyform.opacity;
+                    drawable.drawOrder = keyform.drawOrder;
+                }
                 const int begin = sourceKeyform->keyform_position_sources_begin_indices;
                 if (begin >= 0 && begin + source->vertex_counts * 2 <= table.keyform_positions->xys.size()) {
                     for (int v = 0; v < source->vertex_counts * 2; ++v) {

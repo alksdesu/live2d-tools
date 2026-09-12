@@ -33,6 +33,8 @@ private:
     QLabel* m_visibilityLabel = nullptr;
     QLabel* m_geometryLabel = nullptr;
     QLabel* m_textureLabel = nullptr;
+    QLabel* m_drawOrderLabel = nullptr;
+    QLabel* m_blendLabel = nullptr;
     QLabel* m_maskLabel = nullptr;
     QLabel* m_keyformLabel = nullptr;
 };

@@ -38,12 +38,14 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_visibilityLabel = new QLabel(content);
     m_geometryLabel = new QLabel(content);
     m_textureLabel = new QLabel(content);
+    m_drawOrderLabel = new QLabel(content);
+    m_blendLabel = new QLabel(content);
     m_maskLabel = new QLabel(content);
     m_keyformLabel = new QLabel(content);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
-                          m_maskLabel, m_keyformLabel}) {
+                          m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         value->setWordWrap(true);
     }
@@ -54,6 +56,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("可见 / 启用"), m_visibilityLabel);
     form->addRow(QStringLiteral("几何"), m_geometryLabel);
     form->addRow(QStringLiteral("纹理"), m_textureLabel);
+    form->addRow(QStringLiteral("绘制顺序"), m_drawOrderLabel);
+    form->addRow(QStringLiteral("混合 / 剔除"), m_blendLabel);
     form->addRow(QStringLiteral("Clipping"), m_maskLabel);
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
     layout->addLayout(form);
@@ -83,7 +87,7 @@ void CInspectorPanel::ClearSelection()
     m_emptyLabel->setVisible(true);
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
-                          m_maskLabel, m_keyformLabel}) {
+                          m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         label->clear();
     }
 }
@@ -106,6 +110,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_visibilityLabel->setText(QStringLiteral("—"));
     m_geometryLabel->setText(QStringLiteral("—"));
     m_textureLabel->setText(QStringLiteral("—"));
+    m_drawOrderLabel->setText(QStringLiteral("—"));
+    m_blendLabel->setText(QStringLiteral("—"));
     m_maskLabel->setText(QStringLiteral("—"));
     m_keyformLabel->setText(QStringLiteral("—"));
 
@@ -118,6 +124,13 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
                                                                     drawable.enabled ? QStringLiteral("是") : QStringLiteral("否")));
             m_geometryLabel->setText(QStringLiteral("%1 顶点，%2 索引").arg(drawable.vertexCount).arg(drawable.indices.size()));
             m_textureLabel->setText(drawable.textureIndex < 0 ? QStringLiteral("无") : QString::number(drawable.textureIndex));
+            const QString blend = drawable.blendMode == 1 ? QStringLiteral("ADD")
+                               : drawable.blendMode == 2 ? QStringLiteral("MULTIPLY")
+                                                          : QStringLiteral("NORMAL");
+            m_drawOrderLabel->setText(QStringLiteral("%1（默认透明度 %2）")
+                                      .arg(QString::number(drawable.drawOrder, 'f', 0))
+                                      .arg(QString::number(drawable.opacity, 'f', 3)));
+            m_blendLabel->setText(QStringLiteral("%1 / %2").arg(blend, drawable.culling ? QStringLiteral("启用") : QStringLiteral("关闭")));
             m_maskLabel->setText(drawable.maskIndices.isEmpty() ? QStringLiteral("无") : QString::number(drawable.maskIndices.size()));
             m_keyformLabel->setText(QString::number(drawable.keyforms.size()));
             return;
