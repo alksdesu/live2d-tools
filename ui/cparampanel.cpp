@@ -151,6 +151,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         connect(slider, &QSlider::sliderReleased, this, [this, idx](){
             m_userDragging.remove(idx);
             m_userLocked.insert(idx); // 用户改过的参数锁定，不再被 sync 覆盖
+            if (!m_dragStarts.contains(idx)) return;
             const float before = m_dragStarts.take(idx);
             const float after = m_lastValues.value(m_rows[idx].paramId);
             PushEdit(m_rows[idx].paramId, before, after);
