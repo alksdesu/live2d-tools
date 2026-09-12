@@ -67,4 +67,5 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - CMake 的 model_data、draw_order、inspector_history 和 cmo3 测试目标均通过普通构建及 AddressSanitizer/UndefinedBehaviorSanitizer 检查，涵盖四个内置模型、交错分组、非法索引、循环父级、一万层嵌套、Inspector 属性回放和 CAFF 回读。运行时代码另通过语法检查。
 - PSD 写入器增加 7000 条记录容量保护，普通图层和分组均计入上限，超限返回失败且不打开目标文件。Windows 的 psd_tests 覆盖三条超限入口、目标文件保留及写入器重置；本机仅完成语法检查，尚未执行该目标。
 - CMake 补齐 cmo3 测试所需的模型解析和 miniz 链接依赖；cmo3 回归测试现已跨平台注册，检查 Wanko 的 main.xml 与 PNG 条目。针对 Qt 6.8.3 导入的过时 AGL 链接项，macOS 且当前 SDK 缺少该框架时会自动清理。
+- cmo3 生成器在读取父级、关键形位置和提取层索引前进行范围检查；非法父级和循环 Part 会归入虚拟根，正常样本输出保持不变。
 - 仍需在 Windows + Cubism Editor/Photoshop 环境验证 GUI、OpenGL、PSD 与 cmo3 实际回读，并继续实现可保存编辑文档、网格/关键形编辑和完整动画时间轴。
