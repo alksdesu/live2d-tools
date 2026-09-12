@@ -43,6 +43,7 @@
 #include <QSettings>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSharedPointer>
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
@@ -370,7 +371,9 @@ void MainWindow::on_actionLoadSession_triggered()
         return;
     }
     const QString sourceMoc = session.sourceMoc;
-    auto apply = [this, sourceMoc, session]() {
+    const auto applied = QSharedPointer<bool>::create(false);
+    auto apply = [this, sourceMoc, session, applied]() {
+        if (*applied && m_sessionDirty) return;
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
         m_applyingSession = true;
         QString resetError;
@@ -426,6 +429,7 @@ void MainWindow::on_actionLoadSession_triggered()
         if (m_undoAction) m_undoAction->setEnabled(false);
         if (m_redoAction) m_redoAction->setEnabled(false);
         m_sessionDirty = false;
+        *applied = true;
         setWindowTitle(QStringLiteral("live2d2psd"));
         statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
     };
