@@ -169,6 +169,7 @@ void CMotionPanel::BuildLists()
              << "expressions:" << setting->GetExpressionCount();
     for(int g = 0; g < groupCount; g++){
         const char* groupName = setting->GetMotionGroupName(g);
+        if (!groupName || !*groupName) continue;
         int motionCount = setting->GetMotionCount(groupName);
         for(int m = 0; m < motionCount; m++){
             QString label = QString("%1 [%2]").arg(groupName).arg(m);
@@ -184,6 +185,7 @@ void CMotionPanel::BuildLists()
     int exprCount = setting->GetExpressionCount();
     for(int i = 0; i < exprCount; i++){
         const char* name = setting->GetExpressionName(i);
+        if (!name || !*name) continue;
         m_exprList->addItem(name);
         m_exprNames.append(name);
     }
