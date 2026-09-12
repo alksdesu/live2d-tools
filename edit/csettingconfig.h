@@ -13,13 +13,13 @@ public:
     const QString& GetInitFileName(){
         return m_InitName;
     }
-    const QVector2D& GetLastPos(){
+    const QVector2D& GetLastPos() const {
         return m_lastpos;
     }
     void SetLastPos(const QVector2D& lastpos){
         m_lastpos = lastpos;
     }
-    float GeteScalefactor(){
+    float GeteScalefactor() const {
         return m_Scalefactor;
     }
     void SetScalefactor(float Scalefactor){

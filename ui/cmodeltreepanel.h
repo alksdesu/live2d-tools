@@ -4,6 +4,7 @@
 #include <QDockWidget>
 #include <QTreeWidget>
 #include <QTabWidget>
+#include <QMap>
 
 class CCidJson;
 
@@ -13,9 +14,11 @@ class CModelTreePanel : public QDockWidget
 public:
     explicit CModelTreePanel(QWidget *parent = nullptr);
     void BuildTree(const QString& mocPath, CCidJson* cid);
+    QMap<QString, bool> VisibilityState() const;
 
 public slots:
     void HighlightMesh(const QString& artName);
+    void ApplyVisibilityState(const QMap<QString, bool>& state);
 
 signals:
     void ObjectSelected(const QString& name, const QString& type);

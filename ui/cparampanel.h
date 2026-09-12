@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QMap>
 #include <QSet>
+#include <QMap>
 
 class CCidJson;
 
@@ -18,6 +19,7 @@ class CParamPanel : public QDockWidget
 public:
     explicit CParamPanel(QWidget *parent = nullptr);
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
+    QMap<QString, float> CurrentValues() const;
 
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
@@ -29,6 +31,7 @@ public slots:
     void Undo();
     void Redo();
     void ClearHistory();
+    void ApplyValues(const QMap<QString, float>& values);
 
 private:
     struct ParamRow {

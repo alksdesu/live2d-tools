@@ -203,6 +203,21 @@ void OpengGlForm::do_ResetView()
     identity.setToIdentity();
     view->SetViewMatrix(identity);
     m_config.SetScalefactor(1.0f);
+    m_config.SetLastPos(QVector2D());
+}
+
+void OpengGlForm::SetViewState(float scale, const QVector2D& position)
+{
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if (!view) return;
+    const float clampedScale = qBound(0.1f, scale, 20.0f);
+    QMatrix4x4 matrix;
+    matrix.setToIdentity();
+    matrix.scale(clampedScale);
+    matrix.translate(position.x(), position.y(), 0.0f);
+    view->SetViewMatrix(matrix);
+    m_config.SetScalefactor(clampedScale);
+    m_config.SetLastPos(position);
 }
 
 void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, bool visible)
@@ -513,4 +528,3 @@ void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 
     }
 }
-

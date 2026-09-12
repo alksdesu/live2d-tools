@@ -276,6 +276,35 @@ void CParamPanel::SyncFromModel()
     }
 }
 
+QMap<QString, float> CParamPanel::CurrentValues() const
+{
+    QMap<QString, float> values;
+    for (const ParamRow& row : m_rows) values.insert(row.paramId, m_lastValues.value(row.paramId, row.defaultVal));
+    return values;
+}
+
+void CParamPanel::ApplyValues(const QMap<QString, float>& values)
+{
+    m_replaying = true;
+    for (int i = 0; i < m_rows.size(); ++i) {
+        ParamRow& row = m_rows[i];
+        if (!values.contains(row.paramId)) continue;
+        const float value = qBound(row.minVal, values.value(row.paramId), row.maxVal);
+        const int sliderValue = row.maxVal > row.minVal
+            ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
+            : 0;
+        QSignalBlocker sliderBlocker(row.slider);
+        QSignalBlocker spinBlocker(row.spinBox);
+        row.slider->setValue(sliderValue);
+        row.spinBox->setValue(value);
+        m_lastValues.insert(row.paramId, value);
+        m_userLocked.insert(i);
+        emit ParamChanged(row.paramId, value, false);
+    }
+    m_replaying = false;
+    ClearHistory();
+}
+
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
 {
     if (rowIndex < 0 || rowIndex >= m_rows.size()) return;

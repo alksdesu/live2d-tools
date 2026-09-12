@@ -36,6 +36,8 @@ private slots:
     void on_actionBatchPsd_triggered();
     void on_actionCloseModel_triggered();
     void on_actionCmo3Export_triggered();
+    void on_actionSaveSession_triggered();
+    void on_actionLoadSession_triggered();
     void doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu, bool isTexExtract = false, bool cubismCompat = false);
 
 
@@ -60,6 +62,8 @@ private:
     QAction *myCmo3Action = nullptr; // 导出 cmo3 工程
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
+    QAction *m_saveSessionAction = nullptr;
+    QAction *m_loadSessionAction = nullptr;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
     QString m_currentModelDir;
     void createActions();

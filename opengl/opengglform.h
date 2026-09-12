@@ -46,6 +46,8 @@ public:
     bool do_TextureExtract(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
     bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
     const QString& GetCurrentModelJson() const { return m_currentModelJson; }
+    float ViewScale() const { return m_config.GeteScalefactor(); }
+    QVector2D ViewPosition() const { return m_config.GetLastPos(); }
 
     //点击对应的art 显示对应的mesh网格
     //点击对应网格  显示对应item
@@ -63,6 +65,7 @@ public slots:
     void do_SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                   const QList<float>& maxVals, const QList<float>& defaultVals);
     void do_ResetView();
+    void SetViewState(float scale, const QVector2D& position);
 
 
 signals:

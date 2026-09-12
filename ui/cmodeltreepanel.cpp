@@ -429,6 +429,49 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
 
 }
 
+QMap<QString, bool> CModelTreePanel::VisibilityState() const
+{
+    QMap<QString, bool> state;
+    const auto collect = [&state](QTreeWidgetItem* item, auto&& collectRef) -> void {
+        const QString type = item->data(0, Qt::UserRole + 1).toString();
+        const QString id = item->data(0, Qt::UserRole).toString();
+        if (!type.isEmpty() && !id.isEmpty()) state.insert(type + QLatin1Char('|') + id, item->checkState(0) == Qt::Checked);
+        for (int i = 0; i < item->childCount(); ++i) collectRef(item->child(i), collectRef);
+    };
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) collect(tree->topLevelItem(i), collect);
+    }
+    return state;
+}
+
+void CModelTreePanel::ApplyVisibilityState(const QMap<QString, bool>& state)
+{
+    m_updatingChecks = true;
+    const auto apply = [this, &state](QTreeWidgetItem* item, auto&& applyRef) -> void {
+        const QString type = item->data(0, Qt::UserRole + 1).toString();
+        const QString id = item->data(0, Qt::UserRole).toString();
+        const QString key = type + QLatin1Char('|') + id;
+        if (state.contains(key)) item->setCheckState(0, state.value(key) ? Qt::Checked : Qt::Unchecked);
+        for (int i = 0; i < item->childCount(); ++i) applyRef(item->child(i), applyRef);
+    };
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+        tree->blockSignals(true);
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) apply(tree->topLevelItem(i), apply);
+        tree->blockSignals(false);
+    }
+    m_updatingChecks = false;
+
+    const auto emitState = [this](QTreeWidgetItem* item, auto&& emitRef) -> void {
+        const QString type = item->data(0, Qt::UserRole + 1).toString();
+        const QString id = item->data(0, Qt::UserRole).toString();
+        if (!type.isEmpty() && !id.isEmpty()) emit VisibilityChanged(id, type, item->checkState(0) == Qt::Checked);
+        for (int i = 0; i < item->childCount(); ++i) emitRef(item->child(i), emitRef);
+    };
+    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) emitState(tree->topLevelItem(i), emitState);
+    }
+}
+
 QStringList CModelTreePanel::collectDeformerNames(QTreeWidgetItem* item)
 {
     QStringList result;

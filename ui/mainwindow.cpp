@@ -40,6 +40,10 @@
 #include <QFrame>
 #include <QFileInfo>
 #include <QSettings>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QFile>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
@@ -282,6 +286,100 @@ void MainWindow::on_actionCmo3Export_triggered()
         statusBar()->showMessage("cmo3 导出失败", 8000);
         QMessageBox::warning(this, "导出失败", error);
     }
+}
+
+void MainWindow::on_actionSaveSession_triggered()
+{
+    if (!m_openglwindows || !m_paramPanel || m_currentMoc.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("保存会话"), QStringLiteral("请先打开模型"));
+        return;
+    }
+    const QString defaultPath = QFileInfo(m_currentMoc).absolutePath() + "/" +
+        QFileInfo(m_currentMoc).completeBaseName() + QStringLiteral(".live2d-session.json");
+    const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("保存工作会话"),
+                                                       defaultPath, QStringLiteral("Live2D 会话 (*.live2d-session.json);;JSON (*.json)"));
+    if (path.isEmpty()) return;
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("sourceMoc"), QFileInfo(m_currentMoc).absoluteFilePath());
+    QJsonObject parameters;
+    const QMap<QString, float> currentValues = m_paramPanel->CurrentValues();
+    for (auto it = currentValues.cbegin(); it != currentValues.cend(); ++it) {
+        parameters.insert(it.key(), static_cast<double>(it.value()));
+    }
+    root.insert(QStringLiteral("parameters"), parameters);
+    QJsonObject visibility;
+    if (m_treePanel) {
+        const QMap<QString, bool> currentVisibility = m_treePanel->VisibilityState();
+        for (auto it = currentVisibility.cbegin(); it != currentVisibility.cend(); ++it) {
+            visibility.insert(it.key(), it.value());
+        }
+    }
+    root.insert(QStringLiteral("visibility"), visibility);
+    QJsonObject view;
+    view.insert(QStringLiteral("scale"), static_cast<double>(m_openglwindows->ViewScale()));
+    const QVector2D position = m_openglwindows->ViewPosition();
+    view.insert(QStringLiteral("x"), static_cast<double>(position.x()));
+    view.insert(QStringLiteral("y"), static_cast<double>(position.y()));
+    root.insert(QStringLiteral("view"), view);
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0) {
+        QMessageBox::warning(this, QStringLiteral("保存会话失败"), QStringLiteral("无法写入：\n%1").arg(path));
+        return;
+    }
+    statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
+}
+
+void MainWindow::on_actionLoadSession_triggered()
+{
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("载入工作会话"),
+                                                       QString(), QStringLiteral("Live2D 会话 (*.live2d-session.json);;JSON (*.json)"));
+    if (path.isEmpty()) return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("无法读取：\n%1").arg(path));
+        return;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), parseError.errorString());
+        return;
+    }
+    const QJsonObject root = document.object();
+    const QString sourceMoc = root.value(QStringLiteral("sourceMoc")).toString();
+    if (!m_openglwindows || sourceMoc.isEmpty() ||
+        QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的模型不是当前打开的模型"));
+        return;
+    }
+
+    QMap<QString, float> parameters;
+    const QJsonObject parameterObject = root.value(QStringLiteral("parameters")).toObject();
+    for (const QString& key : parameterObject.keys()) parameters.insert(key, static_cast<float>(parameterObject.value(key).toDouble()));
+    const QMap<QString, bool> visibility = [&root]() {
+        QMap<QString, bool> result;
+        const QJsonObject object = root.value(QStringLiteral("visibility")).toObject();
+        for (const QString& key : object.keys()) result.insert(key, object.value(key).toBool());
+        return result;
+    }();
+    const QJsonObject view = root.value(QStringLiteral("view")).toObject();
+    const float scale = static_cast<float>(view.value(QStringLiteral("scale")).toDouble(1.0));
+    const QVector2D position(static_cast<float>(view.value(QStringLiteral("x")).toDouble()),
+                             static_cast<float>(view.value(QStringLiteral("y")).toDouble()));
+
+    auto apply = [this, sourceMoc, parameters, visibility, scale, position]() {
+        if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
+        if (m_paramPanel) m_paramPanel->ApplyValues(parameters);
+        if (m_treePanel) m_treePanel->ApplyVisibilityState(visibility);
+        if (m_openglwindows) m_openglwindows->SetViewState(scale, position);
+        statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
+    };
+    apply();
+    QTimer::singleShot(300, this, apply);
 }
 
 bool MainWindow::ConfirmExportReady(const QString& operation)
@@ -901,6 +999,12 @@ void MainWindow::createActions()
     m_redoAction->setShortcut(QKeySequence::Redo);
     m_redoAction->setEnabled(false);
     m_redoAction->setStatusTip(tr("重做最近一次参数修改"));
+    m_saveSessionAction = new QAction(tr("保存会话"), this);
+    m_saveSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    connect(m_saveSessionAction, &QAction::triggered, this, &MainWindow::on_actionSaveSession_triggered);
+    m_loadSessionAction = new QAction(tr("载入会话"), this);
+    m_loadSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    connect(m_loadSessionAction, &QAction::triggered, this, &MainWindow::on_actionLoadSession_triggered);
 }
 
 void MainWindow::setupUI()
@@ -967,6 +1071,8 @@ void MainWindow::setupUI()
     mainToolBar->addSeparator();
     mainToolBar->addAction(m_undoAction);
     mainToolBar->addAction(m_redoAction);
+    mainToolBar->addAction(m_saveSessionAction);
+    mainToolBar->addAction(m_loadSessionAction);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myCloseAction);
     mainToolBar->addSeparator();
