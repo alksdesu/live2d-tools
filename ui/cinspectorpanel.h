@@ -53,6 +53,8 @@ private:
     void InterpolatePreviousKeyform();
     void CopyKeyformToNext();
     void ResetCurrentKeyform();
+    void CopyCurrentKeyform();
+    void PasteCurrentKeyform();
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -76,6 +78,8 @@ private:
     QPushButton* m_interpolatePrevious = nullptr;
     QPushButton* m_copyToNext = nullptr;
     QPushButton* m_resetKeyform = nullptr;
+    QPushButton* m_copyKeyform = nullptr;
+    QPushButton* m_pasteKeyform = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QSet<QString> m_lockedKeys;

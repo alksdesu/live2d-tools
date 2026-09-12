@@ -14,6 +14,14 @@
 #include <QHeaderView>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QApplication>
+#include <QClipboard>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QMessageBox>
+#include <cmath>
 
 namespace {
 QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
@@ -84,21 +92,29 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_interpolatePrevious = new QPushButton(QStringLiteral("与前一形插值"), keyformTools);
     m_copyToNext = new QPushButton(QStringLiteral("复制到后一形"), keyformTools);
     m_resetKeyform = new QPushButton(QStringLiteral("重置当前形"), keyformTools);
+    m_copyKeyform = new QPushButton(QStringLiteral("复制关键形"), keyformTools);
+    m_pasteKeyform = new QPushButton(QStringLiteral("粘贴关键形"), keyformTools);
     m_mirrorHorizontal->setObjectName(QStringLiteral("mirrorHorizontal"));
     m_mirrorVertical->setObjectName(QStringLiteral("mirrorVertical"));
     m_interpolatePrevious->setObjectName(QStringLiteral("interpolatePreviousKeyform"));
     m_copyToNext->setObjectName(QStringLiteral("copyKeyformToNext"));
     m_resetKeyform->setObjectName(QStringLiteral("resetKeyform"));
+    m_copyKeyform->setObjectName(QStringLiteral("copyKeyform"));
+    m_pasteKeyform->setObjectName(QStringLiteral("pasteKeyform"));
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
     m_copyToNext->setEnabled(false);
     m_resetKeyform->setEnabled(false);
+    m_copyKeyform->setEnabled(false);
+    m_pasteKeyform->setEnabled(false);
     keyformToolsLayout->addWidget(m_mirrorHorizontal);
     keyformToolsLayout->addWidget(m_mirrorVertical);
     keyformToolsLayout->addWidget(m_interpolatePrevious);
     keyformToolsLayout->addWidget(m_copyToNext);
     keyformToolsLayout->addWidget(m_resetKeyform);
+    keyformToolsLayout->addWidget(m_copyKeyform);
+    keyformToolsLayout->addWidget(m_pasteKeyform);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -137,6 +153,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_interpolatePrevious, &QPushButton::clicked, this, [this](){ InterpolatePreviousKeyform(); });
     connect(m_copyToNext, &QPushButton::clicked, this, [this](){ CopyKeyformToNext(); });
     connect(m_resetKeyform, &QPushButton::clicked, this, [this](){ ResetCurrentKeyform(); });
+    connect(m_copyKeyform, &QPushButton::clicked, this, [this](){ CopyCurrentKeyform(); });
+    connect(m_pasteKeyform, &QPushButton::clicked, this, [this](){ PasteCurrentKeyform(); });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -282,6 +300,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_interpolatePrevious->setEnabled(false);
     m_copyToNext->setEnabled(false);
     m_resetKeyform->setEnabled(false);
+    m_copyKeyform->setEnabled(false);
+    m_pasteKeyform->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -513,6 +533,63 @@ void CInspectorPanel::ResetCurrentKeyform()
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
+void CInspectorPanel::CopyCurrentKeyform()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> positions = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    if (keyformIndex < 0 || positions.isEmpty() || positions.size() % 2 != 0) return;
+    QJsonArray values;
+    for (float value : positions) values.append(static_cast<double>(value));
+    QJsonObject object;
+    object.insert(QStringLiteral("format"), QStringLiteral("live2d2psd-keyform-v1"));
+    object.insert(QStringLiteral("vertexCount"), positions.size() / 2);
+    object.insert(QStringLiteral("positions"), values);
+    QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
+}
+
+void CInspectorPanel::PasteCurrentKeyform()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    if (keyformIndex < 0 || before.isEmpty()) return;
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(QApplication::clipboard()->text().toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        QMessageBox::warning(this, QStringLiteral("粘贴关键形失败"), QStringLiteral("剪贴板不是有效的关键形数据"));
+        return;
+    }
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("format")).toString() != QStringLiteral("live2d2psd-keyform-v1")) {
+        QMessageBox::warning(this, QStringLiteral("粘贴关键形失败"), QStringLiteral("剪贴板格式不受支持"));
+        return;
+    }
+    const QJsonArray values = object.value(QStringLiteral("positions")).toArray();
+    if (values.size() != before.size() || object.value(QStringLiteral("vertexCount")).toInt() != before.size() / 2) {
+        QMessageBox::warning(this, QStringLiteral("粘贴关键形失败"), QStringLiteral("目标网格的顶点数量不同"));
+        return;
+    }
+    QVector<float> after;
+    after.reserve(values.size());
+    for (const QJsonValue& value : values) {
+        if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+            QMessageBox::warning(this, QStringLiteral("粘贴关键形失败"), QStringLiteral("关键形包含无效顶点坐标"));
+            return;
+        }
+        after.append(static_cast<float>(value.toDouble()));
+    }
+    if (after == before) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    RebuildKeyformTable();
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
@@ -539,6 +616,8 @@ void CInspectorPanel::ClearSelection()
     m_interpolatePrevious->setEnabled(false);
     m_copyToNext->setEnabled(false);
     m_resetKeyform->setEnabled(false);
+    m_copyKeyform->setEnabled(false);
+    m_pasteKeyform->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -672,6 +751,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_interpolatePrevious->setEnabled(unlocked && drawable.keyforms.size() > 1);
             m_copyToNext->setEnabled(unlocked && drawable.keyforms.size() > 1);
             m_resetKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
+            m_copyKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
+            m_pasteKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();
