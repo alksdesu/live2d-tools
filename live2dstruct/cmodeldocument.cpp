@@ -313,6 +313,18 @@ bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)
     return true;
 }
 
+bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents)
+{
+    const QHash<QString, int> previous = m_deformerParentOverrides;
+    for (auto it = parents.cbegin(); it != parents.cend(); ++it) {
+        if (!SetDeformerParentIndex(it.key(), it.value())) {
+            m_deformerParentOverrides = previous;
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int>& maskIndices)
 {
     for (int drawableIndex = 0; drawableIndex < m_drawables.size(); ++drawableIndex) {

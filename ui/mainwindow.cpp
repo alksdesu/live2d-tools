@@ -402,8 +402,7 @@ void MainWindow::on_actionLoadSession_triggered()
         }
         for (auto maskIt = session.drawableMaskIndices.cbegin(); maskIt != session.drawableMaskIndices.cend(); ++maskIt)
             m_document.SetDrawableMaskIndices(maskIt.key(), maskIt.value());
-        for (auto parentIt = session.deformerParentIndices.cbegin(); parentIt != session.deformerParentIndices.cend(); ++parentIt)
-            m_document.SetDeformerParentIndex(parentIt.key(), parentIt.value());
+        m_document.SetDeformerParentIndices(session.deformerParentIndices);
         for (auto invertIt = session.drawableMaskInverted.cbegin(); invertIt != session.drawableMaskInverted.cend(); ++invertIt)
             m_document.SetDrawableMaskInverted(invertIt.key(), invertIt.value());
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();

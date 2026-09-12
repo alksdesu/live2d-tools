@@ -130,6 +130,7 @@ public:
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     int DeformerParentIndex(const QString& id) const;
     bool SetDeformerParentIndex(const QString& id, int parentIndex);
+    bool SetDeformerParentIndices(const QHash<QString, int>& parents);
     const QHash<QString, int>& DeformerParentOverrides() const { return m_deformerParentOverrides; }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
     QVector<quint16> DrawableIndices(const QString& id) const;
