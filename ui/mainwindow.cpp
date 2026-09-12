@@ -341,6 +341,7 @@ void MainWindow::on_actionLoadSession_triggered()
     const QString sourceMoc = session.sourceMoc;
     auto apply = [this, sourceMoc, session]() {
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
+        m_applyingSession = true;
         if (m_paramPanel) m_paramPanel->ApplyValues(session.parameters);
         if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
         for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
@@ -349,6 +350,9 @@ void MainWindow::on_actionLoadSession_triggered()
         }
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
+        m_applyingSession = false;
+        m_sessionDirty = false;
+        setWindowTitle(QStringLiteral("live2d2psd"));
         statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
     };
     apply();
@@ -857,6 +861,14 @@ void MainWindow::RestDock(const QString &name)
     connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, m_treePanel, &CModelTreePanel::SetVisibility);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableOpacity);
+    const auto markSessionDirty = [this]() {
+        if (m_applyingSession) return;
+        m_sessionDirty = true;
+        setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+        statusBar()->showMessage(QStringLiteral("有未保存的模型编辑"));
+    };
+    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, markSessionDirty);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged, this, markSessionDirty);
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){
