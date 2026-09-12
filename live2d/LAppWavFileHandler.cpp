@@ -224,6 +224,10 @@ Csm::csmBool LAppWavFileHandler::LoadWavFile(const Csm::csmString& filePath)
     // ファイルロードに失敗しているか、先頭のシグネチャ"RIFF"を入れるサイズもない場合は失敗
     if ((_byteReader._fileByte == NULL) || (_byteReader._fileSize < 4))
     {
+        if (_byteReader._fileByte != NULL) LAppPal::ReleaseBytes(_byteReader._fileByte);
+        _byteReader._fileByte = NULL;
+        _byteReader._fileSize = 0;
+        _byteReader._valid = false;
         return false;
     }
 
