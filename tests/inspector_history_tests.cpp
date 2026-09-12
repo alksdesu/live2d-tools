@@ -50,6 +50,57 @@ private slots:
         panel.Redo();
         QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), changedDrawOrder);
 
+        const QString secondId = document.Drawables().at(1).id;
+        const float secondOpacity = document.DrawableOpacity(document.Drawables().at(1));
+        const int secondDrawOrder = qRound(document.DrawableDrawOrder(document.Drawables().at(1)));
+        const bool secondVisibility = document.Drawables().at(1).visible;
+        const int currentDrawOrder = qRound(document.DrawableDrawOrder(document.Drawables().first()));
+        const bool firstVisibilityBefore = document.Drawables().first().visible;
+        panel.SetSelections({id, secondId}, {QStringLiteral("artmesh"), QStringLiteral("artmesh")});
+        const bool targetVisibility = !document.Drawables().first().visible;
+        const int visibilityChanges = (document.Drawables().first().visible != targetVisibility ? 1 : 0) +
+            (document.Drawables().at(1).visible != targetVisibility ? 1 : 0);
+        QVERIFY(visibility->isEnabled());
+        visibility->setCheckState(targetVisibility ? Qt::Checked : Qt::Unchecked);
+        QCOMPARE(document.Drawables().first().visible, targetVisibility);
+        QCOMPARE(document.Drawables().at(1).visible, targetVisibility);
+        QVERIFY(visibilityChanges > 0);
+        for (int i = 0; i < visibilityChanges; ++i) panel.Undo();
+        QCOMPARE(document.Drawables().first().visible, firstVisibilityBefore);
+        QCOMPARE(document.Drawables().at(1).visible, secondVisibility);
+        for (int i = 0; i < visibilityChanges; ++i) panel.Redo();
+        panel.ClearHistory();
+
+        const float firstOpacityBefore = document.DrawableOpacity(document.Drawables().first());
+        const float secondOpacityBefore = document.DrawableOpacity(document.Drawables().at(1));
+        opacity->setValue(0.33);
+        QCOMPARE(document.DrawableOpacity(document.Drawables().first()), 0.33f);
+        QCOMPARE(document.DrawableOpacity(document.Drawables().at(1)), 0.33f);
+        const int opacityChanges = (qFuzzyCompare(firstOpacityBefore + 1.0f, 1.33f) ? 0 : 1) +
+            (qFuzzyCompare(secondOpacityBefore + 1.0f, 1.33f) ? 0 : 1);
+        QVERIFY(opacityChanges > 0);
+        for (int i = 0; i < opacityChanges; ++i) panel.Undo();
+        QCOMPARE(document.DrawableOpacity(document.Drawables().first()), firstOpacityBefore);
+        QCOMPARE(document.DrawableOpacity(document.Drawables().at(1)), secondOpacity);
+        for (int i = 0; i < opacityChanges; ++i) panel.Redo();
+        panel.ClearHistory();
+
+        const int firstDrawOrderBefore = qRound(document.DrawableDrawOrder(document.Drawables().first()));
+        const int secondDrawOrderBefore = qRound(document.DrawableDrawOrder(document.Drawables().at(1)));
+        drawOrder->setValue(321);
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), 321);
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().at(1))), 321);
+        const int drawOrderChanges = (firstDrawOrderBefore == 321 ? 0 : 1) +
+            (secondDrawOrderBefore == 321 ? 0 : 1);
+        QVERIFY(drawOrderChanges > 0);
+        for (int i = 0; i < drawOrderChanges; ++i) panel.Undo();
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), currentDrawOrder);
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().at(1))), secondDrawOrder);
+        for (int i = 0; i < drawOrderChanges; ++i) panel.Redo();
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), 321);
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().at(1))), 321);
+        panel.ClearHistory();
+        QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), 321);
         panel.SetSelections({id}, {QStringLiteral("artmesh")});
         panel.SetSelections({}, {});
         QVERIFY(!visibility->isEnabled());

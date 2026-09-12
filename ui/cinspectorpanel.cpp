@@ -79,8 +79,37 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     layout->addLayout(form);
     layout->addStretch(1);
     setWidget(content);
-    connect(m_visibilityCheck, &QCheckBox::toggled, this, [this](bool visible){
-        if (m_updatingVisibility || !m_document || m_selectionName.isEmpty()) return;
+    connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
+        if (state == Qt::PartiallyChecked) return;
+        const bool visible = state == Qt::Checked;
+        if (m_updatingVisibility || !m_document) return;
+        if (m_selectionNames.size() > 1) {
+            for (int i = 0; i < m_selectionNames.size(); ++i) {
+                const QString name = m_selectionNames[i];
+                const QString type = m_selectionTypes.value(i);
+                bool before = visible;
+                if (type == QLatin1String("part")) {
+                    for (const auto& part : m_document->Parts()) if (part.id == name) { before = part.visible; break; }
+                } else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) {
+                    for (const auto& deformer : m_document->Deformers()) if (deformer.id == name) { before = deformer.visible; break; }
+                } else if (type == QLatin1String("artmesh")) {
+                    for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { before = drawable.visible; break; }
+                } else {
+                    continue;
+                }
+                if (before == visible) continue;
+                bool changed = false;
+                if (type == QLatin1String("part")) changed = m_document->SetPartVisible(name, visible);
+                else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) changed = m_document->SetDeformerVisible(name, visible);
+                else if (type == QLatin1String("artmesh")) changed = m_document->SetDrawableVisible(name, visible);
+                if (changed) {
+                    if (!m_replaying) PushEdit(name, type, Edit::Visibility, before, visible);
+                    emit VisibilityChanged(name, type, visible);
+                }
+            }
+            return;
+        }
+        if (m_selectionName.isEmpty()) return;
         bool before = visible;
         if (m_selectionType == QLatin1String("part")) {
             for (const auto& part : m_document->Parts()) if (part.id == m_selectionName) { before = part.visible; break; }
@@ -100,7 +129,23 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         }
     });
     connect(m_opacitySpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value){
-        if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
+        if (m_updatingVisibility || !m_document) return;
+        if (m_selectionNames.size() > 1) {
+            for (int i = 0; i < m_selectionNames.size(); ++i) {
+                if (m_selectionTypes.value(i) != QLatin1String("artmesh")) continue;
+                const QString name = m_selectionNames[i];
+                float before = static_cast<float>(value);
+                for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { before = m_document->DrawableOpacity(drawable); break; }
+                const float after = static_cast<float>(value);
+                if (qFuzzyCompare(before + 1.0f, after + 1.0f)) continue;
+                if (m_document->SetDrawableOpacity(name, after)) {
+                    if (!m_replaying) PushEdit(name, QLatin1String("artmesh"), Edit::Opacity, before, after);
+                    emit DrawableOpacityChanged(name, after);
+                }
+            }
+            return;
+        }
+        if (m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
         float before = static_cast<float>(value);
         for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = m_document->DrawableOpacity(drawable); break; }
         if (qFuzzyCompare(before + 1.0f, static_cast<float>(value) + 1.0f)) return;
@@ -110,7 +155,22 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         }
     });
     connect(m_drawOrderSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value){
-        if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
+        if (m_updatingVisibility || !m_document) return;
+        if (m_selectionNames.size() > 1) {
+            for (int i = 0; i < m_selectionNames.size(); ++i) {
+                if (m_selectionTypes.value(i) != QLatin1String("artmesh")) continue;
+                const QString name = m_selectionNames[i];
+                int before = value;
+                for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { before = qRound(m_document->DrawableDrawOrder(drawable)); break; }
+                if (before == value) continue;
+                if (m_document->SetDrawableDrawOrder(name, value)) {
+                    if (!m_replaying) PushEdit(name, QLatin1String("artmesh"), Edit::DrawOrder, before, value);
+                    emit DrawableDrawOrderChanged(name, value);
+                }
+            }
+            return;
+        }
+        if (m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
         int before = value;
         for (const auto& drawable : m_document->Drawables()) if (drawable.id == m_selectionName) { before = qRound(m_document->DrawableDrawOrder(drawable)); break; }
         if (before == value) return;
@@ -133,6 +193,9 @@ void CInspectorPanel::SetSelection(const QString& name, const QString& type)
 {
     m_selectionName = name;
     m_selectionType = type;
+    m_selectionNames = {name};
+    m_selectionTypes = {type};
+    m_visibilityCheck->setTristate(false);
     showModelObject(name, type);
 }
 
@@ -145,14 +208,59 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     }
     m_selectionName.clear();
     m_selectionType.clear();
+    m_selectionNames = names;
+    m_selectionTypes = types;
     m_emptyLabel->setVisible(true);
     m_updatingVisibility = true;
-    m_visibilityCheck->setChecked(false);
-    m_visibilityCheck->setEnabled(false);
-    m_opacitySpin->setValue(1.0);
-    m_opacitySpin->setEnabled(false);
-    m_drawOrderSpin->setValue(0);
-    m_drawOrderSpin->setEnabled(false);
+    m_visibilityCheck->setTristate(true);
+    bool anyVisible = false;
+    bool anyHidden = false;
+    bool allVisibleEditable = true;
+    bool allArtMeshes = true;
+    if (!m_document) {
+        allVisibleEditable = false;
+        allArtMeshes = false;
+    }
+    for (int i = 0; i < names.size(); ++i) {
+        if (!m_document) break;
+        if (i >= types.size()) {
+            allVisibleEditable = false;
+            allArtMeshes = false;
+            continue;
+        }
+        const QString type = types.value(i);
+        const QString name = names[i];
+        bool found = false;
+        if (type == QLatin1String("part")) {
+            for (const auto& part : m_document->Parts()) if (part.id == name) { anyVisible |= part.visible; anyHidden |= !part.visible; found = true; break; }
+        } else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) {
+            for (const auto& deformer : m_document->Deformers()) if (deformer.id == name) { anyVisible |= deformer.visible; anyHidden |= !deformer.visible; found = true; break; }
+        } else if (type == QLatin1String("artmesh")) {
+            for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { anyVisible |= drawable.visible; anyHidden |= !drawable.visible; found = true; break; }
+        } else {
+            allVisibleEditable = false;
+        }
+        if (!found) allVisibleEditable = false;
+        allArtMeshes = allArtMeshes && type == QLatin1String("artmesh");
+        if (!found) allArtMeshes = false;
+    }
+    if (anyVisible && anyHidden) m_visibilityCheck->setCheckState(Qt::PartiallyChecked);
+    else m_visibilityCheck->setChecked(anyVisible);
+    m_visibilityCheck->setEnabled(allVisibleEditable);
+    m_opacitySpin->setEnabled(allArtMeshes);
+    m_drawOrderSpin->setEnabled(allArtMeshes);
+    if (allArtMeshes && !names.isEmpty()) {
+        for (const auto& drawable : m_document->Drawables()) {
+            if (drawable.id == names.first()) {
+                m_opacitySpin->setValue(m_document->DrawableOpacity(drawable));
+                m_drawOrderSpin->setValue(qRound(m_document->DrawableDrawOrder(drawable)));
+                break;
+            }
+        }
+    } else {
+        m_opacitySpin->setValue(1.0);
+        m_drawOrderSpin->setValue(0);
+    }
     m_updatingVisibility = false;
     m_emptyLabel->setText(QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围").arg(names.size()));
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
@@ -170,9 +278,12 @@ void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
     m_selectionType.clear();
+    m_selectionNames.clear();
+    m_selectionTypes.clear();
     m_emptyLabel->setText(QStringLiteral("从模型结构中选择一个对象"));
     m_emptyLabel->setVisible(true);
     m_updatingVisibility = true;
+    m_visibilityCheck->setTristate(false);
     m_visibilityCheck->setChecked(false);
     m_opacitySpin->setValue(1.0);
     m_visibilityCheck->setEnabled(false);

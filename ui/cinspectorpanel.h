@@ -45,6 +45,8 @@ private:
     live2dstruct::CModelDocument* m_document = nullptr;
     QString m_selectionName;
     QString m_selectionType;
+    QStringList m_selectionNames;
+    QStringList m_selectionTypes;
     QLabel* m_emptyLabel = nullptr;
     QLabel* m_typeLabel = nullptr;
     QLabel* m_idLabel = nullptr;
