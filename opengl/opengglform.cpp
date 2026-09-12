@@ -112,10 +112,11 @@ bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, b
 void OpengGlForm::do_ShowMesh(const QString &artName)
 {
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
-    int size = Live2DManager->GetModelNum();
-    if(size > 0){
+    if(Live2DManager && Live2DManager->GetModelNum() > 0){
         LAppModel* model = Live2DManager->GetModel(0);
+        if(!model || !model->GetModel()) return;
         CMeshMap* map = model->GetModel()->GetMeshMap();
+        if(!map) return;
         map->SetShow(artName);
 
     }
@@ -131,6 +132,7 @@ void OpengGlForm::AddWrapKey(std::vector<C2DTreeNode*> &node)
 void OpengGlForm::do_ShowWarp(const QString &artName)
 {
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view) return;
     view->ShowWarp(artName);
 }
 
@@ -138,7 +140,10 @@ void OpengGlForm::do_ShowWarp(const QString &artName)
 
 void OpengGlForm::do_setPoint(float x, float y)
 {
-    CubismModelMatrix* matrix = LAppLive2DManager::GetInstance()->GetModel(0)->GetModelMatrix();
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    if(!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0)) return;
+    CubismModelMatrix* matrix = manager->GetModel(0)->GetModelMatrix();
+    if(!matrix) return;
     matrix->SetCenterPosition(x,y);
 }
 
@@ -148,12 +153,17 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
     if(Live2DManager !=nullptr){
         int modelCount = Live2DManager->GetModelNum();
         if(modelCount > 0){
-            Live2DManager->GetModel(0)->UpdateParaValue(name,value,IsInit);
-            if (IsInit && Live2DManager->GetModel(0)->GetModel()) {
-                CMeshMap* meshMap = Live2DManager->GetModel(0)->GetModel()->GetMeshMap();
-                for (auto it = LAppDelegate::GetInstance()->m_meshOverlayPositions.cbegin();
-                     it != LAppDelegate::GetInstance()->m_meshOverlayPositions.cend(); ++it) {
-                    meshMap->SetMeshPositions(it.key(), it.value());
+            LAppModel* model = Live2DManager->GetModel(0);
+            if (model) {
+                model->UpdateParaValue(name,value,IsInit);
+            }
+            if (model && IsInit && model->GetModel()) {
+                CMeshMap* meshMap = model->GetModel()->GetMeshMap();
+                if (meshMap) {
+                    for (auto it = LAppDelegate::GetInstance()->m_meshOverlayPositions.cbegin();
+                         it != LAppDelegate::GetInstance()->m_meshOverlayPositions.cend(); ++it) {
+                        meshMap->SetMeshPositions(it.key(), it.value());
+                    }
                 }
             }
         }
@@ -162,12 +172,13 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
     C2DTree* tree = CTreeManage::GetInstance();
     if (tree) tree->SetParaValue(name,value);
     LAppView* view= LAppDelegate::GetInstance()->GetView();
-    view->InitWrapAndRotation();
+    if (view) view->InitWrapAndRotation();
 }
 
 void OpengGlForm::do_ShowDeformers(const QStringList& names)
 {
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view) return;
     if(names.isEmpty()){
         view->HideAllWarps();
     } else {
@@ -180,6 +191,7 @@ void OpengGlForm::do_ShowDeformerMeshes(const QStringList& artMeshNames)
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(!mgr || mgr->GetModelNum() <= 0) return;
     LAppModel* model = mgr->GetModel(0);
+    if(!model || !model->GetModel()) return;
     CMeshMap* map = model->GetModel()->GetMeshMap();
     if(!map) return;
 
@@ -199,7 +211,7 @@ void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QL
                                             const QList<float>& maxVals, const QList<float>& defaultVals)
 {
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    if(mgr && mgr->GetModelNum() > 0){
+    if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
         mgr->GetModel(0)->SetDeformerDragParams(paramIds, minVals, maxVals, defaultVals);
     }
 }
@@ -207,6 +219,7 @@ void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QL
 void OpengGlForm::do_ResetView()
 {
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view) return;
     QMatrix4x4 identity;
     identity.setToIdentity();
     view->SetViewMatrix(identity);
@@ -233,7 +246,7 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
     if(type == "part"){
         // Part 通过 LAppModel 的隐藏列表控制（每帧 Update 中强制设 opacity=0）
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetPartVisible(name, visible);
         }
     } else if (type == "artmesh") {
@@ -282,7 +295,9 @@ void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyfor
     LAppDelegate::GetInstance()->m_meshOverlayPositions.insert(name, positions);
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
-    manager->GetModel(0)->GetModel()->GetMeshMap()->SetMeshPositions(name, positions);
+    CMeshMap* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap();
+    if (!meshMap) return;
+    meshMap->SetMeshPositions(name, positions);
 }
 
 void OpengGlForm::do_ModelChange(const QString& fileName)
@@ -325,6 +340,7 @@ void OpengGlForm::paintGL()
 void OpengGlForm::mousePressEvent(QMouseEvent *event)
 {
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view) return;
     QVector4D pos = view->GetWorldPoint(event->pos().x(),event->pos().y());
     view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(0,0),QVector2D(0,0));
     m_ceditstate.AddState(CEditState::MousePress);
@@ -360,6 +376,7 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
 void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view) return;
     view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(0,0),QVector2D(0,0));
     m_ceditstate.RemoveState(CEditState::MousePress);
 
@@ -377,13 +394,15 @@ void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
 
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view || width() <= 0 || height() <= 0) return;
+
     // 计算归一化鼠标坐标 [-1, 1]
     float viewX = (float)event->pos().x() / (float)width() * 2.0f - 1.0f;
     float viewY = -((float)event->pos().y() / (float)height() * 2.0f - 1.0f);
 
     if(m_ceditstate.IsContins(CEditState::MousePress)){
         if(m_ceditstate.IsContins(CEditState::ViewMove)){
-            LAppView* view = LAppDelegate::GetInstance()->GetView();
             QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
             QVector4D last =  QVector4D(m_config.GetLastPos());
             QVector4D delta =  (curPos - last);
@@ -398,7 +417,7 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
             bool ctrlHeld = event->modifiers() & Qt::ControlModifier;
             if(ctrlHeld){
                 LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-                if(mgr && mgr->GetModelNum() > 0){
+                if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
                     LAppModel* model = mgr->GetModel(0);
                     if(!model->GetDeformerDragParamIds().isEmpty()){
                         model->ApplyDeformerDrag(viewX, viewY);
@@ -408,7 +427,6 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
                     }
                 }
             } else {
-                LAppView* view = LAppDelegate::GetInstance()->GetView();
                 QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
                 view->GetMouseSelectRect()->SetStartAndEndPos(m_config.GetLastPos(),QVector2D(curPos));
             }
@@ -416,14 +434,13 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
     }
     else {
         if(!m_ceditstate.IsContins(CEditState::ViewMove)){
-            LAppView* view = LAppDelegate::GetInstance()->GetView();
             QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
             view->GetSelectMesh(QVector2D(curPos),true);
         }
 
         // 鼠标跟随 + 物理拖拽
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             LAppModel* model = mgr->GetModel(0);
             if(model->GetEnableMouseFollow()){
                 model->SetDragging(viewX, viewY);
@@ -439,6 +456,7 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 {
     //为什么状态没有用
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view || width() <= 0 || height() <= 0) return;
     QVector4D curPos = view->GetWorldPoint(event->position().x(),event->position().y());
     float sor = event->angleDelta().y() ;
     float sflo = m_config.GeteScalefactor();
@@ -482,6 +500,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
 
     LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if(!view) return;
     constexpr float moveStep = 0.1f;
     constexpr float scaleStep = 0.2f;
 
@@ -546,7 +565,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
         }
         case Qt::Key_Z: {
             LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-            if(mgr && mgr->GetModelNum() > 0){
+            if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0) && mgr->GetModel(0)->GetModel()){
                 CMeshMap* map = mgr->GetModel(0)->GetModel()->GetMeshMap();
                 if(map) map->SetShow("");
             }

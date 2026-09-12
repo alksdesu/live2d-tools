@@ -1061,13 +1061,13 @@ void MainWindow::RestDock(const QString &name)
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetPhysicsGravity(x, y);
         }
     });
     connect(m_physicsPanel, &CPhysicsPanel::WindChanged, this, [](float x, float y){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetPhysicsWind(x, y);
         }
     });
@@ -1075,7 +1075,7 @@ void MainWindow::RestDock(const QString &name)
     // 信号连接：物理组拖拽参数
     connect(m_physicsPanel, &CPhysicsPanel::PhysicsDragParamsChanged, this, [](const QStringList& ids, const QStringList& types){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetPhysicsDragParams(ids, types);
         }
     });
@@ -1083,7 +1083,7 @@ void MainWindow::RestDock(const QString &name)
     // 信号连接：动作面板 → 模型
     connect(m_motionPanel, &CMotionPanel::PlayMotion, this, [](const QString& group, int no){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->StartMotion(group.toUtf8().constData(), no, LAppDefine::PriorityForce);
         }
     });
@@ -1095,35 +1095,35 @@ void MainWindow::RestDock(const QString &name)
 
     connect(m_motionPanel, &CMotionPanel::ApplyExpression, this, [](const QString& name){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetExpression(name.toUtf8().constData());
         }
     });
 
     connect(m_motionPanel, &CMotionPanel::AutoEyeBlinkChanged, this, [](bool enabled){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetAutoEyeBlink(enabled);
         }
     });
 
     connect(m_motionPanel, &CMotionPanel::AutoBreathChanged, this, [](bool enabled){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetAutoBreath(enabled);
         }
     });
 
     connect(m_motionPanel, &CMotionPanel::PhysicsChanged, this, [](bool enabled){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetAutoPhysics(enabled);
         }
     });
 
     connect(m_motionPanel, &CMotionPanel::MouseFollowChanged, this, [](bool enabled){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0){
+        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetEnableMouseFollow(enabled);
             if(!enabled){
                 mgr->GetModel(0)->SetDragging(0.0f, 0.0f);
@@ -1134,7 +1134,7 @@ void MainWindow::RestDock(const QString &name)
     // Pose 切换
     connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QString& showId, const QStringList& hideIds){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(!mgr || mgr->GetModelNum() <= 0) return;
+        if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || !mgr->GetModel(0)->GetModel()) return;
         LAppModel* model = mgr->GetModel(0);
         auto* cubismModel = model->GetModel();
         // 显示选中的 Part
