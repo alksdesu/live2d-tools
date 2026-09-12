@@ -5,6 +5,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QSignalBlocker>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -19,11 +20,24 @@ CParamPanel::CParamPanel(QWidget *parent)
     connect(resetBtn, &QPushButton::clicked, this, &CParamPanel::ResetAll);
     mainLayout->addWidget(resetBtn);
 
+    m_search = new QLineEdit(wrapper);
+    m_search->setPlaceholderText("搜索参数名称或 ID");
+    m_search->setClearButtonEnabled(true);
+    mainLayout->addWidget(m_search);
+
     m_scroll = new QScrollArea(wrapper);
     m_scroll->setWidgetResizable(true);
     m_container = new QWidget();
     m_scroll->setWidget(m_container);
     mainLayout->addWidget(m_scroll);
+
+    connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text){
+        const QString query = text.trimmed().toLower();
+        for (const ParamRow& row : m_rows) {
+            const QString searchText = row.widget ? row.widget->property("searchText").toString() : QString();
+            row.widget->setVisible(query.isEmpty() || searchText.contains(query));
+        }
+    });
 
     setWidget(wrapper);
 }
@@ -68,7 +82,9 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
         float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
 
-        QHBoxLayout* row = new QHBoxLayout();
+        QWidget* rowWidget = new QWidget(m_container);
+        QHBoxLayout* row = new QHBoxLayout(rowWidget);
+        row->setContentsMargins(0, 2, 0, 2);
 
         // 显示名称：优先用 cid 映射的名称，否则回退到内部 ID
         QString displayName = paramId;
@@ -83,6 +99,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         if(isBlendShape){
             displayName = QString("[融合] %1").arg(displayName);
         }
+        rowWidget->setProperty("searchText", (displayName + " " + paramId).toLower());
 
         QLabel* nameLabel = new QLabel(displayName, m_container);
         nameLabel->setFixedWidth(150);
@@ -92,7 +109,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         }
         row->addWidget(nameLabel);
 
-        QSlider* slider = new QSlider(Qt::Horizontal, m_container);
+        QSlider* slider = new QSlider(Qt::Horizontal, rowWidget);
         slider->setRange(0, 1000);
         int sliderDefault = 0;
         if(maxVal > minVal){
@@ -101,13 +118,19 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         slider->setValue(sliderDefault);
         row->addWidget(slider);
 
-        QLabel* valLabel = new QLabel(QString::number(defVal, 'f', 2), m_container);
-        valLabel->setFixedWidth(60);
-        row->addWidget(valLabel);
+        QDoubleSpinBox* spinBox = new QDoubleSpinBox(rowWidget);
+        spinBox->setRange(minVal, maxVal);
+        spinBox->setDecimals(3);
+        spinBox->setSingleStep((maxVal - minVal) > 0 ? (maxVal - minVal) / 100.0 : 1.0);
+        spinBox->setValue(defVal);
+        spinBox->setFixedWidth(92);
+        row->addWidget(spinBox);
 
         ParamRow pr;
+        pr.widget = rowWidget;
         pr.slider = slider;
-        pr.valueLabel = valLabel;
+        pr.spinBox = spinBox;
+        pr.valueLabel = nullptr;
         pr.minVal = minVal;
         pr.maxVal = maxVal;
         pr.defaultVal = defVal;
@@ -124,11 +147,23 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         connect(slider, &QSlider::valueChanged, this, [this, idx](int val){
             ParamRow& r = m_rows[idx];
             float realVal = r.minVal + (r.maxVal - r.minVal) * val / 1000.0f;
-            r.valueLabel->setText(QString::number(realVal, 'f', 2));
+            QSignalBlocker blocker(r.spinBox);
+            r.spinBox->setValue(realVal);
             emit ParamChanged(r.paramId, realVal, false);
         });
 
-        layout->addLayout(row);
+        connect(spinBox, &QDoubleSpinBox::valueChanged, this, [this, idx](double value){
+            ParamRow& r = m_rows[idx];
+            if (r.maxVal > r.minVal) {
+                const int sliderValue = qBound(0, qRound((value - r.minVal) * 1000.0f / (r.maxVal - r.minVal)), 1000);
+                QSignalBlocker blocker(r.slider);
+                r.slider->setValue(sliderValue);
+            }
+            emit ParamChanged(r.paramId, static_cast<float>(value), false);
+        });
+        connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){ m_userLocked.insert(idx); });
+
+        layout->addWidget(rowWidget);
     };
 
     // 有分组信息时按组显示
@@ -186,6 +221,7 @@ void CParamPanel::ResetAll()
             sliderDefault = static_cast<int>((r.defaultVal - r.minVal) / (r.maxVal - r.minVal) * 1000.0f);
         }
         r.slider->setValue(sliderDefault);
+        r.spinBox->setValue(r.defaultVal);
     }
 }
 
@@ -213,6 +249,8 @@ void CParamPanel::SyncFromModel()
         r.slider->blockSignals(true);
         r.slider->setValue(sliderVal);
         r.slider->blockSignals(false);
-        r.valueLabel->setText(QString::number(curVal, 'f', 2));
+        r.spinBox->blockSignals(true);
+        r.spinBox->setValue(curVal);
+        r.spinBox->blockSignals(false);
     }
 }

@@ -4,6 +4,8 @@
 #include <QDockWidget>
 #include <QScrollArea>
 #include <QSlider>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
 #include <QLabel>
 #include <QMap>
 #include <QSet>
@@ -26,7 +28,9 @@ public slots:
 
 private:
     struct ParamRow {
+        QWidget* widget = nullptr;
         QSlider* slider;
+        QDoubleSpinBox* spinBox;
         QLabel* valueLabel;
         float minVal;
         float maxVal;
@@ -37,6 +41,7 @@ private:
 
     QScrollArea* m_scroll;
     QWidget* m_container;
+    QLineEdit* m_search;
     QVector<ParamRow> m_rows;
     QSet<int> m_userDragging;
     QSet<int> m_userLocked; // 用户手动修改过的参数，不再被 sync 覆盖

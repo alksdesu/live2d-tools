@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 include(CTest)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL Test)
 
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
@@ -32,9 +32,11 @@ target_link_libraries(cmo3_data PUBLIC Qt6::Core Qt6::Gui)
 
 add_library(ui_inspector STATIC
     ui/cinspectorpanel.cpp
+    ui/cparampanel.cpp
 )
 target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets)
+target_include_directories(ui_inspector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/opencv/include)
+target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
     add_executable(model_data_tests tests/model_data_tests.cpp)
