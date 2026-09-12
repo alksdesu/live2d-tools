@@ -65,9 +65,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_openglwindows=nullptr;
     createActions();
     setupUI();
-    if (settings.contains(QStringLiteral("windowState"))) {
-        restoreState(settings.value(QStringLiteral("windowState")).toByteArray());
-    }
+    m_savedWindowState = settings.value(QStringLiteral("windowState")).toByteArray();
 
     // 启动时显示占位提示
     m_placeholder = createEmptyState();
@@ -822,6 +820,11 @@ void MainWindow::RestDock(const QString &name)
     wireToggle(m_btnToggleTexture, m_texturePanel);
     wireToggle(m_btnToggleInspector, m_inspectorPanel);
     wireToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
+
+    if (!m_savedWindowState.isEmpty()) {
+        restoreState(m_savedWindowState);
+        m_savedWindowState.clear();
+    }
 
     // 信号连接：树面板 → OpenGL
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
