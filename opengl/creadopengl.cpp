@@ -150,7 +150,8 @@ void CReadOpengl::EndDraw()
 
 bool CReadOpengl::CreateOffscreenSurface(int displayBufferWidth, int displayBufferHeight, GLuint colorBuffer)
 {
-
+    if (displayBufferWidth <= 0 || displayBufferHeight <= 0 ||
+        displayBufferWidth > 16384 || displayBufferHeight > 16384) return false;
 
     // 一旦削除
     DestroyOffscreenSurface();
@@ -187,7 +188,15 @@ bool CReadOpengl::CreateOffscreenSurface(int displayBufferWidth, int displayBuff
         glGenFramebuffers(1, &ret);
         glBindFramebuffer(GL_FRAMEBUFFER, ret);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _colorBuffer, 0);//绑定帧缓冲区作为附件
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, tmpFramebufferObject);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            glDeleteFramebuffers(1, &ret);
+            if (!_isColorBufferInherited && _colorBuffer != 0) glDeleteTextures(1, &_colorBuffer);
+            _renderTexture = 0;
+            _colorBuffer = 0;
+            return false;
+        }
 
         _renderTexture = ret;//在什么时候进行绑定
 
