@@ -82,15 +82,23 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_mirrorHorizontal = new QPushButton(QStringLiteral("水平镜像"), keyformTools);
     m_mirrorVertical = new QPushButton(QStringLiteral("垂直镜像"), keyformTools);
     m_interpolatePrevious = new QPushButton(QStringLiteral("与前一形插值"), keyformTools);
+    m_copyToNext = new QPushButton(QStringLiteral("复制到后一形"), keyformTools);
+    m_resetKeyform = new QPushButton(QStringLiteral("重置当前形"), keyformTools);
     m_mirrorHorizontal->setObjectName(QStringLiteral("mirrorHorizontal"));
     m_mirrorVertical->setObjectName(QStringLiteral("mirrorVertical"));
     m_interpolatePrevious->setObjectName(QStringLiteral("interpolatePreviousKeyform"));
+    m_copyToNext->setObjectName(QStringLiteral("copyKeyformToNext"));
+    m_resetKeyform->setObjectName(QStringLiteral("resetKeyform"));
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
+    m_copyToNext->setEnabled(false);
+    m_resetKeyform->setEnabled(false);
     keyformToolsLayout->addWidget(m_mirrorHorizontal);
     keyformToolsLayout->addWidget(m_mirrorVertical);
     keyformToolsLayout->addWidget(m_interpolatePrevious);
+    keyformToolsLayout->addWidget(m_copyToNext);
+    keyformToolsLayout->addWidget(m_resetKeyform);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -127,6 +135,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_mirrorHorizontal, &QPushButton::clicked, this, [this](){ MirrorKeyform(true); });
     connect(m_mirrorVertical, &QPushButton::clicked, this, [this](){ MirrorKeyform(false); });
     connect(m_interpolatePrevious, &QPushButton::clicked, this, [this](){ InterpolatePreviousKeyform(); });
+    connect(m_copyToNext, &QPushButton::clicked, this, [this](){ CopyKeyformToNext(); });
+    connect(m_resetKeyform, &QPushButton::clicked, this, [this](){ ResetCurrentKeyform(); });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -270,6 +280,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
+    m_copyToNext->setEnabled(false);
+    m_resetKeyform->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -462,6 +474,45 @@ void CInspectorPanel::InterpolatePreviousKeyform()
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
+void CInspectorPanel::CopyKeyformToNext()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> source = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex + 1);
+    if (keyformIndex < 0 || source.isEmpty() || source.size() != before.size()) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(source), keyformIndex + 1, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex + 1, source);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
+void CInspectorPanel::ResetCurrentKeyform()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    QVector<float> original;
+    for (const auto& drawable : m_document->Drawables()) {
+        if (drawable.id == m_selectionName && keyformIndex >= 0 && keyformIndex < drawable.keyforms.size()) {
+            original = drawable.keyforms.at(keyformIndex).positions;
+            break;
+        }
+    }
+    if (before.isEmpty() || original.isEmpty() || before.size() != original.size() || before == original) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(original), keyformIndex, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    RebuildKeyformTable();
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, original);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
@@ -486,6 +537,8 @@ void CInspectorPanel::ClearSelection()
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
+    m_copyToNext->setEnabled(false);
+    m_resetKeyform->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -617,6 +670,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_mirrorHorizontal->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_mirrorVertical->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_interpolatePrevious->setEnabled(unlocked && drawable.keyforms.size() > 1);
+            m_copyToNext->setEnabled(unlocked && drawable.keyforms.size() > 1);
+            m_resetKeyform->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();

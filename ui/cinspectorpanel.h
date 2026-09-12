@@ -51,6 +51,8 @@ private:
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
     void InterpolatePreviousKeyform();
+    void CopyKeyformToNext();
+    void ResetCurrentKeyform();
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -72,6 +74,8 @@ private:
     QPushButton* m_mirrorHorizontal = nullptr;
     QPushButton* m_mirrorVertical = nullptr;
     QPushButton* m_interpolatePrevious = nullptr;
+    QPushButton* m_copyToNext = nullptr;
+    QPushButton* m_resetKeyform = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QSet<QString> m_lockedKeys;
