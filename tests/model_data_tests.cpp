@@ -1,10 +1,12 @@
 #include "opengl/cmeshbounds.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmodelsession.h"
 #include "std/cmodeljson.h"
 #include "live2dstruct/csectiontable.h"
 #include <QtTest>
 #include <QRegularExpression>
 #include <limits>
+#include <QTemporaryDir>
 
 class ModelDataTests : public QObject
 {
@@ -87,6 +89,33 @@ private slots:
         QCOMPARE(model.m_Textures.size(), textures);
         QCOMPARE(model.m_Motions.size(), motions);
         QVERIFY(!model.getAllZipFiles().contains(QRegularExpression("/(null|$)")));
+    }
+
+    void sessionRoundTrip()
+    {
+        live2dstruct::CModelSession source;
+        source.sourceMoc = QStringLiteral("/tmp/Model.moc3");
+        source.parameters.insert(QStringLiteral("ParamAngleX"), -12.5f);
+        source.visibility.insert(QStringLiteral("artmesh|Body"), false);
+        source.viewScale = 1.75f;
+        source.viewPosition = QPointF(0.25, -0.5);
+
+        live2dstruct::CModelSession decoded;
+        QString error;
+        QVERIFY2(live2dstruct::CModelSession::FromJson(source.ToJson(), &decoded, &error), qPrintable(error));
+        QCOMPARE(decoded.sourceMoc, source.sourceMoc);
+        QCOMPARE(decoded.parameters, source.parameters);
+        QCOMPARE(decoded.visibility, source.visibility);
+        QCOMPARE(decoded.viewScale, source.viewScale);
+        QCOMPARE(decoded.viewPosition, source.viewPosition);
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath(QStringLiteral("state.live2d-session.json"));
+        QVERIFY2(source.Save(path, &error), qPrintable(error));
+        live2dstruct::CModelSession loaded;
+        QVERIFY2(live2dstruct::CModelSession::Load(path, &loaded, &error), qPrintable(error));
+        QCOMPARE(loaded.parameters, source.parameters);
     }
 
 };

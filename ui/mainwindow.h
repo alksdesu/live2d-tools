@@ -4,6 +4,7 @@
 #include "CPrecompileHead.h"
 #include "std/cmodeljson.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
 #include <QAction>

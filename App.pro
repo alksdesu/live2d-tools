@@ -39,6 +39,7 @@ SOURCES += \
     ui/cmodeldiagnosticspanel.cpp \
     opengl/cmeshbounds.cpp \
     live2dstruct/cmodeldocument.cpp \
+    live2dstruct/cmodelsession.cpp \
     edit/cdrawobject.cpp \
     edit/cdrawrotation.cpp \
     edit/cdrawwarp.cpp \
@@ -217,6 +218,7 @@ HEADERS += \
     ui/cmodeldiagnosticspanel.h \
     opengl/cmeshbounds.h \
     live2dstruct/cmodeldocument.h \
+    live2dstruct/cmodelsession.h \
     CPrecompileHead.h \
     edit/cdrawobject.h \
     edit/cdrawrotation.h \

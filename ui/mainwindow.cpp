@@ -300,34 +300,19 @@ void MainWindow::on_actionSaveSession_triggered()
                                                        defaultPath, QStringLiteral("Live2D 会话 (*.live2d-session.json);;JSON (*.json)"));
     if (path.isEmpty()) return;
 
-    QJsonObject root;
-    root.insert(QStringLiteral("version"), 1);
-    root.insert(QStringLiteral("sourceMoc"), QFileInfo(m_currentMoc).absoluteFilePath());
-    QJsonObject parameters;
+    live2dstruct::CModelSession session;
+    session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     const QMap<QString, float> currentValues = m_paramPanel->CurrentValues();
-    for (auto it = currentValues.cbegin(); it != currentValues.cend(); ++it) {
-        parameters.insert(it.key(), static_cast<double>(it.value()));
-    }
-    root.insert(QStringLiteral("parameters"), parameters);
-    QJsonObject visibility;
+    session.parameters = currentValues;
     if (m_treePanel) {
-        const QMap<QString, bool> currentVisibility = m_treePanel->VisibilityState();
-        for (auto it = currentVisibility.cbegin(); it != currentVisibility.cend(); ++it) {
-            visibility.insert(it.key(), it.value());
-        }
+        session.visibility = m_treePanel->VisibilityState();
     }
-    root.insert(QStringLiteral("visibility"), visibility);
-    QJsonObject view;
-    view.insert(QStringLiteral("scale"), static_cast<double>(m_openglwindows->ViewScale()));
+    session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
-    view.insert(QStringLiteral("x"), static_cast<double>(position.x()));
-    view.insert(QStringLiteral("y"), static_cast<double>(position.y()));
-    root.insert(QStringLiteral("view"), view);
-
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0) {
-        QMessageBox::warning(this, QStringLiteral("保存会话失败"), QStringLiteral("无法写入：\n%1").arg(path));
+    session.viewPosition = QPointF(position.x(), position.y());
+    QString saveError;
+    if (!session.Save(path, &saveError)) {
+        QMessageBox::warning(this, QStringLiteral("保存会话失败"), saveError);
         return;
     }
     statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
@@ -338,44 +323,24 @@ void MainWindow::on_actionLoadSession_triggered()
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("载入工作会话"),
                                                        QString(), QStringLiteral("Live2D 会话 (*.live2d-session.json);;JSON (*.json)"));
     if (path.isEmpty()) return;
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("无法读取：\n%1").arg(path));
+    live2dstruct::CModelSession session;
+    QString loadError;
+    if (!live2dstruct::CModelSession::Load(path, &session, &loadError)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        QMessageBox::warning(this, QStringLiteral("载入会话失败"), parseError.errorString());
-        return;
-    }
-    const QJsonObject root = document.object();
-    const QString sourceMoc = root.value(QStringLiteral("sourceMoc")).toString();
-    if (!m_openglwindows || sourceMoc.isEmpty() ||
-        QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) {
+    if (!m_openglwindows || session.sourceMoc.isEmpty() ||
+        QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(session.sourceMoc).absoluteFilePath()) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的模型不是当前打开的模型"));
         return;
     }
-
-    QMap<QString, float> parameters;
-    const QJsonObject parameterObject = root.value(QStringLiteral("parameters")).toObject();
-    for (const QString& key : parameterObject.keys()) parameters.insert(key, static_cast<float>(parameterObject.value(key).toDouble()));
-    const QMap<QString, bool> visibility = [&root]() {
-        QMap<QString, bool> result;
-        const QJsonObject object = root.value(QStringLiteral("visibility")).toObject();
-        for (const QString& key : object.keys()) result.insert(key, object.value(key).toBool());
-        return result;
-    }();
-    const QJsonObject view = root.value(QStringLiteral("view")).toObject();
-    const float scale = static_cast<float>(view.value(QStringLiteral("scale")).toDouble(1.0));
-    const QVector2D position(static_cast<float>(view.value(QStringLiteral("x")).toDouble()),
-                             static_cast<float>(view.value(QStringLiteral("y")).toDouble()));
-
-    auto apply = [this, sourceMoc, parameters, visibility, scale, position]() {
+    const QString sourceMoc = session.sourceMoc;
+    auto apply = [this, sourceMoc, session]() {
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
-        if (m_paramPanel) m_paramPanel->ApplyValues(parameters);
-        if (m_treePanel) m_treePanel->ApplyVisibilityState(visibility);
-        if (m_openglwindows) m_openglwindows->SetViewState(scale, position);
+        if (m_paramPanel) m_paramPanel->ApplyValues(session.parameters);
+        if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
+        if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
+                                                            QVector2D(session.viewPosition.x(), session.viewPosition.y()));
         statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
     };
     apply();
