@@ -13,6 +13,12 @@ void CMeshMap::SetRenderOrder(const QStringList& names)
     }
 }
 
+bool CMeshMap::SetMeshPositions(const QString& name, const QVector<float>& positions)
+{
+    CDrawMesh* mesh = m_vetDrawMesh.value(name, nullptr);
+    return mesh && mesh->SetPositions(positions);
+}
+
 void CMeshMap::clear()
 {
     for (QMap<QString, CDrawMesh*>::iterator i = m_vetDrawMesh.begin(); i != m_vetDrawMesh.end(); ++i) {

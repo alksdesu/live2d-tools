@@ -998,6 +998,8 @@ void MainWindow::RestDock(const QString &name)
             this, [this](const QString& name, int drawOrder){
                 if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(name, drawOrder);
             });
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged,
+            m_openglwindows, &OpengGlForm::do_SetDrawableKeyformPositions);
     const auto markSessionDirty = [this]() {
         if (m_applyingSession) return;
         m_sessionDirty = true;

@@ -22,6 +22,7 @@ public:
     void Draw(const QMatrix4x4& projection);
 
     void MoveSelect(const QVector2D& vet);//移动的向量
+    bool SetPositions(const QVector<float>& positions);
     void SetSelect(const QRectF& rect);
     void CancelSelect();
     const std::vector<CPoint*>& GetSelectPoint() const ;//保存被选择点的指针

@@ -1,6 +1,7 @@
 #ifndef CMESHMAP_H
 #define CMESHMAP_H
 #include <QString>
+#include <QVector>
 #include "cdrawmesh.h"
 
 class CMeshMap
@@ -12,6 +13,7 @@ public:
         m_vetDrawMesh.insert(name,drawMesh);
     }
     void SetRenderOrder(const QStringList& names);
+    bool SetMeshPositions(const QString& name, const QVector<float>& positions);
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
     void SetShow(const QString& artName);

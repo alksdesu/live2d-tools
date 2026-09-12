@@ -1,6 +1,7 @@
 #ifndef CTRIANGL_H
 #define CTRIANGL_H
 #include <QVector2D>
+#include <QVector>
 #include <opencv2/opencv.hpp>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QMatrix4x4>
@@ -43,6 +44,7 @@ public:
     ~CTrianglMesh();
     void normalizing();
     bool AddPoint(const QVector2D& pos);
+    bool SetPositions(const QVector<float>& positions);
     void DeleteEdge(int satat,int end);
     const short* GetEBOIndex() const;
     const int GetEBOSize()const ;

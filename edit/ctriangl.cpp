@@ -1,4 +1,5 @@
 #include "ctriangl.h"
+#include <cmath>
 
 
 
@@ -171,6 +172,17 @@ bool CTrianglMesh::AddPoint(const QVector2D &pos)
     return result;
 }
 
+bool CTrianglMesh::SetPositions(const QVector<float>& positions)
+{
+    if (positions.size() != static_cast<int>(vetPosPoint.size() * 2)) return false;
+    for (float value : positions) if (!std::isfinite(value)) return false;
+    for (int i = 0; i < vetPosPoint.size(); ++i) {
+        vetPosPoint[i]->SetPoint(QVector2D(positions[i * 2], positions[i * 2 + 1]));
+    }
+    normalizing();
+    return true;
+}
+
 void CTrianglMesh::DeleteEdge(int satat, int end)
 {
 
@@ -311,6 +323,5 @@ QMatrix4x4 CTrianglMesh::cvMatToQMatrix4x4(const cv::Mat &mat)
 
     return qMatrix;
 }
-
 
 

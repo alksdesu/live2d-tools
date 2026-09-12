@@ -267,6 +267,16 @@ void OpengGlForm::do_SetDrawableDrawOrder(const QString& name, int drawOrder)
     LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides.insert(name, qBound(0, drawOrder, 1000));
 }
 
+void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyformIndex,
+                                                  const QVector<float>& positions)
+{
+    Q_UNUSED(keyformIndex);
+    if (name.isEmpty()) return;
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
+    manager->GetModel(0)->GetModel()->GetMeshMap()->SetMeshPositions(name, positions);
+}
+
 void OpengGlForm::do_ModelChange(const QString& fileName)
 {
     if(m_ceditstate.IsContins(CEditState::ModelOpen)){

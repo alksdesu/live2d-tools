@@ -103,6 +103,11 @@ void CDrawMesh::MoveSelect(const QVector2D &vet)
     }
 }
 
+bool CDrawMesh::SetPositions(const QVector<float>& positions)
+{
+    return mesh && mesh->SetPositions(positions);
+}
+
 //世界坐标系
 void CDrawMesh::SetSelect(const QRectF &rect)
 {
@@ -210,6 +215,5 @@ void CDrawMesh::DrawMesh(const CTrianglMesh& mesh)
 
 
 }
-
 
 
