@@ -1,7 +1,9 @@
 #include "opengl/cmeshbounds.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "std/cmodeljson.h"
 #include "live2dstruct/csectiontable.h"
 #include <QtTest>
+#include <QRegularExpression>
 #include <limits>
 
 class ModelDataTests : public QObject
@@ -71,6 +73,20 @@ private slots:
         QCOMPARE(document.Deformers().size(), 28);
         QCOMPARE(document.Drawables().size(), 30);
         QVERIFY(document.Validate().isEmpty());
+    }
+
+    void modelJsonCanBeReused()
+    {
+        CModelJson model;
+        const QString path = QString(TEST_RESOURCES) + "/Mark/Mark.model3.json";
+        model.Parse(path);
+        QVERIFY(model.IsOpen());
+        const int textures = model.m_Textures.size();
+        const int motions = model.m_Motions.size();
+        model.Parse(path);
+        QCOMPARE(model.m_Textures.size(), textures);
+        QCOMPARE(model.m_Motions.size(), motions);
+        QVERIFY(!model.getAllZipFiles().contains(QRegularExpression("/(null|$)")));
     }
 
 };

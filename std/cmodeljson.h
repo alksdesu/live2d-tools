@@ -27,7 +27,8 @@ public:
     QString m_parentPath;
     QString m_modelName;
 
-
+private:
+    void Clear();
 };
 
 #endif // CMODELJSON_H
