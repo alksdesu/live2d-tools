@@ -33,6 +33,9 @@
 #include <QThread>
 #include <QProgressDialog>
 #include <QTimer>
+#include <QApplication>
+#include <QVBoxLayout>
+#include <QFrame>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
@@ -51,14 +54,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupUI();
 
     // 启动时显示占位提示
-    m_placeholder = new QLabel(
-        "<div style='text-align:center;'>"
-        "<p style='font-size:36px; color:#2B5EA8; font-weight:300; margin-bottom:8px;'>live2d2psd</p>"
-        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json / .moc3 文件</p>"
-        "<p style='font-size:12px; color:#353A50; margin-top:16px;'>Ctrl+O 打开文件 &nbsp;|&nbsp; 拖拽导入</p>"
-        "</div>", this);
-    m_placeholder->setAlignment(Qt::AlignCenter);
-    m_placeholder->setTextFormat(Qt::RichText);
+    m_placeholder = createEmptyState();
     setCentralWidget(m_placeholder);
 }
 
@@ -411,6 +407,43 @@ void MainWindow::on_actionCloseModel_triggered()
     CloseModel();
 }
 
+QWidget* MainWindow::createEmptyState()
+{
+    QWidget* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(32, 32, 32, 32);
+    layout->addStretch(1);
+
+    auto* card = new QFrame(page);
+    card->setObjectName("emptyCard");
+    card->setMaximumWidth(560);
+    auto* cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(40, 36, 40, 36);
+    cardLayout->setSpacing(12);
+
+    auto* kicker = new QLabel("Live2D 工作台", card);
+    kicker->setObjectName("emptyKicker");
+    auto* title = new QLabel("打开一个模型开始工作", card);
+    title->setObjectName("emptyTitle");
+    auto* hint = new QLabel("支持 .model3.json 和 .moc3。你可以调整参数、检查结构并导出 PSD 或 cmo3。", card);
+    hint->setObjectName("emptyHint");
+    hint->setWordWrap(true);
+    auto* open = new QPushButton("打开模型", card);
+    open->setObjectName("primaryBtn");
+    open->setMinimumHeight(36);
+    open->setToolTip("打开 model3.json 或 moc3 文件（Ctrl+O）");
+    connect(open, &QPushButton::clicked, this, &MainWindow::on_actionOpen_triggered);
+
+    cardLayout->addWidget(kicker);
+    cardLayout->addWidget(title);
+    cardLayout->addWidget(hint);
+    cardLayout->addSpacing(8);
+    cardLayout->addWidget(open);
+    layout->addWidget(card, 0, Qt::AlignHCenter);
+    layout->addStretch(1);
+    return page;
+}
+
 void MainWindow::CloseModel()
 {
     if(!m_openglwindows) return;
@@ -450,15 +483,8 @@ void MainWindow::CloseModel()
     delete m_openglwindows;
     m_openglwindows = nullptr;
 
-    // 显示占位提示
-    m_placeholder = new QLabel(
-        "<div style='text-align:center;'>"
-        "<p style='font-size:36px; color:#2B5EA8; font-weight:300; margin-bottom:8px;'>live2d2psd</p>"
-        "<p style='font-size:14px; color:#4A5070; letter-spacing:1px;'>拖入或打开 .model3.json / .moc3 文件</p>"
-        "<p style='font-size:12px; color:#353A50; margin-top:16px;'>Ctrl+O 打开文件 &nbsp;|&nbsp; 拖拽导入</p>"
-        "</div>", this);
-    m_placeholder->setAlignment(Qt::AlignCenter);
-    m_placeholder->setTextFormat(Qt::RichText);
+    m_document.Clear();
+    m_placeholder = createEmptyState();
     setCentralWidget(m_placeholder);
 
     statusBar()->showMessage("模型已关闭");
@@ -466,13 +492,19 @@ void MainWindow::CloseModel()
 
 void MainWindow::RestDock(const QString &name)
 {
-    // 清理占位控件
-    if(m_placeholder) { delete m_placeholder; m_placeholder = nullptr; }
-
-
     CModelJson modeljson;
     modeljson.Parse(name);
-    QString moc = modeljson.m_parentPath + "/" + modeljson.m_moc;
+    if (!modeljson.IsOpen() || modeljson.m_moc.isEmpty()) {
+        QMessageBox::warning(this, "打开模型失败", "model3.json 格式无效或缺少 Moc 文件引用");
+        return;
+    }
+    const QString moc = QDir(modeljson.m_parentPath).filePath(modeljson.m_moc);
+    QString documentError;
+    if (!m_document.Load(moc, &documentError)) {
+        QMessageBox::warning(this, "打开模型失败", documentError);
+        return;
+    }
+    if(m_placeholder) { delete m_placeholder; m_placeholder = nullptr; }
     m_currentMoc = moc;
     m_currentModelDir = modeljson.m_parentPath;
     CTreeManage::InitOpenLive2d(moc);

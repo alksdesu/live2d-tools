@@ -2,8 +2,8 @@
 #define CUBISMPHYSICS_H
 
 
-#include "framework\Math\CubismVector2.hpp"
-#include "framework\Physics\CubismPhysicsInternal.hpp"
+#include "framework/Math/CubismVector2.hpp"
+#include "framework/Physics/CubismPhysicsInternal.hpp"
 
 namespace Live2D { namespace Cubism { namespace Framework {
 

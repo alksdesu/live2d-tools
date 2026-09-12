@@ -69,9 +69,9 @@ signals:
     void SendSelectMesh(const QString& artName);
 
 protected:
-    virtual void initializeGL();
-    virtual void resizeGL(int w, int h);
-    virtual void paintGL();
+    void initializeGL() override;
+    void resizeGL(int w, int h) override;
+    void paintGL() override;
 
 
 public:

@@ -7,8 +7,8 @@
 
 #pragma once
 
-#include <framework\CubismFramework.hpp>
-#include <framework\ICubismAllocator.hpp>
+#include <framework/CubismFramework.hpp>
+#include <framework/ICubismAllocator.hpp>
 
 /**
 * @brief メモリアロケーションを実装するクラス。

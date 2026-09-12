@@ -6,7 +6,7 @@
  */
 #pragma once
 
-#include <framework\CubismFramework.hpp>
+#include <framework/CubismFramework.hpp>
 
 /**
 * @brief  Sample Appで使用する定数

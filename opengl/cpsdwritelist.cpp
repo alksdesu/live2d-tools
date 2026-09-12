@@ -12,11 +12,11 @@ CPsdWriteList::~CPsdWriteList()
     }
 }
 
-uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mode)
+uint32_t CPsdWriteList::CubismBlendModeToPsd(Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode mode)
 {
     switch (mode) {
-    case CubismRenderer::CubismBlendMode_Additive: return 0x6C646467; // lddg
-    case CubismRenderer::CubismBlendMode_Multiplicative: return 0x6D756C20; // mul
+    case Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode_Additive: return 0x6C646467; // lddg
+    case Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode_Multiplicative: return 0x6D756C20; // mul
     default: return 0x6E6F726D; // norm
     }
 }

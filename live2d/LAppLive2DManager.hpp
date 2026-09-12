@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <framework\CubismFramework.hpp>
+#include <framework/CubismFramework.hpp>
 #include <framework/Math/CubismMatrix44.hpp>
 #include <framework/Type/csmVector.hpp>
 #include <QString>

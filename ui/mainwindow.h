@@ -3,6 +3,7 @@
 
 #include "CPrecompileHead.h"
 #include "std/cmodeljson.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
 #include <QAction>
@@ -58,8 +59,10 @@ private:
     QString m_currentModelDir;
     void createActions();
     void setupUI();
+    QWidget* createEmptyState();
     OpengGlForm* m_headless = nullptr; // 后台离屏导出上下文
-    QLabel* m_placeholder = nullptr;   // 空状态占位提示
+    QWidget* m_placeholder = nullptr;
+    live2dstruct::CModelDocument m_document;
 
     // Dock 面板
     CModelTreePanel* m_treePanel = nullptr;
