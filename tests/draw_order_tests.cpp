@@ -81,6 +81,17 @@ private slots:
         QCOMPARE(ResolveDrawableOrder(entries, {}, groupIndices, groups), QVector<int>({0, 2, 1}));
     }
 
+    void dynamicGroupsRemainRegisteredWhenEdited()
+    {
+        const QVector<CDrawableOrder> entries = {
+            {"outside", 450, 0}, {"group_front", 700, 2}, {"group_back", 700, 1}
+        };
+        const QHash<QString, int> groupIndices = {{"group_front", 0}, {"group_back", 0}};
+        const QVector<CDrawableOrderGroup> groups = {{500, 900}};
+        QCOMPARE(ResolveDrawableOrder(entries, {{"outside", 800}, {"group_front", 900}, {"group_back", 500}},
+                                       groupIndices, groups), QVector<int>({2, 1, 0}));
+    }
+
     void nestedGroupsPreserveHierarchyAndLayerOrder()
     {
         const QVector<CModelPart> parts = {{"body", -1}, {"face", 0}, {"empty", -1}};
