@@ -67,6 +67,7 @@ private:
     QAction *m_loadSessionAction = nullptr;
     QAction *m_themeAction = nullptr;
     bool m_darkTheme = false;
+    bool m_sessionDirty = false;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
     QString m_currentModelDir;
     void createActions();

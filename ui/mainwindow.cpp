@@ -316,6 +316,8 @@ void MainWindow::on_actionSaveSession_triggered()
         QMessageBox::warning(this, QStringLiteral("保存会话失败"), saveError);
         return;
     }
+    m_sessionDirty = false;
+    setWindowTitle(QStringLiteral("live2d2psd"));
     statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
 }
 
@@ -718,6 +720,9 @@ void MainWindow::RestDock(const QString &name)
     connect(m_paramPanel, &CParamPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
         if (m_undoAction) m_undoAction->setEnabled(canUndo);
         if (m_redoAction) m_redoAction->setEnabled(canRedo);
+        m_sessionDirty = canUndo;
+        setWindowTitle(m_sessionDirty ? QStringLiteral("live2d2psd · 未保存") : QStringLiteral("live2d2psd"));
+        if (canUndo) statusBar()->showMessage(QStringLiteral("有未保存的参数修改"));
     });
     connect(m_undoAction, &QAction::triggered, m_paramPanel, &CParamPanel::Undo);
     connect(m_redoAction, &QAction::triggered, m_paramPanel, &CParamPanel::Redo);
