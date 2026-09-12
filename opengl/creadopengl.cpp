@@ -219,6 +219,7 @@ void CReadOpengl::DestroyOffscreenSurface()
         glDeleteFramebuffers(1, &_renderTexture);
         _renderTexture = 0;
     }
+    _colorBuffer = 0;
 }
 GLuint CReadOpengl::GetRenderTexture() const
 {

@@ -669,7 +669,7 @@ csmFloat32 CubismModel::GetDrawableOpacity(csmInt32 drawableIndex) const
 {
 
     const csmFloat32* opacities = Core::csmGetDrawableOpacities(_model);
-    bool ofs = opacities[drawableIndex];
+    csmFloat32 ofs = opacities[drawableIndex];
 
     // if(LAppDelegate::GetInstance()->m_IsPrintALl){
     //      if(ofs == 0.0f){
@@ -682,7 +682,7 @@ csmFloat32 CubismModel::GetDrawableOpacity(csmInt32 drawableIndex) const
 csmFloat32 CubismModel::GetDrawableOpacityAll(csmInt32 drawableIndex, bool IsALL) const
 {
     const csmFloat32* opacities = Core::csmGetDrawableOpacities(_model);
-    bool ofs = opacities[drawableIndex];
+    csmFloat32 ofs = opacities[drawableIndex];
 
     if(IsALL){
          if(ofs == 0.0f){

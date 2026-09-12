@@ -389,7 +389,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
                         uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, el->opacity * 255.0f, 255.0f));
 
                         writer.AddLayer(displayName, el->canvasRect, el->image,
-                                       opacityByte, blendKey, false, false);
+                                       opacityByte, blendKey, !el->maskIndices.isEmpty(), false);
                     }
                 } else if (dynamic_cast<live2dstruct::CPartsNode*>(node)) {
                     QString partName = node->getName();
@@ -414,7 +414,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
             uint8_t opacityByte = static_cast<uint8_t>(qBound(0.0f, el.opacity * 255.0f, 255.0f));
 
             writer.AddLayer(displayName, el.canvasRect, el.image,
-                           opacityByte, blendKey, false, false);
+                           opacityByte, blendKey, !el.maskIndices.isEmpty(), false);
         }
     }
 

@@ -135,6 +135,7 @@ void COffScreenLive::DestroyOffscreenSurface()
         glDeleteFramebuffers(1, &_renderTexture);
         _renderTexture = 0;
     }
+    _colorBuffer = 0;
 
 }
 
@@ -202,5 +203,4 @@ QImage COffScreenLive::ReadFrame(int width, int height)
 
     return image;
 }
-
 
