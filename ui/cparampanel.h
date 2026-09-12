@@ -21,10 +21,14 @@ public:
 
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
+    void HistoryChanged(bool canUndo, bool canRedo);
 
 public slots:
     void ResetAll();
     void SyncFromModel();
+    void Undo();
+    void Redo();
+    void ClearHistory();
 
 private:
     struct ParamRow {
@@ -45,6 +49,20 @@ private:
     QVector<ParamRow> m_rows;
     QSet<int> m_userDragging;
     QSet<int> m_userLocked; // 用户手动修改过的参数，不再被 sync 覆盖
+    struct Edit {
+        QString paramId;
+        float before = 0.0f;
+        float after = 0.0f;
+    };
+    QVector<Edit> m_history;
+    int m_historyIndex = 0;
+    QHash<QString, float> m_lastValues;
+    QHash<int, float> m_dragStarts;
+    bool m_replaying = false;
+
+    void ApplyValue(int rowIndex, float value, bool record);
+    void PushEdit(const QString& paramId, float before, float after);
+    void EmitHistoryState();
 };
 
 #endif // CPARAMPANEL_H

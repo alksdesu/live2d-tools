@@ -57,6 +57,8 @@ private:
     QAction *myBatchAction; // 批量导出psd
     QAction *myCloseAction; // 关闭模型
     QAction *myCmo3Action = nullptr; // 导出 cmo3 工程
+    QAction *m_undoAction = nullptr;
+    QAction *m_redoAction = nullptr;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
     QString m_currentModelDir;
     void createActions();

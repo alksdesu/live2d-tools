@@ -463,6 +463,8 @@ void MainWindow::CloseModel()
     if(m_texturePanel) { removeDockWidget(m_texturePanel); delete m_texturePanel; m_texturePanel = nullptr; }
     if(m_inspectorPanel) { removeDockWidget(m_inspectorPanel); delete m_inspectorPanel; m_inspectorPanel = nullptr; }
     if(m_diagnosticsPanel) { removeDockWidget(m_diagnosticsPanel); delete m_diagnosticsPanel; m_diagnosticsPanel = nullptr; }
+    if (m_undoAction) m_undoAction->setEnabled(false);
+    if (m_redoAction) m_redoAction->setEnabled(false);
 
     // 隐藏面板切换按钮
     m_btnToggleTree->setVisible(false);
@@ -567,6 +569,12 @@ void MainWindow::RestDock(const QString &name)
     // 右侧面板：参数控制 + 物理设置（tabify）
     m_paramPanel = new CParamPanel(this);
     addDockWidget(Qt::RightDockWidgetArea, m_paramPanel);
+    connect(m_paramPanel, &CParamPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
+        if (m_undoAction) m_undoAction->setEnabled(canUndo);
+        if (m_redoAction) m_redoAction->setEnabled(canRedo);
+    });
+    connect(m_undoAction, &QAction::triggered, m_paramPanel, &CParamPanel::Undo);
+    connect(m_redoAction, &QAction::triggered, m_paramPanel, &CParamPanel::Redo);
 
     m_physicsPanel = new CPhysicsPanel(this);
     addDockWidget(Qt::RightDockWidgetArea, m_physicsPanel);
@@ -802,6 +810,15 @@ void MainWindow::createActions()
     myCmo3Action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     myCmo3Action->setStatusTip(tr("将当前 moc3 恢复为 Cubism Editor 可编辑工程"));
     connect(myCmo3Action, &QAction::triggered, this, &MainWindow::on_actionCmo3Export_triggered);
+
+    m_undoAction = new QAction(tr("撤销"), this);
+    m_undoAction->setShortcut(QKeySequence::Undo);
+    m_undoAction->setEnabled(false);
+    m_undoAction->setStatusTip(tr("撤销最近一次参数修改"));
+    m_redoAction = new QAction(tr("重做"), this);
+    m_redoAction->setShortcut(QKeySequence::Redo);
+    m_redoAction->setEnabled(false);
+    m_redoAction->setStatusTip(tr("重做最近一次参数修改"));
 }
 
 void MainWindow::setupUI()
@@ -865,6 +882,9 @@ void MainWindow::setupUI()
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
     mainToolBar->addAction(myCmo3Action);
+    mainToolBar->addSeparator();
+    mainToolBar->addAction(m_undoAction);
+    mainToolBar->addAction(m_redoAction);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myCloseAction);
     mainToolBar->addSeparator();

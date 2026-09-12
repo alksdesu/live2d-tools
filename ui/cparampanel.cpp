@@ -6,6 +6,8 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <algorithm>
+#include <iterator>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -45,6 +47,8 @@ CParamPanel::CParamPanel(QWidget *parent)
 void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapeParams)
 {
     m_rows.clear();
+    m_lastValues.clear();
+    ClearHistory();
 
     // 删除旧 layout
     if(m_container->layout()){
@@ -137,19 +141,26 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         pr.paramId = paramId;
         pr.modelIndex = modelIdx;
         m_rows.append(pr);
+        m_lastValues.insert(paramId, defVal);
 
         int idx = m_rows.size() - 1;
-        connect(slider, &QSlider::sliderPressed, this, [this, idx](){ m_userDragging.insert(idx); });
+        connect(slider, &QSlider::sliderPressed, this, [this, idx](){
+            m_userDragging.insert(idx);
+            m_dragStarts.insert(idx, m_lastValues.value(m_rows[idx].paramId));
+        });
         connect(slider, &QSlider::sliderReleased, this, [this, idx](){
             m_userDragging.remove(idx);
             m_userLocked.insert(idx); // 用户改过的参数锁定，不再被 sync 覆盖
+            const float before = m_dragStarts.take(idx);
+            const float after = m_lastValues.value(m_rows[idx].paramId);
+            PushEdit(m_rows[idx].paramId, before, after);
         });
         connect(slider, &QSlider::valueChanged, this, [this, idx](int val){
             ParamRow& r = m_rows[idx];
             float realVal = r.minVal + (r.maxVal - r.minVal) * val / 1000.0f;
             QSignalBlocker blocker(r.spinBox);
             r.spinBox->setValue(realVal);
-            emit ParamChanged(r.paramId, realVal, false);
+            ApplyValue(idx, realVal, !m_userDragging.contains(idx));
         });
 
         connect(spinBox, &QDoubleSpinBox::valueChanged, this, [this, idx](double value){
@@ -159,7 +170,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
                 QSignalBlocker blocker(r.slider);
                 r.slider->setValue(sliderValue);
             }
-            emit ParamChanged(r.paramId, static_cast<float>(value), false);
+            ApplyValue(idx, static_cast<float>(value), true);
         });
         connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){ m_userLocked.insert(idx); });
 
@@ -215,13 +226,21 @@ void CParamPanel::ResetAll()
 {
     m_userLocked.clear();
     m_userDragging.clear();
+    m_dragStarts.clear();
     for(auto& r : m_rows){
+        const float before = m_lastValues.value(r.paramId, r.defaultVal);
         int sliderDefault = 0;
         if(r.maxVal > r.minVal){
             sliderDefault = static_cast<int>((r.defaultVal - r.minVal) / (r.maxVal - r.minVal) * 1000.0f);
         }
+        r.slider->blockSignals(true);
         r.slider->setValue(sliderDefault);
+        r.slider->blockSignals(false);
+        r.spinBox->blockSignals(true);
         r.spinBox->setValue(r.defaultVal);
+        r.spinBox->blockSignals(false);
+        ApplyValue(&r - m_rows.data(), r.defaultVal, false);
+        PushEdit(r.paramId, before, r.defaultVal);
     }
 }
 
@@ -252,5 +271,91 @@ void CParamPanel::SyncFromModel()
         r.spinBox->blockSignals(true);
         r.spinBox->setValue(curVal);
         r.spinBox->blockSignals(false);
+        m_lastValues.insert(r.paramId, curVal);
     }
+}
+
+void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
+{
+    if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
+    ParamRow& row = m_rows[rowIndex];
+    const float before = m_lastValues.value(row.paramId, value);
+    m_lastValues.insert(row.paramId, value);
+    emit ParamChanged(row.paramId, value, false);
+    if (record && !m_replaying && !qFuzzyCompare(before + 1.0f, value + 1.0f)) {
+        PushEdit(row.paramId, before, value);
+    }
+}
+
+void CParamPanel::PushEdit(const QString& paramId, float before, float after)
+{
+    if (qFuzzyCompare(before + 1.0f, after + 1.0f)) return;
+    if (m_historyIndex < m_history.size()) m_history.resize(m_historyIndex);
+    if (!m_history.isEmpty() && m_historyIndex == m_history.size()) {
+        Edit& last = m_history.last();
+        if (last.paramId == paramId && qFuzzyCompare(last.after + 1.0f, before + 1.0f)) {
+            last.after = after;
+            EmitHistoryState();
+            return;
+        }
+    }
+    m_history.push_back({paramId, before, after});
+    m_historyIndex = m_history.size();
+    EmitHistoryState();
+}
+
+void CParamPanel::EmitHistoryState()
+{
+    emit HistoryChanged(m_historyIndex > 0, m_historyIndex < m_history.size());
+}
+
+void CParamPanel::ClearHistory()
+{
+    m_history.clear();
+    m_historyIndex = 0;
+    EmitHistoryState();
+}
+
+void CParamPanel::Undo()
+{
+    if (m_historyIndex <= 0) return;
+    const Edit edit = m_history[m_historyIndex - 1];
+    m_replaying = true;
+    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.paramId; });
+    const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
+    if (rowIndex >= 0 && rowIndex < m_rows.size()) {
+        ParamRow& row = m_rows[rowIndex];
+        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((edit.before - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        QSignalBlocker sliderBlocker(row.slider);
+        QSignalBlocker spinBlocker(row.spinBox);
+        row.slider->setValue(sliderValue);
+        row.spinBox->setValue(edit.before);
+        m_lastValues.insert(edit.paramId, edit.before);
+        emit ParamChanged(edit.paramId, edit.before, false);
+    }
+    m_replaying = false;
+    --m_historyIndex;
+    EmitHistoryState();
+}
+
+void CParamPanel::Redo()
+{
+    if (m_historyIndex >= m_history.size()) return;
+    const Edit edit = m_history[m_historyIndex];
+    m_replaying = true;
+    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.paramId; });
+    const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
+    if (rowIndex >= 0 && rowIndex < m_rows.size()) {
+        ParamRow& row = m_rows[rowIndex];
+        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((edit.after - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        QSignalBlocker sliderBlocker(row.slider);
+        QSignalBlocker spinBlocker(row.spinBox);
+        row.slider->setValue(sliderValue);
+        row.spinBox->setValue(edit.after);
+        m_lastValues.insert(edit.paramId, edit.after);
+        emit ParamChanged(edit.paramId, edit.after, false);
+    }
+    m_replaying = false;
+    ++m_historyIndex;
+    EmitHistoryState();
 }
