@@ -117,6 +117,8 @@ Csm::csmVector<Csm::csmFloat32> LAppWavFileHandler::GetPcmData() const
     Csm::csmVector<Csm::csmFloat32> buffer;
 
     if (_pcmData == NULL || _wavFileInfo._numberOfChannels == 0) return buffer;
+    for (Csm::csmUint32 channelCount = 0; channelCount < _wavFileInfo._numberOfChannels; ++channelCount)
+        if (_pcmData[channelCount] == NULL) return buffer;
 
     for (Csm::csmUint32 sampleCount = 0; sampleCount < _wavFileInfo._samplesPerChannel; sampleCount++)
     {
@@ -131,7 +133,8 @@ Csm::csmVector<Csm::csmFloat32> LAppWavFileHandler::GetPcmData() const
 
 void LAppWavFileHandler::GetPcmDataChannel(Csm::csmFloat32* dst, Csm::csmUint32 useChannel) const
 {
-    if (_pcmData == NULL || dst == NULL || useChannel >= _wavFileInfo._numberOfChannels) return;
+    if (_pcmData == NULL || dst == NULL || useChannel >= _wavFileInfo._numberOfChannels ||
+        _pcmData[useChannel] == NULL) return;
     for (Csm::csmUint32 sampleCount = 0; sampleCount < _wavFileInfo._samplesPerChannel; sampleCount++)
     {
         dst[sampleCount] = _pcmData[useChannel][sampleCount];
@@ -376,6 +379,16 @@ Csm::csmBool LAppWavFileHandler::LoadWavFile(const Csm::csmString& filePath)
     LAppPal::ReleaseBytes(_byteReader._fileByte);
     _byteReader._fileByte = NULL;
     _byteReader._fileSize = 0;
+
+    if (!ret)
+    {
+        if (_rawData != NULL) {
+            CSM_FREE(_rawData);
+            _rawData = NULL;
+        }
+        _rawDataSize = 0;
+        if (_pcmData != NULL) ReleasePcmData();
+    }
 
     return ret;
 }
