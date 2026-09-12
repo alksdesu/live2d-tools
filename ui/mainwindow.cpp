@@ -826,6 +826,7 @@ void MainWindow::RestDock(const QString &name)
     // 信号连接：树面板 → OpenGL
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
     connect(m_treePanel, &CModelTreePanel::ObjectSelected, m_inspectorPanel, &CInspectorPanel::SetSelection);
+    connect(m_treePanel, &CModelTreePanel::ObjectsSelected, m_inspectorPanel, &CInspectorPanel::SetSelections);
     connect(m_treePanel, &CModelTreePanel::WarpSelected, m_openglwindows, &OpengGlForm::do_ShowWarp);
     connect(m_treePanel, &CModelTreePanel::ShowDeformers, m_openglwindows, &OpengGlForm::do_ShowDeformers);
     connect(m_treePanel, &CModelTreePanel::ShowDeformerMeshes, m_openglwindows, &OpengGlForm::do_ShowDeformerMeshes);

@@ -17,6 +17,7 @@ public:
 
     void SetDocument(const live2dstruct::CModelDocument* document);
     void SetSelection(const QString& name, const QString& type);
+    void SetSelections(const QStringList& names, const QStringList& types);
     void ClearSelection();
 
 private:

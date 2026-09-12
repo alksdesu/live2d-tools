@@ -121,6 +121,18 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
         }
     });
 
+    const auto emitSelection = [this](QTreeWidget* tree) {
+        QStringList names;
+        QStringList types;
+        for (QTreeWidgetItem* item : tree->selectedItems()) {
+            names.append(item->data(0, Qt::UserRole).toString());
+            types.append(item->data(0, Qt::UserRole + 1).toString());
+        }
+        if (!names.isEmpty()) emit ObjectsSelected(names, types);
+    };
+    connect(m_partTree, &QTreeWidget::itemSelectionChanged, this, [this, emitSelection](){ emitSelection(m_partTree); });
+    connect(m_deformerTree, &QTreeWidget::itemSelectionChanged, this, [this, emitSelection](){ emitSelection(m_deformerTree); });
+
     connect(m_partTree, &QTreeWidget::itemChanged, this, &CModelTreePanel::onPartItemChanged);
     connect(m_deformerTree, &QTreeWidget::itemChanged, this, &CModelTreePanel::onDeformerItemChanged);
 }

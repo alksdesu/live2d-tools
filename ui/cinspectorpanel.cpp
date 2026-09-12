@@ -2,6 +2,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include <QFormLayout>
 #include <QLabel>
+#include <QSet>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -80,10 +81,32 @@ void CInspectorPanel::SetSelection(const QString& name, const QString& type)
     showModelObject(name, type);
 }
 
+void CInspectorPanel::SetSelections(const QStringList& names, const QStringList& types)
+{
+    if (names.size() <= 1) {
+        if (!names.isEmpty()) SetSelection(names.first(), types.value(0));
+        return;
+    }
+    m_selectionName.clear();
+    m_selectionType.clear();
+    m_emptyLabel->setVisible(true);
+    m_emptyLabel->setText(QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围").arg(names.size()));
+    for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
+                          m_visibilityLabel, m_geometryLabel, m_textureLabel,
+                          m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
+        label->clear();
+    }
+    QSet<QString> uniqueTypes;
+    for (const QString& type : types) uniqueTypes.insert(type);
+    m_typeLabel->setText(uniqueTypes.values().join(QStringLiteral("、")));
+    m_idLabel->setText(QStringLiteral("%1 个对象").arg(names.size()));
+}
+
 void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
     m_selectionType.clear();
+    m_emptyLabel->setText(QStringLiteral("从模型结构中选择一个对象"));
     m_emptyLabel->setVisible(true);
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,

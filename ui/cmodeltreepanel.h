@@ -23,6 +23,7 @@ public slots:
 
 signals:
     void ObjectSelected(const QString& name, const QString& type);
+    void ObjectsSelected(const QStringList& names, const QStringList& types);
     void MeshSelected(const QString& artName);
     void WarpSelected(const QString& artName);
     void ShowDeformers(const QStringList& names);
