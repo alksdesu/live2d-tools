@@ -195,6 +195,7 @@ void MainWindow::on_actionOpen_triggered()
 void MainWindow::on_actionpsdPrint_triggered()
 {
     if(m_openglwindows != nullptr){
+        if (!ConfirmExportReady(QStringLiteral("PSD 导出"))) return;
         QString fileName = CFileOption::GetSvaePsdFile(this);
         if(!fileName.isEmpty()){
             CPsdPrintDialog* dialg = new  CPsdPrintDialog(this);
@@ -230,6 +231,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         QMessageBox::about(this, "请将模型拖入", "请先打开一个模型");
         return;
     }
+    if (!ConfirmExportReady(QStringLiteral("cmo3 导出"))) return;
 
     const QString defaultName = QFileInfo(m_currentMoc).completeBaseName() + ".cmo3";
     const QString outPath = QFileDialog::getSaveFileName(
@@ -272,6 +274,34 @@ void MainWindow::on_actionCmo3Export_triggered()
         statusBar()->showMessage("cmo3 导出失败", 8000);
         QMessageBox::warning(this, "导出失败", error);
     }
+}
+
+bool MainWindow::ConfirmExportReady(const QString& operation)
+{
+    if (!m_document.IsLoaded()) return true;
+    int errors = 0;
+    int warnings = 0;
+    for (const auto& diagnostic : m_document.Validate()) {
+        if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error) ++errors;
+        else ++warnings;
+    }
+    if (errors > 0) {
+        QMessageBox::warning(this, operation + QStringLiteral("已阻止"),
+                             QStringLiteral("模型检查发现 %1 个错误，请先在“模型检查”面板处理。").arg(errors));
+        if (m_diagnosticsPanel) {
+            m_diagnosticsPanel->show();
+            m_diagnosticsPanel->raise();
+        }
+        return false;
+    }
+    if (warnings > 0) {
+        const auto answer = QMessageBox::question(
+            this, operation + QStringLiteral("存在警告"),
+            QStringLiteral("模型检查发现 %1 个警告，仍要继续吗？").arg(warnings),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        return answer == QMessageBox::Yes;
+    }
+    return true;
 }
 
 void MainWindow::on_actionBatchPsd_triggered()
@@ -361,6 +391,22 @@ void MainWindow::on_actionBatchPsd_triggered()
 
 void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract, bool cubismCompat)
 {
+    CModelJson preflightJson;
+    preflightJson.Parse(modelPath);
+    const QString preflightMoc = preflightJson.IsOpen()
+        ? QDir(preflightJson.m_parentPath).filePath(preflightJson.m_moc) : QString();
+    live2dstruct::CModelDocument preflight;
+    QString preflightError;
+    if (preflightMoc.isEmpty() || !preflight.Load(preflightMoc, &preflightError)) {
+        emit oneExportFinished(false, outPath);
+        return;
+    }
+    for (const auto& diagnostic : preflight.Validate()) {
+        if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error) {
+            emit oneExportFinished(false, outPath);
+            return;
+        }
+    }
     // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
     if(m_openglwindows){
         bool wasActive = m_openglwindows->m_timer.isActive();

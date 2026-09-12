@@ -45,6 +45,7 @@ private:
     void CloseModel();
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
+    bool ConfirmExportReady(const QString& operation);
 
 
 
