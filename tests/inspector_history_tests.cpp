@@ -84,6 +84,22 @@ private slots:
         QCOMPARE(document.DrawableKeyformPositions(id, 0), mirrorBefore);
         panel.Redo();
         QCOMPARE(document.DrawableKeyformPositions(id, 0), mirrorAfter);
+        auto* interpolatePrevious = panel.findChild<QPushButton*>("interpolatePreviousKeyform");
+        QVERIFY(interpolatePrevious);
+        if (interpolatePrevious->isEnabled() && keyformSelector->count() > 1) {
+            keyformSelector->setCurrentIndex(1);
+            const QVector<float> current = document.DrawableKeyformPositions(id, 1);
+            const QVector<float> previous = document.DrawableKeyformPositions(id, 0);
+            QVERIFY(current.size() == previous.size() && !current.isEmpty());
+            interpolatePrevious->click();
+            const QVector<float> interpolated = document.DrawableKeyformPositions(id, 1);
+            QVERIFY(qAbs(interpolated.first() - (current.first() + previous.first()) * 0.5f) < 0.00001f);
+            panel.Undo();
+            QCOMPARE(document.DrawableKeyformPositions(id, 1), current);
+            panel.Redo();
+            QCOMPARE(document.DrawableKeyformPositions(id, 1), interpolated);
+            keyformSelector->setCurrentIndex(0);
+        }
 
         const QString secondId = document.Drawables().at(1).id;
         const float secondOpacity = document.DrawableOpacity(document.Drawables().at(1));

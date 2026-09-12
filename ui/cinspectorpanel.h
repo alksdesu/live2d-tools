@@ -50,6 +50,7 @@ private:
     void RebuildKeyformTable();
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
+    void InterpolatePreviousKeyform();
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -70,6 +71,7 @@ private:
     QTableWidget* m_vertexTable = nullptr;
     QPushButton* m_mirrorHorizontal = nullptr;
     QPushButton* m_mirrorVertical = nullptr;
+    QPushButton* m_interpolatePrevious = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     QSet<QString> m_lockedKeys;

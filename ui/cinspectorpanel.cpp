@@ -81,12 +81,16 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     keyformToolsLayout->setContentsMargins(0, 0, 0, 0);
     m_mirrorHorizontal = new QPushButton(QStringLiteral("水平镜像"), keyformTools);
     m_mirrorVertical = new QPushButton(QStringLiteral("垂直镜像"), keyformTools);
+    m_interpolatePrevious = new QPushButton(QStringLiteral("与前一形插值"), keyformTools);
     m_mirrorHorizontal->setObjectName(QStringLiteral("mirrorHorizontal"));
     m_mirrorVertical->setObjectName(QStringLiteral("mirrorVertical"));
+    m_interpolatePrevious->setObjectName(QStringLiteral("interpolatePreviousKeyform"));
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
+    m_interpolatePrevious->setEnabled(false);
     keyformToolsLayout->addWidget(m_mirrorHorizontal);
     keyformToolsLayout->addWidget(m_mirrorVertical);
+    keyformToolsLayout->addWidget(m_interpolatePrevious);
 
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -122,6 +126,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     });
     connect(m_mirrorHorizontal, &QPushButton::clicked, this, [this](){ MirrorKeyform(true); });
     connect(m_mirrorVertical, &QPushButton::clicked, this, [this](){ MirrorKeyform(false); });
+    connect(m_interpolatePrevious, &QPushButton::clicked, this, [this](){ InterpolatePreviousKeyform(); });
     connect(m_visibilityCheck, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state){
         if (state == Qt::PartiallyChecked) return;
         const bool visible = state == Qt::Checked;
@@ -264,6 +269,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_vertexTable->setRowCount(0);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
+    m_interpolatePrevious->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -434,6 +440,28 @@ void CInspectorPanel::MirrorKeyform(bool horizontal)
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
+void CInspectorPanel::InterpolatePreviousKeyform()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    if (keyformIndex <= 0) return;
+    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    const QVector<float> previous = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex - 1);
+    if (before.isEmpty() || before.size() != previous.size()) return;
+    QVector<float> after;
+    after.resize(before.size());
+    for (int i = 0; i < before.size(); ++i) after[i] = (before[i] + previous[i]) * 0.5f;
+    if (after == before) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    RebuildKeyformTable();
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
 void CInspectorPanel::ClearSelection()
 {
     m_selectionName.clear();
@@ -457,6 +485,7 @@ void CInspectorPanel::ClearSelection()
     m_vertexTable->setRowCount(0);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
+    m_interpolatePrevious->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -550,6 +579,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_vertexTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
+    m_interpolatePrevious->setEnabled(false);
     m_updatingKeyform = false;
 
     if (type == QLatin1String("artmesh")) {
@@ -586,6 +616,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_keyformCombo->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_mirrorHorizontal->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_mirrorVertical->setEnabled(unlocked && !drawable.keyforms.isEmpty());
+            m_interpolatePrevious->setEnabled(unlocked && drawable.keyforms.size() > 1);
             if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
             m_updatingKeyform = false;
             RebuildKeyformTable();
