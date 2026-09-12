@@ -117,7 +117,8 @@ void CInspectorPanel::SetSelection(const QString& name, const QString& type)
 void CInspectorPanel::SetSelections(const QStringList& names, const QStringList& types)
 {
     if (names.size() <= 1) {
-        if (!names.isEmpty()) SetSelection(names.first(), types.value(0));
+        if (names.isEmpty()) ClearSelection();
+        else SetSelection(names.first(), types.value(0));
         return;
     }
     m_selectionName.clear();
