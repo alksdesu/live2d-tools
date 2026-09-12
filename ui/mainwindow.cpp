@@ -989,7 +989,9 @@ void MainWindow::RestDock(const QString &name)
 
     // 信号连接：参数面板 → OpenGL
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
-    connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
+    connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
+        if (m_paramPanel) m_paramPanel->ApplyExternalValue(name, value, true);
+    });
 
     // 信号连接：OpenGL → 树面板高亮
     connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_treePanel, &CModelTreePanel::HighlightMesh);
