@@ -101,6 +101,7 @@ QVector<QPair<int,CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndex
 
     partNameToName.clear();
     m_sort.clear();
+    if (!model || m_mocName.isEmpty()) return {};
     QMap<QString,int> qMapNameToIndex;
     CCidJson* cid = new CCidJson();
     cid->Parse(m_CidPath);
@@ -117,7 +118,11 @@ QVector<QPair<int,CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndex
 
 
     for(int i = 0 ;i < size ;i++){
-        QString drName(model->GetDrawableId(sortedDrawableIndexList[i])->GetString().GetRawString()) ;
+        const int drawableIndex = sortedDrawableIndexList[i];
+        if (drawableIndex < 0 || drawableIndex >= model->GetDrawableCount()) continue;
+        const auto drawableId = model->GetDrawableId(drawableIndex);
+        if (!drawableId) continue;
+        QString drName(drawableId->GetString().GetRawString()) ;
         m_sort.insert(drName,i);//权重
         qMapNameToIndex.insert(drName,sortedDrawableIndexList[i]);//顺序
     }
@@ -154,7 +159,7 @@ QVector<QPair<int,CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndex
             out.push_back(QPair<int,LayerType>(0,LayerType::GroupEnd ) );
         }
         else{
-            out.push_back(QPair<int,LayerType>(qMapNameToIndex[name],LayerType::Layer) );
+            if (qMapNameToIndex.contains(name)) out.push_back(QPair<int,LayerType>(qMapNameToIndex.value(name),LayerType::Layer) );
         }
 
         //这里换成中文名称输出

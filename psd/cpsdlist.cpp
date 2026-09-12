@@ -156,6 +156,7 @@ void CPsdList::AddGroupEnd(const char* groupName)
 
 bool CPsdList::CreatePsd()
 {
+    if (!document) return false;
 
     NativeFile file(&allocator);
 
