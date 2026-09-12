@@ -1,13 +1,40 @@
 #include "cmesh.h"
+#include <QOpenGLContext>
 
 CMesh::CMesh() {
-
-    IsEbo =true;
 }
 
 CMesh::~CMesh()
 {
+    delete textureMaskFrame;
+    textureMaskFrame = nullptr;
+    if (!QOpenGLContext::currentContext()) {
+        m_EBO = 0;
+        m_VAO = 0;
+        m_vboIdList.clear();
+        return;
+    }
+    if (m_EBO != 0) glDeleteBuffers(1, &m_EBO);
+    if (!m_vboIdList.isEmpty()) glDeleteBuffers(m_vboIdList.size(), m_vboIdList.constData());
+    if (m_VAO != 0) glDeleteVertexArrays(1, &m_VAO);
+}
 
+namespace {
+void clearMeshBuffers(QOpenGLFunctions_3_3_Core* functions, GLuint& vao, GLuint& ebo, QVector<unsigned int>& vbos)
+{
+    if (!QOpenGLContext::currentContext()) {
+        ebo = 0;
+        vao = 0;
+        vbos.clear();
+        return;
+    }
+    if (ebo != 0) functions->glDeleteBuffers(1, &ebo);
+    if (!vbos.isEmpty()) functions->glDeleteBuffers(vbos.size(), vbos.constData());
+    if (vao != 0) functions->glDeleteVertexArrays(1, &vao);
+    ebo = 0;
+    vao = 0;
+    vbos.clear();
+}
 }
 
 
@@ -20,6 +47,7 @@ void CMesh::setGlOwningContext(const QOpenGLContext *context)
 
 void CMesh::SetConstPoint(float *uvVertex, float *positionVertex, unsigned int *indices)
 {
+    clearMeshBuffers(this, m_VAO, m_EBO, m_vboIdList);
     IsEbo =true;
     unsigned int VBO;
     glGenVertexArrays(1, &m_VAO);
@@ -54,6 +82,7 @@ void CMesh::SetConstPoint(float *uvVertex, float *positionVertex, unsigned int *
 
 void CMesh::SetConstPointEBO(float *uvVertex, float *positionVertex)
 {
+    clearMeshBuffers(this, m_VAO, m_EBO, m_vboIdList);
     IsEbo =false;
     unsigned int VBO;
     glGenVertexArrays(1, &m_VAO);
@@ -84,18 +113,20 @@ void CMesh::SetConstPointEBO(float *uvVertex, float *positionVertex)
 
 void CMesh::SetImage(const QString &name)
 {
-    textureMaskFrame = new QOpenGLTexture(QImage(name).mirrored());
+    delete textureMaskFrame;
+    textureMaskFrame = nullptr;
+    const QImage image(name);
+    if (!image.isNull()) textureMaskFrame = new QOpenGLTexture(image.mirrored());
 }
 
 void CMesh::Draw()
 {
+    if (m_VAO == 0 || !textureMaskFrame) return;
     glBindVertexArray(m_VAO);//
     glActiveTexture(GL_TEXTURE0);
     textureMaskFrame->bind(0);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, NULL);
 
 }
-
-
 
 

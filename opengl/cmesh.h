@@ -21,12 +21,12 @@ public:
     }
 private:
 
-    bool IsEbo;
-    unsigned int m_VAO;
-    unsigned int m_EBO;
+    bool IsEbo = true;
+    unsigned int m_VAO = 0;
+    unsigned int m_EBO = 0;
     QVector<unsigned int> m_vboIdList;
 
-    QOpenGLTexture* textureMaskFrame;
+    QOpenGLTexture* textureMaskFrame = nullptr;
 };
 
 #endif // CMESH_H
