@@ -80,6 +80,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Inspector 支持 ArtMesh 拓扑剪贴板复制/粘贴，跨网格粘贴会校验顶点数和索引范围。
 - Inspector 支持当前 Keyform 的多顶点 X/Y 批量平移，整次操作可撤销/重做。
 - Inspector 支持选中多个顶点的拓扑合并，自动过滤退化和重复三角形。
+- Inspector 支持围绕选区中心缩放和旋转当前 Keyform 顶点。
 - Inspector 支持 Clipping Mask 多选编辑；蒙版关系进入文档命令栈、session、诊断和 cmo3 `clipGuidList`。
 - Inspector 支持同 Part Warp/Rotation Deformer 父级调整；关系进入文档命令栈、session、环检测和 cmo3 `targetDeformerGuid`。
 - 物理配置保存成功后先创建新 Cubism Physics 实例再替换运行时实例，失败时保留旧实例。
