@@ -170,6 +170,28 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
+    auto* vertexTransformTools = new QWidget(content);
+    auto* vertexTransformLayout = new QHBoxLayout(vertexTransformTools);
+    vertexTransformLayout->setContentsMargins(0, 0, 0, 0);
+    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("ΔX"), vertexTransformTools));
+    m_vertexDeltaX = new QDoubleSpinBox(vertexTransformTools);
+    m_vertexDeltaX->setObjectName(QStringLiteral("vertexDeltaX"));
+    m_vertexDeltaX->setRange(-10000.0, 10000.0);
+    m_vertexDeltaX->setDecimals(4);
+    m_vertexDeltaX->setSingleStep(0.01);
+    vertexTransformLayout->addWidget(m_vertexDeltaX);
+    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("ΔY"), vertexTransformTools));
+    m_vertexDeltaY = new QDoubleSpinBox(vertexTransformTools);
+    m_vertexDeltaY->setObjectName(QStringLiteral("vertexDeltaY"));
+    m_vertexDeltaY->setRange(-10000.0, 10000.0);
+    m_vertexDeltaY->setDecimals(4);
+    m_vertexDeltaY->setSingleStep(0.01);
+    vertexTransformLayout->addWidget(m_vertexDeltaY);
+    m_moveVertices = new QPushButton(QStringLiteral("移动选中顶点"), vertexTransformTools);
+    m_moveVertices->setObjectName(QStringLiteral("moveSelectedVertices"));
+    m_moveVertices->setEnabled(false);
+    vertexTransformLayout->addWidget(m_moveVertices, 1);
+    form->addRow(QStringLiteral("顶点变换"), vertexTransformTools);
     form->addRow(QStringLiteral("顶点位置"), m_vertexTable);
     layout->addLayout(form);
     layout->addStretch(1);
@@ -191,6 +213,11 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_copyTopology, &QPushButton::clicked, this, [this](){ CopyTopology(); });
     connect(m_pasteTopology, &QPushButton::clicked, this, [this](){ PasteTopology(); });
     connect(m_editMasks, &QPushButton::clicked, this, [this](){ EditMasks(); });
+    connect(m_moveVertices, &QPushButton::clicked, this, [this](){ TranslateSelectedVertices(); });
+    connect(m_vertexTable, &QTableWidget::itemSelectionChanged, this, [this](){
+        m_moveVertices->setEnabled(m_vertexTable->selectedItems().size() > 0 &&
+                                   m_vertexTable->isEnabled() && m_vertexDeltaX && m_vertexDeltaY);
+    });
     connect(m_maskInvertedCheck, &QCheckBox::toggled, this, [this](bool inverted){
         if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") ||
             m_selectionName.isEmpty() || IsLocked(m_selectionType, m_selectionName)) return;
@@ -376,6 +403,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_maskInvertedCheck->setEnabled(false);
     m_maskInvertedCheck->setChecked(false);
     m_deformerParentCombo->setEnabled(false);
+    m_moveVertices->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -886,6 +914,7 @@ void CInspectorPanel::ClearSelection()
     m_editMasks->setEnabled(false);
     m_maskInvertedCheck->setChecked(false);
     m_deformerParentCombo->setEnabled(false);
+    m_moveVertices->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -969,6 +998,36 @@ void CInspectorPanel::EditMasks()
     emit DrawableMaskIndicesChanged(m_selectionName, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     showModelObject(m_selectionName, m_selectionType);
+}
+
+void CInspectorPanel::TranslateSelectedVertices()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName) || !m_vertexDeltaX || !m_vertexDeltaY) return;
+    const float deltaX = static_cast<float>(m_vertexDeltaX->value());
+    const float deltaY = static_cast<float>(m_vertexDeltaY->value());
+    if (!std::isfinite(deltaX) || !std::isfinite(deltaY) || (deltaX == 0.0f && deltaY == 0.0f)) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    if (keyformIndex < 0 || before.isEmpty() || before.size() % 2 != 0) return;
+    QSet<int> rows;
+    for (const QTableWidgetSelectionRange& range : m_vertexTable->selectedRanges()) {
+        for (int row = range.topRow(); row <= range.bottomRow(); ++row) rows.insert(row);
+    }
+    if (rows.isEmpty()) return;
+    QVector<float> after = before;
+    for (int row : rows) {
+        if (row < 0 || row * 2 + 1 >= after.size()) continue;
+        after[row * 2] += deltaX;
+        after[row * 2 + 1] += deltaY;
+    }
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    RebuildKeyformTable();
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
 void CInspectorPanel::Undo()
