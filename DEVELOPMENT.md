@@ -36,7 +36,7 @@
 - [x] 多选、独显、锁定、搜索、批量编辑、复制粘贴、同 Part Deformer 父级调整。
 - [ ] 参数创建/删除/元数据/分组/颜色、XY 联动、关键形标记/网格和绑定验证。
 - [x] 关键形复制/粘贴/插值/镜像；Blend Shape 参数编辑和保存。
-- [ ] ArtMesh 顶点移动/增删/合并、三角剖分、自动网格、复制、对称编辑。
+- [ ] ArtMesh 顶点增删/合并、三角剖分、自动网格、复制、对称编辑。
 - [ ] Warp/Rotation 创建/删除/重命名/父子调整、行列/中心/角度/缩放/反射编辑。
 - [x] 多蒙版关系编辑、重复/自引用诊断和 cmo3/session 往返。
 - [x] 反向蒙版开关及空蒙版保护，进入 session、诊断和 cmo3 `invertClippingMask`。
@@ -78,6 +78,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Inspector 支持关键形顶点 X/Y 编辑、水平/垂直镜像、相邻关键形 50% 插值；合法覆盖会写入 session 并进入 cmo3 生成。
 - Inspector 支持 ArtMesh 自动三角剖分；索引覆盖进入文档命令栈、实时网格、会话和 cmo3，非法索引会回退原始拓扑。
 - Inspector 支持 ArtMesh 拓扑剪贴板复制/粘贴，跨网格粘贴会校验顶点数和索引范围。
+- Inspector 支持当前 Keyform 的多顶点 X/Y 批量平移，整次操作可撤销/重做。
 - Inspector 支持 Clipping Mask 多选编辑；蒙版关系进入文档命令栈、session、诊断和 cmo3 `clipGuidList`。
 - Inspector 支持同 Part Warp/Rotation Deformer 父级调整；关系进入文档命令栈、session、环检测和 cmo3 `targetDeformerGuid`。
 - 物理配置保存成功后先创建新 Cubism Physics 实例再替换运行时实例，失败时保留旧实例。
