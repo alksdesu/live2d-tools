@@ -883,6 +883,7 @@ void MainWindow::RestDock(const QString &name)
     };
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, markSessionDirty);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged, this, markSessionDirty);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged, this, markSessionDirty);
 
     // 信号连接：物理面板 → 模型
     connect(m_physicsPanel, &CPhysicsPanel::GravityChanged, this, [](float x, float y){
