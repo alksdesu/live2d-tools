@@ -498,7 +498,8 @@ void CModelTreePanel::ApplyVisibilityState(const QMap<QString, bool>& state)
     const auto emitState = [this](QTreeWidgetItem* item, auto&& emitRef) -> void {
         const QString type = item->data(0, Qt::UserRole + 1).toString();
         const QString id = item->data(0, Qt::UserRole).toString();
-        if (!type.isEmpty() && !id.isEmpty()) emit VisibilityChanged(id, type, item->checkState(0) == Qt::Checked);
+        if ((type == QLatin1String("part") || type == QLatin1String("artmesh")) && !id.isEmpty())
+            emit VisibilityChanged(id, type, item->checkState(0) == Qt::Checked);
         for (int i = 0; i < item->childCount(); ++i) emitRef(item->child(i), emitRef);
     };
     for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
