@@ -10,6 +10,7 @@ class CModelDocument;
 class QLabel;
 class QCheckBox;
 class QDoubleSpinBox;
+class QSpinBox;
 
 class CInspectorPanel : public QDockWidget
 {
@@ -25,6 +26,7 @@ public:
 signals:
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
     void DrawableOpacityChanged(const QString& name, float opacity);
+    void DrawableDrawOrderChanged(const QString& name, int drawOrder);
 
 private:
     void showModelObject(const QString& name, const QString& type);
@@ -40,6 +42,7 @@ private:
     QLabel* m_visibilityLabel = nullptr;
     QCheckBox* m_visibilityCheck = nullptr;
     QDoubleSpinBox* m_opacitySpin = nullptr;
+    QSpinBox* m_drawOrderSpin = nullptr;
     bool m_updatingVisibility = false;
     QLabel* m_geometryLabel = nullptr;
     QLabel* m_textureLabel = nullptr;

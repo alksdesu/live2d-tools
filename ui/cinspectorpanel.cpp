@@ -5,6 +5,7 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QSet>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -45,6 +46,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_opacitySpin->setRange(0.0, 1.0);
     m_opacitySpin->setDecimals(3);
     m_opacitySpin->setSingleStep(0.05);
+    m_drawOrderSpin = new QSpinBox(content);
+    m_drawOrderSpin->setRange(0, 1000);
     m_geometryLabel = new QLabel(content);
     m_textureLabel = new QLabel(content);
     m_drawOrderLabel = new QLabel(content);
@@ -65,6 +68,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("可见 / 启用"), m_visibilityLabel);
     form->addRow(QStringLiteral("编辑可见性"), m_visibilityCheck);
     form->addRow(QStringLiteral("编辑透明度"), m_opacitySpin);
+    form->addRow(QStringLiteral("编辑绘制顺序"), m_drawOrderSpin);
     form->addRow(QStringLiteral("几何"), m_geometryLabel);
     form->addRow(QStringLiteral("纹理"), m_textureLabel);
     form->addRow(QStringLiteral("绘制顺序"), m_drawOrderLabel);
@@ -86,6 +90,11 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
         if (m_document->SetDrawableOpacity(m_selectionName, static_cast<float>(value)))
             emit DrawableOpacityChanged(m_selectionName, static_cast<float>(value));
+    });
+    connect(m_drawOrderSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value){
+        if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
+        if (m_document->SetDrawableDrawOrder(m_selectionName, value))
+            emit DrawableDrawOrderChanged(m_selectionName, value);
     });
     ClearSelection();
 }
@@ -118,6 +127,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_visibilityCheck->setEnabled(false);
     m_opacitySpin->setValue(1.0);
     m_opacitySpin->setEnabled(false);
+    m_drawOrderSpin->setValue(0);
+    m_drawOrderSpin->setEnabled(false);
     m_updatingVisibility = false;
     m_emptyLabel->setText(QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围").arg(names.size()));
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
@@ -142,6 +153,8 @@ void CInspectorPanel::ClearSelection()
     m_opacitySpin->setValue(1.0);
     m_visibilityCheck->setEnabled(false);
     m_opacitySpin->setEnabled(false);
+    m_drawOrderSpin->setValue(0);
+    m_drawOrderSpin->setEnabled(false);
     m_updatingVisibility = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -174,6 +187,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_keyformLabel->setText(QStringLiteral("—"));
     m_visibilityCheck->setEnabled(true);
     m_opacitySpin->setEnabled(false);
+    m_drawOrderSpin->setEnabled(false);
 
     if (type == QLatin1String("artmesh")) {
         for (const auto& drawable : m_document->Drawables()) {
@@ -188,6 +202,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_updatingVisibility = true;
             m_opacitySpin->setValue(m_document->DrawableOpacity(drawable));
             m_opacitySpin->setEnabled(true);
+            m_drawOrderSpin->setValue(qRound(m_document->DrawableDrawOrder(drawable)));
+            m_drawOrderSpin->setEnabled(true);
             m_updatingVisibility = false;
             m_geometryLabel->setText(QStringLiteral("%1 顶点，%2 索引").arg(drawable.vertexCount).arg(drawable.indices.size()));
             m_textureLabel->setText(drawable.textureIndex < 0 ? QStringLiteral("无") : QString::number(drawable.textureIndex));

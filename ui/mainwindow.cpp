@@ -274,6 +274,7 @@ void MainWindow::on_actionCmo3Export_triggered()
     }
     options.hiddenIds = m_document.HiddenIds();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
+    options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();
 
     QString error;
     const bool ok = cmo3::CCmo3Builder::Build(options, &error);
@@ -309,6 +310,7 @@ void MainWindow::on_actionSaveSession_triggered()
         session.visibility = m_treePanel->VisibilityState();
     }
     session.drawableOpacity = m_document.DrawableOpacityOverrides();
+    session.drawableDrawOrder = m_document.DrawableDrawOrderOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
@@ -347,6 +349,10 @@ void MainWindow::on_actionLoadSession_triggered()
         for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
             m_document.SetDrawableOpacity(it.key(), it.value());
             if (m_openglwindows) m_openglwindows->do_SetDrawableOpacity(it.key(), it.value());
+        }
+        for (auto it = session.drawableDrawOrder.cbegin(); it != session.drawableDrawOrder.cend(); ++it) {
+            m_document.SetDrawableDrawOrder(it.key(), it.value());
+            if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(it.key(), it.value());
         }
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
@@ -865,6 +871,10 @@ void MainWindow::RestDock(const QString &name)
     connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, m_treePanel, &CModelTreePanel::SetVisibility);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableOpacity);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged,
+            this, [this](const QString& name, int drawOrder){
+                if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(name, drawOrder);
+            });
     const auto markSessionDirty = [this]() {
         if (m_applyingSession) return;
         m_sessionDirty = true;

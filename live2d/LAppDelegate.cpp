@@ -62,6 +62,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
     m_IsPrintFenzu=false;
     m_hiddenDrawables.clear();
     m_drawableOpacityOverrides.clear();
+    m_drawableDrawOrderOverrides.clear();
 
     _IsOffScreen =false;
 
@@ -101,6 +102,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
 void LAppDelegate::Release()
 {
     m_drawableOpacityOverrides.clear();
+    m_drawableDrawOrderOverrides.clear();
     delete _textureManager;
     delete _view;
     LAppLive2DManager::ReleaseInstance();
@@ -461,6 +463,7 @@ void LAppDelegate::ChangeScene(const QString &modelJsonName)
 {
 
     m_drawableOpacityOverrides.clear();
+    m_drawableDrawOrderOverrides.clear();
     LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
     live2DManager->ChangeSceneFileName(modelJsonName);
 }

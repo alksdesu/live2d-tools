@@ -611,7 +611,7 @@ void Generator::writeArtMeshEntities()
             m_xml.Null(QStringLiteral("name"));
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject(); // ACForm
-            m_xml.I(QStringLiteral("drawOrder"), qRound(kf->draw_orders));
+            m_xml.I(QStringLiteral("drawOrder"), m_opt.drawableDrawOrderOverrides.value(mesh->ids, qRound(kf->draw_orders)));
             m_xml.F(QStringLiteral("opacity"), m_opt.drawableOpacityOverrides.value(mesh->ids, kf->opacities));
             m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
             m_xml.EndObject(); // ACDrawableForm

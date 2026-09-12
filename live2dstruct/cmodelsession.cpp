@@ -27,6 +27,9 @@ QByteArray CModelSession::ToJson() const
     QJsonObject opacityObject;
     for (auto it = drawableOpacity.cbegin(); it != drawableOpacity.cend(); ++it) opacityObject.insert(it.key(), static_cast<double>(it.value()));
     root.insert(QStringLiteral("drawableOpacity"), opacityObject);
+    QJsonObject drawOrderObject;
+    for (auto it = drawableDrawOrder.cbegin(); it != drawableDrawOrder.cend(); ++it) drawOrderObject.insert(it.key(), it.value());
+    root.insert(QStringLiteral("drawableDrawOrder"), drawOrderObject);
     QJsonObject view;
     view.insert(QStringLiteral("scale"), static_cast<double>(viewScale));
     view.insert(QStringLiteral("x"), viewPosition.x());
@@ -63,6 +66,8 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     for (const QString& key : visibilityObject.keys()) result.visibility.insert(key, visibilityObject.value(key).toBool());
     const QJsonObject opacityObject = root.value(QStringLiteral("drawableOpacity")).toObject();
     for (const QString& key : opacityObject.keys()) result.drawableOpacity.insert(key, static_cast<float>(opacityObject.value(key).toDouble()));
+    const QJsonObject drawOrderObject = root.value(QStringLiteral("drawableDrawOrder")).toObject();
+    for (const QString& key : drawOrderObject.keys()) result.drawableDrawOrder.insert(key, drawOrderObject.value(key).toInt());
     const QJsonObject view = root.value(QStringLiteral("view")).toObject();
     result.viewScale = static_cast<float>(view.value(QStringLiteral("scale")).toDouble(1.0));
     result.viewPosition = QPointF(view.value(QStringLiteral("x")).toDouble(), view.value(QStringLiteral("y")).toDouble());

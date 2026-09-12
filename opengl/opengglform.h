@@ -61,6 +61,7 @@ public slots:
     void do_change_para_value(const QString& name,float value,bool IsInit);
     void do_SetVisibility(const QString& name, const QString& type, bool visible);
     void do_SetDrawableOpacity(const QString& name, float opacity);
+    void do_SetDrawableDrawOrder(const QString& name, int drawOrder);
     void do_ShowDeformers(const QStringList& names);
     void do_ShowDeformerMeshes(const QStringList& artMeshNames);
     void do_SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,

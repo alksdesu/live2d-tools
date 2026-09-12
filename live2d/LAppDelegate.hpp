@@ -59,6 +59,7 @@ public:
     // 可见性控制：隐藏的 drawable 名称集合
     QSet<QString> m_hiddenDrawables;
     QHash<QString, float> m_drawableOpacityOverrides;
+    QHash<QString, int> m_drawableDrawOrderOverrides;
 
     // 背景色
     float m_clearColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -110,4 +111,3 @@ private:
     QString ResourcesPath;
 
 };
-

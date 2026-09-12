@@ -246,6 +246,12 @@ void OpengGlForm::do_SetDrawableOpacity(const QString& name, float opacity)
     LAppDelegate::GetInstance()->m_drawableOpacityOverrides.insert(name, qBound(0.0f, opacity, 1.0f));
 }
 
+void OpengGlForm::do_SetDrawableDrawOrder(const QString& name, int drawOrder)
+{
+    if (name.isEmpty()) return;
+    LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides.insert(name, qBound(0, drawOrder, 1000));
+}
+
 void OpengGlForm::do_ModelChange(const QString& fileName)
 {
     if(m_ceditstate.IsContins(CEditState::ModelOpen)){

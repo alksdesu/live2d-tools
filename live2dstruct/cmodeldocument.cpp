@@ -32,6 +32,7 @@ void CModelDocument::Clear()
     m_deformers.clear();
     m_drawables.clear();
     m_drawableOpacityOverrides.clear();
+    m_drawableDrawOrderOverrides.clear();
 }
 
 bool CModelDocument::Load(const QString& mocPath, QString* error)
@@ -189,6 +190,21 @@ bool CModelDocument::SetDrawableOpacity(const QString& id, float opacity)
 float CModelDocument::DrawableOpacity(const CModelDrawable& drawable) const
 {
     return m_drawableOpacityOverrides.value(drawable.id, drawable.opacity);
+}
+
+bool CModelDocument::SetDrawableDrawOrder(const QString& id, int drawOrder)
+{
+    for (const CModelDrawable& drawable : m_drawables) {
+        if (drawable.id != id) continue;
+        m_drawableDrawOrderOverrides.insert(id, qBound(0, drawOrder, 1000));
+        return true;
+    }
+    return false;
+}
+
+float CModelDocument::DrawableDrawOrder(const CModelDrawable& drawable) const
+{
+    return m_drawableDrawOrderOverrides.value(drawable.id, static_cast<int>(qBound(0.0f, drawable.drawOrder, 1000.0f)));
 }
 
 QSet<QString> CModelDocument::HiddenIds() const

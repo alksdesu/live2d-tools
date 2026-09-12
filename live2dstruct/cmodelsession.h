@@ -16,6 +16,7 @@ struct CModelSession
     QMap<QString, float> parameters;
     QMap<QString, bool> visibility;
     QHash<QString, float> drawableOpacity;
+    QHash<QString, int> drawableDrawOrder;
     float viewScale = 1.0f;
     QPointF viewPosition;
 

@@ -26,6 +26,7 @@ public:
         QString physicsPath;             // 可选 .physics3.json
         QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
         QHash<QString, float> drawableOpacityOverrides;
+        QHash<QString, int> drawableDrawOrderOverrides;
     };
 
     // 全流程执行；失败时 outError 带原因

@@ -96,6 +96,9 @@ public:
     bool SetDrawableOpacity(const QString& id, float opacity);
     float DrawableOpacity(const CModelDrawable& drawable) const;
     const QHash<QString, float>& DrawableOpacityOverrides() const { return m_drawableOpacityOverrides; }
+    bool SetDrawableDrawOrder(const QString& id, int drawOrder);
+    float DrawableDrawOrder(const CModelDrawable& drawable) const;
+    const QHash<QString, int>& DrawableDrawOrderOverrides() const { return m_drawableDrawOrderOverrides; }
     QSet<QString> HiddenIds() const;
 
     QVector<CModelDiagnostic> Validate() const;
@@ -109,6 +112,7 @@ private:
     QVector<CModelDeformer> m_deformers;
     QVector<CModelDrawable> m_drawables;
     QHash<QString, float> m_drawableOpacityOverrides;
+    QHash<QString, int> m_drawableDrawOrderOverrides;
 };
 
 }
