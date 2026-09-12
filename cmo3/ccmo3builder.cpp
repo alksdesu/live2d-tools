@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
+#include <cmath>
 
 using namespace live2dstruct;
 
@@ -1372,7 +1373,9 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
 
     CReader reader(opt.mocPath);
     CSectionTable table(reader);
-    if (!table.IsValid() || !table.count_info || !table.canvas_info || !table.uvs || !table.position_indices) {
+    if (!table.IsValid() || !table.count_info || !table.canvas_info || !table.uvs ||
+        !table.position_indices || !table.keyform_positions || !table.keys ||
+        !std::isfinite(table.canvas_info->pixels_per_unit) || table.canvas_info->pixels_per_unit <= 0.0f) {
         if (outError) *outError = QStringLiteral("moc3 解析失败: %1").arg(opt.mocPath);
         return false;
     }
