@@ -494,7 +494,8 @@ void CModelTreePanel::ApplyVisibilityState(const QMap<QString, bool>& state)
     const auto emitState = [this](QTreeWidgetItem* item, auto&& emitRef) -> void {
         const QString type = item->data(0, Qt::UserRole + 1).toString();
         const QString id = item->data(0, Qt::UserRole).toString();
-        if ((type == QLatin1String("part") || type == QLatin1String("artmesh")) && !id.isEmpty())
+        if ((type == QLatin1String("part") || type == QLatin1String("artmesh") ||
+             type == QLatin1String("warp") || type == QLatin1String("rotation")) && !id.isEmpty())
             emit VisibilityChanged(id, type, item->checkState(0) == Qt::Checked);
         for (int i = 0; i < item->childCount(); ++i) emitRef(item->child(i), emitRef);
     };
@@ -529,7 +530,8 @@ void CModelTreePanel::SetVisibility(const QString& name, const QString& type, bo
         if (!item) return;
         const QString itemType = item->data(0, Qt::UserRole + 1).toString();
         const QString itemName = item->data(0, Qt::UserRole).toString();
-        if ((itemType == QLatin1String("part") || itemType == QLatin1String("artmesh")) && !itemName.isEmpty())
+        if ((itemType == QLatin1String("part") || itemType == QLatin1String("artmesh") ||
+             itemType == QLatin1String("warp") || itemType == QLatin1String("rotation")) && !itemName.isEmpty())
             emit VisibilityChanged(itemName, itemType, item->checkState(0) == Qt::Checked);
         for (int i = 0; i < item->childCount(); ++i) emitRef(item->child(i), emitRef);
     };

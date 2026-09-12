@@ -84,6 +84,11 @@ private slots:
         QVERIFY(document.HiddenIds().contains(drawableId));
         QVERIFY(document.SetDrawableVisible(drawableId, true));
         QVERIFY(!document.HiddenIds().contains(drawableId));
+        const QString deformerId = document.Deformers().first().id;
+        QVERIFY(document.SetDeformerVisible(deformerId, false));
+        QVERIFY(document.HiddenIds().contains(deformerId));
+        QVERIFY(document.SetDeformerVisible(deformerId, true));
+        QVERIFY(!document.HiddenIds().contains(deformerId));
     }
 
     void modelJsonCanBeReused()

@@ -229,8 +229,7 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
         if(mgr && mgr->GetModelNum() > 0){
             mgr->GetModel(0)->SetPartVisible(name, visible);
         }
-    } else {
-        // artmesh 通过渲染循环中跳过
+    } else if (type == "artmesh") {
         if(visible){
             LAppDelegate::GetInstance()->m_hiddenDrawables.remove(name);
         } else {
