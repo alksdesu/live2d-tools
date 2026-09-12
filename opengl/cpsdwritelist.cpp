@@ -49,6 +49,7 @@ QString CPsdWriteList::UniqueName(const QString &name)
 
 bool CPsdWriteList::WritePsd()
 {
+    if (!m_list) return false;
     bool ok = m_list->CreatePsd();
     delete m_list;
     m_list= nullptr;
@@ -57,7 +58,7 @@ bool CPsdWriteList::WritePsd()
 
 void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const QImage &image)
 {
-    if(rect.width() > 0 && rect.height() > 0 && !image.isNull()){
+    if(m_list && rect.width() > 0 && rect.height() > 0 && !image.isNull()){
         m_list->AddLayer(UniqueName(layerName),image,rect);
     }else{
         qDebug("CPsdWriteList::AddLayer skip empty: %s", layerName.toUtf8().constData());
@@ -68,7 +69,7 @@ void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const 
                              uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                              bool isPremultiplied)
 {
-    if(rect.width() > 0 && rect.height() > 0 && !image.isNull()){
+    if(m_list && rect.width() > 0 && rect.height() > 0 && !image.isNull()){
         m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied);
     }else{
         qDebug("CPsdWriteList::AddLayer skip empty: %s", layerName.toUtf8().constData());
@@ -77,6 +78,7 @@ void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const 
 
 void CPsdWriteList::AddGroupStart(const QString &groupName)
 {
+    if (!m_list) return;
     // PSD 规范：GroupStart 必须命名为 "</Layer group>"，真实名称写在 GroupEnd。
     // 为保持名称一致，这里将名称暂存到栈中，GroupEnd 时再取出写入。
     m_groupNameStack.push_back(groupName);
@@ -85,6 +87,7 @@ void CPsdWriteList::AddGroupStart(const QString &groupName)
 
 void CPsdWriteList::AddGroupEnd()
 {
+    if (!m_list) return;
     QString name = m_groupNameStack.isEmpty() ? QString("Group") : m_groupNameStack.takeLast();
     QByteArray utf8Text = UniqueName(name).toUtf8();
     m_list->AddGroupEnd(utf8Text.constData());

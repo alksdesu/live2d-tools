@@ -1,5 +1,6 @@
 #include "cpsdlist.h"
 #include <QFile>
+#include <limits>
 
 CPsdList::CPsdList() {
     m_canvasWidth = 0;
@@ -22,6 +23,7 @@ void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
     m_canvasWidth = w;
     m_canvasHeight = h;
     m_docname = name;
+    if (m_canvasWidth <= 0 || m_canvasHeight <= 0) return;
     document = CreateExportDocument(&allocator, m_canvasWidth, m_canvasHeight, m_bitsPerChannel, m_colorMode);
 
     if (cubismCompat) {
@@ -47,9 +49,13 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
                         uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                         bool isPremultiplied)
 {
+    if (!document || image.isNull() || rect.width() <= 0 || rect.height() <= 0) return;
     int width = rect.width();
     int height = rect.height();
-    int size = width * height;
+    const qint64 pixelCount = static_cast<qint64>(width) * height;
+    if (pixelCount <= 0 || pixelCount > 100000000 || pixelCount > std::numeric_limits<int>::max()) return;
+    const int size = static_cast<int>(pixelCount);
+    const QSize targetSize(width, height);
 
     uint8_t* planarDataR = new uint8_t[size];
     uint8_t* planarDataG = new uint8_t[size];
@@ -60,6 +66,14 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
     QImage img32 = image.format() == QImage::Format_ARGB32
                        ? image
                        : image.convertToFormat(QImage::Format_ARGB32);
+    if (img32.size() != targetSize) img32 = img32.scaled(targetSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    if (img32.size() != targetSize) {
+        delete[] planarDataR;
+        delete[] planarDataG;
+        delete[] planarDataB;
+        delete[] planarDataA;
+        return;
+    }
 
     for (int y = 0; y < height; ++y) {
         const QRgb* scanLine = reinterpret_cast<const QRgb*>(img32.constScanLine(y));
@@ -115,6 +129,7 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
 
 void CPsdList::AddGroupStart()
 {
+    if (!document) return;
     const unsigned int groupStart = psd::AddLayerGroupStart(document, &allocator, "</Layer group>");
 
     uint8_t* point = new uint8_t[1];
@@ -128,6 +143,7 @@ void CPsdList::AddGroupStart()
 
 void CPsdList::AddGroupEnd(const char* groupName)
 {
+    if (!document) return;
     const unsigned int groupEnd = psd::AddLayerGroupEnd(document, &allocator, groupName);
 
     uint8_t* point = new uint8_t[1];
