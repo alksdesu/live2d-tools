@@ -884,6 +884,7 @@ void CInspectorPanel::ClearSelection()
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
     m_editMasks->setEnabled(false);
+    m_maskInvertedCheck->setChecked(false);
     m_deformerParentCombo->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
