@@ -191,6 +191,10 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_moveVertices->setObjectName(QStringLiteral("moveSelectedVertices"));
     m_moveVertices->setEnabled(false);
     vertexTransformLayout->addWidget(m_moveVertices, 1);
+    m_mergeVertices = new QPushButton(QStringLiteral("合并拓扑顶点"), vertexTransformTools);
+    m_mergeVertices->setObjectName(QStringLiteral("mergeSelectedVertices"));
+    m_mergeVertices->setEnabled(false);
+    vertexTransformLayout->addWidget(m_mergeVertices);
     form->addRow(QStringLiteral("顶点变换"), vertexTransformTools);
     form->addRow(QStringLiteral("顶点位置"), m_vertexTable);
     layout->addLayout(form);
@@ -214,9 +218,15 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_pasteTopology, &QPushButton::clicked, this, [this](){ PasteTopology(); });
     connect(m_editMasks, &QPushButton::clicked, this, [this](){ EditMasks(); });
     connect(m_moveVertices, &QPushButton::clicked, this, [this](){ TranslateSelectedVertices(); });
+    connect(m_mergeVertices, &QPushButton::clicked, this, [this](){ MergeSelectedVertices(); });
     connect(m_vertexTable, &QTableWidget::itemSelectionChanged, this, [this](){
-        m_moveVertices->setEnabled(m_vertexTable->selectedItems().size() > 0 &&
+        const bool hasSelection = m_vertexTable->selectedItems().size() > 0 && m_vertexTable->isEnabled();
+        QSet<int> selectedRows;
+        for (const QTableWidgetSelectionRange& range : m_vertexTable->selectedRanges())
+            for (int row = range.topRow(); row <= range.bottomRow(); ++row) selectedRows.insert(row);
+        m_moveVertices->setEnabled(hasSelection &&
                                    m_vertexTable->isEnabled() && m_vertexDeltaX && m_vertexDeltaY);
+        m_mergeVertices->setEnabled(selectedRows.size() >= 2);
     });
     connect(m_maskInvertedCheck, &QCheckBox::toggled, this, [this](bool inverted){
         if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") ||
@@ -404,6 +414,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_maskInvertedCheck->setChecked(false);
     m_deformerParentCombo->setEnabled(false);
     m_moveVertices->setEnabled(false);
+    m_mergeVertices->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -915,6 +926,7 @@ void CInspectorPanel::ClearSelection()
     m_maskInvertedCheck->setChecked(false);
     m_deformerParentCombo->setEnabled(false);
     m_moveVertices->setEnabled(false);
+    m_mergeVertices->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -1027,6 +1039,43 @@ void CInspectorPanel::TranslateSelectedVertices()
     if (!m_document->ExecuteEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
+void CInspectorPanel::MergeSelectedVertices()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    QSet<int> selectedRows;
+    for (const QTableWidgetSelectionRange& range : m_vertexTable->selectedRanges())
+        for (int row = range.topRow(); row <= range.bottomRow(); ++row) selectedRows.insert(row);
+    if (selectedRows.size() < 2) return;
+    QVector<int> selected;
+    for (int row : selectedRows) selected.append(row);
+    std::sort(selected.begin(), selected.end());
+    const int target = selected.first();
+    const QVector<quint16> before = m_document->DrawableIndices(m_selectionName);
+    if (before.isEmpty()) return;
+    QVector<quint16> after;
+    after.reserve(before.size());
+    for (int i = 0; i + 2 < before.size(); i += 3) {
+        quint16 triangle[3] = {before[i], before[i + 1], before[i + 2]};
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            if (selected.contains(static_cast<int>(triangle[vertex]))) triangle[vertex] = static_cast<quint16>(target);
+        }
+        if (triangle[0] == triangle[1] || triangle[1] == triangle[2] || triangle[0] == triangle[2]) continue;
+        if (!after.isEmpty() && after[after.size() - 3] == triangle[0] &&
+            after[after.size() - 2] == triangle[1] && after[after.size() - 1] == triangle[2]) continue;
+        after.append(triangle[0]);
+        after.append(triangle[1]);
+        after.append(triangle[2]);
+    }
+    if (after.isEmpty() || after == before) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::MeshIndices,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    emit DrawableIndicesChanged(m_selectionName, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 

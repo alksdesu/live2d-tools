@@ -88,6 +88,18 @@ private slots:
         QCOMPARE(document.DrawableKeyformPositions(id, 0), translateBefore);
         panel.Redo();
         QCOMPARE(document.DrawableKeyformPositions(id, 0), translateAfter);
+        auto* mergeVertices = panel.findChild<QPushButton*>("mergeSelectedVertices");
+        QVERIFY(mergeVertices);
+        vertexTable->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+        const QVector<quint16> mergeBefore = document.DrawableIndices(id);
+        mergeVertices->click();
+        const QVector<quint16> mergeAfter = document.DrawableIndices(id);
+        QVERIFY(!mergeAfter.isEmpty() && mergeAfter.size() % 3 == 0);
+        QVERIFY(mergeAfter != mergeBefore);
+        panel.Undo();
+        QCOMPARE(document.DrawableIndices(id), mergeBefore);
+        panel.Redo();
+        QCOMPARE(document.DrawableIndices(id), mergeAfter);
         auto* mirrorHorizontal = panel.findChild<QPushButton*>("mirrorHorizontal");
         QVERIFY(mirrorHorizontal && mirrorHorizontal->isEnabled());
         const QVector<float> mirrorBefore = document.DrawableKeyformPositions(id, 0);

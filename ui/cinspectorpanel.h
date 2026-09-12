@@ -62,6 +62,7 @@ private:
     void PasteCurrentKeyform();
     void EditMasks();
     void TranslateSelectedVertices();
+    void MergeSelectedVertices();
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -96,6 +97,7 @@ private:
     QDoubleSpinBox* m_vertexDeltaX = nullptr;
     QDoubleSpinBox* m_vertexDeltaY = nullptr;
     QPushButton* m_moveVertices = nullptr;
+    QPushButton* m_mergeVertices = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     bool m_updatingDeformerParent = false;
