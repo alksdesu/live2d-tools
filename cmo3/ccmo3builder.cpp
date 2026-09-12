@@ -475,11 +475,24 @@ void Generator::writeArtMeshEntities()
         const int vertexCount = mesh->vertex_counts;
         const int keyformCount = mesh->keyform_sources_counts;
         const int layerIdx = m_layerOfMesh.value(i, -1);
+        bool keyformPositionsValid = vertexCount > 0 && keyformCount > 0 &&
+            validSlice(mesh->keyform_sources_begin_indices, keyformCount, m_table.art_mesh_keyforms.size());
+        if (keyformPositionsValid) {
+            for (int k = 0; k < keyformCount; ++k) {
+                const CArt_mesh_keyforms* keyform = m_table.art_mesh_keyforms[
+                    mesh->keyform_sources_begin_indices + k];
+                if (!validSlice(keyform->keyform_position_sources_begin_indices, vertexCount * 2,
+                                static_cast<int>(m_table.keyform_positions->xys.size()))) {
+                    keyformPositionsValid = false;
+                    break;
+                }
+            }
+        }
         if (vertexCount <= 0 || vertexCount > 1000000 || keyformCount <= 0 ||
             !validSlice(mesh->keyform_sources_begin_indices, keyformCount, m_table.art_mesh_keyforms.size()) ||
             !validSlice(mesh->uv_sources_begin_indices, vertexCount * 2, static_cast<int>(m_table.uvs->uvs.size())) ||
             !validSlice(mesh->position_index_sources_begin_indices, mesh->position_index_sources_counts,
-                        static_cast<int>(m_table.position_indices->indices.size()))) {
+                        static_cast<int>(m_table.position_indices->indices.size())) || !keyformPositionsValid) {
             continue;
         }
 
@@ -556,7 +569,7 @@ void Generator::writeArtMeshEntities()
         m_xml.BeginObject(QStringLiteral("CArtMeshSource"), QString(), m_meshSourceIds[i]);
         m_xml.BeginObject(QStringLiteral("ACDrawableSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(mesh->ids), mesh->is_visible && !m_opt.hiddenIds.contains(mesh->ids),
-                                (mesh->parent_part_indices >= 0)
+                                (mesh->parent_part_indices >= 0 && mesh->parent_part_indices < m_partIds.size())
                                     ? m_partIds[mesh->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 1);
         m_xml.Ref(QStringLiteral("CTextureInputExtension"), QString(), texExtId);
@@ -704,6 +717,17 @@ void Generator::writeWarpDeformerEntities()
         if (gridVerts <= 0 || gridVerts > 1000000 ||
             !validSlice(warp->keyform_sources_begin_indices, keyformCount,
                         m_table.warp_deformer_keyforms.size())) continue;
+        bool keyformPositionsValid = true;
+        for (int k = 0; k < keyformCount; ++k) {
+            const CWarp_deformer_keyforms* keyform = m_table.warp_deformer_keyforms[
+                warp->keyform_sources_begin_indices + k];
+            if (!validSlice(keyform->keyform_position_sources_begin_indices, gridVerts * 2,
+                            static_cast<int>(m_table.keyform_positions->xys.size()))) {
+                keyformPositionsValid = false;
+                break;
+            }
+        }
+        if (!keyformPositionsValid) continue;
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
@@ -719,7 +743,7 @@ void Generator::writeWarpDeformerEntities()
         m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_warpSourceIds[w]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
-                                (deformer->parent_part_indices >= 0)
+                                (deformer->parent_part_indices >= 0 && deformer->parent_part_indices < m_partIds.size())
                                     ? m_partIds[deformer->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 0);
         m_xml.EndList();   // _extensions
@@ -818,7 +842,7 @@ void Generator::writeRotationDeformerEntities()
         m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_rotationSourceIds[r]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
-                                (deformer->parent_part_indices >= 0)
+                                (deformer->parent_part_indices >= 0 && deformer->parent_part_indices < m_partIds.size())
                                     ? m_partIds[deformer->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 0);
         m_xml.EndList();
@@ -1109,7 +1133,8 @@ bool Generator::Run(QString* outError)
         layer.image = ex.image;
         layer.bounds = ex.canvasRect;
         layer.visible = ex.isVisible;
-        m_layerOfMesh[ex.meshIndex] = m_layers.size();
+        if (ex.meshIndex >= 0 && ex.meshIndex < m_layerOfMesh.size())
+            m_layerOfMesh[ex.meshIndex] = m_layers.size();
         m_layers.append(layer);
     }
     if (m_layers.isEmpty()) {
@@ -1306,7 +1331,7 @@ bool Generator::Run(QString* outError)
 
         m_xml.BeginObject(QStringLiteral("CPartSource"), QString(), m_partIds[i].source);
         writeControllableHeader(displayName(part->ids), part->is_visible && !m_opt.hiddenIds.contains(part->ids),
-                                (part->parent_part_indices >= 0)
+                                (part->parent_part_indices >= 0 && part->parent_part_indices < m_partIds.size())
                                     ? m_partIds[part->parent_part_indices].guid : m_rootPartGuidId,
                                 gridId, 0);
         m_xml.EndList();
