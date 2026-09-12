@@ -34,6 +34,7 @@ public:
 
 
     COffScreenMap();
+    ~COffScreenMap();
     void AddImageAndRect(const QString& name,QImage* image,const QRect& rect);
     void AddSort(const QString& name);
     const QImage* GetIamge(const QString& name);
