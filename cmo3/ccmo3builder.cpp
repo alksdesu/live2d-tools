@@ -1084,7 +1084,12 @@ void Generator::writeMain()
         m_xml.F(QStringLiteral("snapEpsilon"), 0.001f);
         m_xml.F(QStringLiteral("minValue"), param->min_values);
         m_xml.F(QStringLiteral("maxValue"), param->max_values);
-        m_xml.F(QStringLiteral("defaultValue"), param->default_values);
+        const float defaultValue = m_opt.parameterValues.contains(param->ids) &&
+                std::isfinite(m_opt.parameterValues.value(param->ids)) &&
+                m_opt.parameterValues.value(param->ids) >= param->min_values &&
+                m_opt.parameterValues.value(param->ids) <= param->max_values
+            ? m_opt.parameterValues.value(param->ids) : param->default_values;
+        m_xml.F(QStringLiteral("defaultValue"), defaultValue);
         m_xml.B(QStringLiteral("isRepeat"), param->is_repeat);
         m_xml.BeginObject(QStringLiteral("CParameterId"), QStringLiteral("id"));
         m_xml.Attribute(QStringLiteral("idstr"), param->ids);

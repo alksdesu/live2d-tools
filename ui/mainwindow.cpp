@@ -272,6 +272,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         const QStringList physics = dir.entryList({ "*.physics3.json" }, QDir::Files);
         if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
     }
+    options.parameterValues = m_document.ParameterValues();
     options.hiddenIds = m_document.HiddenIds();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
     options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();

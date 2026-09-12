@@ -75,6 +75,32 @@ private slots:
         QVERIFY(mainXml);
         QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(expected).toUtf8()));
     }
+
+    void buildUsesParameterOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        QVERIFY(!document.Parameters().isEmpty());
+        const auto& parameter = document.Parameters().first();
+        float value = parameter.minimum;
+        if (qFuzzyCompare(value + 1.0f, parameter.defaultValue + 1.0f)) value = parameter.maximum;
+        QVERIFY(value >= parameter.minimum && value <= parameter.maximum);
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Wanko-parameter.cmo3"));
+        options.parameterValues.insert(parameter.id, value);
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* mainXml = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(mainXml);
+        QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(value).toUtf8()));
+    }
 };
 
 QTEST_GUILESS_MAIN(Cmo3Tests)

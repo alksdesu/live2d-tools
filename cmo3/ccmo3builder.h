@@ -24,6 +24,7 @@ public:
         QString modelName;               // 模型显示名（默认取文件名）
         QString cdiPath;                 // 可选 .cdi3.json（显示名映射）
         QString physicsPath;             // 可选 .physics3.json
+        QHash<QString, float> parameterValues;
         QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
         QHash<QString, float> drawableOpacityOverrides;
         QHash<QString, int> drawableDrawOrderOverrides;
