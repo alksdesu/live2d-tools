@@ -50,20 +50,22 @@ QString CMeshMap::SetOver(const QPointF &point, bool IsOver)
     QString re="";
     bool isFind = false;
     for(int i = m_readerSort.size()-1 ;i >=0 ;i--){
-        if(!isFind && m_vetDrawMesh[m_readerSort[i]]->ClickMesh(point)){
+        auto meshIt = m_vetDrawMesh.find(m_readerSort[i]);
+        if (meshIt == m_vetDrawMesh.end() || !meshIt.value()) continue;
+        if(!isFind && meshIt.value()->ClickMesh(point)){
             re =m_readerSort[i];
             if(IsOver){
-                m_vetDrawMesh[m_readerSort[i]]->SetIsOver(true);
+                meshIt.value()->SetIsOver(true);
             }else{
-                m_vetDrawMesh[m_readerSort[i]]->SetShow(true);
+                meshIt.value()->SetShow(true);
             }
             isFind =true;
         }
         else{
             if(IsOver){
-                m_vetDrawMesh[m_readerSort[i]]->SetIsOver(false);
+                meshIt.value()->SetIsOver(false);
             }else{
-                m_vetDrawMesh[m_readerSort[i]]->SetShow(false);
+                meshIt.value()->SetShow(false);
             }
 
         }
