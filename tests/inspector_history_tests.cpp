@@ -132,6 +132,52 @@ private slots:
         QCOMPARE(rotateAfter[1], rotateCenterY + (rotateBefore[0] - rotateCenterX));
         panel.Undo();
         QCOMPARE(document.DrawableKeyformPositions(id, 0), rotateBefore);
+        panel.ClearHistory();
+        QString deformerId;
+        int deformerParentChoice = -1;
+        for (int i = 0; i < document.Deformers().size() && deformerId.isEmpty(); ++i) {
+            for (int j = 0; j < document.Deformers().size(); ++j) {
+                if (i == j || document.Deformers()[i].parentPartIndex != document.Deformers()[j].parentPartIndex ||
+                    document.DeformerParentIndex(document.Deformers()[i].id) == j) continue;
+                deformerId = document.Deformers()[i].id;
+                deformerParentChoice = j;
+                break;
+            }
+        }
+        QVERIFY(!deformerId.isEmpty() && deformerParentChoice >= 0);
+        QString deformerType = QStringLiteral("warp");
+        for (const auto& deformer : document.Deformers())
+            if (deformer.id == deformerId && deformer.type == live2dstruct::CModelDeformer::Rotation)
+                deformerType = QStringLiteral("rotation");
+        panel.SetSelection(deformerId, deformerType);
+        auto* deformerParent = panel.findChild<QComboBox*>("deformerParentSelector");
+        QVERIFY(deformerParent && deformerParent->count() > 1);
+        const int parentRow = deformerParent->findData(deformerParentChoice);
+        QVERIFY(parentRow >= 0);
+        const int oldDeformerParent = document.DeformerParentIndex(deformerId);
+        deformerParent->setCurrentIndex(parentRow);
+        QCOMPARE(document.DeformerParentIndex(deformerId), deformerParentChoice);
+        panel.Undo();
+        QCOMPARE(document.DeformerParentIndex(deformerId), oldDeformerParent);
+        panel.Redo();
+        QCOMPARE(document.DeformerParentIndex(deformerId), deformerParentChoice);
+        QString maskedId;
+        for (const auto& drawableCandidate : document.Drawables()) {
+            if (!drawableCandidate.maskIndices.isEmpty()) { maskedId = drawableCandidate.id; break; }
+        }
+        if (!maskedId.isEmpty()) {
+            panel.SetSelection(maskedId, QStringLiteral("artmesh"));
+            auto* maskInverted = panel.findChild<QCheckBox*>("maskInverted");
+            QVERIFY(maskInverted && maskInverted->isEnabled());
+            const bool beforeMaskInverted = document.DrawableMaskInverted(maskedId);
+            maskInverted->setChecked(!beforeMaskInverted);
+            QCOMPARE(document.DrawableMaskInverted(maskedId), !beforeMaskInverted);
+            panel.Undo();
+            QCOMPARE(document.DrawableMaskInverted(maskedId), beforeMaskInverted);
+            panel.Redo();
+            QCOMPARE(document.DrawableMaskInverted(maskedId), !beforeMaskInverted);
+        }
+        panel.SetSelection(id, QStringLiteral("artmesh"));
         auto* mirrorHorizontal = panel.findChild<QPushButton*>("mirrorHorizontal");
         QVERIFY(mirrorHorizontal && mirrorHorizontal->isEnabled());
         const QVector<float> mirrorBefore = document.DrawableKeyformPositions(id, 0);
