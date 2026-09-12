@@ -6,6 +6,7 @@
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
+#include <limits>
 
 namespace live2dstruct {
 
@@ -18,6 +19,11 @@ void setError(QString* error, const QString& value)
 bool inRange(int value, int size)
 {
     return value >= 0 && value < size;
+}
+
+bool validSlice(int begin, int count, int size)
+{
+    return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
 }
 }
 
@@ -95,20 +101,23 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
         drawable.vertexCount = source->vertex_counts;
         drawable.visible = source->is_visible;
         drawable.enabled = source->is_enabled;
-        if (source->uv_sources_begin_indices >= 0 &&
-            source->uv_sources_begin_indices + source->vertex_counts * 2 <= table.uvs->uvs.size()) {
+        const bool vertexCountValid = source->vertex_counts >= 0 && source->vertex_counts <= 1000000 &&
+            source->vertex_counts <= std::numeric_limits<int>::max() / 2;
+        if (vertexCountValid && validSlice(source->uv_sources_begin_indices, source->vertex_counts * 2,
+                                           static_cast<int>(table.uvs->uvs.size()))) {
             for (int i = 0; i < source->vertex_counts * 2; ++i) {
                 drawable.uvs.append(table.uvs->uvs[source->uv_sources_begin_indices + i]);
             }
         }
-        if (source->position_index_sources_begin_indices >= 0 &&
-            source->position_index_sources_begin_indices + source->position_index_sources_counts <= table.position_indices->indices.size()) {
+        if (validSlice(source->position_index_sources_begin_indices, source->position_index_sources_counts,
+                       static_cast<int>(table.position_indices->indices.size()))) {
             for (int i = 0; i < source->position_index_sources_counts; ++i) {
                 drawable.indices.append(static_cast<quint16>(table.position_indices->indices[
                     source->position_index_sources_begin_indices + i]));
             }
         }
-        if (source->drawable_mask_sources_begin_indices >= 0) {
+        if (validSlice(source->drawable_mask_sources_begin_indices, source->drawable_mask_sources_counts,
+                       static_cast<int>(table.drawable_masks.size()))) {
             for (int i = 0; i < source->drawable_mask_sources_counts; ++i) {
                 const int index = source->drawable_mask_sources_begin_indices + i;
                 if (inRange(index, table.drawable_masks.size())) {
@@ -116,7 +125,8 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
                 }
             }
         }
-        if (source->keyform_sources_begin_indices >= 0) {
+        if (validSlice(source->keyform_sources_begin_indices, source->keyform_sources_counts,
+                       static_cast<int>(table.art_mesh_keyforms.size()))) {
             for (int i = 0; i < source->keyform_sources_counts; ++i) {
                 const int index = source->keyform_sources_begin_indices + i;
                 if (!inRange(index, table.art_mesh_keyforms.size())) continue;
@@ -129,7 +139,8 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
                     drawable.drawOrder = keyform.drawOrder;
                 }
                 const int begin = sourceKeyform->keyform_position_sources_begin_indices;
-                if (begin >= 0 && begin + source->vertex_counts * 2 <= table.keyform_positions->xys.size()) {
+                if (vertexCountValid && validSlice(begin, source->vertex_counts * 2,
+                                                   static_cast<int>(table.keyform_positions->xys.size()))) {
                     for (int v = 0; v < source->vertex_counts * 2; ++v) {
                         keyform.positions.append(table.keyform_positions->xys[begin + v]);
                     }
@@ -312,6 +323,10 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("ArtMesh ID 为空或重复"), i});
         }
         drawableIds.insert(drawable.id);
+        if (drawable.vertexCount < 0 || drawable.vertexCount > 1000000) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("vertex_count"),
+                                 QStringLiteral("ArtMesh 顶点数量无效"), i});
+        }
         if (drawable.parentPartIndex != -1 && !inRange(drawable.parentPartIndex, m_parts.size())) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("drawable_part"),
                                  QStringLiteral("ArtMesh 所属 Part 越界"), i});
