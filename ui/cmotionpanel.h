@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QVBoxLayout>
+#include <QLineEdit>
 
 class CMotionPanel : public QDockWidget
 {
@@ -30,6 +31,8 @@ signals:
 private:
     QListWidget* m_motionList;
     QListWidget* m_exprList;
+    QLineEdit* m_motionSearch = nullptr;
+    QLineEdit* m_exprSearch = nullptr;
     QCheckBox* m_eyeBlinkCb;
     QCheckBox* m_breathCb;
     QCheckBox* m_mouseFollowCb;

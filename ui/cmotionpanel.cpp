@@ -26,6 +26,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     QWidget* motionWidget = new QWidget();
     QVBoxLayout* motionLayout = new QVBoxLayout(motionWidget);
     motionLayout->addWidget(new QLabel("动作列表"));
+    m_motionSearch = new QLineEdit(motionWidget);
+    m_motionSearch->setPlaceholderText(QStringLiteral("搜索动作或分组"));
+    m_motionSearch->setClearButtonEnabled(true);
+    motionLayout->addWidget(m_motionSearch);
     m_motionList = new QListWidget();
     motionLayout->addWidget(m_motionList);
     QPushButton* playBtn = new QPushButton("▶ 播放");
@@ -51,6 +55,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     QWidget* exprWidget = new QWidget();
     QVBoxLayout* exprLayout = new QVBoxLayout(exprWidget);
     exprLayout->addWidget(new QLabel("表情列表"));
+    m_exprSearch = new QLineEdit(exprWidget);
+    m_exprSearch->setPlaceholderText(QStringLiteral("搜索表情"));
+    m_exprSearch->setClearButtonEnabled(true);
+    exprLayout->addWidget(m_exprSearch);
     m_exprList = new QListWidget();
     exprLayout->addWidget(m_exprList);
     QPushButton* applyBtn = new QPushButton("✦ 应用");
@@ -77,6 +85,17 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         if(row >= 0 && row < m_exprNames.size()){
             emit ApplyExpression(m_exprNames[row]);
         }
+    });
+
+    connect(m_motionSearch, &QLineEdit::textChanged, this, [this](const QString& text){
+        const QString query = text.trimmed().toLower();
+        for (int i = 0; i < m_motionList->count(); ++i)
+            m_motionList->item(i)->setHidden(!query.isEmpty() && !m_motionList->item(i)->text().toLower().contains(query));
+    });
+    connect(m_exprSearch, &QLineEdit::textChanged, this, [this](const QString& text){
+        const QString query = text.trimmed().toLower();
+        for (int i = 0; i < m_exprList->count(); ++i)
+            m_exprList->item(i)->setHidden(!query.isEmpty() && !m_exprList->item(i)->text().toLower().contains(query));
     });
 
     mainLayout->addWidget(splitter);
