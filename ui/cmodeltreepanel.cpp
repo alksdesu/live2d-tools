@@ -20,11 +20,6 @@ static void initTree(QTreeWidget* tree, QObject* parent)
     tree->setAnimated(true);
     tree->setRootIsDecorated(true);
     tree->setItemDelegate(new CTreeNodeDelegate(tree));
-    // checkbox 在深色主题下更明显
-    tree->setStyleSheet(
-        "QTreeWidget::indicator:checked { background-color: #4A90D9; border: 1px solid #3A7BC8; border-radius: 2px; }"
-        "QTreeWidget::indicator:unchecked { background-color: #555; border: 1px solid #777; border-radius: 2px; }"
-    );
 }
 
 CModelTreePanel::CModelTreePanel(QWidget *parent)

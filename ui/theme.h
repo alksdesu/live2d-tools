@@ -289,6 +289,23 @@ QTreeWidget::item:selected, QTreeView::item:selected, QListWidget::item:selected
     color: @accent@;
 }
 
+QTreeWidget::indicator, QTableWidget::indicator {
+    width: 14px;
+    height: 14px;
+}
+
+QTreeWidget::indicator:checked, QTableWidget::indicator:checked {
+    background: @accent@;
+    border: 1px solid @accentHover@;
+    border-radius: 3px;
+}
+
+QTreeWidget::indicator:unchecked, QTableWidget::indicator:unchecked {
+    background: @surface@;
+    border: 1px solid @borderStrong@;
+    border-radius: 3px;
+}
+
 QHeaderView::section {
     background: @surfaceMuted@;
     color: @textMuted@;
