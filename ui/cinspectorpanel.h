@@ -63,6 +63,7 @@ private:
     void EditMasks();
     void TranslateSelectedVertices();
     void MergeSelectedVertices();
+    void TransformSelectedVertices();
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -98,6 +99,9 @@ private:
     QDoubleSpinBox* m_vertexDeltaY = nullptr;
     QPushButton* m_moveVertices = nullptr;
     QPushButton* m_mergeVertices = nullptr;
+    QDoubleSpinBox* m_vertexScale = nullptr;
+    QDoubleSpinBox* m_vertexRotation = nullptr;
+    QPushButton* m_transformVertices = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
     bool m_updatingDeformerParent = false;

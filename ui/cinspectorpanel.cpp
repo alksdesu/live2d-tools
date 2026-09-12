@@ -195,6 +195,23 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_mergeVertices->setObjectName(QStringLiteral("mergeSelectedVertices"));
     m_mergeVertices->setEnabled(false);
     vertexTransformLayout->addWidget(m_mergeVertices);
+    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("缩放"), vertexTransformTools));
+    m_vertexScale = new QDoubleSpinBox(vertexTransformTools);
+    m_vertexScale->setObjectName(QStringLiteral("vertexScale"));
+    m_vertexScale->setRange(0.01, 100.0);
+    m_vertexScale->setDecimals(3);
+    m_vertexScale->setValue(1.0);
+    vertexTransformLayout->addWidget(m_vertexScale);
+    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("旋转°"), vertexTransformTools));
+    m_vertexRotation = new QDoubleSpinBox(vertexTransformTools);
+    m_vertexRotation->setObjectName(QStringLiteral("vertexRotation"));
+    m_vertexRotation->setRange(-3600.0, 3600.0);
+    m_vertexRotation->setDecimals(2);
+    vertexTransformLayout->addWidget(m_vertexRotation);
+    m_transformVertices = new QPushButton(QStringLiteral("应用变换"), vertexTransformTools);
+    m_transformVertices->setObjectName(QStringLiteral("transformSelectedVertices"));
+    m_transformVertices->setEnabled(false);
+    vertexTransformLayout->addWidget(m_transformVertices);
     form->addRow(QStringLiteral("顶点变换"), vertexTransformTools);
     form->addRow(QStringLiteral("顶点位置"), m_vertexTable);
     layout->addLayout(form);
@@ -219,6 +236,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_editMasks, &QPushButton::clicked, this, [this](){ EditMasks(); });
     connect(m_moveVertices, &QPushButton::clicked, this, [this](){ TranslateSelectedVertices(); });
     connect(m_mergeVertices, &QPushButton::clicked, this, [this](){ MergeSelectedVertices(); });
+    connect(m_transformVertices, &QPushButton::clicked, this, [this](){ TransformSelectedVertices(); });
     connect(m_vertexTable, &QTableWidget::itemSelectionChanged, this, [this](){
         const bool hasSelection = m_vertexTable->selectedItems().size() > 0 && m_vertexTable->isEnabled();
         QSet<int> selectedRows;
@@ -227,6 +245,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         m_moveVertices->setEnabled(hasSelection &&
                                    m_vertexTable->isEnabled() && m_vertexDeltaX && m_vertexDeltaY);
         m_mergeVertices->setEnabled(selectedRows.size() >= 2);
+        m_transformVertices->setEnabled(!selectedRows.isEmpty());
     });
     connect(m_maskInvertedCheck, &QCheckBox::toggled, this, [this](bool inverted){
         if (m_updatingVisibility || !m_document || m_selectionType != QLatin1String("artmesh") ||
@@ -415,6 +434,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_deformerParentCombo->setEnabled(false);
     m_moveVertices->setEnabled(false);
     m_mergeVertices->setEnabled(false);
+    m_transformVertices->setEnabled(false);
     m_updatingKeyform = false;
     m_updatingVisibility = true;
     m_visibilityCheck->setTristate(true);
@@ -927,6 +947,7 @@ void CInspectorPanel::ClearSelection()
     m_deformerParentCombo->setEnabled(false);
     m_moveVertices->setEnabled(false);
     m_mergeVertices->setEnabled(false);
+    m_transformVertices->setEnabled(false);
     m_updatingKeyform = false;
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
@@ -1076,6 +1097,53 @@ void CInspectorPanel::MergeSelectedVertices()
                                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
     if (!m_document->ExecuteEdit(command)) return;
     emit DrawableIndicesChanged(m_selectionName, after);
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+}
+
+void CInspectorPanel::TransformSelectedVertices()
+{
+    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
+        IsLocked(m_selectionType, m_selectionName) || !m_vertexScale || !m_vertexRotation) return;
+    const float scale = static_cast<float>(m_vertexScale->value());
+    const float degrees = static_cast<float>(m_vertexRotation->value());
+    if (!std::isfinite(scale) || !std::isfinite(degrees) || scale <= 0.0f ||
+        (qFuzzyCompare(scale, 1.0f) && qFuzzyIsNull(degrees))) return;
+    const int keyformIndex = m_keyformCombo->currentIndex();
+    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
+    if (keyformIndex < 0 || before.isEmpty() || before.size() % 2 != 0) return;
+    QSet<int> selectedRows;
+    for (const QTableWidgetSelectionRange& range : m_vertexTable->selectedRanges())
+        for (int row = range.topRow(); row <= range.bottomRow(); ++row) selectedRows.insert(row);
+    if (selectedRows.isEmpty()) return;
+    float centerX = 0.0f;
+    float centerY = 0.0f;
+    int count = 0;
+    for (int row : selectedRows) {
+        if (row < 0 || row * 2 + 1 >= before.size()) continue;
+        centerX += before[row * 2];
+        centerY += before[row * 2 + 1];
+        ++count;
+    }
+    if (count == 0) return;
+    centerX /= count;
+    centerY /= count;
+    const float radians = degrees * 0.0174532925199433f;
+    const float cosine = std::cos(radians);
+    const float sine = std::sin(radians);
+    QVector<float> after = before;
+    for (int row : selectedRows) {
+        if (row < 0 || row * 2 + 1 >= after.size()) continue;
+        const float x = before[row * 2] - centerX;
+        const float y = before[row * 2 + 1] - centerY;
+        after[row * 2] = centerX + (x * cosine - y * sine) * scale;
+        after[row * 2 + 1] = centerY + (x * sine + y * cosine) * scale;
+    }
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+                                           live2dstruct::CModelEdit::KeyformPositions,
+                                           QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    RebuildKeyformTable();
+    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
