@@ -77,7 +77,9 @@ void CubismModel::InitMesh()
     m_vetDrawMesh.clear();
     const csmInt32 drawableCount = GetDrawableCount();
     for(int index = 0 ;index < drawableCount;index++){
-        QString drawName(GetDrawableId(index)->GetString().GetRawString());
+        const CubismIdHandle drawableId = GetDrawableId(index);
+        if (!drawableId) continue;
+        QString drawName(drawableId->GetString().GetRawString());
 
         int indexCount = GetDrawableVertexIndexCount(index);//点的数量
         const short* indexArray = reinterpret_cast<const short*>(GetDrawableVertexIndices(index));//Indices
@@ -85,6 +87,8 @@ void CubismModel::InitMesh()
 
         const float* vertexArray =reinterpret_cast<const float*>(GetDrawableVertices(index)) ;//pos
         const float* uvArray = reinterpret_cast<const float*>(GetDrawableVertexUvs(index));//Uv
+        if (indexCount < 3 || indexCount % 3 != 0 || indexCount > 3000000 ||
+            drawableVertexCount <= 0 || drawableVertexCount > 1000000 || !indexArray || !vertexArray || !uvArray) continue;
         CDrawMesh* drawMesh = new CDrawMesh(indexCount,indexArray,drawableVertexCount*2,uvArray,vertexArray);
         m_vetDrawMesh.insert(drawName,drawMesh);
     }
@@ -94,15 +98,22 @@ void CubismModel::InitMesh()
     // インデックスを描画順でソート
     std::vector<int> sortedDrawableIndexList;
     sortedDrawableIndexList.resize(drawableCount,0);
+    if (!renderOrder) return;
+    std::vector<bool> seenOrder(drawableCount, false);
     for (csmInt32 i = 0; i < drawableCount; ++i)
     {
         const csmInt32 order = renderOrder[i];
+        if (order < 0 || order >= drawableCount || seenOrder[order]) continue;
         sortedDrawableIndexList[order] = i;
+        seenOrder[order] = true;
     }
 
     for(int index = 0 ;index < drawableCount;index++){
+        if (!seenOrder[index]) continue;
         int ind = sortedDrawableIndexList[index];
-        QString drawName(GetDrawableId(ind)->GetString().GetRawString());
+        const CubismIdHandle drawableId = GetDrawableId(ind);
+        if (!drawableId) continue;
+        QString drawName(drawableId->GetString().GetRawString());
 
         m_vetDrawMesh.insertReaderSort(drawName);
 
