@@ -9,6 +9,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Test)
 
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
+    live2dstruct/cmodeldocument.cpp
     live2dstruct/util/cfilereader.cpp
     live2dstruct/csectionoffsettable.cpp
     live2dstruct/csectiontable.cpp

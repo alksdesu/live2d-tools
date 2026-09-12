@@ -36,6 +36,7 @@ DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
     opengl/cmeshbounds.cpp \
+    live2dstruct/cmodeldocument.cpp \
     edit/cdrawobject.cpp \
     edit/cdrawrotation.cpp \
     edit/cdrawwarp.cpp \
@@ -211,6 +212,7 @@ SOURCES += \
 
 HEADERS += \
     opengl/cmeshbounds.h \
+    live2dstruct/cmodeldocument.h \
     CPrecompileHead.h \
     edit/cdrawobject.h \
     edit/cdrawrotation.h \
@@ -463,5 +465,4 @@ RESOURCES += \
     assets/images/images.qrc\
     assets/shaders/shaders.qrc\
     assets/icc.qrc
-
 

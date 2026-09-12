@@ -1,4 +1,5 @@
 #include "opengl/cmeshbounds.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
 #include <QtTest>
 #include <limits>
@@ -58,6 +59,18 @@ private slots:
         QCOMPARE(table.art_meshes.size(), table.count_info->art_meshes);
         QCOMPARE(QSize(qRound(table.canvas_info->width), qRound(table.canvas_info->height)), canvas);
         for (const auto* info : table.glue_info) QVERIFY(info->position_indices >= 0);
+    }
+
+    void documentSnapshot()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        QCOMPARE(document.CanvasPixels(), QSize(2400, 3000));
+        QCOMPARE(document.Parts().size(), 17);
+        QCOMPARE(document.Deformers().size(), 28);
+        QCOMPARE(document.Drawables().size(), 30);
+        QVERIFY(document.Validate().isEmpty());
     }
 
 };
