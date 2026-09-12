@@ -69,6 +69,13 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
         parameter.decimalPlaces = source->decimal_places;
         parameter.repeat = source->is_repeat;
         parameter.type = source->parameter_types;
+        if (table.keys && validSlice(source->keys_sources_begin_indices, source->keys_sources_counts,
+                                     static_cast<int>(table.keys->values.size()))) {
+            parameter.keyValues.reserve(source->keys_sources_counts);
+            for (int keyIndex = 0; keyIndex < source->keys_sources_counts; ++keyIndex) {
+                parameter.keyValues.append(table.keys->GetData(source->keys_sources_begin_indices + keyIndex));
+            }
+        }
         m_parameters.append(parameter);
     }
 
@@ -465,6 +472,15 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             !std::isfinite(parameter.defaultValue)) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_nan"),
                                  QStringLiteral("参数包含非有限数值"), i});
+        }
+        float previousKey = -std::numeric_limits<float>::infinity();
+        for (float key : parameter.keyValues) {
+            if (!std::isfinite(key) || key < parameter.minimum || key > parameter.maximum || key < previousKey) {
+                diagnostics.append({CModelDiagnostic::Warning, QStringLiteral("parameter_keys"),
+                                     QStringLiteral("参数关键值无效或未递增"), i});
+                break;
+            }
+            previousKey = key;
         }
     }
 

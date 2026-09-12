@@ -28,6 +28,7 @@ struct CModelParameter
     int decimalPlaces = 0;
     bool repeat = false;
     int type = 0;
+    QVector<float> keyValues;
 };
 
 struct CModelKeyform

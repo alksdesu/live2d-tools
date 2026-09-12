@@ -67,6 +67,9 @@ private slots:
         QString documentError;
         QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/" + name + "/" + name + ".moc3", &documentError), qPrintable(documentError));
         QVERIFY2(document.Validate().isEmpty(), qPrintable(name));
+        for (const auto& parameter : document.Parameters()) {
+            for (float key : parameter.keyValues) QVERIFY(std::isfinite(key));
+        }
     }
 
     void documentSnapshot()

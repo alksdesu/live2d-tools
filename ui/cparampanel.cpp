@@ -193,10 +193,21 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
             displayName = QString("[融合] %1").arg(displayName);
         }
         rowWidget->setProperty("searchText", (displayName + " " + paramId).toLower());
+        QStringList keyTexts;
+        if (m_document) {
+            for (const auto& parameter : m_document->Parameters()) {
+                if (parameter.id != paramId) continue;
+                for (float key : parameter.keyValues) keyTexts.append(QString::number(key, 'f', 3));
+                break;
+            }
+        }
+        const QString tooltip = keyTexts.isEmpty()
+            ? paramId : QStringLiteral("%1\n关键值：%2").arg(paramId, keyTexts.join(QStringLiteral("、")));
+        rowWidget->setToolTip(tooltip);
 
         QLabel* nameLabel = new QLabel(displayName, m_container);
         nameLabel->setFixedWidth(150);
-        nameLabel->setToolTip(paramId);
+        nameLabel->setToolTip(tooltip);
         if(isBlendShape){
             nameLabel->setObjectName(QStringLiteral("blendParamTag"));
         }
