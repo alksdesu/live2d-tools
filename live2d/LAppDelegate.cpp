@@ -59,6 +59,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
     m_hiddenDrawables.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
+    m_meshOverlayPositions.clear();
     m_dragTargetDrawables.clear();
     m_savedVertices.clear();
     m_isDraggingDeformer = false;
@@ -433,6 +434,7 @@ void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
     m_hiddenDrawables.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
+    m_meshOverlayPositions.clear();
     m_dragTargetDrawables.clear();
     m_savedVertices.clear();
     m_isDraggingDeformer = false;

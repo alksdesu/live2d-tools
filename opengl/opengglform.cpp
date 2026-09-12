@@ -149,6 +149,13 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
         int modelCount = Live2DManager->GetModelNum();
         if(modelCount > 0){
             Live2DManager->GetModel(0)->UpdateParaValue(name,value,IsInit);
+            if (IsInit && Live2DManager->GetModel(0)->GetModel()) {
+                CMeshMap* meshMap = Live2DManager->GetModel(0)->GetModel()->GetMeshMap();
+                for (auto it = LAppDelegate::GetInstance()->m_meshOverlayPositions.cbegin();
+                     it != LAppDelegate::GetInstance()->m_meshOverlayPositions.cend(); ++it) {
+                    meshMap->SetMeshPositions(it.key(), it.value());
+                }
+            }
         }
     }
     //修改当前参数对应的
@@ -272,6 +279,7 @@ void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyfor
 {
     Q_UNUSED(keyformIndex);
     if (name.isEmpty()) return;
+    LAppDelegate::GetInstance()->m_meshOverlayPositions.insert(name, positions);
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
     manager->GetModel(0)->GetModel()->GetMeshMap()->SetMeshPositions(name, positions);
