@@ -25,6 +25,7 @@
 #include "ui/para/ccidjson.h"
 #include "std/cmodeljsonwriter.h"
 #include "cmo3/ccmo3builder.h"
+#include "ui/theme.h"
 #include <QFileDialog>
 #include "live2d/LAppDefine.hpp"
 #include "live2d/LAppLive2DManager.hpp"
@@ -970,6 +971,17 @@ void MainWindow::createActions()
     m_loadSessionAction = new QAction(tr("载入会话"), this);
     m_loadSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
     connect(m_loadSessionAction, &QAction::triggered, this, &MainWindow::on_actionLoadSession_triggered);
+    m_darkTheme = QSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"))
+                      .value(QStringLiteral("darkTheme"), false).toBool();
+    m_themeAction = new QAction(m_darkTheme ? QStringLiteral("主题：深色") : QStringLiteral("主题：浅色"), this);
+    m_themeAction->setStatusTip(tr("切换浅色/深色工作区"));
+    connect(m_themeAction, &QAction::triggered, this, [this](){
+        m_darkTheme = !m_darkTheme;
+        qApp->setStyleSheet(Theme::globalStyleSheet(m_darkTheme));
+        m_themeAction->setText(m_darkTheme ? QStringLiteral("主题：深色") : QStringLiteral("主题：浅色"));
+        QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+        settings.setValue(QStringLiteral("darkTheme"), m_darkTheme);
+    });
 }
 
 void MainWindow::setupUI()
@@ -1038,6 +1050,7 @@ void MainWindow::setupUI()
     mainToolBar->addAction(m_redoAction);
     mainToolBar->addAction(m_saveSessionAction);
     mainToolBar->addAction(m_loadSessionAction);
+    mainToolBar->addAction(m_themeAction);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myCloseAction);
     mainToolBar->addSeparator();

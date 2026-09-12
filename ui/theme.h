@@ -6,9 +6,9 @@
 
 namespace Theme {
 
-inline QString globalStyleSheet()
+inline QString globalStyleSheet(bool dark = false)
 {
-    const QMap<QString, QString> token = {
+    QMap<QString, QString> token = {
         {QStringLiteral("@window@"), QStringLiteral("#F5F7FA")},
         {QStringLiteral("@surface@"), QStringLiteral("#FFFFFF")},
         {QStringLiteral("@surfaceMuted@"), QStringLiteral("#F8F9FB")},
@@ -27,6 +27,19 @@ inline QString globalStyleSheet()
         {QStringLiteral("@radiusSmall@"), QStringLiteral("6px")},
         {QStringLiteral("@space@"), QStringLiteral("8px")},
     };
+    if (dark) {
+        token.insert(QStringLiteral("@window@"), QStringLiteral("#16181D"));
+        token.insert(QStringLiteral("@surface@"), QStringLiteral("#20242B"));
+        token.insert(QStringLiteral("@surfaceMuted@"), QStringLiteral("#1B1E24"));
+        token.insert(QStringLiteral("@surfaceHover@"), QStringLiteral("#2A3039"));
+        token.insert(QStringLiteral("@border@"), QStringLiteral("#353C48"));
+        token.insert(QStringLiteral("@borderStrong@"), QStringLiteral("#46505F"));
+        token.insert(QStringLiteral("@text@"), QStringLiteral("#F4F6F8"));
+        token.insert(QStringLiteral("@textMuted@"), QStringLiteral("#B7C0CC"));
+        token.insert(QStringLiteral("@textSubtle@"), QStringLiteral("#8994A3"));
+        token.insert(QStringLiteral("@accentSoft@"), QStringLiteral("#173B70"));
+        token.insert(QStringLiteral("@focus@"), QStringLiteral("#5B9DFF"));
+    }
 
     QString style = QStringLiteral(R"(
 * {
