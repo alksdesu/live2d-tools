@@ -126,7 +126,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         nameLabel->setFixedWidth(150);
         nameLabel->setToolTip(paramId);
         if(isBlendShape){
-            nameLabel->setStyleSheet("background-color: #FFF3CD; padding: 2px; border-radius: 2px;");
+            nameLabel->setObjectName(QStringLiteral("blendParamTag"));
         }
         row->addWidget(nameLabel);
 

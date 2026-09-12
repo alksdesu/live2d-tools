@@ -185,6 +185,18 @@ QLabel#recentTitle {
     padding-top: 4px;
 }
 
+QLabel#texInfoLabel {
+    color: @textSubtle@;
+    padding: 2px 4px;
+}
+
+QLabel#blendParamTag {
+    background: @accentSoft@;
+    color: @accent@;
+    padding: 2px;
+    border-radius: @radiusSmall@;
+}
+
 QPushButton#recentModel {
     text-align: left;
     color: @textMuted@;

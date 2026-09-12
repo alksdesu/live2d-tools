@@ -142,6 +142,7 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     : QDockWidget("纹理", parent)
 {
     QWidget* wrapper = new QWidget(this);
+    wrapper->setObjectName(QStringLiteral("texturePanelRoot"));
     wrapper->setObjectName("texPanelRoot");
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
     mainLayout->setContentsMargins(8, 8, 8, 8);
@@ -185,19 +186,6 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     m_infoLabel = new QLabel("未加载纹理", wrapper);
     m_infoLabel->setObjectName("texInfoLabel");
     mainLayout->addWidget(m_infoLabel);
-
-    // 深色工作区风格，选择器均限定在本面板内避免污染宿主
-    wrapper->setStyleSheet(
-        "#texPanelRoot { background: #2c2e36; }"
-        "#texPanelRoot QComboBox, #texPanelRoot QToolButton {"
-        "  background: #3a3d47; color: #e8eaf0; border: 1px solid #4a4e5a;"
-        "  border-radius: 4px; padding: 3px 10px; }"
-        "#texPanelRoot QToolButton:hover, #texPanelRoot QComboBox:hover {"
-        "  background: #464a56; }"
-        "#texPanelRoot QToolButton:pressed { background: #2f6fd0; }"
-        "#texPanelRoot QCheckBox { color: #e8eaf0; }"
-        "#texInfoLabel { color: #9aa0ae; padding: 2px 4px; }"
-    );
 
     setWidget(wrapper);
 
