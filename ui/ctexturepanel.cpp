@@ -273,12 +273,21 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
         return;
     }
 
-    const int meshCount = table.count_info->art_meshes;
+    const int meshCount = qMin(table.count_info->art_meshes, static_cast<int>(table.art_meshes.size()));
     m_meshes.reserve(meshCount);
 
     for (int i = 0; i < meshCount; ++i) {
         CArt_meshes* mesh = table.art_meshes[i];
-        if (mesh->vertex_counts <= 0) continue;
+        if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000) continue;
+        const int uvSize = static_cast<int>(table.uvs->uvs.size());
+        const int uvCount = mesh->vertex_counts * 2;
+        if (mesh->uv_sources_begin_indices < 0 || mesh->uv_sources_begin_indices > uvSize ||
+            uvCount > uvSize - mesh->uv_sources_begin_indices) continue;
+        const int indexSize = static_cast<int>(table.position_indices->indices.size());
+        if (mesh->position_index_sources_begin_indices < 0 || mesh->position_index_sources_counts < 3 ||
+            mesh->position_index_sources_counts % 3 != 0 ||
+            mesh->position_index_sources_begin_indices > indexSize ||
+            mesh->position_index_sources_counts > indexSize - mesh->position_index_sources_begin_indices) continue;
 
         CAtlasMeshUv uv;
         uv.name = mesh->ids;
@@ -300,7 +309,12 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
         const int idxCount = mesh->position_index_sources_counts;
         uv.triangles.reserve(idxCount);
         for (int t = 0; t < idxCount; ++t) {
-            uv.triangles.append(idxPtr[t]);
+            const int index = idxPtr[t];
+            if (index < 0 || index >= uv.points.size()) {
+                uv.triangles.clear();
+                break;
+            }
+            uv.triangles.append(index);
         }
 
         // 预生成绘制路径
@@ -374,6 +388,9 @@ QString CTexturePanel::hitTest(const QPointF& scenePos) const
         if (mesh.textureNo != m_currentTexKey) continue;
 
         for (int t = 0; t + 2 < mesh.triangles.size(); t += 3) {
+            if (mesh.triangles[t] < 0 || mesh.triangles[t] >= mesh.points.size() ||
+                mesh.triangles[t + 1] < 0 || mesh.triangles[t + 1] >= mesh.points.size() ||
+                mesh.triangles[t + 2] < 0 || mesh.triangles[t + 2] >= mesh.points.size()) continue;
             const QPointF& a = mesh.points[mesh.triangles[t]];
             const QPointF& b = mesh.points[mesh.triangles[t + 1]];
             const QPointF& c = mesh.points[mesh.triangles[t + 2]];
