@@ -14,6 +14,7 @@ struct CModelSession
 {
     int version = 1;
     QString sourceMoc;
+    QByteArray sourceDigest;
     QMap<QString, float> parameters;
     QMap<QString, bool> visibility;
     QMap<QString, bool> locked;
@@ -25,6 +26,7 @@ struct CModelSession
 
     QByteArray ToJson() const;
     static bool FromJson(const QByteArray& data, CModelSession* session, QString* error = nullptr);
+    static QByteArray ComputeSourceDigest(const QString& path);
     bool Save(const QString& path, QString* error = nullptr) const;
     static bool Load(const QString& path, CModelSession* session, QString* error = nullptr);
 };

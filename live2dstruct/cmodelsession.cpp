@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QCryptographicHash>
 #include <cmath>
 #include <limits>
 
@@ -53,6 +54,7 @@ QByteArray CModelSession::ToJson() const
     QJsonObject root;
     root.insert(QStringLiteral("version"), version);
     root.insert(QStringLiteral("sourceMoc"), sourceMoc);
+    if (!sourceDigest.isEmpty()) root.insert(QStringLiteral("sourceDigest"), QString::fromLatin1(sourceDigest.toHex()));
     QJsonObject parameterObject;
     for (auto it = parameters.cbegin(); it != parameters.cend(); ++it) parameterObject.insert(it.key(), static_cast<double>(it.value()));
     root.insert(QStringLiteral("parameters"), parameterObject);
@@ -124,6 +126,17 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     result.sourceMoc = sourceMoc.toString();
+    const QJsonValue sourceDigest = root.value(QStringLiteral("sourceDigest"));
+    if (!sourceDigest.isUndefined()) {
+        const QString encoded = sourceDigest.toString();
+        const QByteArray decoded = QByteArray::fromHex(encoded.toLatin1());
+        if (!sourceDigest.isString() || encoded.size() != 64 || decoded.size() != QCryptographicHash::hashLength(QCryptographicHash::Sha256) ||
+            QString::fromLatin1(decoded.toHex()).compare(encoded, Qt::CaseInsensitive) != 0) {
+            setError(error, QStringLiteral("会话源文件指纹无效"));
+            return false;
+        }
+        result.sourceDigest = decoded;
+    }
 
     QJsonObject parameterObject;
     QJsonObject visibilityObject;
@@ -251,6 +264,15 @@ bool CModelSession::Save(const QString& path, QString* error) const
         return false;
     }
     return true;
+}
+
+QByteArray CModelSession::ComputeSourceDigest(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    const QByteArray data = file.readAll();
+    if (file.error() != QFileDevice::NoError) return {};
+    return QCryptographicHash::hash(data, QCryptographicHash::Sha256);
 }
 
 bool CModelSession::Load(const QString& path, CModelSession* session, QString* error)

@@ -189,6 +189,7 @@ private slots:
     {
         live2dstruct::CModelSession source;
         source.sourceMoc = QStringLiteral("/tmp/Model.moc3");
+        source.sourceDigest = QByteArray(32, '\x42');
         source.parameters.insert(QStringLiteral("ParamAngleX"), -12.5f);
         source.visibility.insert(QStringLiteral("artmesh|Body"), false);
         source.locked.insert(QStringLiteral("artmesh|Body"), true);
@@ -202,6 +203,7 @@ private slots:
         QString error;
         QVERIFY2(live2dstruct::CModelSession::FromJson(source.ToJson(), &decoded, &error), qPrintable(error));
         QCOMPARE(decoded.sourceMoc, source.sourceMoc);
+        QCOMPARE(decoded.sourceDigest, source.sourceDigest);
         QCOMPARE(decoded.parameters, source.parameters);
         QCOMPARE(decoded.visibility, source.visibility);
         QCOMPARE(decoded.locked, source.locked);
@@ -214,6 +216,12 @@ private slots:
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
         const QString path = temp.filePath(QStringLiteral("state.live2d-session.json"));
+        const QString mocPath = temp.filePath(QStringLiteral("model.moc3"));
+        QFile mocFile(mocPath);
+        QVERIFY(mocFile.open(QIODevice::WriteOnly));
+        QVERIFY(mocFile.write("digest-test") > 0);
+        mocFile.close();
+        QCOMPARE(live2dstruct::CModelSession::ComputeSourceDigest(mocPath).size(), 32);
         QVERIFY2(source.Save(path, &error), qPrintable(error));
         live2dstruct::CModelSession loaded;
         QVERIFY2(live2dstruct::CModelSession::Load(path, &loaded, &error), qPrintable(error));
@@ -249,6 +257,8 @@ private slots:
             R"({"version":1,"drawableKeyformPositions":{"Body":"bad"}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"locked":{"artmesh|Body":"bad"}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"sourceDigest":"bad"})", &session, &error));
         QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &session, &error));
         QCOMPARE(session.viewScale, 1.0f);
         QVERIFY(session.drawableKeyformPositions.isEmpty());

@@ -313,6 +313,11 @@ void MainWindow::on_actionSaveSession_triggered()
 
     live2dstruct::CModelSession session;
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
+    session.sourceDigest = live2dstruct::CModelSession::ComputeSourceDigest(session.sourceMoc);
+    if (session.sourceDigest.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("保存会话失败"), QStringLiteral("无法读取当前 moc3 文件指纹"));
+        return;
+    }
     const QMap<QString, float> currentValues = m_paramPanel->CurrentValues();
     session.parameters = currentValues;
     if (m_treePanel) {
@@ -349,6 +354,11 @@ void MainWindow::on_actionLoadSession_triggered()
     if (!m_openglwindows || session.sourceMoc.isEmpty() ||
         QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(session.sourceMoc).absoluteFilePath()) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的模型不是当前打开的模型"));
+        return;
+    }
+    if (!session.sourceDigest.isEmpty() &&
+        session.sourceDigest != live2dstruct::CModelSession::ComputeSourceDigest(session.sourceMoc)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的 moc3 文件内容已变化，无法安全恢复编辑状态"));
         return;
     }
     const QString sourceMoc = session.sourceMoc;
