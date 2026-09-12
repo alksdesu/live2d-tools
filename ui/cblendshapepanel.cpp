@@ -10,6 +10,7 @@
 #include <QDebug>
 #include <QHash>
 #include <QSignalBlocker>
+#include <cmath>
 
 using namespace live2dstruct;
 
@@ -51,8 +52,15 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
     QHash<QString, QPair<float, float>> parameterRanges;
     QHash<QString, float> parameterDefaults;
     for (const auto* parameter : sec.parameters) {
-        parameterRanges.insert(parameter->ids, qMakePair(parameter->min_values, parameter->max_values));
-        parameterDefaults.insert(parameter->ids, parameter->default_values);
+        float minimum = parameter->min_values;
+        float maximum = parameter->max_values;
+        if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum) {
+            minimum = 0.0f;
+            maximum = 1.0f;
+        }
+        parameterRanges.insert(parameter->ids, qMakePair(minimum, maximum));
+        parameterDefaults.insert(parameter->ids, std::isfinite(parameter->default_values)
+                                             ? qBound(minimum, parameter->default_values, maximum) : minimum);
     }
 
     // 从 blend_shape_constraints 直接获取 blend shape 关联的参数
