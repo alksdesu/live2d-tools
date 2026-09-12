@@ -238,9 +238,16 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         PoseGroup pg;
         QComboBox* combo = new QComboBox();
         for(int i = 0; i < group.size(); i++){
-            QString partId = group[i].toObject()["Id"].toString();
+            const QJsonObject part = group[i].toObject();
+            QString partId = part["Id"].toString();
             if(partId.isEmpty()) continue;
             pg.partIds << partId;
+            QStringList links;
+            for (const QJsonValue& link : part["Link"].toArray()) {
+                const QString linkId = link.toString();
+                if (!linkId.isEmpty() && linkId != partId && !links.contains(linkId)) links.append(linkId);
+            }
+            pg.links.append(links);
             combo->addItem(QString("组%1: %2").arg(g + 1).arg(partId), partId);
         }
         if (pg.partIds.size() < 2) {
@@ -257,11 +264,26 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
             const PoseGroup& pg = m_poseGroups[poseIndex];
             QStringList hideIds;
             QString showId;
+            QStringList showLinks;
             for(int i = 0; i < pg.partIds.size(); i++){
-                if(i == index) showId = pg.partIds[i];
-                else hideIds << pg.partIds[i];
+                const QStringList links = i < pg.links.size() ? pg.links[i] : QStringList();
+                if(i == index) {
+                    showId = pg.partIds[i];
+                    showLinks = links;
+                } else {
+                    hideIds << pg.partIds[i];
+                    hideIds.append(links);
+                }
             }
-            emit PosePartChanged(showId, hideIds);
+            hideIds.removeDuplicates();
+            showLinks.removeDuplicates();
+            hideIds.removeAll(showId);
+            for (const QString& link : showLinks) hideIds.removeAll(link);
+            QStringList showIds;
+            showIds << showId;
+            showIds.append(showLinks);
+            showIds.removeDuplicates();
+            emit PosePartChanged(showIds, hideIds);
         });
     }
 

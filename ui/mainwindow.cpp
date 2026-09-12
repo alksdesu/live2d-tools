@@ -1241,11 +1241,13 @@ void MainWindow::RestDock(const QString &name)
     });
 
     // Pose 切换
-    connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QString& showId, const QStringList& hideIds){
+    connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QStringList& showIds, const QStringList& hideIds){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || showId.isEmpty()) return;
+        if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || showIds.isEmpty()) return;
         LAppModel* model = mgr->GetModel(0);
-        model->SetPartVisible(showId, true);
+        for (const QString& showId : showIds) {
+            if (!showId.isEmpty()) model->SetPartVisible(showId, true);
+        }
         for(const QString& hideId : hideIds) {
             if (!hideId.isEmpty()) model->SetPartVisible(hideId, false);
         }

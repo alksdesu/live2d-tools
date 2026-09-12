@@ -31,7 +31,7 @@ signals:
     void MouseFollowChanged(bool enabled);
     void PhysicsChanged(bool enabled);
     void MotionPlaybackChanged(float speed, bool loop);
-    void PosePartChanged(const QString& showPartId, const QStringList& hidePartIds);
+    void PosePartChanged(const QStringList& showPartIds, const QStringList& hidePartIds);
 
 private:
     QListWidget* m_motionList;
@@ -57,6 +57,7 @@ private:
     // Pose 组数据：每组是一个互斥 Part 列表
     struct PoseGroup {
         QStringList partIds;
+        QVector<QStringList> links;
         QComboBox* combo;
     };
     QVector<PoseGroup> m_poseGroups;
