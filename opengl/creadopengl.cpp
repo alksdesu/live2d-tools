@@ -89,6 +89,7 @@ QImage* CReadOpengl::GetImage(int x, int y, int width, int height)
 
     glReadBuffer(GL_COLOR_ATTACHMENT0);
     glReadPixels(x, y, width, height, GLenum(GL_RGBA), GLenum(GL_UNSIGNED_BYTE), image->bits());
+    *image = image->mirrored(false, true);
 
     return image;
 }
