@@ -676,13 +676,16 @@ void MainWindow::on_actionCloseModel_triggered()
 bool MainWindow::ConfirmCloseWithUnsavedChanges()
 {
     const bool physicsDirty = m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
-    if (!m_sessionDirty && !physicsDirty) return true;
+    const bool poseDirty = m_poseDirty || (m_motionPanel && m_motionPanel->HasUnsavedPoseChanges());
+    if (!m_sessionDirty && !physicsDirty && !poseDirty) return true;
     QMessageBox prompt(this);
     prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
     prompt.setText(QStringLiteral("当前模型有未保存的编辑。"));
-    prompt.setInformativeText(physicsDirty
-        ? QStringLiteral("关闭前是否保存工作会话和物理配置？")
-        : QStringLiteral("关闭前是否保存工作会话？"));
+    QStringList pending;
+    if (m_sessionDirty) pending.append(QStringLiteral("工作会话"));
+    if (physicsDirty) pending.append(QStringLiteral("物理配置"));
+    if (poseDirty) pending.append(QStringLiteral("Pose 配置"));
+    prompt.setInformativeText(QStringLiteral("关闭前是否保存：%1？").arg(pending.join(QStringLiteral("、"))));
     QPushButton* save = prompt.addButton(QStringLiteral("保存"), QMessageBox::AcceptRole);
     prompt.addButton(QStringLiteral("放弃"), QMessageBox::DestructiveRole);
     prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
@@ -691,7 +694,11 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges()
         if (m_sessionDirty) on_actionSaveSession_triggered();
         const bool sessionSaved = !m_sessionDirty;
         const bool physicsSaved = !physicsDirty || (m_physicsPanel && m_physicsPanel->SavePhysics());
-        return sessionSaved && physicsSaved;
+        QString poseError;
+        const bool poseSaved = !poseDirty || (m_motionPanel && m_motionPanel->SavePose(&poseError));
+        if (!poseSaved && !poseError.isEmpty())
+            QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), poseError);
+        return sessionSaved && physicsSaved && poseSaved;
     }
     return prompt.buttonRole(prompt.clickedButton()) == QMessageBox::DestructiveRole;
 }
@@ -774,6 +781,7 @@ bool MainWindow::CloseModel()
     if (m_undoAction) m_undoAction->setEnabled(false);
     if (m_redoAction) m_redoAction->setEnabled(false);
     m_sessionDirty = false;
+    m_poseDirty = false;
     setWindowTitle(QStringLiteral("live2d2psd"));
 
     // 隐藏面板切换按钮
@@ -1241,6 +1249,15 @@ void MainWindow::RestDock(const QString &name)
     });
 
     // Pose 切换
+    connect(m_motionPanel, &CMotionPanel::PoseConfigChanged, this, [this](){
+        m_poseDirty = true;
+        setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+        statusBar()->showMessage(QStringLiteral("有未保存的 Pose 配置"));
+    });
+    connect(m_motionPanel, &CMotionPanel::PoseSaved, this, [this](){
+        m_poseDirty = false;
+        if (!m_sessionDirty) setWindowTitle(QStringLiteral("live2d2psd"));
+    });
     connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QStringList& showIds, const QStringList& hideIds){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || showIds.isEmpty()) return;

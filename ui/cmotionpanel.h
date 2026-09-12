@@ -20,6 +20,8 @@ public:
     explicit CMotionPanel(QWidget *parent = nullptr);
     void BuildLists();
     bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
+    bool SavePose(QString* error = nullptr);
+    bool HasUnsavedPoseChanges() const { return m_poseDirty; }
 
     bool isAutoEyeBlink() const { return m_eyeBlinkCb->isChecked(); }
     bool isAutoBreath() const { return m_breathCb->isChecked(); }
@@ -34,6 +36,8 @@ signals:
     void PhysicsChanged(bool enabled);
     void MotionPlaybackChanged(float speed, bool loop);
     void PosePartChanged(const QStringList& showPartIds, const QStringList& hidePartIds);
+    void PoseConfigChanged();
+    void PoseSaved();
 
 private:
     QListWidget* m_motionList;
@@ -69,8 +73,8 @@ private:
     QPushButton* m_addPosePartButton = nullptr;
     QPushButton* m_removePosePartButton = nullptr;
     int m_activePoseGroup = -1;
+    bool m_poseDirty = false;
 
-    bool SavePose(QString* error = nullptr);
     void AddPosePart();
     void RemovePosePart();
 };

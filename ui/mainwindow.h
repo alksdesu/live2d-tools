@@ -74,6 +74,7 @@ private:
     QAction *m_themeAction = nullptr;
     bool m_darkTheme = false;
     bool m_sessionDirty = false;
+    bool m_poseDirty = false;
     bool m_applyingSession = false;
     bool m_syncingVisibility = false;
     enum class HistorySource { None, Parameters, Inspector };

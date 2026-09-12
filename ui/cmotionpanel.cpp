@@ -221,6 +221,7 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
     m_poseDocument = {};
     m_poseGroups.clear();
     m_activePoseGroup = -1;
+    m_poseDirty = false;
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));
     m_addPosePartButton->setEnabled(false);
     m_removePosePartButton->setEnabled(false);
@@ -358,6 +359,8 @@ bool CMotionPanel::SavePose(QString* error)
         return false;
     }
     m_savePoseButton->setText(QStringLiteral("已保存 Pose"));
+    m_poseDirty = false;
+    emit PoseSaved();
     return true;
 }
 
@@ -380,6 +383,8 @@ void CMotionPanel::AddPosePart()
     group.combo->setCurrentIndex(group.combo->count() - 1);
     m_removePosePartButton->setEnabled(group.partIds.size() > 1);
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));
+    m_poseDirty = true;
+    emit PoseConfigChanged();
 }
 
 void CMotionPanel::RemovePosePart()
@@ -393,4 +398,6 @@ void CMotionPanel::RemovePosePart()
     group.combo->removeItem(index);
     m_removePosePartButton->setEnabled(group.partIds.size() > 1);
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));
+    m_poseDirty = true;
+    emit PoseConfigChanged();
 }
