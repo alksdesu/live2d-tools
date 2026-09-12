@@ -77,6 +77,23 @@ struct CModelDrawable
     QVector<CModelKeyform> keyforms;
 };
 
+struct CModelDrawOrderGroupObject
+{
+    int type = -1;
+    int index = -1;
+    int selfIndex = -1;
+};
+
+struct CModelDrawOrderGroup
+{
+    int minimumDrawOrder = 0;
+    int maximumDrawOrder = 0;
+    int objectCount = 0;
+    int totalObjectCount = 0;
+    bool objectsValid = true;
+    QVector<CModelDrawOrderGroupObject> objects;
+};
+
 class CModelDocument
 {
 public:
@@ -90,6 +107,7 @@ public:
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
+    const QVector<CModelDrawOrderGroup>& DrawOrderGroups() const { return m_drawOrderGroups; }
     bool SetPartVisible(const QString& id, bool visible);
     bool SetDeformerVisible(const QString& id, bool visible);
     bool SetDrawableVisible(const QString& id, bool visible);
@@ -111,6 +129,7 @@ private:
     QVector<CModelPart> m_parts;
     QVector<CModelDeformer> m_deformers;
     QVector<CModelDrawable> m_drawables;
+    QVector<CModelDrawOrderGroup> m_drawOrderGroups;
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
 };

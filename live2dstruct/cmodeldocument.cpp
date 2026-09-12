@@ -36,6 +36,7 @@ void CModelDocument::Clear()
     m_parts.clear();
     m_deformers.clear();
     m_drawables.clear();
+    m_drawOrderGroups.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
 }
@@ -149,6 +150,26 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
             }
         }
         m_drawables.append(drawable);
+    }
+
+    m_drawOrderGroups.reserve(table.draw_order_groups.size());
+    for (const CDraw_order_groups* source : table.draw_order_groups) {
+        CModelDrawOrderGroup group;
+        group.minimumDrawOrder = source->minimum_draw_orders;
+        group.maximumDrawOrder = source->maximum_draw_orders;
+        group.objectCount = source->object_sources_counts;
+        group.totalObjectCount = source->object_sources_total_counts;
+        group.objectsValid = validSlice(source->object_sources_begin_indices, group.objectCount,
+                                        table.draw_order_group_objects.size());
+        if (group.objectsValid) {
+            group.objects.reserve(group.objectCount);
+            for (int i = 0; i < group.objectCount; ++i) {
+                const CDraw_order_group_objects* object = table.draw_order_group_objects[
+                    source->object_sources_begin_indices + i];
+                group.objects.append({object->types, object->indices, object->self_indices});
+            }
+        }
+        m_drawOrderGroups.append(group);
     }
 
     m_loaded = true;
@@ -374,6 +395,56 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_nan"),
                                      QStringLiteral("关键形包含非有限数值"), i});
                 break;
+            }
+        }
+    }
+
+    for (int i = 0; i < m_drawOrderGroups.size(); ++i) {
+        const CModelDrawOrderGroup& group = m_drawOrderGroups[i];
+        if (group.minimumDrawOrder < 0 || group.maximumDrawOrder > 1000 ||
+            group.minimumDrawOrder > group.maximumDrawOrder) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_range"),
+                                 QStringLiteral("Draw Order Group 范围无效"), i});
+        }
+        if (group.objectCount < 0 || group.totalObjectCount < group.objectCount || !group.objectsValid) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_objects"),
+                                 QStringLiteral("Draw Order Group 成员切片无效"), i});
+            continue;
+        }
+        QSet<QString> members;
+        for (const CModelDrawOrderGroupObject& object : group.objects) {
+            if (object.type == 0) {
+                if (!inRange(object.index, m_drawables.size())) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_drawable"),
+                                         QStringLiteral("Draw Order Group ArtMesh 索引越界"), i});
+                    continue;
+                }
+                if (object.selfIndex != -1) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_self"),
+                                         QStringLiteral("ArtMesh 的组索引应为空"), i});
+                }
+                const QString key = QStringLiteral("drawable:%1").arg(object.index);
+                if (members.contains(key)) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_duplicate"),
+                                         QStringLiteral("Draw Order Group 成员重复"), i});
+                }
+                members.insert(key);
+            } else if (object.type == 1) {
+                if (!inRange(object.index, m_parts.size()) ||
+                    !inRange(object.selfIndex, m_drawOrderGroups.size())) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_part"),
+                                         QStringLiteral("Draw Order Group Part 或组索引越界"), i});
+                    continue;
+                }
+                const QString key = QStringLiteral("part:%1").arg(object.index);
+                if (members.contains(key)) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_duplicate"),
+                                         QStringLiteral("Draw Order Group 成员重复"), i});
+                }
+                members.insert(key);
+            } else {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_group_type"),
+                                     QStringLiteral("Draw Order Group 成员类型无效"), i});
             }
         }
     }

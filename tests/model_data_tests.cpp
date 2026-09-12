@@ -78,6 +78,16 @@ private slots:
         QCOMPARE(document.Parts().size(), 17);
         QCOMPARE(document.Deformers().size(), 28);
         QCOMPARE(document.Drawables().size(), 30);
+        QCOMPARE(document.DrawOrderGroups().size(), 1);
+        const auto& drawOrderGroup = document.DrawOrderGroups().first();
+        QVERIFY(drawOrderGroup.objectsValid);
+        QCOMPARE(drawOrderGroup.objectCount, 30);
+        QCOMPARE(drawOrderGroup.totalObjectCount, 30);
+        for (const auto& object : drawOrderGroup.objects) {
+            QCOMPARE(object.type, 0);
+            QVERIFY(object.index >= 0 && object.index < document.Drawables().size());
+            QCOMPARE(object.selfIndex, -1);
+        }
         QVERIFY(document.Validate().isEmpty());
         const QString drawableId = document.Drawables().first().id;
         QVERIFY(document.SetDrawableVisible(drawableId, false));
