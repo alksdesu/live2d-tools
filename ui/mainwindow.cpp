@@ -382,6 +382,7 @@ void MainWindow::on_actionLoadSession_triggered()
         }
         if (m_treePanel) m_treePanel->ApplyLockedState(session.locked);
         if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
+        m_document.SetDeformerParentIndices(session.deformerParentIndices);
         if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
         for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
             m_document.SetDrawableOpacity(it.key(), it.value());
@@ -402,7 +403,6 @@ void MainWindow::on_actionLoadSession_triggered()
         }
         for (auto maskIt = session.drawableMaskIndices.cbegin(); maskIt != session.drawableMaskIndices.cend(); ++maskIt)
             m_document.SetDrawableMaskIndices(maskIt.key(), maskIt.value());
-        m_document.SetDeformerParentIndices(session.deformerParentIndices);
         for (auto invertIt = session.drawableMaskInverted.cbegin(); invertIt != session.drawableMaskInverted.cend(); ++invertIt)
             m_document.SetDrawableMaskInverted(invertIt.key(), invertIt.value());
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
@@ -1041,7 +1041,30 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_texturePanel, &CTexturePanel::HighlightMesh);
 
     // 信号连接：树面板可见性 → OpenGL 渲染控制
-    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_openglwindows, &OpengGlForm::do_SetVisibility);
+    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this,
+            [this](const QString& name, const QString& type, bool visible){
+        if (!m_openglwindows) return;
+        if (type != QLatin1String("warp") && type != QLatin1String("rotation")) {
+            m_openglwindows->do_SetVisibility(name, type, visible);
+            return;
+        }
+        int deformerIndex = -1;
+        for (int i = 0; i < m_document.Deformers().size(); ++i) {
+            if (m_document.Deformers()[i].id == name) { deformerIndex = i; break; }
+        }
+        if (deformerIndex < 0) return;
+        QStringList affected;
+        for (const auto& drawable : m_document.Drawables()) {
+            int current = drawable.parentDeformerIndex;
+            QSet<int> visited;
+            while (current >= 0 && current < m_document.Deformers().size() && !visited.contains(current)) {
+                if (current == deformerIndex) { affected.append(drawable.id); break; }
+                visited.insert(current);
+                current = m_document.DeformerParentIndex(m_document.Deformers()[current].id);
+            }
+        }
+        m_openglwindows->do_SetDeformerDrawableVisibility(affected, visible);
+    });
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, [this](const QString& name, const QString& type, bool visible){
         if (m_syncingVisibility) return;
         bool found = false;
