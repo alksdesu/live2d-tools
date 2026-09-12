@@ -49,7 +49,10 @@ uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)
 QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool includeHidden)
 {
     QVector<ExtractedLayer> results;
+    if (!table || !table->IsValid() || !table->count_info || !table->uvs ||
+        !table->position_indices || !table->keyform_positions || !table->canvas_info) return results;
     int meshCount = table->count_info->art_meshes;
+    meshCount = std::min(meshCount, static_cast<int>(table->art_meshes.size()));
     results.reserve(meshCount);
 
     for (int i = 0; i < meshCount; ++i) {
@@ -84,6 +87,12 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         // 提取三角形索引
         int idxBegin = mesh->position_index_sources_begin_indices;
         int idxCount = mesh->position_index_sources_counts;
+        const int uvSize = static_cast<int>(table->uvs->uvs.size());
+        const int indexSize = static_cast<int>(table->position_indices->indices.size());
+        if (uvBegin < 0 || uvCount < 0 || uvBegin > uvSize || uvCount > uvSize - uvBegin ||
+            idxBegin < 0 || idxCount < 0 || idxBegin > indexSize || idxCount > indexSize - idxBegin) {
+            continue;
+        }
 
         // 准备 UV 数据指针
         const float* uvPtr = &table->uvs->uvs[uvBegin];
@@ -103,8 +112,11 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         int keyformBegin = mesh->keyform_sources_begin_indices;
         if (keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
             int posBegin = table->art_mesh_keyforms[keyformBegin]->keyform_position_sources_begin_indices;
-            const float* posPtr = &table->keyform_positions->xys[posBegin];
-            canvasRect = ComputeCanvasRect(posPtr, mesh->vertex_counts, table->canvas_info);
+            const int positionSize = static_cast<int>(table->keyform_positions->xys.size());
+            if (posBegin >= 0 && posBegin <= positionSize && uvCount <= positionSize - posBegin) {
+                const float* posPtr = &table->keyform_positions->xys[posBegin];
+                canvasRect = ComputeCanvasRect(posPtr, mesh->vertex_counts, table->canvas_info);
+            }
         } else {
             // 回退：使用 UV 像素区域
             canvasRect = uvPixelRect;
@@ -120,9 +132,10 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         QVector<int> maskIndices;
         int maskBegin = mesh->drawable_mask_sources_begin_indices;
         int maskCount = mesh->drawable_mask_sources_counts;
-        for (int m = 0; m < maskCount; ++m) {
-            int maskIdx = maskBegin + m;
-            if (maskIdx < table->drawable_masks.size()) {
+        const int maskSize = static_cast<int>(table->drawable_masks.size());
+        if (maskBegin >= 0 && maskCount >= 0 && maskBegin <= maskSize && maskCount <= maskSize - maskBegin) {
+            for (int m = 0; m < maskCount; ++m) {
+                int maskIdx = maskBegin + m;
                 maskIndices.append(table->drawable_masks[maskIdx]->art_mesh_sources_indices);
             }
         }
@@ -154,12 +167,20 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
 {
     int atlasW = atlas.width();
     int atlasH = atlas.height();
+    if (atlas.isNull() || !uvData || !indexData || vertexCount <= 0 || indexCount < 3) {
+        outUvRect = QRect();
+        return QImage();
+    }
 
     // 计算 UV 像素空间包围盒
     float minPx = 1e9f, minPy = 1e9f, maxPx = -1e9f, maxPy = -1e9f;
     for (int v = 0; v < vertexCount; ++v) {
         float u = uvData[v * 2];
         float vCoord = uvData[v * 2 + 1];
+        if (!std::isfinite(u) || !std::isfinite(vCoord)) {
+            outUvRect = QRect();
+            return QImage();
+        }
         float px = u * atlasW;
         float py = vCoord * atlasH;
         minPx = std::min(minPx, px);
@@ -193,6 +214,7 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
         int i0 = indexData[t * 3];
         int i1 = indexData[t * 3 + 1];
         int i2 = indexData[t * 3 + 2];
+        if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
 
         // atlas 中的像素坐标
         float ax0 = uvData[i0 * 2] * atlasW;
@@ -218,6 +240,9 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
 QRect CTextureExtractor::ComputeCanvasRect(const float* positions, int vertexCount,
                                             const CCanvas_info* canvasInfo)
 {
+    if (!positions || !canvasInfo || vertexCount <= 0 || !std::isfinite(canvasInfo->pixels_per_unit) ||
+        canvasInfo->pixels_per_unit <= 0.0f ||
+        !std::isfinite(canvasInfo->origin_x) || !std::isfinite(canvasInfo->origin_y)) return QRect();
     float ppu = canvasInfo->pixels_per_unit;
     float originX = canvasInfo->origin_x;
     float originY = canvasInfo->origin_y;
@@ -226,6 +251,7 @@ QRect CTextureExtractor::ComputeCanvasRect(const float* positions, int vertexCou
     for (int v = 0; v < vertexCount; ++v) {
         float mx = positions[v * 2];
         float my = positions[v * 2 + 1];
+        if (!std::isfinite(mx) || !std::isfinite(my)) return QRect();
         // 模型空间 → 像素空间
         float px = (mx + originX) * ppu;
         float py = (originY - my) * ppu;

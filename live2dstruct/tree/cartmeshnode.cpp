@@ -13,11 +13,21 @@ CArtMeshNode::~CArtMeshNode()
 
 void CArtMeshNode::InitArtMesh(CArt_meshes &art_meshes,const CSectionTable &sectionTable)
 {
+    meshKeys.clear();
     is_visible = art_meshes.is_visible;
     is_enabled = art_meshes.is_enabled;
     texture_nos = art_meshes.texture_nos;
     drawable_flags =art_meshes.drawable_flags;
     vertex_counts =art_meshes.vertex_counts;
+    if (vertex_counts <= 0 || vertex_counts > 1000000 || !sectionTable.uvs || !sectionTable.position_indices ||
+        !sectionTable.keyform_positions ||
+        art_meshes.uv_sources_begin_indices < 0 ||
+        art_meshes.uv_sources_begin_indices > static_cast<int>(sectionTable.uvs->uvs.size()) - vertex_counts * 2 ||
+        art_meshes.position_index_sources_begin_indices < 0 || art_meshes.position_index_sources_counts < 3 ||
+        art_meshes.position_index_sources_counts % 3 != 0 ||
+        art_meshes.position_index_sources_begin_indices > static_cast<int>(sectionTable.position_indices->indices.size()) - art_meshes.position_index_sources_counts ||
+        art_meshes.keyform_sources_begin_indices < 0 || art_meshes.keyform_sources_counts <= 0 ||
+        art_meshes.keyform_sources_begin_indices > sectionTable.art_mesh_keyforms.size() - art_meshes.keyform_sources_counts) return;
     int vecoun = vertex_counts * 2;
     int count = vertex_counts * 2;
     uv.resize(count,0);

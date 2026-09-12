@@ -18,6 +18,9 @@ void CWarpNode::InitWarp(const CWarp_deformers &warpDeformers, const CSectionTab
     columns = warpDeformers.columns;
     rows =warpDeformers.rows;
     vertex_counts = warpDeformers.vertex_counts;
+    if (vertex_counts <= 0 || vertex_counts > 1000000 || !sectionTable.keyform_positions ||
+        warpDeformers.keyform_sources_begin_indices < 0 || warpDeformers.keyform_sources_counts <= 0 ||
+        warpDeformers.keyform_sources_begin_indices > sectionTable.warp_deformer_keyforms.size() - warpDeformers.keyform_sources_counts) return;
     int count = warpDeformers.keyform_sources_counts;
     int length = vertex_counts * 2;
     vetWarp.clear();

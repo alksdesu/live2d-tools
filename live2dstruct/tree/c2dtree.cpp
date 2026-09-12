@@ -76,6 +76,7 @@ void C2DTree::GetWarpKeys(QList<C2DTreeNode *> &list, std::vector<C2DTreeNode*> 
 
 void C2DTree::AddEdge(C2DTreeNode *father, C2DTreeNode *child)
 {
+    if (!father || !child || father == child) return;
     father->AddChild(child);
     child->AddFather(father);
 }
@@ -96,6 +97,9 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 parametersTree.push_back(parameterNode);
                 //参数关键帧数量
                 int counts = paraSelect->parameter_binding_sources_counts;
+                if (counts < 0 || paraSelect->parameter_binding_sources_begin_indices < 0 ||
+                    paraSelect->parameter_binding_sources_begin_indices > sectionTable.parameter_bindings.size() - counts)
+                    counts = 0;
                 for(int j = 1 ;j < counts;j++){
                     CParameterNode* next = new CParameterNode(paraSelect->ids);
                     next->InitParameterValue(sectionTable,*(paraSelect),j);
@@ -111,9 +115,11 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 int offset = keyform_bindings->parameter_binding_index_sources_begin_indices;
                 int counts = keyform_bindings->parameter_binding_index_sources_counts;
                 vetSave.clear();
-                for(int j = 0 ; j < counts ;j++){
-                    int sources = sectionTable.parameter_binding_indices[offset+j]->binding_sources_indices;
-                    vetSave.push_back((CParameterNode*)parametersTree[sources]);
+                if (offset >= 0 && counts >= 0 && offset <= sectionTable.parameter_binding_indices.size() - counts) {
+                    for(int j = 0 ; j < counts ;j++){
+                        int sources = sectionTable.parameter_binding_indices[offset+j]->binding_sources_indices;
+                        if (sources >= 0 && sources < parametersTree.size()) vetSave.push_back((CParameterNode*)parametersTree[sources]);
+                    }
                 }
                 mpakeyPara.push_back(vetSave);
             }
@@ -129,6 +135,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 partutilList.push_back(treeNode);
 
                 int sources = sectionTable.parts[i]->keyform_binding_sources_indices;
+                if (sources < 0 || sources >= mpakeyPara.size()) continue;
                 for(int j = 0 ;j < mpakeyPara[sources].size();j++){
                     AddEdge(mpakeyPara[sources][j],treeNode);
                 }
@@ -142,7 +149,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     partRoot.push_back(partutilList[i]);
                 }
                 else {
-                    AddEdge(partutilList[parentIndeices],partutilList[i]);
+                    if (parentIndeices >= 0 && parentIndeices < partutilList.size())
+                        AddEdge(partutilList[parentIndeices],partutilList[i]);
                 }
             }
         }
@@ -158,26 +166,30 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
 
                 if(deformers->types == 1){
                     treeNode = new CRotationNode(deformers->ids);
-
-                    CRotation_deformers* rdef= sectionTable.rotation_deformers[deformers->specific_sources_indices];
-                    CRotationNode* ronode = (CRotationNode*)(treeNode);
-                    ronode->InitRotation(*rdef,sectionTable);
-                    vetRotation.push_back(ronode);
+                    if (deformers->specific_sources_indices >= 0 && deformers->specific_sources_indices < sectionTable.rotation_deformers.size()) {
+                        CRotation_deformers* rdef= sectionTable.rotation_deformers[deformers->specific_sources_indices];
+                        CRotationNode* ronode = (CRotationNode*)(treeNode);
+                        ronode->InitRotation(*rdef,sectionTable);
+                        vetRotation.push_back(ronode);
+                    }
                 }else{
                     treeNode = new CWarpNode(deformers->ids);
-
-                    CWarp_deformers* rdef = sectionTable.warp_deformers[deformers->specific_sources_indices];
-                    CWarpNode* warpNode = (CWarpNode*) treeNode;
-                    warpNode->InitWarp(*rdef,sectionTable);
-                    vetWarp.push_back(warpNode);
+                    if (deformers->specific_sources_indices >= 0 && deformers->specific_sources_indices < sectionTable.warp_deformers.size()) {
+                        CWarp_deformers* rdef = sectionTable.warp_deformers[deformers->specific_sources_indices];
+                        CWarpNode* warpNode = (CWarpNode*) treeNode;
+                        warpNode->InitWarp(*rdef,sectionTable);
+                        vetWarp.push_back(warpNode);
+                    }
                 }
                 //这里会被part添加
                 if(deformers->parent_part_indices != -1){
-                    AddEdge(partutilList[deformers->parent_part_indices],treeNode);
+                    if (deformers->parent_part_indices >= 0 && deformers->parent_part_indices < partutilList.size())
+                        AddEdge(partutilList[deformers->parent_part_indices],treeNode);
                 }
                 deformutilList.push_back(treeNode);//添加所有的变形器
 
                 int sources =deformers->keyform_binding_sources_indices;
+                if (sources < 0 || sources >= mpakeyPara.size()) continue;
                 for(int j = 0 ;j < mpakeyPara[sources].size();j++){
                     AddEdge(mpakeyPara[sources][j],treeNode);
                 }
@@ -192,7 +204,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     deformRoot.push_back(deformutilList[i]);
                 }
                 else {
-                    AddEdge(deformutilList[defparent],deformutilList[i]);
+                    if (defparent >= 0 && defparent < deformutilList.size())
+                        AddEdge(deformutilList[defparent],deformutilList[i]);
                 }
             }
         }
@@ -208,18 +221,20 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
 
                 int artparent=art_meshes->parent_deformer_indices;
                 if(artparent != -1){
-                    AddEdge(deformutilList[artparent],treeNode);
+                    if (artparent >= 0 && artparent < deformutilList.size()) AddEdge(deformutilList[artparent],treeNode);
                 }else{
                     deformRoot.push_back(treeNode);//这个结点是变形器
                 }
                 if(art_meshes->parent_part_indices != -1){
-                    AddEdge(partutilList[art_meshes->parent_part_indices],treeNode);
+                    if (art_meshes->parent_part_indices >= 0 && art_meshes->parent_part_indices < partutilList.size())
+                        AddEdge(partutilList[art_meshes->parent_part_indices],treeNode);
                 }
                 else{
                     partRoot.push_back(treeNode);
                 }
 
                 int sources =art_meshes->keyform_binding_sources_indices;
+                if (sources < 0 || sources >= mpakeyPara.size()) { artTree.push_back(treeNode); continue; }
                 for(int j = 0 ;j < mpakeyPara[sources].size();j++){
                     AddEdge(mpakeyPara[sources][j],treeNode);
                 }
@@ -247,6 +262,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     CBlend_shapes_warp_deformers* warpnode = sectionTable.blend_shapes_warp_deformers[i];
                     int indices =warpnode->blend_shape_keyform_binding_sources_begin_indices;
                     int counts = warpnode->blend_shape_keyform_binding_sources_counts;
+                    if (indices < 0 || counts < 0 || indices > sectionTable.blend_shape_keyform_bindings.size() - counts ||
+                        warpnode->target_indices < 0 || warpnode->target_indices >= vetWarp.size()) continue;
                     for(int j = 0 ;j < counts; j++){
                         CBlend_shape_keyform_bindings* warpkey = sectionTable.blend_shape_keyform_bindings[j+indices];
                         int paraIndex = warpkey->parameter_binding_sources_indices;
@@ -261,6 +278,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     CBlend_shapes_art_meshes* artnode = sectionTable.blend_shapes_art_meshes[i];
                     int indices =artnode->blend_shape_keyform_binding_sources_begin_indices;
                     int counts = artnode->blend_shape_keyform_binding_sources_counts;
+                    if (indices < 0 || counts < 0 || indices > sectionTable.blend_shape_keyform_bindings.size() - counts ||
+                        artnode->target_indices < 0 || artnode->target_indices >= artTree.size()) continue;
                     for(int j = 0 ;j < counts; j++){
                         CBlend_shape_keyform_bindings* warpkey = sectionTable.blend_shape_keyform_bindings[j+indices];
                         int paraIndex = warpkey->parameter_binding_sources_indices;
@@ -466,4 +485,3 @@ int C2DTree::GetKeyIndex(int size)
 
 
 }
-

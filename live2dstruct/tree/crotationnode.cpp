@@ -18,6 +18,7 @@ void CRotationNode::InitRotation(const CRotation_deformers &rdef, const CSection
     int count = rdef.keyform_sources_counts;
     base_angles = rdef.base_angles;
     list.clear();
+    if (begin < 0 || count <= 0 || begin > sectionTable.rotation_deformer_keyforms.size() - count) return;
     for (int i = 0;i < count;i++){
         CRotation_deformer_keyforms* deformerKeyforms = sectionTable.rotation_deformer_keyforms[i+begin];
         CRotationNodeKeyform record;
