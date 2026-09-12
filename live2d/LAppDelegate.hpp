@@ -93,6 +93,7 @@ private:
     LAppDelegate();
     ~LAppDelegate();
     void InitializeCubism(const QString& strMoldeName="");
+    void ClearModelRuntimeState(bool clearOrderGroups);
 
     LAppAllocator _cubismAllocator;              ///< Cubism SDK Allocator
     Csm::CubismFramework::Option _cubismOption;  ///< Cubism SDK Option

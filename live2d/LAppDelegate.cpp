@@ -59,6 +59,9 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
     m_hiddenDrawables.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
+    m_dragTargetDrawables.clear();
+    m_savedVertices.clear();
+    m_isDraggingDeformer = false;
 
     _IsOffScreen =false;
 
@@ -97,8 +100,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
 
 void LAppDelegate::Release()
 {
-    m_drawableOpacityOverrides.clear();
-    m_drawableDrawOrderOverrides.clear();
+    ClearModelRuntimeState(true);
     delete _textureManager;
     delete _view;
     LAppLive2DManager::ReleaseInstance();
@@ -421,11 +423,23 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
 
 void LAppDelegate::ChangeScene(const QString &modelJsonName)
 {
-
-    m_drawableOpacityOverrides.clear();
-    m_drawableDrawOrderOverrides.clear();
+    ClearModelRuntimeState(true);
     LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
     live2DManager->ChangeSceneFileName(modelJsonName);
+}
+
+void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
+{
+    m_hiddenDrawables.clear();
+    m_drawableOpacityOverrides.clear();
+    m_drawableDrawOrderOverrides.clear();
+    m_dragTargetDrawables.clear();
+    m_savedVertices.clear();
+    m_isDraggingDeformer = false;
+    if (clearOrderGroups) {
+        m_drawableOrderGroupIndices.clear();
+        m_drawOrderGroups.clear();
+    }
 }
 
 //通过文件直接打开，如果已经打开场景就
