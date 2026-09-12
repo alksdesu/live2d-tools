@@ -79,6 +79,11 @@ private slots:
         QCOMPARE(document.Deformers().size(), 28);
         QCOMPARE(document.Drawables().size(), 30);
         QVERIFY(document.Validate().isEmpty());
+        const QString drawableId = document.Drawables().first().id;
+        QVERIFY(document.SetDrawableVisible(drawableId, false));
+        QVERIFY(document.HiddenIds().contains(drawableId));
+        QVERIFY(document.SetDrawableVisible(drawableId, true));
+        QVERIFY(!document.HiddenIds().contains(drawableId));
     }
 
     void modelJsonCanBeReused()
