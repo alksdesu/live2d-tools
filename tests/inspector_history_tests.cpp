@@ -155,6 +155,13 @@ private slots:
         panel.SetSelections({id}, {QStringLiteral("artmesh")});
         panel.SetSelections({}, {});
         QVERIFY(!visibility->isEnabled());
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        panel.SetLockedState({QStringLiteral("artmesh|") + id});
+        QVERIFY(!visibility->isEnabled());
+        QVERIFY(!opacity->isEnabled());
+        QVERIFY(!drawOrder->isEnabled());
+        panel.SetLockedState({});
+        QVERIFY(visibility->isEnabled());
     }
 };
 
