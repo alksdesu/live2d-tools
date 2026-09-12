@@ -39,6 +39,7 @@
 #include <QVBoxLayout>
 #include <QFrame>
 #include <QFileInfo>
+#include <QSettings>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
@@ -442,6 +443,27 @@ QWidget* MainWindow::createEmptyState()
     cardLayout->addWidget(hint);
     cardLayout->addSpacing(8);
     cardLayout->addWidget(open);
+
+    QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    QStringList recent = settings.value(QStringLiteral("recentModels")).toStringList();
+    QStringList validRecent;
+    for (const QString& path : recent) {
+        if (QFileInfo(path).isFile() && !validRecent.contains(path)) validRecent.append(path);
+    }
+    if (!validRecent.isEmpty()) {
+        auto* recentTitle = new QLabel(QStringLiteral("最近打开"), card);
+        recentTitle->setObjectName(QStringLiteral("recentTitle"));
+        cardLayout->addSpacing(8);
+        cardLayout->addWidget(recentTitle);
+        for (const QString& path : validRecent) {
+            auto* recentButton = new QPushButton(QFileInfo(path).fileName(), card);
+            recentButton->setObjectName(QStringLiteral("recentModel"));
+            recentButton->setToolTip(path);
+            connect(recentButton, &QPushButton::clicked, this, [this, path](){ OpenModelWithConfirm(path); });
+            cardLayout->addWidget(recentButton);
+        }
+        if (validRecent != recent) settings.setValue(QStringLiteral("recentModels"), validRecent);
+    }
     layout->addWidget(card, 0, Qt::AlignHCenter);
     layout->addStretch(1);
     return page;
@@ -517,6 +539,12 @@ void MainWindow::RestDock(const QString &name)
         QMessageBox::warning(this, "打开模型失败", documentError);
         return;
     }
+    QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    QStringList recent = settings.value(QStringLiteral("recentModels")).toStringList();
+    recent.removeAll(name);
+    recent.prepend(name);
+    while (recent.size() > 8) recent.removeLast();
+    settings.setValue(QStringLiteral("recentModels"), recent);
     if(m_placeholder) { delete m_placeholder; m_placeholder = nullptr; }
     m_currentMoc = moc;
     m_currentModelDir = modeljson.m_parentPath;

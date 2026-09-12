@@ -166,6 +166,25 @@ QLabel#inspectorEmpty {
     padding: 8px;
 }
 
+QLabel#recentTitle {
+    color: @textMuted@;
+    font-weight: 600;
+    padding-top: 4px;
+}
+
+QPushButton#recentModel {
+    text-align: left;
+    color: @textMuted@;
+    background: @surfaceMuted@;
+    border-color: @border@;
+}
+
+QPushButton#recentModel:hover {
+    color: @text@;
+    background: @surfaceHover@;
+    border-color: @focus@;
+}
+
 QPushButton#winBtnMin, QPushButton#winBtnMax, QPushButton#winBtnClose {
     background: transparent;
     border: none;
