@@ -151,20 +151,23 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
 
     // 构建变形器 → ArtMesh 映射（递归含子变形器）
     m_deformerToArtMeshes.clear();
-    std::function<QStringList(int)> collectArtMeshesUnderDeformer;
-    collectArtMeshesUnderDeformer = [&](int defIdx) -> QStringList {
+    std::function<QStringList(int, QSet<int>&)> collectArtMeshesUnderDeformer;
+    collectArtMeshesUnderDeformer = [&](int defIdx, QSet<int>& visited) -> QStringList {
+        if (defIdx < 0 || defIdx >= deformerCount || visited.contains(defIdx)) return {};
+        visited.insert(defIdx);
         QStringList result;
         for(int amIdx : deformerArtMeshes[defIdx]){
             result << sec.art_meshes[amIdx]->ids;
         }
         for(int childIdx : deformerChildren[defIdx]){
-            result << collectArtMeshesUnderDeformer(childIdx);
+            result << collectArtMeshesUnderDeformer(childIdx, visited);
         }
         return result;
     };
     for(int i = 0; i < deformerCount; i++){
         QString defName = sec.deformers[i]->ids;
-        m_deformerToArtMeshes[defName] = collectArtMeshesUnderDeformer(i);
+        QSet<int> visited;
+        m_deformerToArtMeshes[defName] = collectArtMeshesUnderDeformer(i, visited);
     }
 
     // 构建变形器 → 绑定参数映射
@@ -219,14 +222,17 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
 
             // 3) 子 ArtMesh 的绑定
             QVector<int> amIndices;
-            std::function<void(int)> collectAM;
-            collectAM = [&](int defIdx){
+            std::function<void(int, QSet<int>&)> collectAM;
+            collectAM = [&](int defIdx, QSet<int>& visited){
+                if (defIdx < 0 || defIdx >= deformerCount || visited.contains(defIdx)) return;
+                visited.insert(defIdx);
                 for(int amIdx : deformerArtMeshes[defIdx])
                     amIndices.append(amIdx);
                 for(int childIdx : deformerChildren[defIdx])
-                    collectAM(childIdx);
+                    collectAM(childIdx, visited);
             };
-            collectAM(i);
+            QSet<int> visited;
+            collectAM(i, visited);
             for(int amIdx : amIndices){
                 tryAddFromKb(sec.art_meshes[amIdx]->keyform_binding_sources_indices);
             }
@@ -255,8 +261,10 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
     // ========= 构建部件树 (Part Tree) =========
 
     // 递归构建 Deformer 子树 (部件树用)
-    std::function<void(QTreeWidgetItem*, int)> buildDeformerSubtree;
-    buildDeformerSubtree = [&](QTreeWidgetItem* parentItem, int defIdx){
+    std::function<void(QTreeWidgetItem*, int, QSet<int>&)> buildDeformerSubtree;
+    buildDeformerSubtree = [&](QTreeWidgetItem* parentItem, int defIdx, QSet<int>& visited){
+        if (defIdx < 0 || defIdx >= deformerCount || visited.contains(defIdx)) return;
+        visited.insert(defIdx);
         for(int childIdx : deformerChildren[defIdx]){
             CDeformers* def = sec.deformers[childIdx];
             QString defName = def->ids;
@@ -271,7 +279,7 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(0, Qt::Checked);
             m_nameToPartItem[defName] = item;
-            buildDeformerSubtree(item, childIdx);
+            buildDeformerSubtree(item, childIdx, visited);
         }
         for(int amIdx : deformerArtMeshes[defIdx]){
             QString amName = sec.art_meshes[amIdx]->ids;
@@ -286,8 +294,10 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         }
     };
 
-    std::function<void(QTreeWidgetItem*, int)> buildPartSubtree;
-    buildPartSubtree = [&](QTreeWidgetItem* parentItem, int partIdx){
+    std::function<void(QTreeWidgetItem*, int, QSet<int>&, QSet<int>&)> buildPartSubtree;
+    buildPartSubtree = [&](QTreeWidgetItem* parentItem, int partIdx, QSet<int>& partPath, QSet<int>& deformerPath){
+        if (partIdx < 0 || partIdx >= partCount || partPath.contains(partIdx)) return;
+        partPath.insert(partIdx);
         for(int childPartIdx : partChildren[partIdx]){
             CParts* part = sec.parts[childPartIdx];
             QString partId = part->ids;
@@ -299,7 +309,7 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(0, Qt::Checked);
             m_nameToPartItem[partId] = item;
-            buildPartSubtree(item, childPartIdx);
+            buildPartSubtree(item, childPartIdx, partPath, deformerPath);
         }
         for(int defIdx : partDeformers[partIdx]){
             CDeformers* def = sec.deformers[defIdx];
@@ -315,7 +325,8 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(0, Qt::Checked);
             m_nameToPartItem[defName] = item;
-            buildDeformerSubtree(item, defIdx);
+            QSet<int> branchVisited = deformerPath;
+            buildDeformerSubtree(item, defIdx, branchVisited);
         }
         for(int amIdx : partDirectArtMeshes[partIdx]){
             QString amName = sec.art_meshes[amIdx]->ids;
@@ -328,6 +339,7 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setCheckState(0, Qt::Checked);
             m_nameToPartItem[amName] = item;
         }
+        partPath.remove(partIdx);
     };
 
     m_partTree->blockSignals(true);
@@ -342,7 +354,9 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(0, Qt::Checked);
         m_nameToPartItem[partId] = item;
-        buildPartSubtree(item, rootIdx);
+        QSet<int> partPath;
+        QSet<int> deformerPath;
+        buildPartSubtree(item, rootIdx, partPath, deformerPath);
     }
     m_partTree->blockSignals(false);
     m_partTree->expandToDepth(1);
@@ -358,8 +372,10 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
     }
 
     // 递归构建变形器树的 Part 层级
-    std::function<void(QTreeWidgetItem*, int)> buildDeformerTreePart;
-    buildDeformerTreePart = [&](QTreeWidgetItem* parentItem, int partIdx){
+    std::function<void(QTreeWidgetItem*, int, QSet<int>&)> buildDeformerTreePart;
+    buildDeformerTreePart = [&](QTreeWidgetItem* parentItem, int partIdx, QSet<int>& visited){
+        if (partIdx < 0 || partIdx >= partCount || visited.contains(partIdx)) return;
+        visited.insert(partIdx);
         // 子 Part
         for(int childPartIdx : partChildren[partIdx]){
             CParts* childPart = sec.parts[childPartIdx];
@@ -372,8 +388,9 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             childItem->setFlags(childItem->flags() | Qt::ItemIsUserCheckable);
             childItem->setCheckState(0, Qt::Checked);
             m_nameToDeformerItem[childPartId] = childItem;
-            buildDeformerTreePart(childItem, childPartIdx);
+            buildDeformerTreePart(childItem, childPartIdx, visited);
         }
+        visited.remove(partIdx);
         // 该 Part 拥有的变形器（平铺列出，不嵌套）
         for(int defIdx : partOwnedDeformers[partIdx]){
             CDeformers* def = sec.deformers[defIdx];
@@ -404,7 +421,8 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         partItem->setFlags(partItem->flags() | Qt::ItemIsUserCheckable);
         partItem->setCheckState(0, Qt::Checked);
         m_nameToDeformerItem[partId] = partItem;
-        buildDeformerTreePart(partItem, rootIdx);
+        QSet<int> visited;
+        buildDeformerTreePart(partItem, rootIdx, visited);
     }
     m_deformerTree->blockSignals(false);
     m_deformerTree->expandToDepth(1);
