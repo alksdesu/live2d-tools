@@ -63,6 +63,10 @@ private slots:
         QCOMPARE(table.art_meshes.size(), table.count_info->art_meshes);
         QCOMPARE(QSize(qRound(table.canvas_info->width), qRound(table.canvas_info->height)), canvas);
         for (const auto* info : table.glue_info) QVERIFY(info->position_indices >= 0);
+        live2dstruct::CModelDocument document;
+        QString documentError;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/" + name + "/" + name + ".moc3", &documentError), qPrintable(documentError));
+        QVERIFY2(document.Validate().isEmpty(), qPrintable(name));
     }
 
     void documentSnapshot()

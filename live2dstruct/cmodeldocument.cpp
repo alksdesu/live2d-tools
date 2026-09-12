@@ -272,7 +272,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_missing"),
                                  QStringLiteral("ArtMesh 缺少三角形索引"), i});
         }
-        if (!std::isfinite(drawable.opacity) || drawable.opacity < 0.0f || drawable.opacity > 1.0f) {
+        if (!std::isfinite(drawable.opacity) || drawable.opacity < -0.001f || drawable.opacity > 1.001f) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("opacity_range"),
                                  QStringLiteral("ArtMesh 默认透明度超出 0 到 1 范围"), i});
         }
