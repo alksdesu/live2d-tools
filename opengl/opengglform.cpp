@@ -263,6 +263,17 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
     qDebug() << "[Visibility]" << type << name << (visible ? "show" : "hide");
 }
 
+void OpengGlForm::do_SetDeformerDrawableVisibility(const QStringList& artMeshNames, bool visible)
+{
+    auto* delegate = LAppDelegate::GetInstance();
+    if (!delegate) return;
+    for (const QString& name : artMeshNames) {
+        if (name.isEmpty()) continue;
+        if (visible) delegate->m_hiddenDeformerDrawables.remove(name);
+        else delegate->m_hiddenDeformerDrawables.insert(name);
+    }
+}
+
 void OpengGlForm::PublishRenderOrder(const QStringList& names)
 {
     if (names == m_lastRenderOrder) return;

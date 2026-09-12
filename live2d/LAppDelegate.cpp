@@ -57,6 +57,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
     m_IsPrintALl =false;
     m_IsPrintFenzu=false;
     m_hiddenDrawables.clear();
+    m_hiddenDeformerDrawables.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
     m_meshOverlayPositions.clear();
@@ -433,6 +434,7 @@ void LAppDelegate::ChangeScene(const QString &modelJsonName)
 void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
 {
     m_hiddenDrawables.clear();
+    m_hiddenDeformerDrawables.clear();
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
     m_meshOverlayPositions.clear();

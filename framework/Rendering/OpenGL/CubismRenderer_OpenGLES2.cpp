@@ -716,7 +716,8 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
 
             QString drawName(GetModel()->GetDrawableId(drawableIndex)->GetString().GetRawString());
 
-            if(LAppDelegate::GetInstance()->m_hiddenDrawables.contains(drawName)) continue;
+            if(LAppDelegate::GetInstance()->m_hiddenDrawables.contains(drawName) ||
+               LAppDelegate::GetInstance()->m_hiddenDeformerDrawables.contains(drawName)) continue;
 
             if(!LAppDelegate::GetInstance()->m_IsPrintALl){
                 if (!GetModel()->GetDrawableDynamicFlagIsVisible(drawableIndex))
@@ -815,7 +816,8 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
         else{
             for (csmInt32 i = 0; i < drawableCount; ++i){
                 QString drawName(GetModel()->GetDrawableId(i)->GetString().GetRawString());
-                if(LAppDelegate::GetInstance()->m_hiddenDrawables.contains(drawName)) continue;
+                if(LAppDelegate::GetInstance()->m_hiddenDrawables.contains(drawName) ||
+                   LAppDelegate::GetInstance()->m_hiddenDeformerDrawables.contains(drawName)) continue;
                 GetModel()->DrawMesh(drawName,GetMvpMatrix().GetQMatrix44());
             }
 

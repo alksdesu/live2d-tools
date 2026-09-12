@@ -60,6 +60,7 @@ public:
 
     // 可见性控制：隐藏的 drawable 名称集合
     QSet<QString> m_hiddenDrawables;
+    QSet<QString> m_hiddenDeformerDrawables;
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, int> m_drawableOrderGroupIndices;
