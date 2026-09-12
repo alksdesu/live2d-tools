@@ -64,7 +64,8 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         }
 
         // 跳过无顶点的 mesh
-        if (mesh->vertex_counts <= 0) {
+        if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000 ||
+            mesh->vertex_counts > std::numeric_limits<int>::max() / 2) {
             continue;
         }
 
@@ -97,6 +98,14 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         // 准备 UV 数据指针
         const float* uvPtr = &table->uvs->uvs[uvBegin];
         const short* idxPtr = &table->position_indices->indices[idxBegin];
+        bool indicesValid = true;
+        for (int t = 0; t < idxCount; ++t) {
+            if (idxPtr[t] < 0 || idxPtr[t] >= mesh->vertex_counts) {
+                indicesValid = false;
+                break;
+            }
+        }
+        if (!indicesValid) continue;
 
         // 通过 UV 三角形光栅化从 atlas 提取原始纹理
         QRect uvPixelRect;
@@ -106,7 +115,6 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         if (meshImage.isNull() || meshImage.width() == 0 || meshImage.height() == 0) {
             continue;
         }
-
         // 计算画布位置：使用默认 keyform 的顶点位置
         QRect canvasRect;
         int keyformBegin = mesh->keyform_sources_begin_indices;
@@ -121,6 +129,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             // 回退：使用 UV 像素区域
             canvasRect = uvPixelRect;
         }
+        if (canvasRect.isEmpty()) canvasRect = uvPixelRect;
 
         // 读取默认透明度
         float opacity = 1.0f;
@@ -177,7 +186,8 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
     for (int v = 0; v < vertexCount; ++v) {
         float u = uvData[v * 2];
         float vCoord = uvData[v * 2 + 1];
-        if (!std::isfinite(u) || !std::isfinite(vCoord)) {
+        if (!std::isfinite(u) || !std::isfinite(vCoord) || u < -0.001f || u > 1.001f ||
+            vCoord < -0.001f || vCoord > 1.001f) {
             outUvRect = QRect();
             return QImage();
         }
