@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QToolButton>
 #include <algorithm>
 #include <iterator>
 
@@ -35,6 +36,9 @@ CParamPanel::CParamPanel(QWidget *parent)
 
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text){
         const QString query = text.trimmed().toLower();
+        if (!query.isEmpty()) {
+            for (QToolButton* groupButton : m_container->findChildren<QToolButton*>()) groupButton->setChecked(true);
+        }
         for (const ParamRow& row : m_rows) {
             const QString searchText = row.widget ? row.widget->property("searchText").toString() : QString();
             row.widget->setVisible(query.isEmpty() || searchText.contains(query));
@@ -81,7 +85,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
     }
 
     // 添加一行参数滑条的 lambda
-    auto addParamRow = [&](const QString& paramId, int modelIdx){
+    auto addParamRow = [&](QVBoxLayout* targetLayout, const QString& paramId, int modelIdx){
         float minVal = cubismModel->GetParameterMinimumValue(modelIdx);
         float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
         float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
@@ -175,7 +179,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         });
         connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){ m_userLocked.insert(idx); });
 
-        layout->addWidget(rowWidget);
+        targetLayout->addWidget(rowWidget);
     };
 
     // 有分组信息时按组显示
@@ -190,17 +194,27 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
             else
                 groupName = group.strGroup;
 
-            QLabel* groupLabel = new QLabel(groupName, m_container);
-            QFont boldFont = groupLabel->font();
-            boldFont.setBold(true);
-            boldFont.setPointSize(boldFont.pointSize() + 1);
-            groupLabel->setFont(boldFont);
-            groupLabel->setStyleSheet("margin-top: 8px; margin-bottom: 4px; color: #4A90D9;");
-            layout->addWidget(groupLabel);
+            auto* groupButton = new QToolButton(m_container);
+            groupButton->setText(groupName);
+            groupButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+            groupButton->setArrowType(Qt::DownArrow);
+            groupButton->setCheckable(true);
+            groupButton->setChecked(true);
+            groupButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            auto* groupBody = new QWidget(m_container);
+            auto* groupLayout = new QVBoxLayout(groupBody);
+            groupLayout->setContentsMargins(8, 0, 0, 0);
+            groupLayout->setSpacing(0);
+            layout->addWidget(groupButton);
+            layout->addWidget(groupBody);
+            connect(groupButton, &QToolButton::toggled, groupBody, [groupButton, groupBody](bool checked){
+                groupBody->setVisible(checked);
+                groupButton->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+            });
 
             for(const QString& paramId : group.vetParam){
                 if(!paramIdToModelIndex.contains(paramId)) continue;
-                addParamRow(paramId, paramIdToModelIndex[paramId]);
+                addParamRow(groupLayout, paramId, paramIdToModelIndex[paramId]);
                 addedParams.insert(paramId);
             }
         }
@@ -209,14 +223,14 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         for(int i = 0; i < count; i++){
             QString paramId = cubismModel->GetParameterId(i)->GetString().GetRawString();
             if(!addedParams.contains(paramId)){
-                addParamRow(paramId, i);
+                addParamRow(layout, paramId, i);
             }
         }
     } else {
         // 无分组信息，全部平铺
         for(int i = 0; i < count; i++){
             QString paramId = cubismModel->GetParameterId(i)->GetString().GetRawString();
-            addParamRow(paramId, i);
+            addParamRow(layout, paramId, i);
         }
     }
 
