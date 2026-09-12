@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QDebug>
 #include <QHash>
+#include <QSignalBlocker>
 
 using namespace live2dstruct;
 
@@ -35,6 +36,9 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
 {
     m_tree->clear();
     m_blendShapeParamIds.clear();
+    m_paramSliders.clear();
+    m_paramValueLabels.clear();
+    m_paramRanges.clear();
 
     CReader reader(mocPath);
     CSectionTable sec(reader);
@@ -161,6 +165,9 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
             sl->addWidget(valLabel);
 
             m_tree->setItemWidget(item, 1, sliderWidget);
+            m_paramSliders.insert(paramId, slider);
+            m_paramValueLabels.insert(paramId, valLabel);
+            m_paramRanges.insert(paramId, qMakePair(minValue, maxValue));
 
             QString pid = paramId;
             connect(slider, &QSlider::valueChanged, this, [this, pid, valLabel, minValue, maxValue](int val){
@@ -189,4 +196,19 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
             item->setText(1, QString("%1 个约束值").arg(valueCount));
         }
     }
+}
+
+void CBlendShapePanel::SyncParameterValue(const QString& paramId, float value)
+{
+    if (!m_paramSliders.contains(paramId)) return;
+    QSlider* slider = m_paramSliders.value(paramId);
+    const auto range = m_paramRanges.value(paramId, qMakePair(0.0f, 1.0f));
+    const float minValue = range.first;
+    const float maxValue = range.second;
+    const float bounded = qBound(minValue, value, maxValue);
+    const int sliderValue = maxValue > minValue
+        ? qBound(0, qRound((bounded - minValue) * 1000.0f / (maxValue - minValue)), 1000) : 0;
+    QSignalBlocker blocker(slider);
+    slider->setValue(sliderValue);
+    if (m_paramValueLabels.contains(paramId)) m_paramValueLabels.value(paramId)->setText(QString::number(bounded, 'f', 2));
 }

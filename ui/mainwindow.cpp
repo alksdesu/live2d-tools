@@ -931,6 +931,12 @@ void MainWindow::RestDock(const QString &name)
     QTimer::singleShot(200, this, [this, posePath, moc](){
         const QSet<QString>* bsParams = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
         if(m_paramPanel) m_paramPanel->BuildParams(m_cidJson, bsParams);
+        if (m_paramPanel && m_blendShapePanel) {
+            const auto values = m_paramPanel->CurrentValues();
+            for (auto it = values.cbegin(); it != values.cend(); ++it) {
+                m_blendShapePanel->SyncParameterValue(it.key(), it.value());
+            }
+        }
         if(m_motionPanel) m_motionPanel->BuildLists();
         // Pose 切换
         if(m_motionPanel && !posePath.isEmpty()){
@@ -989,6 +995,8 @@ void MainWindow::RestDock(const QString &name)
 
     // 信号连接：参数面板 → OpenGL
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
+    connect(m_paramPanel, &CParamPanel::ParamChanged, m_blendShapePanel,
+            [this](const QString& name, float value, bool){ m_blendShapePanel->SyncParameterValue(name, value); });
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(name, value, true);
     });
