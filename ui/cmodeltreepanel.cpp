@@ -46,6 +46,7 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
     connect(m_partTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int){
         QString name = item->data(0, Qt::UserRole).toString();
         QString type = item->data(0, Qt::UserRole + 1).toString();
+        emit ObjectSelected(name, type);
         if(type == "artmesh"){
             emit MeshSelected(name);
         } else if(type == "warp" || type == "rotation"){
@@ -73,6 +74,7 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
     connect(m_deformerTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int){
         QString name = item->data(0, Qt::UserRole).toString();
         QString type = item->data(0, Qt::UserRole + 1).toString();
+        emit ObjectSelected(name, type);
         if(type == "warp" || type == "rotation"){
             QStringList artMeshes;
             if(m_deformerToArtMeshes.contains(name))

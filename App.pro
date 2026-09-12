@@ -35,6 +35,7 @@ OBJECTS_DIR = $${OUTPUTDIR}/objs
 DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
+    ui/cinspectorpanel.cpp \
     opengl/cmeshbounds.cpp \
     live2dstruct/cmodeldocument.cpp \
     edit/cdrawobject.cpp \
@@ -211,6 +212,7 @@ SOURCES += \
     cmo3\ccmo3builder.cpp \
 
 HEADERS += \
+    ui/cinspectorpanel.h \
     opengl/cmeshbounds.h \
     live2dstruct/cmodeldocument.h \
     CPrecompileHead.h \
@@ -465,4 +467,3 @@ RESOURCES += \
     assets/images/images.qrc\
     assets/shaders/shaders.qrc\
     assets/icc.qrc
-

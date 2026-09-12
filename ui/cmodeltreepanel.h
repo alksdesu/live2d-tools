@@ -18,6 +18,7 @@ public slots:
     void HighlightMesh(const QString& artName);
 
 signals:
+    void ObjectSelected(const QString& name, const QString& type);
     void MeshSelected(const QString& artName);
     void WarpSelected(const QString& artName);
     void ShowDeformers(const QStringList& names);

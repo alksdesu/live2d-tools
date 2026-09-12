@@ -20,6 +20,7 @@
 #include "ui/cphysicspanel.h"
 #include "ui/cblendshapepanel.h"
 #include "ui/ctexturepanel.h"
+#include "ui/cinspectorpanel.h"
 #include "ui/para/ccidjson.h"
 #include "std/cmodeljsonwriter.h"
 #include "cmo3/ccmo3builder.h"
@@ -458,6 +459,7 @@ void MainWindow::CloseModel()
     if(m_physicsPanel) { removeDockWidget(m_physicsPanel); delete m_physicsPanel; m_physicsPanel = nullptr; }
     if(m_blendShapePanel) { removeDockWidget(m_blendShapePanel); delete m_blendShapePanel; m_blendShapePanel = nullptr; }
     if(m_texturePanel) { removeDockWidget(m_texturePanel); delete m_texturePanel; m_texturePanel = nullptr; }
+    if(m_inspectorPanel) { removeDockWidget(m_inspectorPanel); delete m_inspectorPanel; m_inspectorPanel = nullptr; }
 
     // 隐藏面板切换按钮
     m_btnToggleTree->setVisible(false);
@@ -466,6 +468,7 @@ void MainWindow::CloseModel()
     m_btnTogglePhysics->setVisible(false);
     m_btnToggleBlend->setVisible(false);
     m_btnToggleTexture->setVisible(false);
+    m_btnToggleInspector->setVisible(false);
 
     // 释放显示名称映射
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
@@ -548,6 +551,11 @@ void MainWindow::RestDock(const QString &name)
     addDockWidget(Qt::BottomDockWidgetArea, m_texturePanel);
     tabifyDockWidget(m_blendShapePanel, m_texturePanel);
 
+    m_inspectorPanel = new CInspectorPanel(this);
+    addDockWidget(Qt::RightDockWidgetArea, m_inspectorPanel);
+    tabifyDockWidget(m_paramPanel, m_inspectorPanel);
+    m_inspectorPanel->SetDocument(&m_document);
+
     m_motionPanel->raise();
 
     // 加载物理设置（立即，不需要 GL）
@@ -591,6 +599,7 @@ void MainWindow::RestDock(const QString &name)
     m_btnTogglePhysics->setVisible(true);
     m_btnToggleBlend->setVisible(true);
     m_btnToggleTexture->setVisible(true);
+    m_btnToggleInspector->setVisible(true);
 
     auto wireToggle = [](QPushButton* btn, QDockWidget* dock){
         QObject::connect(btn, &QPushButton::toggled, dock, &QDockWidget::setVisible);
@@ -602,9 +611,11 @@ void MainWindow::RestDock(const QString &name)
     wireToggle(m_btnTogglePhysics, m_physicsPanel);
     wireToggle(m_btnToggleBlend, m_blendShapePanel);
     wireToggle(m_btnToggleTexture, m_texturePanel);
+    wireToggle(m_btnToggleInspector, m_inspectorPanel);
 
     // 信号连接：树面板 → OpenGL
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
+    connect(m_treePanel, &CModelTreePanel::ObjectSelected, m_inspectorPanel, &CInspectorPanel::SetSelection);
     connect(m_treePanel, &CModelTreePanel::WarpSelected, m_openglwindows, &OpengGlForm::do_ShowWarp);
     connect(m_treePanel, &CModelTreePanel::ShowDeformers, m_openglwindows, &OpengGlForm::do_ShowDeformers);
     connect(m_treePanel, &CModelTreePanel::ShowDeformerMeshes, m_openglwindows, &OpengGlForm::do_ShowDeformerMeshes);
@@ -854,15 +865,19 @@ void MainWindow::setupUI()
     m_btnTogglePhysics = new QPushButton("物理设置", this);
     m_btnToggleBlend = new QPushButton("融合变形", this);
     m_btnToggleTexture = new QPushButton("纹理", this);
+    m_btnToggleInspector = new QPushButton("属性", this);
     m_btnTogglePhysics->setCheckable(true);
     m_btnToggleBlend->setCheckable(true);
     m_btnToggleTexture->setCheckable(true);
+    m_btnToggleInspector->setCheckable(true);
     m_btnTogglePhysics->setChecked(true);
     m_btnToggleBlend->setChecked(true);
     m_btnToggleTexture->setChecked(true);
+    m_btnToggleInspector->setChecked(true);
     m_btnTogglePhysics->setFlat(true);
     m_btnToggleBlend->setFlat(true);
     m_btnToggleTexture->setFlat(true);
+    m_btnToggleInspector->setFlat(true);
 
     // 未创建面板前先隐藏
     m_btnToggleTree->setVisible(false);
@@ -871,6 +886,7 @@ void MainWindow::setupUI()
     m_btnTogglePhysics->setVisible(false);
     m_btnToggleBlend->setVisible(false);
     m_btnToggleTexture->setVisible(false);
+    m_btnToggleInspector->setVisible(false);
 
     statusBar()->addPermanentWidget(m_btnToggleTree);
     statusBar()->addPermanentWidget(m_btnToggleParam);
@@ -878,6 +894,7 @@ void MainWindow::setupUI()
     statusBar()->addPermanentWidget(m_btnTogglePhysics);
     statusBar()->addPermanentWidget(m_btnToggleBlend);
     statusBar()->addPermanentWidget(m_btnToggleTexture);
+    statusBar()->addPermanentWidget(m_btnToggleInspector);
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)

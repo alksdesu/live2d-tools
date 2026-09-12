@@ -165,6 +165,19 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
     }
 
     QSet<QString> partIds;
+    QVector<int> partStates(m_parts.size(), 0);
+    std::function<void(int)> visitPart = [&](int index) {
+        if (!inRange(index, m_parts.size())) return;
+        if (partStates[index] == 1) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("part_cycle"),
+                                 QStringLiteral("Part 父子关系存在循环"), index});
+            return;
+        }
+        if (partStates[index] == 2) return;
+        partStates[index] = 1;
+        visitPart(m_parts[index].parentIndex);
+        partStates[index] = 2;
+    };
     for (int i = 0; i < m_parts.size(); ++i) {
         const CModelPart& part = m_parts[i];
         if (part.id.isEmpty() || partIds.contains(part.id)) {
@@ -176,6 +189,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("part_parent"),
                                  QStringLiteral("Part 父索引越界"), i});
         }
+        visitPart(i);
     }
 
     QVector<int> states(m_deformers.size(), 0);
@@ -237,6 +251,14 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         if (!drawable.uvs.isEmpty() && drawable.uvs.size() != drawable.vertexCount * 2) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("uv_count"),
                                  QStringLiteral("UV 数量与顶点数量不一致"), i});
+        }
+        if (drawable.vertexCount > 0 && drawable.uvs.isEmpty()) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("uv_missing"),
+                                 QStringLiteral("ArtMesh 缺少 UV 数据"), i});
+        }
+        if (drawable.vertexCount > 0 && drawable.indices.isEmpty()) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_missing"),
+                                 QStringLiteral("ArtMesh 缺少三角形索引"), i});
         }
     }
     return diagnostics;

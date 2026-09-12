@@ -1,0 +1,149 @@
+#include "cinspectorpanel.h"
+#include "live2dstruct/cmodeldocument.h"
+#include <QFormLayout>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QWidget>
+
+namespace {
+QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
+{
+    return index < 0 ? fallback : QString::number(index);
+}
+}
+
+CInspectorPanel::CInspectorPanel(QWidget* parent)
+    : QDockWidget(QStringLiteral("属性"), parent)
+{
+    auto* content = new QWidget(this);
+    auto* layout = new QVBoxLayout(content);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+
+    m_emptyLabel = new QLabel(QStringLiteral("从模型结构中选择一个对象"), content);
+    m_emptyLabel->setObjectName(QStringLiteral("inspectorEmpty"));
+    m_emptyLabel->setWordWrap(true);
+    layout->addWidget(m_emptyLabel);
+
+    auto* form = new QFormLayout();
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setVerticalSpacing(9);
+    form->setHorizontalSpacing(12);
+
+    m_typeLabel = new QLabel(content);
+    m_idLabel = new QLabel(content);
+    m_parentLabel = new QLabel(content);
+    m_deformerLabel = new QLabel(content);
+    m_visibilityLabel = new QLabel(content);
+    m_geometryLabel = new QLabel(content);
+    m_textureLabel = new QLabel(content);
+    m_maskLabel = new QLabel(content);
+    m_keyformLabel = new QLabel(content);
+
+    for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
+                          m_visibilityLabel, m_geometryLabel, m_textureLabel,
+                          m_maskLabel, m_keyformLabel}) {
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        value->setWordWrap(true);
+    }
+    form->addRow(QStringLiteral("类型"), m_typeLabel);
+    form->addRow(QStringLiteral("ID"), m_idLabel);
+    form->addRow(QStringLiteral("所属 Part"), m_parentLabel);
+    form->addRow(QStringLiteral("父变形器"), m_deformerLabel);
+    form->addRow(QStringLiteral("可见 / 启用"), m_visibilityLabel);
+    form->addRow(QStringLiteral("几何"), m_geometryLabel);
+    form->addRow(QStringLiteral("纹理"), m_textureLabel);
+    form->addRow(QStringLiteral("Clipping"), m_maskLabel);
+    form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
+    layout->addLayout(form);
+    layout->addStretch(1);
+    setWidget(content);
+    ClearSelection();
+}
+
+void CInspectorPanel::SetDocument(const live2dstruct::CModelDocument* document)
+{
+    m_document = document;
+    if (m_selectionName.isEmpty()) ClearSelection();
+    else showModelObject(m_selectionName, m_selectionType);
+}
+
+void CInspectorPanel::SetSelection(const QString& name, const QString& type)
+{
+    m_selectionName = name;
+    m_selectionType = type;
+    showModelObject(name, type);
+}
+
+void CInspectorPanel::ClearSelection()
+{
+    m_selectionName.clear();
+    m_selectionType.clear();
+    m_emptyLabel->setVisible(true);
+    for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
+                          m_visibilityLabel, m_geometryLabel, m_textureLabel,
+                          m_maskLabel, m_keyformLabel}) {
+        label->clear();
+    }
+}
+
+void CInspectorPanel::showModelObject(const QString& name, const QString& type)
+{
+    if (!m_document || name.isEmpty()) {
+        ClearSelection();
+        return;
+    }
+    m_emptyLabel->setVisible(false);
+    m_typeLabel->setText(type == QLatin1String("artmesh") ? QStringLiteral("ArtMesh")
+                       : type == QLatin1String("part") ? QStringLiteral("Part")
+                       : type == QLatin1String("warp") ? QStringLiteral("Warp Deformer")
+                       : type == QLatin1String("rotation") ? QStringLiteral("Rotation Deformer")
+                       : type);
+    m_idLabel->setText(name);
+    m_parentLabel->setText(QStringLiteral("—"));
+    m_deformerLabel->setText(QStringLiteral("—"));
+    m_visibilityLabel->setText(QStringLiteral("—"));
+    m_geometryLabel->setText(QStringLiteral("—"));
+    m_textureLabel->setText(QStringLiteral("—"));
+    m_maskLabel->setText(QStringLiteral("—"));
+    m_keyformLabel->setText(QStringLiteral("—"));
+
+    if (type == QLatin1String("artmesh")) {
+        for (const auto& drawable : m_document->Drawables()) {
+            if (drawable.id != name) continue;
+            m_parentLabel->setText(indexValue(drawable.parentPartIndex));
+            m_deformerLabel->setText(indexValue(drawable.parentDeformerIndex, QStringLiteral("无")));
+            m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(drawable.visible ? QStringLiteral("是") : QStringLiteral("否"),
+                                                                    drawable.enabled ? QStringLiteral("是") : QStringLiteral("否")));
+            m_geometryLabel->setText(QStringLiteral("%1 顶点，%2 索引").arg(drawable.vertexCount).arg(drawable.indices.size()));
+            m_textureLabel->setText(drawable.textureIndex < 0 ? QStringLiteral("无") : QString::number(drawable.textureIndex));
+            m_maskLabel->setText(drawable.maskIndices.isEmpty() ? QStringLiteral("无") : QString::number(drawable.maskIndices.size()));
+            m_keyformLabel->setText(QString::number(drawable.keyforms.size()));
+            return;
+        }
+    } else if (type == QLatin1String("part")) {
+        for (const auto& part : m_document->Parts()) {
+            if (part.id != name) continue;
+            m_parentLabel->setText(indexValue(part.parentIndex));
+            m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(part.visible ? QStringLiteral("是") : QStringLiteral("否"),
+                                                                    part.enabled ? QStringLiteral("是") : QStringLiteral("否")));
+            return;
+        }
+    } else {
+        for (const auto& deformer : m_document->Deformers()) {
+            if (deformer.id != name) continue;
+            m_parentLabel->setText(indexValue(deformer.parentPartIndex));
+            m_deformerLabel->setText(indexValue(deformer.parentDeformerIndex, QStringLiteral("无")));
+            m_visibilityLabel->setText(QStringLiteral("%1 / %2").arg(deformer.visible ? QStringLiteral("是") : QStringLiteral("否"),
+                                                                    deformer.enabled ? QStringLiteral("是") : QStringLiteral("否")));
+            if (deformer.type == live2dstruct::CModelDeformer::Warp) {
+                m_geometryLabel->setText(QStringLiteral("Warp %1 × %2").arg(deformer.columns).arg(deformer.rows));
+            } else {
+                m_geometryLabel->setText(QStringLiteral("Rotation Deformer"));
+            }
+            return;
+        }
+    }
+    ClearSelection();
+}
