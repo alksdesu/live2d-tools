@@ -32,6 +32,8 @@ public slots:
     void Redo();
     void ClearHistory();
     void ApplyValues(const QMap<QString, float>& values);
+    void CopyValues();
+    void PasteValues();
 
 private:
     struct ParamRow {

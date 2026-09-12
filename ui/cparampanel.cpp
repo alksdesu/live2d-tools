@@ -7,6 +7,10 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QToolButton>
+#include <QApplication>
+#include <QClipboard>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <algorithm>
 #include <iterator>
 
@@ -18,10 +22,18 @@ CParamPanel::CParamPanel(QWidget *parent)
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 
+    auto* buttonRow = new QHBoxLayout();
     QPushButton* resetBtn = new QPushButton("重置全部", wrapper);
     resetBtn->setObjectName("primaryBtn");
     connect(resetBtn, &QPushButton::clicked, this, &CParamPanel::ResetAll);
-    mainLayout->addWidget(resetBtn);
+    buttonRow->addWidget(resetBtn);
+    auto* copyBtn = new QPushButton(QStringLiteral("复制参数"), wrapper);
+    auto* pasteBtn = new QPushButton(QStringLiteral("粘贴参数"), wrapper);
+    buttonRow->addWidget(copyBtn);
+    buttonRow->addWidget(pasteBtn);
+    mainLayout->addLayout(buttonRow);
+    connect(copyBtn, &QPushButton::clicked, this, &CParamPanel::CopyValues);
+    connect(pasteBtn, &QPushButton::clicked, this, &CParamPanel::PasteValues);
 
     m_search = new QLineEdit(wrapper);
     m_search->setPlaceholderText("搜索参数名称或 ID");
@@ -317,6 +329,30 @@ void CParamPanel::ApplyValues(const QMap<QString, float>& values)
     }
     m_replaying = false;
     ClearHistory();
+}
+
+void CParamPanel::CopyValues()
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("format"), QStringLiteral("live2d2psd-parameters-v1"));
+    const QMap<QString, float> values = CurrentValues();
+    for (auto it = values.cbegin(); it != values.cend(); ++it) object.insert(it.key(), static_cast<double>(it.value()));
+    QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
+}
+
+void CParamPanel::PasteValues()
+{
+    const QString text = QApplication::clipboard()->text();
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+        document.object().value(QStringLiteral("format")).toString() != QStringLiteral("live2d2psd-parameters-v1")) return;
+    QMap<QString, float> values;
+    const QJsonObject object = document.object();
+    for (const QString& key : object.keys()) {
+        if (key != QStringLiteral("format")) values.insert(key, static_cast<float>(object.value(key).toDouble()));
+    }
+    ApplyValues(values);
 }
 
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
