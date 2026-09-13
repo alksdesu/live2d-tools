@@ -275,11 +275,15 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.mocPath = m_currentMoc;
     options.outPath = outPath;
     {
+        CModelJson modelJson;
+        modelJson.Parse(m_openglwindows->GetCurrentModelJson());
         const QDir dir(m_currentModelDir);
-        const QStringList cdis = dir.entryList({ "*.cdi3.json" }, QDir::Files);
-        if(!cdis.isEmpty()) options.cdiPath = dir.filePath(cdis.first());
-        const QStringList physics = dir.entryList({ "*.physics3.json" }, QDir::Files);
-        if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
+        if (modelJson.IsOpen()) {
+            if (!modelJson.m_DisplayInfo.isEmpty())
+                options.cdiPath = dir.filePath(modelJson.m_DisplayInfo);
+            if (!modelJson.m_Physics.isEmpty())
+                options.physicsPath = dir.filePath(modelJson.m_Physics);
+        }
     }
     options.parameterValues = m_document.ParameterValues();
     options.parameterMetadata = m_document.ParameterMetadataOverrides();
