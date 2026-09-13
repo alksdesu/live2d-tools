@@ -115,6 +115,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - cmo3 Warp/Rotation 来源按 `specific_sources_indices` 与 Deformer 对齐，非法来源类型或索引在写出前失败；索引重排、编辑关键形和 CAFF 引用有专门回归测试。
 - 主窗口增加建模、动画、物理工作区切换，模式写入 QSettings；关键形运行时覆盖按 drawable 与 keyform 索引保存。
 - 批量 PSD 输出会移除 `.model3` 文件后缀，并避让输出目录已有文件和同批次重名文件。
+- cmo3 纹理图集按当前 moc3 对应的 `FileReferences.Moc` 精确选择，多模型同目录时不会拿错图集。
 - 动作预览支持循环播放和 25%–200% 速度控制，速度只作用于动作时间，不改变物理、眨眼和呼吸时间步。
 - WAV 口型驱动对短时间步、空 PCM、非法通道和空目标缓冲安全返回，避免 RMS 除零和空指针。
 - WAV 解析器校验 RIFF/fmt/data chunk 边界、通道、采样率、位深、块对齐和文件大小，截断文件不会越界读取。
