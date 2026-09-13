@@ -10,6 +10,7 @@
 #include <QJsonArray>
 
 class CPhysicsGraphWidget;
+class QPushButton;
 
 class CPhysicsPanel : public QDockWidget
 {
@@ -34,6 +35,12 @@ private:
     void updateInputCell(int row, int column);
     void updateOutputCell(int row, int column);
     void updateVertexCell(int row, int column);
+    void addPhysicsInput();
+    void removePhysicsInput();
+    void addPhysicsOutput();
+    void removePhysicsOutput();
+    void addPhysicsVertex();
+    void removePhysicsVertex();
     void updateForceDocument();
     bool ValidateDocument(QString* error) const;
 
@@ -46,6 +53,12 @@ private:
     QTableWidget* m_outputTable;
     QTableWidget* m_vertexTable;
     CPhysicsGraphWidget* m_graph = nullptr;
+    QPushButton* m_addInputButton = nullptr;
+    QPushButton* m_removeInputButton = nullptr;
+    QPushButton* m_addOutputButton = nullptr;
+    QPushButton* m_removeOutputButton = nullptr;
+    QPushButton* m_addVertexButton = nullptr;
+    QPushButton* m_removeVertexButton = nullptr;
 
     // 重力/风力滑条
     QSlider* m_gravityX;

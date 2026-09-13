@@ -11,6 +11,7 @@
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QInputDialog>
 #include <QSaveFile>
 #include <cmath>
 
@@ -121,40 +122,97 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     detailSplitter->addWidget(m_graph);
 
     // 输入设置
-    m_inputTable = new QTableWidget(0, 4, wrapper);
+    auto* inputSection = new QWidget(wrapper);
+    auto* inputSectionLayout = new QVBoxLayout(inputSection);
+    auto* inputTools = new QHBoxLayout();
+    m_addInputButton = new QPushButton(QStringLiteral("添加输入"), inputSection);
+    m_removeInputButton = new QPushButton(QStringLiteral("删除输入"), inputSection);
+    m_addInputButton->setObjectName(QStringLiteral("addPhysicsInput"));
+    m_removeInputButton->setObjectName(QStringLiteral("removePhysicsInput"));
+    m_addInputButton->setEnabled(false);
+    m_removeInputButton->setEnabled(false);
+    inputTools->addWidget(m_addInputButton);
+    inputTools->addWidget(m_removeInputButton);
+    inputTools->addStretch(1);
+    inputSectionLayout->addLayout(inputTools);
+    m_inputTable = new QTableWidget(0, 4, inputSection);
     m_inputTable->setObjectName(QStringLiteral("physicsInputTable"));
     m_inputTable->setHorizontalHeaderLabels({"参数", "类型", "影响度", "反转"});
     m_inputTable->horizontalHeader()->setStretchLastSection(true);
     m_inputTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                   QAbstractItemView::SelectedClicked);
     m_inputTable->verticalHeader()->setVisible(false);
-    detailSplitter->addWidget(m_inputTable);
+    inputSectionLayout->addWidget(m_inputTable);
+    detailSplitter->addWidget(inputSection);
 
     // 输出设置
-    m_outputTable = new QTableWidget(0, 5, wrapper);
+    auto* outputSection = new QWidget(wrapper);
+    auto* outputSectionLayout = new QVBoxLayout(outputSection);
+    auto* outputTools = new QHBoxLayout();
+    m_addOutputButton = new QPushButton(QStringLiteral("添加输出"), outputSection);
+    m_removeOutputButton = new QPushButton(QStringLiteral("删除输出"), outputSection);
+    m_addOutputButton->setObjectName(QStringLiteral("addPhysicsOutput"));
+    m_removeOutputButton->setObjectName(QStringLiteral("removePhysicsOutput"));
+    m_addOutputButton->setEnabled(false);
+    m_removeOutputButton->setEnabled(false);
+    outputTools->addWidget(m_addOutputButton);
+    outputTools->addWidget(m_removeOutputButton);
+    outputTools->addStretch(1);
+    outputSectionLayout->addLayout(outputTools);
+    m_outputTable = new QTableWidget(0, 5, outputSection);
     m_outputTable->setObjectName(QStringLiteral("physicsOutputTable"));
     m_outputTable->setHorizontalHeaderLabels({"参数", "类型", "影响度", "倍率", "反转"});
     m_outputTable->horizontalHeader()->setStretchLastSection(true);
     m_outputTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                    QAbstractItemView::SelectedClicked);
     m_outputTable->verticalHeader()->setVisible(false);
-    detailSplitter->addWidget(m_outputTable);
+    outputSectionLayout->addWidget(m_outputTable);
+    detailSplitter->addWidget(outputSection);
 
     // 摆锤参数
-    m_vertexTable = new QTableWidget(0, 5, wrapper);
+    auto* vertexSection = new QWidget(wrapper);
+    auto* vertexSectionLayout = new QVBoxLayout(vertexSection);
+    auto* vertexTools = new QHBoxLayout();
+    m_addVertexButton = new QPushButton(QStringLiteral("添加摆锤"), vertexSection);
+    m_removeVertexButton = new QPushButton(QStringLiteral("删除摆锤"), vertexSection);
+    m_addVertexButton->setObjectName(QStringLiteral("addPhysicsVertex"));
+    m_removeVertexButton->setObjectName(QStringLiteral("removePhysicsVertex"));
+    m_addVertexButton->setEnabled(false);
+    m_removeVertexButton->setEnabled(false);
+    vertexTools->addWidget(m_addVertexButton);
+    vertexTools->addWidget(m_removeVertexButton);
+    vertexTools->addStretch(1);
+    vertexSectionLayout->addLayout(vertexTools);
+    m_vertexTable = new QTableWidget(0, 5, vertexSection);
     m_vertexTable->setObjectName(QStringLiteral("physicsVertexTable"));
     m_vertexTable->setHorizontalHeaderLabels({"序号", "长度", "摆幅度", "反应速度", "收敛速度"});
     m_vertexTable->horizontalHeader()->setStretchLastSection(true);
     m_vertexTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                    QAbstractItemView::SelectedClicked);
     m_vertexTable->verticalHeader()->setVisible(false);
-    detailSplitter->addWidget(m_vertexTable);
+    vertexSectionLayout->addWidget(m_vertexTable);
+    detailSplitter->addWidget(vertexSection);
 
     mainLayout->addWidget(detailSplitter);
     setWidget(wrapper);
     connect(m_inputTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateInputCell);
     connect(m_outputTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateOutputCell);
     connect(m_vertexTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateVertexCell);
+    connect(m_addInputButton, &QPushButton::clicked, this, &CPhysicsPanel::addPhysicsInput);
+    connect(m_removeInputButton, &QPushButton::clicked, this, &CPhysicsPanel::removePhysicsInput);
+    connect(m_addOutputButton, &QPushButton::clicked, this, &CPhysicsPanel::addPhysicsOutput);
+    connect(m_removeOutputButton, &QPushButton::clicked, this, &CPhysicsPanel::removePhysicsOutput);
+    connect(m_addVertexButton, &QPushButton::clicked, this, &CPhysicsPanel::addPhysicsVertex);
+    connect(m_removeVertexButton, &QPushButton::clicked, this, &CPhysicsPanel::removePhysicsVertex);
+    connect(m_inputTable, &QTableWidget::itemSelectionChanged, this, [this](){
+        if (m_removeInputButton) m_removeInputButton->setEnabled(m_inputTable->currentRow() >= 0);
+    });
+    connect(m_outputTable, &QTableWidget::itemSelectionChanged, this, [this](){
+        if (m_removeOutputButton) m_removeOutputButton->setEnabled(m_outputTable->currentRow() >= 0);
+    });
+    connect(m_vertexTable, &QTableWidget::itemSelectionChanged, this, [this](){
+        if (m_removeVertexButton) m_removeVertexButton->setEnabled(m_vertexTable->currentRow() >= 0);
+    });
 }
 
 bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
@@ -251,6 +309,9 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
         m_groupTable->selectRow(0);
         showGroupDetail(0);
     }
+    if (m_addInputButton) m_addInputButton->setEnabled(true);
+    if (m_addOutputButton) m_addOutputButton->setEnabled(true);
+    if (m_addVertexButton) m_addVertexButton->setEnabled(true);
     m_updating = false;
     return true;
 }
@@ -475,6 +536,179 @@ void CPhysicsPanel::updateVertexCell(int row, int column)
     emit PhysicsConfigChanged();
 }
 
+void CPhysicsPanel::addPhysicsInput()
+{
+    const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return;
+    bool accepted = false;
+    const QString id = QInputDialog::getText(this, QStringLiteral("添加物理输入"),
+                                              QStringLiteral("参数 ID"), QLineEdit::Normal,
+                                              QString(), &accepted).trimmed();
+    if (!accepted || id.isEmpty()) return;
+    const QStringList types = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Angle")};
+    const QString type = QInputDialog::getItem(this, QStringLiteral("添加物理输入"),
+                                                QStringLiteral("输入类型"), types, 0, false, &accepted);
+    if (!accepted) return;
+    const double weight = QInputDialog::getDouble(this, QStringLiteral("添加物理输入"),
+                                                   QStringLiteral("影响度（0-100）"), 100.0, 0.0, 100.0, 2, &accepted);
+    if (!accepted) return;
+    QJsonObject source;
+    source.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
+    source.insert(QStringLiteral("Id"), id);
+    QJsonObject input;
+    input.insert(QStringLiteral("Source"), source);
+    input.insert(QStringLiteral("Weight"), weight);
+    input.insert(QStringLiteral("Type"), type);
+    input.insert(QStringLiteral("Reflect"), false);
+    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
+    inputs.append(input);
+    setting.insert(QStringLiteral("Input"), inputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    showGroupDetail(groupRow);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::removePhysicsInput()
+{
+    const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
+    const int row = m_inputTable ? m_inputTable->currentRow() : -1;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || row < 0) return;
+    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
+    if (row >= inputs.size()) return;
+    inputs.removeAt(row);
+    setting.insert(QStringLiteral("Input"), inputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    showGroupDetail(groupRow);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::addPhysicsOutput()
+{
+    const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return;
+    const QJsonObject current = m_physicsSettings.at(groupRow).toObject();
+    const int vertexCount = current.value(QStringLiteral("Vertices")).toArray().size();
+    if (vertexCount <= 0) {
+        QMessageBox::warning(this, QStringLiteral("添加物理输出"), QStringLiteral("当前物理组没有可用摆锤"));
+        return;
+    }
+    bool accepted = false;
+    const QString id = QInputDialog::getText(this, QStringLiteral("添加物理输出"),
+                                              QStringLiteral("参数 ID"), QLineEdit::Normal,
+                                              QString(), &accepted).trimmed();
+    if (!accepted || id.isEmpty()) return;
+    const QStringList types = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Angle")};
+    const QString type = QInputDialog::getItem(this, QStringLiteral("添加物理输出"),
+                                                QStringLiteral("输出类型"), types, 0, false, &accepted);
+    if (!accepted) return;
+    const int vertexIndex = QInputDialog::getInt(this, QStringLiteral("添加物理输出"),
+                                                 QStringLiteral("摆锤索引"), 0, 0, vertexCount - 1, 1, &accepted);
+    if (!accepted) return;
+    const double scale = QInputDialog::getDouble(this, QStringLiteral("添加物理输出"),
+                                                 QStringLiteral("倍率"), 1.0, -100000.0, 100000.0, 3, &accepted);
+    if (!accepted) return;
+    QJsonObject destination;
+    destination.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
+    destination.insert(QStringLiteral("Id"), id);
+    QJsonObject output;
+    output.insert(QStringLiteral("Destination"), destination);
+    output.insert(QStringLiteral("VertexIndex"), vertexIndex);
+    output.insert(QStringLiteral("Scale"), scale);
+    output.insert(QStringLiteral("Weight"), 100.0);
+    output.insert(QStringLiteral("Type"), type);
+    output.insert(QStringLiteral("Reflect"), false);
+    QJsonObject setting = current;
+    QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
+    outputs.append(output);
+    setting.insert(QStringLiteral("Output"), outputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    showGroupDetail(groupRow);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::removePhysicsOutput()
+{
+    const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
+    const int row = m_outputTable ? m_outputTable->currentRow() : -1;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || row < 0) return;
+    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
+    if (row >= outputs.size()) return;
+    outputs.removeAt(row);
+    setting.insert(QStringLiteral("Output"), outputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    showGroupDetail(groupRow);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::addPhysicsVertex()
+{
+    const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return;
+    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonArray vertices = setting.value(QStringLiteral("Vertices")).toArray();
+    if (vertices.size() >= 10000) return;
+    QJsonObject position;
+    position.insert(QStringLiteral("X"), 0.0);
+    position.insert(QStringLiteral("Y"), 0.0);
+    QJsonObject vertex;
+    vertex.insert(QStringLiteral("Position"), position);
+    vertex.insert(QStringLiteral("Mobility"), 0.5);
+    vertex.insert(QStringLiteral("Delay"), 0.2);
+    vertex.insert(QStringLiteral("Acceleration"), 0.3);
+    vertex.insert(QStringLiteral("Radius"), 1.0);
+    vertices.append(vertex);
+    setting.insert(QStringLiteral("Vertices"), vertices);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    showGroupDetail(groupRow);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::removePhysicsVertex()
+{
+    const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
+    const int row = m_vertexTable ? m_vertexTable->currentRow() : -1;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || row < 0) return;
+    const int vertexIndex = row + 1;
+    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonArray vertices = setting.value(QStringLiteral("Vertices")).toArray();
+    if (vertexIndex <= 0 || vertexIndex >= vertices.size()) return;
+    QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
+    for (const QJsonValue& outputValue : outputs) {
+        const int outputIndex = outputValue.toObject().value(QStringLiteral("VertexIndex")).toInt(-1);
+        if (outputIndex == vertexIndex) {
+            QMessageBox::warning(this, QStringLiteral("删除摆锤"), QStringLiteral("该摆锤仍被输出引用，不能删除"));
+            return;
+        }
+    }
+    for (int i = 0; i < outputs.size(); ++i) {
+        QJsonObject output = outputs.at(i).toObject();
+        const int outputIndex = output.value(QStringLiteral("VertexIndex")).toInt(-1);
+        if (outputIndex > vertexIndex) output.insert(QStringLiteral("VertexIndex"), outputIndex - 1);
+        outputs[i] = output;
+    }
+    vertices.removeAt(vertexIndex);
+    setting.insert(QStringLiteral("Vertices"), vertices);
+    setting.insert(QStringLiteral("Output"), outputs);
+    m_physicsSettings[groupRow] = setting;
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    showGroupDetail(groupRow);
+    emit PhysicsConfigChanged();
+}
+
 void CPhysicsPanel::showGroupDetail(int row)
 {
     if(row < 0 || row >= m_physicsSettings.size()) return;
@@ -525,6 +759,9 @@ void CPhysicsPanel::showGroupDetail(int row)
         m_vertexTable->setItem(row, 4, new QTableWidgetItem(QString::number(v["Acceleration"].toDouble(), 'f', 2)));
     }
     m_vertexTable->resizeColumnsToContents();
+    if (m_removeInputButton) m_removeInputButton->setEnabled(false);
+    if (m_removeOutputButton) m_removeOutputButton->setEnabled(false);
+    if (m_removeVertexButton) m_removeVertexButton->setEnabled(false);
     m_updating = wasUpdating;
 }
 

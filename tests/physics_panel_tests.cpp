@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QSignalSpy>
+#include <QPushButton>
 
 class PhysicsPanelTests : public QObject
 {
@@ -79,6 +80,15 @@ private slots:
         QCOMPARE(graph->InputCount(), 1);
         QCOMPARE(graph->OutputCount(), 1);
         QCOMPARE(graph->VertexCount(), 2);
+        auto* addVertex = panel.findChild<QPushButton*>(QStringLiteral("addPhysicsVertex"));
+        auto* removeVertex = panel.findChild<QPushButton*>(QStringLiteral("removePhysicsVertex"));
+        QVERIFY(addVertex && removeVertex && addVertex->isEnabled());
+        addVertex->click();
+        QCOMPARE(vertex->rowCount(), 2);
+        vertex->selectRow(1);
+        QVERIFY(removeVertex->isEnabled());
+        removeVertex->click();
+        QCOMPARE(vertex->rowCount(), 1);
         QSignalSpy configChanges(&panel, &CPhysicsPanel::PhysicsConfigChanged);
         panel.LoadPhysics(path);
         QCOMPARE(configChanges.count(), 0);
