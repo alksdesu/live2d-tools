@@ -141,7 +141,7 @@ void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
     m_document = document;
 }
 
-void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record)
+void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record, bool userEdit)
 {
     auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&paramId](const ParamRow& row){ return row.paramId == paramId; });
     if (rowIt == m_rows.cend()) return;
@@ -155,7 +155,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     QSignalBlocker spinBlocker(row.spinBox);
     row.slider->setValue(sliderValue);
     row.spinBox->setValue(value);
-    m_userLocked.insert(rowIndex);
+    if (userEdit) m_userLocked.insert(rowIndex);
     m_lastValues.insert(paramId, value);
     if (m_document) m_document->SetParameterValue(paramId, value);
     emit ParamChanged(paramId, value, false);

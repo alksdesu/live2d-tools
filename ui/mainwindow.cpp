@@ -1115,7 +1115,7 @@ void MainWindow::RestDock(const QString &name)
             [this](const QMap<QString, float>& values){
                 if (!m_paramPanel) return;
                 for (auto it = values.cbegin(); it != values.cend(); ++it)
-                    m_paramPanel->ApplyExternalValue(it.key(), it.value());
+                    m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false);
             });
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(name, value, true);
