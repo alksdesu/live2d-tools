@@ -49,6 +49,8 @@ public:
 
     //来自世界坐标系的
     QString GetSelectMesh(const QVector2D& pos,bool IsOver);
+    bool SelectMeshPoint(const QString& name, const QVector2D& pos, float radius);
+    QVector2D ModelDelta(const QVector2D& worldDelta) const;
 
     QVector4D GetWorldPoint(int posX, int posY);
     QMatrix4x4 GetProjectionView();

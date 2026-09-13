@@ -206,6 +206,45 @@ bool CTrianglMesh::SetIndices(const QVector<quint16>& indices)
     return true;
 }
 
+bool CTrianglMesh::SelectNearestPoint(const QVector2D& position, float radius)
+{
+    if (!std::isfinite(radius) || radius < 0.0f) return false;
+    int nearest = -1;
+    float nearestDistance = radius * radius;
+    for (int i = 0; i < vetPosPoint.size(); ++i) {
+        const QVector2D delta = vetPosPoint[i]->GetPoint() - position;
+        const float distance = QVector2D::dotProduct(delta, delta);
+        if (distance <= nearestDistance) {
+            nearest = i;
+            nearestDistance = distance;
+        }
+        vetPosPoint[i]->SetIsSelect(false);
+    }
+    if (nearest < 0) return false;
+    vetPosPoint[nearest]->SetIsSelect(true);
+    return true;
+}
+
+void CTrianglMesh::MoveSelected(const QVector2D& delta)
+{
+    if (!std::isfinite(delta.x()) || !std::isfinite(delta.y())) return;
+    for (CPoint* point : vetPosPoint) {
+        if (point->GetIsSelect()) point->SetPoint(point->GetPoint() + delta);
+    }
+    normalizing();
+}
+
+QVector<float> CTrianglMesh::Positions() const
+{
+    QVector<float> positions;
+    positions.reserve(static_cast<int>(vetPosPoint.size() * 2));
+    for (const CPoint* point : vetPosPoint) {
+        positions.append(point->GetPoint().x());
+        positions.append(point->GetPoint().y());
+    }
+    return positions;
+}
+
 void CTrianglMesh::DeleteEdge(int satat, int end)
 {
 
@@ -346,4 +385,3 @@ QMatrix4x4 CTrianglMesh::cvMatToQMatrix4x4(const cv::Mat &mat)
 
     return qMatrix;
 }
-

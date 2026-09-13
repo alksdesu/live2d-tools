@@ -111,6 +111,7 @@ bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, b
 
 void OpengGlForm::do_ShowMesh(const QString &artName)
 {
+    m_meshEditName = artName;
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
     if(Live2DManager && Live2DManager->GetModelNum() > 0){
         LAppModel* model = Live2DManager->GetModel(0);
@@ -122,6 +123,21 @@ void OpengGlForm::do_ShowMesh(const QString &artName)
     }
 
 
+}
+
+void OpengGlForm::SetMeshEditEnabled(bool enabled)
+{
+    m_meshEditEnabled = enabled;
+    if (!enabled) {
+        m_meshPointDragging = false;
+        m_meshEditName.clear();
+        m_meshEditBefore.clear();
+    }
+}
+
+void OpengGlForm::SetActiveKeyform(int keyformIndex)
+{
+    if (keyformIndex >= 0) m_activeKeyformIndex = keyformIndex;
 }
 
 void OpengGlForm::AddWrapKey(std::vector<C2DTreeNode*> &node)
@@ -407,6 +423,21 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
             QString str = view->GetSelectMesh(QVector2D(pos),false);
             if(!str.isEmpty()){
                 emit SendSelectMesh(str);
+                if (m_meshEditEnabled && event->button() == Qt::LeftButton &&
+                    view->SelectMeshPoint(str, QVector2D(pos), 0.05f)) {
+                    m_meshEditName = str;
+                    m_meshEditBefore.clear();
+                    if (LAppLive2DManager* manager = LAppLive2DManager::GetInstance()) {
+                        if (manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
+                            if (CMeshMap* map = manager->GetModel(0)->GetModel()->GetMeshMap())
+                                m_meshEditBefore = map->MeshPositions(str);
+                        }
+                    }
+                    if (!m_meshEditBefore.isEmpty()) {
+                        m_meshPointDragging = true;
+                        return;
+                    }
+                }
             } else {
                 emit SendSelectMesh("");
                 view->HideAllWarps();
@@ -423,6 +454,19 @@ void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
+    if (m_meshPointDragging) {
+        if (LAppLive2DManager* manager = LAppLive2DManager::GetInstance()) {
+            if (manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
+                if (CMeshMap* map = manager->GetModel(0)->GetModel()->GetMeshMap()) {
+                    const QVector<float> positions = map->MeshPositions(m_meshEditName);
+                    if (!positions.isEmpty() && positions != m_meshEditBefore)
+                        emit MeshKeyformEdited(m_meshEditName, m_activeKeyformIndex, positions);
+                }
+            }
+        }
+        m_meshPointDragging = false;
+        m_meshEditBefore.clear();
+    }
     view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(0,0),QVector2D(0,0));
     m_ceditstate.RemoveState(CEditState::MousePress);
 
@@ -442,6 +486,22 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view || width() <= 0 || height() <= 0) return;
+
+    if (m_meshPointDragging && (event->buttons() & Qt::LeftButton)) {
+        const QVector4D current = view->GetWorldPoint(event->pos().x(), event->pos().y());
+        const QVector4D previous = QVector4D(m_config.GetLastPos());
+        const QVector2D worldDelta(current.x() - previous.x(), current.y() - previous.y());
+        const QVector2D delta = view->ModelDelta(worldDelta);
+        if (LAppLive2DManager* manager = LAppLive2DManager::GetInstance()) {
+            if (manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
+                if (CMeshMap* map = manager->GetModel(0)->GetModel()->GetMeshMap())
+                    map->MoveSelected(m_meshEditName, delta);
+            }
+        }
+        m_config.SetLastPos(QVector2D(current));
+        update();
+        return;
+    }
 
     // 计算归一化鼠标坐标 [-1, 1]
     float viewX = (float)event->pos().x() / (float)width() * 2.0f - 1.0f;

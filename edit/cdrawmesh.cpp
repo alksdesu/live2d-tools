@@ -113,6 +113,21 @@ bool CDrawMesh::SetIndices(const QVector<quint16>& indices)
     return mesh && mesh->SetIndices(indices);
 }
 
+bool CDrawMesh::SelectNearestPoint(const QVector2D& position, float radius)
+{
+    return mesh && mesh->SelectNearestPoint(position, radius);
+}
+
+void CDrawMesh::MoveSelected(const QVector2D& delta)
+{
+    if (mesh) mesh->MoveSelected(delta);
+}
+
+QVector<float> CDrawMesh::Positions() const
+{
+    return mesh ? mesh->Positions() : QVector<float>();
+}
+
 //世界坐标系
 void CDrawMesh::SetSelect(const QRectF &rect)
 {
@@ -220,4 +235,3 @@ void CDrawMesh::DrawMesh(const CTrianglMesh& mesh)
 
 
 }
-

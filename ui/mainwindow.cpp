@@ -543,6 +543,7 @@ void MainWindow::SetWorkspaceMode(int mode)
     }
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     settings.setValue(QStringLiteral("workspaceMode"), m_workspaceMode);
+    if (m_openglwindows) m_openglwindows->SetMeshEditEnabled(m_workspaceMode == 0);
     if (!m_treePanel) return;
 
     const bool modeling = m_workspaceMode == 0;
@@ -1189,6 +1190,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformSelected, this,
             [this](const QString& name, int keyformIndex){
                 if (!m_openglwindows) return;
+                m_openglwindows->SetActiveKeyform(keyformIndex);
                 const QVector<float> positions = m_document.DrawableKeyformPositions(name, keyformIndex);
                 if (!positions.isEmpty())
                     m_openglwindows->do_SetDrawableKeyformPositions(name, keyformIndex, positions);
@@ -1201,6 +1203,20 @@ void MainWindow::RestDock(const QString &name)
         setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
         statusBar()->showMessage(QStringLiteral("有未保存的模型编辑"));
     };
+    connect(m_openglwindows, &OpengGlForm::MeshKeyformEdited, this,
+            [this, markSessionDirty](const QString& name, int keyformIndex, const QVector<float>& positions){
+                const QVector<float> before = m_document.DrawableKeyformPositions(name, keyformIndex);
+                if (before.isEmpty() || before.size() != positions.size()) return;
+                const live2dstruct::CModelEdit command{
+                    name, QStringLiteral("artmesh"), live2dstruct::CModelEdit::KeyformPositions,
+                    QVariant::fromValue(before), QVariant::fromValue(positions), keyformIndex, false};
+                if (!m_document.ExecuteEdit(command)) {
+                    if (m_openglwindows) m_openglwindows->do_SetDrawableKeyformPositions(name, keyformIndex, before);
+                    return;
+                }
+                markSessionDirty();
+                if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+            });
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, markSessionDirty);
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
     connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged, this, markSessionDirty);

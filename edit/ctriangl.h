@@ -46,6 +46,9 @@ public:
     bool AddPoint(const QVector2D& pos);
     bool SetPositions(const QVector<float>& positions);
     bool SetIndices(const QVector<quint16>& indices);
+    bool SelectNearestPoint(const QVector2D& position, float radius);
+    void MoveSelected(const QVector2D& delta);
+    QVector<float> Positions() const;
     void DeleteEdge(int satat,int end);
     const short* GetEBOIndex() const;
     const int GetEBOSize()const ;

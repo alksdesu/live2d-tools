@@ -65,6 +65,8 @@ public slots:
     void do_SetDrawableOpacity(const QString& name, float opacity);
     void do_SetDrawableDrawOrder(const QString& name, int drawOrder);
     void do_SetDrawableKeyformPositions(const QString& name, int keyformIndex, const QVector<float>& positions);
+    void SetMeshEditEnabled(bool enabled);
+    void SetActiveKeyform(int keyformIndex);
     void do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices);
     void do_ShowDeformers(const QStringList& names);
     void do_ShowDeformerMeshes(const QStringList& artMeshNames);
@@ -80,6 +82,7 @@ public slots:
 signals:
     void SendSelectMesh(const QString& artName);
     void RenderOrderChanged(const QStringList& names);
+    void MeshKeyformEdited(const QString& name, int keyformIndex, const QVector<float>& positions);
 
 protected:
     void initializeGL() override;
@@ -104,6 +107,11 @@ protected:
     QStringList m_lastRenderOrder;
     std::vector<C2DTreeNode*> m_mapWarpNode;
     QString m_currentModelJson;
+    bool m_meshEditEnabled = false;
+    bool m_meshPointDragging = false;
+    QString m_meshEditName;
+    QVector<float> m_meshEditBefore;
+    int m_activeKeyformIndex = 0;
 
 
 

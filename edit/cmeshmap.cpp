@@ -25,6 +25,29 @@ bool CMeshMap::SetMeshIndices(const QString& name, const QVector<quint16>& indic
     return mesh && mesh->SetIndices(indices);
 }
 
+bool CMeshMap::SelectNearestPoint(const QString& name, const QVector2D& position, float radius)
+{
+    CDrawMesh* mesh = m_vetDrawMesh.value(name, nullptr);
+    if (!mesh) return false;
+    for (auto it = m_vetDrawMesh.begin(); it != m_vetDrawMesh.end(); ++it)
+        if (it.value() && it.key() != name) it.value()->CancelSelect();
+    return mesh->SelectNearestPoint(position, radius);
+}
+
+bool CMeshMap::MoveSelected(const QString& name, const QVector2D& delta)
+{
+    CDrawMesh* mesh = m_vetDrawMesh.value(name, nullptr);
+    if (!mesh) return false;
+    mesh->MoveSelected(delta);
+    return true;
+}
+
+QVector<float> CMeshMap::MeshPositions(const QString& name) const
+{
+    const CDrawMesh* mesh = m_vetDrawMesh.value(name, nullptr);
+    return mesh ? mesh->Positions() : QVector<float>();
+}
+
 void CMeshMap::clear()
 {
     for (QMap<QString, CDrawMesh*>::iterator i = m_vetDrawMesh.begin(); i != m_vetDrawMesh.end(); ++i) {

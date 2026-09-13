@@ -175,6 +175,31 @@ QString LAppView::GetSelectMesh(const QVector2D &pos, bool IsOver)
     return re;
 }
 
+bool LAppView::SelectMeshPoint(const QString& name, const QVector2D& pos, float radius)
+{
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    if (!manager || manager->GetModelNum() <= 0) return false;
+    LAppModel* model = manager->GetModel(0);
+    if (!model || !model->GetModel() || !model->GetModelMatrix()) return false;
+    CMeshMap* map = model->GetModel()->GetMeshMap();
+    if (!map) return false;
+    const QMatrix4x4 inverse = model->GetModelMatrix()->GetQMatrix44().inverted();
+    const QVector4D modelPosition = inverse * QVector4D(pos, 0.0f, 1.0f);
+    return map->SelectNearestPoint(name, QVector2D(modelPosition.x(), modelPosition.y()), radius);
+}
+
+QVector2D LAppView::ModelDelta(const QVector2D& worldDelta) const
+{
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    if (!manager || manager->GetModelNum() <= 0) return {};
+    LAppModel* model = manager->GetModel(0);
+    if (!model || !model->GetModelMatrix()) return {};
+    const QMatrix4x4 inverse = model->GetModelMatrix()->GetQMatrix44().inverted();
+    const QVector4D origin = inverse * QVector4D(0.0f, 0.0f, 0.0f, 1.0f);
+    const QVector4D translated = inverse * QVector4D(worldDelta, 0.0f, 1.0f);
+    return QVector2D(translated.x() - origin.x(), translated.y() - origin.y());
+}
+
 QVector4D LAppView::GetWorldPoint(int posX, int posY)
 {
     float width, height;

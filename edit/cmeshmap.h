@@ -15,6 +15,9 @@ public:
     void SetRenderOrder(const QStringList& names);
     bool SetMeshPositions(const QString& name, const QVector<float>& positions);
     bool SetMeshIndices(const QString& name, const QVector<quint16>& indices);
+    bool SelectNearestPoint(const QString& name, const QVector2D& position, float radius);
+    bool MoveSelected(const QString& name, const QVector2D& delta);
+    QVector<float> MeshPositions(const QString& name) const;
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
     void SetShow(const QString& artName);
