@@ -9,7 +9,7 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
 {
     setWindowTitle("导出 PSD 选项");
 
-    m_IsPrint = true;
+    m_IsPrint = false;
     m_IsFenZu = false;
     m_IsAll = false;
     m_IsTexExtract = false;
@@ -71,4 +71,3 @@ void CPsdPrintDialog::on_pushButton_2_clicked()
     m_IsPrint = false;
     reject();
 }
-

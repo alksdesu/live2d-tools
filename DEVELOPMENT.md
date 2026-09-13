@@ -69,6 +69,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 绘制顺序不再混用 draw order 数值与 render order 排名；同值按 Core 排名处理，未编辑时完整保留 Core 原生顺序。预览、鼠标选取、渲染 PSD 和纹理提取 PSD 共用排序入口。
 - CModelDocument 现在保留 moc3 的 Draw Order Group 范围和成员索引，并在模型检查中报告无效类型、越界和重复成员；这为后续组内编辑提供数据基础。
 - PSD 分组只合并连续的 Part 图层；交错时拆分文件夹，避免重新分组改变叠放顺序。过滤无效索引后，图层名称与记录同步生成；父级循环和深层级不会导致递归溢出。
+- PSD 导出选项对话框默认保持未确认，窗口关闭或取消不会误触发实际写入。
 - 明确最小值等于最大值的 Draw Order Group 已支持组块内排序，编辑不会穿透到其他组；根组、动态范围组和 cmo3 的组结构还原仍未完整支持，不能据此宣称与 Cubism 完整兼容。
 - 动态 Draw Order Group 现在也会注册成员索引，参数化绘制顺序编辑可按组范围排序；cmo3 结构还原仍未完整支持。
 - CMake 的 model_data、draw_order、inspector_history 和 cmo3 测试目标均通过普通构建及 AddressSanitizer/UndefinedBehaviorSanitizer 检查，涵盖四个内置模型、交错分组、非法索引、循环父级、一万层嵌套、Inspector 属性回放和 CAFF 回读。运行时代码另通过语法检查。
