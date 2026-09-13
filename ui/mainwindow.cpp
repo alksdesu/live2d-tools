@@ -1186,6 +1186,13 @@ void MainWindow::RestDock(const QString &name)
             });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableKeyformPositions);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformSelected, this,
+            [this](const QString& name, int keyformIndex){
+                if (!m_openglwindows) return;
+                const QVector<float> positions = m_document.DrawableKeyformPositions(name, keyformIndex);
+                if (!positions.isEmpty())
+                    m_openglwindows->do_SetDrawableKeyformPositions(name, keyformIndex, positions);
+            });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableIndicesChanged,
             m_openglwindows, &OpengGlForm::do_SetDrawableIndices);
     const auto markSessionDirty = [this]() {

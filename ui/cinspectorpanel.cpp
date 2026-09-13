@@ -248,8 +248,10 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     layout->addLayout(form);
     layout->addStretch(1);
     setWidget(content);
-    connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int){
-        if (!m_updatingKeyform) RebuildKeyformTable();
+    connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
+        if (m_updatingKeyform) return;
+        RebuildKeyformTable();
+        if (index >= 0 && !m_selectionName.isEmpty()) emit DrawableKeyformSelected(m_selectionName, index);
     });
     connect(m_vertexTable, &QTableWidget::cellChanged, this, [this](int row, int column){
         if (!m_updatingKeyform) ApplyKeyformCellEdit(row, column);

@@ -42,6 +42,7 @@ signals:
     void DrawableOpacityChanged(const QString& name, float opacity);
     void DrawableDrawOrderChanged(const QString& name, int drawOrder);
     void DrawableKeyformPositionsChanged(const QString& name, int keyformIndex, const QVector<float>& positions);
+    void DrawableKeyformSelected(const QString& name, int keyformIndex);
     void DrawableIndicesChanged(const QString& name, const QVector<quint16>& indices);
     void DrawableMaskIndicesChanged(const QString& name, const QVector<int>& maskIndices);
     void HistoryChanged(bool canUndo, bool canRedo);

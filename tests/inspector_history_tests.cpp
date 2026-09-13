@@ -59,6 +59,14 @@ private slots:
         QVERIFY(keyformSelector && vertexTable);
         QVERIFY(keyformSelector->count() > 0);
         QVERIFY(vertexTable->rowCount() > 0);
+        QSignalSpy keyformSelections(&panel, &CInspectorPanel::DrawableKeyformSelected);
+        if (keyformSelector->count() > 1) {
+            keyformSelector->setCurrentIndex(1);
+            QCOMPARE(keyformSelections.count(), 1);
+            QCOMPARE(keyformSelections.last().at(0).toString(), id);
+            QCOMPARE(keyformSelections.last().at(1).toInt(), 1);
+            keyformSelector->setCurrentIndex(0);
+        }
         const QVector<float> keyformBefore = document.DrawableKeyformPositions(id, 0);
         QVERIFY(!keyformBefore.isEmpty());
         const float editedX = keyformBefore.first() + 0.5f;
