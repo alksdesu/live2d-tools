@@ -167,9 +167,9 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     outputTools->addWidget(m_removeOutputButton);
     outputTools->addStretch(1);
     outputSectionLayout->addLayout(outputTools);
-    m_outputTable = new QTableWidget(0, 5, outputSection);
+    m_outputTable = new QTableWidget(0, 6, outputSection);
     m_outputTable->setObjectName(QStringLiteral("physicsOutputTable"));
-    m_outputTable->setHorizontalHeaderLabels({"参数", "类型", "影响度", "倍率", "反转"});
+    m_outputTable->setHorizontalHeaderLabels({"参数", "类型", "影响度", "倍率", "反转", "摆锤索引"});
     m_outputTable->horizontalHeader()->setStretchLastSection(true);
     m_outputTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                    QAbstractItemView::SelectedClicked);
@@ -337,6 +337,7 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
     meta.insert(QStringLiteral("VertexCount"), vertexCount);
     meta.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
     QJsonObject updated = m_physicsDocument;
+    updated.remove(QStringLiteral("PhysicsDictionary"));
     updated.insert(QStringLiteral("Meta"), meta);
     updated.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
     QSaveFile file(target);
@@ -430,13 +431,25 @@ bool CPhysicsPanel::ValidateDocument(QString* error) const
 void CPhysicsPanel::updateInputCell(int row, int column)
 {
     const int groupRow = m_groupTable->currentRow();
-    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || (column != 2 && column != 3)) return;
+    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || column < 0 || column > 3) return;
     QJsonObject setting = m_physicsSettings[groupRow].toObject();
     QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
     if (row >= inputs.size()) return;
     if (row < 0 || row >= inputs.size() || !m_inputTable->item(row, column)) return;
     QJsonObject input = inputs[row].toObject();
-    if (column == 2) {
+    if (column == 0) {
+        const QString id = m_inputTable->item(row, column)->text().trimmed();
+        if (id.isEmpty()) { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
+        QJsonObject source = input.value(QStringLiteral("Source")).toObject();
+        source.insert(QStringLiteral("Id"), id);
+        input.insert(QStringLiteral("Source"), source);
+    } else if (column == 1) {
+        const QString type = m_inputTable->item(row, column)->text().trimmed();
+        if (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) {
+            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
+        }
+        input.insert(QStringLiteral("Type"), type);
+    } else if (column == 2) {
         bool ok = false;
         const double value = m_inputTable->item(row, column)->text().toDouble(&ok);
         if (!ok || !std::isfinite(value) || value < 0.0 || value > 100.0) {
@@ -458,24 +471,44 @@ void CPhysicsPanel::updateInputCell(int row, int column)
 void CPhysicsPanel::updateOutputCell(int row, int column)
 {
     const int groupRow = m_groupTable->currentRow();
-    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || (column != 2 && column != 3 && column != 4)) return;
+    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || column < 0 || column > 5) return;
     const int detailRow = row;
     QJsonObject setting = m_physicsSettings[groupRow].toObject();
     QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
     if (detailRow < 0 || detailRow >= outputs.size() || !m_outputTable->item(detailRow, column)) return;
     QJsonObject output = outputs[detailRow].toObject();
-    if (column == 2 || column == 3) {
+    if (column == 0) {
+        const QString id = m_outputTable->item(detailRow, column)->text().trimmed();
+        if (id.isEmpty()) { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
+        QJsonObject destination = output.value(QStringLiteral("Destination")).toObject();
+        destination.insert(QStringLiteral("Id"), id);
+        output.insert(QStringLiteral("Destination"), destination);
+    } else if (column == 1) {
+        const QString type = m_outputTable->item(detailRow, column)->text().trimmed();
+        if (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) {
+            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
+        }
+        output.insert(QStringLiteral("Type"), type);
+    } else if (column == 2 || column == 3) {
         bool ok = false;
         const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
         if (!ok || !std::isfinite(value) || (column == 2 && (value < 0.0 || value > 100.0))) {
             m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
         }
         output.insert(column == 2 ? QStringLiteral("Weight") : QStringLiteral("Scale"), value);
-    } else {
+    } else if (column == 4) {
         const QString text = m_outputTable->item(detailRow, column)->text().trimmed().toLower();
         if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) output.insert(QStringLiteral("Reflect"), true);
         else if (text == QStringLiteral("否") || text == QStringLiteral("false") || text == QStringLiteral("0")) output.insert(QStringLiteral("Reflect"), false);
         else { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
+    } else {
+        bool ok = false;
+        const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
+        const int vertexCount = setting.value(QStringLiteral("Vertices")).toArray().size();
+        if (!ok || !std::isfinite(value) || std::floor(value) != value || value < 0.0 || value >= vertexCount) {
+            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
+        }
+        output.insert(QStringLiteral("VertexIndex"), static_cast<int>(value));
     }
     outputs[detailRow] = output;
     setting.insert(QStringLiteral("Output"), outputs);
@@ -838,6 +871,7 @@ void CPhysicsPanel::showGroupDetail(int row)
         m_outputTable->setItem(i, 2, new QTableWidgetItem(QString::number(out["Weight"].toDouble())));
         m_outputTable->setItem(i, 3, new QTableWidgetItem(QString::number(out["Scale"].toDouble(), 'f', 2)));
         m_outputTable->setItem(i, 4, new QTableWidgetItem(out["Reflect"].toBool() ? "是" : "否"));
+        m_outputTable->setItem(i, 5, new QTableWidgetItem(QString::number(out["VertexIndex"].toInt())));
     }
     m_outputTable->resizeColumnsToContents();
 

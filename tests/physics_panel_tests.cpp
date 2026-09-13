@@ -136,6 +136,7 @@ private slots:
         QVERIFY(temp.isValid());
         const QString path = temp.filePath("groups.physics3.json");
         QJsonObject root = physicsFixture();
+        root.insert(QStringLiteral("PhysicsDictionary"), QJsonArray{QJsonObject{{"Id", "hair"}, {"Name", "旧副本"}}});
         if (!hasDictionaryEntry) {
             QJsonObject meta = root.value("Meta").toObject();
             QJsonArray dictionary = meta.value("PhysicsDictionary").toArray();
@@ -440,6 +441,20 @@ private slots:
 
         input->item(0, 2)->setText(QStringLiteral("0.8"));
         QCOMPARE(input->item(0, 2)->text(), QStringLiteral("0.8"));
+        input->item(0, 0)->setText(QStringLiteral("ParamEditedIn"));
+        input->item(0, 1)->setText(QStringLiteral("Angle"));
+        QCOMPARE(input->item(0, 0)->text(), QStringLiteral("ParamEditedIn"));
+        QCOMPARE(input->item(0, 1)->text(), QStringLiteral("Angle"));
+        input->item(0, 1)->setText(QStringLiteral("Invalid"));
+        QCOMPARE(input->item(0, 1)->text(), QStringLiteral("Angle"));
+        output->item(0, 0)->setText(QStringLiteral("ParamEditedOut"));
+        output->item(0, 1)->setText(QStringLiteral("Angle"));
+        output->item(0, 5)->setText(QStringLiteral("0"));
+        QCOMPARE(output->item(0, 0)->text(), QStringLiteral("ParamEditedOut"));
+        QCOMPARE(output->item(0, 1)->text(), QStringLiteral("Angle"));
+        QCOMPARE(output->item(0, 5)->text(), QStringLiteral("0"));
+        output->item(0, 5)->setText(QStringLiteral("99"));
+        QCOMPARE(output->item(0, 5)->text(), QStringLiteral("0"));
         QVERIFY(panel.HasUnsavedChanges());
         input->item(0, 2)->setText(QStringLiteral("101.0"));
         QVERIFY(input->item(0, 2)->text() != QStringLiteral("101.0"));
@@ -457,8 +472,15 @@ private slots:
         QCOMPARE(meta.value(QStringLiteral("TotalInputCount")).toInt(), 2);
         QCOMPARE(meta.value(QStringLiteral("TotalOutputCount")).toInt(), 2);
         QCOMPARE(meta.value(QStringLiteral("VertexCount")).toInt(), 4);
-        QCOMPARE(setting.value(QStringLiteral("Input")).toArray().first().toObject().value(QStringLiteral("Weight")).toDouble(), 0.8);
-        QCOMPARE(setting.value(QStringLiteral("Output")).toArray().first().toObject().value(QStringLiteral("Scale")).toDouble(), 2.5);
+        const QJsonObject savedInput = setting.value(QStringLiteral("Input")).toArray().first().toObject();
+        const QJsonObject savedOutput = setting.value(QStringLiteral("Output")).toArray().first().toObject();
+        QCOMPARE(savedInput.value(QStringLiteral("Source")).toObject().value(QStringLiteral("Id")).toString(), QStringLiteral("ParamEditedIn"));
+        QCOMPARE(savedInput.value(QStringLiteral("Type")).toString(), QStringLiteral("Angle"));
+        QCOMPARE(savedInput.value(QStringLiteral("Weight")).toDouble(), 0.8);
+        QCOMPARE(savedOutput.value(QStringLiteral("Destination")).toObject().value(QStringLiteral("Id")).toString(), QStringLiteral("ParamEditedOut"));
+        QCOMPARE(savedOutput.value(QStringLiteral("Type")).toString(), QStringLiteral("Angle"));
+        QCOMPARE(savedOutput.value(QStringLiteral("VertexIndex")).toInt(), 0);
+        QCOMPARE(savedOutput.value(QStringLiteral("Scale")).toDouble(), 2.5);
         QCOMPARE(setting.value(QStringLiteral("Vertices")).toArray().at(1).toObject().value(QStringLiteral("Mobility")).toDouble(), 0.75);
 
         const QString brokenPath = temp.filePath(QStringLiteral("broken.physics3.json"));
