@@ -91,8 +91,8 @@ private slots:
         input->item(0, 2)->setText(QStringLiteral("0.8"));
         QCOMPARE(input->item(0, 2)->text(), QStringLiteral("0.8"));
         QVERIFY(panel.HasUnsavedChanges());
-        input->item(0, 2)->setText(QStringLiteral("2.0"));
-        QVERIFY(input->item(0, 2)->text() != QStringLiteral("2.0"));
+        input->item(0, 2)->setText(QStringLiteral("101.0"));
+        QVERIFY(input->item(0, 2)->text() != QStringLiteral("101.0"));
         output->item(0, 3)->setText(QStringLiteral("2.5"));
         vertex->item(0, 2)->setText(QStringLiteral("0.75"));
         QVERIFY(panel.SavePhysics());
@@ -124,6 +124,36 @@ private slots:
         QVERIFY(!panel.LoadPhysics(malformedPath, &error));
         QVERIFY(error.contains(QStringLiteral("Input 无效")));
         QCOMPARE(groups->rowCount(), 2);
+    }
+
+    void loadsCubismPercentageWeights()
+    {
+        CPhysicsPanel panel;
+        QString error;
+        const QString path = QString(TEST_RESOURCES) + QStringLiteral("/Mark/Mark.physics3.json");
+        QVERIFY2(panel.LoadPhysics(path, &error), qPrintable(error));
+        auto* groups = panel.findChild<QTableWidget*>(QStringLiteral("physicsGroupTable"));
+        auto* input = panel.findChild<QTableWidget*>(QStringLiteral("physicsInputTable"));
+        auto* output = panel.findChild<QTableWidget*>(QStringLiteral("physicsOutputTable"));
+        QVERIFY(groups && input && output);
+        QVERIFY(groups->rowCount() > 0);
+        QVERIFY(input->rowCount() > 0);
+        QVERIFY(output->rowCount() > 0);
+        QVERIFY(input->item(0, 2)->text().toDouble() > 1.0);
+        QVERIFY(output->item(0, 2)->text().toDouble() > 1.0);
+        QVERIFY(!panel.HasUnsavedChanges());
+    }
+
+    void loadsAllBuiltinPhysicsFiles()
+    {
+        for (const QString& model : {QStringLiteral("Mark"), QStringLiteral("Natori"),
+                                     QStringLiteral("Rice"), QStringLiteral("Wanko")}) {
+            CPhysicsPanel panel;
+            QString error;
+            const QString path = QString(TEST_RESOURCES) + QLatin1Char('/') + model + QLatin1Char('/') + model + QStringLiteral(".physics3.json");
+            QVERIFY2(panel.LoadPhysics(path, &error), qPrintable(model + QStringLiteral(": ") + error));
+            QVERIFY(panel.findChild<QTableWidget*>(QStringLiteral("physicsGroupTable"))->rowCount() > 0);
+        }
     }
 };
 

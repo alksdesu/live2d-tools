@@ -331,7 +331,7 @@ bool CPhysicsPanel::ValidateDocument(QString* error) const
         const QJsonValue inputsValue = group.value(QStringLiteral("Input"));
         if (!inputsValue.isUndefined() && !inputsValue.isArray()) return fail(QStringLiteral("物理组 %1 的 Input 无效").arg(groupIndex));
         for (const QJsonValue& inputValue : inputsValue.toArray()) {
-            if (!inputValue.isObject() || !numberInRange(inputValue.toObject(), QStringLiteral("Weight"), 0.0, 1.0))
+            if (!inputValue.isObject() || !numberInRange(inputValue.toObject(), QStringLiteral("Weight"), 0.0, 100.0))
                 return fail(QStringLiteral("物理组 %1 的输入权重无效").arg(groupIndex));
         }
         const QJsonValue outputsValue = group.value(QStringLiteral("Output"));
@@ -339,7 +339,7 @@ bool CPhysicsPanel::ValidateDocument(QString* error) const
         for (const QJsonValue& outputValue : outputsValue.toArray()) {
             if (!outputValue.isObject()) return fail(QStringLiteral("物理组 %1 的输出无效").arg(groupIndex));
             const QJsonObject output = outputValue.toObject();
-            if (!numberInRange(output, QStringLiteral("Weight"), 0.0, 1.0) ||
+            if (!numberInRange(output, QStringLiteral("Weight"), 0.0, 100.0) ||
                 !numberInRange(output, QStringLiteral("Scale"), -100000.0, 100000.0))
                 return fail(QStringLiteral("物理组 %1 的输出数值无效").arg(groupIndex));
         }
@@ -371,7 +371,7 @@ void CPhysicsPanel::updateInputCell(int row, int column)
     if (column == 2) {
         bool ok = false;
         const double value = m_inputTable->item(row, column)->text().toDouble(&ok);
-        if (!ok || !std::isfinite(value) || value < 0.0 || value > 1.0) {
+        if (!ok || !std::isfinite(value) || value < 0.0 || value > 100.0) {
             m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
         }
         input.insert(QStringLiteral("Weight"), value);
@@ -401,7 +401,7 @@ void CPhysicsPanel::updateOutputCell(int row, int column)
     if (column == 2 || column == 3) {
         bool ok = false;
         const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
-        if (!ok || !std::isfinite(value) || (column == 2 && (value < 0.0 || value > 1.0))) {
+        if (!ok || !std::isfinite(value) || (column == 2 && (value < 0.0 || value > 100.0))) {
             m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
         }
         output.insert(column == 2 ? QStringLiteral("Weight") : QStringLiteral("Scale"), value);
