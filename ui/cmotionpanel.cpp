@@ -23,6 +23,7 @@
 #include <QHeaderView>
 #include <QGroupBox>
 #include <QFileDialog>
+#include <QTimer>
 #include <algorithm>
 
 using namespace Live2D::Cubism::Framework;
@@ -166,6 +167,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     auto* clearTimelineButton = new QPushButton(QStringLiteral("清空"), timelineBox);
     auto* removeTimelineButton = new QPushButton(QStringLiteral("删除关键帧"), timelineBox);
     auto* exportTimelineButton = new QPushButton(QStringLiteral("导出 motion3"), timelineBox);
+    m_playTimelineButton = new QPushButton(QStringLiteral("预览"), timelineBox);
+    m_playTimelineButton->setObjectName(QStringLiteral("previewTimeline"));
+    m_playTimelineButton->setEnabled(false);
+    timelineTools->addWidget(m_playTimelineButton);
     timelineTools->addWidget(m_recordTimelineCb);
     timelineTools->addWidget(clearTimelineButton);
     timelineTools->addWidget(removeTimelineButton);
@@ -203,6 +208,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(removeTimelineButton, &QPushButton::clicked, this, &CMotionPanel::RemoveTimelineKeyframe);
     connect(exportTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ExportTimeline);
     connect(m_timelineTable, &QTableWidget::cellChanged, this, &CMotionPanel::ApplyTimelineCellEdit);
+    m_timelineTimer = new QTimer(this);
+    m_timelineTimer->setInterval(33);
+    connect(m_playTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ToggleTimelinePlayback);
+    connect(m_timelineTimer, &QTimer::timeout, this, &CMotionPanel::TickTimelinePlayback);
 
     // 选项
     QHBoxLayout* optLayout = new QHBoxLayout();
@@ -248,6 +257,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
 
 void CMotionPanel::BuildLists()
 {
+    if (m_timelineTimer) m_timelineTimer->stop();
+    if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
     if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
     m_timeline.Clear();
     RefreshTimelineTable();
@@ -306,7 +317,7 @@ void CMotionPanel::BuildLists()
 
 void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 {
-    if (!m_timeline.IsRecording()) return;
+    if (!m_timeline.IsRecording() || (m_timelineTimer && m_timelineTimer->isActive())) return;
     const int before = m_timeline.PointCount();
     m_timeline.Record(parameterId, value);
     if (m_timeline.PointCount() != before) {
@@ -328,6 +339,7 @@ void CMotionPanel::RefreshTimelineTable()
         return left.parameterId < right.parameterId;
     });
     m_timelineRows = points;
+    if (m_playTimelineButton) m_playTimelineButton->setEnabled(!points.isEmpty());
     m_updatingTimeline = true;
     m_timelineTable->setRowCount(points.size());
     for (int row = 0; row < points.size(); ++row) {
@@ -345,6 +357,40 @@ void CMotionPanel::RefreshTimelineTable()
         m_timelineTable->setItem(row, 3, interpolation);
     }
     m_updatingTimeline = false;
+}
+
+void CMotionPanel::ToggleTimelinePlayback()
+{
+    if (!m_timelineTimer || m_timeline.Curves().isEmpty()) return;
+    if (m_timelineTimer->isActive()) {
+        m_timelineTimer->stop();
+        m_playTimelineButton->setText(QStringLiteral("预览"));
+        return;
+    }
+    m_timelineTime = 0.0f;
+    m_timelineTimer->start();
+    m_playTimelineButton->setText(QStringLiteral("停止"));
+    emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
+}
+
+void CMotionPanel::TickTimelinePlayback()
+{
+    const float duration = m_timeline.Duration();
+    if (duration <= 0.0f) {
+        m_timelineTimer->stop();
+        m_playTimelineButton->setText(QStringLiteral("预览"));
+        return;
+    }
+    m_timelineTime += 0.033f;
+    if (m_timelineTime > duration) {
+        if (m_loopCb && m_loopCb->isChecked()) m_timelineTime = 0.0f;
+        else {
+            m_timelineTime = duration;
+            m_timelineTimer->stop();
+            m_playTimelineButton->setText(QStringLiteral("预览"));
+        }
+    }
+    emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
 }
 
 void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
@@ -399,6 +445,8 @@ void CMotionPanel::RemoveTimelineKeyframe()
 
 void CMotionPanel::ClearTimeline()
 {
+    if (m_timelineTimer) m_timelineTimer->stop();
+    if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
     if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
     m_timeline.Clear();
     RefreshTimelineTable();

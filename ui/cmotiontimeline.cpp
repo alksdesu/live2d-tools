@@ -103,6 +103,65 @@ int CMotionTimeline::SegmentType(const QString& parameterId, int pointIndex) con
     return m_segmentTypes.value(parameterId).value(pointIndex, 0);
 }
 
+float CMotionTimeline::Duration() const
+{
+    float duration = 0.0f;
+    for (const auto& points : m_curves)
+        if (!points.isEmpty()) duration = qMax(duration, static_cast<float>(points.last().x()));
+    return duration;
+}
+
+float CMotionTimeline::Evaluate(const QString& parameterId, float time, bool* ok) const
+{
+    const QVector<QPointF> points = m_curves.value(parameterId);
+    if (points.isEmpty() || !std::isfinite(time)) {
+        if (ok) *ok = false;
+        return 0.0f;
+    }
+    if (ok) *ok = true;
+    if (time <= points.first().x()) return static_cast<float>(points.first().y());
+    for (int i = 1; i < points.size(); ++i) {
+        const QPointF start = points[i - 1];
+        const QPointF end = points[i];
+        if (time > end.x()) continue;
+        const float span = static_cast<float>(end.x() - start.x());
+        const float ratio = span > 0.0f ? qBound(0.0f, static_cast<float>((time - start.x()) / span), 1.0f) : 1.0f;
+        const int type = SegmentType(parameterId, i);
+        if (type == 2) return static_cast<float>(start.y());
+        if (type == 3) return static_cast<float>(end.y());
+        if (type != 1) return static_cast<float>(start.y() + (end.y() - start.y()) * ratio);
+        const auto cubic = [](float a, float b, float c, float d, float t) {
+            const float inverse = 1.0f - t;
+            return inverse * inverse * inverse * a + 3.0f * inverse * inverse * t * b +
+                   3.0f * inverse * t * t * c + t * t * t * d;
+        };
+        float low = 0.0f;
+        float high = 1.0f;
+        for (int step = 0; step < 24; ++step) {
+            const float middle = (low + high) * 0.5f;
+            if (cubic(0.0f, 1.0f / 3.0f, 2.0f / 3.0f, 1.0f, middle) < ratio) low = middle;
+            else high = middle;
+        }
+        const float control = (low + high) * 0.5f;
+        return cubic(static_cast<float>(start.y()),
+                     static_cast<float>(start.y() + (end.y() - start.y()) / 3.0),
+                     static_cast<float>(start.y() + (end.y() - start.y()) * 2.0 / 3.0),
+                     static_cast<float>(end.y()), control);
+    }
+    return static_cast<float>(points.last().y());
+}
+
+QMap<QString, float> CMotionTimeline::EvaluateAll(float time) const
+{
+    QMap<QString, float> values;
+    for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it) {
+        bool valid = false;
+        const float value = Evaluate(it.key(), time, &valid);
+        if (valid) values.insert(it.key(), value);
+    }
+    return values;
+}
+
 int CMotionTimeline::PointCount() const
 {
     int count = 0;

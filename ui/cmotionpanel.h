@@ -9,11 +9,13 @@
 #include <QVBoxLayout>
 #include <QLineEdit>
 #include <QJsonObject>
+#include <QMap>
 #include "cmotiontimeline.h"
 
 class QLabel;
 class QPushButton;
 class QTableWidget;
+class QTimer;
 
 class CMotionPanel : public QDockWidget
 {
@@ -42,6 +44,7 @@ signals:
     void PoseConfigChanged();
     void PoseSaved();
     void MotionTimelineChanged();
+    void MotionTimelinePreviewChanged(const QMap<QString, float>& values);
 
 private:
     QListWidget* m_motionList;
@@ -88,6 +91,9 @@ private:
     QCheckBox* m_recordTimelineCb = nullptr;
     QTableWidget* m_timelineTable = nullptr;
     QLabel* m_timelineStatus = nullptr;
+    QPushButton* m_playTimelineButton = nullptr;
+    QTimer* m_timelineTimer = nullptr;
+    float m_timelineTime = 0.0f;
 
     void AddPosePart();
     void RemovePosePart();
@@ -97,6 +103,8 @@ private:
     void RefreshTimelineTable();
     void ApplyTimelineCellEdit(int row, int column);
     void RemoveTimelineKeyframe();
+    void ToggleTimelinePlayback();
+    void TickTimelinePlayback();
 
     struct TimelineRow {
         QString parameterId;

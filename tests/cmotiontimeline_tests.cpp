@@ -88,6 +88,19 @@ private slots:
         QCOMPARE(segments.at(2).toInt(), 1);
         QCOMPARE(root.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("TotalPointCount")).toInt(), 4);
     }
+
+    void evaluatesInterpolation()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint(QStringLiteral("Linear"), 0.0f, 0.0f));
+        QVERIFY(timeline.AddPoint(QStringLiteral("Linear"), 1.0f, 10.0f));
+        QCOMPARE(timeline.Evaluate(QStringLiteral("Linear"), 0.5f), 5.0f);
+        QVERIFY(timeline.AddPoint(QStringLiteral("Step"), 0.0f, 1.0f));
+        QVERIFY(timeline.AddPoint(QStringLiteral("Step"), 1.0f, 9.0f));
+        QVERIFY(timeline.SetSegmentType(QStringLiteral("Step"), 1, 2));
+        QCOMPARE(timeline.Evaluate(QStringLiteral("Step"), 0.5f), 1.0f);
+        QCOMPARE(timeline.EvaluateAll(0.5f).size(), 2);
+    }
 };
 
 QTEST_GUILESS_MAIN(CMotionTimelineTests)

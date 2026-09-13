@@ -20,6 +20,9 @@ public:
     bool RemovePoint(const QString& parameterId, int index);
     bool SetSegmentType(const QString& parameterId, int pointIndex, int segmentType);
     int SegmentType(const QString& parameterId, int pointIndex) const;
+    float Duration() const;
+    float Evaluate(const QString& parameterId, float time, bool* ok = nullptr) const;
+    QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
     int PointCount() const;
     const QMap<QString, QVector<QPointF>>& Curves() const { return m_curves; }
