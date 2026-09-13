@@ -676,11 +676,48 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
             return;
         }
     }
+
+    QString previousModelJson;
+    QMap<QString, float> previousParameters;
+    QMap<QString, bool> previousVisibility;
+    float previousViewScale = 1.0f;
+    QVector2D previousViewPosition;
+    QSet<QString> previousHiddenDrawables;
+    QSet<QString> previousHiddenDeformerDrawables;
+    QHash<QString, float> previousDrawableOpacity;
+    QHash<QString, int> previousDrawableDrawOrder;
+    QHash<QString, int> previousDrawableOrderGroups;
+    QVector<live2dstruct::CDrawableOrderGroup> previousDrawOrderGroups;
+    QHash<QString, QHash<int, QVector<float>>> previousMeshOverlayPositions;
+    QHash<QString, int> previousMeshOverlayKeyformIndices;
+    QHash<QString, QVector<quint16>> previousMeshIndexOverrides;
+    QSet<QString> previousDragTargets;
+    bool restoreVisibleModel = false;
+
     // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
     if(m_openglwindows){
+        previousModelJson = m_openglwindows->GetCurrentModelJson();
+        restoreVisibleModel = !previousModelJson.isEmpty();
+        if (m_paramPanel) previousParameters = m_paramPanel->CurrentValues();
+        if (m_treePanel) previousVisibility = m_treePanel->VisibilityState();
+        previousViewScale = m_openglwindows->ViewScale();
+        previousViewPosition = m_openglwindows->ViewPosition();
+        if (auto* delegate = LAppDelegate::GetInstance()) {
+            previousHiddenDrawables = delegate->m_hiddenDrawables;
+            previousHiddenDeformerDrawables = delegate->m_hiddenDeformerDrawables;
+            previousDrawableOpacity = delegate->m_drawableOpacityOverrides;
+            previousDrawableDrawOrder = delegate->m_drawableDrawOrderOverrides;
+            previousDrawableOrderGroups = delegate->m_drawableOrderGroupIndices;
+            previousDrawOrderGroups = delegate->m_drawOrderGroups;
+            previousMeshOverlayPositions = delegate->m_meshOverlayPositions;
+            previousMeshOverlayKeyformIndices = delegate->m_meshOverlayKeyformIndices;
+            previousMeshIndexOverrides = delegate->m_meshIndexOverrides;
+            previousDragTargets = delegate->m_dragTargetDrawables;
+        }
         bool wasActive = m_openglwindows->m_timer.isActive();
         if (wasActive) m_openglwindows->m_timer.stop();
-        m_openglwindows->do_ModelChange(modelPath);
+        const bool changedModel = previousModelJson != modelPath;
+        if (changedModel) m_openglwindows->do_ModelChange(modelPath);
         bool ok;
         if (isTexExtract) {
             ok = m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
@@ -688,6 +725,44 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
             ok = m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
         }
         if (wasActive) m_openglwindows->m_timer.start(1000/60);
+
+        if (restoreVisibleModel && changedModel) {
+            m_openglwindows->do_ModelChange(previousModelJson);
+            if (auto* delegate = LAppDelegate::GetInstance()) {
+                delegate->m_hiddenDrawables = previousHiddenDrawables;
+                delegate->m_hiddenDeformerDrawables = previousHiddenDeformerDrawables;
+                delegate->m_drawableOpacityOverrides = previousDrawableOpacity;
+                delegate->m_drawableDrawOrderOverrides = previousDrawableDrawOrder;
+                delegate->m_drawableOrderGroupIndices = previousDrawableOrderGroups;
+                delegate->m_drawOrderGroups = previousDrawOrderGroups;
+                delegate->m_meshOverlayPositions = previousMeshOverlayPositions;
+                delegate->m_meshOverlayKeyformIndices = previousMeshOverlayKeyformIndices;
+                delegate->m_meshIndexOverrides = previousMeshIndexOverrides;
+                delegate->m_dragTargetDrawables = previousDragTargets;
+                if (auto* manager = LAppLive2DManager::GetInstance(); manager &&
+                    manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
+                    if (auto* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap()) {
+                        for (auto it = previousMeshOverlayPositions.cbegin(); it != previousMeshOverlayPositions.cend(); ++it) {
+                            const int keyformIndex = previousMeshOverlayKeyformIndices.value(it.key(), -1);
+                            const auto keyform = it.value().constFind(keyformIndex);
+                            if (keyform != it.value().cend()) meshMap->SetMeshPositions(it.key(), keyform.value());
+                        }
+                        for (auto it = previousMeshIndexOverrides.cbegin(); it != previousMeshIndexOverrides.cend(); ++it)
+                            meshMap->SetMeshIndices(it.key(), it.value());
+                    }
+                }
+            }
+            if (m_paramPanel) {
+                for (auto it = previousParameters.cbegin(); it != previousParameters.cend(); ++it)
+                    m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false);
+            }
+            if (m_treePanel) {
+                m_syncingVisibility = true;
+                m_treePanel->ApplyVisibilityState(previousVisibility);
+                m_syncingVisibility = false;
+            }
+            m_openglwindows->SetViewState(previousViewScale, previousViewPosition);
+        }
         // 通知批量工作器继续
         emit oneExportFinished(ok, outPath);
         return;
