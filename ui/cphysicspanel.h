@@ -31,6 +31,7 @@ signals:
 
 private:
     void showGroupDetail(int row);
+    void refreshGroupTable();
     void emitDragParams(int row);
     void updateInputCell(int row, int column);
     void updateOutputCell(int row, int column);
@@ -41,6 +42,9 @@ private:
     void removePhysicsOutput();
     void addPhysicsVertex();
     void removePhysicsVertex();
+    void addPhysicsGroup();
+    void removePhysicsGroup();
+    void renamePhysicsGroup();
     void updateForceDocument();
     bool ValidateDocument(QString* error) const;
 
@@ -59,6 +63,9 @@ private:
     QPushButton* m_removeOutputButton = nullptr;
     QPushButton* m_addVertexButton = nullptr;
     QPushButton* m_removeVertexButton = nullptr;
+    QPushButton* m_addGroupButton = nullptr;
+    QPushButton* m_removeGroupButton = nullptr;
+    QPushButton* m_renameGroupButton = nullptr;
 
     // 重力/风力滑条
     QSlider* m_gravityX;

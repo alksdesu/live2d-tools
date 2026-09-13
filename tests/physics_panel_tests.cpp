@@ -139,6 +139,12 @@ private slots:
         QVERIFY(!panel.LoadPhysics(malformedPath, &error));
         QVERIFY(error.contains(QStringLiteral("Input 无效")));
         QCOMPARE(groups->rowCount(), 2);
+        auto* removeGroup = panel.findChild<QPushButton*>(QStringLiteral("removePhysicsGroup"));
+        QVERIFY(removeGroup);
+        groups->selectRow(1);
+        removeGroup->click();
+        QCOMPARE(groups->rowCount(), 1);
+        QVERIFY(panel.HasUnsavedChanges());
     }
 
     void loadsCubismPercentageWeights()

@@ -84,6 +84,22 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     QGroupBox* groupBox = new QGroupBox("物理组", wrapper);
     QVBoxLayout* groupLayout = new QVBoxLayout(groupBox);
 
+    auto* groupTools = new QHBoxLayout();
+    m_addGroupButton = new QPushButton(QStringLiteral("添加组"), groupBox);
+    m_removeGroupButton = new QPushButton(QStringLiteral("删除组"), groupBox);
+    m_renameGroupButton = new QPushButton(QStringLiteral("重命名"), groupBox);
+    m_addGroupButton->setObjectName(QStringLiteral("addPhysicsGroup"));
+    m_removeGroupButton->setObjectName(QStringLiteral("removePhysicsGroup"));
+    m_renameGroupButton->setObjectName(QStringLiteral("renamePhysicsGroup"));
+    m_addGroupButton->setEnabled(false);
+    m_removeGroupButton->setEnabled(false);
+    m_renameGroupButton->setEnabled(false);
+    groupTools->addWidget(m_addGroupButton);
+    groupTools->addWidget(m_removeGroupButton);
+    groupTools->addWidget(m_renameGroupButton);
+    groupTools->addStretch(1);
+    groupLayout->addLayout(groupTools);
+
     m_groupTable = new QTableWidget(0, 3, groupBox);
     m_groupTable->setObjectName(QStringLiteral("physicsGroupTable"));
     m_groupTable->setHorizontalHeaderLabels({"ID", "名称", "输出数"});
@@ -104,6 +120,8 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
             // 发射选中组的输入参数
             if(m_dragModeCb->isChecked()) emitDragParams(row);
         }
+        if (m_removeGroupButton) m_removeGroupButton->setEnabled(row >= 0);
+        if (m_renameGroupButton) m_renameGroupButton->setEnabled(row >= 0);
     });
     connect(m_dragModeCb, &QCheckBox::toggled, this, [this](bool checked){
         if(checked){
@@ -213,6 +231,9 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     connect(m_vertexTable, &QTableWidget::itemSelectionChanged, this, [this](){
         if (m_removeVertexButton) m_removeVertexButton->setEnabled(m_vertexTable->currentRow() >= 0);
     });
+    connect(m_addGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::addPhysicsGroup);
+    connect(m_removeGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::removePhysicsGroup);
+    connect(m_renameGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::renamePhysicsGroup);
 }
 
 bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
@@ -312,6 +333,9 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
     if (m_addInputButton) m_addInputButton->setEnabled(true);
     if (m_addOutputButton) m_addOutputButton->setEnabled(true);
     if (m_addVertexButton) m_addVertexButton->setEnabled(true);
+    if (m_addGroupButton) m_addGroupButton->setEnabled(true);
+    if (m_removeGroupButton) m_removeGroupButton->setEnabled(m_groupTable->currentRow() >= 0);
+    if (m_renameGroupButton) m_renameGroupButton->setEnabled(m_groupTable->currentRow() >= 0);
     m_updating = false;
     return true;
 }
@@ -533,6 +557,139 @@ void CPhysicsPanel::updateVertexCell(int row, int column)
     m_physicsSettings[groupRow] = setting;
     m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
     m_dirty = true;
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::refreshGroupTable()
+{
+    if (!m_groupTable) return;
+    const bool wasUpdating = m_updating;
+    m_updating = true;
+    QMap<QString, QString> idToName;
+    for (const QJsonValue& value : m_physicsDictionary) {
+        const QJsonObject entry = value.toObject();
+        idToName.insert(entry.value(QStringLiteral("Id")).toString(), entry.value(QStringLiteral("Name")).toString());
+    }
+    m_groupTable->setRowCount(m_physicsSettings.size());
+    for (int i = 0; i < m_physicsSettings.size(); ++i) {
+        const QJsonObject setting = m_physicsSettings.at(i).toObject();
+        const QString id = setting.value(QStringLiteral("Id")).toString();
+        m_groupTable->setItem(i, 0, new QTableWidgetItem(id));
+        m_groupTable->setItem(i, 1, new QTableWidgetItem(idToName.value(id, id)));
+        m_groupTable->setItem(i, 2, new QTableWidgetItem(QString::number(setting.value(QStringLiteral("Output")).toArray().size())));
+    }
+    m_groupTable->resizeColumnsToContents();
+    m_updating = wasUpdating;
+}
+
+void CPhysicsPanel::addPhysicsGroup()
+{
+    if (!m_physicsDocument.isEmpty() && m_physicsSettings.size() >= 10000) return;
+    bool accepted = false;
+    const QString id = QInputDialog::getText(this, QStringLiteral("添加物理组"),
+                                              QStringLiteral("组 ID"), QLineEdit::Normal,
+                                              QString(), &accepted).trimmed();
+    if (!accepted || id.isEmpty()) return;
+    for (const QJsonValue& value : m_physicsSettings) {
+        if (value.toObject().value(QStringLiteral("Id")).toString() == id) {
+            QMessageBox::warning(this, QStringLiteral("添加物理组"), QStringLiteral("该组 ID 已存在"));
+            return;
+        }
+    }
+    const QString name = QInputDialog::getText(this, QStringLiteral("添加物理组"),
+                                                QStringLiteral("显示名称"), QLineEdit::Normal,
+                                                id, &accepted).trimmed();
+    if (!accepted || name.isEmpty()) return;
+    QJsonObject position;
+    position.insert(QStringLiteral("Minimum"), -10.0);
+    position.insert(QStringLiteral("Default"), 0.0);
+    position.insert(QStringLiteral("Maximum"), 10.0);
+    QJsonObject normalization;
+    normalization.insert(QStringLiteral("Position"), position);
+    normalization.insert(QStringLiteral("Angle"), position);
+    QJsonObject rootPosition;
+    rootPosition.insert(QStringLiteral("X"), 0.0);
+    rootPosition.insert(QStringLiteral("Y"), 0.0);
+    QJsonObject rootVertex;
+    rootVertex.insert(QStringLiteral("Position"), rootPosition);
+    rootVertex.insert(QStringLiteral("Mobility"), 1.0);
+    rootVertex.insert(QStringLiteral("Delay"), 1.0);
+    rootVertex.insert(QStringLiteral("Acceleration"), 1.0);
+    rootVertex.insert(QStringLiteral("Radius"), 0.0);
+    QJsonArray vertices;
+    vertices.append(rootVertex);
+    QJsonObject setting;
+    setting.insert(QStringLiteral("Id"), id);
+    setting.insert(QStringLiteral("Input"), QJsonArray());
+    setting.insert(QStringLiteral("Output"), QJsonArray());
+    setting.insert(QStringLiteral("Vertices"), vertices);
+    setting.insert(QStringLiteral("Normalization"), normalization);
+    m_physicsSettings.append(setting);
+    QJsonObject dictionaryEntry;
+    dictionaryEntry.insert(QStringLiteral("Id"), id);
+    dictionaryEntry.insert(QStringLiteral("Name"), name);
+    m_physicsDictionary.append(dictionaryEntry);
+    m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    refreshGroupTable();
+    m_groupTable->selectRow(m_physicsSettings.size() - 1);
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::removePhysicsGroup()
+{
+    const int row = m_groupTable ? m_groupTable->currentRow() : -1;
+    if (row < 0 || row >= m_physicsSettings.size()) return;
+    const QString id = m_physicsSettings.at(row).toObject().value(QStringLiteral("Id")).toString();
+    m_physicsSettings.removeAt(row);
+    for (int i = m_physicsDictionary.size() - 1; i >= 0; --i) {
+        if (m_physicsDictionary.at(i).toObject().value(QStringLiteral("Id")).toString() == id)
+            m_physicsDictionary.removeAt(i);
+    }
+    m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    refreshGroupTable();
+    if (m_physicsSettings.isEmpty()) {
+        m_inputTable->setRowCount(0);
+        m_outputTable->setRowCount(0);
+        m_vertexTable->setRowCount(0);
+        if (m_graph) m_graph->SetGroup(QJsonObject());
+        if (m_removeGroupButton) m_removeGroupButton->setEnabled(false);
+        if (m_renameGroupButton) m_renameGroupButton->setEnabled(false);
+    } else {
+        m_groupTable->selectRow(qMin(row, m_physicsSettings.size() - 1));
+    }
+    emit PhysicsConfigChanged();
+}
+
+void CPhysicsPanel::renamePhysicsGroup()
+{
+    const int row = m_groupTable ? m_groupTable->currentRow() : -1;
+    if (row < 0 || row >= m_physicsSettings.size()) return;
+    const QString id = m_physicsSettings.at(row).toObject().value(QStringLiteral("Id")).toString();
+    QString currentName = id;
+    for (const QJsonValue& value : m_physicsDictionary) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("Id")).toString() == id) { currentName = entry.value(QStringLiteral("Name")).toString(); break; }
+    }
+    bool accepted = false;
+    const QString name = QInputDialog::getText(this, QStringLiteral("重命名物理组"),
+                                                QStringLiteral("显示名称"), QLineEdit::Normal,
+                                                currentName, &accepted).trimmed();
+    if (!accepted || name.isEmpty()) return;
+    for (int i = 0; i < m_physicsDictionary.size(); ++i) {
+        QJsonObject entry = m_physicsDictionary.at(i).toObject();
+        if (entry.value(QStringLiteral("Id")).toString() != id) continue;
+        entry.insert(QStringLiteral("Name"), name);
+        m_physicsDictionary[i] = entry;
+        break;
+    }
+    m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
+    m_dirty = true;
+    refreshGroupTable();
+    m_groupTable->selectRow(row);
     emit PhysicsConfigChanged();
 }
 
