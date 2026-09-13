@@ -9,9 +9,11 @@
 #include <QVBoxLayout>
 #include <QLineEdit>
 #include <QJsonObject>
+#include "cmotiontimeline.h"
 
 class QLabel;
 class QPushButton;
+class QTableWidget;
 
 class CMotionPanel : public QDockWidget
 {
@@ -21,6 +23,7 @@ public:
     void BuildLists();
     bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
     bool SavePose(QString* error = nullptr);
+    void RecordParameterValue(const QString& parameterId, float value);
     bool HasUnsavedPoseChanges() const { return m_poseDirty; }
 
     bool isAutoEyeBlink() const { return m_eyeBlinkCb->isChecked(); }
@@ -38,6 +41,7 @@ signals:
     void PosePartChanged(const QStringList& showPartIds, const QStringList& hidePartIds);
     void PoseConfigChanged();
     void PoseSaved();
+    void MotionTimelineChanged();
 
 private:
     QListWidget* m_motionList;
@@ -80,10 +84,17 @@ private:
     QPushButton* m_removePosePartButton = nullptr;
     int m_activePoseGroup = -1;
     bool m_poseDirty = false;
+    CMotionTimeline m_timeline;
+    QCheckBox* m_recordTimelineCb = nullptr;
+    QTableWidget* m_timelineTable = nullptr;
+    QLabel* m_timelineStatus = nullptr;
 
     void AddPosePart();
     void RemovePosePart();
     void EditSelectedExpression();
+    void ExportTimeline();
+    void ClearTimeline();
+    void RefreshTimelineTable();
 };
 
 #endif // CMOTIONPANEL_H

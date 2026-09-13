@@ -1107,6 +1107,10 @@ void MainWindow::RestDock(const QString &name)
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_blendShapePanel,
             [this](const QString& name, float value, bool){ m_blendShapePanel->SyncParameterValue(name, value); });
+    connect(m_paramPanel, &CParamPanel::ParamChanged, m_motionPanel,
+            [this](const QString& name, float value, bool isInit){
+                if (!isInit) m_motionPanel->RecordParameterValue(name, value);
+            });
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(name, value, true);
     });

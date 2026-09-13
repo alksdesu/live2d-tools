@@ -21,6 +21,9 @@
 #include <QDialogButtonBox>
 #include <QTableWidget>
 #include <QHeaderView>
+#include <QGroupBox>
+#include <QFileDialog>
+#include <algorithm>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -155,6 +158,45 @@ CMotionPanel::CMotionPanel(QWidget *parent)
 
     mainLayout->addWidget(splitter);
 
+    auto* timelineBox = new QGroupBox(QStringLiteral("参数录制时间轴"), wrapper);
+    auto* timelineLayout = new QVBoxLayout(timelineBox);
+    auto* timelineTools = new QHBoxLayout();
+    m_recordTimelineCb = new QCheckBox(QStringLiteral("录制"), timelineBox);
+    m_recordTimelineCb->setObjectName(QStringLiteral("recordTimeline"));
+    auto* clearTimelineButton = new QPushButton(QStringLiteral("清空"), timelineBox);
+    auto* exportTimelineButton = new QPushButton(QStringLiteral("导出 motion3"), timelineBox);
+    timelineTools->addWidget(m_recordTimelineCb);
+    timelineTools->addWidget(clearTimelineButton);
+    timelineTools->addWidget(exportTimelineButton);
+    timelineTools->addStretch(1);
+    m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
+    timelineTools->addWidget(m_timelineStatus);
+    timelineLayout->addLayout(timelineTools);
+    m_timelineTable = new QTableWidget(0, 3, timelineBox);
+    m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
+    m_timelineTable->setHorizontalHeaderLabels({QStringLiteral("时间"), QStringLiteral("参数"), QStringLiteral("值")});
+    m_timelineTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_timelineTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_timelineTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_timelineTable->verticalHeader()->setVisible(false);
+    m_timelineTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_timelineTable->setMaximumHeight(170);
+    timelineLayout->addWidget(m_timelineTable);
+    mainLayout->addWidget(timelineBox);
+    connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
+        if (recording) {
+            m_timeline.StartRecording();
+            m_timelineStatus->setText(QStringLiteral("正在录制"));
+        } else {
+            m_timeline.StopRecording();
+            m_timelineStatus->setText(m_timeline.PointCount() > 0
+                                      ? QStringLiteral("已录制 %1 个关键帧").arg(m_timeline.PointCount())
+                                      : QStringLiteral("暂无关键帧"));
+        }
+    });
+    connect(clearTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ClearTimeline);
+    connect(exportTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ExportTimeline);
+
     // 选项
     QHBoxLayout* optLayout = new QHBoxLayout();
     m_eyeBlinkCb = new QCheckBox("自动眨眼");
@@ -199,6 +241,9 @@ CMotionPanel::CMotionPanel(QWidget *parent)
 
 void CMotionPanel::BuildLists()
 {
+    if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
+    m_timeline.Clear();
+    RefreshTimelineTable();
     m_motionList->clear();
     m_exprList->clear();
     m_motionEntries.clear();
@@ -250,6 +295,58 @@ void CMotionPanel::BuildLists()
 
     if(m_motionEntries.isEmpty()) m_motionList->addItem("(此模型无动作定义)");
     if(m_exprEntries.isEmpty()) m_exprList->addItem("(此模型无表情定义)");
+}
+
+void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
+{
+    if (!m_timeline.IsRecording()) return;
+    const int before = m_timeline.PointCount();
+    m_timeline.Record(parameterId, value);
+    if (m_timeline.PointCount() != before) {
+        RefreshTimelineTable();
+        m_timelineStatus->setText(QStringLiteral("正在录制 · %1 个关键帧").arg(m_timeline.PointCount()));
+        emit MotionTimelineChanged();
+    }
+}
+
+void CMotionPanel::RefreshTimelineTable()
+{
+    if (!m_timelineTable) return;
+    QVector<QPair<QString, QPointF>> points;
+    for (auto it = m_timeline.Curves().cbegin(); it != m_timeline.Curves().cend(); ++it)
+        for (const QPointF& point : it.value()) points.append(qMakePair(it.key(), point));
+    std::sort(points.begin(), points.end(), [](const auto& left, const auto& right){
+        if (!qFuzzyCompare(left.second.x() + 1.0, right.second.x() + 1.0)) return left.second.x() < right.second.x();
+        return left.first < right.first;
+    });
+    m_timelineTable->setRowCount(points.size());
+    for (int row = 0; row < points.size(); ++row) {
+        m_timelineTable->setItem(row, 0, new QTableWidgetItem(QString::number(points[row].second.x(), 'f', 3)));
+        m_timelineTable->setItem(row, 1, new QTableWidgetItem(points[row].first));
+        m_timelineTable->setItem(row, 2, new QTableWidgetItem(QString::number(points[row].second.y(), 'g', 6)));
+    }
+}
+
+void CMotionPanel::ClearTimeline()
+{
+    if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
+    m_timeline.Clear();
+    RefreshTimelineTable();
+    if (m_timelineStatus) m_timelineStatus->setText(QStringLiteral("暂无关键帧"));
+    emit MotionTimelineChanged();
+}
+
+void CMotionPanel::ExportTimeline()
+{
+    const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 motion3"),
+                                                       QString(), QStringLiteral("Motion (*.motion3.json)"));
+    if (path.isEmpty()) return;
+    QString error;
+    if (!m_timeline.Save(path, 30.0f, m_loopCb && m_loopCb->isChecked(), &error)) {
+        QMessageBox::warning(this, QStringLiteral("导出 motion3 失败"), error);
+        return;
+    }
+    m_timelineStatus->setText(QStringLiteral("已导出 motion3"));
 }
 
 bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
