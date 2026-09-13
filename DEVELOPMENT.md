@@ -110,6 +110,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - XY 拖动使用成对参数编辑命令，两个参数一起校验、应用和撤销，避免历史只回退一半状态。
 - Inspector 支持 Rotation Deformer 关键形的角度、原点、缩放和反射编辑，进入撤销栈、session 和 cmo3。
 - Inspector 支持 Warp Deformer keyform 网格坐标编辑，按原始行列校验并进入撤销栈、session 和 cmo3。
+- 建模工作区支持 ArtMesh 顶点命中、拖动和当前关键形写回；移动量按模型矩阵转换，失败时恢复运行时网格。
 - CDI 显示信息重复载入时会清理旧参数/Part/Deformer 分组，损坏或类型错误的字段会返回失败。
 - CDI 解析改为临时容器事务提交，中途字段错误不会留下半份映射；Pose 重载会递归清理旧布局，并保存未展示的原始组。
 - cmo3 Warp/Rotation 来源按 `specific_sources_indices` 与 Deformer 对齐，非法来源类型或索引在写出前失败；索引重排、编辑关键形和 CAFF 引用有专门回归测试。
