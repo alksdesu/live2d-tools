@@ -679,12 +679,20 @@ void CPhysicsPanel::renamePhysicsGroup()
                                                 QStringLiteral("显示名称"), QLineEdit::Normal,
                                                 currentName, &accepted).trimmed();
     if (!accepted || name.isEmpty()) return;
+    bool dictionaryFound = false;
     for (int i = 0; i < m_physicsDictionary.size(); ++i) {
         QJsonObject entry = m_physicsDictionary.at(i).toObject();
         if (entry.value(QStringLiteral("Id")).toString() != id) continue;
         entry.insert(QStringLiteral("Name"), name);
         m_physicsDictionary[i] = entry;
+        dictionaryFound = true;
         break;
+    }
+    if (!dictionaryFound) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("Id"), id);
+        entry.insert(QStringLiteral("Name"), name);
+        m_physicsDictionary.append(entry);
     }
     m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
     m_dirty = true;
