@@ -45,6 +45,21 @@ void clearLayoutItems(QLayout* layout)
         delete item;
     }
 }
+
+bool modelHasPart(const QString& id, bool* modelAvailable)
+{
+    if (modelAvailable) *modelAvailable = false;
+    if (id.isEmpty()) return false;
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+    if (!model || !model->GetModel()) return false;
+    if (modelAvailable) *modelAvailable = true;
+    for (int i = 0; i < model->GetModel()->GetPartCount(); ++i) {
+        const CubismId* partId = model->GetModel()->GetPartId(i);
+        if (partId && id == QString::fromUtf8(partId->GetString().GetRawString())) return true;
+    }
+    return false;
+}
 }
 
 CMotionPanel::CMotionPanel(QWidget *parent)
@@ -772,6 +787,30 @@ bool CMotionPanel::SavePose(QString* error)
         return false;
     }
     QJsonArray groups = m_poseDocument.value(QStringLiteral("Groups")).toArray();
+    bool modelAvailable = false;
+    for (const PoseGroup& group : m_poseGroups) {
+        for (int i = 0; i < group.partIds.size(); ++i) {
+            if (!modelHasPart(group.partIds.at(i), &modelAvailable)) {
+                if (!modelAvailable) break;
+                if (error) *error = QStringLiteral("Pose 包含不存在的 Part：%1").arg(group.partIds.at(i));
+                return false;
+            }
+            if (i >= group.links.size()) continue;
+            for (const QString& link : group.links.at(i)) {
+                if (link == group.partIds.at(i)) {
+                    if (error) *error = QStringLiteral("Pose Link 不能指向自身：%1").arg(link);
+                    return false;
+                }
+                if (!modelHasPart(link, &modelAvailable)) {
+                    if (!modelAvailable) break;
+                    if (error) *error = QStringLiteral("Pose 包含不存在的 Link：%1").arg(link);
+                    return false;
+                }
+            }
+            if (!modelAvailable) break;
+        }
+        if (!modelAvailable && !m_poseGroups.isEmpty()) break;
+    }
     for (const PoseGroup& group : m_poseGroups) {
         QJsonArray entries;
         for (int i = 0; i < group.partIds.size(); ++i) {
@@ -810,6 +849,12 @@ void CMotionPanel::AddPosePart()
                                                   QStringLiteral("Part ID"), QLineEdit::Normal,
                                                   QString(), &accepted).trimmed();
     if (!accepted || partId.isEmpty()) return;
+    bool modelAvailable = false;
+    if (!modelHasPart(partId, &modelAvailable)) {
+        QMessageBox::warning(this, QStringLiteral("添加 Pose Part"),
+                             modelAvailable ? QStringLiteral("当前模型不存在该 Part") : QStringLiteral("模型尚未准备好"));
+        return;
+    }
     PoseGroup& group = m_poseGroups[m_activePoseGroup];
     if (group.partIds.contains(partId)) {
         QMessageBox::information(this, QStringLiteral("添加 Pose Part"), QStringLiteral("该 Part 已在当前组中"));
