@@ -42,6 +42,33 @@ private slots:
         QVERIFY(!table.IsValid());
     }
 
+    void failedLoadPreservesDocument()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const QString drawableId = document.Drawables().first().id;
+        document.SetLocked(QStringLiteral("artmesh"), drawableId, true);
+        const bool beforeVisible = document.Drawables().first().visible;
+        QVERIFY(document.ExecuteEdit({drawableId, QStringLiteral("artmesh"),
+                                      live2dstruct::CModelEdit::Visibility,
+                                      beforeVisible, !beforeVisible}));
+        const int partCount = document.Parts().size();
+        const int drawableCount = document.Drawables().size();
+        const QString sourcePath = document.SourcePath();
+        const bool locked = document.IsLocked(QStringLiteral("artmesh"), drawableId);
+        QVERIFY(!document.Load(QStringLiteral("/does/not/exist.moc3"), &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(document.IsLoaded());
+        QCOMPARE(document.SourcePath(), sourcePath);
+        QCOMPARE(document.Parts().size(), partCount);
+        QCOMPARE(document.Drawables().size(), drawableCount);
+        QCOMPARE(document.Drawables().first().visible, !beforeVisible);
+        QCOMPARE(document.IsLocked(QStringLiteral("artmesh"), drawableId), locked);
+        QVERIFY(document.CanUndoEdit());
+    }
+
     void parsesSamples_data()
     {
         QTest::addColumn<QString>("name");

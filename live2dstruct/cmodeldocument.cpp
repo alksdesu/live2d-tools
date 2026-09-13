@@ -7,6 +7,7 @@
 #include <QtGlobal>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace live2dstruct {
 
@@ -89,6 +90,14 @@ void CModelDocument::Clear()
 }
 
 bool CModelDocument::Load(const QString& mocPath, QString* error)
+{
+    CModelDocument candidate;
+    if (!candidate.LoadInternal(mocPath, error)) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool CModelDocument::LoadInternal(const QString& mocPath, QString* error)
 {
     Clear();
     CReader reader(mocPath);

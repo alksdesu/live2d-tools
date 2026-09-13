@@ -256,6 +256,7 @@ private:
     int m_editIndex = 0;
 
     bool ApplyEdit(const CModelEdit& edit, bool forward);
+    bool LoadInternal(const QString& mocPath, QString* error);
 };
 
 }
