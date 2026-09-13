@@ -102,6 +102,7 @@ private:
         QString parameterId;
         int pointIndex = -1;
         QPointF point;
+        int segmentType = 0;
     };
     QVector<TimelineRow> m_timelineRows;
     bool m_updatingTimeline = false;

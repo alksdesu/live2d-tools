@@ -69,6 +69,25 @@ private slots:
         QVERIFY(timeline.RemovePoint(QStringLiteral("ParamA"), 1));
         QCOMPARE(timeline.PointCount(), 1);
     }
+
+    void writesBezierSegmentMetadata()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamA"), 0.0f, 0.0f));
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamA"), 1.0f, 1.0f));
+        QVERIFY(timeline.SetSegmentType(QStringLiteral("ParamA"), 1, 1));
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QString error;
+        QVERIFY(timeline.Save(temp.filePath(QStringLiteral("bezier.motion3.json")), 30.0f, false, &error));
+        QFile file(temp.filePath(QStringLiteral("bezier.motion3.json")));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+        const QJsonArray segments = root.value(QStringLiteral("Curves")).toArray().first().toObject()
+            .value(QStringLiteral("Segments")).toArray();
+        QCOMPARE(segments.at(2).toInt(), 1);
+        QCOMPARE(root.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("TotalPointCount")).toInt(), 4);
+    }
 };
 
 QTEST_GUILESS_MAIN(CMotionTimelineTests)

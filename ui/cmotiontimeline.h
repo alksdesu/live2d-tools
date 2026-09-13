@@ -18,6 +18,8 @@ public:
     bool AddPoint(const QString& parameterId, float time, float value);
     bool UpdatePoint(const QString& parameterId, int index, float time, float value);
     bool RemovePoint(const QString& parameterId, int index);
+    bool SetSegmentType(const QString& parameterId, int pointIndex, int segmentType);
+    int SegmentType(const QString& parameterId, int pointIndex) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
     int PointCount() const;
     const QMap<QString, QVector<QPointF>>& Curves() const { return m_curves; }
@@ -26,6 +28,7 @@ private:
     bool m_recording = false;
     QElapsedTimer m_clock;
     QMap<QString, QVector<QPointF>> m_curves;
+    QMap<QString, QVector<int>> m_segmentTypes;
 };
 
 #endif

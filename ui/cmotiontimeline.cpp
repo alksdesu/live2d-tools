@@ -23,6 +23,7 @@ void CMotionTimeline::StopRecording()
 void CMotionTimeline::Clear()
 {
     m_curves.clear();
+    m_segmentTypes.clear();
 }
 
 void CMotionTimeline::Record(const QString& parameterId, float value)
@@ -35,6 +36,7 @@ bool CMotionTimeline::AddPoint(const QString& parameterId, float time, float val
 {
     if (parameterId.isEmpty() || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
     QVector<QPointF>& points = m_curves[parameterId];
+    QVector<int>& segmentTypes = m_segmentTypes[parameterId];
     if (!points.isEmpty()) {
         if (time < points.last().x()) time = points.last().x();
         if (qFuzzyCompare(time + 1.0, points.last().x() + 1.0) &&
@@ -45,6 +47,7 @@ bool CMotionTimeline::AddPoint(const QString& parameterId, float time, float val
     }
     if (PointCount() >= 100000) return false;
     points.append(QPointF(time, value));
+    segmentTypes.append(0);
     return true;
 }
 
@@ -56,10 +59,17 @@ bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float t
     for (int i = 0; i < curve->size(); ++i) {
         if (i != index && qFuzzyCompare(curve->at(i).x() + 1.0, static_cast<double>(time) + 1.0)) return false;
     }
-    (*curve)[index] = QPointF(time, value);
-    std::sort(curve->begin(), curve->end(), [](const QPointF& left, const QPointF& right){
-        return left.x() < right.x();
+    QVector<QPair<QPointF, int>> entries;
+    const QVector<int> segmentTypes = m_segmentTypes.value(parameterId);
+    for (int i = 0; i < curve->size(); ++i)
+        entries.append(qMakePair(i == index ? QPointF(time, value) : curve->at(i), segmentTypes.value(i, 0)));
+    std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right){
+        return left.first.x() < right.first.x();
     });
+    for (int i = 0; i < entries.size(); ++i) {
+        (*curve)[i] = entries[i].first;
+        m_segmentTypes[parameterId][i] = entries[i].second;
+    }
     return true;
 }
 
@@ -68,8 +78,29 @@ bool CMotionTimeline::RemovePoint(const QString& parameterId, int index)
     auto curve = m_curves.find(parameterId);
     if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
     curve->removeAt(index);
-    if (curve->isEmpty()) m_curves.erase(curve);
+    if (m_segmentTypes.contains(parameterId)) m_segmentTypes[parameterId].removeAt(index);
+    const bool empty = curve->isEmpty();
+    if (empty) {
+        m_curves.erase(curve);
+        m_segmentTypes.remove(parameterId);
+    }
     return true;
+}
+
+bool CMotionTimeline::SetSegmentType(const QString& parameterId, int pointIndex, int segmentType)
+{
+    if (pointIndex <= 0 || segmentType < 0 || segmentType > 3) return false;
+    auto curve = m_curves.find(parameterId);
+    if (curve == m_curves.end() || pointIndex >= curve->size()) return false;
+    QVector<int>& types = m_segmentTypes[parameterId];
+    types.resize(curve->size());
+    types[pointIndex] = segmentType;
+    return true;
+}
+
+int CMotionTimeline::SegmentType(const QString& parameterId, int pointIndex) const
+{
+    return m_segmentTypes.value(parameterId).value(pointIndex, 0);
 }
 
 int CMotionTimeline::PointCount() const
@@ -100,17 +131,33 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
         QJsonArray segments;
         segments.append(points.first().x());
         segments.append(points.first().y());
+        int curvePointCount = 1;
         for (int i = 1; i < points.size(); ++i) {
-            segments.append(0);
-            segments.append(points[i].x());
-            segments.append(points[i].y());
+            const int segmentType = m_segmentTypes.value(it.key()).value(i, 0);
+            segments.append(segmentType);
+            if (segmentType == 1) {
+                const QPointF& start = points[i - 1];
+                const QPointF& end = points[i];
+                const QPointF first(start.x() + (end.x() - start.x()) / 3.0,
+                                    start.y() + (end.y() - start.y()) / 3.0);
+                const QPointF second(start.x() + (end.x() - start.x()) * 2.0 / 3.0,
+                                     start.y() + (end.y() - start.y()) * 2.0 / 3.0);
+                segments.append(first.x()); segments.append(first.y());
+                segments.append(second.x()); segments.append(second.y());
+                segments.append(end.x()); segments.append(end.y());
+                curvePointCount += 3;
+            } else {
+                segments.append(points[i].x());
+                segments.append(points[i].y());
+                ++curvePointCount;
+            }
         }
         QJsonObject curve;
         curve.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
         curve.insert(QStringLiteral("Id"), it.key());
         curve.insert(QStringLiteral("Segments"), segments);
         curves.append(curve);
-        totalPoints += points.size();
+        totalPoints += curvePointCount;
         totalSegments += points.size() - 1;
         duration = qMax(duration, static_cast<float>(points.last().x()));
     }

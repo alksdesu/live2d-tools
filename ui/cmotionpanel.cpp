@@ -174,12 +174,13 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
     timelineTools->addWidget(m_timelineStatus);
     timelineLayout->addLayout(timelineTools);
-    m_timelineTable = new QTableWidget(0, 3, timelineBox);
+    m_timelineTable = new QTableWidget(0, 4, timelineBox);
     m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
-    m_timelineTable->setHorizontalHeaderLabels({QStringLiteral("时间"), QStringLiteral("参数"), QStringLiteral("值")});
+    m_timelineTable->setHorizontalHeaderLabels({QStringLiteral("时间"), QStringLiteral("参数"), QStringLiteral("值"), QStringLiteral("插值")});
     m_timelineTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_timelineTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_timelineTable->verticalHeader()->setVisible(false);
     m_timelineTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_timelineTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
@@ -321,7 +322,7 @@ void CMotionPanel::RefreshTimelineTable()
     QVector<TimelineRow> points;
     for (auto it = m_timeline.Curves().cbegin(); it != m_timeline.Curves().cend(); ++it)
         for (int index = 0; index < it.value().size(); ++index)
-            points.append({it.key(), index, it.value().at(index)});
+            points.append({it.key(), index, it.value().at(index), m_timeline.SegmentType(it.key(), index)});
     std::sort(points.begin(), points.end(), [](const auto& left, const auto& right){
         if (!qFuzzyCompare(left.point.x() + 1.0, right.point.x() + 1.0)) return left.point.x() < right.point.x();
         return left.parameterId < right.parameterId;
@@ -335,14 +336,38 @@ void CMotionPanel::RefreshTimelineTable()
         parameter->setFlags(parameter->flags() & ~Qt::ItemIsEditable);
         m_timelineTable->setItem(row, 1, parameter);
         m_timelineTable->setItem(row, 2, new QTableWidgetItem(QString::number(points[row].point.y(), 'g', 6)));
+        auto* interpolation = new QTableWidgetItem(points[row].pointIndex == 0
+            ? QStringLiteral("起点") : points[row].segmentType == 1 ? QStringLiteral("Bézier")
+            : points[row].segmentType == 2 ? QStringLiteral("阶梯")
+            : points[row].segmentType == 3 ? QStringLiteral("反阶梯") : QStringLiteral("线性"));
+        if (points[row].pointIndex == 0) interpolation->setFlags(interpolation->flags() & ~Qt::ItemIsEditable);
+        interpolation->setToolTip(QStringLiteral("0 线性，1 Bézier，2 阶梯，3 反阶梯"));
+        m_timelineTable->setItem(row, 3, interpolation);
     }
     m_updatingTimeline = false;
 }
 
 void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
 {
-    if (m_updatingTimeline || row < 0 || row >= m_timelineRows.size() || (column != 0 && column != 2)) return;
+    if (m_updatingTimeline || row < 0 || row >= m_timelineRows.size() ||
+        (column != 0 && column != 2 && column != 3)) return;
     const TimelineRow reference = m_timelineRows.at(row);
+    if (column == 3) {
+        const QString text = m_timelineTable->item(row, column)
+            ? m_timelineTable->item(row, column)->text().trimmed().toLower() : QString();
+        int segmentType = -1;
+        if (text == QStringLiteral("0") || text == QStringLiteral("线性") || text == QStringLiteral("linear")) segmentType = 0;
+        else if (text == QStringLiteral("1") || text == QStringLiteral("bezier") || text == QStringLiteral("bézier")) segmentType = 1;
+        else if (text == QStringLiteral("2") || text == QStringLiteral("阶梯") || text == QStringLiteral("stepped")) segmentType = 2;
+        else if (text == QStringLiteral("3") || text == QStringLiteral("反阶梯") || text == QStringLiteral("inverse stepped")) segmentType = 3;
+        if (segmentType < 0 || !m_timeline.SetSegmentType(reference.parameterId, reference.pointIndex, segmentType)) {
+            RefreshTimelineTable();
+            return;
+        }
+        RefreshTimelineTable();
+        emit MotionTimelineChanged();
+        return;
+    }
     const float oldValue = column == 0 ? static_cast<float>(reference.point.x())
                                        : static_cast<float>(reference.point.y());
     bool ok = false;
