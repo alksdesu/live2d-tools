@@ -281,6 +281,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         if(!physics.isEmpty()) options.physicsPath = dir.filePath(physics.first());
     }
     options.parameterValues = m_document.ParameterValues();
+    options.parameterMetadata = m_document.ParameterMetadataOverrides();
     options.hiddenIds = m_document.HiddenIds();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
     options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();
@@ -325,6 +326,7 @@ void MainWindow::on_actionSaveSession_triggered()
     }
     const QMap<QString, float> currentValues = m_paramPanel->CurrentValues();
     session.parameters = currentValues;
+    session.parameterMetadata = m_document.ParameterMetadataOverrides();
     if (m_treePanel) {
         session.visibility = m_treePanel->VisibilityState();
         session.locked = m_treePanel->LockedState();
@@ -386,6 +388,9 @@ void MainWindow::on_actionLoadSession_triggered()
         if (m_inspectorPanel) m_inspectorPanel->SetDocument(&m_document);
         if (m_paramPanel) {
             m_paramPanel->SetDocument(&m_document);
+            for (auto it = session.parameterMetadata.cbegin(); it != session.parameterMetadata.cend(); ++it)
+                m_document.SetParameterMetadata(it.key(), it.value());
+            m_paramPanel->RefreshParameterMetadata();
             m_paramPanel->ResetAll();
             m_paramPanel->ApplyValues(session.parameters);
         }

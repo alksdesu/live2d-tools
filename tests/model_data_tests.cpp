@@ -155,6 +155,27 @@ private slots:
         QCOMPARE(document.ParameterValue(parameter.id), parameterAfter);
         QVERIFY(!document.ExecuteEdit({parameter.id, QStringLiteral("parameter"), live2dstruct::CModelEdit::ParameterValue,
                                        parameterAfter, parameter.maximum + 1.0f}));
+        const auto metadataBefore = document.ParameterMetadata(parameter.id);
+        auto metadataAfter = metadataBefore;
+        metadataAfter.displayName = QStringLiteral("测试参数");
+        metadataAfter.decimalPlaces = qMin(metadataBefore.decimalPlaces + 1, 9);
+        const auto metadataVariant = [](const live2dstruct::CModelParameterMetadata& metadata) {
+            QVariantMap map;
+            map.insert(QStringLiteral("displayName"), metadata.displayName);
+            map.insert(QStringLiteral("minimum"), metadata.minimum);
+            map.insert(QStringLiteral("maximum"), metadata.maximum);
+            map.insert(QStringLiteral("defaultValue"), metadata.defaultValue);
+            map.insert(QStringLiteral("decimalPlaces"), metadata.decimalPlaces);
+            map.insert(QStringLiteral("repeat"), metadata.repeat);
+            return map;
+        };
+        QVERIFY(document.ExecuteEdit({parameter.id, QStringLiteral("parameter"), live2dstruct::CModelEdit::ParameterMetadata,
+                                      metadataVariant(metadataBefore), metadataVariant(metadataAfter)}));
+        QCOMPARE(document.ParameterMetadata(parameter.id).displayName, QStringLiteral("测试参数"));
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.ParameterMetadata(parameter.id).displayName, metadataBefore.displayName);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.ParameterMetadata(parameter.id).displayName, QStringLiteral("测试参数"));
         QVERIFY(!drawable.keyforms.isEmpty());
         const QVector<float> keyformBefore = document.DrawableKeyformPositions(id, 0);
         QVERIFY(keyformBefore.size() == drawable.vertexCount * 2);
@@ -266,6 +287,7 @@ private slots:
         source.sourceMoc = QStringLiteral("/tmp/Model.moc3");
         source.sourceDigest = QByteArray(32, '\x42');
         source.parameters.insert(QStringLiteral("ParamAngleX"), -12.5f);
+        source.parameterMetadata.insert(QStringLiteral("ParamAngleX"), {QStringLiteral("角度 X"), -30.0f, 30.0f, 0.0f, 2, false});
         source.visibility.insert(QStringLiteral("artmesh|Body"), false);
         source.locked.insert(QStringLiteral("artmesh|Body"), true);
         source.drawableOpacity.insert(QStringLiteral("Body"), 0.42f);
@@ -284,6 +306,7 @@ private slots:
         QCOMPARE(decoded.sourceMoc, source.sourceMoc);
         QCOMPARE(decoded.sourceDigest, source.sourceDigest);
         QCOMPARE(decoded.parameters, source.parameters);
+        QCOMPARE(decoded.parameterMetadata, source.parameterMetadata);
         QCOMPARE(decoded.visibility, source.visibility);
         QCOMPARE(decoded.locked, source.locked);
         QCOMPARE(decoded.drawableOpacity, source.drawableOpacity);
@@ -309,6 +332,7 @@ private slots:
         live2dstruct::CModelSession loaded;
         QVERIFY2(live2dstruct::CModelSession::Load(path, &loaded, &error), qPrintable(error));
         QCOMPARE(loaded.parameters, source.parameters);
+        QCOMPARE(loaded.parameterMetadata, source.parameterMetadata);
         QCOMPARE(loaded.locked, source.locked);
         QCOMPARE(loaded.drawableOpacity, source.drawableOpacity);
         QCOMPARE(loaded.drawableDrawOrder, source.drawableDrawOrder);
@@ -327,6 +351,8 @@ private slots:
             R"({"version":1e100})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"parameters":{"ParamAngleX":1e100}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"parameterMetadata":{"ParamAngleX":{"minimum":0,"maximum":1,"defaultValue":2,"decimalPlaces":2,"repeat":false}}})", &session, &error));
         QVERIFY(!error.isEmpty());
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableOpacity":{"Body":2}})", &session, &error));

@@ -126,7 +126,24 @@ private:
 
     QString displayName(const QString& id) const
     {
+        const auto metadata = m_opt.parameterMetadata.constFind(id);
+        if (metadata != m_opt.parameterMetadata.cend() && !metadata->displayName.isEmpty())
+            return metadata->displayName;
         return m_displayNames.value(id, id);
+    }
+
+    live2dstruct::CModelParameterMetadata parameterMetadata(const CParameters* parameter) const
+    {
+        live2dstruct::CModelParameterMetadata metadata;
+        metadata.displayName = displayName(parameter->ids);
+        metadata.minimum = parameter->min_values;
+        metadata.maximum = parameter->max_values;
+        metadata.defaultValue = parameter->default_values;
+        metadata.decimalPlaces = parameter->decimal_places;
+        metadata.repeat = parameter->is_repeat;
+        const auto override = m_opt.parameterMetadata.constFind(parameter->ids);
+        if (override != m_opt.parameterMetadata.cend()) metadata = override.value();
+        return metadata;
     }
 
     const CCmo3Builder::Options& m_opt;
@@ -1147,19 +1164,20 @@ void Generator::writeMain()
     m_xml.BeginCArrayList(QStringLiteral("_sources"), m_table.parameters.size());
     for (int i = 0; i < m_table.parameters.size(); ++i) {
         const CParameters* param = m_table.parameters[i];
+        const auto metadata = parameterMetadata(param);
         m_xml.BeginObject(QStringLiteral("CParameterSource"));
-        m_xml.I(QStringLiteral("decimalPlaces"), param->decimal_places);
+        m_xml.I(QStringLiteral("decimalPlaces"), metadata.decimalPlaces);
         m_xml.Ref(QStringLiteral("CParameterGuid"), QStringLiteral("guid"), m_paramIds[i].guid);
         m_xml.F(QStringLiteral("snapEpsilon"), 0.001f);
-        m_xml.F(QStringLiteral("minValue"), param->min_values);
-        m_xml.F(QStringLiteral("maxValue"), param->max_values);
+        m_xml.F(QStringLiteral("minValue"), metadata.minimum);
+        m_xml.F(QStringLiteral("maxValue"), metadata.maximum);
         const float defaultValue = m_opt.parameterValues.contains(param->ids) &&
                 std::isfinite(m_opt.parameterValues.value(param->ids)) &&
-                m_opt.parameterValues.value(param->ids) >= param->min_values &&
-                m_opt.parameterValues.value(param->ids) <= param->max_values
-            ? m_opt.parameterValues.value(param->ids) : param->default_values;
+                m_opt.parameterValues.value(param->ids) >= metadata.minimum &&
+                m_opt.parameterValues.value(param->ids) <= metadata.maximum
+            ? m_opt.parameterValues.value(param->ids) : metadata.defaultValue;
         m_xml.F(QStringLiteral("defaultValue"), defaultValue);
-        m_xml.B(QStringLiteral("isRepeat"), param->is_repeat);
+        m_xml.B(QStringLiteral("isRepeat"), metadata.repeat);
         m_xml.BeginObject(QStringLiteral("CParameterId"), QStringLiteral("id"));
         m_xml.Attribute(QStringLiteral("idstr"), param->ids);
         m_xml.EndObject();

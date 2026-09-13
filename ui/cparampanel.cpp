@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QFormLayout>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QToolButton>
@@ -17,6 +18,11 @@
 #include <QMessageBox>
 #include <QFile>
 #include <QSaveFile>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QInputDialog>
+#include <QCheckBox>
+#include <QSpinBox>
 #include <algorithm>
 #include <iterator>
 #include <cmath>
@@ -70,15 +76,18 @@ CParamPanel::CParamPanel(QWidget *parent)
     auto* pasteBtn = new QPushButton(QStringLiteral("粘贴参数"), wrapper);
     auto* savePresetBtn = new QPushButton(QStringLiteral("保存预设"), wrapper);
     auto* loadPresetBtn = new QPushButton(QStringLiteral("载入预设"), wrapper);
+    auto* metadataBtn = new QPushButton(QStringLiteral("编辑参数元数据"), wrapper);
     buttonRow->addWidget(copyBtn, 0, 1);
     buttonRow->addWidget(pasteBtn, 1, 0);
     buttonRow->addWidget(savePresetBtn, 1, 1);
     buttonRow->addWidget(loadPresetBtn, 2, 0, 1, 2);
+    buttonRow->addWidget(metadataBtn, 3, 0, 1, 2);
     mainLayout->addLayout(buttonRow);
     connect(copyBtn, &QPushButton::clicked, this, &CParamPanel::CopyValues);
     connect(pasteBtn, &QPushButton::clicked, this, &CParamPanel::PasteValues);
     connect(savePresetBtn, &QPushButton::clicked, this, &CParamPanel::SavePreset);
     connect(loadPresetBtn, &QPushButton::clicked, this, &CParamPanel::LoadPreset);
+    connect(metadataBtn, &QPushButton::clicked, this, &CParamPanel::EditParameterMetadata);
 
     m_search = new QLineEdit(wrapper);
     m_search->setPlaceholderText("搜索参数名称或 ID");
@@ -172,6 +181,16 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         float minVal = cubismModel->GetParameterMinimumValue(modelIdx);
         float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
         float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
+        live2dstruct::CModelParameterMetadata metadata;
+        const bool hasMetadata = m_document && m_document->ParameterMetadataOverrides().contains(paramId);
+        if (hasMetadata) {
+            metadata = m_document->ParameterMetadata(paramId);
+        }
+        if (hasMetadata) {
+            minVal = metadata.minimum;
+            maxVal = metadata.maximum;
+            defVal = metadata.defaultValue;
+        }
         if (!std::isfinite(minVal) || !std::isfinite(maxVal) || minVal > maxVal) {
             minVal = 0.0f;
             maxVal = 1.0f;
@@ -189,10 +208,10 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         row->setContentsMargins(0, 2, 0, 2);
 
         // 显示名称：优先用 cid 映射的名称，否则回退到内部 ID
-        QString displayName = paramId;
+        QString displayName = hasMetadata && !metadata.displayName.isEmpty() ? metadata.displayName : paramId;
         if(cid){
             QString mapped = cid->getParaName(paramId);
-            if(!mapped.isEmpty()) displayName = mapped;
+            if(!hasMetadata && !mapped.isEmpty()) displayName = mapped;
         }
 
         // 融合变形参数标记
@@ -250,12 +269,14 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         pr.slider = slider;
         pr.spinBox = spinBox;
         pr.resetButton = resetButton;
+        pr.nameLabel = nameLabel;
         pr.valueLabel = nullptr;
         pr.minVal = minVal;
         pr.maxVal = maxVal;
         pr.defaultVal = defVal;
         pr.paramId = paramId;
         pr.modelIndex = modelIdx;
+        pr.blendShape = isBlendShape;
         m_rows.append(pr);
         m_lastValues.insert(paramId, initialVal);
 
@@ -360,6 +381,11 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
     }
 
     layout->addStretch();
+}
+
+void CParamPanel::RefreshParameterMetadata()
+{
+    for (int rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex) RefreshParameterRow(rowIndex);
 }
 
 void CParamPanel::ResetAll()
@@ -507,6 +533,109 @@ void CParamPanel::LoadPreset()
         return;
     }
     ApplyValuesInternal(values, true);
+}
+
+void CParamPanel::EditParameterMetadata()
+{
+    if (!m_document || m_rows.isEmpty()) return;
+    QStringList ids;
+    for (const ParamRow& row : m_rows) ids.append(row.paramId);
+    bool accepted = false;
+    const QString id = QInputDialog::getItem(this, QStringLiteral("选择参数"), QStringLiteral("参数 ID"),
+                                              ids, 0, false, &accepted);
+    if (!accepted || id.isEmpty()) return;
+    const int rowIndex = std::distance(m_rows.cbegin(), std::find_if(m_rows.cbegin(), m_rows.cend(),
+        [&id](const ParamRow& row){ return row.paramId == id; }));
+    if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
+    const live2dstruct::CModelParameterMetadata current = m_document->ParameterMetadata(id);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("编辑参数：%1").arg(id));
+    auto* form = new QFormLayout(&dialog);
+    auto* nameEdit = new QLineEdit(current.displayName, &dialog);
+    auto* minSpin = new QDoubleSpinBox(&dialog);
+    auto* maxSpin = new QDoubleSpinBox(&dialog);
+    auto* defaultSpin = new QDoubleSpinBox(&dialog);
+    for (QDoubleSpinBox* spin : {minSpin, maxSpin, defaultSpin}) {
+        spin->setRange(-1000000000.0, 1000000000.0);
+        spin->setDecimals(6);
+    }
+    minSpin->setValue(current.minimum);
+    maxSpin->setValue(current.maximum);
+    defaultSpin->setValue(current.defaultValue);
+    auto* decimalsSpin = new QSpinBox(&dialog);
+    decimalsSpin->setRange(0, 9);
+    decimalsSpin->setValue(current.decimalPlaces);
+    auto* repeatCheck = new QCheckBox(&dialog);
+    repeatCheck->setChecked(current.repeat);
+    form->addRow(QStringLiteral("显示名"), nameEdit);
+    form->addRow(QStringLiteral("最小值"), minSpin);
+    form->addRow(QStringLiteral("最大值"), maxSpin);
+    form->addRow(QStringLiteral("默认值"), defaultSpin);
+    form->addRow(QStringLiteral("小数位"), decimalsSpin);
+    form->addRow(QStringLiteral("循环参数"), repeatCheck);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+    if (minSpin->value() > maxSpin->value() || defaultSpin->value() < minSpin->value() ||
+        defaultSpin->value() > maxSpin->value()) {
+        QMessageBox::warning(this, QStringLiteral("参数元数据无效"), QStringLiteral("默认值必须位于最小值和最大值之间"));
+        return;
+    }
+
+    const live2dstruct::CModelParameterMetadata updated{
+        nameEdit->text().trimmed().isEmpty() ? id : nameEdit->text().trimmed(),
+        static_cast<float>(minSpin->value()), static_cast<float>(maxSpin->value()),
+        static_cast<float>(defaultSpin->value()), decimalsSpin->value(), repeatCheck->isChecked()};
+    const auto toVariant = [](const live2dstruct::CModelParameterMetadata& metadata) {
+        QVariantMap map;
+        map.insert(QStringLiteral("displayName"), metadata.displayName);
+        map.insert(QStringLiteral("minimum"), metadata.minimum);
+        map.insert(QStringLiteral("maximum"), metadata.maximum);
+        map.insert(QStringLiteral("defaultValue"), metadata.defaultValue);
+        map.insert(QStringLiteral("decimalPlaces"), metadata.decimalPlaces);
+        map.insert(QStringLiteral("repeat"), metadata.repeat);
+        return map;
+    };
+    const live2dstruct::CModelEdit edit{id, QStringLiteral("parameter"),
+                                        live2dstruct::CModelEdit::ParameterMetadata,
+                                        toVariant(current), toVariant(updated), -1, false};
+    if (!m_document->ExecuteEdit(edit)) {
+        QMessageBox::warning(this, QStringLiteral("参数元数据无效"), QStringLiteral("关键值超出新范围或当前值无法兼容"));
+        return;
+    }
+    RefreshParameterRow(rowIndex);
+    EmitHistoryState();
+}
+
+void CParamPanel::RefreshParameterRow(int rowIndex)
+{
+    if (!m_document || rowIndex < 0 || rowIndex >= m_rows.size()) return;
+    ParamRow& row = m_rows[rowIndex];
+    const auto metadata = m_document->ParameterMetadata(row.paramId);
+    row.minVal = metadata.minimum;
+    row.maxVal = metadata.maximum;
+    row.defaultVal = metadata.defaultValue;
+    const QString displayName = (row.blendShape ? QStringLiteral("[融合] ") : QString()) +
+                                (metadata.displayName.isEmpty() ? row.paramId : metadata.displayName);
+    row.nameLabel->setText(displayName);
+    row.nameLabel->setToolTip(row.paramId);
+    row.widget->setProperty("searchText", (displayName + " " + row.paramId).toLower());
+    const float value = m_lastValues.value(row.paramId, metadata.defaultValue);
+    QSignalBlocker sliderBlocker(row.slider);
+    QSignalBlocker spinBlocker(row.spinBox);
+    row.spinBox->setRange(row.minVal, row.maxVal);
+    row.spinBox->setDecimals(metadata.decimalPlaces);
+    row.spinBox->setSingleStep((row.maxVal - row.minVal) > 0 ? (row.maxVal - row.minVal) / 100.0 : 1.0);
+    row.spinBox->setValue(value);
+    row.slider->setValue(row.maxVal > row.minVal
+                             ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
+                             : 0);
+    row.resetButton->setToolTip(QStringLiteral("恢复默认值 %1").arg(QString::number(row.defaultVal, 'f', 3)));
+    const QString query = m_search->text().trimmed().toLower();
+    row.widget->setVisible(query.isEmpty() || row.widget->property("searchText").toString().contains(query));
 }
 
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)

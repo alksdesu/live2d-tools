@@ -122,6 +122,32 @@ private slots:
         QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(value).toUtf8()));
     }
 
+    void buildUsesParameterMetadataOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        QVERIFY(!document.Parameters().isEmpty());
+        const auto& parameter = document.Parameters().first();
+        auto metadata = document.ParameterMetadata(parameter.id);
+        metadata.displayName = QStringLiteral("测试参数");
+        QVERIFY(document.SetParameterMetadata(parameter.id, metadata));
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Wanko-metadata.cmo3"));
+        options.parameterMetadata = document.ParameterMetadataOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* mainXml = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(mainXml);
+        QVERIFY(mainXml->content.contains(QStringLiteral("测试参数").toUtf8()));
+    }
+
     void buildUsesIndexOverride()
     {
         const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";

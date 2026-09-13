@@ -7,6 +7,7 @@
 #include <QPointF>
 #include <QString>
 #include <QVector>
+#include "live2dstruct/cmodeldocument.h"
 
 namespace live2dstruct {
 
@@ -16,6 +17,7 @@ struct CModelSession
     QString sourceMoc;
     QByteArray sourceDigest;
     QMap<QString, float> parameters;
+    QHash<QString, CModelParameterMetadata> parameterMetadata;
     QMap<QString, bool> visibility;
     QMap<QString, bool> locked;
     QHash<QString, float> drawableOpacity;

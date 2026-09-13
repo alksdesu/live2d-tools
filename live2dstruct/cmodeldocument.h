@@ -31,6 +31,22 @@ struct CModelParameter
     QVector<float> keyValues;
 };
 
+struct CModelParameterMetadata
+{
+    QString displayName;
+    float minimum = 0.0f;
+    float maximum = 1.0f;
+    float defaultValue = 0.0f;
+    int decimalPlaces = 0;
+    bool repeat = false;
+
+    bool operator==(const CModelParameterMetadata& other) const
+    {
+        return displayName == other.displayName && minimum == other.minimum && maximum == other.maximum &&
+               defaultValue == other.defaultValue && decimalPlaces == other.decimalPlaces && repeat == other.repeat;
+    }
+};
+
 struct CModelKeyform
 {
     QVector<float> positions;
@@ -98,7 +114,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent };
     QString name;
     QString type;
     Field field = Visibility;
@@ -120,6 +136,9 @@ public:
     const QVector<CModelParameter>& Parameters() const { return m_parameters; }
     bool SetParameterValue(const QString& id, float value);
     float ParameterValue(const QString& id) const;
+    CModelParameterMetadata ParameterMetadata(const QString& id) const;
+    bool SetParameterMetadata(const QString& id, const CModelParameterMetadata& metadata);
+    const QHash<QString, CModelParameterMetadata>& ParameterMetadataOverrides() const { return m_parameterMetadataOverrides; }
     const QHash<QString, float>& ParameterValues() const { return m_parameterValues; }
     QVector<float> DrawableKeyformPositions(const QString& id, int keyformIndex) const;
     bool SetDrawableKeyformPositions(const QString& id, int keyformIndex, const QVector<float>& positions);
@@ -180,6 +199,7 @@ private:
     QHash<QString, float> m_drawableOpacityOverrides;
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, float> m_parameterValues;
+    QHash<QString, CModelParameterMetadata> m_parameterMetadataOverrides;
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;
     QHash<QString, QVector<quint16>> m_drawableIndexOverrides;
     QHash<QString, QVector<int>> m_drawableMaskIndexOverrides;

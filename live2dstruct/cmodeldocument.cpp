@@ -25,6 +25,42 @@ bool validSlice(int begin, int count, int size)
 {
     return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
 }
+
+bool metadataFromVariant(const QVariant& value, const CModelParameterMetadata& current,
+                         CModelParameterMetadata* metadata)
+{
+    if (!metadata || !value.canConvert<QVariantMap>()) return false;
+    const QVariantMap map = value.toMap();
+    CModelParameterMetadata parsed = current;
+    if (map.contains(QStringLiteral("displayName"))) {
+        if (!map.value(QStringLiteral("displayName")).canConvert<QString>()) return false;
+        parsed.displayName = map.value(QStringLiteral("displayName")).toString();
+    }
+    const auto readFloatField = [&map](const QString& key, float* target) {
+        if (!map.contains(key)) return true;
+        bool ok = false;
+        const double number = map.value(key).toDouble(&ok);
+        if (!ok || !std::isfinite(number) || number < -std::numeric_limits<float>::max() ||
+            number > std::numeric_limits<float>::max()) return false;
+        *target = static_cast<float>(number);
+        return std::isfinite(*target);
+    };
+    if (!readFloatField(QStringLiteral("minimum"), &parsed.minimum) ||
+        !readFloatField(QStringLiteral("maximum"), &parsed.maximum) ||
+        !readFloatField(QStringLiteral("defaultValue"), &parsed.defaultValue)) return false;
+    if (map.contains(QStringLiteral("decimalPlaces"))) {
+        bool ok = false;
+        const int decimalPlaces = map.value(QStringLiteral("decimalPlaces")).toInt(&ok);
+        if (!ok) return false;
+        parsed.decimalPlaces = decimalPlaces;
+    }
+    if (map.contains(QStringLiteral("repeat"))) {
+        if (!map.value(QStringLiteral("repeat")).canConvert<bool>()) return false;
+        parsed.repeat = map.value(QStringLiteral("repeat")).toBool();
+    }
+    *metadata = parsed;
+    return true;
+}
 }
 
 void CModelDocument::Clear()
@@ -40,6 +76,7 @@ void CModelDocument::Clear()
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
+    m_parameterMetadataOverrides.clear();
     m_drawableKeyformPositionOverrides.clear();
     m_drawableIndexOverrides.clear();
     m_drawableMaskIndexOverrides.clear();
@@ -206,21 +243,74 @@ bool CModelDocument::SetPartVisible(const QString& id, bool visible)
 bool CModelDocument::SetParameterValue(const QString& id, float value)
 {
     if (!std::isfinite(value)) return false;
-    for (const CModelParameter& parameter : m_parameters) {
-        if (parameter.id != id) continue;
-        if (value < parameter.minimum || value > parameter.maximum) return false;
-        m_parameterValues.insert(id, value);
-        return true;
+    const CModelParameterMetadata metadata = ParameterMetadata(id);
+    if (metadata.displayName.isEmpty() && !m_parameterMetadataOverrides.contains(id)) {
+        bool found = false;
+        for (const CModelParameter& parameter : m_parameters) if (parameter.id == id) { found = true; break; }
+        if (!found) return false;
     }
-    return false;
+    if (value < metadata.minimum || value > metadata.maximum) return false;
+    m_parameterValues.insert(id, value);
+    return true;
 }
 
 float CModelDocument::ParameterValue(const QString& id) const
 {
+    const CModelParameterMetadata metadata = ParameterMetadata(id);
+    if (metadata.displayName.isEmpty() && !m_parameterMetadataOverrides.contains(id)) return 0.0f;
+    return m_parameterValues.value(id, metadata.defaultValue);
+}
+
+CModelParameterMetadata CModelDocument::ParameterMetadata(const QString& id) const
+{
     for (const CModelParameter& parameter : m_parameters) {
-        if (parameter.id == id) return m_parameterValues.value(id, parameter.defaultValue);
+        if (parameter.id != id) continue;
+        CModelParameterMetadata metadata;
+        metadata.displayName = parameter.id;
+        metadata.minimum = parameter.minimum;
+        metadata.maximum = parameter.maximum;
+        metadata.defaultValue = parameter.defaultValue;
+        metadata.decimalPlaces = parameter.decimalPlaces;
+        metadata.repeat = parameter.repeat;
+        if (m_parameterMetadataOverrides.contains(id)) {
+            const CModelParameterMetadata& override = m_parameterMetadataOverrides.value(id);
+            if (!override.displayName.isEmpty()) metadata.displayName = override.displayName;
+            metadata.minimum = override.minimum;
+            metadata.maximum = override.maximum;
+            metadata.defaultValue = override.defaultValue;
+            metadata.decimalPlaces = override.decimalPlaces;
+            metadata.repeat = override.repeat;
+        }
+        return metadata;
     }
-    return 0.0f;
+    return {};
+}
+
+bool CModelDocument::SetParameterMetadata(const QString& id, const CModelParameterMetadata& metadata)
+{
+    const CModelParameterMetadata base = ParameterMetadata(id);
+    bool found = false;
+    const CModelParameter* source = nullptr;
+    for (const CModelParameter& parameter : m_parameters) {
+        if (parameter.id == id) { found = true; source = &parameter; break; }
+    }
+    if (!found || !source || !std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
+        !std::isfinite(metadata.defaultValue) || metadata.minimum > metadata.maximum ||
+        metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum ||
+        metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9) return false;
+    float previousKey = -std::numeric_limits<float>::infinity();
+    for (float key : source->keyValues) {
+        if (!std::isfinite(key) || key < metadata.minimum || key > metadata.maximum || key < previousKey) return false;
+        previousKey = key;
+    }
+    if (m_parameterValues.contains(id)) {
+        const float value = m_parameterValues.value(id);
+        if (!std::isfinite(value) || value < metadata.minimum || value > metadata.maximum) return false;
+    }
+    CModelParameterMetadata normalized = metadata;
+    if (normalized.displayName.isEmpty()) normalized.displayName = base.displayName;
+    m_parameterMetadataOverrides.insert(id, normalized);
+    return true;
 }
 
 QVector<float> CModelDocument::DrawableKeyformPositions(const QString& id, int keyformIndex) const
@@ -471,6 +561,12 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     if (edit.field == CModelEdit::ParameterValue) {
         if (edit.type != QLatin1String("parameter") || !value.canConvert<float>()) return false;
         return SetParameterValue(edit.name, value.toFloat());
+    }
+    if (edit.field == CModelEdit::ParameterMetadata) {
+        if (edit.type != QLatin1String("parameter")) return false;
+        CModelParameterMetadata metadata;
+        if (!metadataFromVariant(value, ParameterMetadata(edit.name), &metadata)) return false;
+        return SetParameterMetadata(edit.name, metadata);
     }
     if (edit.field == CModelEdit::KeyformPositions) {
         if (edit.type != QLatin1String("artmesh") || !value.canConvert<QVector<float>>()) return false;

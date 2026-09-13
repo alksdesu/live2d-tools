@@ -59,6 +59,18 @@ QByteArray CModelSession::ToJson() const
     QJsonObject parameterObject;
     for (auto it = parameters.cbegin(); it != parameters.cend(); ++it) parameterObject.insert(it.key(), static_cast<double>(it.value()));
     root.insert(QStringLiteral("parameters"), parameterObject);
+    QJsonObject parameterMetadataObject;
+    for (auto it = parameterMetadata.cbegin(); it != parameterMetadata.cend(); ++it) {
+        QJsonObject metadata;
+        metadata.insert(QStringLiteral("displayName"), it.value().displayName);
+        metadata.insert(QStringLiteral("minimum"), static_cast<double>(it.value().minimum));
+        metadata.insert(QStringLiteral("maximum"), static_cast<double>(it.value().maximum));
+        metadata.insert(QStringLiteral("defaultValue"), static_cast<double>(it.value().defaultValue));
+        metadata.insert(QStringLiteral("decimalPlaces"), it.value().decimalPlaces);
+        metadata.insert(QStringLiteral("repeat"), it.value().repeat);
+        parameterMetadataObject.insert(it.key(), metadata);
+    }
+    root.insert(QStringLiteral("parameterMetadata"), parameterMetadataObject);
     QJsonObject visibilityObject;
     for (auto it = visibility.cbegin(); it != visibility.cend(); ++it) visibilityObject.insert(it.key(), it.value());
     root.insert(QStringLiteral("visibility"), visibilityObject);
@@ -162,6 +174,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     }
 
     QJsonObject parameterObject;
+    QJsonObject parameterMetadataObject;
     QJsonObject visibilityObject;
     QJsonObject lockedObject;
     QJsonObject opacityObject;
@@ -172,6 +185,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject deformerParentObject;
     QJsonObject maskInvertedObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
+        !readObject(root, QStringLiteral("parameterMetadata"), &parameterMetadataObject, error) ||
         !readObject(root, QStringLiteral("visibility"), &visibilityObject, error) ||
         !readObject(root, QStringLiteral("locked"), &lockedObject, error) ||
         !readObject(root, QStringLiteral("drawableOpacity"), &opacityObject, error) ||
@@ -188,6 +202,44 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             return false;
         }
         result.parameters.insert(key, value);
+    }
+    for (const QString& key : parameterMetadataObject.keys()) {
+        const QJsonValue metadataValue = parameterMetadataObject.value(key);
+        if (!metadataValue.isObject()) {
+            setError(error, QStringLiteral("参数元数据类型错误：%1").arg(key));
+            return false;
+        }
+        const QJsonObject metadataObject = metadataValue.toObject();
+        CModelParameterMetadata metadata;
+        if (!metadataObject.value(QStringLiteral("displayName")).isUndefined() &&
+            !metadataObject.value(QStringLiteral("displayName")).isString()) {
+            setError(error, QStringLiteral("参数显示名类型错误：%1").arg(key));
+            return false;
+        }
+        metadata.displayName = metadataObject.value(QStringLiteral("displayName")).toString();
+        if (!readFloat(metadataObject.value(QStringLiteral("minimum")), &metadata.minimum) ||
+            !readFloat(metadataObject.value(QStringLiteral("maximum")), &metadata.maximum) ||
+            !readFloat(metadataObject.value(QStringLiteral("defaultValue")), &metadata.defaultValue) ||
+            metadata.minimum > metadata.maximum || metadata.defaultValue < metadata.minimum ||
+            metadata.defaultValue > metadata.maximum) {
+            setError(error, QStringLiteral("参数元数据范围无效：%1").arg(key));
+            return false;
+        }
+        const QJsonValue decimals = metadataObject.value(QStringLiteral("decimalPlaces"));
+        double decimalsNumber = 0.0;
+        if (!readNumber(decimals, &decimalsNumber) || std::floor(decimalsNumber) != decimalsNumber ||
+            decimalsNumber < 0.0 || decimalsNumber > 9.0) {
+            setError(error, QStringLiteral("参数元数据小数位无效：%1").arg(key));
+            return false;
+        }
+        metadata.decimalPlaces = static_cast<int>(decimalsNumber);
+        const QJsonValue repeat = metadataObject.value(QStringLiteral("repeat"));
+        if (!repeat.isBool()) {
+            setError(error, QStringLiteral("参数元数据循环标记无效：%1").arg(key));
+            return false;
+        }
+        metadata.repeat = repeat.toBool();
+        result.parameterMetadata.insert(key, metadata);
     }
     for (const QString& key : visibilityObject.keys()) {
         if (!visibilityObject.value(key).isBool()) {

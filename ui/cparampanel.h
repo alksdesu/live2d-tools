@@ -23,6 +23,7 @@ public:
     void SetDocument(live2dstruct::CModelDocument* document);
     void ApplyExternalValue(const QString& paramId, float value, bool record = false);
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
+    void RefreshParameterMetadata();
     QMap<QString, float> CurrentValues() const;
 
 signals:
@@ -41,6 +42,7 @@ public slots:
     void PasteValues();
     void SavePreset();
     void LoadPreset();
+    void EditParameterMetadata();
 
 private:
     struct ParamRow {
@@ -48,12 +50,14 @@ private:
         QSlider* slider;
         QDoubleSpinBox* spinBox;
         QToolButton* resetButton;
+        QLabel* nameLabel = nullptr;
         QLabel* valueLabel;
         float minVal;
         float maxVal;
         float defaultVal;
         QString paramId;
         int modelIndex = -1;
+        bool blendShape = false;
     };
 
     QScrollArea* m_scroll;
@@ -70,6 +74,7 @@ private:
     void ApplyValuesInternal(const QMap<QString, float>& values, bool record);
     void PushEdit(const QString& paramId, float before, float after);
     void EmitHistoryState();
+    void RefreshParameterRow(int rowIndex);
 };
 
 #endif // CPARAMPANEL_H
