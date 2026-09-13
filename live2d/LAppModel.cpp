@@ -439,6 +439,16 @@ void LAppModel::Update()
 
     _model->SaveParameters();
 
+    if (_lipSyncIds.GetSize() > 0)
+    {
+        _wavFileHandler.Update(deltaTimeSeconds);
+        const csmFloat32 value = _wavFileHandler.GetRms();
+        for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
+        {
+            _model->AddParameterValue(_lipSyncIds[i], value, 0.8f);
+        }
+    }
+
     _opacity = _model->GetModelOpacity();
     if (!motionUpdated)
     {

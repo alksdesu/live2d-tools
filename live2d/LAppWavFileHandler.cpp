@@ -201,7 +201,7 @@ Csm::csmFloat32 LAppWavFileHandler::NormalizePcmSample(Csm::csmUint32 bitsPerSam
         break;
     }
 
-    return static_cast<Csm::csmFloat32>(pcm32) / INT32_MAX;
+    return static_cast<Csm::csmFloat32>(pcm32) / 2147483648.0f;
 }
 
 Csm::csmBool LAppWavFileHandler::LoadWavFile(const Csm::csmString& filePath)
@@ -410,13 +410,16 @@ Csm::csmFloat32 LAppWavFileHandler::GetPcmSample()
     case 24:
         pcm32 = _byteReader.Get24LittleEndian() << 8;
         break;
+    case 32:
+        pcm32 = static_cast<Csm::csmInt32>(_byteReader.Get32LittleEndian());
+        break;
     default:
         // 対応していないビット幅
         pcm32 = 0;
         break;
     }
 
-    return static_cast<Csm::csmFloat32>(pcm32) / INT32_MAX;
+    return static_cast<Csm::csmFloat32>(pcm32) / 2147483648.0f;
 }
 
 void LAppWavFileHandler::ReleasePcmData()

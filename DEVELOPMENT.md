@@ -137,6 +137,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 时间轴编辑在非录制状态下立即刷新当前播放头；录制时保留用户正在操作的实时姿态，避免预览回写干扰取样。
 - WAV 口型驱动对短时间步、空 PCM、非法通道和空目标缓冲安全返回，避免 RMS 除零和空指针。
 - WAV 解析器校验 RIFF/fmt/data chunk 边界、通道、采样率、位深、块对齐和文件大小，截断文件不会越界读取。
+- WAV 口型链路在模型更新中消费 RMS，并按 Cubism Native 的 0.8 权重叠加到全部 LipSync 参数；32-bit PCM 归一化路径已覆盖。
 - Blend Shape 参数与普通参数面板共用文档、撤销和导出路径；物理配置保存前检查结构、有限数值和范围。
 - App.pro 的源文件路径统一使用跨平台分隔符，macOS qmake 不再把反斜杠路径误判为缺失文件。
 - 仍需在 Windows + Cubism Editor/Photoshop 环境验证 GUI、OpenGL、PSD 与 cmo3 实际回读，并继续实现可保存编辑文档、网格/关键形编辑和完整动画时间轴。
