@@ -40,16 +40,82 @@ bool validatePhysicsFile(const QString& path, QString* error)
         if (error) *error = QStringLiteral("physics3 JSON 无效：%1").arg(parseError.errorString());
         return false;
     }
-    const QJsonValue settings = document.object().value(QStringLiteral("PhysicsSettings"));
+    const QJsonObject root = document.object();
+    const QJsonValue version = root.value(QStringLiteral("Version"));
+    if (!version.isUndefined() && (!version.isDouble() || version.toInt() != 3)) {
+        if (error) *error = QStringLiteral("physics3 版本无效");
+        return false;
+    }
+    const QJsonValue settings = root.value(QStringLiteral("PhysicsSettings"));
     if (!settings.isArray()) {
         if (error) *error = QStringLiteral("physics3 缺少 PhysicsSettings 数组");
         return false;
     }
     const QJsonArray groups = settings.toArray();
+    QSet<QString> groupIds;
     for (int i = 0; i < groups.size(); ++i) {
         if (!groups.at(i).isObject()) {
             if (error) *error = QStringLiteral("physics3 的物理组 %1 不是对象").arg(i);
             return false;
+        }
+        const QJsonObject group = groups.at(i).toObject();
+        const QString groupId = group.value(QStringLiteral("Id")).toString();
+        if (groupId.isEmpty() || groupIds.contains(groupId)) {
+            if (error) *error = QStringLiteral("physics3 的物理组 ID 无效或重复：%1").arg(groupId);
+            return false;
+        }
+        groupIds.insert(groupId);
+        const QJsonValue inputsValue = group.value(QStringLiteral("Input"));
+        const QJsonValue outputsValue = group.value(QStringLiteral("Output"));
+        const QJsonValue verticesValue = group.value(QStringLiteral("Vertices"));
+        if (!inputsValue.isArray() || !outputsValue.isArray() || !verticesValue.isArray()) {
+            if (error) *error = QStringLiteral("physics3 的物理组字段无效：%1").arg(groupId);
+            return false;
+        }
+        const QJsonArray vertices = verticesValue.toArray();
+        const auto validNumber = [](const QJsonObject& object, const QString& key, double minimum, double maximum) {
+            const QJsonValue value = object.value(key);
+            return value.isDouble() && std::isfinite(value.toDouble()) && value.toDouble() >= minimum && value.toDouble() <= maximum;
+        };
+        for (const QJsonValue& inputValue : inputsValue.toArray()) {
+            if (!inputValue.isObject()) { if (error) *error = QStringLiteral("physics3 输入无效：%1").arg(groupId); return false; }
+            const QJsonObject input = inputValue.toObject();
+            const QString inputId = input.value(QStringLiteral("Source")).toObject().value(QStringLiteral("Id")).toString();
+            const QString type = input.value(QStringLiteral("Type")).toString();
+            if (inputId.isEmpty() || (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) ||
+                !validNumber(input, QStringLiteral("Weight"), 0.0, 100.0)) {
+                if (error) *error = QStringLiteral("physics3 输入无效：%1").arg(groupId);
+                return false;
+            }
+        }
+        for (const QJsonValue& outputValue : outputsValue.toArray()) {
+            if (!outputValue.isObject()) { if (error) *error = QStringLiteral("physics3 输出无效：%1").arg(groupId); return false; }
+            const QJsonObject output = outputValue.toObject();
+            const QString outputId = output.value(QStringLiteral("Destination")).toObject().value(QStringLiteral("Id")).toString();
+            const QString type = output.value(QStringLiteral("Type")).toString();
+            const QJsonValue vertexIndex = output.value(QStringLiteral("VertexIndex"));
+            const double index = vertexIndex.toDouble(-1.0);
+            if (outputId.isEmpty() || (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) ||
+                !vertexIndex.isDouble() || !std::isfinite(index) || std::floor(index) != index || index < 0.0 || index >= vertices.size() ||
+                !validNumber(output, QStringLiteral("Weight"), 0.0, 100.0) ||
+                !validNumber(output, QStringLiteral("Scale"), -100000.0, 100000.0)) {
+                if (error) *error = QStringLiteral("physics3 输出无效：%1").arg(groupId);
+                return false;
+            }
+        }
+        for (const QJsonValue& vertexValue : vertices) {
+            if (!vertexValue.isObject()) { if (error) *error = QStringLiteral("physics3 摆锤无效：%1").arg(groupId); return false; }
+            const QJsonObject vertex = vertexValue.toObject();
+            const QJsonObject position = vertex.value(QStringLiteral("Position")).toObject();
+            if (!validNumber(position, QStringLiteral("X"), -100000.0, 100000.0) ||
+                !validNumber(position, QStringLiteral("Y"), -100000.0, 100000.0) ||
+                !validNumber(vertex, QStringLiteral("Mobility"), 0.0, 1.0) ||
+                !validNumber(vertex, QStringLiteral("Delay"), 0.0, 100000.0) ||
+                !validNumber(vertex, QStringLiteral("Acceleration"), 0.0, 100000.0) ||
+                !validNumber(vertex, QStringLiteral("Radius"), 0.0, 100000.0)) {
+                if (error) *error = QStringLiteral("physics3 摆锤无效：%1").arg(groupId);
+                return false;
+            }
         }
     }
     return true;

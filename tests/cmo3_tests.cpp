@@ -117,6 +117,45 @@ private slots:
         QVERIFY(!QFileInfo::exists(options.outPath));
     }
 
+    void rejectsInvalidPhysicsStructure()
+    {
+        QFile source(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json");
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        const QJsonObject original = QJsonDocument::fromJson(source.readAll()).object();
+        for (const QString& kind : {QStringLiteral("vertex"), QStringLiteral("duplicate")}) {
+            QTemporaryDir temp;
+            QVERIFY(temp.isValid());
+            QJsonObject root = original;
+            QJsonArray settings = root.value(QStringLiteral("PhysicsSettings")).toArray();
+            QJsonObject first = settings.first().toObject();
+            if (kind == QStringLiteral("vertex")) {
+                QJsonArray outputs = first.value(QStringLiteral("Output")).toArray();
+                QJsonObject output = outputs.first().toObject();
+                output.insert(QStringLiteral("VertexIndex"), 99999);
+                outputs[0] = output;
+                first.insert(QStringLiteral("Output"), outputs);
+            } else {
+                settings.append(first);
+            }
+            settings[0] = first;
+            root.insert(QStringLiteral("PhysicsSettings"), settings);
+            const QString physicsPath = temp.filePath(kind + QStringLiteral(".physics3.json"));
+            QFile file(physicsPath);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            const QByteArray data = QJsonDocument(root).toJson();
+            QCOMPARE(file.write(data), data.size());
+            file.close();
+            cmo3::CCmo3Builder::Options options;
+            options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+            options.physicsPath = physicsPath;
+            options.outPath = temp.filePath(kind + QStringLiteral(".cmo3"));
+            QString error;
+            QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+            QVERIFY(error.contains(QStringLiteral("physics3")));
+            QVERIFY(!QFileInfo::exists(options.outPath));
+        }
+    }
+
     void buildAndReadArchive()
     {
         QTemporaryDir temp;
