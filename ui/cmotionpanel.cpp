@@ -246,6 +246,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineTimer->setInterval(33);
     connect(m_playTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ToggleTimelinePlayback);
     connect(m_timelineTimer, &QTimer::timeout, this, &CMotionPanel::TickTimelinePlayback);
+    connect(this, &CMotionPanel::MotionTimelineChanged, this, [this](){
+        if (m_recordTimelineCb && m_recordTimelineCb->isChecked()) return;
+        emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
+    });
 
     // 选项
     QHBoxLayout* optLayout = new QHBoxLayout();
