@@ -164,9 +164,11 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_recordTimelineCb = new QCheckBox(QStringLiteral("录制"), timelineBox);
     m_recordTimelineCb->setObjectName(QStringLiteral("recordTimeline"));
     auto* clearTimelineButton = new QPushButton(QStringLiteral("清空"), timelineBox);
+    auto* removeTimelineButton = new QPushButton(QStringLiteral("删除关键帧"), timelineBox);
     auto* exportTimelineButton = new QPushButton(QStringLiteral("导出 motion3"), timelineBox);
     timelineTools->addWidget(m_recordTimelineCb);
     timelineTools->addWidget(clearTimelineButton);
+    timelineTools->addWidget(removeTimelineButton);
     timelineTools->addWidget(exportTimelineButton);
     timelineTools->addStretch(1);
     m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
@@ -180,6 +182,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_timelineTable->verticalHeader()->setVisible(false);
     m_timelineTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_timelineTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                     QAbstractItemView::SelectedClicked);
     m_timelineTable->setMaximumHeight(170);
     timelineLayout->addWidget(m_timelineTable);
     mainLayout->addWidget(timelineBox);
@@ -195,7 +199,9 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(clearTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ClearTimeline);
+    connect(removeTimelineButton, &QPushButton::clicked, this, &CMotionPanel::RemoveTimelineKeyframe);
     connect(exportTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ExportTimeline);
+    connect(m_timelineTable, &QTableWidget::cellChanged, this, &CMotionPanel::ApplyTimelineCellEdit);
 
     // 选项
     QHBoxLayout* optLayout = new QHBoxLayout();
@@ -312,19 +318,58 @@ void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 void CMotionPanel::RefreshTimelineTable()
 {
     if (!m_timelineTable) return;
-    QVector<QPair<QString, QPointF>> points;
+    QVector<TimelineRow> points;
     for (auto it = m_timeline.Curves().cbegin(); it != m_timeline.Curves().cend(); ++it)
-        for (const QPointF& point : it.value()) points.append(qMakePair(it.key(), point));
+        for (int index = 0; index < it.value().size(); ++index)
+            points.append({it.key(), index, it.value().at(index)});
     std::sort(points.begin(), points.end(), [](const auto& left, const auto& right){
-        if (!qFuzzyCompare(left.second.x() + 1.0, right.second.x() + 1.0)) return left.second.x() < right.second.x();
-        return left.first < right.first;
+        if (!qFuzzyCompare(left.point.x() + 1.0, right.point.x() + 1.0)) return left.point.x() < right.point.x();
+        return left.parameterId < right.parameterId;
     });
+    m_timelineRows = points;
+    m_updatingTimeline = true;
     m_timelineTable->setRowCount(points.size());
     for (int row = 0; row < points.size(); ++row) {
-        m_timelineTable->setItem(row, 0, new QTableWidgetItem(QString::number(points[row].second.x(), 'f', 3)));
-        m_timelineTable->setItem(row, 1, new QTableWidgetItem(points[row].first));
-        m_timelineTable->setItem(row, 2, new QTableWidgetItem(QString::number(points[row].second.y(), 'g', 6)));
+        m_timelineTable->setItem(row, 0, new QTableWidgetItem(QString::number(points[row].point.x(), 'f', 3)));
+        auto* parameter = new QTableWidgetItem(points[row].parameterId);
+        parameter->setFlags(parameter->flags() & ~Qt::ItemIsEditable);
+        m_timelineTable->setItem(row, 1, parameter);
+        m_timelineTable->setItem(row, 2, new QTableWidgetItem(QString::number(points[row].point.y(), 'g', 6)));
     }
+    m_updatingTimeline = false;
+}
+
+void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
+{
+    if (m_updatingTimeline || row < 0 || row >= m_timelineRows.size() || (column != 0 && column != 2)) return;
+    const TimelineRow reference = m_timelineRows.at(row);
+    const float oldValue = column == 0 ? static_cast<float>(reference.point.x())
+                                       : static_cast<float>(reference.point.y());
+    bool ok = false;
+    const float value = m_timelineTable->item(row, column)
+        ? static_cast<float>(m_timelineTable->item(row, column)->text().toDouble(&ok)) : oldValue;
+    if (!ok || !std::isfinite(value) ||
+        !m_timeline.UpdatePoint(reference.parameterId, reference.pointIndex,
+                                column == 0 ? value : static_cast<float>(reference.point.x()),
+                                column == 2 ? value : static_cast<float>(reference.point.y()))) {
+        RefreshTimelineTable();
+        return;
+    }
+    RefreshTimelineTable();
+    emit MotionTimelineChanged();
+}
+
+void CMotionPanel::RemoveTimelineKeyframe()
+{
+    if (!m_timelineTable || m_timelineTable->currentRow() < 0 ||
+        m_timelineTable->currentRow() >= m_timelineRows.size()) return;
+    const TimelineRow reference = m_timelineRows.at(m_timelineTable->currentRow());
+    if (!m_timeline.RemovePoint(reference.parameterId, reference.pointIndex)) return;
+    RefreshTimelineTable();
+    m_timelineStatus->setText(m_timeline.PointCount() > 0
+                              ? QStringLiteral("已录制 %1 个关键帧").arg(m_timeline.PointCount())
+                              : QStringLiteral("暂无关键帧"));
+    emit MotionTimelineChanged();
 }
 
 void CMotionPanel::ClearTimeline()

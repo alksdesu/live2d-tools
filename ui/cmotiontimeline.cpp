@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -44,6 +45,30 @@ bool CMotionTimeline::AddPoint(const QString& parameterId, float time, float val
     }
     if (PointCount() >= 100000) return false;
     points.append(QPointF(time, value));
+    return true;
+}
+
+bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float time, float value)
+{
+    if (parameterId.isEmpty() || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
+    auto curve = m_curves.find(parameterId);
+    if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
+    for (int i = 0; i < curve->size(); ++i) {
+        if (i != index && qFuzzyCompare(curve->at(i).x() + 1.0, static_cast<double>(time) + 1.0)) return false;
+    }
+    (*curve)[index] = QPointF(time, value);
+    std::sort(curve->begin(), curve->end(), [](const QPointF& left, const QPointF& right){
+        return left.x() < right.x();
+    });
+    return true;
+}
+
+bool CMotionTimeline::RemovePoint(const QString& parameterId, int index)
+{
+    auto curve = m_curves.find(parameterId);
+    if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
+    curve->removeAt(index);
+    if (curve->isEmpty()) m_curves.erase(curve);
     return true;
 }
 

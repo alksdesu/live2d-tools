@@ -57,6 +57,18 @@ private slots:
         QCOMPARE(points.size(), 2);
         QVERIFY(points.at(1).x() > points.at(0).x());
     }
+
+    void editsAndRemovesPoints()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamA"), 0.0f, 0.0f));
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamA"), 1.0f, 1.0f));
+        QVERIFY(timeline.UpdatePoint(QStringLiteral("ParamA"), 1, 0.25f, 0.5f));
+        QCOMPARE(timeline.Curves().value(QStringLiteral("ParamA")).at(1).x(), 0.25);
+        QVERIFY(!timeline.UpdatePoint(QStringLiteral("ParamA"), 0, 0.25f, 0.2f));
+        QVERIFY(timeline.RemovePoint(QStringLiteral("ParamA"), 1));
+        QCOMPARE(timeline.PointCount(), 1);
+    }
 };
 
 QTEST_GUILESS_MAIN(CMotionTimelineTests)

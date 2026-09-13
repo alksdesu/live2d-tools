@@ -95,6 +95,16 @@ private:
     void ExportTimeline();
     void ClearTimeline();
     void RefreshTimelineTable();
+    void ApplyTimelineCellEdit(int row, int column);
+    void RemoveTimelineKeyframe();
+
+    struct TimelineRow {
+        QString parameterId;
+        int pointIndex = -1;
+        QPointF point;
+    };
+    QVector<TimelineRow> m_timelineRows;
+    bool m_updatingTimeline = false;
 };
 
 #endif // CMOTIONPANEL_H
