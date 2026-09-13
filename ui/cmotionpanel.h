@@ -70,6 +70,7 @@ private:
         QStringList partIds;
         QVector<QStringList> links;
         QComboBox* combo;
+        int sourceIndex = -1;
     };
     QVector<PoseGroup> m_poseGroups;
     QString m_poseJsonPath;

@@ -287,6 +287,7 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         if(group.size() < 2) continue; // 只有一个选项没意义
 
         PoseGroup pg;
+        pg.sourceIndex = g;
         QComboBox* combo = new QComboBox();
         for(int i = 0; i < group.size(); i++){
             const QJsonObject part = group[i].toObject();
@@ -357,7 +358,7 @@ bool CMotionPanel::SavePose(QString* error)
         if (error) *error = QStringLiteral("没有可保存的 Pose 配置");
         return false;
     }
-    QJsonArray groups;
+    QJsonArray groups = m_poseDocument.value(QStringLiteral("Groups")).toArray();
     for (const PoseGroup& group : m_poseGroups) {
         QJsonArray entries;
         for (int i = 0; i < group.partIds.size(); ++i) {
@@ -370,7 +371,10 @@ bool CMotionPanel::SavePose(QString* error)
             }
             entries.append(entry);
         }
-        groups.append(entries);
+        if (group.sourceIndex >= 0 && group.sourceIndex < groups.size())
+            groups[group.sourceIndex] = entries;
+        else
+            groups.append(entries);
     }
     m_poseDocument.insert(QStringLiteral("Groups"), groups);
     const QByteArray data = QJsonDocument(m_poseDocument).toJson(QJsonDocument::Indented);

@@ -33,6 +33,14 @@ private slots:
         QVERIFY(cid.getPartName(QStringLiteral("PartA")).isEmpty());
         QCOMPARE(cid.getPartName(QStringLiteral("PartB")), QStringLiteral("B"));
         QVERIFY(cid.getGroups().size() <= 1);
+        const QString partialPath = temp.filePath(QStringLiteral("partial.cdi3.json"));
+        QFile partial(partialPath);
+        QVERIFY(partial.open(QIODevice::WriteOnly));
+        QVERIFY(partial.write(R"({"Parts":[{"Id":"PartC","Name":"C"}],"ParameterGroups":"invalid"})") > 0);
+        partial.close();
+        QVERIFY(!cid.Parse(partialPath, &error));
+        QVERIFY(cid.getPartName(QStringLiteral("PartC")).isEmpty());
+        QVERIFY(cid.getPartName(QStringLiteral("PartB")).isEmpty());
         QVERIFY(!cid.Parse(temp.filePath(QStringLiteral("broken.json")), &error));
         QVERIFY(cid.getPartName(QStringLiteral("PartB")).isEmpty());
     }
