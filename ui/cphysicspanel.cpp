@@ -286,6 +286,21 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
         QMessageBox::warning(this, QStringLiteral("保存物理配置失败"), validationError);
         return false;
     }
+    QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
+    int inputCount = 0;
+    int outputCount = 0;
+    int vertexCount = 0;
+    for (const QJsonValue& settingValue : m_physicsSettings) {
+        const QJsonObject setting = settingValue.toObject();
+        inputCount += setting.value(QStringLiteral("Input")).toArray().size();
+        outputCount += setting.value(QStringLiteral("Output")).toArray().size();
+        vertexCount += setting.value(QStringLiteral("Vertices")).toArray().size();
+    }
+    meta.insert(QStringLiteral("PhysicsSettingCount"), m_physicsSettings.size());
+    meta.insert(QStringLiteral("TotalInputCount"), inputCount);
+    meta.insert(QStringLiteral("TotalOutputCount"), outputCount);
+    meta.insert(QStringLiteral("VertexCount"), vertexCount);
+    m_physicsDocument.insert(QStringLiteral("Meta"), meta);
     m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
     QSaveFile file(target);
     const QByteArray data = QJsonDocument(m_physicsDocument).toJson(QJsonDocument::Indented);

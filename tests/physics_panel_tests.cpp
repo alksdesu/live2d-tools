@@ -102,6 +102,11 @@ private slots:
         QVERIFY(saved.open(QIODevice::ReadOnly));
         const QJsonObject root = QJsonDocument::fromJson(saved.readAll()).object();
         const QJsonObject setting = root.value(QStringLiteral("PhysicsSettings")).toArray().first().toObject();
+        const QJsonObject meta = root.value(QStringLiteral("Meta")).toObject();
+        QCOMPARE(meta.value(QStringLiteral("PhysicsSettingCount")).toInt(), 2);
+        QCOMPARE(meta.value(QStringLiteral("TotalInputCount")).toInt(), 2);
+        QCOMPARE(meta.value(QStringLiteral("TotalOutputCount")).toInt(), 2);
+        QCOMPARE(meta.value(QStringLiteral("VertexCount")).toInt(), 4);
         QCOMPARE(setting.value(QStringLiteral("Input")).toArray().first().toObject().value(QStringLiteral("Weight")).toDouble(), 0.8);
         QCOMPARE(setting.value(QStringLiteral("Output")).toArray().first().toObject().value(QStringLiteral("Scale")).toDouble(), 2.5);
         QCOMPARE(setting.value(QStringLiteral("Vertices")).toArray().at(1).toObject().value(QStringLiteral("Mobility")).toDouble(), 0.75);
