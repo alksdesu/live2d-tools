@@ -21,8 +21,10 @@ void PsdBatchWorker::setTask(const QStringList &models, const QString &outDir, b
     m_failedFiles.clear();
     m_outputNames.clear();
     QHash<QString, int> nameCounts;
-    QSet<QString> reservedNames;
+    QSet<QString> reservedNamesFolded;
     const QDir outputDirectory(m_outDir);
+    const QStringList existingFiles = outputDirectory.entryList(QDir::Files);
+    for (const QString& file : existingFiles) reservedNamesFolded.insert(file.toCaseFolded());
     for (const QString& model : m_models) {
         QString baseName = QFileInfo(model).completeBaseName();
         if (baseName.endsWith(QStringLiteral(".model3"), Qt::CaseInsensitive))
@@ -34,9 +36,9 @@ void PsdBatchWorker::setTask(const QStringList &models, const QString &outDir, b
             ++count;
             candidate = count == 1 ? baseName + QStringLiteral(".psd")
                                    : QStringLiteral("%1 #%2.psd").arg(baseName).arg(count);
-        } while (reservedNames.contains(candidate) || outputDirectory.exists(candidate));
+        } while (reservedNamesFolded.contains(candidate.toCaseFolded()));
         nameCounts.insert(baseName, count);
-        reservedNames.insert(candidate);
+        reservedNamesFolded.insert(candidate.toCaseFolded());
         m_outputNames.append(candidate);
     }
 }

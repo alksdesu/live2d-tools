@@ -118,6 +118,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - cmo3 Warp/Rotation 来源按 `specific_sources_indices` 与 Deformer 对齐，非法来源类型或索引在写出前失败；索引重排、编辑关键形和 CAFF 引用有专门回归测试。
 - 主窗口增加建模、动画、物理工作区切换，模式写入 QSettings；关键形运行时覆盖按 drawable 与 keyform 索引保存。
 - 批量 PSD 输出会移除 `.model3` 文件后缀，并避让输出目录已有文件和同批次重名文件。
+- 批量 PSD 输出名称按大小写不敏感规则避让，兼容 macOS/Windows 文件系统，避免 `Model.psd` 与 `model.psd` 覆盖。
 - cmo3 纹理图集按当前 moc3 对应的 `FileReferences.Moc` 精确选择，多模型同目录时不会拿错图集。
 - 物理面板加载会在替换当前状态前校验 Input、Output、Vertices 和力场字段，损坏配置不会清空当前有效数据。
 - 物理 Weight 按 Cubism physics3 的百分比范围 `0..100` 校验，四个内置 physics3 文件均可加载。

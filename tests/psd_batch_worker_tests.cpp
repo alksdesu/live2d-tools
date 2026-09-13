@@ -33,6 +33,23 @@ private slots:
         QCOMPARE(requests.size(), 3);
         QCOMPARE(requests.at(2).at(1).toString(), temp.filePath(QStringLiteral("second.psd")));
     }
+
+    void treatsNamesCaseInsensitively()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QFile existing(temp.filePath(QStringLiteral("MODEL.psd")));
+        QVERIFY(existing.open(QIODevice::WriteOnly));
+        existing.close();
+        PsdBatchWorker worker;
+        worker.setTask({QStringLiteral("/input/Model.model3.json"),
+                        QStringLiteral("/other/model.model3.json")}, temp.path(), true, false);
+        QSignalSpy requests(&worker, &PsdBatchWorker::requestExport);
+        worker.start();
+        QCOMPARE(requests.at(0).at(1).toString(), temp.filePath(QStringLiteral("Model #2.psd")));
+        worker.onOneExportFinished(true, requests.at(0).at(1).toString());
+        QCOMPARE(requests.at(1).at(1).toString(), temp.filePath(QStringLiteral("model #3.psd")));
+    }
 };
 
 QTEST_GUILESS_MAIN(PsdBatchWorkerTests)
