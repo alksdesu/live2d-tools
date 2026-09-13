@@ -33,6 +33,7 @@ private:
     QElapsedTimer m_clock;
     QMap<QString, QVector<QPointF>> m_curves;
     QMap<QString, QVector<int>> m_segmentTypes;
+    QMap<QString, QVector<QVector<QPointF>>> m_bezierControls;
 };
 
 #endif

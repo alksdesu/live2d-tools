@@ -121,6 +121,40 @@ private slots:
         QVERIFY(!loaded.Load(temp.filePath(QStringLiteral("missing.motion3.json")), &error));
         QCOMPARE(loaded.PointCount(), 2);
     }
+
+    void preservesCustomBezierControls()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QJsonArray segments{0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+        QJsonObject curve;
+        curve.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
+        curve.insert(QStringLiteral("Id"), QStringLiteral("ParamA"));
+        curve.insert(QStringLiteral("Segments"), segments);
+        QJsonArray curves;
+        curves.append(curve);
+        QJsonObject root;
+        root.insert(QStringLiteral("Version"), 3);
+        root.insert(QStringLiteral("Curves"), curves);
+        const QString sourcePath = temp.filePath(QStringLiteral("custom.motion3.json"));
+        QFile sourceFile(sourcePath);
+        QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+        QVERIFY(sourceFile.write(QJsonDocument(root).toJson()) > 0);
+        sourceFile.close();
+
+        CMotionTimeline loaded;
+        QString error;
+        QVERIFY2(loaded.Load(sourcePath, &error), qPrintable(error));
+        QVERIFY(qAbs(loaded.Evaluate(QStringLiteral("ParamA"), 0.125f) - 0.5f) < 0.001f);
+
+        const QString outputPath = temp.filePath(QStringLiteral("custom-out.motion3.json"));
+        QVERIFY2(loaded.Save(outputPath, 30.0f, false, &error), qPrintable(error));
+        QFile outputFile(outputPath);
+        QVERIFY(outputFile.open(QIODevice::ReadOnly));
+        const QJsonArray outputSegments = QJsonDocument::fromJson(outputFile.readAll()).object()
+            .value(QStringLiteral("Curves")).toArray().first().toObject().value(QStringLiteral("Segments")).toArray();
+        QCOMPARE(outputSegments, segments);
+    }
 };
 
 QTEST_GUILESS_MAIN(CMotionTimelineTests)
