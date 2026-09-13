@@ -89,6 +89,7 @@ private:
     QPushButton* m_savePoseButton = nullptr;
     QPushButton* m_addPosePartButton = nullptr;
     QPushButton* m_removePosePartButton = nullptr;
+    QPushButton* m_editPoseLinksButton = nullptr;
     int m_activePoseGroup = -1;
     bool m_poseDirty = false;
     CMotionTimeline m_timeline;
@@ -101,6 +102,8 @@ private:
 
     void AddPosePart();
     void RemovePosePart();
+    void EditPoseLinks();
+    void EmitPoseSelection(int poseIndex, int optionIndex);
     void EditSelectedExpression();
     void ExportTimeline();
     void ImportTimeline();

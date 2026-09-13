@@ -112,16 +112,20 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     auto* poseTools = new QHBoxLayout();
     m_addPosePartButton = new QPushButton(QStringLiteral("添加 Part"), m_poseWidget);
     m_removePosePartButton = new QPushButton(QStringLiteral("删除 Part"), m_poseWidget);
+    m_editPoseLinksButton = new QPushButton(QStringLiteral("编辑 Link"), m_poseWidget);
     m_savePoseButton = new QPushButton(QStringLiteral("保存 Pose"), m_poseWidget);
     m_addPosePartButton->setEnabled(false);
     m_removePosePartButton->setEnabled(false);
+    m_editPoseLinksButton->setEnabled(false);
     m_savePoseButton->setEnabled(false);
     poseTools->addWidget(m_addPosePartButton);
     poseTools->addWidget(m_removePosePartButton);
+    poseTools->addWidget(m_editPoseLinksButton);
     poseTools->addWidget(m_savePoseButton, 1);
     poseLayout->addLayout(poseTools);
     connect(m_addPosePartButton, &QPushButton::clicked, this, &CMotionPanel::AddPosePart);
     connect(m_removePosePartButton, &QPushButton::clicked, this, &CMotionPanel::RemovePosePart);
+    connect(m_editPoseLinksButton, &QPushButton::clicked, this, &CMotionPanel::EditPoseLinks);
     connect(m_savePoseButton, &QPushButton::clicked, this, [this](){
         QString error;
         if (!SavePose(&error)) QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), error);
@@ -573,6 +577,7 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));
     m_addPosePartButton->setEnabled(false);
     m_removePosePartButton->setEnabled(false);
+    m_editPoseLinksButton->setEnabled(false);
     m_savePoseButton->setEnabled(false);
     // 清除 poseWidget 中旧的 combo
     QLayout* layout = m_poseWidget->layout();
@@ -648,29 +653,8 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
             m_activePoseGroup = poseIndex;
             m_addPosePartButton->setEnabled(true);
             m_removePosePartButton->setEnabled(m_poseGroups[poseIndex].partIds.size() > 1);
-            const PoseGroup& pg = m_poseGroups[poseIndex];
-            QStringList hideIds;
-            QString showId;
-            QStringList showLinks;
-            for(int i = 0; i < pg.partIds.size(); i++){
-                const QStringList links = i < pg.links.size() ? pg.links[i] : QStringList();
-                if(i == index) {
-                    showId = pg.partIds[i];
-                    showLinks = links;
-                } else {
-                    hideIds << pg.partIds[i];
-                    hideIds.append(links);
-                }
-            }
-            hideIds.removeDuplicates();
-            showLinks.removeDuplicates();
-            hideIds.removeAll(showId);
-            for (const QString& link : showLinks) hideIds.removeAll(link);
-            QStringList showIds;
-            showIds << showId;
-            showIds.append(showLinks);
-            showIds.removeDuplicates();
-            emit PosePartChanged(showIds, hideIds);
+            m_editPoseLinksButton->setEnabled(true);
+            EmitPoseSelection(poseIndex, index);
         });
     }
 
@@ -680,8 +664,94 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         m_activePoseGroup = 0;
         m_addPosePartButton->setEnabled(true);
         m_removePosePartButton->setEnabled(m_poseGroups[0].partIds.size() > 1);
+        m_editPoseLinksButton->setEnabled(true);
     }
     return true;
+}
+
+void CMotionPanel::EmitPoseSelection(int poseIndex, int optionIndex)
+{
+    if (poseIndex < 0 || poseIndex >= m_poseGroups.size()) return;
+    const PoseGroup& group = m_poseGroups.at(poseIndex);
+    if (optionIndex < 0 || optionIndex >= group.partIds.size()) return;
+    QStringList hideIds;
+    const QString showId = group.partIds.at(optionIndex);
+    QStringList showLinks = optionIndex < group.links.size() ? group.links.at(optionIndex) : QStringList();
+    for (int i = 0; i < group.partIds.size(); ++i) {
+        if (i == optionIndex) continue;
+        hideIds << group.partIds.at(i);
+        if (i < group.links.size()) hideIds.append(group.links.at(i));
+    }
+    hideIds.removeDuplicates();
+    showLinks.removeDuplicates();
+    hideIds.removeAll(showId);
+    for (const QString& link : showLinks) hideIds.removeAll(link);
+    QStringList showIds{showId};
+    showIds.append(showLinks);
+    showIds.removeDuplicates();
+    emit PosePartChanged(showIds, hideIds);
+}
+
+void CMotionPanel::EditPoseLinks()
+{
+    if (m_activePoseGroup < 0 || m_activePoseGroup >= m_poseGroups.size()) return;
+    PoseGroup& group = m_poseGroups[m_activePoseGroup];
+    const int optionIndex = group.combo ? group.combo->currentIndex() : -1;
+    if (optionIndex < 0 || optionIndex >= group.partIds.size()) return;
+    const QString currentId = group.partIds.at(optionIndex);
+
+    QStringList candidates;
+    QSet<QString> candidateSet;
+    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+    LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+    if (model && model->GetModel()) {
+        for (int i = 0; i < model->GetModel()->GetPartCount(); ++i) {
+            const CubismId* partId = model->GetModel()->GetPartId(i);
+            if (!partId) continue;
+            const QString id = QString::fromUtf8(partId->GetString().GetRawString());
+            if (!id.isEmpty() && !candidateSet.contains(id)) {
+                candidateSet.insert(id);
+                candidates.append(id);
+            }
+        }
+    }
+    for (const QString& id : group.partIds) if (!candidateSet.contains(id)) { candidateSet.insert(id); candidates.append(id); }
+    for (const QStringList& links : group.links)
+        for (const QString& id : links) if (!candidateSet.contains(id)) { candidateSet.insert(id); candidates.append(id); }
+    candidates.sort(Qt::CaseInsensitive);
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("编辑 Link：%1").arg(currentId));
+    dialog.resize(360, 420);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* list = new QListWidget(&dialog);
+    const QStringList currentLinks = optionIndex < group.links.size() ? group.links.at(optionIndex) : QStringList();
+    for (const QString& id : candidates) {
+        if (id == currentId) continue;
+        auto* item = new QListWidgetItem(id, list);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(currentLinks.contains(id) ? Qt::Checked : Qt::Unchecked);
+    }
+    layout->addWidget(list);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QStringList links;
+    for (int row = 0; row < list->count(); ++row) {
+        QListWidgetItem* item = list->item(row);
+        if (item && item->checkState() == Qt::Checked) links.append(item->text());
+    }
+    links.removeDuplicates();
+    if (group.links.size() < group.partIds.size()) group.links.resize(group.partIds.size());
+    if (group.links.at(optionIndex) == links) return;
+    group.links[optionIndex] = links;
+    m_savePoseButton->setText(QStringLiteral("保存 Pose"));
+    m_poseDirty = true;
+    emit PoseConfigChanged();
+    EmitPoseSelection(m_activePoseGroup, optionIndex);
 }
 
 bool CMotionPanel::SavePose(QString* error)
