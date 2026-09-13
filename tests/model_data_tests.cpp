@@ -279,6 +279,24 @@ private slots:
         QCOMPARE(document.DeformerRotationKeyforms(rotationId), rotationBefore);
         QVERIFY(document.RedoEdit());
         QCOMPARE(document.DeformerRotationKeyforms(rotationId), rotationAfter);
+        auto warpIt = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(),
+                                   [](const live2dstruct::CModelDeformer& deformer){
+                                       return deformer.type == live2dstruct::CModelDeformer::Warp &&
+                                              !deformer.warpKeyforms.isEmpty() &&
+                                              !deformer.warpKeyforms.first().positions.isEmpty();
+                                   });
+        QVERIFY(warpIt != document.Deformers().cend());
+        const QString warpId = warpIt->id;
+        const QVector<live2dstruct::CModelWarpKeyform> warpBefore = document.DeformerWarpKeyforms(warpId);
+        QVector<live2dstruct::CModelWarpKeyform> warpAfter = warpBefore;
+        warpAfter[0].positions[0] += 3.0f;
+        QVERIFY(document.ExecuteEdit({warpId, QStringLiteral("warp"), live2dstruct::CModelEdit::WarpKeyforms,
+                                      QVariant::fromValue(warpBefore), QVariant::fromValue(warpAfter)}));
+        QCOMPARE(document.DeformerWarpKeyforms(warpId), warpAfter);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DeformerWarpKeyforms(warpId), warpBefore);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DeformerWarpKeyforms(warpId), warpAfter);
         document.ClearEditHistory();
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(!document.CanRedoEdit());
@@ -316,6 +334,8 @@ private slots:
         source.drawableMaskInverted.insert(QStringLiteral("Body"), true);
         source.deformerRotationKeyforms.insert(QStringLiteral("Rotation1"),
                                                 {{1.0f, 12.0f, 0.25f, -0.5f, 1.1f, true, false}});
+        source.deformerWarpKeyforms.insert(QStringLiteral("Warp1"),
+                                           {{{0.0f, 1.0f, 2.0f, 3.0f}, 1.0f}});
         source.viewScale = 1.75f;
         source.viewPosition = QPointF(0.25, -0.5);
 
@@ -336,6 +356,7 @@ private slots:
         QCOMPARE(decoded.deformerParentIndices, source.deformerParentIndices);
         QCOMPARE(decoded.drawableMaskInverted, source.drawableMaskInverted);
         QCOMPARE(decoded.deformerRotationKeyforms, source.deformerRotationKeyforms);
+        QCOMPARE(decoded.deformerWarpKeyforms, source.deformerWarpKeyforms);
         QCOMPARE(decoded.viewScale, source.viewScale);
         QCOMPARE(decoded.viewPosition, source.viewPosition);
 
@@ -360,6 +381,7 @@ private slots:
         QCOMPARE(loaded.drawableMaskIndices, source.drawableMaskIndices);
         QCOMPARE(loaded.drawableMaskInverted, source.drawableMaskInverted);
         QCOMPARE(loaded.deformerRotationKeyforms, source.deformerRotationKeyforms);
+        QCOMPARE(loaded.deformerWarpKeyforms, source.deformerWarpKeyforms);
     }
 
     void sessionRejectsInvalidValues()

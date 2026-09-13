@@ -858,23 +858,48 @@ void Generator::writeWarpDeformerEntities()
         const CDeformers* deformer = m_table.deformers[d];
         const int parentDeformer = effectiveDeformerParentIndex(d);
 
-        const int keyformCount = warp->keyform_sources_counts;
         if (warp->rows < 0 || warp->columns < 0 || warp->rows > 1000 || warp->columns > 1000) continue;
-        const int gridVerts = (warp->columns + 1) * (warp->rows + 1);
+        const qint64 gridVertCount = (static_cast<qint64>(warp->columns) + 1) *
+                                     (static_cast<qint64>(warp->rows) + 1);
+        if (gridVertCount <= 0 || gridVertCount > 1000000) continue;
+        const int gridVerts = static_cast<int>(gridVertCount);
+        const int keyformCount = warp->keyform_sources_counts;
         if (gridVerts <= 0 || gridVerts > 1000000 ||
             !validSlice(warp->keyform_sources_begin_indices, keyformCount,
                         m_table.warp_deformer_keyforms.size())) continue;
-        bool keyformPositionsValid = true;
-        for (int k = 0; k < keyformCount; ++k) {
-            const CWarp_deformer_keyforms* keyform = m_table.warp_deformer_keyforms[
-                warp->keyform_sources_begin_indices + k];
-            if (!validSlice(keyform->keyform_position_sources_begin_indices, gridVerts * 2,
-                            static_cast<int>(m_table.keyform_positions->xys.size()))) {
-                keyformPositionsValid = false;
-                break;
+        QVector<live2dstruct::CModelWarpKeyform> keyforms;
+        const auto overrideIt = m_opt.deformerWarpKeyformOverrides.constFind(deformer->ids);
+        if (overrideIt != m_opt.deformerWarpKeyformOverrides.cend() && overrideIt->size() == keyformCount) {
+            bool overrideValid = true;
+            for (const auto& keyform : overrideIt.value()) {
+                if (keyform.positions.size() != gridVerts * 2 || !std::isfinite(keyform.opacity) ||
+                    keyform.opacity < 0.0f || keyform.opacity > 1.0f) { overrideValid = false; break; }
+                for (float position : keyform.positions) {
+                    if (!std::isfinite(position)) { overrideValid = false; break; }
+                }
+                if (!overrideValid) break;
             }
+            if (overrideValid) keyforms = overrideIt.value();
         }
-        if (!keyformPositionsValid) continue;
+        if (keyforms.isEmpty()) {
+            for (int k = 0; k < keyformCount; ++k) {
+                const CWarp_deformer_keyforms* keyform = m_table.warp_deformer_keyforms[
+                    warp->keyform_sources_begin_indices + k];
+                if (!validSlice(keyform->keyform_position_sources_begin_indices, gridVerts * 2,
+                                static_cast<int>(m_table.keyform_positions->xys.size()))) continue;
+                live2dstruct::CModelWarpKeyform converted;
+                converted.opacity = keyform->opacities;
+                converted.positions.reserve(gridVerts * 2);
+                for (int v = 0; v < gridVerts; ++v) {
+                    converted.positions.append(m_table.keyform_positions->GetData(
+                        keyform->keyform_position_sources_begin_indices + v * 2));
+                    converted.positions.append(m_table.keyform_positions->GetData(
+                        keyform->keyform_position_sources_begin_indices + v * 2 + 1));
+                }
+                keyforms.append(converted);
+            }
+            if (keyforms.size() != keyformCount) continue;
+        }
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
@@ -909,8 +934,7 @@ void Generator::writeWarpDeformerEntities()
 
         m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
         for (int k = 0; k < keyformCount; ++k) {
-            const CWarp_deformer_keyforms* kf = m_table.warp_deformer_keyforms[
-                warp->keyform_sources_begin_indices + k];
+            const auto& kf = keyforms[k];
             m_xml.BeginObject(QStringLiteral("CWarpDeformerForm"));
             m_xml.BeginObject(QStringLiteral("ACDeformerForm"), QStringLiteral("super"));
             m_xml.BeginObject(QStringLiteral("ACForm"), QStringLiteral("super"));
@@ -921,18 +945,17 @@ void Generator::writeWarpDeformerEntities()
             m_xml.Null(QStringLiteral("name"));
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject(); // ACForm
-            m_xml.F(QStringLiteral("opacity"), kf->opacities);
+            m_xml.F(QStringLiteral("opacity"), kf.opacity);
             m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
             m_xml.EndObject(); // ACDeformerForm
 
             QVector<float> positions;
             positions.reserve(gridVerts * 2);
-            const int posBegin = kf->keyform_position_sources_begin_indices;
             const bool onCanvas = (parentDeformer < 0);
             const CCanvas_info* canvas = m_table.canvas_info;
             for (int v = 0; v < gridVerts; ++v) {
-                const float mx = m_table.keyform_positions->GetData(posBegin + v * 2);
-                const float my = m_table.keyform_positions->GetData(posBegin + v * 2 + 1);
+                const float mx = kf.positions[v * 2];
+                const float my = kf.positions[v * 2 + 1];
                 if (onCanvas) {
                     positions.append((mx + canvas->origin_x) * canvas->pixels_per_unit);
                     positions.append((canvas->origin_y - my) * canvas->pixels_per_unit);

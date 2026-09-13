@@ -229,6 +229,22 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                                              QAbstractItemView::SelectedClicked);
     m_rotationKeyformTable->setVisible(false);
     form->addRow(QStringLiteral("旋转关键形"), m_rotationKeyformTable);
+    m_warpKeyformCombo = new QComboBox(content);
+    m_warpKeyformCombo->setObjectName(QStringLiteral("warpKeyformSelector"));
+    m_warpKeyformCombo->setEnabled(false);
+    m_warpKeyformTable = new QTableWidget(content);
+    m_warpKeyformTable->setObjectName(QStringLiteral("warpKeyformTable"));
+    m_warpKeyformTable->setColumnCount(3);
+    m_warpKeyformTable->setHorizontalHeaderLabels({QStringLiteral("网格点"), QStringLiteral("X"), QStringLiteral("Y")});
+    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_warpKeyformTable->verticalHeader()->setVisible(false);
+    m_warpKeyformTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                        QAbstractItemView::SelectedClicked);
+    m_warpKeyformTable->setVisible(false);
+    form->addRow(QStringLiteral("Warp 关键形"), m_warpKeyformCombo);
+    form->addRow(QStringLiteral("Warp 网格坐标"), m_warpKeyformTable);
     layout->addLayout(form);
     layout->addStretch(1);
     setWidget(content);
@@ -240,6 +256,12 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     });
     connect(m_rotationKeyformTable, &QTableWidget::cellChanged, this, [this](int row, int column){
         if (!m_updatingRotationKeyform) ApplyRotationKeyformCellEdit(row, column);
+    });
+    connect(m_warpKeyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int){
+        if (!m_updatingWarpKeyform) RebuildWarpKeyformTable();
+    });
+    connect(m_warpKeyformTable, &QTableWidget::cellChanged, this, [this](int row, int column){
+        if (!m_updatingWarpKeyform) ApplyWarpKeyformCellEdit(row, column);
     });
     connect(m_mirrorHorizontal, &QPushButton::clicked, this, [this](){ MirrorKeyform(true); });
     connect(m_mirrorVertical, &QPushButton::clicked, this, [this](){ MirrorKeyform(false); });
@@ -439,6 +461,11 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_rotationKeyformTable->setRowCount(0);
     m_rotationKeyformTable->setVisible(false);
     m_rotationKeyformTable->setEnabled(false);
+    m_warpKeyformCombo->clear();
+    m_warpKeyformCombo->setEnabled(false);
+    m_warpKeyformTable->setRowCount(0);
+    m_warpKeyformTable->setVisible(false);
+    m_warpKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -642,6 +669,64 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
     }
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     RebuildRotationKeyformTable();
+}
+
+void CInspectorPanel::RebuildWarpKeyformTable()
+{
+    m_updatingWarpKeyform = true;
+    m_warpKeyformTable->setRowCount(0);
+    if (!m_document || m_selectionType != QLatin1String("warp") || m_selectionName.isEmpty()) {
+        m_warpKeyformTable->setEnabled(false);
+        m_updatingWarpKeyform = false;
+        return;
+    }
+    const int keyformIndex = m_warpKeyformCombo->currentIndex();
+    const QVector<live2dstruct::CModelWarpKeyform> keyforms = m_document->DeformerWarpKeyforms(m_selectionName);
+    if (keyformIndex < 0 || keyformIndex >= keyforms.size()) {
+        m_warpKeyformTable->setEnabled(false);
+        m_updatingWarpKeyform = false;
+        return;
+    }
+    const auto& keyform = keyforms[keyformIndex];
+    const int pointCount = keyform.positions.size() / 2;
+    const bool unlocked = !IsLocked(m_selectionType, m_selectionName);
+    m_warpKeyformTable->setRowCount(pointCount);
+    for (int row = 0; row < pointCount; ++row) {
+        auto* index = new QTableWidgetItem(QString::number(row));
+        index->setFlags(index->flags() & ~Qt::ItemIsEditable);
+        m_warpKeyformTable->setItem(row, 0, index);
+        m_warpKeyformTable->setItem(row, 1, new QTableWidgetItem(QString::number(keyform.positions[row * 2], 'g', 9)));
+        m_warpKeyformTable->setItem(row, 2, new QTableWidgetItem(QString::number(keyform.positions[row * 2 + 1], 'g', 9)));
+    }
+    m_warpKeyformTable->setEnabled(unlocked);
+    m_updatingWarpKeyform = false;
+}
+
+void CInspectorPanel::ApplyWarpKeyformCellEdit(int row, int column)
+{
+    if (!m_document || m_selectionType != QLatin1String("warp") || m_selectionName.isEmpty() ||
+        row < 0 || (column != 1 && column != 2) || IsLocked(m_selectionType, m_selectionName)) return;
+    const int keyformIndex = m_warpKeyformCombo->currentIndex();
+    QVector<live2dstruct::CModelWarpKeyform> before = m_document->DeformerWarpKeyforms(m_selectionName);
+    if (keyformIndex < 0 || keyformIndex >= before.size() || !m_warpKeyformTable->item(row, column)) return;
+    QVector<live2dstruct::CModelWarpKeyform> after = before;
+    bool ok = false;
+    const float value = static_cast<float>(m_warpKeyformTable->item(row, column)->text().toDouble(&ok));
+    if (!ok || !std::isfinite(value)) {
+        RebuildWarpKeyformTable();
+        return;
+    }
+    after[keyformIndex].positions[row * 2 + (column - 1)] = value;
+    if (after == before) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("warp"),
+                                           live2dstruct::CModelEdit::WarpKeyforms,
+                                           QVariant::fromValue(before), QVariant::fromValue(after)};
+    if (!m_document->ExecuteEdit(command)) {
+        RebuildWarpKeyformTable();
+        return;
+    }
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    RebuildWarpKeyformTable();
 }
 
 void CInspectorPanel::ApplyKeyformCellEdit(int row, int column)
@@ -1032,6 +1117,11 @@ void CInspectorPanel::ClearSelection()
     m_rotationKeyformTable->setRowCount(0);
     m_rotationKeyformTable->setVisible(false);
     m_rotationKeyformTable->setEnabled(false);
+    m_warpKeyformCombo->clear();
+    m_warpKeyformCombo->setEnabled(false);
+    m_warpKeyformTable->setRowCount(0);
+    m_warpKeyformTable->setVisible(false);
+    m_warpKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -1307,6 +1397,11 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_rotationKeyformTable->setRowCount(0);
     m_rotationKeyformTable->setVisible(false);
     m_rotationKeyformTable->setEnabled(false);
+    m_warpKeyformCombo->clear();
+    m_warpKeyformCombo->setEnabled(false);
+    m_warpKeyformTable->setRowCount(0);
+    m_warpKeyformTable->setVisible(false);
+    m_warpKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -1404,6 +1499,16 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_updatingVisibility = false;
             if (deformer.type == live2dstruct::CModelDeformer::Warp) {
                 m_geometryLabel->setText(QStringLiteral("Warp %1 × %2").arg(deformer.columns).arg(deformer.rows));
+                const auto keyforms = m_document->DeformerWarpKeyforms(name);
+                m_updatingWarpKeyform = true;
+                for (int keyformIndex = 0; keyformIndex < keyforms.size(); ++keyformIndex)
+                    m_warpKeyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
+                m_warpKeyformCombo->setEnabled(unlocked && !keyforms.isEmpty());
+                m_warpKeyformTable->setVisible(!keyforms.isEmpty());
+                m_warpKeyformTable->setEnabled(unlocked && !keyforms.isEmpty());
+                if (!keyforms.isEmpty()) m_warpKeyformCombo->setCurrentIndex(0);
+                m_updatingWarpKeyform = false;
+                RebuildWarpKeyformTable();
             } else {
                 m_geometryLabel->setText(QStringLiteral("Rotation Deformer"));
                 m_rotationKeyformTable->setVisible(true);

@@ -27,6 +27,7 @@ struct CModelSession
     QHash<QString, QVector<int>> drawableMaskIndices;
     QHash<QString, int> deformerParentIndices;
     QHash<QString, QVector<CModelRotationKeyform>> deformerRotationKeyforms;
+    QHash<QString, QVector<CModelWarpKeyform>> deformerWarpKeyforms;
     QHash<QString, bool> drawableMaskInverted;
     float viewScale = 1.0f;
     QPointF viewPosition;

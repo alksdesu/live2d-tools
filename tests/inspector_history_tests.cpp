@@ -173,6 +173,18 @@ private slots:
             QCOMPARE(document.DeformerRotationKeyforms(deformerId).first().angle, angleBefore);
             panel.Redo();
             QCOMPARE(document.DeformerRotationKeyforms(deformerId).first().angle, angleBefore + 6.0f);
+        } else {
+            auto* warpSelector = panel.findChild<QComboBox*>("warpKeyformSelector");
+            auto* warpTable = panel.findChild<QTableWidget*>("warpKeyformTable");
+            QVERIFY(warpSelector && warpTable && warpSelector->count() > 0 && warpTable->rowCount() > 0 && warpTable->isEnabled());
+            const auto warpBefore = document.DeformerWarpKeyforms(deformerId);
+            const float xBefore = warpBefore.first().positions.first();
+            warpTable->item(0, 1)->setText(QString::number(xBefore + 2.5f));
+            QCOMPARE(document.DeformerWarpKeyforms(deformerId).first().positions.first(), xBefore + 2.5f);
+            panel.Undo();
+            QCOMPARE(document.DeformerWarpKeyforms(deformerId).first().positions.first(), xBefore);
+            panel.Redo();
+            QCOMPARE(document.DeformerWarpKeyforms(deformerId).first().positions.first(), xBefore + 2.5f);
         }
         QString maskedId;
         for (const auto& drawableCandidate : document.Drawables()) {

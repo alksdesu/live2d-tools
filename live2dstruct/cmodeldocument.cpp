@@ -82,6 +82,7 @@ void CModelDocument::Clear()
     m_drawableMaskIndexOverrides.clear();
     m_deformerParentOverrides.clear();
     m_deformerRotationKeyformOverrides.clear();
+    m_deformerWarpKeyformOverrides.clear();
     m_drawableMaskInvertedOverrides.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
@@ -138,6 +139,31 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
             const CWarp_deformers* warp = table.warp_deformers[source->specific_sources_indices];
             deformer.rows = warp->rows;
             deformer.columns = warp->columns;
+            deformer.quadTransform = warp->is_quad_source;
+            const qint64 gridVertexCount = (warp->rows >= 0 && warp->columns >= 0)
+                ? (static_cast<qint64>(warp->rows) + 1) * (static_cast<qint64>(warp->columns) + 1) : 0;
+            if (warp->rows <= 1000 && warp->columns <= 1000 && gridVertexCount > 0 && gridVertexCount <= 1000000 &&
+                validSlice(warp->keyform_sources_begin_indices, warp->keyform_sources_counts,
+                           table.warp_deformer_keyforms.size())) {
+                deformer.warpKeyforms.reserve(warp->keyform_sources_counts);
+                for (int keyformIndex = 0; keyformIndex < warp->keyform_sources_counts; ++keyformIndex) {
+                    const CWarp_deformer_keyforms* sourceKeyform = table.warp_deformer_keyforms[
+                        warp->keyform_sources_begin_indices + keyformIndex];
+                    CModelWarpKeyform keyform;
+                    keyform.opacity = sourceKeyform->opacities;
+                    if (validSlice(sourceKeyform->keyform_position_sources_begin_indices,
+                                   static_cast<int>(gridVertexCount * 2), table.keyform_positions->xys.size())) {
+                        keyform.positions.reserve(static_cast<int>(gridVertexCount * 2));
+                        for (int point = 0; point < gridVertexCount; ++point) {
+                            keyform.positions.append(table.keyform_positions->GetData(
+                                sourceKeyform->keyform_position_sources_begin_indices + point * 2));
+                            keyform.positions.append(table.keyform_positions->GetData(
+                                sourceKeyform->keyform_position_sources_begin_indices + point * 2 + 1));
+                        }
+                    }
+                    deformer.warpKeyforms.append(keyform);
+                }
+            }
         } else if (deformer.type == CModelDeformer::Rotation &&
                    inRange(source->specific_sources_indices, table.rotation_deformers.size())) {
             const CRotation_deformers* rotation = table.rotation_deformers[source->specific_sources_indices];
@@ -482,6 +508,41 @@ bool CModelDocument::SetDeformerRotationKeyforms(const QString& id,
     return false;
 }
 
+QVector<CModelWarpKeyform> CModelDocument::DeformerWarpKeyforms(const QString& id) const
+{
+    if (m_deformerWarpKeyformOverrides.contains(id))
+        return m_deformerWarpKeyformOverrides.value(id);
+    for (const CModelDeformer& deformer : m_deformers) {
+        if (deformer.id == id && deformer.type == CModelDeformer::Warp)
+            return deformer.warpKeyforms;
+    }
+    return {};
+}
+
+bool CModelDocument::SetDeformerWarpKeyforms(const QString& id,
+                                             const QVector<CModelWarpKeyform>& keyforms)
+{
+    for (const CModelDeformer& deformer : m_deformers) {
+        if (deformer.id != id || deformer.type != CModelDeformer::Warp) continue;
+        if (deformer.rows < 0 || deformer.columns < 0 || deformer.rows > 1000 || deformer.columns > 1000)
+            return false;
+        const qint64 pointCount = (static_cast<qint64>(deformer.rows) + 1) *
+                                  (static_cast<qint64>(deformer.columns) + 1);
+        if (pointCount <= 0 || pointCount > 1000000 || keyforms.isEmpty() ||
+            keyforms.size() != deformer.warpKeyforms.size() || keyforms.size() > 10000)
+            return false;
+        for (const CModelWarpKeyform& keyform : keyforms) {
+            if (keyform.positions.size() != pointCount * 2 || !std::isfinite(keyform.opacity) ||
+                keyform.opacity < 0.0f || keyform.opacity > 1.0f)
+                return false;
+            for (float position : keyform.positions) if (!std::isfinite(position)) return false;
+        }
+        m_deformerWarpKeyformOverrides.insert(id, keyforms);
+        return true;
+    }
+    return false;
+}
+
 bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int>& maskIndices)
 {
     for (int drawableIndex = 0; drawableIndex < m_drawables.size(); ++drawableIndex) {
@@ -636,6 +697,11 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         if (edit.type != QLatin1String("rotation") || !value.canConvert<QVector<CModelRotationKeyform>>())
             return false;
         return SetDeformerRotationKeyforms(edit.name, value.value<QVector<CModelRotationKeyform>>());
+    }
+    if (edit.field == CModelEdit::WarpKeyforms) {
+        if (edit.type != QLatin1String("warp") || !value.canConvert<QVector<CModelWarpKeyform>>())
+            return false;
+        return SetDeformerWarpKeyforms(edit.name, value.value<QVector<CModelWarpKeyform>>());
     }
     if (edit.field == CModelEdit::MaskInverted) {
         if (edit.type != QLatin1String("artmesh") || !value.canConvert<bool>()) return false;
@@ -794,6 +860,24 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                     !std::isfinite(keyform.originY) || !std::isfinite(keyform.scale) || keyform.scale < 0.0f) {
                     diagnostics.append({CModelDiagnostic::Error, QStringLiteral("rotation_keyform"),
                                          QStringLiteral("Rotation Deformer 关键形数值无效"), i});
+                    break;
+                }
+            }
+        } else if (m_deformers[i].type == CModelDeformer::Warp) {
+            const qint64 pointCount = (static_cast<qint64>(m_deformers[i].rows) + 1) *
+                                      (static_cast<qint64>(m_deformers[i].columns) + 1);
+            for (const CModelWarpKeyform& keyform : DeformerWarpKeyforms(m_deformers[i].id)) {
+                if (pointCount <= 0 || pointCount > 1000000 || keyform.positions.size() != pointCount * 2 ||
+                    !std::isfinite(keyform.opacity) || keyform.opacity < 0.0f || keyform.opacity > 1.0f) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("warp_keyform"),
+                                         QStringLiteral("Warp Deformer 关键形网格无效"), i});
+                    break;
+                }
+                bool finite = true;
+                for (float position : keyform.positions) if (!std::isfinite(position)) { finite = false; break; }
+                if (!finite) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("warp_keyform_nan"),
+                                         QStringLiteral("Warp Deformer 关键形包含非有限坐标"), i});
                     break;
                 }
             }

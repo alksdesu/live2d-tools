@@ -129,6 +129,20 @@ QByteArray CModelSession::ToJson() const
         rotationKeyformObject.insert(it.key(), keyforms);
     }
     root.insert(QStringLiteral("deformerRotationKeyforms"), rotationKeyformObject);
+    QJsonObject warpKeyformObject;
+    for (auto it = deformerWarpKeyforms.cbegin(); it != deformerWarpKeyforms.cend(); ++it) {
+        QJsonArray keyforms;
+        for (const CModelWarpKeyform& keyform : it.value()) {
+            QJsonObject value;
+            value.insert(QStringLiteral("opacity"), static_cast<double>(keyform.opacity));
+            QJsonArray positions;
+            for (float position : keyform.positions) positions.append(static_cast<double>(position));
+            value.insert(QStringLiteral("positions"), positions);
+            keyforms.append(value);
+        }
+        warpKeyformObject.insert(it.key(), keyforms);
+    }
+    root.insert(QStringLiteral("deformerWarpKeyforms"), warpKeyformObject);
     QJsonObject maskInvertedObject;
     for (auto it = drawableMaskInverted.cbegin(); it != drawableMaskInverted.cend(); ++it)
         maskInvertedObject.insert(it.key(), it.value());
@@ -201,6 +215,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject maskObject;
     QJsonObject deformerParentObject;
     QJsonObject rotationKeyformObject;
+    QJsonObject warpKeyformObject;
     QJsonObject maskInvertedObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("parameterMetadata"), &parameterMetadataObject, error) ||
@@ -213,6 +228,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         !readObject(root, QStringLiteral("drawableMaskIndices"), &maskObject, error) ||
         !readObject(root, QStringLiteral("deformerParentIndices"), &deformerParentObject, error) ||
         !readObject(root, QStringLiteral("deformerRotationKeyforms"), &rotationKeyformObject, error) ||
+        !readObject(root, QStringLiteral("deformerWarpKeyforms"), &warpKeyformObject, error) ||
         !readObject(root, QStringLiteral("drawableMaskInverted"), &maskInvertedObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         float value = 0.0f;
@@ -425,6 +441,43 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             keyforms.append(keyform);
         }
         result.deformerRotationKeyforms.insert(key, keyforms);
+    }
+    if (warpKeyformObject.size() > 100000) {
+        setError(error, QStringLiteral("Warp Deformer 覆盖数量超出限制"));
+        return false;
+    }
+    for (const QString& key : warpKeyformObject.keys()) {
+        const QJsonValue keyformValue = warpKeyformObject.value(key);
+        if (!keyformValue.isArray() || keyformValue.toArray().isEmpty() || keyformValue.toArray().size() > 10000) {
+            setError(error, QStringLiteral("Warp Deformer 关键形数组无效：%1").arg(key));
+            return false;
+        }
+        QVector<CModelWarpKeyform> keyforms;
+        for (const QJsonValue& value : keyformValue.toArray()) {
+            if (!value.isObject()) {
+                setError(error, QStringLiteral("Warp Deformer 关键形不是对象：%1").arg(key));
+                return false;
+            }
+            const QJsonObject object = value.toObject();
+            CModelWarpKeyform keyform;
+            if (!readFloat(object.value(QStringLiteral("opacity")), &keyform.opacity) ||
+                keyform.opacity < 0.0f || keyform.opacity > 1.0f ||
+                !object.value(QStringLiteral("positions")).isArray() ||
+                object.value(QStringLiteral("positions")).toArray().size() > 2000000) {
+                setError(error, QStringLiteral("Warp Deformer 关键形数值无效：%1").arg(key));
+                return false;
+            }
+            for (const QJsonValue& position : object.value(QStringLiteral("positions")).toArray()) {
+                float number = 0.0f;
+                if (!readFloat(position, &number)) {
+                    setError(error, QStringLiteral("Warp Deformer 关键形坐标无效：%1").arg(key));
+                    return false;
+                }
+                keyform.positions.append(number);
+            }
+            keyforms.append(keyform);
+        }
+        result.deformerWarpKeyforms.insert(key, keyforms);
     }
     for (const QString& key : maskInvertedObject.keys()) {
         if (!maskInvertedObject.value(key).isBool()) {

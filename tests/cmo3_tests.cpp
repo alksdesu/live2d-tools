@@ -177,6 +177,37 @@ private slots:
         QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(keyforms[0].angle).toUtf8()));
     }
 
+    void buildUsesWarpKeyformOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const auto deformerIt = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(),
+            [](const live2dstruct::CModelDeformer& deformer){
+                return deformer.type == live2dstruct::CModelDeformer::Warp &&
+                       deformer.parentDeformerIndex >= 0 && !deformer.warpKeyforms.isEmpty() &&
+                       !deformer.warpKeyforms.first().positions.isEmpty();
+            });
+        QVERIFY(deformerIt != document.Deformers().cend());
+        QVector<live2dstruct::CModelWarpKeyform> keyforms = document.DeformerWarpKeyforms(deformerIt->id);
+        keyforms[0].positions[0] += 4.25f;
+        QVERIFY(document.SetDeformerWarpKeyforms(deformerIt->id, keyforms));
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Mark-warp.cmo3"));
+        options.deformerWarpKeyformOverrides = document.DeformerWarpKeyformOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* mainXml = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(mainXml);
+        QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(keyforms[0].positions[0]).toUtf8()));
+    }
+
     void buildUsesIndexOverride()
     {
         const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
