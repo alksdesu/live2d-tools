@@ -158,7 +158,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     if (userEdit) m_userLocked.insert(rowIndex);
     m_lastValues.insert(paramId, value);
     if (m_document) m_document->SetParameterValue(paramId, value);
-    emit ParamChanged(paramId, value, false);
+    emit ParamChanged(paramId, value, !userEdit);
     RefreshXYControls();
     if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) PushEdit(paramId, before, value);
 }
