@@ -75,6 +75,7 @@ SOURCES += \
     ui/cxyparameterpad.cpp \
     ui/cmotionpanel.cpp \
     ui/cmotiontimeline.cpp \
+    ui/cmotioncurveview.cpp \
     ui/cphysicspanel.cpp \
     ui/cphysicsgraph.cpp \
     ui/cblendshapepanel.cpp \
@@ -260,6 +261,7 @@ HEADERS += \
     ui/cxyparameterpad.h \
     ui/cmotionpanel.h \
     ui/cmotiontimeline.h \
+    ui/cmotioncurveview.h \
     ui/cphysicsgraph.h \
     ui/cphysicspanel.h \
     ui/cblendshapepanel.h \

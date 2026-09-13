@@ -16,6 +16,7 @@ class QLabel;
 class QPushButton;
 class QTableWidget;
 class QTimer;
+class CMotionCurveView;
 
 class CMotionPanel : public QDockWidget
 {
@@ -61,6 +62,7 @@ private:
     QLabel* m_speedLabel;
     QSlider* m_timelinePlayhead = nullptr;
     QLabel* m_timelineTimeLabel = nullptr;
+    CMotionCurveView* m_curveView = nullptr;
     QWidget* m_poseWidget;
 
     struct MotionEntry {

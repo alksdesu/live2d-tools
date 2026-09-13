@@ -1,4 +1,5 @@
 #include "cmotionpanel.h"
+#include "cmotioncurveview.h"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
 #include <QDebug>
@@ -182,6 +183,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
     timelineTools->addWidget(m_timelineStatus);
     timelineLayout->addLayout(timelineTools);
+    m_curveView = new CMotionCurveView(timelineBox);
+    timelineLayout->addWidget(m_curveView);
     m_timelineTable = new QTableWidget(0, 4, timelineBox);
     m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
     m_timelineTable->setHorizontalHeaderLabels({QStringLiteral("时间"), QStringLiteral("参数"), QStringLiteral("值"), QStringLiteral("插值")});
@@ -355,6 +358,10 @@ void CMotionPanel::RefreshTimelineTable()
         return left.parameterId < right.parameterId;
     });
     m_timelineRows = points;
+    if (m_curveView) {
+        m_curveView->SetTimeline(&m_timeline);
+        m_curveView->SetTime(m_timelineTime);
+    }
     if (m_playTimelineButton) m_playTimelineButton->setEnabled(!points.isEmpty());
     if (m_timelinePlayhead) m_timelinePlayhead->setEnabled(!points.isEmpty());
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
@@ -392,6 +399,7 @@ void CMotionPanel::ToggleTimelinePlayback()
         QSignalBlocker blocker(m_timelinePlayhead);
         m_timelinePlayhead->setValue(0);
     }
+    if (m_curveView) m_curveView->SetTime(m_timelineTime);
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
 }
 
@@ -418,6 +426,7 @@ void CMotionPanel::TickTimelinePlayback()
             ? qBound(0, qRound(m_timelineTime * 1000.0f / duration), 1000) : 0);
     }
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
+    if (m_curveView) m_curveView->SetTime(m_timelineTime);
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
 }
 
@@ -431,6 +440,7 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
     const float duration = m_timeline.Duration();
     m_timelineTime = duration * qBound(0, value, 1000) / 1000.0f;
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
+    if (m_curveView) m_curveView->SetTime(m_timelineTime);
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
 }
 
