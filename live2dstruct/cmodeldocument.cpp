@@ -871,6 +871,10 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
 
     QVector<int> states(m_deformers.size(), 0);
     for (int i = 0; i < m_deformers.size(); ++i) {
+        if (!std::isfinite(m_deformers[i].baseAngle)) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_angle"),
+                                 QStringLiteral("Deformer 基准角度不是有限数值"), i});
+        }
         if (m_deformers[i].parentPartIndex != -1 && !inRange(m_deformers[i].parentPartIndex, m_parts.size())) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_part"),
                                  QStringLiteral("Deformer 所属 Part 越界"), i});
@@ -886,6 +890,11 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                 }
             }
         } else if (m_deformers[i].type == CModelDeformer::Warp) {
+            if (m_deformers[i].rows < 0 || m_deformers[i].columns < 0 ||
+                m_deformers[i].rows > 1000 || m_deformers[i].columns > 1000) {
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("warp_grid"),
+                                     QStringLiteral("Warp Deformer 网格尺寸无效"), i});
+            }
             const qint64 pointCount = (static_cast<qint64>(m_deformers[i].rows) + 1) *
                                       (static_cast<qint64>(m_deformers[i].columns) + 1);
             for (const CModelWarpKeyform& keyform : DeformerWarpKeyforms(m_deformers[i].id)) {
@@ -994,15 +1003,20 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("opacity_range"),
                                  QStringLiteral("ArtMesh 默认透明度超出 0 到 1 范围"), i});
         }
+        if (!std::isfinite(drawable.drawOrder)) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("draw_order_nan"),
+                                 QStringLiteral("ArtMesh 默认绘制顺序不是有限数值"), i});
+        }
         for (const CModelKeyform& keyform : drawable.keyforms) {
             if (!keyform.positions.isEmpty() && keyform.positions.size() != drawable.vertexCount * 2) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_position_count"),
                                      QStringLiteral("关键形顶点数量与 ArtMesh 不一致"), i});
                 break;
             }
-            if (!std::isfinite(keyform.opacity) || !std::isfinite(keyform.drawOrder)) {
+            if (!std::isfinite(keyform.opacity) || keyform.opacity < -0.001f || keyform.opacity > 1.001f ||
+                !std::isfinite(keyform.drawOrder)) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("keyform_nan"),
-                                     QStringLiteral("关键形包含非有限数值"), i});
+                                     QStringLiteral("关键形透明度或绘制顺序无效"), i});
                 break;
             }
             bool finitePositions = true;

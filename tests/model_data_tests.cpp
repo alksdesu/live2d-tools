@@ -135,6 +135,48 @@ private slots:
         QVERIFY(!document.IsLocked(QStringLiteral("artmesh"), drawableId));
     }
 
+    void validatesRuntimeNumericState()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+
+        auto& drawables = const_cast<QVector<live2dstruct::CModelDrawable>&>(document.Drawables());
+        const float originalDrawOrder = drawables.first().drawOrder;
+        drawables.first().drawOrder = std::numeric_limits<float>::quiet_NaN();
+        const auto drawOrderDiagnostics = document.Validate();
+        QVERIFY(std::any_of(drawOrderDiagnostics.cbegin(), drawOrderDiagnostics.cend(),
+                            [](const live2dstruct::CModelDiagnostic& diagnostic){
+                                return diagnostic.code == QStringLiteral("draw_order_nan");
+                            }));
+        drawables.first().drawOrder = originalDrawOrder;
+
+        auto& deformers = const_cast<QVector<live2dstruct::CModelDeformer>&>(document.Deformers());
+        const auto warpIt = std::find_if(deformers.cbegin(), deformers.cend(),
+                                         [](const live2dstruct::CModelDeformer& deformer){
+                                             return deformer.type == live2dstruct::CModelDeformer::Warp;
+                                         });
+        QVERIFY(warpIt != deformers.cend());
+        const int warpIndex = static_cast<int>(warpIt - deformers.cbegin());
+        const int originalRows = deformers[warpIndex].rows;
+        deformers[warpIndex].rows = -1;
+        const auto warpDiagnostics = document.Validate();
+        QVERIFY(std::any_of(warpDiagnostics.cbegin(), warpDiagnostics.cend(),
+                            [](const live2dstruct::CModelDiagnostic& diagnostic){
+                                return diagnostic.code == QStringLiteral("warp_grid");
+                            }));
+        deformers[warpIndex].rows = originalRows;
+
+        const float originalAngle = deformers[warpIndex].baseAngle;
+        deformers[warpIndex].baseAngle = std::numeric_limits<float>::quiet_NaN();
+        const auto angleDiagnostics = document.Validate();
+        QVERIFY(std::any_of(angleDiagnostics.cbegin(), angleDiagnostics.cend(),
+                            [](const live2dstruct::CModelDiagnostic& diagnostic){
+                                return diagnostic.code == QStringLiteral("deformer_angle");
+                            }));
+        deformers[warpIndex].baseAngle = originalAngle;
+    }
+
     void documentEditHistory()
     {
         live2dstruct::CModelDocument document;
