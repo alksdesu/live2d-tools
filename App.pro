@@ -75,6 +75,7 @@ SOURCES += \
     ui/cxyparameterpad.cpp \
     ui/cmotionpanel.cpp \
     ui/cphysicspanel.cpp \
+    ui/cphysicsgraph.cpp \
     ui/cblendshapepanel.cpp \
     ui/ctexturepanel.cpp \
     live2dstruct/tree/c2dtree.cpp \
@@ -257,6 +258,7 @@ HEADERS += \
     ui/cparampanel.h \
     ui/cxyparameterpad.h \
     ui/cmotionpanel.h \
+    ui/cphysicsgraph.h \
     ui/cphysicspanel.h \
     ui/cblendshapepanel.h \
     ui/ctexturepanel.h \

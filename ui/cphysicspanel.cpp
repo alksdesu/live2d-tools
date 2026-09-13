@@ -1,4 +1,5 @@
 #include "cphysicspanel.h"
+#include "cphysicsgraph.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -116,6 +117,8 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
 
     // 详情区域（输入/输出/摆锤）
     QSplitter* detailSplitter = new QSplitter(Qt::Vertical, wrapper);
+    m_graph = new CPhysicsGraphWidget(wrapper);
+    detailSplitter->addWidget(m_graph);
 
     // 输入设置
     m_inputTable = new QTableWidget(0, 4, wrapper);
@@ -449,6 +452,7 @@ void CPhysicsPanel::showGroupDetail(int row)
     m_updating = true;
 
     QJsonObject setting = m_physicsSettings[row].toObject();
+    if (m_graph) m_graph->SetGroup(setting);
 
     // 输入设置
     QJsonArray inputs = setting["Input"].toArray();

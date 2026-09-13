@@ -9,6 +9,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 
+class CPhysicsGraphWidget;
+
 class CPhysicsPanel : public QDockWidget
 {
     Q_OBJECT
@@ -43,6 +45,7 @@ private:
     QTableWidget* m_inputTable;
     QTableWidget* m_outputTable;
     QTableWidget* m_vertexTable;
+    CPhysicsGraphWidget* m_graph = nullptr;
 
     // 重力/风力滑条
     QSlider* m_gravityX;

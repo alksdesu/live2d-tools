@@ -1,4 +1,5 @@
 #include "ui/cphysicspanel.h"
+#include "ui/cphysicsgraph.h"
 #include <QtTest>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -28,6 +29,7 @@ private slots:
         QVERIFY(!panel.HasUnsavedChanges());
         auto* groups = panel.findChild<QTableWidget*>(QStringLiteral("physicsGroupTable"));
         QVERIFY(groups);
+        QVERIFY(panel.findChild<CPhysicsGraphWidget*>(QStringLiteral("physicsGraph")));
         QCOMPARE(groups->rowCount(), 0);
     }
 
@@ -68,10 +70,15 @@ private slots:
         auto* vertex = panel.findChild<QTableWidget*>(QStringLiteral("physicsVertexTable"));
         auto* groups = panel.findChild<QTableWidget*>(QStringLiteral("physicsGroupTable"));
         QVERIFY(input && output && vertex && groups);
+        auto* graph = panel.findChild<CPhysicsGraphWidget*>(QStringLiteral("physicsGraph"));
+        QVERIFY(graph);
         QCOMPARE(groups->rowCount(), 2);
         QCOMPARE(input->rowCount(), 1);
         QCOMPARE(output->rowCount(), 1);
         QCOMPARE(vertex->rowCount(), 1);
+        QCOMPARE(graph->InputCount(), 1);
+        QCOMPARE(graph->OutputCount(), 1);
+        QCOMPARE(graph->VertexCount(), 2);
         QSignalSpy configChanges(&panel, &CPhysicsPanel::PhysicsConfigChanged);
         panel.LoadPhysics(path);
         QCOMPARE(configChanges.count(), 0);
