@@ -98,6 +98,16 @@ private slots:
         QCOMPARE(setting.value(QStringLiteral("Input")).toArray().first().toObject().value(QStringLiteral("Weight")).toDouble(), 0.8);
         QCOMPARE(setting.value(QStringLiteral("Output")).toArray().first().toObject().value(QStringLiteral("Scale")).toDouble(), 2.5);
         QCOMPARE(setting.value(QStringLiteral("Vertices")).toArray().at(1).toObject().value(QStringLiteral("Mobility")).toDouble(), 0.75);
+
+        const QString brokenPath = temp.filePath(QStringLiteral("broken.physics3.json"));
+        QFile broken(brokenPath);
+        QVERIFY(broken.open(QIODevice::WriteOnly));
+        QVERIFY(broken.write("{broken") > 0);
+        broken.close();
+        QString error;
+        QVERIFY(!panel.LoadPhysics(brokenPath, &error));
+        QCOMPARE(groups->rowCount(), 2);
+        QVERIFY(!panel.HasUnsavedChanges());
     }
 };
 
