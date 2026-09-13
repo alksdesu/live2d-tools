@@ -712,6 +712,7 @@ bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QStr
         static_cast<csmSizeInt>(data.size()), nameBytes.constData());
     if (!replacement) return false;
     const csmString key(nameBytes.constData());
+    if (_expressionManager) _expressionManager->StopAllMotions();
     if (_expressions[key] != NULL) ACubismMotion::Delete(_expressions[key]);
     _expressions[key] = replacement;
     return true;
