@@ -42,7 +42,7 @@ private slots:
             "Meta": {"Fps": 30, "EffectiveForces": {"Gravity": {"X": 0, "Y": -1}, "Wind": {"X": 0, "Y": 0}},
                      "PhysicsDictionary": [{"Id": "ParamAngleX", "Name": "角度"}]},
             "PhysicsSettings": [{"Id": "hair", "Input": [{"Source": {"Id": "ParamAngleX"}, "Type": "X", "Weight": 0.5, "Reflect": false}],
-                                  "Output": [{"Destination": {"Id": "ParamAngleY"}, "Type": "Y", "Weight": 0.7, "Scale": 1.2, "Reflect": false}],
+                                  "Output": [{"Destination": {"Id": "ParamAngleY"}, "VertexIndex": 1, "Type": "Y", "Weight": 0.7, "Scale": 1.2, "Reflect": false}],
                                   "Vertices": [{"Position": {"X": 0, "Y": 0}}, {"Position": {"X": 1, "Y": 0}, "Radius": 1, "Mobility": 0.5, "Delay": 0.2, "Acceleration": 0.3}]}]
         })";
         QJsonObject sourceRoot = QJsonDocument::fromJson(source).object();
@@ -159,6 +159,29 @@ private slots:
             QVERIFY2(panel.LoadPhysics(path, &error), qPrintable(model + QStringLiteral(": ") + error));
             QVERIFY(panel.findChild<QTableWidget*>(QStringLiteral("physicsGroupTable"))->rowCount() > 0);
         }
+    }
+
+    void rejectsInvalidPhysicsReferences()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath(QStringLiteral("invalid.physics3.json"));
+        const QByteArray source = R"({
+            "PhysicsSettings": [{
+                "Id": "group",
+                "Input": [{"Source": {"Id": ""}, "Type": "Bad", "Weight": 50, "Reflect": false}],
+                "Output": [{"Destination": {"Id": "Param"}, "VertexIndex": 2, "Scale": 1, "Weight": 100, "Type": "X", "Reflect": false}],
+                "Vertices": [{"Position": {"X": 0, "Y": 0}, "Mobility": 1, "Delay": 1, "Acceleration": 1, "Radius": 0}]
+            }]
+        })";
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(source) == source.size());
+        file.close();
+        CPhysicsPanel panel;
+        QString error;
+        QVERIFY(!panel.LoadPhysics(path, &error));
+        QVERIFY(error.contains(QStringLiteral("输入权重无效")) || error.contains(QStringLiteral("输出数值无效")));
     }
 };
 

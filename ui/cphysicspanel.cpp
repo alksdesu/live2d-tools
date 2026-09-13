@@ -346,7 +346,13 @@ bool CPhysicsPanel::ValidateDocument(QString* error) const
         const QJsonValue inputsValue = group.value(QStringLiteral("Input"));
         if (!inputsValue.isUndefined() && !inputsValue.isArray()) return fail(QStringLiteral("物理组 %1 的 Input 无效").arg(groupIndex));
         for (const QJsonValue& inputValue : inputsValue.toArray()) {
-            if (!inputValue.isObject() || !numberInRange(inputValue.toObject(), QStringLiteral("Weight"), 0.0, 100.0))
+            if (!inputValue.isObject()) return fail(QStringLiteral("物理组 %1 的输入无效").arg(groupIndex));
+            const QJsonObject input = inputValue.toObject();
+            const QString sourceId = input.value(QStringLiteral("Source")).toObject().value(QStringLiteral("Id")).toString();
+            const QString inputType = input.value(QStringLiteral("Type")).toString();
+            if (sourceId.isEmpty() || (inputType != QStringLiteral("X") && inputType != QStringLiteral("Y") &&
+                                       inputType != QStringLiteral("Angle")) ||
+                !numberInRange(input, QStringLiteral("Weight"), 0.0, 100.0))
                 return fail(QStringLiteral("物理组 %1 的输入权重无效").arg(groupIndex));
         }
         const QJsonValue outputsValue = group.value(QStringLiteral("Output"));
@@ -354,7 +360,16 @@ bool CPhysicsPanel::ValidateDocument(QString* error) const
         for (const QJsonValue& outputValue : outputsValue.toArray()) {
             if (!outputValue.isObject()) return fail(QStringLiteral("物理组 %1 的输出无效").arg(groupIndex));
             const QJsonObject output = outputValue.toObject();
-            if (!numberInRange(output, QStringLiteral("Weight"), 0.0, 100.0) ||
+            const QString destinationId = output.value(QStringLiteral("Destination")).toObject().value(QStringLiteral("Id")).toString();
+            const QString outputType = output.value(QStringLiteral("Type")).toString();
+            const QJsonValue vertexIndexValue = output.value(QStringLiteral("VertexIndex"));
+            const int vertexCount = group.value(QStringLiteral("Vertices")).toArray().size();
+            if (destinationId.isEmpty() || (outputType != QStringLiteral("X") && outputType != QStringLiteral("Y") &&
+                                            outputType != QStringLiteral("Angle")) ||
+                !vertexIndexValue.isDouble() || vertexIndexValue.toDouble() < 0.0 ||
+                vertexIndexValue.toDouble() != std::floor(vertexIndexValue.toDouble()) ||
+                vertexIndexValue.toDouble() >= vertexCount ||
+                !numberInRange(output, QStringLiteral("Weight"), 0.0, 100.0) ||
                 !numberInRange(output, QStringLiteral("Scale"), -100000.0, 100000.0))
                 return fail(QStringLiteral("物理组 %1 的输出数值无效").arg(groupIndex));
         }
