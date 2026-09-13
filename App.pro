@@ -72,6 +72,7 @@ SOURCES += \
     ui/psdbatchworker.cpp \
     ui/cmodeltreepanel.cpp \
     ui/cparampanel.cpp \
+    ui/cxyparameterpad.cpp \
     ui/cmotionpanel.cpp \
     ui/cphysicspanel.cpp \
     ui/cblendshapepanel.cpp \
@@ -254,6 +255,7 @@ HEADERS += \
     ui/ctreenodedelegate.h \
     ui/theme.h \
     ui/cparampanel.h \
+    ui/cxyparameterpad.h \
     ui/cmotionpanel.h \
     ui/cphysicspanel.h \
     ui/cblendshapepanel.h \

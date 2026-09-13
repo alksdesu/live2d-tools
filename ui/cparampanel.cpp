@@ -3,6 +3,7 @@
 #include "live2d/LAppModel.hpp"
 #include "live2dstruct/cmodeldocument.h"
 #include "ui/para/ccidjson.h"
+#include "ui/cxyparameterpad.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -96,28 +97,24 @@ CParamPanel::CParamPanel(QWidget *parent)
     m_search->setClearButtonEnabled(true);
     mainLayout->addWidget(m_search);
 
-    auto* xyBox = new QGroupBox(QStringLiteral("XY 参数控制"), wrapper);
-    auto* xyLayout = new QGridLayout(xyBox);
-    m_xyXSelector = new QComboBox(xyBox);
-    m_xyYSelector = new QComboBox(xyBox);
+    m_xyBox = new QGroupBox(QStringLiteral("XY 参数控制"), wrapper);
+    auto* xyLayout = new QGridLayout(m_xyBox);
+    m_xyXSelector = new QComboBox(m_xyBox);
+    m_xyYSelector = new QComboBox(m_xyBox);
     m_xyXSelector->setObjectName(QStringLiteral("xyXParameter"));
     m_xyYSelector->setObjectName(QStringLiteral("xyYParameter"));
-    m_xyXSlider = new QSlider(Qt::Horizontal, xyBox);
-    m_xyYSlider = new QSlider(Qt::Horizontal, xyBox);
-    m_xyXSlider->setRange(0, 1000);
-    m_xyYSlider->setRange(0, 1000);
-    xyLayout->addWidget(new QLabel(QStringLiteral("X"), xyBox), 0, 0);
+    m_xyPad = new CXYParameterPad(m_xyBox);
+    m_xyPad->setObjectName(QStringLiteral("xyParameterPad"));
+    xyLayout->addWidget(new QLabel(QStringLiteral("X"), m_xyBox), 0, 0);
     xyLayout->addWidget(m_xyXSelector, 0, 1);
-    xyLayout->addWidget(m_xyXSlider, 0, 2);
-    xyLayout->addWidget(new QLabel(QStringLiteral("Y"), xyBox), 1, 0);
+    xyLayout->addWidget(new QLabel(QStringLiteral("Y"), m_xyBox), 1, 0);
     xyLayout->addWidget(m_xyYSelector, 1, 1);
-    xyLayout->addWidget(m_xyYSlider, 1, 2);
-    xyBox->setEnabled(false);
-    mainLayout->addWidget(xyBox);
+    xyLayout->addWidget(m_xyPad, 0, 2, 2, 1);
+    m_xyBox->setEnabled(false);
+    mainLayout->addWidget(m_xyBox);
     connect(m_xyXSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
     connect(m_xyYSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
-    connect(m_xyXSlider, &QSlider::valueChanged, this, [this](){ ApplyXYSlider(m_xyXSlider, m_xyXSelector); });
-    connect(m_xyYSlider, &QSlider::valueChanged, this, [this](){ ApplyXYSlider(m_xyYSlider, m_xyYSelector); });
+    connect(m_xyPad, &CXYParameterPad::ValuesChanged, this, &CParamPanel::ApplyXYPad);
 
     m_scroll = new QScrollArea(wrapper);
     m_scroll->setWidgetResizable(true);
@@ -436,9 +433,9 @@ void CParamPanel::RefreshParameterMetadata()
 
 void CParamPanel::RefreshXYControls()
 {
-    if (!m_xyXSelector || !m_xyYSelector || !m_xyXSlider || !m_xyYSlider || m_updatingXY) return;
+    if (!m_xyXSelector || !m_xyYSelector || !m_xyPad || !m_xyBox || m_updatingXY) return;
     if (m_rows.size() < 2 || m_xyXSelector->count() < 2 || m_xyYSelector->count() < 2) {
-        m_xyXSelector->parentWidget()->setEnabled(false);
+        m_xyBox->setEnabled(false);
         return;
     }
     m_updatingXY = true;
@@ -447,33 +444,37 @@ void CParamPanel::RefreshXYControls()
         QSignalBlocker blocker(m_xyYSelector);
         m_xyYSelector->setCurrentIndex(replacement);
     }
-    const auto updateSlider = [this](QComboBox* selector, QSlider* slider) {
+    const auto parameterValue = [this](QComboBox* selector, float* minimum, float* maximum) {
         const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
             return row.paramId == selector->currentText();
         });
-        if (rowIt == m_rows.cend()) return;
-        const float value = m_lastValues.value(rowIt->paramId, rowIt->defaultVal);
-        const int sliderValue = rowIt->maxVal > rowIt->minVal
-            ? qBound(0, qRound((value - rowIt->minVal) * 1000.0f / (rowIt->maxVal - rowIt->minVal)), 1000)
-            : 0;
-        QSignalBlocker blocker(slider);
-        slider->setValue(sliderValue);
+        if (rowIt == m_rows.cend()) return 0.0f;
+        *minimum = rowIt->minVal;
+        *maximum = rowIt->maxVal;
+        return m_lastValues.value(rowIt->paramId, rowIt->defaultVal);
     };
-    updateSlider(m_xyXSelector, m_xyXSlider);
-    updateSlider(m_xyYSelector, m_xyYSlider);
-    m_xyXSelector->parentWidget()->setEnabled(true);
+    float xMinimum = 0.0f, xMaximum = 1.0f, yMinimum = 0.0f, yMaximum = 1.0f;
+    const float xValue = parameterValue(m_xyXSelector, &xMinimum, &xMaximum);
+    const float yValue = parameterValue(m_xyYSelector, &yMinimum, &yMaximum);
+    m_xyPad->SetRange(xMinimum, xMaximum, yMinimum, yMaximum);
+    m_xyPad->SetValues(xValue, yValue);
+    m_xyBox->setEnabled(true);
     m_updatingXY = false;
 }
 
-void CParamPanel::ApplyXYSlider(QSlider* slider, QComboBox* selector)
+void CParamPanel::ApplyXYPad(float xValue, float yValue)
 {
-    if (m_updatingXY || !slider || !selector) return;
-    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
-        return row.paramId == selector->currentText();
-    });
-    if (rowIt == m_rows.cend() || rowIt->maxVal <= rowIt->minVal) return;
-    const float value = rowIt->minVal + (rowIt->maxVal - rowIt->minVal) * slider->value() / 1000.0f;
-    ApplyExternalValue(rowIt->paramId, value, true);
+    if (m_updatingXY || !m_xyXSelector || !m_xyYSelector) return;
+    const auto findRow = [this](QComboBox* selector) {
+        return std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
+            return row.paramId == selector->currentText();
+        });
+    };
+    const auto xRow = findRow(m_xyXSelector);
+    const auto yRow = findRow(m_xyYSelector);
+    if (xRow == m_rows.cend() || yRow == m_rows.cend()) return;
+    ApplyExternalValue(xRow->paramId, xValue, true);
+    ApplyExternalValue(yRow->paramId, yValue, true);
 }
 
 void CParamPanel::ResetAll()

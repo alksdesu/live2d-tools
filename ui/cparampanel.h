@@ -14,6 +14,8 @@
 class CCidJson;
 class QToolButton;
 class QComboBox;
+class QGroupBox;
+class CXYParameterPad;
 namespace live2dstruct { class CModelDocument; }
 
 class CParamPanel : public QDockWidget
@@ -66,8 +68,8 @@ private:
     QLineEdit* m_search;
     QComboBox* m_xyXSelector = nullptr;
     QComboBox* m_xyYSelector = nullptr;
-    QSlider* m_xyXSlider = nullptr;
-    QSlider* m_xyYSlider = nullptr;
+    CXYParameterPad* m_xyPad = nullptr;
+    QGroupBox* m_xyBox = nullptr;
     bool m_updatingXY = false;
     QVector<ParamRow> m_rows;
     QSet<int> m_userDragging;
@@ -82,7 +84,7 @@ private:
     void EmitHistoryState();
     void RefreshParameterRow(int rowIndex);
     void RefreshXYControls();
-    void ApplyXYSlider(QSlider* slider, QComboBox* selector);
+    void ApplyXYPad(float xValue, float yValue);
 };
 
 #endif // CPARAMPANEL_H

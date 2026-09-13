@@ -57,6 +57,7 @@ add_library(ui_inspector STATIC
     ui/cinspectorpanel.cpp
     ui/cmodeldiagnosticspanel.cpp
     ui/cparampanel.cpp
+    ui/cxyparameterpad.cpp
 )
 target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(ui_inspector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/opencv/include)
@@ -87,6 +88,11 @@ if(BUILD_TESTING)
     target_link_libraries(physics_panel_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME physics_panel COMMAND physics_panel_tests)
     set_tests_properties(physics_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(xy_parameter_pad_tests tests/xy_parameter_pad_tests.cpp ui/cxyparameterpad.cpp)
+    target_include_directories(xy_parameter_pad_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(xy_parameter_pad_tests PRIVATE Qt6::Test Qt6::Widgets)
+    add_test(NAME xy_parameter_pad COMMAND xy_parameter_pad_tests)
+    set_tests_properties(xy_parameter_pad PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(cmo3_tests tests/cmo3_tests.cpp)
     target_link_libraries(cmo3_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(cmo3_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
