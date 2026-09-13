@@ -63,7 +63,7 @@ public:
      *
      * @param[in] filePath wavファイルのパス
      */
-    void Start(const Csm::csmString& filePath);
+    Csm::csmBool Start(const Csm::csmString& filePath);
 
     void Stop();
 

@@ -63,6 +63,8 @@ public:
     void SetPhysicsGravity(float x, float y);
     void SetPhysicsWind(float x, float y);
     bool ReloadPhysicsFromFile(const QString& path);
+    bool StartLipSyncWav(const QString& path);
+    void StopLipSyncWav();
 
     // 物理组拖拽：设置拖拽驱动的参数列表
     void SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types);

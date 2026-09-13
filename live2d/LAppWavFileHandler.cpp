@@ -68,12 +68,12 @@ Csm::csmBool LAppWavFileHandler::Update(Csm::csmFloat32 deltaTimeSeconds)
     return true;
 }
 
-void LAppWavFileHandler::Start(const Csm::csmString& filePath)
+Csm::csmBool LAppWavFileHandler::Start(const Csm::csmString& filePath)
 {
     // WAVファイルのロード
     if (!LoadWavFile(filePath))
     {
-        return;
+        return false;
     }
 
     // サンプル参照位置を初期化
@@ -82,6 +82,7 @@ void LAppWavFileHandler::Start(const Csm::csmString& filePath)
 
     // RMS値をリセット
     _lastRms = 0.0f;
+    return true;
 }
 
 void LAppWavFileHandler::Stop()

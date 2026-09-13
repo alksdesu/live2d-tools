@@ -1323,6 +1323,23 @@ void MainWindow::RestDock(const QString &name)
             mgr->GetModel(0)->SetMotionLoop(loop);
         }
     });
+    connect(m_motionPanel, &CMotionPanel::LipSyncWavChanged, this, [this](const QString& path){
+        LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+        LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+        if (!model) return;
+        if (path.isEmpty()) {
+            model->StopLipSyncWav();
+            m_motionPanel->SetLipSyncWavStatus(false);
+            return;
+        }
+        if (!model->StartLipSyncWav(path)) {
+            m_motionPanel->SetLipSyncWavStatus(false);
+            statusBar()->showMessage(QStringLiteral("口型 WAV 加载失败：%1").arg(path), 8000);
+            return;
+        }
+        m_motionPanel->SetLipSyncWavStatus(true, path);
+        statusBar()->showMessage(QStringLiteral("已加载口型 WAV：%1").arg(path), 5000);
+    });
 
     connect(m_motionPanel, &CMotionPanel::MouseFollowChanged, this, [](bool enabled){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();

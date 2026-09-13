@@ -10,6 +10,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -68,8 +69,16 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     QPushButton* playBtn = new QPushButton("▶ 播放");
     playBtn->setObjectName("primaryBtn");
     QPushButton* stopBtn = new QPushButton("■ 停止");
+    auto* loadLipSyncBtn = new QPushButton(QStringLiteral("加载口型 WAV"), motionWidget);
+    auto* stopLipSyncBtn = new QPushButton(QStringLiteral("停止口型"), motionWidget);
+    m_lipSyncWavStatus = new QLabel(QStringLiteral("口型：未加载"), motionWidget);
+    loadLipSyncBtn->setObjectName(QStringLiteral("loadLipSyncWav"));
+    stopLipSyncBtn->setObjectName(QStringLiteral("stopLipSyncWav"));
     motionLayout->addWidget(playBtn);
     motionLayout->addWidget(stopBtn);
+    motionLayout->addWidget(loadLipSyncBtn);
+    motionLayout->addWidget(stopLipSyncBtn);
+    motionLayout->addWidget(m_lipSyncWavStatus);
     splitter->addWidget(motionWidget);
 
     connect(playBtn, &QPushButton::clicked, this, [this](){
@@ -79,6 +88,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(stopBtn, &QPushButton::clicked, this, &CMotionPanel::StopMotions);
+    connect(loadLipSyncBtn, &QPushButton::clicked, this, &CMotionPanel::LoadLipSyncWav);
+    connect(stopLipSyncBtn, &QPushButton::clicked, this, &CMotionPanel::StopLipSyncWav);
 
     connect(m_motionList, &QListWidget::itemDoubleClicked, this, [this](){
         int row = m_motionList->currentRow();
@@ -827,6 +838,27 @@ void CMotionPanel::RemovePosePart()
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));
     m_poseDirty = true;
     emit PoseConfigChanged();
+}
+
+void CMotionPanel::LoadLipSyncWav()
+{
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("加载口型 WAV"),
+                                                       QString(), QStringLiteral("WAV 音频 (*.wav)"));
+    if (path.isEmpty()) return;
+    emit LipSyncWavChanged(path);
+}
+
+void CMotionPanel::StopLipSyncWav()
+{
+    emit LipSyncWavChanged(QString());
+}
+
+void CMotionPanel::SetLipSyncWavStatus(bool loaded, const QString& path)
+{
+    if (!m_lipSyncWavStatus) return;
+    m_lipSyncWavStatus->setText(loaded
+                                ? QStringLiteral("口型：%1").arg(QFileInfo(path).fileName())
+                                : QStringLiteral("口型：未加载"));
 }
 
 void CMotionPanel::EditSelectedExpression()

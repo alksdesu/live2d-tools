@@ -28,6 +28,7 @@ public:
     bool SavePose(QString* error = nullptr);
     void RecordParameterValue(const QString& parameterId, float value);
     bool HasUnsavedPoseChanges() const { return m_poseDirty; }
+    void SetLipSyncWavStatus(bool loaded, const QString& path = QString());
 
     bool isAutoEyeBlink() const { return m_eyeBlinkCb->isChecked(); }
     bool isAutoBreath() const { return m_breathCb->isChecked(); }
@@ -46,6 +47,7 @@ signals:
     void PoseSaved();
     void MotionTimelineChanged();
     void MotionTimelinePreviewChanged(const QMap<QString, float>& values);
+    void LipSyncWavChanged(const QString& path);
 
 private:
     QListWidget* m_motionList;
@@ -53,6 +55,7 @@ private:
     QLineEdit* m_motionSearch = nullptr;
     QLineEdit* m_exprSearch = nullptr;
     QPushButton* m_editExpressionButton = nullptr;
+    QLabel* m_lipSyncWavStatus = nullptr;
     QCheckBox* m_eyeBlinkCb;
     QCheckBox* m_breathCb;
     QCheckBox* m_mouseFollowCb;
@@ -105,6 +108,8 @@ private:
     void EditPoseLinks();
     void EmitPoseSelection(int poseIndex, int optionIndex);
     void EditSelectedExpression();
+    void LoadLipSyncWav();
+    void StopLipSyncWav();
     void ExportTimeline();
     void ImportTimeline();
     void ClearTimeline();

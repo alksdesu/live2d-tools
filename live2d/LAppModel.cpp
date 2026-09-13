@@ -904,6 +904,18 @@ void LAppModel::SetPhysicsWind(float x, float y)
     }
 }
 
+bool LAppModel::StartLipSyncWav(const QString& path)
+{
+    if (path.isEmpty()) return false;
+    const QByteArray utf8Path = path.toUtf8();
+    return _wavFileHandler.Start(csmString(utf8Path.constData()));
+}
+
+void LAppModel::StopLipSyncWav()
+{
+    _wavFileHandler.Stop();
+}
+
 void LAppModel::SetPartVisible(const QString& partId, bool visible)
 {
     if (!_model) return;
