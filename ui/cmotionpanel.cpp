@@ -225,6 +225,22 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(exportTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ExportTimeline);
     connect(importTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ImportTimeline);
     connect(m_timelineTable, &QTableWidget::cellChanged, this, &CMotionPanel::ApplyTimelineCellEdit);
+    connect(m_timelineTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int){
+        if (!m_curveView || row < 0 || row >= m_timelineRows.size()) return;
+        const TimelineRow& selected = m_timelineRows.at(row);
+        m_curveView->SetSelectedPoint(selected.parameterId, selected.pointIndex);
+    });
+    connect(m_curveView, &CMotionCurveView::PointSelected, this, [this](const QString& parameterId, int pointIndex){
+        if (!m_timelineTable) return;
+        for (int row = 0; row < m_timelineRows.size(); ++row) {
+            const TimelineRow& candidate = m_timelineRows.at(row);
+            if (candidate.parameterId == parameterId && candidate.pointIndex == pointIndex) {
+                m_timelineTable->selectRow(row);
+                return;
+            }
+        }
+    });
+    connect(m_curveView, &CMotionCurveView::PointEdited, this, &CMotionPanel::ApplyTimelineCurveEdit);
     connect(m_timelinePlayhead, &QSlider::valueChanged, this, &CMotionPanel::SetTimelineTimeFromSlider);
     m_timelineTimer = new QTimer(this);
     m_timelineTimer->setInterval(33);
@@ -442,6 +458,13 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     if (m_curveView) m_curveView->SetTime(m_timelineTime);
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
+}
+
+void CMotionPanel::ApplyTimelineCurveEdit(const QString& parameterId, int pointIndex, float time, float value)
+{
+    if (m_updatingTimeline || !m_timeline.UpdatePoint(parameterId, pointIndex, time, value)) return;
+    RefreshTimelineTable();
+    emit MotionTimelineChanged();
 }
 
 void CMotionPanel::ApplyTimelineCellEdit(int row, int column)

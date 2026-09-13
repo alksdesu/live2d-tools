@@ -111,6 +111,7 @@ private:
     void ToggleTimelinePlayback();
     void TickTimelinePlayback();
     void SetTimelineTimeFromSlider(int value);
+    void ApplyTimelineCurveEdit(const QString& parameterId, int pointIndex, float time, float value);
 
     struct TimelineRow {
         QString parameterId;
