@@ -148,7 +148,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms };
     QString name;
     QString type;
     Field field = Visibility;

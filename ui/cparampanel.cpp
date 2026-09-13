@@ -473,8 +473,21 @@ void CParamPanel::ApplyXYPad(float xValue, float yValue)
     const auto xRow = findRow(m_xyXSelector);
     const auto yRow = findRow(m_xyYSelector);
     if (xRow == m_rows.cend() || yRow == m_rows.cend()) return;
-    ApplyExternalValue(xRow->paramId, xValue, true);
-    ApplyExternalValue(yRow->paramId, yValue, true);
+    xValue = qBound(xRow->minVal, xValue, xRow->maxVal);
+    yValue = qBound(yRow->minVal, yValue, yRow->maxVal);
+    const QMap<QString, float> before{{xRow->paramId, m_lastValues.value(xRow->paramId, xRow->defaultVal)},
+                                      {yRow->paramId, m_lastValues.value(yRow->paramId, yRow->defaultVal)}};
+    const QMap<QString, float> after{{xRow->paramId, xValue}, {yRow->paramId, yValue}};
+    if (before == after || !m_document) return;
+    const live2dstruct::CModelEdit command{
+        QStringLiteral("xy"), QStringLiteral("parameters"), live2dstruct::CModelEdit::ParameterValues,
+        QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+    if (!m_document->ExecuteEdit(command)) return;
+    m_updatingXY = true;
+    ApplyExternalValue(xRow->paramId, xValue, false);
+    ApplyExternalValue(yRow->paramId, yValue, false);
+    m_updatingXY = false;
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
 void CParamPanel::ResetAll()

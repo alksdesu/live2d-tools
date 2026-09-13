@@ -488,6 +488,15 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         else if (m_openglwindows) m_openglwindows->do_change_para_value(edit.name, parameterValue, false);
     } else if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {
         if (m_paramPanel) m_paramPanel->RefreshParameterMetadata();
+    } else if (edit.field == live2dstruct::CModelEdit::ParameterValues) {
+        const QMap<QString, float> values = value.value<QMap<QString, float>>();
+        if (m_paramPanel) {
+            for (auto it = values.cbegin(); it != values.cend(); ++it)
+                m_paramPanel->ApplyExternalValue(it.key(), it.value());
+        } else if (m_openglwindows) {
+            for (auto it = values.cbegin(); it != values.cend(); ++it)
+                m_openglwindows->do_change_para_value(it.key(), it.value(), false);
+        }
     } else if (edit.field == live2dstruct::CModelEdit::Visibility) {
         const bool visible = value.toBool();
         if (m_treePanel) {

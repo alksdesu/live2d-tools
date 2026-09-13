@@ -176,6 +176,22 @@ private slots:
         QCOMPARE(document.ParameterMetadata(parameter.id).displayName, metadataBefore.displayName);
         QVERIFY(document.RedoEdit());
         QCOMPARE(document.ParameterMetadata(parameter.id).displayName, QStringLiteral("测试参数"));
+        const QString secondParameterId = document.Parameters().at(1).id;
+        const QMap<QString, float> pairBefore{{parameter.id, document.ParameterValue(parameter.id)},
+                                              {secondParameterId, document.ParameterValue(secondParameterId)}};
+        const QMap<QString, float> pairAfter{{parameter.id, parameter.minimum},
+                                             {secondParameterId, document.Parameters().at(1).maximum}};
+        QVERIFY(document.ExecuteEdit({QStringLiteral("xy"), QStringLiteral("parameters"),
+                                      live2dstruct::CModelEdit::ParameterValues,
+                                      QVariant::fromValue(pairBefore), QVariant::fromValue(pairAfter), -1, false}));
+        QCOMPARE(document.ParameterValue(parameter.id), pairAfter.value(parameter.id));
+        QCOMPARE(document.ParameterValue(secondParameterId), pairAfter.value(secondParameterId));
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.ParameterValue(parameter.id), pairBefore.value(parameter.id));
+        QCOMPARE(document.ParameterValue(secondParameterId), pairBefore.value(secondParameterId));
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.ParameterValue(parameter.id), pairAfter.value(parameter.id));
+        QCOMPARE(document.ParameterValue(secondParameterId), pairAfter.value(secondParameterId));
         QVERIFY(!drawable.keyforms.isEmpty());
         const QVector<float> keyformBefore = document.DrawableKeyformPositions(id, 0);
         QVERIFY(keyformBefore.size() == drawable.vertexCount * 2);

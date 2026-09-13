@@ -670,6 +670,19 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         if (edit.type != QLatin1String("parameter") || !value.canConvert<float>()) return false;
         return SetParameterValue(edit.name, value.toFloat());
     }
+    if (edit.field == CModelEdit::ParameterValues) {
+        if (edit.type != QLatin1String("parameters") || !value.canConvert<QMap<QString, float>>()) return false;
+        const QMap<QString, float> values = value.value<QMap<QString, float>>();
+        if (values.isEmpty()) return false;
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            const CModelParameterMetadata metadata = ParameterMetadata(it.key());
+            if (metadata.displayName.isEmpty() || !std::isfinite(it.value()) ||
+                it.value() < metadata.minimum || it.value() > metadata.maximum) return false;
+        }
+        for (auto it = values.cbegin(); it != values.cend(); ++it)
+            m_parameterValues.insert(it.key(), it.value());
+        return true;
+    }
     if (edit.field == CModelEdit::ParameterMetadata) {
         if (edit.type != QLatin1String("parameter")) return false;
         CModelParameterMetadata metadata;
