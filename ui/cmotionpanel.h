@@ -59,6 +59,8 @@ private:
     QCheckBox* m_loopCb;
     QSlider* m_speedSlider;
     QLabel* m_speedLabel;
+    QSlider* m_timelinePlayhead = nullptr;
+    QLabel* m_timelineTimeLabel = nullptr;
     QWidget* m_poseWidget;
 
     struct MotionEntry {
@@ -99,12 +101,14 @@ private:
     void RemovePosePart();
     void EditSelectedExpression();
     void ExportTimeline();
+    void ImportTimeline();
     void ClearTimeline();
     void RefreshTimelineTable();
     void ApplyTimelineCellEdit(int row, int column);
     void RemoveTimelineKeyframe();
     void ToggleTimelinePlayback();
     void TickTimelinePlayback();
+    void SetTimelineTimeFromSlider(int value);
 
     struct TimelineRow {
         QString parameterId;

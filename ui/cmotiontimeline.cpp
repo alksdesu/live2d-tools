@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QSaveFile>
 #include <algorithm>
 #include <cmath>
@@ -242,5 +243,95 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
         if (error) *error = file.errorString();
         return false;
     }
+    return true;
+}
+
+bool CMotionTimeline::Load(const QString& path, QString* error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        if (error) *error = QStringLiteral("motion3 JSON 无效：%1").arg(parseError.errorString());
+        return false;
+    }
+    const QJsonObject root = document.object();
+    if (root.value(QStringLiteral("Version")).toInt() != 3 || !root.value(QStringLiteral("Curves")).isArray()) {
+        if (error) *error = QStringLiteral("不支持的 motion3 版本或曲线字段");
+        return false;
+    }
+    QMap<QString, QVector<QPointF>> curves;
+    QMap<QString, QVector<int>> segmentTypes;
+    const QJsonArray sourceCurves = root.value(QStringLiteral("Curves")).toArray();
+    for (const QJsonValue& curveValue : sourceCurves) {
+        if (!curveValue.isObject()) {
+            if (error) *error = QStringLiteral("motion3 曲线不是对象");
+            return false;
+        }
+        const QJsonObject curve = curveValue.toObject();
+        if (curve.value(QStringLiteral("Target")).toString() != QStringLiteral("Parameter")) continue;
+        const QString id = curve.value(QStringLiteral("Id")).toString();
+        const QJsonArray segments = curve.value(QStringLiteral("Segments")).toArray();
+        if (id.isEmpty() || segments.size() < 2 || curves.contains(id)) {
+            if (error) *error = QStringLiteral("motion3 参数曲线无效或重复：%1").arg(id);
+            return false;
+        }
+        bool valid = true;
+        QVector<QPointF> points;
+        QVector<int> types;
+        const auto number = [&segments](int index, bool* ok) {
+            if (index < 0 || index >= segments.size() || !segments.at(index).isDouble()) {
+                *ok = false;
+                return 0.0;
+            }
+            const double value = segments.at(index).toDouble();
+            *ok = std::isfinite(value);
+            return value;
+        };
+        bool ok = true;
+        const double firstTime = number(0, &ok);
+        const double firstValue = number(1, &ok);
+        if (!ok || firstTime < 0.0) valid = false;
+        if (valid) {
+            points.append(QPointF(firstTime, firstValue));
+            types.append(0);
+        }
+        int index = 2;
+        while (valid && index < segments.size()) {
+            const double segmentNumber = number(index++, &ok);
+            const int type = static_cast<int>(segmentNumber);
+            if (!ok || segmentNumber != type || type < 0 || type > 3) { valid = false; break; }
+            const int values = type == 1 ? 6 : 2;
+            if (index + values > segments.size()) { valid = false; break; }
+            QVector<QPointF> segmentPoints;
+            for (int point = 0; point < values / 2; ++point) {
+                const double time = number(index++, &ok);
+                const double value = number(index++, &ok);
+                if (!ok || time < 0.0) { valid = false; break; }
+                segmentPoints.append(QPointF(time, value));
+            }
+            if (!valid) break;
+            const QPointF endpoint = segmentPoints.last();
+            if (endpoint.x() <= points.last().x()) { valid = false; break; }
+            points.append(endpoint);
+            types.append(type);
+        }
+        if (!valid || points.size() < 2) {
+            if (error) *error = QStringLiteral("motion3 曲线段无效：%1").arg(id);
+            return false;
+        }
+        curves.insert(id, points);
+        segmentTypes.insert(id, types);
+    }
+    if (curves.isEmpty()) {
+        if (error) *error = QStringLiteral("motion3 没有参数曲线");
+        return false;
+    }
+    m_curves.swap(curves);
+    m_segmentTypes.swap(segmentTypes);
     return true;
 }

@@ -101,6 +101,26 @@ private slots:
         QCOMPARE(timeline.Evaluate(QStringLiteral("Step"), 0.5f), 1.0f);
         QCOMPARE(timeline.EvaluateAll(0.5f).size(), 2);
     }
+
+    void loadsExportedMotion()
+    {
+        CMotionTimeline source;
+        QVERIFY(source.AddPoint(QStringLiteral("ParamA"), 0.0f, 0.0f));
+        QVERIFY(source.AddPoint(QStringLiteral("ParamA"), 1.0f, 1.0f));
+        QVERIFY(source.SetSegmentType(QStringLiteral("ParamA"), 1, 2));
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath(QStringLiteral("roundtrip.motion3.json"));
+        QString error;
+        QVERIFY(source.Save(path, 30.0f, true, &error));
+        CMotionTimeline loaded;
+        QVERIFY2(loaded.Load(path, &error), qPrintable(error));
+        QCOMPARE(loaded.Curves().keys(), QStringList{QStringLiteral("ParamA")});
+        QCOMPARE(loaded.SegmentType(QStringLiteral("ParamA"), 1), 2);
+        QCOMPARE(loaded.Evaluate(QStringLiteral("ParamA"), 0.5f), 0.0f);
+        QVERIFY(!loaded.Load(temp.filePath(QStringLiteral("missing.motion3.json")), &error));
+        QCOMPARE(loaded.PointCount(), 2);
+    }
 };
 
 QTEST_GUILESS_MAIN(CMotionTimelineTests)

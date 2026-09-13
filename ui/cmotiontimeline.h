@@ -24,6 +24,7 @@ public:
     float Evaluate(const QString& parameterId, float time, bool* ok = nullptr) const;
     QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
+    bool Load(const QString& path, QString* error = nullptr);
     int PointCount() const;
     const QMap<QString, QVector<QPointF>>& Curves() const { return m_curves; }
 

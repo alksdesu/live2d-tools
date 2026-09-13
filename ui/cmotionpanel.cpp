@@ -24,6 +24,7 @@
 #include <QGroupBox>
 #include <QFileDialog>
 #include <QTimer>
+#include <QSignalBlocker>
 #include <algorithm>
 
 using namespace Live2D::Cubism::Framework;
@@ -167,6 +168,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     auto* clearTimelineButton = new QPushButton(QStringLiteral("清空"), timelineBox);
     auto* removeTimelineButton = new QPushButton(QStringLiteral("删除关键帧"), timelineBox);
     auto* exportTimelineButton = new QPushButton(QStringLiteral("导出 motion3"), timelineBox);
+    auto* importTimelineButton = new QPushButton(QStringLiteral("导入 motion3"), timelineBox);
     m_playTimelineButton = new QPushButton(QStringLiteral("预览"), timelineBox);
     m_playTimelineButton->setObjectName(QStringLiteral("previewTimeline"));
     m_playTimelineButton->setEnabled(false);
@@ -175,6 +177,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     timelineTools->addWidget(clearTimelineButton);
     timelineTools->addWidget(removeTimelineButton);
     timelineTools->addWidget(exportTimelineButton);
+    timelineTools->addWidget(importTimelineButton);
     timelineTools->addStretch(1);
     m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
     timelineTools->addWidget(m_timelineStatus);
@@ -192,6 +195,16 @@ CMotionPanel::CMotionPanel(QWidget *parent)
                                      QAbstractItemView::SelectedClicked);
     m_timelineTable->setMaximumHeight(170);
     timelineLayout->addWidget(m_timelineTable);
+    m_timelinePlayhead = new QSlider(Qt::Horizontal, timelineBox);
+    m_timelinePlayhead->setObjectName(QStringLiteral("motionTimelinePlayhead"));
+    m_timelinePlayhead->setRange(0, 1000);
+    m_timelinePlayhead->setEnabled(false);
+    m_timelineTimeLabel = new QLabel(QStringLiteral("0.000s"), timelineBox);
+    auto* playheadRow = new QHBoxLayout();
+    playheadRow->addWidget(new QLabel(QStringLiteral("播放头"), timelineBox));
+    playheadRow->addWidget(m_timelinePlayhead, 1);
+    playheadRow->addWidget(m_timelineTimeLabel);
+    timelineLayout->addLayout(playheadRow);
     mainLayout->addWidget(timelineBox);
     connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
         if (recording) {
@@ -207,7 +220,9 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(clearTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ClearTimeline);
     connect(removeTimelineButton, &QPushButton::clicked, this, &CMotionPanel::RemoveTimelineKeyframe);
     connect(exportTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ExportTimeline);
+    connect(importTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ImportTimeline);
     connect(m_timelineTable, &QTableWidget::cellChanged, this, &CMotionPanel::ApplyTimelineCellEdit);
+    connect(m_timelinePlayhead, &QSlider::valueChanged, this, &CMotionPanel::SetTimelineTimeFromSlider);
     m_timelineTimer = new QTimer(this);
     m_timelineTimer->setInterval(33);
     connect(m_playTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ToggleTimelinePlayback);
@@ -259,6 +274,7 @@ void CMotionPanel::BuildLists()
 {
     if (m_timelineTimer) m_timelineTimer->stop();
     if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
+    if (m_timelinePlayhead) m_timelinePlayhead->setValue(0);
     if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
     m_timeline.Clear();
     RefreshTimelineTable();
@@ -340,6 +356,8 @@ void CMotionPanel::RefreshTimelineTable()
     });
     m_timelineRows = points;
     if (m_playTimelineButton) m_playTimelineButton->setEnabled(!points.isEmpty());
+    if (m_timelinePlayhead) m_timelinePlayhead->setEnabled(!points.isEmpty());
+    if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     m_updatingTimeline = true;
     m_timelineTable->setRowCount(points.size());
     for (int row = 0; row < points.size(); ++row) {
@@ -370,6 +388,10 @@ void CMotionPanel::ToggleTimelinePlayback()
     m_timelineTime = 0.0f;
     m_timelineTimer->start();
     m_playTimelineButton->setText(QStringLiteral("停止"));
+    if (m_timelinePlayhead) {
+        QSignalBlocker blocker(m_timelinePlayhead);
+        m_timelinePlayhead->setValue(0);
+    }
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
 }
 
@@ -390,6 +412,25 @@ void CMotionPanel::TickTimelinePlayback()
             m_playTimelineButton->setText(QStringLiteral("预览"));
         }
     }
+    if (m_timelinePlayhead) {
+        QSignalBlocker blocker(m_timelinePlayhead);
+        m_timelinePlayhead->setValue(duration > 0.0f
+            ? qBound(0, qRound(m_timelineTime * 1000.0f / duration), 1000) : 0);
+    }
+    if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
+    emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
+}
+
+void CMotionPanel::SetTimelineTimeFromSlider(int value)
+{
+    if (!m_timelinePlayhead || m_timeline.Curves().isEmpty()) return;
+    if (m_timelineTimer && m_timelineTimer->isActive()) {
+        m_timelineTimer->stop();
+        if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
+    }
+    const float duration = m_timeline.Duration();
+    m_timelineTime = duration * qBound(0, value, 1000) / 1000.0f;
+    if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
 }
 
@@ -465,6 +506,24 @@ void CMotionPanel::ExportTimeline()
         return;
     }
     m_timelineStatus->setText(QStringLiteral("已导出 motion3"));
+}
+
+void CMotionPanel::ImportTimeline()
+{
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("导入 motion3"),
+                                                       QString(), QStringLiteral("Motion (*.motion3.json)"));
+    if (path.isEmpty()) return;
+    QString error;
+    if (!m_timeline.Load(path, &error)) {
+        QMessageBox::warning(this, QStringLiteral("导入 motion3 失败"), error);
+        return;
+    }
+    if (m_timelineTimer) m_timelineTimer->stop();
+    if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
+    m_timelineTime = 0.0f;
+    RefreshTimelineTable();
+    m_timelineStatus->setText(QStringLiteral("已导入 %1 个关键帧").arg(m_timeline.PointCount()));
+    emit MotionTimelineChanged();
 }
 
 bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
