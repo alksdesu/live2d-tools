@@ -106,9 +106,13 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 表情面板支持 exp3 参数值与 Add/Multiply/Overwrite 编辑，保存后热重载当前表达式并校验有限值。
 - 参数面板支持名称、范围、默认值、小数位和循环标记编辑；覆盖进入撤销栈、session 和 cmo3。
 - 参数面板增加 XY 双参数联动控制，按各自范围换算并复用撤销、预览和 session 链路。
+- 参数面板增加可键盘操作的二维 XY 控制板，范围钳制和鼠标定位有独立 Qt 回归测试。
 - Inspector 支持 Rotation Deformer 关键形的角度、原点、缩放和反射编辑，进入撤销栈、session 和 cmo3。
 - Inspector 支持 Warp Deformer keyform 网格坐标编辑，按原始行列校验并进入撤销栈、session 和 cmo3。
 - CDI 显示信息重复载入时会清理旧参数/Part/Deformer 分组，损坏或类型错误的字段会返回失败。
+- CDI 解析改为临时容器事务提交，中途字段错误不会留下半份映射；Pose 重载会递归清理旧布局，并保存未展示的原始组。
+- cmo3 Warp/Rotation 来源按 `specific_sources_indices` 与 Deformer 对齐，非法来源类型或索引在写出前失败；索引重排、编辑关键形和 CAFF 引用有专门回归测试。
+- 主窗口增加建模、动画、物理工作区切换，模式写入 QSettings；关键形运行时覆盖按 drawable 与 keyform 索引保存。
 - 动作预览支持循环播放和 25%–200% 速度控制，速度只作用于动作时间，不改变物理、眨眼和呼吸时间步。
 - WAV 口型驱动对短时间步、空 PCM、非法通道和空目标缓冲安全返回，避免 RMS 除零和空指针。
 - WAV 解析器校验 RIFF/fmt/data chunk 边界、通道、采样率、位深、块对齐和文件大小，截断文件不会越界读取。
