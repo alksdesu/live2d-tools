@@ -55,6 +55,25 @@ bool validatePhysicsFile(const QString& path, QString* error)
     return true;
 }
 
+bool validateDeformerSources(const CSectionTable& table, QString* error)
+{
+    for (int i = 0; i < table.deformers.size(); ++i) {
+        const CDeformers* deformer = table.deformers[i];
+        const int sourceIndex = deformer->specific_sources_indices;
+        const int sourceCount = deformer->types == 0 ? table.warp_deformers.size()
+                                                     : deformer->types == 1 ? table.rotation_deformers.size() : 0;
+        if ((deformer->types != 0 && deformer->types != 1) ||
+            sourceIndex < 0 || sourceIndex >= sourceCount) {
+            if (error) {
+                *error = QStringLiteral("Deformer %1 的专用数据索引无效：type=%2, index=%3")
+                    .arg(deformer->ids).arg(deformer->types).arg(sourceIndex);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 // keyform 绑定链：一个绑定源 = 参数索引 + 该参数上的 key 值序列
 struct SBindingChain {
     struct SBinding {
@@ -161,11 +180,8 @@ private:
     QVector<SDeformerIds> m_deformerIds;        // 与 deformers 表对齐
     QVector<QString> m_meshGuidIds;             // 与 art_meshes 表对齐
     QVector<QString> m_meshSourceIds;           // CArtMeshSource xs.id
-    QVector<QString> m_warpSourceIds;           // 与 warp_deformers 表对齐（经 deformers 反查）
-    QVector<QString> m_rotationSourceIds;
+    QVector<QString> m_deformerSourceIds;       // 与 deformers 表对齐
     QVector<QString> m_glueSourceIds;
-    QVector<int> m_deformerIndexOfWarp;         // warp 表下标 → deformers 表下标
-    QVector<int> m_deformerIndexOfRotation;
     QVector<SLayerData> m_layers;               // 与可见提取层对齐
     QVector<int> m_layerOfMesh;                 // art_meshes 下标 → m_layers 下标（-1 无贴图）
 
@@ -381,6 +397,7 @@ void Generator::writePhysicsMain()
 void Generator::writeDeformerGuids()
 {
     m_deformerIds.resize(m_table.deformers.size());
+    m_deformerSourceIds.fill(QString(), m_table.deformers.size());
     for (int i = 0; i < m_table.deformers.size(); ++i) {
         m_deformerIds[i].guid = m_xml.AllocId();
         m_xml.GuidObject(QStringLiteral("CDeformerGuid"), NewGuid(), m_deformerIds[i].guid,
@@ -844,18 +861,10 @@ void Generator::writeArtMeshEntities()
 
 void Generator::writeWarpDeformerEntities()
 {
-    // deformers 表 → warp 表映射
-    m_deformerIndexOfWarp.clear();
     for (int d = 0; d < m_table.deformers.size(); ++d) {
-        if (m_table.deformers[d]->types == 0) m_deformerIndexOfWarp.append(d);
-    }
-    m_warpSourceIds.resize(m_table.warp_deformers.size());
-
-    for (int w = 0; w < m_table.warp_deformers.size(); ++w) {
-        const CWarp_deformers* warp = m_table.warp_deformers[w];
-        const int d = m_deformerIndexOfWarp.value(w, -1);
-        if (d < 0) continue;
         const CDeformers* deformer = m_table.deformers[d];
+        if (deformer->types != 0) continue;
+        const CWarp_deformers* warp = m_table.warp_deformers[deformer->specific_sources_indices];
         const int parentDeformer = effectiveDeformerParentIndex(d);
 
         if (warp->rows < 0 || warp->columns < 0 || warp->rows > 1000 || warp->columns > 1000) continue;
@@ -911,8 +920,8 @@ void Generator::writeWarpDeformerEntities()
         const QString coordTypeId = (parentDeformer >= 0)
                                         ? m_coordDeformerLocal : m_coordCanvas;
 
-        m_warpSourceIds[w] = m_xml.AllocId();
-        m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_warpSourceIds[w]);
+        m_deformerSourceIds[d] = m_xml.AllocId();
+        m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_deformerSourceIds[d]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
                                 objectPartIndex(deformer->parent_part_indices) >= 0
@@ -941,7 +950,7 @@ void Generator::writeWarpDeformerEntities()
             m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("guid"), formGuidIds[k]);
             m_xml.B(QStringLiteral("isAnimatedForm"), false);
             m_xml.B(QStringLiteral("isLocalAnimatedForm"), false);
-            m_xml.Ref(QStringLiteral("CWarpDeformerSource"), QStringLiteral("_source"), m_warpSourceIds[w]);
+            m_xml.Ref(QStringLiteral("CWarpDeformerSource"), QStringLiteral("_source"), m_deformerSourceIds[d]);
             m_xml.Null(QStringLiteral("name"));
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject(); // ACForm
@@ -980,19 +989,12 @@ void Generator::writeWarpDeformerEntities()
 
 void Generator::writeRotationDeformerEntities()
 {
-    m_deformerIndexOfRotation.clear();
-    for (int d = 0; d < m_table.deformers.size(); ++d) {
-        if (m_table.deformers[d]->types == 1) m_deformerIndexOfRotation.append(d);
-    }
-    m_rotationSourceIds.resize(m_table.rotation_deformers.size());
-
     const CCanvas_info* canvas = m_table.canvas_info;
 
-    for (int r = 0; r < m_table.rotation_deformers.size(); ++r) {
-        const CRotation_deformers* rot = m_table.rotation_deformers[r];
-        const int d = m_deformerIndexOfRotation.value(r, -1);
-        if (d < 0) continue;
+    for (int d = 0; d < m_table.deformers.size(); ++d) {
         const CDeformers* deformer = m_table.deformers[d];
+        if (deformer->types != 1) continue;
+        const CRotation_deformers* rot = m_table.rotation_deformers[deformer->specific_sources_indices];
         const int parentDeformer = effectiveDeformerParentIndex(d);
 
         QVector<live2dstruct::CModelRotationKeyform> keyforms;
@@ -1028,8 +1030,8 @@ void Generator::writeRotationDeformerEntities()
         const QString coordTypeId = (parentDeformer >= 0)
                                         ? m_coordDeformerLocal : m_coordCanvas;
 
-        m_rotationSourceIds[r] = m_xml.AllocId();
-        m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_rotationSourceIds[r]);
+        m_deformerSourceIds[d] = m_xml.AllocId();
+        m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_deformerSourceIds[d]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
         writeControllableHeader(displayName(deformer->ids), deformer->is_visible && !m_opt.hiddenIds.contains(deformer->ids),
                                 objectPartIndex(deformer->parent_part_indices) >= 0
@@ -1071,7 +1073,7 @@ void Generator::writeRotationDeformerEntities()
             m_xml.B(QStringLiteral("isAnimatedForm"), false);
             m_xml.B(QStringLiteral("isLocalAnimatedForm"), false);
             m_xml.Ref(QStringLiteral("CRotationDeformerSource"), QStringLiteral("_source"),
-                      m_rotationSourceIds[r]);
+                      m_deformerSourceIds[d]);
             m_xml.Null(QStringLiteral("name"));
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject();
@@ -1249,20 +1251,16 @@ void Generator::writeMain()
     // 变形器集（moc3 deformers 表原序）
     {
         int total = 0;
-        for (const QString& id : m_warpSourceIds) if (!id.isEmpty()) ++total;
-        for (const QString& id : m_rotationSourceIds) if (!id.isEmpty()) ++total;
+        for (const QString& id : m_deformerSourceIds) if (!id.isEmpty()) ++total;
         m_xml.BeginObject(QStringLiteral("CDeformerSourceSet"), QStringLiteral("deformerSourceSet"));
         m_xml.BeginCArrayList(QStringLiteral("_sources"), total);
-        int warpCursor = 0;
-        int rotationCursor = 0;
         for (int d = 0; d < m_table.deformers.size(); ++d) {
-            if (m_table.deformers[d]->types == 0) {
-                const QString id = m_warpSourceIds.value(warpCursor++);
-                if (!id.isEmpty()) m_xml.Ref(QStringLiteral("CWarpDeformerSource"), QString(), id);
-            } else {
-                const QString id = m_rotationSourceIds.value(rotationCursor++);
-                if (!id.isEmpty()) m_xml.Ref(QStringLiteral("CRotationDeformerSource"), QString(), id);
-            }
+            const QString id = m_deformerSourceIds.value(d);
+            if (id.isEmpty()) continue;
+            const QString tag = m_table.deformers[d]->types == 0
+                ? QStringLiteral("CWarpDeformerSource")
+                : QStringLiteral("CRotationDeformerSource");
+            m_xml.Ref(tag, QString(), id);
         }
         m_xml.EndList();
         m_xml.EndObject();
@@ -1599,6 +1597,8 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         if (outError) *outError = QStringLiteral("moc3 解析失败: %1").arg(opt.mocPath);
         return false;
     }
+
+    if (!validateDeformerSources(table, outError)) return false;
 
     if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, outError)) return false;
 

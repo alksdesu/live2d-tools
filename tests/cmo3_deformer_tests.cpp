@@ -1,0 +1,333 @@
+#include "cmo3/ccaffarchive.h"
+#include "cmo3/ccmo3builder.h"
+#include "live2dstruct/csectiontable.h"
+#include <QtTest>
+#include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTemporaryDir>
+#include <QXmlStreamReader>
+#include <QtEndian>
+
+namespace {
+struct XmlNode
+{
+    QString tag;
+    QString text;
+    QMap<QString, QString> attributes;
+    QVector<int> children;
+};
+
+struct ExportXml
+{
+    QVector<XmlNode> nodes;
+    QHash<QString, int> definitions;
+
+    bool parse(const QByteArray& bytes, QString* error)
+    {
+        QXmlStreamReader xml(bytes);
+        xml.setNamespaceProcessing(false);
+        QVector<int> parents;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement()) {
+                XmlNode node;
+                node.tag = xml.name().toString();
+                for (const auto& attribute : xml.attributes())
+                    node.attributes.insert(attribute.qualifiedName().toString(), attribute.value().toString());
+                const int index = nodes.size();
+                if (!parents.isEmpty()) nodes[parents.last()].children.append(index);
+                const QString id = node.attributes.value("xs.id");
+                if (!id.isEmpty()) {
+                    if (definitions.contains(id)) { *error = "duplicate xs.id: " + id; return false; }
+                    definitions.insert(id, index);
+                }
+                nodes.append(node);
+                parents.append(index);
+            } else if (xml.isCharacters() && !parents.isEmpty()) {
+                nodes[parents.last()].text += xml.text();
+            } else if (xml.isEndElement()) {
+                parents.removeLast();
+            }
+        }
+        *error = xml.errorString();
+        return !xml.hasError();
+    }
+
+    int field(int parent, const QString& name) const
+    {
+        if (parent < 0 || parent >= nodes.size()) return -1;
+        for (int child : nodes[parent].children)
+            if (nodes[child].attributes.value("xs.n") == name) return child;
+        return -1;
+    }
+
+    QString attribute(int index, const QString& name) const
+    {
+        return index >= 0 && index < nodes.size() ? nodes[index].attributes.value(name) : QString();
+    }
+
+    QString text(int index) const
+    {
+        return index >= 0 && index < nodes.size() ? nodes[index].text.trimmed() : QString();
+    }
+
+    int resolve(int index) const { return definitions.value(attribute(index, "xs.ref"), -1); }
+};
+
+bool copyInputs(const QString& model, const QDir& destination)
+{
+    const QDir source(QString(TEST_RESOURCES) + '/' + model);
+    const QString jsonName = model + ".model3.json";
+    if (!QFile::copy(source.filePath(jsonName), destination.filePath(jsonName))) return false;
+    QFile jsonFile(source.filePath(jsonName));
+    if (!jsonFile.open(QIODevice::ReadOnly)) return false;
+    const auto textures = QJsonDocument::fromJson(jsonFile.readAll()).object()
+        .value("FileReferences").toObject().value("Textures").toArray();
+    for (const auto& texture : textures) {
+        const QString path = destination.filePath(texture.toString());
+        if (!QDir().mkpath(QFileInfo(path).absolutePath()) ||
+            !QFile::copy(source.filePath(texture.toString()), path)) return false;
+    }
+    return true;
+}
+
+bool saveBytes(const QString& path, const QByteArray& bytes)
+{
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+
+void writeInt(QByteArray& bytes, int offset, int value)
+{
+    Q_ASSERT(offset >= 0 && offset <= bytes.size() - 4);
+    qToLittleEndian<qint32>(value, reinterpret_cast<uchar*>(bytes.data() + offset));
+}
+}
+
+class Cmo3DeformerTests : public QObject
+{
+    Q_OBJECT
+private slots:
+    void sourceRelationships_data()
+    {
+        QTest::addColumn<QString>("model");
+        QTest::addColumn<int>("permutedType");
+        QTest::addColumn<bool>("editKeyforms");
+        for (const QString& model : {QStringLiteral("Mark"), QStringLiteral("Wanko"),
+                                    QStringLiteral("Rice"), QStringLiteral("Natori")})
+            QTest::newRow(qPrintable(model)) << model << -1 << false;
+        QTest::newRow("warp-permuted") << QStringLiteral("Mark") << 0 << false;
+        QTest::newRow("rotation-permuted") << QStringLiteral("Mark") << 1 << false;
+        QTest::newRow("warp-edited-permuted") << QStringLiteral("Mark") << 0 << true;
+        QTest::newRow("rotation-edited-permuted") << QStringLiteral("Mark") << 1 << true;
+    }
+
+    void sourceRelationships()
+    {
+        QFETCH(QString, model);
+        QFETCH(int, permutedType);
+        QFETCH(bool, editKeyforms);
+        live2dstruct::CReader original(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3");
+        live2dstruct::CSectionTable originalTable(original);
+        QVERIFY(originalTable.IsValid());
+        QByteArray bytes = original.m_byte;
+        if (permutedType >= 0) {
+            QVector<int> candidates;
+            for (int i = 0; i < originalTable.deformers.size(); ++i)
+                if (originalTable.deformers[i]->types == permutedType) candidates.append(i);
+            QVERIFY(candidates.size() >= 2);
+            const int first = candidates.first();
+            const int second = candidates.last();
+            const auto* offsets = originalTable.sectionOffsetTable->deformers;
+            writeInt(bytes, offsets->specific_sources_indices + first * 4,
+                     originalTable.deformers[second]->specific_sources_indices);
+            writeInt(bytes, offsets->specific_sources_indices + second * 4,
+                     originalTable.deformers[first]->specific_sources_indices);
+            writeInt(bytes, offsets->keyform_binding_sources_indices + first * 4,
+                     originalTable.deformers[second]->keyform_binding_sources_indices);
+            writeInt(bytes, offsets->keyform_binding_sources_indices + second * 4,
+                     originalTable.deformers[first]->keyform_binding_sources_indices);
+        }
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QDir dir(temp.path());
+        QVERIFY(copyInputs(model, dir));
+        const QString mocPath = dir.filePath(model + ".moc3");
+        QVERIFY(saveBytes(mocPath, bytes));
+        live2dstruct::CReader reader(mocPath);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        if (editKeyforms) {
+            for (const auto& deformer : document.Deformers()) {
+                if (deformer.type == live2dstruct::CModelDeformer::Warp) {
+                    auto keyforms = document.DeformerWarpKeyforms(deformer.id);
+                    QVERIFY(!keyforms.isEmpty() && !keyforms.first().positions.isEmpty());
+                    keyforms[0].positions[0] += 0.375f;
+                    QVERIFY(document.SetDeformerWarpKeyforms(deformer.id, keyforms));
+                } else {
+                    auto keyforms = document.DeformerRotationKeyforms(deformer.id);
+                    QVERIFY(!keyforms.isEmpty());
+                    keyforms[0].angle += 13.25f;
+                    keyforms[0].reflectY = !keyforms[0].reflectY;
+                    QVERIFY(document.SetDeformerRotationKeyforms(deformer.id, keyforms));
+                }
+            }
+        }
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = dir.filePath("result.cmo3");
+        options.deformerWarpKeyformOverrides = document.DeformerWarpKeyformOverrides();
+        options.deformerRotationKeyformOverrides = document.DeformerRotationKeyformOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        QHash<QString, int> sources;
+        int sourceSet = -1;
+        for (int i = 0; i < xml.nodes.size(); ++i) {
+            const auto& node = xml.nodes[i];
+            if (node.tag == "CDeformerSourceSet") sourceSet = i;
+            if ((node.tag != "CWarpDeformerSource" && node.tag != "CRotationDeformerSource") ||
+                xml.attribute(i, "xs.id").isEmpty()) continue;
+            const int super = xml.field(i, "super");
+            const QString id = xml.attribute(xml.field(super, "id"), "idstr");
+            QVERIFY2(!id.isEmpty() && !sources.contains(id), qPrintable(id));
+            sources.insert(id, i);
+        }
+        QCOMPARE(sources.size(), table.deformers.size());
+        QVERIFY(sourceSet >= 0);
+        const int sourceList = xml.field(sourceSet, "_sources");
+        QVERIFY(sourceList >= 0);
+        const auto& orderedSources = xml.nodes[sourceList].children;
+        QCOMPARE(orderedSources.size(), table.deformers.size());
+        QCOMPARE(xml.attribute(sourceList, "count").toInt(), table.deformers.size());
+
+        for (int d = 0; d < table.deformers.size(); ++d) {
+            const auto* deformer = table.deformers[d];
+            const int source = sources.value(deformer->ids, -1);
+            QVERIFY2(source >= 0, qPrintable(deformer->ids));
+            QCOMPARE(xml.resolve(orderedSources[d]), source);
+            const int super = xml.field(source, "super");
+            QCOMPARE(xml.attribute(xml.resolve(xml.field(super, "guid")), "note"), deformer->ids);
+            const int parent = deformer->parent_deformer_indices;
+            const int targetGuid = xml.resolve(xml.field(super, "targetDeformerGuid"));
+            QVERIFY(targetGuid >= 0);
+            if (parent >= 0) QCOMPARE(xml.attribute(targetGuid, "note"), table.deformers[parent]->ids);
+            const int keyformList = xml.field(source, "keyforms");
+            QVERIFY(keyformList >= 0);
+            const auto& forms = xml.nodes[keyformList].children;
+            const int common = xml.field(super, "super");
+            const int grid = xml.resolve(xml.field(common, "keyformGridSource"));
+            QVERIFY(grid >= 0);
+            const int gridForms = xml.field(grid, "keyformsOnGrid");
+            QVERIFY(gridForms >= 0);
+            QCOMPARE(xml.nodes[gridForms].children.size(), forms.size());
+            for (int k = 0; k < forms.size(); ++k) {
+                const int formBase = xml.field(xml.field(forms[k], "super"), "super");
+                QCOMPARE(xml.resolve(xml.field(formBase, "_source")), source);
+                QCOMPARE(xml.resolve(xml.field(formBase, "guid")),
+                         xml.resolve(xml.field(xml.nodes[gridForms].children[k], "keyformGuid")));
+            }
+            if (deformer->types == 0) {
+                const auto* warp = table.warp_deformers[deformer->specific_sources_indices];
+                QCOMPARE(xml.text(xml.field(source, "row")).toInt(), warp->rows);
+                QCOMPARE(xml.text(xml.field(source, "col")).toInt(), warp->columns);
+                QCOMPARE(xml.text(xml.field(source, "isQuadTransform")), warp->is_quad_source ? QString("true") : QString("false"));
+                const auto expected = document.DeformerWarpKeyforms(deformer->ids);
+                QCOMPARE(forms.size(), expected.size());
+                for (int k = 0; k < forms.size(); ++k) {
+                    const int positionNode = xml.field(forms[k], "positions");
+                    const auto values = xml.text(positionNode).split(' ', Qt::SkipEmptyParts);
+                    QCOMPARE(values.size(), expected[k].positions.size());
+                    QCOMPARE(xml.attribute(positionNode, "count").toInt(), values.size());
+                    for (int v = 0; v < values.size(); ++v) {
+                        float expectedValue = expected[k].positions[v];
+                        if (parent < 0) expectedValue = v % 2 == 0
+                            ? (expectedValue + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit
+                            : (table.canvas_info->origin_y - expectedValue) * table.canvas_info->pixels_per_unit;
+                        QCOMPARE(values[v].toFloat(), expectedValue);
+                    }
+                    QCOMPARE(xml.text(xml.field(xml.field(forms[k], "super"), "opacity")).toFloat(), expected[k].opacity);
+                }
+            } else {
+                const auto* rotation = table.rotation_deformers[deformer->specific_sources_indices];
+                QCOMPARE(xml.text(xml.field(source, "baseAngle")).toFloat(), rotation->base_angles);
+                const auto expected = document.DeformerRotationKeyforms(deformer->ids);
+                QCOMPARE(forms.size(), expected.size());
+                for (int k = 0; k < forms.size(); ++k) {
+                    const auto& form = expected[k];
+                    QCOMPARE(xml.attribute(forms[k], "angle").toFloat(), form.angle);
+                    QCOMPARE(xml.attribute(forms[k], "originX").toFloat(), parent >= 0 ? form.originX :
+                             (form.originX + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit);
+                    QCOMPARE(xml.attribute(forms[k], "originY").toFloat(), parent >= 0 ? form.originY :
+                             (table.canvas_info->origin_y - form.originY) * table.canvas_info->pixels_per_unit);
+                    QCOMPARE(xml.attribute(forms[k], "scale").toFloat(), form.scale);
+                    QCOMPARE(xml.attribute(forms[k], "isReflectX"), form.reflectX ? QString("true") : QString("false"));
+                    QCOMPARE(xml.attribute(forms[k], "isReflectY"), form.reflectY ? QString("true") : QString("false"));
+                    QCOMPARE(xml.text(xml.field(xml.field(forms[k], "super"), "opacity")).toFloat(), form.opacity);
+                }
+            }
+        }
+    }
+
+    void rejectInvalidSource_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("unknown-type") << 0;
+        QTest::newRow("out-of-range-index") << 1;
+    }
+
+    void rejectInvalidSource()
+    {
+        QFETCH(int, mode);
+        const QString model = QStringLiteral("Mark");
+        const QString sourcePath = QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3";
+        live2dstruct::CReader original(sourcePath);
+        live2dstruct::CSectionTable table(original);
+        QVERIFY(table.IsValid());
+        QVERIFY(!table.deformers.isEmpty());
+        QByteArray bytes = original.m_byte;
+        const auto* offsets = table.sectionOffsetTable->deformers;
+        int firstWarp = -1;
+        for (int i = 0; i < table.deformers.size(); ++i) {
+            if (table.deformers[i]->types == 0) { firstWarp = i; break; }
+        }
+        QVERIFY(firstWarp >= 0);
+        if (mode == 0) {
+            writeInt(bytes, offsets->types + firstWarp * 4, 99);
+        } else {
+            writeInt(bytes, offsets->specific_sources_indices + firstWarp * 4,
+                     table.warp_deformers.size());
+        }
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString mocPath = QDir(temp.path()).filePath(model + ".moc3");
+        QVERIFY(saveBytes(mocPath, bytes));
+        const QString outPath = QDir(temp.path()).filePath("result.cmo3");
+        const QByteArray sentinel("existing output");
+        QVERIFY(saveBytes(outPath, sentinel));
+
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = outPath;
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(error.contains(QStringLiteral("专用数据索引无效")), qPrintable(error));
+        QFile output(outPath);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        QCOMPARE(output.readAll(), sentinel);
+    }
+};
+
+QTEST_GUILESS_MAIN(Cmo3DeformerTests)
+#include "cmo3_deformer_tests.moc"

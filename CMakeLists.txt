@@ -91,6 +91,10 @@ if(BUILD_TESTING)
     target_link_libraries(cmo3_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(cmo3_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME cmo3 COMMAND cmo3_tests)
+    add_executable(cmo3_deformer_tests tests/cmo3_deformer_tests.cpp)
+    target_link_libraries(cmo3_deformer_tests PRIVATE cmo3_data Qt6::Test)
+    target_compile_definitions(cmo3_deformer_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME cmo3_deformers COMMAND cmo3_deformer_tests)
     if(WIN32)
         add_library(psd_data STATIC
             psd/cpsdlist.cpp

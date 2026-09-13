@@ -485,6 +485,8 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         const float parameterValue = value.toFloat();
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(edit.name, parameterValue);
         else if (m_openglwindows) m_openglwindows->do_change_para_value(edit.name, parameterValue, false);
+    } else if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {
+        if (m_paramPanel) m_paramPanel->RefreshParameterMetadata();
     } else if (edit.field == live2dstruct::CModelEdit::Visibility) {
         const bool visible = value.toBool();
         if (m_treePanel) {
@@ -511,6 +513,9 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
     } else if (edit.field == live2dstruct::CModelEdit::MaskIndices) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::DeformerParent) {
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::RotationKeyforms ||
+               edit.field == live2dstruct::CModelEdit::WarpKeyforms) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MaskInverted) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
