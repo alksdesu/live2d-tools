@@ -21,15 +21,7 @@ LAppWavFileHandler::LAppWavFileHandler()
 
 LAppWavFileHandler::~LAppWavFileHandler()
 {
-    if (_rawData != NULL)
-    {
-        CSM_FREE(_rawData);
-    }
-
-    if (_pcmData != NULL)
-    {
-        ReleasePcmData();
-    }
+    Reset();
 }
 
 Csm::csmBool LAppWavFileHandler::Update(Csm::csmFloat32 deltaTimeSeconds)
@@ -90,6 +82,23 @@ void LAppWavFileHandler::Start(const Csm::csmString& filePath)
 
     // RMS値をリセット
     _lastRms = 0.0f;
+}
+
+void LAppWavFileHandler::Stop()
+{
+    Reset();
+}
+
+void LAppWavFileHandler::Reset()
+{
+    if (_rawData != NULL) CSM_FREE(_rawData);
+    _rawData = NULL;
+    if (_pcmData != NULL) ReleasePcmData();
+    _rawDataSize = 0;
+    _sampleOffset = 0;
+    _userTimeSeconds = 0.0f;
+    _lastRms = 0.0f;
+    _wavFileInfo = WavFileInfo();
 }
 
 Csm::csmFloat32 LAppWavFileHandler::GetRms() const
@@ -209,15 +218,7 @@ Csm::csmBool LAppWavFileHandler::LoadWavFile(const Csm::csmString& filePath)
     Csm::csmBool ret;
 
     // 既にwavファイルロード済みならば領域開放
-    if (_rawData != NULL)
-    {
-        CSM_FREE(_rawData);
-        _rawDataSize = 0;
-    }
-    if (_pcmData != NULL)
-    {
-        ReleasePcmData();
-    }
+    Reset();
 
     // ファイルロード
     _byteReader._fileByte = LAppPal::LoadFileAsBytes(filePath.GetRawString(), &(_byteReader._fileSize));

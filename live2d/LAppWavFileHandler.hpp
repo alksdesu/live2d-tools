@@ -65,6 +65,8 @@ public:
      */
     void Start(const Csm::csmString& filePath);
 
+    void Stop();
+
     /**
      * @brief 現在のRMS値取得
      *
@@ -128,6 +130,8 @@ private:
      * @retval  false   読み込み失敗
      */
     Csm::csmBool LoadWavFile(const Csm::csmString& filePath);
+
+    void Reset();
 
     /**
      * @brief PCMデータの解放

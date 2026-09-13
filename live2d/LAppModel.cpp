@@ -600,6 +600,10 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
         path = _modelHomeDir + path;
         _wavFileHandler.Start(path);
     }
+    else
+    {
+        _wavFileHandler.Stop();
+    }
 
     if (_debugMode)
     {
@@ -644,6 +648,7 @@ CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, 
 void LAppModel::StopAllMotions()
 {
     if (_motionManager) _motionManager->StopAllMotions();
+    _wavFileHandler.Stop();
 }
 
 void LAppModel::DoDraw()
