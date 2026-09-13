@@ -74,6 +74,46 @@ bool validateDeformerSources(const CSectionTable& table, QString* error)
     return true;
 }
 
+bool loadModelTextures(const QDir& directory, const QString& mocPath, QVector<QString>* paths)
+{
+    const QStringList jsons = directory.entryList({QStringLiteral("*.model3.json")}, QDir::Files, QDir::Name);
+    const QString targetMoc = QFileInfo(mocPath).canonicalFilePath().isEmpty()
+        ? QFileInfo(mocPath).absoluteFilePath() : QFileInfo(mocPath).canonicalFilePath();
+    QString selectedJson;
+    for (const QString& jsonName : jsons) {
+        QFile file(directory.filePath(jsonName));
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+        file.close();
+        const QString reference = root.value(QStringLiteral("FileReferences")).toObject()
+                                      .value(QStringLiteral("Moc")).toString();
+        if (reference.isEmpty()) continue;
+        const QString referencedMoc = QFileInfo(directory.filePath(reference)).canonicalFilePath().isEmpty()
+            ? QFileInfo(directory.filePath(reference)).absoluteFilePath()
+            : QFileInfo(directory.filePath(reference)).canonicalFilePath();
+        if (referencedMoc == targetMoc) {
+            selectedJson = directory.filePath(jsonName);
+            break;
+        }
+    }
+    if (selectedJson.isEmpty() && jsons.size() == 1) selectedJson = directory.filePath(jsons.first());
+    if (selectedJson.isEmpty()) return false;
+
+    QFile file(selectedJson);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    const QJsonArray textures = root.value(QStringLiteral("FileReferences"))
+                                    .toObject().value(QStringLiteral("Textures")).toArray();
+    if (textures.isEmpty()) return false;
+    for (const QJsonValue& texture : textures) {
+        const QString path = texture.toString();
+        if (path.isEmpty()) return false;
+        paths->append(directory.filePath(path));
+    }
+    return true;
+}
+
 // keyform 绑定链：一个绑定源 = 参数索引 + 该参数上的 key 值序列
 struct SBindingChain {
     struct SBinding {
@@ -1606,26 +1646,15 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     QVector<QString> atlasPaths;
     {
         const QDir dir = QFileInfo(opt.mocPath).dir();
-        // model3.json 引用优先
-        const QStringList jsons = dir.entryList({ QStringLiteral("*.model3.json") }, QDir::Files);
-        if (!jsons.isEmpty()) {
-            QFile file(dir.filePath(jsons.first()));
-            if (file.open(QIODevice::ReadOnly)) {
-                const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-                file.close();
-                const QJsonArray textures = root.value(QStringLiteral("FileReferences"))
-                                                .toObject().value(QStringLiteral("Textures")).toArray();
-                for (const QJsonValue& v : textures) {
-                    atlasPaths.append(dir.filePath(v.toString()));
-                }
-            }
-        }
-        if (atlasPaths.isEmpty()) {
+        const bool hasModelConfig = !dir.entryList({QStringLiteral("*.model3.json")}, QDir::Files).isEmpty();
+        const bool loadedModelConfig = loadModelTextures(dir, opt.mocPath, &atlasPaths);
+        if (atlasPaths.isEmpty() && !hasModelConfig) {
             QDir texDir(dir.filePath(QStringLiteral("textures")));
             if (!texDir.exists()) texDir = dir;
             const QStringList pngs = texDir.entryList({ QStringLiteral("*.png") }, QDir::Files, QDir::Name);
             for (const QString& png : pngs) atlasPaths.append(texDir.filePath(png));
         }
+        if (hasModelConfig && !loadedModelConfig) atlasPaths.clear();
     }
     if (atlasPaths.isEmpty()) {
         if (outError) *outError = QStringLiteral("找不到纹理图集 PNG");

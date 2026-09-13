@@ -6,6 +6,9 @@
 #include "live2dstruct/util/cfilereader.h"
 #include <QtTest>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <algorithm>
 
@@ -13,6 +16,36 @@ class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void matchesTextureConfigToMoc()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QDir source(QString(TEST_RESOURCES) + "/Wanko");
+        const QDir destination(temp.path());
+        QVERIFY(QFile::copy(source.filePath("Wanko.moc3"), destination.filePath("Wanko.moc3")));
+        const QString modelJson = source.filePath("Wanko.model3.json");
+        QFile input(modelJson);
+        QVERIFY(input.open(QIODevice::ReadOnly));
+        const QJsonObject root = QJsonDocument::fromJson(input.readAll()).object();
+        input.close();
+        QVERIFY(QFile::copy(modelJson, destination.filePath("Wanko.model3.json")));
+        for (const QJsonValue& texture : root.value("FileReferences").toObject().value("Textures").toArray()) {
+            QVERIFY(destination.mkpath(QFileInfo(texture.toString()).path()));
+            QVERIFY(QFile::copy(source.filePath(texture.toString()), destination.filePath(texture.toString())));
+        }
+        QFile unrelated(destination.filePath("A-other.model3.json"));
+        QVERIFY(unrelated.open(QIODevice::WriteOnly));
+        QVERIFY(unrelated.write(R"({"FileReferences":{"Moc":"Other.moc3","Textures":["missing.png"]}})") > 0);
+        unrelated.close();
+
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = destination.filePath("Wanko.moc3");
+        options.outPath = destination.filePath("result.cmo3");
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        QVERIFY(QFileInfo::exists(options.outPath));
+    }
+
     void rejectsInvalidPhysicsJson()
     {
         QTemporaryDir temp;
