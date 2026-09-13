@@ -18,6 +18,7 @@ public:
 
     QString m_Physics;
     QString m_Pose;
+    QString m_UserData;
     QString m_DisplayInfo;
     QVector<QString> m_Expressions;
     QString m_moc;

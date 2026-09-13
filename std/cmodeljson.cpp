@@ -11,6 +11,7 @@ void CModelJson::Clear()
     m_DisplayInfo.clear();
     m_Physics.clear();
     m_Pose.clear();
+    m_UserData.clear();
     m_Expressions.clear();
     m_Textures.clear();
     m_Motions.clear();
@@ -55,6 +56,7 @@ void CModelJson::Parse(const QString &fileName)
 
     m_Physics = FileReferences["Physics"].toString();
     m_Pose = FileReferences["Pose"].toString();
+    m_UserData = FileReferences["UserData"].toString();
 
     QJsonArray  Expressions = FileReferences["Expressions"].toArray();
     for(int i = 0 ;i < Expressions.size() ;i++){
@@ -85,6 +87,8 @@ QStringList CModelJson::getAllZipFiles()
     list.push_back(m_parentPath+ "/" + m_moc);
     if (!m_DisplayInfo.isEmpty()) list.push_back(m_parentPath+ "/" + m_DisplayInfo);
     if (!m_Physics.isEmpty()) list.push_back(m_parentPath+ "/" + m_Physics);
+    if (!m_Pose.isEmpty()) list.push_back(m_parentPath+ "/" + m_Pose);
+    if (!m_UserData.isEmpty()) list.push_back(m_parentPath+ "/" + m_UserData);
 
     for(int i = 0 ;i < m_Textures.size() ;i++){
         list.push_back(m_parentPath+ "/" + m_Textures[i]);

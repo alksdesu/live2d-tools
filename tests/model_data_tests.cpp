@@ -399,6 +399,13 @@ private slots:
         QCOMPARE(model.m_Textures.size(), textures);
         QCOMPARE(model.m_Motions.size(), motions);
         QVERIFY(!model.getAllZipFiles().contains(QRegularExpression("/(null|$)")));
+
+        CModelJson mark;
+        mark.Parse(QString(TEST_RESOURCES) + "/Mark/Mark.model3.json");
+        QVERIFY(!mark.getAllZipFiles().filter(QRegularExpression("Mark\\.userdata3\\.json$")).isEmpty());
+        CModelJson natori;
+        natori.Parse(QString(TEST_RESOURCES) + "/Natori/Natori.model3.json");
+        QVERIFY(!natori.getAllZipFiles().filter(QRegularExpression("Natori\\.pose3\\.json$")).isEmpty());
     }
 
     void sessionRoundTrip()
