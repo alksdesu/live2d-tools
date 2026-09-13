@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <cmath>
+#include <limits>
 
 void CMotionTimeline::StartRecording()
 {
@@ -35,6 +36,9 @@ bool CMotionTimeline::AddPoint(const QString& parameterId, float time, float val
     QVector<QPointF>& points = m_curves[parameterId];
     if (!points.isEmpty()) {
         if (time < points.last().x()) time = points.last().x();
+        if (qFuzzyCompare(time + 1.0, points.last().x() + 1.0) &&
+            !qFuzzyCompare(points.last().y() + 1.0, static_cast<double>(value) + 1.0))
+            time = std::nextafterf(static_cast<float>(points.last().x()), std::numeric_limits<float>::infinity());
         if (qFuzzyCompare(points.last().y() + 1.0, static_cast<double>(value) + 1.0) &&
             qFuzzyCompare(points.last().x() + 1.0, static_cast<double>(time) + 1.0)) return false;
     }

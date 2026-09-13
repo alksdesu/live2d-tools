@@ -47,6 +47,16 @@ private slots:
         QCOMPARE(segments.size(), 5);
         QCOMPARE(segments.at(2).toInt(), 0);
     }
+
+    void separatesSameTimestampValues()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamA"), 1.0f, 0.0f));
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamA"), 1.0f, 1.0f));
+        const auto points = timeline.Curves().value(QStringLiteral("ParamA"));
+        QCOMPARE(points.size(), 2);
+        QVERIFY(points.at(1).x() > points.at(0).x());
+    }
 };
 
 QTEST_GUILESS_MAIN(CMotionTimelineTests)
