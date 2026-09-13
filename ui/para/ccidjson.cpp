@@ -1,48 +1,73 @@
 #include "ccidjson.h"
+#include <QJsonParseError>
 
 CCidJson::CCidJson() {
     empty="";
 
 }
 
-void CCidJson::Parse(QString fileName)
+bool CCidJson::Parse(const QString& fileName, QString* error)
 {
-
+    m_PartsIdToName.clear();
+    m_GroupIdToName.clear();
+    m_ParametersIdToName.clear();
+    m_DeformersIdToName.clear();
+    m_VetGroupToParam.clear();
+    m_CombinedParameters.clear();
+    m_CombinedParamSet.clear();
     QFile file(fileName);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         qDebug() << "Failed to open file";
-        return;
+        if (error) *error = file.errorString();
+        return false;
     }
     QByteArray jsonData = file.readAll();
 
     file.close();
-    QJsonDocument jsonDoc = QJsonDocument::fromJson(jsonData);
-    if (jsonDoc.isNull()) {
+    QJsonParseError parseError;
+    QJsonDocument jsonDoc = QJsonDocument::fromJson(jsonData, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !jsonDoc.isObject()) {
         qDebug() << "Failed to parse JSON";
-        return;
+        if (error) *error = parseError.errorString();
+        return false;
     }
 
     QJsonObject qt = jsonDoc.object();
-    QJsonArray Parts = qt["Parts"].toArray();
+    const auto readArray = [&qt, error](const QString& key, QJsonArray* array) {
+        const QJsonValue value = qt.value(key);
+        if (value.isUndefined()) { *array = {}; return true; }
+        if (!value.isArray()) {
+            if (error) *error = QStringLiteral("CDI 字段必须是数组：%1").arg(key);
+            return false;
+        }
+        *array = value.toArray();
+        return true;
+    };
+    QJsonArray Parts;
+    if (!readArray(QStringLiteral("Parts"), &Parts)) return false;
     for(int i = 0 ;i < Parts.size() ;i++){
         QJsonObject pO = Parts[i].toObject();
-        m_PartsIdToName.insert(pO["Id"].toString(),pO["Name"].toString());
+        const QString id = pO["Id"].toString();
+        if (!id.isEmpty()) m_PartsIdToName.insert(id,pO["Name"].toString());
     }
 
 
-    Parts = qt["ParameterGroups"].toArray();
+    if (!readArray(QStringLiteral("ParameterGroups"), &Parts)) return false;
     for(int i = 0 ;i < Parts.size() ;i++){
         QJsonObject pO = Parts[i].toObject();
-        m_GroupIdToName.insert(pO["Id"].toString(),pO["Name"].toString());
+        const QString id = pO["Id"].toString();
+        if (!id.isEmpty()) m_GroupIdToName.insert(id,pO["Name"].toString());
     }
 
-    Parts = qt["Parameters"].toArray();
+    if (!readArray(QStringLiteral("Parameters"), &Parts)) return false;
     CVetGroup vetgrop;
     QString curGroupName;
     QString lastGroupName;
     for(int i = 0 ;i < Parts.size() ;i++){
         QJsonObject pO = Parts[i].toObject();
-        m_ParametersIdToName.insert(pO["Id"].toString(),pO["Name"].toString());
+        const QString id = pO["Id"].toString();
+        if (id.isEmpty()) continue;
+        m_ParametersIdToName.insert(id,pO["Name"].toString());
         curGroupName = pO["GroupId"].toString();
 
         if(i == 0){
@@ -55,7 +80,7 @@ void CCidJson::Parse(QString fileName)
             lastGroupName = curGroupName;
         }
 
-        vetgrop.vetParam.push_back(pO["Id"].toString());
+        vetgrop.vetParam.push_back(id);
         vetgrop.strGroup = curGroupName;
 
         if(i == (Parts.size() - 1)){
@@ -65,25 +90,31 @@ void CCidJson::Parse(QString fileName)
 
     // 解析 Deformers（部分模型可能包含）
     if(qt.contains("Deformers")){
-        QJsonArray deformers = qt["Deformers"].toArray();
+        QJsonArray deformers;
+        if (!readArray(QStringLiteral("Deformers"), &deformers)) return false;
         for(int i = 0; i < deformers.size(); i++){
             QJsonObject dO = deformers[i].toObject();
-            m_DeformersIdToName.insert(dO["Id"].toString(), dO["Name"].toString());
+            const QString id = dO["Id"].toString();
+            if (!id.isEmpty()) m_DeformersIdToName.insert(id, dO["Name"].toString());
         }
     }
 
     // 解析 CombinedParameters（融合变形参数组）
     if(qt.contains("CombinedParameters")){
-        QJsonArray combined = qt["CombinedParameters"].toArray();
+        QJsonArray combined;
+        if (!readArray(QStringLiteral("CombinedParameters"), &combined)) return false;
         for(int i = 0; i < combined.size(); i++){
+            if (!combined[i].isArray()) continue;
             QJsonArray group = combined[i].toArray();
             QVector<QString> paramIds;
             for(int j = 0; j < group.size(); j++){
                 QString id = group[j].toString();
+                if (id.isEmpty()) continue;
                 paramIds.append(id);
                 m_CombinedParamSet.insert(id);
             }
-            m_CombinedParameters.append(paramIds);
+            if (!paramIds.isEmpty()) m_CombinedParameters.append(paramIds);
         }
     }
+    return true;
 }

@@ -108,6 +108,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 参数面板增加 XY 双参数联动控制，按各自范围换算并复用撤销、预览和 session 链路。
 - Inspector 支持 Rotation Deformer 关键形的角度、原点、缩放和反射编辑，进入撤销栈、session 和 cmo3。
 - Inspector 支持 Warp Deformer keyform 网格坐标编辑，按原始行列校验并进入撤销栈、session 和 cmo3。
+- CDI 显示信息重复载入时会清理旧参数/Part/Deformer 分组，损坏或类型错误的字段会返回失败。
 - 动作预览支持循环播放和 25%–200% 速度控制，速度只作用于动作时间，不改变物理、眨眼和呼吸时间步。
 - WAV 口型驱动对短时间步、空 PCM、非法通道和空目标缓冲安全返回，避免 RMS 除零和空指针。
 - WAV 解析器校验 RIFF/fmt/data chunk 边界、通道、采样率、位深、块对齐和文件大小，截断文件不会越界读取。

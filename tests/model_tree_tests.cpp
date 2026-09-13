@@ -1,12 +1,42 @@
 #include "ui/cmodeltreepanel.h"
+#include "ui/para/ccidjson.h"
 #include "live2dstruct/cmodeldocument.h"
 #include <QtTest>
 #include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QFile>
 
 class ModelTreeTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void reparseCdiClearsPreviousState()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString firstPath = temp.filePath(QStringLiteral("first.cdi3.json"));
+        const QString secondPath = temp.filePath(QStringLiteral("second.cdi3.json"));
+        QFile first(firstPath);
+        QVERIFY(first.open(QIODevice::WriteOnly));
+        QVERIFY(first.write(R"({"Parts":[{"Id":"PartA","Name":"A"}],"ParameterGroups":[{"Id":"GroupA","Name":"GA"}],"Parameters":[{"Id":"ParamA","GroupId":"GroupA","Name":"PA"}]})") > 0);
+        first.close();
+        QFile second(secondPath);
+        QVERIFY(second.open(QIODevice::WriteOnly));
+        QVERIFY(second.write(R"({"Parts":[{"Id":"PartB","Name":"B"}],"Parameters":[{"Id":"ParamB","Name":"PB"}]})") > 0);
+        second.close();
+
+        CCidJson cid;
+        QString error;
+        QVERIFY(cid.Parse(firstPath, &error));
+        QCOMPARE(cid.getPartName(QStringLiteral("PartA")), QStringLiteral("A"));
+        QVERIFY(cid.Parse(secondPath, &error));
+        QVERIFY(cid.getPartName(QStringLiteral("PartA")).isEmpty());
+        QCOMPARE(cid.getPartName(QStringLiteral("PartB")), QStringLiteral("B"));
+        QVERIFY(cid.getGroups().size() <= 1);
+        QVERIFY(!cid.Parse(temp.filePath(QStringLiteral("broken.json")), &error));
+        QVERIFY(cid.getPartName(QStringLiteral("PartB")).isEmpty());
+    }
+
     void mirrorsInitialVisibilityAndClearsSelection()
     {
         const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";

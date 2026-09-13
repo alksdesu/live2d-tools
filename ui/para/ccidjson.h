@@ -29,7 +29,7 @@ class CCidJson
     friend class CParaTree;
 public:
     CCidJson();
-    void Parse(QString fileName);//传递解析文件
+    bool Parse(const QString& fileName, QString* error = nullptr);//传递解析文件
 
     const QString& getPartName(const QString& Id){
         if(m_PartsIdToName.contains(Id)){
