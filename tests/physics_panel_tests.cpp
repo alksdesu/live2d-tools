@@ -108,6 +108,15 @@ private slots:
         QVERIFY(!panel.LoadPhysics(brokenPath, &error));
         QCOMPARE(groups->rowCount(), 2);
         QVERIFY(!panel.HasUnsavedChanges());
+
+        const QString malformedPath = temp.filePath(QStringLiteral("malformed.physics3.json"));
+        QFile malformed(malformedPath);
+        QVERIFY(malformed.open(QIODevice::WriteOnly));
+        QVERIFY(malformed.write(R"({"PhysicsSettings":[{"Input":"bad"}]})") > 0);
+        malformed.close();
+        QVERIFY(!panel.LoadPhysics(malformedPath, &error));
+        QVERIFY(error.contains(QStringLiteral("Input 无效")));
+        QCOMPARE(groups->rowCount(), 2);
     }
 };
 

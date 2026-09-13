@@ -176,8 +176,15 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
         if (error) *error = QStringLiteral("物理配置缺少 PhysicsSettings 数组");
         return false;
     }
-    m_physicsPath = physicsPath;
+    const QJsonObject previousDocument = m_physicsDocument;
     m_physicsDocument = root;
+    QString validationError;
+    if (!ValidateDocument(&validationError)) {
+        m_physicsDocument = previousDocument;
+        if (error) *error = validationError;
+        return false;
+    }
+    m_physicsPath = physicsPath;
     m_dirty = false;
     m_updating = true;
     m_groupTable->setRowCount(0);
