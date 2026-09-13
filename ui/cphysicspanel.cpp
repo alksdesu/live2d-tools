@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QInputDialog>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <cmath>
 
 CPhysicsPanel::CPhysicsPanel(QWidget *parent)
@@ -52,27 +53,26 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     makeSliderRow("重力 Y", m_gravityY, m_gravityYLabel);
     makeSliderRow("风力 X", m_windX, m_windXLabel);
     makeSliderRow("风力 Y", m_windY, m_windYLabel);
+    m_gravityX->setObjectName(QStringLiteral("physicsGravityX"));
+    m_gravityY->setObjectName(QStringLiteral("physicsGravityY"));
+    m_windX->setObjectName(QStringLiteral("physicsWindX"));
+    m_windY->setObjectName(QStringLiteral("physicsWindY"));
     mainLayout->addWidget(forceBox);
 
     // 重力/风力信号
     auto connectSlider = [this](QSlider* slider, QLabel* label, bool isGravity, bool isX) {
         connect(slider, &QSlider::valueChanged, this, [this, label, isGravity, isX](int val){
-            float fval = val / 100.0f;
-            label->setText(QString::number(fval, 'f', 2));
-            if(isGravity){
-                float gx = m_gravityX->value() / 100.0f;
-                float gy = m_gravityY->value() / 100.0f;
-                emit GravityChanged(gx, gy);
-            } else {
-                float wx = m_windX->value() / 100.0f;
-                float wy = m_windY->value() / 100.0f;
-                emit WindChanged(wx, wy);
-            }
-            if (!m_updating) {
-                updateForceDocument();
-                m_dirty = true;
-                emit PhysicsConfigChanged();
-            }
+            if (m_updating || m_physicsDocument.isEmpty()) return;
+            const double value = val / 100.0;
+            label->setText(QString::number(value, 'f', 2));
+            updateForceDocument(isGravity, isX, value);
+            const QJsonObject force = m_physicsDocument.value(QStringLiteral("Meta")).toObject()
+                .value(QStringLiteral("EffectiveForces")).toObject()
+                .value(isGravity ? QStringLiteral("Gravity") : QStringLiteral("Wind")).toObject();
+            if (isGravity) emit GravityChanged(force.value("X").toDouble(), force.value("Y").toDouble());
+            else emit WindChanged(force.value("X").toDouble(), force.value("Y").toDouble());
+            m_dirty = true;
+            emit PhysicsConfigChanged();
         });
     };
     connectSlider(m_gravityX, m_gravityXLabel, true, true);
@@ -111,25 +111,15 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     groupLayout->addWidget(m_groupTable);
 
     m_dragModeCb = new QCheckBox("拖拽驱动选中组", groupBox);
+    m_dragModeCb->setObjectName(QStringLiteral("physicsDragMode"));
     m_dragModeCb->setToolTip("勾选后，在模型上拖拽鼠标可驱动选中物理组的输入参数");
     groupLayout->addWidget(m_dragModeCb);
 
     connect(m_groupTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int){
-        if(row >= 0){
-            showGroupDetail(row);
-            // 发射选中组的输入参数
-            if(m_dragModeCb->isChecked()) emitDragParams(row);
-        }
-        if (m_removeGroupButton) m_removeGroupButton->setEnabled(row >= 0);
-        if (m_renameGroupButton) m_renameGroupButton->setEnabled(row >= 0);
+        if (!m_updating) showGroupDetail(row);
     });
-    connect(m_dragModeCb, &QCheckBox::toggled, this, [this](bool checked){
-        if(checked){
-            int row = m_groupTable->currentRow();
-            if(row >= 0) emitDragParams(row);
-        } else {
-            emit PhysicsDragParamsChanged(QStringList(), QStringList());
-        }
+    connect(m_dragModeCb, &QCheckBox::toggled, this, [this](){
+        if (!m_updating) emitDragParams(m_groupTable->currentRow());
     });
 
     mainLayout->addWidget(groupBox);
@@ -269,10 +259,6 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
     m_physicsPath = physicsPath;
     m_dirty = false;
     m_updating = true;
-    m_groupTable->setRowCount(0);
-    m_inputTable->setRowCount(0);
-    m_outputTable->setRowCount(0);
-    m_vertexTable->setRowCount(0);
     QJsonObject meta = root["Meta"].toObject();
 
     // FPS
@@ -302,57 +288,22 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
 
     // 物理字典（名称映射）
     m_physicsDictionary = meta["PhysicsDictionary"].toArray();
-    QMap<QString, QString> idToName;
-    for(int i = 0; i < m_physicsDictionary.size(); i++){
-        QJsonObject entry = m_physicsDictionary[i].toObject();
-        idToName[entry["Id"].toString()] = entry["Name"].toString();
-    }
-
-    // 物理设置
     m_physicsSettings = root["PhysicsSettings"].toArray();
-    m_groupTable->setRowCount(m_physicsSettings.size());
-
-    for(int i = 0; i < m_physicsSettings.size(); i++){
-        QJsonObject setting = m_physicsSettings[i].toObject();
-        QString id = setting["Id"].toString();
-        QString name = idToName.value(id, id);
-        int outputCount = setting["Output"].toArray().size();
-
-        m_groupTable->setItem(i, 0, new QTableWidgetItem(id));
-        m_groupTable->setItem(i, 1, new QTableWidgetItem(name));
-        m_groupTable->setItem(i, 2, new QTableWidgetItem(QString::number(outputCount)));
-    }
-
-    m_groupTable->resizeColumnsToContents();
-
-    // 默认选第一组
-    if(m_physicsSettings.size() > 0){
-        m_groupTable->selectRow(0);
-        showGroupDetail(0);
-    }
-    if (m_addInputButton) m_addInputButton->setEnabled(true);
-    if (m_addOutputButton) m_addOutputButton->setEnabled(true);
-    if (m_addVertexButton) m_addVertexButton->setEnabled(true);
     if (m_addGroupButton) m_addGroupButton->setEnabled(true);
-    if (m_removeGroupButton) m_removeGroupButton->setEnabled(m_groupTable->currentRow() >= 0);
-    if (m_renameGroupButton) m_renameGroupButton->setEnabled(m_groupTable->currentRow() >= 0);
     m_updating = false;
+    refreshGroupTable(0);
     return true;
 }
 
-void CPhysicsPanel::updateForceDocument()
+void CPhysicsPanel::updateForceDocument(bool gravity, bool xAxis, double value)
 {
     if (m_physicsDocument.isEmpty()) return;
     QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
     QJsonObject forces = meta.value(QStringLiteral("EffectiveForces")).toObject();
-    QJsonObject gravity;
-    gravity.insert(QStringLiteral("X"), m_gravityX->value() / 100.0);
-    gravity.insert(QStringLiteral("Y"), m_gravityY->value() / 100.0);
-    QJsonObject wind;
-    wind.insert(QStringLiteral("X"), m_windX->value() / 100.0);
-    wind.insert(QStringLiteral("Y"), m_windY->value() / 100.0);
-    forces.insert(QStringLiteral("Gravity"), gravity);
-    forces.insert(QStringLiteral("Wind"), wind);
+    const QString forceName = gravity ? QStringLiteral("Gravity") : QStringLiteral("Wind");
+    QJsonObject force = forces.value(forceName).toObject();
+    force.insert(xAxis ? QStringLiteral("X") : QStringLiteral("Y"), value);
+    forces.insert(forceName, force);
     meta.insert(QStringLiteral("EffectiveForces"), forces);
     m_physicsDocument.insert(QStringLiteral("Meta"), meta);
 }
@@ -365,7 +316,6 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
                                               QStringLiteral("Physics (*.physics3.json);;JSON (*.json)"));
     }
     if (target.isEmpty() || m_physicsDocument.isEmpty()) return false;
-    updateForceDocument();
     QString validationError;
     if (!ValidateDocument(&validationError)) {
         QMessageBox::warning(this, QStringLiteral("保存物理配置失败"), validationError);
@@ -385,14 +335,17 @@ bool CPhysicsPanel::SavePhysics(const QString& path)
     meta.insert(QStringLiteral("TotalInputCount"), inputCount);
     meta.insert(QStringLiteral("TotalOutputCount"), outputCount);
     meta.insert(QStringLiteral("VertexCount"), vertexCount);
-    m_physicsDocument.insert(QStringLiteral("Meta"), meta);
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    meta.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
+    QJsonObject updated = m_physicsDocument;
+    updated.insert(QStringLiteral("Meta"), meta);
+    updated.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
     QSaveFile file(target);
-    const QByteArray data = QJsonDocument(m_physicsDocument).toJson(QJsonDocument::Indented);
+    const QByteArray data = QJsonDocument(updated).toJson(QJsonDocument::Indented);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         QMessageBox::warning(this, QStringLiteral("保存物理配置失败"), target);
         return false;
     }
+    m_physicsDocument = updated;
     m_physicsPath = target;
     m_dirty = false;
     emit PhysicsSaved(target);
@@ -499,9 +452,7 @@ void CPhysicsPanel::updateInputCell(int row, int column)
     inputs[row] = input;
     setting.insert(QStringLiteral("Input"), inputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::updateOutputCell(int row, int column)
@@ -529,9 +480,7 @@ void CPhysicsPanel::updateOutputCell(int row, int column)
     outputs[detailRow] = output;
     setting.insert(QStringLiteral("Output"), outputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::updateVertexCell(int row, int column)
@@ -555,14 +504,13 @@ void CPhysicsPanel::updateVertexCell(int row, int column)
     vertices[vertexIndex] = vertex;
     setting.insert(QStringLiteral("Vertices"), vertices);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
-void CPhysicsPanel::refreshGroupTable()
+void CPhysicsPanel::refreshGroupTable(int selectedRow)
 {
     if (!m_groupTable) return;
+    const QSignalBlocker blocker(m_groupTable);
     const bool wasUpdating = m_updating;
     m_updating = true;
     QMap<QString, QString> idToName;
@@ -579,12 +527,27 @@ void CPhysicsPanel::refreshGroupTable()
         m_groupTable->setItem(i, 2, new QTableWidgetItem(QString::number(setting.value(QStringLiteral("Output")).toArray().size())));
     }
     m_groupTable->resizeColumnsToContents();
+    selectedRow = m_physicsSettings.isEmpty() ? -1 : qBound(0, selectedRow, static_cast<int>(m_physicsSettings.size()) - 1);
+    m_groupTable->setCurrentCell(selectedRow, selectedRow >= 0 ? 0 : -1);
+    if (selectedRow >= 0) m_groupTable->selectRow(selectedRow);
     m_updating = wasUpdating;
+    showGroupDetail(selectedRow);
+}
+
+void CPhysicsPanel::commitGroupChanges(int selectedRow)
+{
+    QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
+    meta.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
+    m_physicsDocument.insert(QStringLiteral("Meta"), meta);
+    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    m_dirty = true;
+    refreshGroupTable(selectedRow);
+    emit PhysicsConfigChanged();
 }
 
 void CPhysicsPanel::addPhysicsGroup()
 {
-    if (!m_physicsDocument.isEmpty() && m_physicsSettings.size() >= 10000) return;
+    if (m_physicsDocument.isEmpty() || m_physicsSettings.size() >= 10000) return;
     bool accepted = false;
     const QString id = QInputDialog::getText(this, QStringLiteral("添加物理组"),
                                               QStringLiteral("组 ID"), QLineEdit::Normal,
@@ -629,12 +592,7 @@ void CPhysicsPanel::addPhysicsGroup()
     dictionaryEntry.insert(QStringLiteral("Id"), id);
     dictionaryEntry.insert(QStringLiteral("Name"), name);
     m_physicsDictionary.append(dictionaryEntry);
-    m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    refreshGroupTable();
-    m_groupTable->selectRow(m_physicsSettings.size() - 1);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(m_physicsSettings.size() - 1);
 }
 
 void CPhysicsPanel::removePhysicsGroup()
@@ -647,21 +605,7 @@ void CPhysicsPanel::removePhysicsGroup()
         if (m_physicsDictionary.at(i).toObject().value(QStringLiteral("Id")).toString() == id)
             m_physicsDictionary.removeAt(i);
     }
-    m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    refreshGroupTable();
-    if (m_physicsSettings.isEmpty()) {
-        m_inputTable->setRowCount(0);
-        m_outputTable->setRowCount(0);
-        m_vertexTable->setRowCount(0);
-        if (m_graph) m_graph->SetGroup(QJsonObject());
-        if (m_removeGroupButton) m_removeGroupButton->setEnabled(false);
-        if (m_renameGroupButton) m_renameGroupButton->setEnabled(false);
-    } else {
-        m_groupTable->selectRow(qMin(row, m_physicsSettings.size() - 1));
-    }
-    emit PhysicsConfigChanged();
+    commitGroupChanges(row);
 }
 
 void CPhysicsPanel::renamePhysicsGroup()
@@ -694,11 +638,7 @@ void CPhysicsPanel::renamePhysicsGroup()
         entry.insert(QStringLiteral("Name"), name);
         m_physicsDictionary.append(entry);
     }
-    m_physicsDocument.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
-    m_dirty = true;
-    refreshGroupTable();
-    m_groupTable->selectRow(row);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(row);
 }
 
 void CPhysicsPanel::addPhysicsInput()
@@ -730,10 +670,7 @@ void CPhysicsPanel::addPhysicsInput()
     inputs.append(input);
     setting.insert(QStringLiteral("Input"), inputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    showGroupDetail(groupRow);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::removePhysicsInput()
@@ -747,10 +684,7 @@ void CPhysicsPanel::removePhysicsInput()
     inputs.removeAt(row);
     setting.insert(QStringLiteral("Input"), inputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    showGroupDetail(groupRow);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::addPhysicsOutput()
@@ -793,10 +727,7 @@ void CPhysicsPanel::addPhysicsOutput()
     outputs.append(output);
     setting.insert(QStringLiteral("Output"), outputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    showGroupDetail(groupRow);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::removePhysicsOutput()
@@ -810,10 +741,7 @@ void CPhysicsPanel::removePhysicsOutput()
     outputs.removeAt(row);
     setting.insert(QStringLiteral("Output"), outputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    showGroupDetail(groupRow);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::addPhysicsVertex()
@@ -835,10 +763,7 @@ void CPhysicsPanel::addPhysicsVertex()
     vertices.append(vertex);
     setting.insert(QStringLiteral("Vertices"), vertices);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    showGroupDetail(groupRow);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::removePhysicsVertex()
@@ -868,19 +793,25 @@ void CPhysicsPanel::removePhysicsVertex()
     setting.insert(QStringLiteral("Vertices"), vertices);
     setting.insert(QStringLiteral("Output"), outputs);
     m_physicsSettings[groupRow] = setting;
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    showGroupDetail(groupRow);
-    emit PhysicsConfigChanged();
+    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::showGroupDetail(int row)
 {
-    if(row < 0 || row >= m_physicsSettings.size()) return;
+    const bool validGroup = row >= 0 && row < m_physicsSettings.size();
     const bool wasUpdating = m_updating;
     m_updating = true;
 
-    QJsonObject setting = m_physicsSettings[row].toObject();
+    const QJsonObject setting = validGroup ? m_physicsSettings.at(row).toObject() : QJsonObject();
+    m_addInputButton->setEnabled(validGroup);
+    m_addOutputButton->setEnabled(validGroup && !setting.value("Vertices").toArray().isEmpty());
+    m_addVertexButton->setEnabled(validGroup);
+    m_removeGroupButton->setEnabled(validGroup);
+    m_renameGroupButton->setEnabled(validGroup);
+    for (auto* table : {m_inputTable, m_outputTable, m_vertexTable}) {
+        table->clearSelection();
+        table->setCurrentCell(-1, -1);
+    }
     if (m_graph) m_graph->SetGroup(setting);
 
     // 输入设置
@@ -928,19 +859,19 @@ void CPhysicsPanel::showGroupDetail(int row)
     if (m_removeOutputButton) m_removeOutputButton->setEnabled(false);
     if (m_removeVertexButton) m_removeVertexButton->setEnabled(false);
     m_updating = wasUpdating;
+    if (!m_updating) emitDragParams(row);
 }
 
 void CPhysicsPanel::emitDragParams(int row)
 {
-    if(row < 0 || row >= m_physicsSettings.size()) return;
-    QJsonObject setting = m_physicsSettings[row].toObject();
-    QJsonArray inputs = setting["Input"].toArray();
-
     QStringList paramIds, types;
-    for(int i = 0; i < inputs.size(); i++){
-        QJsonObject inp = inputs[i].toObject();
-        paramIds << inp["Source"].toObject()["Id"].toString();
-        types << inp["Type"].toString();
+    if (m_dragModeCb->isChecked() && row >= 0 && row < m_physicsSettings.size()) {
+        const QJsonArray inputs = m_physicsSettings.at(row).toObject().value("Input").toArray();
+        for (const auto& value : inputs) {
+            const QJsonObject input = value.toObject();
+            paramIds << input.value("Source").toObject().value("Id").toString();
+            types << input.value("Type").toString();
+        }
     }
     emit PhysicsDragParamsChanged(paramIds, types);
 }

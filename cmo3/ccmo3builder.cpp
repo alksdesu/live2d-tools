@@ -312,11 +312,20 @@ void Generator::writePhysicsMain()
     m_xml.BeginObject(QStringLiteral("CPhysicsSettingsSourceSet"),
                       QStringLiteral("physicsSettingsSourceSet"));
     QJsonArray settings;
+    QHash<QString, QString> groupNames;
     if (!m_opt.physicsPath.isEmpty()) {
         QFile file(m_opt.physicsPath);
         if (file.open(QIODevice::ReadOnly)) {
-            settings = QJsonDocument::fromJson(file.readAll()).object()
-                           .value(QStringLiteral("PhysicsSettings")).toArray();
+            const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+            settings = root.value(QStringLiteral("PhysicsSettings")).toArray();
+            const QJsonArray dictionary = root.value(QStringLiteral("Meta")).toObject()
+                .value(QStringLiteral("PhysicsDictionary")).toArray();
+            for (const auto& value : dictionary) {
+                const QJsonObject entry = value.toObject();
+                const QString id = entry.value(QStringLiteral("Id")).toString();
+                const QString name = entry.value(QStringLiteral("Name")).toString();
+                if (!id.isEmpty() && !name.isEmpty()) groupNames.insert(id, name);
+            }
             file.close();
         }
     }
@@ -339,14 +348,15 @@ void Generator::writePhysicsMain()
 
     for (const QJsonValue& sv : settings) {
         const QJsonObject setting = sv.toObject();
+        const QString id = setting.value(QStringLiteral("Id")).toString();
         m_xml.BeginObject(QStringLiteral("CPhysicsSettingsSource"));
-        m_xml.S(QStringLiteral("name"), setting.value(QStringLiteral("Id")).toString());
+        m_xml.S(QStringLiteral("name"), groupNames.value(id, id));
         m_xml.BeginObject(QStringLiteral("CPhysicsSettingsGuid"), QStringLiteral("guid"));
         m_xml.Attribute(QStringLiteral("uuid"), NewGuid());
         m_xml.Attribute(QStringLiteral("note"), kNoDebug);
         m_xml.EndObject();
         m_xml.BeginObject(QStringLiteral("CPhysicsSettingId"), QStringLiteral("id"));
-        m_xml.Attribute(QStringLiteral("idstr"), setting.value(QStringLiteral("Id")).toString());
+        m_xml.Attribute(QStringLiteral("idstr"), id);
         m_xml.EndObject();
 
         const QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();

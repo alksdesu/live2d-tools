@@ -31,7 +31,8 @@ signals:
 
 private:
     void showGroupDetail(int row);
-    void refreshGroupTable();
+    void refreshGroupTable(int selectedRow);
+    void commitGroupChanges(int selectedRow);
     void emitDragParams(int row);
     void updateInputCell(int row, int column);
     void updateOutputCell(int row, int column);
@@ -45,7 +46,7 @@ private:
     void addPhysicsGroup();
     void removePhysicsGroup();
     void renamePhysicsGroup();
-    void updateForceDocument();
+    void updateForceDocument(bool gravity, bool xAxis, double value);
     bool ValidateDocument(QString* error) const;
 
     QLabel* m_fpsLabel;

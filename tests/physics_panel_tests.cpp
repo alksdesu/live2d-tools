@@ -1,5 +1,7 @@
 #include "ui/cphysicspanel.h"
 #include "ui/cphysicsgraph.h"
+#include "cmo3/ccmo3builder.h"
+#include "cmo3/ccaffarchive.h"
 #include <QtTest>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -8,11 +10,349 @@
 #include <QTemporaryDir>
 #include <QSignalSpy>
 #include <QPushButton>
+#include <QInputDialog>
+#include <QTimer>
+#include <QXmlStreamReader>
+#include <QMessageBox>
+
+namespace {
+QJsonObject physicsFixture()
+{
+    return QJsonDocument::fromJson(R"({
+        "Version": 3,
+        "Meta": {"Fps": 30, "PhysicsSettingCount": 2, "TotalInputCount": 2,
+            "TotalOutputCount": 0, "VertexCount": 2,
+            "EffectiveForces": {"Gravity": {"X": 1.25, "Y": -1}, "Wind": {"X": 0.1234, "Y": 0}},
+            "PhysicsDictionary": [{"Id": "hair", "Name": "头发"}, {"Id": "tail", "Name": "尾巴"}],
+            "CustomMeta": "keep"},
+        "PhysicsSettings": [
+            {"Id": "hair", "Input": [{"Source": {"Target": "Parameter", "Id": "ParamHair"},
+                "Type": "X", "Weight": 100, "Reflect": false}], "Output": [],
+             "Vertices": [{"Position": {"X": 0, "Y": 0}, "Mobility": 1, "Delay": 1, "Acceleration": 1, "Radius": 0}],
+             "Normalization": {"Position": {"Minimum": -10, "Default": 0, "Maximum": 10},
+                               "Angle": {"Minimum": -30, "Default": 0, "Maximum": 30}}},
+            {"Id": "tail", "Input": [{"Source": {"Target": "Parameter", "Id": "ParamTail"},
+                "Type": "Angle", "Weight": 100, "Reflect": false}], "Output": [],
+             "Vertices": [{"Position": {"X": 0, "Y": 0}, "Mobility": 1, "Delay": 1, "Acceleration": 1, "Radius": 0}],
+             "Normalization": {"Position": {"Minimum": -10, "Default": 0, "Maximum": 10},
+                               "Angle": {"Minimum": -30, "Default": 0, "Maximum": 30}}}
+        ]
+    })").object();
+}
+
+bool writePhysics(const QString& path, const QJsonObject& root)
+{
+    QFile file(path);
+    const QByteArray data = QJsonDocument(root).toJson();
+    return file.open(QIODevice::WriteOnly) && file.write(data) == data.size();
+}
+
+QJsonObject readPhysics(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    return QJsonDocument::fromJson(file.readAll()).object();
+}
+
+bool answerTextDialogs(QPushButton* button, const QStringList& answers, bool cancelLast = false)
+{
+    if (!button || !button->isEnabled()) return false;
+    QTimer timer;
+    QElapsedTimer elapsed;
+    int answered = 0;
+    bool timedOut = false;
+    QObject::connect(&timer, &QTimer::timeout, [&](){
+        auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (elapsed.elapsed() > 2000) {
+            timedOut = true;
+            if (modal) modal->reject();
+            return;
+        }
+        auto* dialog = qobject_cast<QInputDialog*>(modal);
+        if (!dialog || answered >= answers.size()) return;
+        dialog->setTextValue(answers.at(answered++));
+        if (cancelLast && answered == answers.size()) dialog->reject();
+        else dialog->accept();
+    });
+    elapsed.start();
+    timer.start(5);
+    button->click();
+    return !timedOut && answered == answers.size();
+}
+}
 
 class PhysicsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void editedGroupNameReachesCmo3()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        CPhysicsPanel panel;
+        QString error;
+        QVERIFY2(panel.LoadPhysics(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json", &error), qPrintable(error));
+        const QString name = QStringLiteral("测试组 & 摆动");
+        QVERIFY(answerTextDialogs(panel.findChild<QPushButton*>("renamePhysicsGroup"), {name}));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        options.physicsPath = temp.filePath("edited.physics3.json");
+        options.outPath = temp.filePath("edited.cmo3");
+        QVERIFY(panel.SavePhysics(options.physicsPath));
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* entry = archive.FindByPath("main.xml");
+        QVERIFY(entry);
+        QXmlStreamReader xml(entry->content);
+        QString firstName;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (!xml.isStartElement() || xml.name() != QLatin1String("CPhysicsSettingsSource")) continue;
+            while (xml.readNextStartElement()) {
+                if (xml.name() == QLatin1String("s") && xml.attributes().value("xs.n") == QLatin1String("name")) {
+                    firstName = xml.readElementText();
+                    break;
+                }
+                xml.skipCurrentElement();
+            }
+            break;
+        }
+        QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+        QCOMPARE(firstName, name);
+    }
+
+    void groupNamesSurviveSaveAndReload_data()
+    {
+        QTest::addColumn<bool>("hasDictionaryEntry");
+        QTest::newRow("existing-name") << true;
+        QTest::newRow("missing-name") << false;
+    }
+
+    void groupNamesSurviveSaveAndReload()
+    {
+        QFETCH(bool, hasDictionaryEntry);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("groups.physics3.json");
+        QJsonObject root = physicsFixture();
+        if (!hasDictionaryEntry) {
+            QJsonObject meta = root.value("Meta").toObject();
+            QJsonArray dictionary = meta.value("PhysicsDictionary").toArray();
+            dictionary.removeAt(0);
+            meta.insert("PhysicsDictionary", dictionary);
+            root.insert("Meta", meta);
+        }
+        QVERIFY(writePhysics(path, root));
+        CPhysicsPanel panel;
+        QString error;
+        QVERIFY2(panel.LoadPhysics(path, &error), qPrintable(error));
+        QVERIFY(answerTextDialogs(panel.findChild<QPushButton*>("renamePhysicsGroup"), {QStringLiteral("发梢摆动")}));
+        QVERIFY(panel.SavePhysics());
+        const QJsonObject saved = readPhysics(path);
+        QVERIFY(!saved.contains("PhysicsDictionary"));
+        const QJsonArray dictionary = saved.value("Meta").toObject().value("PhysicsDictionary").toArray();
+        QString name;
+        for (const auto& entry : dictionary)
+            if (entry.toObject().value("Id") == "hair") name = entry.toObject().value("Name").toString();
+        QCOMPARE(name, QStringLiteral("发梢摆动"));
+        QCOMPARE(saved.value("PhysicsSettings"), root.value("PhysicsSettings"));
+        CPhysicsPanel reloaded;
+        QVERIFY2(reloaded.LoadPhysics(path, &error), qPrintable(error));
+        QCOMPARE(reloaded.findChild<QTableWidget*>("physicsGroupTable")->item(0, 1)->text(), name);
+    }
+
+    void addedGroupAndCancelledDialogRoundTrip()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("groups.physics3.json");
+        QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        auto* add = panel.findChild<QPushButton*>("addPhysicsGroup");
+        QVERIFY(answerTextDialogs(add, {"extra", QStringLiteral("追加组")}));
+        QVERIFY(panel.SavePhysics());
+        const QJsonObject saved = readPhysics(path);
+        QVERIFY(!saved.contains("PhysicsDictionary"));
+        const auto settings = saved.value("PhysicsSettings").toArray();
+        QCOMPARE(settings.size(), 3);
+        QCOMPARE(settings.last().toObject().value("Id").toString(), QStringLiteral("extra"));
+        QCOMPARE(saved.value("Meta").toObject().value("PhysicsDictionary").toArray().last().toObject().value("Name").toString(), QStringLiteral("追加组"));
+        CPhysicsPanel reloaded;
+        QVERIFY(reloaded.LoadPhysics(path));
+        auto* groups = reloaded.findChild<QTableWidget*>("physicsGroupTable");
+        QCOMPARE(groups->item(2, 1)->text(), QStringLiteral("追加组"));
+        QVERIFY(answerTextDialogs(reloaded.findChild<QPushButton*>("addPhysicsGroup"), {"cancelled", "cancel"}, true));
+        QCOMPARE(groups->rowCount(), 3);
+        QVERIFY(!reloaded.HasUnsavedChanges());
+        QVERIFY(reloaded.SavePhysics());
+        QCOMPARE(readPhysics(path), saved);
+    }
+
+    void deletingCurrentGroupRefreshesDetailsAndDrag()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("groups.physics3.json");
+        QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable");
+        auto* inputs = panel.findChild<QTableWidget*>("physicsInputTable");
+        auto* drag = panel.findChild<QCheckBox*>();
+        auto* remove = panel.findChild<QPushButton*>("removePhysicsGroup");
+        QVERIFY(groups && inputs && drag && remove);
+        QSignalSpy parameters(&panel, &CPhysicsPanel::PhysicsDragParamsChanged);
+        drag->setChecked(true);
+        QCOMPARE(parameters.last().at(0).toStringList(), QStringList{"ParamHair"});
+        parameters.clear();
+        remove->click();
+        QCOMPARE(groups->item(0, 0)->text(), QStringLiteral("tail"));
+        QCOMPARE(inputs->item(0, 0)->text(), QStringLiteral("ParamTail"));
+        QVERIFY(!parameters.isEmpty());
+        QCOMPARE(parameters.last().at(0).toStringList(), QStringList{"ParamTail"});
+        QVERIFY(panel.SavePhysics());
+        const auto dictionary = readPhysics(path).value("Meta").toObject().value("PhysicsDictionary").toArray();
+        QCOMPARE(dictionary.size(), 1);
+        QCOMPARE(dictionary.first().toObject().value("Id").toString(), QStringLiteral("tail"));
+        parameters.clear();
+        remove->click();
+        QCOMPARE(inputs->rowCount(), 0);
+        QVERIFY(!parameters.isEmpty());
+        QVERIFY(parameters.last().at(0).toStringList().isEmpty());
+        QVERIFY(!panel.findChild<QPushButton*>("addPhysicsInput")->isEnabled());
+        QVERIFY(!panel.findChild<QPushButton*>("addPhysicsOutput")->isEnabled());
+        QVERIFY(!panel.findChild<QPushButton*>("addPhysicsVertex")->isEnabled());
+        QVERIFY(panel.findChild<QPushButton*>("addPhysicsGroup")->isEnabled());
+        QVERIFY(panel.SavePhysics());
+        CPhysicsPanel empty;
+        QVERIFY(empty.LoadPhysics(path));
+        QCOMPARE(empty.findChild<CPhysicsGraphWidget*>()->InputCount(), 0);
+        QVERIFY(!empty.findChild<QPushButton*>("addPhysicsInput")->isEnabled());
+    }
+
+    void savingPreservesUneditedForces()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("forces.physics3.json");
+        const QJsonObject source = physicsFixture();
+        QVERIFY(writePhysics(path, source));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        QVERIFY(panel.SavePhysics());
+        QCOMPARE(readPhysics(path), source);
+    }
+
+    void editingOneForcePreservesOtherComponents()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("forces.physics3.json");
+        QJsonObject expected = physicsFixture();
+        QVERIFY(writePhysics(path, expected));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        QSignalSpy force(&panel, &CPhysicsPanel::GravityChanged);
+        auto* slider = panel.findChild<QSlider*>("physicsGravityY");
+        QVERIFY(slider);
+        slider->setValue(-50);
+        QCOMPARE(force.size(), 1);
+        QCOMPARE(force.first().at(0).toFloat(), 1.25f);
+        QCOMPARE(force.first().at(1).toFloat(), -0.5f);
+        QJsonObject meta = expected.value("Meta").toObject();
+        QJsonObject forces = meta.value("EffectiveForces").toObject();
+        QJsonObject gravity = forces.value("Gravity").toObject();
+        gravity.insert("Y", -0.5);
+        forces.insert("Gravity", gravity);
+        meta.insert("EffectiveForces", forces);
+        expected.insert("Meta", meta);
+        QVERIFY(panel.SavePhysics());
+        QCOMPARE(readPhysics(path), expected);
+    }
+
+    void removingInputClearsActiveDragParameters()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("topology.physics3.json");
+        QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        auto* inputs = panel.findChild<QTableWidget*>("physicsInputTable");
+        auto* drag = panel.findChild<QCheckBox*>("physicsDragMode");
+        auto* remove = panel.findChild<QPushButton*>("removePhysicsInput");
+        QVERIFY(inputs && drag && remove);
+        drag->setChecked(true);
+        inputs->selectRow(0);
+        QSignalSpy parameters(&panel, &CPhysicsPanel::PhysicsDragParamsChanged);
+        remove->click();
+        QCOMPARE(inputs->rowCount(), 0);
+        QVERIFY(!parameters.isEmpty());
+        QVERIFY(parameters.last().at(0).toStringList().isEmpty());
+        QVERIFY(panel.SavePhysics());
+        CPhysicsPanel reloaded;
+        QVERIFY(reloaded.LoadPhysics(path));
+        QCOMPARE(reloaded.findChild<QTableWidget*>("physicsInputTable")->rowCount(), 0);
+    }
+
+    void failedSavePreservesFileAndDraft()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("original.physics3.json");
+        const QJsonObject source = physicsFixture();
+        QVERIFY(writePhysics(path, source));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        QVERIFY(answerTextDialogs(panel.findChild<QPushButton*>("renamePhysicsGroup"), {QStringLiteral("待保存名称")}));
+        QTimer dismiss;
+        int warnings = 0;
+        QObject::connect(&dismiss, &QTimer::timeout, [&](){
+            auto* message = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (message) { ++warnings; message->accept(); }
+        });
+        dismiss.start(5);
+        QVERIFY(!panel.SavePhysics(temp.path()));
+        dismiss.stop();
+        QCOMPARE(warnings, 1);
+        QVERIFY(panel.HasUnsavedChanges());
+        QCOMPARE(readPhysics(path), source);
+        QVERIFY(panel.SavePhysics());
+        CPhysicsPanel reloaded;
+        QVERIFY(reloaded.LoadPhysics(path));
+        QCOMPARE(reloaded.findChild<QTableWidget*>("physicsGroupTable")->item(0, 1)->text(), QStringLiteral("待保存名称"));
+    }
+
+    void failedLoadPreservesSelectionAndUnsavedChanges()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("original.physics3.json");
+        const QString invalidPath = temp.filePath("invalid.physics3.json");
+        QVERIFY(writePhysics(path, physicsFixture()));
+        QVERIFY(writePhysics(invalidPath, QJsonObject{{"PhysicsSettings", "invalid"}}));
+        CPhysicsPanel panel;
+        QVERIFY(panel.LoadPhysics(path));
+        auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable");
+        groups->selectRow(1);
+        panel.findChild<QCheckBox*>("physicsDragMode")->setChecked(true);
+        QVERIFY(answerTextDialogs(panel.findChild<QPushButton*>("renamePhysicsGroup"), {QStringLiteral("编辑中的尾巴")}));
+        QSignalSpy parameters(&panel, &CPhysicsPanel::PhysicsDragParamsChanged);
+        QString error;
+        QVERIFY(!panel.LoadPhysics(invalidPath, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(panel.HasUnsavedChanges());
+        QCOMPARE(groups->currentRow(), 1);
+        QCOMPARE(groups->item(1, 1)->text(), QStringLiteral("编辑中的尾巴"));
+        QVERIFY(parameters.isEmpty());
+        QVERIFY(panel.SavePhysics());
+        CPhysicsPanel reloaded;
+        QVERIFY(reloaded.LoadPhysics(path));
+        QCOMPARE(reloaded.findChild<QTableWidget*>("physicsGroupTable")->item(1, 1)->text(), QStringLiteral("编辑中的尾巴"));
+    }
+
     void rejectsInvalidJson()
     {
         QTemporaryDir temp;

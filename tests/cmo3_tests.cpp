@@ -10,12 +10,63 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QXmlStreamReader>
 #include <algorithm>
 
 class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void buildUsesPhysicsDisplayNames()
+    {
+        QFile source(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json");
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        QJsonObject root = QJsonDocument::fromJson(source.readAll()).object();
+        QJsonArray settings = root.value("PhysicsSettings").toArray();
+        QVERIFY(!settings.isEmpty());
+        const QString id = settings.first().toObject().value("Id").toString();
+        QJsonObject fallback = settings.first().toObject();
+        fallback.insert("Id", "UnmappedGroup");
+        settings = QJsonArray{settings.first(), fallback};
+        root.insert("PhysicsSettings", settings);
+        QJsonObject meta = root.value("Meta").toObject();
+        meta.insert("PhysicsDictionary", QJsonArray{QJsonObject{{"Id", id}, {"Name", QStringLiteral("发梢 & 耳朵")}}});
+        root.insert("Meta", meta);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QFile edited(temp.filePath("edited.physics3.json"));
+        QVERIFY(edited.open(QIODevice::WriteOnly));
+        const QByteArray bytes = QJsonDocument(root).toJson();
+        QCOMPARE(edited.write(bytes), bytes.size());
+        edited.close();
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        options.physicsPath = edited.fileName();
+        options.outPath = temp.filePath("named.cmo3");
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* entry = archive.FindByPath("main.xml");
+        QVERIFY(entry);
+        QXmlStreamReader xml(entry->content);
+        QStringList names;
+        QStringList ids;
+        bool inPhysicsGroup = false;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement() && xml.name() == QLatin1String("CPhysicsSettingsSource")) inPhysicsGroup = true;
+            if (xml.isEndElement() && xml.name() == QLatin1String("CPhysicsSettingsSource")) inPhysicsGroup = false;
+            if (!inPhysicsGroup || !xml.isStartElement()) continue;
+            if (xml.name() == QLatin1String("s") && xml.attributes().value("xs.n") == QLatin1String("name"))
+                names.append(xml.readElementText());
+            if (xml.name() == QLatin1String("CPhysicsSettingId")) ids.append(xml.attributes().value("idstr").toString());
+        }
+        QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+        QCOMPARE(names, (QStringList{QStringLiteral("发梢 & 耳朵"), "UnmappedGroup"}));
+        QCOMPARE(ids, (QStringList{id, "UnmappedGroup"}));
+    }
+
     void matchesTextureConfigToMoc()
     {
         QTemporaryDir temp;
