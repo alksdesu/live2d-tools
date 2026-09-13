@@ -7,7 +7,9 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QPushButton>
+#include <QComboBox>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QApplication>
@@ -94,6 +96,29 @@ CParamPanel::CParamPanel(QWidget *parent)
     m_search->setClearButtonEnabled(true);
     mainLayout->addWidget(m_search);
 
+    auto* xyBox = new QGroupBox(QStringLiteral("XY 参数控制"), wrapper);
+    auto* xyLayout = new QGridLayout(xyBox);
+    m_xyXSelector = new QComboBox(xyBox);
+    m_xyYSelector = new QComboBox(xyBox);
+    m_xyXSelector->setObjectName(QStringLiteral("xyXParameter"));
+    m_xyYSelector->setObjectName(QStringLiteral("xyYParameter"));
+    m_xyXSlider = new QSlider(Qt::Horizontal, xyBox);
+    m_xyYSlider = new QSlider(Qt::Horizontal, xyBox);
+    m_xyXSlider->setRange(0, 1000);
+    m_xyYSlider->setRange(0, 1000);
+    xyLayout->addWidget(new QLabel(QStringLiteral("X"), xyBox), 0, 0);
+    xyLayout->addWidget(m_xyXSelector, 0, 1);
+    xyLayout->addWidget(m_xyXSlider, 0, 2);
+    xyLayout->addWidget(new QLabel(QStringLiteral("Y"), xyBox), 1, 0);
+    xyLayout->addWidget(m_xyYSelector, 1, 1);
+    xyLayout->addWidget(m_xyYSlider, 1, 2);
+    xyBox->setEnabled(false);
+    mainLayout->addWidget(xyBox);
+    connect(m_xyXSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
+    connect(m_xyYSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
+    connect(m_xyXSlider, &QSlider::valueChanged, this, [this](){ ApplyXYSlider(m_xyXSlider, m_xyXSelector); });
+    connect(m_xyYSlider, &QSlider::valueChanged, this, [this](){ ApplyXYSlider(m_xyYSlider, m_xyYSelector); });
+
     m_scroll = new QScrollArea(wrapper);
     m_scroll->setWidgetResizable(true);
     m_container = new QWidget();
@@ -137,6 +162,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     m_lastValues.insert(paramId, value);
     if (m_document) m_document->SetParameterValue(paramId, value);
     emit ParamChanged(paramId, value, false);
+    RefreshXYControls();
     if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) PushEdit(paramId, before, value);
 }
 
@@ -145,6 +171,13 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
     m_rows.clear();
     m_lastValues.clear();
     ClearHistory();
+    {
+        QSignalBlocker xBlocker(m_xyXSelector);
+        QSignalBlocker yBlocker(m_xyYSelector);
+        m_xyXSelector->clear();
+        m_xyYSelector->clear();
+        m_xyXSelector->parentWidget()->setEnabled(false);
+    }
 
     // 删除旧 layout
     if(m_container->layout()){
@@ -381,11 +414,66 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
     }
 
     layout->addStretch();
+    for (const ParamRow& row : m_rows) {
+        m_xyXSelector->addItem(row.paramId);
+        m_xyYSelector->addItem(row.paramId);
+    }
+    if (m_rows.size() >= 2) {
+        QSignalBlocker xBlocker(m_xyXSelector);
+        QSignalBlocker yBlocker(m_xyYSelector);
+        m_xyXSelector->setCurrentIndex(0);
+        m_xyYSelector->setCurrentIndex(1);
+        m_xyXSelector->parentWidget()->setEnabled(true);
+    }
+    RefreshXYControls();
 }
 
 void CParamPanel::RefreshParameterMetadata()
 {
     for (int rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex) RefreshParameterRow(rowIndex);
+    RefreshXYControls();
+}
+
+void CParamPanel::RefreshXYControls()
+{
+    if (!m_xyXSelector || !m_xyYSelector || !m_xyXSlider || !m_xyYSlider || m_updatingXY) return;
+    if (m_rows.size() < 2 || m_xyXSelector->count() < 2 || m_xyYSelector->count() < 2) {
+        m_xyXSelector->parentWidget()->setEnabled(false);
+        return;
+    }
+    m_updatingXY = true;
+    if (m_xyXSelector->currentText() == m_xyYSelector->currentText()) {
+        const int replacement = m_xyYSelector->currentIndex() == 0 ? 1 : 0;
+        QSignalBlocker blocker(m_xyYSelector);
+        m_xyYSelector->setCurrentIndex(replacement);
+    }
+    const auto updateSlider = [this](QComboBox* selector, QSlider* slider) {
+        const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
+            return row.paramId == selector->currentText();
+        });
+        if (rowIt == m_rows.cend()) return;
+        const float value = m_lastValues.value(rowIt->paramId, rowIt->defaultVal);
+        const int sliderValue = rowIt->maxVal > rowIt->minVal
+            ? qBound(0, qRound((value - rowIt->minVal) * 1000.0f / (rowIt->maxVal - rowIt->minVal)), 1000)
+            : 0;
+        QSignalBlocker blocker(slider);
+        slider->setValue(sliderValue);
+    };
+    updateSlider(m_xyXSelector, m_xyXSlider);
+    updateSlider(m_xyYSelector, m_xyYSlider);
+    m_xyXSelector->parentWidget()->setEnabled(true);
+    m_updatingXY = false;
+}
+
+void CParamPanel::ApplyXYSlider(QSlider* slider, QComboBox* selector)
+{
+    if (m_updatingXY || !slider || !selector) return;
+    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
+        return row.paramId == selector->currentText();
+    });
+    if (rowIt == m_rows.cend() || rowIt->maxVal <= rowIt->minVal) return;
+    const float value = rowIt->minVal + (rowIt->maxVal - rowIt->minVal) * slider->value() / 1000.0f;
+    ApplyExternalValue(rowIt->paramId, value, true);
 }
 
 void CParamPanel::ResetAll()
@@ -636,6 +724,7 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     row.resetButton->setToolTip(QStringLiteral("恢复默认值 %1").arg(QString::number(row.defaultVal, 'f', 3)));
     const QString query = m_search->text().trimmed().toLower();
     row.widget->setVisible(query.isEmpty() || row.widget->property("searchText").toString().contains(query));
+    RefreshXYControls();
 }
 
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
@@ -645,6 +734,7 @@ void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
     const float before = m_lastValues.value(row.paramId, value);
     m_lastValues.insert(row.paramId, value);
     emit ParamChanged(row.paramId, value, false);
+    RefreshXYControls();
     if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) {
         PushEdit(row.paramId, before, value);
     }

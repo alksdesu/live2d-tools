@@ -13,6 +13,7 @@
 
 class CCidJson;
 class QToolButton;
+class QComboBox;
 namespace live2dstruct { class CModelDocument; }
 
 class CParamPanel : public QDockWidget
@@ -63,6 +64,11 @@ private:
     QScrollArea* m_scroll;
     QWidget* m_container;
     QLineEdit* m_search;
+    QComboBox* m_xyXSelector = nullptr;
+    QComboBox* m_xyYSelector = nullptr;
+    QSlider* m_xyXSlider = nullptr;
+    QSlider* m_xyYSlider = nullptr;
+    bool m_updatingXY = false;
     QVector<ParamRow> m_rows;
     QSet<int> m_userDragging;
     QSet<int> m_userLocked; // 用户手动修改过的参数，不再被 sync 覆盖
@@ -75,6 +81,8 @@ private:
     void PushEdit(const QString& paramId, float before, float after);
     void EmitHistoryState();
     void RefreshParameterRow(int rowIndex);
+    void RefreshXYControls();
+    void ApplyXYSlider(QSlider* slider, QComboBox* selector);
 };
 
 #endif // CPARAMPANEL_H
