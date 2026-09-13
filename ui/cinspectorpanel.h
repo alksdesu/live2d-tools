@@ -64,6 +64,8 @@ private:
     void TranslateSelectedVertices();
     void MergeSelectedVertices();
     void TransformSelectedVertices();
+    void RebuildRotationKeyformTable();
+    void ApplyRotationKeyformCellEdit(int row, int column);
     bool IsLocked(const QString& type, const QString& name) const;
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -83,6 +85,7 @@ private:
     QComboBox* m_keyformCombo = nullptr;
     QComboBox* m_deformerParentCombo = nullptr;
     QTableWidget* m_vertexTable = nullptr;
+    QTableWidget* m_rotationKeyformTable = nullptr;
     QPushButton* m_mirrorHorizontal = nullptr;
     QPushButton* m_mirrorVertical = nullptr;
     QPushButton* m_interpolatePrevious = nullptr;
@@ -104,6 +107,7 @@ private:
     QPushButton* m_transformVertices = nullptr;
     bool m_updatingVisibility = false;
     bool m_updatingKeyform = false;
+    bool m_updatingRotationKeyform = false;
     bool m_updatingDeformerParent = false;
     QSet<QString> m_lockedKeys;
     QLabel* m_geometryLabel = nullptr;

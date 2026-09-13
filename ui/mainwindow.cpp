@@ -289,6 +289,7 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.drawableIndexOverrides = m_document.DrawableIndexOverrides();
     options.drawableMaskIndexOverrides = m_document.DrawableMaskIndexOverrides();
     options.deformerParentOverrides = m_document.DeformerParentOverrides();
+    options.deformerRotationKeyformOverrides = m_document.DeformerRotationKeyformOverrides();
     options.drawableMaskInverted = m_document.DrawableMaskInvertedOverrides();
 
     QString error;
@@ -337,6 +338,7 @@ void MainWindow::on_actionSaveSession_triggered()
     session.drawableIndices = m_document.DrawableIndexOverrides();
     session.drawableMaskIndices = m_document.DrawableMaskIndexOverrides();
     session.deformerParentIndices = m_document.DeformerParentOverrides();
+    session.deformerRotationKeyforms = m_document.DeformerRotationKeyformOverrides();
     session.drawableMaskInverted = m_document.DrawableMaskInvertedOverrides();
     session.viewScale = m_openglwindows->ViewScale();
     const QVector2D position = m_openglwindows->ViewPosition();
@@ -403,6 +405,8 @@ void MainWindow::on_actionLoadSession_triggered()
         if (m_treePanel) m_treePanel->ApplyLockedState(session.locked);
         if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
         m_document.SetDeformerParentIndices(session.deformerParentIndices);
+        for (auto it = session.deformerRotationKeyforms.cbegin(); it != session.deformerRotationKeyforms.cend(); ++it)
+            m_document.SetDeformerRotationKeyforms(it.key(), it.value());
         if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
         for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
             m_document.SetDrawableOpacity(it.key(), it.value());

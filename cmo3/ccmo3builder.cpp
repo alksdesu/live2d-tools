@@ -972,9 +972,28 @@ void Generator::writeRotationDeformerEntities()
         const CDeformers* deformer = m_table.deformers[d];
         const int parentDeformer = effectiveDeformerParentIndex(d);
 
-        const int keyformCount = rot->keyform_sources_counts;
-        if (keyformCount <= 0 || !validSlice(rot->keyform_sources_begin_indices, keyformCount,
-                                             m_table.rotation_deformer_keyforms.size())) continue;
+        QVector<live2dstruct::CModelRotationKeyform> keyforms;
+        const auto overrideIt = m_opt.deformerRotationKeyformOverrides.constFind(deformer->ids);
+        if (overrideIt != m_opt.deformerRotationKeyformOverrides.cend() &&
+            overrideIt->size() == rot->keyform_sources_counts) {
+            keyforms = overrideIt.value();
+        } else if (rot->keyform_sources_counts <= 0 ||
+                   !validSlice(rot->keyform_sources_begin_indices, rot->keyform_sources_counts,
+                               m_table.rotation_deformer_keyforms.size())) continue;
+        if (keyforms.isEmpty()) {
+            if (rot->keyform_sources_counts <= 0 || !validSlice(rot->keyform_sources_begin_indices,
+                                                                 rot->keyform_sources_counts,
+                                                                 m_table.rotation_deformer_keyforms.size())) continue;
+            keyforms.reserve(rot->keyform_sources_counts);
+            for (int k = 0; k < rot->keyform_sources_counts; ++k) {
+                const CRotation_deformer_keyforms* sourceKeyform = m_table.rotation_deformer_keyforms[
+                    rot->keyform_sources_begin_indices + k];
+                keyforms.append({sourceKeyform->opacities, sourceKeyform->angles, sourceKeyform->origin_x,
+                                 sourceKeyform->origin_y, sourceKeyform->scales, sourceKeyform->is_reflect_x,
+                                 sourceKeyform->is_reflect_y});
+            }
+        }
+        const int keyformCount = keyforms.size();
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
@@ -1006,24 +1025,23 @@ void Generator::writeRotationDeformerEntities()
         m_xml.B(QStringLiteral("useBoneUi_testImpl"), true);
         m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
         for (int k = 0; k < keyformCount; ++k) {
-            const CRotation_deformer_keyforms* kf = m_table.rotation_deformer_keyforms[
-                rot->keyform_sources_begin_indices + k];
+            const auto& kf = keyforms[k];
             const bool onCanvas = (parentDeformer < 0);
-            float px = kf->origin_x;
-            float py = kf->origin_y;
+            float px = kf.originX;
+            float py = kf.originY;
             if (onCanvas) {
-                px = (kf->origin_x + canvas->origin_x) * canvas->pixels_per_unit;
-                py = (canvas->origin_y - kf->origin_y) * canvas->pixels_per_unit;
+                px = (kf.originX + canvas->origin_x) * canvas->pixels_per_unit;
+                py = (canvas->origin_y - kf.originY) * canvas->pixels_per_unit;
             }
             m_xml.BeginObject(QStringLiteral("CRotationDeformerForm"));
-            m_xml.Attribute(QStringLiteral("angle"), CXsXmlWriter::FormatFloat(kf->angles));
+            m_xml.Attribute(QStringLiteral("angle"), CXsXmlWriter::FormatFloat(kf.angle));
             m_xml.Attribute(QStringLiteral("originX"), CXsXmlWriter::FormatFloat(px));
             m_xml.Attribute(QStringLiteral("originY"), CXsXmlWriter::FormatFloat(py));
-            m_xml.Attribute(QStringLiteral("scale"), CXsXmlWriter::FormatFloat(kf->scales));
+            m_xml.Attribute(QStringLiteral("scale"), CXsXmlWriter::FormatFloat(kf.scale));
             m_xml.Attribute(QStringLiteral("isReflectX"),
-                            kf->is_reflect_x ? QStringLiteral("true") : QStringLiteral("false"));
+                            kf.reflectX ? QStringLiteral("true") : QStringLiteral("false"));
             m_xml.Attribute(QStringLiteral("isReflectY"),
-                            kf->is_reflect_y ? QStringLiteral("true") : QStringLiteral("false"));
+                            kf.reflectY ? QStringLiteral("true") : QStringLiteral("false"));
             m_xml.BeginObject(QStringLiteral("ACDeformerForm"), QStringLiteral("super"));
             m_xml.BeginObject(QStringLiteral("ACForm"), QStringLiteral("super"));
             m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("guid"), formGuidIds[k]);
@@ -1034,7 +1052,7 @@ void Generator::writeRotationDeformerEntities()
             m_xml.Null(QStringLiteral("name"));
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject();
-            m_xml.F(QStringLiteral("opacity"), kf->opacities);
+            m_xml.F(QStringLiteral("opacity"), kf.opacity);
             m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
             m_xml.EndObject(); // ACDeformerForm
             m_xml.EndObject(); // CRotationDeformerForm

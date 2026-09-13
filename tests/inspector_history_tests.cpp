@@ -161,6 +161,19 @@ private slots:
         QCOMPARE(document.DeformerParentIndex(deformerId), oldDeformerParent);
         panel.Redo();
         QCOMPARE(document.DeformerParentIndex(deformerId), deformerParentChoice);
+        if (deformerType == QLatin1String("rotation")) {
+            auto* rotationTable = panel.findChild<QTableWidget*>("rotationKeyformTable");
+            QVERIFY(rotationTable && rotationTable->rowCount() > 0 && rotationTable->isEnabled());
+            const auto rotationBefore = document.DeformerRotationKeyforms(deformerId);
+            const float angleBefore = rotationBefore.first().angle;
+            rotationTable->item(0, 1)->setText(QString::number(angleBefore + 6.0f));
+            const auto rotationAfter = document.DeformerRotationKeyforms(deformerId);
+            QCOMPARE(rotationAfter.first().angle, angleBefore + 6.0f);
+            panel.Undo();
+            QCOMPARE(document.DeformerRotationKeyforms(deformerId).first().angle, angleBefore);
+            panel.Redo();
+            QCOMPARE(document.DeformerRotationKeyforms(deformerId).first().angle, angleBefore + 6.0f);
+        }
         QString maskedId;
         for (const auto& drawableCandidate : document.Drawables()) {
             if (!drawableCandidate.maskIndices.isEmpty()) { maskedId = drawableCandidate.id; break; }

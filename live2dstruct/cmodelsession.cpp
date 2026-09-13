@@ -112,6 +112,23 @@ QByteArray CModelSession::ToJson() const
     for (auto it = deformerParentIndices.cbegin(); it != deformerParentIndices.cend(); ++it)
         deformerParentObject.insert(it.key(), it.value());
     root.insert(QStringLiteral("deformerParentIndices"), deformerParentObject);
+    QJsonObject rotationKeyformObject;
+    for (auto it = deformerRotationKeyforms.cbegin(); it != deformerRotationKeyforms.cend(); ++it) {
+        QJsonArray keyforms;
+        for (const CModelRotationKeyform& keyform : it.value()) {
+            QJsonObject value;
+            value.insert(QStringLiteral("opacity"), static_cast<double>(keyform.opacity));
+            value.insert(QStringLiteral("angle"), static_cast<double>(keyform.angle));
+            value.insert(QStringLiteral("originX"), static_cast<double>(keyform.originX));
+            value.insert(QStringLiteral("originY"), static_cast<double>(keyform.originY));
+            value.insert(QStringLiteral("scale"), static_cast<double>(keyform.scale));
+            value.insert(QStringLiteral("reflectX"), keyform.reflectX);
+            value.insert(QStringLiteral("reflectY"), keyform.reflectY);
+            keyforms.append(value);
+        }
+        rotationKeyformObject.insert(it.key(), keyforms);
+    }
+    root.insert(QStringLiteral("deformerRotationKeyforms"), rotationKeyformObject);
     QJsonObject maskInvertedObject;
     for (auto it = drawableMaskInverted.cbegin(); it != drawableMaskInverted.cend(); ++it)
         maskInvertedObject.insert(it.key(), it.value());
@@ -183,6 +200,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     QJsonObject indexObject;
     QJsonObject maskObject;
     QJsonObject deformerParentObject;
+    QJsonObject rotationKeyformObject;
     QJsonObject maskInvertedObject;
     if (!readObject(root, QStringLiteral("parameters"), &parameterObject, error) ||
         !readObject(root, QStringLiteral("parameterMetadata"), &parameterMetadataObject, error) ||
@@ -194,6 +212,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         !readObject(root, QStringLiteral("drawableIndices"), &indexObject, error) ||
         !readObject(root, QStringLiteral("drawableMaskIndices"), &maskObject, error) ||
         !readObject(root, QStringLiteral("deformerParentIndices"), &deformerParentObject, error) ||
+        !readObject(root, QStringLiteral("deformerRotationKeyforms"), &rotationKeyformObject, error) ||
         !readObject(root, QStringLiteral("drawableMaskInverted"), &maskInvertedObject, error)) return false;
     for (const QString& key : parameterObject.keys()) {
         float value = 0.0f;
@@ -371,6 +390,41 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             return false;
         }
         result.deformerParentIndices.insert(key, static_cast<int>(number));
+    }
+    if (rotationKeyformObject.size() > 100000) {
+        setError(error, QStringLiteral("Rotation Deformer 覆盖数量超出限制"));
+        return false;
+    }
+    for (const QString& key : rotationKeyformObject.keys()) {
+        const QJsonValue keyformValue = rotationKeyformObject.value(key);
+        if (!keyformValue.isArray() || keyformValue.toArray().isEmpty() || keyformValue.toArray().size() > 10000) {
+            setError(error, QStringLiteral("Rotation Deformer 关键形数组无效：%1").arg(key));
+            return false;
+        }
+        QVector<CModelRotationKeyform> keyforms;
+        for (const QJsonValue& value : keyformValue.toArray()) {
+            if (!value.isObject()) {
+                setError(error, QStringLiteral("Rotation Deformer 关键形不是对象：%1").arg(key));
+                return false;
+            }
+            const QJsonObject object = value.toObject();
+            CModelRotationKeyform keyform;
+            if (!readFloat(object.value(QStringLiteral("opacity")), &keyform.opacity) ||
+                !readFloat(object.value(QStringLiteral("angle")), &keyform.angle) ||
+                !readFloat(object.value(QStringLiteral("originX")), &keyform.originX) ||
+                !readFloat(object.value(QStringLiteral("originY")), &keyform.originY) ||
+                !readFloat(object.value(QStringLiteral("scale")), &keyform.scale) ||
+                keyform.opacity < 0.0f || keyform.opacity > 1.0f || keyform.scale < 0.0f ||
+                !object.value(QStringLiteral("reflectX")).isBool() ||
+                !object.value(QStringLiteral("reflectY")).isBool()) {
+                setError(error, QStringLiteral("Rotation Deformer 关键形数值无效：%1").arg(key));
+                return false;
+            }
+            keyform.reflectX = object.value(QStringLiteral("reflectX")).toBool();
+            keyform.reflectY = object.value(QStringLiteral("reflectY")).toBool();
+            keyforms.append(keyform);
+        }
+        result.deformerRotationKeyforms.insert(key, keyforms);
     }
     for (const QString& key : maskInvertedObject.keys()) {
         if (!maskInvertedObject.value(key).isBool()) {

@@ -34,6 +34,7 @@ public:
         QHash<QString, QVector<quint16>> drawableIndexOverrides;
         QHash<QString, QVector<int>> drawableMaskIndexOverrides;
         QHash<QString, int> deformerParentOverrides;
+        QHash<QString, QVector<live2dstruct::CModelRotationKeyform>> deformerRotationKeyformOverrides;
         QHash<QString, bool> drawableMaskInverted;
     };
 

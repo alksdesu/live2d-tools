@@ -148,6 +148,35 @@ private slots:
         QVERIFY(mainXml->content.contains(QStringLiteral("测试参数").toUtf8()));
     }
 
+    void buildUsesRotationKeyformOverride()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const auto deformerIt = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(),
+            [](const live2dstruct::CModelDeformer& deformer){
+                return deformer.type == live2dstruct::CModelDeformer::Rotation && !deformer.rotationKeyforms.isEmpty();
+            });
+        QVERIFY(deformerIt != document.Deformers().cend());
+        QVector<live2dstruct::CModelRotationKeyform> keyforms = document.DeformerRotationKeyforms(deformerIt->id);
+        keyforms[0].angle += 7.5f;
+        QVERIFY(document.SetDeformerRotationKeyforms(deformerIt->id, keyforms));
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath(QStringLiteral("Mark-rotation.cmo3"));
+        options.deformerRotationKeyformOverrides = document.DeformerRotationKeyformOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* mainXml = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(mainXml);
+        QVERIFY(mainXml->content.contains(cmo3::CXsXmlWriter::FormatFloat(keyforms[0].angle).toUtf8()));
+    }
+
     void buildUsesIndexOverride()
     {
         const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";

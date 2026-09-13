@@ -214,6 +214,21 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     vertexTransformLayout->addWidget(m_transformVertices);
     form->addRow(QStringLiteral("顶点变换"), vertexTransformTools);
     form->addRow(QStringLiteral("顶点位置"), m_vertexTable);
+    m_rotationKeyformTable = new QTableWidget(content);
+    m_rotationKeyformTable->setObjectName(QStringLiteral("rotationKeyformTable"));
+    m_rotationKeyformTable->setColumnCount(7);
+    m_rotationKeyformTable->setHorizontalHeaderLabels({QStringLiteral("形"), QStringLiteral("角度"),
+                                                        QStringLiteral("原点 X"), QStringLiteral("原点 Y"),
+                                                        QStringLiteral("缩放"), QStringLiteral("反射 X"),
+                                                        QStringLiteral("反射 Y")});
+    m_rotationKeyformTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    for (int column = 1; column < 7; ++column)
+        m_rotationKeyformTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::Stretch);
+    m_rotationKeyformTable->verticalHeader()->setVisible(false);
+    m_rotationKeyformTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+                                             QAbstractItemView::SelectedClicked);
+    m_rotationKeyformTable->setVisible(false);
+    form->addRow(QStringLiteral("旋转关键形"), m_rotationKeyformTable);
     layout->addLayout(form);
     layout->addStretch(1);
     setWidget(content);
@@ -222,6 +237,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     });
     connect(m_vertexTable, &QTableWidget::cellChanged, this, [this](int row, int column){
         if (!m_updatingKeyform) ApplyKeyformCellEdit(row, column);
+    });
+    connect(m_rotationKeyformTable, &QTableWidget::cellChanged, this, [this](int row, int column){
+        if (!m_updatingRotationKeyform) ApplyRotationKeyformCellEdit(row, column);
     });
     connect(m_mirrorHorizontal, &QPushButton::clicked, this, [this](){ MirrorKeyform(true); });
     connect(m_mirrorVertical, &QPushButton::clicked, this, [this](){ MirrorKeyform(false); });
@@ -418,6 +436,9 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_keyformCombo->clear();
     m_keyformCombo->setEnabled(false);
     m_vertexTable->setRowCount(0);
+    m_rotationKeyformTable->setRowCount(0);
+    m_rotationKeyformTable->setVisible(false);
+    m_rotationKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -545,6 +566,82 @@ void CInspectorPanel::RebuildKeyformTable()
     }
     m_vertexTable->setEnabled(true);
     m_updatingKeyform = false;
+}
+
+void CInspectorPanel::RebuildRotationKeyformTable()
+{
+    m_updatingRotationKeyform = true;
+    m_rotationKeyformTable->setRowCount(0);
+    if (!m_document || m_selectionType != QLatin1String("rotation") || m_selectionName.isEmpty()) {
+        m_rotationKeyformTable->setEnabled(false);
+        m_updatingRotationKeyform = false;
+        return;
+    }
+    const QVector<live2dstruct::CModelRotationKeyform> keyforms =
+        m_document->DeformerRotationKeyforms(m_selectionName);
+    const bool unlocked = !IsLocked(m_selectionType, m_selectionName);
+    m_rotationKeyformTable->setRowCount(keyforms.size());
+    for (int row = 0; row < keyforms.size(); ++row) {
+        const auto& keyform = keyforms[row];
+        auto* index = new QTableWidgetItem(QString::number(row));
+        index->setFlags(index->flags() & ~Qt::ItemIsEditable);
+        m_rotationKeyformTable->setItem(row, 0, index);
+        m_rotationKeyformTable->setItem(row, 1, new QTableWidgetItem(QString::number(keyform.angle, 'g', 9)));
+        m_rotationKeyformTable->setItem(row, 2, new QTableWidgetItem(QString::number(keyform.originX, 'g', 9)));
+        m_rotationKeyformTable->setItem(row, 3, new QTableWidgetItem(QString::number(keyform.originY, 'g', 9)));
+        m_rotationKeyformTable->setItem(row, 4, new QTableWidgetItem(QString::number(keyform.scale, 'g', 9)));
+        m_rotationKeyformTable->setItem(row, 5, new QTableWidgetItem(keyform.reflectX ? QStringLiteral("是") : QStringLiteral("否")));
+        m_rotationKeyformTable->setItem(row, 6, new QTableWidgetItem(keyform.reflectY ? QStringLiteral("是") : QStringLiteral("否")));
+    }
+    m_rotationKeyformTable->setEnabled(unlocked);
+    m_updatingRotationKeyform = false;
+}
+
+void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
+{
+    if (!m_document || m_selectionType != QLatin1String("rotation") || m_selectionName.isEmpty() ||
+        row < 0 || column < 1 || column > 6 || IsLocked(m_selectionType, m_selectionName)) return;
+    QVector<live2dstruct::CModelRotationKeyform> before =
+        m_document->DeformerRotationKeyforms(m_selectionName);
+    if (row >= before.size() || !m_rotationKeyformTable->item(row, column)) return;
+    QVector<live2dstruct::CModelRotationKeyform> after = before;
+    const QString text = m_rotationKeyformTable->item(row, column)->text().trimmed().toLower();
+    if (column == 5 || column == 6) {
+        bool value = false;
+        if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) value = true;
+        else if (text != QStringLiteral("否") && text != QStringLiteral("false") && text != QStringLiteral("0")) {
+            RebuildRotationKeyformTable();
+            return;
+        }
+        if (column == 5) after[row].reflectX = value;
+        else after[row].reflectY = value;
+    } else {
+        bool ok = false;
+        const double number = m_rotationKeyformTable->item(row, column)->text().toDouble(&ok);
+        if (!ok || !std::isfinite(number)) {
+            RebuildRotationKeyformTable();
+            return;
+        }
+        const float value = static_cast<float>(number);
+        if (column == 1) after[row].angle = value;
+        else if (column == 2) after[row].originX = value;
+        else if (column == 3) after[row].originY = value;
+        else if (column == 4) after[row].scale = value;
+    }
+    if (after[row].scale < 0.0f) {
+        RebuildRotationKeyformTable();
+        return;
+    }
+    if (after == before) return;
+    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("rotation"),
+                                           live2dstruct::CModelEdit::RotationKeyforms,
+                                           QVariant::fromValue(before), QVariant::fromValue(after)};
+    if (!m_document->ExecuteEdit(command)) {
+        RebuildRotationKeyformTable();
+        return;
+    }
+    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    RebuildRotationKeyformTable();
 }
 
 void CInspectorPanel::ApplyKeyformCellEdit(int row, int column)
@@ -932,6 +1029,9 @@ void CInspectorPanel::ClearSelection()
     m_keyformCombo->clear();
     m_keyformCombo->setEnabled(false);
     m_vertexTable->setRowCount(0);
+    m_rotationKeyformTable->setRowCount(0);
+    m_rotationKeyformTable->setVisible(false);
+    m_rotationKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -1204,6 +1304,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
     m_keyformCombo->setEnabled(false);
     m_vertexTable->setRowCount(0);
     m_vertexTable->setEnabled(false);
+    m_rotationKeyformTable->setRowCount(0);
+    m_rotationKeyformTable->setVisible(false);
+    m_rotationKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
     m_interpolatePrevious->setEnabled(false);
@@ -1303,6 +1406,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
                 m_geometryLabel->setText(QStringLiteral("Warp %1 × %2").arg(deformer.columns).arg(deformer.rows));
             } else {
                 m_geometryLabel->setText(QStringLiteral("Rotation Deformer"));
+                m_rotationKeyformTable->setVisible(true);
+                m_rotationKeyformTable->setEnabled(unlocked);
+                RebuildRotationKeyformTable();
             }
             return;
         }

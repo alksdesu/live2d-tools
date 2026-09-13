@@ -81,6 +81,7 @@ void CModelDocument::Clear()
     m_drawableIndexOverrides.clear();
     m_drawableMaskIndexOverrides.clear();
     m_deformerParentOverrides.clear();
+    m_deformerRotationKeyformOverrides.clear();
     m_drawableMaskInvertedOverrides.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
@@ -137,6 +138,22 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
             const CWarp_deformers* warp = table.warp_deformers[source->specific_sources_indices];
             deformer.rows = warp->rows;
             deformer.columns = warp->columns;
+        } else if (deformer.type == CModelDeformer::Rotation &&
+                   inRange(source->specific_sources_indices, table.rotation_deformers.size())) {
+            const CRotation_deformers* rotation = table.rotation_deformers[source->specific_sources_indices];
+            deformer.baseAngle = rotation->base_angles;
+            if (validSlice(rotation->keyform_sources_begin_indices, rotation->keyform_sources_counts,
+                           table.rotation_deformer_keyforms.size())) {
+                deformer.rotationKeyforms.reserve(rotation->keyform_sources_counts);
+                for (int keyformIndex = 0; keyformIndex < rotation->keyform_sources_counts; ++keyformIndex) {
+                    const CRotation_deformer_keyforms* sourceKeyform = table.rotation_deformer_keyforms[
+                        rotation->keyform_sources_begin_indices + keyformIndex];
+                    deformer.rotationKeyforms.append({sourceKeyform->opacities, sourceKeyform->angles,
+                                                      sourceKeyform->origin_x, sourceKeyform->origin_y,
+                                                      sourceKeyform->scales, sourceKeyform->is_reflect_x,
+                                                      sourceKeyform->is_reflect_y});
+                }
+            }
         }
         m_deformers.append(deformer);
     }
@@ -435,6 +452,36 @@ bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents
     return true;
 }
 
+QVector<CModelRotationKeyform> CModelDocument::DeformerRotationKeyforms(const QString& id) const
+{
+    if (m_deformerRotationKeyformOverrides.contains(id))
+        return m_deformerRotationKeyformOverrides.value(id);
+    for (const CModelDeformer& deformer : m_deformers) {
+        if (deformer.id == id && deformer.type == CModelDeformer::Rotation)
+            return deformer.rotationKeyforms;
+    }
+    return {};
+}
+
+bool CModelDocument::SetDeformerRotationKeyforms(const QString& id,
+                                                 const QVector<CModelRotationKeyform>& keyforms)
+{
+    for (const CModelDeformer& deformer : m_deformers) {
+        if (deformer.id != id || deformer.type != CModelDeformer::Rotation) continue;
+        if (keyforms.isEmpty() || keyforms.size() != deformer.rotationKeyforms.size() || keyforms.size() > 10000)
+            return false;
+        for (const CModelRotationKeyform& keyform : keyforms) {
+            if (!std::isfinite(keyform.opacity) || keyform.opacity < 0.0f || keyform.opacity > 1.0f ||
+                !std::isfinite(keyform.angle) || !std::isfinite(keyform.originX) ||
+                !std::isfinite(keyform.originY) || !std::isfinite(keyform.scale) || keyform.scale < 0.0f)
+                return false;
+        }
+        m_deformerRotationKeyformOverrides.insert(id, keyforms);
+        return true;
+    }
+    return false;
+}
+
 bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int>& maskIndices)
 {
     for (int drawableIndex = 0; drawableIndex < m_drawables.size(); ++drawableIndex) {
@@ -585,6 +632,11 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         if (!value.canConvert<int>()) return false;
         return SetDeformerParentIndex(edit.name, value.toInt());
     }
+    if (edit.field == CModelEdit::RotationKeyforms) {
+        if (edit.type != QLatin1String("rotation") || !value.canConvert<QVector<CModelRotationKeyform>>())
+            return false;
+        return SetDeformerRotationKeyforms(edit.name, value.value<QVector<CModelRotationKeyform>>());
+    }
     if (edit.field == CModelEdit::MaskInverted) {
         if (edit.type != QLatin1String("artmesh") || !value.canConvert<bool>()) return false;
         return SetDrawableMaskInverted(edit.name, value.toBool());
@@ -734,6 +786,17 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         if (m_deformers[i].parentPartIndex != -1 && !inRange(m_deformers[i].parentPartIndex, m_parts.size())) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_part"),
                                  QStringLiteral("Deformer 所属 Part 越界"), i});
+        }
+        if (m_deformers[i].type == CModelDeformer::Rotation) {
+            for (const CModelRotationKeyform& keyform : DeformerRotationKeyforms(m_deformers[i].id)) {
+                if (!std::isfinite(keyform.opacity) || keyform.opacity < 0.0f || keyform.opacity > 1.0f ||
+                    !std::isfinite(keyform.angle) || !std::isfinite(keyform.originX) ||
+                    !std::isfinite(keyform.originY) || !std::isfinite(keyform.scale) || keyform.scale < 0.0f) {
+                    diagnostics.append({CModelDiagnostic::Error, QStringLiteral("rotation_keyform"),
+                                         QStringLiteral("Rotation Deformer 关键形数值无效"), i});
+                    break;
+                }
+            }
         }
         if (states[i] != 0) continue;
         QVector<int> path;

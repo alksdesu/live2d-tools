@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QHash>
 #include <QVariant>
+#include <QMetaType>
 
 namespace live2dstruct {
 
@@ -62,6 +63,24 @@ struct CModelPart
     bool enabled = true;
 };
 
+struct CModelRotationKeyform
+{
+    float opacity = 1.0f;
+    float angle = 0.0f;
+    float originX = 0.0f;
+    float originY = 0.0f;
+    float scale = 1.0f;
+    bool reflectX = false;
+    bool reflectY = false;
+
+    bool operator==(const CModelRotationKeyform& other) const
+    {
+        return opacity == other.opacity && angle == other.angle && originX == other.originX &&
+               originY == other.originY && scale == other.scale && reflectX == other.reflectX &&
+               reflectY == other.reflectY;
+    }
+};
+
 struct CModelDeformer
 {
     enum Type { Warp, Rotation };
@@ -73,6 +92,8 @@ struct CModelDeformer
     bool enabled = true;
     int rows = 0;
     int columns = 0;
+    float baseAngle = 0.0f;
+    QVector<CModelRotationKeyform> rotationKeyforms;
 };
 
 struct CModelDrawable
@@ -114,7 +135,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms };
     QString name;
     QString type;
     Field field = Visibility;
@@ -151,6 +172,11 @@ public:
     bool SetDeformerParentIndex(const QString& id, int parentIndex);
     bool SetDeformerParentIndices(const QHash<QString, int>& parents);
     const QHash<QString, int>& DeformerParentOverrides() const { return m_deformerParentOverrides; }
+    QVector<CModelRotationKeyform> DeformerRotationKeyforms(const QString& id) const;
+    bool SetDeformerRotationKeyforms(const QString& id, const QVector<CModelRotationKeyform>& keyforms);
+    const QHash<QString, QVector<CModelRotationKeyform>>& DeformerRotationKeyformOverrides() const {
+        return m_deformerRotationKeyformOverrides;
+    }
     const QVector<CModelDrawable>& Drawables() const { return m_drawables; }
     QVector<quint16> DrawableIndices(const QString& id) const;
     bool SetDrawableIndices(const QString& id, const QVector<quint16>& indices);
@@ -204,6 +230,7 @@ private:
     QHash<QString, QVector<quint16>> m_drawableIndexOverrides;
     QHash<QString, QVector<int>> m_drawableMaskIndexOverrides;
     QHash<QString, int> m_deformerParentOverrides;
+    QHash<QString, QVector<CModelRotationKeyform>> m_deformerRotationKeyformOverrides;
     QHash<QString, bool> m_drawableMaskInvertedOverrides;
     QSet<QString> m_lockedKeys;
     QVector<CModelEdit> m_editHistory;
@@ -213,5 +240,8 @@ private:
 };
 
 }
+
+Q_DECLARE_METATYPE(live2dstruct::CModelRotationKeyform)
+Q_DECLARE_METATYPE(QVector<live2dstruct::CModelRotationKeyform>)
 
 #endif
