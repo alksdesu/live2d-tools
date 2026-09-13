@@ -24,6 +24,22 @@
 
 using namespace Live2D::Cubism::Framework;
 
+namespace {
+void clearLayoutItems(QLayout* layout)
+{
+    if (!layout) return;
+    while (QLayoutItem* item = layout->takeAt(0)) {
+        if (QWidget* widget = item->widget()) {
+            delete widget;
+        } else if (QLayout* child = item->layout()) {
+            clearLayoutItems(child);
+            delete child;
+        }
+        delete item;
+    }
+}
+}
+
 CMotionPanel::CMotionPanel(QWidget *parent)
     : QDockWidget("动作/表情", parent)
 {
@@ -251,7 +267,12 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
     QLayout* layout = m_poseWidget->layout();
     while(layout->count() > 1){ // 保留标签
         QLayoutItem* item = layout->takeAt(1);
-        if(item->widget()) delete item->widget();
+        if (QWidget* widget = item->widget()) {
+            delete widget;
+        } else if (QLayout* child = item->layout()) {
+            clearLayoutItems(child);
+            delete child;
+        }
         delete item;
     }
 
