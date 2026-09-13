@@ -89,6 +89,13 @@ QToolBar QToolButton:pressed {
     color: @accent@;
 }
 
+QToolBar QToolButton:checked {
+    background: @accentSoft@;
+    color: @accent@;
+    border-color: @accent@;
+    font-weight: 600;
+}
+
 QPushButton {
     background: @surface@;
     color: @text@;

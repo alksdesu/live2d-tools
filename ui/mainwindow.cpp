@@ -4,6 +4,7 @@
 #include "QPainter"
 #include "QLineEdit"
 #include <QAction>
+#include <QActionGroup>
 #include <QMenu>
 #include <QMenuBar>
 #include <QToolBar>
@@ -522,6 +523,30 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
     }
     if (m_paramPanel) m_paramPanel->SyncHistoryState();
     if (m_inspectorPanel) m_inspectorPanel->SyncHistoryState();
+}
+
+void MainWindow::SetWorkspaceMode(int mode)
+{
+    m_workspaceMode = qBound(0, mode, 2);
+    if (m_workspaceActionGroup) {
+        for (int i = 0; i < m_workspaceActions.size(); ++i)
+            m_workspaceActions[i]->setChecked(i == m_workspaceMode);
+    }
+    QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    settings.setValue(QStringLiteral("workspaceMode"), m_workspaceMode);
+    if (!m_treePanel) return;
+
+    const bool modeling = m_workspaceMode == 0;
+    const bool animation = m_workspaceMode == 1;
+    const bool physics = m_workspaceMode == 2;
+    m_treePanel->setVisible(true);
+    m_paramPanel->setVisible(modeling || animation);
+    m_inspectorPanel->setVisible(modeling || animation);
+    m_motionPanel->setVisible(animation);
+    m_physicsPanel->setVisible(physics);
+    m_blendShapePanel->setVisible(modeling);
+    m_texturePanel->setVisible(modeling);
+    m_diagnosticsPanel->setVisible(false);
 }
 
 void MainWindow::UndoDocumentEdit()
@@ -1057,6 +1082,7 @@ void MainWindow::RestDock(const QString &name)
         restoreState(m_savedWindowState);
         m_savedWindowState.clear();
     }
+    SetWorkspaceMode(m_workspaceMode);
 
     // 信号连接：树面板 → OpenGL
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
@@ -1343,6 +1369,8 @@ void MainWindow::createActions()
     connect(m_loadSessionAction, &QAction::triggered, this, &MainWindow::on_actionLoadSession_triggered);
     m_darkTheme = QSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"))
                       .value(QStringLiteral("darkTheme"), false).toBool();
+    m_workspaceMode = QSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"))
+                          .value(QStringLiteral("workspaceMode"), 0).toInt();
     m_themeAction = new QAction(m_darkTheme ? QStringLiteral("主题：深色") : QStringLiteral("主题：浅色"), this);
     m_themeAction->setStatusTip(tr("切换浅色/深色工作区"));
     connect(m_themeAction, &QAction::triggered, this, [this](){
@@ -1415,6 +1443,22 @@ void MainWindow::setupUI()
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
     mainToolBar->addAction(myCmo3Action);
+    mainToolBar->addSeparator();
+    m_workspaceActionGroup = new QActionGroup(this);
+    m_workspaceActionGroup->setExclusive(true);
+    const QStringList workspaceNames = {QStringLiteral("建模"), QStringLiteral("动画"), QStringLiteral("物理")};
+    for (int i = 0; i < workspaceNames.size(); ++i) {
+        QAction* action = new QAction(workspaceNames[i], this);
+        action->setCheckable(true);
+        action->setData(i);
+        action->setStatusTip(QStringLiteral("切换到%1工作区").arg(workspaceNames[i]));
+        m_workspaceActionGroup->addAction(action);
+        m_workspaceActions.append(action);
+        mainToolBar->addAction(action);
+    }
+    connect(m_workspaceActionGroup, &QActionGroup::triggered, this,
+            [this](QAction* action){ SetWorkspaceMode(action->data().toInt()); });
+    SetWorkspaceMode(m_workspaceMode);
     mainToolBar->addSeparator();
     mainToolBar->addAction(m_undoAction);
     mainToolBar->addAction(m_redoAction);

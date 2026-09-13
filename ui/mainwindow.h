@@ -12,6 +12,7 @@
 #include <QPushButton>
 #include <QToolBar>
 #include <QByteArray>
+#include <QVector>
 
 class CModelTreePanel;
 class CParamPanel;
@@ -23,6 +24,7 @@ class CInspectorPanel;
 class CModelDiagnosticsPanel;
 class CCidJson;
 class QCloseEvent;
+class QActionGroup;
 
 class MainWindow : public QMainWindow
 {
@@ -55,6 +57,7 @@ private:
     void UndoDocumentEdit();
     void RedoDocumentEdit();
     void ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward);
+    void SetWorkspaceMode(int mode);
 
 
 
@@ -72,6 +75,9 @@ private:
     QAction *m_saveSessionAction = nullptr;
     QAction *m_loadSessionAction = nullptr;
     QAction *m_themeAction = nullptr;
+    QActionGroup* m_workspaceActionGroup = nullptr;
+    QVector<QAction*> m_workspaceActions;
+    int m_workspaceMode = 0;
     bool m_darkTheme = false;
     bool m_sessionDirty = false;
     bool m_poseDirty = false;
