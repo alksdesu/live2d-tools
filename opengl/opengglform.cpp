@@ -160,9 +160,12 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
             if (model && IsInit && model->GetModel()) {
                 CMeshMap* meshMap = model->GetModel()->GetMeshMap();
                 if (meshMap) {
-                    for (auto it = LAppDelegate::GetInstance()->m_meshOverlayPositions.cbegin();
-                         it != LAppDelegate::GetInstance()->m_meshOverlayPositions.cend(); ++it) {
-                        meshMap->SetMeshPositions(it.key(), it.value());
+                    const auto* delegate = LAppDelegate::GetInstance();
+                    for (auto it = delegate->m_meshOverlayPositions.cbegin();
+                         it != delegate->m_meshOverlayPositions.cend(); ++it) {
+                        const int keyformIndex = delegate->m_meshOverlayKeyformIndices.value(it.key(), -1);
+                        const auto keyform = it.value().constFind(keyformIndex);
+                        if (keyform != it.value().cend()) meshMap->SetMeshPositions(it.key(), keyform.value());
                     }
                     for (auto it = LAppDelegate::GetInstance()->m_meshIndexOverrides.cbegin();
                          it != LAppDelegate::GetInstance()->m_meshIndexOverrides.cend(); ++it) {
@@ -283,6 +286,7 @@ void OpengGlForm::ClearEditorOverrides()
     delegate->m_drawableOpacityOverrides.clear();
     delegate->m_drawableDrawOrderOverrides.clear();
     delegate->m_meshOverlayPositions.clear();
+    delegate->m_meshOverlayKeyformIndices.clear();
     delegate->m_meshIndexOverrides.clear();
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     if (manager && manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel())
@@ -320,9 +324,10 @@ void OpengGlForm::do_SetDrawableDrawOrder(const QString& name, int drawOrder)
 void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyformIndex,
                                                   const QVector<float>& positions)
 {
-    Q_UNUSED(keyformIndex);
-    if (name.isEmpty()) return;
-    LAppDelegate::GetInstance()->m_meshOverlayPositions.insert(name, positions);
+    if (name.isEmpty() || keyformIndex < 0 || positions.isEmpty() || positions.size() % 2 != 0) return;
+    auto* delegate = LAppDelegate::GetInstance();
+    delegate->m_meshOverlayPositions[name].insert(keyformIndex, positions);
+    delegate->m_meshOverlayKeyformIndices.insert(name, keyformIndex);
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
     CMeshMap* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap();

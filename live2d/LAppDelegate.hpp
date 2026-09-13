@@ -65,7 +65,8 @@ public:
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, int> m_drawableOrderGroupIndices;
     QVector<live2dstruct::CDrawableOrderGroup> m_drawOrderGroups;
-    QHash<QString, QVector<float>> m_meshOverlayPositions;
+    QHash<QString, QHash<int, QVector<float>>> m_meshOverlayPositions;
+    QHash<QString, int> m_meshOverlayKeyformIndices;
     QHash<QString, QVector<quint16>> m_meshIndexOverrides;
 
     // 背景色
