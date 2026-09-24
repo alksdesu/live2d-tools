@@ -1,4 +1,6 @@
 #include "cmo3/ccaffarchive.h"
+#include "cmo3_userdata.h"
+#include "live2dstruct/cmodeluserdata.h"
 #include "cmo3/ccmo3builder.h"
 #include "cmo3/cxsxmlwriter.h"
 #include "live2dstruct/cmodeldocument.h"
@@ -17,6 +19,81 @@ class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void exportsUserDataByMeshId()
+    {
+        QTemporaryDir temp;
+        live2dstruct::CModelUserData data;
+        QString error;
+        QVERIFY(data.Load(QString(TEST_RESOURCES) + "/Mark/Mark.userdata3.json", &error));
+        auto entries = data.Entries();
+        entries[0].value = QStringLiteral("头发 🌸 <hair> & \"tag\"\n第二行\t尾部");
+        entries[1].value.clear();
+        data.SetEntries(entries);
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        options.userDataPath = temp.filePath("edited.userdata3.json");
+        options.outPath = temp.filePath("edited.cmo3");
+        live2dstruct::CModelDocument model;
+        QVERIFY(model.Load(options.mocPath, &error));
+        for (bool cleared : {false, true}) {
+            if (cleared) data.SetEntries({});
+            QVERIFY(data.Save(options.userDataPath, &error));
+            QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+            cmo3::CCaffArchive archive;
+            QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+            const auto* main = archive.FindByPath("main.xml");
+            QVERIFY(main);
+            QMap<QString, QString> tags;
+            QVERIFY2(readMeshUserData(main->content, &tags, &error), qPrintable(error));
+            QCOMPARE(tags.size(), model.Drawables().size());
+            QMap<QString, QString> expected;
+            for (const auto& drawable : model.Drawables()) expected.insert(drawable.id, QString());
+            for (const auto& entry : data.Entries()) expected[entry.id] = entry.value;
+            QCOMPARE(tags, expected);
+        }
+    }
+
+    void rejectsInvalidUserDataBeforeReplacingOutput_data()
+    {
+        QTest::addColumn<QString>("kind");
+        for (const QString& kind : {"missing", "invalid-json", "unknown-id", "duplicate", "invalid-xml", "invalid-xml-name"})
+            QTest::newRow(qPrintable(kind)) << kind;
+    }
+
+    void rejectsInvalidUserDataBeforeReplacingOutput()
+    {
+        QFETCH(QString, kind);
+        QTemporaryDir temp;
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        options.outPath = temp.filePath("existing.cmo3");
+        options.userDataPath = temp.filePath("labels.userdata3.json");
+        if (kind == QLatin1String("invalid-xml-name")) options.modelName = QString(QChar(1));
+        if (kind != QLatin1String("missing")) {
+            QByteArray bytes = "{broken";
+            if (kind != QLatin1String("invalid-json")) {
+                live2dstruct::CModelUserData data;
+                QString id = kind == QLatin1String("unknown-id") ? "MissingMesh" : "Hair1";
+                QString value = kind == QLatin1String("invalid-xml") ? QString(QChar(1)) : "tag";
+                data.SetEntries({{"ArtMesh", id, value, {}}});
+                if (kind == QLatin1String("duplicate")) data.SetEntries({data.Entries().first(), data.Entries().first()});
+                bytes = data.ToJson();
+            }
+            QFile source(options.userDataPath);
+            QVERIFY(source.open(QIODevice::WriteOnly));
+            QCOMPARE(source.write(bytes), bytes.size());
+        }
+        QFile target(options.outPath);
+        QVERIFY(target.open(QIODevice::WriteOnly));
+        QCOMPARE(target.write("previous-project"), 16);
+        target.close();
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(!error.isEmpty(), qPrintable(kind));
+        QVERIFY(target.open(QIODevice::ReadOnly));
+        QCOMPARE(target.readAll(), QByteArray("previous-project"));
+    }
+
     void buildUsesPhysicsDisplayNames()
     {
         QFile source(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json");

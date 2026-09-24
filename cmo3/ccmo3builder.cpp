@@ -4,6 +4,7 @@
 #include "ccmo3ids.h"
 #include "cxsxmlwriter.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/cmodeluserdata.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "opengl/ctextureextractor.h"
 #include <QDir>
@@ -211,8 +212,8 @@ class Generator
 {
 public:
     Generator(const CCmo3Builder::Options& options, CSectionTable& table,
-              QVector<ExtractedLayer>& extracted)
-        : m_opt(options), m_table(table), m_extracted(extracted),
+              QVector<ExtractedLayer>& extracted, const QHash<QString, QString>& userData)
+        : m_opt(options), m_table(table), m_extracted(extracted), m_userData(userData),
           m_entities(m_xml, m_caff)
     {
     }
@@ -274,6 +275,7 @@ private:
     const CCmo3Builder::Options& m_opt;
     CSectionTable& m_table;
     QVector<ExtractedLayer>& m_extracted;
+    const QHash<QString, QString>& m_userData;
 
     CXsXmlWriter m_xml;
     CCaffArchive m_caff;
@@ -963,7 +965,7 @@ void Generator::writeArtMeshEntities()
         m_xml.B(QStringLiteral("culling"), !(mesh->drawable_flags & 0x4));
         m_xml.Enum(QStringLiteral("TextureState"), QStringLiteral("textureState"),
                    QStringLiteral("MODEL_IMAGE"));
-        m_xml.S(QStringLiteral("userData"), QString());
+        m_xml.S(QStringLiteral("userData"), m_userData.value(mesh->ids));
         m_xml.EndObject(); // CArtMeshSource
 
         // 挂到父 part 的 childGuids
@@ -1690,6 +1692,11 @@ bool Generator::Run(QString* outError)
     writeMain();
     m_xml.EndDocument();
 
+    if (m_xml.HasError()) {
+        if (outError) *outError = QStringLiteral("cmo3 XML 写出失败，请检查名称、标签等字段中的非法字符");
+        return false;
+    }
+
     // ---- CAFF 打包 ----
     m_caff.AddEntry(QStringLiteral("main.xml"), m_xml.Result(),
                     QStringLiteral("main_xml"), CCaffArchive::CompressFast);
@@ -1718,6 +1725,25 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
 
     if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, outError)) return false;
 
+    QHash<QString, QString> userData;
+    if (!opt.userDataPath.isEmpty()) {
+        CModelUserData document;
+        QString userDataError;
+        if (!document.Load(opt.userDataPath, &userDataError)) {
+            if (outError) *outError = QStringLiteral("UserData 读取失败：%1").arg(userDataError);
+            return false;
+        }
+        QSet<QString> meshIds;
+        for (const auto* mesh : table.art_meshes) meshIds.insert(mesh->ids);
+        for (const auto& entry : document.Entries()) {
+            if (!meshIds.contains(entry.id)) {
+                if (outError) *outError = QStringLiteral("UserData 引用了不存在的 ArtMesh：%1").arg(entry.id);
+                return false;
+            }
+            userData.insert(entry.id, entry.value);
+        }
+    }
+
     // 纹理图集定位：moc3 同目录 model3.json 或 textures/ 推断
     QVector<QString> atlasPaths;
     {
@@ -1744,7 +1770,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     }
     QVector<ExtractedLayer> extracted = extractor.ExtractAll(&table, true, &opt.drawableIndexOverrides);
 
-    Generator generator(opt, table, extracted);
+    Generator generator(opt, table, extracted, userData);
     return generator.Run(outError);
 }
 

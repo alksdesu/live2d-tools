@@ -2,6 +2,9 @@
 #include "ui/theme.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "std/cmodeljson.h"
+#include "cmo3/ccmo3builder.h"
+#include "cmo3/ccaffarchive.h"
+#include "cmo3_userdata.h"
 #include <QtTest>
 #include <QApplication>
 #include <QInputDialog>
@@ -164,6 +167,34 @@ private slots:
         QVERIFY(!panel.HasUnsavedChanges());
         QVERIFY(data.Load(path));
         QCOMPARE(data.Entries().first().value, QStringLiteral("まだ入力中"));
+    }
+
+    void savedPanelEditsReachCmo3()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("labels.userdata3.json");
+        live2dstruct::CModelUserData data;
+        data.SetEntries({{"ArtMesh", "Hair1", "old", {}}});
+        QVERIFY(data.Save(path));
+        CUserDataPanel panel;
+        panel.SetValidArtMeshIds({"Hair1"});
+        QVERIFY(panel.LoadUserData(path));
+        auto* table = panel.findChild<QTableWidget*>("userDataTable");
+        table->item(0, 1)->setText(QStringLiteral("标签 & 导出🌸"));
+        QString error;
+        QVERIFY(panel.SaveUserData(&error));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        options.userDataPath = panel.FilePath();
+        options.outPath = temp.filePath("labels.cmo3");
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY(archive.Load(options.outPath, &error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        QMap<QString, QString> tags;
+        QVERIFY2(readMeshUserData(main->content, &tags, &error), qPrintable(error));
+        QCOMPARE(tags.value("Hair1"), QStringLiteral("标签 & 导出🌸"));
     }
 };
 

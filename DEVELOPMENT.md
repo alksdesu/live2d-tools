@@ -161,5 +161,6 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 正在编辑的单元格显式提交后才保存；未提交输入也计入未保存检查。失败加载不清空表格，失败保存不清除脏状态，关闭/切换模型会处理标签草稿。
 - 初次运行时加载和保存后刷新共用校验入口，先校验真实 Drawable ID、修正 Meta，再创建 SDK 对象；创建成功后才替换旧对象。
 - 数据与面板测试覆盖官方 Mark 样例、Unicode、扩展字段、损坏输入、重复目标、实际新增/取消/编辑/删除操作、引用登记、保存失败和未提交输入。
-- UserData 当前输出为标准运行时 JSON；cmo3 内部标签还原及 Cubism Editor 实际回读仍待实现和验证。
+- UserData 同时输出为标准运行时 JSON 和 cmo3 的 `CArtMeshSource.userData` 字段；按 ArtMesh ID 精确关联，未知 ID、损坏配置和 XML 写出错误会在覆盖目标前失败。导出会先处理未保存标签，模型引用读取失败不会静默丢弃配置。
+- UserData 面板保存后生成 cmo3、CAFF 回读及逐网格 XML 检查已覆盖中文、emoji、XML 特殊字符与清空标签；Cubism Editor 实际回读仍待验证。
 - 本机常规 CTest 15/15 通过，UserData 数据/面板两项目标通过 ASAN/UBSAN；主窗口和 LAppModel 通过语法检查，浅色/深色面板已渲染检查。完整应用的 SDK 热重载尚未实机验证。

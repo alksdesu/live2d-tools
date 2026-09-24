@@ -253,6 +253,18 @@ void MainWindow::on_actionCmo3Export_triggered()
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
         if (savePhysics != QMessageBox::Yes || !m_physicsPanel->SavePhysics()) return;
     }
+    if (m_userDataPanel && m_userDataPanel->HasUnsavedChanges()) {
+        const auto saveUserData = QMessageBox::question(
+            this, QStringLiteral("网格标签未保存"),
+            QStringLiteral("保存当前网格标签后导出 cmo3？"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (saveUserData != QMessageBox::Yes) return;
+        QString error;
+        if (!m_userDataPanel->SaveUserData(&error)) {
+            QMessageBox::warning(this, QStringLiteral("保存 UserData 失败"), error);
+            return;
+        }
+    }
 
     const QString defaultName = QFileInfo(m_currentMoc).completeBaseName() + ".cmo3";
     const QString outPath = QFileDialog::getSaveFileName(
@@ -278,13 +290,20 @@ void MainWindow::on_actionCmo3Export_triggered()
     {
         CModelJson modelJson;
         modelJson.Parse(m_openglwindows->GetCurrentModelJson());
-        const QDir dir(m_currentModelDir);
-        if (modelJson.IsOpen()) {
-            if (!modelJson.m_DisplayInfo.isEmpty())
-                options.cdiPath = dir.filePath(modelJson.m_DisplayInfo);
-            if (!modelJson.m_Physics.isEmpty())
-                options.physicsPath = dir.filePath(modelJson.m_Physics);
+        if (!modelJson.IsOpen()) {
+            QApplication::restoreOverrideCursor();
+            statusBar()->showMessage(QStringLiteral("cmo3 导出失败"));
+            QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                 QStringLiteral("无法读取当前 model3.json，请重新打开模型后再导出。"));
+            return;
         }
+        const QDir dir(m_currentModelDir);
+        if (!modelJson.m_DisplayInfo.isEmpty())
+            options.cdiPath = dir.filePath(modelJson.m_DisplayInfo);
+        if (!modelJson.m_Physics.isEmpty())
+            options.physicsPath = dir.filePath(modelJson.m_Physics);
+        if (!modelJson.m_UserData.isEmpty())
+            options.userDataPath = dir.filePath(modelJson.m_UserData);
     }
     options.parameterValues = m_document.ParameterValues();
     options.parameterMetadata = m_document.ParameterMetadataOverrides();

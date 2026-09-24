@@ -63,6 +63,7 @@ public:
                     const QString& note = QStringLiteral("(no debug info)"));
 
     QByteArray Result() const { return m_buffer; }
+    bool HasError() const { return m_xml.hasError(); }
 
     // Java float 风格格式化（最短往返表示，如 "1.0"、"0.14434664"）
     static QString FormatFloat(float value);
