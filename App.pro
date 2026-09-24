@@ -78,6 +78,7 @@ SOURCES += \
     ui/cmotionpanel.cpp \
     ui/cmotionsettingsdialog.cpp \
     live2dstruct/cmotiontimeline.cpp \
+    live2dstruct/cmotionblendpreview.cpp \
     ui/cmotioncurveview.cpp \
     ui/cphysicspanel.cpp \
     ui/cphysicsgraph.cpp \
@@ -268,6 +269,7 @@ HEADERS += \
     ui/cmotionpanel.h \
     ui/cmotionsettingsdialog.h \
     live2dstruct/cmotiontimeline.h \
+    live2dstruct/cmotionblendpreview.h \
     ui/cmotioncurveview.h \
     ui/cphysicsgraph.h \
     ui/cphysicspanel.h \

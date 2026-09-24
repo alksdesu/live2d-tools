@@ -66,7 +66,280 @@ private:
         return -1;
     }
 
+    static QJsonObject eventState(const QJsonArray& events, double duration, bool loop = false)
+    {
+        return QJsonObject{{"version", 1}, {"playhead", 0}, {"motion", QJsonObject{
+            {"Version", 3}, {"Curves", QJsonArray{}}, {"UserData", events},
+            {"Meta", QJsonObject{{"Fps", 30}, {"Duration", duration}, {"Loop", loop}}}}}};
+    }
+
+    static QVector<CMotionEventOccurrence> occurrences(const QSignalSpy& spy)
+    {
+        QVector<CMotionEventOccurrence> result;
+        for (const auto& arguments : spy)
+            result += arguments.first().value<CMotionEventBatch>().occurrences;
+        return result;
+    }
+
 private slots:
+    void eventOnlyClipExportsImportsAndPlays()
+    {
+        const QJsonArray events{QJsonObject{{"Time", 0.02}, {"Value", QStringLiteral("開始 🌸")}},
+                                QJsonObject{{"Time", 0.04}, {"Value", "end"}}};
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState(events, 0.06)));
+        QVERIFY(panel.Timeline().HasAnimation());
+        QVERIFY(!panel.Timeline().HasCurves());
+        QVERIFY(panel.findChild<QPushButton*>("previewTimeline")->isEnabled());
+        QVERIFY(panel.findChild<QSlider*>("motionTimelinePlayhead")->isEnabled());
+        auto* list = panel.findChild<QTableWidget*>("timelineEventList");
+        QCOMPARE(list->rowCount(), 2);
+        QCOMPARE(list->editTriggers(), QAbstractItemView::NoEditTriggers);
+        QCOMPARE(panel.findChild<QTabWidget*>("animationDetailTabs")->currentWidget(), list);
+        QTemporaryDir temp;
+        const QString path = temp.filePath("events.motion3.json");
+        QVERIFY(panel.SaveTimeline(path));
+        CMotionPanel imported;
+        QVERIFY(imported.LoadTimeline(path));
+        QCOMPARE(imported.Timeline().Events(), events);
+        QVERIFY(!imported.Timeline().HasCurves());
+        QCOMPARE(imported.findChild<QTableWidget*>("timelineEventList")->rowCount(), 2);
+        QSignalSpy fired(&imported, &CMotionPanel::TimelineEventsTriggered);
+        QSignalSpy preview(&imported, &CMotionPanel::TimelineFrameChanged);
+        auto* play = imported.findChild<QPushButton*>("previewTimeline");
+        play->click();
+        QTest::qSleep(90);
+        QCoreApplication::processEvents();
+        const auto played = occurrences(fired);
+        QCOMPARE(played.size(), 2);
+        QCOMPARE(played.at(0).time, 0.02);
+        QCOMPARE(played.at(0).value, QStringLiteral("開始 🌸"));
+        QCOMPARE(played.at(1).value, QStringLiteral("end"));
+        QCOMPARE(imported.TimelineTime(), 0.06);
+        QCOMPARE(play->text(), QStringLiteral("预览"));
+        QVERIFY(!preview.isEmpty());
+        QVERIFY(preview.last().first().value<CMotionPreviewFrame>().IsEmpty());
+        QVERIFY(!imported.HasUnsavedTimelineChanges());
+        QVERIFY(!imported.CanUndoTimeline());
+    }
+
+    void zeroTimeEventsDoNotRepeatOnPauseResumeOrStoppedTicks()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState({QJsonObject{{"Time", 0}, {"Value", "start"}}}, 10)));
+        QSignalSpy fired(&panel, &CMotionPanel::TimelineEventsTriggered);
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        play->click();
+        QCOMPARE(occurrences(fired).size(), 1);
+        QCOMPARE(occurrences(fired).first().value, QStringLiteral("start"));
+        play->click();
+        const double paused = panel.TimelineTime();
+        QTest::qSleep(20);
+        play->click();
+        QCOMPARE(panel.TimelineTime(), paused);
+        QCOMPARE(occurrences(fired).size(), 1);
+        QTest::qSleep(20);
+        play->click();
+        QCOMPARE(occurrences(fired).size(), 1);
+        QVERIFY(panel.TimelineTime() > paused);
+        panel.StopTimelinePreview();
+
+        QVERIFY(panel.RestoreTimelineState(eventState({QJsonObject{{"Time", 0}, {"Value", "zero"}}}, 0, true)));
+        fired.clear();
+        play->click();
+        QCOMPARE(occurrences(fired).size(), 1);
+        QTRY_COMPARE(play->text(), QStringLiteral("预览"));
+        QTest::qWait(30);
+        QCOMPARE(occurrences(fired).size(), 1);
+        QCOMPARE(panel.TimelineTime(), 0.0);
+    }
+
+    void eventSeeksUseExactTimesWithoutFiringOrDirtying()
+    {
+        const double exactTime = 1.000000000123;
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState({
+            QJsonObject{{"Time", 0.5}, {"Value", "middle"}},
+            QJsonObject{{"Time", exactTime}, {"Value", QStringLiteral("精确定位 🌸")}}}, 2)));
+        panel.resize(740, 520);
+        panel.show();
+        QCoreApplication::processEvents();
+        QSignalSpy fired(&panel, &CMotionPanel::TimelineEventsTriggered);
+        auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* list = panel.findChild<QTableWidget*>("timelineEventList");
+        auto* view = panel.findChild<CMotionCurveView*>();
+        slider->setValue(250);
+        QCOMPARE(panel.TimelineTime(), 0.5);
+        QVERIFY(fired.isEmpty());
+        list->setCurrentCell(1, 1);
+        list->setFocus();
+        QTest::keyClick(list, Qt::Key_Return);
+        QCOMPARE(panel.TimelineTime(), exactTime);
+        QVERIFY(fired.isEmpty());
+        slider->setValue(0);
+        const double laneWidth = view->width() - 48;
+        const int buckets = qMax(1, static_cast<int>(laneWidth / 14));
+        const int bucket = qMin(buckets - 1, static_cast<int>(exactTime / 2 * buckets));
+        const int markerX = qRound(34 + (bucket + 0.5) * laneWidth / buckets);
+        QTest::mouseClick(view, Qt::LeftButton, Qt::NoModifier, QPoint(markerX, 27));
+        QCOMPARE(panel.TimelineTime(), exactTime);
+        QVERIFY(fired.isEmpty());
+        QVERIFY(panel.findChild<QLabel*>("timelineEventStatus")->text().contains(QStringLiteral("精确定位 🌸")));
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(!panel.CanUndoTimeline());
+        QJsonObject state;
+        QVERIFY(panel.CaptureTimelineState(&state));
+        QCOMPARE(state.value("playhead").toDouble(), exactTime);
+        CMotionPanel restored;
+        QVERIFY(restored.RestoreTimelineState(state));
+        QCOMPARE(restored.TimelineTime(), exactTime);
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        play->click();
+        QCOMPARE(occurrences(fired).size(), 1);
+        QCOMPARE(occurrences(fired).first().time, exactTime);
+        QCOMPARE(occurrences(fired).first().sourceIndex, 1);
+        play->click();
+        QCOMPARE(occurrences(fired).size(), 1);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
+
+    void delayedPlaybackDeliversCrossedEventsAndBoundsLoopBatches()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState({
+            QJsonObject{{"Time", 0.01}, {"Value", "one"}},
+            QJsonObject{{"Time", 0.02}, {"Value", "two"}},
+            QJsonObject{{"Time", 0.03}, {"Value", "three"}}}, 10)));
+        QSignalSpy fired(&panel, &CMotionPanel::TimelineEventsTriggered);
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        play->click();
+        QVERIFY(fired.isEmpty());
+        QTest::qSleep(70);
+        play->click();
+        QCOMPARE(fired.size(), 1);
+        const auto crossed = occurrences(fired);
+        QCOMPARE(crossed.size(), 3);
+        for (int i = 0; i < crossed.size(); ++i) QCOMPARE(crossed.at(i).sourceIndex, i);
+
+        QVERIFY(panel.RestoreTimelineState(eventState({QJsonObject{{"Time", 0.0000005}, {"Value", "loop"}}}, 0.000001, true)));
+        fired.clear();
+        QVERIFY(panel.TimelineLoop());
+        play->click();
+        QTest::qSleep(30);
+        play->click();
+        QCOMPARE(fired.size(), 1);
+        const auto batch = fired.first().first().value<CMotionEventBatch>();
+        QVERIFY(batch.valid);
+        QVERIFY(!batch.countSaturated);
+        QVERIFY(!batch.occurrences.isEmpty());
+        QVERIFY(batch.occurrences.size() <= 100);
+        QVERIFY(batch.omittedCount > 0);
+        QVERIFY(batch.occurrences.last().cycle > 0);
+        QCOMPARE(batch.occurrences.first().time, 0.0000005);
+        const auto* status = panel.findChild<QLabel*>("timelineEventStatus");
+        QVERIFY(status->text().contains(QStringLiteral("loop")));
+        QVERIFY(status->text().contains(QString::number(batch.omittedCount)));
+        QVERIFY(status->toolTip().size() < 10000);
+        QVERIFY(panel.TimelineTime() >= 0 && panel.TimelineTime() < panel.Timeline().Timing().duration);
+    }
+
+    void eventListTracksSettingsUndoRedoAndSessionRestore()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState({QJsonObject{{"Time", 1}, {"Value", "before"}}}, 2)));
+        auto* list = panel.findChild<QTableWidget*>("timelineEventList");
+        QTimer::singleShot(0, [](){
+            auto* dialog = qobject_cast<CMotionSettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            const auto closeDialog = qScopeGuard([dialog](){ if (dialog->isVisible()) dialog->reject(); });
+            auto* table = dialog->findChild<QTableWidget*>("motionEventTable");
+            table->item(0, 0)->setText("1.5");
+            table->item(0, 1)->setText("after");
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        panel.findChild<QPushButton*>("editMotionSettings")->click();
+        QCOMPARE(list->item(0, 0)->text().toDouble(), 1.5);
+        QCOMPARE(list->item(0, 1)->text(), QStringLiteral("after"));
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QCOMPARE(list->item(0, 1)->text(), QStringLiteral("before"));
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline();
+        QCOMPARE(list->item(0, 1)->text(), QStringLiteral("after"));
+        QJsonObject snapshot;
+        QVERIFY(panel.CaptureTimelineState(&snapshot));
+        CMotionPanel restored;
+        QVERIFY(restored.RestoreTimelineState(snapshot));
+        QCOMPARE(restored.findChild<QTableWidget*>("timelineEventList")->item(0, 1)->text(), QStringLiteral("after"));
+        QVERIFY(!restored.HasUnsavedTimelineChanges());
+        QVERIFY(restored.RestoreTimelineState({}));
+        QCOMPARE(restored.findChild<QTableWidget*>("timelineEventList")->rowCount(), 0);
+        QVERIFY(!restored.findChild<QTabWidget*>("animationDetailTabs")->isTabVisible(1));
+        QVERIFY(restored.findChild<QLabel*>("timelineEventStatus")->isHidden());
+    }
+
+    void previewFadesPersistOnlyAsLayoutPreference()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(settingsState()));
+        QVERIFY(!panel.UsesMotionFades());
+        const CMotionTimeline before = panel.Timeline();
+        const quint64 revision = panel.TimelineRevision();
+        QSignalSpy preview(&panel, &CMotionPanel::TimelineFrameChanged);
+        auto* fades = panel.findChild<QCheckBox*>("previewMotionFades");
+        fades->setChecked(true);
+        QVERIFY(panel.UsesMotionFades());
+        QVERIFY(panel.TimelineRevision() > revision);
+        QVERIFY(!preview.isEmpty());
+        QVERIFY(panel.Timeline().HasSameContent(before));
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(!panel.CanUndoTimeline());
+        const QByteArray layout = panel.SaveLayout();
+        QVERIFY(QJsonDocument::fromJson(layout).object().value("fades").toBool());
+        CMotionPanel restored;
+        restored.RestoreLayout(layout);
+        QVERIFY(restored.UsesMotionFades());
+        QVERIFY(!restored.HasUnsavedTimelineChanges());
+        QVERIFY(!restored.CanUndoTimeline());
+        auto legacy = QJsonDocument::fromJson(layout).object();
+        legacy.remove("fades");
+        restored.RestoreLayout(QJsonDocument(legacy).toJson());
+        QVERIFY(!restored.UsesMotionFades());
+        QVERIFY(!restored.HasUnsavedTimelineChanges());
+    }
+
+    void eventListsFitCompactWorkspaceInBothThemes()
+    {
+        QJsonArray events;
+        for (int i = 0; i < 80; ++i)
+            events.append(QJsonObject{{"Time", i / 40.0}, {"Value", QStringLiteral("事件 %1 · 动作与口型 🌸").arg(i)}});
+        for (const bool dark : {false, true}) {
+            CMotionPanel panel;
+            panel.setStyleSheet(Theme::globalStyleSheet(dark));
+            QVERIFY(panel.RestoreTimelineState(eventState(events, 2)));
+            panel.resize(700, 520);
+            panel.show();
+            QCoreApplication::processEvents();
+            auto* list = panel.findChild<QTableWidget*>("timelineEventList");
+            if (!qEnvironmentVariableIsEmpty("MOTION_EVENT_SCREENSHOT")) {
+                const QString output = qEnvironmentVariable("MOTION_EVENT_SCREENSHOT") +
+                    (dark ? QStringLiteral("-dark.png") : QStringLiteral("-light.png"));
+                QVERIFY(panel.grab().save(output));
+            }
+            QVERIFY2(panel.width() <= 740, qPrintable(QStringLiteral("panel width %1").arg(panel.width())));
+            QVERIFY2(panel.height() <= 540, qPrintable(QStringLiteral("panel height %1").arg(panel.height())));
+            QVERIFY(list->isVisible());
+            QVERIFY2(list->viewport()->height() >= list->rowHeight(0) * 2,
+                     qPrintable(QStringLiteral("viewport %1, row %2, panel %3x%4")
+                         .arg(list->viewport()->height()).arg(list->rowHeight(0)).arg(panel.width()).arg(panel.height())));
+            QVERIFY(list->verticalScrollBar()->maximum() > 0);
+            list->scrollToBottom();
+            QCOMPARE(list->verticalScrollBar()->value(), list->verticalScrollBar()->maximum());
+            QVERIFY(panel.findChild<QPushButton*>("previewTimeline")->isVisible());
+            QVERIFY(panel.findChild<QCheckBox*>("previewMotionFades")->isVisible());
+        }
+    }
+
     void motionTimingEditsKeepPlayheadPositionConsistent()
     {
         CMotionPanel panel;

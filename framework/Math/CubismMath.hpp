@@ -93,6 +93,20 @@ public:
         return static_cast<csmFloat32>(0.5f - 0.5f * CosF(value * Pi));
     }
 
+    static csmFloat32 GetLoopTime(csmFloat32 time, csmFloat32 duration)
+    {
+        if (!std::isfinite(time) || !std::isfinite(duration) || time < 0.0f || duration <= 0.0f)
+        {
+            return 0.0f;
+        }
+        if (time <= duration)
+        {
+            return time;
+        }
+        const csmFloat32 remainder = std::fmod(time, duration);
+        return remainder == 0.0f ? duration : remainder;
+    }
+
     /**
      * @brief  大きい方の値を返す。
      *

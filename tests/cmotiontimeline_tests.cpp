@@ -1,4 +1,5 @@
 #include "live2dstruct/cmotiontimeline.h"
+#include "framework/Math/CubismMath.hpp"
 #include <QtTest>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -6,6 +7,7 @@
 #include <QTemporaryDir>
 #include <QFile>
 #include <QDirIterator>
+#include <algorithm>
 #include <limits>
 #include <cmath>
 
@@ -33,6 +35,339 @@ private:
     }
 
 private slots:
+
+    void sdkLoopTimeBoundsRuntimeAndPreservesEndFrame()
+    {
+        using Live2D::Cubism::Framework::CubismMath;
+        QCOMPARE(CubismMath::GetLoopTime(0.0f, 1.0f), 0.0f);
+        QCOMPARE(CubismMath::GetLoopTime(0.25f, 1.0f), 0.25f);
+        QCOMPARE(CubismMath::GetLoopTime(1.0f, 1.0f), 1.0f);
+        QCOMPARE(CubismMath::GetLoopTime(2.0f, 1.0f), 1.0f);
+        QCOMPARE(CubismMath::GetLoopTime(10.0f, 0.5f), 0.5f);
+        QCOMPARE(CubismMath::GetLoopTime(10.25f, 0.5f), 0.25f);
+        const float belowEnd = std::nextafterf(1.0f, 0.0f);
+        QCOMPARE(CubismMath::GetLoopTime(belowEnd, 1.0f), belowEnd);
+        const float aboveEnd = std::nextafterf(1.0f, 2.0f);
+        QCOMPARE(CubismMath::GetLoopTime(aboveEnd, 1.0f), aboveEnd - 1.0f);
+        const float tiny = std::numeric_limits<float>::denorm_min();
+        QCOMPARE(CubismMath::GetLoopTime(std::numeric_limits<float>::max(), tiny), tiny);
+        const float hugeRemainder = CubismMath::GetLoopTime(std::numeric_limits<float>::max(), 0.03f);
+        QVERIFY(hugeRemainder > 0.0f);
+        QVERIFY(hugeRemainder <= 0.03f);
+        for (float invalid : {-1.0f, std::numeric_limits<float>::quiet_NaN(),
+                               std::numeric_limits<float>::infinity()}) {
+            QCOMPARE(CubismMath::GetLoopTime(invalid, 1.0f), 0.0f);
+            QCOMPARE(CubismMath::GetLoopTime(1.0f, invalid), 0.0f);
+        }
+        QCOMPARE(CubismMath::GetLoopTime(1.0f, 0.0f), 0.0f);
+    }
+
+    void eventPlaybackUsesOpenLeftBoundaryAndStableSourceOrder()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 1.0}, {"Value", "first"}},
+                                    QJsonObject{{"Time", 0.0}, {"Value", QStringLiteral("开场🌸")}},
+                                    QJsonObject{{"Time", 1.0}, {"Value", "second"}},
+                                    QJsonObject{{"Time", 2.0}, {"Value", "end"}}}));
+        const auto start = timeline.EventsBetween(0, 0, false, true);
+        QVERIFY(start.valid);
+        QCOMPARE(start.occurrences.size(), 1);
+        QCOMPARE(start.occurrences.first().value, QStringLiteral("开场🌸"));
+        QCOMPARE(start.occurrences.first().sourceIndex, 1);
+        QVERIFY(timeline.EventsBetween(0, 0, false).occurrences.isEmpty());
+        const auto first = timeline.EventsBetween(0, 1, false);
+        QCOMPARE(first.occurrences.size(), 2);
+        QCOMPARE(first.occurrences.at(0).sourceIndex, 0);
+        QCOMPARE(first.occurrences.at(1).sourceIndex, 2);
+        QCOMPARE(first.occurrences.at(0).time, 1.0);
+        QCOMPARE(first.occurrences.at(0).cycle, quint64(0));
+        const auto second = timeline.EventsBetween(1, 100, false);
+        QCOMPARE(second.occurrences.size(), 1);
+        QCOMPARE(second.occurrences.first().value, QStringLiteral("end"));
+        QCOMPARE(second.omittedCount, quint64(0));
+        QVERIFY(!second.countSaturated);
+        QCOMPARE(timeline.EventsBetween(1, 0, false, true).occurrences.size(), 2);
+        QVERIFY(timeline.EventsBetween(2, 1, false).occurrences.isEmpty());
+        QVERIFY(timeline.EventsBetween(0, std::nextafter(1.0, 0.0), false).occurrences.isEmpty());
+    }
+
+    void eventPlaybackCrossesLoopBoundariesWithoutDuplicates()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 0.0}, {"Value", "start"}},
+                                    QJsonObject{{"Time", 0.5}, {"Value", "middle"}},
+                                    QJsonObject{{"Time", 1.0}, {"Value", "end"}}}));
+        const auto first = timeline.EventsBetween(0, 1, true, true);
+        QCOMPARE(first.occurrences.size(), 4);
+        QCOMPARE(first.occurrences.at(2).value, QStringLiteral("end"));
+        QCOMPARE(first.occurrences.at(2).cycle, quint64(0));
+        QCOMPARE(first.occurrences.at(3).value, QStringLiteral("start"));
+        QCOMPARE(first.occurrences.at(3).cycle, quint64(1));
+        const auto continuation = timeline.EventsBetween(0, 0.5, true);
+        QCOMPARE(continuation.occurrences.size(), 1);
+        QCOMPARE(continuation.occurrences.first().value, QStringLiteral("middle"));
+        const auto endpointContinuation = timeline.EventsBetween(1, 0.5, true);
+        QCOMPARE(endpointContinuation.occurrences.size(), 1);
+        QCOMPARE(endpointContinuation.occurrences.first().value, QStringLiteral("middle"));
+        QCOMPARE(endpointContinuation.occurrences.first().cycle, quint64(1));
+        QVERIFY(timeline.EventsBetween(1, 0, true).occurrences.isEmpty());
+        const auto missed = timeline.EventsBetween(0.5, 3.75, true);
+        QCOMPARE(missed.occurrences.size(), 11);
+        QCOMPARE(missed.occurrences.first().value, QStringLiteral("end"));
+        QCOMPARE(missed.occurrences.last().value, QStringLiteral("start"));
+        QCOMPARE(missed.occurrences.last().cycle, quint64(4));
+        const auto bounded = timeline.EventsBetween(0.5, 3.75, true, false, 5);
+        QCOMPARE(bounded.occurrences.size(), 5);
+        QCOMPARE(bounded.omittedCount, quint64(6));
+        QCOMPARE(bounded.occurrences.at(4).cycle, quint64(2));
+        const auto counted = timeline.EventsBetween(0.5, 3.75, true, false, 0);
+        QVERIFY(counted.occurrences.isEmpty());
+        QCOMPARE(counted.omittedCount, quint64(11));
+    }
+
+    void eventPlaybackUsesExactDoubleDuration()
+    {
+        const double duration = 1.1234567890123;
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", duration}, {"Value", "end"}},
+                                    QJsonObject{{"Time", 0.0}, {"Value", "start"}}}));
+        const auto before = timeline.EventsBetween(0, std::nextafter(duration, 0.0), true);
+        QVERIFY(before.occurrences.isEmpty());
+        const auto boundary = timeline.EventsBetween(0, duration, true);
+        QCOMPARE(boundary.occurrences.size(), 2);
+        QCOMPARE(boundary.occurrences.first().time, duration);
+        QCOMPARE(boundary.occurrences.last().time, 0.0);
+        QCOMPARE(boundary.occurrences.last().cycle, quint64(1));
+        const auto nearSecond = timeline.EventsBetween(0, std::nextafter(duration * 2, 0.0), true);
+        QCOMPARE(nearSecond.occurrences.size(), 2);
+        const auto second = timeline.EventsBetween(0, duration * 2, true);
+        QCOMPARE(second.occurrences.size(), 4);
+    }
+
+    void eventPlaybackRemainsFreshAfterEditsLoadsAndCopies()
+    {
+        const QJsonArray original{QJsonObject{{"Time", 2.0}, {"Value", "late"}},
+                                  QJsonObject{{"Time", 0.0}, {"Value", "start"}}};
+        const QJsonArray edited{QJsonObject{{"Time", 3.0}, {"Value", "new late"}},
+                                QJsonObject{{"Time", 1.0}, {"Value", "new first"}}};
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents(original));
+        const auto cold = timeline;
+        QCOMPARE(timeline.EventsBetween(0, 2, false, true).occurrences.first().value, QStringLiteral("start"));
+        QCOMPARE(timeline.Timing().duration, 2.0);
+        QVERIFY(timeline.HasSameContent(cold));
+        QJsonObject state;
+        QVERIFY(timeline.SaveState(&state, false, 0));
+        QVERIFY(timeline.SetFadeTimes({0.25, 0.5}));
+        QCOMPARE(timeline.EventsBetween(0, 2, false, true).occurrences.last().value, QStringLiteral("late"));
+        QCOMPARE(timeline.Timing().duration, 2.0);
+        CMotionTimeline copied = timeline;
+        QVERIFY(timeline.SetEvents(edited));
+        QCOMPARE(timeline.Timing().duration, 3.0);
+        const auto changed = timeline.EventsBetween(0, 3, false, true);
+        QCOMPARE(changed.occurrences.first().value, QStringLiteral("new first"));
+        QCOMPARE(changed.occurrences.last().value, QStringLiteral("new late"));
+        QCOMPARE(copied.EventsBetween(0, 2, false, true).occurrences.first().value, QStringLiteral("start"));
+        QCOMPARE(copied.Timing().duration, 2.0);
+        QVERIFY(copied.SetEvents({QJsonObject{{"Time", 4.0}, {"Value", "copy"}}}));
+        QCOMPARE(copied.Timing().duration, 4.0);
+        QCOMPARE(timeline.Timing().duration, 3.0);
+        QVERIFY(timeline.RestoreState(state));
+        QCOMPARE(timeline.EventsBetween(0, 2, false, true).occurrences.last().value, QStringLiteral("late"));
+        QTemporaryDir temp;
+        const auto path = temp.filePath("event-cache.motion3.json");
+        QVERIFY(copied.Save(path, 30, false));
+        QVERIFY(timeline.Load(path));
+        QCOMPARE(timeline.Timing().duration, 4.0);
+        QCOMPARE(timeline.EventsBetween(0, 4, false).occurrences.first().value, QStringLiteral("copy"));
+        const auto beforeInvalid = timeline;
+        QVERIFY(!timeline.SetEvents({QJsonObject{{"Time", -1.0}, {"Value", "invalid"}}}));
+        QVERIFY(timeline.HasSameContent(beforeInvalid));
+        QCOMPARE(timeline.EventsBetween(0, 4, false).occurrences.first().value, QStringLiteral("copy"));
+        timeline.Clear();
+        QVERIFY(timeline.EventsBetween(0, 0, false, true).occurrences.isEmpty());
+        QCOMPARE(timeline.Timing().duration, 0.0);
+        QCOMPARE(copied.EventsBetween(0, 4, false).occurrences.first().value, QStringLiteral("copy"));
+    }
+
+    void denseEventPlaybackKeepsRepeatedQueriesBounded()
+    {
+        QJsonArray source;
+        for (int time = 99999; time >= 0; --time)
+            source.append(QJsonObject{{"Time", time}, {"Value", QString::number(time)}});
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents(source));
+        QTemporaryDir temp;
+        const auto path = temp.filePath("dense.motion3.json");
+        for (int reload = 0; reload < 2; ++reload) {
+            if (reload) {
+                QVERIFY(timeline.Save(path, 30, false));
+                QVERIFY(timeline.Load(path));
+            }
+            QCOMPARE(timeline.Timing().duration, 99999.0);
+            QElapsedTimer timer;
+            timer.start();
+            for (int iteration = 0; iteration < 256; ++iteration) {
+                const double start = iteration * 19;
+                const auto events = timeline.EventsBetween(start, 32, false, false, 8);
+                QCOMPARE(events.occurrences.size(), 8);
+                QCOMPARE(events.omittedCount, quint64(24));
+                QCOMPARE(events.occurrences.first().time, start + 1);
+                QCOMPARE(events.occurrences.first().sourceIndex, 99999 - static_cast<int>(start + 1));
+                QCOMPARE(timeline.Timing().duration, 99999.0);
+            }
+            qInfo("256 playback queries over 100000 events (reload=%d): %lld ms", reload, timer.elapsed());
+        }
+    }
+
+    void eventPlaybackMatchesExpandedCycles()
+    {
+        CMotionTimeline timeline;
+        const QVector<double> times{1.0, 0.0, 0.25, 0.5, 0.0, 1.0};
+        QJsonArray source;
+        for (int index = 0; index < times.size(); ++index)
+            source.append(QJsonObject{{"Time", times.at(index)}, {"Value", QString::number(index)}});
+        QVERIFY(timeline.SetEvents(source));
+        for (int startStep = 0; startStep <= 4; ++startStep) {
+            const double start = startStep / 4.0;
+            for (int advanceStep = 0; advanceStep <= 20; ++advanceStep) {
+                const double advance = advanceStep / 4.0;
+                for (bool includeStart : {false, true}) {
+                    QVector<CMotionEventOccurrence> expected;
+                    for (quint64 cycle = 0; cycle <= 6; ++cycle) {
+                        QVector<CMotionEventOccurrence> entries;
+                        for (int index = 0; index < times.size(); ++index) {
+                            const double absolute = static_cast<double>(cycle) + times.at(index);
+                            if ((includeStart ? absolute >= start : absolute > start) && absolute <= start + advance)
+                                entries.append({times.at(index), QString::number(index), index, cycle});
+                        }
+                        std::stable_sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) {
+                            return left.time < right.time;
+                        });
+                        expected += entries;
+                    }
+                    const auto actual = timeline.EventsBetween(start, advance, true, includeStart);
+                    QCOMPARE(actual.occurrences.size(), expected.size());
+                    QCOMPARE(actual.omittedCount, quint64(0));
+                    for (int index = 0; index < expected.size(); ++index) {
+                        QCOMPARE(actual.occurrences.at(index).time, expected.at(index).time);
+                        QCOMPARE(actual.occurrences.at(index).sourceIndex, expected.at(index).sourceIndex);
+                        QCOMPARE(actual.occurrences.at(index).cycle, expected.at(index).cycle);
+                    }
+                }
+            }
+        }
+    }
+
+    void eventPlaybackBoundsHugeAdvancesAndRejectsInvalidInput()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 0.0}, {"Value", "tick"}}}));
+        QVERIFY(timeline.SetTiming(30, 1));
+        const auto many = timeline.EventsBetween(0, 1000000, true, false, 4);
+        QCOMPARE(many.occurrences.size(), 4);
+        QCOMPARE(many.occurrences.at(0).cycle, quint64(1));
+        QCOMPARE(many.occurrences.at(3).cycle, quint64(4));
+        QCOMPARE(many.omittedCount, quint64(999996));
+        QVERIFY(!many.countSaturated);
+        const auto hardLimit = timeline.EventsBetween(0, 1000000, true, false, std::numeric_limits<int>::max());
+        QCOMPARE(hardLimit.occurrences.size(), 10000);
+        QCOMPARE(hardLimit.omittedCount, quint64(990000));
+        const quint64 exactLargeCount = (quint64(1) << 53) + 2;
+        const auto exactLarge = timeline.EventsBetween(0, static_cast<double>(exactLargeCount), true, false, 0);
+        QCOMPARE(exactLarge.omittedCount, exactLargeCount);
+        QVERIFY(!exactLarge.countSaturated);
+        QVERIFY(timeline.SetTiming(30, std::numeric_limits<double>::denorm_min()));
+        const auto huge = timeline.EventsBetween(0, std::numeric_limits<double>::max(), true, true, 7);
+        QCOMPARE(huge.occurrences.size(), 7);
+        QVERIFY(huge.countSaturated);
+        QCOMPARE(huge.omittedCount, std::numeric_limits<quint64>::max() - 7);
+        for (double value : {-1.0, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity()}) {
+            QVERIFY(!timeline.EventsBetween(value, 0, true).valid);
+            QVERIFY(!timeline.EventsBetween(0, value, true).valid);
+        }
+        QVERIFY(!timeline.EventsBetween(1, 0, true).valid);
+        QVERIFY(!timeline.EventsBetween(0, 0, true, false, -1).valid);
+        QVERIFY(timeline.SetTiming(30, 0));
+        const auto zero = timeline.EventsBetween(0, 100, true, true);
+        QCOMPARE(zero.occurrences.size(), 1);
+        QVERIFY(!zero.countSaturated);
+        QCOMPARE(zero.omittedCount, quint64(0));
+        QVERIFY(timeline.EventsBetween(0, 100, true).occurrences.isEmpty());
+        CMotionTimeline empty;
+        QVERIFY(empty.EventsBetween(0, std::numeric_limits<double>::max(), true).occurrences.isEmpty());
+    }
+
+    void eventOnlyMotionRoundtripsAndEmptyExportRemainsRejected()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(!timeline.HasAnimation());
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 0.0}, {"Value", QStringLiteral("开始🟦")}},
+                                    QJsonObject{{"Time", 2.125}, {"Value", "end"}, {"Extension", "kept"}}}));
+        QVERIFY(timeline.HasAnimation());
+        QVERIFY(!timeline.HasCurves());
+        QVERIFY(timeline.SetTiming(48, 3));
+        QTemporaryDir temp;
+        const auto path = temp.filePath("events-only.motion3.json");
+        QVERIFY(timeline.Save(path, timeline.Fps(), true));
+        const auto source = readJson(path);
+        const auto meta = source.value("Meta").toObject();
+        QCOMPARE(meta.value("CurveCount").toInt(), 0);
+        QCOMPARE(meta.value("TotalSegmentCount").toInt(), 0);
+        QCOMPARE(meta.value("TotalPointCount").toInt(), 0);
+        QCOMPARE(meta.value("UserDataCount").toInt(), 2);
+        QCOMPARE(meta.value("Duration").toDouble(), 3.0);
+        QCOMPARE(meta.value("TotalUserDataSize").toInt(), QStringLiteral("开始🟦end").toUtf8().size());
+        CMotionTimeline loaded;
+        QVERIFY(loaded.Load(path));
+        QVERIFY(loaded.HasAnimation());
+        QVERIFY(!loaded.HasCurves());
+        QVERIFY(loaded.Loop());
+        QCOMPARE(loaded.Events(), timeline.Events());
+        QJsonObject state;
+        QVERIFY(loaded.SaveState(&state, true, 2.5));
+        CMotionTimeline restored;
+        QVERIFY(restored.RestoreState(state));
+        QCOMPARE(restored.Events(), timeline.Events());
+        QCOMPARE(restored.Timing().duration, 3.0);
+        const auto before = loaded;
+        QVERIFY(writeJson(path, {{"Version", 3}, {"Curves", QJsonArray{}}, {"UserData", QJsonArray{}}}));
+        QVERIFY(!loaded.Load(path));
+        QVERIFY(loaded.HasSameContent(before));
+        QVERIFY(restored.SetEvents({}));
+        QVERIFY(!restored.HasAnimation());
+        QVERIFY(!restored.Save(path, 30, false));
+        CMotionTimeline zero;
+        QVERIFY(zero.SetEvents({QJsonObject{{"Time", 0.0}, {"Value", "start"}}}));
+        for (double duration : {0.0, std::numeric_limits<double>::denorm_min()}) {
+            QVERIFY(zero.SetTiming(30, duration));
+            QVERIFY(zero.Save(path, 30, true));
+            QVERIFY(loaded.Load(path));
+            QCOMPARE(loaded.Timing().duration, duration);
+            QCOMPARE(loaded.Events(), zero.Events());
+        }
+    }
+
+    void bulkTrackFadesMatchIndividualFades()
+    {
+        CMotionTimeline timeline;
+        const CMotionTrack model{CMotionTarget::Model, "Shared"};
+        const CMotionTrack parameter{CMotionTarget::Parameter, "Shared"};
+        const CMotionTrack part{CMotionTarget::PartOpacity, "Shared"};
+        for (const auto& track : {model, parameter, part}) QVERIFY(timeline.AddPoint(track, 0, 1));
+        QVERIFY(timeline.SetTrackFadeTimes(model, {0.25, std::nullopt}));
+        QVERIFY(timeline.SetTrackFadeTimes(parameter, {0.0, 2.0}));
+        const auto fades = timeline.TrackFadeTimes();
+        QCOMPARE(fades.size(), 3);
+        for (const auto& track : {model, parameter, part}) {
+            const auto individual = timeline.TrackFadeTimes(track);
+            QCOMPARE(fades.value(track).fadeIn, individual.fadeIn);
+            QCOMPARE(fades.value(track).fadeOut, individual.fadeOut);
+        }
+        QVERIFY(timeline.RemovePoint(model, 0));
+        QVERIFY(!timeline.TrackFadeTimes().contains(model));
+    }
 
     void timingEditsKeepExactCounterpartAndAbsentDefaults()
     {

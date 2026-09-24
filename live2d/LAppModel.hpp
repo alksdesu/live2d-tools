@@ -26,7 +26,8 @@ public:
     void LoadAssets(const Csm::csmChar* dir, const  Csm::csmChar* fileName);
     void ReloadRenderer();
     void Update();
-    bool SetTimelinePreview(const CMotionPreviewFrame& frame);
+    bool SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline = nullptr,
+                            double time = 0, bool loop = false);
     void ClearTimelinePreview();
     bool HasTimelinePreview() const { return _timelinePreviewActive; }
     QMap<QString, float> GetTimelineBaseParameters() const { return _timelineBaseParameters; }

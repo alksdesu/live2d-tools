@@ -49,6 +49,10 @@ public:
     void SetParameterIds(const QStringList& ids) { m_parameterIds = ids; }
     bool AddTimelinePoint(const CMotionTrack& track, float time, float value);
     void StopTimelinePreview();
+    const CMotionTimeline& Timeline() const { return m_timeline; }
+    double TimelineTime() const { return m_timelineTime; }
+    bool UsesMotionFades() const { return m_previewFades->isChecked(); }
+    bool TimelineLoop() const { return m_loopCb->isChecked(); }
     bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
     bool SavePose(QString* error = nullptr);
     void RecordParameterValue(const QString& parameterId, float value);
@@ -76,10 +80,14 @@ signals:
     void TimelineActivated();
     void TimelineFrameChanged(const CMotionPreviewFrame& frame);
     void TimelinePreviewStopped();
+    void TimelineEventsTriggered(const CMotionEventBatch& events);
     void SaveSessionRequested();
     void ExpressionSaved(const QString& name, const QString& path);
     void MotionTimelinePreviewChanged(const QMap<QString, float>& values);
     void LipSyncWavChanged(const QString& path);
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     QListWidget* m_motionList;
@@ -135,6 +143,16 @@ private:
     void AddTimelineKeyframe();
     void EditTimelineSettings();
     void EmitTimelinePreview();
+    void RefreshTimelineEvents();
+    void ShowTimelineEvents(const CMotionEventBatch& events);
+    void SeekTimeline(double time);
+    void ActivateTimelineEvent(int row);
+    QCheckBox* m_previewFades = nullptr;
+    QTabWidget* m_detailTabs = nullptr;
+    QTableWidget* m_eventTable = nullptr;
+    QLabel* m_eventStatus = nullptr;
+    QJsonArray m_displayedEvents;
+    bool m_eventStartPending = true;
     QSet<QString> m_modelPartIds;
     bool m_modelPartsKnown = false;
     bool m_timelineDirty = false;

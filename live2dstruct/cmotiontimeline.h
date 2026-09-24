@@ -48,6 +48,23 @@ struct CMotionTiming
     double duration = 0.0;
 };
 
+struct CMotionEventOccurrence
+{
+    double time = 0.0;
+    QString value;
+    int sourceIndex = 0;
+    quint64 cycle = 0;
+};
+
+struct CMotionEventBatch
+{
+    QVector<CMotionEventOccurrence> occurrences;
+    quint64 omittedCount = 0;
+    // 饱和后 omittedCount 仅表示下限。
+    bool countSaturated = false;
+    bool valid = true;
+};
+
 class CMotionTimeline
 {
 public:
@@ -74,9 +91,13 @@ public:
     CMotionFadeTimes FadeTimes() const;
     bool SetFadeTimes(const CMotionFadeTimes& fades, QString* error = nullptr);
     CMotionFadeTimes TrackFadeTimes(const CMotionTrack& track) const;
+    QMap<CMotionTrack, CMotionFadeTimes> TrackFadeTimes() const;
     bool SetTrackFadeTimes(const CMotionTrack& track, const CMotionFadeTimes& fades, QString* error = nullptr);
     QJsonArray Events() const;
     bool SetEvents(const QJsonArray& events, QString* error = nullptr);
+    // 默认查询左开右闭区间，循环边界先发末尾事件，再发下一轮零时刻事件。
+    CMotionEventBatch EventsBetween(double startTime, double elapsedAdvance, bool loop,
+                                   bool includeStart = false, int maxOccurrences = 100) const;
     bool SetTiming(double fps, double duration, QString* error = nullptr);
     float Evaluate(const QString& id, float time, bool* ok = nullptr) const { return Evaluate({CMotionTarget::Parameter, id}, time, ok); }
     float Evaluate(const CMotionTrack& track, float time, bool* ok = nullptr) const;
@@ -84,9 +105,10 @@ public:
     QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
     bool Load(const QString& path, QString* error = nullptr);
-    bool SaveState(QJsonObject* state, bool loop, float playhead, QString* error = nullptr) const;
+    bool SaveState(QJsonObject* state, bool loop, double playhead, QString* error = nullptr) const;
     bool RestoreState(const QJsonObject& state, float* playhead = nullptr, QString* error = nullptr);
     bool HasCurves() const;
+    bool HasAnimation() const;
     bool HasSameContent(const CMotionTimeline& other) const;
     int PointCount() const;
     int TotalPointCount() const;
@@ -97,8 +119,11 @@ private:
     bool BuildJson(QJsonObject* root, double fps, bool loop, bool draft, QString* error) const;
     bool LoadJson(const QJsonObject& root, bool draft, QString* error);
     double ContentDuration() const;
+    const QVector<CMotionEventOccurrence>& SortedEvents() const;
     bool SetSource(QJsonObject source, QString* error);
     QJsonObject m_source;
+    mutable QJsonArray m_cachedEvents;
+    mutable QVector<CMotionEventOccurrence> m_sortedEvents;
     bool m_recording = false;
     float m_recordStartTime = 0.0f;
     QElapsedTimer m_clock;
@@ -109,5 +134,7 @@ private:
 
 Q_DECLARE_METATYPE(CMotionTrack)
 Q_DECLARE_METATYPE(CMotionPreviewFrame)
+Q_DECLARE_METATYPE(CMotionEventOccurrence)
+Q_DECLARE_METATYPE(CMotionEventBatch)
 
 #endif

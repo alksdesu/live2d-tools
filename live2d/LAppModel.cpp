@@ -7,6 +7,7 @@
 
 #include "LAppModel.hpp"
 #include "opengl/cmeshbounds.h"
+#include "live2dstruct/cmotionblendpreview.h"
 
 #include <framework/CubismModelSettingJson.hpp>
 #include <framework/Motion/CubismMotion.hpp>
@@ -524,9 +525,10 @@ QMap<QString, float> LAppModel::GetParameterValues() const
     return values;
 }
 
-bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame)
+bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline,
+                                  double time, bool loop)
 {
-    if (!_model || !frame.IsFinite()) return false;
+    if (!_model || !frame.IsFinite() || (fadeTimeline && !std::isfinite(time))) return false;
     if (frame.IsEmpty()) { ClearTimelinePreview(); return true; }
     _model->LoadParameters();
     if (!_timelinePreviewActive) {
@@ -547,9 +549,10 @@ bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame)
         eyeIds.insert(QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString()));
     for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
         lipIds.insert(QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString()));
-    _timelinePreview = frame;
-    _timelineParameters = frame.ResolveParameters(eyeIds, lipIds);
-    if (!frame.model.contains(QStringLiteral("Opacity"))) _model->SetModelOpacity(_timelineBaseOpacity);
+    _timelinePreview = fadeTimeline
+        ? CMotionBlendPreview::Evaluate(*fadeTimeline, time, _timelineBaseParameters, eyeIds, lipIds, loop) : frame;
+    _timelineParameters = _timelinePreview.ResolveParameters(eyeIds, lipIds);
+    if (!_timelinePreview.model.contains(QStringLiteral("Opacity"))) _model->SetModelOpacity(_timelineBaseOpacity);
     ApplyTimelinePreview();
     ApplyPartVisibility();
     _opacity = _model->GetModelOpacity();

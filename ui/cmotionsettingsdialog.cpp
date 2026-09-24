@@ -118,12 +118,12 @@ CMotionSettingsDialog::CMotionSettingsDialog(const CMotionTimeline& timeline, do
     curveLayout->addRow(QStringLiteral("淡入"), m_curveFadeIn);
     curveLayout->addRow(QStringLiteral("淡出"), m_curveFadeOut);
     auto* curveHint = new QLabel(timeline.HasCurves()
-        ? QStringLiteral("未自定义的曲线沿用动作设置。时间轴展示原始曲线，淡入淡出在导出的动作播放时生效。")
+        ? QStringLiteral("未自定义的曲线沿用动作设置。可在时间轴勾选“混合”查看参数与基础姿态的混合效果。")
         : QStringLiteral("先在时间轴添加关键帧，即可为曲线设置淡入淡出。"), curves);
     curveHint->setWordWrap(true);
     curveLayout->addRow(curveHint);
+    m_curveFades = timeline.TrackFadeTimes();
     for (const auto& track : timeline.Tracks().keys()) {
-        m_curveFades.insert(track, timeline.TrackFadeTimes(track));
         m_curve->addItem(track.TargetName() + QStringLiteral(" · ") + track.id, QVariant::fromValue(track));
     }
     const auto selectCurve = [this, curveHint](int index){
@@ -134,7 +134,7 @@ CMotionSettingsDialog::CMotionSettingsDialog(const CMotionTimeline& timeline, do
         if (index < 0) return;
         m_currentTrack = m_curve->itemData(index).value<CMotionTrack>();
         curveHint->setText(m_currentTrack->target == CMotionTarget::Parameter
-            ? QStringLiteral("未自定义时沿用动作设置。时间轴展示原始曲线，淡入淡出在导出的动作播放时生效。")
+            ? QStringLiteral("未自定义时沿用动作设置。可在时间轴勾选“混合”查看参数与基础姿态的混合效果。")
             : QStringLiteral("此类曲线的设置可保存，但当前 Cubism SDK 不使用它的单独淡入淡出时间。"));
         const auto fades = m_curveFades.value(*m_currentTrack);
         m_curveFadeIn->SetValue(fades.fadeIn);
@@ -166,7 +166,7 @@ CMotionSettingsDialog::CMotionSettingsDialog(const CMotionTimeline& timeline, do
     m_eventDelegate = new CTableEditDelegate(m_events);
     m_events->setItemDelegate(m_eventDelegate);
     eventsLayout->addWidget(m_events, 1);
-    auto* eventHint = new QLabel(QStringLiteral("导出的动作播放到指定时间时触发事件内容。多个事件可使用相同时间。"), events);
+    auto* eventHint = new QLabel(QStringLiteral("播放到指定时间时提示事件内容。多个事件可使用相同时间。"), events);
     eventHint->setWordWrap(true);
     eventsLayout->addWidget(eventHint);
     for (const auto& event : timeline.Events()) AddEvent(event.toObject());

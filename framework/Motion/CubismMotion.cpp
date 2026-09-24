@@ -322,10 +322,7 @@ void CubismMotion::DoUpdateParameters(CubismModel* model, csmFloat32 userTimeSec
 
     if (_isLoop)
     {
-        while (time > _motionData->Duration)
-        {
-            time -= _motionData->Duration;
-        }
+        time = CubismMath::GetLoopTime(time, _motionData->Duration);
     }
 
     csmVector<CubismMotionCurve>& curves = _motionData->Curves;

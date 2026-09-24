@@ -3,6 +3,7 @@
 #include "cmotionsettingsdialog.h"
 #include "ctableeditdelegate.h"
 #include <QDebug>
+#include <QKeyEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -254,7 +255,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_playTimelineButton = new QPushButton(QStringLiteral("预览"), timelineBox);
     m_playTimelineButton->setObjectName(QStringLiteral("previewTimeline"));
     m_playTimelineButton->setEnabled(false);
-    m_playTimelineButton->setToolTip(QStringLiteral("预览原始曲线数值；Part 直接显示透明度，不模拟动作淡入淡出"));
+    m_playTimelineButton->setToolTip(QStringLiteral("从播放头预览动作；勾选“混合”可查看参数淡入淡出，Part 直接显示透明度"));
     timelineTools->addWidget(m_playTimelineButton);
     timelineTools->addWidget(m_recordTimelineCb);
     m_endPreviewButton = new QPushButton(QStringLiteral("还原"), timelineBox);
@@ -278,7 +279,17 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     editTools->addWidget(addTimelineButton);
     editTools->addWidget(removeTimelineButton);
     editTools->addWidget(clearTimelineButton);
+    m_previewFades = new QCheckBox(QStringLiteral("混合"), timelineBox);
+    m_previewFades->setObjectName(QStringLiteral("previewMotionFades"));
+    m_previewFades->setAccessibleName(QStringLiteral("预览参数淡入淡出"));
+    m_previewFades->setToolTip(QStringLiteral("将参数曲线按动作与曲线淡入淡出混合到基础姿态；Part 仍直接预览透明度"));
+    editTools->addWidget(m_previewFades);
     editTools->addStretch(1);
+    connect(m_previewFades, &QCheckBox::toggled, this, [this](){
+        ++m_timelineRevision;
+        emit TimelineActivated();
+        EmitTimelinePreview();
+    });
     auto* settingsButton = new QPushButton(QStringLiteral("设置"), timelineBox);
     settingsButton->setObjectName(QStringLiteral("editMotionSettings"));
     settingsButton->setToolTip(QStringLiteral("编辑事件、帧率、时长和淡入淡出"));
@@ -313,7 +324,24 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_timelineTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                      QAbstractItemView::SelectedClicked);
-    m_curveSplitter->addWidget(m_timelineTable);
+    m_detailTabs = new QTabWidget(m_curveSplitter);
+    m_detailTabs->setObjectName(QStringLiteral("animationDetailTabs"));
+    m_detailTabs->setTabBarAutoHide(true);
+    m_detailTabs->addTab(m_timelineTable, QStringLiteral("关键帧"));
+    m_eventTable = new QTableWidget(0, 2, m_detailTabs);
+    m_eventTable->setObjectName(QStringLiteral("timelineEventList"));
+    m_eventTable->setHorizontalHeaderLabels({QStringLiteral("时间"), QStringLiteral("事件")});
+    m_eventTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_eventTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_eventTable->verticalHeader()->setVisible(false);
+    m_eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_eventTable->installEventFilter(this);
+    m_eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_eventTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_eventTable->setToolTip(QStringLiteral("双击事件或按 Enter 定位；在“设置”中编辑事件"));
+    m_detailTabs->addTab(m_eventTable, QStringLiteral("事件"));
+    m_detailTabs->setTabVisible(1, false);
+    connect(m_eventTable, &QTableWidget::cellActivated, this, [this](int row, int){ ActivateTimelineEvent(row); });
     m_curveSplitter->setStretchFactor(0, 1);
     m_curveSplitter->setStretchFactor(1, 1);
     timelineLayout->addWidget(m_curveSplitter, 1);
@@ -334,6 +362,12 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     playheadRow->addWidget(m_timelinePlayhead, 1);
     playheadRow->addWidget(m_timelineTimeLabel);
     timelineLayout->addLayout(playheadRow);
+    m_eventStatus = new QLabel(timelineBox);
+    m_eventStatus->setObjectName(QStringLiteral("timelineEventStatus"));
+    m_eventStatus->setTextFormat(Qt::PlainText);
+    m_eventStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_eventStatus->hide();
+    timelineLayout->addWidget(m_eventStatus);
     m_workspaceSplitter->addWidget(timelineBox);
     m_workspaceSplitter->setStretchFactor(0, 0);
     m_workspaceSplitter->setStretchFactor(1, 1);
@@ -380,6 +414,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
                 return;
             }
         }
+    });
+    connect(m_curveView, &CMotionCurveView::EventSelected, this, [this](double time, const QString& value){
+        SeekTimeline(time);
+        m_eventStatus->setText(QStringLiteral("定位 %1s：%2").arg(time, 0, 'g', 8).arg(value));
     });
     connect(m_curveView, &CMotionCurveView::PointEdited, this, &CMotionPanel::ApplyTimelineCurveEdit);
     connect(m_curveView, &CMotionCurveView::EditStarted, this, [this](){
@@ -433,7 +471,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_physicsCb, &QCheckBox::toggled, this, &CMotionPanel::PhysicsChanged);
     connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
         emit MotionPlaybackChanged(m_speedSlider->value() / 100.0f, loop);
-        if (!m_restoringTimeline && m_timeline.HasCurves()) {
+        if (!m_restoringTimeline && m_timeline.HasAnimation()) {
             auto before = CurrentTimelineSnapshot();
             before.loop = !loop;
             emit TimelineActivated();
@@ -525,6 +563,9 @@ void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 void CMotionPanel::RefreshTimelineTable()
 {
     if (!m_timelineTable) return;
+    for (auto* table : {m_timelineTable, m_eventTable})
+        table->setMinimumHeight(table->horizontalHeader()->sizeHint().height() +
+                                2 * table->verticalHeader()->defaultSectionSize() + 2 * table->frameWidth());
     const double duration = m_timeline.Timing().duration;
     m_timelineTime = qBound(0.0, m_timelineTime, duration);
     if (m_timelinePlayhead) {
@@ -547,8 +588,9 @@ void CMotionPanel::RefreshTimelineTable()
         m_curveView->SetTimeline(&m_timeline);
         m_curveView->SetTime(m_timelineTime);
     }
-    if (m_playTimelineButton) m_playTimelineButton->setEnabled(m_timeline.HasCurves());
-    if (m_timelinePlayhead) m_timelinePlayhead->setEnabled(m_timeline.HasCurves());
+    RefreshTimelineEvents();
+    if (m_playTimelineButton) m_playTimelineButton->setEnabled(m_timeline.HasAnimation());
+    if (m_timelinePlayhead) m_timelinePlayhead->setEnabled(m_timeline.HasAnimation());
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     m_updatingTimeline = true;
     m_timelineTable->setRowCount(points.size());
@@ -569,9 +611,76 @@ void CMotionPanel::RefreshTimelineTable()
     m_updatingTimeline = false;
 }
 
+bool CMotionPanel::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_eventTable && event->type() == QEvent::KeyPress) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+            ActivateTimelineEvent(m_eventTable->currentRow());
+            return true;
+        }
+    }
+    return QDockWidget::eventFilter(watched, event);
+}
+
+void CMotionPanel::ActivateTimelineEvent(int row)
+{
+    if (row < 0 || row >= m_displayedEvents.size()) return;
+    const auto event = m_displayedEvents.at(row).toObject();
+    const double time = event.value(QStringLiteral("Time")).toDouble();
+    SeekTimeline(time);
+    m_eventStatus->setText(QStringLiteral("定位 %1s：%2").arg(time, 0, 'g', 8)
+                           .arg(event.value(QStringLiteral("Value")).toString()));
+}
+
+void CMotionPanel::RefreshTimelineEvents()
+{
+    const auto events = m_timeline.Events();
+    if (events == m_displayedEvents) {
+        m_displayedEvents = events;
+        return;
+    }
+    m_displayedEvents = events;
+    m_eventStartPending = true;
+    m_eventTable->setRowCount(events.size());
+    for (int row = 0; row < events.size(); ++row) {
+        const auto event = events.at(row).toObject();
+        m_eventTable->setItem(row, 0, new QTableWidgetItem(QString::number(event.value(QStringLiteral("Time")).toDouble(), 'g', 12)));
+        m_eventTable->setItem(row, 1, new QTableWidgetItem(event.value(QStringLiteral("Value")).toString()));
+    }
+    m_detailTabs->setTabVisible(1, !events.isEmpty());
+    m_detailTabs->setTabText(1, QStringLiteral("事件 (%1)").arg(events.size()));
+    m_eventStatus->setVisible(!events.isEmpty());
+    m_eventStatus->setText(QStringLiteral("播放时显示事件；双击列表可定位"));
+    m_eventStatus->setToolTip(QString());
+    if (!m_timeline.HasCurves() && !events.isEmpty()) m_detailTabs->setCurrentIndex(1);
+}
+
+void CMotionPanel::ShowTimelineEvents(const CMotionEventBatch& events)
+{
+    if (!events.valid || events.occurrences.isEmpty()) return;
+    const auto& last = events.occurrences.last();
+    QString message = QStringLiteral("事件 %1s：%2").arg(last.time, 0, 'g', 8).arg(last.value.left(160));
+    if (events.countSaturated) message += QStringLiteral("（大量事件已省略）");
+    else if (events.omittedCount) message += QStringLiteral("（另 %1 条未显示）").arg(events.omittedCount);
+    m_eventStatus->setText(message);
+    QStringList details;
+    for (const auto& event : events.occurrences)
+        details.append(QStringLiteral("%1s：%2").arg(event.time, 0, 'g', 12).arg(event.value.left(1000)));
+    if (events.omittedCount) details.append(events.countSaturated
+        ? QStringLiteral("还有大量重复事件未列出")
+        : QStringLiteral("另有 %1 条事件未列出").arg(events.omittedCount));
+    m_eventStatus->setToolTip(QStringLiteral("<qt>%1</qt>").arg(details.join(QLatin1Char('\n')).toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>"))));
+    if (last.sourceIndex >= 0 && last.sourceIndex < m_eventTable->rowCount()) {
+        m_eventTable->selectRow(last.sourceIndex);
+        m_eventTable->scrollToItem(m_eventTable->item(last.sourceIndex, 0));
+    }
+    emit TimelineEventsTriggered(events);
+}
+
 void CMotionPanel::ToggleTimelinePlayback()
 {
-    if (!m_timelineTimer || m_timeline.Tracks().isEmpty()) return;
+    if (!m_timelineTimer || !m_timeline.HasAnimation()) return;
     ++m_timelineRevision;
     emit TimelineActivated();
     if (m_timelineTimer->isActive()) {
@@ -581,14 +690,21 @@ void CMotionPanel::ToggleTimelinePlayback()
         return;
     }
     m_recordTimelineCb->setChecked(false);
-    if (m_timelineTime >= m_timeline.Duration()) m_timelineTime = 0.0;
+    if (m_timelineTime >= m_timeline.Timing().duration) {
+        m_timelineTime = 0.0;
+        m_eventStartPending = true;
+    }
     m_playbackClock.start();
     m_playbackLastNs = 0;
     m_timelineTimer->start();
     m_playTimelineButton->setText(QStringLiteral("暂停"));
+    if (m_eventStartPending) {
+        ShowTimelineEvents(m_timeline.EventsBetween(m_timelineTime, 0, m_loopCb->isChecked(), true));
+        m_eventStartPending = false;
+    }
     if (m_timelinePlayhead) {
         QSignalBlocker blocker(m_timelinePlayhead);
-        const double duration = m_timeline.Duration();
+        const double duration = m_timeline.Timing().duration;
         m_timelinePlayhead->setValue(duration > 0.0 ? qRound(m_timelineTime * 1000.0 / duration) : 0);
     }
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
@@ -599,14 +715,16 @@ void CMotionPanel::ToggleTimelinePlayback()
 void CMotionPanel::TickTimelinePlayback()
 {
     if (!m_timelineTimer || !m_timelineTimer->isActive() || !m_playbackClock.isValid()) return;
-    const double duration = m_timeline.Duration();
+    const double duration = m_timeline.Timing().duration;
     if (duration <= 0.0f) {
         m_timelineTimer->stop();
         m_playTimelineButton->setText(QStringLiteral("预览"));
         return;
     }
     const qint64 now = m_playbackClock.nsecsElapsed();
-    m_timelineTime += (now - m_playbackLastNs) / 1e9 * m_timelinePlaybackSpeed;
+    const double advance = (now - m_playbackLastNs) / 1e9 * m_timelinePlaybackSpeed;
+    const auto events = m_timeline.EventsBetween(m_timelineTime, advance, m_loopCb->isChecked());
+    m_timelineTime += advance;
     m_playbackLastNs = now;
     if (m_timelineTime >= duration) {
         if (m_loopCb && m_loopCb->isChecked()) m_timelineTime = std::fmod(m_timelineTime, duration);
@@ -623,13 +741,14 @@ void CMotionPanel::TickTimelinePlayback()
     }
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     if (m_curveView) m_curveView->SetTime(m_timelineTime);
+    ShowTimelineEvents(events);
     EmitTimelinePreview();
 }
 
 void CMotionPanel::EmitTimelinePreview()
 {
     const auto frame = m_timeline.EvaluateFrame(m_timelineTime);
-    m_endPreviewButton->setEnabled(!frame.IsEmpty());
+    m_endPreviewButton->setEnabled(m_timeline.HasAnimation());
     emit TimelineFrameChanged(frame);
     emit MotionTimelinePreviewChanged(frame.parameters);
 }
@@ -744,18 +863,29 @@ void CMotionPanel::AddTimelineKeyframe()
 
 void CMotionPanel::SetTimelineTimeFromSlider(int value)
 {
-    if (!m_timelinePlayhead || m_timeline.Tracks().isEmpty()) return;
+    if (!m_timelinePlayhead || !m_timeline.HasAnimation()) return;
+    SeekTimeline(m_timeline.Timing().duration * qBound(0, value, 1000) / 1000.0);
+}
+
+void CMotionPanel::SeekTimeline(double time)
+{
+    if (!std::isfinite(time) || !m_timeline.HasAnimation()) return;
     m_recordTimelineCb->setChecked(false);
     ++m_timelineRevision;
     emit TimelineActivated();
-    if (m_timelineTimer && m_timelineTimer->isActive()) {
-        m_timelineTimer->stop();
-        if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
+    m_timelineTimer->stop();
+    m_playTimelineButton->setText(QStringLiteral("预览"));
+    const double duration = m_timeline.Timing().duration;
+    m_timelineTime = qBound(0.0, time, duration);
+    m_eventStartPending = true;
+    m_eventStatus->setText(QStringLiteral("播放时显示事件；双击列表可定位"));
+    m_eventStatus->setToolTip(QString());
+    {
+        const QSignalBlocker blocker(m_timelinePlayhead);
+        m_timelinePlayhead->setValue(duration > 0 ? qRound(m_timelineTime * 1000.0 / duration) : 0);
     }
-    const float duration = m_timeline.Duration();
-    m_timelineTime = static_cast<double>(duration) * qBound(0, value, 1000) / 1000.0;
-    if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
-    if (m_curveView) m_curveView->SetTime(m_timelineTime);
+    m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
+    m_curveView->SetTime(m_timelineTime);
     EmitTimelinePreview();
 }
 
@@ -880,8 +1010,8 @@ bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
 bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error)
 {
     CMotionTimeline candidate;
-    float playhead = 0.0f;
-    if (!candidate.RestoreState(state, &playhead, error)) return false;
+    if (!candidate.RestoreState(state, nullptr, error)) return false;
+    const double playhead = state.value(QStringLiteral("playhead")).toDouble();
     m_restoringTimeline = true;
     m_editGroupActive = false;
     m_curveView->CancelDrag();
@@ -889,12 +1019,13 @@ bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error
     m_timelineTimer->stop();
     m_recordTimelineCb->setChecked(false);
     m_timeline = std::move(candidate);
+    m_eventStartPending = true;
     m_timelineTime = playhead;
     if (!state.isEmpty()) m_loopCb->setChecked(m_timeline.Loop());
     m_playTimelineButton->setText(QStringLiteral("预览"));
     {
         const QSignalBlocker blocker(m_timelinePlayhead);
-        const double duration = m_timeline.Duration();
+        const double duration = m_timeline.Timing().duration;
         m_timelinePlayhead->setValue(duration > 0.0 ? qRound(playhead * 1000.0 / duration) : 0);
     }
     RefreshTimelineTable();
@@ -937,7 +1068,8 @@ QByteArray CMotionPanel::SaveLayout() const
     return QJsonDocument(QJsonObject{
         {QStringLiteral("assets"), QString::fromLatin1(m_workspaceSplitter->saveState().toBase64())},
         {QStringLiteral("curves"), QString::fromLatin1(m_curveSplitter->saveState().toBase64())},
-        {QStringLiteral("tab"), m_assetTabs->currentIndex()}
+        {QStringLiteral("tab"), m_assetTabs->currentIndex()},
+        {QStringLiteral("fades"), m_previewFades->isChecked()}
     }).toJson(QJsonDocument::Compact);
 }
 
@@ -947,6 +1079,7 @@ void CMotionPanel::RestoreLayout(const QByteArray& state)
     if (object.isEmpty()) return;
     m_workspaceSplitter->restoreState(QByteArray::fromBase64(object.value(QStringLiteral("assets")).toString().toLatin1()));
     m_curveSplitter->restoreState(QByteArray::fromBase64(object.value(QStringLiteral("curves")).toString().toLatin1()));
+    m_previewFades->setChecked(object.value(QStringLiteral("fades")).toBool(false));
     const int tab = object.value(QStringLiteral("tab")).toInt(-1);
     if (tab < 0 || tab >= m_assetTabs->count()) return;
     m_savedAssetTab = tab;
@@ -1003,18 +1136,19 @@ void CMotionPanel::ApplyTimelineSnapshot(const TimelineSnapshot& snapshot)
     m_timelineTimer->stop();
     m_recordTimelineCb->setChecked(false);
     m_timeline = snapshot.timeline;
+    m_eventStartPending = true;
     m_loopCb->setChecked(snapshot.loop);
-    m_timelineTime = qBound(0.0, snapshot.playhead, static_cast<double>(m_timeline.Duration()));
+    m_timelineTime = qBound(0.0, snapshot.playhead, m_timeline.Timing().duration);
     m_playTimelineButton->setText(QStringLiteral("预览"));
     {
         const QSignalBlocker blocker(m_timelinePlayhead);
-        const double duration = m_timeline.Duration();
+        const double duration = m_timeline.Timing().duration;
         m_timelinePlayhead->setValue(duration > 0.0 ? qRound(m_timelineTime * 1000.0 / duration) : 0);
     }
     RefreshTimelineTable();
     m_timelineStatus->setText(m_timeline.TotalPointCount() > 0
         ? QStringLiteral("%1 个关键帧").arg(m_timeline.TotalPointCount())
-        : m_timeline.HasCurves() ? QStringLiteral("模型 / Part 曲线") : QStringLiteral("暂无关键帧"));
+        : !m_timeline.Events().isEmpty() ? QStringLiteral("%1 个事件").arg(m_timeline.Events().size()) : QStringLiteral("暂无关键帧"));
     emit MotionTimelineChanged();
     m_restoringTimeline = false;
 }
@@ -1089,7 +1223,7 @@ bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
     emit TimelineActivated();
     m_timelineStatus->setText(m_timeline.TotalPointCount() > 0
         ? QStringLiteral("已导入 %1 个关键帧").arg(m_timeline.TotalPointCount())
-        : QStringLiteral("已保留模型 / Part 曲线，可继续导出"));
+        : QStringLiteral("已导入 %1 个事件").arg(m_timeline.Events().size()));
     return true;
 }
 

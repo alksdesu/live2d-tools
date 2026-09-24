@@ -1360,7 +1360,9 @@ void MainWindow::RestDock(const QString &name)
         if (!m_openglwindows || !m_openglwindows->isValid()) return;
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
-        if (!model || !model->SetTimelinePreview(frame) || !m_paramPanel) return;
+        if (!model || !m_motionPanel || !m_paramPanel) return;
+        const auto* fades = m_motionPanel->UsesMotionFades() ? &m_motionPanel->Timeline() : nullptr;
+        if (!model->SetTimelinePreview(frame, fades, m_motionPanel->TimelineTime(), m_motionPanel->TimelineLoop())) return;
         const auto values = model->GetParameterValues();
         m_openglwindows->SyncPreviewView(values);
         m_paramPanel->SetPreviewValues(values, model->GetTimelineBaseParameters());

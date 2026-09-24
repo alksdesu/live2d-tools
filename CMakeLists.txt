@@ -25,6 +25,7 @@ add_library(model_data STATIC
     opengl/cmeshbounds.cpp
     live2dstruct/cdraworder.cpp
     live2dstruct/cmotiontimeline.cpp
+    live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
@@ -129,6 +130,9 @@ if(BUILD_TESTING)
     target_link_libraries(cmotiontimeline_tests PRIVATE model_data Qt6::Test Qt6::Core)
     target_compile_definitions(cmotiontimeline_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME cmotiontimeline COMMAND cmotiontimeline_tests)
+    add_executable(cmotionblendpreview_tests tests/cmotionblendpreview_tests.cpp)
+    target_link_libraries(cmotionblendpreview_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME cmotionblendpreview COMMAND cmotionblendpreview_tests)
     add_executable(cmotioncurveview_tests tests/cmotioncurveview_tests.cpp ui/cmotioncurveview.cpp)
     target_include_directories(cmotioncurveview_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cmotioncurveview_tests PRIVATE model_data Qt6::Test Qt6::Widgets)

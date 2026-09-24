@@ -14,7 +14,7 @@ class CMotionCurveView : public QWidget
 public:
     explicit CMotionCurveView(QWidget* parent = nullptr);
     void SetTimeline(const CMotionTimeline* timeline);
-    void SetTime(float time);
+    void SetTime(double time);
     void SetSelectedPoint(const CMotionTrack& track, int pointIndex);
     void SetTargetFilter(int target);
     void CancelDrag();
@@ -24,16 +24,29 @@ signals:
     void PointEdited(const CMotionTrack& track, int pointIndex, float time, float value);
     void EditStarted();
     void EditFinished();
+    void EventSelected(double time, const QString& value);
 
 protected:
+    bool event(QEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     const CMotionTimeline* m_timeline = nullptr;
-    float m_time = 0.0f;
+    double m_time = 0.0;
+    double m_duration = 0.001;
+    QJsonArray m_events;
+    struct EventMarker {
+        qreal x = 0.0;
+        int count = 0;
+        int firstEvent = -1;
+        QVector<int> previews;
+    };
+    QVector<EventMarker> m_eventMarkers;
     CMotionTrack m_selectedTrack;
     int m_selectedPointIndex = -1;
     std::optional<CMotionTrack> m_dragTrack;
@@ -42,10 +55,14 @@ private:
     int m_dragPointIndex = -1;
 
     QRectF plotRect() const;
+    QRectF eventRect() const;
+    void rebuildEventMarkers();
+    const EventMarker* hitEvent(const QPointF& position) const;
+    QString eventToolTip(const EventMarker& marker) const;
     bool valueRange(double* minimum, double* maximum) const;
-    QPointF mapPoint(const QPointF& point, const QRectF& plot, float duration,
+    QPointF mapPoint(const QPointF& point, const QRectF& plot, double duration,
                      double minimum, double maximum) const;
-    QPointF unmapPoint(const QPointF& point, const QRectF& plot, float duration,
+    QPointF unmapPoint(const QPointF& point, const QRectF& plot, double duration,
                        double minimum, double maximum) const;
     bool hitPoint(const QPointF& position, CMotionTrack* track, int* pointIndex) const;
 };
