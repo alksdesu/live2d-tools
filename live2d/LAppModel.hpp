@@ -15,6 +15,7 @@
 
 #include "LAppWavFileHandler.hpp"
 #include <QRectF>
+#include "live2dstruct/cmotiontimeline.h"
 
 class LAppModel : public Csm::CubismUserModel
 {
@@ -25,6 +26,11 @@ public:
     void LoadAssets(const Csm::csmChar* dir, const  Csm::csmChar* fileName);
     void ReloadRenderer();
     void Update();
+    bool SetTimelinePreview(const CMotionPreviewFrame& frame);
+    void ClearTimelinePreview();
+    bool HasTimelinePreview() const { return _timelinePreviewActive; }
+    QMap<QString, float> GetTimelineBaseParameters() const { return _timelineBaseParameters; }
+    QMap<QString, float> GetParameterValues() const;
     void UpdateParaValue(const QString& parId,float value,bool IsInit);
     void Draw(Csm::CubismMatrix44& matrix);
     Csm::CubismMotionQueueEntryHandle StartMotion(const Csm::csmChar* group, Csm::csmInt32 no, Csm::csmInt32 priority, Csm::ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
@@ -90,6 +96,15 @@ protected:
 private:
 
     void SetupModel(Csm::ICubismModelSetting* setting);
+    void ApplyTimelinePreview();
+    void ApplyPartVisibility();
+    int FindPartIndex(const QString& id) const;
+    CMotionPreviewFrame _timelinePreview;
+    QMap<QString, float> _timelineParameters;
+    QMap<QString, float> _timelineBaseParts;
+    QMap<QString, float> _timelineBaseParameters;
+    float _timelineBaseOpacity = 1.0f;
+    bool _timelinePreviewActive = false;
 
     void SetupTextures();
 

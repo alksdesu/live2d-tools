@@ -413,6 +413,9 @@ void LAppModel::Update()
     // 快照模式：只应用已保存的参数，跳过所有自动效果
     if (_snapshotMode) {
         _model->LoadParameters();
+        ApplyTimelinePreview();
+        ApplyPartVisibility();
+        _opacity = _model->GetModelOpacity();
         _model->Update();
         return;
     }
@@ -428,7 +431,7 @@ void LAppModel::Update()
     _model->LoadParameters();
 
     // 动作更新（不自动播放随机动作，由 UI 触发）
-    if (!_motionManager->IsFinished())
+    if (!_timelinePreviewActive && !_motionManager->IsFinished())
     {
         motionUpdated = _motionManager->UpdateMotion(_model, deltaTimeSeconds * _motionSpeed);
     }
@@ -445,7 +448,6 @@ void LAppModel::Update()
         }
     }
 
-    _opacity = _model->GetModelOpacity();
     if (!motionUpdated)
     {
         if (_eyeBlink != NULL && _autoEyeBlink)
@@ -455,7 +457,7 @@ void LAppModel::Update()
     }
 
     // 表情
-    if (_expressionManager != NULL)
+    if (_expressionManager != NULL && !_timelinePreviewActive)
     {
         _expressionManager->UpdateMotion(_model, deltaTimeSeconds);
     }
@@ -477,6 +479,7 @@ void LAppModel::Update()
        _breath->UpdateParameters(_model, deltaTimeSeconds);
     }
 
+    ApplyTimelinePreview();
     if (_physics != NULL && _autoPhysics)
     {
         _physics->Evaluate(_model, deltaTimeSeconds);
@@ -488,13 +491,9 @@ void LAppModel::Update()
         _pose->UpdateParameters(_model, deltaTimeSeconds);
     }
 
-    // Part 可见性覆盖
-    if(!_hiddenPartIds.isEmpty()){
-        for(const QString& partId : _hiddenPartIds){
-            CubismIdHandle id = CubismFramework::GetIdManager()->GetId(partId.toUtf8().constData());
-            _model->SetPartOpacity(id, 0.0f);
-        }
-    }
+    ApplyTimelinePreview();
+    ApplyPartVisibility();
+    _opacity = _model->GetModelOpacity();
 
     // 变形器拖拽参数覆盖（在所有效果之后、Update 之前强制设置）
     if(!_deformerDragParamIds.isEmpty() && _deformerDragActive){
@@ -509,9 +508,100 @@ void LAppModel::Update()
 
 }
 
+int LAppModel::FindPartIndex(const QString& id) const
+{
+    if (!_model) return -1;
+    for (int index = 0; index < _model->GetPartCount(); ++index)
+        if (id == QString::fromUtf8(_model->GetPartId(index)->GetString().GetRawString())) return index;
+    return -1;
+}
+
+QMap<QString, float> LAppModel::GetParameterValues() const
+{
+    QMap<QString, float> values;
+    if (_model) for (auto it = m_mapParaToIndex.cbegin(); it != m_mapParaToIndex.cend(); ++it)
+        values.insert(it.key(), _model->GetParameterValue(it.value()));
+    return values;
+}
+
+bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame)
+{
+    if (!_model || !frame.IsFinite()) return false;
+    if (frame.IsEmpty()) { ClearTimelinePreview(); return true; }
+    _model->LoadParameters();
+    if (!_timelinePreviewActive) {
+        _timelineBaseOpacity = _model->GetModelOpacity();
+        _timelineBaseParameters = GetParameterValues();
+        for (int index = 0; index < _model->GetPartCount(); ++index)
+            _timelineBaseParts.insert(QString::fromUtf8(_model->GetPartId(index)->GetString().GetRawString()),
+                                      _model->GetPartOpacity(index));
+        _timelinePreviewActive = true;
+    }
+    for (auto it = _timelinePreview.parts.cbegin(); it != _timelinePreview.parts.cend(); ++it) {
+        if (frame.parts.contains(it.key())) continue;
+        const int index = FindPartIndex(it.key());
+        if (index >= 0) _model->SetPartOpacity(index, _timelineBaseParts.value(it.key(), 1.0f));
+    }
+    QSet<QString> eyeIds, lipIds;
+    for (csmUint32 i = 0; i < _eyeBlinkIds.GetSize(); ++i)
+        eyeIds.insert(QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString()));
+    for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
+        lipIds.insert(QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString()));
+    _timelinePreview = frame;
+    _timelineParameters = frame.ResolveParameters(eyeIds, lipIds);
+    if (!frame.model.contains(QStringLiteral("Opacity"))) _model->SetModelOpacity(_timelineBaseOpacity);
+    ApplyTimelinePreview();
+    ApplyPartVisibility();
+    _opacity = _model->GetModelOpacity();
+    _model->Update();
+    return true;
+}
+
+void LAppModel::ApplyTimelinePreview()
+{
+    if (!_model || !_timelinePreviewActive) return;
+    for (auto it = _timelineParameters.cbegin(); it != _timelineParameters.cend(); ++it)
+        if (m_mapParaToIndex.contains(it.key())) _model->SetParameterValue(m_mapParaToIndex.value(it.key()), it.value());
+    for (auto it = _timelinePreview.parts.cbegin(); it != _timelinePreview.parts.cend(); ++it) {
+        const int index = FindPartIndex(it.key());
+        if (index >= 0) _model->SetPartOpacity(index, qBound(0.0f, it.value(), 1.0f));
+    }
+    if (_timelinePreview.model.contains(QStringLiteral("Opacity")))
+        _model->SetModelOpacity(qBound(0.0f, _timelinePreview.model.value(QStringLiteral("Opacity")), 1.0f));
+}
+
+void LAppModel::ApplyPartVisibility()
+{
+    if (!_model) return;
+    for (const auto& id : _hiddenPartIds) {
+        const int index = FindPartIndex(id);
+        if (index >= 0) _model->SetPartOpacity(index, 0.0f);
+    }
+}
+
+void LAppModel::ClearTimelinePreview()
+{
+    if (!_model || !_timelinePreviewActive) return;
+    _timelinePreviewActive = false;
+    _model->LoadParameters();
+    for (auto it = _timelineBaseParts.cbegin(); it != _timelineBaseParts.cend(); ++it) {
+        const int index = FindPartIndex(it.key());
+        if (index >= 0) _model->SetPartOpacity(index, it.value());
+    }
+    _model->SetModelOpacity(_timelineBaseOpacity);
+    _opacity = _timelineBaseOpacity;
+    _timelinePreview = {};
+    _timelineParameters.clear();
+    _timelineBaseParts.clear();
+    _timelineBaseParameters.clear();
+    ApplyPartVisibility();
+    _model->Update();
+}
+
 void LAppModel::UpdateParaValue(const QString &parId, float value,bool IsInit)
 {
     if(!_model || !std::isfinite(value) || !m_mapParaToIndex.contains(parId)) return;
+    if (!IsInit) ClearTimelinePreview();
     int Id = m_mapParaToIndex[parId];
 
     // 先恢复干净的快照，修改目标参数，再保存回去
@@ -654,7 +744,10 @@ void LAppModel::DoDraw()
         return;
     }
 
-    GetRenderer<Rendering::CubismRenderer_OpenGLES2>()->DrawModel();
+    auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    const auto color = renderer->GetModelColor();
+    renderer->SetModelColor(color.R, color.G, color.B, _model->GetModelOpacity());
+    renderer->DrawModel();
 }
 
 void LAppModel::Draw(CubismMatrix44& matrix)

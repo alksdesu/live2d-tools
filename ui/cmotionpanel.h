@@ -2,6 +2,7 @@
 #define CMOTIONPANEL_H
 
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QListWidget>
 #include <QCheckBox>
 #include <QComboBox>
@@ -45,6 +46,9 @@ public:
     bool ConfirmTimelineReplacement();
     bool LoadTimeline(const QString& path, QString* error = nullptr);
     bool SaveTimeline(const QString& path, QString* error = nullptr);
+    void SetParameterIds(const QStringList& ids) { m_parameterIds = ids; }
+    bool AddTimelinePoint(const CMotionTrack& track, float time, float value);
+    void StopTimelinePreview();
     bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
     bool SavePose(QString* error = nullptr);
     void RecordParameterValue(const QString& parameterId, float value);
@@ -70,6 +74,8 @@ signals:
     void TimelineDirtyChanged(bool dirty);
     void TimelineHistoryChanged(bool canUndo, bool canRedo);
     void TimelineActivated();
+    void TimelineFrameChanged(const CMotionPreviewFrame& frame);
+    void TimelinePreviewStopped();
     void SaveSessionRequested();
     void ExpressionSaved(const QString& name, const QString& path);
     void MotionTimelinePreviewChanged(const QMap<QString, float>& values);
@@ -123,6 +129,11 @@ private:
     int m_activePoseGroup = -1;
     bool m_poseDirty = false;
     CMotionTimeline m_timeline;
+    QStringList m_parameterIds;
+    QComboBox* m_targetFilter = nullptr;
+    QPushButton* m_endPreviewButton = nullptr;
+    void AddTimelineKeyframe();
+    void EmitTimelinePreview();
     QSet<QString> m_modelPartIds;
     bool m_modelPartsKnown = false;
     bool m_timelineDirty = false;
@@ -130,7 +141,7 @@ private:
     struct TimelineSnapshot {
         CMotionTimeline timeline;
         bool loop = false;
-        float playhead = 0;
+        double playhead = 0;
         bool SameContent(const TimelineSnapshot& other) const {
             return loop == other.loop && timeline.HasSameContent(other.timeline);
         }
@@ -163,7 +174,10 @@ private:
     QLabel* m_timelineStatus = nullptr;
     QPushButton* m_playTimelineButton = nullptr;
     QTimer* m_timelineTimer = nullptr;
-    float m_timelineTime = 0.0f;
+    double m_timelineTime = 0.0;
+    QElapsedTimer m_playbackClock;
+    qint64 m_playbackLastNs = 0;
+    double m_timelinePlaybackSpeed = 1.0;
 
     void AddPosePart();
     void RemovePosePart();
@@ -181,10 +195,10 @@ private:
     void ToggleTimelinePlayback();
     void TickTimelinePlayback();
     void SetTimelineTimeFromSlider(int value);
-    void ApplyTimelineCurveEdit(const QString& parameterId, int pointIndex, float time, float value);
+    void ApplyTimelineCurveEdit(const CMotionTrack& track, int pointIndex, float time, float value);
 
     struct TimelineRow {
-        QString parameterId;
+        CMotionTrack track;
         int pointIndex = -1;
         QPointF point;
         int segmentType = 0;

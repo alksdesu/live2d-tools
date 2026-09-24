@@ -24,7 +24,7 @@ class CParamPanel : public QDockWidget
 public:
     explicit CParamPanel(QWidget *parent = nullptr);
     void SetDocument(live2dstruct::CModelDocument* document);
-    void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true);
+    void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
     void RefreshParameterMetadata();
     QMap<QString, float> CurrentValues() const;

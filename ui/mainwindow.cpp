@@ -48,6 +48,7 @@
 #include <QSharedPointer>
 #include <QPointer>
 #include <QScopedValueRollback>
+#include <QSignalBlocker>
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
@@ -362,6 +363,11 @@ void MainWindow::on_actionSaveSession_triggered()
     }
     const QMap<QString, float> currentValues = m_paramPanel->CurrentValues();
     session.parameters = currentValues;
+    if (m_openglwindows->isValid()) {
+        auto* manager = LAppLive2DManager::GetInstance();
+        auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+        if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
+    }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
     if (m_treePanel) {
         session.visibility = m_treePanel->VisibilityState();
@@ -595,6 +601,7 @@ void MainWindow::SetWorkspaceMode(int mode)
     const bool modeling = m_workspaceMode == 0;
     const bool animation = m_workspaceMode == 1;
     const bool physics = m_workspaceMode == 2;
+    if (!animation && m_motionPanel) m_motionPanel->StopTimelinePreview();
     m_treePanel->setVisible(true);
     m_paramPanel->setVisible(modeling || animation);
     m_inspectorPanel->setVisible(modeling || animation);
@@ -606,6 +613,24 @@ void MainWindow::SetWorkspaceMode(int mode)
     if (m_userDataPanel) m_userDataPanel->setVisible(false);
     m_historySource = animation ? HistorySource::Timeline : HistorySource::Parameters;
     RefreshUndoActions();
+}
+
+void MainWindow::ClearTimelinePreview()
+{
+    if (!m_openglwindows || !m_openglwindows->isValid()) return;
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+    if (!model || !model->HasTimelinePreview()) return;
+    model->ClearTimelinePreview();
+    if (!m_paramPanel) return;
+    const QSignalBlocker blocker(m_paramPanel);
+    const auto values = model->GetParameterValues();
+    m_openglwindows->SyncPreviewView(values);
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        if (it.key() == m_parameterBeingEdited) continue;
+        m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false, false);
+        if (m_blendShapePanel) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
+    }
 }
 
 void MainWindow::RefreshUndoActions()
@@ -764,6 +789,8 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
     // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
     if(m_openglwindows){
         previousModelJson = m_openglwindows->GetCurrentModelJson();
+        const bool changedModel = previousModelJson != modelPath;
+        if (changedModel && m_motionPanel) m_motionPanel->StopTimelinePreview();
         restoreVisibleModel = !previousModelJson.isEmpty();
         if (m_paramPanel) previousParameters = m_paramPanel->CurrentValues();
         if (m_treePanel) previousVisibility = m_treePanel->VisibilityState();
@@ -783,7 +810,6 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
         }
         bool wasActive = m_openglwindows->m_timer.isActive();
         if (wasActive) m_openglwindows->m_timer.stop();
-        const bool changedModel = previousModelJson != modelPath;
         if (changedModel) m_openglwindows->do_ModelChange(modelPath);
         bool ok;
         if (isTexExtract) {
@@ -1144,6 +1170,9 @@ void MainWindow::RestDock(const QString &name)
 
     // 底部面板：动作/表情 + 融合变形 + 纹理（tabify）
     m_motionPanel = new CMotionPanel(this);
+    QStringList parameterIds;
+    for (const auto& parameter : m_document.Parameters()) parameterIds.append(parameter.id);
+    m_motionPanel->SetParameterIds(parameterIds);
     addDockWidget(Qt::BottomDockWidgetArea, m_motionPanel);
     QStringList partIds;
     for (const auto& part : m_document.Parts()) partIds.append(part.id);
@@ -1319,19 +1348,32 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::DeformerDragParamsChanged, m_openglwindows, &OpengGlForm::do_SetDeformerDragParams);
 
     // 信号连接：参数面板 → OpenGL
-    connect(m_paramPanel, &CParamPanel::ParamChanged, m_openglwindows, &OpengGlForm::do_change_para_value);
+    connect(m_paramPanel, &CParamPanel::ParamChanged, this, [this](const QString& name, float value, bool isInit){
+        const QScopedValueRollback<QString> editing(m_parameterBeingEdited, name);
+        if (!isInit && m_motionPanel) m_motionPanel->StopTimelinePreview();
+        if (m_openglwindows) m_openglwindows->do_change_para_value(name, value, isInit);
+    });
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_blendShapePanel,
             [this](const QString& name, float value, bool){ m_blendShapePanel->SyncParameterValue(name, value); });
     connect(m_paramPanel, &CParamPanel::ParamChanged, m_motionPanel,
             [this](const QString& name, float value, bool isInit){
                 if (!isInit) m_motionPanel->RecordParameterValue(name, value);
             });
-    connect(m_motionPanel, &CMotionPanel::MotionTimelinePreviewChanged, this,
-            [this](const QMap<QString, float>& values){
-                if (!m_paramPanel) return;
-                for (auto it = values.cbegin(); it != values.cend(); ++it)
-                    m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false);
-            });
+    connect(m_motionPanel, &CMotionPanel::TimelineFrameChanged, this, [this](const CMotionPreviewFrame& frame){
+        if (frame.IsEmpty()) { ClearTimelinePreview(); return; }
+        if (!m_openglwindows || !m_openglwindows->isValid()) return;
+        auto* manager = LAppLive2DManager::GetInstance();
+        auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+        if (!model || !model->SetTimelinePreview(frame) || !m_paramPanel) return;
+        const QSignalBlocker blocker(m_paramPanel);
+        const auto values = model->GetParameterValues();
+        m_openglwindows->SyncPreviewView(values);
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false, false);
+            if (m_blendShapePanel) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
+        }
+    });
+    connect(m_motionPanel, &CMotionPanel::TimelinePreviewStopped, this, &MainWindow::ClearTimelinePreview);
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(name, value, true);
     });
@@ -1351,6 +1393,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this,
             [this](const QString& name, const QString& type, bool visible){
         if (!m_openglwindows) return;
+        if (m_motionPanel) m_motionPanel->StopTimelinePreview();
         if (type != QLatin1String("warp") && type != QLatin1String("rotation")) {
             m_openglwindows->do_SetVisibility(name, type, visible);
             return;
@@ -1491,19 +1534,22 @@ void MainWindow::RestDock(const QString &name)
     });
 
     // 信号连接：动作面板 → 模型
-    connect(m_motionPanel, &CMotionPanel::PlayMotion, this, [](const QString& group, int no){
+    connect(m_motionPanel, &CMotionPanel::PlayMotion, this, [this](const QString& group, int no){
+        m_motionPanel->StopTimelinePreview();
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->StartMotion(group.toUtf8().constData(), no, LAppDefine::PriorityForce);
         }
     });
 
-    connect(m_motionPanel, &CMotionPanel::StopMotions, this, [](){
+    connect(m_motionPanel, &CMotionPanel::StopMotions, this, [this](){
+        m_motionPanel->StopTimelinePreview();
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)) mgr->GetModel(0)->StopAllMotions();
     });
 
-    connect(m_motionPanel, &CMotionPanel::ApplyExpression, this, [](const QString& name){
+    connect(m_motionPanel, &CMotionPanel::ApplyExpression, this, [this](const QString& name){
+        m_motionPanel->StopTimelinePreview();
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
             mgr->GetModel(0)->SetExpression(name.toUtf8().constData());
@@ -1576,7 +1622,8 @@ void MainWindow::RestDock(const QString &name)
         m_poseDirty = false;
         if (!m_sessionDirty) setWindowTitle(QStringLiteral("live2d2psd"));
     });
-    connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [](const QStringList& showIds, const QStringList& hideIds){
+    connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [this](const QStringList& showIds, const QStringList& hideIds){
+        m_motionPanel->StopTimelinePreview();
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || showIds.isEmpty()) return;
         LAppModel* model = mgr->GetModel(0);

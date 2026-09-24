@@ -29,17 +29,25 @@ void CMotionCurveView::SetTime(float time)
     update();
 }
 
-void CMotionCurveView::SetSelectedPoint(const QString& parameterId, int pointIndex)
+void CMotionCurveView::SetSelectedPoint(const CMotionTrack& track, int pointIndex)
 {
-    m_selectedParameter = parameterId;
+    m_selectedTrack = track;
     m_selectedPointIndex = pointIndex;
+    update();
+}
+
+void CMotionCurveView::SetTargetFilter(int target)
+{
+    if (m_targetFilter == target) return;
+    CancelDrag();
+    m_targetFilter = target;
     update();
 }
 
 void CMotionCurveView::CancelDrag()
 {
-    const bool dragging = !m_dragParameter.isEmpty();
-    m_dragParameter.clear();
+    const bool dragging = m_dragTrack.has_value();
+    m_dragTrack.reset();
     m_dragPointIndex = -1;
     if (dragging) emit EditFinished();
 }
@@ -51,11 +59,12 @@ QRectF CMotionCurveView::plotRect() const
 
 bool CMotionCurveView::valueRange(double* minimum, double* maximum) const
 {
-    if (!minimum || !maximum || !m_timeline || m_timeline->Curves().isEmpty()) return false;
+    if (!minimum || !maximum || !m_timeline || m_timeline->Tracks().isEmpty()) return false;
     *minimum = std::numeric_limits<float>::max();
     *maximum = std::numeric_limits<float>::lowest();
-    for (const auto& points : m_timeline->Curves()) {
-        for (const QPointF& point : points) {
+    for (auto it = m_timeline->Tracks().cbegin(); it != m_timeline->Tracks().cend(); ++it) {
+        if (!TrackVisible(it.key())) continue;
+        for (const QPointF& point : it.value()) {
             *minimum = qMin(*minimum, point.y());
             *maximum = qMax(*maximum, point.y());
         }
@@ -82,9 +91,9 @@ QPointF CMotionCurveView::unmapPoint(const QPointF& point, const QRectF& plot, f
                    maximum - qBound(0.0, (point.y() - plot.top()) / plot.height(), 1.0) * (maximum - minimum));
 }
 
-bool CMotionCurveView::hitPoint(const QPointF& position, QString* parameterId, int* pointIndex) const
+bool CMotionCurveView::hitPoint(const QPointF& position, CMotionTrack* track, int* pointIndex) const
 {
-    if (!m_timeline || !parameterId || !pointIndex) return false;
+    if (!m_timeline || !track || !pointIndex) return false;
     const QRectF plot = plotRect();
     double minimum = 0.0;
     double maximum = 0.0;
@@ -93,13 +102,14 @@ bool CMotionCurveView::hitPoint(const QPointF& position, QString* parameterId, i
     const float radiusSquared = 10.0f * 10.0f;
     float nearest = radiusSquared;
     bool found = false;
-    for (auto curve = m_timeline->Curves().cbegin(); curve != m_timeline->Curves().cend(); ++curve) {
+    for (auto curve = m_timeline->Tracks().cbegin(); curve != m_timeline->Tracks().cend(); ++curve) {
+        if (!TrackVisible(curve.key())) continue;
         for (int index = 0; index < curve.value().size(); ++index) {
             const QPointF delta = mapPoint(curve.value().at(index), plot, duration, minimum, maximum) - position;
             const float distanceSquared = static_cast<float>(QPointF::dotProduct(delta, delta));
             if (distanceSquared <= nearest) {
                 nearest = distanceSquared;
-                *parameterId = curve.key();
+                *track = curve.key();
                 *pointIndex = index;
                 found = true;
             }
@@ -128,17 +138,21 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
     }
     painter.setPen(text);
     painter.drawText(10, 14, QStringLiteral("曲线"));
-    if (!m_timeline || m_timeline->Curves().isEmpty()) {
-        painter.drawText(plot, Qt::AlignCenter, QStringLiteral("暂无参数曲线"));
+    if (!m_timeline || m_timeline->Tracks().isEmpty()) {
+        painter.drawText(plot, Qt::AlignCenter, QStringLiteral("暂无曲线"));
         return;
     }
     const float duration = qMax(0.001f, m_timeline->Duration());
     double minimum = 0.0;
     double maximum = 0.0;
-    if (!valueRange(&minimum, &maximum)) return;
+    if (!valueRange(&minimum, &maximum)) {
+        painter.drawText(plot, Qt::AlignCenter, QStringLiteral("当前类型暂无曲线"));
+        return;
+    }
     const QVector<QColor> colors = {accent, QColor(220, 120, 70), QColor(80, 170, 125), QColor(170, 110, 210)};
     int colorIndex = 0;
-    for (auto it = m_timeline->Curves().cbegin(); it != m_timeline->Curves().cend(); ++it, ++colorIndex) {
+    for (auto it = m_timeline->Tracks().cbegin(); it != m_timeline->Tracks().cend(); ++it, ++colorIndex) {
+        if (!TrackVisible(it.key())) continue;
         const QColor color = colors[colorIndex % colors.size()];
         painter.setPen(QPen(color, 1.5));
         QPolygonF line;
@@ -151,7 +165,7 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
         for (int index = 0; index < it.value().size(); ++index) {
             const QPointF& point = it.value().at(index);
             const QPointF mapped = mapPoint(point, plot, duration, minimum, maximum);
-            const bool selected = it.key() == m_selectedParameter && index == m_selectedPointIndex;
+            const bool selected = it.key() == m_selectedTrack && index == m_selectedPointIndex;
             painter.setPen(selected ? QPen(text, 2.0) : QPen(color, 1.0));
             painter.drawEllipse(mapped, selected ? 5.0 : 3.5, selected ? 5.0 : 3.5);
         }
@@ -164,27 +178,27 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
 void CMotionCurveView::mousePressEvent(QMouseEvent* event)
 {
     if (!event || event->button() != Qt::LeftButton) return;
-    QString parameterId;
+    CMotionTrack track;
     int pointIndex = -1;
-    if (!hitPoint(event->position(), &parameterId, &pointIndex)) return;
+    if (!hitPoint(event->position(), &track, &pointIndex)) return;
     setFocus(Qt::MouseFocusReason);
-    m_dragParameter = parameterId;
+    m_dragTrack = track;
     m_dragPointIndex = pointIndex;
     emit EditStarted();
-    SetSelectedPoint(parameterId, pointIndex);
-    emit PointSelected(parameterId, pointIndex);
+    SetSelectedPoint(track, pointIndex);
+    emit PointSelected(track, pointIndex);
     event->accept();
 }
 
 void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
 {
-    if (!event || m_dragParameter.isEmpty() || m_dragPointIndex < 0 || !m_timeline) return;
+    if (!event || !m_dragTrack || m_dragPointIndex < 0 || !m_timeline) return;
     if (!(event->buttons() & Qt::LeftButton)) {
         CancelDrag();
         return;
     }
-    const auto curve = m_timeline->Curves().constFind(m_dragParameter);
-    if (curve == m_timeline->Curves().cend() || m_dragPointIndex >= curve.value().size()) return;
+    const auto curve = m_timeline->Tracks().constFind(*m_dragTrack);
+    if (curve == m_timeline->Tracks().cend() || m_dragPointIndex >= curve.value().size()) return;
     const QRectF plot = plotRect();
     double minimum = 0.0;
     double maximum = 0.0;
@@ -195,7 +209,7 @@ void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
     if (m_dragPointIndex > 0) point.setX(qMax(point.x(), static_cast<float>(curve.value().at(m_dragPointIndex - 1).x()) + epsilon));
     if (m_dragPointIndex + 1 < curve.value().size()) point.setX(qMin(point.x(), static_cast<float>(curve.value().at(m_dragPointIndex + 1).x()) - epsilon));
     point.setX(qBound(0.0f, static_cast<float>(point.x()), duration));
-    emit PointEdited(m_dragParameter, m_dragPointIndex, static_cast<float>(point.x()), static_cast<float>(point.y()));
+    emit PointEdited(*m_dragTrack, m_dragPointIndex, static_cast<float>(point.x()), static_cast<float>(point.y()));
     event->accept();
 }
 

@@ -134,7 +134,7 @@ void LAppLive2DManager::OnTap(csmFloat32 x, csmFloat32 y)
 
     for (csmUint32 i = 0; i < _models.GetSize(); i++)
     {
-        if (!_models[i]) continue;
+        if (!_models[i] || _models[i]->HasTimelinePreview()) continue;
         if (_models[i]->HitTest(HitAreaNameHead, x, y))
         {
             if (DebugLogEnable)

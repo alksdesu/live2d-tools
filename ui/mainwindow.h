@@ -55,6 +55,8 @@ private:
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
+    void ClearTimelinePreview();
+    QString m_parameterBeingEdited;
     void RefreshUndoActions();
     void UndoDocumentEdit();
     void RedoDocumentEdit();

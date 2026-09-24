@@ -372,6 +372,35 @@ void OpengGlForm::do_ModelChange(const QString& fileName)
     m_currentModelJson = fileName;
 }
 
+void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
+{
+    if (!isValid()) return;
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+    if (!model || !model->GetModel()) return;
+    auto* coreModel = model->GetModel();
+    auto* meshMap = coreModel->GetMeshMap();
+    auto* delegate = LAppDelegate::GetInstance();
+    if (meshMap) for (int index = 0; index < coreModel->GetDrawableCount(); ++index) {
+        const QString id = QString::fromUtf8(coreModel->GetDrawableId(index)->GetString().GetRawString());
+        QVector<float> positions = delegate->m_meshOverlayPositions.value(id)
+            .value(delegate->m_meshOverlayKeyformIndices.value(id, -1));
+        if (positions.isEmpty()) {
+            const float* vertices = coreModel->GetDrawableVertices(index);
+            const int count = coreModel->GetDrawableVertexCount(index);
+            if (!vertices || count <= 0 || count > 1000000) continue;
+            positions = QVector<float>(vertices, vertices + count * 2);
+        }
+        meshMap->SetMeshPositions(id, positions);
+    }
+    C2DTree* tree = CTreeManage::GetInstance();
+    if (tree) for (auto it = values.cbegin(); it != values.cend(); ++it) tree->SetParaValue(it.key(), it.value());
+    makeCurrent();
+    if (delegate->GetView()) delegate->GetView()->InitWrapAndRotation();
+    doneCurrent();
+    update();
+}
+
 
 
 void OpengGlForm::initializeGL()

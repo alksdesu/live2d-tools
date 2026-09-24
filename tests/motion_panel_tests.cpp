@@ -17,6 +17,8 @@
 #include <QTabWidget>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 
 class MotionPanelTests : public QObject
 {
@@ -41,6 +43,212 @@ private:
     }
 
 private slots:
+    void playbackUsesElapsedTimeAndSelectedSpeed_data()
+    {
+        QTest::addColumn<int>("percent");
+        QTest::newRow("slow") << 50;
+        QTest::newRow("fast") << 200;
+    }
+
+    void playbackUsesElapsedTimeAndSelectedSpeed()
+    {
+        QFETCH(int, percent);
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 10, 10));
+        panel.findChild<QSlider*>("motionPlaybackSpeed")->setValue(percent);
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        QSignalSpy preview(&panel, &CMotionPanel::TimelineFrameChanged);
+        QElapsedTimer elapsed;
+        elapsed.start();
+        play->click();
+        QTest::qSleep(140);
+        const double lowerTime = elapsed.nsecsElapsed() / 1e9;
+        QCoreApplication::processEvents();
+        const double upperTime = elapsed.nsecsElapsed() / 1e9;
+        const double value = preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity");
+        QVERIFY2(value >= lowerTime * percent / 100.0 - 0.015, qPrintable(QString::number(value)));
+        QVERIFY(value <= upperTime * percent / 100.0 + 0.015);
+        play->click();
+        const float paused = preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity");
+        QTest::qSleep(40);
+        play->click();
+        QCOMPARE(preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity"), paused);
+        QTest::qSleep(70);
+        panel.findChild<QSlider*>("motionPlaybackSpeed")->setValue(100);
+        const float switched = preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity");
+        QVERIFY(switched > paused);
+        QElapsedTimer afterSwitch;
+        afterSwitch.start();
+        QTest::qSleep(90);
+        const double minimumAdvance = afterSwitch.nsecsElapsed() / 1e9;
+        QCoreApplication::processEvents();
+        const double maximumAdvance = afterSwitch.nsecsElapsed() / 1e9;
+        const float advanced = preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity") - switched;
+        QVERIFY(advanced >= minimumAdvance - 0.015);
+        QVERIFY(advanced <= maximumAdvance + 0.015);
+        panel.StopTimelinePreview();
+    }
+
+    void playbackContinuesFromPlayheadAndFinishesAtClipEnd()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 0.1f, 1));
+        auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        slider->setValue(500);
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        QSignalSpy preview(&panel, &CMotionPanel::TimelineFrameChanged);
+        play->click();
+        QCOMPARE(preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity"), 0.5f);
+        QTest::qSleep(150);
+        QCoreApplication::processEvents();
+        QCOMPARE(preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity"), 1.0f);
+        QCOMPARE(slider->value(), 1000);
+        QCOMPARE(play->text(), QStringLiteral("预览"));
+        play->click();
+        QCOMPARE(preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity"), 0.0f);
+        panel.findChild<QCheckBox*>("motionLoop")->setChecked(true);
+        QTest::qSleep(150);
+        QCoreApplication::processEvents();
+        const float value = preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity");
+        QVERIFY(value >= 0.0f && value < 1.0f);
+        QCOMPARE(play->text(), QStringLiteral("暂停"));
+        panel.StopTimelinePreview();
+    }
+
+    void modelOnlyClipPreviewsWithEmptyParameterFilterAndStopsRecording()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 2, 1));
+        auto* filter = panel.findChild<QComboBox*>("motionTargetFilter");
+        filter->setCurrentIndex(filter->findData(static_cast<int>(CMotionTarget::Parameter)));
+        QCOMPARE(panel.findChild<QTableWidget*>("motionTimelineTable")->rowCount(), 0);
+        auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline");
+        QVERIFY(slider->isEnabled());
+        QVERIFY(play->isEnabled());
+        QSignalSpy preview(&panel, &CMotionPanel::TimelineFrameChanged);
+        record->setChecked(true);
+        slider->setValue(500);
+        QVERIFY(!record->isChecked());
+        QCOMPARE(preview.last().first().value<CMotionPreviewFrame>().model.value("Opacity"), 0.5f);
+        record->setChecked(true);
+        play->click();
+        QVERIFY(!record->isChecked());
+        panel.StopTimelinePreview();
+        const int count = preview.size();
+        QTest::qWait(80);
+        QCOMPARE(preview.size(), count);
+    }
+
+
+    void typedTracksFilterEditUndoAndPreview()
+    {
+        CMotionPanel panel;
+        const CMotionTrack model{CMotionTarget::Model, "Opacity"};
+        const CMotionTrack parameter{CMotionTarget::Parameter, "Opacity"};
+        const CMotionTrack part{CMotionTarget::PartOpacity, "Opacity"};
+        QSignalSpy preview(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        for (const auto& track : {model, parameter, part}) {
+            QVERIFY(panel.AddTimelinePoint(track, 0, 0));
+            QVERIFY(panel.AddTimelinePoint(track, 2, 1));
+        }
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        auto* filter = panel.findChild<QComboBox*>("motionTargetFilter");
+        auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        QCOMPARE(table->rowCount(), 6);
+        slider->setValue(500);
+        auto frame = preview.last().first().value<CMotionPreviewFrame>();
+        QCOMPARE(frame.parameters.value("Opacity"), 0.5f);
+        QCOMPARE(frame.model.value("Opacity"), 0.5f);
+        QCOMPARE(frame.parts.value("Opacity"), 0.5f);
+        filter->setCurrentIndex(filter->findData(static_cast<int>(CMotionTarget::PartOpacity)));
+        QCOMPARE(table->rowCount(), 2);
+        QVERIFY(table->item(0, 1)->text().startsWith("PartOpacity"));
+        table->item(1, 2)->setText("0.25");
+        frame = preview.last().first().value<CMotionPreviewFrame>();
+        QCOMPARE(frame.parts.value("Opacity"), 0.125f);
+        QCOMPARE(frame.model.value("Opacity"), 0.5f);
+        panel.UndoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        panel.RedoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 0.25f);
+        QVERIFY(panel.AddTimelinePoint(model, 1, 0.75f));
+        QCOMPARE(filter->currentData().toInt(), static_cast<int>(CMotionTarget::Model));
+        QCOMPARE(table->rowCount(), 3);
+        QCOMPARE(table->currentRow(), 1);
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 0.75f);
+        panel.findChild<QPushButton*>("removeTimelineKeyframe")->click();
+        QCOMPARE(table->rowCount(), 2);
+        panel.UndoTimeline();
+        QCOMPARE(table->rowCount(), 3);
+        panel.findChild<QPushButton*>("endTimelinePreview")->click();
+        QCOMPARE(stopped.size(), 1);
+        QVERIFY(!panel.findChild<QPushButton*>("endTimelinePreview")->isEnabled());
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline");
+        record->setChecked(true);
+        QCOMPARE(stopped.size(), 2);
+        QVERIFY(!panel.findChild<QPushButton*>("addTimelineKeyframe")->isEnabled());
+        QVERIFY(!panel.AddTimelinePoint(part, 1, 0.5f));
+        record->setChecked(false);
+        QJsonObject state;
+        QVERIFY(panel.CaptureTimelineState(&state));
+        CMotionPanel restored;
+        QVERIFY(restored.RestoreTimelineState(state));
+        QCOMPARE(restored.findChild<QTableWidget*>("motionTimelineTable")->rowCount(), 7);
+        QTemporaryDir temp;
+        QVERIFY(restored.SaveTimeline(temp.filePath("typed.motion3.json")));
+        CMotionTimeline exported;
+        QVERIFY(exported.Load(temp.filePath("typed.motion3.json")));
+        QCOMPARE(exported.Evaluate(model, 1), 0.75f);
+        QCOMPARE(exported.Evaluate(part, 1), 0.125f);
+    }
+
+    void manualDialogAddsAllTypesAndCancelsCleanly()
+    {
+        CMotionPanel panel;
+        panel.SetParameterIds({"ParamA"});
+        QTemporaryDir temp;
+        QFile modelFile(temp.filePath("model.model3.json"));
+        QVERIFY(modelFile.open(QIODevice::WriteOnly));
+        modelFile.write("{\"Version\":3,\"FileReferences\":{}}");
+        modelFile.close();
+        QVERIFY(panel.BuildLists(modelFile.fileName(), {"PartA"}));
+        for (const auto kind : {CMotionTarget::Parameter, CMotionTarget::Model, CMotionTarget::PartOpacity}) {
+            QTimer::singleShot(0, [kind](){
+                auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                QVERIFY(dialog);
+                auto* target = dialog->findChild<QComboBox*>("keyframeTarget");
+                auto* id = dialog->findChild<QComboBox*>("keyframeId");
+                target->setCurrentIndex(target->findData(static_cast<int>(kind)));
+                id->setCurrentText(kind == CMotionTarget::Model ? "Opacity" : kind == CMotionTarget::Parameter ? "ParamA" : "PartA");
+                dialog->findChild<QDoubleSpinBox*>("keyframeTime")->setValue(0.5);
+                dialog->findChild<QDoubleSpinBox*>("keyframeValue")->setValue(0.25);
+                dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+            });
+            panel.findChild<QPushButton*>("addTimelineKeyframe")->click();
+        }
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        QCOMPARE(table->rowCount(), 3);
+        QTimer::singleShot(0, [](){
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            dialog->reject();
+        });
+        panel.findChild<QPushButton*>("addTimelineKeyframe")->click();
+        QCOMPARE(table->rowCount(), 3);
+        panel.UndoTimeline();
+        QCOMPARE(table->rowCount(), 2);
+        panel.UndoTimeline();
+        QCOMPARE(table->rowCount(), 1);
+        panel.UndoTimeline();
+        QCOMPARE(table->rowCount(), 0);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
     void undoRedoTracksSavedPositionAndBranches()
     {
         QTemporaryDir temp;
@@ -294,7 +502,7 @@ private slots:
             auto* undo = panel.findChild<QPushButton*>("undoMotionTimeline");
             auto* redo = panel.findChild<QPushButton*>("redoMotionTimeline");
             QVERIFY(undo && redo);
-            QVERIFY(panel.width() <= 740);
+            QVERIFY2(panel.width() <= 740, qPrintable(QStringLiteral("panel width %1").arg(panel.width())));
             QVERIFY(panel.height() <= 540);
             QVERIFY(table->viewport()->height() >= table->rowHeight(0) * 2);
             QVERIFY(undo->isVisible());

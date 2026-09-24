@@ -141,7 +141,7 @@ void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
     m_document = document;
 }
 
-void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record, bool userEdit)
+void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record, bool userEdit, bool writeDocument)
 {
     auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&paramId](const ParamRow& row){ return row.paramId == paramId; });
     if (rowIt == m_rows.cend()) return;
@@ -157,7 +157,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     row.spinBox->setValue(value);
     if (userEdit) m_userLocked.insert(rowIndex);
     m_lastValues.insert(paramId, value);
-    if (m_document) m_document->SetParameterValue(paramId, value);
+    if (m_document && writeDocument) m_document->SetParameterValue(paramId, value);
     emit ParamChanged(paramId, value, !userEdit);
     RefreshXYControls();
     if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) PushEdit(paramId, before, value);

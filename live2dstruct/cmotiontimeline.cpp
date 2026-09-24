@@ -146,13 +146,13 @@ void CMotionTimeline::Record(const QString& parameterId, float value)
     AddPoint(parameterId, m_recordStartTime + m_clock.elapsed() / 1000.0f, value);
 }
 
-bool CMotionTimeline::AddPoint(const QString& parameterId, float time, float value)
+bool CMotionTimeline::AddPoint(const CMotionTrack& track, float time, float value)
 {
-    if (parameterId.trimmed().isEmpty() || parameterId.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
-    if (PointCount() >= maximumMotionPoints) return false;
-    QVector<QPointF>& points = m_curves[parameterId];
-    QVector<int>& segmentTypes = m_segmentTypes[parameterId];
-    QVector<QVector<QPointF>>& bezierControls = m_bezierControls[parameterId];
+    if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
+    if (TotalPointCount() >= maximumMotionPoints) return false;
+    QVector<QPointF>& points = m_curves[track];
+    QVector<int>& segmentTypes = m_segmentTypes[track];
+    QVector<QVector<QPointF>>& bezierControls = m_bezierControls[track];
     if (!points.isEmpty()) {
         const float lastTime = static_cast<float>(points.last().x());
         time = qMax(time, lastTime);
@@ -168,10 +168,10 @@ bool CMotionTimeline::AddPoint(const QString& parameterId, float time, float val
     return true;
 }
 
-bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float time, float value)
+bool CMotionTimeline::UpdatePoint(const CMotionTrack& track, int index, float time, float value)
 {
-    if (parameterId.trimmed().isEmpty() || parameterId.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
-    auto curve = m_curves.find(parameterId);
+    if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
+    auto curve = m_curves.find(track);
     if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
     const QPointF current = curve->at(index);
     const QPointF updated(static_cast<float>(current.x()) == time ? current.x() : time,
@@ -183,8 +183,8 @@ bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float t
     struct Entry { QPointF point; int originalIndex; };
     QVector<Entry> entries;
     const auto before = *curve;
-    const auto types = m_segmentTypes.value(parameterId);
-    const auto controls = m_bezierControls.value(parameterId);
+    const auto types = m_segmentTypes.value(track);
+    const auto controls = m_bezierControls.value(track);
     for (int i = 0; i < curve->size(); ++i)
         entries.append({i == index ? updated : curve->at(i), i});
     std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right){
@@ -193,66 +193,60 @@ bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float t
     for (int i = 0; i < entries.size(); ++i) {
         const int original = entries[i].originalIndex;
         (*curve)[i] = entries[i].point;
-        m_segmentTypes[parameterId][i] = i == 0 ? 0 : types.value(original, 0);
-        m_bezierControls[parameterId][i] = (i > 0 && original > 0 && types.value(original) == 1)
+        m_segmentTypes[track][i] = i == 0 ? 0 : types.value(original, 0);
+        m_bezierControls[track][i] = (i > 0 && original > 0 && types.value(original) == 1)
             ? retargetBezier(controls.value(original), before[original - 1], before[original],
                               entries[i - 1].point, entries[i].point) : QVector<QPointF>();
     }
     return true;
 }
 
-bool CMotionTimeline::RemovePoint(const QString& parameterId, int index)
+bool CMotionTimeline::RemovePoint(const CMotionTrack& track, int index)
 {
-    auto curve = m_curves.find(parameterId);
+    auto curve = m_curves.find(track);
     if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
-    if (index > 0 && index + 1 < curve->size() && SegmentType(parameterId, index + 1) == 1) {
-        m_bezierControls[parameterId][index + 1] = retargetBezier(
-            m_bezierControls.value(parameterId).value(index + 1), curve->at(index), curve->at(index + 1),
+    if (index > 0 && index + 1 < curve->size() && SegmentType(track, index + 1) == 1) {
+        m_bezierControls[track][index + 1] = retargetBezier(
+            m_bezierControls.value(track).value(index + 1), curve->at(index), curve->at(index + 1),
             curve->at(index - 1), curve->at(index + 1));
     }
     curve->removeAt(index);
-    if (m_segmentTypes.contains(parameterId)) m_segmentTypes[parameterId].removeAt(index);
-    if (m_bezierControls.contains(parameterId)) m_bezierControls[parameterId].removeAt(index);
+    if (m_segmentTypes.contains(track)) m_segmentTypes[track].removeAt(index);
+    if (m_bezierControls.contains(track)) m_bezierControls[track].removeAt(index);
     if (!curve->isEmpty()) {
-        m_segmentTypes[parameterId][0] = 0;
-        m_bezierControls[parameterId][0].clear();
+        m_segmentTypes[track][0] = 0;
+        m_bezierControls[track][0].clear();
     }
     const bool empty = curve->isEmpty();
     if (empty) {
         m_curves.erase(curve);
-        m_segmentTypes.remove(parameterId);
-        m_bezierControls.remove(parameterId);
+        m_segmentTypes.remove(track);
+        m_bezierControls.remove(track);
     }
     return true;
 }
 
-bool CMotionTimeline::SetSegmentType(const QString& parameterId, int pointIndex, int segmentType)
+bool CMotionTimeline::SetSegmentType(const CMotionTrack& track, int pointIndex, int segmentType)
 {
     if (pointIndex <= 0 || segmentType < 0 || segmentType > 3) return false;
-    auto curve = m_curves.find(parameterId);
+    auto curve = m_curves.find(track);
     if (curve == m_curves.end() || pointIndex >= curve->size()) return false;
-    QVector<int>& types = m_segmentTypes[parameterId];
+    QVector<int>& types = m_segmentTypes[track];
     types.resize(curve->size());
-    m_bezierControls[parameterId].resize(curve->size());
+    m_bezierControls[track].resize(curve->size());
     types[pointIndex] = segmentType;
     return true;
 }
 
-int CMotionTimeline::SegmentType(const QString& parameterId, int pointIndex) const
+int CMotionTimeline::SegmentType(const CMotionTrack& track, int pointIndex) const
 {
-    return m_segmentTypes.value(parameterId).value(pointIndex, 0);
+    return m_segmentTypes.value(track).value(pointIndex, 0);
 }
 
 float CMotionTimeline::Duration() const
 {
     float duration = static_cast<float>(m_source.value(QStringLiteral("Meta")).toObject()
                                            .value(QStringLiteral("Duration")).toDouble());
-    for (const auto& source : m_source.value(QStringLiteral("Curves")).toArray()) {
-        const auto curve = source.toObject();
-        if (curve.value(QStringLiteral("Target")).toString() == QStringLiteral("Parameter")) continue;
-        const auto segments = curve.value(QStringLiteral("Segments")).toArray();
-        if (segments.size() >= 2) duration = qMax(duration, static_cast<float>(segments.at(segments.size() - 2).toDouble()));
-    }
     for (const auto& points : m_curves)
         if (!points.isEmpty()) duration = qMax(duration, static_cast<float>(points.last().x()));
     return duration;
@@ -269,9 +263,9 @@ bool CMotionTimeline::Loop() const
     return m_source.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("Loop")).toBool();
 }
 
-float CMotionTimeline::Evaluate(const QString& parameterId, float time, bool* ok) const
+float CMotionTimeline::Evaluate(const CMotionTrack& track, float time, bool* ok) const
 {
-    const QVector<QPointF> points = m_curves.value(parameterId);
+    const QVector<QPointF> points = m_curves.value(track);
     if (points.isEmpty() || !std::isfinite(time)) {
         if (ok) *ok = false;
         return 0.0f;
@@ -284,7 +278,7 @@ float CMotionTimeline::Evaluate(const QString& parameterId, float time, bool* ok
         if (time >= static_cast<float>(end.x())) continue;
         const double span = end.x() - start.x();
         const double ratio = span > 0.0 ? qBound(0.0, (time - start.x()) / span, 1.0) : 1.0;
-        const int type = SegmentType(parameterId, i);
+        const int type = SegmentType(track, i);
         if (type == 2) return static_cast<float>(start.y());
         if (type == 3) return static_cast<float>(end.y());
         if (type != 1) return static_cast<float>(start.y() + (end.y() - start.y()) * ratio);
@@ -295,7 +289,7 @@ float CMotionTimeline::Evaluate(const QString& parameterId, float time, bool* ok
         };
         const bool restricted = m_source.value(QStringLiteral("Meta")).toObject()
                                     .value(QStringLiteral("AreBeziersRestricted")).toBool();
-        const QVector<QPointF> controls = m_bezierControls.value(parameterId).value(i);
+        const QVector<QPointF> controls = m_bezierControls.value(track).value(i);
         const QVector<QPointF> fallback = defaultBezierControls(start, end);
         const QVector<QPointF> selectedControls = (restricted && controls.size() == 2) || validBezierControls(controls, start, end)
             ? controls : fallback;
@@ -319,16 +313,40 @@ float CMotionTimeline::Evaluate(const QString& parameterId, float time, bool* ok
 
 QMap<QString, float> CMotionTimeline::EvaluateAll(float time) const
 {
-    QMap<QString, float> values;
+    return EvaluateFrame(time).parameters;
+}
+
+CMotionPreviewFrame CMotionTimeline::EvaluateFrame(float time) const
+{
+    CMotionPreviewFrame frame;
     for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it) {
         bool valid = false;
         const float value = Evaluate(it.key(), time, &valid);
-        if (valid) values.insert(it.key(), value);
+        if (!valid) continue;
+        auto& values = it.key().target == CMotionTarget::Parameter ? frame.parameters
+            : it.key().target == CMotionTarget::Model ? frame.model : frame.parts;
+        values.insert(it.key().id, value);
     }
-    return values;
+    return frame;
+}
+
+QMap<QString, QVector<QPointF>> CMotionTimeline::Curves() const
+{
+    QMap<QString, QVector<QPointF>> parameters;
+    for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it)
+        if (it.key().target == CMotionTarget::Parameter) parameters.insert(it.key().id, it.value());
+    return parameters;
 }
 
 int CMotionTimeline::PointCount() const
+{
+    int count = 0;
+    for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it)
+        if (it.key().target == CMotionTarget::Parameter) count += it.value().size();
+    return count;
+}
+
+int CMotionTimeline::TotalPointCount() const
 {
     int count = 0;
     for (const auto& points : m_curves) count += points.size();
@@ -339,18 +357,17 @@ bool CMotionTimeline::BuildJson(QJsonObject* output, float fps, bool loop, bool 
 {
     const double outputFps = std::isfinite(fps) && fps > 0.0f ? fps : 30.0;
     const QJsonArray originals = m_source.value(QStringLiteral("Curves")).toArray();
-    QMap<QString, QJsonObject> parameterFields;
-    QJsonArray modelCurves, partCurves;
+    QMap<CMotionTrack, QJsonObject> curveFields;
     for (const auto& value : originals) {
         const auto curve = value.toObject();
         const QString target = curve.value(QStringLiteral("Target")).toString();
-        if (target == QLatin1String("Parameter")) parameterFields.insert(curve.value(QStringLiteral("Id")).toString(), curve);
-        else if (target == QLatin1String("Model")) modelCurves.append(curve);
-        else partCurves.append(curve);
+        const auto type = target == QLatin1String("Parameter") ? CMotionTarget::Parameter
+            : target == QLatin1String("Model") ? CMotionTarget::Model : CMotionTarget::PartOpacity;
+        curveFields.insert({type, curve.value(QStringLiteral("Id")).toString()}, curve);
     }
     const bool restricted = m_source.value(QStringLiteral("Meta")).toObject()
                                 .value(QStringLiteral("AreBeziersRestricted")).toBool();
-    QJsonArray curves = modelCurves;
+    QJsonArray curves;
     for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it) {
         if (it.value().isEmpty()) continue;
         QVector<QPointF> points = it.value();
@@ -361,7 +378,7 @@ bool CMotionTimeline::BuildJson(QJsonObject* output, float fps, bool loop, bool 
             const float endpoint = qMax(static_cast<float>(start + 1.0 / outputFps),
                                          std::nextafterf(start, std::numeric_limits<float>::infinity()));
             if (!std::isfinite(endpoint)) {
-                if (error) *error = QStringLiteral("无法为单点曲线生成有效终点：%1").arg(it.key());
+                if (error) *error = QStringLiteral("无法为单点曲线生成有效终点：%1").arg(it.key().id);
                 return false;
             }
             points.append(QPointF(endpoint, points.first().y()));
@@ -382,13 +399,12 @@ bool CMotionTimeline::BuildJson(QJsonObject* output, float fps, bool loop, bool 
             segments.append(points[i].x());
             segments.append(points[i].y());
         }
-        QJsonObject curve = parameterFields.value(it.key());
-        curve.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
-        curve.insert(QStringLiteral("Id"), it.key());
+        QJsonObject curve = curveFields.value(it.key());
+        curve.insert(QStringLiteral("Target"), it.key().TargetName());
+        curve.insert(QStringLiteral("Id"), it.key().id);
         curve.insert(QStringLiteral("Segments"), segments);
         curves.append(curve);
     }
-    for (const auto& curve : partCurves) curves.append(curve);
     if (!draft && curves.isEmpty()) {
         if (error) *error = QStringLiteral("没有可导出的曲线");
         return false;
@@ -508,9 +524,9 @@ bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* err
             return false;
         }
     }
-    QMap<QString, QVector<QPointF>> curves;
-    QMap<QString, QVector<int>> segmentTypes;
-    QMap<QString, QVector<QVector<QPointF>>> bezierControls;
+    QMap<CMotionTrack, QVector<QPointF>> curves;
+    QMap<CMotionTrack, QVector<int>> segmentTypes;
+    QMap<CMotionTrack, QVector<QVector<QPointF>>> bezierControls;
     QSet<QString> identities;
     int totalKeys = 0;
     const bool restricted = meta.value(QStringLiteral("AreBeziersRestricted")).toBool();
@@ -533,11 +549,12 @@ bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* err
             if (error) *error = QStringLiteral("motion3 关键帧过多");
             return false;
         }
-        if (target == QLatin1String("Parameter")) {
-            curves.insert(id, parsed.points);
-            segmentTypes.insert(id, parsed.types);
-            bezierControls.insert(id, parsed.controls);
-        }
+        const auto type = target == QLatin1String("Parameter") ? CMotionTarget::Parameter
+            : target == QLatin1String("Model") ? CMotionTarget::Model : CMotionTarget::PartOpacity;
+        const CMotionTrack track{type, id};
+        curves.insert(track, parsed.points);
+        segmentTypes.insert(track, parsed.types);
+        bezierControls.insert(track, parsed.controls);
     }
     if (!draft && identities.isEmpty()) {
         if (error) *error = QStringLiteral("motion3 没有曲线");
@@ -553,10 +570,7 @@ bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* err
 
 bool CMotionTimeline::HasCurves() const
 {
-    if (!m_curves.isEmpty()) return true;
-    for (const auto& value : m_source.value(QStringLiteral("Curves")).toArray())
-        if (value.toObject().value(QStringLiteral("Target")).toString() != QLatin1String("Parameter")) return true;
-    return false;
+    return !m_curves.isEmpty();
 }
 
 bool CMotionTimeline::HasSameContent(const CMotionTimeline& other) const
@@ -606,5 +620,61 @@ bool CMotionTimeline::RestoreState(const QJsonObject& state, float* playhead, QS
     }
     *this = std::move(candidate);
     if (playhead) *playhead = static_cast<float>(time.toDouble());
+    return true;
+}
+
+QString CMotionTrack::TargetName() const
+{
+    switch (target) {
+    case CMotionTarget::Model: return QStringLiteral("Model");
+    case CMotionTarget::Parameter: return QStringLiteral("Parameter");
+    case CMotionTarget::PartOpacity: return QStringLiteral("PartOpacity");
+    }
+    return {};
+}
+
+QMap<QString, float> CMotionPreviewFrame::ResolveParameters(const QSet<QString>& eyeBlinkIds,
+                                                         const QSet<QString>& lipSyncIds) const
+{
+    QMap<QString, float> values = parameters;
+    const auto eye = model.constFind(QStringLiteral("EyeBlink"));
+    const auto lip = model.constFind(QStringLiteral("LipSync"));
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        double value = it.value();
+        if (eye != model.cend() && eyeBlinkIds.contains(it.key())) value *= eye.value();
+        if (lip != model.cend() && lipSyncIds.contains(it.key())) value += lip.value();
+        it.value() = static_cast<float>(qBound(-static_cast<double>(std::numeric_limits<float>::max()),
+                                              value, static_cast<double>(std::numeric_limits<float>::max())));
+    }
+    if (eye != model.cend()) for (const auto& id : eyeBlinkIds)
+        if (!parameters.contains(id)) values.insert(id, eye.value());
+    if (lip != model.cend()) for (const auto& id : lipSyncIds)
+        if (!parameters.contains(id)) values.insert(id, lip.value());
+    return values;
+}
+
+bool CMotionTimeline::InsertPoint(const CMotionTrack& track, float time, float value)
+{
+    if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) ||
+        !std::isfinite(time) || time < 0 || !std::isfinite(value) || TotalPointCount() >= maximumMotionPoints) return false;
+    const auto points = m_curves.value(track);
+    for (const auto& point : points) if (static_cast<float>(point.x()) == time) return false;
+    const int index = static_cast<int>(std::lower_bound(points.cbegin(), points.cend(), time,
+        [](const QPointF& point, float at){ return point.x() < at; }) - points.cbegin());
+    m_curves[track].insert(index, QPointF(time, value));
+    m_segmentTypes[track].insert(index, 0);
+    m_bezierControls[track].insert(index, QVector<QPointF>());
+    if (index + 1 < m_curves[track].size() && m_segmentTypes[track].value(index + 1) == 1 && index > 0) {
+        m_bezierControls[track][index + 1] = retargetBezier(m_bezierControls[track][index + 1],
+            points[index - 1], points[index], m_curves[track][index], m_curves[track][index + 1]);
+    }
+    return true;
+}
+
+bool CMotionPreviewFrame::IsFinite() const
+{
+    for (const auto* values : {&parameters, &model, &parts})
+        for (auto it = values->cbegin(); it != values->cend(); ++it)
+            if (it.key().isEmpty() || it.key().contains(QChar::Null) || !std::isfinite(it.value())) return false;
     return true;
 }

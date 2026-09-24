@@ -77,6 +77,7 @@ public slots:
     void PublishRenderOrder(const QStringList& names);
     void SetDrawOrderGroups(const QHash<QString, int>& groupIndices,
                             const QVector<live2dstruct::CDrawableOrderGroup>& groups);
+    void SyncPreviewView(const QMap<QString, float>& values);
 
 
 signals:

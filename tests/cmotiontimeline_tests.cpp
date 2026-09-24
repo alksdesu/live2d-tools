@@ -33,6 +33,115 @@ private:
     }
 
 private slots:
+
+    void typedTracksRemainIndependentThroughEditingAndStorage()
+    {
+        CMotionTimeline timeline;
+        const CMotionTrack model{CMotionTarget::Model, "Opacity"};
+        const CMotionTrack parameter{CMotionTarget::Parameter, "Opacity"};
+        const CMotionTrack part{CMotionTarget::PartOpacity, "Opacity"};
+        for (const auto& track : {model, parameter, part}) {
+            QVERIFY(timeline.AddPoint(track, 0, 0));
+            QVERIFY(timeline.AddPoint(track, 2, 1));
+        }
+        QVERIFY(timeline.InsertPoint(model, 1, 0.25f));
+        QVERIFY(timeline.UpdatePoint(parameter, 1, 2, 4));
+        QVERIFY(timeline.SetSegmentType(part, 1, 2));
+        const auto frame = timeline.EvaluateFrame(1);
+        QCOMPARE(frame.model.value("Opacity"), 0.25f);
+        QCOMPARE(frame.parameters.value("Opacity"), 2.0f);
+        QCOMPARE(frame.parts.value("Opacity"), 0.0f);
+        QCOMPARE(timeline.TotalPointCount(), 7);
+        QCOMPARE(timeline.PointCount(), 2);
+        QVERIFY(!timeline.InsertPoint(model, 1, 9));
+        QVERIFY(!timeline.InsertPoint({static_cast<CMotionTarget>(99), "bad"}, 1, 0));
+        QVERIFY(!timeline.InsertPoint(part, -1, 0));
+        QVERIFY(!timeline.InsertPoint(part, 1, std::numeric_limits<float>::infinity()));
+        QVERIFY(timeline.RemovePoint(parameter, 0));
+        QCOMPARE(timeline.Tracks().value(model).size(), 3);
+        QCOMPARE(timeline.Tracks().value(part).size(), 2);
+        QJsonObject state;
+        QVERIFY(timeline.SaveState(&state, true, 1));
+        CMotionTimeline restored;
+        float playhead = 0;
+        QVERIFY(restored.RestoreState(state, &playhead));
+        QCOMPARE(playhead, 1.0f);
+        QCOMPARE(restored.Tracks(), timeline.Tracks());
+        QCOMPARE(restored.SegmentType(part, 1), 2);
+        QTemporaryDir temp;
+        const auto path = temp.filePath("typed.motion3.json");
+        QVERIFY(restored.Save(path, 60, true));
+        CMotionTimeline exported;
+        QVERIFY(exported.Load(path));
+        QCOMPARE(exported.EvaluateFrame(1).model, frame.model);
+        QCOMPARE(exported.EvaluateFrame(1).parts, frame.parts);
+        QCOMPARE(exported.EvaluateFrame(1).parameters.value("Opacity"), 4.0f);
+        const auto curves = readJson(path).value("Curves").toArray();
+        QCOMPARE(curves.at(0).toObject().value("Target").toString(), QString("Model"));
+        QCOMPARE(curves.at(1).toObject().value("Target").toString(), QString("Parameter"));
+        QCOMPARE(curves.at(2).toObject().value("Target").toString(), QString("PartOpacity"));
+    }
+
+    void nonParameterBezierInsertionPreservesValidSegments()
+    {
+        QTemporaryDir temp;
+        const auto path = temp.filePath("typed.motion3.json");
+        for (const auto target : {CMotionTarget::Model, CMotionTarget::PartOpacity}) {
+            const CMotionTrack track{target, "Opacity"};
+            auto original = curve(track.TargetName(), track.id, {0, 0, 1, 0.5, 0, 1.5, 1, 2, 1});
+            original.insert("FadeInTime", 0.5);
+            original.insert("Extension", true);
+            QVERIFY(writeJson(path, {{"Version", 3}, {"Curves", QJsonArray{original}}}));
+            CMotionTimeline timeline;
+            QVERIFY(timeline.Load(path));
+            QVERIFY(timeline.InsertPoint(track, 1, 0.25f));
+            QCOMPARE(timeline.SegmentType(track, 2), 1);
+            QVERIFY(timeline.Save(path, 30, false));
+            CMotionTimeline restored;
+            QVERIFY(restored.Load(path));
+            for (float time : {0.0f, 0.5f, 1.0f, 1.25f, 1.75f, 2.0f})
+                QCOMPARE(restored.Evaluate(track, time), timeline.Evaluate(track, time));
+            auto saved = readJson(path).value("Curves").toArray().first().toObject();
+            QCOMPARE(saved.value("FadeInTime").toDouble(), 0.5);
+            QVERIFY(saved.value("Extension").toBool());
+            QVERIFY(timeline.RemovePoint(track, 1));
+            QVERIFY(timeline.InsertPoint(track, 0.5f, 0.2f));
+            QVERIFY(timeline.Save(path, 30, false));
+            QVERIFY(restored.Load(path));
+            QCOMPARE(restored.Evaluate(track, 1.5f), timeline.Evaluate(track, 1.5f));
+        }
+    }
+
+    void modelEffectsComposeWithoutAccumulation()
+    {
+        CMotionPreviewFrame frame;
+        frame.parameters = {{"EyeL", 0.8f}, {"Mouth", 0.2f}, {"Both", 0.4f}, {"Body", 5}};
+        frame.model = {{"EyeBlink", 0.5f}, {"LipSync", 0.3f}, {"Opacity", 0.25f}};
+        frame.parts = {{"PartA", 0.6f}};
+        const QSet<QString> eyes{"EyeL", "EyeR", "Both", "Shared"};
+        const QSet<QString> lips{"Mouth", "Mouth2", "Both", "Shared"};
+        const auto values = frame.ResolveParameters(eyes, lips);
+        QCOMPARE(values.value("EyeL"), 0.4f);
+        QCOMPARE(values.value("EyeR"), 0.5f);
+        QCOMPARE(values.value("Mouth"), 0.5f);
+        QCOMPARE(values.value("Mouth2"), 0.3f);
+        QCOMPARE(values.value("Both"), 0.5f);
+        QCOMPARE(values.value("Shared"), 0.3f);
+        QCOMPARE(values.value("Body"), 5.0f);
+        QVERIFY(!values.contains("Opacity"));
+        QVERIFY(!values.contains("PartA"));
+        QCOMPARE(frame.ResolveParameters(eyes, lips), values);
+        QCOMPARE(frame.parameters.value("EyeL"), 0.8f);
+        frame.parameters["Both"] = std::numeric_limits<float>::max();
+        frame.model["EyeBlink"] = std::numeric_limits<float>::max();
+        QVERIFY(std::isfinite(frame.ResolveParameters(eyes, lips).value("Both")));
+        QVERIFY(frame.IsFinite());
+        frame.parts["PartA"] = std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!frame.IsFinite());
+        frame.parts.clear();
+        frame.model[QString("Bad") + QChar::Null] = 1;
+        QVERIFY(!frame.IsFinite());
+    }
     void preservesMixedMotionData()
     {
         QTemporaryDir temp;
@@ -231,10 +340,10 @@ private slots:
             }
             CMotionTimeline reloaded;
             QVERIFY(reloaded.Load(output, &error));
-            for (const QString& id : timeline.Curves().keys()) {
+            for (const auto& track : timeline.Tracks().keys()) {
                 for (int sample = 0; sample <= 10; ++sample) {
                     const float time = timeline.Duration() * sample / 10.0f;
-                    QVERIFY(qAbs(timeline.Evaluate(id, time) - reloaded.Evaluate(id, time)) < 0.0001f);
+                    QVERIFY(qAbs(timeline.Evaluate(track, time) - reloaded.Evaluate(track, time)) < 0.0001f);
                 }
             }
             ++tested;
