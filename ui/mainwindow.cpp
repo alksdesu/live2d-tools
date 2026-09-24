@@ -566,7 +566,7 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(edit.name, drawOrder);
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
-        if (m_openglwindows) m_openglwindows->do_SetDrawableKeyformPositions(edit.name, edit.index, value.value<QVector<float>>());
+        if (m_openglwindows) m_openglwindows->do_SetDrawableKeyformPositions(edit.name, edit.index, value.value<QVector<float>>(), false);
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
         if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(edit.name, value.value<QVector<quint16>>());
@@ -1449,12 +1449,17 @@ void MainWindow::RestDock(const QString &name)
             this, [this](const QString& name, int drawOrder){
                 if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(name, drawOrder);
             });
-    connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged,
-            m_openglwindows, &OpengGlForm::do_SetDrawableKeyformPositions);
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformPositionsChanged, this,
+            [this](const QString& name, int keyformIndex, const QVector<float>& positions){
+                if (m_openglwindows) m_openglwindows->do_SetDrawableKeyformPositions(name, keyformIndex, positions, false);
+            });
+    connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformActivated, this,
+            [this](const QString& name, int keyformIndex){
+                if (m_openglwindows) m_openglwindows->SetActiveKeyform(name, keyformIndex);
+            });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformSelected, this,
             [this](const QString& name, int keyformIndex){
                 if (!m_openglwindows) return;
-                m_openglwindows->SetActiveKeyform(keyformIndex);
                 const QVector<float> positions = m_document.DrawableKeyformPositions(name, keyformIndex);
                 if (!positions.isEmpty())
                     m_openglwindows->do_SetDrawableKeyformPositions(name, keyformIndex, positions);

@@ -8,11 +8,146 @@
 #include <QTableWidget>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <algorithm>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void keyformSelectionTracksDisplayedMesh()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable) { return drawable.vertexCount > 0 && drawable.keyforms.size() >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const auto other = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [&mesh](const auto& drawable) {
+                return drawable.vertexCount > 0 && !drawable.keyforms.isEmpty() &&
+                       drawable.keyforms.size() < mesh->keyforms.size();
+            });
+        QVERIFY(other != document.Drawables().cend());
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        QSignalSpy activated(&panel, &CInspectorPanel::DrawableKeyformActivated);
+        QSignalSpy selected(&panel, &CInspectorPanel::DrawableKeyformSelected);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        auto* selector = panel.findChild<QComboBox*>("keyformSelector");
+        auto* vertices = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(selector && vertices);
+        panel.SetSelection(mesh->id, QStringLiteral("artmesh"));
+        QCOMPARE(activated.count(), 1);
+        QCOMPARE(activated.last().at(0).toString(), mesh->id);
+        QCOMPARE(activated.last().at(1).toInt(), 0);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(changed.count(), 0);
+        const int index = mesh->keyforms.size() / 2;
+        selector->setCurrentIndex(index);
+        QCOMPARE(selected.count(), 1);
+        selected.clear();
+        QCOMPARE(activated.last().at(1).toInt(), index);
+        panel.RefreshSelection();
+        QCOMPARE(selector->currentIndex(), index);
+        QCOMPARE(activated.last().at(1).toInt(), index);
+        QCOMPARE(history.count(), 0);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(changed.count(), 0);
+        QVERIFY(!document.CanUndoEdit());
+
+        const QVector<float> before = document.DrawableKeyformPositions(mesh->id, index);
+        QVERIFY(vertices->rowCount() > 0);
+        vertices->item(0, 1)->setText(QString::number(before.first() + 0.25f, 'f', 6));
+        const auto edited = document.DrawableKeyformPositions(mesh->id, index);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(changed.last().at(1).toInt(), index);
+        QVERIFY(edited != before);
+        const int historyCount = history.count();
+        panel.RefreshSelection();
+        panel.SetSelection(mesh->id, QStringLiteral("artmesh"));
+        QCOMPARE(selector->currentIndex(), index);
+        QCOMPARE(history.count(), historyCount);
+        panel.Undo();
+        QCOMPARE(selector->currentIndex(), index);
+        QCOMPARE(activated.last().at(1).toInt(), index);
+        QCOMPARE(document.DrawableKeyformPositions(mesh->id, index), before);
+        QVERIFY(!document.CanUndoEdit());
+        panel.Redo();
+        QCOMPARE(selector->currentIndex(), index);
+        QCOMPARE(activated.last().at(1).toInt(), index);
+        QCOMPARE(document.DrawableKeyformPositions(mesh->id, index), edited);
+        QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(selected.count(), 0);
+        selector->setCurrentIndex(index - 1);
+        QCOMPARE(vertices->rowCount(), mesh->vertexCount);
+        QVERIFY(vertices->isEnabled());
+        auto* copyNext = panel.findChild<QPushButton*>("copyKeyformToNext");
+        QVERIFY(copyNext && copyNext->isEnabled());
+        selected.clear();
+        copyNext->click();
+        QCOMPARE(changed.last().at(1).toInt(), index);
+        QCOMPARE(selector->currentIndex(), index - 1);
+        QCOMPARE(activated.last().at(1).toInt(), index - 1);
+        QCOMPARE(selected.count(), 0);
+
+        selector->setCurrentIndex(mesh->keyforms.size() - 1);
+        activated.clear();
+        selected.clear();
+        changed.clear();
+        panel.SetSelection(other->id, QStringLiteral("artmesh"));
+        QCOMPARE(selector->currentIndex(), 0);
+        QCOMPARE(activated.count(), 1);
+        QCOMPARE(activated.last().at(0).toString(), other->id);
+        QCOMPARE(activated.last().at(1).toInt(), 0);
+        QCOMPARE(vertices->rowCount(), other->vertexCount);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(changed.count(), 0);
+        panel.ClearSelection();
+        activated.clear();
+        panel.SetSelection(mesh->id, QStringLiteral("artmesh"));
+        QCOMPARE(activated.count(), 1);
+        QCOMPARE(selector->currentIndex(), 0);
+        QCOMPARE(activated.last().at(1).toInt(), 0);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(changed.count(), 0);
+    }
+
+    void warpKeyformSelectionSurvivesRefreshAndHistory()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        const auto warp = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(),
+            [](const auto& deformer) {
+                return deformer.warpKeyforms.size() > 1 && !deformer.warpKeyforms[1].positions.isEmpty();
+            });
+        QVERIFY(warp != document.Deformers().cend());
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(warp->id, QStringLiteral("warp"));
+        auto* selector = panel.findChild<QComboBox*>("warpKeyformSelector");
+        auto* vertices = panel.findChild<QTableWidget*>("warpKeyformTable");
+        QVERIFY(selector && vertices);
+        selector->setCurrentIndex(1);
+        panel.RefreshSelection();
+        QCOMPARE(selector->currentIndex(), 1);
+        QVERIFY(!document.CanUndoEdit());
+        const auto before = document.DeformerWarpKeyforms(warp->id);
+        QVERIFY(vertices->rowCount() > 0);
+        vertices->item(0, 1)->setText(QString::number(before[1].positions.first() + 0.25f, 'g', 9));
+        const auto edited = document.DeformerWarpKeyforms(warp->id);
+        QVERIFY(edited != before);
+        panel.Undo();
+        QCOMPARE(selector->currentIndex(), 1);
+        QCOMPARE(document.DeformerWarpKeyforms(warp->id), before);
+        QVERIFY(!document.CanUndoEdit());
+        panel.Redo();
+        QCOMPARE(selector->currentIndex(), 1);
+        QCOMPARE(document.DeformerWarpKeyforms(warp->id), edited);
+        QVERIFY(!document.CanRedoEdit());
+    }
+
     void editsUndoAndRedo()
     {
         live2dstruct::CModelDocument document;

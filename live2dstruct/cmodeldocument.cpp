@@ -369,7 +369,8 @@ QVector<float> CModelDocument::DrawableKeyformPositions(const QString& id, int k
 {
     if (keyformIndex < 0) return {};
     const auto overrideIt = m_drawableKeyformPositionOverrides.constFind(id);
-    if (overrideIt != m_drawableKeyformPositionOverrides.cend() && keyformIndex < overrideIt->size()) {
+    if (overrideIt != m_drawableKeyformPositionOverrides.cend() && keyformIndex < overrideIt->size() &&
+        !overrideIt->at(keyformIndex).isEmpty()) {
         return overrideIt->at(keyformIndex);
     }
     for (const CModelDrawable& drawable : m_drawables) {

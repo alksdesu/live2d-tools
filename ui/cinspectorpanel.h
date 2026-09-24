@@ -42,13 +42,14 @@ signals:
     void DrawableOpacityChanged(const QString& name, float opacity);
     void DrawableDrawOrderChanged(const QString& name, int drawOrder);
     void DrawableKeyformPositionsChanged(const QString& name, int keyformIndex, const QVector<float>& positions);
+    void DrawableKeyformActivated(const QString& name, int keyformIndex);
     void DrawableKeyformSelected(const QString& name, int keyformIndex);
     void DrawableIndicesChanged(const QString& name, const QVector<quint16>& indices);
     void DrawableMaskIndicesChanged(const QString& name, const QVector<int>& maskIndices);
     void HistoryChanged(bool canUndo, bool canRedo);
 
 private:
-    void showModelObject(const QString& name, const QString& type);
+    void showModelObject(const QString& name, const QString& type, bool preserveKeyforms = true);
     void EmitEdit(const live2dstruct::CModelEdit& edit, bool forward);
     void RebuildKeyformTable();
     void ApplyKeyformCellEdit(int row, int column);

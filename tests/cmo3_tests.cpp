@@ -19,6 +19,82 @@ class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void sparseKeyformOverridesExportAllForms()
+    {
+        const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable) { return drawable.vertexCount > 0 && drawable.keyforms.size() >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const int editedIndex = mesh->keyforms.size() / 2;
+        auto edited = mesh->keyforms[editedIndex].positions;
+        QVERIFY(!edited.isEmpty());
+        edited[0] += 0.25f;
+        QVERIFY(document.SetDrawableKeyformPositions(mesh->id, editedIndex, edited));
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath("keyforms.cmo3");
+        options.drawableKeyformPositionOverrides = document.DrawableKeyformPositionOverrides();
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        QXmlStreamReader xml(main->content);
+        xml.setNamespaceProcessing(false);
+        int depth = 0;
+        int meshDepth = -1;
+        int formDepth = -1;
+        QString meshId;
+        QStringList exportedPositions;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement()) {
+                ++depth;
+                if (xml.name() == QLatin1String("CArtMeshSource") && xml.attributes().hasAttribute("xs.id")) {
+                    meshDepth = depth;
+                    meshId.clear();
+                }
+                if (meshDepth < 0) continue;
+                if (xml.name() == QLatin1String("CDrawableId") && xml.attributes().value("xs.n") == QLatin1String("id"))
+                    meshId = xml.attributes().value("idstr").toString();
+                if (xml.name() == QLatin1String("CArtMeshForm")) formDepth = depth;
+                if (meshId == mesh->id && formDepth > 0 && depth == formDepth + 1 &&
+                    xml.name() == QLatin1String("float-array") &&
+                    xml.attributes().value("xs.n") == QLatin1String("positions")) {
+                    exportedPositions.append(xml.readElementText());
+                    --depth;
+                }
+            } else if (xml.isEndElement()) {
+                if (depth == formDepth) formDepth = -1;
+                if (depth == meshDepth) meshDepth = -1;
+                --depth;
+            }
+        }
+        QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+        QCOMPARE(exportedPositions.size(), mesh->keyforms.size());
+        live2dstruct::CReader reader(mocPath);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        for (int index = 0; index < mesh->keyforms.size(); ++index) {
+            auto positions = index == editedIndex ? edited : mesh->keyforms[index].positions;
+            QCOMPARE(document.DrawableKeyformPositions(mesh->id, index), positions);
+            if (mesh->parentDeformerIndex < 0) {
+                for (int vertex = 0; vertex < positions.size(); vertex += 2) {
+                    positions[vertex] = (positions[vertex] + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit;
+                    positions[vertex + 1] = (table.canvas_info->origin_y - positions[vertex + 1]) * table.canvas_info->pixels_per_unit;
+                }
+            }
+            QStringList expected;
+            for (float position : positions) expected.append(cmo3::CXsXmlWriter::FormatFloat(position));
+            QCOMPARE(exportedPositions[index], expected.join(QLatin1Char(' ')));
+        }
+    }
+
     void exportsUserDataByMeshId()
     {
         QTemporaryDir temp;

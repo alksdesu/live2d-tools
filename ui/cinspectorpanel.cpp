@@ -251,7 +251,10 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingKeyform) return;
         RebuildKeyformTable();
-        if (index >= 0 && !m_selectionName.isEmpty()) emit DrawableKeyformSelected(m_selectionName, index);
+        if (index >= 0 && !m_selectionName.isEmpty()) {
+            emit DrawableKeyformActivated(m_selectionName, index);
+            emit DrawableKeyformSelected(m_selectionName, index);
+        }
     });
     connect(m_vertexTable, &QTableWidget::cellChanged, this, [this](int row, int column){
         if (!m_updatingKeyform) ApplyKeyformCellEdit(row, column);
@@ -429,19 +432,21 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
 
 void CInspectorPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
+    const bool sameDocument = m_document == document;
     m_document = document;
     if (m_selectionName.isEmpty()) ClearSelection();
-    else showModelObject(m_selectionName, m_selectionType);
+    else showModelObject(m_selectionName, m_selectionType, sameDocument);
 }
 
 void CInspectorPanel::SetSelection(const QString& name, const QString& type)
 {
+    const bool sameObject = m_selectionName == name && m_selectionType == type;
     m_selectionName = name;
     m_selectionType = type;
     m_selectionNames = {name};
     m_selectionTypes = {type};
     m_visibilityCheck->setTristate(false);
-    showModelObject(name, type);
+    showModelObject(name, type, sameObject);
 }
 
 void CInspectorPanel::SetSelections(const QStringList& names, const QStringList& types)
@@ -824,6 +829,7 @@ void CInspectorPanel::CopyKeyformToNext()
                                            QVariant::fromValue(before), QVariant::fromValue(source), keyformIndex + 1, false};
     if (!m_document->ExecuteEdit(command)) return;
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex + 1, source);
+    emit DrawableKeyformActivated(m_selectionName, keyformIndex);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
@@ -1361,12 +1367,14 @@ void CInspectorPanel::Redo()
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
-void CInspectorPanel::showModelObject(const QString& name, const QString& type)
+void CInspectorPanel::showModelObject(const QString& name, const QString& type, bool preserveKeyforms)
 {
     if (!m_document || name.isEmpty()) {
         ClearSelection();
         return;
     }
+    const int selectedKeyform = preserveKeyforms ? m_keyformCombo->currentIndex() : 0;
+    const int selectedWarpKeyform = preserveKeyforms ? m_warpKeyformCombo->currentIndex() : 0;
     m_emptyLabel->setVisible(false);
     m_typeLabel->setText(type == QLatin1String("artmesh") ? QStringLiteral("ArtMesh")
                        : type == QLatin1String("part") ? QStringLiteral("Part")
@@ -1456,9 +1464,13 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
             m_maskInvertedCheck->setChecked(m_document->DrawableMaskInverted(name));
             m_maskInvertedCheck->setEnabled(unlocked && !m_document->DrawableMaskIndices(name).isEmpty());
             m_updatingVisibility = false;
-            if (!drawable.keyforms.isEmpty()) m_keyformCombo->setCurrentIndex(0);
+            if (!drawable.keyforms.isEmpty())
+                m_keyformCombo->setCurrentIndex(selectedKeyform >= 0 && selectedKeyform < drawable.keyforms.size()
+                                                   ? selectedKeyform : 0);
             m_updatingKeyform = false;
             RebuildKeyformTable();
+            if (m_keyformCombo->currentIndex() >= 0)
+                emit DrawableKeyformActivated(name, m_keyformCombo->currentIndex());
             return;
         }
     } else if (type == QLatin1String("part")) {
@@ -1508,7 +1520,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type)
                 m_warpKeyformCombo->setEnabled(unlocked && !keyforms.isEmpty());
                 m_warpKeyformTable->setVisible(!keyforms.isEmpty());
                 m_warpKeyformTable->setEnabled(unlocked && !keyforms.isEmpty());
-                if (!keyforms.isEmpty()) m_warpKeyformCombo->setCurrentIndex(0);
+                if (!keyforms.isEmpty())
+                    m_warpKeyformCombo->setCurrentIndex(selectedWarpKeyform >= 0 && selectedWarpKeyform < keyforms.size()
+                                                           ? selectedWarpKeyform : 0);
                 m_updatingWarpKeyform = false;
                 RebuildWarpKeyformTable();
             } else {

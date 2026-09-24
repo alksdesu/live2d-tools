@@ -10,11 +10,73 @@
 #include <QRegularExpression>
 #include <limits>
 #include <QTemporaryDir>
+#include <algorithm>
 
 class ModelDataTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void sparseKeyformOverridesPreserveOtherForms()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable) { return drawable.vertexCount > 0 && drawable.keyforms.size() >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        const int editedIndex = mesh->keyforms.size() / 2;
+        const QVector<float> original = mesh->keyforms[editedIndex].positions;
+        QVERIFY(!original.isEmpty());
+        QVector<float> edited = original;
+        edited[0] += 0.25f;
+        const live2dstruct::CModelEdit command{id, QStringLiteral("artmesh"),
+            live2dstruct::CModelEdit::KeyformPositions, QVariant::fromValue(original),
+            QVariant::fromValue(edited), editedIndex, false};
+        QVERIFY(document.ExecuteEdit(command));
+        for (int index = 0; index < mesh->keyforms.size(); ++index)
+            QCOMPARE(document.DrawableKeyformPositions(id, index),
+                     index == editedIndex ? edited : mesh->keyforms[index].positions);
+        QVERIFY(document.UndoEdit());
+        for (int index = 0; index < mesh->keyforms.size(); ++index)
+            QCOMPARE(document.DrawableKeyformPositions(id, index), mesh->keyforms[index].positions);
+        QVERIFY(!document.CanUndoEdit());
+        QVERIFY(document.RedoEdit());
+        QVERIFY(!document.CanRedoEdit());
+
+        const auto overrides = document.DrawableKeyformPositionOverrides().value(id);
+        QCOMPARE(overrides.size(), mesh->keyforms.size());
+        for (int index = 0; index < overrides.size(); ++index)
+            QCOMPARE(overrides[index], index == editedIndex ? edited : QVector<float>());
+        live2dstruct::CModelSession session;
+        session.sourceMoc = mocPath;
+        session.drawableKeyformPositions = document.DrawableKeyformPositionOverrides();
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("keyforms.live2d-session.json");
+        QVERIFY2(session.Save(path, &error), qPrintable(error));
+        live2dstruct::CModelSession restoredSession;
+        QVERIFY2(live2dstruct::CModelSession::Load(path, &restoredSession, &error), qPrintable(error));
+        QCOMPARE(restoredSession.drawableKeyformPositions, session.drawableKeyformPositions);
+        live2dstruct::CModelDocument restored;
+        QVERIFY2(restored.Load(restoredSession.sourceMoc, &error), qPrintable(error));
+        for (auto it = restoredSession.drawableKeyformPositions.cbegin();
+             it != restoredSession.drawableKeyformPositions.cend(); ++it) {
+            for (int index = 0; index < it->size(); ++index) {
+                if (it->at(index).isEmpty()) continue;
+                QVERIFY(restored.SetDrawableKeyformPositions(it.key(), index, it->at(index)));
+            }
+        }
+        QVERIFY(restored.Validate().isEmpty());
+        for (int index = 0; index < mesh->keyforms.size(); ++index)
+            QCOMPARE(restored.DrawableKeyformPositions(id, index),
+                     index == editedIndex ? edited : mesh->keyforms[index].positions);
+        QVERIFY(restored.DrawableKeyformPositions(id, -1).isEmpty());
+        QVERIFY(restored.DrawableKeyformPositions(id, mesh->keyforms.size()).isEmpty());
+        QVERIFY(restored.DrawableKeyformPositions(QStringLiteral("missing"), editedIndex).isEmpty());
+    }
+
     void drawableBounds()
     {
         const float vertices[] = {-1, -1, 1, -1, 1, 1, -1, 1};

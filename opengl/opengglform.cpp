@@ -135,9 +135,11 @@ void OpengGlForm::SetMeshEditEnabled(bool enabled)
     }
 }
 
-void OpengGlForm::SetActiveKeyform(int keyformIndex)
+void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
 {
-    if (keyformIndex >= 0) m_activeKeyformIndex = keyformIndex;
+    if (name.isEmpty() || keyformIndex < 0) return;
+    m_meshEditName = name;
+    m_activeKeyformIndex = keyformIndex;
 }
 
 void OpengGlForm::AddWrapKey(std::vector<C2DTreeNode*> &node)
@@ -338,11 +340,13 @@ void OpengGlForm::do_SetDrawableDrawOrder(const QString& name, int drawOrder)
 }
 
 void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyformIndex,
-                                                  const QVector<float>& positions)
+                                                  const QVector<float>& positions, bool activate)
 {
     if (name.isEmpty() || keyformIndex < 0 || positions.isEmpty() || positions.size() % 2 != 0) return;
     auto* delegate = LAppDelegate::GetInstance();
     delegate->m_meshOverlayPositions[name].insert(keyformIndex, positions);
+    if (!activate && (name != m_meshEditName || keyformIndex != m_activeKeyformIndex)) return;
+    if (activate) SetActiveKeyform(name, keyformIndex);
     delegate->m_meshOverlayKeyformIndices.insert(name, keyformIndex);
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;

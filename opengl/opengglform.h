@@ -64,9 +64,10 @@ public slots:
     void ClearEditorOverrides();
     void do_SetDrawableOpacity(const QString& name, float opacity);
     void do_SetDrawableDrawOrder(const QString& name, int drawOrder);
-    void do_SetDrawableKeyformPositions(const QString& name, int keyformIndex, const QVector<float>& positions);
+    void do_SetDrawableKeyformPositions(const QString& name, int keyformIndex, const QVector<float>& positions,
+                                       bool activate = true);
     void SetMeshEditEnabled(bool enabled);
-    void SetActiveKeyform(int keyformIndex);
+    void SetActiveKeyform(const QString& name, int keyformIndex);
     void do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices);
     void do_ShowDeformers(const QStringList& names);
     void do_ShowDeformerMeshes(const QStringList& artMeshNames);
