@@ -133,6 +133,7 @@ private:
     QComboBox* m_targetFilter = nullptr;
     QPushButton* m_endPreviewButton = nullptr;
     void AddTimelineKeyframe();
+    void EditTimelineSettings();
     void EmitTimelinePreview();
     QSet<QString> m_modelPartIds;
     bool m_modelPartsKnown = false;

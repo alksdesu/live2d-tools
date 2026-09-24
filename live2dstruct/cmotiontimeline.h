@@ -3,12 +3,14 @@
 
 #include <QElapsedTimer>
 #include <QMap>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QPointF>
 #include <QString>
 #include <QVector>
 #include <QSet>
 #include <QMetaType>
+#include <optional>
 
 enum class CMotionTarget { Model, Parameter, PartOpacity };
 
@@ -34,6 +36,18 @@ struct CMotionPreviewFrame
     QMap<QString, float> ResolveParameters(const QSet<QString>& eyeBlinkIds, const QSet<QString>& lipSyncIds) const;
 };
 
+struct CMotionFadeTimes
+{
+    std::optional<double> fadeIn;
+    std::optional<double> fadeOut;
+};
+
+struct CMotionTiming
+{
+    double fps = 30.0;
+    double duration = 0.0;
+};
+
 class CMotionTimeline
 {
 public:
@@ -55,7 +69,15 @@ public:
     int SegmentType(const CMotionTrack& track, int pointIndex) const;
     float Duration() const;
     float Fps() const;
+    CMotionTiming Timing() const;
     bool Loop() const;
+    CMotionFadeTimes FadeTimes() const;
+    bool SetFadeTimes(const CMotionFadeTimes& fades, QString* error = nullptr);
+    CMotionFadeTimes TrackFadeTimes(const CMotionTrack& track) const;
+    bool SetTrackFadeTimes(const CMotionTrack& track, const CMotionFadeTimes& fades, QString* error = nullptr);
+    QJsonArray Events() const;
+    bool SetEvents(const QJsonArray& events, QString* error = nullptr);
+    bool SetTiming(double fps, double duration, QString* error = nullptr);
     float Evaluate(const QString& id, float time, bool* ok = nullptr) const { return Evaluate({CMotionTarget::Parameter, id}, time, ok); }
     float Evaluate(const CMotionTrack& track, float time, bool* ok = nullptr) const;
     CMotionPreviewFrame EvaluateFrame(float time) const;
@@ -72,8 +94,10 @@ public:
     const QMap<CMotionTrack, QVector<QPointF>>& Tracks() const { return m_curves; }
 
 private:
-    bool BuildJson(QJsonObject* root, float fps, bool loop, bool draft, QString* error) const;
+    bool BuildJson(QJsonObject* root, double fps, bool loop, bool draft, QString* error) const;
     bool LoadJson(const QJsonObject& root, bool draft, QString* error);
+    double ContentDuration() const;
+    bool SetSource(QJsonObject source, QString* error);
     QJsonObject m_source;
     bool m_recording = false;
     float m_recordStartTime = 0.0f;

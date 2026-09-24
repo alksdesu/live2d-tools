@@ -138,17 +138,58 @@ CParamPanel::CParamPanel(QWidget *parent)
 
 void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
+    if (m_document != document) {
+        m_previewBaseline.clear();
+        m_previewActive = false;
+        m_userDragging.clear();
+        m_changedDrags.clear();
+        m_dragStarts.clear();
+    }
     m_document = document;
+}
+
+float CParamPanel::ValueBeforeEdit(const QString& paramId, float fallback) const
+{
+    return m_previewBaseline.value(paramId, m_lastValues.value(paramId, fallback));
+}
+
+void CParamPanel::SetPreviewValues(const QMap<QString, float>& values,
+                                  const QMap<QString, float>& baselineValues)
+{
+    if (!m_previewActive) {
+        for (const ParamRow& row : m_rows) {
+            const float value = baselineValues.value(row.paramId, m_lastValues.value(row.paramId, row.defaultVal));
+            if (std::isfinite(value)) m_previewBaseline.insert(row.paramId, qBound(row.minVal, value, row.maxVal));
+        }
+        m_previewActive = true;
+    }
+    const QSignalBlocker blocker(this);
+    for (auto it = values.cbegin(); it != values.cend(); ++it)
+        ApplyExternalValue(it.key(), it.value(), false, false, false);
+}
+
+void CParamPanel::ClearPreviewValues(const QMap<QString, float>& restoredValues,
+                                    const QString& preservedParameterId)
+{
+    const auto values = restoredValues.isEmpty() ? m_previewBaseline : restoredValues;
+    m_previewBaseline.clear();
+    m_previewActive = false;
+    const QSignalBlocker blocker(this);
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        if (it.key() != preservedParameterId) ApplyExternalValue(it.key(), it.value(), false, false, false);
+    }
 }
 
 void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record, bool userEdit, bool writeDocument)
 {
+    if (!std::isfinite(value)) return;
     auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&paramId](const ParamRow& row){ return row.paramId == paramId; });
     if (rowIt == m_rows.cend()) return;
     const int rowIndex = static_cast<int>(rowIt - m_rows.cbegin());
     ParamRow& row = m_rows[rowIndex];
     value = qBound(row.minVal, value, row.maxVal);
-    const float before = m_lastValues.value(paramId, row.defaultVal);
+    const float before = ValueBeforeEdit(paramId, row.defaultVal);
+    if (userEdit || writeDocument) m_previewBaseline.remove(paramId);
     const int sliderValue = row.maxVal > row.minVal
         ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
     QSignalBlocker sliderBlocker(row.slider);
@@ -167,7 +208,13 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
 {
     m_rows.clear();
     m_lastValues.clear();
+    m_previewBaseline.clear();
+    m_previewActive = false;
     ClearHistory();
+    m_userDragging.clear();
+    m_changedDrags.clear();
+    m_dragStarts.clear();
+    m_userLocked.clear();
     {
         QSignalBlocker xBlocker(m_xyXSelector);
         QSignalBlocker yBlocker(m_xyYSelector);
@@ -324,18 +371,8 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
             m_userLocked.insert(idx);
             ApplyValue(idx, r.defaultVal, true);
         });
-        connect(slider, &QSlider::sliderPressed, this, [this, idx](){
-            m_userDragging.insert(idx);
-            m_dragStarts.insert(idx, m_lastValues.value(m_rows[idx].paramId));
-        });
-        connect(slider, &QSlider::sliderReleased, this, [this, idx](){
-            m_userDragging.remove(idx);
-            m_userLocked.insert(idx); // 用户改过的参数锁定，不再被 sync 覆盖
-            if (!m_dragStarts.contains(idx)) return;
-            const float before = m_dragStarts.take(idx);
-            const float after = m_lastValues.value(m_rows[idx].paramId);
-            PushEdit(m_rows[idx].paramId, before, after);
-        });
+        connect(slider, &QSlider::sliderPressed, this, [this, idx](){ BeginParameterDrag(idx); });
+        connect(slider, &QSlider::sliderReleased, this, [this, idx](){ EndParameterDrag(idx); });
         connect(slider, &QSlider::valueChanged, this, [this, idx](int val){
             ParamRow& r = m_rows[idx];
             float realVal = r.minVal + (r.maxVal - r.minVal) * val / 1000.0f;
@@ -475,28 +512,29 @@ void CParamPanel::ApplyXYPad(float xValue, float yValue)
     if (xRow == m_rows.cend() || yRow == m_rows.cend()) return;
     xValue = qBound(xRow->minVal, xValue, xRow->maxVal);
     yValue = qBound(yRow->minVal, yValue, yRow->maxVal);
-    const QMap<QString, float> before{{xRow->paramId, m_lastValues.value(xRow->paramId, xRow->defaultVal)},
-                                      {yRow->paramId, m_lastValues.value(yRow->paramId, yRow->defaultVal)}};
+    const QMap<QString, float> before{{xRow->paramId, ValueBeforeEdit(xRow->paramId, xRow->defaultVal)},
+                                      {yRow->paramId, ValueBeforeEdit(yRow->paramId, yRow->defaultVal)}};
     const QMap<QString, float> after{{xRow->paramId, xValue}, {yRow->paramId, yValue}};
-    if (before == after || !m_document) return;
+    if (!m_document || (before == after && !m_previewActive)) return;
     const live2dstruct::CModelEdit command{
         QStringLiteral("xy"), QStringLiteral("parameters"), live2dstruct::CModelEdit::ParameterValues,
         QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (before != after && !m_document->ExecuteEdit(command)) return;
     m_updatingXY = true;
     ApplyExternalValue(xRow->paramId, xValue, false);
     ApplyExternalValue(yRow->paramId, yValue, false);
     m_updatingXY = false;
-    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    if (before != after) emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
 void CParamPanel::ResetAll()
 {
     m_userLocked.clear();
     m_userDragging.clear();
+    m_changedDrags.clear();
     m_dragStarts.clear();
     for(auto& r : m_rows){
-        const float before = m_lastValues.value(r.paramId, r.defaultVal);
+        const float before = ValueBeforeEdit(r.paramId, r.defaultVal);
         int sliderDefault = 0;
         if(r.maxVal > r.minVal){
             sliderDefault = static_cast<int>((r.defaultVal - r.minVal) / (r.maxVal - r.minVal) * 1000.0f);
@@ -563,7 +601,8 @@ void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool r
         const float requested = values.value(row.paramId);
         if (!std::isfinite(requested)) continue;
         const float value = qBound(row.minVal, requested, row.maxVal);
-        const float before = m_lastValues.value(row.paramId, row.defaultVal);
+        const float before = ValueBeforeEdit(row.paramId, row.defaultVal);
+        m_previewBaseline.remove(row.paramId);
         const int sliderValue = row.maxVal > row.minVal
             ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
             : 0;
@@ -741,11 +780,37 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     RefreshXYControls();
 }
 
+void CParamPanel::BeginParameterDrag(int rowIndex)
+{
+    if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
+    const ParamRow& row = m_rows[rowIndex];
+    m_userDragging.insert(rowIndex);
+    m_changedDrags.remove(rowIndex);
+    m_dragStarts.insert(rowIndex, ValueBeforeEdit(row.paramId, row.defaultVal));
+}
+
+void CParamPanel::EndParameterDrag(int rowIndex)
+{
+    m_userDragging.remove(rowIndex);
+    const bool changed = m_changedDrags.remove(rowIndex);
+    if (!m_dragStarts.contains(rowIndex)) return;
+    const float before = m_dragStarts.take(rowIndex);
+    if (!changed || rowIndex < 0 || rowIndex >= m_rows.size()) return;
+    m_userLocked.insert(rowIndex);
+    const ParamRow& row = m_rows[rowIndex];
+    PushEdit(row.paramId, before, m_lastValues.value(row.paramId, row.defaultVal));
+}
+
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
 {
     if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
     ParamRow& row = m_rows[rowIndex];
-    const float before = m_lastValues.value(row.paramId, value);
+    if (m_userDragging.contains(rowIndex)) {
+        if (value == m_lastValues.value(row.paramId, row.defaultVal)) return;
+        m_changedDrags.insert(rowIndex);
+    }
+    const float before = ValueBeforeEdit(row.paramId, value);
+    m_previewBaseline.remove(row.paramId);
     m_lastValues.insert(row.paramId, value);
     emit ParamChanged(row.paramId, value, false);
     RefreshXYControls();
@@ -803,6 +868,7 @@ void CParamPanel::Undo()
         row.slider->setValue(sliderValue);
         row.spinBox->setValue(value);
         m_lastValues.insert(edit.name, value);
+        m_previewBaseline.remove(edit.name);
         emit ParamChanged(edit.name, value, false);
     }
     EmitHistoryState();
@@ -826,6 +892,7 @@ void CParamPanel::Redo()
         row.slider->setValue(sliderValue);
         row.spinBox->setValue(value);
         m_lastValues.insert(edit.name, value);
+        m_previewBaseline.remove(edit.name);
         emit ParamChanged(edit.name, value, false);
     }
     EmitHistoryState();

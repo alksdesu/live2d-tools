@@ -1,5 +1,6 @@
 #include "ui/cmotionpanel.h"
 #include "ui/cmotioncurveview.h"
+#include "ui/cmotionsettingsdialog.h"
 #include "ui/theme.h"
 #include "live2dstruct/cmodelsession.h"
 #include <QtTest>
@@ -19,6 +20,8 @@
 #include <QScrollBar>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QLabel>
+#include <QScopeGuard>
 
 class MotionPanelTests : public QObject
 {
@@ -42,7 +45,340 @@ private:
         });
     }
 
+    static QJsonObject settingsState()
+    {
+        QJsonArray curves;
+        for (const QString& target : {QStringLiteral("Model"), QStringLiteral("Parameter"), QStringLiteral("PartOpacity")})
+            curves.append(QJsonObject{{"Target", target}, {"Id", "Opacity"}, {"Segments", QJsonArray{0, 0, 0, 1, 1}},
+                {"FadeInTime", 0.123456789012345}, {"FadeOutTime", -1}, {"Extension", target}});
+        const QJsonObject motion{{"Version", 3}, {"Curves", curves}, {"RootExtension", "keep"},
+            {"Meta", QJsonObject{{"Fps", 59.940000123456}, {"Duration", 3.000000123456},
+                {"FadeInTime", 0.987654321012345}, {"FadeOutTime", -1}, {"Loop", false}, {"MetaExtension", true}}},
+            {"UserData", QJsonArray{QJsonObject{{"Time", 0.123456789012345}, {"Value", QStringLiteral("原始事件")},
+                {"Extension", QJsonObject{{"payload", 7}}}}}}};
+        return QJsonObject{{"version", 1}, {"motion", motion}, {"playhead", 0}};
+    }
+
+    static int trackIndex(const QComboBox* combo, const CMotionTrack& track)
+    {
+        for (int i = 0; i < combo->count(); ++i)
+            if (combo->itemData(i).value<CMotionTrack>() == track) return i;
+        return -1;
+    }
+
 private slots:
+    void motionTimingEditsKeepPlayheadPositionConsistent()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(settingsState()));
+        auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        slider->setValue(500);
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        QTimer::singleShot(0, [](){
+            auto* dialog = qobject_cast<CMotionSettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            const auto closeDialog = qScopeGuard([dialog](){ if (dialog->isVisible()) dialog->reject(); });
+            dialog->findChild<QDoubleSpinBox*>("motionDuration")->setValue(6);
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        panel.findChild<QPushButton*>("editMotionSettings")->click();
+        QCOMPARE(slider->value(), 250);
+        QJsonObject state;
+        QVERIFY(panel.CaptureTimelineState(&state));
+        QCOMPARE(state.value("playhead"), before.value("playhead"));
+        panel.UndoTimeline();
+        QCOMPARE(slider->value(), 500);
+        panel.RedoTimeline();
+        QCOMPARE(slider->value(), 250);
+    }
+
+    void motionSettingsUntouchedFieldsRetainPrecisionAndExtensions()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState(settingsState()));
+        QJsonObject before;
+        QVERIFY(timeline.SaveState(&before, false, 0));
+        CMotionSettingsDialog dialog(timeline);
+        dialog.show();
+        auto* tracks = dialog.findChild<QComboBox*>("motionFadeTrack");
+        QVERIFY(tracks);
+        QCOMPARE(tracks->count(), 3);
+        for (int i = 0; i < tracks->count(); ++i) tracks->setCurrentIndex(i);
+        dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        QCOMPARE(dialog.result(), QDialog::Accepted);
+        QJsonObject after;
+        QVERIFY(dialog.Timeline().SaveState(&after, false, 0));
+        QCOMPARE(after, before);
+    }
+
+    void motionSettingsEditEventsCommitsActiveEditorAndPreservesExtensions()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState(settingsState()));
+        CMotionSettingsDialog dialog(timeline, 0.75);
+        dialog.resize(640, 480);
+        dialog.show();
+        dialog.findChild<QTabWidget*>("motionSettingsTabs")->setCurrentIndex(2);
+        auto* table = dialog.findChild<QTableWidget*>("motionEventTable");
+        auto* add = dialog.findChild<QPushButton*>("addMotionEvent");
+        auto* remove = dialog.findChild<QPushButton*>("removeMotionEvent");
+        QVERIFY(table && add && remove);
+        QCOMPARE(table->rowCount(), 1);
+        table->item(0, 1)->setText(QStringLiteral("修改后的事件 🎵"));
+        add->click();
+        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->item(1, 0)->text().toDouble(), 0.75);
+        table->item(1, 0)->setText("2.5");
+        table->item(1, 1)->setText(QStringLiteral("删除此事件"));
+        table->setCurrentCell(1, 1);
+        remove->click();
+        QCOMPARE(table->rowCount(), 1);
+        add->click();
+        table->item(1, 0)->setText("1.25");
+        QLineEdit* editor = nullptr;
+        for (auto* candidate : table->findChildren<QLineEdit*>())
+            if (candidate->isVisible()) editor = candidate;
+        QVERIFY(editor);
+        editor->setText(QStringLiteral("嘴型：あいう 🌸"));
+        dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        QCOMPARE(dialog.result(), QDialog::Accepted);
+        const QJsonArray events = dialog.Timeline().Events();
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events.first().toObject().value("Time").toDouble(), 0.123456789012345);
+        QCOMPARE(events.first().toObject().value("Value").toString(), QStringLiteral("修改后的事件 🎵"));
+        QCOMPARE(events.first().toObject().value("Extension").toObject().value("payload").toInt(), 7);
+        QCOMPARE(events.last().toObject().value("Time").toDouble(), 1.25);
+        QCOMPARE(events.last().toObject().value("Value").toString(), QStringLiteral("嘴型：あいう 🌸"));
+        QCOMPARE(timeline.Events().first().toObject().value("Value").toString(), QStringLiteral("原始事件"));
+        QTemporaryDir temp;
+        const QString exported = temp.filePath("events.motion3.json");
+        QVERIFY(dialog.Timeline().Save(exported, dialog.Timeline().Fps(), false));
+        QFile file(exported);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+        QCOMPARE(root.value("UserData").toArray(), events);
+        const int bytes = QStringLiteral("修改后的事件 🎵嘴型：あいう 🌸").toUtf8().size();
+        QCOMPARE(root.value("Meta").toObject().value("TotalUserDataSize").toInt(), bytes);
+        QCOMPARE(root.value("Meta").toObject().value("UserDataCount").toInt(), 2);
+        QCOMPARE(root.value("RootExtension").toString(), QStringLiteral("keep"));
+        live2dstruct::CModelSession session;
+        QVERIFY(dialog.Timeline().SaveState(&session.animation, false, 0));
+        QVERIFY(session.Save(temp.filePath("events.session.json")));
+        live2dstruct::CModelSession restored;
+        QVERIFY(live2dstruct::CModelSession::Load(temp.filePath("events.session.json"), &restored));
+        CMotionTimeline recovered;
+        QVERIFY(recovered.RestoreState(restored.animation));
+        QCOMPARE(recovered.Events(), events);
+    }
+
+    void motionSettingsKeepTypedTrackFadesIndependent()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState(settingsState()));
+        CMotionSettingsDialog dialog(timeline);
+        dialog.show();
+        dialog.findChild<QDoubleSpinBox*>("motionFps")->setValue(24);
+        dialog.findChild<QDoubleSpinBox*>("motionDuration")->setValue(5);
+        dialog.findChild<QCheckBox*>("motionFadeInEnabled")->setChecked(false);
+        dialog.findChild<QCheckBox*>("motionFadeOutEnabled")->setChecked(true);
+        dialog.findChild<QDoubleSpinBox*>("motionFadeOut")->setValue(0.5);
+        dialog.findChild<QTabWidget*>("motionSettingsTabs")->setCurrentIndex(1);
+        auto* tracks = dialog.findChild<QComboBox*>("motionFadeTrack");
+        QVERIFY(tracks);
+        const CMotionTrack model{CMotionTarget::Model, "Opacity"};
+        const CMotionTrack parameter{CMotionTarget::Parameter, "Opacity"};
+        const CMotionTrack part{CMotionTarget::PartOpacity, "Opacity"};
+        QVERIFY(trackIndex(tracks, model) >= 0);
+        QVERIFY(trackIndex(tracks, parameter) >= 0);
+        QVERIFY(trackIndex(tracks, part) >= 0);
+        tracks->setCurrentIndex(trackIndex(tracks, model));
+        dialog.findChild<QDoubleSpinBox*>("curveFadeIn")->setValue(0.25);
+        dialog.findChild<QCheckBox*>("curveFadeOutEnabled")->setChecked(true);
+        dialog.findChild<QCheckBox*>("curveFadeOutEnabled")->setChecked(false);
+        tracks->setCurrentIndex(trackIndex(tracks, parameter));
+        dialog.findChild<QDoubleSpinBox*>("curveFadeIn")->setValue(0.75);
+        dialog.findChild<QCheckBox*>("curveFadeOutEnabled")->setChecked(true);
+        dialog.findChild<QDoubleSpinBox*>("curveFadeOut")->setValue(0.9);
+        tracks->setCurrentIndex(trackIndex(tracks, part));
+        dialog.findChild<QCheckBox*>("curveFadeInEnabled")->setChecked(false);
+        dialog.findChild<QCheckBox*>("curveFadeOutEnabled")->setChecked(true);
+        dialog.findChild<QCheckBox*>("curveFadeOutEnabled")->setChecked(false);
+        tracks->setCurrentIndex(trackIndex(tracks, model));
+        QCOMPARE(dialog.findChild<QDoubleSpinBox*>("curveFadeIn")->value(), 0.25);
+        QVERIFY(!dialog.findChild<QCheckBox*>("curveFadeOutEnabled")->isChecked());
+        dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        QCOMPARE(dialog.result(), QDialog::Accepted);
+        const auto& result = dialog.Timeline();
+        QCOMPARE(result.Fps(), 24.0f);
+        QCOMPARE(result.Duration(), 5.0f);
+        QVERIFY(!result.FadeTimes().fadeIn);
+        QVERIFY(result.FadeTimes().fadeOut);
+        QCOMPARE(*result.FadeTimes().fadeOut, 0.5);
+        QVERIFY(result.TrackFadeTimes(model).fadeIn);
+        QCOMPARE(*result.TrackFadeTimes(model).fadeIn, 0.25);
+        QVERIFY(!result.TrackFadeTimes(model).fadeOut);
+        QCOMPARE(*result.TrackFadeTimes(parameter).fadeIn, 0.75);
+        QCOMPARE(*result.TrackFadeTimes(parameter).fadeOut, 0.9);
+        QVERIFY(!result.TrackFadeTimes(part).fadeIn);
+        QVERIFY(!result.TrackFadeTimes(part).fadeOut);
+        QJsonObject state;
+        QVERIFY(result.SaveState(&state, false, 0));
+        for (const auto& value : state.value("motion").toObject().value("Curves").toArray()) {
+            const auto curve = value.toObject();
+            QCOMPARE(curve.value("Extension"), curve.value("Target"));
+        }
+    }
+
+    void motionSettingsRejectInvalidEventWithoutChangingCandidate()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState(settingsState()));
+        QJsonObject before;
+        QVERIFY(timeline.SaveState(&before, false, 0));
+        CMotionSettingsDialog dialog(timeline);
+        dialog.show();
+        auto* tabs = dialog.findChild<QTabWidget*>("motionSettingsTabs");
+        dialog.findChild<QDoubleSpinBox*>("motionFps")->setValue(24);
+        dialog.findChild<QCheckBox*>("motionFadeInEnabled")->setChecked(false);
+        tabs->setCurrentIndex(2);
+        auto* table = dialog.findChild<QTableWidget*>("motionEventTable");
+        auto* error = dialog.findChild<QLabel*>("motionSettingsError");
+        QVERIFY(table && error);
+        auto* ok = dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok);
+        for (const QString& invalid : {QStringLiteral("-1"), QStringLiteral("NaN"), QStringLiteral("not a time")}) {
+            table->item(0, 0)->setText(invalid);
+            ok->click();
+            QVERIFY(dialog.isVisible());
+            QVERIFY(error->isVisible());
+            QVERIFY(!error->text().isEmpty());
+            QJsonObject after;
+            QVERIFY(dialog.Timeline().SaveState(&after, false, 0));
+            QCOMPARE(after, before);
+        }
+        table->item(0, 0)->setText("0.5");
+        table->item(0, 1)->setText(QStringLiteral("修正"));
+        ok->click();
+        QCOMPARE(dialog.result(), QDialog::Accepted);
+        QCOMPARE(dialog.Timeline().Events().first().toObject().value("Time").toDouble(), 0.5);
+    }
+
+    void motionSettingsPanelCancelAndUndoRemainTransactional()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(settingsState()));
+        panel.resize(900, 640);
+        panel.show();
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        auto* settings = panel.findChild<QPushButton*>("editMotionSettings");
+        QVERIFY(settings);
+        QTimer::singleShot(0, [](){
+            auto* dialog = qobject_cast<CMotionSettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            const auto closeDialog = qScopeGuard([dialog](){ if (dialog->isVisible()) dialog->reject(); });
+            dialog->findChild<QDoubleSpinBox*>("motionFps")->setValue(12);
+            dialog->findChild<QPushButton*>("addMotionEvent")->click();
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
+        });
+        settings->click();
+        QJsonObject cancelled;
+        QVERIFY(panel.CaptureTimelineState(&cancelled));
+        QCOMPARE(cancelled, before);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(!panel.CanUndoTimeline());
+        QTimer::singleShot(0, [](){
+            auto* dialog = qobject_cast<CMotionSettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            const auto closeDialog = qScopeGuard([dialog](){ if (dialog->isVisible()) dialog->reject(); });
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        settings->click();
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(!panel.CanUndoTimeline());
+        auto* timelineTable = panel.findChild<QTableWidget*>("motionTimelineTable");
+        timelineTable->setCurrentCell(0, 2);
+        timelineTable->editItem(timelineTable->item(0, 2));
+        auto* editor = timelineTable->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        editor->setText("0.35");
+        QTimer::singleShot(0, [](){
+            auto* dialog = qobject_cast<CMotionSettingsDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            const auto closeDialog = qScopeGuard([dialog](){ if (dialog->isVisible()) dialog->reject(); });
+            QCOMPARE(dialog->Timeline().Evaluate({CMotionTarget::Model, "Opacity"}, 0), 0.35f);
+            dialog->findChild<QDoubleSpinBox*>("motionFps")->setValue(24);
+            dialog->findChild<QCheckBox*>("motionFadeInEnabled")->setChecked(false);
+            auto* events = dialog->findChild<QTableWidget*>("motionEventTable");
+            events->item(0, 1)->setText(QStringLiteral("保存事件"));
+            dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        });
+        settings->click();
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        QJsonObject changed;
+        QVERIFY(panel.CaptureTimelineState(&changed));
+        panel.MarkTimelineSaved();
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QJsonObject undone;
+        QVERIFY(panel.CaptureTimelineState(&undone));
+        CMotionTimeline restored;
+        QVERIFY(restored.RestoreState(undone));
+        QCOMPARE(restored.Evaluate({CMotionTarget::Model, "Opacity"}, 0), 0.35f);
+        QCOMPARE(restored.Events().first().toObject().value("Value").toString(), QStringLiteral("原始事件"));
+        QVERIFY(restored.FadeTimes().fadeIn);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QVERIFY(panel.CaptureTimelineState(&undone));
+        QCOMPARE(undone, before);
+        QVERIFY(!panel.CanUndoTimeline());
+        panel.RedoTimeline();
+        panel.RedoTimeline();
+        QVERIFY(panel.CaptureTimelineState(&undone));
+        QCOMPARE(undone, changed);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
+
+    void motionSettingsLargeEventListFitsBothThemes()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState(settingsState()));
+        QJsonArray events;
+        for (int i = 0; i < 80; ++i)
+            events.append(QJsonObject{{"Time", i / 40.0}, {"Value", QStringLiteral("事件 %1 · 音频与表情").arg(i)}});
+        QVERIFY(timeline.SetEvents(events));
+        for (bool dark : {false, true}) {
+            CMotionSettingsDialog dialog(timeline);
+            dialog.setStyleSheet(Theme::globalStyleSheet(dark));
+            dialog.resize(640, 480);
+            dialog.show();
+            auto* tabs = dialog.findChild<QTabWidget*>("motionSettingsTabs");
+            auto* table = dialog.findChild<QTableWidget*>("motionEventTable");
+            QVERIFY(tabs && table);
+            tabs->setCurrentIndex(2);
+            QCoreApplication::processEvents();
+            QVERIFY2(dialog.width() <= 680, qPrintable(QString::number(dialog.width())));
+            QVERIFY2(dialog.height() <= 520, qPrintable(QString::number(dialog.height())));
+            QVERIFY(table->viewport()->height() >= table->rowHeight(0) * 3);
+            QVERIFY(table->verticalScrollBar()->maximum() > 0);
+            table->scrollToBottom();
+            QCOMPARE(table->verticalScrollBar()->value(), table->verticalScrollBar()->maximum());
+            auto* buttons = dialog.findChild<QDialogButtonBox*>();
+            QVERIFY(buttons->button(QDialogButtonBox::Ok)->isVisible());
+            QVERIFY(buttons->button(QDialogButtonBox::Cancel)->isVisible());
+            if (!qEnvironmentVariableIsEmpty("MOTION_SETTINGS_SCREENSHOT")) {
+                const QString output = qEnvironmentVariable("MOTION_SETTINGS_SCREENSHOT") +
+                    (dark ? QStringLiteral("-dark.png") : QStringLiteral("-light.png"));
+                QVERIFY(dialog.grab().save(output));
+                for (int page : {0, 1}) {
+                    tabs->setCurrentIndex(page);
+                    QCoreApplication::processEvents();
+                    QVERIFY(dialog.grab().save(output + QStringLiteral(".%1.png").arg(page)));
+                }
+            }
+        }
+    }
+
     void playbackUsesElapsedTimeAndSelectedSpeed_data()
     {
         QTest::addColumn<int>("percent");

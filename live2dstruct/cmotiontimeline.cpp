@@ -15,6 +15,7 @@
 namespace {
 constexpr qint64 maximumMotionBytes = 16 * 1024 * 1024;
 constexpr int maximumMotionPoints = 100000;
+constexpr int maximumMotionEvents = 100000;
 
 bool finiteFloat(double value)
 {
@@ -114,6 +115,53 @@ bool validFadeTimes(const QJsonObject& object)
         if (!object.contains(field)) continue;
         const auto value = object.value(field);
         if (!value.isDouble() || !finiteFloat(value.toDouble())) return false;
+    }
+    return true;
+}
+
+bool validFadeTimes(const CMotionFadeTimes& fades)
+{
+    return (!fades.fadeIn || finiteFloat(*fades.fadeIn)) &&
+           (!fades.fadeOut || finiteFloat(*fades.fadeOut));
+}
+
+CMotionFadeTimes readFadeTimes(const QJsonObject& object)
+{
+    CMotionFadeTimes fades;
+    if (object.contains(QStringLiteral("FadeInTime"))) fades.fadeIn = object.value(QStringLiteral("FadeInTime")).toDouble();
+    if (object.contains(QStringLiteral("FadeOutTime"))) fades.fadeOut = object.value(QStringLiteral("FadeOutTime")).toDouble();
+    return fades;
+}
+
+void writeFadeTimes(QJsonObject* object, const CMotionFadeTimes& fades)
+{
+    if (fades.fadeIn) object->insert(QStringLiteral("FadeInTime"), *fades.fadeIn);
+    else object->remove(QStringLiteral("FadeInTime"));
+    if (fades.fadeOut) object->insert(QStringLiteral("FadeOutTime"), *fades.fadeOut);
+    else object->remove(QStringLiteral("FadeOutTime"));
+}
+
+bool validEvents(const QJsonArray& events, QString* error)
+{
+    if (events.size() > maximumMotionEvents) {
+        if (error) *error = QStringLiteral("motion3 事件过多");
+        return false;
+    }
+    qint64 bytes = 0;
+    for (const auto& value : events) {
+        const auto event = value.toObject();
+        const auto time = event.value(QStringLiteral("Time"));
+        const auto text = event.value(QStringLiteral("Value"));
+        if (!value.isObject() || !time.isDouble() || !finiteFloat(time.toDouble()) || time.toDouble() < 0.0 ||
+            !text.isString() || text.toString().contains(QChar::Null)) {
+            if (error) *error = QStringLiteral("motion3 事件无效");
+            return false;
+        }
+        bytes += text.toString().toUtf8().size();
+        if (bytes > maximumMotionBytes) {
+            if (error) *error = QStringLiteral("motion3 事件文本过大");
+            return false;
+        }
     }
     return true;
 }
@@ -245,10 +293,16 @@ int CMotionTimeline::SegmentType(const CMotionTrack& track, int pointIndex) cons
 
 float CMotionTimeline::Duration() const
 {
-    float duration = static_cast<float>(m_source.value(QStringLiteral("Meta")).toObject()
-                                           .value(QStringLiteral("Duration")).toDouble());
+    return static_cast<float>(Timing().duration);
+}
+
+double CMotionTimeline::ContentDuration() const
+{
+    double duration = 0.0;
     for (const auto& points : m_curves)
-        if (!points.isEmpty()) duration = qMax(duration, static_cast<float>(points.last().x()));
+        if (!points.isEmpty()) duration = qMax(duration, points.last().x());
+    for (const auto& event : Events())
+        duration = qMax(duration, event.toObject().value(QStringLiteral("Time")).toDouble());
     return duration;
 }
 
@@ -258,9 +312,113 @@ float CMotionTimeline::Fps() const
                                   .value(QStringLiteral("Fps")).toDouble(30.0));
 }
 
+CMotionTiming CMotionTimeline::Timing() const
+{
+    const auto meta = m_source.value(QStringLiteral("Meta")).toObject();
+    return {meta.value(QStringLiteral("Fps")).toDouble(30.0),
+            qMax(ContentDuration(), meta.value(QStringLiteral("Duration")).toDouble())};
+}
+
 bool CMotionTimeline::Loop() const
 {
     return m_source.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("Loop")).toBool();
+}
+
+CMotionFadeTimes CMotionTimeline::FadeTimes() const
+{
+    return readFadeTimes(m_source.value(QStringLiteral("Meta")).toObject());
+}
+
+bool CMotionTimeline::SetFadeTimes(const CMotionFadeTimes& fades, QString* error)
+{
+    if (!validFadeTimes(fades)) {
+        if (error) *error = QStringLiteral("动作淡入淡出时间无效");
+        return false;
+    }
+    QJsonObject source = m_source;
+    QJsonObject meta = source.value(QStringLiteral("Meta")).toObject();
+    const auto before = meta;
+    writeFadeTimes(&meta, fades);
+    if (meta == before) return true;
+    source.insert(QStringLiteral("Meta"), meta);
+    return SetSource(std::move(source), error);
+}
+
+CMotionFadeTimes CMotionTimeline::TrackFadeTimes(const CMotionTrack& track) const
+{
+    if (!m_curves.contains(track)) return {};
+    for (const auto& value : m_source.value(QStringLiteral("Curves")).toArray()) {
+        const auto curve = value.toObject();
+        if (curve.value(QStringLiteral("Target")).toString() == track.TargetName() &&
+            curve.value(QStringLiteral("Id")).toString() == track.id) return readFadeTimes(curve);
+    }
+    return {};
+}
+
+bool CMotionTimeline::SetTrackFadeTimes(const CMotionTrack& track, const CMotionFadeTimes& fades, QString* error)
+{
+    if (!m_curves.contains(track) || !validFadeTimes(fades)) {
+        if (error) *error = QStringLiteral("曲线不存在或淡入淡出时间无效");
+        return false;
+    }
+    QJsonArray curves = m_source.value(QStringLiteral("Curves")).toArray();
+    int index = 0;
+    for (; index < curves.size(); ++index) {
+        const auto curve = curves.at(index).toObject();
+        if (curve.value(QStringLiteral("Target")).toString() == track.TargetName() &&
+            curve.value(QStringLiteral("Id")).toString() == track.id) break;
+    }
+    QJsonObject curve = index < curves.size() ? curves.at(index).toObject() : QJsonObject{};
+    const auto before = curve;
+    writeFadeTimes(&curve, fades);
+    if (curve == before) return true;
+    curve.insert(QStringLiteral("Target"), track.TargetName());
+    curve.insert(QStringLiteral("Id"), track.id);
+    if (index < curves.size()) curves.replace(index, curve);
+    else curves.append(curve);
+    QJsonObject source = m_source;
+    source.insert(QStringLiteral("Curves"), curves);
+    return SetSource(std::move(source), error);
+}
+
+QJsonArray CMotionTimeline::Events() const
+{
+    return m_source.value(QStringLiteral("UserData")).toArray();
+}
+
+bool CMotionTimeline::SetEvents(const QJsonArray& events, QString* error)
+{
+    if (!validEvents(events, error)) return false;
+    if (events == Events()) return true;
+    QJsonObject source = m_source;
+    source.insert(QStringLiteral("UserData"), events);
+    return SetSource(std::move(source), error);
+}
+
+bool CMotionTimeline::SetTiming(double fps, double duration, QString* error)
+{
+    if (!finiteFloat(fps) || static_cast<float>(fps) <= 0.0f || !finiteFloat(duration) || duration < ContentDuration()) {
+        if (error) *error = QStringLiteral("帧率必须大于 0，时长不能早于最后一个关键帧或事件");
+        return false;
+    }
+    QJsonObject source = m_source;
+    QJsonObject meta = source.value(QStringLiteral("Meta")).toObject();
+    const auto timing = Timing();
+    if (fps == timing.fps && duration == timing.duration) return true;
+    if (fps != timing.fps) meta.insert(QStringLiteral("Fps"), fps);
+    if (duration != timing.duration) meta.insert(QStringLiteral("Duration"), duration);
+    source.insert(QStringLiteral("Meta"), meta);
+    return SetSource(std::move(source), error);
+}
+
+bool CMotionTimeline::SetSource(QJsonObject source, QString* error)
+{
+    if (source == m_source) return true;
+    CMotionTimeline candidate = *this;
+    candidate.m_source = std::move(source);
+    if (!candidate.BuildJson(nullptr, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+    m_source = std::move(candidate.m_source);
+    return true;
 }
 
 float CMotionTimeline::Evaluate(const CMotionTrack& track, float time, bool* ok) const
@@ -353,9 +511,9 @@ int CMotionTimeline::TotalPointCount() const
     return count;
 }
 
-bool CMotionTimeline::BuildJson(QJsonObject* output, float fps, bool loop, bool draft, QString* error) const
+bool CMotionTimeline::BuildJson(QJsonObject* output, double fps, bool loop, bool draft, QString* error) const
 {
-    const double outputFps = std::isfinite(fps) && fps > 0.0f ? fps : 30.0;
+    const double outputFps = finiteFloat(fps) && static_cast<float>(fps) > 0.0f ? fps : 30.0;
     const QJsonArray originals = m_source.value(QStringLiteral("Curves")).toArray();
     QMap<CMotionTrack, QJsonObject> curveFields;
     for (const auto& value : originals) {
@@ -411,7 +569,7 @@ bool CMotionTimeline::BuildJson(QJsonObject* output, float fps, bool loop, bool 
     }
     QJsonObject meta = m_source.value(QStringLiteral("Meta")).toObject();
     int totalSegments = 0, totalPoints = 0, totalKeys = 0;
-    double duration = meta.value(QStringLiteral("Duration")).toDouble();
+    double duration = qMax(ContentDuration(), meta.value(QStringLiteral("Duration")).toDouble());
     for (const auto& value : curves) {
         ParsedCurve parsed;
         if (!parseCurve(value.toObject(), restricted, &parsed, draft)) {
@@ -459,7 +617,7 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
         return false;
     }
     QJsonObject root;
-    if (!BuildJson(&root, fps, loop, false, error)) return false;
+    if (!BuildJson(&root, fps == Fps() ? Timing().fps : fps, loop, false, error)) return false;
     const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
@@ -514,16 +672,7 @@ bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* err
         if (error) *error = QStringLiteral("motion3 事件字段无效");
         return false;
     }
-    for (const auto& value : root.value(QStringLiteral("UserData")).toArray()) {
-        const auto event = value.toObject();
-        const auto time = event.value(QStringLiteral("Time"));
-        const auto text = event.value(QStringLiteral("Value"));
-        if (!value.isObject() || !time.isDouble() || !finiteFloat(time.toDouble()) || time.toDouble() < 0.0 ||
-            !text.isString() || text.toString().contains(QChar::Null)) {
-            if (error) *error = QStringLiteral("motion3 事件无效");
-            return false;
-        }
-    }
+    if (!validEvents(root.value(QStringLiteral("UserData")).toArray(), error)) return false;
     QMap<CMotionTrack, QVector<QPointF>> curves;
     QMap<CMotionTrack, QVector<int>> segmentTypes;
     QMap<CMotionTrack, QVector<QVector<QPointF>>> bezierControls;
@@ -586,7 +735,7 @@ bool CMotionTimeline::SaveState(QJsonObject* state, bool loop, float playhead, Q
         return false;
     }
     QJsonObject motion;
-    if (!BuildJson(&motion, Fps(), loop, true, error)) return false;
+    if (!BuildJson(&motion, Timing().fps, loop, true, error)) return false;
     const QJsonObject result{{QStringLiteral("version"), 1}, {QStringLiteral("motion"), motion},
                              {QStringLiteral("playhead"), qBound(0.0f, playhead, Duration())}};
     if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() > maximumMotionBytes) {

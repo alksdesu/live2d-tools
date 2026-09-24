@@ -34,6 +34,249 @@ private:
 
 private slots:
 
+    void timingEditsKeepExactCounterpartAndAbsentDefaults()
+    {
+        CMotionTimeline empty;
+        const auto emptyBefore = empty;
+        QVERIFY(empty.SetTiming(30.0, 0.0));
+        QVERIFY(empty.HasSameContent(emptyBefore));
+        QTemporaryDir temp;
+        const auto path = temp.filePath("timing.motion3.json");
+        const QJsonObject base{{"Version", 3}, {"Curves", QJsonArray{curve("Parameter", "A", {0, 0, 0, 1, 1})}}};
+        QVERIFY(writeJson(path, base));
+        CMotionTimeline timeline;
+        QVERIFY(timeline.Load(path));
+        auto before = timeline;
+        QCOMPARE(timeline.Timing().fps, 30.0);
+        QCOMPARE(timeline.Timing().duration, 1.0);
+        QVERIFY(timeline.SetTiming(timeline.Timing().fps, timeline.Timing().duration));
+        QVERIFY(timeline.HasSameContent(before));
+        QVERIFY(timeline.SetTiming(60.0, timeline.Timing().duration));
+        auto expectedRoot = base;
+        expectedRoot.insert("Meta", QJsonObject{{"Fps", 60.0}});
+        QVERIFY(writeJson(path, expectedRoot));
+        CMotionTimeline expected;
+        QVERIFY(expected.Load(path));
+        QVERIFY(timeline.HasSameContent(expected));
+        timeline = before;
+        QVERIFY(timeline.SetTiming(timeline.Timing().fps, 3.0));
+        expectedRoot.insert("Meta", QJsonObject{{"Duration", 3.0}});
+        QVERIFY(writeJson(path, expectedRoot));
+        QVERIFY(expected.Load(path));
+        QVERIFY(timeline.HasSameContent(expected));
+
+        const double exactFps = 29.1234567890123;
+        const double exactDuration = 5.1234567890123;
+        expectedRoot.insert("Meta", QJsonObject{{"Fps", exactFps}, {"Duration", exactDuration}});
+        QVERIFY(writeJson(path, expectedRoot));
+        QVERIFY(timeline.Load(path));
+        QCOMPARE(timeline.Timing().fps, exactFps);
+        QCOMPARE(timeline.Timing().duration, exactDuration);
+        before = timeline;
+        QVERIFY(timeline.SetTiming(exactFps, exactDuration));
+        QVERIFY(timeline.HasSameContent(before));
+        QVERIFY(timeline.SetTiming(exactFps, 7.9876543210987));
+        QJsonObject state;
+        QVERIFY(timeline.SaveState(&state, false, 0));
+        auto savedMeta = state.value("motion").toObject().value("Meta").toObject();
+        QCOMPARE(savedMeta.value("Fps").toDouble(), exactFps);
+        QCOMPARE(savedMeta.value("Duration").toDouble(), 7.9876543210987);
+        CMotionTimeline restored;
+        QVERIFY(restored.RestoreState(state));
+        QCOMPARE(restored.Timing().fps, exactFps);
+        QVERIFY(restored.Save(path, restored.Fps(), false));
+        QCOMPARE(readJson(path).value("Meta").toObject().value("Fps").toDouble(), exactFps);
+        timeline = before;
+        QVERIFY(timeline.SetTiming(60.0, timeline.Timing().duration));
+        QVERIFY(timeline.SaveState(&state, false, 0));
+        savedMeta = state.value("motion").toObject().value("Meta").toObject();
+        QCOMPARE(savedMeta.value("Fps").toDouble(), 60.0);
+        QCOMPARE(savedMeta.value("Duration").toDouble(), exactDuration);
+        QVERIFY(timeline.Save(path, 24.0f, false));
+        QCOMPARE(readJson(path).value("Meta").toObject().value("Fps").toDouble(), 24.0);
+    }
+
+    void metadataEditsPreserveSdkFieldsAndTypedTrackIdentity()
+    {
+        QTemporaryDir temp;
+        const auto path = temp.filePath("metadata.motion3.json");
+        auto model = curve("Model", "Shared", {0, 1, 0, 1, 0.5});
+        auto parameter = curve("Parameter", "Shared", {0, 0, 0, 1, 1});
+        auto part = curve("PartOpacity", "Shared", {0, 1, 0, 1, 0});
+        model.insert("FadeInTime", -2.0);
+        model.insert("Extension", QJsonObject{{"keep", true}});
+        parameter.insert("FadeOutTime", -1.0);
+        const QJsonObject source{{"Version", 3}, {"FadeInTime", 42}, {"RootExtension", "retained"},
+            {"Meta", QJsonObject{{"Duration", 2}, {"Fps", 30}, {"FadeInTime", -3.0}, {"MetaExtension", 99}}},
+            {"Curves", QJsonArray{model, parameter, part}}};
+        QVERIFY(writeJson(path, source));
+        CMotionTimeline timeline;
+        QVERIFY(timeline.Load(path));
+        const CMotionTrack modelTrack{CMotionTarget::Model, "Shared"};
+        const CMotionTrack parameterTrack{CMotionTarget::Parameter, "Shared"};
+        const CMotionTrack partTrack{CMotionTarget::PartOpacity, "Shared"};
+        QCOMPARE(timeline.FadeTimes().fadeIn.value(), -3.0);
+        QVERIFY(!timeline.FadeTimes().fadeOut);
+        QCOMPARE(timeline.TrackFadeTimes(modelTrack).fadeIn.value(), -2.0);
+        QVERIFY(!timeline.TrackFadeTimes(parameterTrack).fadeIn);
+        QCOMPARE(timeline.TrackFadeTimes(parameterTrack).fadeOut.value(), -1.0);
+        auto before = timeline;
+        QVERIFY(timeline.SetFadeTimes(timeline.FadeTimes()));
+        QVERIFY(timeline.SetTrackFadeTimes(modelTrack, timeline.TrackFadeTimes(modelTrack)));
+        QVERIFY(timeline.SetTrackFadeTimes(partTrack, {}));
+        QVERIFY(timeline.HasSameContent(before));
+        QVERIFY(timeline.SetFadeTimes({0.25, std::nullopt}));
+        QVERIFY(timeline.SetTrackFadeTimes(parameterTrack, {0.0, 1.5}));
+        QVERIFY(timeline.SetTrackFadeTimes(partTrack, {std::nullopt, 0.5}));
+        QVERIFY(timeline.SetTiming(60, 4));
+        QVERIFY(timeline.Save(path, timeline.Fps(), true));
+        const auto saved = readJson(path);
+        QCOMPARE(saved.value("FadeInTime").toDouble(), 42.0);
+        QCOMPARE(saved.value("RootExtension"), source.value("RootExtension"));
+        const auto meta = saved.value("Meta").toObject();
+        QCOMPARE(meta.value("MetaExtension").toInt(), 99);
+        QCOMPARE(meta.value("FadeInTime").toDouble(), 0.25);
+        QVERIFY(!meta.contains("FadeOutTime"));
+        QCOMPARE(meta.value("Duration").toDouble(), 4.0);
+        const auto curves = saved.value("Curves").toArray();
+        QCOMPARE(curves.at(0).toObject(), model);
+        QCOMPARE(curves.at(1).toObject().value("FadeInTime").toDouble(), 0.0);
+        QCOMPARE(curves.at(1).toObject().value("FadeOutTime").toDouble(), 1.5);
+        QVERIFY(!curves.at(2).toObject().contains("FadeInTime"));
+        QCOMPARE(curves.at(2).toObject().value("FadeOutTime").toDouble(), 0.5);
+        QVERIFY(timeline.SetTrackFadeTimes(parameterTrack, {}));
+        QVERIFY(timeline.SetFadeTimes({}));
+        QVERIFY(timeline.Save(path, timeline.Fps(), false));
+        QVERIFY(!readJson(path).value("Meta").toObject().contains("FadeInTime"));
+        const auto resetCurve = readJson(path).value("Curves").toArray().at(1).toObject();
+        QVERIFY(!resetCurve.contains("FadeInTime"));
+        QVERIFY(!resetCurve.contains("FadeOutTime"));
+    }
+
+    void eventEditsPreserveUnicodeExtensionsAndExtendDuration()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("A", 0, 0));
+        QVERIFY(timeline.AddPoint("A", 1, 1));
+        QVERIFY(timeline.SetTiming(60, 2));
+        const QJsonObject extension{{"speaker", "猫"}, {"position", QJsonArray{1, 2}}};
+        QJsonArray events{QJsonObject{{"Time", 4.5}, {"Value", QStringLiteral("口型🌸")}, {"Extension", extension}},
+                          QJsonObject{{"Time", 0}, {"Value", "start"}}};
+        QVERIFY(timeline.SetEvents(events));
+        QCOMPARE(timeline.Events(), events);
+        QCOMPARE(timeline.Duration(), 4.5f);
+        const auto before = timeline;
+        QVERIFY(timeline.SetEvents(events));
+        QVERIFY(timeline.HasSameContent(before));
+        auto first = events.first().toObject();
+        first.insert("Value", QStringLiteral("表情✨"));
+        first.insert("Time", 5.0);
+        events.replace(0, first);
+        QVERIFY(timeline.SetEvents(events));
+        QVERIFY(timeline.SetFadeTimes({0.5, -1.0}));
+        QVERIFY(timeline.SetTrackFadeTimes({CMotionTarget::Parameter, "A"}, {0.0, 0.75}));
+        QVERIFY(timeline.SetTiming(48, 6));
+        QJsonObject state;
+        QVERIFY(timeline.SaveState(&state, true, 5.5f));
+        CMotionTimeline restored;
+        float playhead = 0;
+        QVERIFY(restored.RestoreState(state, &playhead));
+        QCOMPARE(playhead, 5.5f);
+        QCOMPARE(restored.Events(), events);
+        QCOMPARE(restored.Duration(), 6.0f);
+        QCOMPARE(restored.Fps(), 48.0f);
+        QCOMPARE(restored.FadeTimes().fadeOut.value(), -1.0);
+        QCOMPARE(restored.TrackFadeTimes({CMotionTarget::Parameter, "A"}).fadeOut.value(), 0.75);
+        QTemporaryDir temp;
+        const auto path = temp.filePath("events.motion3.json");
+        QVERIFY(restored.Save(path, restored.Fps(), restored.Loop()));
+        const auto saved = readJson(path);
+        QCOMPARE(saved.value("UserData").toArray(), events);
+        const auto meta = saved.value("Meta").toObject();
+        QCOMPARE(meta.value("UserDataCount").toInt(), 2);
+        QCOMPARE(meta.value("TotalUserDataSize").toInt(), QStringLiteral("表情✨start").toUtf8().size());
+        CMotionTimeline reloaded;
+        QVERIFY(reloaded.Load(path));
+        QCOMPARE(reloaded.Events(), events);
+        QCOMPARE(reloaded.Events().at(0).toObject().value("Extension").toObject(), extension);
+        QVERIFY(reloaded.SetEvents({}));
+        QCOMPARE(reloaded.Duration(), 6.0f);
+        QVERIFY(reloaded.SetTiming(48, 1));
+        QCOMPARE(reloaded.Duration(), 1.0f);
+    }
+
+    void rejectsInvalidMetadataEditsWithoutMutation()
+    {
+        CMotionTimeline timeline;
+        const auto beforeEmpty = timeline;
+        QVERIFY(timeline.SetEvents({}));
+        QVERIFY(timeline.SetFadeTimes({}));
+        QVERIFY(timeline.HasSameContent(beforeEmpty));
+        QVERIFY(timeline.AddPoint("A", 0, 0));
+        QVERIFY(timeline.AddPoint("A", 2, 1));
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 3.0}, {"Value", "valid"}}}));
+        QVERIFY(timeline.SetTiming(30, 4));
+        timeline.StartRecording();
+        const auto before = timeline;
+        QString error;
+        for (double invalid : {0.0, -1.0, std::numeric_limits<double>::denorm_min(),
+                               std::numeric_limits<double>::infinity(), std::numeric_limits<double>::max()}) {
+            QVERIFY(!timeline.SetTiming(invalid, 4, &error));
+            QVERIFY(!error.isEmpty());
+            QVERIFY(timeline.HasSameContent(before));
+        }
+        for (double invalid : {-1.0, 2.5, std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(), std::numeric_limits<double>::max()}) {
+            QVERIFY(!timeline.SetTiming(30, invalid, &error));
+            QVERIFY(timeline.HasSameContent(before));
+        }
+        for (double invalid : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::max()}) {
+            QVERIFY(!timeline.SetFadeTimes({invalid, 0.0}, &error));
+            QVERIFY(!timeline.SetTrackFadeTimes({CMotionTarget::Parameter, "A"}, {0.0, invalid}, &error));
+            QVERIFY(timeline.HasSameContent(before));
+        }
+        QVERIFY(!timeline.SetTrackFadeTimes({CMotionTarget::PartOpacity, "A"}, {0.0, 1.0}, &error));
+        QVERIFY(!timeline.SetTrackFadeTimes({static_cast<CMotionTarget>(99), "A"}, {}, &error));
+        const QList<QJsonArray> invalidEvents{
+            {true}, {QJsonObject{{"Time", "1"}, {"Value", "text"}}},
+            {QJsonObject{{"Time", -1}, {"Value", "text"}}},
+            {QJsonObject{{"Time", std::numeric_limits<double>::max()}, {"Value", "text"}}},
+            {QJsonObject{{"Time", 1}, {"Value", 2}}},
+            {QJsonObject{{"Time", 1}, {"Value", QString("embedded") + QChar::Null}}}
+        };
+        for (const auto& events : invalidEvents) {
+            QVERIFY(!timeline.SetEvents(events, &error));
+            QVERIFY(!error.isEmpty());
+            QVERIFY(timeline.HasSameContent(before));
+        }
+        QJsonArray tooMany;
+        const QJsonObject event{{"Time", 0}, {"Value", ""}};
+        for (int i = 0; i < 100001; ++i) tooMany.append(event);
+        QVERIFY(!timeline.SetEvents(tooMany, &error));
+        QVERIFY(!timeline.SetEvents({QJsonObject{{"Time", 1}, {"Value", "short"},
+                                                 {"Extension", QString(16 * 1024 * 1024, 'x')}}}, &error));
+        QVERIFY(timeline.HasSameContent(before));
+        QVERIFY(timeline.IsRecording());
+    }
+
+    void importedLateEventsAreIncludedInPlaybackAndExportDuration()
+    {
+        QTemporaryDir temp;
+        const auto path = temp.filePath("late-event.motion3.json");
+        const QJsonObject source{{"Version", 3}, {"Meta", QJsonObject{{"Duration", 1}, {"Fps", 30}}},
+            {"Curves", QJsonArray{curve("Parameter", "A", {0, 0, 0, 1, 1})}},
+            {"UserData", QJsonArray{QJsonObject{{"Time", 7}, {"Value", "late"}}}}};
+        QVERIFY(writeJson(path, source));
+        CMotionTimeline timeline;
+        QVERIFY(timeline.Load(path));
+        QCOMPARE(timeline.Duration(), 7.0f);
+        QVERIFY(!timeline.SetTiming(60, 6));
+        QVERIFY(timeline.SetTiming(60, 7));
+        QVERIFY(timeline.Save(path, timeline.Fps(), false));
+        QCOMPARE(readJson(path).value("Meta").toObject().value("Duration").toDouble(), 7.0);
+    }
+
     void typedTracksRemainIndependentThroughEditingAndStorage()
     {
         CMotionTimeline timeline;

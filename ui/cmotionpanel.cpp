@@ -1,5 +1,6 @@
 #include "cmotionpanel.h"
 #include "cmotioncurveview.h"
+#include "cmotionsettingsdialog.h"
 #include "ctableeditdelegate.h"
 #include <QDebug>
 #include <QVBoxLayout>
@@ -278,6 +279,11 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     editTools->addWidget(removeTimelineButton);
     editTools->addWidget(clearTimelineButton);
     editTools->addStretch(1);
+    auto* settingsButton = new QPushButton(QStringLiteral("设置"), timelineBox);
+    settingsButton->setObjectName(QStringLiteral("editMotionSettings"));
+    settingsButton->setToolTip(QStringLiteral("编辑事件、帧率、时长和淡入淡出"));
+    timelineTools->addWidget(settingsButton);
+    connect(settingsButton, &QPushButton::clicked, this, &CMotionPanel::EditTimelineSettings);
     m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
     m_targetFilter = new QComboBox(timelineBox);
     m_targetFilter->setObjectName(QStringLiteral("motionTargetFilter"));
@@ -519,6 +525,12 @@ void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 void CMotionPanel::RefreshTimelineTable()
 {
     if (!m_timelineTable) return;
+    const double duration = m_timeline.Timing().duration;
+    m_timelineTime = qBound(0.0, m_timelineTime, duration);
+    if (m_timelinePlayhead) {
+        const QSignalBlocker blocker(m_timelinePlayhead);
+        m_timelinePlayhead->setValue(duration > 0.0 ? qRound(m_timelineTime * 1000.0 / duration) : 0);
+    }
     QVector<TimelineRow> points;
     for (auto it = m_timeline.Tracks().cbegin(); it != m_timeline.Tracks().cend(); ++it) {
         if (m_targetFilter->currentData().toInt() >= 0 &&
@@ -653,6 +665,24 @@ bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float
     }
     emit MotionTimelineChanged();
     return true;
+}
+
+void CMotionPanel::EditTimelineSettings()
+{
+    m_timelineDelegate->CommitEditor();
+    m_recordTimelineCb->setChecked(false);
+    TickTimelinePlayback();
+    m_timelineTimer->stop();
+    m_playTimelineButton->setText(QStringLiteral("预览"));
+    const auto before = CurrentTimelineSnapshot();
+    CMotionSettingsDialog dialog(m_timeline, m_timelineTime, this);
+    if (dialog.exec() != QDialog::Accepted || m_timeline.HasSameContent(dialog.Timeline())) return;
+    m_timeline = dialog.Timeline();
+    m_timelineTime = qMin(m_timelineTime, m_timeline.Timing().duration);
+    emit TimelineActivated();
+    PushTimelineEdit(before, QStringLiteral("修改动作设置"));
+    RefreshTimelineTable();
+    emit MotionTimelineChanged();
 }
 
 void CMotionPanel::AddTimelineKeyframe()

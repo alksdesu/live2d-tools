@@ -25,6 +25,8 @@ public:
     explicit CParamPanel(QWidget *parent = nullptr);
     void SetDocument(live2dstruct::CModelDocument* document);
     void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
+    void SetPreviewValues(const QMap<QString, float>& values, const QMap<QString, float>& baselineValues);
+    void ClearPreviewValues(const QMap<QString, float>& restoredValues = {}, const QString& preservedParameterId = {});
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
     void RefreshParameterMetadata();
     QMap<QString, float> CurrentValues() const;
@@ -48,6 +50,7 @@ public slots:
     void EditParameterMetadata();
 
 private:
+    friend class ParamPanelTests;
     struct ParamRow {
         QWidget* widget = nullptr;
         QSlider* slider;
@@ -73,12 +76,18 @@ private:
     bool m_updatingXY = false;
     QVector<ParamRow> m_rows;
     QSet<int> m_userDragging;
+    QSet<int> m_changedDrags;
     QSet<int> m_userLocked; // 用户手动修改过的参数，不再被 sync 覆盖
     QHash<QString, float> m_lastValues;
+    QMap<QString, float> m_previewBaseline;
+    bool m_previewActive = false;
     QHash<int, float> m_dragStarts;
     live2dstruct::CModelDocument* m_document = nullptr;
 
     void ApplyValue(int rowIndex, float value, bool record);
+    void BeginParameterDrag(int rowIndex);
+    void EndParameterDrag(int rowIndex);
+    float ValueBeforeEdit(const QString& paramId, float fallback) const;
     void ApplyValuesInternal(const QMap<QString, float>& values, bool record);
     void PushEdit(const QString& paramId, float before, float after);
     void EmitHistoryState();

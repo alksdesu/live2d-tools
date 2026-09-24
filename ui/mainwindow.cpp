@@ -48,7 +48,6 @@
 #include <QSharedPointer>
 #include <QPointer>
 #include <QScopedValueRollback>
-#include <QSignalBlocker>
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
@@ -623,14 +622,11 @@ void MainWindow::ClearTimelinePreview()
     if (!model || !model->HasTimelinePreview()) return;
     model->ClearTimelinePreview();
     if (!m_paramPanel) return;
-    const QSignalBlocker blocker(m_paramPanel);
     const auto values = model->GetParameterValues();
     m_openglwindows->SyncPreviewView(values);
-    for (auto it = values.cbegin(); it != values.cend(); ++it) {
-        if (it.key() == m_parameterBeingEdited) continue;
-        m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false, false);
-        if (m_blendShapePanel) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
-    }
+    m_paramPanel->ClearPreviewValues(values, m_parameterBeingEdited);
+    if (m_blendShapePanel) for (auto it = values.cbegin(); it != values.cend(); ++it)
+        if (it.key() != m_parameterBeingEdited) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
 }
 
 void MainWindow::RefreshUndoActions()
@@ -1365,13 +1361,11 @@ void MainWindow::RestDock(const QString &name)
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
         if (!model || !model->SetTimelinePreview(frame) || !m_paramPanel) return;
-        const QSignalBlocker blocker(m_paramPanel);
         const auto values = model->GetParameterValues();
         m_openglwindows->SyncPreviewView(values);
-        for (auto it = values.cbegin(); it != values.cend(); ++it) {
-            m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false, false);
-            if (m_blendShapePanel) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
-        }
+        m_paramPanel->SetPreviewValues(values, model->GetTimelineBaseParameters());
+        if (m_blendShapePanel) for (auto it = values.cbegin(); it != values.cend(); ++it)
+            m_blendShapePanel->SyncParameterValue(it.key(), it.value());
     });
     connect(m_motionPanel, &CMotionPanel::TimelinePreviewStopped, this, &MainWindow::ClearTimelinePreview);
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
