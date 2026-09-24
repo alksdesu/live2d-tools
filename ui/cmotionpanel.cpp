@@ -8,6 +8,9 @@
 #include <QLabel>
 #include <QSlider>
 #include <QSplitter>
+#include <QTabWidget>
+#include <QGridLayout>
+#include <QScrollArea>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -26,6 +29,9 @@
 #include <QFileDialog>
 #include <QTimer>
 #include <QSignalBlocker>
+#include <QUndoStack>
+#include <QUndoCommand>
+#include <functional>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -33,6 +39,21 @@
 
 
 namespace {
+class CTimelineEdit : public QUndoCommand
+{
+public:
+    CTimelineEdit(const QString& label, std::function<void(bool)> apply)
+        : QUndoCommand(label), m_apply(std::move(apply)) {}
+    void undo() override { m_apply(false); }
+    void redo() override {
+        if (m_initialRedo) m_initialRedo = false;
+        else m_apply(true);
+    }
+private:
+    std::function<void(bool)> m_apply;
+    bool m_initialRedo = true;
+};
+
 void clearLayoutItems(QLayout* layout)
 {
     if (!layout) return;
@@ -59,10 +80,17 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     : QDockWidget("动作/表情", parent)
 {
     setObjectName(QStringLiteral("motionPanel"));
+    m_timelineHistory = new QUndoStack(this);
+    m_timelineHistory->setUndoLimit(100);
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 
-    QSplitter* splitter = new QSplitter(Qt::Vertical, wrapper);
+    m_workspaceSplitter = new QSplitter(Qt::Horizontal, wrapper);
+    m_workspaceSplitter->setObjectName(QStringLiteral("animationWorkspaceSplitter"));
+    m_workspaceSplitter->setChildrenCollapsible(false);
+    m_assetTabs = new QTabWidget(m_workspaceSplitter);
+    m_assetTabs->setObjectName(QStringLiteral("animationAssetTabs"));
+    m_assetTabs->setDocumentMode(true);
 
     // 动作部分
     QWidget* motionWidget = new QWidget();
@@ -73,21 +101,29 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_motionSearch->setClearButtonEnabled(true);
     motionLayout->addWidget(m_motionSearch);
     m_motionList = new QListWidget();
+    m_motionList->setObjectName(QStringLiteral("motionCatalog"));
     motionLayout->addWidget(m_motionList);
     QPushButton* playBtn = new QPushButton("▶ 播放");
     playBtn->setObjectName("primaryBtn");
+    playBtn->setEnabled(false);
+    playBtn->setAccessibleName(QStringLiteral("播放选中的动作"));
     QPushButton* stopBtn = new QPushButton("■ 停止");
     auto* loadLipSyncBtn = new QPushButton(QStringLiteral("加载口型 WAV"), motionWidget);
     auto* stopLipSyncBtn = new QPushButton(QStringLiteral("停止口型"), motionWidget);
     m_lipSyncWavStatus = new QLabel(QStringLiteral("口型：未加载"), motionWidget);
     loadLipSyncBtn->setObjectName(QStringLiteral("loadLipSyncWav"));
     stopLipSyncBtn->setObjectName(QStringLiteral("stopLipSyncWav"));
-    motionLayout->addWidget(playBtn);
-    motionLayout->addWidget(stopBtn);
-    motionLayout->addWidget(loadLipSyncBtn);
-    motionLayout->addWidget(stopLipSyncBtn);
+    auto* motionActions = new QGridLayout();
+    motionActions->addWidget(playBtn, 0, 0);
+    motionActions->addWidget(stopBtn, 0, 1);
+    motionActions->addWidget(loadLipSyncBtn, 1, 0);
+    motionActions->addWidget(stopLipSyncBtn, 1, 1);
+    motionLayout->addLayout(motionActions);
     motionLayout->addWidget(m_lipSyncWavStatus);
-    splitter->addWidget(motionWidget);
+    m_assetTabs->addTab(motionWidget, QStringLiteral("动作"));
+    connect(m_motionList, &QListWidget::currentRowChanged, this, [this, playBtn](int row){
+        playBtn->setEnabled(row >= 0 && row < m_motionEntries.size());
+    });
 
     connect(playBtn, &QPushButton::clicked, this, [this](){
         int row = m_motionList->currentRow();
@@ -115,20 +151,25 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_exprSearch->setClearButtonEnabled(true);
     exprLayout->addWidget(m_exprSearch);
     m_exprList = new QListWidget();
+    m_exprList->setObjectName(QStringLiteral("expressionCatalog"));
     exprLayout->addWidget(m_exprList);
     QPushButton* applyBtn = new QPushButton("✦ 应用");
     applyBtn->setObjectName("primaryBtn");
+    applyBtn->setEnabled(false);
+    applyBtn->setAccessibleName(QStringLiteral("应用选中的表情"));
     m_editExpressionButton = new QPushButton(QStringLiteral("编辑表情"), exprWidget);
     m_editExpressionButton->setEnabled(false);
-    exprLayout->addWidget(applyBtn);
-    exprLayout->addWidget(m_editExpressionButton);
-    splitter->addWidget(exprWidget);
+    auto* expressionActions = new QHBoxLayout();
+    expressionActions->addWidget(applyBtn);
+    expressionActions->addWidget(m_editExpressionButton);
+    exprLayout->addLayout(expressionActions);
+    m_assetTabs->addTab(exprWidget, QStringLiteral("表情"));
 
     // Pose 区域
     m_poseWidget = new QWidget();
     QVBoxLayout* poseLayout = new QVBoxLayout(m_poseWidget);
     poseLayout->addWidget(new QLabel("Pose 切换"));
-    auto* poseTools = new QHBoxLayout();
+    auto* poseTools = new QGridLayout();
     m_addPosePartButton = new QPushButton(QStringLiteral("添加 Part"), m_poseWidget);
     m_removePosePartButton = new QPushButton(QStringLiteral("删除 Part"), m_poseWidget);
     m_editPoseLinksButton = new QPushButton(QStringLiteral("编辑 Link"), m_poseWidget);
@@ -137,10 +178,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_removePosePartButton->setEnabled(false);
     m_editPoseLinksButton->setEnabled(false);
     m_savePoseButton->setEnabled(false);
-    poseTools->addWidget(m_addPosePartButton);
-    poseTools->addWidget(m_removePosePartButton);
-    poseTools->addWidget(m_editPoseLinksButton);
-    poseTools->addWidget(m_savePoseButton, 1);
+    poseTools->addWidget(m_addPosePartButton, 0, 0);
+    poseTools->addWidget(m_removePosePartButton, 0, 1);
+    poseTools->addWidget(m_editPoseLinksButton, 1, 0);
+    poseTools->addWidget(m_savePoseButton, 1, 1);
     poseLayout->addLayout(poseTools);
     connect(m_addPosePartButton, &QPushButton::clicked, this, &CMotionPanel::AddPosePart);
     connect(m_removePosePartButton, &QPushButton::clicked, this, &CMotionPanel::RemovePosePart);
@@ -149,8 +190,13 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         QString error;
         if (!SavePose(&error)) QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), error);
     });
-    m_poseWidget->setVisible(false); // 没有 pose 数据时隐藏
-    splitter->addWidget(m_poseWidget);
+    auto* poseScroll = new QScrollArea(m_assetTabs);
+    poseScroll->setWidgetResizable(true);
+    poseScroll->setWidget(m_poseWidget);
+    m_posePage = poseScroll;
+    m_assetTabs->addTab(m_posePage, QStringLiteral("Pose"));
+    m_assetTabs->setTabVisible(m_assetTabs->indexOf(m_posePage), false);
+    connect(m_assetTabs, &QTabWidget::currentChanged, this, [this](int index){ m_savedAssetTab = index; });
 
     connect(applyBtn, &QPushButton::clicked, this, [this](){
         int row = m_exprList->currentRow();
@@ -167,8 +213,9 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     });
 
     connect(m_editExpressionButton, &QPushButton::clicked, this, &CMotionPanel::EditSelectedExpression);
-    connect(m_exprList, &QListWidget::currentRowChanged, this, [this](int row){
+    connect(m_exprList, &QListWidget::currentRowChanged, this, [this, applyBtn](int row){
         m_editExpressionButton->setEnabled(row >= 0 && row < m_exprEntries.size());
+        applyBtn->setEnabled(row >= 0 && row < m_exprEntries.size());
     });
 
     connect(m_motionSearch, &QLineEdit::textChanged, this, [this](const QString& text){
@@ -182,9 +229,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
             m_exprList->item(i)->setHidden(!query.isEmpty() && !m_exprList->item(i)->text().toLower().contains(query));
     });
 
-    mainLayout->addWidget(splitter);
+    mainLayout->addWidget(m_workspaceSplitter, 1);
 
     auto* timelineBox = new QGroupBox(QStringLiteral("参数录制时间轴"), wrapper);
+    m_timelineBox = timelineBox;
     auto* timelineLayout = new QVBoxLayout(timelineBox);
     auto* timelineTools = new QHBoxLayout();
     m_recordTimelineCb = new QCheckBox(QStringLiteral("录制"), timelineBox);
@@ -198,16 +246,30 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_playTimelineButton->setEnabled(false);
     timelineTools->addWidget(m_playTimelineButton);
     timelineTools->addWidget(m_recordTimelineCb);
-    timelineTools->addWidget(clearTimelineButton);
-    timelineTools->addWidget(removeTimelineButton);
-    timelineTools->addWidget(exportTimelineButton);
-    timelineTools->addWidget(importTimelineButton);
     timelineTools->addStretch(1);
-    m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
-    timelineTools->addWidget(m_timelineStatus);
+    timelineTools->addWidget(importTimelineButton);
+    timelineTools->addWidget(exportTimelineButton);
     timelineLayout->addLayout(timelineTools);
-    m_curveView = new CMotionCurveView(timelineBox);
-    timelineLayout->addWidget(m_curveView);
+    auto* editTools = new QHBoxLayout();
+    m_undoTimelineButton = new QPushButton(QStringLiteral("撤销"), timelineBox);
+    m_redoTimelineButton = new QPushButton(QStringLiteral("重做"), timelineBox);
+    m_undoTimelineButton->setObjectName(QStringLiteral("undoMotionTimeline"));
+    m_redoTimelineButton->setObjectName(QStringLiteral("redoMotionTimeline"));
+    removeTimelineButton->setObjectName(QStringLiteral("removeTimelineKeyframe"));
+    editTools->addWidget(m_undoTimelineButton);
+    editTools->addWidget(m_redoTimelineButton);
+    editTools->addWidget(removeTimelineButton);
+    editTools->addWidget(clearTimelineButton);
+    editTools->addStretch(1);
+    m_timelineStatus = new QLabel(QStringLiteral("暂无关键帧"), timelineBox);
+    editTools->addWidget(m_timelineStatus);
+    timelineLayout->addLayout(editTools);
+    connect(m_undoTimelineButton, &QPushButton::clicked, this, &CMotionPanel::UndoTimeline);
+    connect(m_redoTimelineButton, &QPushButton::clicked, this, &CMotionPanel::RedoTimeline);
+    m_curveSplitter = new QSplitter(Qt::Vertical, timelineBox);
+    m_curveSplitter->setObjectName(QStringLiteral("animationCurveSplitter"));
+    m_curveSplitter->setChildrenCollapsible(false);
+    m_curveView = new CMotionCurveView(m_curveSplitter);
     m_timelineTable = new QTableWidget(0, 4, timelineBox);
     m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
     m_timelineDelegate = new CTableEditDelegate(m_timelineTable);
@@ -221,8 +283,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_timelineTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                      QAbstractItemView::SelectedClicked);
-    m_timelineTable->setMaximumHeight(170);
-    timelineLayout->addWidget(m_timelineTable);
+    m_curveSplitter->addWidget(m_timelineTable);
+    m_curveSplitter->setStretchFactor(0, 1);
+    m_curveSplitter->setStretchFactor(1, 1);
+    timelineLayout->addWidget(m_curveSplitter, 1);
     m_timelinePlayhead = new QSlider(Qt::Horizontal, timelineBox);
     m_timelinePlayhead->setObjectName(QStringLiteral("motionTimelinePlayhead"));
     m_timelinePlayhead->setRange(0, 1000);
@@ -233,18 +297,30 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     playheadRow->addWidget(m_timelinePlayhead, 1);
     playheadRow->addWidget(m_timelineTimeLabel);
     timelineLayout->addLayout(playheadRow);
-    mainLayout->addWidget(timelineBox);
+    m_workspaceSplitter->addWidget(timelineBox);
+    m_workspaceSplitter->setStretchFactor(0, 0);
+    m_workspaceSplitter->setStretchFactor(1, 1);
     connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
-        if (!m_restoringTimeline) ++m_timelineRevision;
+        if (!m_restoringTimeline) {
+            ++m_timelineRevision;
+            emit TimelineActivated();
+        }
         if (recording) {
+            if (!m_restoringTimeline) {
+                m_curveView->CancelDrag();
+                BeginTimelineEditGroup(QStringLiteral("录制参数"));
+            }
             m_timeline.StartRecording();
             m_timelineStatus->setText(QStringLiteral("正在录制"));
         } else {
             m_timeline.StopRecording();
+            if (!m_restoringTimeline) EndTimelineEditGroup();
             m_timelineStatus->setText(m_timeline.PointCount() > 0
                                       ? QStringLiteral("已录制 %1 个关键帧").arg(m_timeline.PointCount())
                                       : QStringLiteral("暂无关键帧"));
         }
+        m_timelineTable->setEnabled(!recording);
+        m_curveView->setEnabled(!recording);
     });
     connect(clearTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ClearTimeline);
     connect(removeTimelineButton, &QPushButton::clicked, this, &CMotionPanel::RemoveTimelineKeyframe);
@@ -267,6 +343,11 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(m_curveView, &CMotionCurveView::PointEdited, this, &CMotionPanel::ApplyTimelineCurveEdit);
+    connect(m_curveView, &CMotionCurveView::EditStarted, this, [this](){
+        emit TimelineActivated();
+        BeginTimelineEditGroup(QStringLiteral("移动关键帧"));
+    });
+    connect(m_curveView, &CMotionCurveView::EditFinished, this, &CMotionPanel::EndTimelineEditGroup);
     connect(m_timelinePlayhead, &QSlider::valueChanged, this, &CMotionPanel::SetTimelineTimeFromSlider);
     m_timelineTimer = new QTimer(this);
     m_timelineTimer->setInterval(33);
@@ -274,7 +355,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_timelineTimer, &QTimer::timeout, this, &CMotionPanel::TickTimelinePlayback);
     connect(this, &CMotionPanel::MotionTimelineChanged, this, [this](){
         ++m_timelineRevision;
-        if (!m_restoringTimeline) SetTimelineDirty(true);
+        if (!m_restoringTimeline) RefreshTimelineHistory();
         if (m_recordTimelineCb && m_recordTimelineCb->isChecked()) return;
         emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
     });
@@ -312,7 +393,13 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_physicsCb, &QCheckBox::toggled, this, &CMotionPanel::PhysicsChanged);
     connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
         emit MotionPlaybackChanged(m_speedSlider->value() / 100.0f, loop);
-        if (!m_restoringTimeline && m_timeline.HasCurves()) emit MotionTimelineChanged();
+        if (!m_restoringTimeline && m_timeline.HasCurves()) {
+            auto before = CurrentTimelineSnapshot();
+            before.loop = !loop;
+            emit TimelineActivated();
+            PushTimelineEdit(before, QStringLiteral("修改循环设置"));
+            emit MotionTimelineChanged();
+        }
     });
     connect(m_speedSlider, &QSlider::valueChanged, this, [this](int value){
         m_speedLabel->setText(QStringLiteral("%1%").arg(value));
@@ -323,7 +410,18 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     exportTimelineButton->setObjectName(QStringLiteral("exportMotionTimeline"));
     importTimelineButton->setObjectName(QStringLiteral("importMotionTimeline"));
     m_loopCb->setObjectName(QStringLiteral("motionLoop"));
+    connect(m_timelineHistory, &QUndoStack::indexChanged, this, &CMotionPanel::RefreshTimelineHistory);
+    connect(m_timelineHistory, &QUndoStack::cleanChanged, this, &CMotionPanel::RefreshTimelineHistory);
+    RefreshTimelineHistory();
     setWidget(wrapper);
+}
+
+CMotionPanel::~CMotionPanel()
+{
+    m_timelineTimer->stop();
+    // 子控件销毁会发出信号，须在派生成员释放前断开。
+    for (QObject* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
+    delete m_timelineHistory;
 }
 
 bool CMotionPanel::BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error)
@@ -424,6 +522,7 @@ void CMotionPanel::ToggleTimelinePlayback()
 {
     if (!m_timelineTimer || m_timeline.Curves().isEmpty()) return;
     ++m_timelineRevision;
+    emit TimelineActivated();
     if (m_timelineTimer->isActive()) {
         m_timelineTimer->stop();
         m_playTimelineButton->setText(QStringLiteral("预览"));
@@ -471,6 +570,7 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
 {
     if (!m_timelinePlayhead || m_timeline.Curves().isEmpty()) return;
     ++m_timelineRevision;
+    emit TimelineActivated();
     if (m_timelineTimer && m_timelineTimer->isActive()) {
         m_timelineTimer->stop();
         if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
@@ -484,7 +584,11 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
 
 void CMotionPanel::ApplyTimelineCurveEdit(const QString& parameterId, int pointIndex, float time, float value)
 {
-    if (m_updatingTimeline || !m_timeline.UpdatePoint(parameterId, pointIndex, time, value)) return;
+    if (m_updatingTimeline) return;
+    const auto before = CurrentTimelineSnapshot();
+    if (!m_timeline.UpdatePoint(parameterId, pointIndex, time, value)) return;
+    emit TimelineActivated();
+    PushTimelineEdit(before, QStringLiteral("移动关键帧"));
     RefreshTimelineTable();
     emit MotionTimelineChanged();
 }
@@ -494,6 +598,7 @@ void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
     if (m_updatingTimeline || row < 0 || row >= m_timelineRows.size() ||
         (column != 0 && column != 2 && column != 3)) return;
     const TimelineRow reference = m_timelineRows.at(row);
+    const auto before = CurrentTimelineSnapshot();
     if (column == 3) {
         const QString text = m_timelineTable->item(row, column)
             ? m_timelineTable->item(row, column)->text().trimmed().toLower() : QString();
@@ -506,6 +611,8 @@ void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
             RefreshTimelineTable();
             return;
         }
+        emit TimelineActivated();
+        PushTimelineEdit(before, QStringLiteral("修改插值"));
         RefreshTimelineTable();
         emit MotionTimelineChanged();
         return;
@@ -522,6 +629,8 @@ void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
         RefreshTimelineTable();
         return;
     }
+    emit TimelineActivated();
+    PushTimelineEdit(before, QStringLiteral("编辑关键帧"));
     RefreshTimelineTable();
     emit MotionTimelineChanged();
 }
@@ -530,8 +639,13 @@ void CMotionPanel::RemoveTimelineKeyframe()
 {
     if (!m_timelineTable || m_timelineTable->currentRow() < 0 ||
         m_timelineTable->currentRow() >= m_timelineRows.size()) return;
+    m_timelineDelegate->CommitEditor();
+    if (m_timelineTable->currentRow() < 0 || m_timelineTable->currentRow() >= m_timelineRows.size()) return;
     const TimelineRow reference = m_timelineRows.at(m_timelineTable->currentRow());
+    const auto before = CurrentTimelineSnapshot();
     if (!m_timeline.RemovePoint(reference.parameterId, reference.pointIndex)) return;
+    emit TimelineActivated();
+    PushTimelineEdit(before, QStringLiteral("删除关键帧"));
     RefreshTimelineTable();
     m_timelineStatus->setText(m_timeline.PointCount() > 0
                               ? QStringLiteral("已录制 %1 个关键帧").arg(m_timeline.PointCount())
@@ -545,6 +659,8 @@ void CMotionPanel::ClearTimeline()
     if (m_timelineTimer) m_timelineTimer->stop();
     if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
     if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
+    m_curveView->CancelDrag();
+    const auto before = CurrentTimelineSnapshot();
     m_timeline.Clear();
     m_timelineTime = 0.0f;
     {
@@ -553,12 +669,14 @@ void CMotionPanel::ClearTimeline()
     }
     RefreshTimelineTable();
     if (m_timelineStatus) m_timelineStatus->setText(QStringLiteral("暂无关键帧"));
+    emit TimelineActivated();
+    PushTimelineEdit(before, QStringLiteral("清空动画"));
     emit MotionTimelineChanged();
 }
 
 bool CMotionPanel::HasUnsavedTimelineChanges() const
 {
-    return m_timelineDirty || m_timelineDelegate->HasPendingChanges();
+    return m_timelineDirty || PendingTimelineEdit() || m_timelineDelegate->HasPendingChanges();
 }
 
 void CMotionPanel::SetTimelineDirty(bool dirty)
@@ -570,7 +688,10 @@ void CMotionPanel::SetTimelineDirty(bool dirty)
 
 void CMotionPanel::MarkTimelineSaved()
 {
-    SetTimelineDirty(false);
+    m_timelineDelegate->CommitEditor();
+    FlushTimelineEditGroup();
+    m_timelineHistory->setClean();
+    RefreshTimelineHistory();
 }
 
 bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
@@ -585,6 +706,9 @@ bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error
     float playhead = 0.0f;
     if (!candidate.RestoreState(state, &playhead, error)) return false;
     m_restoringTimeline = true;
+    m_editGroupActive = false;
+    m_curveView->CancelDrag();
+    m_timelineHistory->clear();
     m_timelineTimer->stop();
     m_recordTimelineCb->setChecked(false);
     m_timeline = std::move(candidate);
@@ -602,6 +726,142 @@ bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error
     MarkTimelineSaved();
     m_restoringTimeline = false;
     return true;
+}
+
+CMotionPanel::TimelineSnapshot CMotionPanel::CurrentTimelineSnapshot() const
+{
+    TimelineSnapshot state{m_timeline, m_loopCb->isChecked(), m_timelineTime};
+    state.timeline.StopRecording();
+    return state;
+}
+
+bool CMotionPanel::PendingTimelineEdit() const
+{
+    return m_editGroupActive && !m_editGroupBefore.SameContent(CurrentTimelineSnapshot());
+}
+
+bool CMotionPanel::CanUndoTimeline() const
+{
+    return m_timelineHistory->canUndo() || PendingTimelineEdit() || m_timelineDelegate->HasPendingChanges();
+}
+
+bool CMotionPanel::CanRedoTimeline() const
+{
+    return m_timelineHistory->canRedo() && !PendingTimelineEdit() && !m_timelineDelegate->HasPendingChanges();
+}
+
+bool CMotionPanel::IsTimelineWidget(const QWidget* widget) const
+{
+    return widget && (widget == m_loopCb || widget == m_timelineBox || m_timelineBox->isAncestorOf(widget));
+}
+
+QByteArray CMotionPanel::SaveLayout() const
+{
+    return QJsonDocument(QJsonObject{
+        {QStringLiteral("assets"), QString::fromLatin1(m_workspaceSplitter->saveState().toBase64())},
+        {QStringLiteral("curves"), QString::fromLatin1(m_curveSplitter->saveState().toBase64())},
+        {QStringLiteral("tab"), m_assetTabs->currentIndex()}
+    }).toJson(QJsonDocument::Compact);
+}
+
+void CMotionPanel::RestoreLayout(const QByteArray& state)
+{
+    const auto object = QJsonDocument::fromJson(state).object();
+    if (object.isEmpty()) return;
+    m_workspaceSplitter->restoreState(QByteArray::fromBase64(object.value(QStringLiteral("assets")).toString().toLatin1()));
+    m_curveSplitter->restoreState(QByteArray::fromBase64(object.value(QStringLiteral("curves")).toString().toLatin1()));
+    const int tab = object.value(QStringLiteral("tab")).toInt(-1);
+    if (tab < 0 || tab >= m_assetTabs->count()) return;
+    m_savedAssetTab = tab;
+    if (m_assetTabs->isTabVisible(tab)) m_assetTabs->setCurrentIndex(tab);
+}
+
+void CMotionPanel::RefreshTimelineHistory()
+{
+    SetTimelineDirty(!m_timelineHistory->isClean() || PendingTimelineEdit());
+    m_undoTimelineButton->setEnabled(CanUndoTimeline());
+    m_redoTimelineButton->setEnabled(CanRedoTimeline());
+    m_undoTimelineButton->setToolTip(PendingTimelineEdit() ? m_editGroupLabel : m_timelineHistory->undoText());
+    m_redoTimelineButton->setToolTip(m_timelineHistory->redoText());
+    emit TimelineHistoryChanged(CanUndoTimeline(), CanRedoTimeline());
+}
+
+void CMotionPanel::PushTimelineEdit(const TimelineSnapshot& before, const QString& label)
+{
+    if (m_restoringTimeline || m_editGroupActive) return;
+    const auto after = CurrentTimelineSnapshot();
+    if (before.SameContent(after)) return;
+    m_timelineHistory->push(new CTimelineEdit(label, [this, before, after](bool forward){
+        ApplyTimelineSnapshot(forward ? after : before);
+    }));
+}
+
+void CMotionPanel::BeginTimelineEditGroup(const QString& label)
+{
+    EndTimelineEditGroup();
+    m_editGroupBefore = CurrentTimelineSnapshot();
+    m_editGroupLabel = label;
+    m_editGroupActive = true;
+}
+
+void CMotionPanel::EndTimelineEditGroup()
+{
+    if (!m_editGroupActive) return;
+    m_editGroupActive = false;
+    PushTimelineEdit(m_editGroupBefore, m_editGroupLabel);
+    RefreshTimelineHistory();
+}
+
+void CMotionPanel::FlushTimelineEditGroup()
+{
+    if (!m_editGroupActive) return;
+    const auto label = m_editGroupLabel;
+    EndTimelineEditGroup();
+    BeginTimelineEditGroup(label);
+}
+
+void CMotionPanel::ApplyTimelineSnapshot(const TimelineSnapshot& snapshot)
+{
+    m_restoringTimeline = true;
+    m_timelineTimer->stop();
+    m_recordTimelineCb->setChecked(false);
+    m_timeline = snapshot.timeline;
+    m_loopCb->setChecked(snapshot.loop);
+    m_timelineTime = qBound(0.0f, snapshot.playhead, m_timeline.Duration());
+    m_playTimelineButton->setText(QStringLiteral("预览"));
+    {
+        const QSignalBlocker blocker(m_timelinePlayhead);
+        const double duration = m_timeline.Duration();
+        m_timelinePlayhead->setValue(duration > 0.0 ? qRound(m_timelineTime * 1000.0 / duration) : 0);
+    }
+    RefreshTimelineTable();
+    m_timelineStatus->setText(m_timeline.PointCount() > 0
+        ? QStringLiteral("%1 个参数关键帧").arg(m_timeline.PointCount())
+        : m_timeline.HasCurves() ? QStringLiteral("模型 / Part 曲线") : QStringLiteral("暂无关键帧"));
+    emit MotionTimelineChanged();
+    m_restoringTimeline = false;
+}
+
+void CMotionPanel::UndoTimeline()
+{
+    emit TimelineActivated();
+    m_timelineDelegate->CommitEditor();
+    m_recordTimelineCb->setChecked(false);
+    m_curveView->CancelDrag();
+    EndTimelineEditGroup();
+    m_timelineHistory->undo();
+    RefreshTimelineHistory();
+}
+
+void CMotionPanel::RedoTimeline()
+{
+    emit TimelineActivated();
+    m_timelineDelegate->CommitEditor();
+    m_recordTimelineCb->setChecked(false);
+    m_curveView->CancelDrag();
+    EndTimelineEditGroup();
+    m_timelineHistory->redo();
+    RefreshTimelineHistory();
 }
 
 bool CMotionPanel::ConfirmTimelineReplacement()
@@ -649,6 +909,7 @@ bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
     QJsonObject state;
     if (!candidate.SaveState(&state, candidate.Loop(), 0, error)) return false;
     if (!RestoreTimelineState(state, error)) return false;
+    emit TimelineActivated();
     m_timelineStatus->setText(m_timeline.PointCount() > 0
         ? QStringLiteral("已导入 %1 个参数关键帧").arg(m_timeline.PointCount())
         : QStringLiteral("已保留模型 / Part 曲线，可继续导出"));
@@ -734,14 +995,14 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
     }
 
     if(poseJsonPath.isEmpty()){
-        m_poseWidget->setVisible(false);
+        m_assetTabs->setTabVisible(m_assetTabs->indexOf(m_posePage), false);
         return true;
     }
 
     m_poseDocument = candidate;
     QJsonArray groups = candidate.value(QStringLiteral("Groups")).toArray();
     if(groups.isEmpty()){
-        m_poseWidget->setVisible(false);
+        m_assetTabs->setTabVisible(m_assetTabs->indexOf(m_posePage), false);
         return true;
     }
 
@@ -752,6 +1013,8 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         PoseGroup pg;
         pg.sourceIndex = g;
         QComboBox* combo = new QComboBox();
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(10);
         for(int i = 0; i < group.size(); i++){
             const QJsonObject part = group[i].toObject();
             QString partId = part["Id"].toString();
@@ -784,7 +1047,9 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         });
     }
 
-    m_poseWidget->setVisible(!m_poseGroups.isEmpty());
+    const int poseTab = m_assetTabs->indexOf(m_posePage);
+    m_assetTabs->setTabVisible(poseTab, !m_poseGroups.isEmpty());
+    if (!m_poseGroups.isEmpty() && m_savedAssetTab == poseTab) m_assetTabs->setCurrentIndex(poseTab);
     m_savePoseButton->setEnabled(!m_poseGroups.isEmpty());
     if (!m_poseGroups.isEmpty()) {
         m_activePoseGroup = 0;

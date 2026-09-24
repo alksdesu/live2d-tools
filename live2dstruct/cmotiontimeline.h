@@ -31,6 +31,7 @@ public:
     bool SaveState(QJsonObject* state, bool loop, float playhead, QString* error = nullptr) const;
     bool RestoreState(const QJsonObject& state, float* playhead = nullptr, QString* error = nullptr);
     bool HasCurves() const;
+    bool HasSameContent(const CMotionTimeline& other) const;
     int PointCount() const;
     const QMap<QString, QVector<QPointF>>& Curves() const { return m_curves; }
 

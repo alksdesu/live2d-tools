@@ -19,17 +19,28 @@ class QTableWidget;
 class QTimer;
 class CMotionCurveView;
 class CTableEditDelegate;
+class QUndoStack;
+class QTabWidget;
+class QSplitter;
 
 class CMotionPanel : public QDockWidget
 {
     Q_OBJECT
 public:
     explicit CMotionPanel(QWidget *parent = nullptr);
+    ~CMotionPanel() override;
     bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
     bool CaptureTimelineState(QJsonObject* state, QString* error = nullptr);
     bool RestoreTimelineState(const QJsonObject& state, QString* error = nullptr);
     bool HasUnsavedTimelineChanges() const;
     void MarkTimelineSaved();
+    void UndoTimeline();
+    void RedoTimeline();
+    bool CanUndoTimeline() const;
+    bool CanRedoTimeline() const;
+    bool IsTimelineWidget(const QWidget* widget) const;
+    QByteArray SaveLayout() const;
+    void RestoreLayout(const QByteArray& state);
     quint64 TimelineRevision() const { return m_timelineRevision; }
     bool ConfirmTimelineReplacement();
     bool LoadTimeline(const QString& path, QString* error = nullptr);
@@ -57,6 +68,8 @@ signals:
     void PoseSaved();
     void MotionTimelineChanged();
     void TimelineDirtyChanged(bool dirty);
+    void TimelineHistoryChanged(bool canUndo, bool canRedo);
+    void TimelineActivated();
     void SaveSessionRequested();
     void ExpressionSaved(const QString& name, const QString& path);
     void MotionTimelinePreviewChanged(const QMap<QString, float>& values);
@@ -80,6 +93,7 @@ private:
     QLabel* m_timelineTimeLabel = nullptr;
     CMotionCurveView* m_curveView = nullptr;
     QWidget* m_poseWidget;
+    QWidget* m_posePage = nullptr;
 
     struct MotionEntry {
         QString group;
@@ -113,6 +127,33 @@ private:
     bool m_modelPartsKnown = false;
     bool m_timelineDirty = false;
     bool m_restoringTimeline = false;
+    struct TimelineSnapshot {
+        CMotionTimeline timeline;
+        bool loop = false;
+        float playhead = 0;
+        bool SameContent(const TimelineSnapshot& other) const {
+            return loop == other.loop && timeline.HasSameContent(other.timeline);
+        }
+    };
+    TimelineSnapshot CurrentTimelineSnapshot() const;
+    void ApplyTimelineSnapshot(const TimelineSnapshot& snapshot);
+    void PushTimelineEdit(const TimelineSnapshot& before, const QString& label);
+    void BeginTimelineEditGroup(const QString& label);
+    void EndTimelineEditGroup();
+    void FlushTimelineEditGroup();
+    void RefreshTimelineHistory();
+    bool PendingTimelineEdit() const;
+    QUndoStack* m_timelineHistory = nullptr;
+    QWidget* m_timelineBox = nullptr;
+    QSplitter* m_workspaceSplitter = nullptr;
+    QSplitter* m_curveSplitter = nullptr;
+    QTabWidget* m_assetTabs = nullptr;
+    int m_savedAssetTab = 0;
+    QPushButton* m_undoTimelineButton = nullptr;
+    QPushButton* m_redoTimelineButton = nullptr;
+    bool m_editGroupActive = false;
+    TimelineSnapshot m_editGroupBefore;
+    QString m_editGroupLabel;
     quint64 m_timelineRevision = 0;
     CTableEditDelegate* m_timelineDelegate = nullptr;
     void SetTimelineDirty(bool dirty);

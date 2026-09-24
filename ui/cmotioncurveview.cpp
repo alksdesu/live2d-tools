@@ -11,6 +11,8 @@ CMotionCurveView::CMotionCurveView(QWidget* parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("motionCurveView"));
+    setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
     setMinimumHeight(150);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 }
@@ -32,6 +34,14 @@ void CMotionCurveView::SetSelectedPoint(const QString& parameterId, int pointInd
     m_selectedParameter = parameterId;
     m_selectedPointIndex = pointIndex;
     update();
+}
+
+void CMotionCurveView::CancelDrag()
+{
+    const bool dragging = !m_dragParameter.isEmpty();
+    m_dragParameter.clear();
+    m_dragPointIndex = -1;
+    if (dragging) emit EditFinished();
 }
 
 QRectF CMotionCurveView::plotRect() const
@@ -157,8 +167,10 @@ void CMotionCurveView::mousePressEvent(QMouseEvent* event)
     QString parameterId;
     int pointIndex = -1;
     if (!hitPoint(event->position(), &parameterId, &pointIndex)) return;
+    setFocus(Qt::MouseFocusReason);
     m_dragParameter = parameterId;
     m_dragPointIndex = pointIndex;
+    emit EditStarted();
     SetSelectedPoint(parameterId, pointIndex);
     emit PointSelected(parameterId, pointIndex);
     event->accept();
@@ -167,6 +179,10 @@ void CMotionCurveView::mousePressEvent(QMouseEvent* event)
 void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
 {
     if (!event || m_dragParameter.isEmpty() || m_dragPointIndex < 0 || !m_timeline) return;
+    if (!(event->buttons() & Qt::LeftButton)) {
+        CancelDrag();
+        return;
+    }
     const auto curve = m_timeline->Curves().constFind(m_dragParameter);
     if (curve == m_timeline->Curves().cend() || m_dragPointIndex >= curve.value().size()) return;
     const QRectF plot = plotRect();
@@ -186,8 +202,7 @@ void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
 void CMotionCurveView::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event && event->button() == Qt::LeftButton) {
-        m_dragParameter.clear();
-        m_dragPointIndex = -1;
+        CancelDrag();
         event->accept();
     }
 }

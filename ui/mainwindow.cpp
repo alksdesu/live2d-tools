@@ -47,6 +47,7 @@
 #include <QJsonObject>
 #include <QSharedPointer>
 #include <QPointer>
+#include <QScopedValueRollback>
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
@@ -79,9 +80,11 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    m_closingModel = true;
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("windowState"), saveState());
+    if (m_motionPanel) settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
 
     if(m_openglwindows!=nullptr){
         m_openglwindows->makeCurrent();
@@ -601,10 +604,25 @@ void MainWindow::SetWorkspaceMode(int mode)
     m_texturePanel->setVisible(modeling);
     m_diagnosticsPanel->setVisible(false);
     if (m_userDataPanel) m_userDataPanel->setVisible(false);
+    m_historySource = animation ? HistorySource::Timeline : HistorySource::Parameters;
+    RefreshUndoActions();
+}
+
+void MainWindow::RefreshUndoActions()
+{
+    const bool loaded = m_openglwindows && !m_closingModel;
+    const bool timeline = m_historySource == HistorySource::Timeline && m_motionPanel;
+    if (m_undoAction) m_undoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanUndoTimeline() : m_document.CanUndoEdit()));
+    if (m_redoAction) m_redoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanRedoTimeline() : m_document.CanRedoEdit()));
 }
 
 void MainWindow::UndoDocumentEdit()
 {
+    if (m_historySource == HistorySource::Timeline && m_motionPanel) {
+        m_motionPanel->UndoTimeline();
+        RefreshUndoActions();
+        return;
+    }
     live2dstruct::CModelEdit edit;
     if (!m_document.UndoEdit(&edit)) return;
     ApplyDocumentEditToUi(edit, false);
@@ -612,6 +630,11 @@ void MainWindow::UndoDocumentEdit()
 
 void MainWindow::RedoDocumentEdit()
 {
+    if (m_historySource == HistorySource::Timeline && m_motionPanel) {
+        m_motionPanel->RedoTimeline();
+        RefreshUndoActions();
+        return;
+    }
     live2dstruct::CModelEdit edit;
     if (!m_document.RedoEdit(&edit)) return;
     ApplyDocumentEditToUi(edit, true);
@@ -947,6 +970,12 @@ bool MainWindow::CloseModel()
 {
     if (!m_openglwindows) return true;
     if (!ConfirmCloseWithUnsavedChanges()) return false;
+    const QScopedValueRollback<bool> closing(m_closingModel, true);
+    if (m_motionPanel) {
+        QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+        settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
+    }
+    m_historySource = HistorySource::None;
 
     // 停止渲染定时器
     m_openglwindows->m_timer.stop();
@@ -1098,10 +1127,9 @@ void MainWindow::RestDock(const QString &name)
     m_paramPanel = new CParamPanel(this);
     m_paramPanel->SetDocument(&m_document);
     addDockWidget(Qt::RightDockWidgetArea, m_paramPanel);
-    connect(m_paramPanel, &CParamPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
-        m_historySource = HistorySource::Parameters;
-        if (m_undoAction) m_undoAction->setEnabled(canUndo);
-        if (m_redoAction) m_redoAction->setEnabled(canRedo);
+    connect(m_paramPanel, &CParamPanel::HistoryChanged, this, [this](bool canUndo, bool){
+        if (m_historySource != HistorySource::Timeline) m_historySource = HistorySource::Parameters;
+        RefreshUndoActions();
         if (canUndo) {
             m_sessionDirty = true;
             setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
@@ -1122,6 +1150,15 @@ void MainWindow::RestDock(const QString &name)
     QString catalogError;
     if (!m_motionPanel->BuildLists(name, partIds, &catalogError)) statusBar()->showMessage(catalogError, 8000);
     connect(m_motionPanel, &CMotionPanel::SaveSessionRequested, this, &MainWindow::on_actionSaveSession_triggered);
+    connect(m_motionPanel, &CMotionPanel::TimelineHistoryChanged, this, [this](bool, bool){
+        if (m_closingModel) return;
+        RefreshUndoActions();
+    });
+    connect(m_motionPanel, &CMotionPanel::TimelineActivated, this, [this](){
+        if (m_closingModel) return;
+        m_historySource = HistorySource::Timeline;
+        RefreshUndoActions();
+    });
     connect(m_motionPanel, &CMotionPanel::TimelineDirtyChanged, this, [this](bool dirty){
         if (dirty) {
             setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
@@ -1153,18 +1190,15 @@ void MainWindow::RestDock(const QString &name)
     tabifyDockWidget(m_paramPanel, m_inspectorPanel);
     m_inspectorPanel->SetDocument(&m_document);
     m_inspectorPanel->SetLockedState(m_document.LockedKeys());
-    connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, this, [this](bool canUndo, bool canRedo){
-        m_historySource = HistorySource::Inspector;
-        if (m_undoAction) m_undoAction->setEnabled(canUndo);
-        if (m_redoAction) m_redoAction->setEnabled(canRedo);
+    connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, this, [this](bool canUndo, bool){
+        if (m_historySource != HistorySource::Timeline) m_historySource = HistorySource::Inspector;
+        RefreshUndoActions();
         if (canUndo && !m_applyingSession) {
             m_sessionDirty = true;
             setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
             statusBar()->showMessage(QStringLiteral("有未保存的属性修改"));
         }
     });
-    connect(m_undoAction, &QAction::triggered, this, &MainWindow::UndoDocumentEdit);
-    connect(m_redoAction, &QAction::triggered, this, &MainWindow::RedoDocumentEdit);
 
     m_diagnosticsPanel = new CModelDiagnosticsPanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_diagnosticsPanel);
@@ -1268,6 +1302,7 @@ void MainWindow::RestDock(const QString &name)
     wireToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
     wireToggle(m_btnToggleUserData, m_userDataPanel);
 
+    m_motionPanel->RestoreLayout(settings.value(QStringLiteral("motionPanelLayout")).toByteArray());
     if (!m_savedWindowState.isEmpty()) {
         restoreState(m_savedWindowState);
         m_savedWindowState.clear();
@@ -1595,11 +1630,27 @@ void MainWindow::createActions()
     m_undoAction = new QAction(tr("撤销"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
     m_undoAction->setEnabled(false);
-    m_undoAction->setStatusTip(tr("撤销最近一次参数修改"));
+    m_undoAction->setStatusTip(tr("撤销当前编辑区操作"));
     m_redoAction = new QAction(tr("重做"), this);
     m_redoAction->setShortcut(QKeySequence::Redo);
     m_redoAction->setEnabled(false);
-    m_redoAction->setStatusTip(tr("重做最近一次参数修改"));
+    m_redoAction->setStatusTip(tr("重做当前编辑区操作"));
+    connect(m_undoAction, &QAction::triggered, this, &MainWindow::UndoDocumentEdit, Qt::UniqueConnection);
+    connect(m_redoAction, &QAction::triggered, this, &MainWindow::RedoDocumentEdit, Qt::UniqueConnection);
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget*, QWidget* current){
+        if (!current || m_closingModel || !m_openglwindows) return;
+        if (m_motionPanel && m_motionPanel->IsTimelineWidget(current)) {
+            m_historySource = HistorySource::Timeline;
+        } else {
+            const auto contains = [current](QWidget* editor){
+                return editor && (editor == current || editor->isAncestorOf(current));
+            };
+            if (!contains(m_paramPanel) && !contains(m_inspectorPanel) && !contains(m_treePanel) &&
+                !contains(m_blendShapePanel) && !contains(m_openglwindows)) return;
+            m_historySource = HistorySource::Parameters;
+        }
+        RefreshUndoActions();
+    });
     m_saveSessionAction = new QAction(tr("保存会话"), this);
     m_saveSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
     connect(m_saveSessionAction, &QAction::triggered, this, &MainWindow::on_actionSaveSession_triggered);

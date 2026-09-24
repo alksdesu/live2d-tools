@@ -1,4 +1,6 @@
 #include "ui/cmotionpanel.h"
+#include "ui/cmotioncurveview.h"
+#include "ui/theme.h"
 #include "live2dstruct/cmodelsession.h"
 #include <QtTest>
 #include <QApplication>
@@ -11,6 +13,10 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QSplitter>
+#include <QTabWidget>
+#include <QScrollArea>
+#include <QScrollBar>
 
 class MotionPanelTests : public QObject
 {
@@ -35,6 +41,322 @@ private:
     }
 
 private slots:
+    void undoRedoTracksSavedPositionAndBranches()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("input.json");
+        QVERIFY(makeClip(path));
+        CMotionPanel panel;
+        QVERIFY(panel.LoadTimeline(path));
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        QVERIFY(!panel.CanUndoTimeline());
+        table->item(1, 2)->setText("2");
+        QVERIFY(panel.CanUndoTimeline());
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        QVERIFY(!panel.CanUndoTimeline());
+        QVERIFY(panel.CanRedoTimeline());
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 2.0f);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(!panel.SaveTimeline(temp.path()));
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.SaveTimeline(temp.filePath("saved.json")));
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline();
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        table->item(1, 2)->setText("3");
+        QVERIFY(!panel.CanRedoTimeline());
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+    }
+
+    void recordingIsOneEditAndSaveCreatesCheckpoint()
+    {
+        CMotionPanel panel;
+        auto* recording = panel.findChild<QCheckBox*>("recordTimeline");
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        recording->setChecked(true);
+        panel.RecordParameterValue("A", 0);
+        panel.RecordParameterValue("B", 3);
+        panel.RecordParameterValue("A", 1);
+        QCOMPARE(table->rowCount(), 3);
+        QVERIFY(panel.CanUndoTimeline());
+        QJsonObject recorded;
+        QVERIFY(panel.CaptureTimelineState(&recorded));
+        panel.UndoTimeline();
+        QVERIFY(!recording->isChecked());
+        QCOMPARE(table->rowCount(), 0);
+        QVERIFY(!panel.CanUndoTimeline());
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline();
+        QCOMPARE(table->rowCount(), 3);
+        QJsonObject redone;
+        QVERIFY(panel.CaptureTimelineState(&redone));
+        QCOMPARE(redone, recorded);
+        QVERIFY(panel.RestoreTimelineState({}));
+        recording->setChecked(true);
+        panel.RecordParameterValue("A", 0);
+        panel.MarkTimelineSaved();
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RecordParameterValue("A", 1);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QCOMPARE(table->rowCount(), 1);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline();
+        QCOMPARE(table->rowCount(), 2);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+    }
+
+    void curveDragIsOneUndoStep()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("input.json");
+        QVERIFY(makeClip(path));
+        CMotionPanel panel;
+        QVERIFY(panel.LoadTimeline(path));
+        panel.resize(1000, 850);
+        panel.show();
+        auto* view = panel.findChild<CMotionCurveView*>("motionCurveView");
+        QVERIFY(view);
+        view->setFixedSize(320, 190);
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        QSignalSpy activated(&panel, &CMotionPanel::TimelineActivated);
+        QTest::mousePress(view, Qt::LeftButton, Qt::NoModifier, QPoint(34, 161));
+        for (const QPointF& point : {QPointF(70, 135), QPointF(90, 120), QPointF(115, 110)}) {
+            QMouseEvent move(QEvent::MouseMove, point, point, point, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(view, &move);
+        }
+        QTest::mouseRelease(view, Qt::LeftButton, Qt::NoModifier, QPoint(115, 110));
+        QVERIFY(!activated.isEmpty());
+        QVERIFY(panel.IsTimelineWidget(view));
+        QVERIFY(panel.CanUndoTimeline());
+        QJsonObject after;
+        QVERIFY(panel.CaptureTimelineState(&after));
+        QVERIFY(after != before);
+        panel.UndoTimeline();
+        QVERIFY(!panel.CanUndoTimeline());
+        QJsonObject undone;
+        QVERIFY(panel.CaptureTimelineState(&undone));
+        QCOMPARE(undone, before);
+        panel.RedoTimeline();
+        QVERIFY(panel.CaptureTimelineState(&undone));
+        QCOMPARE(undone, after);
+    }
+
+    void undoPreservesBezierEventsAndClearCanBeReversed()
+    {
+        CMotionPanel panel;
+        QString error;
+        QVERIFY(panel.LoadTimeline(QString(TEST_RESOURCES) + "/Mark/motions/mark_m06.motion3.json", &error));
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        int row = -1;
+        for (int i = 0; i < table->rowCount(); ++i)
+            if (table->item(i, 3)->flags() & Qt::ItemIsEditable) { row = i; break; }
+        QVERIFY(row >= 0);
+        table->item(row, 3)->setText("2");
+        QVERIFY(panel.CanUndoTimeline());
+        panel.UndoTimeline();
+        QJsonObject restored;
+        QVERIFY(panel.CaptureTimelineState(&restored));
+        QCOMPARE(restored, before);
+        table->setCurrentCell(row, 0);
+        panel.findChild<QPushButton*>("removeTimelineKeyframe")->click();
+        QVERIFY(panel.CanUndoTimeline());
+        panel.UndoTimeline();
+        QVERIFY(panel.CaptureTimelineState(&restored));
+        QCOMPARE(restored, before);
+        panel.findChild<QPushButton*>("clearMotionTimeline")->click();
+        QCOMPARE(table->rowCount(), 0);
+        QVERIFY(panel.CanUndoTimeline());
+        panel.MarkTimelineSaved();
+        panel.UndoTimeline();
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.CaptureTimelineState(&restored));
+        QCOMPARE(restored, before);
+        panel.RedoTimeline();
+        QCOMPARE(table->rowCount(), 0);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
+
+    void loopAndUncommittedEditsUseTimelineHistory()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("input.json");
+        QVERIFY(makeClip(path));
+        CMotionPanel panel;
+        QVERIFY(panel.LoadTimeline(path));
+        panel.resize(1000, 850);
+        panel.show();
+        auto* loop = panel.findChild<QCheckBox*>("motionLoop");
+        loop->setChecked(true);
+        QVERIFY(panel.IsTimelineWidget(loop));
+        panel.UndoTimeline();
+        QVERIFY(!loop->isChecked());
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline();
+        QVERIFY(loop->isChecked());
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        table->setCurrentCell(1, 2);
+        table->editItem(table->item(1, 2));
+        auto* editor = table->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        editor->setText("8");
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        panel.RedoTimeline();
+        QCOMPARE(table->item(1, 2)->text().toFloat(), 8.0f);
+        QJsonObject snapshot;
+        QVERIFY(panel.CaptureTimelineState(&snapshot));
+        QVERIFY(panel.RestoreTimelineState(snapshot));
+        QVERIFY(!panel.CanUndoTimeline());
+        QVERIFY(!panel.CanRedoTimeline());
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
+
+    void rejectedAndEquivalentEditsDoNotCreateHistory()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("input.json");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(R"({"Version":3,"Curves":[{"Target":"Parameter","Id":"A","Segments":[0,0,0,0.1,1]}]})") > 0);
+        file.close();
+        CMotionPanel panel;
+        QVERIFY(panel.LoadTimeline(path));
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        table->item(1, 2)->setText("1.00");
+        QVERIFY(!panel.CanUndoTimeline());
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        table->item(1, 0)->setText("0");
+        QVERIFY(!panel.CanUndoTimeline());
+        table->item(1, 2)->setText("5");
+        panel.UndoTimeline();
+        QVERIFY(panel.CanRedoTimeline());
+        table->item(1, 3)->setText("bad");
+        QVERIFY(panel.CanRedoTimeline());
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
+
+    void destroysPanelWithActiveHistoryAndEditor()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("input.json");
+        QVERIFY(makeClip(path));
+        for (bool recording : {false, true}) {
+            auto* panel = new CMotionPanel();
+            QVERIFY(panel->LoadTimeline(path));
+            panel->resize(1000, 850);
+            panel->show();
+            auto* table = panel->findChild<QTableWidget*>("motionTimelineTable");
+            table->item(1, 2)->setText("4");
+            QVERIFY(panel->CanUndoTimeline());
+            if (recording) {
+                panel->findChild<QCheckBox*>("recordTimeline")->setChecked(true);
+                panel->RecordParameterValue("ParamA", 7);
+            } else {
+                table->setCurrentCell(1, 2);
+                table->editItem(table->item(1, 2));
+                auto* editor = table->findChild<QLineEdit*>();
+                QVERIFY(editor);
+                editor->setText("5");
+            }
+            delete panel;
+            QCoreApplication::processEvents();
+        }
+    }
+
+    void historyControlsFitBothThemes()
+    {
+        QTemporaryDir temp;
+        const QString path = temp.filePath("input.json");
+        QVERIFY(makeClip(path));
+        for (bool dark : {false, true}) {
+            CMotionPanel panel;
+            panel.setStyleSheet(Theme::globalStyleSheet(dark));
+            QVERIFY(panel.LoadTimeline(path));
+            panel.resize(700, 520);
+            panel.show();
+            QCoreApplication::processEvents();
+            auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+            auto* undo = panel.findChild<QPushButton*>("undoMotionTimeline");
+            auto* redo = panel.findChild<QPushButton*>("redoMotionTimeline");
+            QVERIFY(undo && redo);
+            QVERIFY(panel.width() <= 740);
+            QVERIFY(panel.height() <= 540);
+            QVERIFY(table->viewport()->height() >= table->rowHeight(0) * 2);
+            QVERIFY(undo->isVisible());
+            QVERIFY(redo->isVisible());
+            QVERIFY(!undo->isEnabled());
+            table->item(1, 2)->setText("2");
+            QVERIFY(undo->isEnabled());
+            undo->click();
+            QVERIFY(redo->isEnabled());
+            redo->click();
+            QCOMPARE(table->item(1, 2)->text().toFloat(), 2.0f);
+            if (!qEnvironmentVariableIsEmpty("MOTION_PANEL_SCREENSHOT")) {
+                const QString output = qEnvironmentVariable("MOTION_PANEL_SCREENSHOT") +
+                    (dark ? QStringLiteral("-dark.png") : QStringLiteral("-light.png"));
+                QVERIFY(panel.grab().save(output));
+            }
+        }
+    }
+
+    void layoutRoundTripAndLargePoseRemainUsable()
+    {
+        QTemporaryDir temp;
+        QJsonArray groups;
+        for (int i = 0; i < 40; ++i)
+            groups.append(QJsonArray{QJsonObject{{"Id", QStringLiteral("PartA%1").arg(i)}},
+                                     QJsonObject{{"Id", QStringLiteral("PartB%1").arg(i)}}});
+        QFile pose(temp.filePath("large.pose3.json"));
+        QVERIFY(pose.open(QIODevice::WriteOnly));
+        const QByteArray json = QJsonDocument(QJsonObject{{"Groups", groups}}).toJson();
+        QCOMPARE(pose.write(json), json.size());
+        pose.close();
+        CMotionPanel panel;
+        panel.resize(1000, 520);
+        panel.show();
+        QVERIFY(panel.BuildPoseGroups(pose.fileName()));
+        auto* tabs = panel.findChild<QTabWidget*>("animationAssetTabs");
+        tabs->setCurrentIndex(2);
+        QCoreApplication::processEvents();
+        QVERIFY(panel.height() <= 540);
+        auto* scroll = qobject_cast<QScrollArea*>(tabs->currentWidget());
+        QVERIFY(scroll);
+        QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+        scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+        auto* split = panel.findChild<QSplitter*>("animationWorkspaceSplitter");
+        split->setSizes({300, 700});
+        const QByteArray layout = panel.SaveLayout();
+        CMotionPanel restored;
+        restored.resize(1000, 520);
+        restored.show();
+        restored.RestoreLayout(layout);
+        auto* restoredTabs = restored.findChild<QTabWidget*>("animationAssetTabs");
+        QVERIFY(!restoredTabs->isTabVisible(2));
+        QVERIFY(restored.BuildPoseGroups(pose.fileName()));
+        QCOMPARE(restoredTabs->currentIndex(), 2);
+        restoredTabs->setCurrentIndex(1);
+        QVERIFY(restored.BuildPoseGroups(pose.fileName()));
+        QCOMPARE(restoredTabs->currentIndex(), 1);
+        const QByteArray before = restored.SaveLayout();
+        restored.RestoreLayout("invalid");
+        QCOMPARE(restored.SaveLayout(), before);
+    }
+
     void draftSurvivesSessionAndCatalogRefresh()
     {
         QTemporaryDir temp;

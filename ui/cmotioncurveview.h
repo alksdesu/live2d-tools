@@ -15,10 +15,13 @@ public:
     void SetTimeline(const CMotionTimeline* timeline);
     void SetTime(float time);
     void SetSelectedPoint(const QString& parameterId, int pointIndex);
+    void CancelDrag();
 
 signals:
     void PointSelected(const QString& parameterId, int pointIndex);
     void PointEdited(const QString& parameterId, int pointIndex, float time, float value);
+    void EditStarted();
+    void EditFinished();
 
 protected:
     void paintEvent(QPaintEvent* event) override;

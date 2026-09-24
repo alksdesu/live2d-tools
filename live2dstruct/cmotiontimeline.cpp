@@ -173,6 +173,10 @@ bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float t
     if (parameterId.trimmed().isEmpty() || parameterId.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
     auto curve = m_curves.find(parameterId);
     if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
+    const QPointF current = curve->at(index);
+    const QPointF updated(static_cast<float>(current.x()) == time ? current.x() : time,
+                          static_cast<float>(current.y()) == value ? current.y() : value);
+    if (updated == current) return true;
     for (int i = 0; i < curve->size(); ++i) {
         if (i != index && static_cast<float>(curve->at(i).x()) == time) return false;
     }
@@ -182,7 +186,7 @@ bool CMotionTimeline::UpdatePoint(const QString& parameterId, int index, float t
     const auto types = m_segmentTypes.value(parameterId);
     const auto controls = m_bezierControls.value(parameterId);
     for (int i = 0; i < curve->size(); ++i)
-        entries.append({i == index ? QPointF(time, value) : curve->at(i), i});
+        entries.append({i == index ? updated : curve->at(i), i});
     std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right){
         return left.point.x() < right.point.x();
     });
@@ -553,6 +557,12 @@ bool CMotionTimeline::HasCurves() const
     for (const auto& value : m_source.value(QStringLiteral("Curves")).toArray())
         if (value.toObject().value(QStringLiteral("Target")).toString() != QLatin1String("Parameter")) return true;
     return false;
+}
+
+bool CMotionTimeline::HasSameContent(const CMotionTimeline& other) const
+{
+    return m_source == other.m_source && m_curves == other.m_curves &&
+           m_segmentTypes == other.m_segmentTypes && m_bezierControls == other.m_bezierControls;
 }
 
 bool CMotionTimeline::SaveState(QJsonObject* state, bool loop, float playhead, QString* error) const

@@ -33,6 +33,28 @@ private slots:
         QCOMPARE(edited.size(), 1);
         QVERIFY(std::isfinite(edited.first().at(2).toFloat()));
         QVERIFY(std::isfinite(edited.first().at(3).toFloat()));
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, QPoint(140, 80));
+    }
+
+    void endsDragWhenMouseButtonIsLost()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("A", 0.25f, -1));
+        QVERIFY(timeline.AddPoint("A", 0.75f, 1));
+        CMotionCurveView view;
+        view.resize(320, 190);
+        view.SetTimeline(&timeline);
+        view.show();
+        QSignalSpy finished(&view, &CMotionCurveView::EditFinished);
+        QSignalSpy edited(&view, &CMotionCurveView::PointEdited);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, QPoint(125, 161));
+        QMouseEvent move(QEvent::MouseMove, QPointF(160, 130), QPointF(160, 130), QPointF(160, 130),
+                         Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(&view, &move);
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(edited.isEmpty());
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, QPoint(160, 130));
+        QCOMPARE(finished.size(), 1);
     }
 
     void rendersTimeline()

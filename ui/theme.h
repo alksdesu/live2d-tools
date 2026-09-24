@@ -136,6 +136,12 @@ QPushButton#dangerBtn {
     color: @danger@;
 }
 
+QPushButton#primaryBtn:disabled, QPushButton#dangerBtn:disabled {
+    background: @surfaceMuted@;
+    color: @textSubtle@;
+    border-color: @border@;
+}
+
 QLabel {
     background: transparent;
     color: @textMuted@;

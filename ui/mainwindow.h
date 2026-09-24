@@ -55,6 +55,7 @@ private:
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
+    void RefreshUndoActions();
     void UndoDocumentEdit();
     void RedoDocumentEdit();
     void ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward);
@@ -81,10 +82,11 @@ private:
     int m_workspaceMode = 0;
     bool m_darkTheme = false;
     bool m_sessionDirty = false;
+    bool m_closingModel = false;
     bool m_poseDirty = false;
     bool m_applyingSession = false;
     bool m_syncingVisibility = false;
-    enum class HistorySource { None, Parameters, Inspector };
+    enum class HistorySource { None, Parameters, Inspector, Timeline };
     HistorySource m_historySource = HistorySource::None;
     QByteArray m_savedWindowState;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
