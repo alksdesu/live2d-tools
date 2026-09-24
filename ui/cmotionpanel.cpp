@@ -473,7 +473,7 @@ void CMotionPanel::TickTimelinePlayback()
     if (m_timelinePlayhead) {
         QSignalBlocker blocker(m_timelinePlayhead);
         m_timelinePlayhead->setValue(duration > 0.0f
-            ? qBound(0, qRound(m_timelineTime * 1000.0f / duration), 1000) : 0);
+            ? qBound(0, qRound(static_cast<double>(m_timelineTime) * 1000.0 / duration), 1000) : 0);
     }
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     if (m_curveView) m_curveView->SetTime(m_timelineTime);
@@ -488,7 +488,7 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
         if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
     }
     const float duration = m_timeline.Duration();
-    m_timelineTime = duration * qBound(0, value, 1000) / 1000.0f;
+    m_timelineTime = static_cast<double>(duration) * qBound(0, value, 1000) / 1000.0;
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     if (m_curveView) m_curveView->SetTime(m_timelineTime);
     emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
@@ -568,7 +568,7 @@ void CMotionPanel::ExportTimeline()
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));
     if (path.isEmpty()) return;
     QString error;
-    if (!m_timeline.Save(path, 30.0f, m_loopCb && m_loopCb->isChecked(), &error)) {
+    if (!m_timeline.Save(path, m_timeline.Fps(), m_loopCb && m_loopCb->isChecked(), &error)) {
         QMessageBox::warning(this, QStringLiteral("导出 motion3 失败"), error);
         return;
     }
@@ -587,9 +587,13 @@ void CMotionPanel::ImportTimeline()
     }
     if (m_timelineTimer) m_timelineTimer->stop();
     if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
+    if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
+    if (m_loopCb) m_loopCb->setChecked(m_timeline.Loop());
     m_timelineTime = 0.0f;
     RefreshTimelineTable();
-    m_timelineStatus->setText(QStringLiteral("已导入 %1 个关键帧").arg(m_timeline.PointCount()));
+    m_timelineStatus->setText(m_timeline.PointCount() > 0
+        ? QStringLiteral("已导入 %1 个参数关键帧").arg(m_timeline.PointCount())
+        : QStringLiteral("已保留模型 / Part 曲线，可继续导出"));
     emit MotionTimelineChanged();
 }
 

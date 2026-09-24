@@ -3,6 +3,7 @@
 
 #include <QElapsedTimer>
 #include <QMap>
+#include <QJsonObject>
 #include <QPointF>
 #include <QString>
 #include <QVector>
@@ -21,6 +22,8 @@ public:
     bool SetSegmentType(const QString& parameterId, int pointIndex, int segmentType);
     int SegmentType(const QString& parameterId, int pointIndex) const;
     float Duration() const;
+    float Fps() const;
+    bool Loop() const;
     float Evaluate(const QString& parameterId, float time, bool* ok = nullptr) const;
     QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
@@ -29,7 +32,9 @@ public:
     const QMap<QString, QVector<QPointF>>& Curves() const { return m_curves; }
 
 private:
+    QJsonObject m_source;
     bool m_recording = false;
+    float m_recordStartTime = 0.0f;
     QElapsedTimer m_clock;
     QMap<QString, QVector<QPointF>> m_curves;
     QMap<QString, QVector<int>> m_segmentTypes;

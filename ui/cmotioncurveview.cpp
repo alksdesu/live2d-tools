@@ -39,34 +39,34 @@ QRectF CMotionCurveView::plotRect() const
     return rect().adjusted(34, 16, -14, -22);
 }
 
-bool CMotionCurveView::valueRange(float* minimum, float* maximum) const
+bool CMotionCurveView::valueRange(double* minimum, double* maximum) const
 {
     if (!minimum || !maximum || !m_timeline || m_timeline->Curves().isEmpty()) return false;
     *minimum = std::numeric_limits<float>::max();
     *maximum = std::numeric_limits<float>::lowest();
     for (const auto& points : m_timeline->Curves()) {
         for (const QPointF& point : points) {
-            *minimum = qMin(*minimum, static_cast<float>(point.y()));
-            *maximum = qMax(*maximum, static_cast<float>(point.y()));
+            *minimum = qMin(*minimum, point.y());
+            *maximum = qMax(*maximum, point.y());
         }
     }
     if (!qIsFinite(*minimum) || !qIsFinite(*maximum)) return false;
-    if (qFuzzyCompare(*minimum + 1.0f, *maximum + 1.0f)) *maximum = *minimum + 1.0f;
-    const float padding = qMax(0.05f, (*maximum - *minimum) * 0.05f);
-    *minimum -= padding;
-    *maximum += padding;
-    return true;
+    const double span = *maximum - *minimum;
+    const double padding = qMax(0.05, (span > 0.0 ? span : qAbs(*minimum)) * 0.05);
+    *minimum = qMax(static_cast<double>(std::numeric_limits<float>::lowest()), *minimum - padding);
+    *maximum = qMin(static_cast<double>(std::numeric_limits<float>::max()), *maximum + padding);
+    return *maximum > *minimum;
 }
 
 QPointF CMotionCurveView::mapPoint(const QPointF& point, const QRectF& plot, float duration,
-                                   float minimum, float maximum) const
+                                   double minimum, double maximum) const
 {
     return QPointF(plot.left() + plot.width() * point.x() / duration,
                    plot.bottom() - plot.height() * (point.y() - minimum) / (maximum - minimum));
 }
 
 QPointF CMotionCurveView::unmapPoint(const QPointF& point, const QRectF& plot, float duration,
-                                     float minimum, float maximum) const
+                                     double minimum, double maximum) const
 {
     return QPointF(qBound(0.0, (point.x() - plot.left()) / plot.width(), 1.0) * duration,
                    maximum - qBound(0.0, (point.y() - plot.top()) / plot.height(), 1.0) * (maximum - minimum));
@@ -76,8 +76,8 @@ bool CMotionCurveView::hitPoint(const QPointF& position, QString* parameterId, i
 {
     if (!m_timeline || !parameterId || !pointIndex) return false;
     const QRectF plot = plotRect();
-    float minimum = 0.0f;
-    float maximum = 0.0f;
+    double minimum = 0.0;
+    double maximum = 0.0;
     if (!valueRange(&minimum, &maximum) || plot.width() <= 0.0 || plot.height() <= 0.0) return false;
     const float duration = qMax(0.001f, m_timeline->Duration());
     const float radiusSquared = 10.0f * 10.0f;
@@ -123,8 +123,8 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
         return;
     }
     const float duration = qMax(0.001f, m_timeline->Duration());
-    float minimum = 0.0f;
-    float maximum = 0.0f;
+    double minimum = 0.0;
+    double maximum = 0.0;
     if (!valueRange(&minimum, &maximum)) return;
     const QVector<QColor> colors = {accent, QColor(220, 120, 70), QColor(80, 170, 125), QColor(170, 110, 210)};
     int colorIndex = 0;
@@ -133,7 +133,7 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
         painter.setPen(QPen(color, 1.5));
         QPolygonF line;
         for (int sample = 0; sample <= 80; ++sample) {
-            const float time = duration * sample / 80.0f;
+            const float time = static_cast<double>(duration) * sample / 80.0;
             line.append(mapPoint(QPointF(time, m_timeline->Evaluate(it.key(), time)), plot, duration, minimum, maximum));
         }
         painter.drawPolyline(line);
@@ -170,8 +170,8 @@ void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
     const auto curve = m_timeline->Curves().constFind(m_dragParameter);
     if (curve == m_timeline->Curves().cend() || m_dragPointIndex >= curve.value().size()) return;
     const QRectF plot = plotRect();
-    float minimum = 0.0f;
-    float maximum = 0.0f;
+    double minimum = 0.0;
+    double maximum = 0.0;
     if (!valueRange(&minimum, &maximum) || plot.width() <= 0.0 || plot.height() <= 0.0) return;
     const float duration = qMax(0.001f, m_timeline->Duration());
     QPointF point = unmapPoint(event->position(), plot, duration, minimum, maximum);

@@ -164,3 +164,15 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - UserData 同时输出为标准运行时 JSON 和 cmo3 的 `CArtMeshSource.userData` 字段；按 ArtMesh ID 精确关联，未知 ID、损坏配置和 XML 写出错误会在覆盖目标前失败。导出会先处理未保存标签，模型引用读取失败不会静默丢弃配置。
 - UserData 面板保存后生成 cmo3、CAFF 回读及逐网格 XML 检查已覆盖中文、emoji、XML 特殊字符与清空标签；Cubism Editor 实际回读仍待验证。
 - 本机常规 CTest 15/15 通过，UserData 数据/面板两项目标通过 ASAN/UBSAN；主窗口和 LAppModel 通过语法检查，浅色/深色面板已渲染检查。完整应用的 SDK 热重载尚未实机验证。
+
+## 动作文件往返与曲线一致性
+
+- motion3 导入保留 Model/Parameter/PartOpacity 曲线、根和曲线淡入淡出、事件及扩展字段；导出按 SDK 的目标分组顺序写出，并重算全部曲线/段/点数和事件 UTF-8 字节统计。
+- 导入帧率和循环设置进入面板，已有时长不因最后一个参数关键帧较早结束而被缩短。仅含 Model/PartOpacity 的文件可载入和导出，当前时间轴预览仍只驱动 Parameter。
+- Bézier 求值与导出遵循原 `AreBeziersRestricted` 标记；无约束曲线支持时间轴内交叉手柄。关键帧移动、重排和删除会重映射相邻控制点，避免预览回退为线性但文件仍导出旧控制点。
+- 阶梯/反阶梯在关键帧边界遵循本地 SDK 的区间选择；单点曲线补充严格晚于起点的终点，极限数值无法生成合法终点时保留原文件并报错。
+- 解析对时间、数值、段类型做浮点可表示性与单调性检查，读取错误不能被后一个正常字段覆盖；损坏 Meta/事件/目标类型/重复曲线及超限输入不会替换草稿。
+- 重新录制从已有动作末尾追加；清空和成功导入停止旧录制。播放头和曲线视图的中间计算使用 double，有限的大数值仍可显示、选取和拖动。
+- 验证包括仓库中全部 30 个官方 motion3 样例的曲线内容往返、两种 Bézier 模式的独立已知结果、手柄编辑后的预览一致性、异常 JSON、Unicode 事件和极限数值操作。
+- 格式依据：[Live2D motion3 规范](https://github.com/Live2D/CubismSpecs/blob/master/FileFormats/motion3.json.md)；求值行为对照仓库 `framework/Motion/CubismMotion.cpp`。
+- 待补齐：动画草稿的关闭/替换保护和工作会话持久化，以及 Model/PartOpacity 曲线的编辑与预览。

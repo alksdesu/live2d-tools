@@ -35,11 +35,11 @@ private:
     int m_dragPointIndex = -1;
 
     QRectF plotRect() const;
-    bool valueRange(float* minimum, float* maximum) const;
+    bool valueRange(double* minimum, double* maximum) const;
     QPointF mapPoint(const QPointF& point, const QRectF& plot, float duration,
-                     float minimum, float maximum) const;
+                     double minimum, double maximum) const;
     QPointF unmapPoint(const QPointF& point, const QRectF& plot, float duration,
-                       float minimum, float maximum) const;
+                       double minimum, double maximum) const;
     bool hitPoint(const QPointF& position, QString* parameterId, int* pointIndex) const;
 };
 

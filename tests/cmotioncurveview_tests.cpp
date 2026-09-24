@@ -3,11 +3,38 @@
 #include <QImage>
 #include <QSignalSpy>
 #include <QMouseEvent>
+#include <limits>
+#include <cmath>
 
 class CMotionCurveViewTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void handlesLargeFiniteValues()
+    {
+        CMotionTimeline timeline;
+        const float limit = std::numeric_limits<float>::max();
+        QVERIFY(timeline.AddPoint("A", 0.0f, -limit));
+        QVERIFY(timeline.AddPoint("A", limit, limit));
+        CMotionCurveView view;
+        view.resize(320, 190);
+        view.SetTimeline(&timeline);
+        view.SetTime(limit * 0.5f);
+        view.show();
+        QImage image(view.size(), QImage::Format_ARGB32_Premultiplied);
+        view.render(&image);
+        QSignalSpy selected(&view, &CMotionCurveView::PointSelected);
+        QSignalSpy edited(&view, &CMotionCurveView::PointEdited);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, QPoint(34, 168));
+        QCOMPARE(selected.size(), 1);
+        QMouseEvent move(QEvent::MouseMove, QPointF(140, 80), QPointF(140, 80), QPointF(140, 80),
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(&view, &move);
+        QCOMPARE(edited.size(), 1);
+        QVERIFY(std::isfinite(edited.first().at(2).toFloat()));
+        QVERIFY(std::isfinite(edited.first().at(3).toFloat()));
+    }
+
     void rendersTimeline()
     {
         CMotionTimeline timeline;
