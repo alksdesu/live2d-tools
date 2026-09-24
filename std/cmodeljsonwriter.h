@@ -1,6 +1,7 @@
 #ifndef CMODELJSONWRITER_H
 #define CMODELJSONWRITER_H
 #include <QString>
+namespace live2dstruct { class CModelUserData; }
 
 // 为裸 .moc3 文件（如 Unity 提取物）扫描同目录资源并合成标准 model3.json，
 // 使其能走现有的 model3.json 加载链打开。
@@ -17,6 +18,8 @@ public:
 
     // 目标生成路径 <mocDir>/<mocBaseName>.model3.json
     static QString TargetJsonPath(const QString& mocPath);
+    static bool CreateUserData(const QString& modelJsonPath, const live2dstruct::CModelUserData& data,
+                               QString* savedPath, QString* error = nullptr);
 };
 
 #endif // CMODELJSONWRITER_H

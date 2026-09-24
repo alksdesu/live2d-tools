@@ -43,6 +43,7 @@ void CModelJson::Parse(const QString &fileName)
     QJsonObject qt = jsonDoc.object();
     QJsonObject FileReferences = qt["FileReferences"].toObject();
     if (FileReferences.isEmpty()) return;
+    if (FileReferences.contains("UserData") && !FileReferences["UserData"].isString()) return;
     m_moc = FileReferences["Moc"].toString();
     if (m_moc.isEmpty()) return;
 

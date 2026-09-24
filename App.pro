@@ -38,8 +38,10 @@ SOURCES += \
     live2dstruct/cdraworder.cpp \
     ui/cinspectorpanel.cpp \
     ui/cmodeldiagnosticspanel.cpp \
+    ui/cuserdatapanel.cpp \
     opengl/cmeshbounds.cpp \
     live2dstruct/cmodeldocument.cpp \
+    live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
     edit/cdrawobject.cpp \
     edit/cdrawrotation.cpp \
@@ -222,8 +224,10 @@ HEADERS += \
     live2dstruct/cdraworder.h \
     ui/cinspectorpanel.h \
     ui/cmodeldiagnosticspanel.h \
+    ui/cuserdatapanel.h \
     opengl/cmeshbounds.h \
     live2dstruct/cmodeldocument.h \
+    live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
     CPrecompileHead.h \
     edit/cdrawobject.h \

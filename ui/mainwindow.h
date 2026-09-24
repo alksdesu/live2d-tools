@@ -22,6 +22,7 @@ class CBlendShapePanel;
 class CTexturePanel;
 class CInspectorPanel;
 class CModelDiagnosticsPanel;
+class CUserDataPanel;
 class CCidJson;
 class QCloseEvent;
 class QActionGroup;
@@ -105,6 +106,7 @@ private:
     CTexturePanel* m_texturePanel = nullptr;
     CInspectorPanel* m_inspectorPanel = nullptr;
     CModelDiagnosticsPanel* m_diagnosticsPanel = nullptr;
+    CUserDataPanel* m_userDataPanel = nullptr;
 
     // 背景色状态
     int m_bgState = 0;
@@ -120,6 +122,7 @@ private:
     QPushButton* m_btnToggleTexture = nullptr;
     QPushButton* m_btnToggleInspector = nullptr;
     QPushButton* m_btnToggleDiagnostics = nullptr;
+    QPushButton* m_btnToggleUserData = nullptr;
 
     // 显示名称映射（持久化到模型关闭）
     CCidJson* m_cidJson = nullptr;

@@ -23,6 +23,7 @@
 #include "ui/ctexturepanel.h"
 #include "ui/cinspectorpanel.h"
 #include "ui/cmodeldiagnosticspanel.h"
+#include "ui/cuserdatapanel.h"
 #include "ui/para/ccidjson.h"
 #include "std/cmodeljsonwriter.h"
 #include "cmo3/ccmo3builder.h"
@@ -561,6 +562,7 @@ void MainWindow::SetWorkspaceMode(int mode)
     m_blendShapePanel->setVisible(modeling);
     m_texturePanel->setVisible(modeling);
     m_diagnosticsPanel->setVisible(false);
+    if (m_userDataPanel) m_userDataPanel->setVisible(false);
 }
 
 void MainWindow::UndoDocumentEdit()
@@ -809,7 +811,8 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges()
 {
     const bool physicsDirty = m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
     const bool poseDirty = m_poseDirty || (m_motionPanel && m_motionPanel->HasUnsavedPoseChanges());
-    if (!m_sessionDirty && !physicsDirty && !poseDirty) return true;
+    const bool userDataDirty = m_userDataPanel && m_userDataPanel->HasUnsavedChanges();
+    if (!m_sessionDirty && !physicsDirty && !poseDirty && !userDataDirty) return true;
     QMessageBox prompt(this);
     prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
     prompt.setText(QStringLiteral("当前模型有未保存的编辑。"));
@@ -817,6 +820,7 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges()
     if (m_sessionDirty) pending.append(QStringLiteral("工作会话"));
     if (physicsDirty) pending.append(QStringLiteral("物理配置"));
     if (poseDirty) pending.append(QStringLiteral("Pose 配置"));
+    if (userDataDirty) pending.append(QStringLiteral("网格标签"));
     prompt.setInformativeText(QStringLiteral("关闭前是否保存：%1？").arg(pending.join(QStringLiteral("、"))));
     QPushButton* save = prompt.addButton(QStringLiteral("保存"), QMessageBox::AcceptRole);
     prompt.addButton(QStringLiteral("放弃"), QMessageBox::DestructiveRole);
@@ -830,7 +834,11 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges()
         const bool poseSaved = !poseDirty || (m_motionPanel && m_motionPanel->SavePose(&poseError));
         if (!poseSaved && !poseError.isEmpty())
             QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), poseError);
-        return sessionSaved && physicsSaved && poseSaved;
+        QString userDataError;
+        const bool userDataSaved = !userDataDirty || m_userDataPanel->SaveUserData(&userDataError);
+        if (!userDataSaved)
+            QMessageBox::warning(this, QStringLiteral("保存 UserData 失败"), userDataError);
+        return sessionSaved && physicsSaved && poseSaved && userDataSaved;
     }
     return prompt.buttonRole(prompt.clickedButton()) == QMessageBox::DestructiveRole;
 }
@@ -910,6 +918,7 @@ bool MainWindow::CloseModel()
     if(m_texturePanel) { removeDockWidget(m_texturePanel); delete m_texturePanel; m_texturePanel = nullptr; }
     if(m_inspectorPanel) { removeDockWidget(m_inspectorPanel); delete m_inspectorPanel; m_inspectorPanel = nullptr; }
     if(m_diagnosticsPanel) { removeDockWidget(m_diagnosticsPanel); delete m_diagnosticsPanel; m_diagnosticsPanel = nullptr; }
+    if (m_userDataPanel) { removeDockWidget(m_userDataPanel); delete m_userDataPanel; m_userDataPanel = nullptr; }
     if (m_undoAction) m_undoAction->setEnabled(false);
     if (m_redoAction) m_redoAction->setEnabled(false);
     m_sessionDirty = false;
@@ -925,6 +934,7 @@ bool MainWindow::CloseModel()
     m_btnToggleTexture->setVisible(false);
     m_btnToggleInspector->setVisible(false);
     m_btnToggleDiagnostics->setVisible(false);
+    m_btnToggleUserData->setVisible(false);
 
     // 释放显示名称映射
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
@@ -1098,6 +1108,32 @@ void MainWindow::RestDock(const QString &name)
     m_diagnosticsPanel->SetDocument(&m_document);
     m_diagnosticsPanel->hide();
 
+    m_userDataPanel = new CUserDataPanel(this);
+    addDockWidget(Qt::BottomDockWidgetArea, m_userDataPanel);
+    tabifyDockWidget(m_texturePanel, m_userDataPanel);
+    QSet<QString> drawableIds;
+    for (const auto& drawable : m_document.Drawables()) drawableIds.insert(drawable.id);
+    m_userDataPanel->SetValidArtMeshIds(drawableIds);
+    QString userDataError;
+    if (!m_userDataPanel->LoadModel(name, &userDataError))
+        statusBar()->showMessage(QStringLiteral("UserData 加载失败：%1").arg(userDataError), 8000);
+    m_userDataPanel->hide();
+    connect(m_userDataPanel, &CUserDataPanel::DirtyChanged, this, [this](bool dirty){
+        if (dirty) statusBar()->showMessage(QStringLiteral("网格标签有未保存的修改"));
+    });
+    connect(m_userDataPanel, &CUserDataPanel::UserDataSaved, this, [this](const QString& path){
+        LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+        LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+        if (model && model->ReloadUserDataFromFile(path)) {
+            statusBar()->showMessage(QStringLiteral("网格标签已保存并更新：%1").arg(path), 5000);
+        } else {
+            QMessageBox::warning(this, QStringLiteral("UserData 已保存"),
+                                 QStringLiteral("文件保存成功，但运行时刷新失败。请重新打开模型。"));
+        }
+    });
+    connect(m_userDataPanel, &CUserDataPanel::ArtMeshSelected, m_treePanel, &CModelTreePanel::HighlightMesh);
+    connect(m_userDataPanel, &CUserDataPanel::ArtMeshSelected, m_openglwindows, &OpengGlForm::do_ShowMesh);
+
     m_motionPanel->raise();
 
     // 加载物理设置（立即，不需要 GL）
@@ -1153,6 +1189,7 @@ void MainWindow::RestDock(const QString &name)
     m_btnToggleTexture->setVisible(true);
     m_btnToggleInspector->setVisible(true);
     m_btnToggleDiagnostics->setVisible(true);
+    m_btnToggleUserData->setVisible(true);
 
     auto wireToggle = [](QPushButton* btn, QDockWidget* dock){
         QObject::connect(btn, &QPushButton::toggled, dock, &QDockWidget::setVisible);
@@ -1166,6 +1203,7 @@ void MainWindow::RestDock(const QString &name)
     wireToggle(m_btnToggleTexture, m_texturePanel);
     wireToggle(m_btnToggleInspector, m_inspectorPanel);
     wireToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
+    wireToggle(m_btnToggleUserData, m_userDataPanel);
 
     if (!m_savedWindowState.isEmpty()) {
         restoreState(m_savedWindowState);
@@ -1647,21 +1685,25 @@ void MainWindow::setupUI()
     m_btnToggleTexture = new QPushButton("纹理", this);
     m_btnToggleInspector = new QPushButton("属性", this);
     m_btnToggleDiagnostics = new QPushButton("检查", this);
+    m_btnToggleUserData = new QPushButton(QStringLiteral("网格标签"), this);
     m_btnTogglePhysics->setCheckable(true);
     m_btnToggleBlend->setCheckable(true);
     m_btnToggleTexture->setCheckable(true);
     m_btnToggleInspector->setCheckable(true);
     m_btnToggleDiagnostics->setCheckable(true);
+    m_btnToggleUserData->setCheckable(true);
     m_btnTogglePhysics->setChecked(true);
     m_btnToggleBlend->setChecked(true);
     m_btnToggleTexture->setChecked(true);
     m_btnToggleInspector->setChecked(true);
     m_btnToggleDiagnostics->setChecked(false);
+    m_btnToggleUserData->setChecked(false);
     m_btnTogglePhysics->setFlat(true);
     m_btnToggleBlend->setFlat(true);
     m_btnToggleTexture->setFlat(true);
     m_btnToggleInspector->setFlat(true);
     m_btnToggleDiagnostics->setFlat(true);
+    m_btnToggleUserData->setFlat(true);
 
     // 未创建面板前先隐藏
     m_btnToggleTree->setVisible(false);
@@ -1672,6 +1714,7 @@ void MainWindow::setupUI()
     m_btnToggleTexture->setVisible(false);
     m_btnToggleInspector->setVisible(false);
     m_btnToggleDiagnostics->setVisible(false);
+    m_btnToggleUserData->setVisible(false);
 
     statusBar()->addPermanentWidget(m_btnToggleTree);
     statusBar()->addPermanentWidget(m_btnToggleParam);
@@ -1681,6 +1724,7 @@ void MainWindow::setupUI()
     statusBar()->addPermanentWidget(m_btnToggleTexture);
     statusBar()->addPermanentWidget(m_btnToggleInspector);
     statusBar()->addPermanentWidget(m_btnToggleDiagnostics);
+    statusBar()->addPermanentWidget(m_btnToggleUserData);
 }
 
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)

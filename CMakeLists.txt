@@ -25,8 +25,10 @@ add_library(model_data STATIC
     opengl/cmeshbounds.cpp
     live2dstruct/cdraworder.cpp
     live2dstruct/cmodeldocument.cpp
+    live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
     std/cmodeljson.cpp
+    std/cmodeljsonwriter.cpp
     live2dstruct/util/cfilereader.cpp
     live2dstruct/csectionoffsettable.cpp
     live2dstruct/csectiontable.cpp
@@ -56,6 +58,7 @@ target_link_libraries(cmo3_data PRIVATE psd_zip)
 add_library(ui_inspector STATIC
     ui/cinspectorpanel.cpp
     ui/cmodeldiagnosticspanel.cpp
+    ui/cuserdatapanel.cpp
     ui/cparampanel.cpp
     ui/cxyparameterpad.cpp
 )
@@ -68,6 +71,15 @@ if(BUILD_TESTING)
     target_link_libraries(model_data_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_data_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_data COMMAND model_data_tests)
+
+    add_executable(model_userdata_tests tests/model_userdata_tests.cpp)
+    target_link_libraries(model_userdata_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(model_userdata_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME model_userdata COMMAND model_userdata_tests)
+    add_executable(userdata_panel_tests tests/userdata_panel_tests.cpp ui/cuserdatapanel.cpp)
+    target_link_libraries(userdata_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    add_test(NAME userdata_panel COMMAND userdata_panel_tests)
+    set_tests_properties(userdata_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(draw_order_tests tests/draw_order_tests.cpp)
     target_link_libraries(draw_order_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(draw_order_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

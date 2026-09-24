@@ -63,6 +63,7 @@ public:
     void SetPhysicsGravity(float x, float y);
     void SetPhysicsWind(float x, float y);
     bool ReloadPhysicsFromFile(const QString& path);
+    bool ReloadUserDataFromFile(const QString& path);
     bool StartLipSyncWav(const QString& path);
     void StopLipSyncWav();
 

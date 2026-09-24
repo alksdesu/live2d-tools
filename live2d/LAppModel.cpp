@@ -22,6 +22,7 @@
 #include "LAppDelegate.hpp"
 #include "LAppView.hpp"
 #include "live2dstruct/ctreemanage.h"
+#include "live2dstruct/cmodeluserdata.h"
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
@@ -264,12 +265,7 @@ void LAppModel::SetupModel(ICubismModelSetting* setting)
     {
         csmString path = _modelSetting->GetUserDataFile();
         path = _modelHomeDir + path;
-        buffer = CreateBuffer(path.GetRawString(), &size);
-        if (buffer != NULL)
-        {
-            LoadUserData(buffer, size);
-            DeleteBuffer(buffer, path.GetRawString());
-        }
+        ReloadUserDataFromFile(QString::fromUtf8(path.GetRawString()));
     }
 
     // EyeBlinkIds
@@ -871,6 +867,30 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path)
     if (!replacement) return false;
     CubismPhysics::Delete(_physics);
     _physics = replacement;
+    return true;
+}
+
+bool LAppModel::ReloadUserDataFromFile(const QString& path)
+{
+    if (!_model) return false;
+    live2dstruct::CModelUserData document;
+    if (!document.Load(path)) return false;
+    QSet<QString> drawableIds;
+    for (int index = 0; index < _model->GetDrawableCount(); ++index)
+        drawableIds.insert(QString::fromUtf8(_model->GetDrawableId(index)->GetString().GetRawString()));
+    for (const auto& entry : document.Entries())
+        if (!drawableIds.contains(entry.id)) return false;
+    const QByteArray bytes = document.ToJson();
+    if (bytes.size() > std::numeric_limits<csmSizeInt>::max()) return false;
+    CubismModelUserData* replacement = CubismModelUserData::Create(
+        reinterpret_cast<const csmByte*>(bytes.constData()), static_cast<csmSizeInt>(bytes.size()));
+    if (!replacement) return false;
+    if (replacement->GetArtMeshUserDatas().GetSize() != document.Entries().size()) {
+        CubismModelUserData::Delete(replacement);
+        return false;
+    }
+    CubismModelUserData::Delete(_modelUserData);
+    _modelUserData = replacement;
     return true;
 }
 

@@ -1,11 +1,14 @@
 #include "cmodeljsonwriter.h"
 #include "cmodeljson.h"
+#include "live2dstruct/cmodeluserdata.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QCollator>
+#include <QSaveFile>
+#include <QTemporaryFile>
 
 namespace {
 
@@ -205,4 +208,53 @@ QString CModelJsonWriter::GenerateFor(const QString& mocPath, QString* outError,
     out.close();
 
     return targetPath;
+}
+
+bool CModelJsonWriter::CreateUserData(const QString& modelJsonPath, const live2dstruct::CModelUserData& data,
+                                     QString* savedPath, QString* error)
+{
+    if (!data.Validate(error)) return false;
+    QFile source(modelJsonPath);
+    if (!source.open(QIODevice::ReadOnly)) {
+        if (error) *error = source.errorString();
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(source.readAll(), &parseError);
+    source.close();
+    QJsonObject root = document.object();
+    QJsonObject references = root.value(QStringLiteral("FileReferences")).toObject();
+    if (parseError.error != QJsonParseError::NoError ||
+        root.value(QStringLiteral("Version")).toDouble(-1) != 3.0 ||
+        references.value(QStringLiteral("Moc")).toString().isEmpty()) {
+        if (error) *error = QStringLiteral("无法向无效的 model3.json 登记 UserData");
+        return false;
+    }
+    const QJsonValue existing = references.value(QStringLiteral("UserData"));
+    if (!existing.isUndefined() && (!existing.isString() || !existing.toString().isEmpty())) {
+        if (error) *error = QStringLiteral("模型的 UserData 引用已变化，请重新打开模型后保存");
+        return false;
+    }
+
+    const QDir directory = QFileInfo(modelJsonPath).absoluteDir();
+    const QString base = QFileInfo(references.value(QStringLiteral("Moc")).toString()).completeBaseName();
+    QTemporaryFile output(directory.filePath(base + QStringLiteral(".XXXXXX.userdata3.json")));
+    if (!output.open()) {
+        if (error) *error = output.errorString();
+        return false;
+    }
+    const QString path = output.fileName();
+    output.close();
+    if (!data.Save(path, error)) return false;
+    references.insert(QStringLiteral("UserData"), directory.relativeFilePath(path));
+    root.insert(QStringLiteral("FileReferences"), references);
+    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    QSaveFile modelFile(modelJsonPath);
+    if (!modelFile.open(QIODevice::WriteOnly) || modelFile.write(bytes) != bytes.size() || !modelFile.commit()) {
+        if (error) *error = modelFile.errorString();
+        return false;
+    }
+    output.setAutoRemove(false);
+    if (savedPath) *savedPath = path;
+    return true;
 }
