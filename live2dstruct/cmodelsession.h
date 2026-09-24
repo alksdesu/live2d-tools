@@ -2,6 +2,7 @@
 #define CMODELSESSION_H
 
 #include <QMap>
+#include <QJsonObject>
 #include <QHash>
 #include <QByteArray>
 #include <QPointF>
@@ -14,6 +15,7 @@ namespace live2dstruct {
 struct CModelSession
 {
     int version = 1;
+    QJsonObject animation;
     QString sourceMoc;
     QByteArray sourceDigest;
     QMap<QString, float> parameters;

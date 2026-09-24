@@ -24,6 +24,7 @@ endif()
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
     live2dstruct/cdraworder.cpp
+    live2dstruct/cmotiontimeline.cpp
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
@@ -116,16 +117,21 @@ if(BUILD_TESTING)
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    add_executable(cmotiontimeline_tests tests/cmotiontimeline_tests.cpp ui/cmotiontimeline.cpp)
+    add_executable(cmotiontimeline_tests tests/cmotiontimeline_tests.cpp)
     target_include_directories(cmotiontimeline_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(cmotiontimeline_tests PRIVATE Qt6::Test Qt6::Core)
+    target_link_libraries(cmotiontimeline_tests PRIVATE model_data Qt6::Test Qt6::Core)
     target_compile_definitions(cmotiontimeline_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME cmotiontimeline COMMAND cmotiontimeline_tests)
-    add_executable(cmotioncurveview_tests tests/cmotioncurveview_tests.cpp ui/cmotioncurveview.cpp ui/cmotiontimeline.cpp)
+    add_executable(cmotioncurveview_tests tests/cmotioncurveview_tests.cpp ui/cmotioncurveview.cpp)
     target_include_directories(cmotioncurveview_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(cmotioncurveview_tests PRIVATE Qt6::Test Qt6::Widgets)
+    target_link_libraries(cmotioncurveview_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     add_test(NAME cmotioncurveview COMMAND cmotioncurveview_tests)
     set_tests_properties(cmotioncurveview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(motion_panel_tests tests/motion_panel_tests.cpp ui/cmotionpanel.cpp ui/cmotioncurveview.cpp)
+    target_link_libraries(motion_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(motion_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME motion_panel COMMAND motion_panel_tests)
+    set_tests_properties(motion_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(wav_handler_tests tests/wav_handler_tests.cpp live2d/LAppWavFileHandler.cpp)
     target_include_directories(wav_handler_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(wav_handler_tests PRIVATE Qt6::Test Qt6::Core Qt6::Gui)

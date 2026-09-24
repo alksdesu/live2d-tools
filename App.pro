@@ -76,7 +76,7 @@ SOURCES += \
     ui/cparampanel.cpp \
     ui/cxyparameterpad.cpp \
     ui/cmotionpanel.cpp \
-    ui/cmotiontimeline.cpp \
+    live2dstruct/cmotiontimeline.cpp \
     ui/cmotioncurveview.cpp \
     ui/cphysicspanel.cpp \
     ui/cphysicsgraph.cpp \
@@ -225,6 +225,7 @@ HEADERS += \
     ui/cinspectorpanel.h \
     ui/cmodeldiagnosticspanel.h \
     ui/cuserdatapanel.h \
+    ui/ctableeditdelegate.h \
     opengl/cmeshbounds.h \
     live2dstruct/cmodeldocument.h \
     live2dstruct/cmodeluserdata.h \
@@ -264,7 +265,7 @@ HEADERS += \
     ui/cparampanel.h \
     ui/cxyparameterpad.h \
     ui/cmotionpanel.h \
-    ui/cmotiontimeline.h \
+    live2dstruct/cmotiontimeline.h \
     ui/cmotioncurveview.h \
     ui/cphysicsgraph.h \
     ui/cphysicspanel.h \

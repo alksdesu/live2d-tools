@@ -1,7 +1,6 @@
 #include "cmotionpanel.h"
 #include "cmotioncurveview.h"
-#include "live2d/LAppLive2DManager.hpp"
-#include "live2d/LAppModel.hpp"
+#include "ctableeditdelegate.h"
 #include <QDebug>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -28,8 +27,10 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <utility>
 
-using namespace Live2D::Cubism::Framework;
 
 namespace {
 void clearLayoutItems(QLayout* layout)
@@ -46,20 +47,12 @@ void clearLayoutItems(QLayout* layout)
     }
 }
 
-bool modelHasPart(const QString& id, bool* modelAvailable)
-{
-    if (modelAvailable) *modelAvailable = false;
-    if (id.isEmpty()) return false;
-    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
-    LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
-    if (!model || !model->GetModel()) return false;
-    if (modelAvailable) *modelAvailable = true;
-    for (int i = 0; i < model->GetModel()->GetPartCount(); ++i) {
-        const CubismId* partId = model->GetModel()->GetPartId(i);
-        if (partId && id == QString::fromUtf8(partId->GetString().GetRawString())) return true;
-    }
-    return false;
 }
+
+bool CMotionPanel::ModelHasPart(const QString& id, bool* available) const
+{
+    if (available) *available = m_modelPartsKnown;
+    return m_modelPartsKnown && m_modelPartIds.contains(id);
 }
 
 CMotionPanel::CMotionPanel(QWidget *parent)
@@ -217,6 +210,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     timelineLayout->addWidget(m_curveView);
     m_timelineTable = new QTableWidget(0, 4, timelineBox);
     m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
+    m_timelineDelegate = new CTableEditDelegate(m_timelineTable);
+    m_timelineTable->setItemDelegate(m_timelineDelegate);
     m_timelineTable->setHorizontalHeaderLabels({QStringLiteral("时间"), QStringLiteral("参数"), QStringLiteral("值"), QStringLiteral("插值")});
     m_timelineTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -240,6 +235,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     timelineLayout->addLayout(playheadRow);
     mainLayout->addWidget(timelineBox);
     connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
+        if (!m_restoringTimeline) ++m_timelineRevision;
         if (recording) {
             m_timeline.StartRecording();
             m_timelineStatus->setText(QStringLiteral("正在录制"));
@@ -277,6 +273,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_playTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ToggleTimelinePlayback);
     connect(m_timelineTimer, &QTimer::timeout, this, &CMotionPanel::TickTimelinePlayback);
     connect(this, &CMotionPanel::MotionTimelineChanged, this, [this](){
+        ++m_timelineRevision;
+        if (!m_restoringTimeline) SetTimelineDirty(true);
         if (m_recordTimelineCb && m_recordTimelineCb->isChecked()) return;
         emit MotionTimelinePreviewChanged(m_timeline.EvaluateAll(m_timelineTime));
     });
@@ -314,74 +312,62 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_physicsCb, &QCheckBox::toggled, this, &CMotionPanel::PhysicsChanged);
     connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
         emit MotionPlaybackChanged(m_speedSlider->value() / 100.0f, loop);
+        if (!m_restoringTimeline && m_timeline.HasCurves()) emit MotionTimelineChanged();
     });
     connect(m_speedSlider, &QSlider::valueChanged, this, [this](int value){
         m_speedLabel->setText(QStringLiteral("%1%").arg(value));
         emit MotionPlaybackChanged(value / 100.0f, m_loopCb->isChecked());
     });
 
+    clearTimelineButton->setObjectName(QStringLiteral("clearMotionTimeline"));
+    exportTimelineButton->setObjectName(QStringLiteral("exportMotionTimeline"));
+    importTimelineButton->setObjectName(QStringLiteral("importMotionTimeline"));
+    m_loopCb->setObjectName(QStringLiteral("motionLoop"));
     setWidget(wrapper);
 }
 
-void CMotionPanel::BuildLists()
+bool CMotionPanel::BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error)
 {
-    if (m_timelineTimer) m_timelineTimer->stop();
-    if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
-    if (m_timelinePlayhead) m_timelinePlayhead->setValue(0);
-    if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
-    m_timeline.Clear();
-    RefreshTimelineTable();
+    QFile file(modelJsonPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+        !document.object().value(QStringLiteral("FileReferences")).isObject()) {
+        if (error) *error = QStringLiteral("model3 动作列表无效");
+        return false;
+    }
+    const auto references = document.object().value(QStringLiteral("FileReferences")).toObject();
+    m_modelPartIds = QSet<QString>(partIds.cbegin(), partIds.cend());
+    m_modelPartsKnown = true;
     m_motionList->clear();
     m_exprList->clear();
     m_motionEntries.clear();
     m_exprEntries.clear();
     m_editExpressionButton->setEnabled(false);
-
-    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    if(!mgr || mgr->GetModelNum() == 0) return;
-
-    LAppModel* model = mgr->GetModel(0);
-    if(!model) return;
-
-    ICubismModelSetting* setting = model->GetModelSetting();
-    if(!setting) return;
-
-    // 动作
-    int groupCount = setting->GetMotionGroupCount();
-    qDebug() << "[MotionPanel] motion groups:" << groupCount
-             << "expressions:" << setting->GetExpressionCount();
-    for(int g = 0; g < groupCount; g++){
-        const char* groupName = setting->GetMotionGroupName(g);
-        if (!groupName || !*groupName) continue;
-        int motionCount = setting->GetMotionCount(groupName);
-        for(int m = 0; m < motionCount; m++){
-            QString label = QString("%1 [%2]").arg(groupName).arg(m);
-            m_motionList->addItem(label);
-            MotionEntry entry;
-            entry.group = groupName;
-            entry.no = m;
-            m_motionEntries.append(entry);
+    const auto groups = references.value(QStringLiteral("Motions")).toObject();
+    for (auto group = groups.begin(); group != groups.end(); ++group) {
+        const auto motions = group.value().toArray();
+        for (int index = 0; index < motions.size(); ++index) {
+            m_motionEntries.append({group.key(), index});
+            m_motionList->addItem(QStringLiteral("%1 [%2]").arg(group.key()).arg(index));
         }
     }
-
-    // 表情
-    int exprCount = setting->GetExpressionCount();
-    for(int i = 0; i < exprCount; i++){
-        const char* name = setting->GetExpressionName(i);
-        if (!name || !*name) continue;
+    const QDir directory = QFileInfo(modelJsonPath).absoluteDir();
+    for (const auto& expression : references.value(QStringLiteral("Expressions")).toArray()) {
+        const auto entry = expression.toObject();
+        const QString name = entry.value(QStringLiteral("Name")).toString();
+        if (name.isEmpty()) continue;
+        const QString path = entry.value(QStringLiteral("File")).toString();
+        m_exprEntries.append({name, path.isEmpty() ? QString() : directory.filePath(path)});
         m_exprList->addItem(name);
-        ExpressionEntry entry;
-        entry.name = QString::fromUtf8(name);
-        const char* fileName = setting->GetExpressionFileName(i);
-        if (fileName && *fileName) {
-            const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
-            entry.path = QDir(home).filePath(QString::fromUtf8(fileName));
-        }
-        m_exprEntries.append(entry);
     }
-
-    if(m_motionEntries.isEmpty()) m_motionList->addItem("(此模型无动作定义)");
-    if(m_exprEntries.isEmpty()) m_exprList->addItem("(此模型无表情定义)");
+    if (m_motionEntries.isEmpty()) m_motionList->addItem(QStringLiteral("(此模型无动作定义)"));
+    if (m_exprEntries.isEmpty()) m_exprList->addItem(QStringLiteral("(此模型无表情定义)"));
+    return true;
 }
 
 void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
@@ -437,6 +423,7 @@ void CMotionPanel::RefreshTimelineTable()
 void CMotionPanel::ToggleTimelinePlayback()
 {
     if (!m_timelineTimer || m_timeline.Curves().isEmpty()) return;
+    ++m_timelineRevision;
     if (m_timelineTimer->isActive()) {
         m_timelineTimer->stop();
         m_playTimelineButton->setText(QStringLiteral("预览"));
@@ -483,6 +470,7 @@ void CMotionPanel::TickTimelinePlayback()
 void CMotionPanel::SetTimelineTimeFromSlider(int value)
 {
     if (!m_timelinePlayhead || m_timeline.Curves().isEmpty()) return;
+    ++m_timelineRevision;
     if (m_timelineTimer && m_timelineTimer->isActive()) {
         m_timelineTimer->stop();
         if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
@@ -553,13 +541,95 @@ void CMotionPanel::RemoveTimelineKeyframe()
 
 void CMotionPanel::ClearTimeline()
 {
+    if (!ConfirmTimelineReplacement()) return;
     if (m_timelineTimer) m_timelineTimer->stop();
     if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
     if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
     m_timeline.Clear();
+    m_timelineTime = 0.0f;
+    {
+        const QSignalBlocker blocker(m_timelinePlayhead);
+        m_timelinePlayhead->setValue(0);
+    }
     RefreshTimelineTable();
     if (m_timelineStatus) m_timelineStatus->setText(QStringLiteral("暂无关键帧"));
     emit MotionTimelineChanged();
+}
+
+bool CMotionPanel::HasUnsavedTimelineChanges() const
+{
+    return m_timelineDirty || m_timelineDelegate->HasPendingChanges();
+}
+
+void CMotionPanel::SetTimelineDirty(bool dirty)
+{
+    if (m_timelineDirty == dirty) return;
+    m_timelineDirty = dirty;
+    emit TimelineDirtyChanged(dirty);
+}
+
+void CMotionPanel::MarkTimelineSaved()
+{
+    SetTimelineDirty(false);
+}
+
+bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
+{
+    m_timelineDelegate->CommitEditor();
+    return m_timeline.SaveState(state, m_loopCb->isChecked(), m_timelineTime, error);
+}
+
+bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error)
+{
+    CMotionTimeline candidate;
+    float playhead = 0.0f;
+    if (!candidate.RestoreState(state, &playhead, error)) return false;
+    m_restoringTimeline = true;
+    m_timelineTimer->stop();
+    m_recordTimelineCb->setChecked(false);
+    m_timeline = std::move(candidate);
+    m_timelineTime = playhead;
+    if (!state.isEmpty()) m_loopCb->setChecked(m_timeline.Loop());
+    m_playTimelineButton->setText(QStringLiteral("预览"));
+    {
+        const QSignalBlocker blocker(m_timelinePlayhead);
+        const double duration = m_timeline.Duration();
+        m_timelinePlayhead->setValue(duration > 0.0 ? qRound(playhead * 1000.0 / duration) : 0);
+    }
+    RefreshTimelineTable();
+    m_timelineStatus->setText(QStringLiteral("动画草稿已恢复"));
+    emit MotionTimelineChanged();
+    MarkTimelineSaved();
+    m_restoringTimeline = false;
+    return true;
+}
+
+bool CMotionPanel::ConfirmTimelineReplacement()
+{
+    m_timelineDelegate->CommitEditor();
+    if (!HasUnsavedTimelineChanges()) return true;
+    QMessageBox prompt(this);
+    prompt.setWindowTitle(QStringLiteral("动画草稿未保存"));
+    prompt.setText(QStringLiteral("替换当前时间轴前，是否保存工作会话？"));
+    prompt.setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    prompt.button(QMessageBox::Save)->setText(QStringLiteral("保存会话"));
+    prompt.button(QMessageBox::Discard)->setText(QStringLiteral("放弃修改"));
+    prompt.button(QMessageBox::Cancel)->setText(QStringLiteral("取消"));
+    prompt.setDefaultButton(QMessageBox::Save);
+    const auto result = prompt.exec();
+    if (result == QMessageBox::Discard) return true;
+    if (result != QMessageBox::Save) return false;
+    emit SaveSessionRequested();
+    return !HasUnsavedTimelineChanges();
+}
+
+bool CMotionPanel::SaveTimeline(const QString& path, QString* error)
+{
+    m_timelineDelegate->CommitEditor();
+    if (!m_timeline.Save(path, m_timeline.Fps(), m_loopCb->isChecked(), error)) return false;
+    MarkTimelineSaved();
+    m_timelineStatus->setText(QStringLiteral("已导出 motion3"));
+    return true;
 }
 
 void CMotionPanel::ExportTimeline()
@@ -568,11 +638,21 @@ void CMotionPanel::ExportTimeline()
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));
     if (path.isEmpty()) return;
     QString error;
-    if (!m_timeline.Save(path, m_timeline.Fps(), m_loopCb && m_loopCb->isChecked(), &error)) {
-        QMessageBox::warning(this, QStringLiteral("导出 motion3 失败"), error);
-        return;
-    }
-    m_timelineStatus->setText(QStringLiteral("已导出 motion3"));
+    if (!SaveTimeline(path, &error)) QMessageBox::warning(this, QStringLiteral("导出 motion3 失败"), error);
+}
+
+bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
+{
+    CMotionTimeline candidate;
+    if (!candidate.Load(path, error)) return false;
+    if (!ConfirmTimelineReplacement()) return false;
+    QJsonObject state;
+    if (!candidate.SaveState(&state, candidate.Loop(), 0, error)) return false;
+    if (!RestoreTimelineState(state, error)) return false;
+    m_timelineStatus->setText(m_timeline.PointCount() > 0
+        ? QStringLiteral("已导入 %1 个参数关键帧").arg(m_timeline.PointCount())
+        : QStringLiteral("已保留模型 / Part 曲线，可继续导出"));
+    return true;
 }
 
 void CMotionPanel::ImportTimeline()
@@ -581,24 +661,55 @@ void CMotionPanel::ImportTimeline()
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));
     if (path.isEmpty()) return;
     QString error;
-    if (!m_timeline.Load(path, &error)) {
+    if (!LoadTimeline(path, &error) && !error.isEmpty())
         QMessageBox::warning(this, QStringLiteral("导入 motion3 失败"), error);
-        return;
-    }
-    if (m_timelineTimer) m_timelineTimer->stop();
-    if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
-    if (m_recordTimelineCb) m_recordTimelineCb->setChecked(false);
-    if (m_loopCb) m_loopCb->setChecked(m_timeline.Loop());
-    m_timelineTime = 0.0f;
-    RefreshTimelineTable();
-    m_timelineStatus->setText(m_timeline.PointCount() > 0
-        ? QStringLiteral("已导入 %1 个参数关键帧").arg(m_timeline.PointCount())
-        : QStringLiteral("已保留模型 / Part 曲线，可继续导出"));
-    emit MotionTimelineChanged();
 }
 
 bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 {
+    QJsonObject candidate;
+    if (!poseJsonPath.isEmpty()) {
+        QFile file(poseJsonPath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            if (error) *error = QStringLiteral("无法打开 Pose 配置：%1").arg(file.errorString());
+            return false;
+        }
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+        if (file.error() != QFileDevice::NoError || parseError.error != QJsonParseError::NoError ||
+            !document.isObject() || !document.object().value(QStringLiteral("Groups")).isArray()) {
+            if (error) *error = QStringLiteral("Pose 配置 JSON 或 Groups 字段无效");
+            return false;
+        }
+        candidate = document.object();
+        const auto fade = candidate.value(QStringLiteral("FadeInTime"));
+        if (!fade.isUndefined() && (!fade.isDouble() || !std::isfinite(fade.toDouble()) ||
+            fade.toDouble() < 0.0 || fade.toDouble() > std::numeric_limits<float>::max())) {
+            if (error) *error = QStringLiteral("Pose 淡入时间无效");
+            return false;
+        }
+        for (const auto& group : candidate.value(QStringLiteral("Groups")).toArray()) {
+            if (!group.isArray()) {
+                if (error) *error = QStringLiteral("Pose 组必须是数组");
+                return false;
+            }
+            for (const auto& entry : group.toArray()) {
+                const auto object = entry.toObject();
+                const auto links = object.value(QStringLiteral("Link"));
+                if (!entry.isObject() || object.value(QStringLiteral("Id")).toString().trimmed().isEmpty() ||
+                    (!links.isUndefined() && !links.isArray())) {
+                    if (error) *error = QStringLiteral("Pose Part 或 Link 字段无效");
+                    return false;
+                }
+                for (const auto& link : links.toArray()) {
+                    if (!link.isString() || link.toString().trimmed().isEmpty()) {
+                        if (error) *error = QStringLiteral("Pose Link ID 无效");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
     m_poseJsonPath = poseJsonPath;
     m_poseDocument = {};
     m_poseGroups.clear();
@@ -611,8 +722,8 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
     m_savePoseButton->setEnabled(false);
     // 清除 poseWidget 中旧的 combo
     QLayout* layout = m_poseWidget->layout();
-    while(layout->count() > 1){ // 保留标签
-        QLayoutItem* item = layout->takeAt(1);
+    while(layout->count() > 2){
+        QLayoutItem* item = layout->takeAt(2);
         if (QWidget* widget = item->widget()) {
             delete widget;
         } else if (QLayout* child = item->layout()) {
@@ -627,23 +738,8 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
         return true;
     }
 
-    QFile file(poseJsonPath);
-    if(!file.open(QIODevice::ReadOnly)){
-        m_poseWidget->setVisible(false);
-        if (error) *error = QStringLiteral("无法打开 Pose 配置：%1").arg(file.errorString());
-        return false;
-    }
-
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
-    file.close();
-    if (parseError.error != QJsonParseError::NoError || doc.isNull() || !doc.isObject()) {
-        m_poseWidget->setVisible(false);
-        if (error) *error = QStringLiteral("Pose 配置 JSON 无效：%1").arg(parseError.errorString());
-        return false;
-    }
-    m_poseDocument = doc.object();
-    QJsonArray groups = doc.object()["Groups"].toArray();
+    m_poseDocument = candidate;
+    QJsonArray groups = candidate.value(QStringLiteral("Groups")).toArray();
     if(groups.isEmpty()){
         m_poseWidget->setVisible(false);
         return true;
@@ -732,18 +828,9 @@ void CMotionPanel::EditPoseLinks()
 
     QStringList candidates;
     QSet<QString> candidateSet;
-    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
-    LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
-    if (model && model->GetModel()) {
-        for (int i = 0; i < model->GetModel()->GetPartCount(); ++i) {
-            const CubismId* partId = model->GetModel()->GetPartId(i);
-            if (!partId) continue;
-            const QString id = QString::fromUtf8(partId->GetString().GetRawString());
-            if (!id.isEmpty() && !candidateSet.contains(id)) {
-                candidateSet.insert(id);
-                candidates.append(id);
-            }
-        }
+    for (const QString& id : m_modelPartIds) {
+        candidateSet.insert(id);
+        candidates.append(id);
     }
     for (const QString& id : group.partIds) if (!candidateSet.contains(id)) { candidateSet.insert(id); candidates.append(id); }
     for (const QStringList& links : group.links)
@@ -794,7 +881,7 @@ bool CMotionPanel::SavePose(QString* error)
     bool modelAvailable = false;
     for (const PoseGroup& group : m_poseGroups) {
         for (int i = 0; i < group.partIds.size(); ++i) {
-            if (!modelHasPart(group.partIds.at(i), &modelAvailable)) {
+            if (!ModelHasPart(group.partIds.at(i), &modelAvailable)) {
                 if (!modelAvailable) break;
                 if (error) *error = QStringLiteral("Pose 包含不存在的 Part：%1").arg(group.partIds.at(i));
                 return false;
@@ -805,7 +892,7 @@ bool CMotionPanel::SavePose(QString* error)
                     if (error) *error = QStringLiteral("Pose Link 不能指向自身：%1").arg(link);
                     return false;
                 }
-                if (!modelHasPart(link, &modelAvailable)) {
+                if (!ModelHasPart(link, &modelAvailable)) {
                     if (!modelAvailable) break;
                     if (error) *error = QStringLiteral("Pose 包含不存在的 Link：%1").arg(link);
                     return false;
@@ -854,7 +941,7 @@ void CMotionPanel::AddPosePart()
                                                   QString(), &accepted).trimmed();
     if (!accepted || partId.isEmpty()) return;
     bool modelAvailable = false;
-    if (!modelHasPart(partId, &modelAvailable)) {
+    if (!ModelHasPart(partId, &modelAvailable)) {
         QMessageBox::warning(this, QStringLiteral("添加 Pose Part"),
                              modelAvailable ? QStringLiteral("当前模型不存在该 Part") : QStringLiteral("模型尚未准备好"));
         return;
@@ -1020,10 +1107,5 @@ void CMotionPanel::EditSelectedExpression()
         return;
     }
 
-    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    LAppModel* model = mgr && mgr->GetModelNum() > 0 ? mgr->GetModel(0) : nullptr;
-    if (!model || !model->ReloadExpressionFromFile(entry.name, entry.path)) {
-        QMessageBox::warning(this, QStringLiteral("表情已保存但运行时刷新失败"),
-                             QStringLiteral("下次重新打开模型后会读取新配置"));
-    }
+    emit ExpressionSaved(entry.name, entry.path);
 }

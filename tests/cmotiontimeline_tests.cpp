@@ -1,4 +1,4 @@
-#include "ui/cmotiontimeline.h"
+#include "live2dstruct/cmotiontimeline.h"
 #include <QtTest>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -306,6 +306,29 @@ private slots:
         QVERIFY(!timeline.IsRecording());
         timeline.Record("A", 2);
         QCOMPARE(timeline.PointCount(), 0);
+    }
+
+    void snapshotPreservesCurvesAndStopsRecordingOnRestore()
+    {
+        const QString path = QString(TEST_RESOURCES) + "/Mark/motions/mark_m06.motion3.json";
+        CMotionTimeline original;
+        QVERIFY(original.Load(path));
+        const QString id = original.Curves().firstKey();
+        QVERIFY(original.UpdatePoint(id, 0, 0.0f, 0.25f));
+        original.StartRecording();
+        QJsonObject state;
+        QVERIFY(original.SaveState(&state, true, original.Duration() * 0.5f));
+        QVERIFY(original.IsRecording());
+        CMotionTimeline restored;
+        float time = 0;
+        QVERIFY(restored.RestoreState(state, &time));
+        QVERIFY(!restored.IsRecording());
+        QCOMPARE(restored.Curves(), original.Curves());
+        QJsonObject repeated;
+        QVERIFY(restored.SaveState(&repeated, restored.Loop(), time));
+        QCOMPARE(repeated, state);
+        for (const auto& parameter : original.Curves().keys())
+            QVERIFY(qAbs(original.Evaluate(parameter, time) - restored.Evaluate(parameter, time)) < 0.0001f);
     }
 
     void writesCubismMotionFormat()

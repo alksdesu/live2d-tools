@@ -1,7 +1,7 @@
 #ifndef CMOTIONCURVEVIEW_H
 #define CMOTIONCURVEVIEW_H
 
-#include "cmotiontimeline.h"
+#include "live2dstruct/cmotiontimeline.h"
 #include <QRectF>
 #include <QWidget>
 

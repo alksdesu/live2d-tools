@@ -10,20 +10,30 @@
 #include <QLineEdit>
 #include <QJsonObject>
 #include <QMap>
-#include "cmotiontimeline.h"
+#include <QSet>
+#include "live2dstruct/cmotiontimeline.h"
 
 class QLabel;
 class QPushButton;
 class QTableWidget;
 class QTimer;
 class CMotionCurveView;
+class CTableEditDelegate;
 
 class CMotionPanel : public QDockWidget
 {
     Q_OBJECT
 public:
     explicit CMotionPanel(QWidget *parent = nullptr);
-    void BuildLists();
+    bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
+    bool CaptureTimelineState(QJsonObject* state, QString* error = nullptr);
+    bool RestoreTimelineState(const QJsonObject& state, QString* error = nullptr);
+    bool HasUnsavedTimelineChanges() const;
+    void MarkTimelineSaved();
+    quint64 TimelineRevision() const { return m_timelineRevision; }
+    bool ConfirmTimelineReplacement();
+    bool LoadTimeline(const QString& path, QString* error = nullptr);
+    bool SaveTimeline(const QString& path, QString* error = nullptr);
     bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
     bool SavePose(QString* error = nullptr);
     void RecordParameterValue(const QString& parameterId, float value);
@@ -46,6 +56,9 @@ signals:
     void PoseConfigChanged();
     void PoseSaved();
     void MotionTimelineChanged();
+    void TimelineDirtyChanged(bool dirty);
+    void SaveSessionRequested();
+    void ExpressionSaved(const QString& name, const QString& path);
     void MotionTimelinePreviewChanged(const QMap<QString, float>& values);
     void LipSyncWavChanged(const QString& path);
 
@@ -96,6 +109,14 @@ private:
     int m_activePoseGroup = -1;
     bool m_poseDirty = false;
     CMotionTimeline m_timeline;
+    QSet<QString> m_modelPartIds;
+    bool m_modelPartsKnown = false;
+    bool m_timelineDirty = false;
+    bool m_restoringTimeline = false;
+    quint64 m_timelineRevision = 0;
+    CTableEditDelegate* m_timelineDelegate = nullptr;
+    void SetTimelineDirty(bool dirty);
+    bool ModelHasPart(const QString& id, bool* available) const;
     QCheckBox* m_recordTimelineCb = nullptr;
     QTableWidget* m_timelineTable = nullptr;
     QLabel* m_timelineStatus = nullptr;

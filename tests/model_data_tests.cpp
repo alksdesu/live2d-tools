@@ -1,6 +1,9 @@
 #include "opengl/cmeshbounds.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
+#include "live2dstruct/cmotiontimeline.h"
+#include <QJsonDocument>
+#include <QJsonArray>
 #include "std/cmodeljson.h"
 #include "live2dstruct/csectiontable.h"
 #include <QtTest>
@@ -406,6 +409,75 @@ private slots:
         CModelJson natori;
         natori.Parse(QString(TEST_RESOURCES) + "/Natori/Natori.model3.json");
         QVERIFY(!natori.getAllZipFiles().filter(QRegularExpression("Natori\\.pose3\\.json$")).isEmpty());
+    }
+
+    void sessionPreservesAnimationDrafts()
+    {
+        QTemporaryDir temp;
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("ParamA", 5, 0.5));
+        live2dstruct::CModelSession session;
+        QString error;
+        QVERIFY(timeline.SaveState(&session.animation, true, 3, &error));
+        const QString path = temp.filePath("single.session.json");
+        QVERIFY2(session.Save(path, &error), qPrintable(error));
+        live2dstruct::CModelSession restored;
+        QVERIFY(live2dstruct::CModelSession::Load(path, &restored, &error));
+        CMotionTimeline loaded;
+        float playhead = -1;
+        QVERIFY(loaded.RestoreState(restored.animation, &playhead, &error));
+        QCOMPARE(loaded.PointCount(), 1);
+        QCOMPARE(playhead, 3.0f);
+        QVERIFY(loaded.Loop());
+        QCOMPARE(loaded.Curves(), timeline.Curves());
+        timeline.Clear();
+        QVERIFY(timeline.SaveState(&session.animation, false, 0, &error));
+        QVERIFY(session.Save(path, &error));
+        QVERIFY(live2dstruct::CModelSession::Load(path, &restored, &error));
+        QVERIFY(loaded.RestoreState(restored.animation, &playhead, &error));
+        QVERIFY(!loaded.HasCurves());
+        QCOMPARE(playhead, 0.0f);
+        QVERIFY(live2dstruct::CModelSession::FromJson(R"({"version":1})", &restored, &error));
+        QVERIFY(restored.animation.isEmpty());
+    }
+
+    void rejectsDamagedAnimationWithoutReplacingSession()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("ParamA", 0, 0.5));
+        QJsonObject valid;
+        QVERIFY(timeline.SaveState(&valid, false, 0));
+        QTemporaryDir temp;
+        const QString path = temp.filePath("existing.session.json");
+        live2dstruct::CModelSession current;
+        current.parameters.insert("Keep", 42);
+        QVERIFY(current.Save(path));
+        QFile beforeFile(path);
+        QVERIFY(beforeFile.open(QIODevice::ReadOnly));
+        const QByteArray before = beforeFile.readAll();
+        beforeFile.close();
+        const QVector<QPair<QString, QJsonValue>> badFields{
+            {"version", 2}, {"playhead", "invalid"}, {"playhead", -1}, {"playhead", 5},
+            {"motion", QJsonArray{}},
+            {"motion", QJsonObject{{"Version", 3}, {"Curves", QJsonArray{QJsonObject{
+                {"Target", "Parameter"}, {"Id", "A"}, {"Segments", QJsonArray{"bad", 0}}}}}}}
+        };
+        QString error;
+        for (const auto& field : badFields) {
+            auto snapshot = valid;
+            snapshot.insert(field.first, field.second);
+            const QJsonObject root{{"version", 1}, {"animation", snapshot}};
+            QVERIFY(!live2dstruct::CModelSession::FromJson(QJsonDocument(root).toJson(), &current, &error));
+            QCOMPARE(current.parameters.value("Keep"), 42.0f);
+            live2dstruct::CModelSession invalid;
+            invalid.animation = snapshot;
+            QVERIFY(!invalid.Save(path, &error));
+            QVERIFY(beforeFile.open(QIODevice::ReadOnly));
+            QCOMPARE(beforeFile.readAll(), before);
+            beforeFile.close();
+        }
+        QVERIFY(!live2dstruct::CModelSession::FromJson(R"({"version":1,"animation":[]})", &current, &error));
+        QCOMPARE(current.parameters.value("Keep"), 42.0f);
     }
 
     void sessionRoundTrip()

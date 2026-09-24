@@ -1,4 +1,5 @@
 #include "cmodelsession.h"
+#include "cmotiontimeline.h"
 
 #include <QFile>
 #include <QSaveFile>
@@ -54,6 +55,7 @@ QByteArray CModelSession::ToJson() const
 {
     QJsonObject root;
     root.insert(QStringLiteral("version"), version);
+    root.insert(QStringLiteral("animation"), animation);
     root.insert(QStringLiteral("sourceMoc"), sourceMoc);
     if (!sourceDigest.isEmpty()) root.insert(QStringLiteral("sourceDigest"), QString::fromLatin1(sourceDigest.toHex()));
     QJsonObject parameterObject;
@@ -186,6 +188,9 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
 
     CModelSession result;
     result.version = parsedVersion;
+    if (!readObject(root, QStringLiteral("animation"), &result.animation, error)) return false;
+    CMotionTimeline timeline;
+    if (!timeline.RestoreState(result.animation, nullptr, error)) return false;
     const QJsonValue sourceMoc = root.value(QStringLiteral("sourceMoc"));
     if (!sourceMoc.isUndefined() && !sourceMoc.isString()) {
         setError(error, QStringLiteral("会话字段类型错误：sourceMoc"));
@@ -515,12 +520,14 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
 
 bool CModelSession::Save(const QString& path, QString* error) const
 {
+    const QByteArray data = ToJson();
+    CModelSession validated;
+    if (!FromJson(data, &validated, error)) return false;
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         setError(error, QStringLiteral("无法写入会话：%1").arg(path));
         return false;
     }
-    const QByteArray data = ToJson();
     if (file.write(data) != data.size() || !file.commit()) {
         setError(error, QStringLiteral("写入会话失败：%1").arg(path));
         return false;

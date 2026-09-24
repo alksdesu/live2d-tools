@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace {
 constexpr qint64 maximumMotionBytes = 16 * 1024 * 1024;
@@ -60,12 +61,12 @@ struct ParsedCurve
     int totalPoints = 1;
 };
 
-bool parseCurve(const QJsonObject& curve, bool restricted, ParsedCurve* result)
+bool parseCurve(const QJsonObject& curve, bool restricted, ParsedCurve* result, bool draft = false)
 {
     const QJsonValue raw = curve.value(QStringLiteral("Segments"));
     if (!raw.isArray()) return false;
     const QJsonArray segments = raw.toArray();
-    if (segments.size() < 5 || segments.size() > maximumMotionPoints * 7) return false;
+    if (segments.size() < (draft ? 2 : 5) || segments.size() > maximumMotionPoints * 7) return false;
     bool valid = true;
     const auto number = [&segments, &valid](int index) {
         const auto value = segments.at(index);
@@ -330,12 +331,8 @@ int CMotionTimeline::PointCount() const
     return count;
 }
 
-bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* error) const
+bool CMotionTimeline::BuildJson(QJsonObject* output, float fps, bool loop, bool draft, QString* error) const
 {
-    if (path.isEmpty()) {
-        if (error) *error = QStringLiteral("motion3 保存路径为空");
-        return false;
-    }
     const double outputFps = std::isfinite(fps) && fps > 0.0f ? fps : 30.0;
     const QJsonArray originals = m_source.value(QStringLiteral("Curves")).toArray();
     QMap<QString, QJsonObject> parameterFields;
@@ -355,7 +352,7 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
         QVector<QPointF> points = it.value();
         const auto types = m_segmentTypes.value(it.key());
         const auto bezierControls = m_bezierControls.value(it.key());
-        if (points.size() == 1) {
+        if (!draft && points.size() == 1) {
             const float start = static_cast<float>(points.first().x());
             const float endpoint = qMax(static_cast<float>(start + 1.0 / outputFps),
                                          std::nextafterf(start, std::numeric_limits<float>::infinity()));
@@ -388,7 +385,7 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
         curves.append(curve);
     }
     for (const auto& curve : partCurves) curves.append(curve);
-    if (curves.isEmpty()) {
+    if (!draft && curves.isEmpty()) {
         if (error) *error = QStringLiteral("没有可导出的曲线");
         return false;
     }
@@ -397,7 +394,7 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
     double duration = meta.value(QStringLiteral("Duration")).toDouble();
     for (const auto& value : curves) {
         ParsedCurve parsed;
-        if (!parseCurve(value.toObject(), restricted, &parsed)) {
+        if (!parseCurve(value.toObject(), restricted, &parsed, draft)) {
             if (error) *error = QStringLiteral("motion3 曲线无法安全导出");
             return false;
         }
@@ -431,6 +428,19 @@ bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* e
         if (error) *error = QStringLiteral("motion3 文件过大");
         return false;
     }
+    if (output) *output = root;
+    return true;
+}
+
+bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* error) const
+{
+    if (path.isEmpty()) {
+        if (error) *error = QStringLiteral("motion3 保存路径为空");
+        return false;
+    }
+    QJsonObject root;
+    if (!BuildJson(&root, fps, loop, false, error)) return false;
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         if (error) *error = file.errorString();
@@ -457,7 +467,11 @@ bool CMotionTimeline::Load(const QString& path, QString* error)
         if (error) *error = QStringLiteral("motion3 JSON 无效：%1").arg(parseError.errorString());
         return false;
     }
-    const QJsonObject root = document.object();
+    return LoadJson(document.object(), false, error);
+}
+
+bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* error)
+{
     if (root.value(QStringLiteral("Version")).toDouble(-1) != 3.0 || !root.value(QStringLiteral("Curves")).isArray()) {
         if (error) *error = QStringLiteral("不支持的 motion3 版本或曲线字段");
         return false;
@@ -505,7 +519,7 @@ bool CMotionTimeline::Load(const QString& path, QString* error)
         if (!value.isObject() || (target != QLatin1String("Parameter") && target != QLatin1String("Model") &&
                                   target != QLatin1String("PartOpacity")) || id.trimmed().isEmpty() ||
             id.contains(QChar::Null) || identities.contains(identity) || !validFadeTimes(curve) ||
-            !parseCurve(curve, restricted, &parsed)) {
+            !parseCurve(curve, restricted, &parsed, draft)) {
             if (error) *error = QStringLiteral("motion3 曲线无效或重复：%1 / %2").arg(target, id);
             return false;
         }
@@ -521,7 +535,7 @@ bool CMotionTimeline::Load(const QString& path, QString* error)
             bezierControls.insert(id, parsed.controls);
         }
     }
-    if (identities.isEmpty()) {
+    if (!draft && identities.isEmpty()) {
         if (error) *error = QStringLiteral("motion3 没有曲线");
         return false;
     }
@@ -530,5 +544,57 @@ bool CMotionTimeline::Load(const QString& path, QString* error)
     m_curves.swap(curves);
     m_segmentTypes.swap(segmentTypes);
     m_bezierControls.swap(bezierControls);
+    return true;
+}
+
+bool CMotionTimeline::HasCurves() const
+{
+    if (!m_curves.isEmpty()) return true;
+    for (const auto& value : m_source.value(QStringLiteral("Curves")).toArray())
+        if (value.toObject().value(QStringLiteral("Target")).toString() != QLatin1String("Parameter")) return true;
+    return false;
+}
+
+bool CMotionTimeline::SaveState(QJsonObject* state, bool loop, float playhead, QString* error) const
+{
+    if (!state || !std::isfinite(playhead)) {
+        if (error) *error = QStringLiteral("动画草稿目标或播放头无效");
+        return false;
+    }
+    QJsonObject motion;
+    if (!BuildJson(&motion, Fps(), loop, true, error)) return false;
+    const QJsonObject result{{QStringLiteral("version"), 1}, {QStringLiteral("motion"), motion},
+                             {QStringLiteral("playhead"), qBound(0.0f, playhead, Duration())}};
+    if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() > maximumMotionBytes) {
+        if (error) *error = QStringLiteral("动画草稿过大");
+        return false;
+    }
+    *state = result;
+    return true;
+}
+
+bool CMotionTimeline::RestoreState(const QJsonObject& state, float* playhead, QString* error)
+{
+    if (state.isEmpty()) {
+        Clear();
+        if (playhead) *playhead = 0.0f;
+        return true;
+    }
+    const auto time = state.value(QStringLiteral("playhead"));
+    if (state.value(QStringLiteral("version")).toDouble(-1) != 1.0 ||
+        !state.value(QStringLiteral("motion")).isObject() || !time.isDouble() ||
+        !finiteFloat(time.toDouble()) || time.toDouble() < 0.0 ||
+        QJsonDocument(state).toJson(QJsonDocument::Compact).size() > maximumMotionBytes) {
+        if (error) *error = QStringLiteral("动画草稿格式或播放头无效");
+        return false;
+    }
+    CMotionTimeline candidate;
+    if (!candidate.LoadJson(state.value(QStringLiteral("motion")).toObject(), true, error)) return false;
+    if (time.toDouble() > candidate.Duration()) {
+        if (error) *error = QStringLiteral("动画播放头超出草稿时长");
+        return false;
+    }
+    *this = std::move(candidate);
+    if (playhead) *playhead = static_cast<float>(time.toDouble());
     return true;
 }

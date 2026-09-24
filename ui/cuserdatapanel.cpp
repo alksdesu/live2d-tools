@@ -1,4 +1,5 @@
 #include "cuserdatapanel.h"
+#include "ctableeditdelegate.h"
 
 #include "std/cmodeljson.h"
 #include "std/cmodeljsonwriter.h"
@@ -16,47 +17,6 @@
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 #include <algorithm>
-
-class CUserDataValueDelegate : public QStyledItemDelegate
-{
-public:
-    explicit CUserDataValueDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
-
-    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
-                          const QModelIndex& index) const override
-    {
-        QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
-        m_editor = qobject_cast<QLineEdit*>(editor);
-        m_index = index;
-        return editor;
-    }
-
-    void destroyEditor(QWidget* editor, const QModelIndex& index) const override
-    {
-        if (m_editor == editor) {
-            m_editor.clear();
-            m_index = QPersistentModelIndex();
-        }
-        QStyledItemDelegate::destroyEditor(editor, index);
-    }
-
-    bool HasPendingChanges() const
-    {
-        return m_editor && m_index.isValid() && m_editor->text() != m_index.data(Qt::EditRole).toString();
-    }
-
-    void CommitEditor()
-    {
-        if (!m_editor || !m_index.isValid()) return;
-        QPointer<QLineEdit> editor = m_editor;
-        emit commitData(editor);
-        if (editor) emit closeEditor(editor, QAbstractItemDelegate::NoHint);
-    }
-
-private:
-    mutable QPointer<QLineEdit> m_editor;
-    mutable QPersistentModelIndex m_index;
-};
 
 CUserDataPanel::CUserDataPanel(QWidget* parent)
     : QDockWidget(QStringLiteral("网格标签 · UserData"), parent)
@@ -83,7 +43,7 @@ CUserDataPanel::CUserDataPanel(QWidget* parent)
     m_table = new QTableWidget(wrapper);
     m_table->setObjectName(QStringLiteral("userDataTable"));
     m_table->setColumnCount(2);
-    m_valueDelegate = new CUserDataValueDelegate(m_table);
+    m_valueDelegate = new CTableEditDelegate(m_table);
     m_table->setItemDelegateForColumn(1, m_valueDelegate);
     m_table->setHorizontalHeaderLabels({QStringLiteral("ArtMesh ID"), QStringLiteral("标签内容")});
     m_table->horizontalHeader()->setStretchLastSection(true);

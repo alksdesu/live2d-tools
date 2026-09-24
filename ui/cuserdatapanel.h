@@ -8,7 +8,7 @@
 class QLabel;
 class QTableWidget;
 class QPushButton;
-class CUserDataValueDelegate;
+class CTableEditDelegate;
 
 class CUserDataPanel : public QDockWidget
 {
@@ -38,7 +38,7 @@ private:
 
     QLabel* m_status = nullptr;
     QTableWidget* m_table = nullptr;
-    CUserDataValueDelegate* m_valueDelegate = nullptr;
+    CTableEditDelegate* m_valueDelegate = nullptr;
     QPushButton* m_addButton = nullptr;
     QPushButton* m_removeButton = nullptr;
     QPushButton* m_saveButton = nullptr;

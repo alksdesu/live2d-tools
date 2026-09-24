@@ -51,7 +51,7 @@ private slots:
 private:
     void RestDock(const QString& name);
     bool CloseModel();
-    bool ConfirmCloseWithUnsavedChanges();
+    bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false);
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);

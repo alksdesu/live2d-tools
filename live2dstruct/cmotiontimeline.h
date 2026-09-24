@@ -28,10 +28,15 @@ public:
     QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
     bool Load(const QString& path, QString* error = nullptr);
+    bool SaveState(QJsonObject* state, bool loop, float playhead, QString* error = nullptr) const;
+    bool RestoreState(const QJsonObject& state, float* playhead = nullptr, QString* error = nullptr);
+    bool HasCurves() const;
     int PointCount() const;
     const QMap<QString, QVector<QPointF>>& Curves() const { return m_curves; }
 
 private:
+    bool BuildJson(QJsonObject* root, float fps, bool loop, bool draft, QString* error) const;
+    bool LoadJson(const QJsonObject& root, bool draft, QString* error);
     QJsonObject m_source;
     bool m_recording = false;
     float m_recordStartTime = 0.0f;

@@ -46,6 +46,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSharedPointer>
+#include <QPointer>
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
@@ -345,6 +346,11 @@ void MainWindow::on_actionSaveSession_triggered()
     if (path.isEmpty()) return;
 
     live2dstruct::CModelSession session;
+    QString animationError;
+    if (m_motionPanel && !m_motionPanel->CaptureTimelineState(&session.animation, &animationError)) {
+        QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
+        return;
+    }
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     session.sourceDigest = live2dstruct::CModelSession::ComputeSourceDigest(session.sourceMoc);
     if (session.sourceDigest.isEmpty()) {
@@ -376,6 +382,7 @@ void MainWindow::on_actionSaveSession_triggered()
         return;
     }
     m_sessionDirty = false;
+    if (m_motionPanel) m_motionPanel->MarkTimelineSaved();
     setWindowTitle(QStringLiteral("live2d2psd"));
     statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
 }
@@ -401,10 +408,15 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的 moc3 文件内容已变化，无法安全恢复编辑状态"));
         return;
     }
+    if (!ConfirmCloseWithUnsavedChanges(true)) return;
     const QString sourceMoc = session.sourceMoc;
+    const QPointer<CMotionPanel> motionPanel = m_motionPanel;
     const auto applied = QSharedPointer<bool>::create(false);
-    auto apply = [this, sourceMoc, session, applied]() {
-        if (*applied && m_sessionDirty) return;
+    const auto animationRevision = QSharedPointer<quint64>::create(0);
+    auto apply = [this, sourceMoc, session, applied, motionPanel, animationRevision]() {
+        if (!motionPanel || motionPanel != m_motionPanel) return;
+        if (*applied && (m_sessionDirty || motionPanel->TimelineRevision() != *animationRevision ||
+                         motionPanel->HasUnsavedTimelineChanges())) return;
         if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
         m_applyingSession = true;
         QString resetError;
@@ -461,6 +473,13 @@ void MainWindow::on_actionLoadSession_triggered()
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
         if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
                                                             QVector2D(session.viewPosition.x(), session.viewPosition.y()));
+        QString animationError;
+        if (!motionPanel->RestoreTimelineState(session.animation, &animationError)) {
+            m_applyingSession = false;
+            statusBar()->showMessage(animationError, 8000);
+            return;
+        }
+        *animationRevision = motionPanel->TimelineRevision();
         m_applyingSession = false;
         if (m_inspectorPanel) m_inspectorPanel->ClearHistory();
         m_historySource = HistorySource::None;
@@ -826,28 +845,32 @@ void MainWindow::on_actionCloseModel_triggered()
     CloseModel();
 }
 
-bool MainWindow::ConfirmCloseWithUnsavedChanges()
+bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession)
 {
-    const bool physicsDirty = m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
-    const bool poseDirty = m_poseDirty || (m_motionPanel && m_motionPanel->HasUnsavedPoseChanges());
-    const bool userDataDirty = m_userDataPanel && m_userDataPanel->HasUnsavedChanges();
-    if (!m_sessionDirty && !physicsDirty && !poseDirty && !userDataDirty) return true;
+    const bool physicsDirty = !replacingSession && m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
+    const bool poseDirty = !replacingSession && (m_poseDirty || (m_motionPanel && m_motionPanel->HasUnsavedPoseChanges()));
+    const bool userDataDirty = !replacingSession && m_userDataPanel && m_userDataPanel->HasUnsavedChanges();
+    const bool animationDirty = m_motionPanel && m_motionPanel->HasUnsavedTimelineChanges();
+    if (!m_sessionDirty && !physicsDirty && !poseDirty && !userDataDirty && !animationDirty) return true;
     QMessageBox prompt(this);
     prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
     prompt.setText(QStringLiteral("当前模型有未保存的编辑。"));
     QStringList pending;
     if (m_sessionDirty) pending.append(QStringLiteral("工作会话"));
+    if (animationDirty) pending.append(QStringLiteral("动画草稿"));
     if (physicsDirty) pending.append(QStringLiteral("物理配置"));
     if (poseDirty) pending.append(QStringLiteral("Pose 配置"));
     if (userDataDirty) pending.append(QStringLiteral("网格标签"));
-    prompt.setInformativeText(QStringLiteral("关闭前是否保存：%1？").arg(pending.join(QStringLiteral("、"))));
+    prompt.setInformativeText((replacingSession ? QStringLiteral("载入会话前是否保存：%1？")
+                                                : QStringLiteral("关闭前是否保存：%1？"))
+                                  .arg(pending.join(QStringLiteral("、"))));
     QPushButton* save = prompt.addButton(QStringLiteral("保存"), QMessageBox::AcceptRole);
     prompt.addButton(QStringLiteral("放弃"), QMessageBox::DestructiveRole);
     prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
     prompt.exec();
     if (prompt.clickedButton() == save) {
-        if (m_sessionDirty) on_actionSaveSession_triggered();
-        const bool sessionSaved = !m_sessionDirty;
+        if (m_sessionDirty || animationDirty) on_actionSaveSession_triggered();
+        const bool sessionSaved = !m_sessionDirty && (!m_motionPanel || !m_motionPanel->HasUnsavedTimelineChanges());
         const bool physicsSaved = !physicsDirty || (m_physicsPanel && m_physicsPanel->SavePhysics());
         QString poseError;
         const bool poseSaved = !poseDirty || (m_motionPanel && m_motionPanel->SavePose(&poseError));
@@ -1094,6 +1117,28 @@ void MainWindow::RestDock(const QString &name)
     // 底部面板：动作/表情 + 融合变形 + 纹理（tabify）
     m_motionPanel = new CMotionPanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_motionPanel);
+    QStringList partIds;
+    for (const auto& part : m_document.Parts()) partIds.append(part.id);
+    QString catalogError;
+    if (!m_motionPanel->BuildLists(name, partIds, &catalogError)) statusBar()->showMessage(catalogError, 8000);
+    connect(m_motionPanel, &CMotionPanel::SaveSessionRequested, this, &MainWindow::on_actionSaveSession_triggered);
+    connect(m_motionPanel, &CMotionPanel::TimelineDirtyChanged, this, [this](bool dirty){
+        if (dirty) {
+            setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+            statusBar()->showMessage(QStringLiteral("动画草稿有未保存的修改"));
+        } else if (!m_sessionDirty && !m_poseDirty &&
+                   (!m_physicsPanel || !m_physicsPanel->HasUnsavedChanges()) &&
+                   (!m_userDataPanel || !m_userDataPanel->HasUnsavedChanges())) {
+            setWindowTitle(QStringLiteral("live2d2psd"));
+        }
+    });
+    connect(m_motionPanel, &CMotionPanel::ExpressionSaved, this, [this](const QString& expression, const QString& path){
+        LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+        LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+        if (!model || !model->ReloadExpressionFromFile(expression, path))
+            QMessageBox::warning(this, QStringLiteral("表情已保存但运行时刷新失败"),
+                                 QStringLiteral("下次重新打开模型后会读取新配置"));
+    });
 
     m_blendShapePanel = new CBlendShapePanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_blendShapePanel);
@@ -1167,9 +1212,9 @@ void MainWindow::RestDock(const QString &name)
         m_blendShapePanel->BuildBlendShapes(moc, m_cidJson);
     }
 
-    // 延迟构建参数和动作列表（等 GL 初始化完成）
+    // 参数和图集依赖 GL 初始化。
     QString posePath = modeljson.m_Pose.isEmpty() ? QString() : (modeljson.m_parentPath + "/" + modeljson.m_Pose);
-    QTimer::singleShot(200, this, [this, posePath, moc](){
+    QTimer::singleShot(200, m_paramPanel, [this, posePath, moc](){
         const QSet<QString>* bsParams = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
         if(m_paramPanel) m_paramPanel->BuildParams(m_cidJson, bsParams);
         if (m_paramPanel && m_blendShapePanel) {
@@ -1178,7 +1223,6 @@ void MainWindow::RestDock(const QString &name)
                 m_blendShapePanel->SyncParameterValue(it.key(), it.value());
             }
         }
-        if(m_motionPanel) m_motionPanel->BuildLists();
         // Pose 切换
         if(m_motionPanel && !posePath.isEmpty()){
             QString poseError;
