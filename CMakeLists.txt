@@ -162,25 +162,28 @@ if(BUILD_TESTING)
     target_link_libraries(cmo3_deformer_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(cmo3_deformer_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME cmo3_deformers COMMAND cmo3_deformer_tests)
-    if(WIN32)
-        add_library(psd_data STATIC
-            psd/cpsdlist.cpp
-            psd/psdSamples/Exporter/PsdExport.cpp
-            psd/psdSamples/ImageUtil/PsdDecompressRle.cpp
-            psd/psdSamples/Interfaces/PsdAllocator.cpp
-            psd/psdSamples/Interfaces/PsdFile.cpp
-            psd/psdSamples/Interfaces/PsdMallocAllocator.cpp
-            psd/psdSamples/Interfaces/PsdNativeFile.cpp
-            psd/psdSamples/Util/PsdSyncFileWriter.cpp
-        )
-        target_include_directories(psd_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-        target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui PRIVATE psd_zip)
-        if(MSVC)
-            target_compile_options(psd_data PUBLIC /utf-8)
-        endif()
-        add_executable(psd_tests tests/psd_tests.cpp)
-        target_link_libraries(psd_tests PRIVATE psd_data Qt6::Test)
-        add_test(NAME psd COMMAND psd_tests)
-
+    add_library(psd_data STATIC
+        psd/cpsdlist.cpp
+        psd/psdSamples/Exporter/PsdExport.cpp
+        psd/psdSamples/ImageUtil/PsdDecompressRle.cpp
+        psd/psdSamples/Interfaces/PsdAllocator.cpp
+        psd/psdSamples/Interfaces/PsdFile.cpp
+        psd/psdSamples/Interfaces/PsdMallocAllocator.cpp
+        psd/psdSamples/Interfaces/PsdNativeFile.cpp
+        psd/psdSamples/Util/PsdSyncFileWriter.cpp
+        psd/psdSamples/Util/PsdFixedSizeString.cpp
+    )
+    target_include_directories(psd_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui PRIVATE psd_zip)
+    if(MSVC)
+        target_compile_options(psd_data PUBLIC /utf-8)
     endif()
+    add_executable(psd_tests tests/psd_tests.cpp assets/icc.qrc)
+    set_target_properties(psd_tests PROPERTIES AUTORCC ON)
+    target_link_libraries(psd_tests PRIVATE psd_data Qt6::Test)
+    add_test(NAME psd COMMAND psd_tests)
+    add_executable(psd_native_file_tests tests/psd_native_file_tests.cpp)
+    target_link_libraries(psd_native_file_tests PRIVATE psd_data Qt6::Test)
+    add_test(NAME psd_native_file COMMAND psd_native_file_tests)
+
 endif()

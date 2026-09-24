@@ -11,13 +11,17 @@
 PSD_NAMESPACE_BEGIN
 
 /// \ingroup Files
-/// \brief Simple file implementation that uses Windows' native file functions internally.
+/// \brief File implementation using the platform's file functions.
 /// \sa File
 class NativeFile : public File
 {
 public:
 	/// Constructor.
 	explicit NativeFile(Allocator* allocator);
+	~NativeFile(void) PSD_OVERRIDE;
+
+	NativeFile(const NativeFile&) = delete;
+	NativeFile& operator=(const NativeFile&) = delete;
 
 private:
 	virtual bool DoOpenRead(const wchar_t* filename) PSD_OVERRIDE;

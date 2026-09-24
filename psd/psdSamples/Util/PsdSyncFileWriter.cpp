@@ -5,6 +5,7 @@
 #include "psd/psdSamples/Util/PsdSyncFileWriter.h"
 
 #include "psd/psdSamples/Interfaces/PsdFile.h"
+#include <limits>
 
 
 PSD_NAMESPACE_BEGIN
@@ -14,6 +15,7 @@ PSD_NAMESPACE_BEGIN
 SyncFileWriter::SyncFileWriter(File* file)
 	: m_file(file)
 	, m_position(0ull)
+	, m_failed(file == nullptr)
 {
 }
 
@@ -22,10 +24,18 @@ SyncFileWriter::SyncFileWriter(File* file)
 // ---------------------------------------------------------------------------------------------------------------------
 void SyncFileWriter::Write(const void* buffer, uint32_t count)
 {
-	// do an asynchronous write, wait until it's finished, and update the file position
+	if (m_failed || count == 0) return;
+	if (!buffer || m_position > std::numeric_limits<uint64_t>::max() - count)
+	{
+		m_failed = true;
+		return;
+	}
 	File::WriteOperation op = m_file->Write(buffer, count, m_position);
-	m_file->WaitForWrite(op);
-
+	if (!op || !m_file->WaitForWrite(op))
+	{
+		m_failed = true;
+		return;
+	}
 	m_position += count;
 }
 

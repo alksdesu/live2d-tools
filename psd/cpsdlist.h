@@ -4,7 +4,7 @@
 #include <QImage>
 #include "psd/psdSamples/PsdDocumentation.h"
 #include "psd/psdSamples/Interfaces/PsdMallocAllocator.h"
-#include "psd/psdSamples/Interfaces/PsdNativeFile.h"
+#include "psd/psdSamples/Interfaces/PsdFile.h"
 #include "psd/psdSamples/Exporter/PsdExport.h"
 using namespace   psd;
 

@@ -253,3 +253,29 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 混合预览只计算单动作权重，循环在精确边界重新淡入并忽略结束淡出；模型透明度保持原始值，Part 继续采用直接透明度编辑预览。它不等于多动作叠加或通过 Pose 驱动虚拟参数的完整 Native 播放，完整 Core/GL 环境仍需验证。
 - 实际 Qt 测试修复 Enter 未定位和紧凑布局第二行被裁切的问题；表格最小高度按表头、行高与边框计算。浅/深色界面在约 737×532 范围显示完整两行并支持长列表滚动；事件栏使用当前画布背景，避免深色模式出现白条。
 - 全部 CTest 18/18 通过；事件数据、混合计算、曲线视图、动作面板通过 ASAN/UBSAN。主窗口、LAppModel 与修改后的 SDK 动作实现通过语法检查，未声称完成原生模型渲染或第三方编辑器回读。
+
+
+## 关键形数据与编辑目标修复
+
+- 修复 ArtMesh 稀疏覆盖读取：覆盖数组中的空槽继续回落源关键形，编辑一个关键形不会再让其余关键形变成空数据。原 session 存储语义保持兼容，导出与编辑器共用一致的有效值。
+- 属性面板在同一 ArtMesh/Warp 刷新、撤销与重做时保留有效关键形选择；切换对象重建选择并同步编辑目标。自动激活信号只同步对象/索引，与用户主动预览几何分开，刷新不会额外覆写线框坐标。
+- 关键形变更和历史回放更新所有对应缓存，非活动关键形的复制/撤销不会切换当前预览。活动目标包含网格名称与索引，避免从旧网格沿用索引。
+- 强制查找多关键形的真实 Mark 网格，覆盖中间关键形、全部未编辑关键形、撤销/重做、session 往返及逐关键形 cmo3 XML 坐标；不同网格计数切换、刷新不产生预览副作用和 Warp 同类路径有 Qt 回归。
+- 数据、Inspector、cmo3 三项 regular 与 ASAN/UBSAN 测试通过，主窗口及 OpenGL 接线通过语法检查。父变形器局部坐标到运行时几何的转换、返回旧 overlay 时的显示一致性、纹理绘制消费网格覆盖仍未完成，不能把索引同步测试当作完整 GL 编辑验证。
+
+## PSD 写入正确性与可执行回读
+
+- PSD 数据库和文件测试不再限定 Windows；补齐 CMake 的 FixedSizeString 链接依赖与测试 ICC 资源，macOS 实际生成并读取 PSD 文件。
+- 修复被忽略的写入错误：SyncFileWriter 遇到失败停止提交后续写入并保留正确位置，WriteDocument 返回失败；所有活动调用方处理结果。CPsdList 使用 QSaveFile 原子提交，写入/提交失败不会截断原文件，打开失败后保留文档以便重试。
+- 修复图层信息长度多计 4 字节：重新区分 8-bit 内层长度和外层全局蒙版字段，16/32-bit 的 Lr16/Lr32 额外块不再带多余全局蒙版尾部。0×0 分组通道只写压缩类型，不写无定义的占位像素。
+- 预乘图像在格式转换前统一标记，只反预乘一次；覆盖 ARGB32、RGBA8888、已标记/未标记、外部预乘标志、半透明、透明和不透明共 24 种组合。无效画布/图层尺寸、坐标溢出、空图像、内嵌 NUL 和缺失 ICC 会阻止保存，避免静默丢层。
+- NativeFile 的 POSIX 路径转换不依赖 C locale，动态编码 UTF-8 并拒绝无效码点，避免长路径被截断后打开其他文件；拒绝重复打开，析构关闭，Close 可重复调用。Windows 后端清理操作令牌并校验完整传输，修复重复等待时的悬空令牌及短读误报成功；Windows 分支尚未实机运行。
+- 新增独立大端/PackBits 测试读取器，先用手工 PSD fixture、全部截断及恶意长度/坐标验证其边界，再检查实际导出文件的通道像素、负坐标、透明度、multiply/clipping、Unicode/emoji、分组和 ICC 原始字节。另直接核验 16/32-bit 节边界、图层与 merged 数据字节。结构依据：[Adobe Photoshop File Formats Specification](https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/)。
+- 对每个写入边界注入空操作/等待失败，验证错误向上传播；已有目的文件保护、缺失资源和同实例重试有实际文件系统测试。PSD 套件 49 项通过 ASAN/UBSAN；NativeFile 的 Linux /dev/full 场景在 macOS 跳过，未据此声明所有平台已验证。
+- 本机完整 CTest 20/20 通过，新增 PSD/NativeFile 与关键形相关套件通过 ASAN/UBSAN。尚未验证 Photoshop/Cubism UI 回读、完整 GL 渲染导出的色彩/alpha，以及 CPsdList 的整图合成预览内容。
+
+## 完整应用构建探测
+
+- 在隔离临时目录用 Qt 6.8.3 qmake 编译完整应用，构建已到链接阶段；当前 macOS SDK 不含 Qt 配置仍引用的 AGL。仅在临时 Makefile 排除 AGL 后，缺失符号来自 Cubism Core 与 OpenCV，未生成可运行应用，也未修改已安装 Qt。
+- 本地 Framework 与官方 Native 5-r.1 最接近；该版本 macOS arm64 Core 路径为 `Core/lib/macos/arm64/libLive2DCubismCore.a`，可见[官方构建文件](https://raw.githubusercontent.com/Live2D/CubismNativeSamples/5-r.1/Samples/OpenGL/Demo/proj.mac.cmake/CMakeLists.txt)。仓库只含 Windows Core，macOS 还缺对应 OpenCV 库；没有替换 Framework 或使用未验证的新 Core。
+- 完整 Core/GL、Windows GUI、第三方编辑器实际回读仍是待验证项；当前进展是可执行组件与二进制检查，不构成完整应用已运行的证明。

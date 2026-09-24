@@ -768,11 +768,16 @@ int SampleWritePsd(void)
 				UpdateChannel(document, &allocator, spotIndex, &g_orData[0][0]);
 			}*/
 
-			WriteDocument(document, &allocator, &file);
+			if (!WriteDocument(document, &allocator, &file))
+			{
+				DestroyExportDocument(document, &allocator);
+				file.Close();
+				return 1;
+			}
 		}
 
 		DestroyExportDocument(document, &allocator);
-		file.Close();
+		if (!file.Close()) return 1;
 	}
 	//{
 	//	const std::wstring dstPath = GetSampleOutputPath() + L"SampleWrite_16.psd";

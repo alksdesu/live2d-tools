@@ -1,7 +1,40 @@
 #include "cpsdlist.h"
 #include "psd/psdSamples/Exporter/PsdExportDocument.h"
 #include <QFile>
+#include <QSaveFile>
 #include <limits>
+#include <vector>
+
+namespace {
+class CPsdOutputFile : public psd::File
+{
+public:
+    CPsdOutputFile(psd::Allocator* allocator, QIODevice& device) : File(allocator), m_device(device) {}
+private:
+    bool DoOpenRead(const wchar_t*) override { return false; }
+    bool DoOpenWrite(const wchar_t*) override { return false; }
+    bool DoClose() override { return true; }
+    ReadOperation DoRead(void*, uint32_t, uint64_t) override { return nullptr; }
+    bool DoWaitForRead(ReadOperation& operation) override { operation = nullptr; return false; }
+    WriteOperation DoWrite(const void* data, uint32_t count, uint64_t position) override
+    {
+        const bool success = position <= static_cast<uint64_t>(std::numeric_limits<qint64>::max()) &&
+            m_device.seek(static_cast<qint64>(position)) &&
+            m_device.write(static_cast<const char*>(data), count) == count;
+        return new bool(success);
+    }
+    bool DoWaitForWrite(WriteOperation& operation) override
+    {
+        if (!operation) return false;
+        const bool success = *static_cast<bool*>(operation);
+        delete static_cast<bool*>(operation);
+        operation = nullptr;
+        return success;
+    }
+    uint64_t DoGetSize() const override { return static_cast<uint64_t>(qMax<qint64>(0, m_device.size())); }
+    QIODevice& m_device;
+};
+}
 
 CPsdList::CPsdList() {
     m_canvasWidth = 0;
@@ -26,7 +59,8 @@ void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
         DestroyExportDocument(document, &allocator);
         document = nullptr;
     }
-    m_failed = w <= 0 || h <= 0 || name.isEmpty();
+    m_failed = w <= 0 || h <= 0 || w > 30000 || h > 30000 || name.isEmpty() || name.contains(QChar::Null) ||
+               static_cast<qint64>(w) * h > 100000000;
     if (m_failed) return;
     m_canvasWidth = static_cast<unsigned int>(w);
     m_canvasHeight = static_cast<unsigned int>(h);
@@ -39,9 +73,10 @@ void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
             QByteArray icc = iccFile.readAll();
             if (!icc.isEmpty()) {
                 psd::SetICCProfile(document, &allocator, icc.data(), static_cast<uint32_t>(icc.size()));
-            }
+            } else m_failed = true;
         } else {
             qWarning("CPsdList::SetPsd: 无法读取内置 sRGB ICC 资源");
+            m_failed = true;
         }
     }
 }
@@ -64,31 +99,35 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
                         uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                         bool isPremultiplied)
 {
-    if (image.isNull() || rect.width() <= 0 || rect.height() <= 0 || !CanAppendLayer()) return;
-    int width = rect.width();
-    int height = rect.height();
-    const qint64 pixelCount = static_cast<qint64>(width) * height;
-    if (pixelCount <= 0 || pixelCount > 100000000 || pixelCount > std::numeric_limits<int>::max()) return;
+    if (!CanAppendLayer()) return;
+    int left, top, lastX, lastY;
+    rect.getCoords(&left, &top, &lastX, &lastY);
+    const qint64 wideWidth = static_cast<qint64>(lastX) - left + 1;
+    const qint64 wideHeight = static_cast<qint64>(lastY) - top + 1;
+    if (name.contains(QChar::Null) || image.isNull() || wideWidth <= 0 || wideHeight <= 0 || wideWidth > 30000 || wideHeight > 30000 ||
+        lastX == std::numeric_limits<int>::max() || lastY == std::numeric_limits<int>::max()) {
+        m_failed = true;
+        return;
+    }
+    const int width = static_cast<int>(wideWidth);
+    const int height = static_cast<int>(wideHeight);
+    const qint64 pixelCount = wideWidth * wideHeight;
+    if (pixelCount > 100000000) { m_failed = true; return; }
     const int size = static_cast<int>(pixelCount);
     const QSize targetSize(width, height);
 
-    uint8_t* planarDataR = new uint8_t[size];
-    uint8_t* planarDataG = new uint8_t[size];
-    uint8_t* planarDataB = new uint8_t[size];
-    uint8_t* planarDataA = new uint8_t[size];
-
-    // 确保图像格式兼容 scanLine 读取
-    QImage img32 = image.format() == QImage::Format_ARGB32
-                       ? image
-                       : image.convertToFormat(QImage::Format_ARGB32);
+    QImage source = image;
+    if (isPremultiplied && source.pixelFormat().premultiplied() != QPixelFormat::Premultiplied) {
+        source = source.convertToFormat(QImage::Format_ARGB32);
+        source.reinterpretAsFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+    QImage img32 = source.convertToFormat(QImage::Format_ARGB32);
     if (img32.size() != targetSize) img32 = img32.scaled(targetSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     if (img32.size() != targetSize) {
-        delete[] planarDataR;
-        delete[] planarDataG;
-        delete[] planarDataB;
-        delete[] planarDataA;
+        m_failed = true;
         return;
     }
+    std::vector<uint8_t> planarDataR(size), planarDataG(size), planarDataB(size), planarDataA(size);
 
     for (int y = 0; y < height; ++y) {
         const QRgb* scanLine = reinterpret_cast<const QRgb*>(img32.constScanLine(y));
@@ -105,12 +144,6 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
                 uint8_t r = qRed(pixel);
                 uint8_t g = qGreen(pixel);
                 uint8_t b = qBlue(pixel);
-                // 反乘预乘 alpha
-                if (isPremultiplied && a < 255) {
-                    r = static_cast<uint8_t>(qMin(255, (int)r * 255 / a));
-                    g = static_cast<uint8_t>(qMin(255, (int)g * 255 / a));
-                    b = static_cast<uint8_t>(qMin(255, (int)b * 255 / a));
-                }
                 planarDataR[idx] = r;
                 planarDataG[idx] = g;
                 planarDataB[idx] = b;
@@ -126,20 +159,13 @@ void CPsdList::AddLayer(const QString &name, const QImage &image, const QRect &r
     psd::SetLayerOpacity(document, layerIdx, opacity);
     psd::SetLayerClipping(document, layerIdx, isClipped ? 1u : 0u);
 
-    int left = rect.x();
-    int top = rect.y();
-    int right = rect.x() + width;
-    int bottom = rect.y() + height;
+    const int right = lastX + 1;
+    const int bottom = lastY + 1;
 
-    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::RED,   left, top, right, bottom, planarDataR, compressionType::RLE);
-    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::GREEN, left, top, right, bottom, planarDataG, compressionType::RLE);
-    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::BLUE,  left, top, right, bottom, planarDataB, compressionType::RLE);
-    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::ALPHA, left, top, right, bottom, planarDataA, compressionType::RLE);
-
-    delete[] planarDataR;
-    delete[] planarDataG;
-    delete[] planarDataB;
-    delete[] planarDataA;
+    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::RED,   left, top, right, bottom, planarDataR.data(), compressionType::RLE);
+    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::GREEN, left, top, right, bottom, planarDataG.data(), compressionType::RLE);
+    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::BLUE,  left, top, right, bottom, planarDataB.data(), compressionType::RLE);
+    psd::UpdateLayer(document, &allocator, layerIdx, exportChannel::ALPHA, left, top, right, bottom, planarDataA.data(), compressionType::RLE);
 }
 
 void CPsdList::AddGroupStart()
@@ -173,18 +199,20 @@ bool CPsdList::CreatePsd()
 {
     if (!document || m_failed) return false;
 
-    NativeFile file(&allocator);
-
-    if (!file.OpenWrite(m_docname.toStdWString().c_str()))
+    QSaveFile output(m_docname);
+    output.setDirectWriteFallback(false);
+    if (!output.open(QIODevice::WriteOnly))
     {
         qWarning("CPsdList::CreatePsd 打开文件失败: %s", m_docname.toUtf8().constData());
-        DestroyExportDocument(document, &allocator);
-        document = nullptr;
         return false;
     }
-    WriteDocument(document, &allocator, &file);
+    CPsdOutputFile file(&allocator, output);
+    if (!WriteDocument(document, &allocator, &file)) {
+        output.cancelWriting();
+        return false;
+    }
+    if (!output.commit()) return false;
     DestroyExportDocument(document, &allocator);
     document =nullptr;
-    file.Close();
     return true;
 }

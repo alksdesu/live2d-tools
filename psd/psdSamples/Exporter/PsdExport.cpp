@@ -289,7 +289,7 @@ namespace
 		//   - compression (2)
 		//   - channel data (variable)
 
-		uint32_t size = 2u + 4u;
+		uint32_t size = 2u;
 		for (unsigned int i = 0u; i < document->layerCount; ++i)
 		{
 			ExportLayer* layer = document->layers + i;
@@ -646,18 +646,12 @@ static void CreateDataRaw(Allocator* allocator, ExportLayer* layer, unsigned int
 }
 
 template <typename T>
-static void CreateDataRawEmpty(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T* planarData)
+static void CreateDataRawEmpty(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T*)
 {
-	const uint32_t size = 1;
-
-	T* bigEndianData = memoryUtil::AllocateArray<T>(allocator, size);
-	for (unsigned int i = 0u; i < size; ++i)
-	{
-		bigEndianData[i] = planarData[i];
-	}
-
-	layer->channelData[channelIndex] = bigEndianData;
-	layer->channelSize[channelIndex] = size * sizeof(T);
+	T* emptyData = memoryUtil::AllocateArray<T>(allocator, 1u);
+	emptyData[0] = T{};
+	layer->channelData[channelIndex] = emptyData;
+	layer->channelSize[channelIndex] = 0u;
 }
 
 
@@ -1054,8 +1048,9 @@ void UpdateMergedImage(ExportDocument* document, Allocator* allocator, const flo
 
 // ---------------------------------------------------------------------------------------------------------------------
 // ---------------------------------------------------------------------------------------------------------------------
-void WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
+bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 {
+	if (!document || !allocator || !file) return false;
 	SyncFileWriter writer(file);
 
 	// signature
@@ -1369,7 +1364,7 @@ void WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 	{
 		// 8-bit data
 		// layer mask section length also includes global layer mask info marker. layer info follows directly after that
-		const uint32_t layerMaskSectionLength = layerInfoSectionLength + 4u;
+		const uint32_t layerMaskSectionLength = layerInfoSectionLength + 8u;
 		fileUtil::WriteToFileBE(writer, layerMaskSectionLength);
 	}
 	else
@@ -1512,8 +1507,13 @@ void WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 	}
 
 	// global layer mask info
-	const uint32_t globalLayerMaskInfoLength = 0u;
-	fileUtil::WriteToFileBE(writer, globalLayerMaskInfoLength);
+	if (is8BitData)
+	{
+		const uint32_t globalLayerMaskInfoLength = 0u;
+		fileUtil::WriteToFileBE(writer, globalLayerMaskInfoLength);
+	}
+
+	if (writer.HasError()) return false;
 
 	// for some reason, Photoshop insists on having an (uncompressed) Image Data section for 32-bit files.
 	// this is unfortunate, because it makes the files very large. don't think this is intentional, but rather a bug.
@@ -1551,6 +1551,7 @@ void WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 
 		memoryUtil::FreeArray(allocator, emptyMemory);
 	}
+	return !writer.HasError();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

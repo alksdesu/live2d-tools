@@ -26,10 +26,12 @@ public:
 
 	/// Returns the internal write position.
 	uint64_t GetPosition(void) const;
+	bool HasError(void) const { return m_failed; }
 
 private:
 	File* m_file;
 	uint64_t m_position;
+	bool m_failed;
 };
 
 PSD_NAMESPACE_END

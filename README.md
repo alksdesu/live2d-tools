@@ -36,6 +36,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - **Texture extraction mode** — extract original textures without deformation, for high-quality asset ripping
 - **Cubism-importable mode** — embeds an sRGB ICC profile, Unicode layer names (luni) and deduplicated layer names, so the exported PSD can be imported back into Cubism Editor
 - Batch export: pick a folder, all models are converted automatically; failed files are listed individually
+- Atomic PSD saves preserve existing files on failure; generated layer pixels, Unicode names and ICC data have independent binary regression tests
 
 #### cmo3 Project Recovery (moc3 → cmo3)
 
@@ -78,6 +79,10 @@ If Qt is not in the default location, specify qmake:
 ```
 
 Output: `softwareEnv/physicsV1/live2d2psd.exe`
+
+### Component tests
+
+CMake builds the data, Qt panel and PSD tests independently of Cubism Core. Set `CMAKE_PREFIX_PATH` to your Qt installation, build with `BUILD_TESTING=ON`, then run `ctest --test-dir <build-directory> --output-on-failure` (add `-C Release` for multi-configuration builds). These tests do not replace full application or Photoshop/Cubism Editor validation. Detailed coverage and remaining work are recorded in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ### Dependencies
 
@@ -151,6 +156,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - **纹理提取模式** — 直接提取原始纹理，无变形，适合高质量素材提取
 - **Cubism 可导入模式** — 嵌入 sRGB ICC 配置、Unicode 图层名（luni）、图层名去重，保证导出的 PSD 能再导回 Cubism Editor
 - 批量导出：选择文件夹，自动遍历所有模型生成 PSD，失败文件逐个列出
+- PSD 原子保存，失败时保留已有文件；图层像素、Unicode 名称与 ICC 数据有独立二进制回归测试
 
 #### cmo3 工程恢复（moc3 → cmo3）
 
@@ -193,6 +199,10 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 ```
 
 输出位置：`softwareEnv/physicsV1/live2d2psd.exe`
+
+### 组件测试
+
+CMake 可独立构建数据层、Qt 面板和 PSD 测试，不依赖 Cubism Core。将 `CMAKE_PREFIX_PATH` 指向 Qt 安装目录，启用 `BUILD_TESTING=ON` 构建，然后执行 `ctest --test-dir <构建目录> --output-on-failure`（多配置构建补充 `-C Release`）。这些测试不替代完整应用或 Photoshop/Cubism Editor 验证；具体覆盖与剩余工作见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
 ### 依赖
 

@@ -134,6 +134,6 @@ void SetLayerClipping(ExportDocument* document, unsigned int layerIndex, uint8_t
 
 /// \ingroup Exporter
 /// Exports a document to the given file.
-void WriteDocument(ExportDocument* document, Allocator* allocator, File* file);
+bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file);
 
 PSD_NAMESPACE_END
