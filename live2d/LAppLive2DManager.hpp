@@ -37,7 +37,7 @@ public:
     void ReleaseAllModel();
     void OnDrag(Csm::csmFloat32 x, Csm::csmFloat32 y) const;
     void OnTap(Csm::csmFloat32 x, Csm::csmFloat32 y);
-    void OnUpdate(Csm::CubismMatrix44& projection) const;
+    bool OnUpdate(Csm::CubismMatrix44& projection) const;
     void NextScene();
     bool ChangeScene(Csm::csmInt32 index);
     bool ChangeSceneFileName(const QString& name);

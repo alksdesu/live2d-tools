@@ -95,7 +95,7 @@ public:
      *
      * @param[in]  model -> モデルのインスタンス
      */
-    virtual void Initialize(Framework::CubismModel* model);
+    virtual csmBool Initialize(Framework::CubismModel* model);
 
     /**
     * @brief   レンダラの初期化処理を実行する<br>
@@ -104,13 +104,13 @@ public:
     * @param[in]  model -> モデルのインスタンス
     * @param[in]  maskBufferCount -> バッファの生成数
     */
-    virtual void Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount);
+    virtual csmBool Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount);
 
     /**
      * @brief   モデルを描画する
      *
      */
-    void DrawModel();
+    csmBool DrawModel();
 
     /**
      * @brief   Model-View-Projection 行列をセットする<br>
@@ -235,12 +235,12 @@ protected:
      * @brief   モデル描画の実装
      *
      */
-    virtual void DoDrawModel() = 0;
+    virtual csmBool DoDrawModel() = 0;
 
     /**
      * @brief   モデル描画直前のレンダラのステートを保持する
      */
-    virtual void SaveProfile() = 0;
+    virtual csmBool SaveProfile() = 0;
 
 
     /**

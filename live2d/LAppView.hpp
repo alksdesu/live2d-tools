@@ -37,7 +37,7 @@ public:
     ~LAppView();
 
     void Initialize();
-    void Render();
+    bool Render();
     void InitializeSprite();
     void ResizeSprite();
     Csm::CubismMatrix44 GetProjectionMatrix() const { return *m_projection; }

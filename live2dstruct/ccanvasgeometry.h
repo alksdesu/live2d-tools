@@ -4,6 +4,7 @@
 #include <QPointF>
 #include <QSize>
 #include <QString>
+#include <array>
 
 namespace live2dstruct {
 class CCanvas_info;
@@ -14,6 +15,8 @@ public:
     static QSize PixelSize(double width, double height);
     static bool Validate(const CCanvas_info* canvas, QString* error = nullptr);
     static bool ModelToPixels(const CCanvas_info* canvas, QPointF model, QPointF& pixels);
+    static bool ModelToNdc(double width, double height, double originX, double originY,
+                           double pixelsPerUnit, const QSize& pixelSize, std::array<float, 16>& matrix);
 };
 }
 

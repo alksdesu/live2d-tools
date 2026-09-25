@@ -83,8 +83,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
 
 
     _textureManager->setGlOwningContext(owningContext());
-    read.setGlOwningContext(owningContext());
-    coffscreen.setGlOwningContext(owningContext());
+    if (!read.setGlOwningContext(owningContext()) || !coffscreen.setGlOwningContext(owningContext())) return false;
     if (DebugLogEnable)
     {
         LAppPal::PrintLogLn("START");
@@ -277,9 +276,13 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool Is
     if (!Live2DManager || Live2DManager->GetModelNum() == 0) return false;
     LAppModel* modelr = Live2DManager->GetModel(0);
     if (!modelr || !modelr->GetModel() || !modelr->GetModelMatrix()) return false;
-    const QSize canvasSize = live2dstruct::CCanvasGeometry::PixelSize(
-        modelr->GetModel()->GetCanvasWidthPixel(), modelr->GetModel()->GetCanvasHeightPixel());
-    if (canvasSize.isEmpty()) return false;
+    Live2D::Cubism::Core::csmVector2 sizeInPixels{}, originInPixels{};
+    csmFloat32 pixelsPerUnit = 0.0f;
+    Live2D::Cubism::Core::csmReadCanvasInfo(modelr->GetModel()->GetModel(), &sizeInPixels, &originInPixels, &pixelsPerUnit);
+    const QSize canvasSize = live2dstruct::CCanvasGeometry::PixelSize(sizeInPixels.X, sizeInPixels.Y);
+    std::array<float, 16> canvasProjection;
+    if (!live2dstruct::CCanvasGeometry::ModelToNdc(sizeInPixels.X, sizeInPixels.Y,
+            originInPixels.X, originInPixels.Y, pixelsPerUnit, canvasSize, canvasProjection)) return false;
     const int width = canvasSize.width(), height = canvasSize.height();
     CPsdWriteList writer;
     const QScopedValueRollback<CPsdWriteList*> psdWriter(cpsdwriteList, &writer);
@@ -293,24 +296,32 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool Is
     if (!coffscreen.CreateOffscreenSurface(width,height)) return false;
     const auto destroySurface = qScopeGuard([&] { coffscreen.DestroyOffscreenSurface(); });
     const auto projection = _view->GetProjectionMatrix();
+    const auto viewMatrix = _view->GetViewMatrix();
     const auto modelMatrix = *modelr->GetModelMatrix();
     const QScopedValueRollback<bool> offscreen(_IsOffScreen);
     const QScopedValueRollback<int> offWidth(_OffWidth), offHeight(_OffHeight);
-    const QScopedValueRollback<int> windowWidth(_windowWidth), windowHeight(_windowHeight);
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
     const auto restoreView = qScopeGuard([&] {
         *modelr->GetModelMatrix() = modelMatrix;
         _view->SetProjectionMatrix(projection);
+        _view->SetViewMatrix(viewMatrix);
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     });
-    coffscreen.BeginDraw();
-    const auto endDraw = qScopeGuard([&] { coffscreen.EndDraw(); });
+    if (!coffscreen.BeginDraw()) return false;
+    bool drawing = true;
+    const auto endDraw = qScopeGuard([&] { if (drawing) coffscreen.EndDraw(); });
     SetIsOffset(true);//开始渲染
     SetOffsetWidthANDHeight(width,height);
-    _view->InitializeSprite();
+    CubismMatrix44 exportProjection;
+    exportProjection.SetMatrix(canvasProjection.data());
+    _view->SetProjectionMatrix(exportProjection);
+    _view->SetViewMatrix(QMatrix4x4());
+    modelr->GetModelMatrix()->LoadIdentity();
     glViewport(0, 0, width, height);
-    paint();
+    LAppPal::UpdateTime();
+    if (!_view->Render() || !coffscreen.EndDraw()) return false;
+    drawing = false;
     return cpsdwriteList->WritePsd();
 }
 

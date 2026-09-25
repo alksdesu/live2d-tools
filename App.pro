@@ -129,6 +129,7 @@ SOURCES += \
     live2dstruct/util/cfilereader.cpp \
     opengl/cmesh.cpp \
     opengl/coffscreenlive.cpp \
+    opengl/coffscreenbuffer.cpp \
     opengl/coffscreenmap.cpp \
     opengl/cpsdwritelist.cpp \
     opengl/ctextureextractor.cpp \
@@ -328,6 +329,7 @@ HEADERS += \
     live2dstruct/util/cfilereader.h \
     opengl/cmesh.h \
     opengl/coffscreenlive.h \
+    opengl/coffscreenbuffer.h \
     opengl/coffscreenmap.h \
     opengl/cpsdwritelist.h \
     opengl/ctextureextractor.h \

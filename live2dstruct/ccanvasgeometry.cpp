@@ -56,4 +56,30 @@ bool CCanvasGeometry::ModelToPixels(const CCanvas_info* canvas, QPointF model, Q
     pixels = QPointF(x, y);
     return true;
 }
+
+bool CCanvasGeometry::ModelToNdc(double width, double height, double originX, double originY,
+                                double pixelsPerUnit, const QSize& pixelSize, std::array<float, 16>& matrix)
+{
+    const QSize expectedSize = PixelSize(width, height);
+    if (expectedSize.isEmpty() || pixelSize != expectedSize ||
+        !std::isfinite(originX) || !std::isfinite(originY) ||
+        !std::isfinite(pixelsPerUnit) || pixelsPerUnit <= 0.0) return false;
+    const std::array<double, 4> coefficients{
+        2.0 * (pixelsPerUnit / pixelSize.width()),
+        2.0 * (pixelsPerUnit / pixelSize.height()),
+        2.0 * (originX / pixelSize.width()) - 1.0,
+        1.0 - 2.0 * (originY / pixelSize.height())};
+    const std::array<std::size_t, 4> indices{0, 5, 12, 13};
+    std::array<float, 16> candidate{};
+    for (std::size_t index = 0; index < coefficients.size(); ++index) {
+        const double coefficient = coefficients[index];
+        if (!std::isfinite(coefficient) || std::abs(coefficient) > std::numeric_limits<float>::max()) return false;
+        candidate[indices[index]] = static_cast<float>(coefficient);
+    }
+    if (candidate[0] <= 0.0f || candidate[5] <= 0.0f) return false;
+    candidate[10] = 1.0f;
+    candidate[15] = 1.0f;
+    matrix = candidate;
+    return true;
+}
 }

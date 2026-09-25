@@ -37,7 +37,7 @@ public:
     QMap<QString, float> GetTimelineBaseParameters() const { return _timelineBaseParameters; }
     QMap<QString, float> GetParameterValues() const;
     void UpdateParaValue(const QString& parId,float value,bool IsInit);
-    void Draw(Csm::CubismMatrix44& matrix);
+    bool Draw(Csm::CubismMatrix44& matrix);
     Csm::CubismMotionQueueEntryHandle StartMotion(const Csm::csmChar* group, Csm::csmInt32 no, Csm::csmInt32 priority, Csm::ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
     void StopAllMotions();
     Csm::CubismMotionQueueEntryHandle StartRandomMotion(const Csm::csmChar* group, Csm::csmInt32 priority, Csm::ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
@@ -96,7 +96,7 @@ public:
     void ProbeParamsForArtMeshes(const QStringList& artMeshNames);
 
 protected:
-    void DoDraw();
+    bool DoDraw();
 
 private:
 

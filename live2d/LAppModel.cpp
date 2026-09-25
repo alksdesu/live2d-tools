@@ -752,33 +752,33 @@ void LAppModel::StopAllMotions()
     _wavFileHandler.Stop();
 }
 
-void LAppModel::DoDraw()
+bool LAppModel::DoDraw()
 {
     if (!_initialized || _updating || !_model)
     {
-        return;
+        return false;
     }
 
     auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
-    if (!renderer) return;
+    if (!renderer) return false;
     const auto color = renderer->GetModelColor();
     renderer->SetModelColor(color.R, color.G, color.B, _model->GetModelOpacity());
-    renderer->DrawModel();
+    return renderer->DrawModel();
 }
 
-void LAppModel::Draw(CubismMatrix44& matrix)
+bool LAppModel::Draw(CubismMatrix44& matrix)
 {
     if (!_initialized || _updating || !_model || !_modelMatrix)
     {
-        return;
+        return false;
     }
 
     auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
-    if (!renderer) return;
+    if (!renderer) return false;
     matrix.MultiplyByMatrix(_modelMatrix);
     renderer->SetMvpMatrix(&matrix);
 
-    DoDraw();
+    return DoDraw();
 }
 
 csmBool LAppModel::HitTest(const csmChar* hitAreaName, csmFloat32 x, csmFloat32 y)

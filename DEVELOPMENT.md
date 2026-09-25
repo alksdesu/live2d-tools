@@ -370,7 +370,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 ## 运行时加载与批量任务生命周期
 
 - CubismMoc 的临时对齐内存按所有权管理，拒绝空输入、零模型大小与分配失败，revive/initialize/包装对象异常不遗留缓冲区。DeleteModel(nullptr) 不再递减模型计数。回归直接编译真实 CubismMoc.cpp，但 Core 返回值与最小模型生命周期由测试替身控制，不代表真实 Core 加载已验证。
-- CubismUserModel 先构建候选 moc、model 和 matrix，完成尺寸校验与网格初始化后才发布。渲染器先于模型销毁；创建替代渲染器成功后才释放旧对象。Renderer::Initialize 仍是 void，其内部 FBO/着色器失败尚未完整传播。
+- CubismUserModel 先构建候选 moc、model 和 matrix，完成尺寸校验与网格初始化后才发布。渲染器先于模型销毁；创建替代渲染器成功后才释放旧对象。Renderer 的 FBO 失败传播已在下节补齐，着色器等完整渲染错误仍需继续处理。
 - CubismModelMatrix 用 double 计算像素/PPU 单位尺寸、默认缩放及布局中间值，结果必须是有限、非零的可用 float 矩阵。TrySetupFromLayout 使用候选矩阵整体提交；保留原两遍处理顺序与合法负尺寸反射，未知布局键忽略，失败不覆盖旧矩阵。
 - 运行时 model3 校验与原有文档 Parse 分离。已知布局键检查数值；未知扩展值保留兼容。缺少/空 Textures 数组及空纹理槽位允许，非空引用必须成功读取；不会因为 SDK 可跳过的未绑定纹理而拒绝模型。字段类型、嵌入 NUL 和资源读取失败有独立回归。
 - LoadAssets、SetupModel、SetupTextures 和场景切换返回明确结果；只有完整候选进入场景。失败候选只回收自己新建的纹理，原模型实例、场景编号和纹理映射保持有效。临时导出挂起原模型，结束时恢复同一实例，不重新读取可能已改变的源文件；活跃与挂起模型共用的纹理不会提前删除。
@@ -384,4 +384,20 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - MainWindow 在停止批次前先清除当前任务身份；GL 导出进行时收到关闭请求会先取消后续任务，等当前调用返回再关闭。无可见模型时也会停止批次并清理 headless。取消保留已写出的文件，不显示全部成功或自动打开输出目录。
 - 完整 CTest 42/42 套件通过，其中 Linux `/dev/full` 专用写出失败用例在 macOS 跳过；本轮六个相关目标通过 ASAN/UBSAN，均无跳过。native 重新编译 49 个源文件通过，仍仅缺 40 个 macOS Core 符号；两种渲染目标宏的 Manager 语法检查通过。批次主窗口接线与场景恢复已静态复核，但完整 Core GUI 的关闭/恢复仍未实机验证。
 - 独立 Qt 6.8.3 探针确认隐藏 1×1 控件可初始化；macOS 默认格式得到 OpenGL 2.1，无法初始化本项目的 QOpenGLFunctions_3_3_Core。显式请求 3.3 Core 可得到 4.1，但现有 SDK renderer、shader 与 Rotation 覆盖层仍使用客户端数组，不能仅改默认格式就宣称完整支持。
-- 尚待继续：渲染 PSD 的取景仍受既往竖屏预览 SetWidth(2) 与视图变换影响，需要明确画布坐标与 model3 Layout 的导出语义并独立构造变换；当前修复保证返回预览时状态恢复。FBO 创建仍未全面校验完整性，完整 Core/Photoshop/Cubism Editor 回读及 cmo3 默认姿态语义仍未验证。
+- 上述渲染 PSD 的取景与 FBO 完整性问题已在下节处理。完整 Core/Photoshop/Cubism Editor 回读及 cmo3 默认姿态语义仍未验证。
+
+## 离屏缓冲、画布取景与 PSD 读回
+
+- 新增不依赖 Core/Delegate 的 COffscreenBuffer，SDK 蒙版和 PSD 离屏目标使用同一实现。资源不可复制；候选纹理/FBO 完整性及尺寸检查通过后才替换旧资源，失败保留原缓冲。上下文、GPU 尺寸上限、RGBA 整数范围、外借纹理大小均检查，借用纹理不会被删除，拒绝把自身拥有的纹理再次当作借用纹理接管。
+- Renderer 的蒙版容器改为唯一所有权，消除 GLuint 浅复制后目标函数表尚未初始化、首次绘制前失败回滚就调用 glDelete 的路径。默认 Begin/End 分别保存和恢复 READ/DRAW FBO，创建过程恢复纹理绑定及 UNPACK PBO；销毁清空尺寸与句柄。嵌套 Begin、绘制中重建和外来上下文操作返回失败。
+- Initialize、DrawModel、DoDrawModel 和 SaveProfile 返回成功状态，模型加载检查渲染器初始化；蒙版创建/重建及 Begin/Clear/End 失败停止该帧。失败沿 LAppModel、Manager、View 传到 PSD 导出，在 WritePsd 之前返回，不替换已有目标文件。新建或重建蒙版后保留强制重画状态，失败后的下一帧不能继续使用未生成的蒙版内容。
+- Renderer profile 分别恢复 READ/DRAW FBO、原 READ_BUFFER、视口和清屏颜色；高精度与普通蒙版切换的清理使用作用域守卫。分组和不分组的图层读回共用同一入口，避免两套错误处理继续分叉。未将这项检查等同于全部着色器和绘制错误已覆盖。
+- CReadOpengl 删除没有消费方的 FBO 副本和无效调试接口，活动功能只负责受检查的图层读回和清屏。图像按值管理，不再向渲染循环移交手动释放的 QImage 指针。上层不再使用 COffScreenNode；未使用的旧 Map 类型未在本轮扩大清理范围。
+- 原 UpdateFrame 对当前颜色附件采样并写回同一附件，存在纹理反馈且使用客户端顶点数组。现在以 alpha-only clear 保留 RGB、清零 alpha，保存并恢复绘制缓冲选择、颜色写掩码与 scissor；不改变全局 clear color，也不需要 shader 或顶点缓冲。保留既有颜色语义，不据此宣称 Cubism 混合模式及预乘 alpha 已全部正确。
+- 读回固定从当前 DRAW FBO 的二维颜色纹理读取，即使 READ FBO 指向另一目标。保存和恢复两个 FBO、各自 READ_BUFFER、当前纹理绑定、PACK PBO、行长、对齐、跳过行列；设置安全打包状态后才写入 QImage。拒绝默认、不完整、多样本、整数或非二维纹理附件，以及尺寸不匹配、无效矩阵/顶点和错误上下文。失败保留调用方图像与矩形；合法画布外或空几何返回空层。
+- 真实测试发现目标的读写选择均为 GL_NONE 时，本机 GL 4.1 Metal 返回 GL_FRAMEBUFFER_UNSUPPORTED。读回/清屏改为先选定本次使用的颜色附件再检查完整性，结束后仍恢复原 NONE 状态；未删除或放宽哨兵状态测试。已有 GL 错误会让读回明确失败，不承诺保留 GL 错误标志本身。
+- CCanvasGeometry::ModelToNdc 以实际整数输出宽高 W/H 计算列主矩阵：sx=2*PPU/W、sy=2*PPU/H、tx=2*originX/W-1、ty=1-2*originY/H。原点从左上计、模型 Y 向上，与[官方坐标说明](https://docs.live2d.com/en/cubism-sdk-manual/drawablevertexpositions/)一致；[model3 Layout](https://docs.live2d.com/en/cubism-sdk-manual/layout/)用于显示位置与缩放。导出直接读取一次 Core 画布信息，临时以单位 model/view 矩阵和该投影渲染，排除预览拖动、缩放、竖屏适配历史及显示 Layout；结束或失败均还原原矩阵与视口。
+- GL 裁片仍按左下原点读取，像素只垂直翻转一次，PSD 矩形 top 改为 canvasHeight - glY - height；修复仅翻图像、未翻图层位置造成的上下错位。两个旧 GetCanvasOriginInPixels getter 也恢复返回 Core 的原始 X/Y 像素，仓库中没有消费方；导出不依赖它们。
+- 画布测试覆盖四个真实 MOC、非中心及负原点、横竖画布、四舍五入、已知角点、系数范围和失败原子性。真实 OpenGL 4.1 / M1 Pro 测试用 GLSL 330、VAO/VBO 绘制不对称三角形，经实际 CReadOpengl 与 CPsdList 写出 PSD，再由独立二进制读取器核对上下像素、两层位置、RGBA 通道、裁边及空几何；PACK 哨兵数据未被覆盖，各项状态恢复保持相同。
+- 完整 CTest 44/44 套件通过，Linux `/dev/full` 专用用例在 macOS 跳过；画布、离屏缓冲、渲染 PSD 三项目标均通过常规及 ASAN/UBSAN 检查，无跳过。native 本轮增量编译通过，最终仍仅缺 40 个 Core 符号；两种模型渲染宏语法检查通过。真实 GL 测试使用独立三角形，不能代替完整 Cubism Core 渲染；Photoshop 与 Cubism Editor 回读仍待验证。
+- 资源析构若发生在仍存活但不为当前的所属上下文中，会拒绝 GL 删除，避免调用错误的上下文；测试明确恢复 owner 后手动回收该场景的残留。主路径在 widget 当前上下文中清理，但共享上下文/异常销毁场景仍需更完整的延迟回收机制。模型 GL Core Profile 适配、渲染层颜色/透明度/蒙版最终语义，以及 cmo3 默认姿态与父链还需继续完成。

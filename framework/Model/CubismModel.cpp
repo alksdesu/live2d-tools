@@ -385,7 +385,7 @@ csmFloat32  CubismModel::GetCanvasOriginInPixelsWidth() const{
 
     Core::csmReadCanvasInfo(_model, &tmpSizeInPixels, &tmpOriginInPixels, &tmpPixelsPerUnit);
 
-    return (tmpOriginInPixels.X / tmpSizeInPixels.X) *2;
+    return tmpOriginInPixels.X;
 
 }
 csmFloat32  CubismModel::GetCanvasOriginInPixelsHeight() const{
@@ -400,7 +400,7 @@ csmFloat32  CubismModel::GetCanvasOriginInPixelsHeight() const{
 
     Core::csmReadCanvasInfo(_model, &tmpSizeInPixels, &tmpOriginInPixels, &tmpPixelsPerUnit);
 
-    return 0.0f ;
+    return tmpOriginInPixels.Y;
 }
 
 csmFloat32 CubismModel::GetCanvasHeight() const

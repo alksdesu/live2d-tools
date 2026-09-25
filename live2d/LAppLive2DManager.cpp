@@ -155,7 +155,7 @@ void LAppLive2DManager::OnTap(csmFloat32 x, csmFloat32 y)
     }
 }
 
-void LAppLive2DManager::OnUpdate(CubismMatrix44& projection) const
+bool LAppLive2DManager::OnUpdate(CubismMatrix44& projection) const
 {
 
     const csmUint32 modelCount = LAppDelegate::GetInstance()->IsOffScreen()
@@ -164,14 +164,15 @@ void LAppLive2DManager::OnUpdate(CubismMatrix44& projection) const
     for (csmUint32 i = 0; i < modelCount; ++i)
     {
         LAppModel* model = GetModel(i);
-        if (!model || !model->IsInitialized()) continue;
+        if (!model || !model->IsInitialized()) return false;
         if (view) view->PreModelDraw(*model);//设置离屏渲染缓冲帧
         model->Update();
         CubismMatrix44 modelProjection = projection;
-        model->Draw(modelProjection);
+        const bool drawn = model->Draw(modelProjection);
         if (view) view->PostModelDraw(*model);//删除离屏渲染缓冲区
-
+        if (!drawn) return false;
     }
+    return modelCount > 0;
 }
 
 void LAppLive2DManager::NextScene()

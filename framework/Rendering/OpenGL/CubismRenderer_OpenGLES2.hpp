@@ -12,6 +12,8 @@
 #include "live2d/LAppDelegate.hpp"
 #include <QDebug>
 #include <QString>
+#include <memory>
+#include <vector>
 
 namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
 
@@ -29,11 +31,13 @@ class CubismClippingManager_OpenGLES2 : public CubismClippingManager<CubismClipp
 public:
 
 
-    void setGlOwningContext(const QOpenGLContext *context){
-        initializeOpenGLFunctions();
+    bool setGlOwningContext(const QOpenGLContext *context){
+        if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
+            (owningContext() && owningContext() != context)) return false;
         setOwningContext(context);
+        return initializeOpenGLFunctions();
     }
-    void SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, GLint lastFBO, GLint lastViewport[4]);
+    bool SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, GLint lastViewport[4]);
 };
 
 
@@ -72,9 +76,11 @@ class CubismRendererProfile_OpenGLES2 : public  QOpenGLFunctions_3_3_Core
 {
     friend class CubismRenderer_OpenGLES2;
 public:
-    void setGlOwningContext(const QOpenGLContext *context){
-        initializeOpenGLFunctions();
+    bool setGlOwningContext(const QOpenGLContext *context){
+        if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
+            (owningContext() && owningContext() != context)) return false;
         setOwningContext(context);
+        return initializeOpenGLFunctions();
     }
 private:
     /**
@@ -90,7 +96,7 @@ private:
     /**
      * @brief   OpenGLES2のステートを保持する
      */
-    void Save();
+    bool Save();
 
     /**
      * @brief   保持したOpenGLES2のステートを復帰させる
@@ -129,7 +135,10 @@ private:
     GLint _lastFrontFace;                   ///< モデル描画直前のGL_CULL_FACEパラメータ
     GLboolean _lastColorMask[4];            ///< モデル描画直前のGL_COLOR_WRITEMASKパラメータ
     GLint _lastBlending[4];                 ///< モデル描画直前のカラーブレンディングパラメータ
-    GLint _lastFBO;                         ///< モデル描画直前のフレームバッファ
+    GLint _lastDrawFBO;
+    GLint _lastReadFBO;
+    GLint _lastReadBuffer;
+    GLfloat _lastClearColor[4];
     GLint _lastViewport[4];                 ///< モデル描画直前のビューポート
 };
 
@@ -144,9 +153,11 @@ class CubismRenderer_OpenGLES2 : public  CubismRenderer,  QOpenGLFunctions_3_3_C
     friend class CubismShader_OpenGLES2;
 
 public:
-    void setGlOwningContext(const QOpenGLContext *context){
-        initializeOpenGLFunctions();
+    bool setGlOwningContext(const QOpenGLContext *context){
+        if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
+            (owningContext() && owningContext() != context)) return false;
         setOwningContext(context);
+        return initializeOpenGLFunctions();
     }
 
     /**
@@ -155,9 +166,9 @@ public:
      *
      * @param[in]  model -> モデルのインスタンス
      */
-    void Initialize(Framework::CubismModel* model);
+    csmBool Initialize(Framework::CubismModel* model) override;
 
-    void Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount);
+    csmBool Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount) override;
 
     /**
      * @brief   OpenGLテクスチャのバインド処理<br>
@@ -224,7 +235,7 @@ protected:
      * @brief   モデルを描画する実際の処理
      *
      */
-    virtual void DoDrawModel() override;
+    csmBool DoDrawModel() override;
 
     /**
      * @brief    描画オブジェクト（アートメッシュ）を描画する。
@@ -258,8 +269,11 @@ private:
     static void DoStaticRelease();
     void PreDraw();
     void PostDraw(){};
-    virtual void SaveProfile();
-    virtual void RestoreProfile();
+    csmBool SaveProfile() override;
+    void RestoreProfile() override;
+    bool DrawHighPrecisionMask(CubismClippingContext_OpenGLES2* clipContext);
+    bool WritePsdLayer(csmInt32 drawableIndex, const QString& drawName,
+                       csmFloat32 opacityOverride, bool hasMask);
     void SetClippingContextBufferForMask(CubismClippingContext_OpenGLES2* clip);
     CubismClippingContext_OpenGLES2* GetClippingContextBufferForMask() const;
     void SetClippingContextBufferForDraw(CubismClippingContext_OpenGLES2* clip);
@@ -291,10 +305,11 @@ private:
     CubismClippingContext_OpenGLES2* _clippingContextBufferForMask;  ///< マスクテクスチャに描画するためのクリッピングコンテキスト
     CubismClippingContext_OpenGLES2* _clippingContextBufferForDraw;  ///< 画面上描画するためのクリッピングコンテキスト
 
-    csmVector<CubismOffscreenSurface_OpenGLES2>   _offscreenSurfaces;          ///< マスク描画用のフレームバッファ
+    std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _offscreenSurfaces;
     quint64 _maskIndicesRevision = 0;
     bool _forceMaskRedraw = false;
     bool _maskTopologyUpdated = false;
+    bool _maskBuffersNeedRedraw = false;
 };
 
 }}}}

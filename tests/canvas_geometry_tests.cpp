@@ -24,6 +24,12 @@ public:
     CSectionOffsetTable offsets;
     CCanvas_info canvas;
 };
+
+QPointF ndcPoint(const std::array<float, 16>& matrix, const QPointF& model)
+{
+    return QPointF(matrix[0] * model.x() + matrix[4] * model.y() + matrix[12],
+                   matrix[1] * model.x() + matrix[5] * model.y() + matrix[13]);
+}
 }
 
 class CanvasGeometryTests : public QObject
@@ -135,6 +141,167 @@ private slots:
         QString error;
         QVERIFY(!CCanvasGeometry::Validate(nullptr, &error));
         QVERIFY(error.contains(QStringLiteral("canvas_info")));
+    }
+
+    void ndcUsesColumnMajorOrderAndNonCentralPixelOrigins()
+    {
+        std::array<float, 16> matrix;
+        matrix.fill(99.0f);
+        QVERIFY(CCanvasGeometry::ModelToNdc(16, 16, 3, 5, 4, QSize(16, 16), matrix));
+        const std::array<float, 16> expected{0.5f, 0, 0, 0, 0, 0.5f, 0, 0,
+                                            0, 0, 1, 0, -0.625f, 0.375f, 0, 1};
+        QVERIFY(matrix == expected);
+        QCOMPARE(ndcPoint(matrix, QPointF(-0.75, 1.25)), QPointF(-1, 1));
+        QCOMPARE(ndcPoint(matrix, QPointF(3.25, 1.25)), QPointF(1, 1));
+        QCOMPARE(ndcPoint(matrix, QPointF(-0.75, -2.75)), QPointF(-1, -1));
+        QCOMPARE(ndcPoint(matrix, QPointF(3.25, -2.75)), QPointF(1, -1));
+        QCOMPARE(ndcPoint(matrix, QPointF()), QPointF(-0.625, 0.375));
+        QCOMPARE(ndcPoint(matrix, QPointF(-0.5, 0.75)), QPointF(-0.875, 0.75));
+        QCOMPARE(ndcPoint(matrix, QPointF(0.5, 0.75)), QPointF(-0.375, 0.75));
+        QCOMPARE(ndcPoint(matrix, QPointF(-0.5, -0.25)), QPointF(-0.875, 0.25));
+    }
+
+    void ndcHandlesLandscapePortraitAndNegativeOrigins()
+    {
+        for (const QSize size : {QSize(16, 8), QSize(8, 16)}) {
+            std::array<float, 16> matrix;
+            QVERIFY(CCanvasGeometry::ModelToNdc(size.width(), size.height(), -4, -8, 4, size, matrix));
+            const QPointF topLeft(1, -2);
+            const QPointF bottomRight(1 + size.width() / 4.0, -2 - size.height() / 4.0);
+            QCOMPARE(ndcPoint(matrix, topLeft), QPointF(-1, 1));
+            QCOMPARE(ndcPoint(matrix, bottomRight), QPointF(1, -1));
+            QCOMPARE(ndcPoint(matrix, (topLeft + bottomRight) / 2.0), QPointF());
+            QVERIFY(matrix[0] > 0 && matrix[5] > 0);
+        }
+    }
+
+    void ndcUsesRoundedOutputPixelsWithoutRescalingMetadata()
+    {
+        const QSize size = CCanvasGeometry::PixelSize(16.49, 7.5);
+        QCOMPARE(size, QSize(16, 8));
+        std::array<float, 16> matrix;
+        QVERIFY(CCanvasGeometry::ModelToNdc(16.49, 7.5, 3, 5, 4, size, matrix));
+        QCOMPARE(matrix[0], 0.5f);
+        QCOMPARE(matrix[5], 1.0f);
+        QCOMPARE(matrix[12], -0.625f);
+        QCOMPARE(matrix[13], -0.25f);
+        QCOMPARE(ndcPoint(matrix, QPointF(-0.75, 1.25)), QPointF(-1, 1));
+        QCOMPARE(ndcPoint(matrix, QPointF(3.25, -0.75)), QPointF(1, -1));
+        QVERIFY(CCanvasGeometry::ModelToNdc(0.5, 0.5, 0, 0, 1, QSize(1, 1), matrix));
+        QCOMPARE(ndcPoint(matrix, QPointF()), QPointF(-1, 1));
+        QCOMPARE(ndcPoint(matrix, QPointF(1, -1)), QPointF(1, -1));
+    }
+
+    void ndcMatchesFourSampleCanvasCoordinates_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QSize>("size");
+        QTest::addColumn<float>("ppu");
+        QTest::newRow("Mark") << QString("Mark") << QSize(2400, 3000) << 2400.0f;
+        QTest::newRow("Natori") << QString("Natori") << QSize(4000, 7000) << 4000.0f;
+        QTest::newRow("Rice") << QString("Rice") << QSize(4500, 3000) << 3000.0f;
+        QTest::newRow("Wanko") << QString("Wanko") << QSize(1200, 1200) << 1200.0f;
+    }
+
+    void ndcMatchesFourSampleCanvasCoordinates()
+    {
+        QFETCH(QString, name);
+        QFETCH(QSize, size);
+        QFETCH(float, ppu);
+        CReader reader(QString(TEST_RESOURCES) + '/' + name + '/' + name + ".moc3");
+        CSectionOffsetTable offsets(reader);
+        CCanvas_info canvas(reader, *offsets.canvas_info);
+        QVERIFY2(reader.IsValid(), qPrintable(reader.Error()));
+        QCOMPARE(canvas.width, float(size.width()));
+        QCOMPARE(canvas.height, float(size.height()));
+        QCOMPARE(canvas.pixels_per_unit, ppu);
+        QCOMPARE(canvas.origin_x, size.width() / 2.0f);
+        QCOMPARE(canvas.origin_y, size.height() / 2.0f);
+        std::array<float, 16> matrix;
+        QVERIFY(CCanvasGeometry::ModelToNdc(canvas.width, canvas.height, canvas.origin_x,
+                                           canvas.origin_y, canvas.pixels_per_unit, size, matrix));
+        const double halfWidth = size.width() / (2.0 * ppu);
+        const double halfHeight = size.height() / (2.0 * ppu);
+        const std::array<QPointF, 5> models{
+            QPointF(-halfWidth, halfHeight), QPointF(halfWidth, halfHeight),
+            QPointF(-halfWidth, -halfHeight), QPointF(halfWidth, -halfHeight), QPointF()};
+        const std::array<QPointF, 5> expected{
+            QPointF(-1, 1), QPointF(1, 1), QPointF(-1, -1), QPointF(1, -1), QPointF()};
+        for (std::size_t index = 0; index < models.size(); ++index) {
+            const QPointF ndc = ndcPoint(matrix, models[index]);
+            QVERIFY(std::abs(ndc.x() - expected[index].x()) < 1.0e-6);
+            QVERIFY(std::abs(ndc.y() - expected[index].y()) < 1.0e-6);
+            QPointF pixel;
+            QVERIFY(CCanvasGeometry::ModelToPixels(&canvas, models[index], pixel));
+            QVERIFY(std::abs((ndc.x() + 1) * size.width() / 2.0 - pixel.x()) < 0.001);
+            QVERIFY(std::abs((1 - ndc.y()) * size.height() / 2.0 - pixel.y()) < 0.001);
+        }
+    }
+
+    void ndcFailuresKeepTheEntireOutputUnchanged()
+    {
+        std::array<float, 16> original;
+        for (std::size_t index = 0; index < original.size(); ++index) original[index] = float(index + 17);
+        const std::array<double, 5> valid{16, 8, 3, 5, 4};
+        const auto rejected = [&](const std::array<double, 5>& values, const QSize& size) {
+            auto matrix = original;
+            return !CCanvasGeometry::ModelToNdc(values[0], values[1], values[2], values[3], values[4], size, matrix) &&
+                matrix == original;
+        };
+        for (std::size_t field = 0; field < valid.size(); ++field) {
+            for (double invalid : {std::numeric_limits<double>::quiet_NaN(),
+                                   std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()}) {
+                auto values = valid;
+                values[field] = invalid;
+                QVERIFY(rejected(values, QSize(16, 8)));
+            }
+        }
+        for (std::size_t field : {std::size_t(0), std::size_t(1)}) {
+            for (double invalid : {0.0, -1.0, 0.49, double(INT_MAX) + 1.0}) {
+                auto values = valid;
+                values[field] = invalid;
+                QVERIFY(rejected(values, QSize(16, 8)));
+            }
+        }
+        for (double invalid : {0.0, -1.0, std::numeric_limits<double>::max(),
+                               std::numeric_limits<double>::denorm_min()}) {
+            auto values = valid;
+            values[4] = invalid;
+            QVERIFY(rejected(values, QSize(16, 8)));
+        }
+        for (std::size_t field : {std::size_t(2), std::size_t(3)}) {
+            auto values = valid;
+            values[field] = std::numeric_limits<double>::max();
+            QVERIFY(rejected(values, QSize(16, 8)));
+            values[field] = -std::numeric_limits<double>::max();
+            QVERIFY(rejected(values, QSize(16, 8)));
+        }
+        for (const QSize size : {QSize(), QSize(0, 8), QSize(16, -1), QSize(8, 16), QSize(17, 8)})
+            QVERIFY(rejected(valid, size));
+        const double tiny = std::numeric_limits<float>::denorm_min();
+        QVERIFY(rejected({8, 2, 0, 0, tiny}, QSize(8, 2)));
+        QVERIFY(rejected({2, 8, 0, 0, tiny}, QSize(2, 8)));
+        QVERIFY(rejected({1, 2, 0, 0, std::numeric_limits<float>::max()}, QSize(1, 2)));
+        QVERIFY(rejected({2, 1, 0, 0, std::numeric_limits<float>::max()}, QSize(2, 1)));
+    }
+
+    void ndcAcceptsRepresentableScaleExtremesAndCanBeReused()
+    {
+        std::array<float, 16> matrix;
+        const float tiny = std::numeric_limits<float>::denorm_min();
+        const float maximum = std::numeric_limits<float>::max();
+        for (const float ppu : {tiny, maximum}) {
+            QVERIFY(CCanvasGeometry::ModelToNdc(2, 2, 1, 1, ppu, QSize(2, 2), matrix));
+            QCOMPARE(matrix[0], ppu);
+            QCOMPARE(matrix[5], ppu);
+            QCOMPARE(matrix[12], 0.0f);
+            QCOMPARE(matrix[13], 0.0f);
+            QVERIFY(matrix[0] > 0 && std::isfinite(matrix[0]));
+        }
+        QVERIFY(CCanvasGeometry::ModelToNdc(INT_MAX, INT_MAX, 0, 0, 1, QSize(INT_MAX, INT_MAX), matrix));
+        QVERIFY(matrix[0] > 0 && matrix[5] > 0);
+        QVERIFY(CCanvasGeometry::ModelToNdc(16, 16, 3, 5, 4, QSize(16, 16), matrix));
+        QCOMPARE(ndcPoint(matrix, QPointF(-0.75, 1.25)), QPointF(-1, 1));
     }
 
     void invalidCanvasRejectsBeforeArraysAndPreservesDocument_data()

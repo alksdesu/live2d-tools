@@ -1,286 +1,152 @@
 #include "creadopengl.h"
 #include "cmeshbounds.h"
 
-CReadOpengl::CReadOpengl() {
+#include <QOpenGLVersionFunctionsFactory>
+#include <QScopeGuard>
+#include <cmath>
+#include <vector>
 
-
+bool CReadOpengl::setGlOwningContext(const QOpenGLContext* context)
+{
+    if (!context || !context->isValid() || QOpenGLContext::currentContext() != context) return false;
+    auto* candidate = const_cast<QOpenGLContext*>(context);
+    auto* functions = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_3_3_Core>(candidate);
+    if (!functions || !functions->initializeOpenGLFunctions()) return false;
+    m_context = candidate;
+    m_gl = functions;
+    return true;
 }
 
-void CReadOpengl::setGlOwningContext(const QOpenGLContext *context)
+bool CReadOpengl::CanUseContext() const
 {
-    initializeOpenGLFunctions();
-    setOwningContext(context);
-
-    // kmesh.setGlOwningContext(owningContext());
-    // kmesh.SetConstPointEBO(m_uvVertex,m_positionVertex);
-
-
-    bool success;
-    shaderProgramOffset.addShaderFromSourceFile(QOpenGLShader::Vertex,":/atr.vert");
-    shaderProgramOffset.addShaderFromSourceFile(QOpenGLShader::Fragment,":/atr.frag");
-    success=shaderProgramOffset.link();
-    if(!success)
-        qDebug()<<"ERR:"<<shaderProgramOffset.log();
-
+    return m_context && m_context->isValid() && m_gl && QOpenGLContext::currentContext() == m_context;
 }
 
-void CReadOpengl::UpdateFrame(GLuint tex,int w,int h)
+bool CReadOpengl::ClearTarget(bool alphaOnly)
 {
-    glViewport(0,0,w, h);
-    // //这套代码封装起来，比如说
-    glDisable(GL_BLEND);//关闭混合，用原来的图层直接覆盖只是单纯去修改帧缓冲区的不透明度
-    glUseProgram(shaderProgramOffset.programId());
-    //shaderProgramOffset.bind(); //绑定shader
-    shaderProgramOffset.setUniformValue("textureMaskFrame",0);//设置图像的通道
-    GLuint aPos = shaderProgramOffset.attributeLocation("aPos");
-    GLuint aTexCord = shaderProgramOffset.attributeLocation("aTexCord");
-
-
-    glEnableVertexAttribArray(aPos);
-    glVertexAttribPointer(aPos, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), m_positionVertex);
-
-    glEnableVertexAttribArray(aTexCord);
-    glVertexAttribPointer(aTexCord, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), m_uvVertex);
-    //glBindVertexArray(kmesh.getVAO());
-
-    glActiveTexture(GL_TEXTURE0);//绑定一个cmesh
-    glBindTexture(GL_TEXTURE_2D, tex);//绑定tex
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT,m_indices);
-    glEnable(GL_BLEND);//因为背景颜色是黑色，导致和屏幕混合的时候产生黑边
-    glUseProgram(0);
-}
-
-
-bool CReadOpengl::IsWrite =false;
-int CReadOpengl::m_sIndex = 0;
-void CReadOpengl::WriteONE(const QString& strFileName,int width ,int height)
-{
-    if(IsWrite){
-        return;
+    if (!CanUseContext() || m_gl->glGetError() != GL_NO_ERROR) return false;
+    GLint framebuffer = 0, count = 0;
+    m_gl->glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+    if (!framebuffer) return false;
+    m_gl->glGetIntegerv(GL_MAX_DRAW_BUFFERS, &count);
+    if (count <= 0) return false;
+    std::vector<GLenum> buffers(static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        GLint buffer;
+        m_gl->glGetIntegerv(GL_DRAW_BUFFER0 + index, &buffer);
+        buffers[static_cast<size_t>(index)] = static_cast<GLenum>(buffer);
     }
-    IsWrite =true;
-    Write(strFileName,width,height);
+    GLboolean colorMask[4];
+    m_gl->glGetBooleani_v(GL_COLOR_WRITEMASK, 0, colorMask);
+    const bool scissor = m_gl->glIsEnabled(GL_SCISSOR_TEST);
+    const auto restore = qScopeGuard([&] {
+        m_gl->glDrawBuffers(count, buffers.data());
+        m_gl->glColorMaski(0, colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+        if (scissor) m_gl->glEnable(GL_SCISSOR_TEST);
+    });
+    m_gl->glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    if (m_gl->glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
+    m_gl->glDisable(GL_SCISSOR_TEST);
+    m_gl->glColorMaski(0, !alphaOnly, !alphaOnly, !alphaOnly, GL_TRUE);
+    const GLfloat color[]{1.0f, 1.0f, 1.0f, 0.0f};
+    m_gl->glClearBufferfv(GL_COLOR, 0, color);
+    return m_gl->glGetError() == GL_NO_ERROR;
 }
 
-void CReadOpengl::Write(const QString &strFileName, int width, int height)
+bool CReadOpengl::PreDraw()
 {
-    Q_UNUSED(strFileName);
-    Q_UNUSED(width);
-    Q_UNUSED(height);
+    return ClearTarget(false);
 }
 
-
-
-
-QImage* CReadOpengl::GetImage(int x, int y, int width, int height)
+bool CReadOpengl::UpdateFrame()
 {
-    // QImage 自持像素内存，避免外部缓冲的所有权问题；
-    // RGBA8888 每像素 4 字节，scanline 无 padding，glReadPixels 可直写 bits()
-    QImage* image = new QImage();
-    if (width <= 0 || height <= 0) {
-        return image; // 空图像，下游按 zero-size 跳过
-    }
-
-    *image = QImage(width, height, QImage::Format_RGBA8888);
-    if (image->isNull()) {
-        qWarning("CReadOpengl::GetImage: 分配 %dx%d 图像失败", width, height);
-        return image;
-    }
-
-    glReadBuffer(GL_COLOR_ATTACHMENT0);
-    glReadPixels(x, y, width, height, GLenum(GL_RGBA), GLenum(GL_UNSIGNED_BYTE), image->bits());
-    *image = image->mirrored(false, true);
-
-    return image;
+    return ClearTarget(true);
 }
 
-
-void CReadOpengl::PrintImage(int width, int height)
+bool CReadOpengl::ReadImage(const QRect& rect, const QSize& canvasSize, QImage& image)
 {
-    Q_UNUSED(width);
-    Q_UNUSED(height);
+    if (!CanUseContext() || m_gl->glGetError() != GL_NO_ERROR || rect.isEmpty() ||
+        !QRect(QPoint(), canvasSize).contains(rect)) return false;
+    GLint drawFramebuffer = 0, readFramebuffer = 0;
+    m_gl->glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
+    m_gl->glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
+    if (!drawFramebuffer) return false;
+    m_gl->glBindFramebuffer(GL_READ_FRAMEBUFFER, drawFramebuffer);
+    GLint readBuffer = 0;
+    m_gl->glGetIntegerv(GL_READ_BUFFER, &readBuffer);
+    const auto restoreFramebuffer = qScopeGuard([&] {
+        m_gl->glReadBuffer(readBuffer);
+        m_gl->glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
+    });
+    m_gl->glReadBuffer(GL_COLOR_ATTACHMENT0);
+    if (m_gl->glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
+    GLint objectType = 0, object = 0, componentType = 0;
+    m_gl->glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &objectType);
+    m_gl->glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &object);
+    if (objectType != GL_TEXTURE || !object) return false;
+    m_gl->glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &componentType);
+    if (componentType == GL_INT || componentType == GL_UNSIGNED_INT) return false;
+    GLint textureBinding = 0, level = 0, textureWidth = 0, textureHeight = 0;
+    m_gl->glGetIntegerv(GL_TEXTURE_BINDING_2D, &textureBinding);
+    const auto restoreTexture = qScopeGuard([&] { m_gl->glBindTexture(GL_TEXTURE_2D, textureBinding); });
+    m_gl->glGetFramebufferAttachmentParameteriv(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL, &level);
+    m_gl->glBindTexture(GL_TEXTURE_2D, object);
+    if (m_gl->glGetError() != GL_NO_ERROR) return false;
+    m_gl->glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &textureWidth);
+    m_gl->glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &textureHeight);
+    if (QSize(textureWidth, textureHeight) != canvasSize) return false;
+
+    QImage candidate(rect.size(), QImage::Format_RGBA8888);
+    if (candidate.isNull()) return false;
+    GLint packBuffer = 0, alignment = 0, rowLength = 0, skipPixels = 0, skipRows = 0;
+    m_gl->glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &packBuffer);
+    m_gl->glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
+    m_gl->glGetIntegerv(GL_PACK_ROW_LENGTH, &rowLength);
+    m_gl->glGetIntegerv(GL_PACK_SKIP_PIXELS, &skipPixels);
+    m_gl->glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);
+    const auto restorePack = qScopeGuard([&] {
+        m_gl->glBindBuffer(GL_PIXEL_PACK_BUFFER, packBuffer);
+        m_gl->glPixelStorei(GL_PACK_ALIGNMENT, alignment);
+        m_gl->glPixelStorei(GL_PACK_ROW_LENGTH, rowLength);
+        m_gl->glPixelStorei(GL_PACK_SKIP_PIXELS, skipPixels);
+        m_gl->glPixelStorei(GL_PACK_SKIP_ROWS, skipRows);
+    });
+    m_gl->glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    m_gl->glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    m_gl->glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    m_gl->glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    m_gl->glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    m_gl->glReadPixels(rect.x(), rect.y(), rect.width(), rect.height(), GL_RGBA, GL_UNSIGNED_BYTE, candidate.bits());
+    if (m_gl->glGetError() != GL_NO_ERROR) return false;
+    candidate = candidate.mirrored(false, true);
+    if (candidate.isNull()) return false;
+    image = std::move(candidate);
+    return true;
 }
 
-COffScreenNode CReadOpengl::GetScreenNode(CubismModel &model, const int index, const float *mvp, int width, int height, bool IsPrint)
+bool CReadOpengl::GetScreenNode(const float* vertices, int vertexCount, const float* mvp,
+                               int width, int height, QImage& image, QRect& psdRect)
 {
-    QMatrix4x4 transform;
-    for (int row = 0; row < 4; ++row) {
-        for (int column = 0; column < 4; ++column) {
-            transform(row, column) = mvp[column * 4 + row];
-        }
-    }
-    const QRect rect = MeshBounds::Viewport(model.GetDrawableVertices(index),
-        model.GetDrawableVertexCount(index), [&](float x, float y) {
-            const QVector3D point = transform.map(QVector3D(x, y, 0));
-            return QPointF(point.x(), point.y());
-        }, QSize(width, height));
-    if (IsPrint) PrintImage(width, height);
-    return COffScreenNode(GetImage(rect.x(), rect.y(), rect.width(), rect.height()), rect);
-}
-
-void CReadOpengl::BeginDraw(GLint restoreFBO){
-
-    if (_renderTexture == 0)
-    {
-        return;
-    }
-
-    // バックバッファのサーフェイスを記憶しておく
-    if (restoreFBO < 0)
-    {
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &_oldFBO);//封装了，用于获取上一个帧缓冲区
-    }
-    else
-    {
-        _oldFBO = restoreFBO;
-    }
-    // マスク用RenderTextureをactiveにセット
-    glBindFramebuffer(GL_FRAMEBUFFER, _renderTexture);//绘制之前先绑定
-}
-
-void CReadOpengl::EndDraw()
-{
-    if (_renderTexture == 0)
-    {
-        return;
-    }
-
-    // 描画対象を戻す
-    glBindFramebuffer(GL_FRAMEBUFFER, _oldFBO);
-}
-
-bool CReadOpengl::CreateOffscreenSurface(int displayBufferWidth, int displayBufferHeight, GLuint colorBuffer)
-{
-    if (displayBufferWidth <= 0 || displayBufferHeight <= 0 ||
-        displayBufferWidth > 16384 || displayBufferHeight > 16384) return false;
-
-    // 一旦削除
-    DestroyOffscreenSurface();
-    //进行离屏幕渲染
-    do
-    {
-        GLuint ret = 0;
-
-        // 新しく生成する
-        if (colorBuffer == 0)
-        {
-            glGenTextures(1, &_colorBuffer);
-
-            glBindTexture(GL_TEXTURE_2D, _colorBuffer);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, displayBufferWidth, displayBufferHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glBindTexture(GL_TEXTURE_2D, 0);
-
-            _isColorBufferInherited = false;
-        }
-        else
-        {// 指定されたものを使用
-            _colorBuffer = colorBuffer;
-
-            _isColorBufferInherited = true;
-        }
-
-        GLint tmpFramebufferObject;
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &tmpFramebufferObject);//获得默认的帧缓冲
-
-        glGenFramebuffers(1, &ret);
-        glBindFramebuffer(GL_FRAMEBUFFER, ret);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _colorBuffer, 0);//绑定帧缓冲区作为附件
-        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        glBindFramebuffer(GL_FRAMEBUFFER, tmpFramebufferObject);
-        if (status != GL_FRAMEBUFFER_COMPLETE) {
-            glDeleteFramebuffers(1, &ret);
-            if (!_isColorBufferInherited && _colorBuffer != 0) glDeleteTextures(1, &_colorBuffer);
-            _renderTexture = 0;
-            _colorBuffer = 0;
-            return false;
-        }
-
-        _renderTexture = ret;//在什么时候进行绑定
-
-        _bufferWidth = displayBufferWidth;
-        _bufferHeight = displayBufferHeight;
-//使用的时候使用颜色附件就行
-        // 成功
-        return true;//帧缓冲区怎么使用
-
-    } while (0);
-
-    // 失敗したので削除
-    DestroyOffscreenSurface();
-
-
-    return false;
-}
-
-void CReadOpengl::DestroyOffscreenSurface()
-{
-    if (!_isColorBufferInherited && (_colorBuffer != 0))
-    {
-        glDeleteTextures(1, &_colorBuffer);
-        _colorBuffer = 0;
-    }
-
-    if (_renderTexture!=0)
-    {
-        glDeleteFramebuffers(1, &_renderTexture);
-        _renderTexture = 0;
-    }
-    _colorBuffer = 0;
-}
-GLuint CReadOpengl::GetRenderTexture() const
-{
-    return _renderTexture;
-}
-
-GLuint CReadOpengl::GetColorBuffer() const
-{
-    return _colorBuffer;
-}
-
-int CReadOpengl::GetBufferWidth() const
-{
-    return _bufferWidth;
-}
-
-int CReadOpengl::GetBufferHeight() const
-{
-    return _bufferHeight;
-}
-
-bool CReadOpengl::IsValid() const
-{
-    return _renderTexture != 0;
-}
-
-void CReadOpengl::PreDraw()
-{
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_DEPTH_TEST);
-
-    glEnable(GL_BLEND);//因为背景颜色是黑色，导致和屏幕混合的时候产生黑边
-    glClearColor(1.0f, 1.0f, 1.0f, 0.0f);//没有深度测试
-    //glClearColor(0.0f, 0.0f, 0.0f, 1.0f);//没有深度测试
-
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glColorMask(1, 1, 1, 1);
-#ifdef CSM_TARGET_IPHONE_ES2
-    glBindVertexArrayOES(0);
-#endif
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0); //前にバッファがバインドされていたら破棄する必要がある
-
-
-}
-
-void CReadOpengl::Clear(float r, float g, float b, float a)
-{
-    // マスクをクリアする
-    glClearColor(r,g,b,a);
-    glClear(GL_COLOR_BUFFER_BIT);
+    if (!CanUseContext() || !mvp || width <= 0 || height <= 0 || vertexCount < 0 || vertexCount > 1000000 ||
+        (vertexCount > 0 && !vertices)) return false;
+    for (int index = 0; index < 16; ++index) if (!std::isfinite(mvp[index])) return false;
+    bool valid = true;
+    const QRect rect = MeshBounds::Viewport(vertices, vertexCount, [&](float x, float y) {
+        const double px = double(mvp[0]) * x + double(mvp[4]) * y + mvp[12];
+        const double py = double(mvp[1]) * x + double(mvp[5]) * y + mvp[13];
+        const double pw = double(mvp[3]) * x + double(mvp[7]) * y + mvp[15];
+        const double nx = px / pw, ny = py / pw;
+        if (!std::isfinite(nx) || !std::isfinite(ny)) valid = false;
+        return QPointF(nx, ny);
+    }, QSize(width, height));
+    if (!valid) return false;
+    QImage candidate;
+    if (!rect.isEmpty() && !ReadImage(rect, QSize(width, height), candidate)) return false;
+    image = std::move(candidate);
+    psdRect = rect.isEmpty() ? QRect() : QRect(rect.x(), height - rect.y() - rect.height(), rect.width(), rect.height());
+    return true;
 }

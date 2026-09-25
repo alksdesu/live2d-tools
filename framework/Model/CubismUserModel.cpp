@@ -264,7 +264,7 @@ csmBool CubismUserModel::CreateRenderer(csmInt32 maskBufferCount)
     using Renderer = Rendering::CubismRenderer;
     std::unique_ptr<Renderer, decltype(&Renderer::Delete)> renderer(Renderer::Create(), &Renderer::Delete);
     if (!renderer) return false;
-    renderer->Initialize(_model, maskBufferCount);
+    if (!renderer->Initialize(_model, maskBufferCount)) return false;
     DeleteRenderer();
     _renderer = renderer.release();
     return true;

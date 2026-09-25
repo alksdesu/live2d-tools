@@ -70,10 +70,10 @@ void LAppView::Initialize()
 
 }
 
-void LAppView::Render()
+bool LAppView::Render()
 {
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
-    if (!Live2DManager) return;
+    if (!Live2DManager) return false;
     const bool exporting = LAppDelegate::GetInstance()->IsOffScreen();
     Live2DManager->SetViewMatrix(_viewMatrix);//这里是视图模型
     int modelCount = Live2DManager->GetModelNum();
@@ -83,7 +83,7 @@ void LAppView::Render()
         {
             mvp.MultiplyByMatrix(_viewMatrix);
         }
-        Live2DManager->OnUpdate(mvp);
+        if (!Live2DManager->OnUpdate(mvp)) return false;
     }
 
     if(!exporting){
@@ -99,6 +99,7 @@ void LAppView::Render()
     }
 
 
+    return true;
 }
 
 void LAppView::InitializeSprite()

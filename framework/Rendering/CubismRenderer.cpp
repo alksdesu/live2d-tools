@@ -8,6 +8,7 @@
 #include "CubismRenderer.hpp"
 #include "framework/CubismFramework.hpp"
 #include "framework/Model/CubismModel.hpp"
+#include <QScopeGuard>
 
 //------------ LIVE2D NAMESPACE ------------
 namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
@@ -31,23 +32,23 @@ CubismRenderer::CubismRenderer()
 CubismRenderer::~CubismRenderer()
 {}
 
-void CubismRenderer::Initialize(Framework::CubismModel* model)
+csmBool CubismRenderer::Initialize(Framework::CubismModel* model)
 {
-    Initialize(model, 1);
+    return Initialize(model, 1);
 }
 
-void CubismRenderer::Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount)
+csmBool CubismRenderer::Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount)
 {
+    if (!model || maskBufferCount < 1) return false;
     _model = model;
+    return true;
 }
 
-void CubismRenderer::DrawModel()
+csmBool CubismRenderer::DrawModel()
 {
-    if (GetModel() == NULL) return;
-
-    SaveProfile();
-    DoDrawModel();
-    RestoreProfile();
+    if (!GetModel() || !SaveProfile()) return false;
+    const auto restore = qScopeGuard([this] { RestoreProfile(); });
+    return DoDrawModel();
 }
 
 void CubismRenderer::SetMvpMatrix(CubismMatrix44* matrix4x4)
