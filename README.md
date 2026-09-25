@@ -61,9 +61,9 @@ Output: model.cmo3 (CAFF container: main.xml + one PNG per mesh)
 
 **Requirements:**
 
-- Windows x64
+- Windows x64 or macOS ARM64
 - Qt 6.x (modules: core gui opengl openglwidgets core5compat widgets gui-private network)
-- MSVC compiler
+- MSVC on Windows; Apple Clang on macOS
 - C++17
 
 **Compile:**
@@ -82,9 +82,24 @@ If Qt is not in the default location, specify qmake:
 
 Output: `softwareEnv/physicsV1/live2d2psd.exe`
 
+For an external Core library, pass `LIVE2D_CORE_LIBRARY` to qmake or set the environment variable of the same name. Select a library compatible with `core/Live2DCubismCore.h`. Native SDK 5-r.4.1 has been verified on macOS ARM64; the 5-r.5 Core removes an API used by this framework and is not a drop-in replacement. SDK packages are available from the [official download page](https://www.live2d.com/en/sdk/download/native/).
+
+On macOS, configure from the repository directory using your Qt qmake:
+
+```sh
+/path/to/Qt/bin/qmake App.pro CONFIG+=release \
+  LIVE2D_CORE_LIBRARY=/path/to/Core/lib/macos/arm64/libLive2DCubismCore.a \
+  QMAKE_MACOSX_DEPLOYMENT_TARGET=14.0
+make -j4
+```
+
+The deployment target must meet the selected Core library's minimum OS requirement; 14.0 matches the tested ARM64 library. The project handles the tested Qt 6.8.3 ARM declaration and missing AGL framework compatibility without editing Qt or the generated Makefile. Output: `softwareEnv/physicsV1/live2d2psd.app`.
+
 ### Component tests
 
 CMake builds the data, Qt panel and PSD tests independently of Cubism Core. Set `CMAKE_PREFIX_PATH` to your Qt installation, build with `BUILD_TESTING=ON`, then run `ctest --test-dir <build-directory> --output-on-failure` (add `-C Release` for multi-configuration builds). These tests do not replace full application or Photoshop/Cubism Editor validation. Detailed coverage and remaining work are recorded in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+Adding `-DLIVE2D_CORE_LIBRARY=/absolute/path/to/the/library` enables `real_core_preview`, which loads candidate MOC data through the actual Core library and compares model outputs across poses. Set `LIVE2D_REAL_CORE_EXTRA_MOC` when running that test to include another local model, such as the SDK's Mao sample. The SDK and additional sample are not bundled with these tests.
 
 ### Dependencies
 
@@ -182,9 +197,9 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 
 **环境要求：**
 
-- Windows x64
+- Windows x64 或 macOS ARM64
 - Qt 6.x（需要模块：core gui opengl openglwidgets core5compat widgets gui-private network）
-- MSVC 编译器
+- Windows 使用 MSVC；macOS 使用 Apple Clang
 - C++17
 
 **编译：**
@@ -203,9 +218,24 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 
 输出位置：`softwareEnv/physicsV1/live2d2psd.exe`
 
+外部 Core 库可通过 qmake 参数 `LIVE2D_CORE_LIBRARY` 或同名环境变量指定，必须与 `core/Live2DCubismCore.h` 的 API 匹配。本机 macOS ARM64 已验证 Native SDK 5-r.4.1；5-r.5 Core 删除了当前框架使用的 API，不能直接替换。SDK 可从[官方下载页](https://www.live2d.com/en/sdk/download/native/)获取。
+
+macOS 在仓库目录使用对应 Qt 的 qmake：
+
+```sh
+/path/to/Qt/bin/qmake App.pro CONFIG+=release \
+  LIVE2D_CORE_LIBRARY=/path/to/Core/lib/macos/arm64/libLive2DCubismCore.a \
+  QMAKE_MACOSX_DEPLOYMENT_TARGET=14.0
+make -j4
+```
+
+部署目标应满足所选 Core 库的最低系统要求，14.0 对应本轮验证的 ARM64 库。项目已处理本机 Qt 6.8.3 的 ARM 声明和缺失 AGL 框架问题，无需修改 Qt 安装或生成的 Makefile。输出为 `softwareEnv/physicsV1/live2d2psd.app`。
+
 ### 组件测试
 
 CMake 可独立构建数据层、Qt 面板和 PSD 测试，不依赖 Cubism Core。将 `CMAKE_PREFIX_PATH` 指向 Qt 安装目录，启用 `BUILD_TESTING=ON` 构建，然后执行 `ctest --test-dir <构建目录> --output-on-failure`（多配置构建补充 `-C Release`）。这些测试不替代完整应用或 Photoshop/Cubism Editor 验证；具体覆盖与剩余工作见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+
+配置时增加 `-DLIVE2D_CORE_LIBRARY=/库的绝对路径` 可启用 `real_core_preview`，使用实际 Core 库加载候选 MOC 并比较多姿态结果。运行该测试时设置 `LIVE2D_REAL_CORE_EXTRA_MOC`，可额外验证本地模型，例如 SDK 的 Mao 样本。测试不附带 SDK 或额外样本文件。
 
 ### 依赖
 

@@ -171,11 +171,13 @@ public:
     void id(int offset, int row, const QByteArray& value) { bytes.replace(offset + row * 64, 64, value.leftJustified(64, '\0')); }
     void appendColumn(int slot, std::initializer_list<int> values)
     {
+        bytes.append(QByteArray((64 - bytes.size() % 64) % 64, '\0'));
         const int offset = bytes.size();
         bytes.append(QByteArray(values.size() * 4, '\0'));
         put(bytes, slot, offset);
         int index = 0;
         for (int value : values) put(bytes, offset + index++ * 4, value);
+        bytes.append(QByteArray((64 - bytes.size() % 64) % 64, '\0'));
     }
 
     CReader reader;

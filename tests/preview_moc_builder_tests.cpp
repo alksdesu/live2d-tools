@@ -1,6 +1,7 @@
 #include "live2dstruct/cmocpreviewbuilder.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
+#include "moc_column_oracle.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -79,6 +80,7 @@ int AppendIntegers(QByteArray& bytes, std::initializer_list<int> values)
     std::memset(bytes.data() + originalSize, 0, bytes.size() - originalSize);
     int index = 0;
     for (int value : values) Put(bytes, offset + index++ * 4, value);
+    MocColumnOracle::Pad(bytes);
     return offset;
 }
 
@@ -239,7 +241,6 @@ private slots:
         QVERIFY2(builder.Initialize(source, &error), qPrintable(error));
         QByteArray result;
         QVERIFY2(builder.Build({{"MeshA", {afterA}}}, result, &error), qPrintable(error));
-        QVERIFY(result.size() > source.size());
         QCOMPARE(Word(result, 0x15c) % 64, 0);
         QCOMPARE(Word(result, 0x158) % 64, 0);
         QCOMPARE(result.size() % 64, 0);
@@ -249,11 +250,9 @@ private slots:
         QCOMPARE(Word(result, Word(result, 0x40) + 40), 18);
         QCOMPARE(Word(result, Word(result, 0x158)), 12);
         QCOMPARE(Word(result, Word(result, 0x158) + 4), secondBegin);
-        QByteArray restored = result.left(source.size());
-        Put(restored, 0x15c, Word(source, 0x15c));
-        Put(restored, 0x158, Word(source, 0x158));
-        SetCount(restored, 10, 12);
-        QCOMPARE(restored, source);
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x15c, 0x158}, {10});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        QCOMPARE(builder.SourceDigest(), QCryptographicHash::hash(source, QCryptographicHash::Sha256));
         CModelDocument document;
         QVERIFY2(document.LoadBytes(result, "alias.moc3", &error), qPrintable(error));
         QCOMPARE(document.DrawableKeyformPositions("MeshA", 0), afterA);
@@ -286,8 +285,10 @@ private slots:
         QCOMPARE(result.mid(Word(result, 0x174), 8), sourceKeys);
         QCOMPARE(Row(result, 0), edited);
         QCOMPARE(Row(result, 1), Row(source, 1));
-        QVERIFY(Word(result, 0x15c) != Word(source, 0x15c));
-        QVERIFY(Word(result, 0x158) != Word(source, 0x158));
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x15c, 0x158}, {10});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        QVERIFY(Word(result, 0x15c) != Word(result, 0x178));
+        QVERIFY(Word(result, 0x158) != Word(result, 0x174));
     }
 
     void sharedGlobalRowsCanBeEditedIndependently()
@@ -346,8 +347,11 @@ private slots:
         SetColumn(source, 0x158, 1, 0);
         QVERIFY(builder.Initialize(source));
         QVERIFY(builder.Build({{"MeshA", {a}}}, result));
-        QVERIFY(result.size() > source.size());
+        QCOMPARE(Word(result, Word(result, 0x40) + 40), 18);
+        QCOMPARE(Row(result, 0), a);
         QCOMPARE(Row(result, 1), Row(source, 1));
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x15c, 0x158}, {10});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
     }
 
     void warpReferencesPreserveSharedCoordinates_data()
@@ -367,9 +371,12 @@ private slots:
         QVERIFY2(builder.Initialize(source, &error), qPrintable(error));
         QByteArray result;
         QVERIFY2(builder.Build({{"MeshA", {Changed(Row(source, 0))}}}, result, &error), qPrintable(error));
-        QVERIFY(result.size() > source.size());
+        QCOMPARE(Word(result, Word(result, 0x40) + 40), 18);
+        QCOMPARE(Row(result, 0), Changed(Row(source, 0)));
         QCOMPARE(Word(result, Word(result, 0x130)), 0);
         QCOMPARE(result.mid(Word(result, 0x15c), 24), source.mid(Word(source, 0x15c), 24));
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x15c, 0x158}, {10});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
     }
 
     void stableOrderingAndSnapshotOwnership()

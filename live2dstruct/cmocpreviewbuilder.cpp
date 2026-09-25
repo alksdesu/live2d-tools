@@ -1,4 +1,5 @@
 #include "cmocpreviewbuilder.h"
+#include "cmoclayoutrewriter.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
 
@@ -237,9 +238,34 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
 {
     const auto& offsets = *table.sectionOffsetTable;
     const auto& counts = *table.count_info;
-    const auto spans = CSectionValidation::ArraySpans(offsets, counts);
+    auto spans = CSectionValidation::ArraySpans(offsets, counts);
     if (spans.size() != CSectionValidation::OffsetTableCount - 2)
         return Fail(error, QStringLiteral("预览补丁区段布局不完整"));
+    for (int offset : {offsets.parameters->runtime_space_0, offsets.parameters->extension_runtime_space_0}) {
+        if (offset && counts.parameters)
+            spans.append({"parameter_runtime_pointer_tail", qint64(offset) + qint64(counts.parameters) * 4,
+                          counts.parameters, 4});
+    }
+    const int headerEnd = offsets.count_info->count_info_offset;
+    if (headerEnd % 4 || (headerEnd - CSectionValidation::OffsetTableStart) / 4 > MaximumCount)
+        return Fail(error, QStringLiteral("预览补丁扩展偏移表未对齐或数量超出范围"));
+    QVector<qint64> physicalOffsets;
+    for (int slot = CSectionValidation::OffsetTableStart; slot < headerEnd; slot += 4) {
+        const qint64 offset = Word(bytes, slot);
+        if (!offset) continue;
+        if (offset < headerEnd || offset > bytes.size())
+            return Fail(error, QStringLiteral("预览补丁扩展区段 0x%1 偏移无效").arg(slot, 0, 16));
+        physicalOffsets.append(offset);
+    }
+    std::sort(physicalOffsets.begin(), physicalOffsets.end());
+    physicalOffsets.erase(std::unique(physicalOffsets.begin(), physicalOffsets.end()), physicalOffsets.end());
+    for (int slot = CSectionValidation::OffsetTableEnd; slot < headerEnd; slot += 4) {
+        const qint64 offset = Word(bytes, slot);
+        if (!offset) continue;
+        const auto next = std::upper_bound(physicalOffsets.cbegin(), physicalOffsets.cend(), offset);
+        const qint64 end = next == physicalOffsets.cend() ? bytes.size() : *next;
+        spans.append({"unparsed_header_column", offset, end - offset, 1});
+    }
     columns = {{
         {"deformers.parent_deformer_indices", 0x80, offsets.deformers->parent_deformer_indices, counts.deformers, {}},
         {"warp_deformer_keyforms.opacities", 0x12c, offsets.warp_deformer_keyforms->opacities, counts.warp_deformer_keyforms, {}},
@@ -576,7 +602,12 @@ bool CMocPreviewBuilder::Snapshot::Detach(const QVector<ObjectEdit>& objects,
             std::memcpy(candidate.data() + destination + qint64(it.key()) * column.width, it->constData(), column.width);
         Put(candidate, column.slot, quint32(destination));
     }
-    output = std::move(candidate);
+    QMap<int, qint64> relocatedByteSizes;
+    for (size_t index = 0; index < ColumnCount; ++index)
+        if (relocated[index]) relocatedByteSizes.insert(columns[index].slot, qint64(sizes[index]) * columns[index].width);
+    QByteArray ordered;
+    if (!CMocLayoutRewriter::Rewrite(bytes, candidate, relocatedByteSizes, ordered, error)) return false;
+    output = std::move(ordered);
     changed = true;
     return true;
 }
@@ -789,6 +820,16 @@ bool CMocPreviewBuilder::Snapshot::Write(const Patches& input, const QVector<Add
             std::memcpy(candidate.data() + plan.offset + begin * column.width, values.constData(), values.size());
             appended += values.size() / column.width;
         }
+    }
+    QMap<int, qint64> relocatedByteSizes;
+    for (const auto& plan : pools)
+        if (plan.relocate) relocatedByteSizes.insert(Get(plan.column).slot, qint64(plan.count) * Get(plan.column).width);
+    for (size_t index = 0; index < ColumnCount; ++index)
+        if (relocated[index]) relocatedByteSizes.insert(columns[index].slot, qint64(columns[index].count) * columns[index].width);
+    if (!relocatedByteSizes.isEmpty()) {
+        QByteArray ordered;
+        if (!CMocLayoutRewriter::Rewrite(bytes, candidate, relocatedByteSizes, ordered, error)) return false;
+        candidate.swap(ordered);
     }
     CReader reader = CReader::FromBytes(candidate);
     CSectionTable table(reader);

@@ -5,6 +5,16 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
+macx {
+    QMAKE_CXXFLAGS += -include $$quote($$PWD/std/cmacosqtcompat.h)
+    contains(QT_CONFIG, shared):!isEmpty(QMAKE_MAC_SDK_PATH):!exists($$QMAKE_MAC_SDK_PATH/System/Library/Frameworks/AGL.framework) {
+        LIVE2D_OPENGL_LIBRARIES = $$join(QMAKE_LIBS_OPENGL, " ")
+        LIVE2D_OPENGL_LIBRARIES ~= s/(^| )-framework AGL( |$)/\1\2/g
+        QMAKE_LIBS_OPENGL = $$split(LIVE2D_OPENGL_LIBRARIES, " ")
+        CONFIG -= link_prl
+    }
+}
+
 TARGET = live2d2psd
 
 # You can make your code fail to compile if it uses deprecated APIs.
@@ -53,6 +63,7 @@ SOURCES += \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
+    live2dstruct/cmoclayoutrewriter.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
     edit/cgridlines.cpp \
@@ -246,6 +257,7 @@ SOURCES += \
     cmo3/ccmo3builder.cpp \
 
 HEADERS += \
+    std/cmacosqtcompat.h \
     live2dstruct/cparentgraph.h \
     live2dstruct/cblendshaperelations.h \
     ui/cmodelhierarchymodel.h \
@@ -509,12 +521,20 @@ HEADERS += \
     cmo3/ccmo3ids.h \
     cmo3/ccmo3entities.h \
     cmo3/ccmo3builder.h \
+    live2dstruct/cmoclayoutrewriter.h \
 
 
 
 
 
-win32: LIBS += $$PWD/windows/x86_64/Live2DCubismCore.lib
+isEmpty(LIVE2D_CORE_LIBRARY): LIVE2D_CORE_LIBRARY = $$(LIVE2D_CORE_LIBRARY)
+!isEmpty(LIVE2D_CORE_LIBRARY) {
+    LIVE2D_CORE_LIBRARY = $$absolute_path($$LIVE2D_CORE_LIBRARY, $$PWD)
+    !exists($$LIVE2D_CORE_LIBRARY): error("LIVE2D_CORE_LIBRARY does not exist: $$LIVE2D_CORE_LIBRARY")
+    LIBS += $$quote($$LIVE2D_CORE_LIBRARY)
+} else {
+    win32: LIBS += $$PWD/windows/x86_64/Live2DCubismCore.lib
+}
 macx: LIBS += -framework OpenGL
 win32: LIBS += -luser32
 

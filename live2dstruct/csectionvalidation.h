@@ -19,6 +19,7 @@ public:
         qint64 count;
         qint64 width = 4;
         bool optional = false;
+        int slot = -1;
     };
 
     static constexpr int OffsetTableStart = 0x40;

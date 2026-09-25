@@ -1,6 +1,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmocpreviewbuilder.h"
 #include "live2dstruct/csectiontable.h"
+#include "moc_column_oracle.h"
 
 #include <QtTest>
 #include <QFile>
@@ -71,6 +72,7 @@ int appendWords(QByteArray& bytes, std::initializer_list<int> values)
     bytes.append(QByteArray(offset + int(values.size()) * 4 - bytes.size(), '\0'));
     int index = 0;
     for (int value : values) putWord(bytes, offset + index++ * 4, quint32(value));
+    MocColumnOracle::Pad(bytes);
     return offset;
 }
 
@@ -368,17 +370,17 @@ private slots:
         QVERIFY2(builder.Initialize(source, &error), qPrintable(error));
         QByteArray result;
         QVERIFY2(builder.Build({}, {}, {{"RotationB", forms}}, {}, result, &error), qPrintable(error));
-        QVERIFY(result.size() > source.size());
-        QVERIFY(word(result, 0x138) != word(source, 0x138));
+        QVERIFY(word(result, 0x138) != word(result, 0x134));
         QCOMPARE(columnNumber(result, 0x138, 0), 17.5f);
         QCOMPARE(columnNumber(result, 0x138, 1), columnNumber(source, 0x138, 1));
-        QCOMPARE(result.mid(pool, 12), source.mid(pool, 12));
+        QCOMPARE(result.mid(word(result, 0x134), 8), source.mid(word(source, 0x134), 8));
         QCOMPARE(columnNumber(result, 0x134, 0), 0.25f);
         QCOMPARE(columnNumber(result, 0x134, 1), 0.375f);
-        QByteArray originalPrefix = result.left(source.size());
-        putWord(originalPrefix, 0x138, word(source, 0x138));
-        QCOMPARE(originalPrefix, source);
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x138});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
         QVERIFY2(parses(result, &error), qPrintable(error));
+        QVERIFY(builder.Build({}, {}, {}, {}, result, &error));
+        QCOMPARE(result, source);
     }
 
     void sharedArtWarpCoordinatesAreDetached_data()
@@ -400,16 +402,14 @@ private slots:
         QVERIFY2(builder.Initialize(source, &error), qPrintable(error));
         QByteArray result;
         QVERIFY2(builder.Build({}, {{"WarpA", forms}}, {}, {}, result, &error), qPrintable(error));
-        QVERIFY(result.size() > source.size());
         QCOMPARE(warpForms(result, 1), forms);
         QCOMPARE(warpForms(result, 0), warpForms(source, 0));
         QCOMPARE(positions(result, 0x158, 0, 8), positions(source, 0x158, 0, 8));
-        QCOMPARE(result.mid(word(source, 0x15c), count(source, 10) * 4),
+        QCOMPARE(result.mid(word(result, 0x15c), count(source, 10) * 4),
                  source.mid(word(source, 0x15c), count(source, 10) * 4));
-        QByteArray originalPrefix = result.left(source.size());
-        for (int slot : {0x130, 0x15c}) putWord(originalPrefix, slot, word(source, slot));
-        setCount(originalPrefix, 10, count(source, 10));
-        QCOMPARE(originalPrefix, source);
+        QCOMPARE(count(result, 10), count(source, 10) + forms[0].positions.size());
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x130, 0x15c}, {10});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
         QVERIFY2(parses(result, &error), qPrintable(error));
     }
 
@@ -560,12 +560,12 @@ private slots:
         QVERIFY2(builder.Initialize(source, &error), qPrintable(error));
         QByteArray result;
         QVERIFY2(builder.Build({}, {}, {}, {{"WarpA", 2}}, result, &error), qPrintable(error));
-        QVERIFY(word(result, 0x80) != word(source, 0x80));
+        QVERIFY(word(result, 0x80) != word(result, 0x68));
         QCOMPARE(column(result, 0x80, 0), 2);
         for (int index = 0; index < 4; ++index) QCOMPARE(column(result, 0x68, index), -1);
-        QByteArray originalPrefix = result.left(source.size());
-        putWord(originalPrefix, 0x80, word(source, 0x80));
-        QCOMPARE(originalPrefix, source);
+        for (int index = 1; index < 4; ++index) QCOMPARE(column(result, 0x80, index), column(source, 0x80, index));
+        const QString preserved = MocColumnOracle::Preserved(source, result, {0x80});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
         QVERIFY2(parses(result, &error), qPrintable(error));
     }
 
@@ -592,7 +592,13 @@ private slots:
         const QHash<QString, int> parents{{"WarpA", 3}, {"RotationA", 2}};
         QByteArray first, second;
         QVERIFY(builder.Build({}, warps, rotations, parents, first, &error));
-        QVERIFY(first.size() > source.size());
+        const QString preserved = MocColumnOracle::Preserved(source, first, {0x80, 0x12c, 0x130, 0x138, 0x15c}, {10});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        QCOMPARE(count(first, 10), count(source, 10) + 16);
+        QCOMPARE(warpForms(first, 0), warps.value("WarpB"));
+        QCOMPARE(warpForms(first, 1), warps.value("WarpA"));
+        QCOMPARE(rotationForms(first, 0), rotations.value("RotationB"));
+        QCOMPARE(rotationForms(first, 1), rotations.value("RotationA"));
         WarpOverrides reversedWarps{{"WarpB", warps.value("WarpB")}, {"WarpA", warps.value("WarpA")}};
         RotationOverrides reversedRotations{{"RotationB", rotations.value("RotationB")}, {"RotationA", rotations.value("RotationA")}};
         const QHash<QString, int> reversedParents{{"RotationA", 2}, {"WarpA", 3}};

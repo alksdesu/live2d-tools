@@ -1,5 +1,6 @@
 #include "live2dstruct/cmocpreviewbuilder.h"
 #include "live2dstruct/csectiontable.h"
+#include "moc_column_oracle.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -63,6 +64,7 @@ int appendWords(QByteArray& bytes, const QVector<int>& values)
     const int address = int((bytes.size() + 63) & ~qsizetype(63));
     bytes.append(QByteArray(address + values.size() * 4 - bytes.size(), '\0'));
     for (int index = 0; index < values.size(); ++index) putWord(bytes, address + index * 4, values[index]);
+    MocColumnOracle::Pad(bytes);
     return address;
 }
 
@@ -260,10 +262,13 @@ private slots:
         QVERIFY(builder.BuildOverrides(edits, output));
         QCOMPARE(masksAt(output, 0), (QVector<int>{2, 3}));
         QCOMPARE(masksAt(output, 3), masksAt(source, 3));
-        QVERIFY(word(output, 0x180) >= source.size());
+        QCOMPARE(count(output, 17), count(source, 17) + 2);
         QCOMPARE(column(output, 0xfc, 0), count(source, 17));
         QCOMPARE(output.mid(word(output, 0x180), count(source, 17) * 4), source.mid(word(source, 0x180), count(source, 17) * 4));
-        QCOMPARE(output.mid(word(source, 0x180), count(source, 17) * 4), source.mid(word(source, 0x180), count(source, 17) * 4));
+        const QString preserved = MocColumnOracle::Preserved(source, output, {0xfc, 0x180}, {17});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        for (int mesh = 1; mesh < 4; ++mesh) QCOMPARE(column(output, 0xfc, mesh), column(source, 0xfc, mesh));
+        QCOMPARE(builder.SourceDigest(), QCryptographicHash::hash(source, QCryptographicHash::Sha256));
     }
 
     void physicalAliases_data()
@@ -288,7 +293,7 @@ private slots:
         const int width = slot == 0xe8 ? 1 : 4;
         source.replace(storage + delta, 4 * width, source.mid(word(source, slot), 4 * width));
         putWord(source, slot, storage + delta);
-        const QByteArray sentinel = source.mid(storage, 20);
+        const QByteArray sentinel = source.mid(storage, 16);
         CMocPreviewBuilder builder;
         QVERIFY(builder.Initialize(source));
         Overrides edits;
@@ -299,8 +304,8 @@ private slots:
         QByteArray output;
         QString error;
         QVERIFY2(builder.BuildOverrides(edits, output, &error), qPrintable(error));
-        QCOMPARE(output.mid(storage, 20), sentinel);
-        QVERIFY(word(output, slot) >= source.size());
+        QCOMPARE(output.mid(word(output, 0xb4), 16), sentinel);
+        QVERIFY(word(output, slot) != word(output, 0xb4));
         QCOMPARE(word(output, slot) % 64, 0);
         if (slot == 0xe8) {
             QCOMPARE(quint8(output[word(output, slot)]), quint8(0x88));
@@ -308,6 +313,17 @@ private slots:
         } else if (slot == 0x100) QVERIFY(masksAt(output, 0).isEmpty());
         else if (slot == 0xfc) QCOMPARE(masksAt(output, 2), QVector<int>{0});
         else QCOMPARE(masksAt(output, 0), (QVector<int>{2, 3}));
+        const QSet<int> changed = slot == 0xe8 ? QSet<int>{0xe8} : QSet<int>{0xfc, 0x100, 0x180};
+        const QString preserved = MocColumnOracle::Preserved(source, output, changed, slot == 0xe8 ? QSet<int>{} : QSet<int>{17});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        if (slot != 0xe8) {
+            const int edited = slot == 0xfc ? 2 : 0;
+            for (int mesh = 0; mesh < 4; ++mesh)
+                if (mesh != edited) QCOMPARE(masksAt(output, mesh), masksAt(source, mesh));
+            QCOMPARE(count(output, 17), count(source, 17) + (slot == 0x100 ? 0 : slot == 0xfc ? 1 : 2));
+            QCOMPARE(output.mid(word(output, 0x180), count(source, 17) * 4),
+                     source.mid(word(source, 0x180), count(source, 17) * 4));
+        }
         QVERIFY2(parses(output, &error), qPrintable(error));
     }
 
@@ -335,10 +351,17 @@ private slots:
         QCOMPARE(masksAt(output, 0), (QVector<int>{2, 3}));
         QCOMPARE(masksAt(output, 1), masksAt(source, 1));
         QCOMPARE(quint8(output[word(output, 0xe8)]), quint8(quint8(source[word(source, 0xe8)]) | 8));
-        QCOMPARE(output.mid(positions, 24 * 4), source.mid(positions, 24 * 4));
-        QVERIFY(word(output, 0x15c) >= source.size());
-        QVERIFY(word(output, 0x180) >= source.size());
-        QVERIFY(word(output, 0xe8) >= source.size());
+        QCOMPARE(output.mid(word(output, 0x15c), 24 * 4), source.mid(positions, 24 * 4));
+        QCOMPARE(count(output, 10), count(source, 10) + changedPosition.size());
+        QCOMPARE(count(output, 17), count(source, 17) + 2);
+        QCOMPARE(output.mid(word(output, 0x180), count(source, 17) * 4), source.mid(word(source, 0x180), count(source, 17) * 4));
+        QCOMPARE(output.mid(word(output, 0xe8) + 1, 3), source.mid(word(source, 0xe8) + 1, 3));
+        for (int mesh = 1; mesh < 4; ++mesh) {
+            QCOMPARE(positionsAt(output, mesh), positionsAt(source, mesh));
+            QCOMPARE(masksAt(output, mesh), masksAt(source, mesh));
+        }
+        const QString preserved = MocColumnOracle::Preserved(source, output, {0xe8, 0xfc, 0x158, 0x15c, 0x180}, {10, 17});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
         QVERIFY2(parses(output, &error), qPrintable(error));
     }
 
@@ -356,21 +379,18 @@ private slots:
         QVERIFY(builder.BuildOverrides(edits, output));
         QCOMPARE(masksAt(output, 0), (QVector<int>{1, 2, 3}));
         for (int mesh = 1; mesh < 4; ++mesh) QCOMPARE(masksAt(output, mesh), masksAt(source, mesh));
-        QCOMPARE(word(output, 0xfc), storage);
         QCOMPARE(column(output, 0xfc, 0), count(source, 17));
-        QCOMPARE(output.mid(storage + 4, 16), source.mid(storage + 4, 16));
-        QVERIFY(word(output, 0x100) >= source.size());
+        QCOMPARE(output.mid(word(output, 0xfc) + 4, 12), source.mid(word(source, 0xfc) + 4, 12));
         QCOMPARE(column(output, 0x100, 0), 3);
         QCOMPARE(output.mid(word(output, 0x100) + 4, 12), source.mid(word(source, 0x100) + 4, 12));
         QCOMPARE(output.mid(word(output, 0x180), count(source, 17) * 4),
                  source.mid(word(source, 0x180), count(source, 17) * 4));
         QCOMPARE(count(output, 17), count(source, 17) + 3);
-        QByteArray expectedPrefix = source;
-        putWord(expectedPrefix, storage, count(source, 17));
-        putWord(expectedPrefix, 0x100, word(output, 0x100));
-        putWord(expectedPrefix, 0x180, word(output, 0x180));
-        setCount(expectedPrefix, 17, count(source, 17) + 3);
-        QCOMPARE(output.left(source.size()), expectedPrefix);
+        const QString preserved = MocColumnOracle::Preserved(source, output, {0xfc, 0x100, 0x180}, {17});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        QCOMPARE(builder.SourceDigest(), QCryptographicHash::hash(source, QCryptographicHash::Sha256));
+        QVERIFY(builder.BuildOverrides({}, output));
+        QCOMPARE(output, source);
     }
 
     void stableOrderAndMaskCycles()

@@ -4,8 +4,20 @@ project(live2d_tools VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+if(APPLE)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-include>"
+                        "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/std/cmacosqtcompat.h>")
+endif()
 include(CTest)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Core5Compat Test)
+set(LIVE2D_CORE_LIBRARY "$ENV{LIVE2D_CORE_LIBRARY}" CACHE FILEPATH "Cubism Core library compatible with core/Live2DCubismCore.h")
+if(LIVE2D_CORE_LIBRARY)
+    if(NOT EXISTS "${LIVE2D_CORE_LIBRARY}")
+        message(FATAL_ERROR "LIVE2D_CORE_LIBRARY does not exist: ${LIVE2D_CORE_LIBRARY}")
+    endif()
+    add_library(live2d_core UNKNOWN IMPORTED)
+    set_target_properties(live2d_core PROPERTIES IMPORTED_LOCATION "${LIVE2D_CORE_LIBRARY}")
+endif()
 
 if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
     if(CMAKE_OSX_SYSROOT)
@@ -44,6 +56,7 @@ add_library(model_data STATIC
     live2dstruct/cmodeldocument.cpp
     live2dstruct/ckeyformbindinggrid.cpp
     live2dstruct/cmocpreviewbuilder.cpp
+    live2dstruct/cmoclayoutrewriter.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
     std/cmodeljson.cpp
@@ -125,6 +138,12 @@ target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
+    if(TARGET live2d_core)
+        add_executable(real_core_preview_tests tests/real_core_preview_tests.cpp)
+        target_link_libraries(real_core_preview_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(real_core_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME real_core_preview COMMAND real_core_preview_tests)
+    endif()
     add_executable(export_control_tests tests/export_control_tests.cpp)
     target_link_libraries(export_control_tests PRIVATE export_control Qt6::Test)
     add_test(NAME export_control COMMAND export_control_tests)
@@ -205,6 +224,10 @@ if(BUILD_TESTING)
     target_link_libraries(moc_parameter_preview_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_parameter_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME moc_parameter_preview COMMAND moc_parameter_preview_tests)
+    add_executable(moc_layout_rewriter_tests tests/layout_moc_rewriter_tests.cpp)
+    target_link_libraries(moc_layout_rewriter_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(moc_layout_rewriter_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME moc_layout_rewriter COMMAND moc_layout_rewriter_tests)
     target_link_libraries(moc_deformer_preview_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_deformer_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME moc_deformer_preview COMMAND moc_deformer_preview_tests)

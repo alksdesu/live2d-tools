@@ -1,6 +1,7 @@
 #include "live2dstruct/ckeyformbindinggrid.h"
 #include "live2dstruct/cmocpreviewbuilder.h"
 #include "live2dstruct/csectiontable.h"
+#include "moc_column_oracle.h"
 
 #include <QtTest>
 #include <QFile>
@@ -31,6 +32,7 @@ int append(QByteArray& bytes, const QVector<int>& values)
     const int offset = (bytes.size() + 63) & ~63;
     bytes.append(QByteArray(offset + values.size() * 4 - bytes.size(), '\0'));
     for (int index = 0; index < values.size(); ++index) put(bytes, offset + index * 4, values[index]);
+    MocColumnOracle::Pad(bytes);
     return offset;
 }
 void array(QByteArray& bytes, int slot, const QVector<int>& values) { put(bytes, slot, append(bytes, values)); }
@@ -234,7 +236,7 @@ class SharedKeyformPreviewTests : public QObject
 
     static void unchangedPools(const QByteArray& actual, const QByteArray& source)
     {
-        for (const auto& field : {std::pair{0x104, 2}, {0x10c, 2}, {0x110, 2}, {0x114, 2}, {0x118, 2}, {0x11c, 2},
+        for (const auto& field : {std::pair{0x104, 4}, {0x10c, 2}, {0x110, 2}, {0x114, 2}, {0x118, 2}, {0x11c, 2},
              {0x120, 2}, {0x124, 2}, {0x160, 4}, {0x164, 2}, {0x168, 2}, {0x16c, 2}, {0x170, 2}, {0x174, 5},
              {0x178, 18}, {0x1f0, 18}, {0x1f4, 18}, {0x1f8, 18}, {0x1fc, 18}, {0x200, 18}, {0x204, 18}}) {
             if (field.first >= 0x1f0 && count(source, 23) == 0) continue;

@@ -1,6 +1,7 @@
 #include "live2dstruct/cmocpreviewbuilder.h"
 #include "live2dstruct/ckeyformbindinggrid.h"
 #include "live2dstruct/csectiontable.h"
+#include "moc_column_oracle.h"
 #include <QtTest>
 #include <QtEndian>
 #include <QFile>
@@ -204,17 +205,19 @@ private slots:
         QByteArray output;
         QVERIFY2(builder.BuildOverrides(overrides, output, &error), qPrintable(error));
         const quint32 destination = word(output, columnSlots[field]);
-        QVERIFY(destination >= quint32(baseline.size()));
         QCOMPARE(destination % 64, 0u);
-        auto unchangedPrefix = output.left(baseline.size());
-        put(unchangedPrefix, columnSlots[field], word(baseline, columnSlots[field]));
-        QCOMPARE(unchangedPrefix, baseline);
+        const QString preserved = MocColumnOracle::Preserved(baseline, output, {columnSlots[field]});
+        QVERIFY2(preserved.isEmpty(), qPrintable(preserved));
+        const quint32 shared = word(output, sharedSlot);
+        const quint32 columnBytes = quint32(table.parameters.size()) * 4;
+        QVERIFY(destination + columnBytes <= shared || shared + columnBytes <= destination);
         for (int index = 0; index < table.parameters.size(); ++index)
             QCOMPARE(word(output, destination + index * 4), index == row ? fieldValue(edited, field) : word(baseline, word(baseline, columnSlots[field]) + index * 4));
         CReader updatedReader = CReader::FromBytes(output);
         CSectionTable updated(updatedReader);
         QVERIFY(updated.IsValid());
         QVERIFY(metadata(*updated.parameters[row]) == edited);
+        QCOMPARE(builder.SourceDigest(), QCryptographicHash::hash(baseline, QCryptographicHash::Sha256));
         overrides.parameterMetadata[table.parameters[row]->ids] = original;
         QVERIFY(builder.BuildOverrides(overrides, output));
         QCOMPARE(output, baseline);
