@@ -143,6 +143,18 @@ void CubismPose::Delete(CubismPose* pose)
     CSM_DELETE_SELF(CubismPose, pose);
 }
 
+bool CubismPose::CanRebindModel(const CubismModel* previous) const
+{
+    return previous && (!_lastModel || _lastModel == previous);
+}
+
+bool CubismPose::RebindModel(const CubismModel* previous, CubismModel* replacement)
+{
+    if (!replacement || !CanRebindModel(previous)) return false;
+    if (_lastModel) _lastModel = replacement;
+    return true;
+}
+
 void CubismPose::Reset(CubismModel* model)
 {
     csmInt32 beginIndex = 0;

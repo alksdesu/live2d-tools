@@ -31,6 +31,8 @@ public:
     const QMap<int, QString>& GetTexturePaths() const { return m_texturePaths; }
     const QByteArray& GetSourceMocBytes() const { return m_sourceMocBytes; }
     const QByteArray& GetSourceMocDigest() const { return m_sourceMocDigest; }
+    const QByteArray& GetPreviewMocDigest() const { return m_previewMocDigest; }
+    bool ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error = nullptr);
     void CommitTextureCache() { m_pendingTextureIds.clear(); m_textureCacheCommitted = true; }
     void Update();
     bool SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline = nullptr,
@@ -152,6 +154,7 @@ private:
     QMap<int, QString> m_texturePaths;
     QByteArray m_sourceMocBytes;
     QByteArray m_sourceMocDigest;
+    QByteArray m_previewMocDigest;
     QSet<Csm::csmUint32> m_pendingTextureIds;
     bool m_textureCacheCommitted = false;
     QMap<QString,int> m_mapParaToIndex;

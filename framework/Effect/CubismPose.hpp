@@ -94,6 +94,9 @@ public:
      */
     void                UpdateParameters(CubismModel* model, csmFloat32 deltaTimeSeconds);
 
+    bool                CanRebindModel(const CubismModel* previous) const;
+    bool                RebindModel(const CubismModel* previous, CubismModel* replacement);
+
     /**
      * @brief 表示を初期化
      *

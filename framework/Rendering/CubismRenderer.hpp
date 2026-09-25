@@ -111,6 +111,7 @@ public:
      *
      */
     csmBool DrawModel();
+    csmBool IsDrawing() const { return _drawing; }
 
     /**
      * @brief   Model-View-Projection 行列をセットする<br>
@@ -218,7 +219,7 @@ public:
     /**
      * @brief   マスク描画の方式を取得する。
      */
-    csmBool IsUsingHighPrecisionMask();
+    csmBool IsUsingHighPrecisionMask() const;
 
 protected:
     /**
@@ -261,6 +262,7 @@ private:
     CubismModel*        _model;                 ///< レンダリング対象のモデル
 
     csmBool             _useHighPrecisionMask;  ///< falseの場合、マスクを纏めて描画する trueの場合、マスクはパーツ描画ごとに書き直す
+    csmBool             _drawing = false;
 };
 
 

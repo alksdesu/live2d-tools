@@ -13,6 +13,9 @@
 #include <QMap>
 #include <QHash>
 
+class ModelRuntimeStateTests;
+class CubismRendererPreparationTests;
+
 namespace live2dstruct {
 struct CDrawableOrderGroup;
 }
@@ -25,11 +28,16 @@ class CubismMoc;
 class CubismModel
 {
     friend class CubismMoc;
+    friend class ::ModelRuntimeStateTests;
+    friend class ::CubismRendererPreparationTests;
 public:
 
     void InitMesh();
     void DrawMesh(const QString& drawKey,const QMatrix4x4& mvp);//绘制网格，使用mvp矩阵
     CMeshMap* GetMeshMap(){
+        return &m_vetDrawMesh;
+    }
+    const CMeshMap* GetMeshMap() const {
         return &m_vetDrawMesh;
     }
 
@@ -82,6 +90,10 @@ public:
 
     };  // PartColorData
 
+
+    bool IsCompatibleForKeyformUpdate(const CubismModel& source, QString* error = nullptr) const;
+    bool CopyRuntimeStateFrom(const CubismModel& source, QString* error = nullptr);
+    bool HasFiniteDrawableState(QString* error = nullptr) const;
 
     void    Update() const;
     csmFloat32  GetCanvasWidthPixel() const;
@@ -529,14 +541,14 @@ private:
         csmVector<CubismModel::PartColorData>& partColors,
         csmVector <CubismModel::DrawableColorData>& drawableColors);
 
-    csmMap<csmInt32, csmFloat32>        _notExistPartOpacities;             ///< 存在していないパーツの不透明度のリスト
-    csmMap<CubismIdHandle, csmInt32>   _notExistPartId;                    ///< 存在していないパーツIDのリスト
+    QMap<csmInt32, csmFloat32>        _notExistPartOpacities;             ///< 存在していないパーツの不透明度のリスト
+    QMap<CubismIdHandle, csmInt32>   _notExistPartId;                    ///< 存在していないパーツIDのリスト
 
-    csmMap<csmInt32, csmFloat32>        _notExistParameterValues;           ///< 存在していないパラメータの値のリスト
+    QMap<csmInt32, csmFloat32>        _notExistParameterValues;           ///< 存在していないパラメータの値のリスト
 
-    csmMap<CubismIdHandle, csmInt32>   _notExistParameterId;
+    QMap<CubismIdHandle, csmInt32>   _notExistParameterId;
 
-    csmVector<csmFloat32>   _savedParameters;                   ///< 保存されたパラメータ
+    QVector<csmFloat32>   _savedParameters;                   ///< 保存されたパラメータ
 
     Core::csmModel*     _model;                                 ///< モデル
 

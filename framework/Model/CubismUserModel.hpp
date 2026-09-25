@@ -9,6 +9,7 @@
 #include "framework/Math/CubismTargetPoint.hpp"
 #include "framework/Model/CubismMoc.hpp"
 #include "framework/Model/CubismModel.hpp"
+#include "framework/Model/CubismModelReplacement.hpp"
 #include "framework/Motion/CubismMotionManager.hpp"
 #include "framework/Motion/CubismExpressionMotion.hpp"
 #include "framework/Physics/CubismPhysics.hpp"
@@ -127,6 +128,10 @@ public:
 
     static void   CubismDefaultMotionEventCallback(const CubismMotionQueueManager* caller, const csmString& eventValue, void* customData);
 protected:
+    bool ReplaceModel(const csmByte* bytes, csmSizeInt size,
+                      const CubismModelReplacement::RendererPreparation& prepareRenderer,
+                      QString* error = nullptr);
+
     CubismMoc*              _moc;                       ///< Mocデータ
     CubismModel*            _model;                     ///< Modelインスタンス
 

@@ -121,7 +121,37 @@ bool CDrawMesh::SetIndices(const QVector<quint16>& indices)
 
 bool CDrawMesh::SelectNearestPoint(const QVector2D& position, float radius)
 {
-    return mesh && mesh->SelectNearestPoint(position, radius);
+    const bool selected = mesh && mesh->SelectNearestPoint(position, radius);
+    RefreshSelectedPoints();
+    return selected;
+}
+
+bool CDrawMesh::CanCopyEditorStateFrom(const CDrawMesh& source) const
+{
+    if (!mesh || !source.mesh || mesh->GetEBOSize() != source.mesh->GetEBOSize()) return false;
+    const auto& points = mesh->GetWolrd();
+    const auto& sourcePoints = source.mesh->GetWolrd();
+    if (points.size() != sourcePoints.size()) return false;
+    for (size_t index = 0; index < points.size(); ++index)
+        if (!points[index] || !sourcePoints[index]) return false;
+    return true;
+}
+
+bool CDrawMesh::CopyEditorStateFrom(const CDrawMesh& source)
+{
+    if (!CanCopyEditorStateFrom(source)) return false;
+    const auto& points = mesh->GetWolrd();
+    const auto& sourcePoints = source.mesh->GetWolrd();
+    std::vector<CPoint*> selected;
+    selected.reserve(points.size());
+    for (size_t index = 0; index < points.size(); ++index)
+        if (sourcePoints[index]->GetIsSelect()) selected.push_back(points[index]);
+    for (size_t index = 0; index < points.size(); ++index)
+        points[index]->SetIsSelect(sourcePoints[index]->GetIsSelect());
+    IsDraw = source.IsDraw;
+    IsOver = source.IsOver;
+    m_vetSelectPoint.swap(selected);
+    return true;
 }
 
 void CDrawMesh::MoveSelected(const QVector2D& delta)
@@ -137,31 +167,29 @@ QVector<float> CDrawMesh::Positions() const
 //世界坐标系
 void CDrawMesh::SetSelect(const QRectF &rect)
 {
-    m_vetSelectPoint.clear();
-    std::vector<CPoint*>& point = mesh->GetCpoint();
-    for(int i = 0 ;i < point.size() ;i++){
-        if(rect.contains(point[i]->GetPoint().toPointF()) ){
-            point[i]->SetIsSelect(true);
-            m_vetSelectPoint.push_back(point[i]);//这里获取拷贝
-        }else{
-            if(point[i]->GetIsSelect()){
-                point[i]->SetIsSelect(false);
-            };
-        }
-    }
+    if (!mesh) return;
+    for (auto* point : mesh->GetWolrd())
+        if (point) point->SetIsSelect(rect.contains(point->GetPoint().toPointF()));
+    RefreshSelectedPoints();
 }
 
 void CDrawMesh::CancelSelect()
 {
-    std::vector<CPoint*>& point = mesh->GetCpoint();
-    for(int i = 0 ;i < point.size() ;i++){
-        point[i]->SetIsSelect(false);
-    }
+    if (mesh) for (auto* point : mesh->GetWolrd())
+        if (point) point->SetIsSelect(false);
     m_vetSelectPoint.clear();
+}
+
+void CDrawMesh::RefreshSelectedPoints() const
+{
+    m_vetSelectPoint.clear();
+    if (mesh) for (auto* point : mesh->GetWolrd())
+        if (point && point->GetIsSelect()) m_vetSelectPoint.push_back(point);
 }
 
 const std::vector<CPoint*> &CDrawMesh::GetSelectPoint() const
 {
+    RefreshSelectedPoints();
     return m_vetSelectPoint;//应该是选择的点进行移动
 }
 

@@ -17,6 +17,8 @@
 #include "opengl/cglrenderstate.h"
 #include "opengl/cglmeshbuffer.h"
 
+class CubismRendererPreparationTests;
+
 namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
 
 //  前方宣言
@@ -85,6 +87,7 @@ class CubismRenderer_OpenGLES2 : public  CubismRenderer,  QOpenGLFunctions_3_3_C
     friend class CubismRenderer;
     friend class CubismClippingManager_OpenGLES2;
     friend class CubismShader_OpenGLES2;
+    friend class ::CubismRendererPreparationTests;
 
 public:
     bool setGlOwningContext(const QOpenGLContext *context){
@@ -103,6 +106,9 @@ public:
     csmBool Initialize(Framework::CubismModel* model) override;
 
     csmBool Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount) override;
+
+    bool PrepareModelReplacement(CubismModel* model, const CubismRenderer_OpenGLES2& previous,
+                                 QString* error = nullptr);
 
     /**
      * @brief   OpenGLテクスチャのバインド処理<br>
@@ -201,6 +207,13 @@ private:
     CubismRenderer_OpenGLES2(const CubismRenderer_OpenGLES2&);
     CubismRenderer_OpenGLES2& operator=(const CubismRenderer_OpenGLES2&);
     static void DoStaticRelease();
+    struct PreparedMaskResources;
+    bool PrepareMaskResources(CubismModel& model, csmInt32 count, const CubismVector2& size,
+                              PreparedMaskResources& resources, QString* error);
+    bool InitializeResources(CubismModel* model, csmInt32 maskBufferCount,
+                             const CubismVector2& maskSize, bool preuploadGeometry, QString* error);
+    bool UploadDrawableGeometry(const CubismModel& model, csmInt32 index, const float* positions,
+                                std::unique_ptr<CGlMeshBuffer>& mesh, QString* error);
     void PreDraw();
     void PostDraw(){};
     csmBool SaveProfile() override;

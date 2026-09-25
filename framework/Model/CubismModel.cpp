@@ -10,8 +10,271 @@
 #include "framework/Id/CubismId.hpp"
 #include "framework/Id/CubismIdManager.hpp"
 #include "live2dstruct/cdraworder.h"
+#include <QSet>
+#include <QByteArray>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <utility>
 
 namespace Live2D { namespace Cubism { namespace Framework {
+
+namespace {
+constexpr int MaximumRuntimeCount = 1000000;
+constexpr int MaximumRuntimeIndices = 3000000;
+
+bool runtimeStateError(QString* error, const QString& message)
+{
+    if (error) *error = message;
+    return false;
+}
+
+bool validRuntimeCount(int count, int maximum = MaximumRuntimeCount)
+{
+    return count >= 0 && count <= maximum;
+}
+
+template<typename T>
+bool equalRuntimeValue(T left, T right) { return left == right; }
+
+bool equalRuntimeValue(float left, float right)
+{
+    return std::isfinite(left) && std::isfinite(right) && left == right;
+}
+
+bool equalRuntimeValue(const char* left, const char* right)
+{
+    return left && right && left[0] && right[0] && std::strcmp(left, right) == 0;
+}
+
+bool equalRuntimeValue(Core::csmVector2 left, Core::csmVector2 right)
+{
+    return equalRuntimeValue(left.X, right.X) && equalRuntimeValue(left.Y, right.Y);
+}
+
+template<typename T>
+bool equalRuntimeArray(const T* left, const T* right, int count)
+{
+    if (count && (!left || !right)) return false;
+    for (int i = 0; i < count; ++i)
+        if (!equalRuntimeValue(left[i], right[i])) return false;
+    return true;
+}
+
+bool finiteRuntimeColor(Core::csmVector4 color)
+{
+    return std::isfinite(color.X) && std::isfinite(color.Y) &&
+           std::isfinite(color.Z) && std::isfinite(color.W);
+}
+
+bool finiteRuntimeColor(const Rendering::CubismRenderer::CubismTextureColor& color)
+{
+    return std::isfinite(color.R) && std::isfinite(color.G) &&
+           std::isfinite(color.B) && std::isfinite(color.A);
+}
+
+bool uniqueRuntimeIds(const char* const* ids, int count)
+{
+    QSet<QByteArray> seen;
+    for (int index = 0; index < count; ++index) {
+        const QByteArray id(ids[index]);
+        if (seen.contains(id)) return false;
+        seen.insert(id);
+    }
+    return true;
+}
+}
+
+bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QString* error) const
+{
+    if (error) error->clear();
+    if (!_model || !source._model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
+    const int parameters = GetParameterCount(), parts = GetPartCount(), drawables = GetDrawableCount();
+    if (!validRuntimeCount(parameters) || !validRuntimeCount(parts) || !validRuntimeCount(drawables) ||
+        parameters != source.GetParameterCount() || parts != source.GetPartCount() || drawables != source.GetDrawableCount())
+        return runtimeStateError(error, QStringLiteral("Parameter, part or drawable count differs or is invalid"));
+    if (_parameterIds.GetSize() != parameters || source._parameterIds.GetSize() != parameters ||
+        _partIds.GetSize() != parts || source._partIds.GetSize() != parts ||
+        _drawableIds.GetSize() != drawables || source._drawableIds.GetSize() != drawables ||
+        (parameters && (!_parameterValues || !source._parameterValues)) ||
+        (parts && (!_partOpacities || !source._partOpacities)))
+        return runtimeStateError(error, QStringLiteral("Model runtime arrays are not initialized"));
+    if (!equalRuntimeArray(Core::csmGetParameterIds(_model), Core::csmGetParameterIds(source._model), parameters) ||
+        !equalRuntimeArray(Core::csmGetPartIds(_model), Core::csmGetPartIds(source._model), parts) ||
+        !equalRuntimeArray(Core::csmGetDrawableIds(_model), Core::csmGetDrawableIds(source._model), drawables))
+        return runtimeStateError(error, QStringLiteral("Ordered parameter, part or drawable IDs differ"));
+    if (!uniqueRuntimeIds(Core::csmGetParameterIds(_model), parameters) ||
+        !uniqueRuntimeIds(Core::csmGetPartIds(_model), parts) ||
+        !uniqueRuntimeIds(Core::csmGetDrawableIds(_model), drawables))
+        return runtimeStateError(error, QStringLiteral("Duplicate parameter, part or drawable IDs"));
+
+    Core::csmVector2 size{}, origin{}, sourceSize{}, sourceOrigin{};
+    float ppu = 0, sourcePpu = 0;
+    Core::csmReadCanvasInfo(_model, &size, &origin, &ppu);
+    Core::csmReadCanvasInfo(source._model, &sourceSize, &sourceOrigin, &sourcePpu);
+    if (!equalRuntimeValue(size, sourceSize) || !equalRuntimeValue(origin, sourceOrigin) ||
+        !equalRuntimeValue(ppu, sourcePpu) || size.X <= 0 || size.Y <= 0 || ppu <= 0)
+        return runtimeStateError(error, QStringLiteral("Canvas definition differs or is invalid"));
+
+    const auto* minimum = Core::csmGetParameterMinimumValues(_model);
+    const auto* maximum = Core::csmGetParameterMaximumValues(_model);
+    const auto* defaults = Core::csmGetParameterDefaultValues(_model);
+    const auto* keyCounts = Core::csmGetParameterKeyCounts(_model);
+    if (!equalRuntimeArray(minimum, Core::csmGetParameterMinimumValues(source._model), parameters) ||
+        !equalRuntimeArray(maximum, Core::csmGetParameterMaximumValues(source._model), parameters) ||
+        !equalRuntimeArray(defaults, Core::csmGetParameterDefaultValues(source._model), parameters) ||
+        !equalRuntimeArray(Core::csmGetParameterTypes(_model), Core::csmGetParameterTypes(source._model), parameters) ||
+        !equalRuntimeArray(keyCounts, Core::csmGetParameterKeyCounts(source._model), parameters))
+        return runtimeStateError(error, QStringLiteral("Parameter definition differs or is invalid"));
+    const auto* keys = Core::csmGetParameterKeyValues(_model);
+    const auto* sourceKeys = Core::csmGetParameterKeyValues(source._model);
+    for (int i = 0; i < parameters; ++i) {
+        if (minimum[i] > defaults[i] || defaults[i] > maximum[i] || !validRuntimeCount(keyCounts[i]) ||
+            (keyCounts[i] && (!keys || !sourceKeys)) ||
+            (keyCounts[i] && !equalRuntimeArray(keys[i], sourceKeys[i], keyCounts[i])))
+            return runtimeStateError(error, QStringLiteral("Parameter %1 key values or range differ or are invalid").arg(i));
+    }
+
+    const auto* partParents = Core::csmGetPartParentPartIndices(_model);
+    const auto* drawableParents = Core::csmGetDrawableParentPartIndices(_model);
+    const auto* vertices = Core::csmGetDrawableVertexCounts(_model);
+    const auto* indexCounts = Core::csmGetDrawableIndexCounts(_model);
+    const auto* maskCounts = Core::csmGetDrawableMaskCounts(_model);
+    const auto* textures = Core::csmGetDrawableTextureIndices(_model);
+    if (!equalRuntimeArray(partParents, Core::csmGetPartParentPartIndices(source._model), parts) ||
+        !equalRuntimeArray(drawableParents, Core::csmGetDrawableParentPartIndices(source._model), drawables) ||
+        !equalRuntimeArray(vertices, Core::csmGetDrawableVertexCounts(source._model), drawables) ||
+        !equalRuntimeArray(indexCounts, Core::csmGetDrawableIndexCounts(source._model), drawables) ||
+        !equalRuntimeArray(maskCounts, Core::csmGetDrawableMaskCounts(source._model), drawables) ||
+        !equalRuntimeArray(textures, Core::csmGetDrawableTextureIndices(source._model), drawables) ||
+        !equalRuntimeArray(Core::csmGetDrawableConstantFlags(_model), Core::csmGetDrawableConstantFlags(source._model), drawables))
+        return runtimeStateError(error, QStringLiteral("Part hierarchy or drawable definition differs or is invalid"));
+    for (int i = 0; i < parts; ++i)
+        if (partParents[i] < -1 || partParents[i] >= parts || partParents[i] == i)
+            return runtimeStateError(error, QStringLiteral("Part %1 parent is invalid").arg(i));
+    const auto* uvs = Core::csmGetDrawableVertexUvs(_model);
+    const auto* sourceUvs = Core::csmGetDrawableVertexUvs(source._model);
+    const auto* indices = Core::csmGetDrawableIndices(_model);
+    const auto* sourceIndices = Core::csmGetDrawableIndices(source._model);
+    const auto* masks = Core::csmGetDrawableMasks(_model);
+    const auto* sourceMasks = Core::csmGetDrawableMasks(source._model);
+    for (int i = 0; i < drawables; ++i) {
+        if (!validRuntimeCount(vertices[i]) || !validRuntimeCount(indexCounts[i], MaximumRuntimeIndices) ||
+            indexCounts[i] % 3 || !validRuntimeCount(maskCounts[i], drawables) || textures[i] < 0 ||
+            drawableParents[i] < -1 || drawableParents[i] >= parts ||
+            (vertices[i] && (!uvs || !sourceUvs || !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i]))) ||
+            (indexCounts[i] && (!indices || !sourceIndices || !equalRuntimeArray(indices[i], sourceIndices[i], indexCounts[i]))) ||
+            (maskCounts[i] && (!masks || !sourceMasks || !equalRuntimeArray(masks[i], sourceMasks[i], maskCounts[i]))))
+            return runtimeStateError(error, QStringLiteral("Drawable %1 UVs, topology or masks differ or are invalid").arg(i));
+        for (int j = 0; j < indexCounts[i]; ++j)
+            if (indices[i][j] >= vertices[i])
+                return runtimeStateError(error, QStringLiteral("Drawable %1 has an invalid vertex index").arg(i));
+        for (int j = 0; j < maskCounts[i]; ++j)
+            if (masks[i][j] < 0 || masks[i][j] >= drawables)
+                return runtimeStateError(error, QStringLiteral("Drawable %1 has an invalid mask index").arg(i));
+    }
+    return true;
+}
+
+bool CubismModel::HasFiniteDrawableState(QString* error) const
+{
+    if (error) error->clear();
+    if (!_model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
+    const int count = GetDrawableCount();
+    if (!validRuntimeCount(count)) return runtimeStateError(error, QStringLiteral("Invalid drawable count"));
+    const auto* counts = Core::csmGetDrawableVertexCounts(_model);
+    const auto* positions = Core::csmGetDrawableVertexPositions(_model);
+    const auto* uvs = Core::csmGetDrawableVertexUvs(_model);
+    const auto* opacities = Core::csmGetDrawableOpacities(_model);
+    const auto* multiply = Core::csmGetDrawableMultiplyColors(_model);
+    const auto* screen = Core::csmGetDrawableScreenColors(_model);
+    if (count && (!counts || !opacities || !multiply || !screen))
+        return runtimeStateError(error, QStringLiteral("Missing drawable state arrays"));
+    for (int i = 0; i < count; ++i) {
+        if (!validRuntimeCount(counts[i]) || !std::isfinite(opacities[i]) ||
+            !finiteRuntimeColor(multiply[i]) || !finiteRuntimeColor(screen[i]) ||
+            (counts[i] && (!positions || !uvs || !positions[i] || !uvs[i])))
+            return runtimeStateError(error, QStringLiteral("Drawable %1 state is invalid").arg(i));
+        for (int j = 0; j < counts[i]; ++j)
+            if (!std::isfinite(positions[i][j].X) || !std::isfinite(positions[i][j].Y) ||
+                !std::isfinite(uvs[i][j].X) || !std::isfinite(uvs[i][j].Y))
+                return runtimeStateError(error, QStringLiteral("Drawable %1 vertex %2 is non-finite").arg(i).arg(j));
+    }
+    return true;
+}
+
+bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, QString* error)
+{
+    if (!IsCompatibleForKeyformUpdate(source, error)) return false;
+    const int parameters = GetParameterCount(), parts = GetPartCount(), drawables = GetDrawableCount();
+    const auto arraysMatch = [parts, drawables](const CubismModel& model) {
+        return model._userMultiplyColors.GetSize() == drawables && model._userScreenColors.GetSize() == drawables &&
+               model._userCullings.GetSize() == drawables && model._userPartMultiplyColors.GetSize() == parts &&
+               model._userPartScreenColors.GetSize() == parts;
+    };
+    if (!arraysMatch(*this) || !arraysMatch(source) || source._savedParameters.size() > parameters ||
+        !std::isfinite(source._modelOpacity))
+        return runtimeStateError(error, QStringLiteral("Runtime override arrays or model opacity are invalid"));
+    for (int i = 0; i < parameters; ++i)
+        if (!std::isfinite(source._parameterValues[i]))
+            return runtimeStateError(error, QStringLiteral("Parameter %1 current value is non-finite").arg(i));
+    for (float value : source._savedParameters)
+        if (!std::isfinite(value)) return runtimeStateError(error, QStringLiteral("Saved parameter value is non-finite"));
+    for (int i = 0; i < parts; ++i)
+        if (!std::isfinite(source._partOpacities[i]) || !finiteRuntimeColor(source._userPartMultiplyColors[i].Color) ||
+            !finiteRuntimeColor(source._userPartScreenColors[i].Color))
+            return runtimeStateError(error, QStringLiteral("Part %1 user state is non-finite").arg(i));
+    for (int i = 0; i < drawables; ++i) {
+        if (!finiteRuntimeColor(source._userMultiplyColors[i].Color) || !finiteRuntimeColor(source._userScreenColors[i].Color))
+            return runtimeStateError(error, QStringLiteral("Drawable %1 user color is non-finite").arg(i));
+        const auto* indices = source._drawableIndexOverrides.Find(i);
+        if (indices && !live2dstruct::CMeshTopology::IsValid(*indices, GetDrawableVertexCount(i)))
+            return runtimeStateError(error, QStringLiteral("Drawable %1 index override is invalid").arg(i));
+    }
+    const auto virtualStateValid = [](const auto& ids, const auto& values, int count) {
+        if (ids.size() != values.size() || ids.size() > std::numeric_limits<int>::max() - count) return false;
+        QSet<int> indices;
+        for (auto it = ids.cbegin(); it != ids.cend(); ++it) {
+            if (!it.key() || it.value() < count || it.value() >= count + ids.size() ||
+                indices.contains(it.value()) || !values.contains(it.value()) || !std::isfinite(values.value(it.value()))) return false;
+            indices.insert(it.value());
+        }
+        return true;
+    };
+    if (!virtualStateValid(source._notExistParameterId, source._notExistParameterValues, parameters) ||
+        !virtualStateValid(source._notExistPartId, source._notExistPartOpacities, parts))
+        return runtimeStateError(error, QStringLiteral("Virtual parameter or part state is invalid"));
+
+    auto parameterIds = source._notExistParameterId;
+    auto parameterValues = source._notExistParameterValues;
+    auto partIds = source._notExistPartId;
+    auto partOpacities = source._notExistPartOpacities;
+    auto savedParameters = source._savedParameters;
+    auto indexOverrides = source._drawableIndexOverrides;
+    _notExistParameterId.swap(parameterIds);
+    _notExistParameterValues.swap(parameterValues);
+    _notExistPartId.swap(partIds);
+    _notExistPartOpacities.swap(partOpacities);
+    _savedParameters.swap(savedParameters);
+    std::swap(_drawableIndexOverrides, indexOverrides);
+    for (int i = 0; i < parameters; ++i) _parameterValues[i] = source._parameterValues[i];
+    for (int i = 0; i < parts; ++i) {
+        _partOpacities[i] = source._partOpacities[i];
+        _userPartMultiplyColors[i] = source._userPartMultiplyColors[i];
+        _userPartScreenColors[i] = source._userPartScreenColors[i];
+    }
+    for (int i = 0; i < drawables; ++i) {
+        _userMultiplyColors[i] = source._userMultiplyColors[i];
+        _userScreenColors[i] = source._userScreenColors[i];
+        _userCullings[i] = source._userCullings[i];
+    }
+    _isOverwrittenModelMultiplyColors = source._isOverwrittenModelMultiplyColors;
+    _isOverwrittenModelScreenColors = source._isOverwrittenModelScreenColors;
+    _isOverwrittenCullings = source._isOverwrittenCullings;
+    _modelOpacity = source._modelOpacity;
+    return true;
+}
 
 static csmInt32 IsBitSet(const csmUint8 byte, const csmUint8 mask)
 {
@@ -99,8 +362,9 @@ void CubismModel::InitMesh()
             }
         }
         if (!indicesValid) continue;
-        CDrawMesh* drawMesh = new CDrawMesh(indexCount,indexArray,drawableVertexCount*2,uvArray,vertexArray);
-        m_vetDrawMesh.insert(drawName,drawMesh);
+        auto drawMesh = std::make_unique<CDrawMesh>(indexCount,indexArray,drawableVertexCount*2,uvArray,vertexArray);
+        m_vetDrawMesh.insert(drawName,drawMesh.get());
+        drawMesh.release();
     }
 
 
@@ -146,7 +410,7 @@ void CubismModel::SetPartOpacity(CubismIdHandle partId, csmFloat32 opacity)
 
 void CubismModel::SetPartOpacity(csmInt32 partIndex, csmFloat32 opacity)
 {
-    if (_notExistPartOpacities.IsExist(partIndex))
+    if (_notExistPartOpacities.contains(partIndex))
     {
         _notExistPartOpacities[partIndex] = opacity;
         return;
@@ -173,7 +437,7 @@ csmFloat32 CubismModel::GetPartOpacity(CubismIdHandle partId)
 
 csmFloat32 CubismModel::GetPartOpacity(csmInt32 partIndex)
 {
-    if (_notExistPartOpacities.IsExist(partIndex))
+    if (_notExistPartOpacities.contains(partIndex))
     {
         // モデルに存在しないパーツIDの場合、非存在パーツリストから不透明度を返す
         return _notExistPartOpacities[partIndex];
@@ -227,16 +491,16 @@ csmInt32 CubismModel::GetParameterIndex(CubismIdHandle parameterId)
     }
 
     // モデルに存在していない場合、非存在パラメータIDリスト内を検索し、そのインデックスを返す
-    if (_notExistParameterId.IsExist(parameterId))
+    if (_notExistParameterId.contains(parameterId))
     {
         return _notExistParameterId[parameterId];
     }
 
     // 非存在パラメータIDリストにない場合、新しく要素を追加する
-    parameterIndex = Core::csmGetParameterCount(_model) + _notExistParameterId.GetSize();
+    parameterIndex = Core::csmGetParameterCount(_model) + _notExistParameterId.size();
 
     _notExistParameterId[parameterId] = parameterIndex;
-    _notExistParameterValues.AppendKey(parameterIndex);
+    _notExistParameterValues.insert(parameterIndex, 0.0f);
 
     return parameterIndex;
 }
@@ -255,7 +519,7 @@ const CubismIdHandle CubismModel::GetParameterId(csmUint32 parameterIndex) const
 
 csmFloat32 CubismModel::GetParameterValue(csmInt32 parameterIndex)
 {
-    if (_notExistParameterValues.IsExist(parameterIndex))
+    if (_notExistParameterValues.contains(parameterIndex))
     {
         return _notExistParameterValues[parameterIndex];
     }
@@ -268,7 +532,7 @@ csmFloat32 CubismModel::GetParameterValue(csmInt32 parameterIndex)
 
 void CubismModel::SetParameterValue(csmInt32 parameterIndex, csmFloat32 value, csmFloat32 weight)
 {
-    if (_notExistParameterValues.IsExist(parameterIndex))
+    if (_notExistParameterValues.contains(parameterIndex))
     {
         _notExistParameterValues[parameterIndex] = (weight == 1)
                                                          ? value
@@ -473,16 +737,16 @@ csmInt32 CubismModel::GetPartIndex(CubismIdHandle partId)
     const csmInt32 partCount = Core::csmGetPartCount(_model);
 
     // モデルに存在していない場合、非存在パーツIDリスト内にあるかを検索し、そのインデックスを返す
-    if (_notExistPartId.IsExist(partId))
+    if (_notExistPartId.contains(partId))
     {
         return _notExistPartId[partId];
     }
 
     // 非存在パーツIDリストにない場合、新しく要素を追加する
-    partIndex = partCount + _notExistPartId.GetSize();
+    partIndex = partCount + _notExistPartId.size();
 
     _notExistPartId[partId] = partIndex;
-    _notExistPartOpacities.AppendKey(partIndex);
+    _notExistPartOpacities.insert(partIndex, 0.0f);
 
     return partIndex;
 }
@@ -834,7 +1098,7 @@ const csmInt32* CubismModel::GetDrawableMaskCounts() const
 void CubismModel::LoadParameters()
 {
     csmInt32       parameterCount = Core::csmGetParameterCount(_model);
-    const csmInt32 savedParameterCount = static_cast<csmInt32>(_savedParameters.GetSize());
+    const csmInt32 savedParameterCount = static_cast<csmInt32>(_savedParameters.size());
 
     if (parameterCount > savedParameterCount)
     {
@@ -850,7 +1114,7 @@ void CubismModel::LoadParameters()
 void CubismModel::SaveParameters()
 {
     const csmInt32 parameterCount = Core::csmGetParameterCount(_model);
-    const csmInt32 savedParameterCount = static_cast<csmInt32>(_savedParameters.GetSize());
+    const csmInt32 savedParameterCount = static_cast<csmInt32>(_savedParameters.size());
 
     for (csmInt32 i = 0; i < parameterCount; ++i)
     {
@@ -860,7 +1124,7 @@ void CubismModel::SaveParameters()
         }
         else
         {
-            _savedParameters.PushBack(_parameterValues[i], false);
+            _savedParameters.append(_parameterValues[i]);
         }
     }
 }

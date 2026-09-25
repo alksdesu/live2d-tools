@@ -9,6 +9,7 @@
 #include "framework/Motion/CubismMotion.hpp"
 #include "framework/Physics/CubismPhysics.hpp"
 #include <memory>
+#include <QScopedValueRollback>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -111,6 +112,33 @@ csmBool CubismUserModel::LoadModel(const csmByte* buffer, csmSizeInt size, csmBo
     _moc = moc.release();
     _model = model.release();
     _modelMatrix = matrix.release();
+    return true;
+}
+
+bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
+                                 const CubismModelReplacement::RendererPreparation& prepareRenderer,
+                                 QString* error)
+{
+    if (error) error->clear();
+    if (_updating || !_moc || !_model || !_renderer || !_modelMatrix ||
+        (_pose && !_pose->CanRebindModel(_model))) {
+        if (error) *error = QStringLiteral("当前模型状态不允许替换预览");
+        return false;
+    }
+    const QScopedValueRollback<csmBool> updating(_updating, true);
+    CubismModelReplacement candidate;
+    if (!candidate.Prepare(bytes, size, *_moc, *_model, *_renderer, prepareRenderer, error)) return false;
+    CubismModel* previous = _model;
+    CubismModel* replacement = candidate.GetModel();
+    if (_pose && !_pose->RebindModel(previous, replacement)) {
+        if (error) *error = QStringLiteral("Pose 无法保持当前状态");
+        return false;
+    }
+    if (!candidate.Commit(_moc, _model, _renderer)) {
+        if (_pose) _pose->RebindModel(replacement, previous);
+        if (error) *error = QStringLiteral("预览源模型在准备期间发生变化");
+        return false;
+    }
     return true;
 }
 

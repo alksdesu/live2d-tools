@@ -4,6 +4,8 @@ target_sources(${LIB_NAME}
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismMoc.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModel.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelReplacement.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelReplacement.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelUserData.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelUserData.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelUserDataJson.cpp

@@ -7,6 +7,7 @@
 
 #include "LAppModel.hpp"
 #include <QCryptographicHash>
+#include <limits>
 #include "opengl/cmeshbounds.h"
 #include "live2dstruct/cmotionblendpreview.h"
 
@@ -178,6 +179,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
             if (!loaded) return false;
             m_sourceMocBytes = QByteArray(reinterpret_cast<const char*>(buffer), size);
             m_sourceMocDigest = QCryptographicHash::hash(m_sourceMocBytes, QCryptographicHash::Sha256);
+            m_previewMocDigest = m_sourceMocDigest;
         }
         else
         {
@@ -863,6 +865,37 @@ void LAppModel::SetRandomExpression()
         }
         i++;
     }
+}
+
+bool LAppModel::ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error)
+{
+    if (error) error->clear();
+    if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
+        bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
+        if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
+        return false;
+    }
+    const QByteArray digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+    if (digest == m_previewMocDigest) return true;
+    auto* previous = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    auto* delegate = LAppDelegate::GetInstance();
+    if (!previous || delegate->IsOffScreen() || delegate->m_isDraggingDeformer ||
+        !previous->setGlOwningContext(delegate->getGlOwningContext())) {
+        if (error) *error = QStringLiteral("请在模型预览就绪且拖拽、导出结束后更新关键形");
+        return false;
+    }
+    const auto prepare = [](Rendering::CubismRenderer* renderer, CubismModel* model,
+                            const Rendering::CubismRenderer& source, QString* preparationError) {
+        auto* candidate = dynamic_cast<Rendering::CubismRenderer_OpenGLES2*>(renderer);
+        const auto* previous = dynamic_cast<const Rendering::CubismRenderer_OpenGLES2*>(&source);
+        return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
+    };
+    if (!ReplaceModel(reinterpret_cast<const csmByte*>(bytes.constData()), csmSizeInt(bytes.size()), prepare, error))
+        return false;
+    m_previewMocDigest = digest;
+    delegate->m_savedVertices.clear();
+    delegate->m_meshOverlayPositions.clear();
+    return true;
 }
 
 bool LAppModel::ReloadRenderer()

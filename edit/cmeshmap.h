@@ -17,6 +17,7 @@ public:
     bool SetMeshIndices(const QString& name, const QVector<quint16>& indices);
     bool SelectNearestPoint(const QString& name, const QVector2D& position, float radius);
     bool MoveSelected(const QString& name, const QVector2D& delta);
+    bool CopyEditorStateFrom(const CMeshMap& source);
     QVector<float> MeshPositions(const QString& name) const;
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
@@ -26,12 +27,14 @@ public:
     QString SetOver(const QPointF& point,bool IsOver);
 
     CDrawMesh* GetDrawMesh(const QString& name){
-        return m_vetDrawMesh[name];
+        return m_vetDrawMesh.value(name, nullptr);
     }
+    const CDrawMesh* GetDrawMesh(const QString& name) const { return m_vetDrawMesh.value(name, nullptr); }
 
     QMap<QString,CDrawMesh*>& GetMapMesh(){
         return m_vetDrawMesh;
     }
+    const QMap<QString, CDrawMesh*>& GetMapMesh() const { return m_vetDrawMesh; }
 private:
     QMap<QString,CDrawMesh*>  m_vetDrawMesh;
     QVector<QString> m_readerSort;//绘制顺序

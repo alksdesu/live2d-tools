@@ -42,6 +42,18 @@ bool CMeshMap::MoveSelected(const QString& name, const QVector2D& delta)
     return true;
 }
 
+bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source)
+{
+    if (m_vetDrawMesh.size() != source.m_vetDrawMesh.size()) return false;
+    for (auto it = source.m_vetDrawMesh.cbegin(); it != source.m_vetDrawMesh.cend(); ++it) {
+        const auto* target = m_vetDrawMesh.value(it.key(), nullptr);
+        if (!target || !it.value() || !target->CanCopyEditorStateFrom(*it.value())) return false;
+    }
+    for (auto it = source.m_vetDrawMesh.cbegin(); it != source.m_vetDrawMesh.cend(); ++it)
+        if (!m_vetDrawMesh.value(it.key())->CopyEditorStateFrom(*it.value())) return false;
+    return true;
+}
+
 QVector<float> CMeshMap::MeshPositions(const QString& name) const
 {
     const CDrawMesh* mesh = m_vetDrawMesh.value(name, nullptr);

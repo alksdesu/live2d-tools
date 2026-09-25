@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <QScopeGuard>
 // #include "framework/Math/CubismMatrix44.hpp"
 // #include "framework/Type/csmVector.hpp"
@@ -46,14 +47,30 @@ void DeleteClippingManager(CubismClippingManager_OpenGLES2* manager)
 {
     CSM_DELETE_SELF(CubismClippingManager_OpenGLES2, manager);
 }
+
+bool PreparationFailed(QString* error, const QString& message)
+{
+    if (error) *error = message;
+    return false;
 }
+}
+
+struct CubismRenderer_OpenGLES2::PreparedMaskResources
+{
+    std::unique_ptr<CubismClippingManager_OpenGLES2, decltype(&DeleteClippingManager)>
+        clipping{nullptr, &DeleteClippingManager};
+    std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> surfaces;
+};
 
 /*********************************************************************************************************************
 *                                      CubismClippingManager_OpenGLES2
 ********************************************************************************************************************/
 bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, const GLint lastViewport[4])
 {
-    if (!renderer || !setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext())) return false;
+    if (!renderer) return false;
+    const auto* context = owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
+    if (!setGlOwningContext(context)) return false;
     int maskWidth = 0, maskHeight = 0;
     if (!MaskDimensions(_clippingMaskBufferSize, maskWidth, maskHeight)) return false;
 
@@ -139,6 +156,11 @@ bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
             renderer->PreDraw();
         }
 
+        if (renderer->_forceMaskRedraw && !_clearedMaskBufferFlags[clipContext->_bufferIndex]) {
+            if (!_currentMaskBuffer->Clear(1.0f, 1.0f, 1.0f, 1.0f)) return false;
+            _clearedMaskBufferFlags[clipContext->_bufferIndex] = true;
+        }
+
         // モデル座標上の矩形を、適宜マージンを付けて使う
         _tmpBoundsOnModel.SetRect(allClippedDrawRect);
         _tmpBoundsOnModel.Expand(allClippedDrawRect->Width * MARGIN, allClippedDrawRect->Height * MARGIN);
@@ -152,7 +174,7 @@ bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
         for (csmInt32 i = 0; i < clipDrawCount; i++)
         {
             const csmInt32 clipDrawIndex = clipContext->_clippingIdList[i];
-            if (!renderer->_forceMaskRedraw && !model.GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
+            if (!model.GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
             {
                 continue;
             }
@@ -246,42 +268,157 @@ csmBool CubismRenderer_OpenGLES2::Initialize(CubismModel* model)
 
 csmBool CubismRenderer_OpenGLES2::Initialize(CubismModel* model, csmInt32 maskBufferCount)
 {
-    if (!model || maskBufferCount < 1 ||
-        !setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext()) ||
-        !CubismShader_OpenGLES2::GetInstance()->Initialize(owningContext())) return false;
-    std::unique_ptr<CubismClippingManager_OpenGLES2, decltype(&DeleteClippingManager)>
-        clipping(nullptr, &DeleteClippingManager);
-    std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> surfaces;
-    if (model->IsUsingMasking())
-    {
-        clipping.reset(CSM_NEW CubismClippingManager_OpenGLES2());
-        if (!clipping) return false;
-        clipping->Initialize(*model, maskBufferCount);
-        int maskWidth = 0, maskHeight = 0;
-        if (!MaskDimensions(clipping->GetClippingMaskBufferSize(), maskWidth, maskHeight)) return false;
-        surfaces.reserve(maskBufferCount);
-        for (csmInt32 i = 0; i < maskBufferCount; ++i)
-        {
-            auto surface = std::make_unique<CubismOffscreenSurface_OpenGLES2>();
-            if (!surface->setGlOwningContext(owningContext()) ||
-                !surface->CreateOffscreenSurface(maskWidth, maskHeight)) return false;
-            surfaces.push_back(std::move(surface));
-        }
+    const auto* context = owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
+    if (!setGlOwningContext(context)) return false;
+    return InitializeResources(model, maskBufferCount, CubismVector2(256, 256), false, nullptr);
+}
+
+bool CubismRenderer_OpenGLES2::PrepareMaskResources(CubismModel& model, csmInt32 count,
+                                                   const CubismVector2& size,
+                                                   PreparedMaskResources& resources, QString* error)
+{
+    const int drawables = model.GetDrawableCount();
+    if (count < 1 || count > CGlMeshBuffer::MaxVertices || drawables < 0 || drawables > CGlMeshBuffer::MaxVertices)
+        return PreparationFailed(error, QStringLiteral("渲染器网格或蒙版缓冲数量无效"));
+    const int* maskCounts = model.GetDrawableMaskCounts();
+    const int** masks = model.GetDrawableMasks();
+    if (drawables && !maskCounts)
+        return PreparationFailed(error, QStringLiteral("渲染器缺少蒙版数量数组"));
+    bool masking = false;
+    for (int index = 0; index < drawables; ++index) {
+        if (maskCounts[index] < 0 || maskCounts[index] > CGlMeshBuffer::MaxIndices ||
+            (maskCounts[index] && (!masks || !masks[index])))
+            return PreparationFailed(error, QStringLiteral("网格 %1 的蒙版数组无效").arg(index));
+        for (int mask = 0; mask < maskCounts[index]; ++mask)
+            if (masks[index][mask] < 0 || masks[index][mask] >= drawables)
+                return PreparationFailed(error, QStringLiteral("网格 %1 的蒙版索引越界").arg(index));
+        masking = masking || maskCounts[index] != 0;
     }
-    if (!CubismRenderer::Initialize(model, maskBufferCount)) return false;
-    CSM_DELETE_SELF(CubismClippingManager_OpenGLES2, _clippingManager);
-    _clippingManager = clipping.release();
-    _offscreenSurfaces.swap(surfaces);
-    _meshBuffers.clear();
-    _meshBuffers.resize(static_cast<size_t>(model->GetDrawableCount()));
-    _sortedDrawableIndexList.Resize(model->GetDrawableCount(), 0);
-    _clippingContextBufferForMask = nullptr;
-    _clippingContextBufferForDraw = nullptr;
-    _maskIndicesRevision = 0;
-    _forceMaskRedraw = false;
-    _maskTopologyUpdated = false;
-    _maskBuffersNeedRedraw = _clippingManager != nullptr;
+    if (!masking) return true;
+    int width = 0, height = 0;
+    if (!MaskDimensions(size, width, height))
+        return PreparationFailed(error, QStringLiteral("蒙版缓冲尺寸无效"));
+    resources.clipping.reset(CSM_NEW CubismClippingManager_OpenGLES2());
+    if (!resources.clipping || !resources.clipping->setGlOwningContext(owningContext()))
+        return PreparationFailed(error, QStringLiteral("无法创建蒙版管理器"));
+    resources.clipping->SetClippingMaskBufferSize(size.X, size.Y);
+    resources.clipping->Initialize(model, count);
+    resources.surfaces.reserve(static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        auto surface = std::make_unique<CubismOffscreenSurface_OpenGLES2>();
+        if (!surface->setGlOwningContext(owningContext()) || !surface->CreateOffscreenSurface(width, height))
+            return PreparationFailed(error, QStringLiteral("无法分配蒙版缓冲 %1").arg(index));
+        resources.surfaces.push_back(std::move(surface));
+    }
+    return glGetError() == GL_NO_ERROR || PreparationFailed(error, QStringLiteral("蒙版 GPU 资源准备失败"));
+}
+
+bool CubismRenderer_OpenGLES2::UploadDrawableGeometry(const CubismModel& model, csmInt32 index,
+                                                     const float* positions,
+                                                     std::unique_ptr<CGlMeshBuffer>& mesh, QString* error)
+{
+    const int vertices = model.GetDrawableVertexCount(index);
+    const int count = model.GetDrawableVertexIndexCount(index);
+    if (vertices < 0 || vertices > CGlMeshBuffer::MaxVertices || count < 0 ||
+        count > CGlMeshBuffer::MaxIndices || count % 3 != 0 || (!vertices && count))
+        return PreparationFailed(error, QStringLiteral("网格 %1 的几何数量无效").arg(index));
+    if (!vertices) return true;
+    const auto* uvs = reinterpret_cast<const float*>(model.GetDrawableVertexUvs(index));
+    if (!positions || !uvs)
+        return PreparationFailed(error, QStringLiteral("网格 %1 缺少顶点或 UV 数组").arg(index));
+    if (!count) {
+        for (int value = 0; value < vertices * 2; ++value)
+            if (!std::isfinite(positions[value]) || !std::isfinite(uvs[value]))
+                return PreparationFailed(error, QStringLiteral("网格 %1 包含非有限坐标").arg(index));
+        return true;
+    }
+    if (!mesh) mesh = std::make_unique<CGlMeshBuffer>();
+    if (!mesh->SetContext(owningContext()) ||
+        !mesh->Upload(positions, vertices, uvs, model.GetDrawableVertexIndices(index), count))
+        return PreparationFailed(error, QStringLiteral("网格 %1 的几何数据或 GPU 上传无效").arg(index));
     return true;
+}
+
+bool CubismRenderer_OpenGLES2::InitializeResources(CubismModel* model, csmInt32 maskBufferCount,
+                                                 const CubismVector2& maskSize, bool preuploadGeometry,
+                                                 QString* error)
+{
+    if (!model || GetModel() || maskBufferCount < 1 || !setGlOwningContext(owningContext()))
+        return PreparationFailed(error, QStringLiteral("候选渲染器需要新实例、有效模型和当前 OpenGL 上下文"));
+    try {
+        CGlRenderState caller;
+        if (!caller.Save(owningContext())) return PreparationFailed(error, QStringLiteral("无法保存 OpenGL 状态"));
+        const auto restore = qScopeGuard([&] { caller.Restore(); });
+        if (!CubismShader_OpenGLES2::GetInstance()->Initialize(owningContext()))
+            return PreparationFailed(error, QStringLiteral("无法准备模型着色器"));
+        PreparedMaskResources masks;
+        if (!PrepareMaskResources(*model, maskBufferCount, maskSize, masks, error)) return false;
+        const int count = model->GetDrawableCount();
+        std::vector<std::unique_ptr<CGlMeshBuffer>> meshes(static_cast<size_t>(count));
+        if (preuploadGeometry) {
+            if (count && (!Core::csmGetDrawableVertexCounts(model->GetModel()) ||
+                !Core::csmGetDrawableIndexCounts(model->GetModel()) ||
+                !Core::csmGetDrawableVertexPositions(model->GetModel()) ||
+                !Core::csmGetDrawableVertexUvs(model->GetModel()) || !Core::csmGetDrawableIndices(model->GetModel())))
+                return PreparationFailed(error, QStringLiteral("渲染器缺少几何数组"));
+            for (int index = 0; index < count; ++index)
+                if (!UploadDrawableGeometry(*model, index, model->GetDrawableVertices(index), meshes[index], error)) return false;
+        }
+        _sortedDrawableIndexList.Resize(count, 0);
+        if (!CubismRenderer::Initialize(model, maskBufferCount)) return false;
+        _clippingManager = masks.clipping.release();
+        _offscreenSurfaces.swap(masks.surfaces);
+        _meshBuffers.swap(meshes);
+        _clippingContextBufferForMask = nullptr;
+        _clippingContextBufferForDraw = nullptr;
+        _maskIndicesRevision = 0;
+        _forceMaskRedraw = false;
+        _maskTopologyUpdated = false;
+        _maskBuffersNeedRedraw = _clippingManager != nullptr;
+        return true;
+    } catch (const std::bad_alloc&) {
+        return PreparationFailed(error, QStringLiteral("候选渲染器内存不足"));
+    } catch (const std::length_error&) {
+        return PreparationFailed(error, QStringLiteral("候选渲染器资源长度超出范围"));
+    }
+}
+
+bool CubismRenderer_OpenGLES2::PrepareModelReplacement(CubismModel* model,
+                                                     const CubismRenderer_OpenGLES2& previous, QString* error)
+{
+    if (error) error->clear();
+    if (this == &previous || previous.IsDrawing() || !previous.GetModel() || GetModel() || _textures.GetSize() ||
+        !setGlOwningContext(previous.owningContext()))
+        return PreparationFailed(error, QStringLiteral("模型替换需要同一 OpenGL 上下文中的全新渲染器"));
+    try {
+        auto matrix = previous.GetMvpMatrix();
+        const auto color = previous.GetModelColor();
+        for (int index = 0; index < 16; ++index)
+            if (!std::isfinite(matrix.GetArray()[index]))
+                return PreparationFailed(error, QStringLiteral("原渲染器矩阵包含非有限值"));
+        if (!std::isfinite(color.R) || !std::isfinite(color.G) || !std::isfinite(color.B) ||
+            !std::isfinite(color.A) || !std::isfinite(previous.GetAnisotropy()) || previous.GetAnisotropy() < 0.0f)
+            return PreparationFailed(error, QStringLiteral("原渲染器颜色或过滤设置无效"));
+        SetMvpMatrix(&matrix);
+        SetModelColor(color.R, color.G, color.B, color.A);
+        IsPremultipliedAlpha(previous.IsPremultipliedAlpha());
+        IsCulling(previous.IsCulling());
+        SetAnisotropy(previous.GetAnisotropy());
+        UseHighPrecisionMask(previous.IsUsingHighPrecisionMask());
+        for (auto texture = previous._textures.Begin(); texture != previous._textures.End(); ++texture) {
+            if (texture->First < 0 || (texture->Second && !glIsTexture(texture->Second)))
+                return PreparationFailed(error, QStringLiteral("原渲染器纹理绑定无效"));
+            _textures[texture->First] = texture->Second;
+        }
+        const int count = std::max(1, previous.GetRenderTextureCount());
+        const auto size = previous._clippingManager ? previous.GetClippingMaskBufferSize() : CubismVector2(256, 256);
+        return InitializeResources(model, count, size, true, error);
+    } catch (const std::bad_alloc&) {
+        return PreparationFailed(error, QStringLiteral("复制渲染设置时内存不足"));
+    } catch (const std::length_error&) {
+        return PreparationFailed(error, QStringLiteral("复制渲染设置时长度超出范围"));
+    }
 }
 
 void CubismRenderer_OpenGLES2::PreDraw()
@@ -296,9 +433,10 @@ void CubismRenderer_OpenGLES2::PreDraw()
     //異方性フィルタリング。プラットフォームのOpenGLによっては未対応の場合があるので、未設定のときは設定しない
     if (GetAnisotropy() > 0.0f)
     {
-        for (csmInt32 i = 0; i < _textures.GetSize(); i++)
+        for (auto texture = _textures.Begin(); texture != _textures.End(); ++texture)
         {
-            glBindTexture(GL_TEXTURE_2D, _textures[i]);
+            if (!texture->Second) continue;
+            glBindTexture(GL_TEXTURE_2D, texture->Second);
             glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, GetAnisotropy());
         }
     }
@@ -322,7 +460,7 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
     if (!surface->Clear(1.0f, 1.0f, 1.0f, 1.0f)) return false;
     for (csmInt32 index = 0; index < clipContext->_clippingIdCount; ++index) {
         const csmInt32 clipDrawIndex = clipContext->_clippingIdList[index];
-        if (!_forceMaskRedraw && !GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex)) continue;
+        if (!GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex)) continue;
         IsCulling(GetModel()->GetDrawableCulling(clipDrawIndex) != 0);
         SetClippingContextBufferForMask(clipContext);
         if (!DrawMeshOpenGL(*GetModel(), clipDrawIndex, LAppDelegate::GetInstance()->m_IsPrintALl)) return false;
@@ -487,9 +625,6 @@ bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
     if (!GetBindedTextureId(model.GetDrawableTextureIndex(index))) return true;
     const int vertexCount = model.GetDrawableVertexCount(index);
     const int indexCount = model.GetDrawableVertexIndexCount(index);
-    if (vertexCount < 0 || vertexCount > CGlMeshBuffer::MaxVertices || indexCount < 0 ||
-        indexCount > CGlMeshBuffer::MaxIndices || indexCount % 3 != 0) return false;
-    if (!vertexCount || !indexCount) return true;
     const float* positions = model.GetDrawableVertices(index);
     auto* delegate = LAppDelegate::GetInstance();
     if (delegate->m_isDraggingDeformer && !delegate->IsOffScreen()) {
@@ -500,10 +635,8 @@ bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
         }
     }
     auto& mesh = _meshBuffers[static_cast<size_t>(index)];
-    if (!mesh) mesh = std::make_unique<CGlMeshBuffer>();
-    if (!mesh->SetContext(owningContext()) || !mesh->Upload(positions, vertexCount,
-            reinterpret_cast<const float*>(model.GetDrawableVertexUvs(index)),
-            model.GetDrawableVertexIndices(index), indexCount)) return false;
+    if (!UploadDrawableGeometry(model, index, positions, mesh, nullptr)) return false;
+    if (!vertexCount || !indexCount) return true;
     if (IsCulling()) glEnable(GL_CULL_FACE);
     else glDisable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -543,17 +676,44 @@ const csmMap<csmInt32, GLuint>& CubismRenderer_OpenGLES2::GetBindedTextures() co
 void CubismRenderer_OpenGLES2::SetClippingMaskBufferSize(csmFloat32 width, csmFloat32 height)
 {
     int maskWidth = 0, maskHeight = 0;
-    if (!_clippingManager || !MaskDimensions(CubismVector2(width, height), maskWidth, maskHeight)) return;
-    const csmInt32 renderTextureCount = _clippingManager->GetRenderTextureCount();
-    std::unique_ptr<CubismClippingManager_OpenGLES2, decltype(&DeleteClippingManager)>
-        replacement(CSM_NEW CubismClippingManager_OpenGLES2(), &DeleteClippingManager);
-    if (!replacement) return;
-    replacement->SetClippingMaskBufferSize(width, height);
-    replacement->Initialize(*GetModel(), renderTextureCount);
-    CSM_DELETE_SELF(CubismClippingManager_OpenGLES2, _clippingManager);
-    _clippingManager = replacement.release();
-    SetClippingContextBufferForMask(nullptr);
-    SetClippingContextBufferForDraw(nullptr);
+    if (!_clippingManager || !GetModel() || !setGlOwningContext(owningContext()) ||
+        !MaskDimensions(CubismVector2(width, height), maskWidth, maskHeight)) return;
+    try {
+        CGlRenderState caller;
+        if (!caller.Save(owningContext())) return;
+        const auto restore = qScopeGuard([&] { caller.Restore(); });
+        GLint read = 0, draw = 0, active = 0, units = 0;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &units);
+        const auto restoreActive = qScopeGuard([&] { glActiveTexture(active); });
+        for (const auto& surface : _offscreenSurfaces)
+            if (surface && (surface->GetRenderTexture() == GLuint(read) || surface->GetRenderTexture() == GLuint(draw))) return;
+        for (int unit = 0; unit < units; ++unit) {
+            glActiveTexture(GL_TEXTURE0 + unit);
+            GLint texture = 0;
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+            for (const auto& surface : _offscreenSurfaces)
+                if (surface && surface->GetColorBuffer() == GLuint(texture)) return;
+        }
+        glActiveTexture(active);
+        if (glGetError() != GL_NO_ERROR) return;
+        PreparedMaskResources replacement;
+        if (!PrepareMaskResources(*GetModel(), _clippingManager->GetRenderTextureCount(),
+                                  CubismVector2(width, height), replacement, nullptr)) return;
+        CSM_DELETE_SELF(CubismClippingManager_OpenGLES2, _clippingManager);
+        _clippingManager = replacement.clipping.release();
+        _offscreenSurfaces.swap(replacement.surfaces);
+        SetClippingContextBufferForMask(nullptr);
+        SetClippingContextBufferForDraw(nullptr);
+        _forceMaskRedraw = _clippingManager != nullptr;
+        _maskBuffersNeedRedraw = _clippingManager != nullptr;
+    } catch (const std::bad_alloc&) {
+        return;
+    } catch (const std::length_error&) {
+        return;
+    }
 }
 
 csmInt32 CubismRenderer_OpenGLES2::GetRenderTextureCount() const
@@ -599,7 +759,9 @@ const csmBool inline CubismRenderer_OpenGLES2::IsGeneratingMask() const
 
 GLuint CubismRenderer_OpenGLES2::GetBindedTextureId(csmInt32 textureId)
 {
-    return (_textures[textureId] != 0) ? _textures[textureId] : -1;
+    for (auto texture = _textures.Begin(); texture != _textures.End(); ++texture)
+        if (texture->First == textureId) return texture->Second;
+    return 0;
 }
 
 }}}}

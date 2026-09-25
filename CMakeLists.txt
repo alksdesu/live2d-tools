@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 include(CTest)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Core5Compat Test)
 
 if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
     if(CMAKE_OSX_SYSROOT)
@@ -168,8 +168,45 @@ if(BUILD_TESTING)
     target_include_directories(cubism_shader_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cubism_shader_tests PRIVATE Qt6::Gui Qt6::OpenGL Qt6::Test)
     add_test(NAME cubism_shader COMMAND cubism_shader_tests)
+    set(cubism_model_test_sources
+        tests/cubism_model_fixture.cpp framework/Model/CubismModel.cpp
+        framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp framework/Type/csmString.cpp
+        edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp opengl/cglmeshbuffer.cpp)
+    add_executable(model_runtime_state_tests tests/model_runtime_state_tests.cpp ${cubism_model_test_sources})
+    target_link_libraries(model_runtime_state_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
+    add_test(NAME model_runtime_state COMMAND model_runtime_state_tests)
+    add_executable(model_replacement_tests tests/model_replacement_tests.cpp ${cubism_model_test_sources}
+        framework/Model/CubismModelReplacement.cpp framework/Model/CubismMoc.cpp
+        framework/Rendering/CubismRenderer.cpp framework/Math/CubismMatrix44.cpp framework/Type/csmRectF.cpp)
+    target_link_libraries(model_replacement_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
+    target_compile_definitions(model_replacement_tests PRIVATE CSM_DEBUG)
+    if(MSVC)
+        target_compile_options(model_replacement_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(model_replacement_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME model_replacement COMMAND model_replacement_tests)
+    add_executable(cubism_renderer_preparation_tests tests/cubism_renderer_preparation_tests.cpp
+        ${cubism_model_test_sources} framework/Rendering/CubismRenderer.cpp
+        framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp
+        framework/Rendering/OpenGL/CubismShader_OpenGLES2.cpp
+        framework/Math/CubismMatrix44.cpp framework/Type/csmRectF.cpp
+        opengl/ccubismshaderprograms.cpp opengl/cglrenderstate.cpp opengl/coffscreenbuffer.cpp)
+    target_link_libraries(cubism_renderer_preparation_tests PRIVATE model_data
+        Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Core5Compat Qt6::Test)
+    add_test(NAME cubism_renderer_preparation COMMAND cubism_renderer_preparation_tests)
+    add_executable(pose_rebind_tests tests/pose_rebind_tests.cpp framework/Effect/CubismPose.cpp
+        framework/Utils/CubismJson.cpp framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp
+        framework/Type/csmString.cpp)
+    target_include_directories(pose_rebind_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(pose_rebind_tests PRIVATE Qt6::Gui Qt6::OpenGL Qt6::Test)
+    add_test(NAME pose_rebind COMMAND pose_rebind_tests)
+    add_executable(mesh_editor_state_tests tests/mesh_editor_state_tests.cpp
+        edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp opengl/cglmeshbuffer.cpp)
+    target_link_libraries(mesh_editor_state_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
+    add_test(NAME mesh_editor_state COMMAND mesh_editor_state_tests)
     add_executable(editor_overlay_render_tests tests/editor_overlay_render_tests.cpp
-        edit/cdrawmesh.cpp edit/cdrawrect.cpp edit/cdrawrotation.cpp edit/cdrawobject.cpp edit/ctriangl.cpp
+        edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/cdrawrect.cpp edit/cdrawrotation.cpp edit/cdrawobject.cpp edit/ctriangl.cpp
         opengl/cglmeshbuffer.cpp assets/shaders/shaders.qrc assets/images/images.qrc)
     set_target_properties(editor_overlay_render_tests PROPERTIES AUTORCC ON)
     target_link_libraries(editor_overlay_render_tests PRIVATE deformer_tree_data Qt6::OpenGL Qt6::Test)

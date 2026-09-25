@@ -163,6 +163,7 @@ SOURCES += \
     framework/Math/CubismViewMatrix.cpp\
     framework/Model/CubismMoc.cpp\
     framework/Model/CubismModel.cpp\
+    framework/Model/CubismModelReplacement.cpp\
     framework/Model/CubismModelUserData.cpp\
     framework/Model/CubismModelUserDataJson.cpp\
     framework/Model/CubismUserModel.cpp\
@@ -374,6 +375,7 @@ HEADERS += \
     framework/Math/CubismVector2.hpp\
     framework/Math/CubismViewMatrix.hpp\
     framework/Model/CubismMoc.hpp\
+    framework/Model/CubismModelReplacement.hpp\
     framework/Model/CubismModel.hpp\
     framework/Model/CubismModelUserData.hpp\
     framework/Model/CubismModelUserDataJson.hpp\

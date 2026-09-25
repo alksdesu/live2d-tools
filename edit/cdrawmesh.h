@@ -27,6 +27,8 @@ public:
     bool SetPositions(const QVector<float>& positions);
     bool SetIndices(const QVector<quint16>& indices);
     bool SelectNearestPoint(const QVector2D& position, float radius);
+    bool CanCopyEditorStateFrom(const CDrawMesh& source) const;
+    bool CopyEditorStateFrom(const CDrawMesh& source);
     void MoveSelected(const QVector2D& delta);
     QVector<float> Positions() const;
     void SetSelect(const QRectF& rect);
@@ -40,14 +42,18 @@ public:
     void SetIsOver(bool draw){
         IsOver = draw;
     }
+    bool IsShown() const { return IsDraw; }
+    bool IsHovered() const { return IsOver; }
     bool ClickMesh(const QPointF& point);
 
     CTrianglMesh* GetMesh(){
         return mesh;
     };//三角形mesh网格
+    const CTrianglMesh* GetMesh() const { return mesh; }
 private:
     friend class EditorOverlayRenderTests;
     bool EnsureOpenGl();
+    void RefreshSelectedPoints() const;
     bool IsDraw = false;
     bool IsOver = false;
     QPointer<QOpenGLContext> m_context;
@@ -56,7 +62,7 @@ private:
     CGlMeshBuffer m_selectedPoints;
     std::vector<std::unique_ptr<CGlMeshBuffer>> m_lines;
     CTrianglMesh* mesh;//三角形mesh网格
-    std::vector<CPoint*> m_vetSelectPoint;//保存所有被选择的点
+    mutable std::vector<CPoint*> m_vetSelectPoint;//保存所有被选择的点
 };
 
 #endif // CDRAWMESH_H

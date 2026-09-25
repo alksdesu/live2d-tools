@@ -1,4 +1,5 @@
 #include "edit/cdrawmesh.h"
+#include "edit/cmeshmap.h"
 #include "edit/cdrawrect.h"
 #include "edit/cdrawrotation.h"
 #include "live2dstruct/coor/crotationcoortype.h"
@@ -175,6 +176,78 @@ private slots:
         m_gl.glGenTextures(static_cast<GLsizei>(m_textures.size()), m_textures.data());
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
         qInfo() << "Overlay GL:" << reinterpret_cast<const char*>(m_gl.glGetString(GL_VERSION));
+    }
+
+    void meshStateMigrationKeepsCandidateGeometryAndGpuOwnership()
+    {
+        m_context->doneCurrent();
+        const float original[]{-0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f};
+        const float changed[]{-0.8f, -0.2f, 0.2f, -0.2f, -0.3f, 0.8f};
+        const short indices[]{0, 1, 2};
+        auto source = std::make_unique<CDrawMesh>(3, indices, 6, original, original);
+        CDrawMesh candidate(3, indices, 6, original, changed);
+        source->SetShow(true);
+        QVERIFY(source->SelectNearestPoint({0, 0.5f}, 0.01f));
+        candidate.SetIsOver(true);
+        CMeshMap sourceMap, candidateMap;
+        sourceMap.insert("mesh", source.get());
+        candidateMap.insert("mesh", &candidate);
+        QMatrix4x4 projection;
+        QVERIFY(Prepare());
+        QVERIFY(Draw([&] { source->Draw(projection); }));
+        const auto sourcePositions = source->Positions();
+        const auto sourceArray = source->m_regularPoints.GetVertexArray();
+        const auto sourceShader = source->shader.get();
+        QVERIFY(Prepare());
+        QVERIFY(Draw([&] { candidate.Draw(projection); }));
+        const auto candidatePositions = candidate.Positions();
+        const auto candidateArray = candidate.m_regularPoints.GetVertexArray();
+        const auto candidateShader = candidate.shader.get();
+        QVERIFY(sourceArray != 0 && candidateArray != 0 && sourceArray != candidateArray);
+        QVERIFY(sourceShader != candidateShader);
+        m_context->doneCurrent();
+        QVERIFY(candidateMap.CopyEditorStateFrom(sourceMap));
+        QCOMPARE(candidate.m_regularPoints.GetVertexArray(), candidateArray);
+        QCOMPARE(candidate.shader.get(), candidateShader);
+        QCOMPARE(source->m_regularPoints.GetVertexArray(), sourceArray);
+        QCOMPARE(source->shader.get(), sourceShader);
+        QCOMPARE(candidate.Positions(), candidatePositions);
+        QCOMPARE(source->Positions(), sourcePositions);
+        QCOMPARE(candidate.GetSelectPoint().size(), size_t(1));
+        QCOMPARE(candidate.GetSelectPoint().front(), candidate.GetMesh()->GetWolrd()[2]);
+        QVERIFY(candidate.GetSelectPoint().front() != source->GetSelectPoint().front());
+        QVERIFY(source->IsShown());
+        QVERIFY(candidate.IsShown());
+        QVERIFY(!candidate.IsHovered());
+        QVERIFY(Prepare());
+        QVERIFY(Draw([&] { candidate.Draw(projection); }));
+        const auto red = [](QRgb pixel) { return qRed(pixel) > 200 && qGreen(pixel) < 80 && qBlue(pixel) < 80; };
+        QVERIFY(Count(m_framebuffer->toImage(), Near(-0.3f, 0.8f), red) >= 4);
+        QCOMPARE(Count(m_framebuffer->toImage(), Near(0, 0.5f), red), 0);
+        QCOMPARE(candidate.shader.get(), candidateShader);
+        QCOMPARE(source->Positions(), sourcePositions);
+        source->CancelSelect();
+        source->SetShow(false);
+        source->SetIsOver(true);
+        bool copied = false;
+        QVERIFY(Draw([&] { copied = candidateMap.CopyEditorStateFrom(sourceMap); }));
+        QVERIFY(copied);
+        QVERIFY(!candidate.IsShown());
+        QVERIFY(candidate.IsHovered());
+        QVERIFY(candidate.GetSelectPoint().empty());
+        QVERIFY(Prepare());
+        QVERIFY(Draw([&] { candidate.Draw(projection); }));
+        const auto green = [](QRgb pixel) { return qGreen(pixel) > 200 && qRed(pixel) < 80 && qBlue(pixel) < 80; };
+        QVERIFY(Count(m_framebuffer->toImage(), Near(-0.3f, 0.8f), green) >= 4);
+        source->SetShow(true);
+        QVERIFY(source->SelectNearestPoint({0, 0.5f}, 0.01f));
+        QVERIFY(candidateMap.CopyEditorStateFrom(sourceMap));
+        source.reset();
+        QVERIFY(Prepare());
+        QVERIFY(Draw([&] { candidate.Draw(projection); }));
+        QVERIFY(Count(m_framebuffer->toImage(), Near(-0.3f, 0.8f), red) >= 4);
+        QCOMPARE(candidate.Positions(), candidatePositions);
+        QCOMPARE(candidate.GetSelectPoint().front(), candidate.GetMesh()->GetWolrd()[2]);
     }
 
     void meshConstructsWithoutContextAndBatchesSelection()

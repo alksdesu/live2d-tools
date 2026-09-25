@@ -46,7 +46,10 @@ csmBool CubismRenderer::Initialize(Framework::CubismModel* model, csmInt32 maskB
 
 csmBool CubismRenderer::DrawModel()
 {
-    if (!GetModel() || !SaveProfile()) return false;
+    if (_drawing || !GetModel()) return false;
+    _drawing = true;
+    const auto finishDrawing = qScopeGuard([this] { _drawing = false; });
+    if (!SaveProfile()) return false;
     bool restored = false;
     const auto restore = qScopeGuard([&] { if (!restored) RestoreProfile(); });
     const bool drawn = DoDrawModel();
@@ -142,7 +145,7 @@ void CubismRenderer::UseHighPrecisionMask(csmBool high)
     _useHighPrecisionMask = high;
 }
 
-csmBool CubismRenderer::IsUsingHighPrecisionMask()
+csmBool CubismRenderer::IsUsingHighPrecisionMask() const
 {
     return _useHighPrecisionMask;
 }

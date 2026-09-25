@@ -500,7 +500,7 @@ private:
     static const csmInt32 DefaultSize = 10;  ///< コンテナ初期化のデフォルトサイズ
 
     csmPair<_KeyT, _ValT>* _keyValues;      ///< Key-Valueペアの配列
-    _ValT* _dummyValuePtr;                  ///< 空の値を返すためのダミー(staticのtemplteを回避するためメンバとする）
+    mutable _ValT* _dummyValuePtr;                  ///< 空の値を返すためのダミー(staticのtemplteを回避するためメンバとする）
     csmInt32 _size;                         ///< コンテナの要素数（サイズ）
     csmInt32 _capacity;                     ///< コンテナのキャパシティ
 };

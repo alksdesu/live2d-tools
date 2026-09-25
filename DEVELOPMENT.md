@@ -415,7 +415,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Mesh、Rect、Rotation 的构造及几何更新只处理 CPU 数据，首次绘制才初始化 GPU 资源。网格按选中/普通颜色批量画点并批量画线，显式恢复 GL_PROGRAM_POINT_SIZE；选框改用 GL_LINE_LOOP，保持 polygon mode。旋转柄共享几何层并隔离纹理上传状态，去掉 shader 对已处于模型全局坐标的 Y 的额外翻转。
 - 三类覆盖层的真实 GL 测试包含无上下文构造后首次绘制、实际选中/悬停颜色、顶点移动、空心框边界、旋转正 Y 与父级 90° 变换、非法输入、无/错误上下文、状态恢复及重复绘制资源复用。两个实际 InitMesh UI 入口也在所属上下文内重建，已有当前上下文的调用不提前 doneCurrent，避免恢复参数时删除 GPU 网格却没有当前 owner。
 - 本轮完整 CTest 48/48 套件通过，Linux `/dev/full` 专用用例在 macOS 跳过。几何缓冲、渲染状态、着色器和编辑覆盖层四项目标均通过常规及 ASAN/UBSAN，实际使用 M1 Pro / OpenGL 4.1 Metal，无跳过。native 源码编译通过，链接仍仅缺 40 个 Core 符号；两种渲染目标宏语法通过。额外 Windows 宏的 macOS 语法检查被既有 Microsoft CRT `_snprintf_s` 引用阻止，未添加替代声明，不将其记为 Windows 验证。
-- 调用链复核确认，m_meshOverlayPositions 仍只写入编辑线框的 CMeshMap；带纹理模型的 GetDrawableVertices 仍来自 Core。此轮保持原数据来源，尚未把编辑关键形应用到带纹理模型、遮罩范围和渲染 PSD，这是接下来必须补齐的功能。冻结顶点也尚未进入 CalcClippedDrawTotalBounds。高精度遮罩清白后跳过未变顶点的既有行为还需核对 Core 动态标记语义，并用真实模型验证。
+- 调用链复核确认，m_meshOverlayPositions 仍只写入编辑线框的 CMeshMap；带纹理模型的 GetDrawableVertices 仍来自 Core。此轮保持原数据来源，尚未把编辑关键形应用到带纹理模型、遮罩范围和渲染 PSD，这是接下来必须补齐的功能。冻结顶点也尚未进入 CalcClippedDrawTotalBounds。高精度遮罩的标记语义已按后文官方契约核实；完整模型仍需真实 Core 验证。
 - 这些真实 GL 用例证明共用程序、缓冲和覆盖层，完整 Cubism Core、模型参数驱动、剪裁联动、Windows 窗口及最终 PSD/Editor 回读仍未实机验证。共享/异常上下文销毁后的裸 GL 缓冲延迟回收、编辑坐标父链与默认姿态、完整文档编辑和既定四阶段功能继续保持待办。
 
 ## 加载快照、关键形绑定与会话恢复
@@ -437,7 +437,31 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 
 ### 本轮仍需补齐的链路
 
-- 带纹理模型、蒙版包围盒和渲染 PSD 仍读取 Core 几何。关键形候选 MOC 的实际 Core 校验、保留状态的热替换、统一的编辑/撤销/会话预览发布、关键形对应参数姿态，以及经过父变形器的绝对坐标反解仍待实施；线框覆盖不等于这些功能已完成。
-- 热替换需保留同一个 LAppModel、动画/表情管理器、物理粒子与缓存时间、音频游标和编辑设置。新 CubismModel 必须分别迁移当前参数与 savedParameters，并保留虚拟参数/Part 映射；Pose 要无 Reset 地重绑模型指针。候选 renderer 的 clipping 指针必须指向新 Core 数据，GPU 准备成功后才交换，旧资源按 renderer/model/moc 顺序释放。该流程目前只有源码影响审计，没有作为已实现功能计入。
+- 带纹理模型、蒙版包围盒和渲染 PSD 仍读取 Core 几何。真实 Core 对关键形候选的接受性验证、统一的编辑/撤销/会话预览发布、关键形对应参数姿态，以及经过父变形器的绝对坐标反解仍待完成；底层替换见下节，线框覆盖不等于整条编辑链路已完成。
+- 热替换需保留同一个 LAppModel、动画/表情管理器、物理粒子与缓存时间、音频游标和编辑设置。新 CubismModel 必须分别迁移当前参数与 savedParameters，并保留虚拟参数/Part 映射；Pose 要无 Reset 地重绑模型指针。候选 renderer 的 clipping 指针必须指向新 Core 数据，GPU 准备成功后才交换，旧资源按 renderer/model/moc 顺序释放。底层候选流程现已按下节实现，编辑入口接线仍未完成。
 - 初始加载、树/图集及部分导出入口仍会分别读取磁盘资源；当前指纹检查能发现已观察到的不一致，但尚未让整条加载/导出链都消费同一不可变快照。导出弹窗之后再次读取文件的竞争窗口、源模型与纹理整体版本绑定、视图恢复原有 0.1–20 缩放截断仍待处理。
 - 样本覆盖 MOC 版本 1/3；未知版本扩展区段、真实 BlendShape 模型、独立共享关键形行，以及 Document 自身大规模重复切片展开的累计内存预算仍待验证/补齐。完整 Core GUI、Windows、Photoshop 和 Cubism Editor 回读未因这些组件测试而得到验证。
+
+
+## 关键形预览的运行时替换核心
+
+- CubismModel 增加静态兼容、状态迁移和求值结果检查。比较 Core 返回的有序参数/Part/Drawable 标识、参数类型/范围/默认值/关键值、画布五字段、父 Part、纹理、标记、蒙版、UV 和原始索引；三类标识分别必须唯一。原始索引与编辑拓扑覆盖分开比较，几何坐标和当前参数允许不同；不能把此接口用于改变参数或对象结构的模型。
+- 当前参数与 savedParameters 分别复制，包含虚拟参数/Part 的索引和值、模型与部件透明度、用户颜色/剔除的原值及覆盖标志、索引覆盖。仅 Model 私有的四张虚拟映射和保存参数改用 Qt 容器，避免 SDK csmMap 的默认浅复制和 csmVector 的复制分配问题；保留虚拟索引创建顺序与 saved 长度语义。先验证和准备副本，再交换容器与写入等长数组，失败不改源或目标。
+- CubismModelReplacement 依次准备独立 Moc、Model、Renderer；明确调用 Core consistency 检查，再创建候选、迁移状态、求值、检查有限输出、重建网格并迁移选区。候选准备失败立即按所有权清理并允许重试；成功后只在旧三份资源身份仍匹配时无抛出地交换，旧资源按 Renderer→Model→Moc 释放。生产边界没有用 Core 替身绕过一致性检查。
+- CubismUserModel 在更新守卫内执行上述替换，并在提交前无 Reset 地重绑 Pose；失败可反向重绑。冷 Pose 保留空绑定，第一次实际更新仍执行原初始化；不接受绑定其他模型的 Pose。原 LAppModel、矩阵、动作/表情管理器、物理粒子/缓存、音频、拖拽和时间线状态不重建；只对候选 Core 模型求值，不调用推进这些系统的 LAppModel::Update。
+- LAppModel::ApplyPreviewMoc 保留原始 source digest，单独记录成功应用的 preview digest，相同内容不重建。非所属当前 GL 上下文、导出或变形器拖拽期间拒绝替换；Renderer 绘制期间也禁止重入或切换资源，异常退出会释放绘制守卫。成功后清除旧冻结顶点和旧局部坐标线框缓存，保留对象/关键形选择身份与拓扑覆盖。
+- CDrawMesh/CMeshMap 按 ID 和顶点索引复制显示、悬停及选区，不复用旧 CPoint 指针、不覆盖候选坐标/UV/索引。全表先验证对象集合、指针与数量，失败不部分更新；最近点选择、框选和取消共用选区缓存刷新。InitMesh 用临时唯一所有权保护创建后尚未插入映射的网格。
+- 候选 Renderer 复制稀疏纹理绑定、MVP、颜色、预乘、剔除、过滤和高精度配置，重建引用新 Core 数据的 clipping/FBO，并在发布前预上传有效几何；不调用 DrawModel、PSD 或推进模型。普通初始化仍保持延迟上传，因为初次加载不保证 Core 已求值，不能复用候选的预上传时序。新旧 FBO、VAO/VBO/EBO 相互独立，准备失败保留旧资源。
+- 蒙版尺寸修改先准备完整新管理器与 FBO，分配失败或旧资源正被使用时保留旧配置。纹理遍历使用真实条目，不再通过连续 map 下标给稀疏表插入空项；缺失纹理查询不插入。SDK csmMap 的只读缺省值缓存标为 mutable，修复 const 下标模板实例化失败，缺失读取仍不增加键。
+- 官方 Framework 保留 Update→Reset 顺序，不能仅凭函数名称断言它错误。普通与高精蒙版始终检查 VertexPositionsDidChange；[官方 r15 手册](https://cubism.live2d.com/sdk-doc/reference/NativeCoreAPIReference_en_r15.pdf#page=47) 将 false 描述为顶点信息不可用，[官方 Framework](https://github.com/Live2D/CubismNativeFramework/blob/5-r.4.1/src/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp) 也保留此判断。已移除 force redraw 绕过该检查的行为；脏缓冲清白与是否允许读取顶点分开。未修改 Core Update/Reset 顺序，测试 getter 对 flags 的清零不能当作真实 Core 契约证据。
+- 新测试编译真实 Model、Moc、Replacement、Pose、Renderer 和几何实现。Core 边界及不应触达的应用/PSD 路径明确替换为受控数据或失败哨兵；GPU 测试实际创建资源、读回候选缓冲、检查多 FBO 清白和 GL 状态，CPU 测试检查状态、独立所有权、失败清理及释放顺序。这些验证不证明补丁 MOC 能被实际 Core 接受，也不证明 Glue/BlendShape 的真实求值正确。
+
+- 本轮完整 CTest 58/58 套件通过，Linux `/dev/full` 专用用例在 macOS 跳过。状态迁移、资源候选、Renderer 准备、Pose 重绑、网格状态和实际覆盖层绘制六项目标通过 ASAN/UBSAN，均无跳过。原生源码编译通过，链接仍缺 Core 库：43 个 `_csm*` 符号，其中新增三项为参数关键值数量/值与 Part 父级查询，无非 Core 未定义符号。验证覆盖可返回的失败和受控异常，不代表 SDK 所有原始分配器失败都已处理。
+
+### 编辑入口的下一步
+
+- 当前 UI 尚未调用 BuildPreviewMoc/ApplyPreviewMoc，不能把核心准备记为已完成带纹理画布编辑。应增加统一编辑控制器：在文档副本执行命令，准备运行时成功后再发布文档/历史；Inspector 所有关键形工具、撤销/重做、会话恢复和画布拖拽都走同一入口，失败保持正式状态。
+- 选择关键形先解析真实绑定角点，再与其余参数合成完整编辑姿态；需要专用固定姿态状态。现有 snapshot 分支仍加载参数并叠加时间线，只关闭自动眨眼/呼吸/物理也不能停止所有动作、表情、口型、Pose 和拖拽驱动。相同 MOC bytes 不代表相同编辑姿态，当前 digest 早返接口需与姿态事务配合。
+- 画布必须从逻辑像素依次逆 projection/view/model，取得模型绝对点，再沿不可变父链反解局部关键形。按下时记录起始文档、选中索引、姿态和版本；每次成功采样从同一起始文档生成一个命令，整次拖拽只有一条历史，失败保留上次成功状态，取消事务性回到起点。目标锁定、过期操作及进行中的网格拖拽需要控制器统一校验，不能仅依赖 Inspector 禁用状态。
+- 全局 CTreeManage 仍基于磁盘原文件，未应用文档父级/Warp/Rotation 等覆盖，不能直接用于逆写。独立映射上下文应使用同一快照和姿态，并先将局部顶点正向映射与当前 Core 顶点核对。普通父链、零缩放、折叠或多解网格分别验证；Glue 和 Type1/BlendShape 仍缺对应 CPU 求值，不能误当作普通父链。
+- 预览 MOC 当前只写 ArtMesh 位置；父级、Warp、Rotation 等覆盖需补齐对应运行时表示，不能让 CPU 用新父链而 Core 仍用旧父链。GPU PSD、纹理提取及 cmo3 顶层姿态仍有不同消费路径，须逐项接通和回读验证。
