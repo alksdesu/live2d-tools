@@ -91,6 +91,7 @@ SOURCES += \
     live2dstruct/tree/c2dtree.cpp \
     live2dstruct/tree/c2dtreenode.cpp \
     live2dstruct/csectiontable.cpp \
+    live2dstruct/csectionvalidation.cpp \
     live2dstruct/struct/cart_mesh_keyforms.cpp \
     live2dstruct/struct/cart_meshes.cpp \
     live2dstruct/struct/ccanvas_info.cpp \
@@ -288,6 +289,7 @@ HEADERS += \
     live2dstruct/tree/c2dtree.h \
     live2dstruct/tree/c2dtreenode.h \
     live2dstruct/csectiontable.h \
+    live2dstruct/csectionvalidation.h \
     live2dstruct/struct/cart_mesh_keyforms.h \
     live2dstruct/struct/cart_meshes.h \
     live2dstruct/struct/ccanvas_info.h \

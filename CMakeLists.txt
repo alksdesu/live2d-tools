@@ -36,6 +36,7 @@ add_library(model_data STATIC
     live2dstruct/util/cfilereader.cpp
     live2dstruct/csectionoffsettable.cpp
     live2dstruct/csectiontable.cpp
+    live2dstruct/csectionvalidation.cpp
 )
 target_include_directories(model_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(model_data PUBLIC Qt6::Core)
@@ -103,6 +104,10 @@ if(BUILD_TESTING)
     target_link_libraries(model_data_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_data_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_data COMMAND model_data_tests)
+    add_executable(section_preflight_tests tests/section_preflight_tests.cpp)
+    target_link_libraries(section_preflight_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(section_preflight_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME section_preflight COMMAND section_preflight_tests)
     add_executable(moc_optional_fields_tests tests/optional_moc_fields_tests.cpp)
     target_link_libraries(moc_optional_fields_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_optional_fields_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

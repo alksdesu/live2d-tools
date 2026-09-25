@@ -13,15 +13,17 @@ public:
     ~CReader();
     //QFile* file;
     QByteArray m_byte;
-    int m_pos;
+    int m_pos = 0;
     bool IsValid() const { return m_valid; }
     bool IsMoc3() const;
     const QString& Error() const { return m_error; }
+    bool RequireSpan(const QString& label, qint64 offset, qint64 count, qint64 width);
+    bool Fail(const QString& message);
 
     void seek(int pos) {
+        if (!m_valid) return;
         if (pos < 0 || pos > m_byte.size()) {
-            m_valid = false;
-            m_error = QString("moc3 offset 越界: %1 (size %2)").arg(pos).arg(m_byte.size());
+            Fail(QString("moc3 offset 越界: %1 (size %2)").arg(pos).arg(m_byte.size()));
             return;
         }
         m_pos = pos;
@@ -102,11 +104,10 @@ public:
 
 private:
     bool canRead(int size) {
+        if (!m_valid) return false;
         if (size < 0 || m_pos < 0 || m_pos > m_byte.size() - size) {
-            m_valid = false;
-            m_error = QString("moc3 数据截断: pos %1 size %2 (file %3)")
-                          .arg(m_pos).arg(size).arg(m_byte.size());
-            return false;
+            return Fail(QString("moc3 数据截断: pos %1 size %2 (file %3)")
+                          .arg(m_pos).arg(size).arg(m_byte.size()));
         }
         return true;
     }

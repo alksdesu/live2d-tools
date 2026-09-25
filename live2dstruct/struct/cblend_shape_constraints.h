@@ -11,7 +11,7 @@ public:
         int blend_shape_constraint_value_sources_begin_indices;
         int blend_shape_constraint_value_sources_counts;
 
-        Offset(CReader bytes) {
+        Offset(CReader& bytes) {
             parameter_indices = bytes.readInt();
             blend_shape_constraint_value_sources_begin_indices=bytes.readInt();
             blend_shape_constraint_value_sources_counts=bytes.readInt();
