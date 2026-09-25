@@ -5,6 +5,7 @@
 #include "cxsxmlwriter.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cdrawableflags.h"
+#include "live2dstruct/ccanvasgeometry.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "opengl/ctextureextractor.h"
@@ -15,6 +16,7 @@
 #include <QJsonObject>
 #include <QFile>
 #include <cmath>
+#include <limits>
 
 using namespace live2dstruct;
 
@@ -233,6 +235,7 @@ private:
     void writeArtMeshEntities();
     void writeWarpDeformerEntities();
     void writeRotationDeformerEntities();
+    bool modelToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY);
     void writeGlueEntities();
 
     // ---- 复用块 ----
@@ -309,7 +312,23 @@ private:
     QHash<QString, int> m_paramIndexById;       // 参数 idstr → parameters 表下标
     int m_canvasW = 0;
     int m_canvasH = 0;
+    QString m_geometryError;
 };
+
+bool Generator::modelToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY)
+{
+    QPointF pixels;
+    if (!CCanvasGeometry::ModelToPixels(m_table.canvas_info, QPointF(x, y), pixels) ||
+        !std::isfinite(pixels.x()) || !std::isfinite(pixels.y()) ||
+        std::abs(pixels.x()) > std::numeric_limits<float>::max() ||
+        std::abs(pixels.y()) > std::numeric_limits<float>::max()) {
+        if (m_geometryError.isEmpty()) m_geometryError = QStringLiteral("画布坐标转换无效或超出 float 范围：%1").arg(owner);
+        return false;
+    }
+    pixelX = static_cast<float>(pixels.x());
+    pixelY = static_cast<float>(pixels.y());
+    return true;
+}
 
 void Generator::loadDisplayNames()
 {
@@ -710,11 +729,6 @@ void Generator::writePartEntities()
 
 void Generator::writeArtMeshEntities()
 {
-    const CCanvas_info* canvas = m_table.canvas_info;
-    const float ppu = canvas->pixels_per_unit;
-    const float ox = canvas->origin_x;
-    const float oy = canvas->origin_y;
-
     m_meshGuidIds.resize(m_table.art_meshes.size());
     m_meshSourceIds.resize(m_table.art_meshes.size());
 
@@ -922,8 +936,10 @@ void Generator::writeArtMeshEntities()
                 const float mx = sourcePositions[v * 2];
                 const float my = sourcePositions[v * 2 + 1];
                 if (onCanvas) {
-                    positions.append((mx + ox) * ppu);
-                    positions.append((oy - my) * ppu);
+                    float px, py;
+                    if (!modelToPixels(mesh->ids, mx, my, px, py)) return;
+                    positions.append(px);
+                    positions.append(py);
                 } else {
                     positions.append(mx);
                     positions.append(my);
@@ -942,8 +958,10 @@ void Generator::writeArtMeshEntities()
             for (int v = 0; v < vertexCount; ++v) {
                 const float mx = sourcePositions[v * 2];
                 const float my = sourcePositions[v * 2 + 1];
-                pixelPositions.append((mx + ox) * ppu);
-                pixelPositions.append((oy - my) * ppu);
+                float px, py;
+                if (!modelToPixels(mesh->ids, mx, my, px, py)) return;
+                pixelPositions.append(px);
+                pixelPositions.append(py);
             }
             m_xml.FloatArray(QStringLiteral("positions"), pixelPositions);
         }
@@ -1080,13 +1098,14 @@ void Generator::writeWarpDeformerEntities()
             QVector<float> positions;
             positions.reserve(gridVerts * 2);
             const bool onCanvas = (parentDeformer < 0);
-            const CCanvas_info* canvas = m_table.canvas_info;
             for (int v = 0; v < gridVerts; ++v) {
                 const float mx = kf.positions[v * 2];
                 const float my = kf.positions[v * 2 + 1];
                 if (onCanvas) {
-                    positions.append((mx + canvas->origin_x) * canvas->pixels_per_unit);
-                    positions.append((canvas->origin_y - my) * canvas->pixels_per_unit);
+                    float px, py;
+                    if (!modelToPixels(deformer->ids, mx, my, px, py)) return;
+                    positions.append(px);
+                    positions.append(py);
                 } else {
                     positions.append(mx);
                     positions.append(my);
@@ -1108,8 +1127,6 @@ void Generator::writeWarpDeformerEntities()
 
 void Generator::writeRotationDeformerEntities()
 {
-    const CCanvas_info* canvas = m_table.canvas_info;
-
     for (int d = 0; d < m_table.deformers.size(); ++d) {
         const CDeformers* deformer = m_table.deformers[d];
         if (deformer->types != 1) continue;
@@ -1174,14 +1191,13 @@ void Generator::writeRotationDeformerEntities()
             float px = kf.originX;
             float py = kf.originY;
             if (onCanvas) {
-                px = (kf.originX + canvas->origin_x) * canvas->pixels_per_unit;
-                py = (canvas->origin_y - kf.originY) * canvas->pixels_per_unit;
+                if (!modelToPixels(deformer->ids, kf.originX, kf.originY, px, py)) return;
             }
             m_xml.BeginObject(QStringLiteral("CRotationDeformerForm"));
-            m_xml.Attribute(QStringLiteral("angle"), CXsXmlWriter::FormatFloat(kf.angle));
-            m_xml.Attribute(QStringLiteral("originX"), CXsXmlWriter::FormatFloat(px));
-            m_xml.Attribute(QStringLiteral("originY"), CXsXmlWriter::FormatFloat(py));
-            m_xml.Attribute(QStringLiteral("scale"), CXsXmlWriter::FormatFloat(kf.scale));
+            m_xml.FloatAttribute(QStringLiteral("angle"), kf.angle);
+            m_xml.FloatAttribute(QStringLiteral("originX"), px);
+            m_xml.FloatAttribute(QStringLiteral("originY"), py);
+            m_xml.FloatAttribute(QStringLiteral("scale"), kf.scale);
             m_xml.Attribute(QStringLiteral("isReflectX"),
                             kf.reflectX ? QStringLiteral("true") : QStringLiteral("false"));
             m_xml.Attribute(QStringLiteral("isReflectY"),
@@ -1431,7 +1447,11 @@ void Generator::writeMain()
 
 bool Generator::Run(QString* outError)
 {
-    const QSize canvasSize = CTextureExtractor::GetCanvasPixelSize(m_table.canvas_info);
+    const QSize canvasSize = CCanvasGeometry::PixelSize(m_table.canvas_info->width, m_table.canvas_info->height);
+    if (canvasSize.isEmpty()) {
+        if (outError) *outError = QStringLiteral("cmo3 画布像素尺寸无效");
+        return false;
+    }
     m_canvasW = canvasSize.width();
     m_canvasH = canvasSize.height();
     loadDisplayNames();
@@ -1542,8 +1562,11 @@ bool Generator::Run(QString* outError)
     writeDeformerGuids();
     writePartEntities();
     writeArtMeshEntities();
+    if (!m_geometryError.isEmpty()) { if (outError) *outError = m_geometryError; return false; }
     writeWarpDeformerEntities();
+    if (!m_geometryError.isEmpty()) { if (outError) *outError = m_geometryError; return false; }
     writeRotationDeformerEntities();
+    if (!m_geometryError.isEmpty()) { if (outError) *outError = m_geometryError; return false; }
     writeGlueEntities();
 
     // ---- Part 源（childGuids 现已齐全） ----
@@ -1694,7 +1717,9 @@ bool Generator::Run(QString* outError)
     m_xml.EndDocument();
 
     if (m_xml.HasError()) {
-        if (outError) *outError = QStringLiteral("cmo3 XML 写出失败，请检查名称、标签等字段中的非法字符");
+        if (outError) *outError = m_xml.NumberError().isEmpty()
+            ? QStringLiteral("cmo3 XML 写出失败，请检查名称、标签等字段中的非法字符")
+            : QStringLiteral("cmo3 数值写出失败：%1").arg(m_xml.NumberError());
         return false;
     }
 
@@ -1716,9 +1741,13 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     CReader reader(opt.mocPath);
     CSectionTable table(reader);
     if (!table.IsValid() || !table.count_info || !table.canvas_info || !table.uvs ||
-        !table.position_indices || !table.keyform_positions || !table.keys ||
-        !std::isfinite(table.canvas_info->pixels_per_unit) || table.canvas_info->pixels_per_unit <= 0.0f) {
-        if (outError) *outError = QStringLiteral("moc3 解析失败: %1").arg(opt.mocPath);
+        !table.position_indices || !table.keyform_positions || !table.keys) {
+        if (outError) *outError = QStringLiteral("moc3 解析失败: %1").arg(reader.Error().isEmpty() ? opt.mocPath : reader.Error());
+        return false;
+    }
+    QString canvasError;
+    if (!CCanvasGeometry::Validate(table.canvas_info, &canvasError)) {
+        if (outError) *outError = QStringLiteral("cmo3 画布无效：%1").arg(canvasError);
         return false;
     }
 

@@ -9,6 +9,9 @@
 #include <QTemporaryDir>
 #include <QXmlStreamReader>
 #include <QtEndian>
+#include <array>
+#include <cstring>
+#include <limits>
 
 namespace {
 struct XmlNode
@@ -104,12 +107,244 @@ void writeInt(QByteArray& bytes, int offset, int value)
     Q_ASSERT(offset >= 0 && offset <= bytes.size() - 4);
     qToLittleEndian<qint32>(value, reinterpret_cast<uchar*>(bytes.data() + offset));
 }
+
+void writeFloat(QByteArray& bytes, int offset, float value)
+{
+    quint32 bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    qToLittleEndian<quint32>(bits, reinterpret_cast<uchar*>(bytes.data() + offset));
+}
 }
 
 class Cmo3DeformerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void invalidCanvasPreservesExistingOutput_data()
+    {
+        QTest::addColumn<int>("field");
+        QTest::addColumn<float>("value");
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const float infinity = std::numeric_limits<float>::infinity();
+        for (int field : {3, 4}) {
+            QTest::newRow(qPrintable(QString("dimension-%1-nan").arg(field))) << field << nan;
+            QTest::newRow(qPrintable(QString("dimension-%1-inf").arg(field))) << field << infinity;
+            QTest::newRow(qPrintable(QString("dimension-%1-negative").arg(field))) << field << -1.0f;
+            QTest::newRow(qPrintable(QString("dimension-%1-zero").arg(field))) << field << 0.0f;
+            QTest::newRow(qPrintable(QString("dimension-%1-overflow").arg(field))) << field << 2147483648.0f;
+            QTest::newRow(qPrintable(QString("dimension-%1-subpixel").arg(field))) << field << 0.25f;
+        }
+        QTest::newRow("ppu-nan") << 0 << nan;
+        QTest::newRow("ppu-inf") << 0 << infinity;
+        QTest::newRow("ppu-zero") << 0 << 0.0f;
+        QTest::newRow("ppu-negative") << 0 << -1.0f;
+        for (int field : {1, 2}) {
+            QTest::newRow(qPrintable(QString("origin-%1-nan").arg(field))) << field << nan;
+            QTest::newRow(qPrintable(QString("origin-%1-inf").arg(field))) << field << infinity;
+            QTest::newRow(qPrintable(QString("origin-%1-negative-inf").arg(field))) << field << -infinity;
+        }
+    }
+
+    void invalidCanvasPreservesExistingOutput()
+    {
+        QFETCH(int, field);
+        QFETCH(float, value);
+        const QString model = QStringLiteral("Mark");
+        QFile source(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3");
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        QByteArray bytes = source.readAll();
+        QVERIFY(bytes.size() >= 0x48);
+        const int canvasOffset = qFromLittleEndian<qint32>(bytes.constData() + 0x44);
+        QVERIFY(canvasOffset >= 0 && canvasOffset <= bytes.size() - 20);
+        writeFloat(bytes, canvasOffset + field * 4, value);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QDir directory(temporary.path());
+        QVERIFY(copyInputs(model, directory));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = directory.filePath(model + ".moc3");
+        options.outPath = directory.filePath("existing.cmo3");
+        QVERIFY(saveBytes(options.mocPath, bytes));
+        const QByteArray original("previous-project");
+        QVERIFY(saveBytes(options.outPath, original));
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(error.contains(QStringLiteral("画布")) || error.contains("canvas", Qt::CaseInsensitive), qPrintable(error));
+        QFile target(options.outPath);
+        QVERIFY(target.open(QIODevice::ReadOnly));
+        QCOMPARE(target.readAll(), original);
+    }
+
+    void finitePixelConversionOverflowPreservesExistingOutput_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("mesh") << 0;
+        QTest::newRow("warp") << 1;
+        QTest::newRow("rotation") << 2;
+    }
+
+    void finitePixelConversionOverflowPreservesExistingOutput()
+    {
+        QFETCH(int, kind);
+        const QString mocPath = QString(TEST_RESOURCES) + QStringLiteral("/Mark/Mark.moc3");
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        const float maximum = std::numeric_limits<float>::max();
+        bool changed = false;
+        if (kind == 0) {
+            const auto& mesh = document.Drawables().first();
+            QVERIFY(!mesh.keyforms.isEmpty() && !mesh.keyforms.first().positions.isEmpty());
+            auto positions = mesh.keyforms.first().positions;
+            positions[0] = maximum;
+            options.drawableKeyformPositionOverrides.insert(mesh.id, {positions});
+            changed = true;
+        } else {
+            for (const auto& deformer : document.Deformers()) {
+                if (kind == 1 && deformer.type == live2dstruct::CModelDeformer::Warp) {
+                    auto forms = document.DeformerWarpKeyforms(deformer.id);
+                    if (forms.isEmpty() || forms[0].positions.isEmpty()) continue;
+                    forms[0].positions[0] = maximum;
+                    options.deformerWarpKeyformOverrides.insert(deformer.id, forms);
+                } else if (kind == 2 && deformer.type == live2dstruct::CModelDeformer::Rotation) {
+                    auto forms = document.DeformerRotationKeyforms(deformer.id);
+                    if (forms.isEmpty()) continue;
+                    forms[0].originX = maximum;
+                    options.deformerRotationKeyformOverrides.insert(deformer.id, forms);
+                } else continue;
+                options.deformerParentOverrides.insert(deformer.id, -1);
+                changed = true;
+                break;
+            }
+        }
+        QVERIFY(changed);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        options.outPath = temporary.filePath("existing.cmo3");
+        const QByteArray original("previous-project");
+        QVERIFY(saveBytes(options.outPath, original));
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(error.contains("float") && error.contains(QStringLiteral("坐标")), qPrintable(error));
+        QFile target(options.outPath);
+        QVERIFY(target.open(QIODevice::ReadOnly));
+        QCOMPARE(target.readAll(), original);
+    }
+
+    void rootCoordinatesUsePixelOrigins_data()
+    {
+        QTest::addColumn<QString>("model");
+        QTest::addColumn<QPointF>("center");
+        QTest::addColumn<QPointF>("shifted");
+        QTest::addColumn<bool>("customCanvas");
+        QTest::newRow("Mark") << QString("Mark") << QPointF(1200, 1500) << QPointF(6000, 8700) << false;
+        QTest::newRow("Rice") << QString("Rice") << QPointF(2250, 1500) << QPointF(8250, 10500) << false;
+        QTest::newRow("Natori") << QString("Natori") << QPointF(2000, 3500) << QPointF(10000, 15500) << false;
+        QTest::newRow("Wanko") << QString("Wanko") << QPointF(600, 600) << QPointF(3000, 4200) << false;
+        QTest::newRow("independent-canvas-origin") << QString("Mark") << QPointF(30, 40) << QPointF(50, 70) << true;
+    }
+
+    void rootCoordinatesUsePixelOrigins()
+    {
+        QFETCH(QString, model);
+        QFETCH(QPointF, center);
+        QFETCH(QPointF, shifted);
+        QFETCH(bool, customCanvas);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        QVERIFY(!table.art_meshes.isEmpty());
+        QByteArray bytes = reader.m_byte;
+        writeInt(bytes, table.sectionOffsetTable->art_meshes->parent_deformer_indices, -1);
+        if (customCanvas) {
+            const int canvas = qFromLittleEndian<qint32>(bytes.constData() + 0x44);
+            const std::array<float, 5> fields{10, 30, 40, 200, 300};
+            for (int field = 0; field < 5; ++field) writeFloat(bytes, canvas + field * 4, fields[field]);
+        }
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QDir directory(temporary.path());
+        QVERIFY(copyInputs(model, directory));
+        const QString mocPath = directory.filePath(model + ".moc3");
+        QVERIFY(saveBytes(mocPath, bytes));
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const auto& mesh = document.Drawables().first();
+        QVERIFY(mesh.vertexCount >= 2 && !mesh.keyforms.isEmpty());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = directory.filePath("canvas.cmo3");
+        auto meshPositions = mesh.keyforms.first().positions;
+        meshPositions[0] = 0;
+        meshPositions[1] = 0;
+        meshPositions[2] = 2;
+        meshPositions[3] = -3;
+        options.drawableKeyformPositionOverrides.insert(mesh.id, {meshPositions});
+        QString warpId, rotationId;
+        for (const auto& deformer : document.Deformers()) {
+            if (warpId.isEmpty() && deformer.type == live2dstruct::CModelDeformer::Warp) {
+                auto forms = document.DeformerWarpKeyforms(deformer.id);
+                if (forms.isEmpty() || forms[0].positions.size() < 4) continue;
+                forms[0].positions[0] = 0;
+                forms[0].positions[1] = 0;
+                forms[0].positions[2] = 2;
+                forms[0].positions[3] = -3;
+                options.deformerWarpKeyformOverrides.insert(deformer.id, forms);
+                options.deformerParentOverrides.insert(deformer.id, -1);
+                warpId = deformer.id;
+            }
+            if (rotationId.isEmpty() && deformer.type == live2dstruct::CModelDeformer::Rotation) {
+                auto forms = document.DeformerRotationKeyforms(deformer.id);
+                if (forms.size() < 2) continue;
+                forms[0].originX = 0;
+                forms[0].originY = 0;
+                forms[1].originX = 2;
+                forms[1].originY = -3;
+                options.deformerRotationKeyformOverrides.insert(deformer.id, forms);
+                options.deformerParentOverrides.insert(deformer.id, -1);
+                rotationId = deformer.id;
+            }
+        }
+        QVERIFY(!warpId.isEmpty() && !rotationId.isEmpty());
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        const auto findSource = [&](const QString& tag, const QString& id) {
+            for (int index = 0; index < xml.nodes.size(); ++index)
+                if (xml.nodes[index].tag == tag && !xml.attribute(index, "xs.id").isEmpty() &&
+                    xml.attribute(xml.field(xml.field(index, "super"), "id"), "idstr") == id) return index;
+            return -1;
+        };
+        const int meshSource = findSource("CArtMeshSource", mesh.id);
+        const int warpSource = findSource("CWarpDeformerSource", warpId);
+        const int rotationSource = findSource("CRotationDeformerSource", rotationId);
+        QVERIFY(meshSource >= 0 && warpSource >= 0 && rotationSource >= 0);
+        for (int source : {meshSource, warpSource}) {
+            const int forms = xml.field(source, "keyforms");
+            QVERIFY(forms >= 0 && !xml.nodes[forms].children.isEmpty());
+            const auto values = xml.text(xml.field(xml.nodes[forms].children[0], "positions")).split(' ', Qt::SkipEmptyParts);
+            QVERIFY(values.size() >= 4);
+            QCOMPARE(QPointF(values[0].toDouble(), values[1].toDouble()), center);
+            QCOMPARE(QPointF(values[2].toDouble(), values[3].toDouble()), shifted);
+        }
+        const auto top = xml.text(xml.field(meshSource, "positions")).split(' ', Qt::SkipEmptyParts);
+        QVERIFY(top.size() >= 4);
+        QCOMPARE(QPointF(top[0].toDouble(), top[1].toDouble()), center);
+        QCOMPARE(QPointF(top[2].toDouble(), top[3].toDouble()), shifted);
+        const int forms = xml.field(rotationSource, "keyforms");
+        QVERIFY(forms >= 0 && xml.nodes[forms].children.size() >= 2);
+        QCOMPARE(QPointF(xml.attribute(xml.nodes[forms].children[0], "originX").toDouble(),
+                         xml.attribute(xml.nodes[forms].children[0], "originY").toDouble()), center);
+        QCOMPARE(QPointF(xml.attribute(xml.nodes[forms].children[1], "originX").toDouble(),
+                         xml.attribute(xml.nodes[forms].children[1], "originY").toDouble()), shifted);
+    }
+
     void sourceRelationships_data()
     {
         QTest::addColumn<QString>("model");
@@ -252,8 +487,8 @@ private slots:
                     for (int v = 0; v < values.size(); ++v) {
                         float expectedValue = expected[k].positions[v];
                         if (parent < 0) expectedValue = v % 2 == 0
-                            ? (expectedValue + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit
-                            : (table.canvas_info->origin_y - expectedValue) * table.canvas_info->pixels_per_unit;
+                            ? static_cast<float>(double(expectedValue) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x)
+                            : static_cast<float>(table.canvas_info->origin_y - double(expectedValue) * table.canvas_info->pixels_per_unit);
                         QCOMPARE(values[v].toFloat(), expectedValue);
                     }
                     QCOMPARE(xml.text(xml.field(xml.field(forms[k], "super"), "opacity")).toFloat(), expected[k].opacity);
@@ -267,9 +502,9 @@ private slots:
                     const auto& form = expected[k];
                     QCOMPARE(xml.attribute(forms[k], "angle").toFloat(), form.angle);
                     QCOMPARE(xml.attribute(forms[k], "originX").toFloat(), parent >= 0 ? form.originX :
-                             (form.originX + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit);
+                             static_cast<float>(double(form.originX) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x));
                     QCOMPARE(xml.attribute(forms[k], "originY").toFloat(), parent >= 0 ? form.originY :
-                             (table.canvas_info->origin_y - form.originY) * table.canvas_info->pixels_per_unit);
+                             static_cast<float>(table.canvas_info->origin_y - double(form.originY) * table.canvas_info->pixels_per_unit));
                     QCOMPARE(xml.attribute(forms[k], "scale").toFloat(), form.scale);
                     QCOMPARE(xml.attribute(forms[k], "isReflectX"), form.reflectX ? QString("true") : QString("false"));
                     QCOMPARE(xml.attribute(forms[k], "isReflectY"), form.reflectY ? QString("true") : QString("false"));

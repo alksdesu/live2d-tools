@@ -24,6 +24,7 @@ endif()
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
     opengl/cuvgeometry.cpp
+    live2dstruct/ccanvasgeometry.cpp
     live2dstruct/cdraworder.cpp
     live2dstruct/cmeshtopology.cpp
     live2dstruct/cmotiontimeline.cpp
@@ -108,6 +109,10 @@ if(BUILD_TESTING)
     target_link_libraries(section_preflight_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(section_preflight_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME section_preflight COMMAND section_preflight_tests)
+    add_executable(canvas_geometry_tests tests/canvas_geometry_tests.cpp)
+    target_link_libraries(canvas_geometry_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(canvas_geometry_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME canvas_geometry COMMAND canvas_geometry_tests)
     add_executable(moc_optional_fields_tests tests/optional_moc_fields_tests.cpp)
     target_link_libraries(moc_optional_fields_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_optional_fields_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

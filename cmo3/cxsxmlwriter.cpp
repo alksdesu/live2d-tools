@@ -1,4 +1,5 @@
 #include "cxsxmlwriter.h"
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -80,6 +81,19 @@ void CXsXmlWriter::Attribute(const QString& name, const QString& value)
     m_xml.writeAttribute(name, value);
 }
 
+bool CXsXmlWriter::ValidateNumber(const QString& fieldName, float value)
+{
+    if (std::isfinite(value)) return true;
+    if (m_numberError.isEmpty()) m_numberError = QStringLiteral("字段 %1 包含非有限数值").arg(fieldName);
+    return false;
+}
+
+void CXsXmlWriter::FloatAttribute(const QString& name, float value)
+{
+    if (!ValidateNumber(name, value)) return;
+    m_xml.writeAttribute(name, FormatFloat(value));
+}
+
 void CXsXmlWriter::Ref(const QString& className, const QString& fieldName, const QString& id)
 {
     m_xml.writeStartElement(className);
@@ -121,6 +135,7 @@ void CXsXmlWriter::L(const QString& fieldName, qint64 value)
 
 void CXsXmlWriter::F(const QString& fieldName, float value)
 {
+    if (!ValidateNumber(fieldName, value)) return;
     m_xml.writeStartElement(QStringLiteral("f"));
     if (!fieldName.isEmpty()) m_xml.writeAttribute(kAttrN, fieldName);
     m_xml.writeCharacters(FormatFloat(value));
@@ -153,6 +168,11 @@ void CXsXmlWriter::Enum(const QString& className, const QString& fieldName, cons
 
 void CXsXmlWriter::FloatArray(const QString& fieldName, const QVector<float>& values)
 {
+    for (qsizetype index = 0; index < values.size(); ++index) {
+        if (std::isfinite(values[index])) continue;
+        ValidateNumber(QStringLiteral("%1[%2]").arg(fieldName).arg(index), values[index]);
+        return;
+    }
     m_xml.writeStartElement(QStringLiteral("float-array"));
     if (!fieldName.isEmpty()) m_xml.writeAttribute(kAttrN, fieldName);
     m_xml.writeAttribute(QStringLiteral("count"), QString::number(values.size()));

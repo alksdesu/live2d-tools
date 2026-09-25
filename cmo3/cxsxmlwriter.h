@@ -34,6 +34,7 @@ public:
                      const QString& id = QString());
     void EndObject();
     void Attribute(const QString& name, const QString& value);
+    void FloatAttribute(const QString& name, float value);
 
     // ---- 引用与原生字段（fieldName 为空则不输出 xs.n） ----
     void Ref(const QString& className, const QString& fieldName, const QString& id);
@@ -63,15 +64,18 @@ public:
                     const QString& note = QStringLiteral("(no debug info)"));
 
     QByteArray Result() const { return m_buffer; }
-    bool HasError() const { return m_xml.hasError(); }
+    bool HasError() const { return m_xml.hasError() || !m_numberError.isEmpty(); }
+    const QString& NumberError() const { return m_numberError; }
 
     // Java float 风格格式化（最短往返表示，如 "1.0"、"0.14434664"）
     static QString FormatFloat(float value);
 
 private:
+    bool ValidateNumber(const QString& fieldName, float value);
     QByteArray m_buffer;
     QXmlStreamWriter m_xml;
     int m_nextId = 0;
+    QString m_numberError;
 };
 
 } // namespace cmo3

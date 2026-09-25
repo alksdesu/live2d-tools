@@ -35,6 +35,7 @@ OBJECTS_DIR = $${OUTPUTDIR}/objs
 DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
+    live2dstruct/ccanvasgeometry.cpp \
     live2dstruct/cdraworder.cpp \
     live2dstruct/cmeshtopology.cpp \
     ui/cinspectorpanel.cpp \
@@ -228,6 +229,7 @@ SOURCES += \
     cmo3/ccmo3builder.cpp \
 
 HEADERS += \
+    live2dstruct/ccanvasgeometry.h \
     live2dstruct/cdraworder.h \
     live2dstruct/cdrawableflags.h \
     live2dstruct/cmeshtopology.h \

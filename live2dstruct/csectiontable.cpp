@@ -1,5 +1,6 @@
 #include "csectiontable.h"
 #include "csectionvalidation.h"
+#include "ccanvasgeometry.h"
 #include <type_traits>
 namespace live2dstruct {
 
@@ -17,7 +18,13 @@ CSectionTable::CSectionTable(CReader& bytes)
     if (!bytes.IsValid() || !CSectionValidation::ValidateMetadata(bytes, *sectionOffsetTable)) return;
     count_info = new CCount_info(bytes, *sectionOffsetTable->count_info);
     canvas_info = new CCanvas_info(bytes, *sectionOffsetTable->canvas_info);
-    if (!bytes.IsValid() || !CSectionValidation::ValidateArrays(bytes, *sectionOffsetTable, *count_info)) return;
+    if (!bytes.IsValid()) return;
+    QString canvasError;
+    if (!CCanvasGeometry::Validate(canvas_info, &canvasError)) {
+        bytes.Fail(canvasError);
+        return;
+    }
+    if (!CSectionValidation::ValidateArrays(bytes, *sectionOffsetTable, *count_info)) return;
 
     const auto readItems = [&bytes](auto& target, const auto& offsets, int count) {
         using Item = std::remove_pointer_t<typename std::decay_t<decltype(target)>::value_type>;

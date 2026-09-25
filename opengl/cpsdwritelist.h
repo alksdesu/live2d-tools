@@ -17,7 +17,7 @@ public:
     CPsdWriteList();
     ~CPsdWriteList();
 
-    void CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
+    bool CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
     bool WritePsd();
     static uint32_t CubismBlendModeToPsd(Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode mode);
     void AddLayer(const QString& layerName,const QRect& rect,const QImage& image );

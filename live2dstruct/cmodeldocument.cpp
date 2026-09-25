@@ -2,6 +2,7 @@
 #include "cmeshtopology.h"
 #include "cdrawableflags.h"
 #include "csectiontable.h"
+#include "ccanvasgeometry.h"
 #include "util/cfilereader.h"
 #include "struct/cart_mesh_keyforms.h"
 #include <QHash>
@@ -110,7 +111,7 @@ bool CModelDocument::LoadInternal(const QString& mocPath, QString* error)
     }
 
     m_sourcePath = mocPath;
-    m_canvasPixels = QSize(qRound(table.canvas_info->width), qRound(table.canvas_info->height));
+    m_canvasPixels = CCanvasGeometry::PixelSize(table.canvas_info->width, table.canvas_info->height);
 
     m_parameters.reserve(table.parameters.size());
     for (const CParameters* source : table.parameters) {

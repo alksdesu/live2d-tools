@@ -217,7 +217,7 @@ private slots:
         mesh.CanvasPositions({-1, -2, 1, -2, 1, 2, -1, 2}, 10, 3, 4);
         auto layers = mesh.Extract();
         QCOMPARE(layers.size(), 1);
-        QCOMPARE(layers[0].canvasRect, QRect(20, 20, 20, 40));
+        QCOMPARE(layers[0].canvasRect, QRect(-7, -16, 20, 40));
         mesh.CanvasPositions({2147483392.0f, 0, 2147483520.0f, 0, 2147483520.0f, 1, 2147483392.0f, 1}, 1);
         layers = mesh.Extract();
         QCOMPARE(layers.size(), 1);

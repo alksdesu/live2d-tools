@@ -3,6 +3,7 @@
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cmeshtopology.h"
 #include "live2dstruct/cdrawableflags.h"
+#include "live2dstruct/ccanvasgeometry.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -30,14 +31,7 @@ bool CTextureExtractor::LoadAtlases(const QVector<QString>& atlasPaths)
 
 QSize CTextureExtractor::GetCanvasPixelSize(const CCanvas_info* canvasInfo)
 {
-    if (!canvasInfo) return {};
-    const double w = canvasInfo->width;
-    const double h = canvasInfo->height;
-    if (!std::isfinite(w) || !std::isfinite(h) || w <= 0 || h <= 0 ||
-        w > std::numeric_limits<int>::max() || h > std::numeric_limits<int>::max()) {
-        return {};
-    }
-    return QSize(qRound(w), qRound(h));
+    return canvasInfo ? CCanvasGeometry::PixelSize(canvasInfo->width, canvasInfo->height) : QSize();
 }
 
 uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)
@@ -232,22 +226,16 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
 QRect CTextureExtractor::ComputeCanvasRect(const float* positions, int vertexCount,
                                             const CCanvas_info* canvasInfo)
 {
-    if (!positions || !canvasInfo || vertexCount <= 0 || vertexCount > 1000000 ||
-        !std::isfinite(canvasInfo->pixels_per_unit) || canvasInfo->pixels_per_unit <= 0.0f ||
-        !std::isfinite(canvasInfo->origin_x) || !std::isfinite(canvasInfo->origin_y)) return {};
-    const double ppu = canvasInfo->pixels_per_unit;
-    const double originX = canvasInfo->origin_x, originY = canvasInfo->origin_y;
+    if (!positions || !canvasInfo || vertexCount <= 0 || vertexCount > 1000000) return {};
     double minX = std::numeric_limits<double>::max(), minY = minX;
     double maxX = -minX, maxY = -minX;
     for (int vertex = 0; vertex < vertexCount; ++vertex) {
-        const double x = positions[vertex * 2], y = positions[vertex * 2 + 1];
-        if (!std::isfinite(x) || !std::isfinite(y)) return {};
-        const double pixelX = (x + originX) * ppu, pixelY = (originY - y) * ppu;
-        if (!std::isfinite(pixelX) || !std::isfinite(pixelY)) return {};
-        minX = std::min(minX, pixelX);
-        minY = std::min(minY, pixelY);
-        maxX = std::max(maxX, pixelX);
-        maxY = std::max(maxY, pixelY);
+        QPointF pixels;
+        if (!CCanvasGeometry::ModelToPixels(canvasInfo, QPointF(positions[vertex * 2], positions[vertex * 2 + 1]), pixels)) return {};
+        minX = std::min(minX, pixels.x());
+        minY = std::min(minY, pixels.y());
+        maxX = std::max(maxX, pixels.x());
+        maxY = std::max(maxY, pixels.y());
     }
     const double left = std::floor(minX), top = std::floor(minY);
     const double right = std::ceil(maxX), bottom = std::ceil(maxY);

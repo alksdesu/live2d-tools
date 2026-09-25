@@ -22,7 +22,7 @@ uint32_t CPsdWriteList::CubismBlendModeToPsd(Live2D::Cubism::Framework::Renderin
     }
 }
 
-void CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismCompat)
+bool CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismCompat)
 {
     if (m_list) {
         delete m_list;
@@ -33,7 +33,10 @@ void CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismComp
     m_groupNameStack.clear();
     m_nameUse.clear();
     m_list = new CPsdList();
-    m_list->SetPsd(name,w,h,cubismCompat);
+    if (m_list->SetPsd(name,w,h,cubismCompat)) return true;
+    delete m_list;
+    m_list = nullptr;
+    return false;
 }
 
 // Cubism 导入时同名图层会关联错乱，兼容模式下对重名追加序号后缀

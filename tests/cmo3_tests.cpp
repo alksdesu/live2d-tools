@@ -15,11 +15,91 @@
 #include <QTemporaryDir>
 #include <QXmlStreamReader>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <locale>
+#include <sstream>
 
 class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void xmlFloatWritersRejectNonfiniteValues_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::addColumn<float>("value");
+        for (int kind = 0; kind < 3; ++kind) {
+            QTest::newRow(qPrintable(QStringLiteral("field-%1-nan").arg(kind))) << kind << std::numeric_limits<float>::quiet_NaN();
+            QTest::newRow(qPrintable(QStringLiteral("field-%1-positive-infinity").arg(kind))) << kind << std::numeric_limits<float>::infinity();
+            QTest::newRow(qPrintable(QStringLiteral("field-%1-negative-infinity").arg(kind))) << kind << -std::numeric_limits<float>::infinity();
+        }
+    }
+
+    void xmlFloatWritersRejectNonfiniteValues()
+    {
+        QFETCH(int, kind);
+        QFETCH(float, value);
+        cmo3::CXsXmlWriter writer;
+        writer.BeginDocument({}, {}, "1");
+        writer.BeginObject("Test");
+        if (kind == 0) writer.F("first-number", value);
+        else if (kind == 1) writer.FloatArray("first-number", {1, value, 3});
+        else writer.FloatAttribute("first-number", value);
+        QVERIFY(writer.HasError());
+        QVERIFY(writer.NumberError().contains("first-number"));
+        const QString firstError = writer.NumberError();
+        writer.F("second-number", std::numeric_limits<float>::infinity());
+        QCOMPARE(writer.NumberError(), firstError);
+        writer.EndObject();
+        writer.EndDocument();
+        QVERIFY(writer.HasError());
+        QVERIFY(!writer.Result().contains("nan"));
+        QVERIFY(!writer.Result().contains("inf"));
+    }
+
+    void finiteFloatWriterFormattingRemainsRoundTrippable()
+    {
+        const QVector<float> values{0, -0.0f, 1, -2.5f, 0.14434664f,
+            std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest(),
+            std::numeric_limits<float>::denorm_min()};
+        for (float value : values) {
+            const QString formatted = cmo3::CXsXmlWriter::FormatFloat(value);
+            std::istringstream input(formatted.toStdString());
+            input.imbue(std::locale::classic());
+            float converted = 0;
+            input >> converted;
+            QVERIFY(input.eof() && !input.bad());
+            const bool representedSubnormal = std::fpclassify(converted) == FP_SUBNORMAL && converted == value;
+            QVERIFY(!input.fail() || representedSubnormal);
+            QCOMPARE(converted, value);
+            cmo3::CXsXmlWriter writer;
+            writer.BeginDocument({}, {}, "1");
+            writer.BeginObject("Test");
+            writer.FloatAttribute("attribute", value);
+            writer.F("number", value);
+            writer.FloatArray("array", {value});
+            writer.EndObject();
+            writer.EndDocument();
+            QVERIFY(!writer.HasError());
+            QXmlStreamReader xml(writer.Result());
+            xml.setNamespaceProcessing(false);
+            QString attribute, number, array;
+            while (!xml.atEnd()) {
+                xml.readNext();
+                if (!xml.isStartElement()) continue;
+                if (xml.name() == QLatin1String("Test")) attribute = xml.attributes().value("attribute").toString();
+                else if (xml.name() == QLatin1String("f")) number = xml.readElementText();
+                else if (xml.name() == QLatin1String("float-array")) array = xml.readElementText();
+            }
+            QVERIFY(!xml.hasError());
+            QCOMPARE(attribute, formatted);
+            QCOMPARE(number, formatted);
+            QCOMPARE(array, formatted);
+        }
+        QCOMPARE(cmo3::CXsXmlWriter::FormatFloat(1), QStringLiteral("1.0"));
+        QCOMPARE(cmo3::CXsXmlWriter::FormatFloat(-2.5f), QStringLiteral("-2.5"));
+    }
+
     void textureExtractionUsesValidatedTopologyOverrides()
     {
         live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3");
@@ -140,8 +220,8 @@ private slots:
             QCOMPARE(document.DrawableKeyformPositions(mesh->id, index), positions);
             if (mesh->parentDeformerIndex < 0) {
                 for (int vertex = 0; vertex < positions.size(); vertex += 2) {
-                    positions[vertex] = (positions[vertex] + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit;
-                    positions[vertex + 1] = (table.canvas_info->origin_y - positions[vertex + 1]) * table.canvas_info->pixels_per_unit;
+                    positions[vertex] = static_cast<float>(double(positions[vertex]) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x);
+                    positions[vertex + 1] = static_cast<float>(table.canvas_info->origin_y - double(positions[vertex + 1]) * table.canvas_info->pixels_per_unit);
                 }
             }
             QStringList expected;
@@ -406,7 +486,7 @@ private slots:
         QVERIFY(table.IsValid());
         float expected = 123.456f;
         if (meshIt->parentDeformerIndex < 0) {
-            expected = (123.456f + table.canvas_info->origin_x) * table.canvas_info->pixels_per_unit;
+            expected = static_cast<float>(double(123.456f) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x);
             edited[0] = 123.456f;
         } else {
             edited[0] = expected;

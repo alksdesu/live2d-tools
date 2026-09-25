@@ -52,7 +52,7 @@ CPsdList::~CPsdList()
     }
 }
 
-void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
+bool CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
 {
     m_docname = name;
     if (document) {
@@ -61,10 +61,14 @@ void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
     }
     m_failed = w <= 0 || h <= 0 || w > 30000 || h > 30000 || name.isEmpty() || name.contains(QChar::Null) ||
                static_cast<qint64>(w) * h > 100000000;
-    if (m_failed) return;
+    if (m_failed) return false;
     m_canvasWidth = static_cast<unsigned int>(w);
     m_canvasHeight = static_cast<unsigned int>(h);
     document = CreateExportDocument(&allocator, m_canvasWidth, m_canvasHeight, m_bitsPerChannel, m_colorMode);
+    if (!document) {
+        m_failed = true;
+        return false;
+    }
 
     if (cubismCompat) {
         // Cubism 导入要求 sRGB 色彩配置
@@ -79,6 +83,7 @@ void CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
             m_failed = true;
         }
     }
+    return !m_failed;
 }
 
 bool CPsdList::CanAppendLayer()

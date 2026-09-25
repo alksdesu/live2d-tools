@@ -258,7 +258,7 @@ private slots:
         QVERIFY(temp.isValid());
         const QString path = temp.filePath("missing/retry.psd");
         CPsdList writer;
-        writer.SetPsd(path, 1, 1);
+        QVERIFY(writer.SetPsd(path, 1, 1));
         writer.AddLayer("retained", RawImage(QImage::Format_ARGB32, qRgb(9, 8, 7)), QRect(0, 0, 1, 1));
         QVERIFY(!writer.CreatePsd());
         QVERIFY(QDir().mkpath(temp.filePath("missing")));
@@ -282,7 +282,7 @@ private slots:
         const auto restoreResource = qScopeGuard([] { Q_INIT_RESOURCE(icc); });
         QVERIFY(!QFile::exists(":/icc/sRGB.icc"));
         CPsdList writer;
-        writer.SetPsd(path, 1, 1, true);
+        QVERIFY(!writer.SetPsd(path, 1, 1, true));
         QVERIFY(!writer.CreatePsd());
         QCOMPARE(ReadFile(path), QByteArray("original"));
     }
@@ -468,11 +468,34 @@ private slots:
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
         CPsdList writer;
-        writer.SetPsd(temp.filePath("first.psd"), 2, 2);
+        QVERIFY(writer.SetPsd(temp.filePath("first.psd"), 2, 2));
         const QString invalidPath = temp.filePath("invalid.psd");
-        writer.SetPsd(invalidPath, 0, 2);
+        QVERIFY(!writer.SetPsd(invalidPath, 0, 2));
         QVERIFY(!writer.CreatePsd());
         QVERIFY(!QFile::exists(invalidPath));
+    }
+
+    void creationReportsPixelBudgetFailureBeforeExport()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath("existing.psd");
+        QVERIFY(SeedDestination(path));
+        CPsdList writer;
+        for (const QSize size : {QSize(16384, 16384), QSize(10001, 10000), QSize(30001, 1)}) {
+            QVERIFY(!writer.SetPsd(path, size.width(), size.height()));
+            QCOMPARE(ReadFile(path), QByteArray("original"));
+            QVERIFY(!writer.CreatePsd());
+            QCOMPARE(ReadFile(path), QByteArray("original"));
+        }
+        QVERIFY(writer.SetPsd(path, 1, 1));
+        writer.AddLayer("pixel", RawImage(QImage::Format_ARGB32, qRgb(19, 23, 31)), QRect(0, 0, 1, 1));
+        QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed;
+        QString error;
+        QVERIFY2(PsdBinary::Parse(ReadFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.canvas, QSize(1, 1));
+        QCOMPARE(parsed.layers.size(), 1);
     }
 };
 
