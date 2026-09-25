@@ -17,6 +17,9 @@ public:
     void SetDocument(CModelDocument* document);
     void SetPublisher(Publisher publisher, PreviewEnder ender);
     bool Activate(const QString& id, int keyform, const QMap<QString, float>& currentValues, QString* error = nullptr);
+    bool Activate(const QString& id, const QString& type, int keyform,
+                  const QMap<QString, float>& currentValues, QString* error = nullptr);
+    static bool Handles(const CModelEdit& edit);
     bool End(QString* error = nullptr);
     bool Submit(const CModelEdit& edit, QString* error = nullptr);
     bool Submit(const CModelEdit& edit, const QMap<QString, float>& currentValues,
@@ -30,6 +33,7 @@ public:
     bool IsActive() const { return !m_target.isEmpty(); }
     bool IsDragging() const { return m_drag.has_value(); }
     const QString& Target() const { return m_target; }
+    const QString& Type() const { return m_type; }
     int Keyform() const { return m_keyform; }
     const QMap<QString, float>& Pose() const { return m_pose; }
 
@@ -44,7 +48,10 @@ private:
         quint64 revision = 0;
     };
     bool CanEdit(const QString& id, int keyform, QString* error) const;
-    bool MakePose(const QString& id, int keyform, const QMap<QString, float>& base,
+    bool CanEdit(const QString& id, const QString& type, int keyform, QString* error) const;
+    static bool CanEditIn(const CModelDocument& document, const QString& id, const QString& type,
+                          int keyform, QString* error);
+    bool MakePose(const QString& id, const QString& type, int keyform, const QMap<QString, float>& base,
                   QMap<QString, float>& pose, QString* error) const;
     bool Publish(CModelDocument candidate, const QMap<QString, float>& pose, bool editing, QString* error);
     bool Ready(QString* error) const;
@@ -52,6 +59,7 @@ private:
     Publisher m_publish;
     PreviewEnder m_end;
     QString m_target;
+    QString m_type;
     int m_keyform = -1;
     QMap<QString, float> m_pose;
     QByteArray m_source;

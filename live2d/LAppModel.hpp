@@ -32,6 +32,7 @@ public:
     const QByteArray& GetSourceMocBytes() const { return m_sourceMocBytes; }
     const QByteArray& GetSourceMocDigest() const { return m_sourceMocDigest; }
     const QByteArray& GetPreviewMocDigest() const { return m_previewMocDigest; }
+    const QByteArray& GetPreviewMocBytes() const { return m_previewMocBytes; }
     bool ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);

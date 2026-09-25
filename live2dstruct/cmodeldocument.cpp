@@ -195,7 +195,8 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         setError(error, QStringLiteral("尚未加载模型快照"));
         return false;
     }
-    if (m_drawableKeyformPositionOverrides.isEmpty()) {
+    if (m_drawableKeyformPositionOverrides.isEmpty() && m_deformerWarpKeyformOverrides.isEmpty() &&
+        m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty()) {
         bytes = m_sourceBytes;
         return true;
     }
@@ -203,7 +204,8 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         setError(error, m_previewError);
         return false;
     }
-    return m_previewBuilder->Build(m_drawableKeyformPositionOverrides, bytes, error);
+    return m_previewBuilder->Build(m_drawableKeyformPositionOverrides, m_deformerWarpKeyformOverrides,
+                                  m_deformerRotationKeyformOverrides, m_deformerParentOverrides, bytes, error);
 }
 
 bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QString* error)
@@ -595,7 +597,8 @@ bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)
     }
     if (deformerIndex < 0) return false;
     if (parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex) return false;
-    if (parentIndex >= 0 && m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex) return false;
+    if (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
+        m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex) return false;
     QVector<int> states(m_deformers.size(), 0);
     int current = parentIndex;
     while (current >= 0) {
@@ -619,7 +622,8 @@ bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents
         }
         const int parentIndex = it.value();
         if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
-            (parentIndex >= 0 && m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
+            (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
+             m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
             return false;
         }
         candidate.insert(it.key(), parentIndex);

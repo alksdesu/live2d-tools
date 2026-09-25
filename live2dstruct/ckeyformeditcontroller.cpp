@@ -18,6 +18,7 @@ void CKeyformEditController::SetDocument(CModelDocument* document)
     if (m_publishing) return;
     m_document = document;
     m_target.clear();
+    m_type.clear();
     m_keyform = -1;
     m_pose.clear();
     m_source = document ? document->SourceDigest() : QByteArray();
@@ -40,53 +41,84 @@ bool CKeyformEditController::Ready(QString* error) const
     return true;
 }
 
+bool CKeyformEditController::Handles(const CModelEdit& edit)
+{
+    return edit.field == CModelEdit::KeyformPositions || edit.field == CModelEdit::WarpKeyforms ||
+           edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent;
+}
+
 bool CKeyformEditController::CanEdit(const QString& id, int keyform, QString* error) const
 {
-    if (!Ready(error)) return false;
-    const CModelDrawable* target = nullptr;
-    for (const auto& mesh : m_document->Drawables()) if (mesh.id == id) { target = &mesh; break; }
-    if (!target || keyform < 0 || keyform >= target->keyforms.size())
-        return fail(error, QStringLiteral("网格或关键形不存在"));
-    if (m_document->IsLocked(QStringLiteral("artmesh"), id))
-        return fail(error, QStringLiteral("网格已锁定：%1").arg(id));
+    return CanEdit(id, QStringLiteral("artmesh"), keyform, error);
+}
+
+bool CKeyformEditController::CanEdit(const QString& id, const QString& type, int keyform, QString* error) const
+{
+    return Ready(error) && CanEditIn(*m_document, id, type, keyform, error);
+}
+
+bool CKeyformEditController::CanEditIn(const CModelDocument& document, const QString& id, const QString& type,
+                                      int keyform, QString* error)
+{
+    int parent = -1, part = -1, count = -1;
+    if (type == QLatin1String("artmesh")) {
+        for (const auto& mesh : document.Drawables()) if (mesh.id == id) {
+            if (count >= 0) return fail(error, QStringLiteral("网格 ID 重复：%1").arg(id));
+            parent = mesh.parentDeformerIndex;
+            part = mesh.parentPartIndex;
+            count = mesh.keyforms.size();
+        }
+    } else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) {
+        for (const auto& deformer : document.Deformers()) if (deformer.id == id) {
+            if (count >= 0) return fail(error, QStringLiteral("变形器 ID 重复：%1").arg(id));
+            if ((type == QLatin1String("warp")) != (deformer.type == CModelDeformer::Warp))
+                return fail(error, QStringLiteral("变形器类型不匹配：%1").arg(id));
+            parent = document.DeformerParentIndex(id);
+            part = deformer.parentPartIndex;
+            count = deformer.type == CModelDeformer::Warp ? deformer.warpKeyforms.size() : deformer.rotationKeyforms.size();
+        }
+    }
+    if (count < 0 || keyform < -1 || keyform >= count || (type == QLatin1String("artmesh") && keyform < 0))
+        return fail(error, QStringLiteral("对象或关键形不存在"));
+    if (document.IsLocked(type, id))
+        return fail(error, QStringLiteral("对象已锁定：%1").arg(id));
     const auto checkParts = [&](int index) {
         QSet<int> visited;
         while (index != -1) {
-            if (index < 0 || index >= m_document->Parts().size() || visited.contains(index))
+            if (index < 0 || index >= document.Parts().size() || visited.contains(index))
                 return fail(error, QStringLiteral("部件父链无效"));
             visited.insert(index);
-            const auto& part = m_document->Parts()[index];
-            if (m_document->IsLocked(QStringLiteral("part"), part.id))
+            const auto& part = document.Parts()[index];
+            if (document.IsLocked(QStringLiteral("part"), part.id))
                 return fail(error, QStringLiteral("所属部件已锁定：%1").arg(part.id));
             index = part.parentIndex;
         }
         return true;
     };
-    if (!checkParts(target->parentPartIndex)) return false;
+    if (!checkParts(part)) return false;
     QSet<int> visited;
-    int parent = target->parentDeformerIndex;
     while (parent != -1) {
-        if (parent < 0 || parent >= m_document->Deformers().size() || visited.contains(parent))
+        if (parent < 0 || parent >= document.Deformers().size() || visited.contains(parent))
             return fail(error, QStringLiteral("变形器父链无效"));
         visited.insert(parent);
-        const auto& deformer = m_document->Deformers()[parent];
-        const auto type = deformer.type == CModelDeformer::Warp ? QStringLiteral("warp") : QStringLiteral("rotation");
-        if (m_document->IsLocked(type, deformer.id))
+        const auto& deformer = document.Deformers()[parent];
+        const auto parentType = deformer.type == CModelDeformer::Warp ? QStringLiteral("warp") : QStringLiteral("rotation");
+        if (document.IsLocked(parentType, deformer.id))
             return fail(error, QStringLiteral("父变形器已锁定：%1").arg(deformer.id));
         if (!checkParts(deformer.parentPartIndex)) return false;
-        parent = m_document->DeformerParentIndex(deformer.id);
+        parent = document.DeformerParentIndex(deformer.id);
     }
     return true;
 }
 
-bool CKeyformEditController::MakePose(const QString& id, int keyform, const QMap<QString, float>& base,
+bool CKeyformEditController::MakePose(const QString& id, const QString& type, int keyform, const QMap<QString, float>& base,
                                      QMap<QString, float>& pose, QString* error) const
 {
     QMap<QString, float> result;
     for (const auto& parameter : m_document->Parameters())
         result.insert(parameter.id, base.value(parameter.id, m_document->ParameterValue(parameter.id)));
     QMap<QString, float> corner;
-    if (!m_document->KeyformParameterValues(id, QStringLiteral("artmesh"), keyform, corner, error)) return false;
+    if (!m_document->KeyformParameterValues(id, type, keyform, corner, error)) return false;
     for (auto it = corner.cbegin(); it != corner.cend(); ++it) result.insert(it.key(), it.value());
     for (const auto& parameter : m_document->Parameters()) {
         const float value = result.value(parameter.id);
@@ -102,10 +134,16 @@ bool CKeyformEditController::MakePose(const QString& id, int keyform, const QMap
 bool CKeyformEditController::Activate(const QString& id, int keyform,
                                     const QMap<QString, float>& currentValues, QString* error)
 {
-    if (!CanEdit(id, keyform, error)) return false;
+    return Activate(id, QStringLiteral("artmesh"), keyform, currentValues, error);
+}
+
+bool CKeyformEditController::Activate(const QString& id, const QString& type, int keyform,
+                                    const QMap<QString, float>& currentValues, QString* error)
+{
+    if (!CanEdit(id, type, keyform, error) || keyform < 0) return false;
     if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
     QMap<QString, float> pose;
-    if (!MakePose(id, keyform, currentValues, pose, error)) return false;
+    if (!MakePose(id, type, keyform, currentValues, pose, error)) return false;
     if (!m_publish) return fail(error, QStringLiteral("尚未连接模型预览"));
     const quint64 revision = m_document->Revision();
     const auto* document = m_document;
@@ -118,6 +156,7 @@ bool CKeyformEditController::Activate(const QString& id, int keyform,
     if (m_document != document || m_document->Revision() != revision || m_document->SourceDigest() != m_source)
         return fail(error, QStringLiteral("提交期间文档已改变，请重新选择关键形"));
     m_target = id;
+    m_type = type;
     m_keyform = keyform;
     m_pose = std::move(pose);
     return true;
@@ -151,23 +190,46 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, QString* error)
 bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, float>& currentValues,
                                    int previewKeyform, QString* error)
 {
-    if (edit.field != CModelEdit::KeyformPositions || edit.type != QStringLiteral("artmesh") ||
-        !CanEdit(edit.name, edit.index, error)) return false;
+    if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型几何编辑"));
+    const bool parentEdit = edit.field == CModelEdit::DeformerParent;
+    const bool meshEdit = edit.field == CModelEdit::KeyformPositions;
+    const QString expectedType = meshEdit ? QStringLiteral("artmesh") :
+        edit.field == CModelEdit::WarpKeyforms ? QStringLiteral("warp") :
+        edit.field == CModelEdit::RotationKeyforms ? QStringLiteral("rotation") : edit.type;
+    if (edit.type != expectedType || (parentEdit && edit.type != QLatin1String("warp") && edit.type != QLatin1String("rotation")))
+        return fail(error, QStringLiteral("编辑数据与对象类型不匹配"));
+    if (!CanEdit(edit.name, edit.type, parentEdit ? -1 : previewKeyform, error)) return false;
     if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
-    const auto current = m_document->DrawableKeyformPositions(edit.name, edit.index);
-    if (!edit.before.canConvert<QVector<float>>() || edit.before.value<QVector<float>>() != current)
-        return fail(error, QStringLiteral("关键形在编辑期间已改变，请重新操作"));
+    bool current = false;
+    if (meshEdit) {
+        current = edit.before.canConvert<QVector<float>>() &&
+            edit.before.value<QVector<float>>() == m_document->DrawableKeyformPositions(edit.name, edit.index);
+    } else if (edit.field == CModelEdit::WarpKeyforms) {
+        current = edit.before.canConvert<QVector<CModelWarpKeyform>>() &&
+            edit.before.value<QVector<CModelWarpKeyform>>() == m_document->DeformerWarpKeyforms(edit.name);
+    } else if (edit.field == CModelEdit::RotationKeyforms) {
+        current = edit.before.canConvert<QVector<CModelRotationKeyform>>() &&
+            edit.before.value<QVector<CModelRotationKeyform>>() == m_document->DeformerRotationKeyforms(edit.name);
+    } else {
+        bool valid = false;
+        const int before = edit.before.toInt(&valid);
+        current = valid && before == m_document->DeformerParentIndex(edit.name);
+    }
+    if (!current) return fail(error, QStringLiteral("几何数据在编辑期间已改变，请重新操作"));
     auto pose = m_pose;
-    const bool keepTarget = IsActive() && m_target == edit.name;
-    if (!keepTarget && (!CanEdit(edit.name, previewKeyform, error) ||
-        !MakePose(edit.name, previewKeyform, currentValues, pose, error))) return false;
+    const bool keepTarget = IsActive() && m_target == edit.name && m_type == edit.type &&
+        (meshEdit || m_keyform == previewKeyform);
+    if (!parentEdit && !keepTarget && !MakePose(edit.name, edit.type, previewKeyform, currentValues, pose, error)) return false;
     CModelDocument candidate = *m_document;
     CModelEdit command = edit;
     command.coalesce = false;
-    if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("关键形编辑数据无效或没有变化"));
-    if (!Publish(std::move(candidate), pose, true, error)) return false;
-    if (!keepTarget) { m_target = edit.name; m_keyform = previewKeyform; }
-    m_pose = std::move(pose);
+    if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("几何编辑数据无效或没有变化"));
+    if (parentEdit && !CanEditIn(candidate, edit.name, edit.type, -1, error)) return false;
+    if (!Publish(std::move(candidate), pose, !parentEdit || IsActive(), error)) return false;
+    if (!parentEdit) {
+        if (!keepTarget) { m_target = edit.name; m_type = edit.type; m_keyform = previewKeyform; }
+        m_pose = std::move(pose);
+    }
     return true;
 }
 
@@ -178,8 +240,8 @@ bool CKeyformEditController::History(bool undo, CModelEdit& edit, QString* error
     CModelDocument candidate = *m_document;
     CModelEdit command;
     if (!(undo ? candidate.PeekUndoEdit(&command) : candidate.PeekRedoEdit(&command)) ||
-        command.field != CModelEdit::KeyformPositions)
-        return fail(error, QStringLiteral("当前历史不是关键形编辑"));
+        !Handles(command))
+        return fail(error, QStringLiteral("当前历史不是模型几何编辑"));
     if (!(undo ? candidate.UndoEdit() : candidate.RedoEdit()))
         return fail(error, QStringLiteral("无法恢复关键形历史"));
     if (!Publish(std::move(candidate), m_pose, IsActive(), error)) return false;
@@ -196,7 +258,7 @@ bool CKeyformEditController::Restore(CModelDocument candidate, QString* error)
 bool CKeyformEditController::BeginDrag(const QVector<int>& selected, const QVector<float>& runtimePositions,
                                      QString* error)
 {
-    if (!IsActive() || !CanEdit(m_target, m_keyform, error)) return false;
+    if (!IsActive() || m_type != QLatin1String("artmesh") || !CanEdit(m_target, m_keyform, error)) return false;
     if (m_drag || selected.isEmpty()) return fail(error, QStringLiteral("没有可拖动的顶点或拖拽尚未结束"));
     Drag drag;
     drag.start = *m_document;
@@ -278,6 +340,7 @@ bool CKeyformEditController::End(QString* error)
     if (m_document != document || m_document->Revision() != revision || m_document->SourceDigest() != m_source)
         return fail(error, QStringLiteral("恢复期间文档已改变，请重新选择关键形"));
     m_target.clear();
+    m_type.clear();
     m_keyform = -1;
     m_pose.clear();
     return true;

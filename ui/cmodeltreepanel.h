@@ -8,6 +8,7 @@
 #include <QLineEdit>
 
 class CCidJson;
+namespace live2dstruct { class CSectionTable; }
 
 class CModelTreePanel : public QDockWidget
 {
@@ -15,11 +16,13 @@ class CModelTreePanel : public QDockWidget
 public:
     explicit CModelTreePanel(QWidget *parent = nullptr);
     void BuildTree(const QString& mocPath, CCidJson* cid);
+    bool BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
     QMap<QString, bool> VisibilityState() const;
     QMap<QString, bool> LockedState() const;
 
 public slots:
     void HighlightMesh(const QString& artName);
+    void HighlightObject(const QString& id, const QString& type);
     void ApplyVisibilityState(const QMap<QString, bool>& state);
     void ApplyLockedState(const QMap<QString, bool>& state);
     void SetVisibility(const QString& name, const QString& type, bool visible);
@@ -36,6 +39,7 @@ signals:
     void ObjectLockChanged(const QString& name, const QString& type, bool locked);
 
 private:
+    void BuildTreeData(const live2dstruct::CSectionTable& section, CCidJson* cid);
     void setupPartTree(QTreeWidget* tree);
     void setupDeformerTree(QTreeWidget* tree);
     void onPartItemChanged(QTreeWidgetItem* item, int column);

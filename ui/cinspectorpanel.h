@@ -34,7 +34,9 @@ public:
     void SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler);
     void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);
     void SetKeyformHandler(std::function<bool(const QString&, int, QString*)> handler);
+    void SetDeformerKeyformHandler(std::function<bool(const QString&, const QString&, int, QString*)> handler);
     QString GetSelectionId() const { return m_selectionName; }
+    QString GetSelectionType() const { return m_selectionType; }
     int GetActiveKeyformIndex() const { return m_activeKeyformIndex; }
 
 public slots:
@@ -81,6 +83,7 @@ private:
     bool SubmitEdit(const live2dstruct::CModelEdit& edit);
     bool SubmitHistory(bool undo, live2dstruct::CModelEdit& edit);
     bool RequestKeyform(const QString& name, int index);
+    bool RequestDeformerKeyform(int index);
     void RejectEdit(const QString& error);
 
     live2dstruct::CModelDocument* m_document = nullptr;
@@ -89,6 +92,8 @@ private:
     std::function<bool(const QString&, int, QString*)> m_keyformHandler;
     bool m_submitting = false;
     int m_activeKeyformIndex = -1;
+    int m_activeDeformerKeyform = -1;
+    std::function<bool(const QString&, const QString&, int, QString*)> m_deformerKeyformHandler;
     QString m_selectionName;
     QString m_selectionType;
     QStringList m_selectionNames;

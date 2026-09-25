@@ -40,30 +40,30 @@ bool CDrawRotation::EnsureOpenGl()
     return shader->isLinked();
 }
 
-void CDrawRotation::Init(CRotationNode* node)
+bool CDrawRotation::Init(CRotationNode* node)
 {
     vetrclPos.clear();
     vetdirPos.clear();
-    if (!node || node->GetCurKeyForm().GetPosition().size() != 2 || node->GetCanvasPositions().size() != 2) return;
+    if (!node || node->GetCurKeyForm().GetPosition().size() != 2 || node->GetCanvasPositions().size() != 2) return false;
     base_angles = node->GetBaseAngles();
     cur = node->GetCurKeyForm();
     if (!std::isfinite(base_angles) || !std::isfinite(cur.Getangles()) ||
-        !std::isfinite(cur.Getorigin_x()) || !std::isfinite(cur.Getorigin_y()) || !ClaRect()) return;
+        !std::isfinite(cur.Getorigin_x()) || !std::isfinite(cur.Getorigin_y()) || !ClaRect()) return false;
     if (!node->MapToCanvas(vetrclPos, vetrclPos) || !node->MapToCanvas(vetdirPos, vetdirPos)) {
         vetrclPos.clear();
         vetdirPos.clear();
+        return false;
     }
+    return true;
 }
 
-void CDrawRotation::Draw(const QMatrix4x4& projection)
+bool CDrawRotation::PrepareOpenGl()
 {
-    if (!m_IsDraw || vetrclPos.size() != 8 || vetdirPos.size() != 8 || vetTex.size() != 8 || vetIndex.size() != 6 ||
-        !std::all_of(projection.constData(), projection.constData() + 16,
-                     [](float value) { return std::isfinite(value); })) return;
+    if (vetrclPos.size() != 8 || vetdirPos.size() != 8 || vetTex.size() != 8 || vetIndex.size() != 6) return false;
     auto* context = QOpenGLContext::currentContext();
-    if (!context || !context->isValid() || (m_context && m_context != context)) return;
+    if (!context || !context->isValid() || (m_context && m_context != context)) return false;
     auto* gl = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_3_3_Core>(context);
-    if (!gl || !gl->initializeOpenGLFunctions()) return;
+    if (!gl || !gl->initializeOpenGLFunctions()) return false;
     GLint program = 0, activeTexture = 0, texture = 0, unpackBuffer = 0;
     GLint alignment = 0, rowLength = 0, skipPixels = 0, skipRows = 0;
     gl->glGetIntegerv(GL_CURRENT_PROGRAM, &program);
@@ -91,9 +91,27 @@ void CDrawRotation::Draw(const QMatrix4x4& projection)
     gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     gl->glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
     gl->glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-    if (!EnsureOpenGl() ||
-        !m_originGeometry.Upload(vetrclPos.data(), 4, vetTex.data(), vetIndex.data(), 6) ||
-        !m_directionGeometry.Upload(vetdirPos.data(), 4, vetTex.data(), vetIndex.data(), 6) || !shader->bind()) return;
+    return EnsureOpenGl() &&
+        m_originGeometry.Upload(vetrclPos.data(), 4, vetTex.data(), vetIndex.data(), 6) &&
+        m_directionGeometry.Upload(vetdirPos.data(), 4, vetTex.data(), vetIndex.data(), 6);
+}
+
+void CDrawRotation::Draw(const QMatrix4x4& projection)
+{
+    if (!m_IsDraw || !std::all_of(projection.constData(), projection.constData() + 16,
+                                 [](float value) { return std::isfinite(value); }) || !PrepareOpenGl()) return;
+    auto* gl = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_3_3_Core>(QOpenGLContext::currentContext());
+    GLint program = 0, activeTexture = 0, texture = 0;
+    gl->glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    gl->glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+    gl->glActiveTexture(GL_TEXTURE0);
+    gl->glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    const auto restore = qScopeGuard([&] {
+        gl->glUseProgram(program);
+        gl->glBindTexture(GL_TEXTURE_2D, texture);
+        gl->glActiveTexture(activeTexture);
+    });
+    if (!shader->bind()) return;
     shader->setUniformValue("projection", projection);
     shader->setUniformValue("image", 0);
     m_rclTex->bind(0);

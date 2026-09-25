@@ -1,4 +1,5 @@
 #include "live2dstruct/ckeyformmappingcontext.h"
+#include "deformer_snapshot_fixture.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
 
@@ -13,160 +14,7 @@
 
 using namespace live2dstruct;
 
-namespace {
-QString sample(const QString& name)
-{
-    return QString(TEST_RESOURCES) + '/' + name + '/' + name + ".moc3";
-}
-
-void put(QByteArray& bytes, int offset, int value)
-{
-    Q_ASSERT(offset >= 0 && offset <= bytes.size() - 4);
-    qToLittleEndian(qint32(value), bytes.data() + offset);
-}
-
-void real(QByteArray& bytes, int offset, float value)
-{
-    quint32 bits;
-    std::memcpy(&bits, &value, 4);
-    qToLittleEndian(bits, bytes.data() + offset);
-}
-
-int integer(const QByteArray& bytes, int offset)
-{
-    return qFromLittleEndian<qint32>(bytes.constData() + offset);
-}
-
-bool write(const QString& path, const QByteArray& bytes)
-{
-    QFile file(path);
-    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
-}
-
-QMap<QString, float> pose(const CModelDocument& document)
-{
-    QMap<QString, float> values;
-    for (const auto& parameter : document.Parameters()) values.insert(parameter.id, document.ParameterValue(parameter.id));
-    return values;
-}
-
-bool near(const QVector<float>& actual, const QVector<float>& expected)
-{
-    if (actual.size() != expected.size()) return false;
-    for (int index = 0; index < actual.size(); ++index)
-        if (!std::isfinite(actual[index]) || std::abs(double(actual[index]) - expected[index]) > 0.00002) return false;
-    return true;
-}
-
-class Fixture
-{
-public:
-    Fixture(bool quad = true) : reader(sample("Mark")), table(reader), bytes(reader.m_byte)
-    {
-        if (!table.IsValid()) return;
-        const auto& o = *table.sectionOffsetTable;
-        for (int index = 0; index < 32; ++index) count(index, 0);
-        for (const auto& entry : {std::pair{1, 3}, {2, 1}, {3, 2}, {4, 1}, {5, 1}, {7, 1},
-                                  {8, 2}, {9, 2}, {10, 20}, {11, 1}, {12, 1}, {13, 1}, {14, 2}, {15, 6}, {16, 3}})
-            count(entry.first, entry.second);
-        for (int index = 0; index < 3; ++index) {
-            id(o.deformers->ids, index, index == 0 ? "Root" : index == 1 ? "Warp" : "Child");
-            column(o.deformers->keyform_binding_sources_indices, index, -1);
-            column(o.deformers->is_visible, index, 1);
-            column(o.deformers->is_enabled, index, 1);
-            column(o.deformers->parent_part_indices, index, -1);
-            column(o.deformers->parent_deformer_indices, index, index - 1);
-            column(o.deformers->types, index, index == 1 ? 0 : 1);
-            column(o.deformers->specific_sources_indices, index, index == 2 ? 1 : 0);
-        }
-        for (int index = 0; index < 2; ++index) {
-            column(o.rotation_deformers->keyform_binding_sources_indices, index, -1);
-            column(o.rotation_deformers->keyform_sources_begin_indices, index, index);
-            column(o.rotation_deformers->keyform_sources_counts, index, 1);
-            real(bytes, o.rotation_deformers->base_angles + index * 4, 0);
-            real(bytes, o.rotation_deformer_keyforms->opacities + index * 4, 1);
-            real(bytes, o.rotation_deformer_keyforms->angles + index * 4, index == 0 ? 90 : 0);
-            real(bytes, o.rotation_deformer_keyforms->origin_x + index * 4, index == 0 ? 10 : 0.25f);
-            real(bytes, o.rotation_deformer_keyforms->origin_y + index * 4, index == 0 ? -4 : 0.25f);
-            real(bytes, o.rotation_deformer_keyforms->scales + index * 4, index == 0 ? 1 : 0.5f);
-            column(o.rotation_deformer_keyforms->is_reflect_x, index, 0);
-            column(o.rotation_deformer_keyforms->is_reflect_y, index, 0);
-        }
-        column(o.warp_deformers->keyform_binding_sources_indices, 0, -1);
-        column(o.warp_deformers->keyform_sources_begin_indices, 0, 0);
-        column(o.warp_deformers->keyform_sources_counts, 0, 1);
-        column(o.warp_deformers->vertex_counts, 0, 4);
-        column(o.warp_deformers->rows, 0, 1);
-        column(o.warp_deformers->columns, 0, 1);
-        appendColumn(0x1d4, {quad ? 1 : 0});
-        real(bytes, o.warp_deformer_keyforms->opacities, 1);
-        column(o.warp_deformer_keyforms->keyform_position_sources_begin_indices, 0, 12);
-        id(o.art_meshes->ids, 0, "Mesh");
-        column(o.art_meshes->keyform_binding_sources_indices, 0, 0);
-        column(o.art_meshes->keyform_sources_begin_indices, 0, 0);
-        column(o.art_meshes->keyform_sources_counts, 0, 2);
-        column(o.art_meshes->is_visible, 0, 1);
-        column(o.art_meshes->is_enabled, 0, 1);
-        column(o.art_meshes->parent_part_indices, 0, -1);
-        column(o.art_meshes->parent_deformer_indices, 0, 2);
-        column(o.art_meshes->texture_nos, 0, 0);
-        bytes[o.art_meshes->drawable_flags] = 4;
-        column(o.art_meshes->vertex_counts, 0, 3);
-        column(o.art_meshes->uv_sources_begin_indices, 0, 0);
-        column(o.art_meshes->position_index_sources_begin_indices, 0, 0);
-        column(o.art_meshes->position_index_sources_counts, 0, 3);
-        column(o.art_meshes->drawable_mask_sources_begin_indices, 0, 0);
-        column(o.art_meshes->drawable_mask_sources_counts, 0, 0);
-        for (int index = 0; index < 2; ++index) {
-            real(bytes, o.art_mesh_keyforms->opacities + index * 4, 1);
-            real(bytes, o.art_mesh_keyforms->draw_orders + index * 4, 0);
-            column(o.art_mesh_keyforms->keyform_position_sources_begin_indices, index, index * 6);
-        }
-        const QVector<float> positions{0, 0.5f, 1, 0, 0, 0, 0.1f, 0.7f, 1.1f, 0.2f, 0.1f, 0.2f,
-                                       0, 0, 2, 0, 0, 2, 3, 3};
-        for (int index = 0; index < positions.size(); ++index) real(bytes, o.keyform_positions->xys + index * 4, positions[index]);
-        for (int index = 0; index < 6; ++index) real(bytes, o.uvs->uvs + index * 4, float(index % 2));
-        for (int index = 0; index < 3; ++index) qToLittleEndian(quint16(index), bytes.data() + o.position_indices->indices + index * 2);
-        id(o.parameters->ids, 0, "P");
-        real(bytes, o.parameters->min_values, 0);
-        real(bytes, o.parameters->max_values, 1);
-        real(bytes, o.parameters->default_values, 0);
-        column(o.parameters->is_repeat, 0, 0);
-        column(o.parameters->decimal_places, 0, 3);
-        column(o.parameters->parameter_binding_sources_begin_indices, 0, 0);
-        column(o.parameters->parameter_binding_sources_counts, 0, 1);
-        appendColumn(0x1d8, {0});
-        appendColumn(0x1dc, {0});
-        appendColumn(0x1e0, {2});
-        appendColumn(0x208, {0});
-        appendColumn(0x20c, {0});
-        appendColumn(0x210, {0});
-        column(o.keyform_bindings->parameter_binding_index_sources_begin_indices, 0, 0);
-        column(o.keyform_bindings->parameter_binding_index_sources_counts, 0, 1);
-        column(o.parameter_binding_indices->binding_sources_indices, 0, 0);
-        column(o.parameter_bindings->keys_sources_begin_indices, 0, 0);
-        column(o.parameter_bindings->keys_sources_counts, 0, 2);
-        real(bytes, o.keys->values, 0);
-        real(bytes, o.keys->values + 4, 1);
-    }
-
-    void count(int index, int value) { put(bytes, table.sectionOffsetTable->count_info->count_info_offset + index * 4, value); }
-    void column(int offset, int row, int value) { put(bytes, offset + row * 4, value); }
-    void id(int offset, int row, const QByteArray& value) { bytes.replace(offset + row * 64, 64, value.leftJustified(64, '\0')); }
-    void appendColumn(int slot, std::initializer_list<int> values)
-    {
-        const int offset = bytes.size();
-        bytes.append(QByteArray(values.size() * 4, '\0'));
-        put(bytes, slot, offset);
-        int index = 0;
-        for (int value : values) put(bytes, offset + index++ * 4, value);
-    }
-
-    CReader reader;
-    CSectionTable table;
-    QByteArray bytes;
-};
-}
+using namespace DeformerSnapshotData;
 
 class KeyformMappingTests : public QObject
 {
@@ -276,7 +124,7 @@ private slots:
         QTest::addColumn<QString>("invalid");
         for (const char* value : {"wrong-corner", "missing-pose", "extra-pose", "nan-pose", "out-of-range", "missing-mesh",
                                   "bad-keyform", "cycle", "missing-parent", "rotation-collapse", "folded-warp", "type1-target",
-                                  "type1-parent", "blend-mesh", "blend-parent", "glue", "parent-override", "warp-override", "rotation-override"})
+                                  "type1-parent", "blend-mesh", "blend-parent", "glue", "edited-collapse", "edited-folded"})
             QTest::newRow(value) << QString::fromLatin1(value);
     }
 
@@ -338,17 +186,20 @@ private slots:
         }
         CModelDocument invalidDocument;
         QVERIFY2(invalidDocument.LoadBytes(fixture.bytes, "invalid-candidate", &error), qPrintable(error));
-        if (invalid == "parent-override") QVERIFY(invalidDocument.SetDeformerParentIndex("Child", -1));
-        if (invalid == "warp-override") {
+        if (invalid == "edited-folded") {
             auto forms = invalidDocument.DeformerWarpKeyforms("Warp");
             QVERIFY(!forms.isEmpty());
-            forms[0].positions[0] += 0.1f;
+            forms[0].positions = {0, 0, 2, 2, 0, 2, 2, 0};
             QVERIFY(invalidDocument.SetDeformerWarpKeyforms("Warp", forms));
+            auto local = invalidDocument.DrawableKeyformPositions("Mesh", 0);
+            local[0] = 0.5f;
+            local[1] = 0;
+            QVERIFY(invalidDocument.SetDrawableKeyformPositions("Mesh", 0, local));
         }
-        if (invalid == "rotation-override") {
+        if (invalid == "edited-collapse") {
             auto forms = invalidDocument.DeformerRotationKeyforms("Root");
             QVERIFY(!forms.isEmpty());
-            forms[0].angle += 1;
+            forms[0].scale = 0;
             QVERIFY(invalidDocument.SetDeformerRotationKeyforms("Root", forms));
         }
         QVERIFY2(!context.Build(invalidDocument, id, keyform, values, &error), qPrintable(invalid));
@@ -372,6 +223,107 @@ private slots:
         CKeyformMappingContext context;
         QString error;
         QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+    }
+
+    void patchedParentsAndKeyformsUseTheSameCoordinates_data()
+    {
+        QTest::addColumn<QString>("edit");
+        QTest::addColumn<QVector<float>>("expected");
+        QTest::newRow("detach-parent") << QString("detach") << QVector<float>{0.25f, 0.5f, 0.75f, 0.25f, 0.25f, 0.25f};
+        QTest::newRow("skip-warp-parent") << QString("parent") << QVector<float>{9.5f, -3.75f, 9.75f, -3.25f, 9.75f, -3.75f};
+        QTest::newRow("warp") << QString("warp") << QVector<float>{10.875f, -0.375f, 11.3125f, 0.6875f, 11.4375f, -0.4375f};
+        QTest::newRow("rotation") << QString("rotation") << QVector<float>{-0.75f, -1.25f, 1.375f, -0.375f, -0.875f, -0.125f};
+        QTest::newRow("combined-with-local") << QString("combined") << QVector<float>{-1.25f, 0, -0.5f, 0.5f, -1.5f, 0.5f};
+    }
+
+    void patchedParentsAndKeyformsUseTheSameCoordinates()
+    {
+        QFETCH(QString, edit);
+        QFETCH(QVector<float>, expected);
+        Fixture fixture;
+        CModelDocument document;
+        QVERIFY(document.LoadBytes(fixture.bytes, "modified-chain"));
+        CKeyformMappingContext old, changed;
+        QString error;
+        QVERIFY(old.Build(document, "Mesh", 0, {{"P", 0}}, &error));
+        const auto oldLocal = document.DrawableKeyformPositions("Mesh", 0);
+        QVector<float> oldWorld;
+        QVERIFY(old.ToModel(oldLocal, oldWorld));
+        if (edit == "detach" || edit == "parent" || edit == "combined")
+            QVERIFY(document.SetDeformerParentIndex("Child", edit == "detach" ? -1 : 0));
+        if (edit == "warp" || edit == "combined") {
+            auto forms = document.DeformerWarpKeyforms("Warp");
+            forms[0].opacity = 0.4f;
+            for (int index = 0; index < forms[0].positions.size(); index += 2) {
+                forms[0].positions[index] += 3;
+                forms[0].positions[index + 1] -= 2;
+            }
+            QVERIFY(document.SetDeformerWarpKeyforms("Warp", forms));
+        }
+        if (edit == "rotation" || edit == "combined") {
+            auto forms = document.DeformerRotationKeyforms("Root");
+            forms[0] = {0.6f, 180, -2, 1, 2, true, false};
+            QVERIFY(document.SetDeformerRotationKeyforms("Root", forms));
+        }
+        if (edit == "combined") {
+            auto local = oldLocal;
+            local[0] = 0.25f;
+            QVERIFY(document.SetDrawableKeyformPositions("Mesh", 0, local));
+        }
+        const auto local = document.DrawableKeyformPositions("Mesh", 0);
+        QVERIFY2(changed.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVector<float> world, restored;
+        QVERIFY(changed.ToModel(local, world));
+        QVERIFY(near(world, expected));
+        QVERIFY(changed.MatchesRuntime(expected));
+        QVERIFY(!changed.MatchesRuntime(oldWorld));
+        QVERIFY(changed.FromModel(expected, restored));
+        QVERIFY(near(restored, local));
+        QVERIFY(old.MatchesRuntime(oldWorld));
+        QCOMPARE(document.SourceBytes(), fixture.bytes);
+        document.Clear();
+        QVERIFY(changed.MatchesRuntime(expected));
+    }
+
+    void patchedParentKeyformsInterpolateAtTheFullPose()
+    {
+        Fixture fixture;
+        fixture.BindRoot(false);
+        CModelDocument document;
+        QVERIFY(document.LoadBytes(fixture.bytes, "parent-interpolation"));
+        auto forms = document.DeformerRotationKeyforms("Root");
+        QCOMPARE(forms.size(), 2);
+        forms[1].originX += 8;
+        QVERIFY(document.SetDeformerRotationKeyforms("Root", forms));
+        CKeyformMappingContext context;
+        QString error;
+        QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0.25f}}, &error), qPrintable(error));
+        const QVector<float> expected{10.875f, -3.375f, 11.3125f, -2.3125f, 11.4375f, -3.4375f};
+        QVERIFY(context.MatchesRuntime(expected));
+        QVector<float> restored;
+        QVERIFY(context.FromModel(expected, restored));
+        QVERIFY(near(restored, document.DrawableKeyformPositions("Mesh", 0)));
+    }
+
+    void editedParentCannotIntroduceAnUnsupportedAncestor()
+    {
+        Fixture fixture;
+        fixture.column(fixture.table.sectionOffsetTable->deformers->parent_deformer_indices, 2, -1);
+        fixture.count(27, 1);
+        fixture.appendColumn(0x234, {0});
+        fixture.appendColumn(0x238, {0});
+        fixture.appendColumn(0x23c, {0});
+        CModelDocument document;
+        QVERIFY(document.LoadBytes(fixture.bytes, "reparent-to-blend"));
+        CKeyformMappingContext context;
+        QString error;
+        QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVector<float> oldWorld;
+        QVERIFY(context.ToModel(document.DrawableKeyformPositions("Mesh", 0), oldWorld));
+        QVERIFY(document.SetDeformerParentIndex("Child", 1));
+        QVERIFY(!context.Build(document, "Mesh", 0, {{"P", 0}}, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(context.MatchesRuntime(oldWorld));
     }
 
     void unrelatedBlendShapeDoesNotDisableTheTargetChain()

@@ -215,10 +215,7 @@ void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
     m_activeKeyformIndex = keyformIndex;
 }
 
-void OpengGlForm::AddWrapKey(std::vector<C2DTreeNode*> &node)
-{
-    m_mapWarpNode = node;
-}
+
 
 void OpengGlForm::do_ShowWarp(const QString &artName)
 {
@@ -264,11 +261,7 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
             }
         }
     }
-    //修改当前参数对应的
-    C2DTree* tree = CTreeManage::GetInstance();
-    if (tree) tree->SetParaValue(name,value);
-    LAppView* view= LAppDelegate::GetInstance()->GetView();
-    if (view) view->InitWrapAndRotation();
+    update();
 }
 
 void OpengGlForm::do_ShowDeformers(const QStringList& names)
@@ -452,10 +445,19 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
     auto* model = CurrentModel();
     if (!model) return MeshError(error, QStringLiteral("当前没有模型"));
     try {
-        const bool result = pose ? model->ApplyEditorPreview(bytes, sourceDigest, *pose, error)
-                                 : model->ApplyPreviewMoc(bytes, sourceDigest, error);
-        if (result) update();
-        return result;
+        auto* view = LAppDelegate::GetInstance()->GetView();
+        if (!view) return MeshError(error, QStringLiteral("变形器预览视图尚未就绪"));
+        CTreeManage::Snapshot tree;
+        LAppView::PreparedDeformerOverlays overlays;
+        const auto values = pose ? *pose : model->GetParameterValues();
+        if (!CTreeManage::PrepareSnapshot(bytes, values, tree, error) ||
+            !view->PrepareDeformerOverlays(tree, overlays, error)) return false;
+        if (!(pose ? model->ApplyEditorPreview(bytes, sourceDigest, *pose, error)
+                   : model->ApplyPreviewMoc(bytes, sourceDigest, error))) return false;
+        CTreeManage::SwapSnapshot(tree);
+        view->SwapDeformerOverlays(overlays);
+        update();
+        return true;
     } catch (const std::exception&) {
         return MeshError(error, QStringLiteral("模型预览替换失败"));
     }
@@ -469,9 +471,21 @@ bool OpengGlForm::EndEditorPreview(QString* error)
     if (!model || !model->HasEditorPreview()) return true;
     const RestoreContext restore;
     if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复模型预览的 OpenGL 上下文"));
-    if (!model->EndEditorPreview(error)) return false;
-    update();
-    return true;
+    try {
+        auto* view = LAppDelegate::GetInstance()->GetView();
+        if (!view) return MeshError(error, QStringLiteral("无法恢复变形器预览视图"));
+        CTreeManage::Snapshot tree;
+        LAppView::PreparedDeformerOverlays overlays;
+        if (!CTreeManage::PrepareSnapshot(model->GetPreviewMocBytes(), model->GetEditorBaseParameters(), tree, error) ||
+            !view->PrepareDeformerOverlays(tree, overlays, error)) return false;
+        if (!model->EndEditorPreview(error)) return false;
+        CTreeManage::SwapSnapshot(tree);
+        view->SwapDeformerOverlays(overlays);
+        update();
+        return true;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("无法准备编辑前的变形器预览"));
+    }
 }
 
 bool OpengGlForm::FinishMeshDrag(bool cancel, QString* error)
@@ -668,7 +682,7 @@ bool OpengGlForm::EndTemporaryModel()
     return true;
 }
 
-void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
+void OpengGlForm::SyncPreviewView()
 {
     const RestoreContext restore;
     if (!MakeRuntimeCurrent()) return;
@@ -677,15 +691,11 @@ void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
     if (!model || !model->GetModel()) return;
     auto* coreModel = model->GetModel();
     auto* meshMap = coreModel->GetMeshMap();
-    auto* delegate = LAppDelegate::GetInstance();
     if (meshMap) for (int index = 0; index < coreModel->GetDrawableCount(); ++index) {
         const QString id = QString::fromUtf8(coreModel->GetDrawableId(index)->GetString().GetRawString());
         QVector<float> positions;
         if (CorePositions(*coreModel, index, positions)) meshMap->SetMeshPositions(id, positions);
     }
-    C2DTree* tree = CTreeManage::GetInstance();
-    if (tree) for (auto it = values.cbegin(); it != values.cend(); ++it) tree->SetParaValue(it.key(), it.value());
-    if (delegate->GetView()) delegate->GetView()->InitWrapAndRotation();
     update();
 }
 
@@ -713,10 +723,14 @@ void OpengGlForm::resizeGL(int width, int height)
 
 void OpengGlForm::paintGL()
 {
-    if (m_runtimeReady) LAppDelegate::GetInstance()->paint();
-
-
-
+    if (!m_runtimeReady) return;
+    auto* delegate = LAppDelegate::GetInstance();
+    delegate->paint();
+    auto* view = delegate->GetView();
+    const QString error = view ? view->DeformerOverlayError() : QString();
+    if (error == m_lastPreviewError) return;
+    m_lastPreviewError = error;
+    if (!error.isEmpty()) emit PreviewFailed(error);
 }
 
 

@@ -245,6 +245,14 @@ private slots:
         const QImage updated = framebuffer.toImage();
         QVERIFY(foregroundCount(updated) > 800);
         QVERIFY(updated != original);
+        for (int row : {48, 112, 176, 240}) QVERIFY(foregroundNear(updated, 96, row));
+        for (int column : {48, 144, 240}) QVERIFY(foregroundNear(updated, column, 144));
+        for (int row : {16, 80, 144, 208}) QVERIFY(!foregroundNear(updated, 96, row));
+        for (int y = 0; y < updated.height(); ++y)
+            for (int x = 0; x < updated.width(); ++x)
+                if (foreground(updated.pixel(x, y)))
+                    QVERIFY2(nearAny(x, {48, 144, 240}) || nearAny(y, {48, 112, 176, 240}),
+                             qPrintable(QStringLiteral("Unexpected translated foreground at (%1, %2)").arg(x).arg(y)));
 
         QVERIFY(node.UpdateCanvasPositions({}));
         warp.UpdatePositions(&node);

@@ -39,6 +39,51 @@ bool compare(const QVector<float>& actual, const QVector<float>& expected, QStri
     return true;
 }
 
+bool sameSlice(const std::vector<float>& pool, qint64 begin, const QVector<float>& values)
+{
+    return begin >= 0 && begin <= qint64(pool.size()) && values.size() <= qint64(pool.size()) - begin &&
+           std::equal(values.cbegin(), values.cend(), pool.cbegin() + begin);
+}
+
+bool sameDeformer(const CSectionTable& table, const CDeformers& definition,
+                  const CModelDeformer& source, const CModelDocument& document)
+{
+    const int specific = definition.specific_sources_indices;
+    if (definition.parent_part_indices != source.parentPartIndex) return false;
+    if (definition.types == 0) {
+        if (source.type != CModelDeformer::Warp || specific < 0 || specific >= table.warp_deformers.size()) return false;
+        const auto* warp = table.warp_deformers[specific];
+        const auto forms = document.DeformerWarpKeyforms(source.id);
+        const qint64 begin = warp->keyform_sources_begin_indices;
+        if (warp->rows != source.rows || warp->columns != source.columns || warp->is_quad_source != source.quadTransform ||
+            qint64(warp->vertex_counts) != (qint64(source.rows) + 1) * (qint64(source.columns) + 1) ||
+            forms.size() != warp->keyform_sources_counts || begin < 0 ||
+            begin > table.warp_deformer_keyforms.size() || forms.size() > table.warp_deformer_keyforms.size() - begin)
+            return false;
+        for (int index = 0; index < forms.size(); ++index) {
+            const auto* form = table.warp_deformer_keyforms[begin + index];
+            if (forms[index].opacity != form->opacities || forms[index].positions.size() != qint64(warp->vertex_counts) * 2 ||
+                !sameSlice(table.keyform_positions->xys, form->keyform_position_sources_begin_indices, forms[index].positions))
+                return false;
+        }
+        return true;
+    }
+    if (source.type != CModelDeformer::Rotation || specific < 0 || specific >= table.rotation_deformers.size()) return false;
+    const auto* rotation = table.rotation_deformers[specific];
+    const auto forms = document.DeformerRotationKeyforms(source.id);
+    const qint64 begin = rotation->keyform_sources_begin_indices;
+    if (source.baseAngle != rotation->base_angles || forms.size() != rotation->keyform_sources_counts || begin < 0 ||
+        begin > table.rotation_deformer_keyforms.size() || forms.size() > table.rotation_deformer_keyforms.size() - begin)
+        return false;
+    for (int index = 0; index < forms.size(); ++index) {
+        const auto* form = table.rotation_deformer_keyforms[begin + index];
+        const CModelRotationKeyform actual{form->opacities, form->angles, form->origin_x, form->origin_y,
+                                          form->scales, form->is_reflect_x, form->is_reflect_y};
+        if (!(forms[index] == actual)) return false;
+    }
+    return true;
+}
+
 bool map(const C2DTreeNode& node, const QVector<float>& input, QVector<float>& output, bool inverse, QString* error)
 {
     if (input.size() > 2000000 || input.size() % 2 != 0)
@@ -95,11 +140,17 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             if (fullPose.value(value.key()) != value.value())
                 return fail(error, QStringLiteral("编辑姿态未处于关键形角点：%1").arg(value.key()));
 
-        auto candidate = std::make_shared<State>(document.SourceBytes());
+        QByteArray previewBytes;
+        if (!document.BuildPreviewMoc(previewBytes, error)) return false;
+        auto candidate = std::make_shared<State>(previewBytes);
         if (!candidate->section.IsValid()) return fail(error, candidate->reader.Error());
         const auto& table = candidate->section;
         CKeyformBindingGrid bindings;
         if (!bindings.Build(table, error)) return false;
+        QMap<QString, float> patchedCorner;
+        if (!bindings.Pose(CKeyformBindingGrid::ArtMesh, artMeshId, keyformIndex, patchedCorner, error)) return false;
+        if (patchedCorner != corner)
+            return fail(error, QStringLiteral("预览补丁改变了目标关键形的参数绑定"));
         int meshIndex = -1;
         for (int index = 0; index < table.art_meshes.size(); ++index) {
             if (table.art_meshes[index]->ids != artMeshId) continue;
@@ -107,6 +158,11 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             meshIndex = index;
         }
         if (meshIndex < 0) return fail(error, QStringLiteral("快照中没有 ArtMesh：%1").arg(artMeshId));
+        if (meshIndex >= document.Drawables().size() || document.Drawables()[meshIndex].id != artMeshId ||
+            document.Drawables()[meshIndex].parentDeformerIndex != table.art_meshes[meshIndex]->parent_deformer_indices ||
+            document.Drawables()[meshIndex].vertexCount != table.art_meshes[meshIndex]->vertex_counts ||
+            document.Drawables()[meshIndex].keyforms.size() != table.art_meshes[meshIndex]->keyform_sources_counts)
+            return fail(error, QStringLiteral("目标网格结构与预览补丁不一致：%1").arg(artMeshId));
         for (const auto* glue : table.glue) {
             if (glue->art_mesh_indices_a < 0 || glue->art_mesh_indices_a >= table.art_meshes.size() ||
                 glue->art_mesh_indices_b < 0 || glue->art_mesh_indices_b >= table.art_meshes.size())
@@ -124,6 +180,8 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                 return fail(error, QStringLiteral("ArtMesh 父链缺失或形成循环：%1").arg(artMeshId));
             ancestors.insert(parent);
             const auto* deformer = table.deformers[parent];
+            if (parent >= document.Deformers().size() || document.Deformers()[parent].id != deformer->ids)
+                return fail(error, QStringLiteral("父变形器索引与文档不一致：%1").arg(deformer->ids));
             if (deformer->ids.isEmpty() || deformerIdCounts.value(deformer->ids) != 1)
                 return fail(error, QStringLiteral("父变形器 ID 缺失或重复：%1").arg(deformer->ids));
             if (deformer->types != 0 && deformer->types != 1)
@@ -137,15 +195,18 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                 [deformer](const auto& value) { return value.id == deformer->ids; });
             if (source == document.Deformers().cend())
                 return fail(error, QStringLiteral("文档缺少父变形器：%1").arg(deformer->ids));
-            if ((deformer->types == 0 && document.DeformerWarpKeyforms(deformer->ids) != source->warpKeyforms) ||
-                (deformer->types == 1 && document.DeformerRotationKeyforms(deformer->ids) != source->rotationKeyforms))
-                return fail(error, QStringLiteral("父变形器关键形覆盖尚未同步至模型预览：%1").arg(deformer->ids));
+            if (!sameDeformer(table, *deformer, *source, document))
+                return fail(error, QStringLiteral("父变形器数据与预览补丁不一致：%1").arg(deformer->ids));
             parent = deformer->parent_deformer_indices;
         }
 
         const QVector<float> local = document.DrawableKeyformPositions(artMeshId, keyformIndex);
         if (local.isEmpty() || local.size() != qint64(table.art_meshes[meshIndex]->vertex_counts) * 2)
             return fail(error, QStringLiteral("目标关键形顶点数量无效：%1").arg(artMeshId));
+        const qint64 row = qint64(table.art_meshes[meshIndex]->keyform_sources_begin_indices) + keyformIndex;
+        if (row < 0 || row >= table.art_mesh_keyforms.size() ||
+            !sameSlice(table.keyform_positions->xys, table.art_mesh_keyforms[row]->keyform_position_sources_begin_indices, local))
+            return fail(error, QStringLiteral("目标关键形坐标与预览补丁不一致：%1").arg(artMeshId));
         candidate->tree = std::make_unique<C2DTree>(table);
         QSet<QString> assigned;
         for (auto* node : candidate->tree->getParametersTree()) {
@@ -156,7 +217,12 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         }
         candidate->tree->GetWarpKeys();
         for (auto* node : candidate->tree->getArtTree()) {
-            if (node->getName() == artMeshId) candidate->target = dynamic_cast<const CArtMeshNode*>(node);
+            if (node->getName() != artMeshId) continue;
+            auto* mesh = dynamic_cast<CArtMeshNode*>(node);
+            if (!mesh || !sameSlice(mesh->GetCurKeyForm().GetPosition(), 0, local) ||
+                mesh->GetCurKeyForm().GetPosition().size() != size_t(local.size()))
+                return fail(error, QStringLiteral("目标关键形的求值坐标与角点不一致：%1").arg(artMeshId));
+            candidate->target = mesh;
         }
         if (!candidate->target || candidate->target->GetCanvasPositions().empty())
             return fail(error, QStringLiteral("目标关键形的父链无法求值：%1").arg(artMeshId));

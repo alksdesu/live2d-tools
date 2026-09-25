@@ -63,6 +63,8 @@ if(MSVC)
 endif()
 
 add_library(deformer_tree_data STATIC
+    live2dstruct/ctreemanage.cpp
+    live2dstruct/ctreemanage.h
     live2dstruct/ckeyformmappingcontext.cpp
     live2dstruct/ckeyformmappingcontext.h
     live2dstruct/ckeyformeditcontroller.cpp
@@ -137,12 +139,29 @@ if(BUILD_TESTING)
     target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
     add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME ${keyform_test} COMMAND ${keyform_test}_tests)
     endforeach()
+    add_executable(moc_deformer_preview_tests tests/deformer_moc_preview_tests.cpp)
+    target_link_libraries(moc_deformer_preview_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(moc_deformer_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME moc_deformer_preview COMMAND moc_deformer_preview_tests)
+    add_executable(deformer_editor_tests tests/deformer_editor_tests.cpp ui/cinspectorpanel.cpp
+        ui/cmodeltreepanel.cpp ui/para/ccidjson.cpp)
+    target_link_libraries(deformer_editor_tests PRIVATE deformer_tree_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(deformer_editor_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
+    add_test(NAME deformer_editor COMMAND deformer_editor_tests)
+    set_tests_properties(deformer_editor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(deformer_overlay_snapshot_tests tests/deformer_overlay_snapshot_tests.cpp
+        live2d/LAppViewDeformerOverlays.cpp edit/cdrawobject.cpp edit/cdrawwarp.cpp
+        edit/cdrawrotation.cpp edit/cgridlines.cpp opengl/cglmeshbuffer.cpp assets/shaders/shaders.qrc assets/images/images.qrc)
+    set_target_properties(deformer_overlay_snapshot_tests PROPERTIES AUTORCC ON)
+    target_link_libraries(deformer_overlay_snapshot_tests PRIVATE deformer_tree_data Qt6::OpenGL Qt6::Test)
+    target_compile_definitions(deformer_overlay_snapshot_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
+    add_test(NAME deformer_overlay_snapshot COMMAND deformer_overlay_snapshot_tests)
     add_executable(model_matrix_tests tests/model_matrix_tests.cpp
         framework/Math/CubismModelMatrix.cpp framework/Math/CubismMatrix44.cpp framework/Type/csmString.cpp)
     target_include_directories(model_matrix_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

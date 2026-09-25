@@ -199,6 +199,7 @@ SOURCES += \
     live2d/LAppSprite.cpp\
     live2d/LAppTextureManager.cpp\
     live2d/LAppView.cpp\
+    live2d/LAppViewDeformerOverlays.cpp\
     live2d/LAppWavFileHandler.cpp\
     live2d/TouchManager.cpp\
     psd/psdSamples/Exporter/PsdExport.cpp\

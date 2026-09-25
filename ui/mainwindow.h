@@ -66,11 +66,13 @@ private:
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
     bool ActivateKeyform(const QString& id, int keyform, QString* error);
+    bool ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error);
     bool EndKeyformEditing(QString* error = nullptr);
     bool SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error);
     bool ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error);
     void RefreshKeyformUi(bool changed = false);
     void SelectModelObjects(const QStringList& ids, const QStringList& types);
+    void RefreshModelTree();
     QString m_parameterBeingEdited;
     void RefreshUndoActions();
     void UndoDocumentEdit();

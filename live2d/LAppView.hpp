@@ -16,6 +16,8 @@
 #include "edit/cdrawwarp.h"
 #include "edit/cdrawrotation.h"
 #include "live2dstruct/ctreemanage.h"
+#include <map>
+#include <memory>
 
 class TouchManager;
 class LAppSprite;
@@ -25,6 +27,41 @@ class LAppModel;
 class LAppView
 {
 public:
+    class PreparedDeformerOverlays
+    {
+    public:
+        PreparedDeformerOverlays() = default;
+        PreparedDeformerOverlays(PreparedDeformerOverlays&&) noexcept = default;
+        PreparedDeformerOverlays& operator=(PreparedDeformerOverlays&&) noexcept = default;
+        PreparedDeformerOverlays(const PreparedDeformerOverlays&) = delete;
+        PreparedDeformerOverlays& operator=(const PreparedDeformerOverlays&) = delete;
+        bool Prepare(const CTreeManage::Snapshot& snapshot, const PreparedDeformerOverlays& previous,
+                     QString* error = nullptr);
+        bool Update(const CTreeManage::Snapshot& snapshot, QString* error = nullptr);
+        bool Synchronize(const QByteArray& mocDigest, const QMap<QString, float>& values, QString* error = nullptr);
+        void Invalidate() noexcept { m_frameReady = false; }
+        void Swap(PreparedDeformerOverlays& other) noexcept;
+        void Draw(const QMatrix4x4& projection);
+        void Show(const QStringList& names);
+        CDrawObject* Find(const QString& name) const noexcept;
+        qsizetype Count() const noexcept { return static_cast<qsizetype>(m_objects.size()); }
+
+    private:
+        friend class LAppView;
+        std::map<QString, std::unique_ptr<CDrawObject>> m_objects;
+        std::map<QString, QVector3D> m_warpColors;
+        QSet<QString> m_visibleNames;
+        QSet<QString> m_supportedNames;
+        QPointer<QOpenGLContext> m_context;
+        QByteArray m_snapshotDigest;
+        const C2DTree* m_treeIdentity = nullptr;
+        quint64 m_poseRevision = 0;
+        bool m_frameReady = false;
+    };
+
+    bool PrepareDeformerOverlays(const CTreeManage::Snapshot& snapshot,
+                                PreparedDeformerOverlays& result, QString* error = nullptr) const;
+    void SwapDeformerOverlays(PreparedDeformerOverlays& candidate) noexcept;
 
     enum SelectTarget
     {
@@ -38,6 +75,7 @@ public:
 
     void Initialize();
     bool Render();
+    const QString& DeformerOverlayError() const noexcept { return m_deformerOverlayError; }
     void InitializeSprite();
     void ResizeSprite();
     Csm::CubismMatrix44 GetProjectionMatrix() const { return *m_projection; }
@@ -63,13 +101,11 @@ public:
     QMatrix4x4 GetViewMatrix();
     void InitWraRotationKey(CWarpNode* node);
     void AddWrapKey(CWarpNode* node);
-    void AddWrapKeyTest(CWarpNode* node);
     void AddRotationKey(CRotationNode* node);
     void InitWrapAndRotation();
     void ShowWarp(const QString& warpName);
     void ShowWarps(const QStringList& names);
     void HideAllWarps();
-    void UpdateWarpPositions();
 private:
     //这里可以
     TouchManager* _touchManager;                 ///< タッチマネージャー
@@ -80,7 +116,8 @@ private:
 
     CDrawRect*  m_selectrect;//被选择的点构成选择的矩形
     CDrawRect*  m_mouseselectrect;//鼠标框选构成的矩形
-    QMap<QString,CDrawObject*> m_drawWarpMap;
+    PreparedDeformerOverlays m_deformerOverlays;
+    QString m_deformerOverlayError;
 
 
 };

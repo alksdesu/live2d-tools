@@ -19,9 +19,12 @@ public:
     CDrawWarp();
     ~CDrawWarp() override;
     void InitTest(int i, CWarpNode* node);
-    void Init(CWarpNode* node);
+    bool Init(CWarpNode* node);
     void UpdatePositions(CWarpNode* node);
     void SetColor(QVector3D color) { this->color = color; }
+    QVector3D Color() const { return color; }
+    bool IsShown() const { return m_IsDraw; }
+    bool PrepareOpenGl();
     void Draw(const QMatrix4x4& mv) override;
     void InitOpenGl() override;
     void SetDraw(bool flag) override;

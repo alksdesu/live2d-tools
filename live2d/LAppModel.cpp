@@ -1252,13 +1252,6 @@ void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
         _deformerDragValues[i] = qBound(minV, value, maxV);
     }
 
-    // 同步更新 C2DTree 的参数，让变形器线条跟着动
-    C2DTree* tree = CTreeManage::GetInstance();
-    if (!tree) return;
-    for(int i = 0; i < _deformerDragParamIds.size(); i++){
-        tree->SetParaValue(_deformerDragParamIds[i], _deformerDragValues[i]);
-    }
-    LAppDelegate::GetInstance()->GetView()->UpdateWarpPositions();
 }
 
 void LAppModel::ProbeParamsForArtMeshes(const QStringList& artMeshNames)

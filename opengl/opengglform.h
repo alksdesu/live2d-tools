@@ -69,7 +69,6 @@ public:
     //点击对应的art 显示对应的mesh网格
     //点击对应网格  显示对应item
     void do_ShowMesh(const QString& artName);
-    void AddWrapKey(std::vector<C2DTreeNode*>& node );
     void do_ShowWarp(const QString& artName);
 public slots:
     //刷新每一帧    //跳转模型的位置
@@ -93,7 +92,7 @@ public slots:
     void PublishRenderOrder(const QStringList& names);
     void SetDrawOrderGroups(const QHash<QString, int>& groupIndices,
                             const QVector<live2dstruct::CDrawableOrderGroup>& groups);
-    void SyncPreviewView(const QMap<QString, float>& values);
+    void SyncPreviewView();
 
 
 signals:
@@ -101,6 +100,7 @@ signals:
     void SendSelectMesh(const QString& artName);
     void RenderOrderChanged(const QStringList& names);
     void MeshEditRejected(const QString& error);
+    void PreviewFailed(const QString& error);
     void KeyformEditingFinishedRequested();
 
 protected:
@@ -126,7 +126,7 @@ protected:
     CEditState m_ceditstate;
     CSettingConfig m_config;
     QStringList m_lastRenderOrder;
-    std::vector<C2DTreeNode*> m_mapWarpNode;
+    QString m_lastPreviewError;
     QString m_currentModelJson;
     struct SuspendedModel { QString path; bool ready; };
     std::optional<SuspendedModel> m_suspendedModel;

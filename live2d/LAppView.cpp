@@ -18,6 +18,7 @@
 #include "LAppModel.hpp"
 #include "QCoreApplication"
 #include <QSet>
+#include <exception>
 
 using namespace std;
 using namespace LAppDefine;
@@ -50,22 +51,13 @@ LAppView::~LAppView()
     delete m_projection;
     delete m_selectrect;
     delete m_mouseselectrect;
-    qDeleteAll(m_drawWarpMap);
-    m_drawWarpMap.clear();
 
 
 }
 
 void LAppView::Initialize()
 {
-    QMap<QString,CDrawObject*>::iterator itor;
-
     InitWrapAndRotation();
-
-    for (itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor)
-    {
-        itor.value()->InitOpenGl();
-    }
     m_projection->LoadIdentity();
 
 }
@@ -90,11 +82,16 @@ bool LAppView::Render()
         m_mouseselectrect->Draw(GetProjectionView());
         //在这里把移动绘制处理好,视图，投影，和模型矩阵
 
-        QMap<QString,CDrawObject*>::iterator itor;
-        for (itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor)
-        {
-            itor.value()->Draw(GetMVP());
-        }
+        auto* model = modelCount > 0 ? Live2DManager->GetModel(0) : nullptr;
+        if (model) {
+            try {
+                if (m_deformerOverlays.Synchronize(model->GetPreviewMocDigest(), model->GetParameterValues(), &m_deformerOverlayError))
+                    m_deformerOverlays.Draw(GetMVP());
+            } catch (const std::exception&) {
+                m_deformerOverlays.Invalidate();
+                m_deformerOverlayError = QStringLiteral("变形器线框同步失败");
+            }
+        } else m_deformerOverlayError.clear();
 
     }
 
@@ -286,126 +283,6 @@ QMatrix4x4 LAppView::GetViewMatrix()
 {
     return _viewMatrix->GetQMatrix44();
 }
-
-void LAppView::AddWrapKey(CWarpNode* node)
-{
-    if (auto* warp = dynamic_cast<CDrawWarp*>(m_drawWarpMap.value(node->getName(), nullptr))) {
-        warp->Init(node);
-
-    }
-    else{
-        delete m_drawWarpMap.take(node->getName());
-        warp = new CDrawWarp();
-        warp->Init(node);
-        m_drawWarpMap.insert(node->getName(),warp);
-    }
-
-
-
-}
-void LAppView::AddWrapKeyTest(CWarpNode* node)
-{
-    // if(m_drawWarpMap.contains(node->getName())){
-    //     CDrawWarp* warp = (CDrawWarp*)m_drawWarpMap[node->getName()];
-    //     warp->InitTest(0,node);
-    // }
-    // else{
-
-    // }
-
-    if(!m_drawWarpMap.contains("0")){
-        for(int i = 0 ;i < 6;i++){
-            CDrawWarp* warp = new CDrawWarp();
-            warp->InitTest(i,node);
-            warp->SetDraw(true);
-            warp->SetColor(QVector3D(0,i*6,i-1));
-            m_drawWarpMap.insert(QString::asprintf("%d",i),warp);
-        }
-
-    }
-
-
-}
-
-void LAppView::AddRotationKey(CRotationNode *node)
-{
-    if (auto* rotaion = dynamic_cast<CDrawRotation*>(m_drawWarpMap.value(node->getName(), nullptr))) {
-        rotaion->Init(node);
-
-    }else{
-        delete m_drawWarpMap.take(node->getName());
-        rotaion = new CDrawRotation();
-        rotaion->Init(node);
-        m_drawWarpMap.insert(node->getName(),rotaion);
-
-    }
-
-}
-
-void LAppView::InitWrapAndRotation()
-{
-
-    C2DTree* tree = CTreeManage::GetInstance();
-    if (!tree) return;
-    std::vector<C2DTreeNode*> m_mapWarpNode = tree->GetWarpKeys();
-    QSet<QString> activeNames;
-    for(int i = 0 ;i < m_mapWarpNode.size() ;i++){
-        activeNames.insert(m_mapWarpNode[i]->getName());
-        if(dynamic_cast<CWarpNode*>(m_mapWarpNode[i])){
-            CWarpNode* wrap = (CWarpNode*)m_mapWarpNode[i];
-            AddWrapKey(wrap);
-        }
-        else if(dynamic_cast<CRotationNode*>(m_mapWarpNode[i])){
-            CRotationNode* rotiation = (CRotationNode*)m_mapWarpNode[i];
-            AddRotationKey(rotiation);
-        }
-    }
-    for (auto it = m_drawWarpMap.begin(); it != m_drawWarpMap.end();) {
-        if (activeNames.contains(it.key())) { ++it; continue; }
-        delete it.value();
-        it = m_drawWarpMap.erase(it);
-    }
-
-}
-
-void LAppView::ShowWarp(const QString &warpName)
-{
-    QMap<QString,CDrawObject*>::iterator itor;
-    for (itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor)
-    {
-        itor.value()->SetDraw(false);
-    }
-    if(m_drawWarpMap.contains(warpName)){
-        m_drawWarpMap[warpName]->SetDraw(true);
-    }
-}
-
-void LAppView::ShowWarps(const QStringList& names)
-{
-    // 先隐藏全部
-    for(auto itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor){
-        itor.value()->SetDraw(false);
-    }
-    // 显示指定的
-    for(const QString& name : names){
-        if(m_drawWarpMap.contains(name)){
-            m_drawWarpMap[name]->SetDraw(true);
-        }
-    }
-}
-
-void LAppView::HideAllWarps()
-{
-    for(auto itor = m_drawWarpMap.begin(); itor != m_drawWarpMap.end(); ++itor){
-        itor.value()->SetDraw(false);
-    }
-}
-
-void LAppView::UpdateWarpPositions()
-{
-    InitWrapAndRotation();
-}
-
 
 float LAppView::GetSpriteAlpha(int assign) const
 {

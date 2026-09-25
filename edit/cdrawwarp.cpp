@@ -2,10 +2,7 @@
 
 #include <QScopeGuard>
 
-CDrawWarp::CDrawWarp()
-{
-    InitOpenGl();
-}
+CDrawWarp::CDrawWarp() = default;
 
 CDrawWarp::~CDrawWarp()
 {
@@ -54,11 +51,14 @@ bool CDrawWarp::EnsureOpenGl()
     return true;
 }
 
-void CDrawWarp::Init(CWarpNode* node)
+bool CDrawWarp::Init(CWarpNode* node)
 {
     m_buffersDirty = true;
-    if (!node) m_grid.Clear();
-    else m_grid.SetGrid(node->GetColumns(), node->GetRows(), node->GetCanvasPositions());
+    if (!node) {
+        m_grid.Clear();
+        return false;
+    }
+    return m_grid.SetGrid(node->GetColumns(), node->GetRows(), node->GetCanvasPositions());
 }
 
 void CDrawWarp::UpdatePositions(CWarpNode* node)
@@ -81,35 +81,56 @@ void CDrawWarp::InitTest(int i, CWarpNode* node)
     m_grid.SetGrid(node->GetColumns(), node->GetRows(), positions);
 }
 
-void CDrawWarp::Draw(const QMatrix4x4& mv)
+bool CDrawWarp::PrepareOpenGl()
 {
-    if (!m_IsDraw || m_grid.Indices().empty() || !EnsureOpenGl()) return;
+    if (m_grid.Indices().empty()) return false;
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (!context || !context->isValid() || (m_context && m_context != context)) return false;
+    setOwningContext(context);
+    if (!initializeOpenGLFunctions()) return false;
     GLint previousVertexArray = 0;
     GLint previousArrayBuffer = 0;
     GLint previousProgram = 0;
-    GLfloat previousLineWidth = 1.0f;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVertexArray);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousArrayBuffer);
     glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
-    glGetFloatv(GL_LINE_WIDTH, &previousLineWidth);
     const auto restore = qScopeGuard([&] {
         glBindVertexArray(static_cast<GLuint>(previousVertexArray));
         glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousArrayBuffer));
         glUseProgram(static_cast<GLuint>(previousProgram));
-        glLineWidth(previousLineWidth);
     });
+    if (!EnsureOpenGl()) return false;
     m_vertexArray.bind();
-    if (!m_vertexBuffer.bind() || !m_indexBuffer.bind() || !shader->bind()) return;
+    if (!m_vertexBuffer.bind() || !m_indexBuffer.bind()) return false;
     if (m_buffersDirty) {
         const int vertexBytes = static_cast<int>(m_grid.Positions().size() * sizeof(float));
         const int indexBytes = static_cast<int>(m_grid.Indices().size() * sizeof(quint32));
         m_vertexBuffer.allocate(m_grid.Positions().data(), vertexBytes);
         m_indexBuffer.allocate(m_grid.Indices().data(), indexBytes);
-        if (m_vertexBuffer.size() != vertexBytes || m_indexBuffer.size() != indexBytes) return;
+        if (m_vertexBuffer.size() != vertexBytes || m_indexBuffer.size() != indexBytes) return false;
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
         m_buffersDirty = false;
     }
+    return true;
+}
+
+void CDrawWarp::Draw(const QMatrix4x4& mv)
+{
+    if (!m_IsDraw || !PrepareOpenGl()) return;
+    GLint previousVertexArray = 0;
+    GLint previousProgram = 0;
+    GLfloat previousLineWidth = 1.0f;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVertexArray);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
+    glGetFloatv(GL_LINE_WIDTH, &previousLineWidth);
+    const auto restore = qScopeGuard([&] {
+        glBindVertexArray(static_cast<GLuint>(previousVertexArray));
+        glUseProgram(static_cast<GLuint>(previousProgram));
+        glLineWidth(previousLineWidth);
+    });
+    m_vertexArray.bind();
+    if (!shader->bind()) return;
     shader->setUniformValue("projection", mv);
     shader->setUniformValue("spriteColor", color);
     glLineWidth(1.0f);

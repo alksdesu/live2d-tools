@@ -37,6 +37,82 @@ static QList<QTreeWidgetItem*> findObjectItems(QTreeWidget* tree, const QString&
     return result;
 }
 
+static bool validateTreeRelations(const CSectionTable& section, QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    const auto validIndex = [](int index, qsizetype count) { return index >= -1 && index < count; };
+    const auto acyclic = [&fail, &validIndex](const auto& nodes, const auto& parentOf, const QString& kind) {
+        for (qsizetype index = 0; index < nodes.size(); ++index) {
+            if (!nodes[index] || !validIndex(parentOf(nodes[index]), nodes.size()))
+                return fail(QStringLiteral("%1父级索引无效：%2").arg(kind).arg(index));
+        }
+        QVector<quint8> states(nodes.size(), 0);
+        for (int start = 0; start < nodes.size(); ++start) {
+            if (states[start]) continue;
+            int current = start;
+            while (current != -1 && states[current] == 0) {
+                states[current] = 1;
+                current = parentOf(nodes[current]);
+            }
+            if (current != -1 && states[current] == 1)
+                return fail(QStringLiteral("%1父级包含循环：%2").arg(kind).arg(current));
+            current = start;
+            while (current != -1 && states[current] == 1) {
+                states[current] = 2;
+                current = parentOf(nodes[current]);
+            }
+        }
+        return true;
+    };
+    if (!acyclic(section.parts, [](const auto* part) { return part->parent_part_indices; }, QStringLiteral("部件")) ||
+        !acyclic(section.deformers, [](const auto* deformer) { return deformer->parent_deformer_indices; }, QStringLiteral("变形器")))
+        return false;
+    for (int index = 0; index < section.deformers.size(); ++index) {
+        if (!validIndex(section.deformers[index]->parent_part_indices, section.parts.size()))
+            return fail(QStringLiteral("变形器所属部件索引无效：%1").arg(index));
+    }
+    for (int index = 0; index < section.art_meshes.size(); ++index) {
+        const auto* mesh = section.art_meshes[index];
+        if (!mesh || !validIndex(mesh->parent_part_indices, section.parts.size()) ||
+            !validIndex(mesh->parent_deformer_indices, section.deformers.size()))
+            return fail(QStringLiteral("网格所属部件或父变形器索引无效：%1").arg(index));
+    }
+    const auto validSlice = [](qint64 begin, qint64 count, qint64 size) {
+        if (count == 0) return begin >= -1 && begin <= size;
+        return begin >= 0 && count > 0 && begin <= size && count <= size - begin;
+    };
+    for (const auto* parameter : section.parameters) {
+        if (!parameter || !validSlice(parameter->parameter_binding_sources_begin_indices,
+                                     parameter->parameter_binding_sources_counts, section.parameter_bindings.size()))
+            return fail(QStringLiteral("参数绑定所属区间无效"));
+    }
+    for (const auto* binding : section.keyform_bindings) {
+        if (!binding || !validSlice(binding->parameter_binding_index_sources_begin_indices,
+                                   binding->parameter_binding_index_sources_counts, section.parameter_binding_indices.size()))
+            return fail(QStringLiteral("关键形绑定索引区间无效"));
+    }
+    const qint64 keyCount = section.keys ? qint64(section.keys->values.size()) : 0;
+    for (const auto* binding : section.parameter_bindings) {
+        if (!binding || !validSlice(binding->keys_sources_begin_indices, binding->keys_sources_counts, keyCount))
+            return fail(QStringLiteral("参数绑定关键值区间无效"));
+    }
+    for (const auto* reference : section.parameter_binding_indices) {
+        if (!reference || reference->binding_sources_indices < 0 ||
+            reference->binding_sources_indices >= section.parameter_bindings.size())
+            return fail(QStringLiteral("参数绑定索引引用无效"));
+    }
+    for (const auto* deformer : section.deformers)
+        if (!validIndex(deformer->keyform_binding_sources_indices, section.keyform_bindings.size()))
+            return fail(QStringLiteral("变形器关键形绑定引用无效"));
+    for (const auto* mesh : section.art_meshes)
+        if (!validIndex(mesh->keyform_binding_sources_indices, section.keyform_bindings.size()))
+            return fail(QStringLiteral("网格关键形绑定引用无效"));
+    return true;
+}
+
 CModelTreePanel::CModelTreePanel(QWidget *parent)
     : QDockWidget("模型结构", parent)
 {
@@ -224,12 +300,41 @@ CModelTreePanel::CModelTreePanel(QWidget *parent)
 
 void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
 {
+    CReader reader(mocPath);
+    CSectionTable section(reader);
+    if (section.IsValid() && validateTreeRelations(section, nullptr)) BuildTreeData(section, cid);
+}
+
+bool CModelTreePanel::BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QString* error)
+{
+    auto reader = CReader::FromBytes(bytes);
+    CSectionTable section(reader);
+    if (!section.IsValid()) {
+        if (error) *error = reader.Error();
+        return false;
+    }
+    if (!validateTreeRelations(section, error)) return false;
+    BuildTreeData(section, cid);
+    if (error) error->clear();
+    return true;
+}
+
+void CModelTreePanel::BuildTreeData(const CSectionTable& sec, CCidJson* cid)
+{
+    const QSignalBlocker panelBlocker(this);
+    const QSignalBlocker partBlocker(m_partTree);
+    const QSignalBlocker deformerBlocker(m_deformerTree);
+    const auto expanded = [](QTreeWidget* tree) {
+        QMap<QString, bool> state;
+        for (QTreeWidgetItemIterator it(tree); *it; ++it)
+            state.insert((*it)->data(0, Qt::UserRole + 1).toString() + QLatin1Char('|') +
+                         (*it)->data(0, Qt::UserRole).toString(), (*it)->isExpanded());
+        return state;
+    };
+    const auto partExpanded = expanded(m_partTree);
+    const auto deformerExpanded = expanded(m_deformerTree);
     m_partTree->clear();
     m_deformerTree->clear();
-
-    CReader reader(mocPath);
-    CSectionTable sec(reader);
-    if (!sec.IsValid()) return;
 
     int partCount = sec.parts.size();
     int deformerCount = sec.deformers.size();
@@ -296,10 +401,10 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         // parameter_bindings[k] 属于哪个参数？反向映射
         QMap<int, int> pbToParamIdx;
         for(int i = 0; i < sec.parameters.size(); i++){
-            int begin = sec.parameters[i]->parameter_binding_sources_begin_indices;
-            int count = sec.parameters[i]->parameter_binding_sources_counts;
-            for(int j = 0; j < count; j++){
-                pbToParamIdx[begin + j] = i;
+            const qint64 begin = sec.parameters[i]->parameter_binding_sources_begin_indices;
+            const qint64 end = begin + sec.parameters[i]->parameter_binding_sources_counts;
+            for (qint64 binding = begin; binding < end; ++binding) {
+                pbToParamIdx[int(binding)] = i;
             }
         }
 
@@ -312,11 +417,10 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             auto tryAddFromKb = [&](int kbIdx){
                 if(kbIdx < 0 || kbIdx >= sec.keyform_bindings.size()) return;
                 auto* kb = sec.keyform_bindings[kbIdx];
-                int beginIdx = kb->parameter_binding_index_sources_begin_indices;
-                int count = kb->parameter_binding_index_sources_counts;
-                for(int j = 0; j < count; j++){
-                    int pbiIdx = beginIdx + j;
-                    if(pbiIdx < 0 || pbiIdx >= sec.parameter_binding_indices.size()) continue;
+                const qint64 begin = kb->parameter_binding_index_sources_begin_indices;
+                const qint64 end = begin + kb->parameter_binding_index_sources_counts;
+                for (qint64 binding = begin; binding < end; ++binding) {
+                    const int pbiIdx = int(binding);
                     int pbIdx = sec.parameter_binding_indices[pbiIdx]->binding_sources_indices;
                     if(!pbToParamIdx.contains(pbIdx)) continue;
                     int paramIdx = pbToParamIdx[pbIdx];
@@ -457,7 +561,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         partPath.remove(partIdx);
     };
 
-    m_partTree->blockSignals(true);
     for(int rootIdx : rootParts){
         CParts* part = sec.parts[rootIdx];
         QString partId = part->ids;
@@ -472,7 +575,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         QSet<int> deformerPath;
         buildPartSubtree(item, rootIdx, partPath, deformerPath);
     }
-    m_partTree->blockSignals(false);
     m_partTree->expandToDepth(1);
 
     // ========= 构建变形器树 (Deformer Tree) =========
@@ -521,7 +623,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         }
     };
 
-    m_deformerTree->blockSignals(true);
     for(int rootIdx : rootParts){
         CParts* part = sec.parts[rootIdx];
         QString partId = part->ids;
@@ -535,8 +636,17 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         QSet<int> visited;
         buildDeformerTreePart(partItem, rootIdx, visited);
     }
-    m_deformerTree->blockSignals(false);
     m_deformerTree->expandToDepth(1);
+
+    const auto restoreExpanded = [](QTreeWidget* tree, const QMap<QString, bool>& state) {
+        for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+            const auto key = (*it)->data(0, Qt::UserRole + 1).toString() + QLatin1Char('|') +
+                             (*it)->data(0, Qt::UserRole).toString();
+            if (state.contains(key)) (*it)->setExpanded(state.value(key));
+        }
+    };
+    restoreExpanded(m_partTree, partExpanded);
+    restoreExpanded(m_deformerTree, deformerExpanded);
 
 }
 
@@ -768,4 +878,27 @@ void CModelTreePanel::HighlightMesh(const QString& artName)
         if (!deformerSelection.isEmpty()) m_deformerTree->scrollToItem(deformerSelection.first());
     }
     emit ObjectsSelected({artName}, {QStringLiteral("artmesh")});
+}
+
+void CModelTreePanel::HighlightObject(const QString& id, const QString& type)
+{
+    if (type == QLatin1String("artmesh")) { HighlightMesh(id); return; }
+    const auto partItems = findObjectItems(m_partTree, id, type);
+    const auto deformerItems = findObjectItems(m_deformerTree, id, type);
+    if (partItems.isEmpty() && deformerItems.isEmpty()) return;
+    {
+        const QSignalBlocker partBlocker(m_partTree);
+        const QSignalBlocker deformerBlocker(m_deformerTree);
+        m_partTree->clearSelection();
+        m_deformerTree->clearSelection();
+        if (!partItems.isEmpty()) {
+            partItems.first()->setSelected(true);
+            m_partTree->scrollToItem(partItems.first());
+        }
+        if (!deformerItems.isEmpty()) {
+            deformerItems.first()->setSelected(true);
+            m_deformerTree->scrollToItem(deformerItems.first());
+        }
+    }
+    emit ObjectsSelected({id}, {type});
 }

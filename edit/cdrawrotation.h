@@ -21,7 +21,9 @@ public:
     virtual void Draw(const QMatrix4x4 &mv);
     virtual void SetDraw(bool flag);
     virtual  void InitOpenGl();
-    void Init(CRotationNode* node);
+    bool Init(CRotationNode* node);
+    bool IsShown() const { return m_IsDraw; }
+    bool PrepareOpenGl();
 
 private:
     friend class EditorOverlayRenderTests;

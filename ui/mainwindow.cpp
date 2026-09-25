@@ -434,6 +434,7 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
+    RefreshModelTree();
     if (m_inspectorPanel) m_inspectorPanel->SetDocument(&m_document);
     if (m_paramPanel) {
         const QSignalBlocker blocker(m_paramPanel);
@@ -511,8 +512,13 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
 
 bool MainWindow::ActivateKeyform(const QString& id, int keyform, QString* error)
 {
+    return ActivateKeyform(id, QStringLiteral("artmesh"), keyform, error);
+}
+
+bool MainWindow::ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error)
+{
     if (!m_openglwindows || !m_openglwindows->FinishMeshDrag(false, error)) return false;
-    if (m_keyformEditor.IsActive() && m_keyformEditor.Target() == id && m_keyformEditor.Keyform() == keyform)
+    if (m_keyformEditor.IsActive() && m_keyformEditor.Target() == id && m_keyformEditor.Type() == type && m_keyformEditor.Keyform() == keyform)
         return true;
     const bool wasActive = m_keyformEditor.IsActive();
     QMap<QString, float> values = m_paramPanel ? m_paramPanel->CurrentValues() : QMap<QString, float>();
@@ -521,7 +527,7 @@ bool MainWindow::ActivateKeyform(const QString& id, int keyform, QString* error)
         auto* model = LAppLive2DManager::GetInstance()->GetModel(0);
         if (model) values = model->GetParameterValues();
     }
-    if (!m_keyformEditor.Activate(id, keyform, values, error)) return false;
+    if (!m_keyformEditor.Activate(id, type, keyform, values, error)) return false;
     if (m_motionPanel) m_motionPanel->PauseTimelinePreview();
     if (!wasActive) m_keyformBaseValues = values;
     RefreshKeyformUi();
@@ -548,7 +554,6 @@ bool MainWindow::EndKeyformEditing(QString* error)
     if (m_openglwindows && m_openglwindows->IsModelReady()) {
         auto* model = LAppLive2DManager::GetInstance()->GetModel(0);
         if (model) values = model->GetParameterValues();
-        m_openglwindows->SyncPreviewView(values);
     }
     if (m_paramPanel) {
         auto* manager = LAppLive2DManager::GetInstance();
@@ -567,18 +572,20 @@ bool MainWindow::EndKeyformEditing(QString* error)
 bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error)
 {
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
-    if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
+    if (live2dstruct::CKeyformEditController::Handles(edit)) {
         const bool active = m_keyformEditor.IsActive();
         auto values = m_paramPanel ? m_paramPanel->CurrentValues() : QMap<QString, float>();
         if (m_openglwindows && m_openglwindows->IsModelReady()) {
             auto* model = LAppLive2DManager::GetInstance()->GetModel(0);
             if (model) values = model->GetParameterValues();
         }
-        const int previewKeyform = m_inspectorPanel && m_inspectorPanel->GetSelectionId() == edit.name
-            ? m_inspectorPanel->GetActiveKeyformIndex() : edit.index;
+        const int previewKeyform = edit.field == live2dstruct::CModelEdit::KeyformPositions &&
+            m_inspectorPanel && m_inspectorPanel->GetSelectionId() == edit.name
+                ? m_inspectorPanel->GetActiveKeyformIndex() : edit.index;
         if (!m_keyformEditor.Submit(edit, values, previewKeyform, error)) return false;
-        if (m_motionPanel) m_motionPanel->PauseTimelinePreview();
-        if (!active) m_keyformBaseValues = values;
+        if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
+        if (m_keyformEditor.IsActive() && m_motionPanel) m_motionPanel->PauseTimelinePreview();
+        if (!active && m_keyformEditor.IsActive()) m_keyformBaseValues = values;
         RefreshKeyformUi(true);
         return true;
     }
@@ -593,8 +600,9 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
-    if (pending.field == live2dstruct::CModelEdit::KeyformPositions) {
+    if (live2dstruct::CKeyformEditController::Handles(pending)) {
         if (!m_keyformEditor.History(undo, edit, error)) return false;
+        if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
         RefreshKeyformUi(true);
     } else {
         if (!EndKeyformEditing(error)) return false;
@@ -610,7 +618,14 @@ void MainWindow::RefreshKeyformUi(bool changed)
 {
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
     if (m_keyformEditor.IsActive()) {
-        if (m_openglwindows) m_openglwindows->SetActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Keyform());
+        if (m_openglwindows) {
+            if (m_keyformEditor.Type() == QLatin1String("artmesh"))
+                m_openglwindows->SetActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Keyform());
+            else {
+                m_openglwindows->do_ShowMesh({});
+                m_openglwindows->do_ShowDeformers({m_keyformEditor.Target()});
+            }
+        }
         if (m_paramPanel) m_paramPanel->SetPreviewValues(m_keyformEditor.Pose(), m_keyformBaseValues);
         if (m_blendShapePanel) for (auto it = m_keyformEditor.Pose().cbegin(); it != m_keyformEditor.Pose().cend(); ++it)
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
@@ -630,15 +645,40 @@ void MainWindow::RefreshKeyformUi(bool changed)
     RefreshUndoActions();
 }
 
+void MainWindow::RefreshModelTree()
+{
+    if (!m_treePanel) return;
+    QByteArray bytes;
+    QString error;
+    if (!m_document.BuildPreviewMoc(bytes, &error)) { statusBar()->showMessage(error, 8000); return; }
+    const QSignalBlocker blocker(m_treePanel);
+    if (!m_treePanel->BuildTreeBytes(bytes, m_cidJson, &error)) { statusBar()->showMessage(error, 8000); return; }
+    QMap<QString, bool> visibility, locks;
+    const auto add = [&](const QString& type, const QString& id, bool visible) {
+        const auto key = type + QLatin1Char('|') + id;
+        visibility.insert(key, visible);
+        locks.insert(key, m_document.IsLocked(type, id));
+    };
+    for (const auto& part : m_document.Parts()) add(QStringLiteral("part"), part.id, part.visible);
+    for (const auto& mesh : m_document.Drawables()) add(QStringLiteral("artmesh"), mesh.id, mesh.visible);
+    for (const auto& deformer : m_document.Deformers())
+        add(deformer.type == live2dstruct::CModelDeformer::Warp ? QStringLiteral("warp") : QStringLiteral("rotation"),
+            deformer.id, deformer.visible);
+    m_treePanel->ApplyVisibilityState(visibility);
+    m_treePanel->ApplyLockedState(locks);
+    if (m_inspectorPanel) m_treePanel->HighlightObject(m_inspectorPanel->GetSelectionId(), m_inspectorPanel->GetSelectionType());
+}
+
 void MainWindow::SelectModelObjects(const QStringList& ids, const QStringList& types)
 {
-    if (m_keyformEditor.IsActive() && (ids.size() != 1 || types.value(0) != QLatin1String("artmesh") ||
+    if (m_keyformEditor.IsActive() && (ids.size() != 1 || types.value(0) != m_keyformEditor.Type() ||
         ids.value(0) != m_keyformEditor.Target()) && !EndKeyformEditing()) {
         if (m_treePanel) {
             const QSignalBlocker blocker(m_treePanel);
-            m_treePanel->HighlightMesh(m_keyformEditor.Target());
+            m_treePanel->HighlightObject(m_keyformEditor.Target(), m_keyformEditor.Type());
         }
-        if (m_texturePanel) m_texturePanel->HighlightMesh(m_keyformEditor.Target());
+        if (m_texturePanel) m_texturePanel->HighlightMesh(m_keyformEditor.Type() == QLatin1String("artmesh")
+            ? m_keyformEditor.Target() : QString());
         return;
     }
     if (!m_inspectorPanel) return;
@@ -824,7 +864,7 @@ void MainWindow::ClearTimelinePreview()
     model->ClearTimelinePreview();
     if (!m_paramPanel) return;
     const auto values = model->GetParameterValues();
-    m_openglwindows->SyncPreviewView(values);
+    m_openglwindows->SyncPreviewView();
     m_paramPanel->ClearPreviewValues(values, m_parameterBeingEdited);
     if (m_blendShapePanel) for (auto it = values.cbegin(); it != values.cend(); ++it)
         if (it.key() != m_parameterBeingEdited) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
@@ -1378,7 +1418,12 @@ void MainWindow::RestDock(const QString &name)
     if(m_placeholder) { delete m_placeholder; m_placeholder = nullptr; }
     m_currentMoc = moc;
     m_currentModelDir = modeljson.m_parentPath;
-    CTreeManage::InitOpenLive2d(moc);
+    CTreeManage::Snapshot tree;
+    QMap<QString, float> initialPose;
+    for (const auto& parameter : m_document.Parameters()) initialPose.insert(parameter.id, m_document.ParameterValue(parameter.id));
+    if (CTreeManage::PrepareSnapshot(m_document.SourceBytes(), initialPose, tree, &documentError))
+        CTreeManage::SwapSnapshot(tree);
+    else statusBar()->showMessage(documentError, 8000);
 
     m_openglwindows = new OpengGlForm();
     m_openglwindows->SetInitOpenName(name);
@@ -1451,7 +1496,7 @@ void MainWindow::RestDock(const QString &name)
     // 创建模型结构树面板（左侧）
     m_treePanel = new CModelTreePanel(this);
     addDockWidget(Qt::LeftDockWidgetArea, m_treePanel);
-    m_treePanel->BuildTree(moc, m_cidJson);
+    m_treePanel->BuildTreeBytes(m_document.SourceBytes(), m_cidJson);
 
     // 右侧面板：参数控制 + 物理设置（tabify）
     m_paramPanel = new CParamPanel(this);
@@ -1536,6 +1581,9 @@ void MainWindow::RestDock(const QString &name)
     });
     m_inspectorPanel->SetKeyformHandler([this](const QString& id, int keyform, QString* error) {
         return ActivateKeyform(id, keyform, error);
+    });
+    m_inspectorPanel->SetDeformerKeyformHandler([this](const QString& id, const QString& type, int keyform, QString* error) {
+        return ActivateKeyform(id, type, keyform, error);
     });
     connect(m_inspectorPanel, &CInspectorPanel::EditRejected, this,
             [this](const QString& error) { statusBar()->showMessage(error, 8000); });
@@ -1716,7 +1764,7 @@ void MainWindow::RestDock(const QString &name)
         const auto* fades = m_motionPanel->UsesMotionFades() ? &m_motionPanel->Timeline() : nullptr;
         if (!model->SetTimelinePreview(frame, fades, m_motionPanel->TimelineTime(), m_motionPanel->TimelineLoop())) return;
         const auto values = model->GetParameterValues();
-        m_openglwindows->SyncPreviewView(values);
+        m_openglwindows->SyncPreviewView();
         m_paramPanel->SetPreviewValues(values, model->GetTimelineBaseParameters());
         if (m_blendShapePanel) for (auto it = values.cbegin(); it != values.cend(); ++it)
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
@@ -1838,6 +1886,8 @@ void MainWindow::RestDock(const QString &name)
             return true;
         });
     connect(m_openglwindows, &OpengGlForm::MeshEditRejected, this,
+            [this](const QString& error) { statusBar()->showMessage(error, 8000); });
+    connect(m_openglwindows, &OpengGlForm::PreviewFailed, this,
             [this](const QString& error) { statusBar()->showMessage(error, 8000); });
     connect(m_openglwindows, &OpengGlForm::KeyformEditingFinishedRequested, this,
             [this] { EndKeyformEditing(); });
