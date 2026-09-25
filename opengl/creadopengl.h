@@ -18,7 +18,7 @@ public:
 
 private:
     bool CanUseContext() const;
-    bool ClearTarget(bool alphaOnly);
+    bool ClearTarget();
     bool ReadImage(const QRect& rect, const QSize& canvasSize, QImage& image);
 
     QPointer<QOpenGLContext> m_context;

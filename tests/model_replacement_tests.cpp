@@ -54,6 +54,7 @@ struct Runtime
     QVector<int> releasedModelUpdates;
     QByteArray checkedBytes;
     Failure failure = None;
+    bool editClipping = false;
     int nextGeneration = 1;
     int lastModelGeneration = 0;
     int consistencyCalls = 0, reviveCalls = 0, initializeCalls = 0, rendererCalls = 0;
@@ -286,6 +287,11 @@ csmModel* csmCallingConvention csmInitializeModelInPlace(const csmMoc* moc, void
     const auto* bytes = reinterpret_cast<const unsigned char*>(moc);
     if (bytes[7] == 2) {
         for (auto& point : data->positions[0]) { point.X += 0.5f; point.Y += 0.25f; }
+        if (runtime.editClipping) {
+            data->maskCounts[0] = 1;
+            data->masks[0][0] = 1;
+            data->flags[0] ^= csmIsInvertedMask;
+        }
     }
     if (runtime.failure == StaticDefinition) data->flags[0] ^= csmBlendAdditive;
     if (runtime.failure == NonFiniteOutput) data->positions[1][3].X = std::numeric_limits<float>::quiet_NaN();
@@ -302,6 +308,72 @@ class ModelReplacementTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void explicitClippingPolicyReachesStateCopyAndCommit()
+    {
+        auto source = createSource();
+        runtime.editClipping = true;
+        CubismModelReplacement strict;
+        QString error;
+        QVERIFY(!prepare(strict, *source, normalPreparation(), &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!strict.GetModel());
+        QCOMPARE(source->model->GetDrawableMaskCounts()[0], 0);
+        CubismModelReplacement candidate;
+        QVERIFY2(candidate.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+            *source->renderer, normalPreparation(), CubismModelUpdatePolicy::AllowClippingEdits, &error), qPrintable(error));
+        QCOMPARE(candidate.GetModel()->GetDrawableMaskCounts()[0], 1);
+        QVERIFY(candidate.GetModel()->GetDrawableInvertedMask(0));
+        QCOMPARE(candidate.GetModel()->GetParameterValue(0), 0.7f);
+        QCOMPARE(State(candidate.GetModel()->GetModel()).updates, 1);
+        QCOMPARE(source->model->GetDrawableMaskCounts()[0], 0);
+        QVERIFY(!source->model->GetDrawableInvertedMask(0));
+        QVERIFY(candidate.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(source->model->GetDrawableMaskCounts()[0], 1);
+        QVERIFY(source->model->GetDrawableInvertedMask(0));
+        source->model->LoadParameters();
+        QCOMPARE(source->model->GetParameterValue(0), 0.2f);
+        source->model->SetParameterValue(0, 0.7f);
+    }
+
+    void clippingReplacementFailureDoesNotPublishCandidate_data()
+    {
+        QTest::addColumn<bool>("stateFailure");
+        QTest::newRow("renderer") << false;
+        QTest::newRow("runtime-state") << true;
+    }
+
+    void clippingReplacementFailureDoesNotPublishCandidate()
+    {
+        QFETCH(bool, stateFailure);
+        auto source = createSource();
+        runtime.editClipping = true;
+        auto* originalMoc = source->moc;
+        auto* originalModel = source->model;
+        auto* originalRenderer = source->renderer;
+        if (stateFailure) State(source->model->GetModel()).values[0] = std::numeric_limits<float>::quiet_NaN();
+        int rendererCalls = 0;
+        const auto reject = [&](CubismRenderer*, CubismModel*, const CubismRenderer&, QString* error) {
+            ++rendererCalls;
+            *error = "controlled clipping GPU failure";
+            return false;
+        };
+        CubismModelReplacement candidate;
+        QString error;
+        QVERIFY(!candidate.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+            *source->renderer, reject, CubismModelUpdatePolicy::AllowClippingEdits, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!candidate.GetModel());
+        QVERIFY(!candidate.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(rendererCalls, stateFailure ? 0 : 1);
+        QCOMPARE(source->moc, originalMoc);
+        QCOMPARE(source->model, originalModel);
+        QCOMPARE(source->renderer, originalRenderer);
+        QCOMPARE(source->model->GetDrawableMaskCounts()[0], 0);
+        QVERIFY(!source->model->GetDrawableInvertedMask(0));
+        QCOMPARE(State(source->model->GetModel()).updates, 0);
+        State(source->model->GetModel()).values[0] = 0.7f;
+    }
+
     void init()
     {
         QVERIFY(runtime.allocations.empty());

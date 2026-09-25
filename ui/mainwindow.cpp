@@ -5,6 +5,7 @@
 #include "QLineEdit"
 #include <QAction>
 #include <QActionGroup>
+#include <QCheckBox>
 #include <QMenu>
 #include <QMenuBar>
 #include <QToolBar>
@@ -63,6 +64,7 @@ MainWindow::MainWindow(QWidget *parent)
     this->resize(1400, 900);
     this->setWindowTitle("live2d2psd");
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    m_highPrecisionMasks = settings.value(QStringLiteral("highPrecisionMasks"), false).toBool();
     if (settings.contains(QStringLiteral("windowGeometry"))) {
         restoreGeometry(settings.value(QStringLiteral("windowGeometry")).toByteArray());
     }
@@ -1084,15 +1086,19 @@ bool MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
             if (wasActive) m_openglwindows->m_timer.start(1000 / 60);
             return false;
         }
-        bool ok;
-        if (isTexExtract) {
+        QString precisionError;
+        const bool precisionReady = !changedModel ||
+            m_openglwindows->SetHighPrecisionMasks(m_highPrecisionMasks, &precisionError);
+        bool ok = false;
+        if (!precisionReady) statusBar()->showMessage(precisionError, 8000);
+        else if (isTexExtract) {
             ok = m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
         } else {
             ok = m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
         }
         if (changedModel) {
             if (!m_openglwindows->EndTemporaryModel()) {
-                statusBar()->showMessage(QStringLiteral("导出后无法恢复预览，已暂停画布刷新"));
+                statusBar()->showMessage(QStringLiteral("无法恢复预览，已暂停画布刷新"));
                 return false;
             }
             if (auto* delegate = LAppDelegate::GetInstance()) {
@@ -1159,6 +1165,11 @@ bool MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
         }
         m_headless->m_timer.stop();
     }else if (!m_headless->do_ModelChange(modelPath)) {
+        return false;
+    }
+    QString precisionError;
+    if (!m_headless->SetHighPrecisionMasks(m_highPrecisionMasks, &precisionError)) {
+        statusBar()->showMessage(precisionError, 8000);
         return false;
     }
     bool ok;
@@ -1454,10 +1465,31 @@ void MainWindow::RestDock(const QString &name)
     canvasToolbarLayout->setSpacing(10);
     auto* canvasTitle = new QLabel(QFileInfo(name).fileName(), canvasToolbar);
     canvasTitle->setObjectName("canvasTitle");
+    canvasTitle->setTextFormat(Qt::PlainText);
+    canvasTitle->setToolTip(QStringLiteral("<qt>%1</qt>").arg(QFileInfo(name).fileName().toHtmlEscaped()));
+    canvasTitle->setMinimumWidth(0);
+    canvasTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto* canvasMeta = new QLabel("预览", canvasToolbar);
     canvasMeta->setObjectName("canvasMeta");
     auto* canvasSpacer = new QWidget(canvasToolbar);
     canvasSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto* maskQuality = new QCheckBox(QStringLiteral("高精度蒙版"), canvasToolbar);
+    maskQuality->setObjectName(QStringLiteral("highPrecisionMasks"));
+    maskQuality->setToolTip(QStringLiteral("优先保持蒙版边缘精度，可能降低帧率"));
+    maskQuality->setChecked(m_highPrecisionMasks);
+    maskQuality->setEnabled(false);
+    connect(maskQuality, &QCheckBox::toggled, this, [this, maskQuality](bool enabled) {
+        QString error;
+        if (!m_openglwindows || !m_openglwindows->SetHighPrecisionMasks(enabled, &error)) {
+            const QSignalBlocker blocker(maskQuality);
+            maskQuality->setChecked(m_openglwindows && m_openglwindows->HighPrecisionMasks());
+            if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
+            return;
+        }
+        m_highPrecisionMasks = enabled;
+        QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+        settings.setValue(QStringLiteral("highPrecisionMasks"), enabled);
+    });
     auto* resetCanvas = new QPushButton("重置视图", canvasToolbar);
     resetCanvas->setEnabled(false);
     resetCanvas->setToolTip("恢复模型缩放和位置（Home）");
@@ -1465,16 +1497,25 @@ void MainWindow::RestDock(const QString &name)
         if (m_openglwindows) m_openglwindows->do_ResetView();
     });
     connect(m_openglwindows, &OpengGlForm::RuntimeInitialized, canvasMeta,
-            [this, canvasMeta, resetCanvas, expectedWindow = m_openglwindows](bool loaded) {
+            [this, canvasMeta, resetCanvas, maskQuality, expectedWindow = m_openglwindows](bool loaded) {
         if (m_openglwindows != expectedWindow) return;
         canvasMeta->setText(loaded ? QStringLiteral("预览") : QStringLiteral("预览不可用"));
         resetCanvas->setEnabled(loaded);
+        maskQuality->setEnabled(loaded);
+        if (loaded) {
+            QString error;
+            if (!m_openglwindows->SetHighPrecisionMasks(m_highPrecisionMasks, &error)) {
+                const QSignalBlocker blocker(maskQuality);
+                maskQuality->setChecked(m_openglwindows->HighPrecisionMasks());
+                statusBar()->showMessage(error, 8000);
+            }
+        }
         if (!loaded) {
             canvasMeta->setToolTip(QStringLiteral("请检查模型、纹理文件与图形环境"));
             statusBar()->showMessage(QStringLiteral("模型数据已打开，但运行时预览加载失败"));
         }
     }, Qt::QueuedConnection);
-    canvasToolbarLayout->addWidget(canvasTitle);
+    canvasToolbarLayout->addWidget(canvasTitle, 1);
     canvasToolbarLayout->addWidget(canvasMeta);
     canvasToolbarLayout->addWidget(canvasSpacer);
     m_finishKeyformButton = new QPushButton(QStringLiteral("结束关键形编辑"), canvasToolbar);
@@ -1482,6 +1523,7 @@ void MainWindow::RestDock(const QString &name)
     m_finishKeyformButton->hide();
     connect(m_finishKeyformButton, &QPushButton::clicked, this, [this] { EndKeyformEditing(); });
     canvasToolbarLayout->addWidget(m_finishKeyformButton);
+    canvasToolbarLayout->addWidget(maskQuality);
     canvasToolbarLayout->addWidget(resetCanvas);
     canvasLayout->addWidget(canvasToolbar);
     canvasLayout->addWidget(m_openglwindows, 1);

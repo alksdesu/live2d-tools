@@ -135,6 +135,7 @@ public:
      *
      */
     void SetClippingMaskBufferSize(csmFloat32 width, csmFloat32 height);
+    void UseHighPrecisionMask(csmBool high);
 
     /**
      * @brief  レンダーテクスチャの枚数を取得する。
@@ -243,6 +244,8 @@ private:
     bool _forceMaskRedraw = false;
     bool _maskTopologyUpdated = false;
     bool _maskBuffersNeedRedraw = false;
+    csmInt32 _requestedMaskBufferCount = 1;
+    CubismVector2 _requestedMaskBufferSize{256, 256};
 };
 
 }}}}

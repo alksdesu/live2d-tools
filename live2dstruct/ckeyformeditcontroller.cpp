@@ -44,7 +44,8 @@ bool CKeyformEditController::Ready(QString* error) const
 bool CKeyformEditController::Handles(const CModelEdit& edit)
 {
     return edit.field == CModelEdit::KeyformPositions || edit.field == CModelEdit::WarpKeyforms ||
-           edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent;
+           edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent ||
+           edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted;
 }
 
 bool CKeyformEditController::CanEdit(const QString& id, int keyform, QString* error) const
@@ -78,7 +79,7 @@ bool CKeyformEditController::CanEditIn(const CModelDocument& document, const QSt
             count = deformer.type == CModelDeformer::Warp ? deformer.warpKeyforms.size() : deformer.rotationKeyforms.size();
         }
     }
-    if (count < 0 || keyform < -1 || keyform >= count || (type == QLatin1String("artmesh") && keyform < 0))
+    if (count < 0 || keyform < -1 || keyform >= count)
         return fail(error, QStringLiteral("对象或关键形不存在"));
     if (document.IsLocked(type, id))
         return fail(error, QStringLiteral("对象已锁定：%1").arg(id));
@@ -190,15 +191,18 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, QString* error)
 bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, float>& currentValues,
                                    int previewKeyform, QString* error)
 {
-    if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型几何编辑"));
+    if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
     const bool parentEdit = edit.field == CModelEdit::DeformerParent;
+    const bool clippingEdit = edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted;
+    const bool poseEdit = !parentEdit && !clippingEdit;
     const bool meshEdit = edit.field == CModelEdit::KeyformPositions;
-    const QString expectedType = meshEdit ? QStringLiteral("artmesh") :
+    const QString expectedType = meshEdit || clippingEdit ? QStringLiteral("artmesh") :
         edit.field == CModelEdit::WarpKeyforms ? QStringLiteral("warp") :
         edit.field == CModelEdit::RotationKeyforms ? QStringLiteral("rotation") : edit.type;
     if (edit.type != expectedType || (parentEdit && edit.type != QLatin1String("warp") && edit.type != QLatin1String("rotation")))
         return fail(error, QStringLiteral("编辑数据与对象类型不匹配"));
-    if (!CanEdit(edit.name, edit.type, parentEdit ? -1 : previewKeyform, error)) return false;
+    if (poseEdit && previewKeyform < 0) return fail(error, QStringLiteral("请选择要编辑的关键形"));
+    if (!CanEdit(edit.name, edit.type, poseEdit ? previewKeyform : -1, error)) return false;
     if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
     bool current = false;
     if (meshEdit) {
@@ -210,23 +214,29 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
     } else if (edit.field == CModelEdit::RotationKeyforms) {
         current = edit.before.canConvert<QVector<CModelRotationKeyform>>() &&
             edit.before.value<QVector<CModelRotationKeyform>>() == m_document->DeformerRotationKeyforms(edit.name);
+    } else if (edit.field == CModelEdit::MaskIndices) {
+        current = edit.before.canConvert<QVector<int>>() &&
+            edit.before.value<QVector<int>>() == m_document->DrawableMaskIndices(edit.name);
+    } else if (edit.field == CModelEdit::MaskInverted) {
+        current = edit.before.metaType().id() == QMetaType::Bool && edit.after.metaType().id() == QMetaType::Bool &&
+            edit.before.toBool() == m_document->DrawableMaskInverted(edit.name);
     } else {
         bool valid = false;
         const int before = edit.before.toInt(&valid);
         current = valid && before == m_document->DeformerParentIndex(edit.name);
     }
-    if (!current) return fail(error, QStringLiteral("几何数据在编辑期间已改变，请重新操作"));
+    if (!current) return fail(error, QStringLiteral("编辑数据在操作期间已改变，请重新操作"));
     auto pose = m_pose;
     const bool keepTarget = IsActive() && m_target == edit.name && m_type == edit.type &&
         (meshEdit || m_keyform == previewKeyform);
-    if (!parentEdit && !keepTarget && !MakePose(edit.name, edit.type, previewKeyform, currentValues, pose, error)) return false;
+    if (poseEdit && !keepTarget && !MakePose(edit.name, edit.type, previewKeyform, currentValues, pose, error)) return false;
     CModelDocument candidate = *m_document;
     CModelEdit command = edit;
     command.coalesce = false;
-    if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("几何编辑数据无效或没有变化"));
+    if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("编辑数据无效或没有变化"));
     if (parentEdit && !CanEditIn(candidate, edit.name, edit.type, -1, error)) return false;
-    if (!Publish(std::move(candidate), pose, !parentEdit || IsActive(), error)) return false;
-    if (!parentEdit) {
+    if (!Publish(std::move(candidate), pose, poseEdit || IsActive(), error)) return false;
+    if (poseEdit) {
         if (!keepTarget) { m_target = edit.name; m_type = edit.type; m_keyform = previewKeyform; }
         m_pose = std::move(pose);
     }

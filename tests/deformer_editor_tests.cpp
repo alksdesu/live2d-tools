@@ -463,6 +463,8 @@ private slots:
         QCOMPARE(parent->currentData().toInt(), sourceParent);
         QVERIFY(!editor.document.CanUndoEdit() && editor.document.CanRedoEdit());
         QCOMPARE(editor.publishedBytes, baseline.SourceBytes());
+        for (const auto& diagnostic : editor.document.Validate())
+            QVERIFY(diagnostic.code != QLatin1String("deformer_parent_override"));
         CModelSession restoredSource = detached;
         restoredSource.deformerParentIndices = editor.document.DeformerParentOverrides();
         editor.inspector.Redo();
@@ -478,6 +480,8 @@ private slots:
             QVERIFY2(editor.controller.Restore(std::move(candidate), &error), qPrintable(error));
             editor.refresh();
             QCOMPARE(editor.document.DeformerParentIndex(target.id), expected);
+            for (const auto& diagnostic : editor.document.Validate())
+                QVERIFY(diagnostic.code != QLatin1String("deformer_parent_override"));
             QCOMPARE(parent->currentData().toInt(), expected);
             QVERIFY(!editor.document.CanUndoEdit() && !editor.document.CanRedoEdit());
             QVERIFY(!editor.controller.IsActive());

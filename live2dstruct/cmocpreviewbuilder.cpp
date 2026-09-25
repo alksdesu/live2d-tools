@@ -16,10 +16,11 @@ namespace live2dstruct {
 namespace {
 constexpr int MaximumCount = 1000000;
 constexpr int PositionCountIndex = 10;
+constexpr int MaskCountIndex = 17;
 enum class Kind { ArtMesh, Warp, Rotation };
 enum class ColumnId {
     Parent, WarpOpacity, WarpBegin, RotationOpacity, Angle, OriginX, OriginY, Scale,
-    ReflectX, ReflectY, ArtBegin, Positions, Count
+    ReflectX, ReflectY, ArtBegin, Positions, DrawableFlags, MaskBegin, MaskCount, Masks, Count
 };
 constexpr size_t ColumnCount = static_cast<size_t>(ColumnId::Count);
 size_t Index(Kind kind) { return static_cast<size_t>(kind); }
@@ -110,10 +111,11 @@ struct Column
     int offset;
     int count;
     QVector<QPair<qint64, qint64>> aliases;
+    int width = 4;
 
     bool Safe(qint64 first, qint64 bytes) const
     {
-        const qint64 begin = qint64(offset) + first * 4;
+        const qint64 begin = qint64(offset) + first * width;
         const auto found = std::lower_bound(aliases.cbegin(), aliases.cend(), begin,
             [](const auto& range, qint64 value) { return range.second <= value; });
         return found == aliases.cend() || found->first >= begin + bytes;
@@ -160,7 +162,14 @@ ColumnId RotationColumn(int field) { return static_cast<ColumnId>(Index(ColumnId
 
 struct CMocPreviewBuilder::Snapshot
 {
-    struct Mesh { QString id; Source source; };
+    struct Mesh
+    {
+        QString id;
+        Source source;
+        int maskBegin = 0;
+        int maskCount = 0;
+        bool safeMasks = true;
+    };
     struct Deformer { QString id; int type; int specific; int parent; int part; };
     QByteArray bytes;
     QByteArray digest;
@@ -171,10 +180,15 @@ struct CMocPreviewBuilder::Snapshot
     std::array<QVector<Row>, 3> rows;
     std::array<Column, ColumnCount> columns;
     int positionCountOffset = 0;
+    int maskCountOffset = 0;
     int partCount = 0;
 
     const Column& Get(ColumnId column) const { return columns[Index(column)]; }
-    QByteArray Cell(ColumnId column, int row) const { return bytes.mid(Get(column).offset + row * 4, 4); }
+    QByteArray Cell(ColumnId column, int row) const
+    {
+        const auto& data = Get(column);
+        return bytes.mid(data.offset + row * data.width, data.width);
+    }
     QByteArray Positions(Kind kind, int row, int vertices) const
     {
         return bytes.mid(Get(ColumnId::Positions).offset + rows[Index(kind)][row].begin * 4, vertices * 8);
@@ -194,8 +208,10 @@ struct CMocPreviewBuilder::Snapshot
     }
     bool Read(CSectionTable& table, QString* error);
     bool ParentPatches(const QHash<QString, int>& overrides, Patches& patches, QString* error) const;
+    bool MaskPatches(const Overrides& overrides, Patches& patches, QMap<int, QByteArray>& masks, QString* error) const;
     bool Write(const Patches& patches, const QVector<Address>& positions,
                const std::array<QHash<int, Request>, 3>& requests,
+               const QMap<int, QByteArray>& masks,
                QByteArray& output, QString* error) const;
 };
 
@@ -218,16 +234,23 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
         {"rotation_deformer_keyforms.is_reflect_x", 0x148, offsets.rotation_deformer_keyforms->is_reflect_x, counts.rotation_deformer_keyforms, {}},
         {"rotation_deformer_keyforms.is_reflect_y", 0x14c, offsets.rotation_deformer_keyforms->is_reflect_y, counts.rotation_deformer_keyforms, {}},
         {"art_mesh_keyforms.keyform_position_sources_begin_indices", 0x158, offsets.art_mesh_keyforms->keyform_position_sources_begin_indices, counts.art_mesh_keyforms, {}},
-        {"keyform_positions.xys", 0x15c, offsets.keyform_positions->xys, counts.keyform_positions, {}}
+        {"keyform_positions.xys", 0x15c, offsets.keyform_positions->xys, counts.keyform_positions, {}},
+        {"art_meshes.drawable_flags", 0xe8, offsets.art_meshes->drawable_flags, counts.art_meshes, {}, 1},
+        {"art_meshes.drawable_mask_sources_begin_indices", 0xfc, offsets.art_meshes->drawable_mask_sources_begin_indices, counts.art_meshes, {}},
+        {"art_meshes.drawable_mask_sources_counts", 0x100, offsets.art_meshes->drawable_mask_sources_counts, counts.art_meshes, {}},
+        {"drawable_masks.art_mesh_sources_indices", 0x180, offsets.drawable_masks->art_mesh_sources_indices, counts.drawable_masks, {}}
     }};
     positionCountOffset = offsets.count_info->count_info_offset + PositionCountIndex * 4;
+    maskCountOffset = offsets.count_info->count_info_offset + MaskCountIndex * 4;
     partCount = counts.parts;
     if (Word(bytes, positionCountOffset) != quint32(counts.keyform_positions))
         return Fail(error, QStringLiteral("预览位置数量与区段表不一致"));
+    if (Word(bytes, maskCountOffset) != quint32(counts.drawable_masks))
+        return Fail(error, QStringLiteral("预览蒙版数量与区段表不一致"));
     for (auto& column : columns) {
         if (Word(bytes, column.slot) != quint32(column.offset))
             return Fail(error, QStringLiteral("预览区段 %1 与偏移表不一致").arg(QString::fromLatin1(column.name)));
-        const qint64 end = qint64(column.offset) + qint64(column.count) * 4;
+        const qint64 end = qint64(column.offset) + qint64(column.count) * column.width;
         for (const auto& span : spans) {
             if (!span.count || (span.optional && !span.offset) || std::strcmp(span.name, column.name) == 0) continue;
             const qint64 first = std::max(qint64(column.offset), span.offset);
@@ -247,15 +270,34 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
         if (!std::isfinite(value)) return Fail(error, QStringLiteral("源关键形坐标包含非有限值"));
 
     std::array<QVector<Reference>, 3> normal, all, orphan, blend;
+    QVector<int> maskCoverage(counts.drawable_masks + 1, 0);
     for (const auto* mesh : table.art_meshes) {
         if (mesh->ids.isEmpty() || meshIndices.contains(mesh->ids))
             return Fail(error, QStringLiteral("ArtMesh ID 为空或重复：%1").arg(mesh->ids));
         if (mesh->vertex_counts < 0 || mesh->vertex_counts > MaximumCount / 2 ||
             !Range(mesh->keyform_sources_begin_indices, mesh->keyform_sources_counts, counts.art_mesh_keyforms))
             return Fail(error, QStringLiteral("ArtMesh 顶点或关键形范围无效：%1").arg(mesh->ids));
+        if (!Range(mesh->drawable_mask_sources_begin_indices, mesh->drawable_mask_sources_counts, counts.drawable_masks))
+            return Fail(error, QStringLiteral("ArtMesh 蒙版切片越界：%1").arg(mesh->ids));
         meshIndices.insert(mesh->ids, meshes.size());
-        meshes.append({mesh->ids, {mesh->keyform_sources_begin_indices, mesh->keyform_sources_counts, mesh->vertex_counts}});
+        meshes.append({mesh->ids, {mesh->keyform_sources_begin_indices, mesh->keyform_sources_counts, mesh->vertex_counts},
+                       mesh->drawable_mask_sources_begin_indices, mesh->drawable_mask_sources_counts});
+        if (mesh->drawable_mask_sources_counts) {
+            ++maskCoverage[mesh->drawable_mask_sources_begin_indices];
+            --maskCoverage[mesh->drawable_mask_sources_begin_indices + mesh->drawable_mask_sources_counts];
+        }
         normal[Index(Kind::ArtMesh)].append({mesh->keyform_sources_begin_indices, mesh->keyform_sources_counts, mesh->vertex_counts * 2});
+    }
+    QVector<int> sharedMaskPrefix(counts.drawable_masks + 1, 0);
+    int maskOwners = 0;
+    for (int index = 0; index < counts.drawable_masks; ++index) {
+        maskOwners += maskCoverage[index];
+        sharedMaskPrefix[index + 1] = sharedMaskPrefix[index] + (maskOwners > 1 ? 1 : 0);
+    }
+    for (auto& mesh : meshes) {
+        if (!mesh.maskCount) continue;
+        mesh.safeMasks = sharedMaskPrefix[mesh.maskBegin] == sharedMaskPrefix[mesh.maskBegin + mesh.maskCount] &&
+            Get(ColumnId::Masks).Safe(mesh.maskBegin, qint64(mesh.maskCount) * 4);
     }
     for (const auto* warp : table.warp_deformers) {
         if (warp->vertex_counts < 0 || warp->vertex_counts > MaximumCount / 2 ||
@@ -399,34 +441,99 @@ bool CMocPreviewBuilder::Snapshot::ParentPatches(const QHash<QString, int>& over
     return true;
 }
 
+bool CMocPreviewBuilder::Snapshot::MaskPatches(const Overrides& overrides, Patches& patches,
+                                              QMap<int, QByteArray>& masks, QString* error) const
+{
+    for (auto it = overrides.drawableMasks.cbegin(); it != overrides.drawableMasks.cend(); ++it)
+        if (!meshIndices.contains(it.key())) return Fail(error, QStringLiteral("未知蒙版目标：%1").arg(it.key()));
+    for (auto it = overrides.drawableMaskInverted.cbegin(); it != overrides.drawableMaskInverted.cend(); ++it)
+        if (!meshIndices.contains(it.key())) return Fail(error, QStringLiteral("未知反转蒙版目标：%1").arg(it.key()));
+    for (int index = 0; index < meshes.size(); ++index) {
+        const auto& mesh = meshes[index];
+        const auto inverted = overrides.drawableMaskInverted.constFind(mesh.id);
+        if (inverted != overrides.drawableMaskInverted.cend()) {
+            const auto original = Cell(ColumnId::DrawableFlags, index);
+            const quint8 flags = static_cast<quint8>(original[0]);
+            const quint8 value = (flags & quint8(~0x08)) | (inverted.value() ? 0x08 : 0);
+            if (value != flags) patches[Index(ColumnId::DrawableFlags)].insert(index, QByteArray(1, char(value)));
+        }
+        const auto requested = overrides.drawableMasks.constFind(mesh.id);
+        if (requested == overrides.drawableMasks.cend()) continue;
+        if (requested->size() > MaximumCount) return Fail(error, QStringLiteral("蒙版列表数量超出范围：%1").arg(mesh.id));
+        QByteArray encoded(requested->size() * 4, Qt::Uninitialized);
+        for (int item = 0; item < requested->size(); ++item) Put(encoded, item * 4, quint32((*requested)[item]));
+        const auto original = mesh.maskCount ?
+            bytes.mid(Get(ColumnId::Masks).offset + mesh.maskBegin * 4, mesh.maskCount * 4) : QByteArray();
+        if (encoded == original) continue;
+        QSet<int> unique;
+        for (int target : *requested) {
+            if (target < 0 || target >= meshes.size() || target == index || unique.contains(target))
+                return Fail(error, QStringLiteral("蒙版索引越界、自引用或重复：%1").arg(mesh.id));
+            unique.insert(target);
+        }
+        if (requested->size() != mesh.maskCount)
+            patches[Index(ColumnId::MaskCount)].insert(index, EncodeWord(quint32(requested->size())));
+        if (!encoded.isEmpty()) masks.insert(index, std::move(encoded));
+    }
+    return true;
+}
+
 bool CMocPreviewBuilder::Snapshot::Write(const Patches& input, const QVector<Address>& positions,
                                         const std::array<QHash<int, Request>, 3>& requests,
+                                        const QMap<int, QByteArray>& masks,
                                         QByteArray& output, QString* error) const
 {
+    struct PoolChange
+    {
+        ColumnId beginColumn;
+        int row;
+        int originalBegin;
+        const QByteArray* values;
+    };
+    struct PoolWrite
+    {
+        ColumnId column;
+        int countOffset;
+        QVector<PoolChange> changes;
+        bool relocate = false;
+        qint64 extra = 0;
+        qint64 offset = 0;
+        int count = 0;
+    };
     Patches patches = input;
-    bool relocatePool = false;
-    qint64 extraFloats = 0;
+    std::array<PoolWrite, 2> pools{{{ColumnId::Positions, positionCountOffset, {}},
+                                   {ColumnId::Masks, maskCountOffset, {}}}};
     for (const auto& address : positions) {
-        relocatePool = relocatePool || !rows[Index(address.kind)][address.row].safePosition;
-        extraFloats += GetRequest(requests, address).fields[0].size() / 4;
+        const auto& row = rows[Index(address.kind)][address.row];
+        const auto& values = GetRequest(requests, address).fields[0];
+        pools[0].relocate = pools[0].relocate || !row.safePosition;
+        pools[0].extra += values.size() / 4;
+        pools[0].changes.append({PositionBegin(address.kind), address.row, row.begin, &values});
     }
-    const auto& pool = Get(ColumnId::Positions);
+    for (auto it = masks.cbegin(); it != masks.cend(); ++it) {
+        const auto& mesh = meshes[it.key()];
+        pools[1].relocate = pools[1].relocate || !mesh.safeMasks || it->size() / 4 != mesh.maskCount;
+        pools[1].extra += it->size() / 4;
+        pools[1].changes.append({ColumnId::MaskBegin, it.key(), mesh.maskBegin, &it.value()});
+    }
     qint64 finalSize = bytes.size();
-    qint64 poolOffset = pool.offset;
-    int poolCount = pool.count;
     std::array<qint64, ColumnCount> destinations{};
     std::array<bool, ColumnCount> relocated{};
-    if (relocatePool) {
-        if (extraFloats > MaximumCount - pool.count) return Fail(error, QStringLiteral("隔离共享位置后的预览数据超出范围"));
-        poolOffset = Align64(finalSize);
-        poolCount += int(extraFloats);
-        finalSize = poolOffset + qint64(poolCount) * 4;
-        int begin = pool.count;
-        for (const auto& address : positions) {
-            const ColumnId column = PositionBegin(address.kind);
-            patches[Index(column)].insert(address.row, EncodeWord(quint32(begin)));
-            relocated[Index(column)] = true;
-            begin += GetRequest(requests, address).fields[0].size() / 4;
+    for (auto& plan : pools) {
+        const auto& column = Get(plan.column);
+        plan.offset = column.offset;
+        plan.count = column.count;
+        if (!plan.relocate) continue;
+        if (plan.extra > MaximumCount - column.count)
+            return Fail(error, QStringLiteral("隔离共享数组后的预览数据超出范围：%1").arg(QString::fromLatin1(column.name)));
+        plan.offset = Align64(finalSize);
+        plan.count += int(plan.extra);
+        finalSize = plan.offset + qint64(plan.count) * column.width;
+        int begin = column.count;
+        for (const auto& change : plan.changes) {
+            patches[Index(change.beginColumn)].insert(change.row, EncodeWord(quint32(begin)));
+            if (plan.column == ColumnId::Positions) relocated[Index(change.beginColumn)] = true;
+            begin += change.values->size() / column.width;
         }
     }
     for (size_t index = 0; index < ColumnCount; ++index) {
@@ -434,13 +541,13 @@ bool CMocPreviewBuilder::Snapshot::Write(const Patches& input, const QVector<Add
         destinations[index] = column.offset;
         if (patches[index].isEmpty()) continue;
         for (auto it = patches[index].cbegin(); it != patches[index].cend(); ++it) {
-            if (it.key() < 0 || it.key() >= column.count || it->size() != 4)
+            if (it.key() < 0 || it.key() >= column.count || it->size() != column.width)
                 return Fail(error, QStringLiteral("预览字段补丁越界"));
-            relocated[index] = relocated[index] || !column.Safe(it.key(), 4);
+            relocated[index] = relocated[index] || !column.Safe(it.key(), column.width);
         }
         if (relocated[index]) {
             destinations[index] = Align64(finalSize);
-            finalSize = destinations[index] + qint64(column.count) * 4;
+            finalSize = destinations[index] + qint64(column.count) * column.width;
         }
     }
     if (finalSize != bytes.size()) finalSize = Align64(finalSize);
@@ -450,26 +557,32 @@ bool CMocPreviewBuilder::Snapshot::Write(const Patches& input, const QVector<Add
         candidate.resize(finalSize);
         std::memset(candidate.data() + bytes.size(), 0, finalSize - bytes.size());
     }
-    if (relocatePool) {
-        std::memcpy(candidate.data() + poolOffset, bytes.constData() + pool.offset, pool.count * 4);
-        Put(candidate, pool.slot, quint32(poolOffset));
-        Put(candidate, positionCountOffset, quint32(poolCount));
+    for (const auto& plan : pools) {
+        if (!plan.relocate) continue;
+        const auto& column = Get(plan.column);
+        if (column.count)
+            std::memcpy(candidate.data() + plan.offset, bytes.constData() + column.offset, column.count * column.width);
+        Put(candidate, column.slot, quint32(plan.offset));
+        Put(candidate, plan.countOffset, quint32(plan.count));
     }
     for (size_t index = 0; index < ColumnCount; ++index) {
         const auto& column = columns[index];
         if (relocated[index]) {
-            std::memcpy(candidate.data() + destinations[index], bytes.constData() + column.offset, column.count * 4);
+            std::memcpy(candidate.data() + destinations[index], bytes.constData() + column.offset, column.count * column.width);
             Put(candidate, column.slot, quint32(destinations[index]));
         }
         for (auto it = patches[index].cbegin(); it != patches[index].cend(); ++it)
-            std::memcpy(candidate.data() + destinations[index] + it.key() * 4, it->constData(), 4);
+            std::memcpy(candidate.data() + destinations[index] + it.key() * column.width, it->constData(), column.width);
     }
-    qint64 appended = pool.count;
-    for (const auto& address : positions) {
-        const auto& values = GetRequest(requests, address).fields[0];
-        const qint64 begin = relocatePool ? appended : rows[Index(address.kind)][address.row].begin;
-        std::memcpy(candidate.data() + poolOffset + begin * 4, values.constData(), values.size());
-        appended += values.size() / 4;
+    for (const auto& plan : pools) {
+        const auto& column = Get(plan.column);
+        qint64 appended = column.count;
+        for (const auto& change : plan.changes) {
+            const auto& values = *change.values;
+            const qint64 begin = plan.relocate ? appended : change.originalBegin;
+            std::memcpy(candidate.data() + plan.offset + begin * column.width, values.constData(), values.size());
+            appended += values.size() / column.width;
+        }
     }
     CReader reader = CReader::FromBytes(candidate);
     CSectionTable table(reader);
@@ -517,10 +630,23 @@ bool CMocPreviewBuilder::Build(const QHash<QString, QVector<QVector<float>>>& ar
                               const QHash<QString, int>& deformerParents,
                               QByteArray& result, QString* error) const
 {
+    Overrides overrides;
+    overrides.artMeshPositions = artMeshPositions;
+    overrides.warpKeyforms = warpKeyforms;
+    overrides.rotationKeyforms = rotationKeyforms;
+    overrides.deformerParents = deformerParents;
+    return BuildOverrides(overrides, result, error);
+}
+
+bool CMocPreviewBuilder::BuildOverrides(const Overrides& overrides, QByteArray& result, QString* error) const
+{
     if (error) error->clear();
     if (!m_snapshot) return Fail(error, QStringLiteral("预览补丁尚未初始化"));
     try {
         const auto& state = *m_snapshot;
+        const auto& artMeshPositions = overrides.artMeshPositions;
+        const auto& warpKeyforms = overrides.warpKeyforms;
+        const auto& rotationKeyforms = overrides.rotationKeyforms;
         for (auto it = artMeshPositions.cbegin(); it != artMeshPositions.cend(); ++it)
             if (!state.meshIndices.contains(it.key())) return Fail(error, QStringLiteral("未知 ArtMesh：%1").arg(it.key()));
         const auto knownDeformers = [&](const auto& overrides, int type) {
@@ -533,7 +659,9 @@ bool CMocPreviewBuilder::Build(const QHash<QString, QVector<QVector<float>>>& ar
         };
         if (!knownDeformers(warpKeyforms, 0) || !knownDeformers(rotationKeyforms, 1)) return false;
         Patches patches;
-        if (!state.ParentPatches(deformerParents, patches, error)) return false;
+        QMap<int, QByteArray> masks;
+        if (!state.ParentPatches(overrides.deformerParents, patches, error) ||
+            !state.MaskPatches(overrides, patches, masks, error)) return false;
         std::array<QHash<int, Request>, 3> requests;
         QVector<Address> order;
         const auto collect = [&](Kind kind, int row, QVector<QByteArray> fields, const QVector<QByteArray>& original) {
@@ -621,11 +749,11 @@ bool CMocPreviewBuilder::Build(const QHash<QString, QVector<QVector<float>>>& ar
             }
         }
         const bool anyCells = std::any_of(patches.cbegin(), patches.cend(), [](const auto& patch) { return !patch.isEmpty(); });
-        if (!anyCells && changedPositions.isEmpty()) {
+        if (!anyCells && changedPositions.isEmpty() && masks.isEmpty()) {
             result = state.bytes;
             return true;
         }
-        return state.Write(patches, changedPositions, requests, result, error);
+        return state.Write(patches, changedPositions, requests, masks, result, error);
     } catch (const std::bad_alloc&) {
         return Fail(error, QStringLiteral("预览补丁内存不足"));
     } catch (const std::length_error&) {

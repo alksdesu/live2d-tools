@@ -281,18 +281,10 @@ bool CubismRenderer_OpenGLES2::PrepareMaskResources(CubismModel& model, csmInt32
     const int drawables = model.GetDrawableCount();
     if (count < 1 || count > CGlMeshBuffer::MaxVertices || drawables < 0 || drawables > CGlMeshBuffer::MaxVertices)
         return PreparationFailed(error, QStringLiteral("渲染器网格或蒙版缓冲数量无效"));
+    if (!model.HasValidClippingDefinitions(error)) return false;
     const int* maskCounts = model.GetDrawableMaskCounts();
-    const int** masks = model.GetDrawableMasks();
-    if (drawables && !maskCounts)
-        return PreparationFailed(error, QStringLiteral("渲染器缺少蒙版数量数组"));
     bool masking = false;
     for (int index = 0; index < drawables; ++index) {
-        if (maskCounts[index] < 0 || maskCounts[index] > CGlMeshBuffer::MaxIndices ||
-            (maskCounts[index] && (!masks || !masks[index])))
-            return PreparationFailed(error, QStringLiteral("网格 %1 的蒙版数组无效").arg(index));
-        for (int mask = 0; mask < maskCounts[index]; ++mask)
-            if (masks[index][mask] < 0 || masks[index][mask] >= drawables)
-                return PreparationFailed(error, QStringLiteral("网格 %1 的蒙版索引越界").arg(index));
         masking = masking || maskCounts[index] != 0;
     }
     if (!masking) return true;
@@ -376,6 +368,8 @@ bool CubismRenderer_OpenGLES2::InitializeResources(CubismModel* model, csmInt32 
         _forceMaskRedraw = false;
         _maskTopologyUpdated = false;
         _maskBuffersNeedRedraw = _clippingManager != nullptr;
+        _requestedMaskBufferCount = maskBufferCount;
+        _requestedMaskBufferSize = maskSize;
         return true;
     } catch (const std::bad_alloc&) {
         return PreparationFailed(error, QStringLiteral("候选渲染器内存不足"));
@@ -411,9 +405,8 @@ bool CubismRenderer_OpenGLES2::PrepareModelReplacement(CubismModel* model,
                 return PreparationFailed(error, QStringLiteral("原渲染器纹理绑定无效"));
             _textures[texture->First] = texture->Second;
         }
-        const int count = std::max(1, previous.GetRenderTextureCount());
-        const auto size = previous._clippingManager ? previous.GetClippingMaskBufferSize() : CubismVector2(256, 256);
-        return InitializeResources(model, count, size, true, error);
+        return InitializeResources(model, previous._requestedMaskBufferCount,
+                                   previous._requestedMaskBufferSize, true, error);
     } catch (const std::bad_alloc&) {
         return PreparationFailed(error, QStringLiteral("复制渲染设置时内存不足"));
     } catch (const std::length_error&) {
@@ -472,7 +465,7 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
 }
 
 bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QString& drawName,
-                                            csmFloat32 opacityOverride, bool hasMask)
+                                            csmFloat32 opacityOverride, bool)
 {
     auto* delegate = LAppDelegate::GetInstance();
     auto* writer = delegate->GetCPsdWriteList();
@@ -486,10 +479,11 @@ bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QStri
         if (image.isNull()) return false;
         const csmFloat32 effectiveOpacity = opacityOverride >= 0.0f ? opacityOverride :
             GetModel()->GetDrawableOpacityAll(drawableIndex, delegate->m_IsPrintALl);
-        const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f, effectiveOpacity * 255.0f, 255.0f));
+        const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f, effectiveOpacity * GetModelColor().A * 255.0f, 255.0f));
+        // Core clipping is already baked into the layer alpha.
         writer->AddLayer(drawName, rect, image, opacity,
                         CPsdWriteList::CubismBlendModeToPsd(GetModel()->GetDrawableBlendMode(drawableIndex)),
-                        hasMask, false);
+                        false, true);
     }
     return delegate->read.UpdateFrame();
 }
@@ -645,7 +639,8 @@ bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
     const bool generatingMask = IsGeneratingMask();
     if (generatingMask) {
         if (!shader->SetupShaderProgramForMask(this, model, index)) return false;
-    } else if (!shader->SetupShaderProgramForDraw(this, model, index, IsAll, opacityOverride)) {
+    } else if (!shader->SetupShaderProgramForDraw(this, model, index, IsAll, opacityOverride,
+        delegate->IsOffScreen() ? CubismShader_OpenGLES2::DrawMode::IsolatedPsdLayer : CubismShader_OpenGLES2::DrawMode::Preview)) {
         return false;
     }
     if (!mesh->Draw(GL_TRIANGLES)) return false;
@@ -673,11 +668,26 @@ const csmMap<csmInt32, GLuint>& CubismRenderer_OpenGLES2::GetBindedTextures() co
     return _textures;
 }
 
+void CubismRenderer_OpenGLES2::UseHighPrecisionMask(csmBool high)
+{
+    if (IsUsingHighPrecisionMask() == high) return;
+    CubismRenderer::UseHighPrecisionMask(high);
+    _maskBuffersNeedRedraw = true;
+}
+
 void CubismRenderer_OpenGLES2::SetClippingMaskBufferSize(csmFloat32 width, csmFloat32 height)
 {
     int maskWidth = 0, maskHeight = 0;
-    if (!_clippingManager || !GetModel() || !setGlOwningContext(owningContext()) ||
+    if (!GetModel() || !setGlOwningContext(owningContext()) ||
         !MaskDimensions(CubismVector2(width, height), maskWidth, maskHeight)) return;
+    if (maskWidth > std::numeric_limits<int>::max() / 4 / maskHeight) return;
+    GLint maximum = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
+    if (maximum <= 0 || maskWidth > maximum || maskHeight > maximum || glGetError() != GL_NO_ERROR) return;
+    if (!_clippingManager) {
+        _requestedMaskBufferSize = CubismVector2(width, height);
+        return;
+    }
     try {
         CGlRenderState caller;
         if (!caller.Save(owningContext())) return;
@@ -709,6 +719,7 @@ void CubismRenderer_OpenGLES2::SetClippingMaskBufferSize(csmFloat32 width, csmFl
         SetClippingContextBufferForDraw(nullptr);
         _forceMaskRedraw = _clippingManager != nullptr;
         _maskBuffersNeedRedraw = _clippingManager != nullptr;
+        _requestedMaskBufferSize = CubismVector2(width, height);
     } catch (const std::bad_alloc&) {
         return;
     } catch (const std::length_error&) {

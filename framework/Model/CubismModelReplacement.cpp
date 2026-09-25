@@ -28,6 +28,16 @@ bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
                                     const RendererPreparation& prepareRenderer, QString* error,
                                     const ModelPreparation& prepareModel)
 {
+    return Prepare(bytes, size, sourceMoc, source, renderer, prepareRenderer,
+                   CubismModelUpdatePolicy::Strict, error, prepareModel);
+}
+
+bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
+                                    const CubismMoc& sourceMoc, const CubismModel& source,
+                                    const Rendering::CubismRenderer& renderer,
+                                    const RendererPreparation& prepareRenderer, CubismModelUpdatePolicy policy,
+                                    QString* error, const ModelPreparation& prepareModel)
+{
     if (error) error->clear();
     if (_moc || _model || _renderer || _prepared)
         return fail(error, QStringLiteral("预览候选已使用"));
@@ -39,7 +49,7 @@ bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
         if (!candidate._moc) return fail(error, QStringLiteral("Cubism Core 未接受预览 MOC 数据"));
         candidate._model = candidate._moc->CreateModel();
         if (!candidate._model) return fail(error, QStringLiteral("无法创建预览模型"));
-        if (!candidate._model->CopyRuntimeStateFrom(source, error)) return false;
+        if (!candidate._model->CopyRuntimeStateFrom(source, policy, error)) return false;
         if (prepareModel && !prepareModel(candidate._model, error)) {
             if (error && error->isEmpty()) *error = QStringLiteral("预览模型姿态准备失败");
             return false;

@@ -100,6 +100,7 @@ private:
     QVector<QAction*> m_workspaceActions;
     int m_workspaceMode = 0;
     bool m_darkTheme = false;
+    bool m_highPrecisionMasks = false;
     bool m_sessionDirty = false;
     bool m_closingModel = false;
     bool m_poseDirty = false;

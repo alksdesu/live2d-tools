@@ -68,9 +68,10 @@ void CubismShader_OpenGLES2::SetExtShaderMode(csmBool extMode, csmBool extPAMode
 #endif
 
 bool CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer,
-    const CubismModel& model, csmInt32 index, bool isAll, csmFloat32 opacityOverride)
+    const CubismModel& model, csmInt32 index, bool isAll, csmFloat32 opacityOverride, DrawMode mode)
 {
-    if (!renderer || index < 0 || index >= model.GetDrawableCount()) return false;
+    if (!renderer || index < 0 || index >= model.GetDrawableCount() ||
+        (mode != DrawMode::Preview && mode != DrawMode::IsolatedPsdLayer)) return false;
     const auto* context = LAppDelegate::GetInstance()->getGlOwningContext();
     if (!Initialize(context)) return false;
     auto* gl = functions(context);
@@ -83,8 +84,10 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2*
         ? (masked ? (inverted ? Variant::PremultipliedInverted : Variant::PremultipliedMasked) : Variant::Premultiplied)
         : (masked ? (inverted ? Variant::StraightInverted : Variant::StraightMasked) : Variant::Straight);
     BlendMode blend = BlendMode::Normal;
-    if (model.GetDrawableBlendMode(index) == CubismRenderer::CubismBlendMode_Additive) blend = BlendMode::Additive;
-    else if (model.GetDrawableBlendMode(index) == CubismRenderer::CubismBlendMode_Multiplicative) blend = BlendMode::Multiplicative;
+    if (mode == DrawMode::Preview) {
+        if (model.GetDrawableBlendMode(index) == CubismRenderer::CubismBlendMode_Additive) blend = BlendMode::Additive;
+        else if (model.GetDrawableBlendMode(index) == CubismRenderer::CubismBlendMode_Multiplicative) blend = BlendMode::Multiplicative;
+    }
     const auto* program = m_programs.Get(variant);
     const auto* flag = masked ? channel(clipping) : nullptr;
     auto* mask = masked ? renderer->GetMaskBuffer(clipping->_bufferIndex) : nullptr;
@@ -101,8 +104,13 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2*
         colorUniform(*gl, program->channelFlag, *flag);
     }
     gl->glUniformMatrix4fv(program->matrix, 1, GL_FALSE, renderer->GetMvpMatrix().GetArray());
-    const csmFloat32 opacity = opacityOverride >= 0.0f ? opacityOverride : model.GetDrawableOpacityAll(index, isAll);
-    colorUniform(*gl, program->baseColor, renderer->GetModelColorWithOpacity(opacity));
+    auto baseColor = renderer->GetModelColor();
+    if (mode == DrawMode::IsolatedPsdLayer) baseColor.A = 1.0f;
+    else {
+        const csmFloat32 opacity = opacityOverride >= 0.0f ? opacityOverride : model.GetDrawableOpacityAll(index, isAll);
+        baseColor = renderer->GetModelColorWithOpacity(opacity);
+    }
+    colorUniform(*gl, program->baseColor, baseColor);
     colorUniform(*gl, program->multiplyColor, model.GetMultiplyColor(index));
     colorUniform(*gl, program->screenColor, model.GetScreenColor(index));
     return gl->glGetError() == GL_NO_ERROR;

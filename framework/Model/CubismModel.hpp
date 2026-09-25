@@ -24,6 +24,7 @@ struct CDrawableOrderGroup;
 namespace Live2D { namespace Cubism { namespace Framework {
 
 class CubismMoc;
+enum class CubismModelUpdatePolicy { Strict, AllowClippingEdits };
 
 
 class CubismModel
@@ -93,7 +94,10 @@ public:
 
 
     bool IsCompatibleForKeyformUpdate(const CubismModel& source, QString* error = nullptr) const;
+    bool IsCompatibleForKeyformUpdate(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error = nullptr) const;
     bool CopyRuntimeStateFrom(const CubismModel& source, QString* error = nullptr);
+    bool CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error = nullptr);
+    bool HasValidClippingDefinitions(QString* error = nullptr) const;
     bool HasFiniteDrawableState(QString* error = nullptr) const;
 
     struct RuntimeValueSnapshot

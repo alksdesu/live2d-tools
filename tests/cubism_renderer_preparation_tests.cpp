@@ -23,6 +23,17 @@ namespace Core = Live2D::Cubism::Core;
 namespace {
 std::unique_ptr<CubismIdManager> ids;
 std::unordered_set<void*> allocations;
+QOpenGLContext* controlledContext = nullptr;
+bool allowDraw = false;
+bool allowLayerCapture = false;
+bool isolatedLayer = false;
+QImage capturedFrame, capturedLayer;
+bool capturedClipping = true;
+bool capturedPremultiplied = false;
+uint8_t capturedOpacity = 0;
+uint32_t capturedBlendKey = 0;
+CubismRenderer::CubismBlendMode capturedBlendMode = CubismRenderer::CubismBlendMode_Normal;
+int layerCalls = 0, frameClears = 0;
 
 void* Allocate(csmSizeType size)
 {
@@ -68,19 +79,63 @@ CubismIdManager* CubismFramework::GetIdManager() { return ids.get(); }
 void Utils::CubismDebug::Print(CubismFramework::Option::LogLevel, const csmChar*, ...) {}
 }}}
 
-LAppDelegate* LAppDelegate::GetInstance() { UnexpectedRuntime(); }
-const QWidget* LAppDelegate::GetWindow() { UnexpectedRuntime(); }
-QOpenGLContext* LAppDelegate::getGlOwningContext() { UnexpectedRuntime(); }
-bool LAppDelegate::IsOffScreen() { UnexpectedRuntime(); }
+void* LAppAllocator::Allocate(csmSizeType) { UnexpectedRuntime(); }
+void LAppAllocator::Deallocate(void*) { UnexpectedRuntime(); }
+void* LAppAllocator::AllocateAligned(csmSizeType, csmUint32) { UnexpectedRuntime(); }
+void LAppAllocator::DeallocateAligned(void*) { UnexpectedRuntime(); }
+LAppDelegate::LAppDelegate() : m_IsPrintALl(false), m_IsPrintFenzu(false) {}
+LAppDelegate::~LAppDelegate() = default;
+LAppDelegate* LAppDelegate::GetInstance()
+{
+    if (!allowDraw && !allowLayerCapture) UnexpectedRuntime();
+    static LAppDelegate delegate;
+    return &delegate;
+}
+const QWidget* LAppDelegate::GetWindow() { if (!allowDraw) UnexpectedRuntime(); return nullptr; }
+QOpenGLContext* LAppDelegate::getGlOwningContext()
+{
+    if (!allowDraw) UnexpectedRuntime();
+    return controlledContext;
+}
+bool LAppDelegate::IsOffScreen() { if (!allowDraw) UnexpectedRuntime(); return isolatedLayer; }
 void LAppDelegate::SetIsOffset(bool) { UnexpectedRuntime(); }
-CPsdWriteList* LAppDelegate::GetCPsdWriteList() { UnexpectedRuntime(); }
+CPsdWriteList::CPsdWriteList() : m_list(nullptr) {}
+CPsdWriteList::~CPsdWriteList() = default;
+CPsdWriteList* LAppDelegate::GetCPsdWriteList()
+{
+    if (!allowLayerCapture) UnexpectedRuntime();
+    static CPsdWriteList writer;
+    return &writer;
+}
 bool CReadOpengl::PreDraw() { UnexpectedRuntime(); }
-bool CReadOpengl::UpdateFrame() { UnexpectedRuntime(); }
-bool CReadOpengl::GetScreenNode(const float*, int, const float*, int, int, QImage&, QRect&) { UnexpectedRuntime(); }
+bool CReadOpengl::UpdateFrame() { if (!allowLayerCapture) UnexpectedRuntime(); ++frameClears; return true; }
+bool CReadOpengl::GetScreenNode(const float*, int, const float*, int width, int height, QImage& image, QRect& rect)
+{
+    if (!allowLayerCapture || capturedFrame.isNull() || width != capturedFrame.width() || height != capturedFrame.height())
+        UnexpectedRuntime();
+    image = capturedFrame;
+    rect = image.rect();
+    return true;
+}
 void CPsdWriteList::AddGroupStart(const QString&) { UnexpectedRuntime(); }
 void CPsdWriteList::AddGroupEnd() { UnexpectedRuntime(); }
-void CPsdWriteList::AddLayer(const QString&, const QRect&, const QImage&, uint8_t, uint32_t, bool, bool) { UnexpectedRuntime(); }
-uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode) { UnexpectedRuntime(); }
+void CPsdWriteList::AddLayer(const QString&, const QRect&, const QImage& image, uint8_t opacity, uint32_t blendKey,
+                           bool clipping, bool premultiplied)
+{
+    if (!allowLayerCapture) UnexpectedRuntime();
+    capturedLayer = image;
+    capturedClipping = clipping;
+    capturedPremultiplied = premultiplied;
+    capturedOpacity = opacity;
+    capturedBlendKey = blendKey;
+    ++layerCalls;
+}
+uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mode)
+{
+    if (!allowLayerCapture) UnexpectedRuntime();
+    capturedBlendMode = mode;
+    return 0x12345600u + static_cast<uint32_t>(mode);
+}
 QVector<QPair<int, CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndexList(const QVector<int>&, CubismModel*)
 { UnexpectedRuntime(); }
 
@@ -105,13 +160,15 @@ class CubismRendererPreparationTests : public QObject
         return RendererOwner(CubismRenderer::Create(), &CubismRenderer::Delete);
     }
 
-    GLuint Texture()
+    GLuint Texture(uchar alpha = 255)
     {
         GLuint texture = 0;
         m_gl.glGenTextures(1, &texture);
         m_gl.glBindTexture(GL_TEXTURE_2D, texture);
-        const std::array<uchar, 4> pixel{17, 34, 51, 255};
+        const std::array<uchar, 4> pixel{255, 255, 255, alpha};
         m_gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
+        m_gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        m_gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         return texture;
     }
 
@@ -165,7 +222,271 @@ private slots:
     void init()
     {
         QVERIFY(m_context.makeCurrent(&m_surface));
+        controlledContext = &m_context;
+        allowDraw = allowLayerCapture = isolatedLayer = false;
+        capturedFrame = capturedLayer = {};
+        capturedClipping = true;
+        layerCalls = frameClears = 0;
         while (m_gl.glGetError() != GL_NO_ERROR) {}
+    }
+
+    void clippingTransitionsRetainConfigurationAndComposeAlpha_data()
+    {
+        QTest::addColumn<bool>("highPrecision");
+        QTest::newRow("packed") << false;
+        QTest::newRow("high-precision") << true;
+    }
+
+    void clippingTransitionsRetainConfigurationAndComposeAlpha()
+    {
+        QFETCH(bool, highPrecision);
+        const std::array<GLuint, 3> textures{Texture(64), Texture(128), Texture(255)};
+        const auto deleteTextures = qScopeGuard([&] { m_gl.glDeleteTextures(3, textures.data()); });
+        const auto definition = [](int masks, bool inverted) {
+            auto state = std::make_unique<GetterState>();
+            state->drawableCount = 3;
+            state->flags.fill(Core::csmIsDoubleSided);
+            if (inverted) state->flags[2] |= Core::csmIsInvertedMask;
+            state->maskCounts = {0, 0, masks};
+            state->masks[2] = {0, 1};
+            state->drawableOpacities = {0.01f, 0.02f, 1};
+            state->multiply.fill({1, 1, 1, 1});
+            state->screen.fill({0, 0, 0, 1});
+            state->positions[1] = state->positions[0];
+            state->dynamicFlags.fill(Core::csmIsVisible | Core::csmVertexPositionsDidChange);
+            return state;
+        };
+        auto state = definition(1, false);
+        auto model = Model(*state);
+        auto renderer = Renderer();
+        QVERIFY(Gl(renderer).setGlOwningContext(&m_context));
+        QVERIFY(Gl(renderer).Initialize(model.get(), 2));
+        Gl(renderer).SetClippingMaskBufferSize(32, 48);
+        Gl(renderer).UseHighPrecisionMask(highPrecision);
+        for (int index = 0; index < 3; ++index) Gl(renderer).BindTexture(index, textures[index]);
+        CubismMatrix44 identity;
+        identity.LoadIdentity();
+        Gl(renderer).SetMvpMatrix(&identity);
+        QOpenGLFramebufferObject framebuffer(64, 64);
+        QVERIFY(framebuffer.isValid());
+        const std::array<std::pair<int, bool>, 6> edits{{{0, false}, {1, false}, {2, false}, {2, true}, {0, true}, {2, false}}};
+        for (const auto& edit : edits) {
+            auto nextState = definition(edit.first, edit.second);
+            auto nextModel = Model(*nextState);
+            QVERIFY(nextModel->CopyRuntimeStateFrom(*model, CubismModelUpdatePolicy::AllowClippingEdits));
+            auto candidate = Renderer();
+            allowDraw = allowLayerCapture = false;
+            const auto previousState = State();
+            const auto oldMask = Gl(renderer).GetMaskBuffer(0) ? Gl(renderer).GetMaskBuffer(0)->GetRenderTexture() : 0;
+            QString error;
+            QVERIFY2(Gl(candidate).PrepareModelReplacement(nextModel.get(), Gl(renderer), &error), qPrintable(error));
+            QCOMPARE(State(), previousState);
+            QCOMPARE(Gl(candidate).GetRenderTextureCount(), edit.first ? 2 : 0);
+            QCOMPARE(Gl(candidate)._requestedMaskBufferCount, 2);
+            QCOMPARE(Gl(candidate)._requestedMaskBufferSize.X, 32.0f);
+            QCOMPARE(Gl(candidate)._requestedMaskBufferSize.Y, 48.0f);
+            QCOMPARE(Gl(candidate).IsUsingHighPrecisionMask(), highPrecision);
+            if (edit.first) {
+                QCOMPARE(Gl(candidate).GetMaskBuffer(0)->GetBufferWidth(), 32);
+                QCOMPARE(Gl(candidate).GetMaskBuffer(0)->GetBufferHeight(), 48);
+                QVERIFY(Gl(candidate).GetMaskBuffer(0)->GetRenderTexture() != oldMask);
+                auto* clipping = (*Gl(candidate)._clippingManager->GetClippingContextListForDraw())[2];
+                QVERIFY(clipping);
+                QCOMPARE(clipping->_clippingIdCount, edit.first);
+                for (int index = 0; index < edit.first; ++index) QCOMPARE(clipping->_clippingIdList[index], index);
+            } else QVERIFY(!Gl(candidate)._clippingManager);
+            if (oldMask) QVERIFY(m_gl.glIsFramebuffer(oldMask));
+            for (int index = 0; index < 3; ++index) QCOMPARE(Gl(candidate).GetBindedTextures()[index], textures[index]);
+
+            renderer.swap(candidate);
+            model.swap(nextModel);
+            state.swap(nextState);
+            allowDraw = true;
+            QVERIFY(framebuffer.bind());
+            m_gl.glViewport(0, 0, 64, 64);
+            m_gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            m_gl.glDisable(GL_SCISSOR_TEST);
+            m_gl.glDisable(GL_DEPTH_TEST);
+            m_gl.glDisable(GL_STENCIL_TEST);
+            m_gl.glClearColor(0, 0, 0, 0);
+            m_gl.glClear(GL_COLOR_BUFFER_BIT);
+            QVERIFY(Gl(renderer)._rendererProfile.Save(&m_context));
+            auto* clipping = edit.first ? (*Gl(renderer)._clippingManager->GetClippingContextListForDraw())[2] : nullptr;
+            if (clipping) {
+                if (highPrecision) {
+                    Gl(renderer)._clippingManager->SetupMatrixForHighPrecision(*model, false);
+                    QVERIFY(Gl(renderer).DrawHighPrecisionMask(clipping));
+                } else QVERIFY(Gl(renderer)._clippingManager->SetupClippingContext(*model, &Gl(renderer),
+                                        Gl(renderer)._rendererProfile.Viewport().data()));
+            }
+            Gl(renderer).PreDraw();
+            Gl(renderer).SetClippingContextBufferForDraw(clipping);
+            QVERIFY(Gl(renderer).DrawMeshOpenGL(*model, 2, false));
+            const double unionAlpha = edit.first == 1 ? 64.0 / 255 : 1.0 - (1.0 - 64.0 / 255) * (1.0 - 128.0 / 255);
+            const int expected = qRound(255 * (edit.first == 0 ? 1.0 : edit.second ? 1.0 - unionAlpha : unionAlpha));
+            capturedFrame = framebuffer.toImage();
+            QVERIFY(qAbs(qAlpha(capturedFrame.pixel(32, 32)) - expected) <= 2);
+            allowLayerCapture = true;
+            const int previousCalls = layerCalls;
+            QVERIFY(Gl(renderer).WritePsdLayer(2, "Target", 1, edit.first != 0));
+            QCOMPARE(layerCalls, previousCalls + 1);
+            QCOMPARE(frameClears, layerCalls);
+            QVERIFY(!capturedClipping);
+            QVERIFY(capturedPremultiplied);
+            QCOMPARE(capturedLayer, capturedFrame);
+            QVERIFY(Gl(renderer)._rendererProfile.Restore());
+            QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+        }
+        allowDraw = allowLayerCapture = false;
+    }
+
+    void isolatedPsdLayersKeepOpacityAndBlendInMetadata_data()
+    {
+        QTest::addColumn<int>("blend");
+        QTest::addColumn<int>("textureAlpha");
+        QTest::addColumn<int>("opacityCase");
+        QTest::addColumn<float>("modelAlpha");
+        QTest::addColumn<int>("mask");
+        QTest::addColumn<bool>("premultipliedTexture");
+        for (int blend = 0; blend < 3; ++blend)
+            for (int textureAlpha : {128, 255})
+                for (int opacityCase = 0; opacityCase < 4; ++opacityCase)
+                    for (float modelAlpha : {0.5f, 1.0f})
+                        for (int mask = 0; mask < 3; ++mask)
+                            QTest::newRow(qPrintable(QString("blend%1-alpha%2-opacity%3-model%4-mask%5")
+                                .arg(blend).arg(textureAlpha).arg(opacityCase).arg(modelAlpha).arg(mask)))
+                                << blend << textureAlpha << opacityCase << modelAlpha << mask << false;
+        for (int blend = 0; blend < 3; ++blend)
+            QTest::newRow(qPrintable(QString("premultiplied-texture-blend%1").arg(blend)))
+                << blend << 128 << 0 << 0.5f << 2 << true;
+        for (int blend = 0; blend < 3; ++blend)
+            for (bool premultiplied : {false, true})
+                for (int opacityCase : {0, 2})
+                    QTest::newRow(qPrintable(QString("zero-global-blend%1-premult%2-opacity%3")
+                        .arg(blend).arg(premultiplied).arg(opacityCase)))
+                        << blend << (premultiplied ? 128 : 255) << opacityCase << 0.0f << 0 << premultiplied;
+    }
+
+    void isolatedPsdLayersKeepOpacityAndBlendInMetadata()
+    {
+        QFETCH(int, blend);
+        QFETCH(int, textureAlpha);
+        QFETCH(int, opacityCase);
+        QFETCH(float, modelAlpha);
+        QFETCH(int, mask);
+        QFETCH(bool, premultipliedTexture);
+        GetterState state;
+        state.drawableCount = 3;
+        state.maskCounts = {0, 0, mask ? 2 : 0};
+        state.flags.fill(Core::csmIsDoubleSided);
+        if (blend == 1) state.flags[2] |= Core::csmBlendAdditive;
+        if (blend == 2) state.flags[2] |= Core::csmBlendMultiplicative;
+        if (mask == 2) state.flags[2] |= Core::csmIsInvertedMask;
+        state.positions[1] = state.positions[0];
+        state.dynamicFlags.fill(Core::csmIsVisible | Core::csmVertexPositionsDidChange);
+        state.drawableOpacities = {0.02f, 0.03f, opacityCase >= 2 ? 0.0f : 0.5f};
+        state.multiply[2] = {0.8f, 0.6f, 0.4f, 1};
+        state.screen[2] = {0.1f, 0.2f, 0.3f, 1};
+        auto model = Model(state);
+        auto renderer = Renderer();
+        QVERIFY(Gl(renderer).setGlOwningContext(&m_context));
+        QVERIFY(Gl(renderer).Initialize(model.get()));
+        Gl(renderer).SetClippingMaskBufferSize(32, 32);
+        Gl(renderer).SetModelColor(0.6f, 0.8f, 0.4f, modelAlpha);
+        Gl(renderer).IsPremultipliedAlpha(premultipliedTexture);
+        CubismMatrix44 matrix;
+        matrix.LoadIdentity();
+        Gl(renderer).SetMvpMatrix(&matrix);
+        std::array<GLuint, 3> textures{Texture(64), Texture(128), Texture(static_cast<uchar>(textureAlpha))};
+        const auto releaseTextures = qScopeGuard([&] { m_gl.glDeleteTextures(3, textures.data()); });
+        std::array<uchar, 4> texel{128, 64, 192, static_cast<uchar>(textureAlpha)};
+        if (premultipliedTexture) for (int channel = 0; channel < 3; ++channel)
+            texel[channel] = static_cast<uchar>(qRound(texel[channel] * textureAlpha / 255.0));
+        m_gl.glBindTexture(GL_TEXTURE_2D, textures[2]);
+        m_gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, texel.data());
+        for (int index = 0; index < 3; ++index) Gl(renderer).BindTexture(index, textures[index]);
+        QOpenGLFramebufferObject framebuffer(64, 64);
+        QVERIFY(framebuffer.isValid());
+        QVERIFY(framebuffer.bind());
+        m_gl.glViewport(0, 0, 64, 64);
+        m_gl.glDisable(GL_SCISSOR_TEST);
+        m_gl.glDisable(GL_DEPTH_TEST);
+        m_gl.glDisable(GL_STENCIL_TEST);
+        m_gl.glDisable(GL_DITHER);
+        m_gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        m_gl.glClearColor(0, 0, 0, 0);
+        m_gl.glClear(GL_COLOR_BUFFER_BIT);
+        allowDraw = true;
+        isolatedLayer = true;
+        QVERIFY(Gl(renderer)._rendererProfile.Save(&m_context));
+        auto* clipping = mask ? (*Gl(renderer)._clippingManager->GetClippingContextListForDraw())[2] : nullptr;
+        if (clipping) QVERIFY(Gl(renderer)._clippingManager->SetupClippingContext(*model, &Gl(renderer),
+                                                   Gl(renderer)._rendererProfile.Viewport().data()));
+        Gl(renderer).PreDraw();
+        Gl(renderer).SetClippingContextBufferForDraw(clipping);
+        const float overrideOpacity = opacityCase == 1 ? 0.25f : -1;
+        const bool isAll = opacityCase == 2;
+        LAppDelegate::GetInstance()->m_IsPrintALl = isAll;
+        QVERIFY(Gl(renderer).DrawMeshOpenGL(*model, 2, isAll, overrideOpacity));
+        std::array<uchar, 4> actual{};
+        m_gl.glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, actual.data());
+        const double unionCoverage = 1 - (1 - 64.0 / 255) * (1 - 128.0 / 255);
+        const double coverage = mask == 0 ? 1 : mask == 1 ? unionCoverage : 1 - unionCoverage;
+        const double pixelAlpha = textureAlpha / 255.0 * coverage;
+        std::array<double, 3> color{};
+        const std::array<double, 3> multiply{0.8, 0.6, 0.4}, screen{0.1, 0.2, 0.3}, tint{0.6, 0.8, 0.4};
+        for (int channel = 0; channel < 3; ++channel) {
+            const double textureColor = premultipliedTexture ? double(texel[channel]) / textureAlpha : double(texel[channel]) / 255;
+            const double multiplied = textureColor * multiply[channel];
+            color[channel] = (multiplied + screen[channel] - multiplied * screen[channel]) * tint[channel];
+            QVERIFY(qAbs(int(actual[channel]) - qRound(color[channel] * pixelAlpha * 255)) <= 3);
+        }
+        QVERIFY(qAbs(int(actual[3]) - qRound(pixelAlpha * 255)) <= 2);
+        capturedFrame = framebuffer.toImage();
+        allowLayerCapture = true;
+        QVERIFY(Gl(renderer).WritePsdLayer(2, "Target", overrideOpacity, clipping != nullptr));
+        const double effectiveOpacity = opacityCase == 0 ? 0.5 : opacityCase == 1 ? 0.25 : opacityCase == 2 ? 1 : 0;
+        QCOMPARE(capturedOpacity, static_cast<uint8_t>(effectiveOpacity * modelAlpha * 255));
+        QCOMPARE(capturedBlendMode, static_cast<CubismRenderer::CubismBlendMode>(blend));
+        QCOMPARE(capturedBlendKey, 0x12345600u + static_cast<uint32_t>(blend));
+        QVERIFY(capturedPremultiplied);
+        QVERIFY(!capturedClipping);
+        QCOMPARE(capturedLayer, capturedFrame);
+        QVERIFY(Gl(renderer)._rendererProfile.Restore());
+
+        isolatedLayer = false;
+        QVERIFY(framebuffer.bind());
+        m_gl.glViewport(0, 0, 64, 64);
+        m_gl.glClearColor(26.0f / 255, 51.0f / 255, 77.0f / 255, 102.0f / 255);
+        m_gl.glClear(GL_COLOR_BUFFER_BIT);
+        Gl(renderer).PreDraw();
+        Gl(renderer).SetClippingContextBufferForDraw(clipping);
+        QVERIFY(Gl(renderer).DrawMeshOpenGL(*model, 2, isAll, overrideOpacity));
+        m_gl.glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, actual.data());
+        const double sourceAlpha = pixelAlpha * effectiveOpacity * modelAlpha;
+        const std::array<double, 3> background{26.0 / 255, 51.0 / 255, 77.0 / 255};
+        for (int channel = 0; channel < 3; ++channel) {
+            const double sourceColor = color[channel] * sourceAlpha;
+            const double expected = blend == 0 ? sourceColor + background[channel] * (1 - sourceAlpha) :
+                blend == 1 ? sourceColor + background[channel] : sourceColor * background[channel] + background[channel] * (1 - sourceAlpha);
+            QVERIFY(qAbs(int(actual[channel]) - qRound(expected * 255)) <= 3);
+        }
+        const double expectedAlpha = blend == 0 ? sourceAlpha + 102.0 / 255 * (1 - sourceAlpha) : 102.0 / 255;
+        QVERIFY(qAbs(int(actual[3]) - qRound(expectedAlpha * 255)) <= 2);
+        if (modelAlpha == 0) {
+            m_gl.glClearColor(0, 0, 0, 0);
+            m_gl.glClear(GL_COLOR_BUFFER_BIT);
+            Gl(renderer).SetClippingContextBufferForDraw(clipping);
+            QVERIFY(Gl(renderer).DrawMeshOpenGL(*model, 2, isAll, overrideOpacity));
+            m_gl.glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, actual.data());
+            QVERIFY((actual == std::array<uchar, 4>{0, 0, 0, 0}));
+            QVERIFY(qAlpha(capturedLayer.pixel(32, 32)) > 0);
+            QVERIFY(qRed(capturedLayer.pixel(32, 32)) > 0);
+            QCOMPARE(capturedOpacity, uint8_t(0));
+        }
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+        LAppDelegate::GetInstance()->m_IsPrintALl = false;
+        allowDraw = allowLayerCapture = false;
     }
 
     void independentResourcesCopySettingsAndUploadCandidateVertices()
@@ -294,7 +615,8 @@ private slots:
         QTest::addColumn<QString>("failure");
         for (const char* name : {"nan-position", "null-position", "null-uv", "null-indices", "bad-index",
                                  "incomplete-triangle", "negative-vertices", "empty-with-indices", "bad-mask",
-                                 "null-mask", "null-vertex-counts", "null-position-array", "prior-gl-error"})
+                                 "null-mask", "negative-mask", "invalid-texture-binding",
+                                 "null-vertex-counts", "null-position-array", "prior-gl-error"})
             QTest::newRow(name) << QString::fromLatin1(name);
     }
 
@@ -320,6 +642,11 @@ private slots:
         else if (failure == "empty-with-indices") newState.vertexCounts[1] = 0;
         else if (failure == "bad-mask") newState.masks[1][0] = 2;
         else if (failure == "null-mask") newState.maskPointers[1] = nullptr;
+        else if (failure == "negative-mask") newState.masks[1][0] = -1;
+        else if (failure == "invalid-texture-binding") {
+            QVERIFY(!m_gl.glIsTexture(0x7ffffffe));
+            Gl(previous).BindTexture(9, 0x7ffffffe);
+        }
         else if (failure == "null-vertex-counts") newState.nullGetters.insert("csmGetDrawableVertexCounts");
         else if (failure == "null-position-array") newState.nullGetters.insert("csmGetDrawableVertexPositions");
         const auto state = State();
@@ -369,6 +696,43 @@ private slots:
         QVERIFY(m_context.makeCurrent(&m_surface));
         QVERIFY(Gl(candidate).PrepareModelReplacement(newModel.get(), Gl(previous)));
         QCOMPARE(newState.updates, 0);
+    }
+
+    void rendererPreservesExistingStructurallySafeMaskLists_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("self") << 0;
+        QTest::newRow("duplicate") << 1;
+        QTest::newRow("duplicates-beyond-drawable-count") << 2;
+    }
+
+    void rendererPreservesExistingStructurallySafeMaskLists()
+    {
+        QFETCH(int, kind);
+        GetterState oldState, newState;
+        const std::array<int, 3> repeated{0, 0, 0};
+        const int count = kind + 1;
+        oldState.maskCounts[1] = newState.maskCounts[1] = count;
+        oldState.masks[1] = newState.masks[1] = kind == 0 ? std::array<int, 2>{1, 0} : std::array<int, 2>{0, 0};
+        if (kind == 2) oldState.maskPointers[1] = newState.maskPointers[1] = repeated.data();
+        auto oldModel = Model(oldState), newModel = Model(newState);
+        QVERIFY(oldModel->HasValidClippingDefinitions());
+        QVERIFY(newModel->HasValidClippingDefinitions());
+        if (kind == 2) QVERIFY(!newModel->IsCompatibleForKeyformUpdate(*oldModel));
+        else QVERIFY(newModel->IsCompatibleForKeyformUpdate(*oldModel));
+        auto previous = Renderer(), candidate = Renderer();
+        QVERIFY(Gl(previous).setGlOwningContext(&m_context));
+        QVERIFY(Gl(previous).Initialize(oldModel.get()));
+        const auto oldBuffer = Gl(previous).GetMaskBuffer(0)->GetRenderTexture();
+        QString error;
+        QVERIFY2(Gl(candidate).PrepareModelReplacement(newModel.get(), Gl(previous), &error), qPrintable(error));
+        auto* clipping = (*Gl(candidate)._clippingManager->GetClippingContextListForDraw())[1];
+        QVERIFY(clipping);
+        QCOMPARE(clipping->_clippingIdCount, count);
+        for (int index = 0; index < count; ++index) QCOMPARE(clipping->_clippingIdList[index], kind == 0 ? 1 : 0);
+        QVERIFY(m_gl.glIsFramebuffer(oldBuffer));
+        QCOMPARE(Gl(previous).GetModel(), oldModel.get());
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
     void ordinaryInitializationDoesNotReadUnevaluatedGeometry_data()
@@ -435,6 +799,126 @@ private slots:
         QCOMPARE(Gl(renderer).GetMaskBuffer(0)->GetBufferWidth(), 64);
         QCOMPARE(Gl(renderer).GetMaskBuffer(1)->GetBufferHeight(), 64);
         QVERIFY(!m_gl.glIsFramebuffer(mask));
+    }
+
+    void unmaskedRendererStoresValidatedSizesForFutureMasks()
+    {
+        GetterState oldState, newState;
+        oldState.maskCounts.fill(0);
+        auto oldModel = Model(oldState), newModel = Model(newState);
+        auto previous = Renderer(), candidate = Renderer();
+        QVERIFY(Gl(previous).setGlOwningContext(&m_context));
+        QVERIFY(Gl(previous).Initialize(oldModel.get(), 2));
+        QCOMPARE(Gl(previous).GetRenderTextureCount(), 0);
+        const auto before = State();
+        Gl(previous).SetClippingMaskBufferSize(64, 96);
+        QCOMPARE(State(), before);
+        QCOMPARE(Gl(previous).GetRenderTextureCount(), 0);
+        QVERIFY(!Gl(previous).GetMaskBuffer(0));
+        QCOMPARE(Gl(previous)._requestedMaskBufferSize.X, 64.0f);
+        QCOMPARE(Gl(previous)._requestedMaskBufferSize.Y, 96.0f);
+        GLint maximum = 0;
+        m_gl.glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const float infinity = std::numeric_limits<float>::infinity();
+        for (const auto& size : {CubismVector2(0, 32), CubismVector2(32, -1), CubismVector2(nan, 32),
+             CubismVector2(32, infinity), CubismVector2(float(maximum) + 1, 32),
+             CubismVector2(float(std::numeric_limits<int>::max()), 32)}) {
+            Gl(previous).SetClippingMaskBufferSize(size.X, size.Y);
+            QCOMPARE(Gl(previous)._requestedMaskBufferSize.X, 64.0f);
+            QCOMPARE(Gl(previous)._requestedMaskBufferSize.Y, 96.0f);
+        }
+        m_gl.glEnable(0xffffffff);
+        Gl(previous).SetClippingMaskBufferSize(128, 128);
+        QCOMPARE(Gl(previous)._requestedMaskBufferSize.X, 64.0f);
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+        m_context.doneCurrent();
+        Gl(previous).SetClippingMaskBufferSize(128, 128);
+        QCOMPARE(Gl(previous)._requestedMaskBufferSize.Y, 96.0f);
+        QVERIFY(m_context.makeCurrent(&m_surface));
+        QString error;
+        QVERIFY2(Gl(candidate).PrepareModelReplacement(newModel.get(), Gl(previous), &error), qPrintable(error));
+        QCOMPARE(Gl(candidate).GetRenderTextureCount(), 2);
+        QCOMPARE(Gl(candidate).GetMaskBuffer(0)->GetBufferWidth(), 64);
+        QCOMPARE(Gl(candidate).GetMaskBuffer(0)->GetBufferHeight(), 96);
+        QCOMPARE(Gl(previous).GetRenderTextureCount(), 0);
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+    }
+
+    void switchingMaskPrecisionInvalidatesThePreviousLayout_data()
+    {
+        QTest::addColumn<bool>("inverted");
+        QTest::newRow("mask") << false;
+        QTest::newRow("inverted") << true;
+    }
+
+    void switchingMaskPrecisionInvalidatesThePreviousLayout()
+    {
+        QFETCH(bool, inverted);
+        GetterState state;
+        state.drawableCount = 3;
+        state.maskCounts = {0, 0, 2};
+        state.flags.fill(Core::csmIsDoubleSided);
+        if (inverted) state.flags[2] |= Core::csmIsInvertedMask;
+        state.positions[1] = state.positions[0];
+        state.dynamicFlags.fill(Core::csmIsVisible | Core::csmVertexPositionsDidChange);
+        auto model = Model(state);
+        auto renderer = Renderer();
+        auto& gl = Gl(renderer);
+        QVERIFY(gl.setGlOwningContext(&m_context));
+        QVERIFY(gl.Initialize(model.get()));
+        gl.SetClippingMaskBufferSize(32, 48);
+        CubismMatrix44 matrix;
+        matrix.LoadIdentity();
+        gl.SetMvpMatrix(&matrix);
+        const std::array<GLuint, 3> textures{Texture(64), Texture(128), Texture(255)};
+        const auto deleteTextures = qScopeGuard([&] { m_gl.glDeleteTextures(3, textures.data()); });
+        for (int index = 0; index < 3; ++index) gl.BindTexture(index, textures[index]);
+        QOpenGLFramebufferObject framebuffer(64, 64);
+        QVERIFY(framebuffer.isValid());
+        allowDraw = true;
+        auto* delegate = LAppDelegate::GetInstance();
+        delegate->m_hiddenDrawables = {"MeshA", "MeshB"};
+        const auto restoreDelegate = qScopeGuard([&] { delegate->m_hiddenDrawables.clear(); allowDraw = false; });
+        const auto draw = [&]() {
+            if (!framebuffer.bind()) return -1;
+            m_gl.glViewport(0, 0, 64, 64);
+            m_gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            m_gl.glDisable(GL_SCISSOR_TEST);
+            m_gl.glDisable(GL_DEPTH_TEST);
+            m_gl.glDisable(GL_STENCIL_TEST);
+            m_gl.glClearColor(0, 0, 0, 0);
+            m_gl.glClear(GL_COLOR_BUFFER_BIT);
+            if (!gl.DrawModel()) return -1;
+            std::array<uchar, 4> pixel{};
+            m_gl.glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
+            return int(pixel[3]);
+        };
+        const double coverage = 1 - (1 - 64.0 / 255) * (1 - 128.0 / 255);
+        const int expected = qRound((inverted ? 1 - coverage : coverage) * 255);
+        QVERIFY(qAbs(draw() - expected) <= 2);
+        QVERIFY(!gl._maskBuffersNeedRedraw);
+        gl.UseHighPrecisionMask(false);
+        QVERIFY(!gl._maskBuffersNeedRedraw);
+        gl.UseHighPrecisionMask(true);
+        QVERIFY(gl._maskBuffersNeedRedraw);
+        QVERIFY(qAbs(draw() - expected) <= 2);
+        QVERIFY(!gl._maskBuffersNeedRedraw);
+        gl.UseHighPrecisionMask(true);
+        QVERIFY(!gl._maskBuffersNeedRedraw);
+        state.dynamicFlags[0] = state.dynamicFlags[1] = Core::csmIsVisible;
+        state.positionPointers[0] = state.positionPointers[1] = nullptr;
+        gl.UseHighPrecisionMask(false);
+        QVERIFY(gl._maskBuffersNeedRedraw);
+        QCOMPARE(draw(), inverted ? 255 : 0);
+        QVERIFY(gl._maskBuffersNeedRedraw);
+        QVERIFY(!gl._maskTopologyUpdated);
+        state.positionPointers[0] = state.positions[0].data();
+        state.positionPointers[1] = state.positions[1].data();
+        state.dynamicFlags[0] = state.dynamicFlags[1] = Core::csmIsVisible | Core::csmVertexPositionsDidChange;
+        QVERIFY(qAbs(draw() - expected) <= 2);
+        QVERIFY(!gl._maskBuffersNeedRedraw);
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
     void unavailableMaskVerticesStayGuarded_data()

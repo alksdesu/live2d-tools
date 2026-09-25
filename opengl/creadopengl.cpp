@@ -22,7 +22,7 @@ bool CReadOpengl::CanUseContext() const
     return m_context && m_context->isValid() && m_gl && QOpenGLContext::currentContext() == m_context;
 }
 
-bool CReadOpengl::ClearTarget(bool alphaOnly)
+bool CReadOpengl::ClearTarget()
 {
     if (!CanUseContext() || m_gl->glGetError() != GL_NO_ERROR) return false;
     GLint framebuffer = 0, count = 0;
@@ -47,20 +47,20 @@ bool CReadOpengl::ClearTarget(bool alphaOnly)
     m_gl->glDrawBuffer(GL_COLOR_ATTACHMENT0);
     if (m_gl->glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return false;
     m_gl->glDisable(GL_SCISSOR_TEST);
-    m_gl->glColorMaski(0, !alphaOnly, !alphaOnly, !alphaOnly, GL_TRUE);
-    const GLfloat color[]{1.0f, 1.0f, 1.0f, 0.0f};
+    m_gl->glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    const GLfloat color[]{0.0f, 0.0f, 0.0f, 0.0f};
     m_gl->glClearBufferfv(GL_COLOR, 0, color);
     return m_gl->glGetError() == GL_NO_ERROR;
 }
 
 bool CReadOpengl::PreDraw()
 {
-    return ClearTarget(false);
+    return ClearTarget();
 }
 
 bool CReadOpengl::UpdateFrame()
 {
-    return ClearTarget(true);
+    return ClearTarget();
 }
 
 bool CReadOpengl::ReadImage(const QRect& rect, const QSize& canvasSize, QImage& image)

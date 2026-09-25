@@ -1,5 +1,6 @@
 #include "live2dstruct/ccanvasgeometry.h"
 #include "opengl/coffscreenbuffer.h"
+#include "opengl/ccubismshaderprograms.h"
 #include "opengl/creadopengl.h"
 #include "psd/cpsdlist.h"
 #include "psd_binary_reader.h"
@@ -22,6 +23,11 @@ using live2dstruct::CCanvasGeometry;
 namespace {
 constexpr std::array<float, 6> upperTriangle{-0.5f, 0.75f, 0.5f, 0.75f, -0.5f, -0.25f};
 constexpr std::array<float, 6> lowerTriangle{1.5f, -0.75f, 2.5f, -0.75f, 1.5f, -1.75f};
+constexpr std::array<float, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+constexpr std::array<float, 16> textureMatrix{0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, 0.5f, 0.5f, 0, 1};
+constexpr std::array<float, 12> fullQuad{-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1};
+using Variant = CCubismShaderPrograms::Variant;
+using Color = std::array<float, 4>;
 
 struct GlState
 {
@@ -70,10 +76,60 @@ class RenderedPsdTests : public QObject
     std::unique_ptr<QOffscreenSurface> m_surface;
     std::unique_ptr<QOpenGLContext> m_context;
     std::unique_ptr<QOpenGLShaderProgram> m_program;
+    std::unique_ptr<CCubismShaderPrograms> m_cubismPrograms;
     QOpenGLFunctions_3_3_Core m_gl;
     CReadOpengl m_reader;
     std::array<float, 16> m_matrix{};
     GLuint m_vertexArray = 0, m_vertexBuffer = 0;
+    GLuint m_layerVertexArray = 0, m_layerVertexBuffer = 0;
+
+    GLuint texture(const Color& color)
+    {
+        GLuint texture = 0;
+        m_gl.glGenTextures(1, &texture);
+        m_gl.glActiveTexture(GL_TEXTURE0);
+        m_gl.glBindTexture(GL_TEXTURE_2D, texture);
+        m_gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 1, 1, 0, GL_RGBA, GL_FLOAT, color.data());
+        m_gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        m_gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        m_gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        m_gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        return texture;
+    }
+
+    bool drawLayer(Variant variant, GLuint texture, GLuint mask = 0)
+    {
+        m_gl.glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        m_gl.glViewport(0, 0, 16, 16);
+        m_gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        for (GLenum capability : {GL_CULL_FACE, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_SCISSOR_TEST,
+                                  GL_MULTISAMPLE, GL_FRAMEBUFFER_SRGB, GL_DITHER}) m_gl.glDisable(capability);
+        m_gl.glEnable(GL_BLEND);
+        if (!m_cubismPrograms->Bind(variant)) return false;
+        const auto* program = m_cubismPrograms->Get(variant);
+        if (!program) return false;
+        const bool setup = variant == Variant::SetupMask;
+        m_gl.glActiveTexture(GL_TEXTURE0);
+        m_gl.glBindTexture(GL_TEXTURE_2D, texture);
+        m_gl.glUniform1i(program->sampler0, 0);
+        m_gl.glActiveTexture(GL_TEXTURE1);
+        m_gl.glBindTexture(GL_TEXTURE_2D, mask);
+        m_gl.glUniform1i(program->sampler1, 1);
+        m_gl.glUniformMatrix4fv(program->matrix, 1, GL_FALSE, identity.data());
+        m_gl.glUniformMatrix4fv(program->clipMatrix, 1, GL_FALSE, setup ? identity.data() : textureMatrix.data());
+        m_gl.glUniform4f(program->baseColor, setup ? -1 : 1, setup ? -1 : 1, 1, 1);
+        m_gl.glUniform4f(program->multiplyColor, 1, 1, 1, 1);
+        m_gl.glUniform4f(program->screenColor, 0, 0, 0, 0);
+        m_gl.glUniform4f(program->channelFlag, 1, 0, 0, 0);
+        m_gl.glBindVertexArray(m_layerVertexArray);
+        m_gl.glDrawArrays(GL_TRIANGLES, 0, 6);
+        return m_gl.glGetError() == GL_NO_ERROR;
+    }
+
+    bool readLayer(QImage& image, QRect& rect)
+    {
+        return m_reader.GetScreenNode(fullQuad.data(), 6, identity.data(), 16, 16, image, rect);
+    }
 
     bool create(COffscreenBuffer& target)
     {
@@ -212,6 +268,20 @@ private slots:
         m_gl.glBindBuffer(GL_ARRAY_BUFFER, m_vertexBuffer);
         m_gl.glEnableVertexAttribArray(0);
         m_gl.glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+        m_cubismPrograms = std::make_unique<CCubismShaderPrograms>();
+        QVERIFY2(m_cubismPrograms->Initialize(m_context.get()), qPrintable(m_cubismPrograms->Error()));
+        constexpr std::array<float, 24> vertices{
+            -1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1,
+            -1, 1, 0, 1, 1, -1, 1, 0, 1, 1, 1, 1};
+        m_gl.glGenVertexArrays(1, &m_layerVertexArray);
+        m_gl.glGenBuffers(1, &m_layerVertexBuffer);
+        m_gl.glBindVertexArray(m_layerVertexArray);
+        m_gl.glBindBuffer(GL_ARRAY_BUFFER, m_layerVertexBuffer);
+        m_gl.glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices.data(), GL_STATIC_DRAW);
+        m_gl.glEnableVertexAttribArray(0);
+        m_gl.glEnableVertexAttribArray(1);
+        m_gl.glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+        m_gl.glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), reinterpret_cast<void*>(2 * sizeof(float)));
         qInfo() << "Rendered PSD GL:" << reinterpret_cast<const char*>(m_gl.glGetString(GL_VERSION))
                 << reinterpret_cast<const char*>(m_gl.glGetString(GL_RENDERER));
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
@@ -243,6 +313,9 @@ private slots:
     {
         if (!m_context || !m_surface || !m_context->makeCurrent(m_surface.get())) return;
         m_program.reset();
+        m_cubismPrograms.reset();
+        if (m_layerVertexBuffer) m_gl.glDeleteBuffers(1, &m_layerVertexBuffer);
+        if (m_layerVertexArray) m_gl.glDeleteVertexArrays(1, &m_layerVertexArray);
         if (m_vertexBuffer) m_gl.glDeleteBuffers(1, &m_vertexBuffer);
         if (m_vertexArray) m_gl.glDeleteVertexArrays(1, &m_vertexArray);
         m_context->doneCurrent();
@@ -262,7 +335,7 @@ private slots:
         QCOMPARE(image.size(), QSize(4, 4));
         QCOMPARE(image.pixel(0, 0), qRgba(255, 0, 0, 255));
         QCOMPARE(image.pixel(0, 2), qRgba(0, 255, 0, 255));
-        QCOMPARE(image.pixel(3, 3), qRgba(255, 255, 255, 0));
+        QCOMPARE(image.pixel(3, 3), qRgba(0, 0, 0, 0));
         const QByteArray full = pixels(target.GetRenderTexture());
         QCOMPARE(framebufferPixel(full, 1, 2), image.pixel(0, 0));
         QCOMPARE(framebufferPixel(full, 1, 4), image.pixel(0, 2));
@@ -286,7 +359,7 @@ private slots:
         QCOMPARE(layerPixel(parsed.layers[0], 3, 3), qRgba(0, 0, 0, 0));
     }
 
-    void alphaResetPreservesRgbAndSeparatesSequentialPsdLayers()
+    void fullResetSeparatesSequentialPsdLayersAndPreservesGlState()
     {
         COffscreenBuffer target;
         QVERIFY(create(target));
@@ -300,21 +373,19 @@ private slots:
         QVERIFY(state() == beforeClear);
         const QByteArray cleared = pixels(target.GetRenderTexture());
         for (int index = 0; index < 16 * 16; ++index)
-            QCOMPARE(cleared.mid(index * 4, 4), QByteArray::fromHex("ffffff00"));
+            QCOMPARE(cleared.mid(index * 4, 4), QByteArray::fromHex("00000000"));
 
         QVERIFY(draw(upperTriangle, qRgba(255, 0, 0, 255), qRgba(0, 255, 0, 255)));
         QImage first;
         QRect firstRect;
         QVERIFY(m_reader.GetScreenNode(upperTriangle.data(), 3, m_matrix.data(), 16, 16, first, firstRect));
-        const QByteArray beforePixels = pixels(target.GetRenderTexture());
         hostileClearState();
-        const auto beforeAlpha = state();
+        const auto beforeReset = state();
         QVERIFY(m_reader.UpdateFrame());
-        QVERIFY(state() == beforeAlpha);
+        QVERIFY(state() == beforeReset);
         const QByteArray afterPixels = pixels(target.GetRenderTexture());
         for (int index = 0; index < 16 * 16; ++index) {
-            QCOMPARE(afterPixels.mid(index * 4, 3), beforePixels.mid(index * 4, 3));
-            QCOMPARE(quint8(afterPixels[index * 4 + 3]), quint8(0));
+            QCOMPARE(afterPixels.mid(index * 4, 4), QByteArray::fromHex("00000000"));
         }
         QVERIFY(draw(lowerTriangle, qRgba(0, 0, 255, 128), qRgba(0, 0, 255, 128)));
         QImage second;
@@ -323,7 +394,7 @@ private slots:
         QCOMPARE(secondRect, QRect(9, 8, 4, 4));
         QCOMPARE(second.pixel(0, 0), qRgba(0, 0, 255, 128));
         const QByteArray combined = pixels(target.GetRenderTexture());
-        QCOMPARE(framebufferPixel(combined, 1, 2), qRgba(255, 0, 0, 0));
+        QCOMPARE(framebufferPixel(combined, 1, 2), qRgba(0, 0, 0, 0));
         QCOMPARE(framebufferPixel(combined, 9, 8), qRgba(0, 0, 255, 128));
         QCOMPARE(first.pixel(0, 0), qRgba(255, 0, 0, 255));
 
@@ -346,6 +417,183 @@ private slots:
         QCOMPARE(layerPixel(parsed.layers[0], 0, 0), qRgba(255, 0, 0, 255));
         QCOMPARE(layerPixel(parsed.layers[1], 0, 0), qRgba(0, 0, 255, 128));
         QCOMPARE(layerPixel(parsed.layers[1], 3, 3), qRgba(0, 0, 0, 0));
+    }
+
+    void halfTransparentBlackIsIndependentOfPreviousRedLayer()
+    {
+        const std::array<GLuint, 2> textures{texture({0, 0, 0, 0.5f}), texture({1, 0, 0, 1})};
+        const auto release = qScopeGuard([&] { m_gl.glDeleteTextures(textures.size(), textures.data()); });
+        COffscreenBuffer target;
+        QVERIFY(create(target));
+        QVERIFY(target.BeginDraw());
+        QVERIFY(m_reader.PreDraw());
+        QVERIFY(drawLayer(Variant::Straight, textures[0]));
+        QImage isolated, afterRed;
+        QRect isolatedRect, afterRedRect;
+        QVERIFY(readLayer(isolated, isolatedRect));
+        QCOMPARE(isolatedRect, QRect(0, 0, 16, 16));
+        QCOMPARE(isolated.pixel(8, 8), qRgba(0, 0, 0, 128));
+        QVERIFY(m_reader.UpdateFrame());
+        QVERIFY(drawLayer(Variant::Straight, textures[1]));
+        QImage red;
+        QRect redRect;
+        QVERIFY(readLayer(red, redRect));
+        QCOMPARE(red.pixel(8, 8), qRgba(255, 0, 0, 255));
+        hostileClearState();
+        const auto before = state();
+        QVERIFY(m_reader.UpdateFrame());
+        QVERIFY(state() == before);
+        QVERIFY(drawLayer(Variant::Straight, textures[0]));
+        QVERIFY(readLayer(afterRed, afterRedRect));
+        QCOMPARE(afterRedRect, isolatedRect);
+        QCOMPARE(afterRed, isolated);
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath("independent-layers.psd");
+        CPsdList writer;
+        QVERIFY(writer.SetPsd(path, 16, 16));
+        writer.AddLayer("black-first", isolated, isolatedRect, 255, 0x6e6f726d, false, true);
+        writer.AddLayer("red", red, redRect, 255, 0x6e6f726d, false, true);
+        writer.AddLayer("black-after-red", afterRed, afterRedRect, 255, 0x6e6f726d, false, true);
+        QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed;
+        QString error;
+        QVERIFY2(PsdBinary::Parse(readFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers.size(), 3);
+        for (int channel : {0, 1, 2, -1}) QCOMPARE(parsed.layers[0].Plane(channel), parsed.layers[2].Plane(channel));
+        QCOMPARE(layerPixel(parsed.layers[0], 8, 8), qRgba(0, 0, 0, 128));
+        QCOMPARE(layerPixel(parsed.layers[1], 8, 8), qRgba(255, 0, 0, 255));
+    }
+
+    void productionShaderPixelsKeepBlendAndOpacityInMetadata_data()
+    {
+        QTest::addColumn<QByteArray>("blend");
+        QTest::addColumn<quint32>("blendKey");
+        QTest::addColumn<float>("textureAlpha");
+        QTest::addColumn<bool>("premultipliedTexture");
+        const std::array<QByteArray, 3> names{"norm", "lddg", "mul "};
+        const std::array<quint32, 3> keys{0x6e6f726d, 0x6c646467, 0x6d756c20};
+        for (int blend = 0; blend < 3; ++blend)
+            for (float alpha : {0.5f, 1.0f})
+                for (bool premultiplied : {false, true})
+                    QTest::newRow(qPrintable(QStringLiteral("%1-alpha-%2-premultiplied-%3")
+                        .arg(QString::fromLatin1(names[blend])).arg(alpha).arg(premultiplied)))
+                        << names[blend] << keys[blend] << alpha << premultiplied;
+    }
+
+    void productionShaderPixelsKeepBlendAndOpacityInMetadata()
+    {
+        QFETCH(QByteArray, blend);
+        QFETCH(quint32, blendKey);
+        QFETCH(float, textureAlpha);
+        QFETCH(bool, premultipliedTexture);
+        Color texel{0.5f, 0.25f, 0.125f, textureAlpha};
+        if (premultipliedTexture) for (int channel = 0; channel < 3; ++channel) texel[channel] *= textureAlpha;
+        const GLuint source = texture(texel);
+        const auto release = qScopeGuard([&] { m_gl.glDeleteTextures(1, &source); });
+        COffscreenBuffer target;
+        QVERIFY(create(target));
+        QVERIFY(target.BeginDraw());
+        QVERIFY(m_reader.PreDraw());
+        QVERIFY(drawLayer(premultipliedTexture ? Variant::Premultiplied : Variant::Straight, source));
+        QImage image;
+        QRect rect;
+        QVERIFY(readLayer(image, rect));
+        const int alpha = qRound(textureAlpha * 255);
+        const QRgb readback = image.pixel(8, 8);
+        QCOMPARE(qAlpha(readback), alpha);
+        QVERIFY(qAbs(qRed(readback) - qRound(0.5 * textureAlpha * 255)) <= 1);
+        QVERIFY(qAbs(qGreen(readback) - qRound(0.25 * textureAlpha * 255)) <= 1);
+        QVERIFY(qAbs(qBlue(readback) - qRound(0.125 * textureAlpha * 255)) <= 1);
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath("metadata.psd");
+        CPsdList writer;
+        QVERIFY(writer.SetPsd(path, 16, 16));
+        constexpr quint8 opacity = 127;
+        writer.AddLayer("material", image, rect, opacity, blendKey, false, true);
+        QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed;
+        QString error;
+        QVERIFY2(PsdBinary::Parse(readFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers.size(), 1);
+        const auto& layer = parsed.layers[0];
+        QCOMPARE(layer.opacity, opacity);
+        QCOMPARE(layer.blend, blend);
+        QCOMPARE(layer.clipping, quint8(0));
+        QCOMPARE(layer.bounds, QRect(0, 0, 16, 16));
+        const QRgb straight = layerPixel(layer, 8, 8);
+        QCOMPARE(qAlpha(straight), alpha);
+        QVERIFY(qAbs(qRed(straight) - 128) <= 1);
+        QVERIFY(qAbs(qGreen(straight) - 64) <= 1);
+        QVERIFY(qAbs(qBlue(straight) - 32) <= 1);
+        const double effectiveAlpha = double(qAlpha(straight)) * layer.opacity / 255;
+        QVERIFY(qAbs(effectiveAlpha - double(textureAlpha) * opacity) <= 1);
+    }
+
+    void combinedAndInvertedMasksAreBakedOnceIntoPsdAlpha_data()
+    {
+        QTest::addColumn<bool>("inverted");
+        QTest::addColumn<bool>("premultipliedTexture");
+        for (bool inverted : {false, true})
+            for (bool premultiplied : {false, true})
+                QTest::newRow(qPrintable(QStringLiteral("inverse-%1-premultiplied-%2").arg(inverted).arg(premultiplied)))
+                    << inverted << premultiplied;
+    }
+
+    void combinedAndInvertedMasksAreBakedOnceIntoPsdAlpha()
+    {
+        QFETCH(bool, inverted);
+        QFETCH(bool, premultipliedTexture);
+        const std::array<GLuint, 3> textures{texture({1, 1, 1, 0.25f}), texture({1, 1, 1, 0.5f}),
+                                             texture({0.25f, 0.5f, 0.75f, 1})};
+        const auto release = qScopeGuard([&] { m_gl.glDeleteTextures(textures.size(), textures.data()); });
+        COffscreenBuffer mask, target;
+        QVERIFY(create(mask));
+        QVERIFY(create(target));
+        QVERIFY(mask.BeginDraw());
+        QVERIFY(mask.Clear(1, 1, 1, 1));
+        QVERIFY(drawLayer(Variant::SetupMask, textures[0]));
+        QVERIFY(drawLayer(Variant::SetupMask, textures[1]));
+        QVERIFY(mask.EndDraw());
+        QVERIFY(target.BeginDraw());
+        QVERIFY(m_reader.PreDraw());
+        const auto variant = premultipliedTexture
+            ? (inverted ? Variant::PremultipliedInverted : Variant::PremultipliedMasked)
+            : (inverted ? Variant::StraightInverted : Variant::StraightMasked);
+        QVERIFY(drawLayer(variant, textures[2], mask.GetColorBuffer()));
+        QImage image;
+        QRect rect;
+        QVERIFY(readLayer(image, rect));
+        const double unionAlpha = 1 - (1 - 0.25) * (1 - 0.5);
+        const double coverage = inverted ? 1 - unionAlpha : unionAlpha;
+        const int expectedAlpha = qRound(coverage * 255);
+        QVERIFY(qAbs(qAlpha(image.pixel(8, 8)) - expectedAlpha) <= 1);
+
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath("baked-mask.psd");
+        CPsdList writer;
+        QVERIFY(writer.SetPsd(path, 16, 16));
+        constexpr quint8 opacity = 153;
+        writer.AddLayer("masked", image, rect, opacity, 0x6e6f726d, false, true);
+        QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed;
+        QString error;
+        QVERIFY2(PsdBinary::Parse(readFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers.size(), 1);
+        const auto& layer = parsed.layers[0];
+        QCOMPARE(layer.opacity, opacity);
+        QCOMPARE(layer.blend, QByteArray("norm"));
+        QCOMPARE(layer.clipping, quint8(0));
+        const QRgb pixel = layerPixel(layer, 8, 8);
+        QVERIFY(qAbs(qAlpha(pixel) - expectedAlpha) <= 1);
+        QVERIFY(qAbs(qRed(pixel) - 64) <= 2);
+        QVERIFY(qAbs(qGreen(pixel) - 128) <= 2);
+        QVERIFY(qAbs(qBlue(pixel) - 191) <= 2);
+        QVERIFY(qAbs(double(qAlpha(pixel)) * layer.opacity / 255 - coverage * opacity) <= 1);
     }
 
     void readbackUsesDrawFramebufferAndPreservesHostilePackState()
@@ -551,10 +799,10 @@ private slots:
         QCOMPARE(rect, QRect(1, 2, 4, 4));
         QVERIFY(m_reader.UpdateFrame());
         QVERIFY(m_reader.GetScreenNode(upperTriangle.data(), 3, m_matrix.data(), 16, 16, image, rect));
-        QCOMPARE(image.pixel(0, 0), qRgba(255, 0, 0, 0));
+        QCOMPARE(image.pixel(0, 0), qRgba(0, 0, 0, 0));
         QVERIFY(m_reader.PreDraw());
         QVERIFY(m_reader.GetScreenNode(upperTriangle.data(), 3, m_matrix.data(), 16, 16, image, rect));
-        QCOMPARE(image.pixel(0, 0), qRgba(255, 255, 255, 0));
+        QCOMPARE(image.pixel(0, 0), qRgba(0, 0, 0, 0));
     }
 };
 

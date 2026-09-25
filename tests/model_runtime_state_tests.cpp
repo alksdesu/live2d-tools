@@ -69,9 +69,10 @@ class ModelRuntimeStateTests : public QObject
     Q_OBJECT
     using ModelOwner = std::unique_ptr<CubismModel, void (*)(CubismModel*)>;
 
-    static ModelOwner create(bool empty = false)
+    static ModelOwner create(bool empty = false, int drawables = 2)
     {
         auto data = std::make_unique<GetterState>();
+        data->drawableCount = drawables;
         if (empty) data->parameterCount = data->partCount = data->drawableCount = 0;
         void* handle = allocate(sizeof(CubismModelFixture::ModelHandle), Core::csmAlignofModel);
         auto* model = CubismModelFixture::AttachModel(handle, data.get());
@@ -132,6 +133,129 @@ private slots:
         QCOMPARE(data.drawableOpacities[0], 0.4f);
         QCOMPARE(data.drawOrders[0], 99);
         QCOMPARE(data.updates, 0);
+    }
+
+    void clippingPolicyAllowsOnlyClippingChangesAndCopiesRuntimeState()
+    {
+        auto source = create(false, 3);
+        auto candidate = create(false, 3);
+        auto& old = State(source->GetModel());
+        auto& next = State(candidate->GetModel());
+        old.maskCounts.fill(0);
+        next.maskCounts = {0, 0, 2};
+        next.masks[2] = {0, 1};
+        next.flags[2] ^= Core::csmIsInvertedMask;
+        source->SetParameterValue(0, 0.3f);
+        source->SaveParameters();
+        source->SetParameterValue(0, 0.7f);
+        source->SetPartOpacity(0, 0.4f);
+        source->SetModelOpacity(0.6f);
+        QString error;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, &error));
+        QVERIFY(!candidate->CopyRuntimeStateFrom(*source, &error));
+        QCOMPARE(candidate->GetParameterValue(0), 0.0f);
+        QVERIFY2(candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowClippingEdits, &error), qPrintable(error));
+        QVERIFY(candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowClippingEdits, &error));
+        QCOMPARE(candidate->GetParameterValue(0), 0.7f);
+        QCOMPARE(candidate->GetPartOpacity(0), 0.4f);
+        QCOMPARE(candidate->GetModelOpacity(), 0.6f);
+        candidate->LoadParameters();
+        QCOMPARE(candidate->GetParameterValue(0), 0.3f);
+        QCOMPARE(next.maskCounts[2], 2);
+        QVERIFY(candidate->GetDrawableInvertedMask(2));
+        QCOMPARE(old.maskCounts[2], 0);
+        QVERIFY(!source->GetDrawableInvertedMask(2));
+        QCOMPARE(next.updates, 0);
+        next.flags[2] ^= Core::csmIsDoubleSided;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowClippingEdits));
+        next.flags[2] ^= Core::csmIsDoubleSided;
+        next.flags[2] ^= 0x80;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowClippingEdits));
+    }
+
+    void invalidClippingCandidatesKeepRuntimeValues_data()
+    {
+        QTest::addColumn<QString>("invalid");
+        for (const char* value : {"negative", "range", "null-list", "null-array", "null-counts", "negative-count", "large-count"})
+            QTest::newRow(value) << QString::fromLatin1(value);
+    }
+
+    void invalidClippingCandidatesKeepRuntimeValues()
+    {
+        QFETCH(QString, invalid);
+        auto source = create(false, 3), candidate = create(false, 3);
+        auto& data = State(candidate->GetModel());
+        data.maskCounts[2] = 2;
+        data.masks[2] = {0, 1};
+        source->SetParameterValue(0, 0.8f);
+        candidate->SetParameterValue(0, -0.5f);
+        if (invalid == "negative") data.masks[2][1] = -1;
+        if (invalid == "range") data.masks[2][1] = 3;
+        if (invalid == "null-list") data.maskPointers[2] = nullptr;
+        if (invalid == "null-array") data.nullGetters.insert("csmGetDrawableMasks");
+        if (invalid == "null-counts") data.nullGetters.insert("csmGetDrawableMaskCounts");
+        if (invalid == "negative-count") data.maskCounts[2] = -1;
+        if (invalid == "large-count") data.maskCounts[2] = std::numeric_limits<int>::max();
+        QString error;
+        QVERIFY(!candidate->HasValidClippingDefinitions(&error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowClippingEdits, &error));
+        QCOMPARE(candidate->GetParameterValue(0), -0.5f);
+        QCOMPARE(source->GetParameterValue(0), 0.8f);
+    }
+
+    void existingMaskListsCanBeRemovedAndRestored_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("self") << 0;
+        QTest::newRow("duplicate") << 1;
+        QTest::newRow("duplicates-beyond-drawable-count") << 2;
+    }
+
+    void existingMaskListsCanBeRemovedAndRestored()
+    {
+        QFETCH(int, kind);
+        const std::array<int, 4> repeated{0, 0, 0, 0};
+        auto source = create(false, 3), cleared = create(false, 3), restored = create(false, 3);
+        auto& before = State(source->GetModel());
+        auto& after = State(restored->GetModel());
+        const int count = kind == 0 ? 1 : kind == 1 ? 2 : 4;
+        before.maskCounts[2] = after.maskCounts[2] = count;
+        before.masks[2] = after.masks[2] = kind == 0 ? std::array<int, 2>{2, 0} : std::array<int, 2>{0, 0};
+        if (kind == 2) before.maskPointers[2] = after.maskPointers[2] = repeated.data();
+        source->SetParameterValue(0, 0.3f);
+        source->SaveParameters();
+        source->SetParameterValue(0, 0.8f);
+        QVERIFY(restored->HasValidClippingDefinitions());
+        QCOMPARE(restored->IsCompatibleForKeyformUpdate(*source), kind != 2);
+        QVERIFY(!cleared->CopyRuntimeStateFrom(*source));
+        QVERIFY(cleared->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowClippingEdits));
+        QCOMPARE(cleared->GetParameterValue(0), 0.8f);
+        QCOMPARE(cleared->GetDrawableMaskCounts()[2], 0);
+        QCOMPARE(source->GetDrawableMaskCounts()[2], count);
+        QVERIFY(!restored->CopyRuntimeStateFrom(*cleared));
+        QVERIFY(restored->CopyRuntimeStateFrom(*cleared, CubismModelUpdatePolicy::AllowClippingEdits));
+        QCOMPARE(restored->GetDrawableMaskCounts()[2], count);
+        for (int index = 0; index < count; ++index)
+            QCOMPARE(restored->GetDrawableMasks()[2][index], source->GetDrawableMasks()[2][index]);
+        restored->LoadParameters();
+        QCOMPARE(restored->GetParameterValue(0), 0.3f);
+        after.flags[2] ^= Core::csmIsInvertedMask;
+        QVERIFY(!restored->IsCompatibleForKeyformUpdate(*source));
+        QVERIFY(restored->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowClippingEdits));
+        QCOMPARE(restored->GetParameterValue(0), 0.8f);
+    }
+
+    void validMutualMaskReferencesAreNotTreatedAsRecursiveDependencies()
+    {
+        auto source = create(), candidate = create();
+        auto& data = State(candidate->GetModel());
+        data.maskCounts = {1, 1};
+        data.masks[0][0] = 1;
+        data.masks[1][0] = 0;
+        QVERIFY(candidate->HasValidClippingDefinitions());
+        QVERIFY(candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowClippingEdits));
+        QVERIFY(!candidate->CopyRuntimeStateFrom(*source, static_cast<CubismModelUpdatePolicy>(99)));
     }
 
     void incompatibleDefinitions_data()
@@ -205,6 +329,8 @@ private slots:
         QVERIFY(!error.isEmpty());
         const auto values = data.values;
         QVERIFY(!candidate->CopyRuntimeStateFrom(*source, &error));
+        if (mutation != 26 && mutation != 27)
+            QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowClippingEdits, &error));
         QCOMPARE(data.values, values);
         QCOMPARE(State(source->GetModel()).values[0], 0.0f);
     }

@@ -93,6 +93,8 @@ public slots:
     void SetDrawOrderGroups(const QHash<QString, int>& groupIndices,
                             const QVector<live2dstruct::CDrawableOrderGroup>& groups);
     void SyncPreviewView();
+    bool SetHighPrecisionMasks(bool enabled, QString* error = nullptr);
+    bool HighPrecisionMasks() const;
 
 
 signals:

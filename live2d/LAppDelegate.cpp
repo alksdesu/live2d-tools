@@ -407,7 +407,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
         writer.AddLayer(displayName, layer->canvasRect, layer->image,
                         static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f)),
                         CTextureExtractor::BlendModeToPsd(layer->drawableFlags),
-                        !layer->maskIndices.isEmpty(), false);
+                        false, false);
     };
 
     if (groupByParts) {

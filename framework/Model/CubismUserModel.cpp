@@ -119,6 +119,14 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
                                  const CubismModelReplacement::RendererPreparation& prepareRenderer,
                                  QString* error, const CubismModelReplacement::ModelPreparation& prepareModel)
 {
+    return ReplaceModel(bytes, size, prepareRenderer, CubismModelUpdatePolicy::Strict, error, prepareModel);
+}
+
+bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
+                                 const CubismModelReplacement::RendererPreparation& prepareRenderer,
+                                 CubismModelUpdatePolicy policy, QString* error,
+                                 const CubismModelReplacement::ModelPreparation& prepareModel)
+{
     if (error) error->clear();
     if (_updating || !_moc || !_model || !_renderer || !_modelMatrix ||
         (_pose && !_pose->CanRebindModel(_model))) {
@@ -127,7 +135,7 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
     }
     const QScopedValueRollback<csmBool> updating(_updating, true);
     CubismModelReplacement candidate;
-    if (!candidate.Prepare(bytes, size, *_moc, *_model, *_renderer, prepareRenderer, error, prepareModel)) return false;
+    if (!candidate.Prepare(bytes, size, *_moc, *_model, *_renderer, prepareRenderer, policy, error, prepareModel)) return false;
     CubismModel* previous = _model;
     CubismModel* replacement = candidate.GetModel();
     if (_pose && !_pose->RebindModel(previous, replacement)) {

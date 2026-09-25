@@ -65,6 +65,14 @@ public:
         table.canvas_info->origin_x = x;
         table.canvas_info->origin_y = y;
     }
+    void Masks(int count, bool inverted)
+    {
+        table.art_meshes[0]->drawable_mask_sources_begin_indices = 0;
+        table.art_meshes[0]->drawable_mask_sources_counts = count;
+        table.art_meshes[0]->drawable_flags = inverted ? 0x08 : 0;
+        for (int index = 0; index < count; ++index)
+            table.drawable_masks[index]->art_mesh_sources_indices = index + 1;
+    }
     QVector<ExtractedLayer> Extract() { return extractor.ExtractAll(&table, true); }
 
 private:
@@ -79,6 +87,36 @@ class TextureExtractionTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void originalTexturePixelsDoNotBakeClipping_data()
+    {
+        QTest::addColumn<int>("count");
+        QTest::addColumn<bool>("inverted");
+        QTest::newRow("empty-inverted") << 0 << true;
+        QTest::newRow("single-mask") << 1 << false;
+        QTest::newRow("multiple-masks") << 2 << false;
+        QTest::newRow("multiple-inverted") << 2 << true;
+    }
+
+    void originalTexturePixelsDoNotBakeClipping()
+    {
+        QFETCH(int, count);
+        QFETCH(bool, inverted);
+        MeshFixture mesh;
+        QVERIFY(mesh.IsValid());
+        const QImage atlas = ColoredAtlas();
+        QVERIFY(mesh.LoadAtlas(atlas));
+        mesh.Geometry({0, 0, 1, 0, 1, 1, 0, 1}, {0, 1, 2, 0, 2, 3});
+        mesh.Masks(count, inverted);
+        const auto layers = mesh.Extract();
+        QCOMPARE(layers.size(), 1);
+        QCOMPARE(layers[0].image, atlas);
+        QCOMPARE(layers[0].canvasRect, QRect(0, 0, 4, 4));
+        QVector<int> expected;
+        for (int index = 0; index < count; ++index) expected.append(index + 1);
+        QCOMPARE(layers[0].maskIndices, expected);
+        QCOMPARE(layers[0].drawableFlags, inverted ? 0x08 : 0);
+    }
+
     void inBoundsTextureKeepsEveryColorAndAlpha()
     {
         MeshFixture mesh;

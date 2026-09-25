@@ -8,6 +8,7 @@
 namespace Live2D { namespace Cubism { namespace Framework {
 class CubismMoc;
 class CubismModel;
+enum class CubismModelUpdatePolicy;
 namespace Rendering { class CubismRenderer; }
 
 class CubismModelReplacement
@@ -25,6 +26,9 @@ public:
     bool Prepare(const csmByte* bytes, csmSizeInt size, const CubismMoc& sourceMoc, const CubismModel& source,
                  const Rendering::CubismRenderer& renderer, const RendererPreparation& prepareRenderer,
                  QString* error = nullptr, const ModelPreparation& prepareModel = {});
+    bool Prepare(const csmByte* bytes, csmSizeInt size, const CubismMoc& sourceMoc, const CubismModel& source,
+                 const Rendering::CubismRenderer& renderer, const RendererPreparation& prepareRenderer,
+                 CubismModelUpdatePolicy policy, QString* error = nullptr, const ModelPreparation& prepareModel = {});
     CubismModel* GetModel() const { return _model; }
     bool Commit(CubismMoc*& moc, CubismModel*& model, Rendering::CubismRenderer*& renderer) noexcept;
 

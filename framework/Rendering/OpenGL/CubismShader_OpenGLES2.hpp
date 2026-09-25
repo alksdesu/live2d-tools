@@ -11,11 +11,13 @@ class CubismRenderer_OpenGLES2;
 class CubismShader_OpenGLES2
 {
 public:
+    enum class DrawMode { Preview, IsolatedPsdLayer };
     static CubismShader_OpenGLES2* GetInstance();
     static bool DeleteInstance();
     bool Initialize(const QOpenGLContext* context);
     bool SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model,
-                                   csmInt32 index, bool isAll, csmFloat32 opacityOverride = -1.0f);
+                                   csmInt32 index, bool isAll, csmFloat32 opacityOverride = -1.0f,
+                                   DrawMode mode = DrawMode::Preview);
     bool SetupShaderProgramForMask(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, csmInt32 index);
 #ifdef CSM_TARGET_ANDROID_ES2
     static void SetExtShaderMode(csmBool extMode, csmBool extPAMode);

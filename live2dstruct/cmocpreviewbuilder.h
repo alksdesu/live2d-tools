@@ -12,8 +12,19 @@ namespace live2dstruct {
 class CMocPreviewBuilder
 {
 public:
+    struct Overrides
+    {
+        QHash<QString, QVector<QVector<float>>> artMeshPositions;
+        QHash<QString, QVector<CModelWarpKeyform>> warpKeyforms;
+        QHash<QString, QVector<CModelRotationKeyform>> rotationKeyforms;
+        QHash<QString, int> deformerParents;
+        QHash<QString, QVector<int>> drawableMasks;
+        QHash<QString, bool> drawableMaskInverted;
+    };
+
     bool Initialize(const QByteArray& baseline, QString* error = nullptr);
     QByteArray SourceDigest() const;
+    bool BuildOverrides(const Overrides& overrides, QByteArray& result, QString* error = nullptr) const;
     bool Build(const QHash<QString, QVector<QVector<float>>>& overrides,
                QByteArray& result, QString* error = nullptr) const;
     bool Build(const QHash<QString, QVector<QVector<float>>>& artMeshPositions,

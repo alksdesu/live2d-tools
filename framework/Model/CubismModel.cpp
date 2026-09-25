@@ -270,7 +270,14 @@ bool CubismModel::ApplyParameterPose(const QMap<QString, float>& pose, QString* 
 
 bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QString* error) const
 {
+    return IsCompatibleForKeyformUpdate(source, CubismModelUpdatePolicy::Strict, error);
+}
+
+bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error) const
+{
     if (error) error->clear();
+    if (policy != CubismModelUpdatePolicy::Strict && policy != CubismModelUpdatePolicy::AllowClippingEdits)
+        return runtimeStateError(error, QStringLiteral("Invalid model update policy"));
     if (!_model || !source._model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
     const int parameters = GetParameterCount(), parts = GetPartCount(), drawables = GetDrawableCount();
     if (!validRuntimeCount(parameters) || !validRuntimeCount(parts) || !validRuntimeCount(drawables) ||
@@ -323,15 +330,20 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QStrin
     const auto* vertices = Core::csmGetDrawableVertexCounts(_model);
     const auto* indexCounts = Core::csmGetDrawableIndexCounts(_model);
     const auto* maskCounts = Core::csmGetDrawableMaskCounts(_model);
+    const auto* sourceMaskCounts = Core::csmGetDrawableMaskCounts(source._model);
     const auto* textures = Core::csmGetDrawableTextureIndices(_model);
+    const auto* flags = Core::csmGetDrawableConstantFlags(_model);
+    const auto* sourceFlags = Core::csmGetDrawableConstantFlags(source._model);
+    const bool clippingEdits = policy == CubismModelUpdatePolicy::AllowClippingEdits;
     if (!equalRuntimeArray(partParents, Core::csmGetPartParentPartIndices(source._model), parts) ||
         !equalRuntimeArray(drawableParents, Core::csmGetDrawableParentPartIndices(source._model), drawables) ||
         !equalRuntimeArray(vertices, Core::csmGetDrawableVertexCounts(source._model), drawables) ||
         !equalRuntimeArray(indexCounts, Core::csmGetDrawableIndexCounts(source._model), drawables) ||
-        !equalRuntimeArray(maskCounts, Core::csmGetDrawableMaskCounts(source._model), drawables) ||
+        (!clippingEdits && !equalRuntimeArray(maskCounts, sourceMaskCounts, drawables)) ||
         !equalRuntimeArray(textures, Core::csmGetDrawableTextureIndices(source._model), drawables) ||
-        !equalRuntimeArray(Core::csmGetDrawableConstantFlags(_model), Core::csmGetDrawableConstantFlags(source._model), drawables))
+        (drawables && (!flags || !sourceFlags)))
         return runtimeStateError(error, QStringLiteral("Part hierarchy or drawable definition differs or is invalid"));
+    if (!HasValidClippingDefinitions(error) || !source.HasValidClippingDefinitions(error)) return false;
     for (int i = 0; i < parts; ++i)
         if (partParents[i] < -1 || partParents[i] >= parts || partParents[i] == i)
             return runtimeStateError(error, QStringLiteral("Part %1 parent is invalid").arg(i));
@@ -342,21 +354,46 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QStrin
     const auto* masks = Core::csmGetDrawableMasks(_model);
     const auto* sourceMasks = Core::csmGetDrawableMasks(source._model);
     for (int i = 0; i < drawables; ++i) {
+        const unsigned int allowedFlags = clippingEdits ? Core::csmIsInvertedMask : 0;
+        if ((flags[i] ^ sourceFlags[i]) & ~allowedFlags)
+            return runtimeStateError(error, QStringLiteral("Drawable %1 constant flags differ").arg(i));
         if (!validRuntimeCount(vertices[i]) || !validRuntimeCount(indexCounts[i], MaximumRuntimeIndices) ||
-            indexCounts[i] % 3 || !validRuntimeCount(maskCounts[i], drawables) || textures[i] < 0 ||
+            indexCounts[i] % 3 || !validRuntimeCount(maskCounts[i], clippingEdits ? MaximumRuntimeIndices : drawables) || textures[i] < 0 ||
             drawableParents[i] < -1 || drawableParents[i] >= parts ||
             (vertices[i] && (!uvs || !sourceUvs || !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i]))) ||
             (indexCounts[i] && (!indices || !sourceIndices || !equalRuntimeArray(indices[i], sourceIndices[i], indexCounts[i]))) ||
-            (maskCounts[i] && (!masks || !sourceMasks || !equalRuntimeArray(masks[i], sourceMasks[i], maskCounts[i]))))
+            (!clippingEdits && maskCounts[i] && (!masks || !sourceMasks || !equalRuntimeArray(masks[i], sourceMasks[i], maskCounts[i]))))
             return runtimeStateError(error, QStringLiteral("Drawable %1 UVs, topology or masks differ or are invalid").arg(i));
         for (int j = 0; j < indexCounts[i]; ++j)
             if (indices[i][j] >= vertices[i])
                 return runtimeStateError(error, QStringLiteral("Drawable %1 has an invalid vertex index").arg(i));
-        for (int j = 0; j < maskCounts[i]; ++j)
-            if (masks[i][j] < 0 || masks[i][j] >= drawables)
-                return runtimeStateError(error, QStringLiteral("Drawable %1 has an invalid mask index").arg(i));
     }
     return true;
+}
+
+bool CubismModel::HasValidClippingDefinitions(QString* error) const
+{
+    if (error) error->clear();
+    if (!_model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
+    const int count = GetDrawableCount();
+    if (!validRuntimeCount(count)) return runtimeStateError(error, QStringLiteral("Invalid drawable count"));
+    const auto* counts = Core::csmGetDrawableMaskCounts(_model);
+    const auto* masks = Core::csmGetDrawableMasks(_model);
+    if (count && !counts) return runtimeStateError(error, QStringLiteral("Missing drawable mask counts"));
+    try {
+        for (int drawable = 0; drawable < count; ++drawable) {
+            if (!validRuntimeCount(counts[drawable], MaximumRuntimeIndices) || (counts[drawable] && (!masks || !masks[drawable])))
+                return runtimeStateError(error, QStringLiteral("Drawable %1 mask array is invalid").arg(drawable));
+            for (int index = 0; index < counts[drawable]; ++index) {
+                const int mask = masks[drawable][index];
+                if (mask < 0 || mask >= count)
+                    return runtimeStateError(error, QStringLiteral("Drawable %1 mask index is outside the model").arg(drawable));
+            }
+        }
+        return true;
+    } catch (const std::exception&) {
+        return runtimeStateError(error, QStringLiteral("Unable to validate drawable masks"));
+    }
 }
 
 bool CubismModel::HasFiniteDrawableState(QString* error) const
@@ -388,7 +425,12 @@ bool CubismModel::HasFiniteDrawableState(QString* error) const
 
 bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, QString* error)
 {
-    if (!IsCompatibleForKeyformUpdate(source, error)) return false;
+    return CopyRuntimeStateFrom(source, CubismModelUpdatePolicy::Strict, error);
+}
+
+bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error)
+{
+    if (!IsCompatibleForKeyformUpdate(source, policy, error)) return false;
     const int parameters = GetParameterCount(), parts = GetPartCount(), drawables = GetDrawableCount();
     const auto arraysMatch = [parts, drawables](const CubismModel& model) {
         return model._userMultiplyColors.GetSize() == drawables && model._userScreenColors.GetSize() == drawables &&

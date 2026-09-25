@@ -16,6 +16,7 @@
 #include <QSet>
 #include <QTableWidget>
 #include <QListWidget>
+#include <QLineEdit>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QHeaderView>
@@ -80,6 +81,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_drawOrderLabel = new QLabel(content);
     m_blendLabel = new QLabel(content);
     m_maskLabel = new QLabel(content);
+    m_maskLabel->setObjectName(QStringLiteral("maskCountLabel"));
     m_editMasks = new QPushButton(QStringLiteral("编辑蒙版"), content);
     m_editMasks->setObjectName(QStringLiteral("editMasks"));
     m_editMasks->setEnabled(false);
@@ -139,9 +141,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
-    m_editMasks->setEnabled(false);
-    m_maskInvertedCheck->setEnabled(false);
-    m_maskInvertedCheck->setChecked(false);
+    ResetMaskControls();
     const QList<QPushButton*> keyformButtons = {
         m_mirrorHorizontal, m_mirrorVertical, m_interpolatePrevious, m_copyToNext,
         m_resetKeyform, m_copyKeyform, m_pasteKeyform, m_autoTriangulate,
@@ -153,6 +153,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
+        value->setTextFormat(Qt::PlainText);
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         value->setWordWrap(true);
     }
@@ -627,9 +628,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
-    m_editMasks->setEnabled(false);
-    m_maskInvertedCheck->setEnabled(false);
-    m_maskInvertedCheck->setChecked(false);
+    ResetMaskControls();
     m_deformerParentCombo->setEnabled(false);
     m_moveVertices->setEnabled(false);
     m_mergeVertices->setEnabled(false);
@@ -1280,8 +1279,7 @@ void CInspectorPanel::ClearSelection()
     m_autoTriangulate->setEnabled(false);
     m_copyTopology->setEnabled(false);
     m_pasteTopology->setEnabled(false);
-    m_editMasks->setEnabled(false);
-    m_maskInvertedCheck->setChecked(false);
+    ResetMaskControls();
     m_deformerParentCombo->setEnabled(false);
     m_moveVertices->setEnabled(false);
     m_mergeVertices->setEnabled(false);
@@ -1328,45 +1326,118 @@ void CInspectorPanel::SyncHistoryState()
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
+void CInspectorPanel::ResetMaskControls()
+{
+    const QSignalBlocker blocker(m_maskInvertedCheck);
+    m_editMasks->setEnabled(false);
+    m_maskInvertedCheck->setEnabled(false);
+    m_maskInvertedCheck->setChecked(false);
+}
+
 void CInspectorPanel::EditMasks()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-
+    const auto* document = m_document;
+    const auto source = document->SourceDigest();
+    const QString target = m_selectionName;
+    const QVector<int> current = document->DrawableMaskIndices(target);
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("编辑 Clipping Mask"));
-    dialog.resize(320, 420);
+    dialog.setObjectName(QStringLiteral("maskEditorDialog"));
+    dialog.setWindowTitle(QStringLiteral("编辑蒙版 · %1").arg(target));
+    dialog.resize(400, 480);
     auto* layout = new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(QStringLiteral("选择用于裁剪当前 ArtMesh 的蒙版："), &dialog));
+    auto* hint = new QLabel(QStringLiteral("选择裁剪此网格的蒙版。多个蒙版会合并可见区域。"), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    auto* search = new QLineEdit(&dialog);
+    search->setObjectName(QStringLiteral("maskSearch"));
+    search->setPlaceholderText(QStringLiteral("搜索网格 ID"));
+    search->setClearButtonEnabled(true);
+    layout->addWidget(search);
+    auto* selectedOnly = new QCheckBox(QStringLiteral("仅显示已选"), &dialog);
+    selectedOnly->setObjectName(QStringLiteral("selectedMasksOnly"));
+    layout->addWidget(selectedOnly);
     auto* list = new QListWidget(&dialog);
-    const QVector<int> current = m_document->DrawableMaskIndices(m_selectionName);
-    QSet<int> selected;
-    for (int index : current) selected.insert(index);
-    const auto& drawables = m_document->Drawables();
+    list->setObjectName(QStringLiteral("maskList"));
+    list->setAccessibleName(QStringLiteral("可用蒙版"));
+    const QSet<int> selected(current.cbegin(), current.cend());
+    const auto& drawables = document->Drawables();
     for (int index = 0; index < drawables.size(); ++index) {
-        if (drawables[index].id == m_selectionName) continue;
-        auto* item = new QListWidgetItem(drawables[index].id, list);
+        const bool self = drawables[index].id == target;
+        if (self && !selected.contains(index)) continue;
+        const QString label = self ? QStringLiteral("%1（自身 · 原始引用）").arg(drawables[index].id) : drawables[index].id;
+        auto* item = new QListWidgetItem(label, list);
         item->setData(Qt::UserRole, index);
         item->setCheckState(selected.contains(index) ? Qt::Checked : Qt::Unchecked);
     }
+    QSet<int> added;
+    for (int index : current) {
+        if ((index >= 0 && index < drawables.size()) || added.contains(index)) continue;
+        added.insert(index);
+        auto* item = new QListWidgetItem(QStringLiteral("无效索引 %1（原始引用）").arg(index), list);
+        item->setData(Qt::UserRole, index);
+        item->setCheckState(Qt::Checked);
+    }
     layout->addWidget(list, 1);
+    auto* footer = new QHBoxLayout();
+    auto* count = new QLabel(&dialog);
+    count->setObjectName(QStringLiteral("maskSelectionCount"));
+    auto* clear = new QPushButton(QStringLiteral("清空选择"), &dialog);
+    clear->setObjectName(QStringLiteral("clearMasks"));
+    footer->addWidget(count, 1);
+    footer->addWidget(clear);
+    layout->addLayout(footer);
+    const auto refresh = [list, search, selectedOnly, count, clear] {
+        const QString query = search->text().trimmed();
+        int selected = 0, visible = 0;
+        for (int row = 0; row < list->count(); ++row) {
+            auto* item = list->item(row);
+            const bool checked = item->checkState() == Qt::Checked;
+            if (checked) ++selected;
+            const bool shown = item->text().contains(query, Qt::CaseInsensitive) && (!selectedOnly->isChecked() || checked);
+            item->setHidden(!shown);
+            if (shown) ++visible;
+        }
+        count->setText(QStringLiteral("已选 %1 个 · 显示 %2 / %3").arg(selected).arg(visible).arg(list->count()));
+        clear->setEnabled(selected > 0);
+    };
+    connect(search, &QLineEdit::textChanged, &dialog, refresh);
+    connect(selectedOnly, &QCheckBox::toggled, &dialog, refresh);
+    connect(list, &QListWidget::itemChanged, &dialog, refresh);
+    connect(clear, &QPushButton::clicked, &dialog, [list, refresh] {
+        const QSignalBlocker blocker(list);
+        for (int row = 0; row < list->count(); ++row) list->item(row)->setCheckState(Qt::Unchecked);
+        refresh();
+    });
+    refresh();
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    search->setFocus();
     if (dialog.exec() != QDialog::Accepted) return;
-
+    if (m_document != document || m_document->SourceDigest() != source ||
+        m_document->DrawableMaskIndices(target) != current) {
+        RejectEdit(QStringLiteral("模型或蒙版已改变，请重新打开蒙版编辑器"));
+        return;
+    }
+    QSet<int> checked;
+    for (int row = 0; row < list->count(); ++row)
+        if (list->item(row)->checkState() == Qt::Checked) checked.insert(list->item(row)->data(Qt::UserRole).toInt());
+    if (checked == selected) return;
     QVector<int> after;
+    for (int index : current) if (checked.remove(index)) after.append(index);
     for (int row = 0; row < list->count(); ++row) {
-        const QListWidgetItem* item = list->item(row);
-        if (item->checkState() == Qt::Checked) after.append(item->data(Qt::UserRole).toInt());
+        const int index = list->item(row)->data(Qt::UserRole).toInt();
+        if (checked.remove(index)) after.append(index);
     }
     if (after == current) return;
-    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
+    const live2dstruct::CModelEdit command{target, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MaskIndices,
                                            QVariant::fromValue(current), QVariant::fromValue(after)};
     if (!SubmitEdit(command)) return;
-    emit DrawableMaskIndicesChanged(m_selectionName, after);
+    emit DrawableMaskIndicesChanged(target, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     showModelObject(m_selectionName, m_selectionType);
 }
@@ -1522,6 +1593,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
     m_deformerParentCombo->clear();
     m_deformerParentCombo->setEnabled(false);
     m_updatingDeformerParent = false;
+    ResetMaskControls();
     const bool unlocked = !IsLocked(type, name);
     m_visibilityCheck->setEnabled(unlocked);
     m_opacitySpin->setEnabled(false);
@@ -1569,7 +1641,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
                                       .arg(QString::number(drawable.drawOrder, 'f', 0))
                                       .arg(QString::number(drawable.opacity, 'f', 3)));
             m_blendLabel->setText(QStringLiteral("%1 / %2").arg(blend, drawable.culling ? QStringLiteral("启用") : QStringLiteral("关闭")));
-            m_maskLabel->setText(drawable.maskIndices.isEmpty() ? QStringLiteral("无") : QString::number(drawable.maskIndices.size()));
+            const auto masks = m_document->DrawableMaskIndices(name);
+            m_maskLabel->setText(masks.isEmpty() ? QStringLiteral("无") : QString::number(masks.size()));
             m_keyformLabel->setText(QString::number(drawable.keyforms.size()));
             m_updatingKeyform = true;
             for (int keyformIndex = 0; keyformIndex < drawable.keyforms.size(); ++keyformIndex) {
@@ -1589,7 +1662,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
             m_editMasks->setEnabled(unlocked);
             m_updatingVisibility = true;
             m_maskInvertedCheck->setChecked(m_document->DrawableMaskInverted(name));
-            m_maskInvertedCheck->setEnabled(unlocked && !m_document->DrawableMaskIndices(name).isEmpty());
+            m_maskInvertedCheck->setEnabled(unlocked && !masks.isEmpty());
             m_updatingVisibility = false;
             if (!drawable.keyforms.isEmpty())
                 m_keyformCombo->setCurrentIndex(selectedKeyform >= 0 && selectedKeyform < drawable.keyforms.size()

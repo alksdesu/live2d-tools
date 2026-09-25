@@ -72,6 +72,7 @@ private:
     void CopyCurrentKeyform();
     void PasteCurrentKeyform();
     void EditMasks();
+    void ResetMaskControls();
     void TranslateSelectedVertices();
     void MergeSelectedVertices();
     void TransformSelectedVertices();

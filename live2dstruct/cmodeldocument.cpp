@@ -196,7 +196,8 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         return false;
     }
     if (m_drawableKeyformPositionOverrides.isEmpty() && m_deformerWarpKeyformOverrides.isEmpty() &&
-        m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty()) {
+        m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty() &&
+        m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty()) {
         bytes = m_sourceBytes;
         return true;
     }
@@ -204,8 +205,14 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         setError(error, m_previewError);
         return false;
     }
-    return m_previewBuilder->Build(m_drawableKeyformPositionOverrides, m_deformerWarpKeyformOverrides,
-                                  m_deformerRotationKeyformOverrides, m_deformerParentOverrides, bytes, error);
+    CMocPreviewBuilder::Overrides overrides;
+    overrides.artMeshPositions = m_drawableKeyformPositionOverrides;
+    overrides.warpKeyforms = m_deformerWarpKeyformOverrides;
+    overrides.rotationKeyforms = m_deformerRotationKeyformOverrides;
+    overrides.deformerParents = m_deformerParentOverrides;
+    overrides.drawableMasks = m_drawableMaskIndexOverrides;
+    overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
+    return m_previewBuilder->BuildOverrides(overrides, bytes, error);
 }
 
 bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QString* error)
@@ -717,13 +724,17 @@ bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int
 {
     for (int drawableIndex = 0; drawableIndex < m_drawables.size(); ++drawableIndex) {
         if (m_drawables[drawableIndex].id != id) continue;
-        QSet<int> unique;
-        for (int maskIndex : maskIndices) {
-            if (!inRange(maskIndex, m_drawables.size()) || maskIndex == drawableIndex ||
-                unique.contains(maskIndex)) return false;
-            unique.insert(maskIndex);
+        if (maskIndices == m_drawables[drawableIndex].maskIndices) {
+            m_drawableMaskIndexOverrides.remove(id);
+        } else {
+            QSet<int> unique;
+            for (int maskIndex : maskIndices) {
+                if (!inRange(maskIndex, m_drawables.size()) || maskIndex == drawableIndex ||
+                    unique.contains(maskIndex)) return false;
+                unique.insert(maskIndex);
+            }
+            m_drawableMaskIndexOverrides.insert(id, maskIndices);
         }
-        m_drawableMaskIndexOverrides.insert(id, maskIndices);
         ++m_revision;
         return true;
     }
@@ -1142,7 +1153,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("ArtMesh 索引数量不是三角形的倍数"), i});
         }
         QSet<int> maskIndices;
-        for (int mask : drawable.maskIndices) {
+        for (int mask : DrawableMaskIndices(drawable.id)) {
             if (!inRange(mask, m_drawables.size())) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_range"),
                                      QStringLiteral("Clipping mask 索引越界"), i});
@@ -1306,6 +1317,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("蒙版覆盖引用了不存在的 ArtMesh：%1").arg(maskIt.key()), -1});
             continue;
         }
+        if (maskIt.value() == m_drawables[drawableIndex].maskIndices) continue;
         QSet<int> unique;
         for (int maskIndex : maskIt.value()) {
             if (!inRange(maskIndex, m_drawables.size()) || maskIndex == drawableIndex) {
@@ -1328,7 +1340,8 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         }
         const int parentIndex = parentIt.value();
         if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
-            (parentIndex >= 0 && m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
+            (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
+             m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent_override"),
                                  QStringLiteral("变形器父级覆盖无效：%1").arg(parentIt.key()), -1});
             continue;

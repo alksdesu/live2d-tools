@@ -2,6 +2,7 @@
 #include "edit/cmeshmap.h"
 #include "ccanvascoordinates.h"
 #include "framework/Id/CubismIdManager.hpp"
+#include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
 #include <QSurfaceFormat>
 #include <QScopeGuard>
 #include <QScopedValueRollback>
@@ -679,6 +680,28 @@ bool OpengGlForm::EndTemporaryModel()
     if (m_suspendedModel->ready) m_ceditstate.AddState(CEditState::ModelOpen);
     else m_ceditstate.RemoveState(CEditState::ModelOpen);
     m_suspendedModel.reset();
+    return true;
+}
+
+bool OpengGlForm::HighPrecisionMasks() const
+{
+    if (!IsModelReady()) return false;
+    auto* model = CurrentModel();
+    auto* renderer = model ? model->GetRenderer<Live2D::Cubism::Framework::Rendering::CubismRenderer_OpenGLES2>() : nullptr;
+    return renderer && renderer->IsUsingHighPrecisionMask();
+}
+
+bool OpengGlForm::SetHighPrecisionMasks(bool enabled, QString* error)
+{
+    if (error) error->clear();
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("模型预览尚未就绪"));
+    auto* model = CurrentModel();
+    auto* renderer = model ? model->GetRenderer<Live2D::Cubism::Framework::Rendering::CubismRenderer_OpenGLES2>() : nullptr;
+    if (!renderer || renderer->IsDrawing() || LAppDelegate::GetInstance()->IsOffScreen())
+        return MeshError(error, QStringLiteral("请等待当前绘制或导出结束后更改蒙版精度"));
+    renderer->UseHighPrecisionMask(enabled);
+    update();
     return true;
 }
 

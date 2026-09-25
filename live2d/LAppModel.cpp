@@ -986,7 +986,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
     };
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
-                      prepare, error, prepareModel))
+                      prepare, CubismModelUpdatePolicy::AllowClippingEdits, error, prepareModel))
         return false;
     m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;
