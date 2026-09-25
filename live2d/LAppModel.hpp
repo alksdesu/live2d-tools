@@ -24,6 +24,7 @@
 class LAppModel : public Csm::CubismUserModel
 {
     friend class LAppExportPreviewTests;
+    friend class ModelReplacementTests;
 public:
 
     LAppModel();
@@ -36,6 +37,10 @@ public:
     const QByteArray& GetPreviewMocDigest() const { return m_previewMocDigest; }
     const QByteArray& GetPreviewMocBytes() const { return m_previewMocBytes; }
     bool ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error = nullptr);
+    using ParameterDefinitionPreparation = std::function<bool(const Csm::CubismModel&, QString*)>;
+    bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                         const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
+                                         QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -124,7 +129,7 @@ private:
     void ApplyPartVisibility(Csm::CubismModel& model) const;
     bool ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
                                  const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
-                                 QString* error);
+                                 QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits);
     int FindPartIndex(const QString& id) const;
     CMotionPreviewFrame _timelinePreview;
     QMap<QString, float> _timelineParameters;

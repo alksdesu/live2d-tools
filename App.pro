@@ -536,6 +536,7 @@ SOURCES += \
     opengl/cpsdfiletask.cpp \
     opengl/cpsdrendersession.cpp \
     live2d/LAppModelUpdate.cpp \
+    live2d/LAppModelParameterDefinitions.cpp \
     ui/cpreviewexporttransaction.cpp \
     ui/psdbatchresult.cpp \
     ui/cexportresultspanel.cpp

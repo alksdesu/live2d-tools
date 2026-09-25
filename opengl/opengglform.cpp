@@ -503,6 +503,37 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
     }
 }
 
+bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                                 const QMap<QString, float>& baseValues, bool keepEditorPreview,
+                                                 QString* error)
+{
+    if (error) error->clear();
+    if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数定义"));
+    if (IsMeshDragging() || m_controlDragActive) return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("模型预览的 OpenGL 上下文尚未就绪"));
+    auto* model = CurrentModel();
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
+    try {
+        CTreeManage::Snapshot tree;
+        LAppView::PreparedDeformerOverlays overlays;
+        const auto prepare = [&](const CubismModel& candidate, QString* detail) {
+            CubismModel::RuntimeValueSnapshot values;
+            return candidate.CaptureRuntimeValues(values, detail) &&
+                CTreeManage::PrepareSnapshot(bytes, values.Parameters(), tree, detail) &&
+                view->PrepareDeformerOverlays(tree, overlays, detail);
+        };
+        if (!model->ApplyParameterDefinitionPreview(bytes, sourceDigest, baseValues, keepEditorPreview, error, prepare)) return false;
+        CTreeManage::SwapSnapshot(tree);
+        view->SwapDeformerOverlays(overlays);
+        update();
+        return true;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("无法准备参数定义的变形器预览"));
+    }
+}
+
 bool OpengGlForm::EndEditorPreview(QString* error)
 {
     if (error) error->clear();

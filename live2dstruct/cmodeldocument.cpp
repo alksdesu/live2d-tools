@@ -13,6 +13,7 @@
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
+#include <algorithm>
 #include <exception>
 #include <type_traits>
 #include <limits>
@@ -36,6 +37,34 @@ bool validSlice(int begin, int count, int size)
     return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
 }
 
+CModelParameterMetadata sourceMetadata(const CModelParameter& parameter)
+{
+    return {parameter.id, parameter.minimum, parameter.maximum, parameter.defaultValue,
+            parameter.decimalPlaces, parameter.repeat};
+}
+
+QVariantMap metadataVariant(const CModelParameterMetadata& metadata)
+{
+    return {{QStringLiteral("displayName"), metadata.displayName},
+            {QStringLiteral("minimum"), metadata.minimum}, {QStringLiteral("maximum"), metadata.maximum},
+            {QStringLiteral("defaultValue"), metadata.defaultValue},
+            {QStringLiteral("decimalPlaces"), metadata.decimalPlaces}, {QStringLiteral("repeat"), metadata.repeat}};
+}
+
+bool validMetadata(const CModelParameterMetadata& metadata)
+{
+    return !metadata.displayName.contains(QChar::Null) && std::isfinite(metadata.minimum) &&
+        std::isfinite(metadata.maximum) && std::isfinite(metadata.defaultValue) &&
+        metadata.minimum <= metadata.maximum && metadata.defaultValue >= metadata.minimum &&
+        metadata.defaultValue <= metadata.maximum && metadata.decimalPlaces >= 0 && metadata.decimalPlaces <= 9;
+}
+
+bool hasMetadataState(const QVariantMap& state)
+{
+    return state.contains(QStringLiteral("hasMetadataOverride")) || state.contains(QStringLiteral("hasValueOverride")) ||
+           state.contains(QStringLiteral("value"));
+}
+
 bool metadataFromVariant(const QVariant& value, const CModelParameterMetadata& current,
                          CModelParameterMetadata* metadata)
 {
@@ -53,16 +82,17 @@ bool metadataFromVariant(const QVariant& value, const CModelParameterMetadata& c
         if (!ok || !std::isfinite(number) || number < -std::numeric_limits<float>::max() ||
             number > std::numeric_limits<float>::max()) return false;
         *target = static_cast<float>(number);
-        return std::isfinite(*target);
+        return std::isfinite(*target) && (number == 0.0 || *target != 0.0f);
     };
     if (!readFloatField(QStringLiteral("minimum"), &parsed.minimum) ||
         !readFloatField(QStringLiteral("maximum"), &parsed.maximum) ||
         !readFloatField(QStringLiteral("defaultValue"), &parsed.defaultValue)) return false;
     if (map.contains(QStringLiteral("decimalPlaces"))) {
         bool ok = false;
-        const int decimalPlaces = map.value(QStringLiteral("decimalPlaces")).toInt(&ok);
-        if (!ok) return false;
-        parsed.decimalPlaces = decimalPlaces;
+        const double decimalPlaces = map.value(QStringLiteral("decimalPlaces")).toDouble(&ok);
+        if (!ok || !std::isfinite(decimalPlaces) || decimalPlaces < 0 || decimalPlaces > 9 ||
+            std::floor(decimalPlaces) != decimalPlaces) return false;
+        parsed.decimalPlaces = static_cast<int>(decimalPlaces);
     }
     if (map.contains(QStringLiteral("repeat"))) {
         if (!map.value(QStringLiteral("repeat")).canConvert<bool>()) return false;
@@ -199,7 +229,8 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
     }
     if (m_drawableKeyformPositionOverrides.isEmpty() && m_deformerWarpKeyformOverrides.isEmpty() &&
         m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty() &&
-        m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty()) {
+        m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty() &&
+        m_parameterMetadataOverrides.isEmpty()) {
         bytes = m_sourceBytes;
         return true;
     }
@@ -214,6 +245,7 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
     overrides.deformerParents = m_deformerParentOverrides;
     overrides.drawableMasks = m_drawableMaskIndexOverrides;
     overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
+    overrides.parameterMetadata = m_parameterMetadataOverrides;
     return m_previewBuilder->BuildOverrides(overrides, bytes, error);
 }
 
@@ -467,6 +499,83 @@ CModelParameterMetadata CModelDocument::ParameterMetadata(const QString& id) con
     return {};
 }
 
+QVariantMap CModelDocument::ParameterMetadataState(const QString& id) const
+{
+    int matches = 0;
+    for (const auto& parameter : m_parameters) if (parameter.id == id) ++matches;
+    if (id.isEmpty() || matches != 1) return {};
+    auto state = metadataVariant(ParameterMetadata(id));
+    state.insert(QStringLiteral("hasMetadataOverride"), m_parameterMetadataOverrides.contains(id));
+    state.insert(QStringLiteral("hasValueOverride"), m_parameterValues.contains(id));
+    state.insert(QStringLiteral("value"), ParameterValue(id));
+    return state;
+}
+
+bool CModelDocument::MakeParameterMetadataEdit(const QString& id, const CModelParameterMetadata& metadata,
+                                               CModelEdit& edit, QString* error) const
+{
+    if (error) error->clear();
+    const auto before = ParameterMetadataState(id);
+    if (before.isEmpty()) {
+        setError(error, QStringLiteral("参数不存在或 ID 重复：%1").arg(id));
+        return false;
+    }
+    const auto current = ParameterMetadata(id);
+    auto normalized = metadata;
+    if (normalized.displayName.isEmpty()) normalized.displayName = current.displayName;
+    if (!validMetadata(normalized) || !std::isfinite(ParameterValue(id))) {
+        setError(error, QStringLiteral("参数范围、默认值、小数位或当前值无效"));
+        return false;
+    }
+    CModelEdit command{id, QStringLiteral("parameter"), CModelEdit::ParameterMetadata, before, before, -1, false};
+    if (!(normalized == current)) {
+        const auto source = std::find_if(m_parameters.cbegin(), m_parameters.cend(),
+                                         [&](const auto& parameter) { return parameter.id == id; });
+        const float value = std::clamp(ParameterValue(id), normalized.minimum, normalized.maximum);
+        auto after = metadataVariant(normalized);
+        after.insert(QStringLiteral("hasMetadataOverride"), !(normalized == sourceMetadata(*source)));
+        after.insert(QStringLiteral("hasValueOverride"), m_parameterValues.contains(id) || value != normalized.defaultValue);
+        after.insert(QStringLiteral("value"), value);
+        command.after = after;
+    }
+    edit = std::move(command);
+    return true;
+}
+
+bool CModelDocument::ApplyParameterMetadataState(const QString& id, const QVariantMap& state)
+{
+    const auto current = ParameterMetadataState(id);
+    if (current.isEmpty()) return false;
+    for (const QString& field : {QStringLiteral("displayName"), QStringLiteral("minimum"), QStringLiteral("maximum"),
+            QStringLiteral("defaultValue"), QStringLiteral("decimalPlaces"), QStringLiteral("repeat"),
+            QStringLiteral("hasMetadataOverride"), QStringLiteral("hasValueOverride"), QStringLiteral("value")})
+        if (!state.contains(field)) return false;
+    if (state.value(QStringLiteral("hasMetadataOverride")).metaType().id() != QMetaType::Bool ||
+        state.value(QStringLiteral("hasValueOverride")).metaType().id() != QMetaType::Bool) return false;
+    CModelParameterMetadata metadata;
+    if (!metadataFromVariant(state, ParameterMetadata(id), &metadata) || !validMetadata(metadata)) return false;
+    bool validValue = false;
+    const double number = state.value(QStringLiteral("value")).toDouble(&validValue);
+    if (!validValue || !std::isfinite(number) || number < metadata.minimum || number > metadata.maximum) return false;
+    const float value = static_cast<float>(number);
+    if (number != 0.0 && value == 0.0f) return false;
+    const bool hasMetadata = state.value(QStringLiteral("hasMetadataOverride")).toBool();
+    const bool hasValue = state.value(QStringLiteral("hasValueOverride")).toBool();
+    const auto source = std::find_if(m_parameters.cbegin(), m_parameters.cend(),
+                                     [&](const auto& parameter) { return parameter.id == id; });
+    if ((!hasMetadata && !(metadata == sourceMetadata(*source))) || (!hasValue && value != metadata.defaultValue)) return false;
+    auto metadataOverrides = m_parameterMetadataOverrides;
+    auto parameterValues = m_parameterValues;
+    if (hasMetadata) metadataOverrides.insert(id, metadata);
+    else metadataOverrides.remove(id);
+    if (hasValue) parameterValues.insert(id, value);
+    else parameterValues.remove(id);
+    m_parameterMetadataOverrides.swap(metadataOverrides);
+    m_parameterValues.swap(parameterValues);
+    ++m_revision;
+    return true;
+}
+
 bool CModelDocument::SetParameterMetadata(const QString& id, const CModelParameterMetadata& metadata)
 {
     const CModelParameterMetadata base = ParameterMetadata(id);
@@ -475,13 +584,10 @@ bool CModelDocument::SetParameterMetadata(const QString& id, const CModelParamet
     for (const CModelParameter& parameter : m_parameters) {
         if (parameter.id == id) { found = true; source = &parameter; break; }
     }
-    if (!found || !source || !std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
-        !std::isfinite(metadata.defaultValue) || metadata.minimum > metadata.maximum ||
-        metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum ||
-        metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9) return false;
+    if (!found || !source || !validMetadata(metadata)) return false;
     float previousKey = -std::numeric_limits<float>::infinity();
     for (float key : source->keyValues) {
-        if (!std::isfinite(key) || key < metadata.minimum || key > metadata.maximum || key < previousKey) return false;
+        if (!std::isfinite(key) || key < previousKey) return false;
         previousKey = key;
     }
     if (m_parameterValues.contains(id)) {
@@ -944,6 +1050,8 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     }
     if (edit.field == CModelEdit::ParameterMetadata) {
         if (edit.type != QLatin1String("parameter")) return false;
+        if (value.canConvert<QVariantMap>() && hasMetadataState(value.toMap()))
+            return ApplyParameterMetadataState(edit.name, value.toMap());
         CModelParameterMetadata metadata;
         if (!metadataFromVariant(value, ParameterMetadata(edit.name), &metadata)) return false;
         return SetParameterMetadata(edit.name, metadata);
@@ -985,6 +1093,34 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
 {
     if (edit.name.isEmpty() || edit.before == edit.after) return false;
+    if (edit.field == CModelEdit::ParameterMetadata) {
+        if (edit.type != QLatin1String("parameter") || !edit.before.canConvert<QVariantMap>() ||
+            !edit.after.canConvert<QVariantMap>()) return false;
+        const auto current = ParameterMetadataState(edit.name);
+        if (current.isEmpty()) return false;
+        CModelParameterMetadata before, after;
+        if (!metadataFromVariant(edit.before, ParameterMetadata(edit.name), &before) ||
+            !(before == ParameterMetadata(edit.name)) ||
+            (hasMetadataState(edit.before.toMap()) && edit.before.toMap() != current) ||
+            !metadataFromVariant(edit.after, before, &after)) return false;
+        CModelEdit command = edit;
+        if (!hasMetadataState(edit.after.toMap())) {
+            if (!MakeParameterMetadataEdit(edit.name, after, command)) return false;
+            command.coalesce = edit.coalesce;
+        } else command.before = current;
+        if (command.before == command.after) return false;
+        CModelDocument candidate = *this;
+        if (!candidate.ApplyEdit(command, true)) return false;
+        if (candidate.m_editIndex < candidate.m_editHistory.size()) candidate.m_editHistory.resize(candidate.m_editIndex);
+        if (command.coalesce && !candidate.m_editHistory.isEmpty() && candidate.m_editHistory.last().coalesce &&
+            candidate.m_editHistory.last().name == command.name && candidate.m_editHistory.last().type == command.type &&
+            candidate.m_editHistory.last().field == command.field && candidate.m_editHistory.last().after == command.before)
+            candidate.m_editHistory.last().after = command.after;
+        else candidate.m_editHistory.append(command);
+        candidate.m_editIndex = candidate.m_editHistory.size();
+        CommitCandidate(std::move(candidate));
+        return true;
+    }
     if (!ApplyEdit(edit, true)) return false;
     if (m_editIndex < m_editHistory.size()) m_editHistory.resize(m_editIndex);
     if (edit.coalesce && !m_editHistory.isEmpty() && m_editIndex == m_editHistory.size()) {
@@ -1066,26 +1202,27 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
     QSet<QString> parameterIds;
     for (int i = 0; i < m_parameters.size(); ++i) {
         const CModelParameter& parameter = m_parameters[i];
+        const auto metadata = m_parameterMetadataOverrides.value(parameter.id, sourceMetadata(parameter));
         if (parameter.id.isEmpty() || parameterIds.contains(parameter.id)) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_id"),
                                  QStringLiteral("参数 ID 为空或重复"), i});
         }
         parameterIds.insert(parameter.id);
-        if (parameter.minimum > parameter.maximum ||
-            parameter.defaultValue < parameter.minimum || parameter.defaultValue > parameter.maximum) {
+        if (metadata.minimum > metadata.maximum ||
+            metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_range"),
                                  QStringLiteral("参数范围或默认值无效"), i});
         }
-        if (!std::isfinite(parameter.minimum) || !std::isfinite(parameter.maximum) ||
-            !std::isfinite(parameter.defaultValue)) {
+        if (!std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
+            !std::isfinite(metadata.defaultValue)) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_nan"),
                                  QStringLiteral("参数包含非有限数值"), i});
         }
         float previousKey = -std::numeric_limits<float>::infinity();
         for (float key : parameter.keyValues) {
-            if (!std::isfinite(key) || key < parameter.minimum || key > parameter.maximum || key < previousKey) {
+            if (!std::isfinite(key) || key < metadata.minimum || key > metadata.maximum || key < previousKey) {
                 diagnostics.append({CModelDiagnostic::Warning, QStringLiteral("parameter_keys"),
-                                     QStringLiteral("参数关键值无效或未递增"), i});
+                                     QStringLiteral("参数关键值非有限、超出当前范围或未递增"), i});
                 break;
             }
             previousKey = key;
@@ -1288,7 +1425,8 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         for (const CModelParameter& parameter : m_parameters) {
             if (parameter.id != it.key()) continue;
             found = true;
-            if (!std::isfinite(it.value()) || it.value() < parameter.minimum || it.value() > parameter.maximum) {
+            const auto metadata = m_parameterMetadataOverrides.value(parameter.id, sourceMetadata(parameter));
+            if (!std::isfinite(it.value()) || it.value() < metadata.minimum || it.value() > metadata.maximum) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("parameter_override_range"),
                                      QStringLiteral("参数覆盖值无效：%1").arg(it.key()), -1});
             }

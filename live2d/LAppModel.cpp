@@ -761,7 +761,8 @@ bool LAppModel::EndEditorPreview(QString* error)
 }
 
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
-                                       const CubismModelReplacement::ModelPreparation& prepareModel, QString* error)
+                                       const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
+                                       CubismModelUpdatePolicy policy)
 {
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
@@ -783,7 +784,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
     };
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
-                      prepare, CubismModelUpdatePolicy::AllowClippingEdits, error, prepareModel))
+                      prepare, policy, error, prepareModel))
         return false;
     m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;

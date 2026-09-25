@@ -836,6 +836,118 @@ private slots:
         QVERIFY(model->_notExistPartId.isEmpty());
     }
 
+    void parameterDefinitionPolicyIsExplicitAndComposable()
+    {
+        auto source = create();
+        auto candidate = create();
+        auto& next = State(candidate->GetModel());
+        next.minimum[0] = -2.0f;
+        next.maximum[0] = 3.0f;
+        next.defaults[0] = 0.5f;
+        QString error;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, &error));
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowClippingEdits, &error));
+        QVERIFY2(candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits, &error), qPrintable(error));
+        next.flags[0] ^= Core::csmIsInvertedMask;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits, &error));
+        const auto combined = CubismModelUpdatePolicy::AllowParameterDefinitionEdits | CubismModelUpdatePolicy::AllowClippingEdits;
+        QVERIFY(candidate->IsCompatibleForKeyformUpdate(*source, combined, &error));
+        next.types[0] = Core::csmParameterType_BlendShape;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, combined, &error));
+        next.types[0] = Core::csmParameterType_Normal;
+        next.keys[0][1] = 0.2f;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, combined, &error));
+        next.keys[0][1] = 0.0f;
+        next.minimum[0] = -0.5f;
+        QVERIFY(candidate->IsCompatibleForKeyformUpdate(*source, combined, &error));
+        QCOMPARE(next.keys[0][0], -1.0f);
+        next.minimum[0] = -2.0f;
+        next.maximum[0] = std::numeric_limits<float>::infinity();
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, combined, &error));
+    }
+
+    void narrowedRangeKeepsOutlyingBindingKeys()
+    {
+        auto source = create(), candidate = create();
+        auto& old = State(source->GetModel());
+        auto& next = State(candidate->GetModel());
+        old.minimum[0] = -30.0f;
+        old.maximum[0] = 30.0f;
+        old.keys[0] = {{-30.0f, 0.0f, 30.0f}};
+        next.minimum[0] = -5.0f;
+        next.maximum[0] = 5.0f;
+        next.keys[0] = old.keys[0];
+        source->SetParameterValue(0, 25.0f);
+        source->SaveParameters();
+        source->SetParameterValue(0, -26.0f);
+        QString error;
+        QVERIFY2(candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits, &error), qPrintable(error));
+        QCOMPARE(candidate->GetParameterValue(0), -5.0f);
+        QCOMPARE(candidate->_savedParameters[0], 5.0f);
+        QCOMPARE(next.keys[0][0], -30.0f);
+        QCOMPARE(next.keys[0][1], 0.0f);
+        QCOMPARE(next.keys[0][2], 30.0f);
+    }
+
+    void changedRangesClampCurrentAndSavedSeparately()
+    {
+        auto source = create();
+        auto candidate = create();
+        auto& previous = State(source->GetModel());
+        previous.minimum[0] = -2.0f;
+        previous.maximum[0] = 2.0f;
+        previous.values = {{1.75f, -0.0f}};
+        source->_savedParameters = {-1.5f, 3.5f};
+        previous.partOpacities[0] = 0.37f;
+        source->SetModelOpacity(0.42f);
+        source->SetParameterValue(idManager->GetId("VirtualRange"), 5.0f);
+        QString error;
+        QVERIFY2(candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits, &error), qPrintable(error));
+        QCOMPARE(candidate->GetParameterValue(0), 1.0f);
+        QVERIFY(std::signbit(candidate->GetParameterValue(1)));
+        QCOMPARE(candidate->_savedParameters, QVector<float>({-1.0f, 3.5f}));
+        QCOMPARE(candidate->GetPartOpacity(0), 0.37f);
+        QCOMPARE(candidate->GetModelOpacity(), 0.42f);
+        QCOMPARE(candidate->GetParameterValue(idManager->GetId("VirtualRange")), 5.0f);
+        QCOMPARE(previous.values[0], 1.75f);
+        QCOMPARE(source->_savedParameters[0], -1.5f);
+        auto defaultOnly = create();
+        State(defaultOnly->GetModel()).minimum[0] = -2.0f;
+        State(defaultOnly->GetModel()).maximum[0] = 2.0f;
+        State(defaultOnly->GetModel()).defaults[0] = 1.0f;
+        QVERIFY(defaultOnly->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits));
+        QCOMPARE(defaultOnly->GetParameterValue(0), 1.75f);
+        QCOMPARE(defaultOnly->_savedParameters[0], -1.5f);
+        QVERIFY(std::signbit(defaultOnly->GetParameterValue(1)));
+    }
+
+    void runtimeSnapshotCanRebaseWithoutLosingIdentityOrUnchangedValues()
+    {
+        auto source = create();
+        auto candidate = create();
+        State(source->GetModel()).minimum[0] = -2.0f;
+        State(source->GetModel()).maximum[0] = 2.0f;
+        State(source->GetModel()).values = {{1.5f, -0.0f}};
+        source->_savedParameters = {-1.5f, 4.0f};
+        CubismModel::RuntimeValueSnapshot original, migrated;
+        QVERIFY(source->CaptureRuntimeValues(original));
+        QVERIFY(candidate->RebaseRuntimeValues(original, migrated));
+        QCOMPARE(original.parameterValues[0], 1.5f);
+        QCOMPARE(migrated.parameterValues[0], 1.0f);
+        QCOMPARE(migrated.savedParameters, QVector<float>({-1.0f, 4.0f}));
+        QVERIFY(std::signbit(migrated.parameterValues[1]));
+        QCOMPARE(migrated.minimums, QVector<float>({-1.0f, -2.0f}));
+        QCOMPARE(migrated.parameterTypes, original.parameterTypes);
+        QVERIFY(!candidate->RestoreRuntimeValues(original));
+        QVERIFY(candidate->RestoreRuntimeValues(migrated));
+        const auto previous = migrated.Parameters();
+        auto invalid = original;
+        invalid.parameterTypes[0] = int(Core::csmParameterType_BlendShape);
+        QVERIFY(!candidate->RebaseRuntimeValues(invalid, migrated));
+        QCOMPARE(migrated.Parameters(), previous);
+        QVERIFY(!candidate->RestoreRuntimeValues(invalid));
+    }
+
     void failedCapturePreservesPreviousSnapshot()
     {
         auto model = create();

@@ -90,9 +90,8 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
         }
         const qsizetype begin = source->keys_sources_begin_indices;
         const qsizetype end = begin + source->keys_sources_counts;
-        if (invalidKeys[end] != invalidKeys[begin] || invalidOrder[end] != invalidOrder[begin + 1] ||
-            keys[begin] < parameter->min_values || keys[end - 1] > parameter->max_values) {
-            binding.error = QStringLiteral("参数绑定 %1 的关键值必须有限、严格递增且在参数范围内").arg(index);
+        if (invalidKeys[end] != invalidKeys[begin] || invalidOrder[end] != invalidOrder[begin + 1]) {
+            binding.error = QStringLiteral("参数绑定 %1 的关键值必须有限且严格递增").arg(index);
             continue;
         }
         binding.keyBegin = source->keys_sources_begin_indices;

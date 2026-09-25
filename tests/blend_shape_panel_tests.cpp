@@ -499,6 +499,7 @@ private slots:
         QTest::newRow("signed-subnormal") << -16 * tiny << 16 * tiny << 0.0f << 500;
         QTest::newRow("fixed-large") << h << h << h << 0;
         QTest::newRow("fixed-subnormal") << tiny << tiny << tiny << 0;
+        QTest::newRow("negative-zero-boundary") << 0.0f << 1.0f << -0.0f << 0;
     }
 
     void finiteRangesSupportDefaultSliderAndSilentSync()
@@ -615,6 +616,82 @@ private slots:
             QVERIFY(control);
             QCOMPARE(control->findChild<QSlider*>()->value(), 750);
         }
+    }
+
+    void numericMetadataPreservesCdiNamesAcrossHistoryAndLazyDetails()
+    {
+        const auto bytes = blendBytes();
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.LoadBytes(bytes, "blend-names.moc3"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath("names.cdi3.json");
+        const QJsonDocument names(QJsonObject{{"CombinedParameters", QJsonArray{QJsonArray{"Driver", "Limiter"}}}, {"Parameters", QJsonArray{
+            QJsonObject{{"Id", "Driver"}, {"Name", "驱动名称"}},
+            QJsonObject{{"Id", "Limiter"}, {"Name", "限制名称"}}}}});
+        QVERIFY(save(path, names.toJson()));
+        CCidJson cid;
+        QVERIFY(cid.Parse(path));
+        CBlendShapePanel panel;
+        panel.SetDocument(&document);
+        QVERIFY(panel.BuildBlendShapesBytes(bytes, &cid));
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        auto* driver = findItem(parameters, "parameter", "Driver");
+        QVERIFY(driver);
+        QCOMPARE(driver->text(0), QStringLiteral("驱动名称"));
+        parameters->setCurrentItem(driver);
+        auto* target = findItem(details, "target", "Shared", "artmesh");
+        QVERIFY(target);
+        target->setExpanded(true);
+        auto* binding = findItem(details, "binding", "Driver");
+        QVERIFY(binding);
+        QVERIFY(binding->text(0).contains(QStringLiteral("驱动名称")));
+        binding->setExpanded(true);
+        auto* limiter = findItem(details, "limiter", "Limiter");
+        QVERIFY(limiter);
+        QVERIFY(limiter->text(0).contains(QStringLiteral("限制名称")));
+        auto* controls = row(panel, "Driver");
+        QVERIFY(controls);
+        auto* slider = controls->findChild<QSlider*>();
+        QVERIFY(slider);
+        QSignalSpy changed(&panel, &CBlendShapePanel::ParamChanged);
+        auto metadata = document.ParameterMetadata("Driver");
+        metadata.defaultValue = .5f;
+        live2dstruct::CModelEdit edit;
+        QVERIFY(document.MakeParameterMetadataEdit("Driver", metadata, edit));
+        QVERIFY(document.ExecuteEdit(edit));
+        panel.RefreshParameterMetadata();
+        QCOMPARE(driver->text(0), QStringLiteral("驱动名称"));
+        QCOMPARE(slider->accessibleName(), QStringLiteral("驱动名称"));
+        QVERIFY(binding->text(0).contains(QStringLiteral("驱动名称")));
+        QCOMPARE(document.ParameterMetadata("Driver").displayName, QStringLiteral("Driver"));
+        QVERIFY(document.UndoEdit());
+        panel.RefreshParameterMetadata();
+        QCOMPARE(driver->text(0), QStringLiteral("驱动名称"));
+        QVERIFY(document.RedoEdit());
+        panel.RefreshParameterMetadata();
+        QCOMPARE(driver->text(0), QStringLiteral("驱动名称"));
+        metadata.displayName = QStringLiteral("自定义驱动");
+        QVERIFY(document.MakeParameterMetadataEdit("Driver", metadata, edit));
+        QVERIFY(document.ExecuteEdit(edit));
+        panel.RefreshParameterMetadata();
+        QCOMPARE(driver->text(0), QStringLiteral("自定义驱动"));
+        QVERIFY(binding->text(0).contains(QStringLiteral("自定义驱动")));
+        auto limiterMetadata = document.ParameterMetadata("Limiter");
+        limiterMetadata.defaultValue = .5f;
+        QVERIFY(document.MakeParameterMetadataEdit("Limiter", limiterMetadata, edit));
+        QVERIFY(document.ExecuteEdit(edit));
+        panel.RefreshParameterMetadata();
+        QVERIFY(limiter->text(0).contains(QStringLiteral("限制名称")));
+        QVERIFY(changed.isEmpty());
+        QVERIFY(panel.BuildBlendShapesBytes(bytes, &cid));
+        parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        driver = findItem(parameters, "parameter", "Driver");
+        limiter = findItem(parameters, "parameter", "Limiter");
+        QVERIFY(driver && limiter);
+        QCOMPARE(driver->text(0), QStringLiteral("自定义驱动"));
+        QCOMPARE(limiter->text(0), QStringLiteral("限制名称"));
     }
 
     void typeOneWithoutConstraintsStillHasControls()

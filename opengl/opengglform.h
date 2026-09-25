@@ -67,6 +67,9 @@ public:
     void SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish);
     bool ApplyMocPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                          const QMap<QString, float>* pose, QString* error = nullptr);
+    bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                         const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
+                                         QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);

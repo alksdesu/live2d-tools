@@ -18,6 +18,7 @@ class ModelRuntimeStateTests;
 class LAppExportPreviewTests;
 class CubismRendererPreparationTests;
 class PsdCooperativeGlTests;
+class PhysicsParameterDefinitionTests;
 
 namespace live2dstruct {
 struct CDrawableOrderGroup;
@@ -26,7 +27,15 @@ struct CDrawableOrderGroup;
 namespace Live2D { namespace Cubism { namespace Framework {
 
 class CubismMoc;
-enum class CubismModelUpdatePolicy { Strict, AllowClippingEdits };
+enum class CubismModelUpdatePolicy { Strict = 0, AllowClippingEdits = 1, AllowParameterDefinitionEdits = 2 };
+constexpr CubismModelUpdatePolicy operator|(CubismModelUpdatePolicy left, CubismModelUpdatePolicy right)
+{
+    return static_cast<CubismModelUpdatePolicy>(static_cast<unsigned int>(left) | static_cast<unsigned int>(right));
+}
+constexpr bool AllowsModelUpdate(CubismModelUpdatePolicy policy, CubismModelUpdatePolicy permission)
+{
+    return (static_cast<unsigned int>(policy) & static_cast<unsigned int>(permission)) != 0;
+}
 
 
 class CubismModel
@@ -36,6 +45,7 @@ class CubismModel
     friend class ::LAppExportPreviewTests;
     friend class ::CubismRendererPreparationTests;
     friend class ::PsdCooperativeGlTests;
+    friend class ::PhysicsParameterDefinitionTests;
 public:
 
     void InitMesh();
@@ -108,6 +118,7 @@ public:
     {
         QStringList parameterIds;
         QVector<float> parameterValues, savedParameters, minimums, maximums;
+        QVector<int> parameterTypes;
         QStringList partIds;
         QVector<float> partOpacities;
         QMap<QString, int> virtualParameterIds, virtualPartIds;
@@ -119,6 +130,8 @@ public:
     };
     bool CaptureRuntimeValues(RuntimeValueSnapshot& snapshot, QString* error = nullptr) const;
     bool RestoreRuntimeValues(const RuntimeValueSnapshot& snapshot, QString* error = nullptr);
+    bool RebaseRuntimeValues(const RuntimeValueSnapshot& snapshot, RuntimeValueSnapshot& result,
+                             QString* error = nullptr) const;
     bool ApplyParameterPose(const QMap<QString, float>& pose, QString* error = nullptr);
 
     void    Update() const;

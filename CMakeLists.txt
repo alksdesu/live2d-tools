@@ -194,13 +194,17 @@ if(BUILD_TESTING)
     target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
     add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller parameter_definition_edit tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME ${keyform_test} COMMAND ${keyform_test}_tests)
     endforeach()
     add_executable(moc_deformer_preview_tests tests/deformer_moc_preview_tests.cpp)
+    add_executable(moc_parameter_preview_tests tests/parameter_moc_preview_tests.cpp)
+    target_link_libraries(moc_parameter_preview_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(moc_parameter_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME moc_parameter_preview COMMAND moc_parameter_preview_tests)
     target_link_libraries(moc_deformer_preview_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_deformer_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME moc_deformer_preview COMMAND moc_deformer_preview_tests)
@@ -290,9 +294,10 @@ if(BUILD_TESTING)
     target_link_libraries(model_runtime_state_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
     add_test(NAME model_runtime_state COMMAND model_runtime_state_tests)
     add_executable(model_replacement_tests tests/model_replacement_tests.cpp ${cubism_model_test_sources}
+        live2d/LAppModelParameterDefinitions.cpp opengl/coffscreenbuffer.cpp
         framework/Model/CubismModelReplacement.cpp framework/Model/CubismMoc.cpp
         framework/Rendering/CubismRenderer.cpp framework/Math/CubismMatrix44.cpp framework/Type/csmRectF.cpp)
-    target_link_libraries(model_replacement_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
+    target_link_libraries(model_replacement_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test)
     target_compile_definitions(model_replacement_tests PRIVATE CSM_DEBUG)
     if(MSVC)
         target_compile_options(model_replacement_tests PRIVATE /UNDEBUG)
@@ -300,6 +305,13 @@ if(BUILD_TESTING)
         target_compile_options(model_replacement_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME model_replacement COMMAND model_replacement_tests)
+    add_executable(physics_parameter_definition_tests tests/physics_parameter_definition_tests.cpp
+        ${cubism_model_test_sources}
+        framework/Physics/CubismPhysics.cpp framework/Physics/CubismPhysicsJson.cpp
+        framework/Utils/CubismJson.cpp framework/Utils/CubismString.cpp
+        framework/Math/CubismMath.cpp framework/Math/CubismVector2.cpp)
+    target_link_libraries(physics_parameter_definition_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
+    add_test(NAME physics_parameter_definition COMMAND physics_parameter_definition_tests)
     add_executable(cubism_renderer_preparation_tests tests/cubism_renderer_preparation_tests.cpp
         ${cubism_model_test_sources} framework/Rendering/CubismRenderer.cpp
         framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp

@@ -24,6 +24,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Inspector edits for ArtMesh visibility and opacity are applied to preview, PSD and cmo3 export
 - Inspector draw-order edits use drawable order values, with native render order breaking ties; preview, picking and PSD share the same ordering, and overrides are saved to cmo3/sessions. Editing models with Draw Order Groups remains incomplete.
 - Searchable and collapsible parameter groups with undo/redo history
+- Edit parameter names, ranges, defaults, decimal precision and repeat settings; range changes and the current base value share one undo step and session restore path
 - Versioned editor sessions (parameters, visibility and camera) with recent-model shortcuts and persistent workspace layout/theme
 - Texture atlas viewer: zoom/pan, UV wireframe overlay, click the atlas to locate an ArtMesh (three-way linkage with the tree and main view), PNG export
 
@@ -45,6 +46,7 @@ The "Export cmo3 project" toolbar action (Ctrl+E) restores the current model as 
 - **Recoverable**: mesh geometry (vertices/UVs/triangles), keyform deformations, Warp/Rotation deformers, Part hierarchy, parameter definitions and bindings, clipping masks, blend modes, Glue, physics (physics3.json), display names (cdi3.json)
 - **Not recoverable** (absent from moc3): original PSD association, deformer path organization, artist notes and other editor metadata
 - Textures are rebuilt in "single PSD document + one layer per mesh" mode (MODEL_IMAGE); artwork can be replaced directly in the Editor and re-exported to moc3
+- Export preserves model parameter defaults unless "Use current parameter values as defaults" is selected; sessions store the current values separately
 
 ```
 Input:  model.moc3 + textures/*.png [+ physics3.json + cdi3.json]
@@ -143,6 +145,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - Inspector 可直接修改 ArtMesh 可见性和透明度，结果同步到实时预览、PSD 与 cmo3 导出
 - Inspector 绘制顺序编辑按 draw order 数值排序，同值沿用 Core 前后关系；预览、选取、PSD 共用排序，覆盖值保存至 cmo3 和工作会话。含 Draw Order Group 模型的编辑语义尚未完整支持。
 - 参数分组可折叠，支持名称/ID 搜索、撤销/重做；可保存和载入版本化工作会话（参数、可见性、视图）
+- 可编辑参数名称、范围、默认值、小数位和循环设置；范围变化与当前基线值一起撤销，并通过会话恢复
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
 - 纹理图集查看：缩放/平移、UV 线框叠加、点击图集反查 ArtMesh（与结构树/主视图三方联动）、导出 PNG
 
@@ -164,6 +167,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - **可恢复**：网格几何（顶点/UV/三角形）、关键帧变形、Warp/Rotation 变形器、Part 层级、参数定义与绑定、裁剪蒙版、混合模式、Glue、物理设置（physics3.json）、显示名汉化（cdi3.json）
 - **不可恢复**（moc3 中不存在）：原始 PSD 关联、变形器路径整理、画师备注等编辑器元数据
 - 贴图以"单 PSD 文档 + 每网格一图层"模式重建（MODEL_IMAGE），在 Editor 中可直接换皮再导出 moc3
+- 默认保留模型参数的默认值；勾选“将当前参数值作为默认值”可改用当前姿态，工作会话另行保存当前值
 
 ```
 输入: model.moc3 + textures/*.png [+ physics3.json + cdi3.json]

@@ -14,16 +14,275 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QXmlStreamReader>
+#include <QtEndian>
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <locale>
 #include <sstream>
+#include <cstring>
+
+namespace {
+QMap<QString, QMap<QString, QString>> parameterFields(const QByteArray& bytes, QString* error)
+{
+    QXmlStreamReader xml(bytes);
+    xml.setNamespaceProcessing(false);
+    QMap<QString, QMap<QString, QString>> result;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (!xml.isStartElement() || xml.name() != QLatin1String("CParameterSource")) continue;
+        QString id;
+        QMap<QString, QString> fields;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isEndElement() && xml.name() == QLatin1String("CParameterSource")) break;
+            if (!xml.isStartElement()) continue;
+            if (xml.name() == QLatin1String("CParameterId")) id = xml.attributes().value("idstr").toString();
+            else if (xml.name() == QLatin1String("f") || xml.name() == QLatin1String("i") ||
+                     xml.name() == QLatin1String("b") || xml.name() == QLatin1String("s")) {
+                const QString name = xml.attributes().value("xs.n").toString();
+                fields.insert(name, xml.readElementText());
+            }
+        }
+        if (id.isEmpty() || result.contains(id)) {
+            if (error) *error = QStringLiteral("missing or duplicate parameter definition");
+            return {};
+        }
+        result.insert(id, fields);
+    }
+    if (xml.hasError()) {
+        if (error) *error = xml.errorString();
+        return {};
+    }
+    if (error) error->clear();
+    return result;
+}
+
+QMap<QString, QString> objectDisplayNames(const QByteArray& bytes, QString* error)
+{
+    QXmlStreamReader xml(bytes);
+    xml.setNamespaceProcessing(false);
+    const QSet<QString> types{"CArtMeshSource", "CWarpDeformerSource", "CRotationDeformerSource", "CPartSource"};
+    QMap<QString, QString> names;
+    int depth = 0;
+    QString type, id, name;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            if (!depth) {
+                if (!types.contains(xml.name().toString()) || !xml.attributes().hasAttribute("xs.id")) continue;
+                type = xml.name().toString(); id.clear(); name.clear(); depth = 1;
+                continue;
+            }
+            ++depth;
+            if (xml.name() == QLatin1String("CDrawableId") || xml.name() == QLatin1String("CDeformerId") || xml.name() == QLatin1String("CPartId"))
+                id = xml.attributes().value("idstr").toString();
+            if (xml.name() == QLatin1String("s") && xml.attributes().value("xs.n") == QLatin1String("localName")) {
+                name = xml.readElementText();
+                --depth;
+            }
+        } else if (xml.isEndElement() && depth && --depth == 0 && !id.isEmpty()) names.insert(type + '/' + id, name);
+    }
+    if (error) *error = xml.hasError() ? xml.errorString() : QString();
+    return names;
+}
+}
 
 class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void parameterNamesPreserveCdiAndDoNotRenameOtherObjectTypes_data()
+    {
+        QTest::addColumn<QString>("nameMode");
+        QTest::addColumn<bool>("withCdi");
+        for (bool withCdi : {false, true})
+            for (const QString& mode : {QStringLiteral("none"), QStringLiteral("empty"), QStringLiteral("id"), QStringLiteral("custom")})
+                QTest::newRow(qPrintable((withCdi ? "cdi-" : "fallback-") + mode)) << mode << withCdi;
+    }
+
+    void parameterNamesPreserveCdiAndDoNotRenameOtherObjectTypes()
+    {
+        QFETCH(QString, nameMode);
+        QFETCH(bool, withCdi);
+        const QString base = QString(TEST_RESOURCES) + "/Wanko/";
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(base + "Wanko.moc3"));
+        QVERIFY(!document.Parameters().isEmpty());
+        QVERIFY(!document.Drawables().isEmpty());
+        QVERIFY(!document.Deformers().isEmpty());
+        QVERIFY(!document.Parts().isEmpty());
+        const QString id = document.Parameters().first().id;
+        const QByteArray utf8 = id.toUtf8();
+        QVERIFY(utf8.size() < 64);
+        QByteArray moc = document.SourceBytes();
+        for (int slot : {0xc4, 0x6c, 0x4c}) {
+            const quint32 ids = qFromLittleEndian<quint32>(moc.constData() + slot);
+            QVERIFY(ids <= quint32(moc.size() - 64));
+            std::memset(moc.data() + ids, 0, 64);
+            std::memcpy(moc.data() + ids, utf8.constData(), utf8.size());
+        }
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QFile model(temp.filePath("Wanko.moc3"));
+        QVERIFY(model.open(QIODevice::WriteOnly));
+        QCOMPARE(model.write(moc), moc.size());
+        model.close();
+        QFile config(temp.filePath("Wanko.model3.json"));
+        QVERIFY(config.open(QIODevice::WriteOnly));
+        const QJsonObject modelJson{{"FileReferences", QJsonObject{{"Moc", "Wanko.moc3"},
+            {"Textures", QJsonArray{base + "Wanko.1024/texture_00.png"}}}}};
+        const QByteArray configBytes = QJsonDocument(modelJson).toJson();
+        QCOMPARE(config.write(configBytes), configBytes.size());
+        config.close();
+        QFile cdi(temp.filePath("Wanko.cdi3.json"));
+        QVERIFY(cdi.open(QIODevice::WriteOnly));
+        const QJsonObject names{{"Version", 3},
+            {"Parameters", QJsonArray{QJsonObject{{"Id", id}, {"Name", "CDI 参数"}}}},
+            {"Parts", QJsonArray{QJsonObject{{"Id", id}, {"Name", "CDI 非参数对象"}}}}};
+        const QByteArray cdiBytes = QJsonDocument(names).toJson();
+        QCOMPARE(cdi.write(cdiBytes), cdiBytes.size());
+        cdi.close();
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = model.fileName();
+        options.outPath = temp.filePath("names.cmo3");
+        options.parameterDefaultMode = cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition;
+        if (withCdi) options.cdiPath = cdi.fileName();
+        auto metadata = document.ParameterMetadata(id);
+        metadata.decimalPlaces = 7;
+        if (nameMode == "empty") metadata.displayName.clear();
+        if (nameMode == "custom") metadata.displayName = QStringLiteral("自定义参数 <literal>");
+        if (nameMode != "none") options.parameterMetadata.insert(id, metadata);
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        const auto parameters = parameterFields(main->content, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        const QString expected = nameMode == "custom" ? metadata.displayName : withCdi ? QStringLiteral("CDI 参数") : id;
+        QCOMPARE(parameters.value(id).value("name"), expected);
+        if (nameMode != "none") QCOMPARE(parameters.value(id).value("decimalPlaces"), QStringLiteral("7"));
+        const auto objects = objectDisplayNames(main->content, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        const QString deformerType = document.Deformers().first().type == live2dstruct::CModelDeformer::Warp
+            ? QStringLiteral("CWarpDeformerSource") : QStringLiteral("CRotationDeformerSource");
+        for (const QString& type : {QStringLiteral("CArtMeshSource"), deformerType, QStringLiteral("CPartSource")}) {
+            QVERIFY2(objects.contains(type + '/' + id), qPrintable(type));
+            QCOMPARE(objects.value(type + '/' + id), withCdi ? QStringLiteral("CDI 非参数对象") : id);
+        }
+    }
+
+    void explicitParameterDefaultModes_data()
+    {
+        QTest::addColumn<bool>("definition");
+        QTest::addColumn<QString>("scenario");
+        for (bool definition : {false, true})
+            for (const QString& scenario : {QStringLiteral("source"), QStringLiteral("source-fallback"),
+                    QStringLiteral("metadata"), QStringLiteral("metadata-fallback"), QStringLiteral("expanded"),
+                    QStringLiteral("narrowed"), QStringLiteral("narrowed-fallback")})
+                QTest::newRow(qPrintable((definition ? "definition-" : "current-") + scenario)) << definition << scenario;
+    }
+
+    void explicitParameterDefaultModes()
+    {
+        QFETCH(bool, definition);
+        QFETCH(QString, scenario);
+        const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        QVERIFY(document.Parameters().size() > 1);
+        const auto parameter = document.Parameters().first();
+        auto metadata = document.ParameterMetadata(parameter.id);
+        float current = -2.5f;
+        const bool overridden = scenario == "metadata" || scenario == "metadata-fallback" || scenario == "expanded" || scenario.startsWith("narrowed");
+        if (overridden) metadata.defaultValue = 1.25f;
+        if (scenario == "expanded") { metadata.maximum = 60; current = 45; }
+        if (scenario.startsWith("narrowed")) { metadata.minimum = 10; metadata.maximum = 20; metadata.defaultValue = 12.5f; current = 15; }
+        const bool hasCurrent = !scenario.endsWith("-fallback");
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        QCOMPARE(options.parameterDefaultMode, cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues);
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath("mode.cmo3");
+        options.parameterDefaultMode = definition ? cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition
+                                                : cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues;
+        if (hasCurrent) options.parameterValues.insert(parameter.id, current);
+        if (overridden) options.parameterMetadata.insert(parameter.id, metadata);
+        const auto originalValues = options.parameterValues;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        QCOMPARE(options.parameterValues, originalValues);
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        const auto fields = parameterFields(main->content, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(fields.size(), document.Parameters().size());
+        const float expected = definition || !hasCurrent ? metadata.defaultValue : current;
+        QCOMPARE(fields.value(parameter.id).value("defaultValue"), cmo3::CXsXmlWriter::FormatFloat(expected));
+        QCOMPARE(fields.value(parameter.id).value("minValue"), cmo3::CXsXmlWriter::FormatFloat(metadata.minimum));
+        QCOMPARE(fields.value(parameter.id).value("maxValue"), cmo3::CXsXmlWriter::FormatFloat(metadata.maximum));
+        const auto other = document.Parameters()[1];
+        QCOMPARE(fields.value(other.id).value("defaultValue"), cmo3::CXsXmlWriter::FormatFloat(other.defaultValue));
+        QVERIFY(!fields.value(parameter.id).contains("currentValue"));
+    }
+
+    void invalidParameterModesAndValuesPreserveExistingOutput_data()
+    {
+        QTest::addColumn<bool>("definition");
+        QTest::addColumn<QString>("invalid");
+        for (bool definition : {false, true})
+            for (const QString& invalid : {QStringLiteral("mode"), QStringLiteral("unknown-value"), QStringLiteral("unknown-metadata"),
+                    QStringLiteral("nan-value"), QStringLiteral("infinite-value"), QStringLiteral("outside-range"),
+                    QStringLiteral("narrowed-range"), QStringLiteral("bad-default"), QStringLiteral("reversed-range"), QStringLiteral("bad-precision")})
+                QTest::newRow(qPrintable((definition ? "definition-" : "current-") + invalid)) << definition << invalid;
+    }
+
+    void invalidParameterModesAndValuesPreserveExistingOutput()
+    {
+        QFETCH(bool, definition);
+        QFETCH(QString, invalid);
+        const QString mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(mocPath));
+        const auto parameter = document.Parameters().first();
+        auto metadata = document.ParameterMetadata(parameter.id);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temp.filePath("retained.cmo3");
+        options.parameterDefaultMode = definition ? cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition
+                                                : cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues;
+        if (invalid == "mode") options.parameterDefaultMode = static_cast<cmo3::CCmo3Builder::ParameterDefaultMode>(99);
+        if (invalid == "unknown-value") options.parameterValues.insert("missing", 0);
+        if (invalid == "unknown-metadata") options.parameterMetadata.insert("missing", metadata);
+        if (invalid == "nan-value") options.parameterValues.insert(parameter.id, std::numeric_limits<float>::quiet_NaN());
+        if (invalid == "infinite-value") options.parameterValues.insert(parameter.id, std::numeric_limits<float>::infinity());
+        if (invalid == "outside-range") options.parameterValues.insert(parameter.id, parameter.maximum + 1);
+        if (invalid == "narrowed-range") {
+            metadata.maximum = 1;
+            options.parameterMetadata.insert(parameter.id, metadata);
+            options.parameterValues.insert(parameter.id, 2);
+        }
+        if (invalid == "bad-default") { metadata.defaultValue = metadata.maximum + 1; options.parameterMetadata.insert(parameter.id, metadata); }
+        if (invalid == "reversed-range") { metadata.minimum = metadata.maximum + 1; options.parameterMetadata.insert(parameter.id, metadata); }
+        if (invalid == "bad-precision") { metadata.decimalPlaces = 10; options.parameterMetadata.insert(parameter.id, metadata); }
+        QFile output(options.outPath);
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        QCOMPARE(output.write("existing artifact"), 17);
+        output.close();
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        QCOMPARE(output.readAll(), QByteArray("existing artifact"));
+    }
+
     void xmlFloatWritersRejectNonfiniteValues_data()
     {
         QTest::addColumn<int>("kind");

@@ -81,6 +81,9 @@ private:
     void ClearTimelinePreview();
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
+    bool PublishParameterDefinitions(const live2dstruct::CModelDocument& document,
+                                     const QMap<QString, float>& values, bool editing, QString* error);
+    void SyncParameterDefinitionPreview();
     bool ActivateKeyform(const QString& id, int keyform, QString* error);
     bool ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error);
     bool EndKeyformEditing(QString* error = nullptr);

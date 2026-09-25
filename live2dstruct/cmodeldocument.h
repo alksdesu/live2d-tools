@@ -186,6 +186,9 @@ public:
     bool SetParameterValue(const QString& id, float value);
     float ParameterValue(const QString& id) const;
     CModelParameterMetadata ParameterMetadata(const QString& id) const;
+    QVariantMap ParameterMetadataState(const QString& id) const;
+    bool MakeParameterMetadataEdit(const QString& id, const CModelParameterMetadata& metadata,
+                                   CModelEdit& edit, QString* error = nullptr) const;
     bool SetParameterMetadata(const QString& id, const CModelParameterMetadata& metadata);
     const QHash<QString, CModelParameterMetadata>& ParameterMetadataOverrides() const { return m_parameterMetadataOverrides; }
     const QHash<QString, float>& ParameterValues() const { return m_parameterValues; }
@@ -251,6 +254,7 @@ public:
     QVector<CModelDiagnostic> Validate() const;
 
 private:
+    bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);
     bool m_loaded = false;
     quint64 m_revision = 0;
     QString m_sourcePath;

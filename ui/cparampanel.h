@@ -17,15 +17,19 @@ class QToolButton;
 class QComboBox;
 class QGroupBox;
 class CXYParameterPad;
-namespace live2dstruct { class CModelDocument; }
+namespace live2dstruct { class CModelDocument; struct CModelEdit; }
 
 class CParamPanel : public QDockWidget
 {
     Q_OBJECT
 public:
     using PreEditGuard = std::function<bool(QString*)>;
+    using MetadataEditHandler = std::function<bool(const live2dstruct::CModelEdit&, QString*)>;
+    using HistoryHandler = std::function<bool(bool, live2dstruct::CModelEdit&, QString*)>;
     explicit CParamPanel(QWidget *parent = nullptr);
     void SetPreEditGuard(PreEditGuard guard);
+    void SetMetadataEditHandler(MetadataEditHandler handler);
+    void SetHistoryHandler(HistoryHandler handler);
     void SetDocument(live2dstruct::CModelDocument* document);
     void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
     void SetPreviewValues(const QMap<QString, float>& values, const QMap<QString, float>& baselineValues);
@@ -69,6 +73,7 @@ private:
         float maxVal;
         float defaultVal;
         QString paramId;
+        QString originalName;
         int modelIndex = -1;
         bool blendShape = false;
     };
@@ -84,6 +89,10 @@ private:
     bool m_checkingEditGuard = false;
     bool m_editGuardApproved = false;
     PreEditGuard m_preEditGuard;
+    MetadataEditHandler m_metadataEditHandler;
+    HistoryHandler m_historyHandler;
+    bool m_metadataDialogOpen = false;
+    bool m_submittingEdit = false;
     QSet<int> m_rejectedSpinEdits;
     QVector<ParamRow> m_rows;
     QHash<QWidget*, QToolButton*> m_groupButtons;
@@ -105,6 +114,8 @@ private:
     void ApplyValuesInternal(const QMap<QString, float>& values, bool record);
     void PushEdit(const QString& paramId, float before, float after);
     void EmitHistoryState();
+    void ApplyHistory(bool undo);
+    void RefreshAcceptedMetadata(const live2dstruct::CModelEdit& edit, bool forward);
     void RefreshParameterRow(int rowIndex);
     void RefreshXYControls();
     void ApplyXYPad(float xValue, float yValue);

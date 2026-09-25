@@ -5,6 +5,8 @@
 #include "framework/Id/CubismIdManager.hpp"
 #include "framework/Utils/CubismDebug.hpp"
 #include "cubism_model_fixture.h"
+#include "live2d/LAppModel.hpp"
+#include <QCryptographicHash>
 
 #include <QtTest>
 #include <array>
@@ -15,6 +17,7 @@
 #include <new>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -55,6 +58,9 @@ struct Runtime
     QByteArray checkedBytes;
     Failure failure = None;
     bool editClipping = false;
+    bool editParameterDefinition = false;
+    bool rejectMetadataRenderer = false;
+    float parameterMinimum = -1.0f, parameterMaximum = 1.0f, parameterDefault = 0.0f;
     int nextGeneration = 1;
     int lastModelGeneration = 0;
     int consistencyCalls = 0, reviveCalls = 0, initializeCalls = 0, rendererCalls = 0;
@@ -286,6 +292,11 @@ csmModel* csmCallingConvention csmInitializeModelInPlace(const csmMoc* moc, void
     auto data = std::make_unique<GetterState>();
     const auto* bytes = reinterpret_cast<const unsigned char*>(moc);
     if (bytes[7] == 2) {
+        if (runtime.editParameterDefinition) {
+            data->minimum[0] = runtime.parameterMinimum;
+            data->maximum[0] = runtime.parameterMaximum;
+            data->defaults[0] = runtime.parameterDefault;
+        }
         for (auto& point : data->positions[0]) { point.X += 0.5f; point.Y += 0.25f; }
         if (runtime.editClipping) {
             data->maskCounts[0] = 1;
@@ -304,10 +315,264 @@ csmModel* csmCallingConvention csmInitializeModelInPlace(const csmMoc* moc, void
 }
 }}}
 
+namespace Live2D { namespace Cubism { namespace Framework {
+CubismUserModel::CubismUserModel()
+    : _moc(nullptr), _model(nullptr), _motionManager(nullptr), _expressionManager(nullptr), _eyeBlink(nullptr),
+      _breath(nullptr), _modelMatrix(nullptr), _pose(nullptr), _dragManager(nullptr), _physics(nullptr),
+      _modelUserData(nullptr), _initialized(false), _updating(false), _opacity(1), _lipSync(false),
+      _lastLipSyncValue(0), _dragX(0), _dragY(0), _accelerationX(0), _accelerationY(0), _accelerationZ(0),
+      _mocConsistency(false), _debugMode(false), _renderer(nullptr) {}
+CubismUserModel::~CubismUserModel()
+{
+    CubismRenderer::Delete(_renderer);
+    if (_moc && _model) _moc->DeleteModel(_model);
+    CubismMoc::Delete(_moc);
+}
+csmBool CubismUserModel::IsInitialized() { return _initialized; }
+void CubismUserModel::IsInitialized(csmBool value) { _initialized = value; }
+csmBool CubismUserModel::IsUpdating() { return _updating; }
+void CubismUserModel::IsUpdating(csmBool value) { _updating = value; }
+void CubismUserModel::SetDragging(csmFloat32, csmFloat32) { qFatal("Unexpected effect in metadata test"); }
+void CubismUserModel::SetAcceleration(csmFloat32, csmFloat32, csmFloat32) { qFatal("Unexpected effect in metadata test"); }
+void CubismUserModel::SetOpacity(csmFloat32) { qFatal("Unexpected effect in metadata test"); }
+csmFloat32 CubismUserModel::GetOpacity() { return _opacity; }
+csmBool CubismUserModel::LoadModel(const csmByte*, csmSizeInt, csmBool) { qFatal("Unexpected model loading in metadata test"); }
+ACubismMotion* CubismUserModel::LoadMotion(const csmByte*, csmSizeInt, const csmChar*, ACubismMotion::FinishedMotionCallback) { qFatal("Unexpected effect in metadata test"); }
+ACubismMotion* CubismUserModel::LoadExpression(const csmByte*, csmSizeInt, const csmChar*) { qFatal("Unexpected effect in metadata test"); }
+void CubismUserModel::LoadPose(const csmByte*, csmSizeInt) { qFatal("Unexpected effect in metadata test"); }
+void CubismUserModel::LoadPhysics(const csmByte*, csmSizeInt) { qFatal("Unexpected effect in metadata test"); }
+void CubismUserModel::LoadUserData(const csmByte*, csmSizeInt) { qFatal("Unexpected effect in metadata test"); }
+csmBool CubismUserModel::IsHit(CubismIdHandle, csmFloat32, csmFloat32) { qFatal("Unexpected interaction in metadata test"); }
+void CubismUserModel::MotionEventFired(const csmString&) { qFatal("Unexpected effect in metadata test"); }
+}}}
+
+LAppModel::LAppModel() : _modelSetting(nullptr), _userTimeSeconds(23.0f) {}
+LAppModel::~LAppModel() = default;
+void LAppModel::MotionEventFired(const csmString&) { qFatal("Unexpected effect in metadata test"); }
+csmBool LAppModel::HitTest(const csmChar*, csmFloat32, csmFloat32) { qFatal("Unexpected interaction in metadata test"); }
+LAppWavFileHandler::LAppWavFileHandler()
+    : _rawData(nullptr), _pcmData(nullptr), _userTimeSeconds(0), _lastRms(0), _sampleOffset(0) {}
+LAppWavFileHandler::~LAppWavFileHandler() = default;
+
 class ModelReplacementTests : public QObject
 {
     Q_OBJECT
+    friend class LAppModel;
+    static bool publishPreview(LAppModel& preview, const QByteArray& bytes, const QByteArray& sourceDigest,
+                               const CubismModelReplacement::ModelPreparation& prepareModel,
+                               QString* error, CubismModelUpdatePolicy policy)
+    {
+        Q_UNUSED(sourceDigest);
+        CubismModelReplacement replacement;
+        const auto prepareRenderer = [&](CubismRenderer* renderer, CubismModel* model, const CubismRenderer& source, QString* detail) {
+            if (runtime.rejectMetadataRenderer) { if (detail) *detail = QStringLiteral("GPU preparation rejected"); return false; }
+            return normalPreparation()(renderer, model, source, detail);
+        };
+        if (!replacement.Prepare(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size(), *preview._moc, *preview._model,
+            *preview._renderer, prepareRenderer, policy, error, prepareModel) || !replacement.Commit(preview._moc, preview._model, preview._renderer)) return false;
+        preview.m_previewMocBytes = bytes;
+        preview.m_previewMocDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+        return true;
+    }
+
+    static QByteArray metadataBytes()
+    {
+        return QByteArray(reinterpret_cast<const char*>(candidateBytes.data()), candidateBytes.size());
+    }
+    static void setupPreview(LAppModel& preview)
+    {
+        auto source = createSource();
+        preview._moc = std::exchange(source->moc, nullptr);
+        preview._model = std::exchange(source->model, nullptr);
+        preview._renderer = std::exchange(source->renderer, nullptr);
+        preview._initialized = true;
+        preview.m_sourceMocDigest = QByteArray("original-source-digest");
+        preview.m_previewMocBytes = QByteArray(reinterpret_cast<const char*>(sourceBytes.data()), sourceBytes.size());
+        preview.m_previewMocDigest = QCryptographicHash::hash(preview.m_previewMocBytes, QCryptographicHash::Sha256);
+        preview.m_mapParaToIndex = {{QStringLiteral("ParamA"), 0}, {QStringLiteral("ParamB"), 1}};
+        State(preview._model->GetModel()).minimum[0] = -2.0f;
+        State(preview._model->GetModel()).maximum[0] = 2.0f;
+        preview._model->SetParameterValue(0, 1.5f);
+        preview._model->SaveParameters();
+        preview._model->SetParameterValue(0, 1.75f);
+        runtime.editParameterDefinition = true;
+    }
+    static CubismModel::RuntimeValueSnapshot snapshot(const LAppModel& preview)
+    {
+        CubismModel::RuntimeValueSnapshot result;
+        if (!preview._model->CaptureRuntimeValues(result)) qFatal("Unable to capture fixture model");
+        return result;
+    }
 private slots:
+    void metadataRangeMigrationAndBasePatchUndo()
+    {
+        LAppModel preview;
+        setupPreview(preview);
+        const auto before = snapshot(preview);
+        const auto originalDigest = preview.m_sourceMocDigest;
+        int previewPreparations = 0;
+        QString error;
+        const auto preparePreview = [&](const CubismModel& candidate, QString*) {
+            CubismModel::RuntimeValueSnapshot values;
+            if (!candidate.CaptureRuntimeValues(values)) return false;
+            ++previewPreparations;
+            return values.parameterValues[0] == 1.0f && values.savedParameters[0] == 1.0f;
+        };
+        QVERIFY2(preview.ApplyParameterDefinitionPreview(metadataBytes(), originalDigest, {{"ParamA", 1.0f}}, true,
+                                                         &error, preparePreview), qPrintable(error));
+        QCOMPARE(previewPreparations, 1);
+        auto values = snapshot(preview);
+        QCOMPARE(values.parameterValues[0], 1.0f);
+        QCOMPARE(values.savedParameters[0], 1.0f);
+        QCOMPARE(values.parameterValues[1], before.parameterValues[1]);
+        QCOMPARE(values.savedParameters[1], before.savedParameters[1]);
+        QCOMPARE(values.virtualParameterValues, before.virtualParameterValues);
+        QCOMPARE(values.partOpacities, before.partOpacities);
+        QCOMPARE(values.modelOpacity, before.modelOpacity);
+        QCOMPARE(preview._userTimeSeconds, 23.0f);
+        QCOMPARE(preview.m_sourceMocDigest, originalDigest);
+        runtime.parameterMinimum = -2.0f;
+        runtime.parameterMaximum = 2.0f;
+        QVERIFY(preview.ApplyParameterDefinitionPreview(metadataBytes(), originalDigest, {{"ParamA", 1.5f}}, true, &error));
+        values = snapshot(preview);
+        QCOMPARE(values.parameterValues[0], 1.5f);
+        QCOMPARE(values.savedParameters[0], 1.5f);
+        QCOMPARE(values.savedParameters[1], before.savedParameters[1]);
+        QCOMPARE(values.maximums[0], 2.0f);
+    }
+
+    void metadataTimelineKeepsDisplayedPoseAndDefaultOnlyDoesNotReset()
+    {
+        LAppModel preview;
+        setupPreview(preview);
+        preview._timelinePreviewActive = true;
+        preview._timelineBaseParameters = {{"ParamA", 1.5f}, {"ParamB", 0.3f}};
+        preview._timelineParameters = {{"ParamA", -1.25f}};
+        preview._model->SetParameterValue(0, -1.25f);
+        QString error;
+        QVERIFY2(preview.ApplyParameterDefinitionPreview(metadataBytes(), preview.m_sourceMocDigest,
+                                                         {{"ParamA", 0.9f}}, true, &error), qPrintable(error));
+        auto values = snapshot(preview);
+        QCOMPARE(values.parameterValues[0], -1.0f);
+        QCOMPARE(values.savedParameters[0], 0.9f);
+        QCOMPARE(preview._timelineBaseParameters.value("ParamA"), 0.9f);
+        QCOMPARE(preview._timelineParameters.value("ParamA"), -1.25f);
+        QVERIFY(preview._timelinePreviewActive);
+        runtime.parameterDefault = 0.75f;
+        QVERIFY(preview.ApplyParameterDefinitionPreview(metadataBytes(), preview.m_sourceMocDigest, {}, true, &error));
+        values = snapshot(preview);
+        QCOMPARE(values.parameterValues[0], -1.0f);
+        QCOMPARE(values.savedParameters[0], 0.9f);
+        QCOMPARE(preview._model->GetParameterDefaultValue(0), 0.75f);
+        QCOMPARE(preview._userTimeSeconds, 23.0f);
+    }
+
+    void metadataEditorStateMigratesOrExitsOnlyAfterCommit_data()
+    {
+        QTest::addColumn<bool>("keep");
+        QTest::addColumn<bool>("timeline");
+        QTest::newRow("keep-editor") << true << false;
+        QTest::newRow("end-editor") << false << false;
+        QTest::newRow("keep-editor-from-timeline") << true << true;
+        QTest::newRow("end-editor-from-timeline") << false << true;
+    }
+    void metadataEditorStateMigratesOrExitsOnlyAfterCommit()
+    {
+        QFETCH(bool, keep);
+        QFETCH(bool, timeline);
+        LAppModel preview;
+        setupPreview(preview);
+        preview._model->SetParameterValue(0, 0.1f);
+        preview._model->SaveParameters();
+        preview._model->SetParameterValue(0, 0.8f);
+        preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>(snapshot(preview));
+        preview.m_editorBaseParameters = preview.m_editorEntryState->Parameters();
+        preview.m_editorPose = {{"ParamA", -1.5f}, {"ParamB", 0.6f}};
+        QVERIFY(preview._model->ApplyParameterPose(preview.m_editorPose));
+        preview._timelinePreviewActive = timeline;
+        if (timeline) preview._timelineBaseParameters = {{"ParamA", 1.5f}, {"ParamB", 0.3f}};
+        QString error;
+        QVERIFY2(preview.ApplyParameterDefinitionPreview(metadataBytes(), preview.m_sourceMocDigest,
+                                                         {{"ParamA", 0.2f}}, keep, &error), qPrintable(error));
+        QCOMPARE(preview.HasEditorPreview(), keep);
+        if (timeline) {
+            QCOMPARE(preview._timelineBaseParameters.value("ParamA"), 0.2f);
+            QCOMPARE(preview._timelineBaseParameters.value("ParamB"), 0.3f);
+        } else QVERIFY(preview._timelineBaseParameters.isEmpty());
+        QCOMPARE(preview._timelinePreviewActive, timeline);
+        const float entryCurrent = timeline ? 0.8f : 0.2f;
+        const auto values = snapshot(preview);
+        QCOMPARE(values.savedParameters[0], 0.2f);
+        if (keep) {
+            QCOMPARE(preview.m_editorPose.value("ParamA"), -1.0f);
+            QCOMPARE(preview.m_editorBaseParameters.value("ParamA"), entryCurrent);
+            QCOMPARE(preview.m_editorEntryState->parameterValues[0], entryCurrent);
+            QCOMPARE(preview.m_editorEntryState->savedParameters[0], 0.2f);
+            QCOMPARE(preview.m_editorEntryState->maximums[0], 1.0f);
+            QCOMPARE(values.parameterValues[0], -1.0f);
+            QVERIFY(preview._model->RestoreRuntimeValues(*preview.m_editorEntryState));
+        } else {
+            QCOMPARE(values.parameterValues[0], entryCurrent);
+            QVERIFY(preview.m_editorPose.isEmpty());
+            QVERIFY(preview.m_editorBaseParameters.isEmpty());
+        }
+    }
+
+    void metadataFailurePreservesModelAndEveryPreviewBaseline_data()
+    {
+        QTest::addColumn<int>("failure");
+        QTest::newRow("unknown-base") << 0;
+        QTest::newRow("base-outside-range") << 1;
+        QTest::newRow("base-nonfinite") << 2;
+        QTest::newRow("overlay-refusal") << 3;
+        QTest::newRow("overlay-exception") << 4;
+        QTest::newRow("GPU-refusal") << 5;
+        QTest::newRow("Core-refusal") << 6;
+    }
+    void metadataFailurePreservesModelAndEveryPreviewBaseline()
+    {
+        QFETCH(int, failure);
+        LAppModel preview;
+        setupPreview(preview);
+        preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>(snapshot(preview));
+        preview.m_editorBaseParameters = preview.m_editorEntryState->Parameters();
+        preview.m_editorPose = {{"ParamA", -1.5f}, {"ParamB", 0.6f}};
+        QVERIFY(preview._model->ApplyParameterPose(preview.m_editorPose));
+        preview._timelineBaseParameters = {{"ParamA", 1.5f}, {"ParamB", 0.3f}};
+        preview._timelinePreviewActive = true;
+        auto* old = preview._model;
+        const auto oldValues = snapshot(preview);
+        const auto oldEntry = *preview.m_editorEntryState;
+        const auto oldBase = preview.m_editorBaseParameters, oldPose = preview.m_editorPose;
+        const auto oldTimeline = preview._timelineBaseParameters;
+        const auto oldDigest = preview.m_previewMocDigest;
+        QMap<QString, float> patch{{"ParamA", 0.9f}};
+        if (failure == 0) patch.insert("unknown", 0.5f);
+        if (failure == 1) patch["ParamA"] = 1.25f;
+        if (failure == 2) patch["ParamA"] = std::numeric_limits<float>::quiet_NaN();
+        if (failure == 5) runtime.rejectMetadataRenderer = true;
+        if (failure == 6) runtime.failure = Consistency;
+        const auto preparePreview = [&](const CubismModel&, QString*) {
+            if (failure == 4) throw std::runtime_error("overlay preparation exception");
+            return failure != 3;
+        };
+        QString error;
+        QVERIFY(!preview.ApplyParameterDefinitionPreview(metadataBytes(), preview.m_sourceMocDigest, patch, false, &error, preparePreview));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(preview._model, old);
+        QCOMPARE(snapshot(preview).parameterValues, oldValues.parameterValues);
+        QCOMPARE(snapshot(preview).savedParameters, oldValues.savedParameters);
+        QCOMPARE(preview.m_editorEntryState->parameterValues, oldEntry.parameterValues);
+        QCOMPARE(preview.m_editorEntryState->minimums, oldEntry.minimums);
+        QCOMPARE(preview.m_editorEntryState->maximums, oldEntry.maximums);
+        QCOMPARE(preview.m_editorBaseParameters, oldBase);
+        QCOMPARE(preview.m_editorPose, oldPose);
+        QCOMPARE(preview._timelineBaseParameters, oldTimeline);
+        QCOMPARE(preview.m_previewMocDigest, oldDigest);
+        QCOMPARE(preview._userTimeSeconds, 23.0f);
+        QVERIFY(preview.HasEditorPreview());
+    }
+
     void explicitClippingPolicyReachesStateCopyAndCommit()
     {
         auto source = createSource();
@@ -822,6 +1087,13 @@ private slots:
         QVERIFY(prepare(replacement, *source, normalPreparation(), &error));
     }
 };
+
+bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                       const CubismModelReplacement::ModelPreparation& prepareModel,
+                                       QString* error, CubismModelUpdatePolicy policy)
+{
+    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy);
+}
 
 QTEST_GUILESS_MAIN(ModelReplacementTests)
 #include "model_replacement_tests.moc"

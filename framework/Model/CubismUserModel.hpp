@@ -17,6 +17,8 @@
 #include "framework/Model/CubismModelUserData.hpp"
 #include "framework/Motion/CubismExpressionMotionManager.hpp"
 
+class ModelReplacementTests;
+
 namespace Live2D { namespace Cubism { namespace Framework {
 
 /**
@@ -26,6 +28,7 @@ namespace Live2D { namespace Cubism { namespace Framework {
  */
 class CubismUserModel
 {
+    friend class ::ModelReplacementTests;
 public:
     /**
      * @brief コンストラクタ

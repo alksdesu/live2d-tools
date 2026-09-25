@@ -4,6 +4,10 @@
 
 #include "framework/Math/CubismVector2.hpp"
 #include "framework/Physics/CubismPhysicsInternal.hpp"
+#include <QVector>
+#include <QString>
+
+class PhysicsParameterDefinitionTests;
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -17,7 +21,18 @@ struct CubismPhysicsRig;
  */
 class CubismPhysics
 {
+    friend class ::PhysicsParameterDefinitionTests;
 public:
+    class ParameterDefinitionState
+    {
+        friend class CubismPhysics;
+        const CubismPhysics* owner = nullptr;
+        QVector<float> parameters, inputs;
+    };
+    bool PrepareParameterDefinitionChange(const CubismModel& previous, const CubismModel& replacement,
+                                         ParameterDefinitionState& result, QString* error = nullptr) const;
+    void CommitParameterDefinitionChange(ParameterDefinitionState& state) noexcept;
+
     /**
      * @brief オプション
      *

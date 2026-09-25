@@ -13,9 +13,11 @@ class CKeyformEditController
 public:
     using Publisher = std::function<bool(const CModelDocument&, const QMap<QString, float>&, bool, QString*)>;
     using PreviewEnder = std::function<bool(QString*)>;
+    using DefinitionPublisher = std::function<bool(const CModelDocument&, const QMap<QString, float>&, bool, QString*)>;
 
     void SetDocument(CModelDocument* document);
     void SetPublisher(Publisher publisher, PreviewEnder ender);
+    void SetDefinitionPublisher(DefinitionPublisher publisher);
     bool Activate(const QString& id, int keyform, const QMap<QString, float>& currentValues, QString* error = nullptr);
     bool Activate(const QString& id, const QString& type, int keyform,
                   const QMap<QString, float>& currentValues, QString* error = nullptr);
@@ -38,6 +40,7 @@ public:
     const QMap<QString, float>& Pose() const { return m_pose; }
 
 private:
+    bool PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error);
     struct Drag
     {
         CModelDocument start;
@@ -57,6 +60,7 @@ private:
     bool Ready(QString* error) const;
     CModelDocument* m_document = nullptr;
     Publisher m_publish;
+    DefinitionPublisher m_publishDefinitions;
     PreviewEnder m_end;
     QString m_target;
     QString m_type;

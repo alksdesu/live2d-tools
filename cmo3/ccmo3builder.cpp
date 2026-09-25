@@ -31,6 +31,41 @@ bool validSlice(int begin, int count, int size)
     return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
 }
 
+CModelParameterMetadata effectiveParameterMetadata(const CParameters* parameter, const CCmo3Builder::Options& options)
+{
+    const auto edited = options.parameterMetadata.constFind(parameter->ids);
+    if (edited != options.parameterMetadata.cend()) return edited.value();
+    return {parameter->ids, parameter->min_values, parameter->max_values, parameter->default_values,
+            parameter->decimal_places, parameter->is_repeat};
+}
+
+bool validateParameterOptions(const CSectionTable& table, const CCmo3Builder::Options& options, QString* error)
+{
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    QHash<QString, const CParameters*> parameters;
+    for (const auto* parameter : table.parameters) {
+        if (!parameter || parameter->ids.isEmpty() || parameters.contains(parameter->ids))
+            return fail(QStringLiteral("cmo3 参数 ID 为空或重复"));
+        parameters.insert(parameter->ids, parameter);
+        const auto metadata = effectiveParameterMetadata(parameter, options);
+        if (!std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
+            !std::isfinite(metadata.defaultValue) || metadata.minimum > metadata.maximum ||
+            metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum ||
+            metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9)
+            return fail(QStringLiteral("cmo3 参数范围、默认值或精度无效：%1").arg(parameter->ids));
+    }
+    for (auto metadata = options.parameterMetadata.cbegin(); metadata != options.parameterMetadata.cend(); ++metadata)
+        if (!parameters.contains(metadata.key())) return fail(QStringLiteral("cmo3 参数定义引用了未知 ID：%1").arg(metadata.key()));
+    for (auto value = options.parameterValues.cbegin(); value != options.parameterValues.cend(); ++value) {
+        const auto parameter = parameters.constFind(value.key());
+        if (parameter == parameters.cend()) return fail(QStringLiteral("cmo3 当前参数值引用了未知 ID：%1").arg(value.key()));
+        const auto metadata = effectiveParameterMetadata(parameter.value(), options);
+        if (!std::isfinite(value.value()) || value.value() < metadata.minimum || value.value() > metadata.maximum)
+            return fail(QStringLiteral("cmo3 当前参数值无效或超出范围：%1").arg(value.key()));
+    }
+    return true;
+}
+
 bool validatePhysicsFile(const QString& path, QString* error)
 {
     QFile file(path);
@@ -257,24 +292,20 @@ private:
 
     QString displayName(const QString& id) const
     {
-        const auto metadata = m_opt.parameterMetadata.constFind(id);
-        if (metadata != m_opt.parameterMetadata.cend() && !metadata->displayName.isEmpty())
-            return metadata->displayName;
         return m_displayNames.value(id, id);
+    }
+
+    QString parameterDisplayName(const QString& id) const
+    {
+        const auto metadata = m_opt.parameterMetadata.constFind(id);
+        if (metadata != m_opt.parameterMetadata.cend() && !metadata->displayName.isEmpty() && metadata->displayName != id)
+            return metadata->displayName;
+        return m_parameterDisplayNames.value(id, id);
     }
 
     live2dstruct::CModelParameterMetadata parameterMetadata(const CParameters* parameter) const
     {
-        live2dstruct::CModelParameterMetadata metadata;
-        metadata.displayName = displayName(parameter->ids);
-        metadata.minimum = parameter->min_values;
-        metadata.maximum = parameter->max_values;
-        metadata.defaultValue = parameter->default_values;
-        metadata.decimalPlaces = parameter->decimal_places;
-        metadata.repeat = parameter->is_repeat;
-        const auto override = m_opt.parameterMetadata.constFind(parameter->ids);
-        if (override != m_opt.parameterMetadata.cend()) metadata = override.value();
-        return metadata;
+        return effectiveParameterMetadata(parameter, m_opt);
     }
 
     const CCmo3Builder::Options& m_opt;
@@ -310,6 +341,7 @@ private:
     QString m_rootPartFormGuidId;
 
     QHash<QString, QString> m_displayNames;     // 内部 ID → cdi3 显示名
+    QHash<QString, QString> m_parameterDisplayNames;
     QHash<QString, int> m_paramIndexById;       // 参数 idstr → parameters 表下标
     int m_canvasW = 0;
     int m_canvasH = 0;
@@ -345,7 +377,10 @@ void Generator::loadDisplayNames()
             const QJsonObject o = v.toObject();
             const QString id = o.value(QStringLiteral("Id")).toString();
             const QString name = o.value(QStringLiteral("Name")).toString();
-            if (!id.isEmpty() && !name.isEmpty()) m_displayNames.insert(id, name);
+            if (!id.isEmpty() && !name.isEmpty()) {
+                if (section == QLatin1String("Parameters")) m_parameterDisplayNames.insert(id, name);
+                else m_displayNames.insert(id, name);
+            }
         }
     }
 }
@@ -1356,11 +1391,8 @@ void Generator::writeMain()
         m_xml.F(QStringLiteral("snapEpsilon"), 0.001f);
         m_xml.F(QStringLiteral("minValue"), metadata.minimum);
         m_xml.F(QStringLiteral("maxValue"), metadata.maximum);
-        const float defaultValue = m_opt.parameterValues.contains(param->ids) &&
-                std::isfinite(m_opt.parameterValues.value(param->ids)) &&
-                m_opt.parameterValues.value(param->ids) >= metadata.minimum &&
-                m_opt.parameterValues.value(param->ids) <= metadata.maximum
-            ? m_opt.parameterValues.value(param->ids) : metadata.defaultValue;
+        const float defaultValue = m_opt.parameterDefaultMode == CCmo3Builder::ParameterDefaultMode::CurrentValues
+            ? m_opt.parameterValues.value(param->ids, metadata.defaultValue) : metadata.defaultValue;
         m_xml.F(QStringLiteral("defaultValue"), defaultValue);
         m_xml.B(QStringLiteral("isRepeat"), metadata.repeat);
         m_xml.BeginObject(QStringLiteral("CParameterId"), QStringLiteral("id"));
@@ -1369,7 +1401,7 @@ void Generator::writeMain()
         m_xml.Enum(QStringLiteral("Type"), QStringLiteral("paramType"),
                    (param->parameter_types == 1) ? QStringLiteral("BLEND_SHAPE")
                                                  : QStringLiteral("NORMAL"));
-        m_xml.S(QStringLiteral("name"), displayName(param->ids));
+        m_xml.S(QStringLiteral("name"), parameterDisplayName(param->ids));
         m_xml.S(QStringLiteral("description"), QString());
         m_xml.B(QStringLiteral("combined"), false);
         m_xml.Null(QStringLiteral("parentGroupGuid"));
@@ -1740,6 +1772,12 @@ bool Generator::Run(QString* outError)
 
 bool CCmo3Builder::Build(const Options& options, QString* outError)
 {
+    if (outError) outError->clear();
+    if (options.parameterDefaultMode != ParameterDefaultMode::ModelDefinition &&
+        options.parameterDefaultMode != ParameterDefaultMode::CurrentValues) {
+        if (outError) *outError = QStringLiteral("cmo3 参数默认值导出模式无效");
+        return false;
+    }
     Options opt = options;
     if (opt.modelName.isEmpty()) {
         opt.modelName = QFileInfo(opt.mocPath).completeBaseName();
@@ -1758,7 +1796,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         return false;
     }
 
-    if (!validateDeformerSources(table, outError)) return false;
+    if (!validateDeformerSources(table, outError) || !validateParameterOptions(table, opt, outError)) return false;
 
     if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, outError)) return false;
 

@@ -138,6 +138,9 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
     if (!candidate.Prepare(bytes, size, *_moc, *_model, *_renderer, prepareRenderer, policy, error, prepareModel)) return false;
     CubismModel* previous = _model;
     CubismModel* replacement = candidate.GetModel();
+    CubismPhysics::ParameterDefinitionState physicsState;
+    const bool migratePhysics = _physics && AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterDefinitionEdits);
+    if (migratePhysics && !_physics->PrepareParameterDefinitionChange(*previous, *replacement, physicsState, error)) return false;
     if (_pose && !_pose->RebindModel(previous, replacement)) {
         if (error) *error = QStringLiteral("Pose 无法保持当前状态");
         return false;
@@ -147,6 +150,7 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
         if (error) *error = QStringLiteral("预览源模型在准备期间发生变化");
         return false;
     }
+    if (migratePhysics) _physics->CommitParameterDefinitionChange(physicsState);
     return true;
 }
 

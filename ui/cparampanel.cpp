@@ -28,15 +28,40 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QPointer>
+#include <QScopeGuard>
 #include <algorithm>
 #include <iterator>
 #include <cmath>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <utility>
 
 using namespace Live2D::Cubism::Framework;
 
 namespace {
+class CParameterMetadataDialog final : public QDialog
+{
+public:
+    using QDialog::QDialog;
+    void SetValidator(std::function<bool()> validator) { m_validator = std::move(validator); }
+    void done(int result) override
+    {
+        if (m_validating && result == Accepted) return;
+        if (result == Accepted && m_validator) {
+            const QPointer<CParameterMetadataDialog> dialog(this);
+            const auto validate = m_validator;
+            m_validating = true;
+            const auto finish = qScopeGuard([dialog] { if (dialog) dialog->m_validating = false; });
+            if (!validate() || !dialog) return;
+        }
+        QDialog::done(result);
+    }
+private:
+    std::function<bool()> m_validator;
+    bool m_validating = false;
+};
+
 class CParameterSpinBox final : public QDoubleSpinBox
 {
 public:
@@ -100,6 +125,29 @@ float sliderToParameter(int position, float minimum, float maximum)
     return boundedParameterValue(static_cast<double>(minimum) +
                                  (static_cast<double>(maximum) - minimum) * ratio,
                                  minimum, maximum, minimum);
+}
+
+bool metadataFloat(const QString& text, float original, float& value)
+{
+    const QString input = text.trimmed();
+    if (input == QString::number(original, 'g', 9)) {
+        value = original;
+        return true;
+    }
+    std::istringstream stream(input.toStdString());
+    stream.imbue(std::locale::classic());
+    float parsed = 0;
+    stream >> std::noskipws >> parsed;
+    if (!stream.eof() || stream.bad() || (stream.fail() && std::fpclassify(parsed) != FP_SUBNORMAL) ||
+        !std::isfinite(parsed)) return false;
+    if (parsed == 0) {
+        const int exponent = std::max(input.indexOf(QLatin1Char('e')), input.indexOf(QLatin1Char('E')));
+        const QString mantissa = exponent < 0 ? input : input.left(exponent);
+        if (std::any_of(mantissa.cbegin(), mantissa.cend(), [](QChar digit) { return digit >= QLatin1Char('1') && digit <= QLatin1Char('9'); }))
+            return false;
+    }
+    value = parsed;
+    return true;
 }
 
 bool parseParameterPreset(const QByteArray& data, QMap<QString, float>* values, QString* error)
@@ -224,6 +272,16 @@ void CParamPanel::SetPreEditGuard(PreEditGuard guard)
     if (!m_checkingEditGuard) m_preEditGuard = std::move(guard);
 }
 
+void CParamPanel::SetMetadataEditHandler(MetadataEditHandler handler)
+{
+    if (!m_submittingEdit) m_metadataEditHandler = std::move(handler);
+}
+
+void CParamPanel::SetHistoryHandler(HistoryHandler handler)
+{
+    if (!m_submittingEdit) m_historyHandler = std::move(handler);
+}
+
 void CParamPanel::RestoreControls()
 {
     for (const auto& row : m_rows) {
@@ -238,19 +296,23 @@ void CParamPanel::RestoreControls()
 
 bool CParamPanel::AllowUserEdit()
 {
-    if (m_checkingEditGuard) {
+    if (m_checkingEditGuard || m_submittingEdit) {
         RestoreControls();
         return false;
     }
     if (m_editGuardApproved || !m_preEditGuard) return true;
-    const QScopedValueRollback<bool> checking(m_checkingEditGuard, true);
+    const QPointer<CParamPanel> panel(this);
+    const auto guard = m_preEditGuard;
+    m_checkingEditGuard = true;
+    const auto checking = qScopeGuard([panel] { if (panel) panel->m_checkingEditGuard = false; });
     QString error;
     bool accepted = false;
     try {
-        accepted = m_preEditGuard(&error);
+        accepted = guard(&error);
     } catch (...) {
         error = QStringLiteral("参数编辑前检查失败");
     }
+    if (!panel) return false;
     if (accepted) return true;
     RestoreControls();
     emit EditRejected(error.isEmpty() ? QStringLiteral("参数编辑已取消") : error);
@@ -392,10 +454,10 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
                 parameter.metadata.maximum = 1;
             }
             if (!std::isfinite(parameter.metadata.defaultValue)) parameter.metadata.defaultValue = parameter.metadata.minimum;
-            parameter.metadata.defaultValue = qBound(parameter.metadata.minimum, parameter.metadata.defaultValue,
-                                                     parameter.metadata.maximum);
+            parameter.metadata.defaultValue = std::clamp(parameter.metadata.defaultValue, parameter.metadata.minimum,
+                                                         parameter.metadata.maximum);
             const float current = runtime->GetParameterValue(index);
-            parameter.value = std::isfinite(current) ? qBound(parameter.metadata.minimum, current, parameter.metadata.maximum)
+            parameter.value = std::isfinite(current) ? std::clamp(current, parameter.metadata.minimum, parameter.metadata.maximum)
                                                      : parameter.metadata.defaultValue;
             parameters.append(parameter);
         }
@@ -418,11 +480,13 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         row->setContentsMargins(0, 2, 0, 2);
 
         // 显示名称：优先用 cid 映射的名称，否则回退到内部 ID
-        QString displayName = hasMetadata && !metadata.displayName.isEmpty() ? metadata.displayName : paramId;
+        QString originalName = paramId;
         if(cid){
             QString mapped = cid->getParaName(paramId);
-            if(!hasMetadata && !mapped.isEmpty()) displayName = mapped;
+            if(!mapped.isEmpty()) originalName = mapped;
         }
+        QString displayName = hasMetadata && !metadata.displayName.isEmpty() && metadata.displayName != paramId
+            ? metadata.displayName : originalName;
 
         // 融合变形参数标记
         const bool isBlendShape = parameter.blendShape || (blendShapeParams && blendShapeParams->contains(paramId));
@@ -443,6 +507,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         rowWidget->setToolTip(tooltip);
 
         QLabel* nameLabel = new QLabel(displayName, m_container);
+        nameLabel->setTextFormat(Qt::PlainText);
         nameLabel->setFixedWidth(150);
         nameLabel->setToolTip(tooltip);
         if(isBlendShape){
@@ -480,6 +545,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         pr.maxVal = maxVal;
         pr.defaultVal = defVal;
         pr.paramId = paramId;
+        pr.originalName = originalName;
         pr.modelIndex = parameter.modelIndex;
         pr.blendShape = isBlendShape;
         m_rows.append(pr);
@@ -822,79 +888,156 @@ void CParamPanel::LoadPreset()
 
 void CParamPanel::EditParameterMetadata()
 {
-    if (!m_document || m_rows.isEmpty()) return;
+    if (!m_document || m_rows.isEmpty() || m_metadataDialogOpen || m_submittingEdit) return;
+    const QPointer<CParamPanel> panel(this);
+    m_metadataDialogOpen = true;
+    const auto closeEditing = qScopeGuard([panel] { if (panel) panel->m_metadataDialogOpen = false; });
+    auto* const document = m_document;
+    const QByteArray digest = document->SourceDigest();
+    const quint64 revision = document->Revision();
+    const auto currentDocument = [panel, document, digest, revision] {
+        return panel && panel->m_document == document && document->SourceDigest() == digest && document->Revision() == revision;
+    };
+    const auto rejectStale = [panel] {
+        if (panel) emit panel->EditRejected(QStringLiteral("编辑期间模型数据已改变，请重新打开参数设置"));
+    };
     QStringList ids;
     for (const ParamRow& row : m_rows) ids.append(row.paramId);
-    bool accepted = false;
-    const QString id = QInputDialog::getItem(this, QStringLiteral("选择参数"), QStringLiteral("参数 ID"),
-                                              ids, 0, false, &accepted);
-    if (!accepted || id.isEmpty()) return;
-    const int rowIndex = std::distance(m_rows.cbegin(), std::find_if(m_rows.cbegin(), m_rows.cend(),
-        [&id](const ParamRow& row){ return row.paramId == id; }));
-    if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
-    const live2dstruct::CModelParameterMetadata current = m_document->ParameterMetadata(id);
+    QPointer<QInputDialog> picker = new QInputDialog(this);
+    const auto closePicker = qScopeGuard([picker] { if (picker) delete picker.data(); });
+    picker->setObjectName(QStringLiteral("metadataParameterPicker"));
+    picker->setWindowTitle(QStringLiteral("选择参数"));
+    picker->setLabelText(QStringLiteral("参数 ID"));
+    picker->setComboBoxItems(ids);
+    picker->setComboBoxEditable(false);
+    picker->setTextValue(ids.front());
+    const int picked = picker->exec();
+    if (!panel || !picker) return;
+    if (picked != QDialog::Accepted) return;
+    if (!currentDocument()) { rejectStale(); return; }
+    const QString id = picker->textValue();
+    delete picker.data();
+    if (!ids.contains(id)) return;
+    const auto current = document->ParameterMetadata(id);
+    const auto sourceRow = std::find_if(m_rows.cbegin(), m_rows.cend(), [&id](const auto& row) { return row.paramId == id; });
+    const QString originalName = sourceRow == m_rows.cend() || sourceRow->originalName.isEmpty() ? id : sourceRow->originalName;
+    const QString initialName = current.displayName.isEmpty() || current.displayName == id ? originalName : current.displayName;
 
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("编辑参数：%1").arg(id));
-    auto* form = new QFormLayout(&dialog);
-    auto* nameEdit = new QLineEdit(current.displayName, &dialog);
-    auto* minSpin = new QDoubleSpinBox(&dialog);
-    auto* maxSpin = new QDoubleSpinBox(&dialog);
-    auto* defaultSpin = new QDoubleSpinBox(&dialog);
-    for (QDoubleSpinBox* spin : {minSpin, maxSpin, defaultSpin}) {
-        spin->setRange(-1000000000.0, 1000000000.0);
-        spin->setDecimals(6);
-    }
-    minSpin->setValue(current.minimum);
-    maxSpin->setValue(current.maximum);
-    defaultSpin->setValue(current.defaultValue);
-    auto* decimalsSpin = new QSpinBox(&dialog);
+    QPointer<CParameterMetadataDialog> dialog = new CParameterMetadataDialog(this);
+    const auto closeDialog = qScopeGuard([dialog] { if (dialog) delete dialog.data(); });
+    dialog->setObjectName(QStringLiteral("parameterMetadataDialog"));
+    dialog->setWindowTitle(QStringLiteral("编辑参数：%1").arg(id));
+    auto* form = new QFormLayout(dialog);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setSizeConstraint(QLayout::SetMinimumSize);
+    auto* nameEdit = new QLineEdit(initialName, dialog);
+    nameEdit->setObjectName(QStringLiteral("metadataName"));
+    const auto makeNumber = [&](const QString& name, float value) {
+        auto* edit = new QLineEdit(QString::number(value, 'g', 9), dialog);
+        edit->setObjectName(name);
+        return edit;
+    };
+    auto* minEdit = makeNumber(QStringLiteral("metadataMinimum"), current.minimum);
+    auto* maxEdit = makeNumber(QStringLiteral("metadataMaximum"), current.maximum);
+    auto* defaultEdit = makeNumber(QStringLiteral("metadataDefault"), current.defaultValue);
+    auto* decimalsSpin = new QSpinBox(dialog);
+    decimalsSpin->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    decimalsSpin->setObjectName(QStringLiteral("metadataDecimals"));
     decimalsSpin->setRange(0, 9);
     decimalsSpin->setValue(current.decimalPlaces);
-    auto* repeatCheck = new QCheckBox(&dialog);
+    auto* repeatCheck = new QCheckBox(dialog);
+    repeatCheck->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    repeatCheck->setObjectName(QStringLiteral("metadataRepeat"));
     repeatCheck->setChecked(current.repeat);
     form->addRow(QStringLiteral("显示名"), nameEdit);
-    form->addRow(QStringLiteral("最小值"), minSpin);
-    form->addRow(QStringLiteral("最大值"), maxSpin);
-    form->addRow(QStringLiteral("默认值"), defaultSpin);
+    form->addRow(QStringLiteral("最小值"), minEdit);
+    form->addRow(QStringLiteral("最大值"), maxEdit);
+    form->addRow(QStringLiteral("默认值"), defaultEdit);
     form->addRow(QStringLiteral("小数位"), decimalsSpin);
     form->addRow(QStringLiteral("循环参数"), repeatCheck);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+    auto* inlineError = new QLabel(dialog);
+    inlineError->setObjectName(QStringLiteral("metadataError"));
+    inlineError->setTextFormat(Qt::PlainText);
+    inlineError->setWordWrap(true);
+    inlineError->hide();
+    form->addRow(inlineError);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, dialog);
+    buttons->button(QDialogButtonBox::Save)->setDefault(true);
     form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() != QDialog::Accepted) return;
-    if (minSpin->value() > maxSpin->value() || defaultSpin->value() < minSpin->value() ||
-        defaultSpin->value() > maxSpin->value()) {
-        QMessageBox::warning(this, QStringLiteral("参数元数据无效"), QStringLiteral("默认值必须位于最小值和最大值之间"));
-        return;
-    }
-
-    const live2dstruct::CModelParameterMetadata updated{
-        nameEdit->text().trimmed().isEmpty() ? id : nameEdit->text().trimmed(),
-        static_cast<float>(minSpin->value()), static_cast<float>(maxSpin->value()),
-        static_cast<float>(defaultSpin->value()), decimalsSpin->value(), repeatCheck->isChecked()};
-    const auto toVariant = [](const live2dstruct::CModelParameterMetadata& metadata) {
-        QVariantMap map;
-        map.insert(QStringLiteral("displayName"), metadata.displayName);
-        map.insert(QStringLiteral("minimum"), metadata.minimum);
-        map.insert(QStringLiteral("maximum"), metadata.maximum);
-        map.insert(QStringLiteral("defaultValue"), metadata.defaultValue);
-        map.insert(QStringLiteral("decimalPlaces"), metadata.decimalPlaces);
-        map.insert(QStringLiteral("repeat"), metadata.repeat);
-        return map;
+    auto updated = current;
+    const auto validateNumbers = [&]() {
+        const auto invalid = [&](QLineEdit* field, const QString& reason) {
+            inlineError->setText(QStringLiteral("无法保存：%1").arg(reason));
+            inlineError->show();
+            field->setFocus(Qt::OtherFocusReason);
+            field->selectAll();
+            emit panel->EditRejected(reason);
+            return false;
+        };
+        updated = current;
+        if (!metadataFloat(minEdit->text(), current.minimum, updated.minimum))
+            return invalid(minEdit, QStringLiteral("请输入有效的最小值，支持科学计数法"));
+        if (!metadataFloat(maxEdit->text(), current.maximum, updated.maximum))
+            return invalid(maxEdit, QStringLiteral("请输入有效的最大值，支持科学计数法"));
+        if (!metadataFloat(defaultEdit->text(), current.defaultValue, updated.defaultValue))
+            return invalid(defaultEdit, QStringLiteral("请输入有效的默认值，支持科学计数法"));
+        if (updated.minimum > updated.maximum)
+            return invalid(minEdit, QStringLiteral("最小值不能大于最大值"));
+        if (updated.defaultValue < updated.minimum || updated.defaultValue > updated.maximum)
+            return invalid(defaultEdit, QStringLiteral("默认值必须位于最小值和最大值之间"));
+        inlineError->clear();
+        inlineError->hide();
+        return true;
     };
-    const live2dstruct::CModelEdit edit{id, QStringLiteral("parameter"),
-                                        live2dstruct::CModelEdit::ParameterMetadata,
-                                        toVariant(current), toVariant(updated), -1, false};
-    if (!AllowUserEdit() || !m_document) return;
-    if (!m_document->ExecuteEdit(edit)) {
-        QMessageBox::warning(this, QStringLiteral("参数元数据无效"), QStringLiteral("关键值超出新范围或当前值无法兼容"));
+    dialog->SetValidator([&] {
+        if (!currentDocument()) {
+            rejectStale();
+            if (dialog) dialog->reject();
+            return false;
+        }
+        return validateNumbers();
+    });
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    const int accepted = dialog->exec();
+    if (!panel || !dialog) return;
+    if (accepted != QDialog::Accepted) return;
+    if (!currentDocument()) { rejectStale(); return; }
+    if (!validateNumbers()) return;
+    if (nameEdit->text() != initialName)
+        updated.displayName = nameEdit->text().trimmed().isEmpty() ? id : nameEdit->text().trimmed();
+    updated.decimalPlaces = decimalsSpin->value();
+    updated.repeat = repeatCheck->isChecked();
+    if (updated == current) return;
+    QString error;
+    live2dstruct::CModelEdit edit;
+    if (!document->MakeParameterMetadataEdit(id, updated, edit, &error)) {
+        emit EditRejected(error.isEmpty() ? QStringLiteral("参数元数据无效") : error);
         return;
     }
-    RefreshParameterRow(rowIndex);
-    emit ParameterMetadataChanged();
-    EmitHistoryState();
+    if (edit.before == edit.after) return;
+    const auto handler = m_metadataEditHandler;
+    if (!handler) {
+        if (!AllowUserEdit() || !panel) return;
+        if (!currentDocument()) { rejectStale(); return; }
+    }
+    m_submittingEdit = true;
+    const auto finishSubmission = qScopeGuard([panel] { if (panel) panel->m_submittingEdit = false; });
+    bool submitted = false;
+    try {
+        submitted = handler ? handler(edit, &error) : document->ExecuteEdit(edit);
+    } catch (...) {
+        error = QStringLiteral("参数元数据提交失败");
+    }
+    if (!panel) return;
+    if (m_document != document || document->SourceDigest() != digest) { rejectStale(); return; }
+    if (!submitted) {
+        RestoreControls();
+        emit EditRejected(error.isEmpty() ? QStringLiteral("参数元数据修改未通过校验") : error);
+        return;
+    }
+    RefreshAcceptedMetadata(edit, true);
+    if (panel) EmitHistoryState();
 }
 
 void CParamPanel::RefreshParameterRow(int rowIndex)
@@ -908,13 +1051,19 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     row.minVal = metadata.minimum;
     row.maxVal = metadata.maximum;
     row.defaultVal = metadata.defaultValue;
-    const QString displayName = (row.blendShape ? QStringLiteral("[融合] ") : QString()) +
-                                (metadata.displayName.isEmpty() ? row.paramId : metadata.displayName);
+    const QString originalName = row.originalName.isEmpty() ? row.paramId : row.originalName;
+    const QString name = m_document->ParameterMetadataOverrides().contains(row.paramId) && !metadata.displayName.isEmpty() && metadata.displayName != row.paramId
+        ? metadata.displayName : originalName;
+    const QString displayName = (row.blendShape ? QStringLiteral("[融合] ") : QString()) + name;
+    row.nameLabel->setTextFormat(Qt::PlainText);
     row.nameLabel->setText(displayName);
     row.nameLabel->setToolTip(row.paramId);
     row.widget->setProperty("searchText", (displayName + " " + row.paramId).toLower());
     const float value = boundedParameterValue(m_lastValues.value(row.paramId, metadata.defaultValue),
                                                row.minVal, row.maxVal, row.defaultVal);
+    if (m_previewBaseline.contains(row.paramId))
+        m_previewBaseline[row.paramId] = boundedParameterValue(m_previewBaseline.value(row.paramId),
+                                                              row.minVal, row.maxVal, row.defaultVal);
     m_lastValues.insert(row.paramId, value);
     QSignalBlocker sliderBlocker(row.slider);
     QSignalBlocker spinBlocker(row.spinBox);
@@ -928,6 +1077,23 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     const QString query = m_search->text().trimmed().toLower();
     row.widget->setVisible(query.isEmpty() || row.widget->property("searchText").toString().contains(query));
     RefreshXYControls();
+}
+
+void CParamPanel::RefreshAcceptedMetadata(const live2dstruct::CModelEdit& edit, bool forward)
+{
+    if (!m_document) return;
+    const auto row = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const auto& item) { return item.paramId == edit.name; });
+    if (row == m_rows.cend()) return;
+    const auto before = edit.before.toMap();
+    const auto after = edit.after.toMap();
+    if (before.value(QStringLiteral("value")) != after.value(QStringLiteral("value"))) {
+        const float value = (forward ? after : before).value(QStringLiteral("value")).toFloat();
+        if (m_previewActive) {
+            if (m_previewBaseline.contains(edit.name)) m_previewBaseline[edit.name] = value;
+        } else m_lastValues[edit.name] = value;
+    }
+    RefreshParameterRow(static_cast<int>(row - m_rows.cbegin()));
+    emit ParameterMetadataChanged();
 }
 
 void CParamPanel::BeginParameterDrag(int rowIndex)
@@ -1019,50 +1185,65 @@ void CParamPanel::ClearHistory()
 
 void CParamPanel::Undo()
 {
-    if (!m_document) return;
-    live2dstruct::CModelEdit pending;
-    if (!m_document->PeekUndoEdit(&pending) || pending.field != live2dstruct::CModelEdit::ParameterValue) return;
-    if (!AllowUserEdit() || !m_document) return;
-    live2dstruct::CModelEdit edit;
-    if (!m_document->UndoEdit(&edit) || edit.field != live2dstruct::CModelEdit::ParameterValue) return;
-    const float value = edit.before.toFloat();
-    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.name; });
-    const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
-    if (rowIndex >= 0 && rowIndex < m_rows.size()) {
-        ParamRow& row = m_rows[rowIndex];
-        const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
-        QSignalBlocker sliderBlocker(row.slider);
-        QSignalBlocker spinBlocker(row.spinBox);
-        row.slider->setValue(sliderValue);
-        row.spinBox->setValue(value);
-        m_lastValues.insert(edit.name, value);
-        m_previewBaseline.remove(edit.name);
-        emit ParamChanged(edit.name, value, false);
-    }
-    EmitHistoryState();
+    ApplyHistory(true);
 }
 
 void CParamPanel::Redo()
 {
-    if (!m_document) return;
+    ApplyHistory(false);
+}
+
+void CParamPanel::ApplyHistory(bool undo)
+{
+    if (!m_document || m_metadataDialogOpen || m_submittingEdit) return;
     live2dstruct::CModelEdit pending;
-    if (!m_document->PeekRedoEdit(&pending) || pending.field != live2dstruct::CModelEdit::ParameterValue) return;
-    if (!AllowUserEdit() || !m_document) return;
+    if (!(undo ? m_document->PeekUndoEdit(&pending) : m_document->PeekRedoEdit(&pending)) ||
+        (pending.field != live2dstruct::CModelEdit::ParameterValue &&
+         pending.field != live2dstruct::CModelEdit::ParameterValues &&
+         pending.field != live2dstruct::CModelEdit::ParameterMetadata)) return;
+    const QPointer<CParamPanel> panel(this);
+    auto* const document = m_document;
+    const auto digest = document->SourceDigest();
+    const auto handler = m_historyHandler;
+    if (!handler && (!AllowUserEdit() || !panel || m_document != document)) return;
+    m_submittingEdit = true;
+    const auto finishSubmission = qScopeGuard([panel] { if (panel) panel->m_submittingEdit = false; });
     live2dstruct::CModelEdit edit;
-    if (!m_document->RedoEdit(&edit) || edit.field != live2dstruct::CModelEdit::ParameterValue) return;
-    const float value = edit.after.toFloat();
-    const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&edit](const ParamRow& row){ return row.paramId == edit.name; });
-    const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
-    if (rowIndex >= 0 && rowIndex < m_rows.size()) {
-        ParamRow& row = m_rows[rowIndex];
-        const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
-        QSignalBlocker sliderBlocker(row.slider);
-        QSignalBlocker spinBlocker(row.spinBox);
-        row.slider->setValue(sliderValue);
-        row.spinBox->setValue(value);
-        m_lastValues.insert(edit.name, value);
-        m_previewBaseline.remove(edit.name);
-        emit ParamChanged(edit.name, value, false);
+    QString error;
+    bool accepted = false;
+    try {
+        accepted = handler ? handler(undo, edit, &error)
+                           : (undo ? document->UndoEdit(&edit) : document->RedoEdit(&edit));
+    } catch (...) {
+        error = QStringLiteral("参数历史恢复失败");
     }
-    EmitHistoryState();
+    if (!panel || m_document != document || document->SourceDigest() != digest) return;
+    if (!accepted) {
+        RestoreControls();
+        emit EditRejected(error.isEmpty() ? QStringLiteral("参数历史未通过校验") : error);
+        return;
+    }
+    if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {
+        RefreshAcceptedMetadata(edit, !undo);
+    } else {
+        const QVariant& state = undo ? edit.before : edit.after;
+        const QMap<QString, float> values = edit.field == live2dstruct::CModelEdit::ParameterValue
+            ? QMap<QString, float>{{edit.name, state.toFloat()}} : state.value<QMap<QString, float>>();
+        for (auto value = values.cbegin(); value != values.cend(); ++value) {
+            const auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&value](const auto& row) { return row.paramId == value.key(); });
+            if (rowIt == m_rows.cend()) continue;
+            {
+                const QSignalBlocker sliderBlocker(rowIt->slider);
+                const QSignalBlocker spinBlocker(rowIt->spinBox);
+                rowIt->slider->setValue(parameterToSlider(value.value(), rowIt->minVal, rowIt->maxVal));
+                rowIt->spinBox->setValue(value.value());
+            }
+            m_lastValues.insert(value.key(), value.value());
+            m_previewBaseline.remove(value.key());
+            emit ParamChanged(value.key(), value.value(), false);
+            if (!panel) return;
+        }
+        RefreshXYControls();
+    }
+    if (panel) EmitHistoryState();
 }

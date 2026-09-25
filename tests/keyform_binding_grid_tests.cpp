@@ -320,7 +320,6 @@ private slots:
             [](Fixture& f) { f.table.parameters[0]->min_values = 200; },
             [](Fixture& f) { f.table.parameters[0]->max_values = std::numeric_limits<float>::infinity(); },
             [](Fixture& f) { f.table.parameters[0]->min_values = std::numeric_limits<float>::quiet_NaN(); },
-            [](Fixture& f) { f.table.parameters[0]->min_values = 0.5f; },
             [](Fixture& f) { f.table.parameter_bindings[0]->keys_sources_counts = 0; },
             [](Fixture& f) { f.table.parameter_bindings[0]->keys_sources_begin_indices = -1; },
             [](Fixture& f) { f.table.parameter_bindings[0]->keys_sources_counts = std::numeric_limits<int>::max(); },
@@ -361,6 +360,27 @@ private slots:
             QVERIFY(grid.Pose(CKeyformBindingGrid::ArtMesh, "unaffected", 0, values));
             QVERIFY(values.isEmpty());
         }
+    }
+
+    void sourceKeysOutsideEffectiveRangeRemainStructurallyValid()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.table.IsValid());
+        fixture.Binding(0, 0, {0, 0.5f, 1});
+        fixture.Grid({0}, 3);
+        fixture.table.parameters[0]->min_values = 0.25f;
+        fixture.table.parameters[0]->max_values = 0.75f;
+        CKeyformBindingGrid grid;
+        QVERIFY(grid.Build(fixture.table));
+        QVERIFY(grid.Diagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        const auto axes = grid.Axes(CKeyformBindingGrid::ArtMesh, "target");
+        QCOMPARE(axes.size(), 1);
+        QCOMPARE(axes[0].keys, (QVector<float>{0, 0.5f, 1}));
+        QMap<QString, float> pose;
+        QVERIFY(grid.Pose(CKeyformBindingGrid::ArtMesh, "target", 0, pose));
+        QCOMPARE(pose.value("P0"), 0.0f);
+        QVERIFY(grid.Pose(CKeyformBindingGrid::ArtMesh, "target", 2, pose));
+        QCOMPARE(pose.value("P0"), 1.0f);
     }
 
     void unsupportedParameterTypesRemainReadableButCannotProduceAPose()

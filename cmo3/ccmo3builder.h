@@ -20,6 +20,7 @@ namespace cmo3 {
 class CCmo3Builder
 {
 public:
+    enum class ParameterDefaultMode { ModelDefinition, CurrentValues };
     struct Options {
         QString mocPath;                 // 输入 .moc3
         QString outPath;                 // 输出 .cmo3
@@ -29,6 +30,7 @@ public:
         QString userDataPath;
         QHash<QString, float> parameterValues;
         QHash<QString, live2dstruct::CModelParameterMetadata> parameterMetadata;
+        ParameterDefaultMode parameterDefaultMode = ParameterDefaultMode::CurrentValues;
         QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
         QMap<QString, bool> objectVisibility;
         QHash<QString, float> drawableOpacityOverrides;

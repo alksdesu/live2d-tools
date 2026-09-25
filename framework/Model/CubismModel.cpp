@@ -75,6 +75,13 @@ bool finiteRuntimeColor(const Rendering::CubismRenderer::CubismTextureColor& col
            std::isfinite(color.B) && std::isfinite(color.A);
 }
 
+float boundedRuntimeValue(float value, float minimum, float maximum)
+{
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+}
+
 bool uniqueRuntimeIds(const char* const* ids, int count)
 {
     QSet<QByteArray> seen;
@@ -94,8 +101,9 @@ bool readValueDefinition(const Core::csmModel* model, CubismModel::RuntimeValueS
     const auto* partIds = Core::csmGetPartIds(model);
     const auto* minimums = Core::csmGetParameterMinimumValues(model);
     const auto* maximums = Core::csmGetParameterMaximumValues(model);
+    const auto* types = Core::csmGetParameterTypes(model);
     if (!validRuntimeCount(parameters) || !validRuntimeCount(parts) ||
-        (parameters && (!parameterIds || !minimums || !maximums)) || (parts && !partIds))
+        (parameters && (!parameterIds || !minimums || !maximums || !types)) || (parts && !partIds))
         return runtimeStateError(error, QStringLiteral("Runtime value definition is invalid"));
     const auto copyIds = [](const char* const* ids, int count, QStringList& target) {
         QSet<QString> unique;
@@ -118,6 +126,7 @@ bool readValueDefinition(const Core::csmModel* model, CubismModel::RuntimeValueS
             return runtimeStateError(error, QStringLiteral("Parameter range is invalid"));
         state.minimums.append(minimums[index]);
         state.maximums.append(maximums[index]);
+        state.parameterTypes.append(static_cast<int>(types[index]));
     }
     return true;
 }
@@ -203,6 +212,7 @@ bool CubismModel::RestoreRuntimeValues(const RuntimeValueSnapshot& snapshot, QSt
         if (!readValueDefinition(_model, definition, error)) return false;
         const int parameters = definition.parameterIds.size(), parts = definition.partIds.size();
         if (!snapshot.valid || snapshot.parameterIds != definition.parameterIds || snapshot.partIds != definition.partIds ||
+            snapshot.parameterTypes != definition.parameterTypes ||
             snapshot.minimums != definition.minimums || snapshot.maximums != definition.maximums ||
             snapshot.parameterValues.size() != parameters || snapshot.partOpacities.size() != parts ||
             snapshot.savedParameters.size() > parameters || (parameters && !_parameterValues) ||
@@ -245,6 +255,47 @@ bool CubismModel::RestoreRuntimeValues(const RuntimeValueSnapshot& snapshot, QSt
     }
 }
 
+bool CubismModel::RebaseRuntimeValues(const RuntimeValueSnapshot& snapshot, RuntimeValueSnapshot& result,
+                                     QString* error) const
+{
+    if (error) error->clear();
+    try {
+        RuntimeValueSnapshot definition;
+        if (!readValueDefinition(_model, definition, error)) return false;
+        const int count = definition.parameterIds.size();
+        if (!snapshot.valid || snapshot.parameterIds != definition.parameterIds ||
+            snapshot.parameterTypes != definition.parameterTypes || snapshot.partIds != definition.partIds ||
+            snapshot.parameterValues.size() != count || snapshot.minimums.size() != count ||
+            snapshot.maximums.size() != count || snapshot.savedParameters.size() > count ||
+            snapshot.partOpacities.size() != definition.partIds.size() || !std::isfinite(snapshot.modelOpacity) ||
+            !validVirtualValues(snapshot.virtualParameterIds, snapshot.virtualParameterValues, snapshot.parameterIds) ||
+            !validVirtualValues(snapshot.virtualPartIds, snapshot.virtualPartOpacities, snapshot.partIds))
+            return runtimeStateError(error, QStringLiteral("Runtime snapshot cannot be migrated to this definition"));
+        for (const auto* values : {&snapshot.parameterValues, &snapshot.savedParameters, &snapshot.partOpacities})
+            for (float value : *values)
+                if (!std::isfinite(value)) return runtimeStateError(error, QStringLiteral("Runtime snapshot contains non-finite values"));
+        RuntimeValueSnapshot candidate = snapshot;
+        for (int index = 0; index < count; ++index) {
+            if (!std::isfinite(snapshot.minimums[index]) || !std::isfinite(snapshot.maximums[index]) ||
+                snapshot.minimums[index] > snapshot.maximums[index])
+                return runtimeStateError(error, QStringLiteral("Runtime snapshot range is invalid"));
+            if (snapshot.minimums[index] == definition.minimums[index] &&
+                snapshot.maximums[index] == definition.maximums[index]) continue;
+            candidate.parameterValues[index] = boundedRuntimeValue(candidate.parameterValues[index],
+                definition.minimums[index], definition.maximums[index]);
+            if (index < candidate.savedParameters.size())
+                candidate.savedParameters[index] = boundedRuntimeValue(candidate.savedParameters[index],
+                    definition.minimums[index], definition.maximums[index]);
+        }
+        candidate.minimums = std::move(definition.minimums);
+        candidate.maximums = std::move(definition.maximums);
+        result = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        return runtimeStateError(error, QStringLiteral("Unable to migrate runtime snapshot"));
+    }
+}
+
 bool CubismModel::ApplyParameterPose(const QMap<QString, float>& pose, QString* error)
 {
     if (error) error->clear();
@@ -276,7 +327,7 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QStrin
 bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error) const
 {
     if (error) error->clear();
-    if (policy != CubismModelUpdatePolicy::Strict && policy != CubismModelUpdatePolicy::AllowClippingEdits)
+    if (static_cast<unsigned int>(policy) & ~3u)
         return runtimeStateError(error, QStringLiteral("Invalid model update policy"));
     if (!_model || !source._model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
     const int parameters = GetParameterCount(), parts = GetPartCount(), drawables = GetDrawableCount();
@@ -309,17 +360,24 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     const auto* minimum = Core::csmGetParameterMinimumValues(_model);
     const auto* maximum = Core::csmGetParameterMaximumValues(_model);
     const auto* defaults = Core::csmGetParameterDefaultValues(_model);
+    const auto* sourceMinimum = Core::csmGetParameterMinimumValues(source._model);
+    const auto* sourceMaximum = Core::csmGetParameterMaximumValues(source._model);
+    const auto* sourceDefaults = Core::csmGetParameterDefaultValues(source._model);
     const auto* keyCounts = Core::csmGetParameterKeyCounts(_model);
-    if (!equalRuntimeArray(minimum, Core::csmGetParameterMinimumValues(source._model), parameters) ||
-        !equalRuntimeArray(maximum, Core::csmGetParameterMaximumValues(source._model), parameters) ||
-        !equalRuntimeArray(defaults, Core::csmGetParameterDefaultValues(source._model), parameters) ||
+    const bool parameterEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterDefinitionEdits);
+    if ((parameters && (!minimum || !maximum || !defaults || !sourceMinimum || !sourceMaximum || !sourceDefaults)) ||
+        (!parameterEdits && (!equalRuntimeArray(minimum, sourceMinimum, parameters) ||
+         !equalRuntimeArray(maximum, sourceMaximum, parameters) || !equalRuntimeArray(defaults, sourceDefaults, parameters))) ||
         !equalRuntimeArray(Core::csmGetParameterTypes(_model), Core::csmGetParameterTypes(source._model), parameters) ||
         !equalRuntimeArray(keyCounts, Core::csmGetParameterKeyCounts(source._model), parameters))
         return runtimeStateError(error, QStringLiteral("Parameter definition differs or is invalid"));
     const auto* keys = Core::csmGetParameterKeyValues(_model);
     const auto* sourceKeys = Core::csmGetParameterKeyValues(source._model);
     for (int i = 0; i < parameters; ++i) {
-        if (minimum[i] > defaults[i] || defaults[i] > maximum[i] || !validRuntimeCount(keyCounts[i]) ||
+        if (!std::isfinite(minimum[i]) || !std::isfinite(maximum[i]) || !std::isfinite(defaults[i]) ||
+            !std::isfinite(sourceMinimum[i]) || !std::isfinite(sourceMaximum[i]) || !std::isfinite(sourceDefaults[i]) ||
+            sourceMinimum[i] > sourceDefaults[i] || sourceDefaults[i] > sourceMaximum[i] ||
+            minimum[i] > defaults[i] || defaults[i] > maximum[i] || !validRuntimeCount(keyCounts[i]) ||
             (keyCounts[i] && (!keys || !sourceKeys)) ||
             (keyCounts[i] && !equalRuntimeArray(keys[i], sourceKeys[i], keyCounts[i])))
             return runtimeStateError(error, QStringLiteral("Parameter %1 key values or range differ or are invalid").arg(i));
@@ -334,7 +392,7 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     const auto* textures = Core::csmGetDrawableTextureIndices(_model);
     const auto* flags = Core::csmGetDrawableConstantFlags(_model);
     const auto* sourceFlags = Core::csmGetDrawableConstantFlags(source._model);
-    const bool clippingEdits = policy == CubismModelUpdatePolicy::AllowClippingEdits;
+    const bool clippingEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowClippingEdits);
     if (!equalRuntimeArray(partParents, Core::csmGetPartParentPartIndices(source._model), parts) ||
         !equalRuntimeArray(drawableParents, Core::csmGetDrawableParentPartIndices(source._model), drawables) ||
         !equalRuntimeArray(vertices, Core::csmGetDrawableVertexCounts(source._model), drawables) ||
@@ -475,6 +533,15 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
     auto partIds = source._notExistPartId;
     auto partOpacities = source._notExistPartOpacities;
     auto savedParameters = source._savedParameters;
+    const auto* minimums = Core::csmGetParameterMinimumValues(_model);
+    const auto* maximums = Core::csmGetParameterMaximumValues(_model);
+    const auto* sourceMinimums = Core::csmGetParameterMinimumValues(source._model);
+    const auto* sourceMaximums = Core::csmGetParameterMaximumValues(source._model);
+    const auto rangeChanged = [&](int index) {
+        return minimums[index] != sourceMinimums[index] || maximums[index] != sourceMaximums[index];
+    };
+    for (int index = 0; index < savedParameters.size(); ++index)
+        if (rangeChanged(index)) savedParameters[index] = boundedRuntimeValue(savedParameters[index], minimums[index], maximums[index]);
     auto indexOverrides = source._drawableIndexOverrides;
     _notExistParameterId.swap(parameterIds);
     _notExistParameterValues.swap(parameterValues);
@@ -482,7 +549,9 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
     _notExistPartOpacities.swap(partOpacities);
     _savedParameters.swap(savedParameters);
     std::swap(_drawableIndexOverrides, indexOverrides);
-    for (int i = 0; i < parameters; ++i) _parameterValues[i] = source._parameterValues[i];
+    for (int i = 0; i < parameters; ++i)
+        _parameterValues[i] = rangeChanged(i) ? boundedRuntimeValue(source._parameterValues[i], minimums[i], maximums[i])
+                                            : source._parameterValues[i];
     for (int i = 0; i < parts; ++i) {
         _partOpacities[i] = source._partOpacities[i];
         _userPartMultiplyColors[i] = source._userPartMultiplyColors[i];

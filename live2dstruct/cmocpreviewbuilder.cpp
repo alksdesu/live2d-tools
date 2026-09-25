@@ -24,7 +24,8 @@ enum class ColumnId {
     ArtOpacity, ArtDrawOrder, ArtSourceBegin, Specific,
     WarpBinding, WarpSourceBegin, WarpSourceCount, WarpVertices, WarpRows, WarpColumns, WarpQuad, WarpColor,
     RotationBinding, RotationSourceBegin, RotationSourceCount, RotationBaseAngle, RotationColor,
-    BlendWarpTarget, BlendWarpBegin, BlendWarpCount, Count
+    BlendWarpTarget, BlendWarpBegin, BlendWarpCount,
+    ParameterMax, ParameterMin, ParameterDefault, ParameterRepeat, ParameterDecimal, Count
 };
 constexpr size_t ColumnCount = static_cast<size_t>(ColumnId::Count);
 size_t Index(Kind kind) { return static_cast<size_t>(kind); }
@@ -187,7 +188,7 @@ struct CMocPreviewBuilder::Snapshot
     QByteArray digest;
     QVector<Mesh> meshes;
     QVector<Deformer> deformers;
-    QHash<QString, int> meshIndices, deformerIndices;
+    QHash<QString, int> meshIndices, deformerIndices, parameterIndices;
     QVector<Source> warps, rotations;
     std::array<QVector<Row>, 3> rows;
     std::array<Column, ColumnCount> columns;
@@ -224,6 +225,7 @@ struct CMocPreviewBuilder::Snapshot
     bool Detach(const QVector<ObjectEdit>& objects, const std::array<QHash<int, Request>, 3>& requests,
                 QByteArray& output, bool& changed, QString* error) const;
     bool ParentPatches(const QHash<QString, int>& overrides, Patches& patches, QString* error) const;
+    bool ParameterPatches(const QHash<QString, CModelParameterMetadata>& overrides, Patches& patches, QString* error) const;
     bool MaskPatches(const Overrides& overrides, Patches& patches, QMap<int, QByteArray>& masks, QString* error) const;
     bool Write(const Patches& patches, const QVector<Address>& positions,
                const std::array<QHash<int, Request>, 3>& requests,
@@ -274,7 +276,12 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
         {"rotation_deformers.keyform_color_sources_begin_indices", 0x1e8, offsets.rotation_deformers->keyform_color_sources_begin_indices, counts.rotation_deformers, {}, 4, true},
         {"blend_shapes_warp_deformers.target_indices", 0x234, offsets.blend_shapes_warp_deformers->target_indices, counts.blend_shapes_warp_deformers, {}},
         {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_begin_indices", 0x238, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_begin_indices, counts.blend_shapes_warp_deformers, {}},
-        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_counts", 0x23c, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_counts, counts.blend_shapes_warp_deformers, {}}
+        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_counts", 0x23c, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_counts, counts.blend_shapes_warp_deformers, {}},
+        {"parameters.max_values", 0x10c, offsets.parameters->max_values, counts.parameters, {}},
+        {"parameters.min_values", 0x110, offsets.parameters->min_values, counts.parameters, {}},
+        {"parameters.default_values", 0x114, offsets.parameters->default_values, counts.parameters, {}},
+        {"parameters.is_repeat", 0x118, offsets.parameters->is_repeat, counts.parameters, {}},
+        {"parameters.decimal_places", 0x11c, offsets.parameters->decimal_places, counts.parameters, {}}
     }};
     countInfoOffset = offsets.count_info->count_info_offset;
     positionCountOffset = offsets.count_info->count_info_offset + PositionCountIndex * 4;
@@ -305,6 +312,11 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
     }
     for (float value : table.keyform_positions->xys)
         if (!std::isfinite(value)) return Fail(error, QStringLiteral("源关键形坐标包含非有限值"));
+    for (int index = 0; index < table.parameters.size(); ++index) {
+        const QString& id = table.parameters[index]->ids;
+        if (parameterIndices.contains(id)) parameterIndices[id] = -1;
+        else parameterIndices.insert(id, index);
+    }
 
     std::array<QVector<Reference>, 3> normal, all, orphan, blend;
     QVector<int> maskCoverage(counts.drawable_masks + 1, 0);
@@ -645,6 +657,33 @@ bool CMocPreviewBuilder::Snapshot::MaskPatches(const Overrides& overrides, Patch
     return true;
 }
 
+bool CMocPreviewBuilder::Snapshot::ParameterPatches(const QHash<QString, CModelParameterMetadata>& overrides,
+                                                  Patches& patches, QString* error) const
+{
+    for (auto entry = overrides.cbegin(); entry != overrides.cend(); ++entry) {
+        const auto found = parameterIndices.constFind(entry.key());
+        if (entry.key().isEmpty() || found == parameterIndices.cend() || found.value() < 0)
+            return Fail(error, QStringLiteral("参数 ID 不存在或重复：%1").arg(entry.key()));
+        const auto& metadata = entry.value();
+        if (!std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
+            !std::isfinite(metadata.defaultValue) || metadata.minimum > metadata.maximum ||
+            metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum ||
+            metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9)
+            return Fail(error, QStringLiteral("参数范围、默认值或精度无效：%1").arg(entry.key()));
+        const int row = found.value();
+        const std::array<std::pair<ColumnId, QByteArray>, 5> fields{{
+            {ColumnId::ParameterMax, FloatCell(ColumnId::ParameterMax, row, metadata.maximum)},
+            {ColumnId::ParameterMin, FloatCell(ColumnId::ParameterMin, row, metadata.minimum)},
+            {ColumnId::ParameterDefault, FloatCell(ColumnId::ParameterDefault, row, metadata.defaultValue)},
+            {ColumnId::ParameterRepeat, BoolCell(ColumnId::ParameterRepeat, row, metadata.repeat)},
+            {ColumnId::ParameterDecimal, EncodeWord(quint32(metadata.decimalPlaces))}
+        }};
+        for (const auto& field : fields)
+            if (field.second != Cell(field.first, row)) patches[Index(field.first)].insert(row, field.second);
+    }
+    return true;
+}
+
 bool CMocPreviewBuilder::Snapshot::Write(const Patches& input, const QVector<Address>& positions,
                                         const std::array<QHash<int, Request>, 3>& requests,
                                         const QMap<int, QByteArray>& masks,
@@ -831,7 +870,8 @@ bool CMocPreviewBuilder::BuildOverrides(const Overrides& overrides, QByteArray& 
             Patches patches;
             QMap<int, QByteArray> masks;
             if (!state.ParentPatches(overrides.deformerParents, patches, error) ||
-                !state.MaskPatches(overrides, patches, masks, error)) return false;
+                !state.MaskPatches(overrides, patches, masks, error) ||
+                !state.ParameterPatches(overrides.parameterMetadata, patches, error)) return false;
             std::array<QHash<int, Request>, 3> requests;
             QVector<Address> order;
             QVector<ObjectEdit> objects;

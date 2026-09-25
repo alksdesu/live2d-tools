@@ -20,6 +20,7 @@ public:
         QHash<QString, int> deformerParents;
         QHash<QString, QVector<int>> drawableMasks;
         QHash<QString, bool> drawableMaskInverted;
+        QHash<QString, CModelParameterMetadata> parameterMetadata;
     };
 
     bool Initialize(const QByteArray& baseline, QString* error = nullptr);

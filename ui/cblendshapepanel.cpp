@@ -428,7 +428,7 @@ QString CBlendShapePanel::ParameterName(const QString& id) const
     if (m_document && m_document->SourceDigest() == m_state->digest) {
         const auto& metadata = m_document->ParameterMetadataOverrides();
         const auto value = metadata.constFind(id);
-        if (value != metadata.cend()) return value->displayName.isEmpty() ? id : value->displayName;
+        if (value != metadata.cend() && !value->displayName.isEmpty() && value->displayName != id) return value->displayName;
     }
     return m_state->parameterNames.value(id, id);
 }
@@ -453,7 +453,7 @@ void CBlendShapePanel::RefreshParameterMetadata()
         if (!std::isfinite(range.minimum) || !std::isfinite(range.maximum) || !std::isfinite(range.defaultValue) ||
             range.minimum > range.defaultValue || range.defaultValue > range.maximum) continue;
         m_state->ranges.insert(parameter.id, range);
-        const float value = qBound(range.minimum, m_state->recentValues.value(parameter.id, range.defaultValue), range.maximum);
+        const float value = std::clamp(m_state->recentValues.value(parameter.id, range.defaultValue), range.minimum, range.maximum);
         for (const auto& control : controls.value()) {
             const QSignalBlocker blocker(control.slider);
             control.item->setText(0, name);
@@ -479,7 +479,7 @@ void CBlendShapePanel::SyncParameterValue(const QString& paramId, float value)
     m_state->recentValues.insert(paramId, value);
     const auto range = m_state->ranges.constFind(paramId);
     if (range == m_state->ranges.cend()) return;
-    const float bounded = qBound(range->minimum, value, range->maximum);
+    const float bounded = std::clamp(value, range->minimum, range->maximum);
     for (const auto& control : m_state->controls.value(paramId)) {
         const QSignalBlocker blocker(control.slider);
         control.slider->setValue(sliderPosition(bounded, range->minimum, range->maximum));

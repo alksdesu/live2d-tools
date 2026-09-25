@@ -374,20 +374,27 @@ void MainWindow::on_actionCmo3Export_triggered()
         this, "导出 cmo3 工程", defaultName, "Cubism 工程 (*.cmo3)");
     if(outPath.isEmpty()) return;
 
-    const auto answer = QMessageBox::question(this, "导出 cmo3 工程",
+    QMessageBox confirmation(QMessageBox::Question, QStringLiteral("导出 cmo3 工程"),
         "将从 moc3 运行时数据恢复 Cubism Editor 工程。\n\n"
         "以下信息在 moc3 中不存在，无法恢复：\n"
         "· 变形器路径整理、画师备注\n"
         "· 原始 PSD 关联（贴图以每网格图层重建）\n"
         "· 参数分组的折叠状态等编辑器偏好\n\n"
         "是否继续？",
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-    if(answer != QMessageBox::Yes) return;
+        QMessageBox::Yes | QMessageBox::No, this);
+    confirmation.setDefaultButton(QMessageBox::Yes);
+    auto* currentDefaults = new QCheckBox(QStringLiteral("将当前参数值作为默认值"), &confirmation);
+    currentDefaults->setToolTip(QStringLiteral("勾选后会替代模型定义的默认值。工作会话始终可以单独保存当前参数值。"));
+    confirmation.setCheckBox(currentDefaults);
+    if (confirmation.exec() != QMessageBox::Yes) return;
 
     statusBar()->showMessage("正在生成 cmo3 工程…");
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
     cmo3::CCmo3Builder::Options options;
+    options.parameterDefaultMode = currentDefaults->isChecked()
+        ? cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues
+        : cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition;
     options.mocPath = m_currentMoc;
     options.outPath = outPath;
     {
@@ -409,6 +416,14 @@ void MainWindow::on_actionCmo3Export_triggered()
             options.userDataPath = dir.filePath(modelJson.m_UserData);
     }
     options.parameterValues = m_document.ParameterValues();
+    if (options.parameterDefaultMode == cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues) {
+        auto values = m_paramPanel ? m_paramPanel->CurrentValues() : QMap<QString, float>();
+        auto* manager = m_openglwindows->IsModelReady() ? LAppLive2DManager::GetInstance() : nullptr;
+        auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+        if (model) values = model->GetParameterValues();
+        for (const auto& parameter : m_document.Parameters())
+            options.parameterValues.insert(parameter.id, values.value(parameter.id, m_document.ParameterValue(parameter.id)));
+    }
     options.parameterMetadata = m_document.ParameterMetadataOverrides();
     options.hiddenIds = m_document.HiddenIds();
     options.objectVisibility = m_document.VisibilityState();
@@ -532,15 +547,17 @@ void MainWindow::on_actionLoadSession_triggered()
     }
     if (!ConfirmCloseWithUnsavedChanges(true)) return;
     const QScopedValueRollback<bool> restoring(m_applyingSession, true);
-    if (!EndKeyformEditing(&loadError)) {
+    if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    ClearTimelinePreview();
     if (!m_keyformEditor.Restore(std::move(candidate), &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
+    m_keyformBaseValues.clear();
+    ClearTimelinePreview();
+    RefreshKeyformUi();
     if (!m_motionPanel->RestoreTimelineState(session.animation, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
@@ -623,7 +640,53 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
     if (!m_openglwindows || !m_openglwindows->IsModelReady()) return true;
     QByteArray bytes;
     if (!document.BuildPreviewMoc(bytes, error)) return false;
+    if (!editing) {
+        QMap<QString, float> values;
+        if (!m_runtimePanelsInitialized)
+            for (const auto& parameter : document.Parameters()) values.insert(parameter.id, document.ParameterValue(parameter.id));
+        return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, false, error);
+    }
     return m_openglwindows->ApplyMocPreview(bytes, document.SourceDigest(), editing ? &pose : nullptr, error);
+}
+
+bool MainWindow::PublishParameterDefinitions(const live2dstruct::CModelDocument& document,
+                                              const QMap<QString, float>& values, bool editing, QString* error)
+{
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) {
+        if (error) *error = QStringLiteral("模型正在关闭或导出，请稍后编辑参数定义");
+        return false;
+    }
+    if (!RuntimeMatchesDocument(error)) return false;
+    QByteArray bytes;
+    if (!document.BuildPreviewMoc(bytes, error)) return false;
+    if (!m_openglwindows || !m_openglwindows->IsModelReady()) return true;
+    return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, editing, error);
+}
+
+void MainWindow::SyncParameterDefinitionPreview()
+{
+    if (!m_paramPanel || m_previewExport.IsBusy() || !m_openglwindows || !m_openglwindows->IsModelReady()) return;
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    if (!model) return;
+    const auto values = model->GetParameterValues();
+    const bool editor = model->HasEditorPreview();
+    const bool timeline = model->HasTimelinePreview();
+    {
+        const QSignalBlocker blocker(m_paramPanel);
+        if (editor || timeline) {
+            const auto baseline = timeline ? model->GetTimelineBaseParameters() : model->GetEditorBaseParameters();
+            m_paramPanel->ClearPreviewValues(values);
+            m_paramPanel->SetPreviewValues(values, baseline);
+        } else if (!m_keyformBaseValues.isEmpty()) m_paramPanel->ClearPreviewValues(values);
+        else m_paramPanel->SyncFromModel();
+    }
+    m_keyformBaseValues = editor ? model->GetEditorBaseParameters() : QMap<QString, float>();
+    if (m_blendShapePanel) {
+        const auto displayed = m_paramPanel->CurrentValues();
+        for (auto value = displayed.cbegin(); value != displayed.cend(); ++value)
+            m_blendShapePanel->SyncParameterValue(value.key(), value.value());
+    }
 }
 
 bool MainWindow::ActivateKeyform(const QString& id, int keyform, QString* error)
@@ -691,7 +754,8 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
-    if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
+    if (edit.field != live2dstruct::CModelEdit::ParameterMetadata &&
+        m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(edit)) {
         const bool active = m_keyformEditor.IsActive();
         auto values = m_paramPanel ? m_paramPanel->CurrentValues() : QMap<QString, float>();
@@ -704,7 +768,8 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
                 ? m_inspectorPanel->GetActiveKeyformIndex() : edit.index;
         if (!m_keyformEditor.Submit(edit, values, previewKeyform, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
-        if (m_keyformEditor.IsActive() && m_motionPanel) m_motionPanel->PauseTimelinePreview();
+        if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && m_keyformEditor.IsActive() && m_motionPanel)
+            m_motionPanel->PauseTimelinePreview();
         if (!active && m_keyformEditor.IsActive()) m_keyformBaseValues = values;
         RefreshKeyformUi(true);
         return true;
@@ -721,9 +786,10 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
-    if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
+    if (pending.field != live2dstruct::CModelEdit::ParameterMetadata &&
+        m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(pending)) {
         if (!m_keyformEditor.History(undo, edit, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
@@ -913,7 +979,17 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(edit.name, parameterValue, false, false, false);
         else if (m_openglwindows) m_openglwindows->do_change_para_value(edit.name, parameterValue, false);
     } else if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {
-        if (m_paramPanel) m_paramPanel->RefreshParameterMetadata();
+        if (m_paramPanel) {
+            m_paramPanel->RefreshParameterMetadata();
+            auto* manager = m_openglwindows && m_openglwindows->IsModelReady() ? LAppLive2DManager::GetInstance() : nullptr;
+            auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+            const bool preview = model && (model->HasEditorPreview() || model->HasTimelinePreview());
+            if (!preview && edit.before.toMap().value(QStringLiteral("value")) != edit.after.toMap().value(QStringLiteral("value"))) {
+                const QSignalBlocker blocker(m_paramPanel);
+                m_paramPanel->ApplyExternalValue(edit.name, m_document.ParameterValue(edit.name), false, false, false);
+            }
+            SyncParameterDefinitionPreview();
+        }
     } else if (edit.field == live2dstruct::CModelEdit::ParameterValues) {
         const QMap<QString, float> values = value.value<QMap<QString, float>>();
         if (m_paramPanel) {
@@ -1860,6 +1936,9 @@ void MainWindow::RestDock(const QString &name)
         }, [this](QString* error) {
             return !m_openglwindows || m_openglwindows->EndEditorPreview(error);
         });
+    m_keyformEditor.SetDefinitionPublisher([this](const auto& document, const auto& values, bool editing, QString* error) {
+        return PublishParameterDefinitions(document, values, editing, error);
+    });
     m_workspaceReady = false;
     m_runtimePanelsInitialized = false;
     m_saveSessionAction->setEnabled(false);
@@ -2231,6 +2310,16 @@ void MainWindow::RestDock(const QString &name)
         }
         return EndKeyformEditing(error);
     });
+    m_paramPanel->SetMetadataEditHandler([this](const auto& edit, QString* error) {
+        if (!SubmitInspectorEdit(edit, error)) return false;
+        m_historySource = HistorySource::Parameters;
+        RefreshUndoActions();
+        return true;
+    });
+    m_paramPanel->SetHistoryHandler([this](bool undo, auto& edit, QString* error) {
+        return ApplyDocumentHistory(undo, edit, error);
+    });
+    connect(m_paramPanel, &CParamPanel::ParameterMetadataChanged, this, &MainWindow::SyncParameterDefinitionPreview);
     connect(m_paramPanel, &CParamPanel::EditRejected, this,
             [this](const QString& error) { statusBar()->showMessage(error, 8000); });
 

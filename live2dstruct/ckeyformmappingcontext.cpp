@@ -130,8 +130,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             const auto value = fullPose.constFind(parameter.id);
             const auto metadata = document.ParameterMetadata(parameter.id);
             if (parameter.id.isEmpty() || parameterIds.contains(parameter.id) || value == fullPose.cend() ||
-                !std::isfinite(value.value()) || !std::isfinite(parameter.minimum) || !std::isfinite(parameter.maximum) ||
-                value.value() < parameter.minimum || value.value() > parameter.maximum ||
+                !std::isfinite(value.value()) || !std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
                 value.value() < metadata.minimum || value.value() > metadata.maximum)
                 return fail(error, QStringLiteral("编辑姿态参数缺失、重复或超出范围：%1").arg(parameter.id));
             parameterIds.insert(parameter.id);

@@ -1,5 +1,6 @@
 #include "ckeyformeditcontroller.h"
 #include <QScopedValueRollback>
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -32,6 +33,11 @@ void CKeyformEditController::SetPublisher(Publisher publisher, PreviewEnder ende
     m_end = std::move(ender);
 }
 
+void CKeyformEditController::SetDefinitionPublisher(DefinitionPublisher publisher)
+{
+    if (!m_publishing) m_publishDefinitions = std::move(publisher);
+}
+
 bool CKeyformEditController::Ready(QString* error) const
 {
     if (error) error->clear();
@@ -45,7 +51,8 @@ bool CKeyformEditController::Handles(const CModelEdit& edit)
 {
     return edit.field == CModelEdit::KeyformPositions || edit.field == CModelEdit::WarpKeyforms ||
            edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent ||
-           edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted;
+           edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted ||
+           edit.field == CModelEdit::ParameterMetadata;
 }
 
 bool CKeyformEditController::CanEdit(const QString& id, int keyform, QString* error) const
@@ -124,8 +131,7 @@ bool CKeyformEditController::MakePose(const QString& id, const QString& type, in
     for (const auto& parameter : m_document->Parameters()) {
         const float value = result.value(parameter.id);
         const auto metadata = m_document->ParameterMetadata(parameter.id);
-        if (!std::isfinite(value) || value < metadata.minimum || value > metadata.maximum ||
-            value < parameter.minimum || value > parameter.maximum)
+        if (!std::isfinite(value) || value < metadata.minimum || value > metadata.maximum)
             return fail(error, QStringLiteral("编辑姿态超出参数范围：%1").arg(parameter.id));
     }
     pose = std::move(result);
@@ -192,6 +198,17 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
                                    int previewKeyform, QString* error)
 {
     if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
+    if (edit.field == CModelEdit::ParameterMetadata) {
+        if (!Ready(error)) return false;
+        if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+        try {
+            CModelDocument candidate = *m_document;
+            if (!candidate.ExecuteEdit(edit)) return fail(error, QStringLiteral("参数定义已改变、无变化或数据无效"));
+            return PublishDefinitions(std::move(candidate), false, error);
+        } catch (const std::exception&) {
+            return fail(error, QStringLiteral("无法准备参数定义，原文档和预览保持不变"));
+        }
+    }
     const bool parentEdit = edit.field == CModelEdit::DeformerParent;
     const bool clippingEdit = edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted;
     const bool poseEdit = !parentEdit && !clippingEdit;
@@ -254,15 +271,68 @@ bool CKeyformEditController::History(bool undo, CModelEdit& edit, QString* error
         return fail(error, QStringLiteral("当前历史不是模型几何编辑"));
     if (!(undo ? candidate.UndoEdit() : candidate.RedoEdit()))
         return fail(error, QStringLiteral("无法恢复关键形历史"));
-    if (!Publish(std::move(candidate), m_pose, IsActive(), error)) return false;
+    if (command.field == CModelEdit::ParameterMetadata) {
+        if (!PublishDefinitions(std::move(candidate), false, error)) return false;
+    } else if (!Publish(std::move(candidate), m_pose, IsActive(), error)) return false;
     edit = std::move(command);
     return true;
 }
 
 bool CKeyformEditController::Restore(CModelDocument candidate, QString* error)
 {
+    if (m_publishDefinitions) return PublishDefinitions(std::move(candidate), true, error);
     if (IsActive() || m_drag) return fail(error, QStringLiteral("请先退出关键形编辑再恢复会话"));
     return Publish(std::move(candidate), {}, false, error);
+}
+
+bool CKeyformEditController::PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error)
+{
+    if (!Ready(error)) return false;
+    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (!m_publishDefinitions || candidate.SourceDigest() != m_source)
+        return fail(error, QStringLiteral("参数定义预览尚未连接或源模型已改变"));
+    try {
+        QMap<QString, float> values;
+        for (const auto& parameter : candidate.Parameters()) {
+            const float value = candidate.ParameterValue(parameter.id);
+            if (restoreSession || value != m_document->ParameterValue(parameter.id)) values.insert(parameter.id, value);
+        }
+        bool keepEditor = IsActive() && !restoreSession;
+        QMap<QString, float> pose;
+        if (keepEditor) {
+            QMap<QString, float> corner;
+            if (!candidate.KeyformParameterValues(m_target, m_type, m_keyform, corner)) keepEditor = false;
+            else {
+                for (const auto& parameter : candidate.Parameters()) {
+                    const auto found = m_pose.constFind(parameter.id);
+                    const auto metadata = candidate.ParameterMetadata(parameter.id);
+                    if (found == m_pose.cend() || !std::isfinite(*found))
+                        return fail(error, QStringLiteral("当前编辑姿态的参数不完整"));
+                    pose.insert(parameter.id, std::clamp(*found, metadata.minimum, metadata.maximum));
+                }
+                for (auto value = corner.cbegin(); value != corner.cend(); ++value)
+                    if (pose.value(value.key()) != value.value())
+                        return fail(error, QStringLiteral("参数定义与当前编辑角点不一致"));
+            }
+        }
+        const auto* document = m_document;
+        const auto revision = m_document->Revision();
+        const QScopedValueRollback<bool> publishing(m_publishing, true);
+        if (!m_publishDefinitions(candidate, values, keepEditor, error)) return false;
+        if (m_document != document || m_document->Revision() != revision || m_document->SourceDigest() != m_source)
+            return fail(error, QStringLiteral("发布参数定义期间文档已改变"));
+        m_document->CommitCandidate(std::move(candidate));
+        if (keepEditor) m_pose.swap(pose);
+        else {
+            m_target.clear();
+            m_type.clear();
+            m_keyform = -1;
+            m_pose.clear();
+        }
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("参数定义准备失败，原文档和历史保持不变"));
+    }
 }
 
 bool CKeyformEditController::BeginDrag(const QVector<int>& selected, const QVector<float>& runtimePositions,

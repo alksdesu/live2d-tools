@@ -12,6 +12,10 @@
 #include "framework/Utils/CubismString.hpp"
 #include "framework/Math/CubismMath.hpp"
 #include "framework/Math/CubismVector2.hpp"
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <utility>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -35,41 +39,6 @@ const csmFloat32 MovementThreshold = 0.001f;
 /// Constant of maximum allowed delta time
 const csmFloat32 MaxDeltaTime = 5.0f;
 
-csmFloat32 GetRangeValue(csmFloat32 min, csmFloat32 max)
-{
-    csmFloat32 maxValue = CubismMath::Max(min, max);
-    csmFloat32 minValue = CubismMath::Min(min, max);
-
-    return CubismMath::AbsF(maxValue - minValue);
-}
-
-/// Gets sign.
-///
-/// @param  value  Evaluation target value.
-///
-/// @return  Sign of value.
-csmInt32 Sign(csmFloat32 value)
-{
-    csmInt32 ret = 0;
-
-    if (value > 0.0f)
-    {
-        ret = 1;
-    }
-    else if (value < 0.0f)
-    {
-        ret = -1;
-    }
-
-    return ret;
-}
-
-csmFloat32 GetDefaultValue(csmFloat32 min, csmFloat32 max)
-{
-    const csmFloat32 minValue = CubismMath::Min(min, max);
-    return minValue + (GetRangeValue(min, max) / 2.0f);
-}
-
 csmFloat32 NormalizeParameterValue(
     csmFloat32 value,
     csmFloat32 parameterMinimum,
@@ -80,66 +49,22 @@ csmFloat32 NormalizeParameterValue(
     csmFloat32 normalizedDefault,
     csmInt32 isInverted)
 {
-    csmFloat32 result = 0.0f;
-
-    const csmFloat32 maxValue = CubismMath::Max(parameterMaximum, parameterMinimum);
-
-    if (maxValue < value)
-    {
-        value = maxValue;
+    Q_UNUSED(parameterDefault);
+    const double minimum = std::min(double(parameterMinimum), double(parameterMaximum));
+    const double maximum = std::max(double(parameterMinimum), double(parameterMaximum));
+    const double middle = minimum + (maximum - minimum) * 0.5;
+    const double bounded = std::max(minimum, std::min(maximum, double(value)));
+    const double relative = bounded - middle;
+    double result = normalizedDefault;
+    if (relative != 0.0) {
+        const double endpoint = relative > 0.0 ? maximum : minimum;
+        const double normalizedEndpoint = relative > 0.0
+            ? std::max(double(normalizedMinimum), double(normalizedMaximum))
+            : std::min(double(normalizedMinimum), double(normalizedMaximum));
+        const double fraction = relative / (endpoint - middle);
+        result = double(normalizedDefault) + fraction * (normalizedEndpoint - double(normalizedDefault));
     }
-
-    const csmFloat32 minValue = CubismMath::Min(parameterMaximum, parameterMinimum);
-
-    if (minValue > value)
-    {
-        value = minValue;
-    }
-
-    const csmFloat32 minNormValue = CubismMath::Min(normalizedMinimum, normalizedMaximum);
-    const csmFloat32 maxNormValue = CubismMath::Max(normalizedMinimum, normalizedMaximum);
-    const csmFloat32 middleNormValue = normalizedDefault;
-
-    const csmFloat32 middleValue = GetDefaultValue(minValue, maxValue);
-    const csmFloat32 paramValue = value - middleValue;
-
-    switch (Sign(paramValue))
-    {
-    case 1: {
-        const csmFloat32 nLength = maxNormValue - middleNormValue;
-        const csmFloat32 pLength = maxValue - middleValue;
-        if (pLength != 0.0f)
-        {
-            result = paramValue * (nLength / pLength);
-            result += middleNormValue;
-        }
-
-        break;
-    }
-    case -1: {
-        const csmFloat32 nLength = minNormValue - middleNormValue;
-        const csmFloat32 pLength = minValue - middleValue;
-        if (pLength != 0.0f)
-        {
-            result = paramValue * (nLength / pLength);
-            result += middleNormValue;
-        }
-
-        break;
-    }
-    case 0: {
-        result = middleNormValue;
-
-        break;
-    }
-    default: {
-        break;
-    }
-    }
-
-    return (isInverted)
-        ? result
-        : (result * -1.0f);
+    return static_cast<csmFloat32>(isInverted ? result : -result);
 }
 
 void GetInputTranslationXFromNormalizedParameterValue(CubismVector2* targetTranslation, csmFloat32* targetAngle, csmFloat32 value,
@@ -456,6 +381,58 @@ CubismPhysics::~CubismPhysics()
     CSM_DELETE(_physicsRig);
     _parameterCaches.Clear();
     _parameterInputCaches.Clear();
+}
+
+bool CubismPhysics::PrepareParameterDefinitionChange(const CubismModel& previous, const CubismModel& replacement,
+                                                     ParameterDefinitionState& result, QString* error) const
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    const int count = previous.GetParameterCount();
+    if (count < 0 || replacement.GetParameterCount() != count ||
+        _parameterCaches.GetSize() > count || _parameterInputCaches.GetSize() > count)
+        return fail(QStringLiteral("物理参数缓存与模型定义不匹配"));
+    try {
+        ParameterDefinitionState candidate;
+        candidate.parameters.reserve(_parameterCaches.GetSize());
+        candidate.inputs.reserve(_parameterInputCaches.GetSize());
+        for (int index = 0; index < count; ++index) {
+            const float oldMinimum = previous.GetParameterMinimumValue(index), oldMaximum = previous.GetParameterMaximumValue(index);
+            const float minimum = replacement.GetParameterMinimumValue(index), maximum = replacement.GetParameterMaximumValue(index);
+            if (previous.GetParameterId(index) != replacement.GetParameterId(index) ||
+                !std::isfinite(oldMinimum) || !std::isfinite(oldMaximum) || oldMinimum > oldMaximum ||
+                !std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum)
+                return fail(QStringLiteral("物理参数身份或范围无效"));
+            const bool changed = oldMinimum != minimum || oldMaximum != maximum;
+            const auto append = [&](const auto& source, QVector<float>& target) {
+                if (index >= source.GetSize()) return true;
+                float value = source[index];
+                if (!std::isfinite(value)) return false;
+                if (changed) {
+                    if (value < minimum) value = minimum;
+                    else if (value > maximum) value = maximum;
+                }
+                target.append(value);
+                return true;
+            };
+            if (!append(_parameterCaches, candidate.parameters) || !append(_parameterInputCaches, candidate.inputs))
+                return fail(QStringLiteral("物理参数缓存含非有限值"));
+        }
+        candidate.owner = this;
+        result = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备物理参数缓存"));
+    }
+}
+
+void CubismPhysics::CommitParameterDefinitionChange(ParameterDefinitionState& state) noexcept
+{
+    if (state.owner != this || state.parameters.size() != _parameterCaches.GetSize() ||
+        state.inputs.size() != _parameterInputCaches.GetSize()) return;
+    for (int index = 0; index < state.parameters.size(); ++index) _parameterCaches[index] = state.parameters[index];
+    for (int index = 0; index < state.inputs.size(); ++index) _parameterInputCaches[index] = state.inputs[index];
+    state.owner = nullptr;
 }
 
 /// Initializes physics.
