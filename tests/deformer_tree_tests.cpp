@@ -70,6 +70,43 @@ private slots:
         tree->GetWarpKeys();
         QVERIFY(near(mesh->GetCanvasPositions(), {-2, 0, -1, -1}));
         QVERIFY(near(mesh->GetKeyFormS()[0].GetPosition(), {1, 0, 0, 1}));
+        child->GetKeyFormS().push_back(child->GetKeyFormS().front());
+        tree->GetWarpKeys();
+        QVERIFY(child->GetCanvasPositions().empty());
+        QVERIFY(mesh->GetCanvasPositions().empty());
+        std::vector<float> preserved{7, 9};
+        QVERIFY(!mesh->MapFromCanvas({-2, 0}, preserved));
+        QVERIFY((preserved == std::vector<float>{7, 9}));
+        child->GetKeyFormS().resize(1);
+        tree->GetWarpKeys();
+        QVERIFY(near(mesh->GetCanvasPositions(), {-2, 0, -1, -1}));
+    }
+
+    void zeroBindingParametersDoNotShiftWankoMouthKeyforms()
+    {
+        auto tree = loadTree("Wanko");
+        QVERIFY(tree);
+        CArtMeshNode* face = nullptr;
+        for (auto* node : tree->getArtTree())
+            if (node->getName() == QLatin1String("D_FACE_01")) face = dynamic_cast<CArtMeshNode*>(node);
+        QVERIFY(face);
+        QCOMPARE(face->GetKeyFormS().size(), size_t(2));
+        CParameterNode* mouth = nullptr;
+        for (auto* node : face->getFathers()) {
+            if (auto* parameter = dynamic_cast<CParameterNode*>(node); parameter && parameter->GetType() == 0) {
+                QVERIFY(!mouth);
+                mouth = parameter;
+            }
+        }
+        QVERIFY(mouth);
+        QCOMPARE(mouth->getName(), QStringLiteral("PARAM_MOUTH_OPEN_Y"));
+        QVERIFY((mouth->GetKeys() == std::vector<float>{0, 1}));
+        for (int index : {1, 0, 1}) {
+            tree->SetParaValue(mouth->getName(), static_cast<float>(index));
+            tree->GetWarpKeys();
+            QVERIFY(face->GetCurKeyForm().GetPosition() == face->GetKeyFormS()[index].GetPosition());
+            QVERIFY(!face->GetCanvasPositions().empty());
+        }
     }
 
     void rotationAboveWarpComposesWithoutChangingControlPoints()
@@ -109,6 +146,69 @@ private slots:
         std::vector<float> restored;
         QVERIFY(mesh->MapFromCanvas(mesh->GetCanvasPositions(), restored));
         QVERIFY(near(restored, {0.25f, 0.75f}));
+    }
+
+    void fileBindingIndicesIdentifyTheCorrectParameterAndKeys_data()
+    {
+        sourceLifetimeAndRepeatedUpdates_data();
+    }
+
+    void fileBindingIndicesIdentifyTheCorrectParameterAndKeys()
+    {
+        QFETCH(QString, name);
+        CReader reader(QString(TEST_RESOURCES) + QLatin1Char('/') + name + QLatin1Char('/') + name + ".moc3");
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        C2DTree tree(table);
+        QHash<QString, C2DTreeNode*> deformers;
+        for (auto* node : tree.GetWarpKeys()) deformers.insert(node->getName(), node);
+        QHash<QString, C2DTreeNode*> meshes;
+        for (auto* node : tree.getArtTree()) meshes.insert(node->getName(), node);
+        QVector<const CParameters*> owners(table.parameter_bindings.size(), nullptr);
+        for (const auto* parameter : table.parameters) {
+            for (int index = 0; index < parameter->parameter_binding_sources_counts; ++index)
+                owners[parameter->parameter_binding_sources_begin_indices + index] = parameter;
+        }
+        const auto check = [&](C2DTreeNode* node, int bindingIndex) {
+            QVERIFY(node);
+            std::vector<CParameterNode*> axes;
+            for (auto* parent : node->getFathers()) {
+                if (auto* parameter = dynamic_cast<CParameterNode*>(parent); parameter && parameter->GetType() == 0)
+                    axes.push_back(parameter);
+            }
+            std::vector<int> expectedBindings;
+            if (bindingIndex >= 0) {
+                QVERIFY(bindingIndex < table.keyform_bindings.size());
+                const auto* binding = table.keyform_bindings[bindingIndex];
+                for (int offset = 0; offset < binding->parameter_binding_index_sources_counts; ++offset) {
+                    const int source = table.parameter_binding_indices[
+                        binding->parameter_binding_index_sources_begin_indices + offset]->binding_sources_indices;
+                    QVERIFY(source >= 0 && source < owners.size());
+                    QVERIFY(owners[source]);
+                    if (owners[source]->parameter_types == 0) expectedBindings.push_back(source);
+                }
+            }
+            QCOMPARE(axes.size(), expectedBindings.size());
+            for (size_t axis = 0; axis < axes.size(); ++axis) {
+                const int source = expectedBindings[axis];
+                QCOMPARE(axes[axis]->getName(), owners[source]->ids);
+                const auto* binding = table.parameter_bindings[source];
+                std::vector<float> expected;
+                for (int index = 0; index < binding->keys_sources_counts; ++index)
+                    expected.push_back(table.keys->values[binding->keys_sources_begin_indices + index]);
+                QVERIFY(axes[axis]->GetKeys() == expected);
+            }
+        };
+        for (const auto* deformer : table.deformers)
+            check(deformers.value(deformer->ids, nullptr), deformer->keyform_binding_sources_indices);
+        for (const auto* mesh : table.art_meshes)
+            check(meshes.value(mesh->ids, nullptr), mesh->keyform_binding_sources_indices);
+        for (auto* node : tree.getArtTree()) {
+            auto* mesh = dynamic_cast<CArtMeshNode*>(node);
+            QVERIFY(mesh);
+            QVERIFY2(!mesh->GetCanvasPositions().empty(), qPrintable(mesh->getName()));
+            QCOMPARE(mesh->GetCanvasPositions().size(), mesh->GetKeyFormS().front().GetPosition().size());
+        }
     }
 
     void sourceLifetimeAndRepeatedUpdates_data()

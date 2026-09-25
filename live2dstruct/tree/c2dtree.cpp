@@ -17,6 +17,7 @@ void C2DTree::OnUpdate()
     struct Entry {
         C2DTreeNode* node;
         std::shared_ptr<const CCoordinateFrame> parent;
+        bool valid = true;
     };
     std::vector<Entry> pending;
     for (auto it = deformRoot.crbegin(); it != deformRoot.crend(); ++it) pending.push_back({*it, {}});
@@ -28,27 +29,32 @@ void C2DTree::OnUpdate()
         C2DTreeNode* node = entry.node;
         if (!node || visited.contains(node)) continue;
         visited.insert(node);
-        CLinearInterpolation::SetCKeyFormObject(node);
-        node->SetParentFrame(entry.parent);
+        const bool valid = entry.valid && CLinearInterpolation::SetCKeyFormObject(node);
+        node->SetParentFrame(entry.parent, valid);
+        if (!valid) node->UpdateCanvasPositions({});
         std::shared_ptr<const CCoordinateFrame> childFrame = entry.parent;
         if (auto* rotation = dynamic_cast<CRotationNode*>(node)) {
             auto& key = rotation->GetCurKeyForm();
-            node->UpdateCanvasPositions(key.GetPosition());
-            childFrame = std::make_shared<CCoordinateFrame>(
-                std::make_unique<CRotationCoorType>(rotation->GetBaseAngles(), key), entry.parent);
+            if (valid) {
+                node->UpdateCanvasPositions(key.GetPosition());
+                childFrame = std::make_shared<CCoordinateFrame>(
+                    std::make_unique<CRotationCoorType>(rotation->GetBaseAngles(), key), entry.parent);
+            }
             m_displayDeformers.push_back(node);
         } else if (auto* warp = dynamic_cast<CWarpNode*>(node)) {
             auto& key = warp->GetCurKeyForm();
-            node->UpdateCanvasPositions(key.GetPosition());
-            childFrame = std::make_shared<CCoordinateFrame>(
-                std::make_unique<CWarpCoorType>(warp->GetColumns(), warp->GetRows(),
-                                              key.GetPosition(), warp->GetIs_quad_source()), entry.parent);
+            if (valid) {
+                node->UpdateCanvasPositions(key.GetPosition());
+                childFrame = std::make_shared<CCoordinateFrame>(
+                    std::make_unique<CWarpCoorType>(warp->GetColumns(), warp->GetRows(),
+                                                  key.GetPosition(), warp->GetIs_quad_source()), entry.parent);
+            }
             m_displayDeformers.push_back(node);
         } else if (auto* mesh = dynamic_cast<CArtMeshNode*>(node)) {
-            node->UpdateCanvasPositions(mesh->GetCurKeyForm().GetPosition());
+            if (valid) node->UpdateCanvasPositions(mesh->GetCurKeyForm().GetPosition());
         }
         const auto& children = node->getChilds();
-        for (auto it = children.crbegin(); it != children.crend(); ++it) pending.push_back({*it, childFrame});
+        for (auto it = children.crbegin(); it != children.crend(); ++it) pending.push_back({*it, childFrame, valid});
     }
 }
 
@@ -102,6 +108,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
 
         //QMap<int,CParameterNode*> mapPara;
         QVector<QVector<CParameterNode*>> mpakeyPara;
+        QVector<CParameterNode*> bindingNodes(sectionTable.parameter_bindings.size(), nullptr);
+        QVector<CParameterNode*> primaryParameters(sectionTable.parameters.size(), nullptr);
         {
 
             for (int i = 0 ;i < sectionTable.parameters.size();i++){
@@ -109,16 +117,19 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 CParameterNode* parameterNode = Own(new CParameterNode(paraSelect->ids));
                 parameterNode->InitParameterValue(sectionTable,*(paraSelect),0);
                 parametersTree.push_back(parameterNode);
+                primaryParameters[i] = parameterNode;
                 //参数关键帧数量
                 int counts = paraSelect->parameter_binding_sources_counts;
                 if (counts < 0 || paraSelect->parameter_binding_sources_begin_indices < 0 ||
                     paraSelect->parameter_binding_sources_begin_indices > sectionTable.parameter_bindings.size() - counts)
                     counts = 0;
+                if (counts > 0) bindingNodes[paraSelect->parameter_binding_sources_begin_indices] = parameterNode;
                 for(int j = 1 ;j < counts;j++){
                     CParameterNode* next = Own(new CParameterNode(paraSelect->ids));
                     next->InitParameterValue(sectionTable,*(paraSelect),j);
                     parametersTree.push_back(next);
                     parameterNode->AddParaNext(next);
+                    bindingNodes[paraSelect->parameter_binding_sources_begin_indices + j] = next;
                 }
 
             }
@@ -132,7 +143,8 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 if (offset >= 0 && counts >= 0 && offset <= sectionTable.parameter_binding_indices.size() - counts) {
                     for(int j = 0 ; j < counts ;j++){
                         int sources = sectionTable.parameter_binding_indices[offset+j]->binding_sources_indices;
-                        if (sources >= 0 && sources < parametersTree.size()) vetSave.push_back((CParameterNode*)parametersTree[sources]);
+                        if (sources >= 0 && sources < bindingNodes.size() && bindingNodes[sources])
+                            vetSave.push_back(bindingNodes[sources]);
                     }
                 }
                 mpakeyPara.push_back(vetSave);
@@ -283,7 +295,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                         CBlend_shape_keyform_bindings* warpkey = sectionTable.blend_shape_keyform_bindings[j+indices];
                         int paraIndex = warpkey->parameter_binding_sources_indices;
                         if(beginMin <= paraIndex && paraIndex < endMax){
-                            AddEdge(parametersTree[m],vetWarp[warpnode->target_indices]);
+                            AddEdge(primaryParameters[m],vetWarp[warpnode->target_indices]);
                         }
                     }
                 }
@@ -299,7 +311,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                         CBlend_shape_keyform_bindings* warpkey = sectionTable.blend_shape_keyform_bindings[j+indices];
                         int paraIndex = warpkey->parameter_binding_sources_indices;
                         if(beginMin <= paraIndex && paraIndex < endMax){
-                            AddEdge(parametersTree[m],artTree[artnode->target_indices]);
+                            AddEdge(primaryParameters[m],artTree[artnode->target_indices]);
                         }
                     }
                 }

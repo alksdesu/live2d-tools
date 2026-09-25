@@ -43,7 +43,7 @@ public:
     const QList<C2DTreeNode*>& getFathers() const {
         return father;
     }
-    void SetParentFrame(std::shared_ptr<const CCoordinateFrame> frame);
+    void SetParentFrame(std::shared_ptr<const CCoordinateFrame> frame, bool valid = true);
     bool MapToCanvas(const std::vector<float>& positions, std::vector<float>& output) const;
     bool MapFromCanvas(const std::vector<float>& positions, std::vector<float>& output) const;
     bool UpdateCanvasPositions(const std::vector<float>& positions);
@@ -56,6 +56,7 @@ private:
     QString type;
     std::shared_ptr<const CCoordinateFrame> m_parentFrame;
     std::vector<float> m_canvasPositions;
+    bool m_frameValid = true;
 
 
 

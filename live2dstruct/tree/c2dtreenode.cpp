@@ -5,20 +5,23 @@ namespace live2dstruct {
 C2DTreeNode::C2DTreeNode(const QString& name) : name(name) {}
 C2DTreeNode::~C2DTreeNode() = default;
 
-void C2DTreeNode::SetParentFrame(std::shared_ptr<const CCoordinateFrame> frame)
+void C2DTreeNode::SetParentFrame(std::shared_ptr<const CCoordinateFrame> frame, bool valid)
 {
     m_parentFrame = std::move(frame);
+    m_frameValid = valid;
 }
 
 bool C2DTreeNode::MapToCanvas(const std::vector<float>& positions, std::vector<float>& output) const
 {
     static const CCoordinateFrame identity(nullptr);
+    if (!m_frameValid) return false;
     return (m_parentFrame ? *m_parentFrame : identity).MapToCanvas(positions, output);
 }
 
 bool C2DTreeNode::MapFromCanvas(const std::vector<float>& positions, std::vector<float>& output) const
 {
     static const CCoordinateFrame identity(nullptr);
+    if (!m_frameValid) return false;
     return (m_parentFrame ? *m_parentFrame : identity).MapFromCanvas(positions, output);
 }
 

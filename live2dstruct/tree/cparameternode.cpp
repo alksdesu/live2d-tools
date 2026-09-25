@@ -39,7 +39,6 @@ void CParameterNode::InitParameterValue(const CSectionTable &table, const CParam
         for(int j = 0 ; j < keycounts;j++){
             m_keys.push_back(table.keys->GetData(j+keyindices));
         }
-        std::sort(m_keys.begin(), m_keys.end());
 
     }
 

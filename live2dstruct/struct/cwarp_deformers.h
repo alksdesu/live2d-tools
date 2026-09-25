@@ -13,9 +13,9 @@ public:
         int vertex_counts;
         int rows;
         int columns;
-        int is_quad_source;
+        int is_quad_source = 0;
 
-        int keyform_color_sources_begin_indices;
+        int keyform_color_sources_begin_indices = 0;
         Offset(CReader& bytes) {
             keyform_binding_sources_indices = bytes.readInt();
             keyform_sources_begin_indices =bytes.readInt();
@@ -42,7 +42,7 @@ public:
     int vertex_counts;
     int rows;
     int columns;
-    bool is_quad_source;
+    bool is_quad_source = false;
     CWarp_deformers(CReader& bytes,const Offset& warpDeformers, int i) {
         bytes.seek(warpDeformers.keyform_binding_sources_indices + i*4);
         keyform_binding_sources_indices = bytes.readInt();
@@ -63,8 +63,10 @@ public:
         bytes.seek(warpDeformers.columns + i*4);
         columns = bytes.readInt();
 
-        bytes.seek(warpDeformers.is_quad_source + i*4);
-        is_quad_source = bytes.readBoolean();
+        if (warpDeformers.is_quad_source != 0) {
+            bytes.seek(warpDeformers.is_quad_source + i*4);
+            is_quad_source = bytes.readBoolean();
+        }
 
 
     }

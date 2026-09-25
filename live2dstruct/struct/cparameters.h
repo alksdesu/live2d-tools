@@ -31,12 +31,12 @@ public:
         }
 
 
-        int parameter_types;
-        int extension_runtime_space_0;
-        int keys_sources_begin_indices;
-        int keys_sources_counts;
-        int blend_shape_parameter_binding_sources_begin_indices;
-        int blend_shape_parameter_binding_sources_counts;
+        int parameter_types = 0;
+        int extension_runtime_space_0 = 0;
+        int keys_sources_begin_indices = 0;
+        int keys_sources_counts = 0;
+        int blend_shape_parameter_binding_sources_begin_indices = 0;
+        int blend_shape_parameter_binding_sources_counts = 0;
 
         void InitParaExe(CReader& bytes){
             //新版本添加的参数
@@ -62,12 +62,12 @@ public:
     int parameter_binding_sources_begin_indices;
     int parameter_binding_sources_counts;
 
-    int parameter_types;
-    int extension_runtime_space_0;
-    int keys_sources_begin_indices;
-    int keys_sources_counts;
-    int blend_shape_parameter_binding_sources_begin_indices;
-    int blend_shape_parameter_binding_sources_counts;
+    int parameter_types = 0;
+    int extension_runtime_space_0 = 0;
+    int keys_sources_begin_indices = 0;
+    int keys_sources_counts = 0;
+    int blend_shape_parameter_binding_sources_begin_indices = 0;
+    int blend_shape_parameter_binding_sources_counts = 0;
 
 
     CParameters(CReader& bytes,const Offset& parameters, int i) {
@@ -99,23 +99,17 @@ public:
 
 
 
-        bytes.seek(parameters.parameter_types + i*0x4);
-        parameter_types = bytes.readInt();
-
-        bytes.seek(parameters.extension_runtime_space_0 + i*0x4);
-        extension_runtime_space_0 = bytes.readInt();
-
-        bytes.seek(parameters.keys_sources_begin_indices + i*0x4);
-        keys_sources_begin_indices = bytes.readInt();
-
-        bytes.seek(parameters.keys_sources_counts + i*0x4);
-        keys_sources_counts = bytes.readInt();
-
-        bytes.seek(parameters.blend_shape_parameter_binding_sources_begin_indices + i*0x4);
-        blend_shape_parameter_binding_sources_begin_indices = bytes.readInt();
-
-        bytes.seek(parameters.blend_shape_parameter_binding_sources_counts + i*0x4);
-        blend_shape_parameter_binding_sources_counts = bytes.readInt();
+        const auto readExtension = [&bytes, i](int offset) {
+            if (offset == 0) return 0;
+            bytes.seek(offset + i * 4);
+            return bytes.readInt();
+        };
+        parameter_types = readExtension(parameters.parameter_types);
+        extension_runtime_space_0 = readExtension(parameters.extension_runtime_space_0);
+        keys_sources_begin_indices = readExtension(parameters.keys_sources_begin_indices);
+        keys_sources_counts = readExtension(parameters.keys_sources_counts);
+        blend_shape_parameter_binding_sources_begin_indices = readExtension(parameters.blend_shape_parameter_binding_sources_begin_indices);
+        blend_shape_parameter_binding_sources_counts = readExtension(parameters.blend_shape_parameter_binding_sources_counts);
 
 
     }

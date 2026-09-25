@@ -40,7 +40,7 @@ void CDrawRotation::Init(CRotationNode *node)
 {
     vetrclPos.clear();
     vetdirPos.clear();
-    if (!node || node->GetCurKeyForm().GetPosition().size() != 2) return;
+    if (!node || node->GetCurKeyForm().GetPosition().size() != 2 || node->GetCanvasPositions().size() != 2) return;
     this->base_angles =node->GetBaseAngles();
     this->cur =node->GetCurKeyForm();
     if (!std::isfinite(base_angles) || !std::isfinite(cur.Getangles())) return;
