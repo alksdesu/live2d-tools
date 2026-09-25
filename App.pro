@@ -45,6 +45,8 @@ SOURCES += \
     opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
     live2dstruct/ckeyformbindinggrid.cpp \
+    live2dstruct/ckeyformmappingcontext.cpp \
+    live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
@@ -132,6 +134,7 @@ SOURCES += \
     opengl/cmesh.cpp \
     opengl/coffscreenlive.cpp \
     opengl/coffscreenbuffer.cpp \
+    opengl/ccanvascoordinates.cpp \
     opengl/cglmeshbuffer.cpp \
     opengl/cglrenderstate.cpp \
     opengl/ccubismshaderprograms.cpp \
@@ -250,6 +253,8 @@ HEADERS += \
     opengl/cuvgeometry.h \
     live2dstruct/cmodeldocument.h \
     live2dstruct/ckeyformbindinggrid.h \
+    live2dstruct/ckeyformmappingcontext.h \
+    live2dstruct/ckeyformeditcontroller.h \
     live2dstruct/cmocpreviewbuilder.h \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
@@ -338,6 +343,7 @@ HEADERS += \
     opengl/cmesh.h \
     opengl/coffscreenlive.h \
     opengl/coffscreenbuffer.h \
+    opengl/ccanvascoordinates.h \
     opengl/cglmeshbuffer.h \
     opengl/cglrenderstate.h \
     opengl/ccubismshaderprograms.h \

@@ -10,6 +10,8 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QScopedValueRollback>
+#include <QTimer>
 #include <QSpinBox>
 #include <QSet>
 #include <QTableWidget>
@@ -28,6 +30,8 @@
 #include <QMessageBox>
 #include <cmath>
 #include <algorithm>
+#include <exception>
+#include <utility>
 
 namespace {
 QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
@@ -251,11 +255,34 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     setWidget(content);
     connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingKeyform) return;
+        if (m_keyformHandler) {
+            // activated 在 currentIndexChanged 之后发出，不能提前回滚用户选择。
+            QTimer::singleShot(0, this, [this] {
+                if (!m_keyformHandler || m_updatingKeyform) return;
+                const QSignalBlocker blocker(m_keyformCombo);
+                m_keyformCombo->setCurrentIndex(m_activeKeyformIndex);
+            });
+            return;
+        }
+        m_activeKeyformIndex = index;
         RebuildKeyformTable();
         if (index >= 0 && !m_selectionName.isEmpty()) {
             emit DrawableKeyformActivated(m_selectionName, index);
             emit DrawableKeyformSelected(m_selectionName, index);
         }
+    });
+    connect(m_keyformCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index){
+        if (!m_keyformHandler || m_updatingKeyform || index == m_activeKeyformIndex ||
+            index < 0 || index >= m_keyformCombo->count() || m_selectionType != QLatin1String("artmesh")) return;
+        if (!RequestKeyform(m_selectionName, index)) return;
+        m_activeKeyformIndex = index;
+        {
+            const QSignalBlocker blocker(m_keyformCombo);
+            m_keyformCombo->setCurrentIndex(index);
+        }
+        RebuildKeyformTable();
+        emit DrawableKeyformActivated(m_selectionName, index);
+        emit DrawableKeyformSelected(m_selectionName, index);
     });
     connect(m_vertexTable, &QTableWidget::cellChanged, this, [this](int row, int column){
         if (!m_updatingKeyform) ApplyKeyformCellEdit(row, column);
@@ -300,10 +327,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         if (before == inverted) return;
         const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                                live2dstruct::CModelEdit::MaskInverted, before, inverted};
-        if (!m_document->ExecuteEdit(command)) {
-            showModelObject(m_selectionName, m_selectionType);
-            return;
-        }
+        if (!SubmitEdit(command)) return;
         emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
         showModelObject(m_selectionName, m_selectionType);
     });
@@ -317,10 +341,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
                                                live2dstruct::CModelEdit::DeformerParent,
                                                before, after};
-        if (!m_document->ExecuteEdit(command)) {
-            showModelObject(m_selectionName, m_selectionType);
-            return;
-        }
+        if (!SubmitEdit(command)) return;
         emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
         showModelObject(m_selectionName, m_selectionType);
     });
@@ -345,9 +366,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                 }
                 if (before == visible) continue;
                 const live2dstruct::CModelEdit command{name, type, live2dstruct::CModelEdit::Visibility, before, visible};
-                if (m_document->ExecuteEdit(command)) {
-                    emit VisibilityChanged(name, type, visible);
-                }
+                if (!SubmitEdit(command)) return;
+                emit VisibilityChanged(name, type, visible);
+                emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
             }
             return;
         }
@@ -364,9 +385,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         if (before == visible) return;
         const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
                                                live2dstruct::CModelEdit::Visibility, before, visible};
-        if (m_document->ExecuteEdit(command)) {
-            emit VisibilityChanged(m_selectionName, m_selectionType, visible);
-        }
+        if (!SubmitEdit(command)) return;
+        emit VisibilityChanged(m_selectionName, m_selectionType, visible);
+        emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     });
     connect(m_opacitySpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value){
         if (m_updatingVisibility || !m_document) return;
@@ -381,9 +402,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                 if (qFuzzyCompare(before + 1.0f, after + 1.0f)) continue;
                 const live2dstruct::CModelEdit command{name, QLatin1String("artmesh"),
                                                        live2dstruct::CModelEdit::Opacity, before, after};
-                if (m_document->ExecuteEdit(command)) {
-                    emit DrawableOpacityChanged(name, after);
-                }
+                if (!SubmitEdit(command)) return;
+                emit DrawableOpacityChanged(name, after);
+                emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
             }
             return;
         }
@@ -395,9 +416,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         const float after = static_cast<float>(value);
         const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
                                                live2dstruct::CModelEdit::Opacity, before, after};
-        if (m_document->ExecuteEdit(command)) {
-            emit DrawableOpacityChanged(m_selectionName, after);
-        }
+        if (!SubmitEdit(command)) return;
+        emit DrawableOpacityChanged(m_selectionName, after);
+        emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     });
     connect(m_drawOrderSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value){
         if (m_updatingVisibility || !m_document) return;
@@ -411,9 +432,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                 if (before == value) continue;
                 const live2dstruct::CModelEdit command{name, QLatin1String("artmesh"),
                                                        live2dstruct::CModelEdit::DrawOrder, before, value};
-                if (m_document->ExecuteEdit(command)) {
-                    emit DrawableDrawOrderChanged(name, value);
-                }
+                if (!SubmitEdit(command)) return;
+                emit DrawableDrawOrderChanged(name, value);
+                emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
             }
             return;
         }
@@ -424,9 +445,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         if (before == value) return;
         const live2dstruct::CModelEdit command{m_selectionName, m_selectionType,
                                                live2dstruct::CModelEdit::DrawOrder, before, value};
-        if (m_document->ExecuteEdit(command)) {
-            emit DrawableDrawOrderChanged(m_selectionName, value);
-        }
+        if (!SubmitEdit(command)) return;
+        emit DrawableDrawOrderChanged(m_selectionName, value);
+        emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     });
     ClearSelection();
 }
@@ -437,6 +458,78 @@ void CInspectorPanel::SetDocument(live2dstruct::CModelDocument* document)
     m_document = document;
     if (m_selectionName.isEmpty()) ClearSelection();
     else showModelObject(m_selectionName, m_selectionType, sameDocument);
+}
+
+void CInspectorPanel::SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler)
+{
+    m_editHandler = std::move(handler);
+}
+
+void CInspectorPanel::SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler)
+{
+    m_historyHandler = std::move(handler);
+}
+
+void CInspectorPanel::SetKeyformHandler(std::function<bool(const QString&, int, QString*)> handler)
+{
+    m_keyformHandler = std::move(handler);
+}
+
+void CInspectorPanel::RejectEdit(const QString& error)
+{
+    {
+        const QSignalBlocker blocker(this);
+        RefreshSelection();
+    }
+    emit EditRejected(error.isEmpty() ? QStringLiteral("无法提交当前编辑，已保留原状态") : error);
+}
+
+bool CInspectorPanel::SubmitEdit(const live2dstruct::CModelEdit& edit)
+{
+    if (!m_document || m_submitting) return false;
+    const QScopedValueRollback<bool> guard(m_submitting, true);
+    QString error;
+    try {
+        const auto handler = m_editHandler;
+        if (handler ? handler(edit, &error) : m_document->ExecuteEdit(edit)) return true;
+    } catch (const std::exception& exception) {
+        error = QStringLiteral("编辑提交失败：%1").arg(QString::fromUtf8(exception.what()));
+    }
+    RejectEdit(error);
+    return false;
+}
+
+bool CInspectorPanel::SubmitHistory(bool undo, live2dstruct::CModelEdit& edit)
+{
+    if (!m_document || m_submitting) return false;
+    const QScopedValueRollback<bool> guard(m_submitting, true);
+    QString error;
+    try {
+        const auto handler = m_historyHandler;
+        const bool accepted = handler ? handler(undo, edit, &error)
+                                      : (undo ? m_document->UndoEdit(&edit) : m_document->RedoEdit(&edit));
+        if (accepted) return true;
+    } catch (const std::exception& exception) {
+        error = QStringLiteral("历史操作失败：%1").arg(QString::fromUtf8(exception.what()));
+    }
+    RejectEdit(error);
+    return false;
+}
+
+bool CInspectorPanel::RequestKeyform(const QString& name, int index)
+{
+    if (!m_keyformHandler) return true;
+    if (m_submitting) return false;
+    const QScopedValueRollback<bool> guard(m_submitting, true);
+    QString error;
+    try {
+        const auto handler = m_keyformHandler;
+        if (handler(name, index, &error)) return true;
+    } catch (const std::exception& exception) {
+        error = QStringLiteral("关键形选择失败：%1").arg(QString::fromUtf8(exception.what()));
+    }
+    RejectEdit(error);
+    return false;
 }
 
 void CInspectorPanel::SetSelection(const QString& name, const QString& type)
@@ -459,6 +552,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     }
     m_selectionName.clear();
     m_selectionType.clear();
+    m_activeKeyformIndex = -1;
     m_selectionNames = names;
     m_selectionTypes = types;
     m_emptyLabel->setVisible(true);
@@ -578,7 +672,7 @@ void CInspectorPanel::RebuildKeyformTable()
 {
     m_updatingKeyform = true;
     m_vertexTable->setRowCount(0);
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         keyformIndex < 0 || IsLocked(m_selectionType, m_selectionName)) {
         m_vertexTable->setEnabled(false);
@@ -671,10 +765,7 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("rotation"),
                                            live2dstruct::CModelEdit::RotationKeyforms,
                                            QVariant::fromValue(before), QVariant::fromValue(after)};
-    if (!m_document->ExecuteEdit(command)) {
-        RebuildRotationKeyformTable();
-        return;
-    }
+    if (!SubmitEdit(command)) return;
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     RebuildRotationKeyformTable();
 }
@@ -729,10 +820,7 @@ void CInspectorPanel::ApplyWarpKeyformCellEdit(int row, int column)
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("warp"),
                                            live2dstruct::CModelEdit::WarpKeyforms,
                                            QVariant::fromValue(before), QVariant::fromValue(after)};
-    if (!m_document->ExecuteEdit(command)) {
-        RebuildWarpKeyformTable();
-        return;
-    }
+    if (!SubmitEdit(command)) return;
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     RebuildWarpKeyformTable();
 }
@@ -742,7 +830,7 @@ void CInspectorPanel::ApplyKeyformCellEdit(int row, int column)
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName) ||
         (column != 1 && column != 2) || row < 0 || row >= m_vertexTable->rowCount()) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     if (keyformIndex < 0 || before.size() != m_vertexTable->rowCount() * 2) return;
     bool ok = false;
@@ -759,12 +847,7 @@ void CInspectorPanel::ApplyKeyformCellEdit(int row, int column)
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex};
-    if (!m_document->ExecuteEdit(command)) {
-        m_updatingKeyform = true;
-        m_vertexTable->item(row, column)->setText(QString::number(before[row * 2 + column - 1], 'f', 6));
-        m_updatingKeyform = false;
-        return;
-    }
+    if (!SubmitEdit(command)) return;
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
@@ -773,7 +856,7 @@ void CInspectorPanel::MirrorKeyform(bool horizontal)
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     if (keyformIndex < 0 || before.isEmpty() || before.size() % 2 != 0) return;
     float minimum = before[horizontal ? 0 : 1];
@@ -789,7 +872,7 @@ void CInspectorPanel::MirrorKeyform(bool horizontal)
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -799,7 +882,7 @@ void CInspectorPanel::InterpolatePreviousKeyform()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     if (keyformIndex <= 0) return;
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     const QVector<float> previous = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex - 1);
@@ -811,7 +894,7 @@ void CInspectorPanel::InterpolatePreviousKeyform()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -821,14 +904,14 @@ void CInspectorPanel::CopyKeyformToNext()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> source = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex + 1);
     if (keyformIndex < 0 || source.isEmpty() || source.size() != before.size()) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(source), keyformIndex + 1, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex + 1, source);
     emit DrawableKeyformActivated(m_selectionName, keyformIndex);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -838,7 +921,7 @@ void CInspectorPanel::ResetCurrentKeyform()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     QVector<float> original;
     for (const auto& drawable : m_document->Drawables()) {
@@ -851,7 +934,7 @@ void CInspectorPanel::ResetCurrentKeyform()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(original), keyformIndex, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, original);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -860,7 +943,7 @@ void CInspectorPanel::ResetCurrentKeyform()
 void CInspectorPanel::CopyCurrentKeyform()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty()) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> positions = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     if (keyformIndex < 0 || positions.isEmpty() || positions.size() % 2 != 0) return;
     QJsonArray values;
@@ -876,7 +959,7 @@ void CInspectorPanel::AutoTriangulate()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> positions = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     const QVector<quint16> before = m_document->DrawableIndices(m_selectionName);
     if (keyformIndex < 0 || positions.size() < 6 || positions.size() % 2 != 0 || before.isEmpty()) return;
@@ -986,7 +1069,7 @@ void CInspectorPanel::AutoTriangulate()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MeshIndices,
                                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     emit DrawableIndicesChanged(m_selectionName, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
@@ -1057,7 +1140,7 @@ void CInspectorPanel::PasteTopology()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MeshIndices,
                                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     emit DrawableIndicesChanged(m_selectionName, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
@@ -1066,7 +1149,7 @@ void CInspectorPanel::PasteCurrentKeyform()
 {
     if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
         IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     if (keyformIndex < 0 || before.isEmpty()) return;
     QJsonParseError parseError;
@@ -1098,7 +1181,7 @@ void CInspectorPanel::PasteCurrentKeyform()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -1106,6 +1189,7 @@ void CInspectorPanel::PasteCurrentKeyform()
 
 void CInspectorPanel::ClearSelection()
 {
+    m_activeKeyformIndex = -1;
     m_selectionName.clear();
     m_selectionType.clear();
     m_selectionNames.clear();
@@ -1228,7 +1312,7 @@ void CInspectorPanel::EditMasks()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MaskIndices,
                                            QVariant::fromValue(current), QVariant::fromValue(after)};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     emit DrawableMaskIndicesChanged(m_selectionName, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     showModelObject(m_selectionName, m_selectionType);
@@ -1241,7 +1325,7 @@ void CInspectorPanel::TranslateSelectedVertices()
     const float deltaX = static_cast<float>(m_vertexDeltaX->value());
     const float deltaY = static_cast<float>(m_vertexDeltaY->value());
     if (!std::isfinite(deltaX) || !std::isfinite(deltaY) || (deltaX == 0.0f && deltaY == 0.0f)) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     if (keyformIndex < 0 || before.isEmpty() || before.size() % 2 != 0) return;
     QSet<int> rows;
@@ -1258,7 +1342,7 @@ void CInspectorPanel::TranslateSelectedVertices()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -1281,7 +1365,7 @@ void CInspectorPanel::MergeSelectedVertices()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MeshIndices,
                                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     emit DrawableIndicesChanged(m_selectionName, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
@@ -1294,7 +1378,7 @@ void CInspectorPanel::TransformSelectedVertices()
     const float degrees = static_cast<float>(m_vertexRotation->value());
     if (!std::isfinite(scale) || !std::isfinite(degrees) || scale <= 0.0f ||
         (qFuzzyCompare(scale, 1.0f) && qFuzzyIsNull(degrees))) return;
-    const int keyformIndex = m_keyformCombo->currentIndex();
+    const int keyformIndex = m_activeKeyformIndex;
     const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
     if (keyformIndex < 0 || before.isEmpty() || before.size() % 2 != 0) return;
     QSet<int> selectedRows;
@@ -1327,7 +1411,7 @@ void CInspectorPanel::TransformSelectedVertices()
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
-    if (!m_document->ExecuteEdit(command)) return;
+    if (!SubmitEdit(command)) return;
     RebuildKeyformTable();
     emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
@@ -1339,7 +1423,7 @@ void CInspectorPanel::Undo()
     live2dstruct::CModelEdit pending;
     if (!m_document->PeekUndoEdit(&pending) || pending.field == live2dstruct::CModelEdit::ParameterValue) return;
     live2dstruct::CModelEdit edit;
-    if (!m_document->UndoEdit(&edit)) return;
+    if (!SubmitHistory(true, edit)) return;
     EmitEdit(edit, false);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
@@ -1350,7 +1434,7 @@ void CInspectorPanel::Redo()
     live2dstruct::CModelEdit pending;
     if (!m_document->PeekRedoEdit(&pending) || pending.field == live2dstruct::CModelEdit::ParameterValue) return;
     live2dstruct::CModelEdit edit;
-    if (!m_document->RedoEdit(&edit)) return;
+    if (!SubmitHistory(false, edit)) return;
     EmitEdit(edit, true);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
@@ -1361,8 +1445,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
         ClearSelection();
         return;
     }
-    const int selectedKeyform = preserveKeyforms ? m_keyformCombo->currentIndex() : 0;
+    const int selectedKeyform = preserveKeyforms ? m_activeKeyformIndex : 0;
     const int selectedWarpKeyform = preserveKeyforms ? m_warpKeyformCombo->currentIndex() : 0;
+    m_activeKeyformIndex = -1;
     m_emptyLabel->setVisible(false);
     m_typeLabel->setText(type == QLatin1String("artmesh") ? QStringLiteral("ArtMesh")
                        : type == QLatin1String("part") ? QStringLiteral("Part")
@@ -1455,6 +1540,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
             if (!drawable.keyforms.isEmpty())
                 m_keyformCombo->setCurrentIndex(selectedKeyform >= 0 && selectedKeyform < drawable.keyforms.size()
                                                    ? selectedKeyform : 0);
+            m_activeKeyformIndex = m_keyformCombo->currentIndex();
             m_updatingKeyform = false;
             RebuildKeyformTable();
             if (m_keyformCombo->currentIndex() >= 0)

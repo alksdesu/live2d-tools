@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
+#include <type_traits>
 #include <limits>
 #include <utility>
 
@@ -72,6 +73,7 @@ bool metadataFromVariant(const QVariant& value, const CModelParameterMetadata& c
 
 void CModelDocument::Clear()
 {
+    ++m_revision;
     m_loaded = false;
     m_sourcePath.clear();
     m_sourceBytes.clear();
@@ -105,7 +107,7 @@ bool CModelDocument::Load(const QString& mocPath, QString* error)
     CReader reader(mocPath);
     CModelDocument candidate;
     if (!candidate.LoadInternal(reader, mocPath, error)) return false;
-    *this = std::move(candidate);
+    CommitCandidate(std::move(candidate));
     return true;
 }
 
@@ -114,8 +116,17 @@ bool CModelDocument::LoadBytes(const QByteArray& bytes, const QString& sourcePat
     auto reader = CReader::FromBytes(bytes);
     CModelDocument candidate;
     if (!candidate.LoadInternal(reader, sourcePath, error)) return false;
-    *this = std::move(candidate);
+    CommitCandidate(std::move(candidate));
     return true;
+}
+
+void CModelDocument::CommitCandidate(CModelDocument&& candidate) noexcept
+{
+    static_assert(std::is_nothrow_move_assignable_v<CModelDocument>);
+    if (this == &candidate) return;
+    const quint64 revision = m_revision + 1;
+    *this = std::move(candidate);
+    m_revision = revision;
 }
 
 bool CModelDocument::SourceMatchesDisk(QString* error) const
@@ -392,6 +403,7 @@ bool CModelDocument::SetPartVisible(const QString& id, bool visible)
     for (CModelPart& part : m_parts) {
         if (part.id != id) continue;
         part.visible = visible;
+        ++m_revision;
         return true;
     }
     return false;
@@ -408,6 +420,7 @@ bool CModelDocument::SetParameterValue(const QString& id, float value)
     }
     if (value < metadata.minimum || value > metadata.maximum) return false;
     m_parameterValues.insert(id, value);
+    ++m_revision;
     return true;
 }
 
@@ -467,6 +480,7 @@ bool CModelDocument::SetParameterMetadata(const QString& id, const CModelParamet
     CModelParameterMetadata normalized = metadata;
     if (normalized.displayName.isEmpty()) normalized.displayName = base.displayName;
     m_parameterMetadataOverrides.insert(id, normalized);
+    ++m_revision;
     return true;
 }
 
@@ -496,6 +510,7 @@ bool CModelDocument::SetDrawableKeyformPositions(const QString& id, int keyformI
         auto& overrides = m_drawableKeyformPositionOverrides[id];
         if (overrides.size() < drawable.keyforms.size()) overrides.resize(drawable.keyforms.size());
         overrides[keyformIndex] = positions;
+        ++m_revision;
         return true;
     }
     return false;
@@ -516,6 +531,7 @@ bool CModelDocument::SetDrawableIndices(const QString& id, const QVector<quint16
         if (drawable.id != id) continue;
         if (!CMeshTopology::IsValid(indices, drawable.vertexCount)) return false;
         m_drawableIndexOverrides.insert(id, indices);
+        ++m_revision;
         return true;
     }
     return false;
@@ -589,6 +605,7 @@ bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)
         current = DeformerParentIndex(m_deformers[current].id);
     }
     m_deformerParentOverrides.insert(id, parentIndex);
+    ++m_revision;
     return true;
 }
 
@@ -621,6 +638,7 @@ bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents
         }
     }
     m_deformerParentOverrides = candidate;
+    ++m_revision;
     return true;
 }
 
@@ -649,6 +667,7 @@ bool CModelDocument::SetDeformerRotationKeyforms(const QString& id,
                 return false;
         }
         m_deformerRotationKeyformOverrides.insert(id, keyforms);
+        ++m_revision;
         return true;
     }
     return false;
@@ -684,6 +703,7 @@ bool CModelDocument::SetDeformerWarpKeyforms(const QString& id,
             for (float position : keyform.positions) if (!std::isfinite(position)) return false;
         }
         m_deformerWarpKeyformOverrides.insert(id, keyforms);
+        ++m_revision;
         return true;
     }
     return false;
@@ -700,6 +720,7 @@ bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int
             unique.insert(maskIndex);
         }
         m_drawableMaskIndexOverrides.insert(id, maskIndices);
+        ++m_revision;
         return true;
     }
     return false;
@@ -719,6 +740,7 @@ bool CModelDocument::SetDrawableMaskInverted(const QString& id, bool inverted)
     for (const CModelDrawable& drawable : m_drawables) {
         if (drawable.id != id) continue;
         m_drawableMaskInvertedOverrides.insert(id, inverted);
+        ++m_revision;
         return true;
     }
     return false;
@@ -729,6 +751,7 @@ bool CModelDocument::SetDeformerVisible(const QString& id, bool visible)
     for (CModelDeformer& deformer : m_deformers) {
         if (deformer.id != id) continue;
         deformer.visible = visible;
+        ++m_revision;
         return true;
     }
     return false;
@@ -739,6 +762,7 @@ bool CModelDocument::SetDrawableVisible(const QString& id, bool visible)
     for (CModelDrawable& drawable : m_drawables) {
         if (drawable.id != id) continue;
         drawable.visible = visible;
+        ++m_revision;
         return true;
     }
     return false;
@@ -751,6 +775,7 @@ bool CModelDocument::SetDrawableOpacity(const QString& id, float opacity)
     for (const CModelDrawable& drawable : m_drawables) {
         if (drawable.id != id) continue;
         m_drawableOpacityOverrides.insert(id, clamped);
+        ++m_revision;
         return true;
     }
     return false;
@@ -766,6 +791,7 @@ bool CModelDocument::SetDrawableDrawOrder(const QString& id, int drawOrder)
     for (const CModelDrawable& drawable : m_drawables) {
         if (drawable.id != id) continue;
         m_drawableDrawOrderOverrides.insert(id, qBound(0, drawOrder, 1000));
+        ++m_revision;
         return true;
     }
     return false;
@@ -780,12 +806,15 @@ void CModelDocument::SetLocked(const QString& type, const QString& id, bool lock
 {
     if (type.isEmpty() || id.isEmpty()) return;
     const QString key = type + QLatin1Char('|') + id;
+    if (m_lockedKeys.contains(key) == locked) return;
+    ++m_revision;
     if (locked) m_lockedKeys.insert(key);
     else m_lockedKeys.remove(key);
 }
 
 void CModelDocument::ClearLocked()
 {
+    if (!m_lockedKeys.isEmpty()) ++m_revision;
     m_lockedKeys.clear();
 }
 
@@ -830,6 +859,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         }
         for (auto it = values.cbegin(); it != values.cend(); ++it)
             m_parameterValues.insert(it.key(), it.value());
+        ++m_revision;
         return true;
     }
     if (edit.field == CModelEdit::ParameterMetadata) {
@@ -926,6 +956,7 @@ bool CModelDocument::RedoEdit(CModelEdit* edit)
 
 void CModelDocument::ClearEditHistory()
 {
+    if (!m_editHistory.isEmpty()) ++m_revision;
     m_editHistory.clear();
     m_editIndex = 0;
 }

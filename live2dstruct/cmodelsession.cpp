@@ -625,7 +625,7 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
         candidate.SetLocked(it.key().left(separator), it.key().mid(separator + 1), it.value());
     }
     candidate.ClearEditHistory();
-    result = std::move(candidate);
+    result.CommitCandidate(std::move(candidate));
     setError(error, {});
     return true;
 }

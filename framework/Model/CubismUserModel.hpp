@@ -130,7 +130,8 @@ public:
 protected:
     bool ReplaceModel(const csmByte* bytes, csmSizeInt size,
                       const CubismModelReplacement::RendererPreparation& prepareRenderer,
-                      QString* error = nullptr);
+                      QString* error = nullptr,
+                      const CubismModelReplacement::ModelPreparation& prepareModel = {});
 
     CubismMoc*              _moc;                       ///< Mocデータ
     CubismModel*            _model;                     ///< Modelインスタンス

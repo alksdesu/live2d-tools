@@ -5,6 +5,7 @@
 #include "std/cmodeljson.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
+#include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
 #include <QAction>
@@ -62,6 +63,14 @@ private:
     bool RuntimeMatchesDocument(QString* error = nullptr) const;
     void SyncDocumentToRuntime();
     void ClearTimelinePreview();
+    bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
+                              const QMap<QString, float>& pose, bool editing, QString* error);
+    bool ActivateKeyform(const QString& id, int keyform, QString* error);
+    bool EndKeyformEditing(QString* error = nullptr);
+    bool SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error);
+    bool ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error);
+    void RefreshKeyformUi(bool changed = false);
+    void SelectModelObjects(const QStringList& ids, const QStringList& types);
     QString m_parameterBeingEdited;
     void RefreshUndoActions();
     void UndoDocumentEdit();
@@ -112,6 +121,9 @@ private:
     QWidget* m_placeholder = nullptr;
     QWidget* m_canvasHost = nullptr;
     live2dstruct::CModelDocument m_document;
+    live2dstruct::CKeyformEditController m_keyformEditor;
+    QMap<QString, float> m_keyformBaseValues;
+    QPointer<QPushButton> m_finishKeyformButton;
 
     // Dock 面板
     CModelTreePanel* m_treePanel = nullptr;

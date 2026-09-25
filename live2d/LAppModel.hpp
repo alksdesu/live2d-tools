@@ -33,6 +33,11 @@ public:
     const QByteArray& GetSourceMocDigest() const { return m_sourceMocDigest; }
     const QByteArray& GetPreviewMocDigest() const { return m_previewMocDigest; }
     bool ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error = nullptr);
+    bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                            const QMap<QString, float>& pose, QString* error = nullptr);
+    bool EndEditorPreview(QString* error = nullptr);
+    bool HasEditorPreview() const { return m_editorEntryState != nullptr; }
+    QMap<QString, float> GetEditorBaseParameters() const { return m_editorBaseParameters; }
     void CommitTextureCache() { m_pendingTextureIds.clear(); m_textureCacheCommitted = true; }
     void Update();
     bool SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline = nullptr,
@@ -108,6 +113,10 @@ private:
     bool SetupModel(Csm::ICubismModelSetting* setting);
     void ApplyTimelinePreview();
     void ApplyPartVisibility();
+    void ApplyPartVisibility(Csm::CubismModel& model) const;
+    bool ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
+                                 const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
+                                 QString* error);
     int FindPartIndex(const QString& id) const;
     CMotionPreviewFrame _timelinePreview;
     QMap<QString, float> _timelineParameters;
@@ -155,6 +164,10 @@ private:
     QByteArray m_sourceMocBytes;
     QByteArray m_sourceMocDigest;
     QByteArray m_previewMocDigest;
+    QByteArray m_previewMocBytes;
+    std::unique_ptr<Csm::CubismModel::RuntimeValueSnapshot> m_editorEntryState;
+    QMap<QString, float> m_editorPose;
+    QMap<QString, float> m_editorBaseParameters;
     QSet<Csm::csmUint32> m_pendingTextureIds;
     bool m_textureCacheCommitted = false;
     QMap<QString,int> m_mapParaToIndex;

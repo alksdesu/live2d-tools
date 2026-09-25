@@ -4,6 +4,7 @@
 #include <QDockWidget>
 #include <QSet>
 #include <QVector>
+#include <functional>
 
 namespace live2dstruct {
 class CModelDocument;
@@ -30,6 +31,11 @@ public:
     void ClearSelection();
     void RefreshSelection();
     void SetLockedState(const QSet<QString>& lockedKeys);
+    void SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler);
+    void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);
+    void SetKeyformHandler(std::function<bool(const QString&, int, QString*)> handler);
+    QString GetSelectionId() const { return m_selectionName; }
+    int GetActiveKeyformIndex() const { return m_activeKeyformIndex; }
 
 public slots:
     void Undo();
@@ -47,6 +53,7 @@ signals:
     void DrawableIndicesChanged(const QString& name, const QVector<quint16>& indices);
     void DrawableMaskIndicesChanged(const QString& name, const QVector<int>& maskIndices);
     void HistoryChanged(bool canUndo, bool canRedo);
+    void EditRejected(const QString& error);
 
 private:
     void showModelObject(const QString& name, const QString& type, bool preserveKeyforms = true);
@@ -71,8 +78,17 @@ private:
     void RebuildWarpKeyformTable();
     void ApplyWarpKeyformCellEdit(int row, int column);
     bool IsLocked(const QString& type, const QString& name) const;
+    bool SubmitEdit(const live2dstruct::CModelEdit& edit);
+    bool SubmitHistory(bool undo, live2dstruct::CModelEdit& edit);
+    bool RequestKeyform(const QString& name, int index);
+    void RejectEdit(const QString& error);
 
     live2dstruct::CModelDocument* m_document = nullptr;
+    std::function<bool(const live2dstruct::CModelEdit&, QString*)> m_editHandler;
+    std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> m_historyHandler;
+    std::function<bool(const QString&, int, QString*)> m_keyformHandler;
+    bool m_submitting = false;
+    int m_activeKeyformIndex = -1;
     QString m_selectionName;
     QString m_selectionType;
     QStringList m_selectionNames;

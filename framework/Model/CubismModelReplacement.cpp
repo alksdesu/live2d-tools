@@ -25,7 +25,8 @@ CubismModelReplacement::~CubismModelReplacement()
 bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
                                     const CubismMoc& sourceMoc, const CubismModel& source,
                                     const Rendering::CubismRenderer& renderer,
-                                    const RendererPreparation& prepareRenderer, QString* error)
+                                    const RendererPreparation& prepareRenderer, QString* error,
+                                    const ModelPreparation& prepareModel)
 {
     if (error) error->clear();
     if (_moc || _model || _renderer || _prepared)
@@ -39,6 +40,10 @@ bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
         candidate._model = candidate._moc->CreateModel();
         if (!candidate._model) return fail(error, QStringLiteral("无法创建预览模型"));
         if (!candidate._model->CopyRuntimeStateFrom(source, error)) return false;
+        if (prepareModel && !prepareModel(candidate._model, error)) {
+            if (error && error->isEmpty()) *error = QStringLiteral("预览模型姿态准备失败");
+            return false;
+        }
         candidate._model->Update();
         if (!candidate._model->HasFiniteDrawableState(error)) return false;
         candidate._model->InitMesh();

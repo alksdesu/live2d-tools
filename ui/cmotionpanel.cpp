@@ -753,13 +753,23 @@ void CMotionPanel::EmitTimelinePreview()
     emit MotionTimelinePreviewChanged(frame.parameters);
 }
 
-void CMotionPanel::StopTimelinePreview()
+void CMotionPanel::PauseTimelinePreview()
 {
     ++m_timelineRevision;
     m_timelineTimer->stop();
     m_playTimelineButton->setText(QStringLiteral("预览"));
+}
+
+void CMotionPanel::StopTimelinePreview()
+{
+    PauseTimelinePreview();
     m_endPreviewButton->setEnabled(false);
     emit TimelinePreviewStopped();
+}
+
+void CMotionPanel::SetTimelinePreviewAvailable(bool available)
+{
+    m_endPreviewButton->setEnabled(available);
 }
 
 bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float value)

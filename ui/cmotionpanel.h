@@ -49,6 +49,8 @@ public:
     void SetParameterIds(const QStringList& ids) { m_parameterIds = ids; }
     bool AddTimelinePoint(const CMotionTrack& track, float time, float value);
     void StopTimelinePreview();
+    void PauseTimelinePreview();
+    void SetTimelinePreviewAvailable(bool available);
     const CMotionTimeline& Timeline() const { return m_timeline; }
     double TimelineTime() const { return m_timelineTime; }
     bool UsesMotionFades() const { return m_previewFades->isChecked(); }

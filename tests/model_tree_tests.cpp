@@ -1,4 +1,5 @@
 #include "ui/cmodeltreepanel.h"
+#include "ui/cinspectorpanel.h"
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
@@ -9,6 +10,8 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QTreeWidgetItemIterator>
+#include <QComboBox>
+#include <algorithm>
 
 namespace {
 QList<QTreeWidgetItem*> treeItems(CModelTreePanel& panel)
@@ -31,6 +34,63 @@ class ModelTreeTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void meshHighlightPreservesAcceptedKeyformAcrossBothTrees()
+    {
+        live2dstruct::CModelDocument document;
+        const QString path = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        QVERIFY(document.Load(path));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable){ return drawable.vertexCount && drawable.keyforms.size() > 1; });
+        QVERIFY(mesh != document.Drawables().cend());
+        CModelTreePanel tree;
+        tree.BuildTree(path, nullptr);
+        CInspectorPanel inspector;
+        inspector.SetDocument(&document);
+        int activations = 0;
+        inspector.SetKeyformHandler([&](const QString&, int, QString*) { ++activations; return true; });
+        connect(&tree, &CModelTreePanel::ObjectSelected, &inspector, &CInspectorPanel::SetSelection);
+        connect(&tree, &CModelTreePanel::ObjectsSelected, &inspector, &CInspectorPanel::SetSelections);
+        QSignalSpy selections(&tree, &CModelTreePanel::ObjectsSelected);
+        QSignalSpy objectSelections(&tree, &CModelTreePanel::ObjectSelected);
+        tree.HighlightMesh(mesh->id);
+        QCOMPARE(selections.size(), 1);
+        QCOMPARE(selections.first(), (QList<QVariant>{QStringList{mesh->id}, QStringList{QStringLiteral("artmesh")}}));
+        QCOMPARE(objectSelections.size(), 0);
+        QCOMPARE(inspector.GetSelectionId(), mesh->id);
+        QCOMPARE(inspector.GetActiveKeyformIndex(), 0);
+        QCOMPARE(activations, 0);
+        auto* combo = inspector.findChild<QComboBox*>("keyformSelector");
+        QVERIFY(combo);
+        QTest::keyClick(combo, Qt::Key_Down);
+        QCOMPARE(inspector.GetActiveKeyformIndex(), 1);
+        QCOMPARE(activations, 1);
+        selections.clear();
+        tree.HighlightMesh(mesh->id);
+        QCOMPARE(selections.size(), 0);
+        QCOMPARE(inspector.GetSelectionId(), mesh->id);
+        QCOMPARE(inspector.GetActiveKeyformIndex(), 1);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(activations, 1);
+        const auto other = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [&mesh](const auto& value){ return value.id != mesh->id && value.vertexCount && !value.keyforms.isEmpty(); });
+        QVERIFY(other != document.Drawables().cend());
+        tree.HighlightMesh(other->id);
+        QCOMPARE(selections.size(), 1);
+        QCOMPARE(selections.first(), (QList<QVariant>{QStringList{other->id}, QStringList{QStringLiteral("artmesh")}}));
+        QCOMPARE(inspector.GetSelectionId(), other->id);
+        QCOMPARE(inspector.GetActiveKeyformIndex(), 0);
+        QCOMPARE(activations, 1);
+        selections.clear();
+        tree.HighlightMesh({});
+        QCOMPARE(selections.size(), 1);
+        QCOMPARE(selections.first(), (QList<QVariant>{QStringList{}, QStringList{}}));
+        QVERIFY(inspector.GetSelectionId().isEmpty());
+        QCOMPARE(inspector.GetActiveKeyformIndex(), -1);
+        tree.HighlightMesh({});
+        QCOMPARE(selections.size(), 1);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
     void programmaticVisibilityChangesOnlyTheSelectedObject_data()
     {
         QTest::addColumn<QString>("type");
@@ -184,8 +244,8 @@ private slots:
         auto* selectedParent = deformerTree->selectedItems().first();
         QCOMPARE(selectedParent->data(0, Qt::UserRole).toString(), sharedName);
         QCOMPARE(selectedParent->data(0, Qt::UserRole + 1).toString(), parentType);
-        QVERIFY(selections.contains(QList<QVariant>{QStringList{sharedName}, QStringList{"artmesh"}}));
-        QVERIFY(selections.contains(QList<QVariant>{QStringList{sharedName}, QStringList{parentType}}));
+        QCOMPARE(selections.size(), 1);
+        QCOMPARE(selections.first(), (QList<QVariant>{QStringList{sharedName}, QStringList{"artmesh"}}));
         selections.clear();
         panel.HighlightMesh(partOnly->data(0, Qt::UserRole).toString());
         QCOMPARE(partTree->selectedItems(), (QList<QTreeWidgetItem*>{mesh}));
@@ -194,7 +254,7 @@ private slots:
         panel.HighlightMesh({});
         QVERIFY(partTree->selectedItems().isEmpty());
         QVERIFY(deformerTree->selectedItems().isEmpty());
-        QVERIFY(!selections.isEmpty());
+        QCOMPARE(selections.size(), 1);
         QVERIFY(selections.last()[0].toStringList().isEmpty());
         QVERIFY(selections.last()[1].toStringList().isEmpty());
         QCOMPARE(checkStates(panel), initial);

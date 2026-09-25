@@ -82,6 +82,200 @@ private:
     }
 
 private slots:
+    void pauseKeepsTheDisplayedFrameAndHistory_data()
+    {
+        QTest::addColumn<bool>("clean");
+        QTest::newRow("clean-with-redo") << true;
+        QTest::newRow("dirty-with-redo") << false;
+    }
+
+    void pauseKeepsTheDisplayedFrameAndHistory()
+    {
+        QFETCH(bool, clean);
+        CMotionPanel panel;
+        const CMotionTrack track{CMotionTarget::Model, "Opacity"};
+        QVERIFY(panel.AddTimelinePoint(track, 0, 0));
+        QVERIFY(panel.AddTimelinePoint(track, 10, 1));
+        panel.MarkTimelineSaved();
+        QVERIFY(panel.AddTimelinePoint(track, 3, 0.3f));
+        QVERIFY(panel.AddTimelinePoint(track, 5, 0.5f));
+        panel.UndoTimeline();
+        if (clean) panel.UndoTimeline();
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), !clean);
+        QVERIFY(panel.CanUndoTimeline());
+        QVERIFY(panel.CanRedoTimeline());
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        auto* playhead = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* timer = panel.findChild<QTimer*>();
+        QVERIFY(play && end && playhead && timer);
+        playhead->setValue(250);
+        play->click();
+        QVERIFY(timer->isActive());
+        QVERIFY(end->isEnabled());
+        QCOMPARE(play->text(), QStringLiteral("暂停"));
+        const auto content = panel.Timeline();
+        const double time = panel.TimelineTime();
+        const int slider = playhead->value();
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy parameters(&panel, &CMotionPanel::MotionTimelinePreviewChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy dirty(&panel, &CMotionPanel::TimelineDirtyChanged);
+        QSignalSpy history(&panel, &CMotionPanel::TimelineHistoryChanged);
+        QSignalSpy activated(&panel, &CMotionPanel::TimelineActivated);
+        QSignalSpy edits(&panel, &CMotionPanel::MotionTimelineChanged);
+        QTest::qSleep(45);
+        const quint64 revision = panel.TimelineRevision();
+        panel.PauseTimelinePreview();
+        QVERIFY(!timer->isActive());
+        QVERIFY(panel.TimelineRevision() > revision);
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(playhead->value(), slider);
+        QCOMPARE(play->text(), QStringLiteral("预览"));
+        QVERIFY(end->isEnabled());
+        QTest::qWait(60);
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(parameters.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(dirty.size(), 0);
+        QCOMPARE(history.size(), 0);
+        QCOMPARE(activated.size(), 0);
+        QCOMPARE(edits.size(), 0);
+        QVERIFY(panel.Timeline().HasSameContent(content));
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), !clean);
+        QVERIFY(panel.CanUndoTimeline());
+        QVERIFY(panel.CanRedoTimeline());
+        QJsonObject after;
+        QVERIFY(panel.CaptureTimelineState(&after));
+        QCOMPARE(after, before);
+
+        play->click();
+        QVERIFY(timer->isActive());
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(frame.size(), 1);
+        QCOMPARE(frame.last().first().value<CMotionPreviewFrame>().model, content.EvaluateFrame(float(time)).model);
+        QTRY_VERIFY_WITH_TIMEOUT(panel.TimelineTime() > time, 500);
+        panel.PauseTimelinePreview();
+        QVERIFY(end->isEnabled());
+        end->click();
+        QCOMPARE(stopped.size(), 1);
+        QVERIFY(!end->isEnabled());
+        QVERIFY(!timer->isActive());
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), !clean);
+        QVERIFY(panel.Timeline().HasSameContent(content));
+        QVERIFY(panel.CanUndoTimeline());
+        QVERIFY(panel.CanRedoTimeline());
+    }
+
+    void pauseNeverEnablesOrEndsAnInactivePreview()
+    {
+        CMotionPanel panel;
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        QVERIFY(play && end);
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        panel.PauseTimelinePreview();
+        QVERIFY(!play->isEnabled());
+        QVERIFY(!end->isEnabled());
+        QCOMPARE(panel.TimelineTime(), 0.0);
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "P"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "P"}, 1, 1));
+        panel.StopTimelinePreview();
+        QVERIFY(!end->isEnabled());
+        frame.clear();
+        stopped.clear();
+        panel.PauseTimelinePreview();
+        panel.PauseTimelinePreview();
+        QVERIFY(!end->isEnabled());
+        QCOMPARE(play->text(), QStringLiteral("预览"));
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+    }
+
+    void previewAvailabilityOnlyChangesTheRestoreButton_data()
+    {
+        QTest::addColumn<bool>("playing");
+        QTest::newRow("paused") << false;
+        QTest::newRow("playing") << true;
+    }
+
+    void previewAvailabilityOnlyChangesTheRestoreButton()
+    {
+        QFETCH(bool, playing);
+        CMotionPanel panel;
+        const CMotionTrack track{CMotionTarget::Model, "Opacity"};
+        QVERIFY(panel.AddTimelinePoint(track, 0, 0));
+        QVERIFY(panel.AddTimelinePoint(track, 10, 1));
+        panel.MarkTimelineSaved();
+        QVERIFY(panel.AddTimelinePoint(track, 5, 0.5f));
+        panel.UndoTimeline();
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        auto* playhead = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* timer = panel.findChild<QTimer*>();
+        QVERIFY(play && end && playhead && timer);
+        playhead->setValue(250);
+        if (playing) play->click();
+        const double time = panel.TimelineTime();
+        const int slider = playhead->value();
+        const auto revision = panel.TimelineRevision();
+        const QString playText = play->text();
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy dirty(&panel, &CMotionPanel::TimelineDirtyChanged);
+        QSignalSpy history(&panel, &CMotionPanel::TimelineHistoryChanged);
+        for (bool available : {false, true, true, false}) {
+            panel.SetTimelinePreviewAvailable(available);
+            QCOMPARE(end->isEnabled(), available);
+            QCOMPARE(timer->isActive(), playing);
+            QCOMPARE(play->text(), playText);
+            QCOMPARE(panel.TimelineTime(), time);
+            QCOMPARE(playhead->value(), slider);
+            QCOMPARE(panel.TimelineRevision(), revision);
+            QVERIFY(!panel.HasUnsavedTimelineChanges());
+            QVERIFY(panel.CanUndoTimeline());
+            QVERIFY(panel.CanRedoTimeline());
+            QJsonObject after;
+            QVERIFY(panel.CaptureTimelineState(&after));
+            QCOMPARE(after, before);
+        }
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(dirty.size(), 0);
+        QCOMPARE(history.size(), 0);
+    }
+
+    void failedPreviewStopCanRestoreTheButtonForRetry()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 0, 1));
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        QVERIFY(end);
+        panel.SetTimelinePreviewAvailable(true);
+        int attempts = 0;
+        connect(&panel, &CMotionPanel::TimelinePreviewStopped, &panel, [&] {
+            panel.SetTimelinePreviewAvailable(++attempts == 1);
+        });
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        end->click();
+        QCOMPARE(attempts, 1);
+        QVERIFY(end->isEnabled());
+        end->click();
+        QCOMPARE(attempts, 2);
+        QVERIFY(!end->isEnabled());
+        QCOMPARE(stopped.size(), 2);
+        QCOMPARE(frame.size(), 0);
+    }
+
     void eventOnlyClipExportsImportsAndPlays()
     {
         const QJsonArray events{QJsonObject{{"Time", 0.02}, {"Value", QStringLiteral("開始 🌸")}},

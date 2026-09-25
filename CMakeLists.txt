@@ -63,6 +63,10 @@ if(MSVC)
 endif()
 
 add_library(deformer_tree_data STATIC
+    live2dstruct/ckeyformmappingcontext.cpp
+    live2dstruct/ckeyformmappingcontext.h
+    live2dstruct/ckeyformeditcontroller.cpp
+    live2dstruct/ckeyformeditcontroller.h
     live2dstruct/tree/c2dtree.cpp
     live2dstruct/tree/c2dtreenode.cpp
     live2dstruct/tree/cpartsnode.cpp
@@ -129,6 +133,16 @@ if(BUILD_TESTING)
     target_link_libraries(canvas_geometry_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(canvas_geometry_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME canvas_geometry COMMAND canvas_geometry_tests)
+    add_executable(canvas_coordinates_tests tests/canvas_coordinates_tests.cpp opengl/ccanvascoordinates.cpp)
+    target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
+    add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller)
+        add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
+        target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
+        target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME ${keyform_test} COMMAND ${keyform_test}_tests)
+    endforeach()
     add_executable(model_matrix_tests tests/model_matrix_tests.cpp
         framework/Math/CubismModelMatrix.cpp framework/Math/CubismMatrix44.cpp framework/Type/csmString.cpp)
     target_include_directories(model_matrix_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -283,11 +297,11 @@ if(BUILD_TESTING)
     add_test(NAME warp_render COMMAND warp_render_tests)
     add_executable(inspector_history_tests tests/inspector_history_tests.cpp)
     target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp)
-    target_link_libraries(inspector_history_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_link_libraries(inspector_history_tests PRIVATE deformer_tree_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(inspector_history_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME inspector_history COMMAND inspector_history_tests)
     set_tests_properties(inspector_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    add_executable(model_tree_tests tests/model_tree_tests.cpp ui/cmodeltreepanel.cpp ui/para/ccidjson.cpp)
+    add_executable(model_tree_tests tests/model_tree_tests.cpp ui/cmodeltreepanel.cpp ui/cinspectorpanel.cpp ui/para/ccidjson.cpp)
     target_link_libraries(model_tree_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(model_tree_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_tree COMMAND model_tree_tests)

@@ -1,5 +1,6 @@
 #include "ui/cinspectorpanel.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/ckeyformeditcontroller.h"
 #include <QtTest>
 #include <QCheckBox>
 #include <QComboBox>
@@ -12,12 +13,777 @@
 #include <QDialogButtonBox>
 #include <QListWidget>
 #include <QTimer>
+#include <QApplication>
+#include <QClipboard>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QMessageBox>
+#include <QtEndian>
+#include <stdexcept>
 #include <algorithm>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void controllerBackedEditsAndHistoryPublishExactlyOnce_data()
+    {
+        QTest::addColumn<bool>("copyToNext");
+        QTest::newRow("vertex-table") << false;
+        QTest::newRow("copy-next") << true;
+    }
+
+    void controllerBackedEditsAndHistoryPublishExactlyOnce()
+    {
+        QFETCH(bool, copyToNext);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable){ return drawable.vertexCount && drawable.keyforms.size() >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        const auto previewPositions = document.DrawableKeyformPositions(id, 1);
+        auto nextPositions = previewPositions;
+        nextPositions[0] += 0.5f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 2, nextPositions));
+        const int editedKeyform = copyToNext ? 2 : 1;
+        const auto before = document.DrawableKeyformPositions(id, editedKeyform);
+        QMap<QString, float> currentValues;
+        for (const auto& parameter : document.Parameters())
+            currentValues.insert(parameter.id, float(double(parameter.minimum) +
+                (double(parameter.maximum) - parameter.minimum) * 0.37));
+        QMap<QString, float> corner;
+        QVERIFY(document.KeyformParameterValues(id, QStringLiteral("artmesh"), 1, corner));
+        auto expectedPose = currentValues;
+        for (auto it = corner.cbegin(); it != corner.cend(); ++it) expectedPose.insert(it.key(), it.value());
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        auto* combo = panel.findChild<QComboBox*>("keyformSelector");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        auto* copy = panel.findChild<QPushButton*>("copyKeyformToNext");
+        QVERIFY(combo && table && copy);
+        combo->setCurrentIndex(1);
+        CKeyformEditController controller;
+        controller.SetDocument(&document);
+        bool acceptPublication = false;
+        int publications = 0, builtCandidates = 0, editCalls = 0, historyCalls = 0, activationCalls = 0;
+        QMap<QString, float> publishedPose;
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy activated(&panel, &CInspectorPanel::DrawableKeyformActivated);
+        QSignalSpy selected(&panel, &CInspectorPanel::DrawableKeyformSelected);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        controller.SetPublisher([&](const CModelDocument& candidate, const QMap<QString, float>& pose,
+                                    bool editing, QString* error) {
+            ++publications;
+            QByteArray bytes;
+            if (!editing || !candidate.BuildPreviewMoc(bytes, error) || bytes.isEmpty()) return false;
+            ++builtCandidates;
+            publishedPose = pose;
+            if (!acceptPublication) { *error = QStringLiteral("controlled preview rejection"); return false; }
+            return true;
+        }, [](QString*) { return true; });
+        const auto refreshAcceptedSelection = [&] {
+            const QSignalBlocker blocker(&panel);
+            panel.RefreshSelection();
+            panel.SyncHistoryState();
+        };
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++editCalls;
+            if (!controller.Submit(edit, currentValues, panel.GetActiveKeyformIndex(), error)) return false;
+            refreshAcceptedSelection();
+            return true;
+        });
+        panel.SetHistoryHandler([&](bool undo, CModelEdit& edit, QString* error) {
+            ++historyCalls;
+            if (!controller.History(undo, edit, error)) return false;
+            refreshAcceptedSelection();
+            return true;
+        });
+        panel.SetKeyformHandler([&](const QString& target, int keyform, QString* error) {
+            ++activationCalls;
+            return controller.Activate(target, keyform, currentValues, error);
+        });
+        const auto editFromUi = [&] {
+            if (copyToNext) copy->click();
+            else table->item(0, 1)->setText(QString::number(previewPositions[0] + 0.25f, 'g', 9));
+        };
+        const quint64 startRevision = document.Revision();
+        editFromUi();
+        QCOMPARE(publications, 1);
+        QCOMPARE(builtCandidates, 1);
+        QCOMPARE(editCalls, 1);
+        QCOMPARE(document.Revision(), startRevision);
+        QCOMPARE(document.DrawableKeyformPositions(id, editedKeyform), before);
+        QVERIFY(!document.CanUndoEdit() && !document.CanRedoEdit());
+        QVERIFY(!controller.IsActive());
+        QCOMPARE(panel.GetActiveKeyformIndex(), 1);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(table->item(0, 1)->text(), QString::number(previewPositions[0], 'f', 6));
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(history.count(), 0);
+        QCOMPARE(activated.count(), 0);
+        QCOMPARE(rejected.count(), 1);
+        acceptPublication = true;
+        editFromUi();
+        const auto after = document.DrawableKeyformPositions(id, editedKeyform);
+        QVERIFY(after != before);
+        if (copyToNext) QCOMPARE(after, previewPositions);
+        QCOMPARE(publications, 2);
+        QCOMPARE(editCalls, 2);
+        QCOMPARE(document.Revision(), startRevision + 1);
+        QCOMPARE(publishedPose, expectedPose);
+        QCOMPARE(controller.Pose(), expectedPose);
+        QCOMPARE(controller.Target(), id);
+        QCOMPARE(controller.Keyform(), 1);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 1);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        CModelEdit pending;
+        QVERIFY(document.PeekUndoEdit(&pending));
+        QCOMPARE(pending.index, editedKeyform);
+        QCOMPARE(pending.before.value<QVector<float>>(), before);
+        QCOMPARE(pending.after.value<QVector<float>>(), after);
+        acceptPublication = false;
+        const int successActivations = activated.count();
+        panel.Undo();
+        QCOMPARE(publications, 3);
+        QCOMPARE(document.Revision(), startRevision + 1);
+        QCOMPARE(document.DrawableKeyformPositions(id, editedKeyform), after);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        QCOMPARE(activated.count(), successActivations);
+        QCOMPARE(rejected.count(), 2);
+        acceptPublication = true;
+        panel.Undo();
+        QCOMPARE(publications, 4);
+        QCOMPARE(document.Revision(), startRevision + 2);
+        QCOMPARE(document.DrawableKeyformPositions(id, editedKeyform), before);
+        QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(changed.count(), 2);
+        QCOMPARE(history.count(), 2);
+        panel.Undo();
+        QCOMPARE(publications, 4);
+        QCOMPARE(document.Revision(), startRevision + 2);
+        acceptPublication = false;
+        const int undoActivations = activated.count();
+        panel.Redo();
+        QCOMPARE(publications, 5);
+        QCOMPARE(document.Revision(), startRevision + 2);
+        QCOMPARE(document.DrawableKeyformPositions(id, editedKeyform), before);
+        QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(changed.count(), 2);
+        QCOMPARE(history.count(), 2);
+        QCOMPARE(activated.count(), undoActivations);
+        QCOMPARE(rejected.count(), 3);
+        acceptPublication = true;
+        panel.Redo();
+        QCOMPARE(publications, 6);
+        QCOMPARE(builtCandidates, 6);
+        QCOMPARE(historyCalls, 4);
+        QCOMPARE(document.Revision(), startRevision + 3);
+        QCOMPARE(document.DrawableKeyformPositions(id, editedKeyform), after);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(changed.count(), 3);
+        QCOMPARE(history.count(), 3);
+        QCOMPARE(publishedPose, expectedPose);
+        refreshAcceptedSelection();
+        QCoreApplication::processEvents();
+        QCOMPARE(publications, 6);
+        QCOMPARE(document.Revision(), startRevision + 3);
+        QCOMPARE(activationCalls, 0);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(panel.GetSelectionId(), id);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 1);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(controller.Keyform(), 1);
+        QCOMPARE(history.count(), 3);
+        for (const auto& notification : activated) {
+            QCOMPARE(notification[0].toString(), id);
+            QCOMPARE(notification[1].toInt(), 1);
+        }
+    }
+
+    void keyformToolsUseInjectedCommitter_data()
+    {
+        QTest::addColumn<QString>("operation");
+        QTest::addColumn<bool>("accepted");
+        const QStringList operations{QStringLiteral("cell"), QStringLiteral("mirrorHorizontal"),
+            QStringLiteral("mirrorVertical"), QStringLiteral("interpolatePreviousKeyform"),
+            QStringLiteral("copyKeyformToNext"), QStringLiteral("resetKeyform"),
+            QStringLiteral("pasteKeyform"), QStringLiteral("moveSelectedVertices"),
+            QStringLiteral("transformSelectedVertices")};
+        for (const auto& operation : operations)
+            for (bool accepted : {false, true})
+                QTest::newRow(qPrintable(operation + (accepted ? QStringLiteral("-accept") : QStringLiteral("-reject"))))
+                    << operation << accepted;
+    }
+
+    void keyformToolsUseInjectedCommitter()
+    {
+        QFETCH(QString, operation);
+        QFETCH(bool, accepted);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& value){ return value.vertexCount >= 5 && value.keyforms.size() >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        auto current = document.DrawableKeyformPositions(id, 1);
+        current[0] += 0.3f;
+        current[1] += 0.15f;
+        auto previous = current;
+        previous[0] += 0.5f;
+        auto next = current;
+        next[0] -= 0.5f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, previous));
+        QVERIFY(document.SetDrawableKeyformPositions(id, 1, current));
+        QVERIFY(document.SetDrawableKeyformPositions(id, 2, next));
+        const auto originalOverrides = document.DrawableKeyformPositionOverrides();
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        auto* combo = panel.findChild<QComboBox*>("keyformSelector");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(combo && table);
+        combo->setCurrentIndex(1);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 1);
+        auto paste = current;
+        paste[0] += 0.75f;
+        QJsonArray pastedValues;
+        for (float value : paste) pastedValues.append(double(value));
+        const QJsonObject clipboard{{QStringLiteral("format"), QStringLiteral("live2d2psd-keyform-v1")},
+                                    {QStringLiteral("vertexCount"), current.size() / 2},
+                                    {QStringLiteral("positions"), pastedValues}};
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        QSignalSpy selected(&panel, &CInspectorPanel::DrawableKeyformSelected);
+        int calls = 0;
+        bool calledBeforePublishing = false;
+        CModelEdit submitted;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++calls;
+            submitted = edit;
+            calledBeforePublishing = changed.isEmpty() && history.isEmpty() &&
+                                     document.DrawableKeyformPositionOverrides() == originalOverrides;
+            if (!accepted) { *error = QStringLiteral("candidate rejected"); return false; }
+            return document.ExecuteEdit(edit);
+        });
+        if (operation == QLatin1String("cell")) {
+            table->item(0, 1)->setText(QString::number(current[0] + 0.25f, 'g', 9));
+        } else {
+            if (operation == QLatin1String("pasteKeyform")) {
+                auto* copy = panel.findChild<QPushButton*>("copyKeyform");
+                QVERIFY(copy && copy->isEnabled());
+                copy->click();
+                QCOMPARE(calls, 0);
+                QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(clipboard).toJson()));
+            }
+            if (operation == QLatin1String("moveSelectedVertices") || operation == QLatin1String("transformSelectedVertices")) {
+                table->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+                panel.findChild<QDoubleSpinBox*>("vertexDeltaX")->setValue(0.125);
+                panel.findChild<QDoubleSpinBox*>("vertexDeltaY")->setValue(-0.25);
+                panel.findChild<QDoubleSpinBox*>("vertexScale")->setValue(1.5);
+                panel.findChild<QDoubleSpinBox*>("vertexRotation")->setValue(30);
+            }
+            auto* button = panel.findChild<QPushButton*>(operation);
+            QVERIFY(button && button->isEnabled());
+            button->click();
+        }
+        QCOMPARE(calls, 1);
+        QVERIFY(calledBeforePublishing);
+        QCOMPARE(submitted.field, CModelEdit::KeyformPositions);
+        QCOMPARE(submitted.name, id);
+        QCOMPARE(submitted.index, operation == QLatin1String("copyKeyformToNext") ? 2 : 1);
+        QCOMPARE(panel.GetSelectionId(), id);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 1);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(selected.count(), 0);
+        if (accepted) {
+            QCOMPARE(document.DrawableKeyformPositions(id, submitted.index), submitted.after.value<QVector<float>>());
+            QVERIFY(document.CanUndoEdit());
+            QCOMPARE(changed.count(), 1);
+            QCOMPARE(history.count(), 1);
+            QCOMPARE(rejected.count(), 0);
+        } else {
+            QCOMPARE(document.DrawableKeyformPositionOverrides(), originalOverrides);
+            QVERIFY(!document.CanUndoEdit());
+            QCOMPARE(changed.count(), 0);
+            QCOMPARE(history.count(), 0);
+            QCOMPARE(rejected.count(), 1);
+            QCOMPARE(rejected.first().first().toString(), QStringLiteral("candidate rejected"));
+            QCOMPARE(table->item(0, 1)->text(), QString::number(current[0], 'f', 6));
+        }
+    }
+
+    void basicPropertiesUseInjectedCommitter_data()
+    {
+        QTest::addColumn<int>("field");
+        QTest::addColumn<bool>("accepted");
+        for (int field = 0; field < 3; ++field)
+            for (bool accepted : {false, true})
+                QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(field).arg(accepted))) << field << accepted;
+    }
+
+    void basicPropertiesUseInjectedCommitter()
+    {
+        QFETCH(int, field);
+        QFETCH(bool, accepted);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString id = document.Drawables().front().id;
+        const bool beforeVisibility = document.Drawables().front().visible;
+        const float beforeOpacity = document.DrawableOpacity(document.Drawables().front());
+        const int beforeOrder = qRound(document.DrawableDrawOrder(document.Drawables().front()));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        auto* visibility = panel.findChild<QCheckBox*>();
+        auto* opacity = panel.findChild<QDoubleSpinBox*>();
+        auto* order = panel.findChild<QSpinBox*>();
+        QVERIFY(visibility && opacity && order);
+        QSignalSpy visibleChanged(&panel, &CInspectorPanel::VisibilityChanged);
+        QSignalSpy opacityChanged(&panel, &CInspectorPanel::DrawableOpacityChanged);
+        QSignalSpy orderChanged(&panel, &CInspectorPanel::DrawableDrawOrderChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int calls = 0;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++calls;
+            if (!accepted) { *error = QStringLiteral("rejected property"); return false; }
+            return document.ExecuteEdit(edit);
+        });
+        if (field == 0) visibility->click();
+        if (field == 1) opacity->setValue(beforeOpacity == 0.25f ? 0.75 : 0.25);
+        if (field == 2) order->setValue(beforeOrder == 321 ? 322 : 321);
+        QCOMPARE(calls, 1);
+        QCOMPARE(history.count(), accepted ? 1 : 0);
+        QCOMPARE(rejected.count(), accepted ? 0 : 1);
+        QCOMPARE(visibleChanged.count() + opacityChanged.count() + orderChanged.count(), accepted ? 1 : 0);
+        QCOMPARE(document.CanUndoEdit(), accepted);
+        if (!accepted) {
+            QCOMPARE(document.Drawables().front().visible, beforeVisibility);
+            QCOMPARE(document.DrawableOpacity(document.Drawables().front()), beforeOpacity);
+            QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().front())), beforeOrder);
+            QCOMPARE(visibility->isChecked(), beforeVisibility);
+            QCOMPARE(opacity->value(), double(beforeOpacity));
+            QCOMPARE(order->value(), beforeOrder);
+        }
+    }
+
+    void historyCommitterRejectsThenCommitsUndoAndRedo()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString id = document.Drawables().front().id;
+        const auto before = document.DrawableKeyformPositions(id, 0);
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(table && table->rowCount());
+        table->item(0, 1)->setText(QString::number(before[0] + 0.25f, 'g', 9));
+        const auto after = document.DrawableKeyformPositions(id, 0);
+        QVERIFY(after != before);
+        bool accepted = false;
+        QList<bool> directions;
+        panel.SetHistoryHandler([&](bool undo, CModelEdit& edit, QString* error) {
+            directions.append(undo);
+            if (!accepted) { *error = QStringLiteral("history candidate rejected"); return false; }
+            return undo ? document.UndoEdit(&edit) : document.RedoEdit(&edit);
+        });
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        panel.Undo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), after);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(history.count(), 0);
+        QCOMPARE(rejected.count(), 1);
+        accepted = true;
+        panel.Undo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), before);
+        QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        accepted = false;
+        panel.Redo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), before);
+        QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        QCOMPARE(rejected.count(), 2);
+        accepted = true;
+        panel.Redo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), after);
+        QCOMPARE(changed.count(), 2);
+        QCOMPARE(history.count(), 2);
+        QCOMPARE(directions, QList<bool>({true, true, false, false}));
+    }
+
+    void keyformCommitterRunsOnlyForUserChoicesWhileBrowsingRemainsAvailable()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& value){ return value.vertexCount && value.keyforms.size() >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const auto other = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [&mesh](const auto& value){ return value.id != mesh->id && value.vertexCount && !value.keyforms.isEmpty(); });
+        QVERIFY(other != document.Drawables().cend());
+        for (const auto& parameter : document.Parameters()) {
+            const auto metadata = document.ParameterMetadata(parameter.id);
+            const float value = float(double(metadata.minimum) + (double(metadata.maximum) - metadata.minimum) * 0.37);
+            QVERIFY(document.SetParameterValue(parameter.id, value));
+        }
+        const auto parameterValues = document.ParameterValues();
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        auto* combo = panel.findChild<QComboBox*>("keyformSelector");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(combo && table);
+        bool accepted = false;
+        QVector<QPair<QString, int>> requests;
+        QMap<QString, float> requestedPose;
+        panel.SetKeyformHandler([&](const QString& id, int index, QString* error) {
+            requests.append({id, index});
+            if (!accepted) { *error = QStringLiteral("pose candidate rejected"); return false; }
+            return document.KeyformParameterValues(id, QStringLiteral("artmesh"), index, requestedPose, error);
+        });
+        QSignalSpy selected(&panel, &CInspectorPanel::DrawableKeyformSelected);
+        QSignalSpy activated(&panel, &CInspectorPanel::DrawableKeyformActivated);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        panel.SetSelection(mesh->id, QStringLiteral("artmesh"));
+        QCOMPARE(requests.size(), 0);
+        QCOMPARE(panel.GetSelectionId(), mesh->id);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 0);
+        QCOMPARE(combo->currentIndex(), 0);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(activated.count(), 1);
+        QCOMPARE(rejected.count(), 0);
+        panel.RefreshSelection();
+        panel.SetSelection(mesh->id, QStringLiteral("artmesh"));
+        panel.SetDocument(&document);
+        panel.SetLockedState({});
+        QCOMPARE(requests.size(), 0);
+        combo->setCurrentIndex(2);
+        QCoreApplication::processEvents();
+        QCOMPARE(requests.size(), 0);
+        QCOMPARE(combo->currentIndex(), 0);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 0);
+        activated.clear();
+        QTest::keyClick(combo, Qt::Key_Down);
+        QCOMPARE(requests.size(), 1);
+        QCOMPARE(requests.last(), qMakePair(mesh->id, 1));
+        QCOMPARE(combo->currentIndex(), 0);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 0);
+        QCOMPARE(selected.count(), 0);
+        QCOMPARE(activated.count(), 0);
+        accepted = true;
+        QTest::keyClick(combo, Qt::Key_Down);
+        QCOMPARE(requests.size(), 2);
+        QCOMPARE(combo->currentIndex(), 1);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 1);
+        QCOMPARE(selected.count(), 1);
+        QCOMPARE(activated.count(), 1);
+        QMap<QString, float> expectedPose;
+        QVERIFY(document.KeyformParameterValues(mesh->id, QStringLiteral("artmesh"), 1, expectedPose));
+        QCOMPARE(requestedPose, expectedPose);
+        const auto selectedPositions = document.DrawableKeyformPositions(mesh->id, 1);
+        QCOMPARE(table->item(0, 1)->text(), QString::number(selectedPositions[0], 'f', 6));
+        panel.RefreshSelection();
+        QVERIFY(QMetaObject::invokeMethod(combo, "activated", Q_ARG(int, 1)));
+        QCOMPARE(requests.size(), 2);
+        accepted = false;
+        const int acceptedSignals = activated.count();
+        panel.SetLockedState({QStringLiteral("artmesh|") + other->id});
+        const int refreshedSignals = activated.count();
+        QVERIFY(refreshedSignals >= acceptedSignals);
+        panel.SetSelection(other->id, QStringLiteral("artmesh"));
+        QCOMPARE(requests.size(), 2);
+        QCOMPARE(panel.GetSelectionId(), other->id);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 0);
+        QCOMPARE(combo->currentIndex(), 0);
+        QVERIFY(!combo->isEnabled());
+        QCOMPARE(activated.count(), refreshedSignals + 1);
+        QCOMPARE(selected.count(), 1);
+        QCOMPARE(history.count(), 0);
+        QCOMPARE(rejected.count(), 1);
+        QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(document.ParameterValues(), parameterValues);
+    }
+
+    void unsupportedBlendShapeCanBeInspectedWithoutActivatingIt()
+    {
+        using namespace live2dstruct;
+        CModelDocument original;
+        const QString path = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        QVERIFY(original.Load(path));
+        QByteArray bytes = original.SourceBytes();
+        const int typeOffset = bytes.size();
+        for (int index = 0; index < original.Parameters().size(); ++index) {
+            char value[4];
+            qToLittleEndian<quint32>(1, reinterpret_cast<uchar*>(value));
+            bytes.append(value, 4);
+        }
+        qToLittleEndian<quint32>(typeOffset, reinterpret_cast<uchar*>(bytes.data() + 0x208));
+        CModelDocument document;
+        QString error;
+        QVERIFY2(document.LoadBytes(bytes, path, &error), qPrintable(error));
+        QVERIFY(std::all_of(document.Parameters().cbegin(), document.Parameters().cend(),
+                            [](const auto& parameter){ return parameter.type == 1; }));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable){ return drawable.vertexCount && drawable.keyforms.size() > 1; });
+        QVERIFY(mesh != document.Drawables().cend());
+        QMap<QString, float> pose;
+        QVERIFY(!document.KeyformParameterValues(mesh->id, QStringLiteral("artmesh"), 0, pose, &error));
+        QVERIFY2(error.contains(QStringLiteral("类型 1")), qPrintable(error));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        int requests = 0;
+        panel.SetKeyformHandler([&](const QString& id, int keyform, QString* error) {
+            ++requests;
+            return document.KeyformParameterValues(id, QStringLiteral("artmesh"), keyform, pose, error);
+        });
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        panel.SetSelection(mesh->id, QStringLiteral("artmesh"));
+        QCOMPARE(panel.GetSelectionId(), mesh->id);
+        QCOMPARE(panel.GetActiveKeyformIndex(), 0);
+        QCOMPARE(requests, 0);
+        QCOMPARE(rejected.count(), 0);
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        auto* combo = panel.findChild<QComboBox*>("keyformSelector");
+        QVERIFY(table && combo);
+        QCOMPARE(table->rowCount(), mesh->vertexCount);
+        QTest::keyClick(combo, Qt::Key_Down);
+        QCOMPARE(requests, 1);
+        QCOMPARE(rejected.count(), 1);
+        QCOMPARE(combo->currentIndex(), 0);
+        QCOMPARE(panel.GetSelectionId(), mesh->id);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
+    void otherEditPathsUseInjectedCommitter_data()
+    {
+        QTest::addColumn<QString>("operation");
+        QTest::addColumn<bool>("accepted");
+        const QStringList operations{QStringLiteral("rotation"), QStringLiteral("warp"), QStringLiteral("parent"),
+            QStringLiteral("inversion"), QStringLiteral("masks"), QStringLiteral("pasteTopology"),
+            QStringLiteral("mergeSelectedVertices"), QStringLiteral("autoTriangulate")};
+        for (const auto& operation : operations)
+            for (bool accepted : {false, true})
+                QTest::newRow(qPrintable(operation + (accepted ? QStringLiteral("-accept") : QStringLiteral("-reject"))))
+                    << operation << accepted;
+    }
+
+    void otherEditPathsUseInjectedCommitter()
+    {
+        QFETCH(QString, operation);
+        QFETCH(bool, accepted);
+        using namespace live2dstruct;
+        CModelDocument document;
+        const bool masks = operation == QLatin1String("masks") || operation == QLatin1String("inversion");
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + (masks ? "/Rice/Rice.moc3" : "/Mark/Mark.moc3")));
+        QString id, type = QStringLiteral("artmesh");
+        if (operation == QLatin1String("rotation") || operation == QLatin1String("warp") || operation == QLatin1String("parent")) {
+            const auto deformer = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(), [&](const auto& value) {
+                if (operation == QLatin1String("rotation")) return !value.rotationKeyforms.isEmpty();
+                if (operation == QLatin1String("warp")) return !value.warpKeyforms.isEmpty();
+                return value.parentDeformerIndex >= 0 && !value.warpKeyforms.isEmpty();
+            });
+            QVERIFY(deformer != document.Deformers().cend());
+            id = deformer->id;
+            type = operation == QLatin1String("rotation") ? QStringLiteral("rotation") : QStringLiteral("warp");
+        } else {
+            const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(), [&](const auto& value) {
+                return value.vertexCount >= 5 && !value.keyforms.isEmpty() && (!masks || !value.maskIndices.isEmpty());
+            });
+            QVERIFY(mesh != document.Drawables().cend());
+            id = mesh->id;
+            if (!masks) QVERIFY(document.SetDrawableIndices(id, {0, 2, 3, 0, 3, 4, 1, 2, 3}));
+            if (operation == QLatin1String("autoTriangulate")) {
+                auto positions = document.DrawableKeyformPositions(id, 0);
+                for (int i = 0; i < positions.size() / 2; ++i) {
+                    positions[i * 2] = float(i) * 0.01f;
+                    positions[i * 2 + 1] = float(i) * float(i) * 0.001f;
+                }
+                QVERIFY(document.SetDrawableKeyformPositions(id, 0, positions));
+                QVERIFY(document.SetDrawableIndices(id, {0, 1, 2}));
+            }
+        }
+        const auto rotationBefore = document.DeformerRotationKeyforms(id);
+        const auto warpBefore = document.DeformerWarpKeyforms(id);
+        const auto parentBefore = document.DeformerParentIndex(id);
+        const auto topologyBefore = document.DrawableIndices(id);
+        const auto masksBefore = document.DrawableMaskIndices(id);
+        const auto inversionBefore = document.DrawableMaskInverted(id);
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, type);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        QSignalSpy topology(&panel, &CInspectorPanel::DrawableIndicesChanged);
+        QSignalSpy maskChanges(&panel, &CInspectorPanel::DrawableMaskIndicesChanged);
+        int calls = 0;
+        CModelEdit submitted;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++calls;
+            submitted = edit;
+            if (!accepted) { *error = QStringLiteral("rejected candidate"); return false; }
+            return document.ExecuteEdit(edit);
+        });
+        if (operation == QLatin1String("rotation")) {
+            auto* table = panel.findChild<QTableWidget*>("rotationKeyformTable");
+            QVERIFY(table && table->rowCount());
+            table->item(0, 1)->setText(QString::number(rotationBefore[0].angle + 1.0f, 'g', 9));
+        } else if (operation == QLatin1String("warp")) {
+            auto* table = panel.findChild<QTableWidget*>("warpKeyformTable");
+            QVERIFY(table && table->rowCount());
+            table->item(0, 1)->setText(QString::number(warpBefore[0].positions[0] + 0.25f, 'g', 9));
+        } else if (operation == QLatin1String("parent")) {
+            auto* selector = panel.findChild<QComboBox*>("deformerParentSelector");
+            QVERIFY(selector && selector->findData(-1) >= 0);
+            selector->setCurrentIndex(selector->findData(-1));
+        } else if (operation == QLatin1String("inversion")) {
+            auto* checkbox = panel.findChild<QCheckBox*>("maskInverted");
+            QVERIFY(checkbox && checkbox->isEnabled());
+            checkbox->click();
+        } else if (operation == QLatin1String("masks")) {
+            bool answered = false;
+            QTimer::singleShot(0, &panel, [&] {
+                auto* dialog = panel.findChild<QDialog*>();
+                if (!dialog) return;
+                auto* list = dialog->findChild<QListWidget*>();
+                if (!list) { dialog->reject(); return; }
+                for (int row = 0; row < list->count(); ++row) list->item(row)->setCheckState(Qt::Unchecked);
+                answered = true;
+                dialog->accept();
+            });
+            panel.findChild<QPushButton*>("editMasks")->click();
+            QVERIFY(answered);
+        } else if (operation == QLatin1String("pasteTopology")) {
+            panel.findChild<QPushButton*>("copyTopology")->click();
+            QCOMPARE(calls, 0);
+            QJsonObject object = QJsonDocument::fromJson(QApplication::clipboard()->text().toUtf8()).object();
+            object.insert(QStringLiteral("indices"), QJsonArray{0, 1, 2});
+            QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(object).toJson()));
+            panel.findChild<QPushButton*>("pasteTopology")->click();
+        } else if (operation == QLatin1String("autoTriangulate")) {
+            QTimer dialogGuard;
+            dialogGuard.setSingleShot(true);
+            connect(&dialogGuard, &QTimer::timeout, &panel, [&] {
+                if (auto* dialog = panel.findChild<QMessageBox*>()) dialog->reject();
+            });
+            dialogGuard.start(0);
+            panel.findChild<QPushButton*>("autoTriangulate")->click();
+        } else {
+            auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+            table->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+            panel.findChild<QPushButton*>("mergeSelectedVertices")->click();
+        }
+        QCOMPARE(calls, 1);
+        QCOMPARE(history.count(), accepted ? 1 : 0);
+        QCOMPARE(rejected.count(), accepted ? 0 : 1);
+        QCOMPARE(document.CanUndoEdit(), accepted);
+        if (accepted) {
+            CModelEdit committed;
+            QVERIFY(document.PeekUndoEdit(&committed));
+            QCOMPARE(committed.name, submitted.name);
+            QCOMPARE(committed.field, submitted.field);
+        } else {
+            QCOMPARE(document.DeformerRotationKeyforms(id), rotationBefore);
+            QCOMPARE(document.DeformerWarpKeyforms(id), warpBefore);
+            QCOMPARE(document.DeformerParentIndex(id), parentBefore);
+            QCOMPARE(document.DrawableIndices(id), topologyBefore);
+            QCOMPARE(document.DrawableMaskIndices(id), masksBefore);
+            QCOMPARE(document.DrawableMaskInverted(id), inversionBefore);
+            QCOMPARE(topology.count(), 0);
+            QCOMPARE(maskChanges.count(), 0);
+        }
+    }
+
+    void multiSelectionStopsAtFirstRejectedCommit()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QVERIFY(document.Drawables().size() >= 3);
+        QStringList ids;
+        QVector<float> before;
+        for (int i = 0; i < 3; ++i) {
+            ids.append(document.Drawables()[i].id);
+            before.append(document.DrawableOpacity(document.Drawables()[i]));
+        }
+        const float after = std::all_of(before.cbegin(), before.cend(), [](float value){ return value != 0.25f; }) ? 0.25f : 0.75f;
+        QVERIFY(std::all_of(before.cbegin(), before.cend(), [after](float value){ return value != after; }));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelections(ids, {QStringLiteral("artmesh"), QStringLiteral("artmesh"), QStringLiteral("artmesh")});
+        QStringList submitted;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            submitted.append(edit.name);
+            if (submitted.size() == 2) { *error = QStringLiteral("second candidate failed"); return false; }
+            return document.ExecuteEdit(edit);
+        });
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableOpacityChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        panel.findChild<QDoubleSpinBox*>()->setValue(after);
+        QCOMPARE(submitted, ids.mid(0, 2));
+        QCOMPARE(document.DrawableOpacity(document.Drawables()[0]), after);
+        QCOMPARE(document.DrawableOpacity(document.Drawables()[1]), before[1]);
+        QCOMPARE(document.DrawableOpacity(document.Drawables()[2]), before[2]);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        QCOMPARE(rejected.count(), 1);
+        panel.Undo();
+        QCOMPARE(document.DrawableOpacity(document.Drawables()[0]), before[0]);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
+    void rejectedEditExceptionRestoresTableWithoutPublishing()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString id = document.Drawables().front().id;
+        const auto positions = document.DrawableKeyformPositions(id, 0);
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        panel.SetEditHandler([](const CModelEdit&, QString*) -> bool { throw std::runtime_error("upload failed"); });
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        table->item(0, 1)->setText(QString::number(positions[0] + 1.0f));
+        QCOMPARE(rejected.count(), 1);
+        QVERIFY(rejected.first().first().toString().contains(QStringLiteral("upload failed")));
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(history.count(), 0);
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), positions);
+        QCOMPARE(table->item(0, 1)->text(), QString::number(positions[0], 'f', 6));
+        QVERIFY(!document.CanUndoEdit());
+        panel.SetEditHandler({});
+        table->item(0, 1)->setText(QString::number(positions[0] + 1.0f));
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        QVERIFY(document.CanUndoEdit());
+    }
+
     void clearingMasksPreservesInversionInOneHistoryEntry_data()
     {
         QTest::addColumn<bool>("sourceInverted");

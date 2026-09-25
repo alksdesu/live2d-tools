@@ -170,6 +170,8 @@ public:
     bool Load(const QString& mocPath, QString* error = nullptr);
     bool LoadBytes(const QByteArray& bytes, const QString& sourcePath, QString* error = nullptr);
     void Clear();
+    quint64 Revision() const { return m_revision; }
+    void CommitCandidate(CModelDocument&& candidate) noexcept;
 
     bool IsLoaded() const { return m_loaded; }
     const QString& SourcePath() const { return m_sourcePath; }
@@ -247,6 +249,7 @@ public:
 
 private:
     bool m_loaded = false;
+    quint64 m_revision = 0;
     QString m_sourcePath;
     QByteArray m_sourceBytes;
     QByteArray m_sourceDigest;

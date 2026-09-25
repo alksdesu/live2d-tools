@@ -35,6 +35,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <exception>
 
 using namespace Live2D::Cubism::Framework;
 using namespace Live2D::Cubism::Framework::DefaultParameterId;
@@ -180,6 +181,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
             m_sourceMocBytes = QByteArray(reinterpret_cast<const char*>(buffer), size);
             m_sourceMocDigest = QCryptographicHash::hash(m_sourceMocBytes, QCryptographicHash::Sha256);
             m_previewMocDigest = m_sourceMocDigest;
+            m_previewMocBytes = m_sourceMocBytes;
         }
         else
         {
@@ -428,6 +430,12 @@ void LAppModel::ReleaseExpressions()
 void LAppModel::Update()
 {
     if (!_initialized || _updating || !_model) return;
+    if (HasEditorPreview()) {
+        if (!_model->ApplyParameterPose(m_editorPose)) return;
+        ApplyPartVisibility();
+        _model->Update();
+        return;
+    }
     // 快照模式：只应用已保存的参数，跳过所有自动效果
     if (_snapshotMode) {
         _model->LoadParameters();
@@ -545,6 +553,7 @@ QMap<QString, float> LAppModel::GetParameterValues() const
 bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline,
                                   double time, bool loop)
 {
+    if (HasEditorPreview()) return false;
     if (!_model || !frame.IsFinite() || (fadeTimeline && !std::isfinite(time))) return false;
     if (frame.IsEmpty()) { ClearTimelinePreview(); return true; }
     _model->LoadParameters();
@@ -593,14 +602,20 @@ void LAppModel::ApplyTimelinePreview()
 void LAppModel::ApplyPartVisibility()
 {
     if (!_model) return;
-    for (const auto& id : _hiddenPartIds) {
-        const int index = FindPartIndex(id);
-        if (index >= 0) _model->SetPartOpacity(index, 0.0f);
-    }
+    ApplyPartVisibility(*_model);
+}
+
+void LAppModel::ApplyPartVisibility(CubismModel& model) const
+{
+    if (_hiddenPartIds.isEmpty()) return;
+    for (int index = 0; index < model.GetPartCount(); ++index)
+        if (_hiddenPartIds.contains(QString::fromUtf8(model.GetPartId(index)->GetString().GetRawString())))
+            model.SetPartOpacity(index, 0.0f);
 }
 
 void LAppModel::ClearTimelinePreview()
 {
+    if (HasEditorPreview()) return;
     if (!_model || !_timelinePreviewActive) return;
     _timelinePreviewActive = false;
     _model->LoadParameters();
@@ -620,6 +635,7 @@ void LAppModel::ClearTimelinePreview()
 
 void LAppModel::UpdateParaValue(const QString &parId, float value,bool IsInit)
 {
+    if (HasEditorPreview()) return;
     if(!_model || !std::isfinite(value) || !m_mapParaToIndex.contains(parId)) return;
     if (!IsInit) ClearTimelinePreview();
     int Id = m_mapParaToIndex[parId];
@@ -869,14 +885,93 @@ void LAppModel::SetRandomExpression()
 
 bool LAppModel::ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error)
 {
+    if (HasEditorPreview()) return ApplyEditorPreview(bytes, sourceDigest, m_editorPose, error);
     if (error) error->clear();
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
         if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
         return false;
     }
-    const QByteArray digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
-    if (digest == m_previewMocDigest) return true;
+    try {
+        const QByteArray digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+        if (digest == m_previewMocDigest) return true;
+        const QByteArray ownedBytes(bytes.constData(), bytes.size());
+        return ApplyPreviewTransaction(ownedBytes, sourceDigest, {}, error);
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法保存预览 MOC 字节快照");
+        return false;
+    }
+}
+
+bool LAppModel::ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                  const QMap<QString, float>& pose, QString* error)
+{
+    if (error) error->clear();
+    if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
+        bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
+        if (error) *error = QStringLiteral("编辑姿态与当前模型的加载快照不匹配");
+        return false;
+    }
+    try {
+        const QByteArray ownedBytes(bytes.constData(), bytes.size());
+        const QByteArray digest = QCryptographicHash::hash(ownedBytes, QCryptographicHash::Sha256);
+        QMap<QString, float> frozenPose;
+        for (auto it = pose.cbegin(); it != pose.cend(); ++it)
+            frozenPose.insert(QString(it.key().constData(), it.key().size()), it.value());
+        if (HasEditorPreview() && digest == m_previewMocDigest && frozenPose == m_editorPose) return true;
+        std::unique_ptr<CubismModel::RuntimeValueSnapshot> entry;
+        QMap<QString, float> baseParameters;
+        if (!HasEditorPreview()) {
+            entry = std::make_unique<CubismModel::RuntimeValueSnapshot>();
+            if (!_model->CaptureRuntimeValues(*entry, error)) return false;
+            baseParameters = entry->Parameters();
+        }
+        const auto prepareModel = [&](CubismModel* candidate, QString* preparationError) {
+            if (!candidate->ApplyParameterPose(frozenPose, preparationError)) return false;
+            ApplyPartVisibility(*candidate);
+            return true;
+        };
+        if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepareModel, error)) return false;
+        if (entry) {
+            m_editorEntryState = std::move(entry);
+            m_editorBaseParameters.swap(baseParameters);
+        }
+        m_editorPose.swap(frozenPose);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法准备编辑姿态，原预览保持不变");
+        return false;
+    }
+}
+
+bool LAppModel::EndEditorPreview(QString* error)
+{
+    if (error) error->clear();
+    if (!HasEditorPreview()) return true;
+    try {
+        const auto restoreValues = [this](CubismModel* candidate, QString* preparationError) {
+            return candidate->RestoreRuntimeValues(*m_editorEntryState, preparationError);
+        };
+        if (!ApplyPreviewTransaction(m_previewMocBytes, m_sourceMocDigest, restoreValues, error)) return false;
+        m_editorEntryState.reset();
+        m_editorPose.clear();
+        m_editorBaseParameters.clear();
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法恢复编辑前状态，编辑姿态保持不变");
+        return false;
+    }
+}
+
+bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
+                                       const CubismModelReplacement::ModelPreparation& prepareModel, QString* error)
+{
+    if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
+        ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
+        if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
+        return false;
+    }
+    const QByteArray digest = QCryptographicHash::hash(ownedBytes, QCryptographicHash::Sha256);
     auto* previous = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
     auto* delegate = LAppDelegate::GetInstance();
     if (!previous || delegate->IsOffScreen() || delegate->m_isDraggingDeformer ||
@@ -890,8 +985,10 @@ bool LAppModel::ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourc
         const auto* previous = dynamic_cast<const Rendering::CubismRenderer_OpenGLES2*>(&source);
         return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
     };
-    if (!ReplaceModel(reinterpret_cast<const csmByte*>(bytes.constData()), csmSizeInt(bytes.size()), prepare, error))
+    if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
+                      prepare, error, prepareModel))
         return false;
+    m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;
     delegate->m_savedVertices.clear();
     delegate->m_meshOverlayPositions.clear();

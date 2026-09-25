@@ -10,6 +10,7 @@
 #include <QMap>
 #include <QSet>
 #include <QMap>
+#include <functional>
 
 class CCidJson;
 class QToolButton;
@@ -22,7 +23,9 @@ class CParamPanel : public QDockWidget
 {
     Q_OBJECT
 public:
+    using PreEditGuard = std::function<bool(QString*)>;
     explicit CParamPanel(QWidget *parent = nullptr);
+    void SetPreEditGuard(PreEditGuard guard);
     void SetDocument(live2dstruct::CModelDocument* document);
     void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
     void SetPreviewValues(const QMap<QString, float>& values, const QMap<QString, float>& baselineValues);
@@ -34,6 +37,7 @@ public:
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
     void HistoryChanged(bool canUndo, bool canRedo);
+    void EditRejected(const QString& error);
 
 public slots:
     void ResetAll();
@@ -74,6 +78,10 @@ private:
     CXYParameterPad* m_xyPad = nullptr;
     QGroupBox* m_xyBox = nullptr;
     bool m_updatingXY = false;
+    bool m_checkingEditGuard = false;
+    bool m_editGuardApproved = false;
+    PreEditGuard m_preEditGuard;
+    QSet<int> m_rejectedSpinEdits;
     QVector<ParamRow> m_rows;
     QSet<int> m_userDragging;
     QSet<int> m_changedDrags;
@@ -84,7 +92,9 @@ private:
     QHash<int, float> m_dragStarts;
     live2dstruct::CModelDocument* m_document = nullptr;
 
-    void ApplyValue(int rowIndex, float value, bool record);
+    bool ApplyValue(int rowIndex, float value, bool record, bool preserveSpinText = false);
+    bool AllowUserEdit();
+    void RestoreControls();
     void BeginParameterDrag(int rowIndex);
     void EndParameterDrag(int rowIndex);
     float ValueBeforeEdit(const QString& paramId, float fallback) const;

@@ -1,6 +1,7 @@
 #ifndef OPENGGLFORM_H
 #define OPENGGLFORM_H
 #include <optional>
+#include <functional>
 
 
 #include <QOpenGLFunctions_3_3_Core>
@@ -52,7 +53,18 @@ public:
     bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
     const QString& GetCurrentModelJson() const { return m_currentModelJson; }
     float ViewScale() const { return m_config.GeteScalefactor(); }
-    QVector2D ViewPosition() const { return m_config.GetLastPos(); }
+    QVector2D ViewPosition() const;
+    using MeshActivate = std::function<bool(const QString&, int, QString*)>;
+    using MeshBegin = std::function<bool(const QVector<int>&, const QVector<float>&, QString*)>;
+    using MeshMove = std::function<bool(const QPointF&, QString*)>;
+    using MeshFinish = std::function<bool(bool, QString*)>;
+    void SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish);
+    bool ApplyMocPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                         const QMap<QString, float>* pose, QString* error = nullptr);
+    bool EndEditorPreview(QString* error = nullptr);
+    bool FinishMeshDrag(bool cancel, QString* error = nullptr);
+    bool CancelMeshDrag(QString* error = nullptr);
+    bool IsMeshDragging() const { return m_meshDrag.has_value(); }
 
     //点击对应的art 显示对应的mesh网格
     //点击对应网格  显示对应item
@@ -69,8 +81,6 @@ public slots:
     void ClearEditorOverrides();
     void do_SetDrawableOpacity(const QString& name, float opacity);
     void do_SetDrawableDrawOrder(const QString& name, int drawOrder);
-    void do_SetDrawableKeyformPositions(const QString& name, int keyformIndex, const QVector<float>& positions,
-                                       bool activate = true);
     void SetMeshEditEnabled(bool enabled);
     void SetActiveKeyform(const QString& name, int keyformIndex);
     void do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices);
@@ -90,7 +100,8 @@ signals:
     void RuntimeInitialized(bool modelLoaded);
     void SendSelectMesh(const QString& artName);
     void RenderOrderChanged(const QStringList& names);
-    void MeshKeyformEdited(const QString& name, int keyformIndex, const QVector<float>& positions);
+    void MeshEditRejected(const QString& error);
+    void KeyformEditingFinishedRequested();
 
 protected:
     void initializeGL() override;
@@ -108,6 +119,8 @@ protected:
     virtual void keyPressEvent(QKeyEvent *event) Q_DECL_OVERRIDE;
     virtual void keyReleaseEvent(QKeyEvent *event) Q_DECL_OVERRIDE;
     virtual void wheelEvent(QWheelEvent *event) Q_DECL_OVERRIDE;
+    void focusOutEvent(QFocusEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 
     CEditState m_ceditstate;
@@ -121,10 +134,27 @@ protected:
     bool m_initializationCompleted = false;
     bool MakeRuntimeCurrent();
     bool m_meshEditEnabled = false;
-    bool m_meshPointDragging = false;
     QString m_meshEditName;
-    QVector<float> m_meshEditBefore;
     int m_activeKeyformIndex = 0;
+    struct MeshDrag
+    {
+        QString name;
+        int keyform;
+        QVector<int> selected;
+        QPointF start;
+        QMatrix4x4 mvp;
+        QSize size;
+    };
+    std::optional<MeshDrag> m_meshDrag;
+    MeshActivate m_meshActivate;
+    MeshBegin m_meshBegin;
+    MeshMove m_meshMove;
+    MeshFinish m_meshFinish;
+    bool m_meshEditCallbackActive = false;
+    QPointF m_pointerAnchor;
+    bool MeshDragFrameMatches() const;
+    bool BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error);
+    QString SelectCoreMesh(const QPointF& pixel, bool hover);
 
 
 

@@ -51,6 +51,7 @@ struct Runtime
     std::unordered_map<const Core::csmModel*, ModelRecord> models;
     std::unordered_set<const CubismRenderer*> renderers;
     QStringList events;
+    QVector<int> releasedModelUpdates;
     QByteArray checkedBytes;
     Failure failure = None;
     int nextGeneration = 1;
@@ -92,6 +93,7 @@ void release(void* memory, bool aligned)
             if (renderer->GetModel() && renderer->GetModel()->GetModel() == modelAddress)
                 qFatal("Model released before its renderer");
         runtime.events.append(QStringLiteral("model:%1").arg(model->second.generation));
+        runtime.releasedModelUpdates.append(model->second.state->updates);
         runtime.models.erase(model);
     }
     const auto* mocAddress = static_cast<const Core::csmMoc*>(memory);
@@ -380,6 +382,140 @@ private slots:
         QCOMPARE(candidateMesh->GetSelectPoint().front()->GetPoint(), QVector2D(-0.5f, -0.75f));
         source.reset();
         QCOMPARE(runtime.events.mid(3), QStringList({QStringLiteral("renderer:2"), QStringLiteral("model:2"), QStringLiteral("moc:2")}));
+    }
+
+    void modelPreparationRunsAfterStateCopyAndBeforeEvaluation()
+    {
+        auto source = createSource();
+        auto* oldModel = source->model;
+        bool modelPrepared = false, rendererPrepared = false;
+        const QMap<QString, float> pose{{"ParamA", -0.5f}, {"ParamB", 1.5f}};
+        CubismModelReplacement replacement;
+        QString error;
+        const auto prepareModel = [&](CubismModel* candidate, QString* message) {
+            CubismModel::RuntimeValueSnapshot copied;
+            if (State(candidate->GetModel()).updates != 0 || !candidate->CaptureRuntimeValues(copied, message) ||
+                copied.parameterValues != QVector<float>({0.7f, 0.8f}) ||
+                copied.savedParameters != QVector<float>({0.2f, 0.3f})) return false;
+            modelPrepared = candidate->ApplyParameterPose(pose, message);
+            return modelPrepared;
+        };
+        const auto prepareRenderer = [&](CubismRenderer* renderer, CubismModel* candidate,
+                                          const CubismRenderer& previous, QString* message) {
+            CubismModel::RuntimeValueSnapshot evaluated;
+            if (!modelPrepared || State(candidate->GetModel()).updates != 1 ||
+                !candidate->CaptureRuntimeValues(evaluated, message) || evaluated.Parameters() != pose ||
+                evaluated.savedParameters != QVector<float>({0.2f, 0.3f})) return false;
+            rendererPrepared = true;
+            return normalPreparation()(renderer, candidate, previous, message);
+        };
+        QVERIFY2(replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+                                     *source->renderer, prepareRenderer, &error, prepareModel), qPrintable(error));
+        QVERIFY(modelPrepared && rendererPrepared);
+        QCOMPARE(source->model, oldModel);
+        QCOMPARE(source->model->GetParameterValue(0), 0.7f);
+        QVERIFY(replacement.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(source->model->GetParameterValue(0), -0.5f);
+        QCOMPARE(source->model->GetParameterValue(1), 1.5f);
+        source->model->LoadParameters();
+        QCOMPARE(source->model->GetParameterValue(0), 0.2f);
+        QCOMPARE(source->model->GetParameterValue(1), 0.3f);
+    }
+
+    void modelPreparationFailureRollsBackBeforeCoreUpdate_data()
+    {
+        QTest::addColumn<int>("failure");
+        QTest::newRow("callback-false") << 0;
+        QTest::newRow("callback-throws") << 1;
+        QTest::newRow("out-of-range-pose") << 2;
+    }
+
+    void modelPreparationFailureRollsBackBeforeCoreUpdate()
+    {
+        QFETCH(int, failure);
+        auto source = createSource();
+        auto* mesh = source->model->GetMeshMap()->GetDrawMesh(QStringLiteral("MeshA"));
+        auto* selected = mesh->GetSelectPoint().front();
+        const auto allocationCount = runtime.allocations.size();
+        int calls = 0;
+        CubismModelReplacement replacement;
+        QString error;
+        const auto prepareModel = [&](CubismModel* candidate, QString* message) {
+            ++calls;
+            if (failure == 2) return candidate->ApplyParameterPose({{"ParamA", 99}, {"ParamB", 0}}, message);
+            if (!candidate->ApplyParameterPose({{"ParamA", -0.5f}, {"ParamB", 1.5f}}, message)) return false;
+            if (failure == 1) throw std::runtime_error("Controlled pose preparation failure");
+            return false;
+        };
+        QVERIFY(!replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+                                      *source->renderer, normalPreparation(), &error, prepareModel));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(calls, 1);
+        QCOMPARE(runtime.rendererCalls, 1);
+        QCOMPARE(runtime.allocations.size(), allocationCount);
+        QCOMPARE(runtime.releasedModelUpdates, QVector<int>({0}));
+        QVERIFY(!replacement.GetModel());
+        verifySourceUnchanged(*source, mesh, selected);
+        const auto validPose = [](CubismModel* candidate, QString* message) {
+            return candidate->ApplyParameterPose({{"ParamA", -0.5f}, {"ParamB", 1.5f}}, message);
+        };
+        QVERIFY2(replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+                                     *source->renderer, normalPreparation(), &error, validPose), qPrintable(error));
+        QVERIFY(replacement.Commit(source->moc, source->model, source->renderer));
+    }
+
+    void identicalMocBytesCanChangePoseThenRestoreEntryValuesWithEditedGeometry()
+    {
+        auto source = createSource();
+        CubismModel::RuntimeValueSnapshot entry;
+        QVERIFY(source->model->CaptureRuntimeValues(entry));
+        const QVector<QMap<QString, float>> poses{
+            {{"ParamA", -0.5f}, {"ParamB", 1.5f}}, {{"ParamA", 0.9f}, {"ParamB", -1.5f}}
+        };
+        for (const auto& pose : poses) {
+            auto* previous = source->model;
+            CubismModelReplacement replacement;
+            const auto apply = [&](CubismModel* candidate, QString* error) { return candidate->ApplyParameterPose(pose, error); };
+            QVERIFY(replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+                                        *source->renderer, normalPreparation(), nullptr, apply));
+            QVERIFY(replacement.Commit(source->moc, source->model, source->renderer));
+            QVERIFY(source->model != previous);
+            CubismModel::RuntimeValueSnapshot values;
+            QVERIFY(source->model->CaptureRuntimeValues(values));
+            QCOMPARE(values.Parameters(), pose);
+            QCOMPARE(values.savedParameters, QVector<float>({0.2f, 0.3f}));
+            QCOMPARE(source->model->GetDrawableVertexPositions(0)[0].X, -0.5f);
+            QCOMPARE(State(source->model->GetModel()).updates, 1);
+        }
+        QCOMPARE(runtime.initializeCalls, 3);
+        QCOMPARE(entry.Parameters(), (QMap<QString, float>{{"ParamA", 0.7f}, {"ParamB", 0.8f}}));
+        source->model->SetPartOpacity(0, 0);
+        source->model->SetModelOpacity(0.1f);
+        source->model->SetParameterValue(idManager->GetId("VirtualParameter"), -99);
+        const auto restore = [&](CubismModel* candidate, QString* error) { return candidate->RestoreRuntimeValues(entry, error); };
+        {
+            CubismModelReplacement rejected;
+            const auto rejectRenderer = [](CubismRenderer*, CubismModel*, const CubismRenderer&, QString*) { return false; };
+            QVERIFY(!rejected.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+                                       *source->renderer, rejectRenderer, nullptr, restore));
+            QCOMPARE(source->model->GetParameterValue(0), 0.9f);
+            QCOMPARE(source->model->GetPartOpacity(0), 0.0f);
+            QCOMPARE(source->model->GetModelOpacity(), 0.1f);
+        }
+        CubismModelReplacement replacement;
+        QVERIFY(replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+                                    *source->renderer, normalPreparation(), nullptr, restore));
+        QVERIFY(replacement.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(source->model->GetParameterValue(0), 0.7f);
+        QCOMPARE(source->model->GetParameterValue(1), 0.8f);
+        QCOMPARE(source->model->GetPartOpacity(0), 0.45f);
+        QCOMPARE(source->model->GetModelOpacity(), 0.6f);
+        QCOMPARE(source->model->GetParameterValue(idManager->GetId("VirtualParameter")), 2.5f);
+        QCOMPARE(source->model->GetDrawableVertexPositions(0)[0].X, -0.5f);
+        QCOMPARE(source->model->GetDrawableVertexPositions(0)[0].Y, -0.75f);
+        source->model->LoadParameters();
+        QCOMPARE(source->model->GetParameterValue(0), 0.2f);
+        QCOMPARE(source->model->GetParameterValue(1), 0.3f);
     }
 
     void coreAndFactoryFailuresReleaseCandidateImmediately_data()

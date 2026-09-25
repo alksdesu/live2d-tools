@@ -12,6 +12,7 @@
 #include "live2dstruct/cmeshindexoverrides.h"
 #include <QMap>
 #include <QHash>
+#include <QStringList>
 
 class ModelRuntimeStateTests;
 class CubismRendererPreparationTests;
@@ -94,6 +95,23 @@ public:
     bool IsCompatibleForKeyformUpdate(const CubismModel& source, QString* error = nullptr) const;
     bool CopyRuntimeStateFrom(const CubismModel& source, QString* error = nullptr);
     bool HasFiniteDrawableState(QString* error = nullptr) const;
+
+    struct RuntimeValueSnapshot
+    {
+        QStringList parameterIds;
+        QVector<float> parameterValues, savedParameters, minimums, maximums;
+        QStringList partIds;
+        QVector<float> partOpacities;
+        QMap<QString, int> virtualParameterIds, virtualPartIds;
+        QMap<int, float> virtualParameterValues, virtualPartOpacities;
+        float modelOpacity = 1.0f;
+        bool valid = false;
+
+        QMap<QString, float> Parameters() const;
+    };
+    bool CaptureRuntimeValues(RuntimeValueSnapshot& snapshot, QString* error = nullptr) const;
+    bool RestoreRuntimeValues(const RuntimeValueSnapshot& snapshot, QString* error = nullptr);
+    bool ApplyParameterPose(const QMap<QString, float>& pose, QString* error = nullptr);
 
     void    Update() const;
     csmFloat32  GetCanvasWidthPixel() const;

@@ -567,6 +567,166 @@ private slots:
         QCOMPARE(data.positions[1][3].X, std::numeric_limits<float>::max());
         QCOMPARE(data.positions[1][3].Y, std::numeric_limits<float>::denorm_min());
     }
+
+    void valueSnapshotOutlivesSourceAndRestoresOnlyRuntimeValues()
+    {
+        CubismModel::RuntimeValueSnapshot entry;
+        {
+            auto source = create();
+            source->SetParameterValue(0, 0.2f);
+            source->SetParameterValue(1, 0.3f);
+            source->SaveParameters();
+            source->SetParameterValue(0, 0.7f);
+            source->SetParameterValue(1, 0.8f);
+            source->SetPartOpacity(0, 0.4f);
+            source->SetPartOpacity(1, 0.6f);
+            source->SetModelOpacity(0.45f);
+            source->SetParameterValue(idManager->GetId("VirtualParameter"), 2.5f);
+            source->SetPartOpacity(idManager->GetId("VirtualPart"), 0.15f);
+            QVERIFY(source->CaptureRuntimeValues(entry));
+            QCOMPARE(entry.Parameters(), (QMap<QString, float>{{"ParamA", 0.7f}, {"ParamB", 0.8f}}));
+            QCOMPARE(entry.savedParameters, QVector<float>({0.2f, 0.3f}));
+        }
+        QVERIFY(coreStates.empty());
+        auto candidate = create();
+        auto& data = State(candidate->GetModel());
+        data.positions[0][0] = {123, 456};
+        candidate->SetMultiplyColor(0, 0.1f, 0.2f, 0.3f, 0.4f);
+        candidate->SetParameterValue(idManager->GetId("ExtraVirtual"), 99);
+        candidate->SetPartOpacity(idManager->GetId("ExtraVirtualPart"), 0.8f);
+        QVERIFY(candidate->RestoreRuntimeValues(entry));
+        QCOMPARE(candidate->GetParameterValue(0), 0.7f);
+        QCOMPARE(candidate->GetParameterValue(1), 0.8f);
+        QCOMPARE(candidate->_savedParameters, QVector<float>({0.2f, 0.3f}));
+        QCOMPARE(candidate->GetParameterValue(idManager->GetId("VirtualParameter")), 2.5f);
+        QCOMPARE(candidate->GetPartOpacity(idManager->GetId("VirtualPart")), 0.15f);
+        QCOMPARE(candidate->_notExistParameterId.size(), 1);
+        QCOMPARE(candidate->_notExistPartId.size(), 1);
+        QCOMPARE(candidate->GetPartOpacity(0), 0.4f);
+        QCOMPARE(candidate->GetPartOpacity(1), 0.6f);
+        QCOMPARE(candidate->GetModelOpacity(), 0.45f);
+        QCOMPARE(data.positions[0][0].X, 123.0f);
+        QCOMPARE(data.positions[0][0].Y, 456.0f);
+        verifyColor(candidate->_userMultiplyColors[0].Color, 0.1f, 0.2f, 0.3f, 0.4f);
+        QCOMPARE(data.updates, 0);
+        candidate->LoadParameters();
+        QCOMPARE(candidate->GetParameterValue(0), 0.2f);
+        QCOMPARE(candidate->GetParameterValue(1), 0.3f);
+        QCOMPARE(entry.Parameters().value("ParamA"), 0.7f);
+    }
+
+    void exactPoseRequiresAllRealParametersAndNeverSaves()
+    {
+        auto model = create();
+        model->SetParameterValue(0, 0.2f);
+        model->SetParameterValue(1, 0.3f);
+        model->SaveParameters();
+        const auto virtualId = idManager->GetId("VirtualParameter");
+        model->SetParameterValue(virtualId, 7.5f);
+        QVERIFY(model->ApplyParameterPose({{"ParamA", -1.0f}, {"ParamB", 2.0f}}));
+        QCOMPARE(model->GetParameterValue(0), -1.0f);
+        QCOMPARE(model->GetParameterValue(1), 2.0f);
+        QCOMPARE(model->GetParameterValue(virtualId), 7.5f);
+        QCOMPARE(model->_savedParameters, QVector<float>({0.2f, 0.3f}));
+        const QVector<QMap<QString, float>> invalid{
+            {}, {{"ParamA", 0}}, {{"ParamA", 0}, {"Unknown", 0}},
+            {{"ParamA", 0}, {"ParamB", 0}, {"VirtualParameter", 0}},
+            {{"ParamA", -1.01f}, {"ParamB", 0}}, {{"ParamA", 0}, {"ParamB", 2.01f}},
+            {{"ParamA", 0}, {"ParamB", std::numeric_limits<float>::quiet_NaN()}},
+            {{"ParamA", std::numeric_limits<float>::infinity()}, {"ParamB", 0}}
+        };
+        for (const auto& pose : invalid) {
+            QString error;
+            QVERIFY(!model->ApplyParameterPose(pose, &error));
+            QVERIFY(!error.isEmpty());
+            QCOMPARE(model->GetParameterValue(0), -1.0f);
+            QCOMPARE(model->GetParameterValue(1), 2.0f);
+            QCOMPARE(model->_savedParameters, QVector<float>({0.2f, 0.3f}));
+        }
+        model->LoadParameters();
+        QCOMPARE(model->GetParameterValue(0), 0.2f);
+        QCOMPARE(model->GetParameterValue(1), 0.3f);
+        QCOMPARE(State(model->GetModel()).updates, 0);
+    }
+
+    void valueSnapshotPreservesSavedPrefixAndFiniteOvershoot()
+    {
+        auto model = create();
+        State(model->GetModel()).values = {5.0f, -8.0f};
+        model->_savedParameters = {4.0f};
+        CubismModel::RuntimeValueSnapshot snapshot;
+        QVERIFY(model->CaptureRuntimeValues(snapshot));
+        QVERIFY(model->ApplyParameterPose({{"ParamA", 0}, {"ParamB", 0}}));
+        QVERIFY(model->RestoreRuntimeValues(snapshot));
+        QCOMPARE(model->GetParameterValue(0), 5.0f);
+        QCOMPARE(model->GetParameterValue(1), -8.0f);
+        QCOMPARE(model->_savedParameters, QVector<float>({4.0f}));
+        model->LoadParameters();
+        QCOMPARE(model->GetParameterValue(0), 4.0f);
+        QCOMPARE(model->GetParameterValue(1), -8.0f);
+    }
+
+    void invalidSnapshotRestoreIsAtomic_data()
+    {
+        QTest::addColumn<int>("failure");
+        for (int failure = 0; failure < 12; ++failure)
+            QTest::newRow(qPrintable(QString::number(failure))) << failure;
+    }
+
+    void invalidSnapshotRestoreIsAtomic()
+    {
+        QFETCH(int, failure);
+        auto model = create();
+        model->SaveParameters();
+        CubismModel::RuntimeValueSnapshot snapshot;
+        QVERIFY(model->CaptureRuntimeValues(snapshot));
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        switch (failure) {
+        case 0: snapshot.valid = false; break;
+        case 1: snapshot.parameterIds.swapItemsAt(0, 1); break;
+        case 2: snapshot.partIds[0] = "Other"; break;
+        case 3: snapshot.minimums[0] = -99; break;
+        case 4: snapshot.parameterValues[1] = nan; break;
+        case 5: snapshot.partOpacities[1] = nan; break;
+        case 6: snapshot.savedParameters.append(0); break;
+        case 7: snapshot.modelOpacity = nan; break;
+        case 8: snapshot.virtualParameterIds.insert("Extra", 99); snapshot.virtualParameterValues.insert(99, 1); break;
+        case 9: snapshot.virtualParameterIds.insert("ParamA", 2); snapshot.virtualParameterValues.insert(2, 1); break;
+        case 10: snapshot.virtualPartIds.insert("Extra", 2); snapshot.virtualPartOpacities.insert(2, nan); break;
+        case 11: snapshot.parameterValues.clear(); break;
+        }
+        const auto values = State(model->GetModel()).values;
+        const auto parts = State(model->GetModel()).partOpacities;
+        const auto saved = model->_savedParameters;
+        const auto opacity = model->GetModelOpacity();
+        QString error;
+        QVERIFY(!model->RestoreRuntimeValues(snapshot, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(State(model->GetModel()).values == values);
+        QVERIFY(State(model->GetModel()).partOpacities == parts);
+        QCOMPARE(model->_savedParameters, saved);
+        QCOMPARE(model->GetModelOpacity(), opacity);
+        QVERIFY(model->_notExistParameterId.isEmpty());
+        QVERIFY(model->_notExistPartId.isEmpty());
+    }
+
+    void failedCapturePreservesPreviousSnapshot()
+    {
+        auto model = create();
+        CubismModel::RuntimeValueSnapshot snapshot;
+        QVERIFY(model->CaptureRuntimeValues(snapshot));
+        const auto original = snapshot.Parameters();
+        State(model->GetModel()).values[1] = std::numeric_limits<float>::infinity();
+        QString error;
+        QVERIFY(!model->CaptureRuntimeValues(snapshot, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(snapshot.Parameters(), original);
+        auto empty = create(true);
+        QVERIFY(empty->ApplyParameterPose({}));
+        QVERIFY(empty->CaptureRuntimeValues(snapshot));
+        QVERIFY(snapshot.Parameters().isEmpty());
+        QVERIFY(empty->RestoreRuntimeValues(snapshot));
+    }
 };
 
 QTEST_GUILESS_MAIN(ModelRuntimeStateTests)

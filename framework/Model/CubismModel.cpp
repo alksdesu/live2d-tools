@@ -16,6 +16,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 namespace Live2D { namespace Cubism { namespace Framework {
@@ -84,6 +85,187 @@ bool uniqueRuntimeIds(const char* const* ids, int count)
     }
     return true;
 }
+
+bool readValueDefinition(const Core::csmModel* model, CubismModel::RuntimeValueSnapshot& state, QString* error)
+{
+    if (!model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
+    const int parameters = Core::csmGetParameterCount(model), parts = Core::csmGetPartCount(model);
+    const auto* parameterIds = Core::csmGetParameterIds(model);
+    const auto* partIds = Core::csmGetPartIds(model);
+    const auto* minimums = Core::csmGetParameterMinimumValues(model);
+    const auto* maximums = Core::csmGetParameterMaximumValues(model);
+    if (!validRuntimeCount(parameters) || !validRuntimeCount(parts) ||
+        (parameters && (!parameterIds || !minimums || !maximums)) || (parts && !partIds))
+        return runtimeStateError(error, QStringLiteral("Runtime value definition is invalid"));
+    const auto copyIds = [](const char* const* ids, int count, QStringList& target) {
+        QSet<QString> unique;
+        target.reserve(count);
+        for (int index = 0; index < count; ++index) {
+            if (!ids[index] || !ids[index][0]) return false;
+            const QString id = QString::fromUtf8(ids[index]);
+            if (unique.contains(id)) return false;
+            unique.insert(id);
+            target.append(id);
+        }
+        return true;
+    };
+    if (!copyIds(parameterIds, parameters, state.parameterIds) || !copyIds(partIds, parts, state.partIds))
+        return runtimeStateError(error, QStringLiteral("Runtime value IDs are empty or duplicated"));
+    state.minimums.reserve(parameters);
+    state.maximums.reserve(parameters);
+    for (int index = 0; index < parameters; ++index) {
+        if (!std::isfinite(minimums[index]) || !std::isfinite(maximums[index]) || minimums[index] > maximums[index])
+            return runtimeStateError(error, QStringLiteral("Parameter range is invalid"));
+        state.minimums.append(minimums[index]);
+        state.maximums.append(maximums[index]);
+    }
+    return true;
+}
+
+bool validVirtualValues(const QMap<QString, int>& ids, const QMap<int, float>& values,
+                        const QStringList& realIds)
+{
+    if (ids.size() != values.size() || ids.size() > std::numeric_limits<int>::max() - realIds.size()) return false;
+    QSet<QString> real(realIds.cbegin(), realIds.cend());
+    QSet<int> indices;
+    for (auto id = ids.cbegin(); id != ids.cend(); ++id) {
+        if (id.key().isEmpty() || real.contains(id.key()) || id.value() < realIds.size() ||
+            id.value() >= realIds.size() + ids.size() || indices.contains(id.value()) ||
+            !values.contains(id.value()) || !std::isfinite(values.value(id.value()))) return false;
+        indices.insert(id.value());
+    }
+    return true;
+}
+}
+
+QMap<QString, float> CubismModel::RuntimeValueSnapshot::Parameters() const
+{
+    QMap<QString, float> result;
+    if (!valid || parameterIds.size() != parameterValues.size()) return result;
+    for (int index = 0; index < parameterIds.size(); ++index) result.insert(parameterIds[index], parameterValues[index]);
+    return result;
+}
+
+bool CubismModel::CaptureRuntimeValues(RuntimeValueSnapshot& snapshot, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        RuntimeValueSnapshot candidate;
+        if (!readValueDefinition(_model, candidate, error)) return false;
+        const int parameters = candidate.parameterIds.size(), parts = candidate.partIds.size();
+        if ((parameters && !_parameterValues) || (parts && !_partOpacities) || _savedParameters.size() > parameters ||
+            _parameterIds.GetSize() != parameters || _partIds.GetSize() != parts || !std::isfinite(_modelOpacity))
+            return runtimeStateError(error, QStringLiteral("Runtime values are not initialized"));
+        candidate.parameterValues.reserve(parameters);
+        candidate.partOpacities.reserve(parts);
+        for (int index = 0; index < parameters; ++index) {
+            if (!std::isfinite(_parameterValues[index])) return runtimeStateError(error, QStringLiteral("Current parameter is non-finite"));
+            candidate.parameterValues.append(_parameterValues[index]);
+        }
+        for (int index = 0; index < parts; ++index) {
+            if (!std::isfinite(_partOpacities[index])) return runtimeStateError(error, QStringLiteral("Part opacity is non-finite"));
+            candidate.partOpacities.append(_partOpacities[index]);
+        }
+        for (float value : _savedParameters)
+            if (!std::isfinite(value)) return runtimeStateError(error, QStringLiteral("Saved parameter is non-finite"));
+        const auto copyVirtualIds = [](const auto& source, QMap<QString, int>& target) {
+            for (auto it = source.cbegin(); it != source.cend(); ++it) {
+                if (!it.key()) return false;
+                const QString name = QString::fromUtf8(it.key()->GetString().GetRawString());
+                if (target.contains(name)) return false;
+                target.insert(name, it.value());
+            }
+            return true;
+        };
+        if (!copyVirtualIds(_notExistParameterId, candidate.virtualParameterIds) ||
+            !copyVirtualIds(_notExistPartId, candidate.virtualPartIds))
+            return runtimeStateError(error, QStringLiteral("Virtual value IDs are invalid"));
+        candidate.virtualParameterValues = _notExistParameterValues;
+        candidate.virtualPartOpacities = _notExistPartOpacities;
+        if (!validVirtualValues(candidate.virtualParameterIds, candidate.virtualParameterValues, candidate.parameterIds) ||
+            !validVirtualValues(candidate.virtualPartIds, candidate.virtualPartOpacities, candidate.partIds))
+            return runtimeStateError(error, QStringLiteral("Virtual runtime values are invalid"));
+        candidate.savedParameters = _savedParameters;
+        candidate.modelOpacity = _modelOpacity;
+        candidate.valid = true;
+        snapshot = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        return runtimeStateError(error, QStringLiteral("Unable to capture runtime values"));
+    }
+}
+
+bool CubismModel::RestoreRuntimeValues(const RuntimeValueSnapshot& snapshot, QString* error)
+{
+    if (error) error->clear();
+    try {
+        RuntimeValueSnapshot definition;
+        if (!readValueDefinition(_model, definition, error)) return false;
+        const int parameters = definition.parameterIds.size(), parts = definition.partIds.size();
+        if (!snapshot.valid || snapshot.parameterIds != definition.parameterIds || snapshot.partIds != definition.partIds ||
+            snapshot.minimums != definition.minimums || snapshot.maximums != definition.maximums ||
+            snapshot.parameterValues.size() != parameters || snapshot.partOpacities.size() != parts ||
+            snapshot.savedParameters.size() > parameters || (parameters && !_parameterValues) ||
+            (parts && !_partOpacities) || !std::isfinite(snapshot.modelOpacity))
+            return runtimeStateError(error, QStringLiteral("Runtime snapshot does not match this model"));
+        for (const auto* values : {&snapshot.parameterValues, &snapshot.savedParameters, &snapshot.partOpacities})
+            for (float value : *values)
+                if (!std::isfinite(value)) return runtimeStateError(error, QStringLiteral("Runtime snapshot contains non-finite values"));
+        if (!validVirtualValues(snapshot.virtualParameterIds, snapshot.virtualParameterValues, snapshot.parameterIds) ||
+            !validVirtualValues(snapshot.virtualPartIds, snapshot.virtualPartOpacities, snapshot.partIds))
+            return runtimeStateError(error, QStringLiteral("Runtime snapshot virtual values are invalid"));
+        QMap<CubismIdHandle, int> parameterIds, partIds;
+        auto* manager = CubismFramework::GetIdManager();
+        if (!manager && (!snapshot.virtualParameterIds.isEmpty() || !snapshot.virtualPartIds.isEmpty()))
+            return runtimeStateError(error, QStringLiteral("Missing runtime ID manager"));
+        const auto resolve = [manager](const auto& source, auto& target) {
+            for (auto it = source.cbegin(); it != source.cend(); ++it) {
+                const auto* id = manager->GetId(it.key().toUtf8().constData());
+                if (!id || target.contains(id)) return false;
+                target.insert(id, it.value());
+            }
+            return true;
+        };
+        if (!resolve(snapshot.virtualParameterIds, parameterIds) || !resolve(snapshot.virtualPartIds, partIds))
+            return runtimeStateError(error, QStringLiteral("Unable to resolve snapshot IDs"));
+        auto parameterValues = snapshot.virtualParameterValues;
+        auto partOpacities = snapshot.virtualPartOpacities;
+        auto savedParameters = snapshot.savedParameters;
+        _notExistParameterId.swap(parameterIds);
+        _notExistPartId.swap(partIds);
+        _notExistParameterValues.swap(parameterValues);
+        _notExistPartOpacities.swap(partOpacities);
+        _savedParameters.swap(savedParameters);
+        for (int index = 0; index < parameters; ++index) _parameterValues[index] = snapshot.parameterValues[index];
+        for (int index = 0; index < parts; ++index) _partOpacities[index] = snapshot.partOpacities[index];
+        _modelOpacity = snapshot.modelOpacity;
+        return true;
+    } catch (const std::exception&) {
+        return runtimeStateError(error, QStringLiteral("Unable to restore runtime values"));
+    }
+}
+
+bool CubismModel::ApplyParameterPose(const QMap<QString, float>& pose, QString* error)
+{
+    if (error) error->clear();
+    try {
+        RuntimeValueSnapshot definition;
+        if (!readValueDefinition(_model, definition, error)) return false;
+        if (pose.size() != definition.parameterIds.size() || (!pose.isEmpty() && !_parameterValues))
+            return runtimeStateError(error, QStringLiteral("Editor pose must contain every real parameter"));
+        QVector<float> values;
+        values.reserve(pose.size());
+        for (int index = 0; index < definition.parameterIds.size(); ++index) {
+            const auto found = pose.constFind(definition.parameterIds[index]);
+            if (found == pose.cend() || !std::isfinite(*found) || *found < definition.minimums[index] || *found > definition.maximums[index])
+                return runtimeStateError(error, QStringLiteral("Editor parameter %1 is missing or outside its range").arg(definition.parameterIds[index]));
+            values.append(*found);
+        }
+        for (int index = 0; index < values.size(); ++index) _parameterValues[index] = values[index];
+        return true;
+    } catch (const std::exception&) {
+        return runtimeStateError(error, QStringLiteral("Unable to apply editor parameter pose"));
+    }
 }
 
 bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QString* error) const

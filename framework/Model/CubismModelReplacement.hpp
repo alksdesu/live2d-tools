@@ -15,6 +15,7 @@ class CubismModelReplacement
 public:
     using RendererPreparation = std::function<bool(
         Rendering::CubismRenderer*, CubismModel*, const Rendering::CubismRenderer&, QString*)>;
+    using ModelPreparation = std::function<bool(CubismModel*, QString*)>;
 
     CubismModelReplacement() = default;
     ~CubismModelReplacement();
@@ -23,7 +24,7 @@ public:
 
     bool Prepare(const csmByte* bytes, csmSizeInt size, const CubismMoc& sourceMoc, const CubismModel& source,
                  const Rendering::CubismRenderer& renderer, const RendererPreparation& prepareRenderer,
-                 QString* error = nullptr);
+                 QString* error = nullptr, const ModelPreparation& prepareModel = {});
     CubismModel* GetModel() const { return _model; }
     bool Commit(CubismMoc*& moc, CubismModel*& model, Rendering::CubismRenderer*& renderer) noexcept;
 

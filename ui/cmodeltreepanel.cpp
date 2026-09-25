@@ -729,27 +729,43 @@ void CModelTreePanel::setChildrenChecked(QTreeWidgetItem* item, Qt::CheckState s
 
 void CModelTreePanel::HighlightMesh(const QString& artName)
 {
-    if(artName.isEmpty()){
-        m_partTree->clearSelection();
-        m_deformerTree->clearSelection();
+    if (artName.isEmpty()) {
+        if (m_partTree->selectedItems().isEmpty() && m_deformerTree->selectedItems().isEmpty()) return;
+        {
+            const QSignalBlocker partBlocker(m_partTree);
+            const QSignalBlocker deformerBlocker(m_deformerTree);
+            m_partTree->clearSelection();
+            m_deformerTree->clearSelection();
+        }
+        emit ObjectsSelected({}, {});
         return;
     }
     const auto meshes = findObjectItems(m_partTree, artName, QStringLiteral("artmesh"));
     if (meshes.isEmpty()) return;
     QTreeWidgetItem* mesh = meshes.first();
-    m_partTree->clearSelection();
-    mesh->setSelected(true);
-    m_partTree->scrollToItem(mesh);
-
     auto linked = findObjectItems(m_deformerTree, artName, QStringLiteral("artmesh"));
     if (linked.isEmpty() && mesh->parent()) {
         const auto* parent = mesh->parent();
         linked = findObjectItems(m_deformerTree, parent->data(0, Qt::UserRole).toString(),
                                  parent->data(0, Qt::UserRole + 1).toString());
     }
-    m_deformerTree->clearSelection();
-    if (!linked.isEmpty()) {
-        linked.first()->setSelected(true);
-        m_deformerTree->scrollToItem(linked.first());
+    const QList<QTreeWidgetItem*> partSelection{mesh};
+    const QList<QTreeWidgetItem*> deformerSelection = linked.isEmpty() ? QList<QTreeWidgetItem*>()
+                                                                    : QList<QTreeWidgetItem*>{linked.first()};
+    if (m_partTree->selectedItems() == partSelection && m_deformerTree->selectedItems() == deformerSelection) return;
+    {
+        const QSignalBlocker partBlocker(m_partTree);
+        const QSignalBlocker deformerBlocker(m_deformerTree);
+        if (m_partTree->selectedItems() != partSelection) {
+            m_partTree->clearSelection();
+            mesh->setSelected(true);
+        }
+        m_partTree->scrollToItem(mesh);
+        if (m_deformerTree->selectedItems() != deformerSelection) {
+            m_deformerTree->clearSelection();
+            if (!deformerSelection.isEmpty()) deformerSelection.first()->setSelected(true);
+        }
+        if (!deformerSelection.isEmpty()) m_deformerTree->scrollToItem(deformerSelection.first());
     }
+    emit ObjectsSelected({artName}, {QStringLiteral("artmesh")});
 }

@@ -1,9 +1,71 @@
 #include "opengglform.h"
 #include "edit/cmeshmap.h"
+#include "ccanvascoordinates.h"
 #include "framework/Id/CubismIdManager.hpp"
 #include <QSurfaceFormat>
 #include <QScopeGuard>
+#include <QScopedValueRollback>
+#include <QFocusEvent>
+#include <QHideEvent>
 #include <cmath>
+#include <exception>
+#include <limits>
+
+namespace {
+class RestoreContext
+{
+public:
+    RestoreContext() : previous(QOpenGLContext::currentContext()), surface(previous ? previous->surface() : nullptr) {}
+    ~RestoreContext()
+    {
+        if (QOpenGLContext::currentContext() == previous) return;
+        if (auto* current = QOpenGLContext::currentContext()) current->doneCurrent();
+        if (previous && surface) previous->makeCurrent(surface);
+    }
+private:
+    QPointer<QOpenGLContext> previous;
+    QSurface* surface;
+};
+
+bool MeshError(QString* error, const QString& message)
+{
+    if (error) *error = message;
+    return false;
+}
+
+LAppModel* CurrentModel()
+{
+    auto* manager = LAppLive2DManager::GetInstance();
+    return manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+}
+
+bool CorePositions(CubismModel& model, int index, QVector<float>& output)
+{
+    if (index < 0 || index >= model.GetDrawableCount()) return false;
+    const int count = model.GetDrawableVertexCount(index);
+    if (count <= 0 || count > 1000000) return false;
+    const float* values = model.GetDrawableVertices(index);
+    if (!values) return false;
+    for (int value = 0; value < count * 2; ++value)
+        if (!std::isfinite(values[value])) return false;
+    output = QVector<float>(values, values + count * 2);
+    return true;
+}
+
+bool ViewPoint(LAppView& view, const QSize& size, const QPointF& pixel, QPointF& output)
+{
+    if (!CCanvasCoordinates::ScreenToModel(view.GetProjectionView(), size, pixel, output)) return false;
+    return std::abs(output.x()) <= std::numeric_limits<float>::max() &&
+           std::abs(output.y()) <= std::numeric_limits<float>::max();
+}
+
+bool FiniteMatrix(const QMatrix4x4& matrix)
+{
+    for (int index = 0; index < 16; ++index)
+        if (!std::isfinite(matrix.constData()[index])) return false;
+    return true;
+}
+}
 
 
 OpengGlForm::OpengGlForm(QWidget *par):QOpenGLWidget(par)
@@ -19,6 +81,7 @@ OpengGlForm::OpengGlForm(QWidget *par):QOpenGLWidget(par)
     connect(&m_timer,SIGNAL(timeout()),this,SLOT(on_timeout()));
 
     setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
 }
 
 OpengGlForm::~OpengGlForm()
@@ -111,6 +174,10 @@ bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, b
 
 void OpengGlForm::do_ShowMesh(const QString &artName)
 {
+    if (IsMeshDragging() && m_meshDrag->name != artName) {
+        QString error;
+        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    }
     m_meshEditName = artName;
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
     if(Live2DManager && Live2DManager->GetModelNum() > 0){
@@ -127,17 +194,23 @@ void OpengGlForm::do_ShowMesh(const QString &artName)
 
 void OpengGlForm::SetMeshEditEnabled(bool enabled)
 {
+    if (!enabled && IsMeshDragging()) {
+        QString error;
+        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    }
     m_meshEditEnabled = enabled;
     if (!enabled) {
-        m_meshPointDragging = false;
         m_meshEditName.clear();
-        m_meshEditBefore.clear();
     }
 }
 
 void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
 {
     if (name.isEmpty() || keyformIndex < 0) return;
+    if (IsMeshDragging() && (m_meshDrag->name != name || m_meshDrag->keyform != keyformIndex)) {
+        QString error;
+        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    }
     m_meshEditName = name;
     m_activeKeyformIndex = keyformIndex;
 }
@@ -175,19 +248,13 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
         int modelCount = Live2DManager->GetModelNum();
         if(modelCount > 0){
             LAppModel* model = Live2DManager->GetModel(0);
+            if (model && model->HasEditorPreview()) return;
             if (model) {
                 model->UpdateParaValue(name,value,IsInit);
             }
             if (model && IsInit && model->GetModel()) {
                 CMeshMap* meshMap = model->GetModel()->GetMeshMap();
                 if (meshMap) {
-                    const auto* delegate = LAppDelegate::GetInstance();
-                    for (auto it = delegate->m_meshOverlayPositions.cbegin();
-                         it != delegate->m_meshOverlayPositions.cend(); ++it) {
-                        const int keyformIndex = delegate->m_meshOverlayKeyformIndices.value(it.key(), -1);
-                        const auto keyform = it.value().constFind(keyformIndex);
-                        if (keyform != it.value().cend()) meshMap->SetMeshPositions(it.key(), keyform.value());
-                    }
                     for (auto it = LAppDelegate::GetInstance()->m_meshIndexOverrides.cbegin();
                          it != LAppDelegate::GetInstance()->m_meshIndexOverrides.cend(); ++it) {
                         const auto id = CubismFramework::GetIdManager()->GetId(it.key().toUtf8().constData());
@@ -241,33 +308,50 @@ void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QL
 {
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
+        if (mgr->GetModel(0)->HasEditorPreview()) return;
         mgr->GetModel(0)->SetDeformerDragParams(paramIds, minVals, maxVals, defaultVals);
     }
 }
 
 void OpengGlForm::do_ResetView()
 {
+    QString error;
+    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
     QMatrix4x4 identity;
     identity.setToIdentity();
     view->SetViewMatrix(identity);
     m_config.SetScalefactor(1.0f);
-    m_config.SetLastPos(QVector2D());
+}
+
+QVector2D OpengGlForm::ViewPosition() const
+{
+    if (!m_runtimeReady) return {};
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    const double scale = ViewScale();
+    if (!view || !std::isfinite(scale) || scale <= 0) return {};
+    const auto matrix = view->GetViewMatrix();
+    const double x = double(matrix(0, 3)) / scale, y = double(matrix(1, 3)) / scale;
+    if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x) > std::numeric_limits<float>::max() ||
+        std::abs(y) > std::numeric_limits<float>::max()) return {};
+    return QVector2D(float(x), float(y));
 }
 
 void OpengGlForm::SetViewState(float scale, const QVector2D& position)
 {
     if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(position.x()) || !std::isfinite(position.y())) return;
+    QString error;
+    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     const float clampedScale = qBound(0.1f, scale, 20.0f);
-    m_config.SetScalefactor(clampedScale);
-    m_config.SetLastPos(position);
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if (!view) return;
     QMatrix4x4 matrix;
     matrix.setToIdentity();
     matrix.scale(clampedScale);
     matrix.translate(position.x(), position.y(), 0.0f);
+    if (!FiniteMatrix(matrix)) return;
+    m_config.SetScalefactor(clampedScale);
     view->SetViewMatrix(matrix);
 }
 
@@ -346,20 +430,185 @@ void OpengGlForm::do_SetDrawableDrawOrder(const QString& name, int drawOrder)
     LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides.insert(name, qBound(0, drawOrder, 1000));
 }
 
-void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyformIndex,
-                                                  const QVector<float>& positions, bool activate)
+void OpengGlForm::SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish)
 {
-    if (name.isEmpty() || keyformIndex < 0 || positions.isEmpty() || positions.size() % 2 != 0) return;
+    QString error;
+    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    m_meshActivate = std::move(activate);
+    m_meshBegin = std::move(begin);
+    m_meshMove = std::move(move);
+    m_meshFinish = std::move(finish);
+}
+
+bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                 const QMap<QString, float>* pose, QString* error)
+{
+    if (error) error->clear();
+    if (IsMeshDragging() && !m_meshEditCallbackActive)
+        return MeshError(error, QStringLiteral("请先结束当前顶点拖拽"));
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent())
+        return MeshError(error, QStringLiteral("模型预览的 OpenGL 上下文尚未就绪"));
+    auto* model = CurrentModel();
+    if (!model) return MeshError(error, QStringLiteral("当前没有模型"));
+    try {
+        const bool result = pose ? model->ApplyEditorPreview(bytes, sourceDigest, *pose, error)
+                                 : model->ApplyPreviewMoc(bytes, sourceDigest, error);
+        if (result) update();
+        return result;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("模型预览替换失败"));
+    }
+}
+
+bool OpengGlForm::EndEditorPreview(QString* error)
+{
+    if (error) error->clear();
+    if (IsMeshDragging()) return MeshError(error, QStringLiteral("请先结束当前顶点拖拽"));
+    auto* model = CurrentModel();
+    if (!model || !model->HasEditorPreview()) return true;
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复模型预览的 OpenGL 上下文"));
+    if (!model->EndEditorPreview(error)) return false;
+    update();
+    return true;
+}
+
+bool OpengGlForm::FinishMeshDrag(bool cancel, QString* error)
+{
+    if (error) error->clear();
+    if (!IsMeshDragging()) return true;
+    if (m_meshEditCallbackActive) return MeshError(error, QStringLiteral("正在提交顶点拖拽"));
+    if (!m_meshFinish) return MeshError(error, QStringLiteral("尚未连接顶点拖拽提交器"));
+    const QScopedValueRollback<bool> submitting(m_meshEditCallbackActive, true);
+    try {
+        if (!m_meshFinish(cancel, error)) {
+            if (error && error->isEmpty()) *error = QStringLiteral("无法结束顶点拖拽，保留最后接受的状态");
+            return false;
+        }
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("顶点拖拽提交失败，保留最后接受的状态"));
+    }
+    m_meshDrag.reset();
+    m_ceditstate.RemoveState(CEditState::MousePress);
+    update();
+    return true;
+}
+
+bool OpengGlForm::CancelMeshDrag(QString* error)
+{
+    return FinishMeshDrag(true, error);
+}
+
+bool OpengGlForm::MeshDragFrameMatches() const
+{
+    if (!m_meshDrag || !m_runtimeReady || m_meshDrag->size != size()) return false;
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    return view && view->GetMVP() == m_meshDrag->mvp;
+}
+
+QString OpengGlForm::SelectCoreMesh(const QPointF& pixel, bool hover)
+{
+    auto* appModel = CurrentModel();
     auto* delegate = LAppDelegate::GetInstance();
-    delegate->m_meshOverlayPositions[name].insert(keyformIndex, positions);
-    if (!activate && (name != m_meshEditName || keyformIndex != m_activeKeyformIndex)) return;
-    if (activate) SetActiveKeyform(name, keyformIndex);
-    delegate->m_meshOverlayKeyformIndices.insert(name, keyformIndex);
-    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
-    if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
-    CMeshMap* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap();
-    if (!meshMap) return;
-    meshMap->SetMeshPositions(name, positions);
+    auto* view = delegate->GetView();
+    if (!appModel || !appModel->GetModel() || !view) return {};
+    QPointF point;
+    if (!CCanvasCoordinates::ScreenToModel(view->GetMVP(), size(), pixel, point)) return {};
+    auto* model = appModel->GetModel();
+    auto* map = model->GetMeshMap();
+    if (!map) return {};
+    QString preferred;
+    if (!hover && m_meshEditEnabled && !m_meshEditName.isEmpty()) {
+        const auto activeId = CubismFramework::GetIdManager()->GetId(m_meshEditName.toUtf8().constData());
+        const int activeIndex = model->GetDrawableIndex(activeId);
+        QVector<float> vertices;
+        if (activeIndex >= 0 && !delegate->m_hiddenDrawables.contains(m_meshEditName) &&
+            !delegate->m_hiddenDeformerDrawables.contains(m_meshEditName) &&
+            model->GetDrawableDynamicFlagIsVisible(activeIndex) && CorePositions(*model, activeIndex, vertices) &&
+            CCanvasCoordinates::NearestVertex(view->GetMVP(), size(), pixel, vertices) >= 0)
+            preferred = m_meshEditName;
+    }
+    const auto order = model->GetSortedDrawableIndices(delegate->m_drawableDrawOrderOverrides,
+        delegate->m_drawableOrderGroupIndices, delegate->m_drawOrderGroups);
+    QString selected;
+    for (auto it = order.crbegin(); it != order.crend(); ++it) {
+        const int index = *it;
+        if (index < 0 || index >= model->GetDrawableCount()) continue;
+        const auto id = model->GetDrawableId(index);
+        if (!id) continue;
+        const QString name = QString::fromUtf8(id->GetString().GetRawString());
+        auto* mesh = map->GetDrawMesh(name);
+        QVector<float> positions;
+        const bool visible = !delegate->m_hiddenDrawables.contains(name) &&
+            !delegate->m_hiddenDeformerDrawables.contains(name) && model->GetDrawableDynamicFlagIsVisible(index);
+        const bool hit = visible && selected.isEmpty() && mesh && CorePositions(*model, index, positions) &&
+                         mesh->SetPositions(positions) &&
+                         (preferred.isEmpty() ? mesh->ClickMesh(point) : name == preferred);
+        if (hit) selected = name;
+        if (hover && mesh) mesh->SetIsOver(hit);
+    }
+    return selected;
+}
+
+bool OpengGlForm::BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error)
+{
+    if (error) error->clear();
+    if (!m_meshActivate || !m_meshBegin || !m_meshMove || !m_meshFinish)
+        return MeshError(error, QStringLiteral("尚未连接关键形编辑控制器"));
+    try {
+        if (!m_meshActivate(name, m_activeKeyformIndex, error)) {
+            if (error && error->isEmpty()) *error = QStringLiteral("关键形编辑姿态被拒绝");
+            return false;
+        }
+        auto* appModel = CurrentModel();
+        auto* view = LAppDelegate::GetInstance()->GetView();
+        if (!appModel || !appModel->GetModel() || !view) return MeshError(error, QStringLiteral("编辑模型已改变"));
+        auto* model = appModel->GetModel();
+        const auto id = CubismFramework::GetIdManager()->GetId(name.toUtf8().constData());
+        QVector<float> vertices;
+        if (!CorePositions(*model, model->GetDrawableIndex(id), vertices))
+            return MeshError(error, QStringLiteral("当前 Core 顶点尚未就绪"));
+        MeshDrag drag{name, m_activeKeyformIndex, {}, {}, view->GetMVP(), size()};
+        if (!CCanvasCoordinates::ScreenToModel(drag.mvp, drag.size, pixel, drag.start))
+            return MeshError(error, QStringLiteral("当前画布变换无法反解鼠标位置"));
+        const int nearest = CCanvasCoordinates::NearestVertex(drag.mvp, drag.size, pixel, vertices);
+        if (nearest < 0) return false;
+        auto* map = model->GetMeshMap();
+        auto* mesh = map ? map->GetDrawMesh(name) : nullptr;
+        if (!mesh || !mesh->GetMesh() || !mesh->SetPositions(vertices))
+            return MeshError(error, QStringLiteral("编辑网格与 Core 顶点不一致"));
+        const auto& points = mesh->GetMesh()->GetCpoint();
+        if (points.size() != static_cast<size_t>(vertices.size() / 2) || !points[nearest])
+            return MeshError(error, QStringLiteral("网格选区与 Core 顶点数量不一致"));
+        if (points[nearest]->GetIsSelect()) {
+            for (int index = 0; index < int(points.size()); ++index)
+                if (points[index] && points[index]->GetIsSelect()) drag.selected.append(index);
+        } else drag.selected.append(nearest);
+        if (!m_meshBegin(drag.selected, vertices, error)) {
+            if (error && error->isEmpty()) *error = QStringLiteral("无法开始顶点拖拽");
+            return false;
+        }
+        m_meshDrag = std::move(drag);
+        if (!MeshDragFrameMatches()) {
+            CancelMeshDrag(error);
+            return MeshError(error, QStringLiteral("开始拖拽时画布变换已改变"));
+        }
+        appModel = CurrentModel();
+        map = appModel && appModel->GetModel() ? appModel->GetModel()->GetMeshMap() : nullptr;
+        mesh = map ? map->GetDrawMesh(name) : nullptr;
+        if (!mesh || !mesh->GetMesh() || mesh->GetMesh()->GetCpoint().size() != static_cast<size_t>(vertices.size() / 2)) {
+            CancelMeshDrag(error);
+            return MeshError(error, QStringLiteral("开始拖拽时网格已改变"));
+        }
+        for (auto* other : map->GetMapMesh()) if (other) other->CancelSelect();
+        for (int index : m_meshDrag->selected) mesh->GetMesh()->GetCpoint()[index]->SetIsSelect(true);
+        m_meshEditName = name;
+        update();
+        return true;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("无法开始关键形拖拽"));
+    }
 }
 
 void OpengGlForm::do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices)
@@ -379,7 +628,7 @@ bool OpengGlForm::MakeRuntimeCurrent()
 {
     if (!m_runtimeReady || !isValid()) return false;
     if (LAppDelegate::GetInstance()->getGlOwningContext() != context()) return false;
-    makeCurrent();
+    if (QOpenGLContext::currentContext() != context()) makeCurrent();
     return QOpenGLContext::currentContext() == context();
 }
 
@@ -421,7 +670,8 @@ bool OpengGlForm::EndTemporaryModel()
 
 void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
 {
-    if (!isValid()) return;
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return;
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
     if (!model || !model->GetModel()) return;
@@ -430,21 +680,12 @@ void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
     auto* delegate = LAppDelegate::GetInstance();
     if (meshMap) for (int index = 0; index < coreModel->GetDrawableCount(); ++index) {
         const QString id = QString::fromUtf8(coreModel->GetDrawableId(index)->GetString().GetRawString());
-        QVector<float> positions = delegate->m_meshOverlayPositions.value(id)
-            .value(delegate->m_meshOverlayKeyformIndices.value(id, -1));
-        if (positions.isEmpty()) {
-            const float* vertices = coreModel->GetDrawableVertices(index);
-            const int count = coreModel->GetDrawableVertexCount(index);
-            if (!vertices || count <= 0 || count > 1000000) continue;
-            positions = QVector<float>(vertices, vertices + count * 2);
-        }
-        meshMap->SetMeshPositions(id, positions);
+        QVector<float> positions;
+        if (CorePositions(*coreModel, index, positions)) meshMap->SetMeshPositions(id, positions);
     }
     C2DTree* tree = CTreeManage::GetInstance();
     if (tree) for (auto it = values.cbegin(); it != values.cend(); ++it) tree->SetParaValue(it.key(), it.value());
-    makeCurrent();
     if (delegate->GetView()) delegate->GetView()->InitWrapAndRotation();
-    doneCurrent();
     update();
 }
 
@@ -463,6 +704,10 @@ void OpengGlForm::initializeGL()
 
 void OpengGlForm::resizeGL(int width, int height)
 {
+    if (IsMeshDragging()) {
+        QString error;
+        if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    }
     if (m_runtimeReady) LAppDelegate::GetInstance()->resize(width,height);
 }
 
@@ -477,213 +722,159 @@ void OpengGlForm::paintGL()
 
 void OpengGlForm::mousePressEvent(QMouseEvent *event)
 {
+    QString error;
+    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     if (!IsModelReady()) return;
-    LAppView* view = LAppDelegate::GetInstance()->GetView();
-    if(!view) return;
-    QVector4D pos = view->GetWorldPoint(event->pos().x(),event->pos().y());
-    view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(0,0),QVector2D(0,0));
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    if (!view || !ViewPoint(*view, size(), event->position(), m_pointerAnchor)) return;
+    view->GetMouseSelectRect()->SetStartAndEndPos({}, {});
     m_ceditstate.AddState(CEditState::MousePress);
-    m_config.SetLastPos(QVector2D(pos));
-
-    // 右键拖拽视图
-    if(event->button() == Qt::RightButton){
+    if (event->button() == Qt::RightButton) {
         m_ceditstate.AddState(CEditState::ViewMove);
         return;
     }
-
-    if(!m_ceditstate.IsContins(CEditState::ViewMove)){
-        bool ctrlHeld = event->modifiers() & Qt::ControlModifier;
-        if(ctrlHeld && !LAppDelegate::GetInstance()->m_dragTargetDrawables.isEmpty()){
-            // Ctrl+左键按下：冻结非目标 drawable 顶点
-            LAppDelegate::GetInstance()->StartDeformerDrag();
-        } else if(!ctrlHeld){
-            QString str = view->GetSelectMesh(QVector2D(pos),false);
-            if(!str.isEmpty()){
-                emit SendSelectMesh(str);
-                if (m_meshEditEnabled && event->button() == Qt::LeftButton &&
-                    view->SelectMeshPoint(str, QVector2D(pos), 0.05f)) {
-                    m_meshEditName = str;
-                    m_meshEditBefore.clear();
-                    if (LAppLive2DManager* manager = LAppLive2DManager::GetInstance()) {
-                        if (manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
-                            if (CMeshMap* map = manager->GetModel(0)->GetModel()->GetMeshMap())
-                                m_meshEditBefore = map->MeshPositions(str);
-                        }
-                    }
-                    if (!m_meshEditBefore.isEmpty()) {
-                        m_meshPointDragging = true;
-                        return;
-                    }
-                }
-            } else {
-                emit SendSelectMesh("");
-                view->HideAllWarps();
-            }
+    if (m_ceditstate.IsContins(CEditState::ViewMove) || event->button() != Qt::LeftButton) return;
+    if (event->modifiers() & Qt::ControlModifier) {
+        if (auto* model = CurrentModel(); model && model->HasEditorPreview()) {
+            m_ceditstate.RemoveState(CEditState::MousePress);
+            emit MeshEditRejected(QStringLiteral("请先退出关键形编辑再驱动变形器"));
+            return;
         }
+        auto* delegate = LAppDelegate::GetInstance();
+        if (!delegate->m_dragTargetDrawables.isEmpty()) delegate->StartDeformerDrag();
+        return;
     }
-
-
-
-
+    const QString name = SelectCoreMesh(event->position(), false);
+    emit SendSelectMesh(name);
+    if (name.isEmpty()) return;
+    if (m_meshEditEnabled && !BeginMeshDrag(name, event->position(), &error) && !error.isEmpty())
+        emit MeshEditRejected(error);
 }
 
 void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (!IsModelReady()) return;
-    LAppView* view = LAppDelegate::GetInstance()->GetView();
-    if(!view) return;
-    if (m_meshPointDragging) {
-        if (LAppLive2DManager* manager = LAppLive2DManager::GetInstance()) {
-            if (manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
-                if (CMeshMap* map = manager->GetModel(0)->GetModel()->GetMeshMap()) {
-                    const QVector<float> positions = map->MeshPositions(m_meshEditName);
-                    if (!positions.isEmpty() && positions != m_meshEditBefore)
-                        emit MeshKeyformEdited(m_meshEditName, m_activeKeyformIndex, positions);
-                }
-            }
-        }
-        m_meshPointDragging = false;
-        m_meshEditBefore.clear();
+    if (IsMeshDragging()) {
+        QString error;
+        const bool cancel = event->button() != Qt::LeftButton || !MeshDragFrameMatches();
+        if (!FinishMeshDrag(cancel, &error)) { emit MeshEditRejected(error); return; }
     }
-    view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(0,0),QVector2D(0,0));
     m_ceditstate.RemoveState(CEditState::MousePress);
-
-    // 停止变形器拖拽
-    if(LAppDelegate::GetInstance()->m_isDraggingDeformer){
-        LAppDelegate::GetInstance()->StopDeformerDrag();
-    }
-
-    // 右键释放时退出视图移动
-    if(event->button() == Qt::RightButton){
-        m_ceditstate.RemoveState(CEditState::ViewMove);
-    }
+    if (event->button() == Qt::RightButton) m_ceditstate.RemoveState(CEditState::ViewMove);
+    if (!IsModelReady()) return;
+    auto* delegate = LAppDelegate::GetInstance();
+    if (auto* view = delegate->GetView()) view->GetMouseSelectRect()->SetStartAndEndPos({}, {});
+    if (delegate->m_isDraggingDeformer) delegate->StopDeformerDrag();
 }
 
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
-    if (!IsModelReady()) return;
-
-    LAppView* view = LAppDelegate::GetInstance()->GetView();
-    if(!view || width() <= 0 || height() <= 0) return;
-
-    if (m_meshPointDragging && (event->buttons() & Qt::LeftButton)) {
-        const QVector4D current = view->GetWorldPoint(event->pos().x(), event->pos().y());
-        const QVector4D previous = QVector4D(m_config.GetLastPos());
-        const QVector2D worldDelta(current.x() - previous.x(), current.y() - previous.y());
-        const QVector2D delta = view->ModelDelta(worldDelta);
-        if (LAppLive2DManager* manager = LAppLive2DManager::GetInstance()) {
-            if (manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
-                if (CMeshMap* map = manager->GetModel(0)->GetModel()->GetMeshMap())
-                    map->MoveSelected(m_meshEditName, delta);
-            }
+    if (IsMeshDragging()) {
+        QString error;
+        if (!(event->buttons() & Qt::LeftButton) || !m_meshEditEnabled || !MeshDragFrameMatches()) {
+            if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+            return;
         }
-        m_config.SetLastPos(QVector2D(current));
+        QPointF current;
+        if (!CCanvasCoordinates::ScreenToModel(m_meshDrag->mvp, m_meshDrag->size, event->position(), current)) {
+            emit MeshEditRejected(QStringLiteral("鼠标位置无法转换到模型坐标"));
+            return;
+        }
+        const QPointF delta = current - m_meshDrag->start;
+        const QScopedValueRollback<bool> submitting(m_meshEditCallbackActive, true);
+        try {
+            if (!m_meshMove || !m_meshMove(delta, &error)) {
+                emit MeshEditRejected(error.isEmpty() ? QStringLiteral("顶点移动被拒绝，保留最后接受的状态") : error);
+                return;
+            }
+        } catch (const std::exception&) {
+            emit MeshEditRejected(QStringLiteral("顶点移动失败，保留最后接受的状态"));
+            return;
+        }
         update();
         return;
     }
-
-    // 计算归一化鼠标坐标 [-1, 1]
-    float viewX = (float)event->pos().x() / (float)width() * 2.0f - 1.0f;
-    float viewY = -((float)event->pos().y() / (float)height() * 2.0f - 1.0f);
-
-    if(m_ceditstate.IsContins(CEditState::MousePress)){
-        if(m_ceditstate.IsContins(CEditState::ViewMove)){
-            QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
-            QVector4D last =  QVector4D(m_config.GetLastPos());
-            QVector4D delta =  (curPos - last);
-            QMatrix4x4 temp = view->GetViewMatrix();
-            QMatrix4x4 move;
-            move.setToIdentity();
-            move.translate(delta.x(), delta.y(), 0);
-            temp = temp * move;
-            view->SetViewMatrix(temp);
-        }else{
-            // Ctrl+左键拖拽 → 驱动选中变形器绑定的参数
-            bool ctrlHeld = event->modifiers() & Qt::ControlModifier;
-            if(ctrlHeld){
-                LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-                if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
-                    LAppModel* model = mgr->GetModel(0);
-                    if(!model->GetDeformerDragParamIds().isEmpty()){
-                        model->ApplyDeformerDrag(viewX, viewY);
-                    } else {
-                        // 无绑定参数时 fallback 到标准面部跟随
-                        model->SetDragging(viewX, viewY);
-                    }
-                }
-            } else {
-                QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
-                view->GetMouseSelectRect()->SetStartAndEndPos(m_config.GetLastPos(),QVector2D(curPos));
-            }
+    if (!IsModelReady()) return;
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    if (!view || width() <= 0 || height() <= 0) return;
+    const float viewX = float(event->position().x() / width() * 2.0 - 1.0);
+    const float viewY = float(1.0 - event->position().y() / height() * 2.0);
+    if (!std::isfinite(viewX) || !std::isfinite(viewY)) return;
+    if (m_ceditstate.IsContins(CEditState::MousePress)) {
+        QPointF current;
+        if (!ViewPoint(*view, size(), event->position(), current)) return;
+        if (m_ceditstate.IsContins(CEditState::ViewMove)) {
+            const QPointF delta = current - m_pointerAnchor;
+            if (std::abs(delta.x()) > std::numeric_limits<float>::max() ||
+                std::abs(delta.y()) > std::numeric_limits<float>::max()) return;
+            QMatrix4x4 matrix = view->GetViewMatrix();
+            matrix.translate(float(delta.x()), float(delta.y()));
+            if (!FiniteMatrix(matrix)) return;
+            view->SetViewMatrix(matrix);
+        } else if (event->modifiers() & Qt::ControlModifier) {
+            auto* model = CurrentModel();
+            if (!model || model->HasEditorPreview()) return;
+            if (!model->GetDeformerDragParamIds().isEmpty()) model->ApplyDeformerDrag(viewX, viewY);
+            else model->SetDragging(viewX, viewY);
+        } else {
+            view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(m_pointerAnchor), QVector2D(current));
         }
-    }
-    else {
-        if(!m_ceditstate.IsContins(CEditState::ViewMove)){
-            QVector4D curPos = view->GetWorldPoint(event->pos().x(),event->pos().y());
-            view->GetSelectMesh(QVector2D(curPos),true);
-        }
-
-        // 鼠标跟随 + 物理拖拽
-        LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-        if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
-            LAppModel* model = mgr->GetModel(0);
-            if(model->GetEnableMouseFollow()){
-                model->SetDragging(viewX, viewY);
-            }
+    } else {
+        if (!m_ceditstate.IsContins(CEditState::ViewMove)) SelectCoreMesh(event->position(), true);
+        auto* model = CurrentModel();
+        if (model && !model->HasEditorPreview()) {
+            if (model->GetEnableMouseFollow()) model->SetDragging(viewX, viewY);
             model->ApplyPhysicsDrag(viewX, viewY);
         }
     }
-
-
 }
 
 void OpengGlForm::wheelEvent(QWheelEvent *event)
 {
-    if (!IsModelReady()) return;
-    //为什么状态没有用
-    LAppView* view = LAppDelegate::GetInstance()->GetView();
-    if(!view || width() <= 0 || height() <= 0) return;
-    QVector4D curPos = view->GetWorldPoint(event->position().x(),event->position().y());
-    float sor = event->angleDelta().y() ;
-    float sflo = m_config.GeteScalefactor();
-    if(sor > 0){
-        sflo+=0.2f;
-    }else{
-        sflo-=0.2f;
+    QString error;
+    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    if (!IsModelReady() || !event->angleDelta().y()) return;
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    QPointF before;
+    if (!view || !ViewPoint(*view, size(), event->position(), before)) return;
+    const auto previousMatrix = view->GetViewMatrix();
+    const float previousScale = ViewScale();
+    const float nextScale = qBound(0.1f, previousScale + (event->angleDelta().y() > 0 ? 0.2f : -0.2f), 20.0f);
+    SetViewState(nextScale, ViewPosition());
+    QPointF after;
+    if (!ViewPoint(*view, size(), event->position(), after) ||
+        std::abs(after.x() - before.x()) > std::numeric_limits<float>::max() ||
+        std::abs(after.y() - before.y()) > std::numeric_limits<float>::max()) {
+        view->SetViewMatrix(previousMatrix);
+        m_config.SetScalefactor(previousScale);
+        return;
     }
-    if(sflo <= 0){
-        sflo = 0.1;
+    auto matrix = view->GetViewMatrix();
+    matrix.translate(float(after.x() - before.x()), float(after.y() - before.y()));
+    if (!FiniteMatrix(matrix)) {
+        view->SetViewMatrix(previousMatrix);
+        m_config.SetScalefactor(previousScale);
+        return;
     }
-    m_config.SetScalefactor(sflo);
-    QMatrix4x4 temp = view->GetViewMatrix();
-    QMatrix4x4 matsor;
-    temp.setToIdentity();
-    temp.scale(sflo);
-    temp =    temp * matsor   ;
-    view->SetViewMatrix(temp);//设置为新的视图
-
-
-    //产生一个新的向量
-    QVector4D Newworldpoist = view->GetWorldPoint(event->position().x(), event->position().y());
-    QVector4D delta = Newworldpoist -  curPos;
-    QMatrix4x4 move;
-    move.setToIdentity();//偏移矩阵
-    move.translate(delta.x(), delta.y(), 0);
-    temp = view->GetViewMatrix();//再次获取视图矩阵进行移动
-    temp = temp *   move;
-    view->SetViewMatrix(temp);
-
-
-
-
+    view->SetViewMatrix(matrix);
 }
-
-
-
-
 
 void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
+    if (event->key() == Qt::Key_Escape && !IsMeshDragging() && m_runtimeReady) {
+        auto* model = CurrentModel();
+        if (model && model->HasEditorPreview()) {
+            emit KeyformEditingFinishedRequested();
+            return;
+        }
+    }
+    if (IsMeshDragging() && (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Control ||
+        event->key() == Qt::Key_Space || event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
+        event->key() == Qt::Key_W || event->key() == Qt::Key_A || event->key() == Qt::Key_S ||
+        event->key() == Qt::Key_D || event->key() == Qt::Key_Z)) {
+        QString error;
+        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+        if (event->key() == Qt::Key_Escape) return;
+    }
     if (!IsModelReady()) return;
 
     LAppView* view = LAppDelegate::GetInstance()->GetView();
@@ -693,22 +884,11 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
 
     switch (event->key()) {
         case Qt::Key_Up: {
-            float sflo = m_config.GeteScalefactor() + scaleStep;
-            m_config.SetScalefactor(sflo);
-            QMatrix4x4 temp;
-            temp.setToIdentity();
-            temp.scale(sflo);
-            view->SetViewMatrix(temp);
+            SetViewState(ViewScale() + scaleStep, ViewPosition());
             break;
         }
         case Qt::Key_Down: {
-            float sflo = m_config.GeteScalefactor() - scaleStep;
-            if(sflo <= 0.1f) sflo = 0.1f;
-            m_config.SetScalefactor(sflo);
-            QMatrix4x4 temp;
-            temp.setToIdentity();
-            temp.scale(sflo);
-            view->SetViewMatrix(temp);
+            SetViewState(qMax(0.1f, ViewScale() - scaleStep), ViewPosition());
             break;
         }
         case Qt::Key_W: {
@@ -780,4 +960,18 @@ void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
     default:break;
 
     }
+}
+
+void OpengGlForm::focusOutEvent(QFocusEvent* event)
+{
+    QString error;
+    if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    QOpenGLWidget::focusOutEvent(event);
+}
+
+void OpengGlForm::hideEvent(QHideEvent* event)
+{
+    QString error;
+    if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    QOpenGLWidget::hideEvent(event);
 }

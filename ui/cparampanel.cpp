@@ -12,6 +12,7 @@
 #include <QPushButton>
 #include <QComboBox>
 #include <QSignalBlocker>
+#include <QScopedValueRollback>
 #include <QToolButton>
 #include <QApplication>
 #include <QClipboard>
@@ -26,10 +27,12 @@
 #include <QInputDialog>
 #include <QCheckBox>
 #include <QSpinBox>
+#include <QPointer>
 #include <algorithm>
 #include <iterator>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -39,9 +42,34 @@ class CParameterSpinBox final : public QDoubleSpinBox
 public:
     using QDoubleSpinBox::QDoubleSpinBox;
 
+    struct InputState {
+        QString text;
+        int cursor = 0;
+        int selectionStart = -1;
+        int selectionLength = 0;
+    };
+
     bool DisplaysValue(double value) const
     {
         return textFromValue(value) == textFromValue(this->value());
+    }
+
+    InputState CaptureInput() const
+    {
+        return {lineEdit()->text(), lineEdit()->cursorPosition(), lineEdit()->selectionStart(),
+                static_cast<int>(lineEdit()->selectedText().size())};
+    }
+
+    void RestoreInput(const InputState& input)
+    {
+        if (lineEdit()->text() == input.text) return;
+        const QSignalBlocker blocker(lineEdit());
+        lineEdit()->setText(input.text);
+        if (input.selectionStart >= 0) {
+            const bool backwards = input.cursor == input.selectionStart;
+            lineEdit()->setSelection(backwards ? input.selectionStart + input.selectionLength : input.selectionStart,
+                                     backwards ? -input.selectionLength : input.selectionLength);
+        } else lineEdit()->setCursorPosition(input.cursor);
     }
 };
 
@@ -186,8 +214,47 @@ void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
         m_userDragging.clear();
         m_changedDrags.clear();
         m_dragStarts.clear();
+        m_rejectedSpinEdits.clear();
     }
     m_document = document;
+}
+
+void CParamPanel::SetPreEditGuard(PreEditGuard guard)
+{
+    if (!m_checkingEditGuard) m_preEditGuard = std::move(guard);
+}
+
+void CParamPanel::RestoreControls()
+{
+    for (const auto& row : m_rows) {
+        const float value = m_lastValues.value(row.paramId, row.defaultVal);
+        const QSignalBlocker sliderBlocker(row.slider);
+        const QSignalBlocker spinBlocker(row.spinBox);
+        row.slider->setValue(parameterToSlider(value, row.minVal, row.maxVal));
+        row.spinBox->setValue(value);
+    }
+    RefreshXYControls();
+}
+
+bool CParamPanel::AllowUserEdit()
+{
+    if (m_checkingEditGuard) {
+        RestoreControls();
+        return false;
+    }
+    if (m_editGuardApproved || !m_preEditGuard) return true;
+    const QScopedValueRollback<bool> checking(m_checkingEditGuard, true);
+    QString error;
+    bool accepted = false;
+    try {
+        accepted = m_preEditGuard(&error);
+    } catch (...) {
+        error = QStringLiteral("参数编辑前检查失败");
+    }
+    if (accepted) return true;
+    RestoreControls();
+    emit EditRejected(error.isEmpty() ? QStringLiteral("参数编辑已取消") : error);
+    return false;
 }
 
 float CParamPanel::ValueBeforeEdit(const QString& paramId, float fallback) const
@@ -225,6 +292,7 @@ void CParamPanel::ClearPreviewValues(const QMap<QString, float>& restoredValues,
 void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record, bool userEdit, bool writeDocument)
 {
     if (!std::isfinite(value)) return;
+    if (userEdit && !AllowUserEdit()) return;
     auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&paramId](const ParamRow& row){ return row.paramId == paramId; });
     if (rowIt == m_rows.cend()) return;
     const int rowIndex = static_cast<int>(rowIt - m_rows.cbegin());
@@ -256,6 +324,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
     m_changedDrags.clear();
     m_dragStarts.clear();
     m_userLocked.clear();
+    m_rejectedSpinEdits.clear();
     {
         QSignalBlocker xBlocker(m_xyXSelector);
         QSignalBlocker yBlocker(m_xyYSelector);
@@ -417,37 +486,26 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         int idx = m_rows.size() - 1;
         connect(resetButton, &QToolButton::clicked, this, [this, idx](){
             if (idx < 0 || idx >= m_rows.size()) return;
-            ParamRow& r = m_rows[idx];
-            const int sliderValue = parameterToSlider(r.defaultVal, r.minVal, r.maxVal);
-            QSignalBlocker sliderBlocker(r.slider);
-            QSignalBlocker spinBlocker(r.spinBox);
-            r.slider->setValue(sliderValue);
-            r.spinBox->setValue(r.defaultVal);
-            m_userLocked.insert(idx);
-            ApplyValue(idx, r.defaultVal, true);
+            if (ApplyValue(idx, m_rows[idx].defaultVal, true)) m_userLocked.insert(idx);
         });
         connect(slider, &QSlider::sliderPressed, this, [this, idx](){ BeginParameterDrag(idx); });
         connect(slider, &QSlider::sliderReleased, this, [this, idx](){ EndParameterDrag(idx); });
         connect(slider, &QSlider::valueChanged, this, [this, idx](int val){
             ParamRow& r = m_rows[idx];
             const float realVal = sliderToParameter(val, r.minVal, r.maxVal);
-            QSignalBlocker blocker(r.spinBox);
-            r.spinBox->setValue(realVal);
             ApplyValue(idx, realVal, !m_userDragging.contains(idx));
         });
 
         connect(spinBox, &QDoubleSpinBox::valueChanged, this, [this, idx, spinBox](double value){
             ParamRow& r = m_rows[idx];
             if (spinBox->DisplaysValue(m_lastValues.value(r.paramId, r.defaultVal))) return;
-            if (r.maxVal > r.minVal) {
-                const int sliderValue = parameterToSlider(
-                    boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), r.minVal, r.maxVal);
-                QSignalBlocker blocker(r.slider);
-                r.slider->setValue(sliderValue);
-            }
-            ApplyValue(idx, boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), true);
+            if (ApplyValue(idx, boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), true, true))
+                m_rejectedSpinEdits.remove(idx);
+            else m_rejectedSpinEdits.insert(idx);
         });
-        connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){ m_userLocked.insert(idx); });
+        connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){
+            if (!m_rejectedSpinEdits.contains(idx)) m_userLocked.insert(idx);
+        });
 
         targetLayout->addWidget(rowWidget);
     };
@@ -555,6 +613,8 @@ void CParamPanel::RefreshXYControls()
 void CParamPanel::ApplyXYPad(float xValue, float yValue)
 {
     if (m_updatingXY || !m_xyXSelector || !m_xyYSelector || !std::isfinite(xValue) || !std::isfinite(yValue)) return;
+    if (!AllowUserEdit()) return;
+    const QScopedValueRollback<bool> approved(m_editGuardApproved, true);
     const auto findRow = [this](QComboBox* selector) {
         return std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
             return row.paramId == selector->currentText();
@@ -582,6 +642,8 @@ void CParamPanel::ApplyXYPad(float xValue, float yValue)
 
 void CParamPanel::ResetAll()
 {
+    if (!AllowUserEdit()) return;
+    const QScopedValueRollback<bool> approved(m_editGuardApproved, true);
     m_userLocked.clear();
     m_userDragging.clear();
     m_changedDrags.clear();
@@ -644,6 +706,8 @@ void CParamPanel::ApplyValues(const QMap<QString, float>& values)
 
 void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool record)
 {
+    if (!AllowUserEdit()) return;
+    const QScopedValueRollback<bool> approved(m_editGuardApproved, true);
     for (int i = 0; i < m_rows.size(); ++i) {
         ParamRow& row = m_rows[i];
         if (!values.contains(row.paramId)) continue;
@@ -790,6 +854,7 @@ void CParamPanel::EditParameterMetadata()
     const live2dstruct::CModelEdit edit{id, QStringLiteral("parameter"),
                                         live2dstruct::CModelEdit::ParameterMetadata,
                                         toVariant(current), toVariant(updated), -1, false};
+    if (!AllowUserEdit() || !m_document) return;
     if (!m_document->ExecuteEdit(edit)) {
         QMessageBox::warning(this, QStringLiteral("参数元数据无效"), QStringLiteral("关键值超出新范围或当前值无法兼容"));
         return;
@@ -852,16 +917,31 @@ void CParamPanel::EndParameterDrag(int rowIndex)
     PushEdit(row.paramId, before, m_lastValues.value(row.paramId, row.defaultVal));
 }
 
-void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
+bool CParamPanel::ApplyValue(int rowIndex, float value, bool record, bool preserveSpinText)
 {
-    if (rowIndex < 0 || rowIndex >= m_rows.size() || !std::isfinite(value)) return;
+    if (rowIndex < 0 || rowIndex >= m_rows.size() || !std::isfinite(value)) return false;
+    if (m_userDragging.contains(rowIndex) && value == m_lastValues.value(m_rows[rowIndex].paramId, m_rows[rowIndex].defaultVal)) return true;
+    const QPointer<CParameterSpinBox> inputBox = preserveSpinText
+        ? dynamic_cast<CParameterSpinBox*>(m_rows[rowIndex].spinBox) : nullptr;
+    const auto input = inputBox ? inputBox->CaptureInput() : CParameterSpinBox::InputState{};
+    if (!AllowUserEdit() || rowIndex >= m_rows.size()) return false;
     ParamRow& row = m_rows[rowIndex];
     value = boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal);
     if (m_userDragging.contains(rowIndex)) {
-        if (value == m_lastValues.value(row.paramId, row.defaultVal)) return;
+        if (!m_changedDrags.contains(rowIndex))
+            m_dragStarts.insert(rowIndex, ValueBeforeEdit(row.paramId, row.defaultVal));
         m_changedDrags.insert(rowIndex);
     }
     const float before = ValueBeforeEdit(row.paramId, value);
+    {
+        const QSignalBlocker sliderBlocker(row.slider);
+        const QSignalBlocker spinBlocker(row.spinBox);
+        row.slider->setValue(parameterToSlider(value, row.minVal, row.maxVal));
+        const auto* spinBox = dynamic_cast<const CParameterSpinBox*>(row.spinBox);
+        if (!preserveSpinText || !spinBox || !spinBox->DisplaysValue(value))
+            row.spinBox->setValue(value);
+        if (inputBox && inputBox == row.spinBox) inputBox->RestoreInput(input);
+    }
     m_previewBaseline.remove(row.paramId);
     m_lastValues.insert(row.paramId, value);
     emit ParamChanged(row.paramId, value, false);
@@ -869,6 +949,7 @@ void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
     if (record && before != value) {
         PushEdit(row.paramId, before, value);
     }
+    return true;
 }
 
 void CParamPanel::PushEdit(const QString& paramId, float before, float after)
@@ -907,6 +988,7 @@ void CParamPanel::Undo()
     if (!m_document) return;
     live2dstruct::CModelEdit pending;
     if (!m_document->PeekUndoEdit(&pending) || pending.field != live2dstruct::CModelEdit::ParameterValue) return;
+    if (!AllowUserEdit() || !m_document) return;
     live2dstruct::CModelEdit edit;
     if (!m_document->UndoEdit(&edit) || edit.field != live2dstruct::CModelEdit::ParameterValue) return;
     const float value = edit.before.toFloat();
@@ -931,6 +1013,7 @@ void CParamPanel::Redo()
     if (!m_document) return;
     live2dstruct::CModelEdit pending;
     if (!m_document->PeekRedoEdit(&pending) || pending.field != live2dstruct::CModelEdit::ParameterValue) return;
+    if (!AllowUserEdit() || !m_document) return;
     live2dstruct::CModelEdit edit;
     if (!m_document->RedoEdit(&edit) || edit.field != live2dstruct::CModelEdit::ParameterValue) return;
     const float value = edit.after.toFloat();
