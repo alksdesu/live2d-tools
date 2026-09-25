@@ -3,6 +3,7 @@
 #include "ccanvascoordinates.h"
 #include "framework/Id/CubismIdManager.hpp"
 #include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
+#include "live2d/LAppPal.hpp"
 #include <QSurfaceFormat>
 #include <QScopeGuard>
 #include <QScopedValueRollback>
@@ -95,6 +96,7 @@ OpengGlForm::~OpengGlForm()
 
 void OpengGlForm::SetInitOpenName(const QString &Name)
 {
+    if (m_exportSuspended && m_initializationCompleted) return;
     m_config.SetInitFileName(Name);
     m_currentModelJson = Name;
 }
@@ -103,12 +105,14 @@ void OpengGlForm::SetInitOpenName(const QString &Name)
 
 void OpengGlForm::on_timeout()
 {
+    if (m_exportSuspended) return;
     update();
 }
 
 bool OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu,bool cubismCompat)
 {
-    bool ok = do_OffSeceenSilent(fileName,IsALl,IsFenzu,cubismCompat);
+    QString error;
+    bool ok = do_OffSeceenSilent(fileName,IsALl,IsFenzu,cubismCompat, &error);
 
     if (!fileName.isEmpty()) {
         if (ok) {
@@ -117,17 +121,19 @@ bool OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu,b
             QString directoryPath = fileInfo.absoluteDir().path();
             QDesktopServices::openUrl(QUrl::fromLocalFile(directoryPath));
         } else {
-            QMessageBox::warning(this,"psd",
-                QString("导出失败，无法写入文件：\n%1\n请检查磁盘空间、路径权限或文件是否被占用").arg(fileName));
+            QMessageBox::warning(this,"psd", error);
         }
     }
     return ok;
 }
 
-bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat)
+bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat, QString* error)
 {
-    if (fileName.isEmpty() || !IsModelReady() || !MakeRuntimeCurrent()) return false;
-    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
+    if (error) error->clear();
+    if (fileName.isEmpty()) return MeshError(error, QStringLiteral("PSD 导出路径为空"));
+    if (!IsModelReady()) return MeshError(error, QStringLiteral("当前模型尚未就绪"));
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法使用当前模型的 OpenGL 上下文"));
     if(IsALl){
         m_ceditstate.AddState(CEditState::PrintAllPsd);
     }
@@ -145,12 +151,15 @@ bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool I
         m_ceditstate.RemoveState(CEditState::PrintAllPsd);
         m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
     });
-    return LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat);
+    if (!LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat))
+        return MeshError(error, QStringLiteral("PSD 渲染或写入失败：%1").arg(fileName));
+    return true;
 }
 
 bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
 {
-    bool ok = do_TextureExtractSilent(fileName, isAll, isFenzu, cubismCompat);
+    QString error;
+    bool ok = do_TextureExtractSilent(fileName, isAll, isFenzu, cubismCompat, &error);
     if (!fileName.isEmpty()) {
         if (ok) {
             QMessageBox::about(this, "psd", "保存成功（原始纹理提取）");
@@ -158,23 +167,28 @@ bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool is
             QString directoryPath = fileInfo.absoluteDir().path();
             QDesktopServices::openUrl(QUrl::fromLocalFile(directoryPath));
         } else {
-            QMessageBox::warning(this, "psd",
-                QString("导出失败，无法写入文件：\n%1\n请检查磁盘空间、路径权限或文件是否被占用").arg(fileName));
+            QMessageBox::warning(this, "psd", error);
         }
     }
     return ok;
 }
 
-bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
+bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat, QString* error)
 {
-    if (!fileName.isEmpty() && m_runtimeReady && IsModelReady()) {
-        return LAppDelegate::GetInstance()->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat);
-    }
-    return false;
+    if (error) error->clear();
+    if (fileName.isEmpty()) return MeshError(error, QStringLiteral("PSD 导出路径为空"));
+    if (!m_runtimeReady || !IsModelReady()) return MeshError(error, QStringLiteral("当前模型尚未就绪"));
+    auto* delegate = LAppDelegate::GetInstance();
+    if (!context() || delegate->getGlOwningContext() != context())
+        return MeshError(error, QStringLiteral("当前模型不属于此预览窗口"));
+    if (!delegate->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat))
+        return MeshError(error, QStringLiteral("纹理读取、图层提取或 PSD 写入失败：%1").arg(fileName));
+    return true;
 }
 
 void OpengGlForm::do_ShowMesh(const QString &artName)
 {
+    if (m_exportSuspended) return;
     if (IsMeshDragging() && m_meshDrag->name != artName) {
         QString error;
         if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
@@ -195,6 +209,7 @@ void OpengGlForm::do_ShowMesh(const QString &artName)
 
 void OpengGlForm::SetMeshEditEnabled(bool enabled)
 {
+    if (m_exportSuspended) return;
     if (!enabled && IsMeshDragging()) {
         QString error;
         if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
@@ -207,6 +222,7 @@ void OpengGlForm::SetMeshEditEnabled(bool enabled)
 
 void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
 {
+    if (m_exportSuspended) return;
     if (name.isEmpty() || keyformIndex < 0) return;
     if (IsMeshDragging() && (m_meshDrag->name != name || m_meshDrag->keyform != keyformIndex)) {
         QString error;
@@ -220,6 +236,7 @@ void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
 
 void OpengGlForm::do_ShowWarp(const QString &artName)
 {
+    if (m_exportSuspended) return;
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
     view->ShowWarp(artName);
@@ -229,6 +246,7 @@ void OpengGlForm::do_ShowWarp(const QString &artName)
 
 void OpengGlForm::do_setPoint(float x, float y)
 {
+    if (m_exportSuspended) return;
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
     if(!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0)) return;
     CubismModelMatrix* matrix = manager->GetModel(0)->GetModelMatrix();
@@ -238,6 +256,7 @@ void OpengGlForm::do_setPoint(float x, float y)
 
 void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsInit)
 {
+    if (m_exportSuspended) return;
     const bool wasCurrent = context() && QOpenGLContext::currentContext() == context();
     if (!MakeRuntimeCurrent()) return;
     const auto releaseContext = qScopeGuard([&] { if (!wasCurrent) doneCurrent(); });
@@ -267,6 +286,7 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
 
 void OpengGlForm::do_ShowDeformers(const QStringList& names)
 {
+    if (m_exportSuspended) return;
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
     if(names.isEmpty()){
@@ -278,6 +298,7 @@ void OpengGlForm::do_ShowDeformers(const QStringList& names)
 
 void OpengGlForm::do_ShowDeformerMeshes(const QStringList& artMeshNames)
 {
+    if (m_exportSuspended) return;
     FinishDeformerDrag();
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(!mgr || mgr->GetModelNum() <= 0) return;
@@ -301,6 +322,7 @@ void OpengGlForm::do_ShowDeformerMeshes(const QStringList& artMeshNames)
 void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                             const QList<float>& maxVals, const QList<float>& defaultVals)
 {
+    if (m_exportSuspended) return;
     FinishDeformerDrag();
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
@@ -311,6 +333,7 @@ void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QL
 
 void OpengGlForm::do_ResetView()
 {
+    if (m_exportSuspended) return;
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     FinishDeformerDrag();
@@ -355,6 +378,7 @@ void OpengGlForm::SetViewState(float scale, const QVector2D& position)
 
 void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, bool visible)
 {
+    if (m_exportSuspended) return;
     if(type == "part"){
         // Part 通过 LAppModel 的隐藏列表控制（每帧 Update 中强制设 opacity=0）
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
@@ -373,6 +397,7 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
 
 void OpengGlForm::SetHiddenDeformerDrawables(const QSet<QString>& names)
 {
+    if (m_exportSuspended) return;
     auto* delegate = LAppDelegate::GetInstance();
     if (!delegate) return;
     delegate->m_hiddenDeformerDrawables = names;
@@ -380,6 +405,7 @@ void OpengGlForm::SetHiddenDeformerDrawables(const QSet<QString>& names)
 
 void OpengGlForm::ClearEditorOverrides()
 {
+    if (m_exportSuspended) return;
     const bool wasCurrent = context() && QOpenGLContext::currentContext() == context();
     if (!MakeRuntimeCurrent()) return;
     const auto releaseContext = qScopeGuard([&] { if (!wasCurrent) doneCurrent(); });
@@ -402,6 +428,7 @@ void OpengGlForm::ClearEditorOverrides()
 
 void OpengGlForm::PublishRenderOrder(const QStringList& names)
 {
+    if (m_exportSuspended) return;
     if (names == m_lastRenderOrder) return;
     m_lastRenderOrder = names;
     emit RenderOrderChanged(names);
@@ -411,6 +438,7 @@ void OpengGlForm::SetDrawOrderGroups(
     const QHash<QString, int>& groupIndices,
     const QVector<live2dstruct::CDrawableOrderGroup>& groups)
 {
+    if (m_exportSuspended) return;
     auto* delegate = LAppDelegate::GetInstance();
     delegate->m_drawableOrderGroupIndices = groupIndices;
     delegate->m_drawOrderGroups = groups;
@@ -418,18 +446,21 @@ void OpengGlForm::SetDrawOrderGroups(
 
 void OpengGlForm::do_SetDrawableOpacity(const QString& name, float opacity)
 {
+    if (m_exportSuspended) return;
     if (name.isEmpty() || !std::isfinite(opacity)) return;
     LAppDelegate::GetInstance()->m_drawableOpacityOverrides.insert(name, qBound(0.0f, opacity, 1.0f));
 }
 
 void OpengGlForm::do_SetDrawableDrawOrder(const QString& name, int drawOrder)
 {
+    if (m_exportSuspended) return;
     if (name.isEmpty()) return;
     LAppDelegate::GetInstance()->m_drawableDrawOrderOverrides.insert(name, qBound(0, drawOrder, 1000));
 }
 
 void OpengGlForm::SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish)
 {
+    if (m_exportSuspended) return;
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     m_meshActivate = std::move(activate);
@@ -442,6 +473,7 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
                                  const QMap<QString, float>* pose, QString* error)
 {
     if (error) error->clear();
+    if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能替换模型预览"));
     if (IsMeshDragging() && !m_meshEditCallbackActive)
         return MeshError(error, QStringLiteral("请先结束当前顶点拖拽"));
     const RestoreContext restore;
@@ -471,6 +503,7 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
 bool OpengGlForm::EndEditorPreview(QString* error)
 {
     if (error) error->clear();
+    if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能改变编辑姿态"));
     if (IsMeshDragging()) return MeshError(error, QStringLiteral("请先结束当前顶点拖拽"));
     auto* model = CurrentModel();
     if (!model || !model->HasEditorPreview()) return true;
@@ -632,6 +665,7 @@ bool OpengGlForm::BeginMeshDrag(const QString& name, const QPointF& pixel, QStri
 
 void OpengGlForm::do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices)
 {
+    if (m_exportSuspended) return;
     if (name.isEmpty() || !live2dstruct::CMeshTopology::IsValid(indices, 32768)) return;
     auto* delegate = LAppDelegate::GetInstance();
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
@@ -653,40 +687,95 @@ bool OpengGlForm::MakeRuntimeCurrent()
 
 bool OpengGlForm::do_ModelChange(const QString& fileName)
 {
-    if (!MakeRuntimeCurrent()) return false;
+    if (m_exportSuspended) return false;
+    return ChangeModel(fileName, nullptr);
+}
+
+bool OpengGlForm::LoadExportModel(const QString& fileName, QString* error)
+{
+    if (error) error->clear();
+    if (!m_exportSuspended) return MeshError(error, QStringLiteral("导出模型只能在画布暂停时载入"));
+    return ChangeModel(fileName, error);
+}
+
+bool OpengGlForm::ChangeModel(const QString& fileName, QString* error)
+{
+    if (error) error->clear();
+    if (fileName.isEmpty()) return MeshError(error, QStringLiteral("模型路径为空"));
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法使用模型预览的 OpenGL 上下文"));
+    if (m_suspendedModel.has_value() || LAppLive2DManager::GetInstance()->HasTemporaryScene())
+        return MeshError(error, QStringLiteral("请先恢复临时模型再载入下一个模型"));
+    if (auto* model = CurrentModel(); model && model->HasExportPreview())
+        return MeshError(error, QStringLiteral("请先恢复导出姿态再载入下一个模型"));
+    const QString nextPath(fileName.constData(), fileName.size());
     FinishDeformerDrag();
-    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
     const bool loaded = LAppDelegate::GetInstance()->ChangeScene(fileName);
-    if (!loaded) return false;
+    if (!loaded) return MeshError(error, QStringLiteral("无法载入模型，原模型保持不变：%1").arg(fileName));
     m_ceditstate.AddState(CEditState::ModelOpen);
-    m_currentModelJson = fileName;
+    m_currentModelJson = nextPath;
     return true;
 }
 
-bool OpengGlForm::BeginTemporaryModel(const QString& fileName)
+bool OpengGlForm::BeginTemporaryModel(const QString& fileName, QString* error)
 {
-    if (m_suspendedModel.has_value() || !MakeRuntimeCurrent()) return false;
+    if (error) error->clear();
+    if (m_suspendedModel.has_value()) return MeshError(error, QStringLiteral("上一个临时模型尚未恢复"));
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法使用临时导出的 OpenGL 上下文"));
+    auto* manager = LAppLive2DManager::GetInstance();
+    if (manager->HasTemporaryScene()) return MeshError(error, QStringLiteral("已有临时模型占用预览"));
     FinishDeformerDrag();
-    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
+    m_suspendedModel = SuspendedModel{m_currentModelJson, IsModelReady(), CurrentModel()};
     const bool loaded = LAppDelegate::GetInstance()->BeginTemporaryScene(fileName);
-    if (!loaded) return false;
-    m_suspendedModel = SuspendedModel{m_currentModelJson, IsModelReady()};
+    if (!loaded) return MeshError(error, QStringLiteral("无法加载临时导出模型：%1").arg(fileName));
     m_currentModelJson = fileName;
     m_ceditstate.AddState(CEditState::ModelOpen);
     return true;
 }
 
-bool OpengGlForm::EndTemporaryModel()
+bool OpengGlForm::EndTemporaryModel(QString* error)
 {
-    if (!m_suspendedModel.has_value() || !MakeRuntimeCurrent()) return false;
-    FinishDeformerDrag();
-    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
-    const bool restored = LAppDelegate::GetInstance()->EndTemporaryScene();
-    if (!restored) return false;
+    if (error) error->clear();
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复原模型的 OpenGL 上下文"));
+    auto* manager = LAppLive2DManager::GetInstance();
+    if (!m_suspendedModel.has_value())
+        return !manager->HasTemporaryScene() || MeshError(error, QStringLiteral("临时模型缺少原预览身份"));
+    if (manager->HasTemporaryScene() && !LAppDelegate::GetInstance()->EndTemporaryScene())
+        return MeshError(error, QStringLiteral("原模型或纹理尚未恢复"));
+    if (CurrentModel() != m_suspendedModel->identity)
+        return MeshError(error, QStringLiteral("当前模型与导出前的原模型不一致"));
     m_currentModelJson = m_suspendedModel->path;
     if (m_suspendedModel->ready) m_ceditstate.AddState(CEditState::ModelOpen);
     else m_ceditstate.RemoveState(CEditState::ModelOpen);
     m_suspendedModel.reset();
+    return true;
+}
+
+bool OpengGlForm::SetExportSuspended(bool suspended, QString* error)
+{
+    if (error) error->clear();
+    if (suspended == m_exportSuspended) return true;
+    if (suspended) {
+        if (IsMeshDragging() || m_controlDragActive)
+            return MeshError(error, QStringLiteral("请先结束当前画布拖拽再导出"));
+        m_ceditstate.RemoveState(CEditState::MousePress);
+        m_ceditstate.RemoveState(CEditState::ViewMove);
+        m_exportSuspended = true;
+        return true;
+    }
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复预览的 OpenGL 上下文"));
+    if (m_suspendedModel.has_value() || LAppLive2DManager::GetInstance()->HasTemporaryScene())
+        return MeshError(error, QStringLiteral("临时模型尚未恢复，预览保持暂停"));
+    if (auto* model = CurrentModel(); model && model->HasExportPreview())
+        return MeshError(error, QStringLiteral("导出姿态尚未恢复，预览保持暂停"));
+    if (m_deferredResize && m_deferredResize->width() > 0 && m_deferredResize->height() > 0)
+        LAppDelegate::GetInstance()->resize(m_deferredResize->width(), m_deferredResize->height());
+    LAppPal::ResetTime();
+    m_deferredResize.reset();
+    m_exportSuspended = false;
     return true;
 }
 
@@ -714,6 +803,7 @@ bool OpengGlForm::SetHighPrecisionMasks(bool enabled, QString* error)
 
 void OpengGlForm::SyncPreviewView()
 {
+    if (m_exportSuspended) return;
     const RestoreContext restore;
     if (!MakeRuntimeCurrent()) return;
     auto* manager = LAppLive2DManager::GetInstance();
@@ -744,6 +834,7 @@ void OpengGlForm::initializeGL()
 
 void OpengGlForm::resizeGL(int width, int height)
 {
+    if (m_exportSuspended) { m_deferredResize = QSize(width, height); return; }
     FinishDeformerDrag();
     if (IsMeshDragging()) {
         QString error;
@@ -754,7 +845,7 @@ void OpengGlForm::resizeGL(int width, int height)
 
 void OpengGlForm::paintGL()
 {
-    if (!m_runtimeReady) return;
+    if (m_exportSuspended || !m_runtimeReady) return;
     auto* delegate = LAppDelegate::GetInstance();
     delegate->paint();
     auto* view = delegate->GetView();
@@ -767,6 +858,7 @@ void OpengGlForm::paintGL()
 
 void OpengGlForm::mousePressEvent(QMouseEvent *event)
 {
+    if (m_exportSuspended) { event->accept(); return; }
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     FinishDeformerDrag();
@@ -804,6 +896,7 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
 
 void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_exportSuspended) { event->accept(); return; }
     if (IsMeshDragging()) {
         QString error;
         const bool cancel = event->button() != Qt::LeftButton || !MeshDragFrameMatches();
@@ -830,6 +923,7 @@ void OpengGlForm::FinishDeformerDrag()
 
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_exportSuspended) { event->accept(); return; }
     if (IsMeshDragging()) {
         QString error;
         if (!(event->buttons() & Qt::LeftButton) || !m_meshEditEnabled || !MeshDragFrameMatches()) {
@@ -899,6 +993,7 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 
 void OpengGlForm::wheelEvent(QWheelEvent *event)
 {
+    if (m_exportSuspended) { event->accept(); return; }
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
     FinishDeformerDrag();
@@ -930,6 +1025,7 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 
 void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
+    if (m_exportSuspended) { event->accept(); return; }
     if (m_controlDragActive &&
         (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Space || event->key() == Qt::Key_Up ||
          event->key() == Qt::Key_Down || event->key() == Qt::Key_W || event->key() == Qt::Key_A ||
@@ -1023,6 +1119,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
 
 void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 {
+    if (m_exportSuspended) { event->accept(); return; }
     if (event->key() == Qt::Key_Control && !event->isAutoRepeat()) FinishDeformerDrag();
     if (!IsModelReady()) return;
     switch (event->key()) {
@@ -1042,6 +1139,7 @@ void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 
 void OpengGlForm::focusOutEvent(QFocusEvent* event)
 {
+    if (m_exportSuspended) { QOpenGLWidget::focusOutEvent(event); return; }
     QString error;
     if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
     FinishDeformerDrag();
@@ -1052,6 +1150,7 @@ void OpengGlForm::focusOutEvent(QFocusEvent* event)
 
 void OpengGlForm::hideEvent(QHideEvent* event)
 {
+    if (m_exportSuspended) { QOpenGLWidget::hideEvent(event); return; }
     QString error;
     if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
     FinishDeformerDrag();

@@ -1,16 +1,286 @@
 #include "ui/psdbatchworker.h"
 #include "ui/psdbatchjob.h"
 #include <QtTest>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QEventLoop>
+#include <QPointer>
 #include <memory>
 
 class PsdBatchWorkerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void plannedResultsAreAvailableBeforeAnyGuiEvent()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString duplicate = QStringLiteral("/input/model.model3.json");
+        const QStringList sources{duplicate, duplicate, QStringLiteral("/other/MODEL.model3.json")};
+        PsdBatchJob job;
+        QSignalSpy changed(&job, &PsdBatchJob::fileResultChanged);
+        QVERIFY(job.start(sources, temp.path(), true, false));
+        const auto planned = job.results();
+        QCOMPARE(planned.size(), 3);
+        QCOMPARE(changed.size(), 0);
+        for (int index = 0; index < planned.size(); ++index) {
+            QCOMPARE(planned[index].index, index);
+            QCOMPARE(planned[index].sourcePath, sources[index]);
+            QCOMPARE(planned[index].state, PsdBatchFileState::Pending);
+            QCOMPARE(planned[index].stage, PsdExportStage::Queued);
+            QVERIFY(!planned[index].outputCommitted);
+            QCOMPARE(planned[index].elapsedMs, 0);
+        }
+        QCOMPARE(planned[0].outputPath, temp.filePath(QStringLiteral("model.psd")));
+        QCOMPARE(planned[1].outputPath, temp.filePath(QStringLiteral("model #2.psd")));
+        QCOMPARE(planned[2].outputPath, temp.filePath(QStringLiteral("MODEL #3.psd")));
+        job.shutdown();
+        for (const auto& item : job.results()) QCOMPARE(item.state, PsdBatchFileState::NotRun);
+        for (const auto& item : planned) QCOMPARE(item.state, PsdBatchFileState::Pending);
+    }
+
+    void detailedResultsKeepErrorsPhasesElapsedAndCommittedFiles()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy changed(&job, &PsdBatchJob::fileResultChanged);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QVERIFY(job.start({QStringLiteral("/input/one.json"), QStringLiteral("/input/two.json"),
+                           QStringLiteral("/input/three.json")}, temp.path(), true, false));
+        const auto planned = job.results();
+        QTRY_COMPARE(requests.size(), 1);
+        const QString first = requests[0][1].toString();
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Running);
+        QCOMPARE(job.results()[0].stage, PsdExportStage::Preflight);
+        job.setStage(first, PsdExportStage::Preparing);
+        job.setStage(first, PsdExportStage::Exporting);
+        const auto exporting = job.results();
+        job.setStage(QStringLiteral("wrong"), PsdExportStage::Restoring);
+        job.setStage(first, PsdExportStage::Queued);
+        job.setStage(first, PsdExportStage::Preparing);
+        job.completeDetailed(false, QStringLiteral("wrong"), QStringLiteral("stale"));
+        QVERIFY(job.results() == exporting);
+        QTest::qWait(12);
+        job.completeDetailed(true, first, QStringLiteral("ignored on success"));
+        const auto completed = job.results()[0];
+        QCOMPARE(completed.state, PsdBatchFileState::Succeeded);
+        QCOMPARE(completed.stage, PsdExportStage::Done);
+        QVERIFY(completed.error.isEmpty());
+        QVERIFY(completed.outputCommitted);
+        QVERIFY(completed.elapsedMs >= 10);
+        job.completeDetailed(false, first, QStringLiteral("duplicate"));
+        QVERIFY(job.results()[0] == completed);
+        QTRY_COMPARE(requests.size(), 2);
+        const QString second = requests[1][1].toString();
+        const QString error = QStringLiteral("模型 <bad>.json\n缺少 MOC：原始错误");
+        job.completeDetailed(false, second, error, PsdExportStage::Preflight);
+        QTRY_COMPARE(requests.size(), 3);
+        const QString third = requests[2][1].toString();
+        job.setStage(third, PsdExportStage::Restoring);
+        job.completeDetailed(false, third, QStringLiteral("文件已保存，但恢复预览失败"), PsdExportStage::Restoring, true);
+        QTRY_COMPARE(ready.size(), 1);
+        QCOMPARE(finished.size(), 1);
+        const auto results = qvariant_cast<PsdBatchResults>(ready[0][0]);
+        QVERIFY(results == job.results());
+        QVERIFY(!ready[0][1].toBool());
+        QCOMPARE(results[1].error, error);
+        QCOMPARE(results[1].stage, PsdExportStage::Preflight);
+        QVERIFY(!results[1].outputCommitted);
+        QCOMPARE(results[2].state, PsdBatchFileState::Failed);
+        QCOMPARE(results[2].stage, PsdExportStage::Restoring);
+        QVERIFY(results[2].outputCommitted);
+        QCOMPARE(finished[0][0].toStringList(), (QStringList{second, third}));
+        for (const auto& item : planned) QCOMPARE(item.state, PsdBatchFileState::Pending);
+        QCOMPARE(exporting[0].state, PsdBatchFileState::Running);
+        QVERIFY(!changed.isEmpty());
+        for (const auto& event : changed) {
+            const auto item = qvariant_cast<PsdBatchFileResult>(event[1]);
+            QCOMPARE(item.index, event[0].toInt());
+            QVERIFY(IsPsdBatchResultValid(item));
+        }
+        job.shutdown();
+        QVERIFY(job.results() == results);
+        QCoreApplication::processEvents();
+        QCOMPARE(ready.size(), 1);
+        QCOMPARE(finished.size(), 1);
+    }
+
+    void canceledResultsKeepActualCurrentOutcome_data()
+    {
+        QTest::addColumn<bool>("success");
+        QTest::newRow("completed-current") << true;
+        QTest::newRow("failed-current") << false;
+    }
+
+    void failureStageIdentifiesExportErrorAfterSuccessfulRestore()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        QVERIFY(job.start({QStringLiteral("/a.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const QString output = requests[0][1].toString();
+        job.setStage(output, PsdExportStage::Exporting);
+        job.setStage(output, PsdExportStage::Restoring);
+        job.completeDetailed(false, output, QStringLiteral("写入失败，预览已恢复"), PsdExportStage::Exporting);
+        QTRY_COMPARE(ready.size(), 1);
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Failed);
+        QCOMPARE(job.results()[0].stage, PsdExportStage::Exporting);
+        QCOMPARE(job.results()[0].error, QStringLiteral("写入失败，预览已恢复"));
+        QVERIFY(!job.results()[0].outputCommitted);
+    }
+
+    void canceledResultsKeepActualCurrentOutcome()
+    {
+        QFETCH(bool, success);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QVERIFY(job.start({QStringLiteral("/a.json"), QStringLiteral("/b.json"), QStringLiteral("/c.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        job.cancel();
+        const auto canceled = job.results();
+        QCOMPARE(canceled[0].state, PsdBatchFileState::Running);
+        QCOMPARE(canceled[1].state, PsdBatchFileState::NotRun);
+        QCOMPARE(canceled[2].state, PsdBatchFileState::NotRun);
+        QCOMPARE(ready.size(), 0);
+        job.completeDetailed(success, requests[0][1].toString(), QStringLiteral("actual failure"));
+        QTRY_COMPARE(ready.size(), 1);
+        QCOMPARE(finished.size(), 1);
+        QCOMPARE(requests.size(), 1);
+        QCOMPARE(job.results()[0].state, success ? PsdBatchFileState::Succeeded : PsdBatchFileState::Failed);
+        QCOMPARE(job.results()[0].outputCommitted, success);
+        QVERIFY(ready[0][1].toBool());
+        for (int index = 1; index < 3; ++index) {
+            QCOMPARE(job.results()[index].state, PsdBatchFileState::NotRun);
+            QVERIFY(!job.results()[index].outputCommitted);
+            QVERIFY(!job.results()[index].error.isEmpty());
+        }
+    }
+
+    void cancellationBeforeDispatchPublishesCompleteCanceledSnapshot()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        bool observed = false;
+        connect(&job, &PsdBatchJob::fileResultChanged, &job, [&](int, const PsdBatchFileResult& result) {
+            if (result.state == PsdBatchFileState::Running) job.cancel();
+            if (result.state == PsdBatchFileState::NotRun) {
+                observed = true;
+                for (const auto& item : job.results()) QCOMPARE(item.state, PsdBatchFileState::NotRun);
+                QCoreApplication::processEvents();
+            }
+        });
+        QVERIFY(job.start({QStringLiteral("/a.json"), QStringLiteral("/b.json")}, temp.path(), true, false));
+        QTRY_COMPARE(ready.size(), 1);
+        QVERIFY(observed);
+        QCOMPARE(requests.size(), 0);
+        for (const auto& item : qvariant_cast<PsdBatchResults>(ready[0][0])) {
+            QCOMPARE(item.state, PsdBatchFileState::NotRun);
+            QVERIFY(!item.outputCommitted);
+        }
+    }
+
+    void shutdownRetainsRecordsAndSuppressesFurtherSignals()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy changed(&job, &PsdBatchJob::fileResultChanged);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QVERIFY(job.start({QStringLiteral("/a.json"), QStringLiteral("/b.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        job.setStage(requests[0][1].toString(), PsdExportStage::Exporting);
+        const int emissions = changed.size();
+        job.shutdown();
+        const auto records = job.results();
+        QCOMPARE(records[0].state, PsdBatchFileState::Failed);
+        QCOMPARE(records[0].stage, PsdExportStage::Exporting);
+        QVERIFY(!records[0].error.isEmpty());
+        QVERIFY(!records[0].outputCommitted);
+        QCOMPARE(records[1].state, PsdBatchFileState::NotRun);
+        job.completeDetailed(true, requests[0][1].toString(), {});
+        job.setStage(requests[0][1].toString(), PsdExportStage::Restoring);
+        job.cancel();
+        QCoreApplication::processEvents();
+        QVERIFY(job.results() == records);
+        QCOMPARE(changed.size(), emissions);
+        QCOMPARE(ready.size(), 0);
+        QCOMPARE(finished.size(), 0);
+        QVERIFY(!job.isRunning());
+    }
+
+    void completionBeforeShutdownKeepsCommittedOutputWithoutWorkerAck()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        connect(&job, &PsdBatchJob::fileResultChanged, &job, [&](int, const PsdBatchFileResult& result) {
+            if (result.state == PsdBatchFileState::Succeeded) job.shutdown();
+        });
+        QVERIFY(job.start({QStringLiteral("/a.json"), QStringLiteral("/b.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        job.completeDetailed(true, requests[0][1].toString(), {});
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Succeeded);
+        QVERIFY(job.results()[0].outputCommitted);
+        QCOMPARE(job.results()[1].state, PsdBatchFileState::NotRun);
+        QVERIFY(!job.isRunning());
+        QCoreApplication::processEvents();
+        QCOMPARE(finished.size(), 0);
+        QCOMPARE(requests.size(), 1);
+    }
+
+    void shutdownOrDestructionFromRunningNotificationPreventsDispatch_data()
+    {
+        QTest::addColumn<bool>("destroy");
+        QTest::newRow("shutdown") << false;
+        QTest::newRow("destroy") << true;
+    }
+
+    void shutdownOrDestructionFromRunningNotificationPreventsDispatch()
+    {
+        QFETCH(bool, destroy);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        auto job = std::make_unique<PsdBatchJob>();
+        QPointer<PsdBatchJob> guard(job.get());
+        QSignalSpy requests(job.get(), &PsdBatchJob::requestExport);
+        bool observed = false;
+        connect(job.get(), &PsdBatchJob::fileResultChanged, this, [&](int, const PsdBatchFileResult& result) {
+            if (result.state != PsdBatchFileState::Running) return;
+            observed = true;
+            if (destroy) job.reset();
+            else job->shutdown();
+        });
+        QVERIFY(job->start({QStringLiteral("/a.json")}, temp.path(), true, false));
+        QTRY_VERIFY(observed);
+        QCoreApplication::processEvents();
+        QCOMPARE(requests.size(), 0);
+        if (destroy) QVERIFY(guard.isNull());
+        else {
+            QVERIFY(!job->isRunning());
+            QCOMPARE(job->results()[0].state, PsdBatchFileState::NotRun);
+        }
+    }
+
     void avoidsExistingAndDuplicateNames()
     {
         QTemporaryDir temp;
@@ -52,6 +322,71 @@ private slots:
         QCOMPARE(requests.at(0).at(1).toString(), temp.filePath(QStringLiteral("Model #2.psd")));
         worker.onOneExportFinished(true, requests.at(0).at(1).toString());
         QCOMPARE(requests.at(1).at(1).toString(), temp.filePath(QStringLiteral("model #3.psd")));
+    }
+
+    void reservesCanonicalEquivalentExistingFilesAndPlannedNames()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString composed = QString::fromUtf8("é");
+        const QString decomposed = composed.normalized(QString::NormalizationForm_D);
+        QVERIFY(composed != decomposed);
+        const QString existingName = composed.toUpper() + QStringLiteral(".psd");
+        const QString secondName = decomposed + QStringLiteral(" #2.psd");
+        QFile first(temp.filePath(existingName));
+        QFile second(temp.filePath(secondName));
+        QVERIFY(first.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+        QCOMPARE(first.write("original-first"), 14);
+        first.close();
+        QVERIFY(second.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+        QCOMPARE(second.write("original-second"), 15);
+        second.close();
+        PsdBatchWorker worker;
+        worker.setTask({QStringLiteral("/input/") + composed + QStringLiteral(".model3.json"),
+                        QStringLiteral("/input/") + decomposed + QStringLiteral(".model3.json")}, temp.path(), true, false);
+        const auto plan = worker.plannedResults();
+        QCOMPARE(plan.size(), 2);
+        QCOMPARE(plan[0].outputPath, temp.filePath(composed + QStringLiteral(" #3.psd")));
+        QCOMPARE(plan[1].outputPath, temp.filePath(decomposed + QStringLiteral(" #4.psd")));
+        for (int index = 0; index < plan.size(); ++index) {
+            QVERIFY(!QFileInfo::exists(plan[index].outputPath));
+            QFile planned(plan[index].outputPath);
+            QVERIFY(planned.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+            QCOMPARE(planned.write(QByteArray::number(index)), 1);
+        }
+        QVERIFY(first.open(QIODevice::ReadOnly));
+        QCOMPARE(first.readAll(), QByteArray("original-first"));
+        QVERIFY(second.open(QIODevice::ReadOnly));
+        QCOMPARE(second.readAll(), QByteArray("original-second"));
+        for (int index = 0; index < plan.size(); ++index) {
+            QFile planned(plan[index].outputPath);
+            QVERIFY(planned.open(QIODevice::ReadOnly));
+            QCOMPARE(planned.readAll(), QByteArray::number(index));
+        }
+    }
+
+    void reservesExistingDirectoriesAndHiddenEntries()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QDir directory(temp.path());
+        QVERIFY(directory.mkdir(QStringLiteral("model.psd")));
+        QVERIFY(directory.mkdir(QStringLiteral(".model.psd")));
+        QFile hidden(temp.filePath(QStringLiteral(".model #2.psd")));
+        QVERIFY(hidden.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+        QCOMPARE(hidden.write("keep hidden"), 11);
+        hidden.close();
+        PsdBatchWorker worker;
+        worker.setTask({QStringLiteral("/input/model.model3.json"), QStringLiteral("/input/.model.model3.json")}, temp.path(), true, false);
+        const auto plan = worker.plannedResults();
+        QCOMPARE(plan.size(), 2);
+        QCOMPARE(plan[0].outputPath, temp.filePath(QStringLiteral("model #2.psd")));
+        QCOMPARE(plan[1].outputPath, temp.filePath(QStringLiteral(".model #3.psd")));
+        for (const auto& item : plan) QVERIFY(!QFileInfo::exists(item.outputPath));
+        QVERIFY(QFileInfo(temp.filePath(QStringLiteral("model.psd"))).isDir());
+        QVERIFY(QFileInfo(temp.filePath(QStringLiteral(".model.psd"))).isDir());
+        QVERIFY(hidden.open(QIODevice::ReadOnly));
+        QCOMPARE(hidden.readAll(), QByteArray("keep hidden"));
     }
 
     void workerRejectsRepeatedStartAndStaleResults()

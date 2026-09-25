@@ -11,6 +11,7 @@
 #include <QSet>
 #include <QMetaType>
 #include <optional>
+#include <functional>
 
 enum class CMotionTarget { Model, Parameter, PartOpacity };
 
@@ -68,9 +69,13 @@ struct CMotionEventBatch
 class CMotionTimeline
 {
 public:
+    explicit CMotionTimeline(std::function<qint64()> recordingClock = {});
     void StartRecording();
     void StopRecording();
     bool IsRecording() const { return m_recording; }
+    bool PauseRecordingClock();
+    bool ResumeRecordingClock();
+    bool IsRecordingClockPaused() const { return m_recordClockPaused; }
     void Clear();
     void Record(const QString& parameterId, float value);
     bool AddPoint(const QString& id, float time, float value) { return AddPoint({CMotionTarget::Parameter, id}, time, value); }
@@ -124,6 +129,13 @@ private:
     QJsonObject m_source;
     mutable QJsonArray m_cachedEvents;
     mutable QVector<CMotionEventOccurrence> m_sortedEvents;
+    std::optional<qint64> RecordingElapsedMilliseconds() const;
+    std::function<qint64()> m_recordingClock;
+    qint64 m_recordClockOrigin = 0;
+    qint64 m_recordSkippedMs = 0;
+    qint64 m_recordPauseMs = 0;
+    qint64 m_recordLastMs = 0;
+    bool m_recordClockPaused = false;
     bool m_recording = false;
     float m_recordStartTime = 0.0f;
     QElapsedTimer m_clock;

@@ -16,6 +16,7 @@
 #include <QDirIterator>
 #include "ui/cpsdbatchdialog.h"
 #include "ui/psdbatchjob.h"
+#include "ui/cexportresultspanel.h"
 #include "ui/cmodeltreepanel.h"
 #include "ui/cparampanel.h"
 #include "ui/cmotionpanel.h"
@@ -37,6 +38,9 @@
 #include <framework/CubismFramework.hpp>
 #include <framework/Id/CubismIdManager.hpp>
 #include <QProgressDialog>
+#include <QProgressBar>
+#include <QElapsedTimer>
+#include <QScopeGuard>
 #include <QTimer>
 #include <QApplication>
 #include <QVBoxLayout>
@@ -50,10 +54,42 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
+#include <exception>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <windowsx.h>
 #endif
+
+struct PreviewExportState
+{
+    QPointer<OpengGlForm> surface;
+    QPointer<CMotionPanel> motion;
+    bool hadMotionPanel = false;
+    CMotionPanel::PreviewTransportLease transport;
+    LAppModel* originalModel = nullptr;
+    LAppModel* exportModel = nullptr;
+    bool timelinePreview = false;
+    bool timelineSaved = false;
+    QMap<QString, float> timelineBaseline;
+    QString physicsReload, userDataReload;
+    bool surfacePaused = false;
+    bool timerActive = false;
+    int timerInterval = 0;
+    float scale = 1;
+    QVector2D position;
+    PsdExportStage failureStage = PsdExportStage::Preparing;
+    bool outputCommitted = false;
+    QVector<QPair<QPointer<QWidget>, bool>> widgets;
+    QVector<QPair<QPointer<QObject>, bool>> signalStates;
+    QVector<QPointer<QAction>> actions;
+    QSet<QString> hiddenDrawables, hiddenDeformerDrawables, dragTargets;
+    QHash<QString, float> drawableOpacity;
+    QHash<QString, int> drawableDrawOrder, drawableOrderGroups;
+    QVector<live2dstruct::CDrawableOrderGroup> drawOrderGroups;
+    QHash<QString, QHash<int, QVector<float>>> meshOverlayPositions;
+    QHash<QString, int> meshOverlayKeyformIndices;
+    QHash<QString, QVector<quint16>> meshIndexOverrides;
+};
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -214,33 +250,39 @@ void MainWindow::on_actionOpen_triggered()
 
 void MainWindow::on_actionpsdPrint_triggered()
 {
-    if(m_openglwindows != nullptr){
-        if (!ConfirmExportReady(QStringLiteral("PSD 导出"))) return;
-        QString fileName = CFileOption::GetSvaePsdFile(this);
-        if(!fileName.isEmpty()){
-            CPsdPrintDialog* dialg = new  CPsdPrintDialog(this);
-            dialg->SetName(fileName);
-            dialg->exec();
-            if(dialg->m_IsPrint){
-                // 设置快照模式
-                LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-                LAppModel* model = (mgr && mgr->GetModelNum() > 0) ? mgr->GetModel(0) : nullptr;
-                if(model && dialg->m_IsSnapshot) model->SetSnapshotMode(true);
-
-                if(dialg->m_IsTexExtract){
-                    m_openglwindows->do_TextureExtract(fileName, dialg->m_IsAll, dialg->m_IsFenZu, dialg->m_IsCubismCompat);
-                } else {
-                    m_openglwindows->do_OffSeceen(fileName, dialg->m_IsAll, dialg->m_IsFenZu, dialg->m_IsCubismCompat);
-                }
-
-                // 恢复快照模式
-                if(model) model->SetSnapshotMode(false);
-            }
-            delete dialg;
-        }
-
-    }else{
-        QMessageBox::about(this,"请将模型拖入","请将模型拖入");
+    if (!m_openglwindows) {
+        QMessageBox::information(this, QStringLiteral("PSD 导出"), QStringLiteral("请先打开模型"));
+        return;
+    }
+    if (!ConfirmExportReady(QStringLiteral("PSD 导出"))) return;
+    const QString output = CFileOption::GetSvaePsdFile(this);
+    if (output.isEmpty()) return;
+    CPsdPrintDialog dialog(this);
+    dialog.SetName(output);
+    if (dialog.exec() != QDialog::Accepted || !dialog.m_IsPrint) return;
+    QString error;
+    PsdExportStage stage = PsdExportStage::Preparing;
+    bool committed = false;
+    bool ok = false;
+    try {
+        ok = doExportOne(m_openglwindows->GetCurrentModelJson(), output, dialog.m_IsAll, dialog.m_IsFenZu,
+                         dialog.m_IsTexExtract, dialog.m_IsCubismCompat, &error, &stage, &committed, dialog.m_IsSnapshot);
+    } catch (const std::exception& exception) {
+        error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
+    } catch (...) {
+        error = QStringLiteral("导出发生未知异常");
+    }
+    RefreshExportActions();
+    if (m_closeAfterExport) {
+        QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
+        return;
+    }
+    if (ok) {
+        QMessageBox::information(this, QStringLiteral("PSD 导出完成"), QStringLiteral("已保存：%1").arg(output));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(output).absolutePath()));
+    } else {
+        const QString message = committed ? QStringLiteral("文件已写出，但预览恢复未完成：\n%1\n%2").arg(output, error) : error;
+        QMessageBox::warning(this, QStringLiteral("PSD 导出失败"), message);
     }
 }
 
@@ -341,21 +383,26 @@ void MainWindow::on_actionCmo3Export_triggered()
 
 void MainWindow::on_actionSaveSession_triggered()
 {
+    SaveSession();
+}
+
+bool MainWindow::SaveSession()
+{
     if (!m_workspaceReady || !m_openglwindows || !m_paramPanel || m_currentMoc.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("保存会话"), QStringLiteral("请先打开模型并等待工作区准备完成"));
-        return;
+        return false;
     }
     const QString defaultPath = QFileInfo(m_currentMoc).absolutePath() + "/" +
         QFileInfo(m_currentMoc).completeBaseName() + QStringLiteral(".live2d-session.json");
     const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("保存工作会话"),
                                                        defaultPath, QStringLiteral("Live2D 会话 (*.live2d-session.json);;JSON (*.json)"));
-    if (path.isEmpty()) return;
+    if (path.isEmpty()) return false;
 
     live2dstruct::CModelSession session;
     QString animationError;
     if (m_motionPanel && !m_motionPanel->CaptureTimelineState(&session.animation, &animationError)) {
         QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
-        return;
+        return false;
     }
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     session.sourceDigest = m_document.SourceDigest();
@@ -365,7 +412,9 @@ void MainWindow::on_actionSaveSession_triggered()
         session.parameters.insert(parameter.id, m_document.ParameterValue(parameter.id));
     for (auto value = currentValues.cbegin(); value != currentValues.cend(); ++value)
         session.parameters.insert(value.key(), value.value());
-    if (m_openglwindows->isValid() && RuntimeMatchesDocument()) {
+    if (m_exportState && m_exportState->timelinePreview) {
+        session.parameters = m_exportState->timelineBaseline;
+    } else if (m_openglwindows->isValid() && RuntimeMatchesDocument()) {
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
@@ -384,22 +433,25 @@ void MainWindow::on_actionSaveSession_triggered()
     session.deformerRotationKeyforms = m_document.DeformerRotationKeyformOverrides();
     session.deformerWarpKeyforms = m_document.DeformerWarpKeyformOverrides();
     session.drawableMaskInverted = m_document.DrawableMaskInvertedOverrides();
-    session.viewScale = m_openglwindows->ViewScale();
-    const QVector2D position = m_openglwindows->ViewPosition();
+    session.viewScale = m_exportState ? m_exportState->scale : m_openglwindows->ViewScale();
+    const QVector2D position = m_exportState ? m_exportState->position : m_openglwindows->ViewPosition();
     session.viewPosition = QPointF(position.x(), position.y());
     QString saveError;
     if (!session.Save(path, &saveError)) {
         QMessageBox::warning(this, QStringLiteral("保存会话失败"), saveError);
-        return;
+        return false;
     }
     m_sessionDirty = false;
+    if (m_exportState && m_motionPanel && m_motionPanel->IsPreviewTransportSuspended()) m_exportState->timelineSaved = true;
     if (m_motionPanel) m_motionPanel->MarkTimelineSaved();
     setWindowTitle(QStringLiteral("live2d2psd"));
     statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
+    return !m_motionPanel || m_motionPanel->IsPreviewTransportSuspended() || !m_motionPanel->HasUnsavedTimelineChanges();
 }
 
 void MainWindow::on_actionLoadSession_triggered()
 {
+    if (m_previewExport.IsBusy()) return;
     if (!m_workspaceReady || !m_openglwindows || !m_motionPanel) {
         QMessageBox::information(this, QStringLiteral("载入会话"), QStringLiteral("请先打开模型并等待工作区准备完成"));
         return;
@@ -487,6 +539,10 @@ void MainWindow::on_actionLoadSession_triggered()
 bool MainWindow::RuntimeMatchesDocument(QString* error) const
 {
     if (error) error->clear();
+    if (m_previewExport.IsBusy()) {
+        if (error) *error = QStringLiteral("导出正在占用预览，请等待或恢复预览");
+        return false;
+    }
     if (!m_document.IsLoaded()) {
         if (error) *error = QStringLiteral("尚未加载模型数据");
         return false;
@@ -504,7 +560,7 @@ bool MainWindow::RuntimeMatchesDocument(QString* error) const
 bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                                       const QMap<QString, float>& pose, bool editing, QString* error)
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch) {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) {
         if (error) *error = QStringLiteral("模型正在关闭或导出，请稍后编辑");
         return false;
     }
@@ -576,6 +632,10 @@ bool MainWindow::EndKeyformEditing(QString* error)
 
 bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error)
 {
+    if (m_previewExport.IsBusy()) {
+        if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
+        return false;
+    }
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(edit)) {
         const bool active = m_keyformEditor.IsActive();
@@ -602,6 +662,10 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
 
 bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error)
 {
+    if (m_previewExport.IsBusy()) {
+        if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
+        return false;
+    }
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
@@ -728,6 +792,10 @@ void MainWindow::SyncDocumentToRuntime()
 
 bool MainWindow::ConfirmExportReady(const QString& operation)
 {
+    if (m_previewExport.IsBusy()) {
+        statusBar()->showMessage(QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
+        return false;
+    }
     QString dragError;
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &dragError)) {
         statusBar()->showMessage(dragError, 8000);
@@ -865,6 +933,7 @@ void MainWindow::SetWorkspaceMode(int mode)
 
 void MainWindow::ClearTimelinePreview()
 {
+    if (m_previewExport.IsBusy()) return;
     if (!EndKeyformEditing()) {
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
@@ -926,12 +995,10 @@ void MainWindow::RedoDocumentEdit()
 
 void MainWindow::on_actionBatchPsd_triggered()
 {
-    if (m_psdBatch || m_batchExporting || m_closingModel) return;
-    // 1. 选择输入文件夹
+    if (m_psdBatch || m_batchExporting || m_closingModel || m_previewExport.IsBusy()) return;
     QString inDir = CFileOption::GetSelectDirectory(this);
     if(inDir.isEmpty()) return;
 
-    // 2. 遍历查找所有 *.model3.json
     QStringList modelFiles;
     QDirIterator it(inDir, QStringList() << "*.model3.json", QDir::Files, QDirIterator::Subdirectories);
     while (it.hasNext()) modelFiles << it.next();
@@ -941,7 +1008,6 @@ void MainWindow::on_actionBatchPsd_triggered()
         return;
     }
 
-    // 3. 弹出选择界面，允许勾选需要导出的文件
     CPsdBatchDialog dlg(this);
     dlg.setFileList(modelFiles);
     if(dlg.exec() != QDialog::Accepted) return;
@@ -951,7 +1017,6 @@ void MainWindow::on_actionBatchPsd_triggered()
         return;
     }
 
-    // 4. 选择输出文件夹
     QString outDir = CFileOption::GetSelectDirectory(this);
     if(outDir.isEmpty()) return;
 
@@ -960,66 +1025,100 @@ void MainWindow::on_actionBatchPsd_triggered()
     bool isTexExtract = dlg.isTexExtractChecked();
     bool isCubism = dlg.isCubismChecked();
 
-    if (!EndKeyformEditing()) return;
+    StartPsdBatch(selected, outDir, isAll, isFenzu, isTexExtract, isCubism);
+}
+
+void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputDirectory,
+                              bool all, bool groups, bool textures, bool cubismCompat)
+{
+    if (models.isEmpty() || outputDirectory.isEmpty() || m_psdBatch || m_batchExporting ||
+        m_closingModel || m_previewExport.IsBusy() || !EndKeyformEditing()) return;
+    m_lastBatchOptions = {outputDirectory, all, groups, textures, cubismCompat};
     auto* job = new PsdBatchJob(this);
     m_psdBatch = job;
-    myBatchAction->setEnabled(false);
-
-    // 进度对话框
-    QProgressDialog* progress = new QProgressDialog("正在批量导出...", "取消", 0, selected.size(), this);
+    auto* progress = new QProgressDialog(QStringLiteral("正在准备导出"), QStringLiteral("完成当前文件后取消"),
+                                         0, models.size(), this);
+    auto* progressBar = new QProgressBar(progress);
+    progressBar->setTextVisible(false);
+    progress->setBar(progressBar);
+    auto* progressLabel = new QLabel(progress);
+    progressLabel->setTextFormat(Qt::PlainText);
+    progressLabel->setWordWrap(true);
+    progress->setLabel(progressLabel);
     m_batchProgress = progress;
     progress->setWindowModality(Qt::ApplicationModal);
     progress->setAutoClose(false);
     progress->setAutoReset(false);
     progress->setValue(0);
+    RefreshExportActions();
 
     connect(progress, &QProgressDialog::canceled, job, &PsdBatchJob::cancel);
-    connect(job, &PsdBatchJob::progress, this, [this, job, progress](int cur, int total, const QString& name){
+    connect(job, &PsdBatchJob::progress, this, [this, job, progress](int current, int total, const QString& name) {
         if (m_psdBatch != job) return;
         progress->setMaximum(total);
-        progress->setLabelText(QString("正在导出 %1/%2: %3").arg(cur).arg(total).arg(name));
-        progress->setValue(cur-1);
+        progress->setLabelText(QStringLiteral("正在导出 %1/%2：%3").arg(current).arg(total).arg(name));
     });
-
+    connect(job, &PsdBatchJob::fileResultChanged, this,
+            [this, job, progress](int index, const PsdBatchFileResult& result) {
+        if (m_psdBatch != job) return;
+        m_exportResultsPanel->UpdateResult(index, result);
+        if (result.state == PsdBatchFileState::Running) {
+            progress->setLabelText(QStringLiteral("%1：%2\n已处理 %3/%4")
+                .arg(PsdExportStageText(result.stage), QFileInfo(result.sourcePath).fileName())
+                .arg(index).arg(progress->maximum()));
+        } else if (result.state == PsdBatchFileState::Succeeded || result.state == PsdBatchFileState::Failed) {
+            progress->setValue(index + 1);
+        }
+    });
     connect(job, &PsdBatchJob::requestExport, this,
             [this, job](const QString& model, const QString& output, bool all, bool groups, bool textures, bool cubism) {
         if (m_psdBatch != job || m_closingModel) return;
-        m_batchExporting = true;
-        const bool ok = doExportOne(model, output, all, groups, textures, cubism);
-        m_batchExporting = false;
+        QString error;
+        PsdExportStage stage = PsdExportStage::Preflight;
+        bool committed = false;
+        const auto refresh = qScopeGuard([this] { RefreshExportActions(); });
+        const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+        bool ok = false;
+        try {
+            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed);
+        } catch (const std::exception& exception) {
+            error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
+        } catch (...) {
+            error = QStringLiteral("导出发生未知异常");
+        }
+        if (m_psdBatch != job) return;
+        if (m_previewExport.NeedsRecovery()) job->cancel();
+        job->completeDetailed(ok, output, error, stage, committed);
         if (m_closeAfterExport) {
             StopPsdBatch();
             QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
-            return;
         }
-        if (m_psdBatch == job) job->complete(ok, output);
     });
-
-    connect(job, &PsdBatchJob::finished, this,
-            [this, job, progress, outDir](const QStringList& failedFiles, bool canceled) {
+    connect(job, &PsdBatchJob::resultsReady, this,
+            [this, job](const PsdBatchResults& results, bool canceled) {
         if (m_psdBatch != job) return;
+        m_exportResultsPanel->SetResults(results);
+        statusBar()->showMessage(canceled ? QStringLiteral("批量导出已停止，已处理与未执行结果均已保留")
+                                        : QStringLiteral("批量导出完成，详见导出记录"), 8000);
+    });
+    connect(job, &PsdBatchJob::finished, this, [this, job, progress](const QStringList&, bool) {
+        if (m_psdBatch != job) return;
+        m_exportResultsPanel->SetResults(job->results());
         m_psdBatch.clear();
         m_batchProgress.clear();
-        myBatchAction->setEnabled(true);
         progress->close();
         progress->deleteLater();
         job->deleteLater();
-        if (canceled) {
-            statusBar()->showMessage(QStringLiteral("批量导出已取消，已写出的文件保留"));
-            return;
-        }
-        if (failedFiles.isEmpty()) {
-            QMessageBox::information(this, "批量导出", "导出完成");
-        } else {
-            QMessageBox::warning(this, "批量导出",
-                QString("导出完成，但以下 %1 个文件写入失败：\n%2")
-                    .arg(failedFiles.size())
-                    .arg(failedFiles.join("\n")));
-        }
-        QDesktopServices::openUrl(QUrl::fromLocalFile(outDir));
+        RefreshExportActions();
+        m_exportResultsPanel->show();
+        m_exportResultsPanel->raise();
     });
-
-    if (!job->start(selected, outDir, isAll, isFenzu, isTexExtract, isCubism)) StopPsdBatch();
+    if (!job->start(models, outputDirectory, all, groups, textures, cubismCompat)) {
+        StopPsdBatch();
+        return;
+    }
+    m_exportResultsPanel->SetResults(job->results());
+    m_exportResultsPanel->show();
 }
 
 void MainWindow::StopPsdBatch()
@@ -1028,6 +1127,7 @@ void MainWindow::StopPsdBatch()
         auto* job = m_psdBatch.data();
         m_psdBatch.clear();
         job->shutdown();
+        if (m_exportResultsPanel) m_exportResultsPanel->SetResults(job->results());
         job->deleteLater();
     }
     if (m_batchProgress) {
@@ -1035,130 +1135,291 @@ void MainWindow::StopPsdBatch()
         m_batchProgress->deleteLater();
         m_batchProgress.clear();
     }
-    if (myBatchAction) myBatchAction->setEnabled(true);
+    RefreshExportActions();
 }
 
-bool MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract, bool cubismCompat)
+void MainWindow::ReportExportStage(const QString& outputPath, PsdExportStage stage)
 {
-    CModelJson preflightJson;
-    preflightJson.Parse(modelPath);
-    const QString preflightMoc = preflightJson.IsOpen()
-        ? QDir(preflightJson.m_parentPath).filePath(preflightJson.m_moc) : QString();
-    live2dstruct::CModelDocument preflight;
-    QString preflightError;
-    if (preflightMoc.isEmpty() || !preflight.Load(preflightMoc, &preflightError)) {
+    if (m_psdBatch) m_psdBatch->setStage(outputPath, stage);
+}
+
+void MainWindow::RefreshExportActions()
+{
+    const bool exporting = m_psdBatch || m_batchExporting;
+    const bool busy = exporting || m_previewExport.IsBusy();
+    if (myBatchAction) myBatchAction->setEnabled(!busy && !m_closingModel);
+    if (!busy && !m_closingModel && !m_runtimePanelsInitialized && m_openglwindows) {
+        const QPointer<OpengGlForm> surface = m_openglwindows;
+        QTimer::singleShot(0, surface, [this, surface] {
+            if (surface) InitializeRuntimePanels(surface, surface->IsModelReady());
+        });
+    }
+    if (m_exportResultsPanel) {
+        m_exportResultsPanel->SetBusy(exporting);
+        m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy(),
+            QStringLiteral("请先恢复或关闭当前预览，再重试失败项。"));
+    }
+    if (m_recoverPreviewAction) {
+        m_recoverPreviewAction->setVisible(m_previewExport.NeedsRecovery());
+        m_recoverPreviewAction->setEnabled(m_previewExport.NeedsRecovery() && !m_batchExporting);
+    }
+    if (m_previewExport.NeedsRecovery()) {
+        if (myCloseAction) myCloseAction->setEnabled(true);
+        if (m_saveSessionAction) m_saveSessionAction->setEnabled(m_workspaceReady);
+    }
+}
+
+void MainWindow::RecoverExportPreview()
+{
+    if (m_batchExporting || !m_previewExport.NeedsRecovery()) return;
+    QString error;
+    bool recovered;
+    {
+        const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+        recovered = m_previewExport.Recover(&error);
+    }
+    if (recovered) {
+        m_exportState.reset();
+        statusBar()->showMessage(QStringLiteral("预览已恢复"), 5000);
+    } else {
+        statusBar()->showMessage(error);
+    }
+    RefreshExportActions();
+    if (m_closeAfterExport) QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
+}
+
+bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
+                             bool isTexExtract, bool cubismCompat, QString* error,
+                             PsdExportStage* stage, bool* outputCommitted, bool savedParameterSnapshot)
+{
+    if (error) error->clear();
+    if (stage) *stage = PsdExportStage::Preflight;
+    if (outputCommitted) *outputCommitted = false;
+    const auto fail = [&](PsdExportStage failedStage, const QString& reason) {
+        if (error) *error = reason;
+        if (stage) *stage = failedStage;
         return false;
+    };
+    if (m_previewExport.IsBusy())
+        return fail(PsdExportStage::Restoring, QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
+    if (outPath.isEmpty()) return fail(PsdExportStage::Preflight, QStringLiteral("未指定输出路径"));
+    ReportExportStage(outPath, PsdExportStage::Preflight);
+    const bool currentModel = m_openglwindows && m_openglwindows->GetCurrentModelJson() == modelPath;
+    live2dstruct::CModelDocument preflight;
+    const live2dstruct::CModelDocument* validation = &preflight;
+    QString reason;
+    if (currentModel && m_document.IsLoaded()) {
+        if (!RuntimeMatchesDocument(&reason)) return fail(PsdExportStage::Preflight, reason);
+        validation = &m_document;
+    } else {
+        CModelJson modelJson;
+        modelJson.Parse(modelPath);
+        if (!modelJson.IsOpen() || modelJson.m_moc.isEmpty())
+            return fail(PsdExportStage::Preflight, QStringLiteral("无法读取 model3.json 或缺少 Moc 文件引用：%1").arg(modelPath));
+        const QString moc = QDir(modelJson.m_parentPath).filePath(modelJson.m_moc);
+        if (!preflight.Load(moc, &reason)) return fail(PsdExportStage::Preflight, reason);
     }
-    for (const auto& diagnostic : preflight.Validate()) {
-        if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error) {
-            return false;
-        }
-    }
+    for (const auto& diagnostic : validation->Validate())
+        if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error)
+            return fail(PsdExportStage::Preflight, diagnostic.message);
 
-    QString previousModelJson;
-    QMap<QString, float> previousParameters;
-    QMap<QString, bool> previousVisibility;
-    float previousViewScale = 1.0f;
-    QVector2D previousViewPosition;
-    QSet<QString> previousHiddenDrawables;
-    QSet<QString> previousHiddenDeformerDrawables;
-    QHash<QString, float> previousDrawableOpacity;
-    QHash<QString, int> previousDrawableDrawOrder;
-    QHash<QString, int> previousDrawableOrderGroups;
-    QVector<live2dstruct::CDrawableOrderGroup> previousDrawOrderGroups;
-    QHash<QString, QHash<int, QVector<float>>> previousMeshOverlayPositions;
-    QHash<QString, int> previousMeshOverlayKeyformIndices;
-    QHash<QString, QVector<quint16>> previousMeshIndexOverrides;
-    QSet<QString> previousDragTargets;
-
-    // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
-    if(m_openglwindows){
-        previousModelJson = m_openglwindows->GetCurrentModelJson();
-        const bool changedModel = previousModelJson != modelPath;
-        if (changedModel && m_motionPanel) m_motionPanel->StopTimelinePreview();
-        if (m_paramPanel) previousParameters = m_paramPanel->CurrentValues();
-        if (m_treePanel) previousVisibility = m_treePanel->VisibilityState();
-        previousViewScale = m_openglwindows->ViewScale();
-        previousViewPosition = m_openglwindows->ViewPosition();
-        if (auto* delegate = LAppDelegate::GetInstance()) {
-            previousHiddenDrawables = delegate->m_hiddenDrawables;
-            previousHiddenDeformerDrawables = delegate->m_hiddenDeformerDrawables;
-            previousDrawableOpacity = delegate->m_drawableOpacityOverrides;
-            previousDrawableDrawOrder = delegate->m_drawableDrawOrderOverrides;
-            previousDrawableOrderGroups = delegate->m_drawableOrderGroupIndices;
-            previousDrawOrderGroups = delegate->m_drawOrderGroups;
-            previousMeshOverlayPositions = delegate->m_meshOverlayPositions;
-            previousMeshOverlayKeyformIndices = delegate->m_meshOverlayKeyformIndices;
-            previousMeshIndexOverrides = delegate->m_meshIndexOverrides;
-            previousDragTargets = delegate->m_dragTargetDrawables;
+    const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+    ReportExportStage(outPath, PsdExportStage::Preparing);
+    if (m_openglwindows) {
+        auto state = std::make_shared<PreviewExportState>();
+        state->surface = m_openglwindows;
+        state->motion = m_motionPanel;
+        state->hadMotionPanel = m_motionPanel != nullptr;
+        auto* manager = LAppLive2DManager::GetInstance();
+        state->originalModel = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+        if (!state->surface->IsModelReady() || !state->originalModel)
+            return fail(PsdExportStage::Preparing, QStringLiteral("当前预览模型尚未就绪"));
+        try {
+            state->timelinePreview = state->originalModel->HasTimelinePreview();
+            if (state->timelinePreview) state->timelineBaseline = state->originalModel->GetTimelineBaseParameters();
+            state->timerActive = state->surface->m_timer.isActive();
+            state->timerInterval = state->surface->m_timer.interval();
+            state->scale = state->surface->ViewScale();
+            state->position = state->surface->ViewPosition();
+            for (auto* widget : QList<QWidget*>{m_treePanel, m_paramPanel, m_physicsPanel, m_blendShapePanel,
+                    m_texturePanel, m_inspectorPanel, m_diagnosticsPanel, m_userDataPanel, m_openglwindows}) {
+                if (!widget) continue;
+                state->widgets.append({widget, widget->testAttribute(Qt::WA_ForceDisabled)});
+                state->signalStates.append({widget, widget->signalsBlocked()});
+            }
+            const auto* resultsToggle = m_exportResultsPanel ? m_exportResultsPanel->toggleViewAction() : nullptr;
+            for (auto* action : findChildren<QAction*>())
+                if (action != m_recoverPreviewAction && action != m_exportResultsAction &&
+                    action != resultsToggle && action->isEnabled()) state->actions.append(action);
+            auto* delegate = LAppDelegate::GetInstance();
+            state->hiddenDrawables = delegate->m_hiddenDrawables;
+            state->hiddenDeformerDrawables = delegate->m_hiddenDeformerDrawables;
+            state->drawableOpacity = delegate->m_drawableOpacityOverrides;
+            state->drawableDrawOrder = delegate->m_drawableDrawOrderOverrides;
+            state->drawableOrderGroups = delegate->m_drawableOrderGroupIndices;
+            state->drawOrderGroups = delegate->m_drawOrderGroups;
+            state->meshOverlayPositions = delegate->m_meshOverlayPositions;
+            state->meshOverlayKeyformIndices = delegate->m_meshOverlayKeyformIndices;
+            state->meshIndexOverrides = delegate->m_meshIndexOverrides;
+            state->dragTargets = delegate->m_dragTargetDrawables;
+        } catch (const std::exception&) {
+            return fail(PsdExportStage::Preparing, QStringLiteral("无法保存当前预览状态"));
         }
-        bool wasActive = m_openglwindows->m_timer.isActive();
-        if (wasActive) m_openglwindows->m_timer.stop();
-        if (changedModel && !m_openglwindows->BeginTemporaryModel(modelPath)) {
-            if (wasActive) m_openglwindows->m_timer.start(1000 / 60);
-            return false;
-        }
-        QString precisionError;
-        const bool precisionReady = !changedModel ||
-            m_openglwindows->SetHighPrecisionMasks(m_highPrecisionMasks, &precisionError);
-        bool ok = false;
-        if (!precisionReady) statusBar()->showMessage(precisionError, 8000);
-        else if (isTexExtract) {
-            ok = m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
-        } else {
-            ok = m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
-        }
-        if (changedModel) {
-            if (!m_openglwindows->EndTemporaryModel()) {
-                statusBar()->showMessage(QStringLiteral("无法恢复预览，已暂停画布刷新"));
+        m_exportState = state;
+        const auto endExportPose = [state](QString* detail) {
+            if (!state->exportModel) return true;
+            auto* manager = LAppLive2DManager::GetInstance();
+            if (!manager || manager->GetModel(0) != state->exportModel) {
+                if (detail) *detail = QStringLiteral("导出模型已改变，无法还原参数状态");
                 return false;
             }
-            if (auto* delegate = LAppDelegate::GetInstance()) {
-                delegate->m_hiddenDrawables = previousHiddenDrawables;
-                delegate->m_hiddenDeformerDrawables = previousHiddenDeformerDrawables;
-                delegate->m_drawableOpacityOverrides = previousDrawableOpacity;
-                delegate->m_drawableDrawOrderOverrides = previousDrawableDrawOrder;
-                delegate->m_drawableOrderGroupIndices = previousDrawableOrderGroups;
-                delegate->m_drawOrderGroups = previousDrawOrderGroups;
-                delegate->m_meshOverlayPositions = previousMeshOverlayPositions;
-                delegate->m_meshOverlayKeyformIndices = previousMeshOverlayKeyformIndices;
-                delegate->m_meshIndexOverrides = previousMeshIndexOverrides;
-                delegate->m_dragTargetDrawables = previousDragTargets;
-                if (auto* manager = LAppLive2DManager::GetInstance(); manager &&
-                    manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
-                    if (auto* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap()) {
-                        for (auto it = previousMeshOverlayPositions.cbegin(); it != previousMeshOverlayPositions.cend(); ++it) {
-                            const int keyformIndex = previousMeshOverlayKeyformIndices.value(it.key(), -1);
-                            const auto keyform = it.value().constFind(keyformIndex);
-                            if (keyform != it.value().cend()) meshMap->SetMeshPositions(it.key(), keyform.value());
-                        }
-                        for (auto it = previousMeshIndexOverrides.cbegin(); it != previousMeshIndexOverrides.cend(); ++it)
-                            m_openglwindows->do_SetDrawableIndices(it.key(), it.value());
-                    }
-                }
+            if (state->exportModel->HasExportPreview() && !state->exportModel->EndExportPreview(detail)) return false;
+            state->exportModel = nullptr;
+            return true;
+        };
+        CPreviewExportTransaction::Steps steps;
+        steps.pause = [state](QString* detail) {
+            if (!state->surface) {
+                if (detail) *detail = QStringLiteral("预览窗口已关闭");
+                return false;
             }
-            if (m_paramPanel) {
-                for (auto it = previousParameters.cbegin(); it != previousParameters.cend(); ++it)
-                    m_paramPanel->ApplyExternalValue(it.key(), it.value(), false, false, false);
-            }
-            if (m_treePanel) {
-                m_syncingVisibility = true;
-                m_treePanel->ApplyVisibilityState(previousVisibility);
-                m_syncingVisibility = false;
-            }
-            m_openglwindows->SetViewState(previousViewScale, previousViewPosition);
+            if (state->motion && !state->motion->SuspendPreviewTransport(state->transport, detail)) return false;
+            if (!state->surface->SetExportSuspended(true, detail)) return false;
+            state->surfacePaused = true;
+            state->surface->m_timer.stop();
+            for (const auto& entry : state->signalStates) if (entry.first) entry.first->blockSignals(true);
+            for (const auto& entry : state->widgets) if (entry.first) entry.first->setEnabled(false);
+            for (const auto& action : state->actions) if (action) action->setEnabled(false);
+            return true;
+        };
+        if (!currentModel) {
+            steps.beginTemporary = [state, modelPath](QString* detail) {
+                if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
+                return state->surface->BeginTemporaryModel(modelPath, detail);
+            };
+            steps.endTemporary = [this, state, outPath, endExportPose](QString* detail) {
+                ReportExportStage(outPath, PsdExportStage::Restoring);
+                if (!endExportPose(detail)) return false;
+                if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
+                return state->surface->EndTemporaryModel(detail);
+            };
         }
-        if (wasActive) m_openglwindows->m_timer.start(1000 / 60);
+        steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat,
+                            savedParameterSnapshot, currentModel](QString* detail) {
+            if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
+            if (!currentModel && !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
+            auto* manager = LAppLive2DManager::GetInstance();
+            auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+            if (!model) { if (detail) *detail = QStringLiteral("没有可导出的模型"); return false; }
+            if (!model->BeginExportPreview(savedParameterSnapshot, detail)) return false;
+            state->exportModel = model;
+            state->failureStage = PsdExportStage::Exporting;
+            ReportExportStage(outPath, PsdExportStage::Exporting);
+            state->outputCommitted = isTexExtract
+                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail)
+                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail);
+            return state->outputCommitted;
+        };
+        steps.restorePreview = [this, state, outPath, endExportPose](QString* detail) {
+            ReportExportStage(outPath, PsdExportStage::Restoring);
+            if (!endExportPose(detail)) return false;
+            auto* manager = LAppLive2DManager::GetInstance();
+            if (!state->surface || state->surface != m_openglwindows || !manager ||
+                    manager->HasTemporaryScene() || manager->GetModel(0) != state->originalModel) {
+                if (detail) *detail = QStringLiteral("原预览模型尚未恢复");
+                return false;
+            }
+            auto* delegate = LAppDelegate::GetInstance();
+            delegate->m_hiddenDrawables = state->hiddenDrawables;
+            delegate->m_hiddenDeformerDrawables = state->hiddenDeformerDrawables;
+            delegate->m_drawableOpacityOverrides = state->drawableOpacity;
+            delegate->m_drawableDrawOrderOverrides = state->drawableDrawOrder;
+            delegate->m_drawableOrderGroupIndices = state->drawableOrderGroups;
+            delegate->m_drawOrderGroups = state->drawOrderGroups;
+            delegate->m_meshOverlayPositions = state->meshOverlayPositions;
+            delegate->m_meshOverlayKeyformIndices = state->meshOverlayKeyformIndices;
+            delegate->m_meshIndexOverrides = state->meshIndexOverrides;
+            delegate->m_dragTargetDrawables = state->dragTargets;
+            state->surface->SetViewState(state->scale, state->position);
+            return true;
+        };
+        steps.resume = [state](QString* detail) {
+            if (!state->surface || (state->hadMotionPanel && !state->motion) ||
+                (state->transport.IsValid() && !state->motion) ||
+                (state->motion && state->motion->IsPreviewTransportSuspended() && !state->transport.IsValid())) {
+                if (detail) *detail = QStringLiteral("预览暂停状态已失效");
+                return false;
+            }
+            auto* manager = LAppLive2DManager::GetInstance();
+            if (!manager || manager->GetModel(0) != state->originalModel) {
+                if (detail) *detail = QStringLiteral("原预览模型已改变");
+                return false;
+            }
+            if (!state->physicsReload.isEmpty()) {
+                if (!state->originalModel->ReloadPhysicsFromFile(state->physicsReload)) {
+                    if (detail) *detail = QStringLiteral("无法重新载入已保存的物理配置：%1").arg(state->physicsReload);
+                    return false;
+                }
+                state->physicsReload.clear();
+            }
+            if (!state->userDataReload.isEmpty()) {
+                if (!state->originalModel->ReloadUserDataFromFile(state->userDataReload)) {
+                    if (detail) *detail = QStringLiteral("无法重新载入已保存的网格标签：%1").arg(state->userDataReload);
+                    return false;
+                }
+                state->userDataReload.clear();
+            }
+            bool complete = false;
+            const auto refreeze = qScopeGuard([&] {
+                if (complete) return;
+                try {
+                    if (state->surface) {
+                        state->surface->m_timer.stop();
+                        state->surface->SetExportSuspended(true);
+                    }
+                    if (state->motion && !state->motion->IsPreviewTransportSuspended())
+                        state->motion->SuspendPreviewTransport(state->transport);
+                    for (const auto& entry : state->signalStates) if (entry.first) entry.first->blockSignals(true);
+                    for (const auto& entry : state->widgets) if (entry.first) entry.first->setEnabled(false);
+                    for (const auto& action : state->actions) if (action) action->setEnabled(false);
+                } catch (...) {
+                    // 异常清理不能再次抛出。
+                }
+            });
+            if (state->surfacePaused && !state->surface->SetExportSuspended(false, detail)) return false;
+            for (const auto& entry : state->widgets) if (entry.first) entry.first->setEnabled(!entry.second);
+            for (const auto& action : state->actions) if (action) action->setEnabled(true);
+            if (state->transport.IsValid() && !state->motion->ResumePreviewTransport(state->transport, detail)) return false;
+            if (state->timelineSaved && state->motion) {
+                state->motion->MarkTimelineSaved();
+                state->timelineSaved = false;
+            }
+            for (const auto& entry : state->signalStates) if (entry.first) entry.first->blockSignals(entry.second);
+            if (state->surfacePaused && state->timerActive) state->surface->m_timer.start(state->timerInterval);
+            state->surfacePaused = false;
+            complete = true;
+            return true;
+        };
+        const bool ok = m_previewExport.Run(std::move(steps), &reason);
+        if (outputCommitted) *outputCommitted = state->outputCommitted;
+        if (stage) *stage = ok ? PsdExportStage::Done :
+            (m_previewExport.NeedsRecovery() ? PsdExportStage::Restoring : state->failureStage);
+        if (error) *error = reason;
+        if (!m_previewExport.NeedsRecovery()) m_exportState.reset();
+        RefreshExportActions();
         return ok;
     }
 
-    // 2) 若无窗口，则使用隐藏的离屏导出实例（只初始化一次）
-    if(!m_headless){
+    if (stage) *stage = PsdExportStage::Preparing;
+    if (!m_headless) {
         m_headless = new OpengGlForm();
         m_headless->m_timer.stop();
+        if (!m_headless->SetExportSuspended(true, &reason)) {
+            delete m_headless;
+            return fail(PsdExportStage::Preparing, reason);
+        }
         m_headless->setAttribute(Qt::WA_DontShowOnScreen);
-        m_headless->resize(1,1);
-        // 初始化需要一个初始文件名
+        m_headless->resize(1, 1);
         m_headless->SetInitOpenName(modelPath);
         const QPointer<OpengGlForm> surface = m_headless;
         QEventLoop initialized;
@@ -1173,30 +1434,68 @@ bool MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
             initialized.exec();
         }
         if (m_closeAfterExport || !surface || m_headless != surface || !surface->IsModelReady()) {
-            return false;
+            if (surface && m_headless == surface) delete m_headless;
+            return fail(PsdExportStage::Preparing, QStringLiteral("离屏模型初始化未完成、失败或已取消"));
         }
         m_headless->m_timer.stop();
-    }else if (!m_headless->do_ModelChange(modelPath)) {
-        return false;
-    }
-    QString precisionError;
-    if (!m_headless->SetHighPrecisionMasks(m_highPrecisionMasks, &precisionError)) {
-        statusBar()->showMessage(precisionError, 8000);
-        return false;
-    }
-    bool ok;
-    if (isTexExtract) {
-        ok = m_headless->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
     } else {
-        ok = m_headless->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
+        try {
+            if (!m_headless->LoadExportModel(modelPath, &reason)) return fail(PsdExportStage::Preparing, reason);
+        } catch (const std::exception& exception) {
+            return fail(PsdExportStage::Preparing, QStringLiteral("离屏模型载入异常：%1").arg(QString::fromUtf8(exception.what())));
+        } catch (...) {
+            return fail(PsdExportStage::Preparing, QStringLiteral("离屏模型载入发生未知异常"));
+        }
     }
+    auto state = std::make_shared<PreviewExportState>();
+    state->surface = m_headless;
+    m_exportState = state;
+    CPreviewExportTransaction::Steps steps;
+    steps.pause = [state](QString* detail) {
+        if (!state->surface) { if (detail) *detail = QStringLiteral("离屏导出窗口已关闭"); return false; }
+        state->surface->m_timer.stop();
+        return state->surface->SetExportSuspended(true, detail);
+    };
+    steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat](QString* detail) {
+        if (!state->surface || !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
+        auto* manager = LAppLive2DManager::GetInstance();
+        auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+        if (!model) { if (detail) *detail = QStringLiteral("没有可导出的模型"); return false; }
+        if (!model->BeginExportPreview(false, detail)) return false;
+        state->exportModel = model;
+        state->failureStage = PsdExportStage::Exporting;
+        ReportExportStage(outPath, PsdExportStage::Exporting);
+        state->outputCommitted = isTexExtract
+            ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail)
+            : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail);
+        return state->outputCommitted;
+    };
+    steps.restorePreview = [this, state, outPath](QString* detail) {
+        ReportExportStage(outPath, PsdExportStage::Restoring);
+        if (!state->surface || state->surface != m_headless) {
+            if (detail) *detail = QStringLiteral("离屏导出窗口已改变");
+            return false;
+        }
+        if (!state->exportModel) return true;
+        auto* manager = LAppLive2DManager::GetInstance();
+        if (!manager || manager->GetModel(0) != state->exportModel) {
+            if (detail) *detail = QStringLiteral("离屏导出模型已改变");
+            return false;
+        }
+        if (!state->exportModel->EndExportPreview(detail)) return false;
+        state->exportModel = nullptr;
+        return true;
+    };
+    steps.resume = [](QString*) { return true; };
+    const bool ok = m_previewExport.Run(std::move(steps), &reason);
+    if (outputCommitted) *outputCommitted = state->outputCommitted;
+    if (stage) *stage = ok ? PsdExportStage::Done :
+        (m_previewExport.NeedsRecovery() ? PsdExportStage::Restoring : state->failureStage);
+    if (error) *error = reason;
+    if (!m_previewExport.NeedsRecovery()) m_exportState.reset();
+    RefreshExportActions();
     return ok;
 }
-
-
-
-
-
 
 
 void MainWindow::on_actionCloseModel_triggered()
@@ -1209,7 +1508,8 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession)
     const bool physicsDirty = !replacingSession && m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
     const bool poseDirty = !replacingSession && (m_poseDirty || (m_motionPanel && m_motionPanel->HasUnsavedPoseChanges()));
     const bool userDataDirty = !replacingSession && m_userDataPanel && m_userDataPanel->HasUnsavedChanges();
-    const bool animationDirty = m_motionPanel && m_motionPanel->HasUnsavedTimelineChanges();
+    const bool animationDirty = m_motionPanel && m_motionPanel->HasUnsavedTimelineChanges() &&
+        !(m_exportState && m_exportState->timelineSaved);
     if (!m_sessionDirty && !physicsDirty && !poseDirty && !userDataDirty && !animationDirty) return true;
     QMessageBox prompt(this);
     prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
@@ -1228,15 +1528,19 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession)
     prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
     prompt.exec();
     if (prompt.clickedButton() == save) {
-        if (m_sessionDirty || animationDirty) on_actionSaveSession_triggered();
-        const bool sessionSaved = !m_sessionDirty && (!m_motionPanel || !m_motionPanel->HasUnsavedTimelineChanges());
+        const bool sessionSaved = !(m_sessionDirty || animationDirty) || SaveSession();
         const bool physicsSaved = !physicsDirty || (m_physicsPanel && m_physicsPanel->SavePhysics());
+        if (physicsDirty && physicsSaved && m_exportState)
+            m_exportState->physicsReload = m_physicsPanel->FilePath();
         QString poseError;
         const bool poseSaved = !poseDirty || (m_motionPanel && m_motionPanel->SavePose(&poseError));
+        if (poseSaved) m_poseDirty = false;
         if (!poseSaved && !poseError.isEmpty())
             QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), poseError);
         QString userDataError;
         const bool userDataSaved = !userDataDirty || m_userDataPanel->SaveUserData(&userDataError);
+        if (userDataDirty && userDataSaved && m_exportState)
+            m_exportState->userDataReload = m_userDataPanel->FilePath();
         if (!userDataSaved)
             QMessageBox::warning(this, QStringLiteral("保存 UserData 失败"), userDataError);
         return sessionSaved && physicsSaved && poseSaved && userDataSaved;
@@ -1291,7 +1595,7 @@ QWidget* MainWindow::createEmptyState()
         for (const QString& path : validRecent) {
             auto* recentButton = new QPushButton(QFileInfo(path).fileName(), card);
             recentButton->setObjectName(QStringLiteral("recentModel"));
-            recentButton->setToolTip(path);
+            recentButton->setToolTip(QStringLiteral("<qt>") + path.toHtmlEscaped() + QStringLiteral("</qt>"));
             connect(recentButton, &QPushButton::clicked, this, [this, path](){ OpenModelWithConfirm(path); });
             cardLayout->addWidget(recentButton);
         }
@@ -1307,15 +1611,19 @@ bool MainWindow::CloseModel()
     if (m_batchExporting) return false;
     if (!m_openglwindows) {
         StopPsdBatch();
-        if (m_headless) { delete m_headless; m_headless = nullptr; }
+        if (m_headless) delete m_headless;
+        m_previewExport.ResetAfterPreviewClosed();
+        m_exportState.reset();
+        RefreshExportActions();
         return true;
     }
     QString dragError;
-    if (!m_openglwindows->FinishMeshDrag(false, &dragError)) {
+    if (!m_previewExport.NeedsRecovery() && !m_openglwindows->FinishMeshDrag(false, &dragError)) {
         statusBar()->showMessage(dragError, 8000);
         return false;
     }
     if (!ConfirmCloseWithUnsavedChanges()) return false;
+    if (m_exportState) for (const auto& action : m_exportState->actions) if (action) action->setEnabled(true);
     m_workspaceReady = false;
     m_runtimePanelsInitialized = false;
     m_saveSessionAction->setEnabled(false);
@@ -1374,6 +1682,9 @@ bool MainWindow::CloseModel()
     m_openglwindows->makeCurrent();
     delete m_openglwindows;
     m_openglwindows = nullptr;
+    m_previewExport.ResetAfterPreviewClosed();
+    m_exportState.reset();
+    RefreshExportActions();
     if (m_canvasHost) {
         delete m_canvasHost;
         m_canvasHost = nullptr;
@@ -1399,6 +1710,28 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     if (CloseModel()) event->accept();
     else event->ignore();
+}
+
+void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded)
+{
+    if (!loaded || m_runtimePanelsInitialized || m_openglwindows != expectedWindow || m_psdBatch || m_batchExporting || m_previewExport.IsBusy()) return;
+    QString sourceError;
+    if (!RuntimeMatchesDocument(&sourceError)) {
+        statusBar()->showMessage(sourceError);
+        return;
+    }
+    if (!PublishKeyformPreview(m_document, m_keyformEditor.Pose(), m_keyformEditor.IsActive(), &sourceError)) {
+        statusBar()->showMessage(QStringLiteral("编辑预览同步失败：%1").arg(sourceError), 8000);
+        return;
+    }
+    SyncDocumentToRuntime();
+    RefreshKeyformUi();
+    if (m_texturePanel && m_document.SourceMatchesDisk(&sourceError)) {
+        auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
+        if (textures) m_texturePanel->LoadTextures(textures->GetModelTex(), m_currentMoc);
+    }
+    applyBgColor();
+    m_runtimePanelsInitialized = true;
 }
 
 void MainWindow::RestDock(const QString &name)
@@ -1724,25 +2057,8 @@ void MainWindow::RestDock(const QString &name)
         if (!m_motionPanel->BuildPoseGroups(posePath, &poseError))
             statusBar()->showMessage(poseError, 8000);
     }
-    const auto initializeRuntimePanels = [this, moc, expectedWindow = m_openglwindows](bool loaded) {
-        if (!loaded || m_runtimePanelsInitialized || m_openglwindows != expectedWindow) return;
-        QString sourceError;
-        if (!RuntimeMatchesDocument(&sourceError)) {
-            statusBar()->showMessage(sourceError);
-            return;
-        }
-        if (!PublishKeyformPreview(m_document, m_keyformEditor.Pose(), m_keyformEditor.IsActive(), &sourceError)) {
-            statusBar()->showMessage(QStringLiteral("编辑预览同步失败：%1").arg(sourceError), 8000);
-            return;
-        }
-        SyncDocumentToRuntime();
-        RefreshKeyformUi();
-        if (m_texturePanel && m_document.SourceMatchesDisk(&sourceError)) {
-            auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
-            if (textures) m_texturePanel->LoadTextures(textures->GetModelTex(), moc);
-        }
-        applyBgColor();
-        m_runtimePanelsInitialized = true;
+    const auto initializeRuntimePanels = [this, expectedWindow = m_openglwindows](bool loaded) {
+        InitializeRuntimePanels(expectedWindow, loaded);
     };
     connect(m_openglwindows, &OpengGlForm::RuntimeInitialized, m_paramPanel,
             initializeRuntimePanels, Qt::QueuedConnection);
@@ -1804,12 +2120,19 @@ void MainWindow::RestDock(const QString &name)
     });
     connect(m_treePanel, &CModelTreePanel::DeformerDragParamsChanged, m_openglwindows, &OpengGlForm::do_SetDeformerDragParams);
 
-    m_paramPanel->SetPreEditGuard([this](QString* error) { return EndKeyformEditing(error); });
+    m_paramPanel->SetPreEditGuard([this](QString* error) {
+        if (m_previewExport.IsBusy()) {
+            if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
+            return false;
+        }
+        return EndKeyformEditing(error);
+    });
     connect(m_paramPanel, &CParamPanel::EditRejected, this,
             [this](const QString& error) { statusBar()->showMessage(error, 8000); });
 
     // 信号连接：参数面板 → OpenGL
     connect(m_paramPanel, &CParamPanel::ParamChanged, this, [this](const QString& name, float value, bool isInit){
+        if (m_previewExport.IsBusy()) return;
         const QScopedValueRollback<QString> editing(m_parameterBeingEdited, name);
         if (!isInit && m_motionPanel) m_motionPanel->StopTimelinePreview();
         if (m_openglwindows) m_openglwindows->do_change_para_value(name, value, isInit);
@@ -1821,7 +2144,7 @@ void MainWindow::RestDock(const QString &name)
                 if (!isInit) m_motionPanel->RecordParameterValue(name, value);
             });
     connect(m_motionPanel, &CMotionPanel::TimelineFrameChanged, this, [this](const CMotionPreviewFrame& frame){
-        if (m_applyingSession) return;
+        if (m_applyingSession || m_previewExport.IsBusy()) return;
         if (!EndKeyformEditing()) { m_motionPanel->PauseTimelinePreview(); return; }
         if (frame.IsEmpty()) { ClearTimelinePreview(); return; }
         if (!m_openglwindows || !m_openglwindows->isValid()) return;
@@ -1838,7 +2161,7 @@ void MainWindow::RestDock(const QString &name)
     });
     connect(m_motionPanel, &CMotionPanel::TimelinePreviewStopped, this, &MainWindow::ClearTimelinePreview);
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
-        if (!m_paramPanel) return;
+        if (!m_paramPanel || m_previewExport.IsBusy()) return;
         m_paramPanel->ApplyExternalValue(name, value, true);
         float accepted;
         if (m_blendShapePanel && m_paramPanel->CurrentValue(name, accepted)) m_blendShapePanel->SyncParameterValue(name, accepted);
@@ -2162,6 +2485,17 @@ void MainWindow::createActions()
     myCmo3Action->setStatusTip(tr("将当前 moc3 恢复为 Cubism Editor 可编辑工程"));
     connect(myCmo3Action, &QAction::triggered, this, &MainWindow::on_actionCmo3Export_triggered);
 
+    m_exportResultsAction = new QAction(QStringLiteral("导出记录"), this);
+    connect(m_exportResultsAction, &QAction::triggered, this, [this] {
+        if (!m_exportResultsPanel) return;
+        m_exportResultsPanel->show();
+        m_exportResultsPanel->raise();
+    });
+    m_recoverPreviewAction = new QAction(QStringLiteral("恢复预览"), this);
+    m_recoverPreviewAction->setStatusTip(QStringLiteral("重新尝试恢复导出前的模型与播放状态"));
+    m_recoverPreviewAction->setVisible(false);
+    connect(m_recoverPreviewAction, &QAction::triggered, this, &MainWindow::RecoverExportPreview);
+
     m_undoAction = new QAction(tr("撤销"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
     m_undoAction->setEnabled(false);
@@ -2211,6 +2545,17 @@ void MainWindow::createActions()
 
 void MainWindow::setupUI()
 {
+    m_exportResultsPanel = new CExportResultsPanel(this);
+    addDockWidget(Qt::BottomDockWidgetArea, m_exportResultsPanel);
+    m_exportResultsPanel->hide();
+    connect(m_exportResultsPanel, &CExportResultsPanel::OpenOutputRequested, this, [this](const QString& path) {
+        if (!QFileInfo(path).isFile() || !QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+            statusBar()->showMessage(QStringLiteral("无法打开输出文件：%1").arg(path), 8000);
+    });
+    connect(m_exportResultsPanel, &CExportResultsPanel::RetryRequested, this, [this](const QStringList& sources) {
+        const auto options = m_lastBatchOptions;
+        StartPsdBatch(sources, options.outputDirectory, options.all, options.groups, options.textures, options.cubismCompat);
+    });
     // 标题栏（上排）
     m_titleBar = addToolBar("titlebar");
     m_titleBar->setMovable(false);
@@ -2270,6 +2615,8 @@ void MainWindow::setupUI()
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
     mainToolBar->addAction(myCmo3Action);
+    mainToolBar->addAction(m_exportResultsAction);
+    mainToolBar->addAction(m_recoverPreviewAction);
     mainToolBar->addSeparator();
     m_workspaceActionGroup = new QActionGroup(this);
     m_workspaceActionGroup->setExclusive(true);

@@ -20,6 +20,7 @@ public:
     bool LoadPhysics(const QString& physicsPath, QString* error = nullptr);
     bool SavePhysics(const QString& path = QString());
     bool HasUnsavedChanges() const { return m_dirty; }
+    const QString& FilePath() const { return m_physicsPath; }
 
 signals:
     void GravityChanged(float x, float y);

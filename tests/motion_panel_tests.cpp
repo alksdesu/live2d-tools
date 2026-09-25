@@ -22,6 +22,32 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QScopeGuard>
+#include <QPointer>
+#include <type_traits>
+#include <memory>
+#include <functional>
+
+namespace {
+class RefuseEnabledRestore : public QObject
+{
+public:
+    bool armed = true;
+    int calls = 0;
+    std::function<void()> beforeRefusal;
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        auto* widget = qobject_cast<QWidget*>(watched);
+        if (armed && widget && event->type() == QEvent::EnabledChange && widget->isEnabled()) {
+            armed = false;
+            ++calls;
+            if (beforeRefusal) beforeRefusal();
+            widget->setEnabled(false);
+        }
+        return false;
+    }
+};
+}
 
 class MotionPanelTests : public QObject
 {
@@ -82,6 +108,409 @@ private:
     }
 
 private slots:
+    void transportLeasePreservesPreviewRecordingAndHistory_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("inactive") << 0;
+        QTest::newRow("still-preview") << 1;
+        QTest::newRow("playing") << 2;
+        QTest::newRow("recording") << 3;
+    }
+
+    void transportLeasePreservesPreviewRecordingAndHistory()
+    {
+        QFETCH(int, mode);
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 10, 1));
+        panel.MarkTimelineSaved();
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 4, 0.5f));
+        panel.UndoTimeline();
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        auto* head = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* speed = panel.findChild<QSlider*>("motionPlaybackSpeed");
+        auto* loop = panel.findChild<QCheckBox*>("motionLoop");
+        auto* fades = panel.findChild<QCheckBox*>("previewMotionFades");
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline");
+        auto* timer = panel.findChild<QTimer*>();
+        QVERIFY(play && end && head && speed && loop && fades && record && timer);
+        speed->setValue(150);
+        loop->setChecked(true);
+        fades->setChecked(true);
+        head->setValue(250);
+        if (mode == 0) panel.StopTimelinePreview();
+        if (mode == 2) play->click();
+        if (mode == 3) record->setChecked(true);
+        timer->setInterval(71);
+        const auto content = panel.Timeline();
+        const bool dirty = panel.HasUnsavedTimelineChanges(), undo = panel.CanUndoTimeline(), redo = panel.CanRedoTimeline();
+        const auto revision = panel.TimelineRevision();
+        const double time = panel.TimelineTime();
+        const bool endEnabled = end->isEnabled(), playing = timer->isActive();
+        const QString playText = play->text();
+        QJsonObject before;
+        QVERIFY(panel.CaptureTimelineState(&before));
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged);
+        QSignalSpy history(&panel, &CMotionPanel::TimelineHistoryChanged);
+        QSignalSpy activated(&panel, &CMotionPanel::TimelineActivated);
+        QSignalSpy playback(&panel, &CMotionPanel::MotionPlaybackChanged);
+        CMotionPanel::PreviewTransportLease lease;
+        QString error;
+        QVERIFY2(panel.SuspendPreviewTransport(lease, &error), qPrintable(error));
+        QVERIFY(error.isEmpty());
+        QVERIFY(lease.IsValid() && panel.IsPreviewTransportSuspended());
+        QVERIFY(!timer->isActive());
+        QVERIFY(!panel.widget()->isEnabled());
+        QVERIFY(panel.signalsBlocked());
+        QCOMPARE(panel.Timeline().IsRecording(), mode == 3);
+        QCOMPARE(panel.Timeline().IsRecordingClockPaused(), mode == 3);
+        panel.PauseTimelinePreview();
+        panel.StopTimelinePreview();
+        panel.SetTimelinePreviewAvailable(!endEnabled);
+        panel.RecordParameterValue("A", 8);
+        panel.UndoTimeline();
+        panel.RedoTimeline();
+        panel.MarkTimelineSaved();
+        QVERIFY(!panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 9, 7));
+        QVERIFY(!panel.RestoreTimelineState({}, &error));
+        QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+        speed->setValue(25);
+        loop->setChecked(false);
+        fades->setChecked(false);
+        record->setChecked(mode != 3);
+        head->setValue(900);
+        QCOMPARE(speed->value(), 150);
+        QCOMPARE(loop->isChecked(), true);
+        QCOMPARE(fades->isChecked(), true);
+        QCOMPARE(record->isChecked(), mode == 3);
+        QJsonObject frozen;
+        QVERIFY(panel.CaptureTimelineState(&frozen));
+        QCOMPARE(frozen, before);
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QVERIFY(panel.Timeline().HasSameContent(content));
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty);
+        QCOMPARE(panel.CanUndoTimeline(), undo);
+        QCOMPARE(panel.CanRedoTimeline(), redo);
+        QVERIFY2(panel.ResumePreviewTransport(lease, &error), qPrintable(error));
+        QVERIFY(!lease.IsValid() && !panel.IsPreviewTransportSuspended());
+        QCOMPARE(timer->isActive(), playing);
+        QCOMPARE(timer->interval(), 71);
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(head->value(), 250);
+        QCOMPARE(play->text(), playText);
+        QCOMPARE(end->isEnabled(), endEnabled);
+        QVERIFY(panel.widget()->isEnabled());
+        QVERIFY(!panel.signalsBlocked());
+        QCOMPARE(panel.Timeline().IsRecording(), mode == 3);
+        QVERIFY(!panel.Timeline().IsRecordingClockPaused());
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty);
+        QCOMPARE(panel.CanUndoTimeline(), undo);
+        QCOMPARE(panel.CanRedoTimeline(), redo);
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(changed.size(), 0);
+        QCOMPARE(history.size(), 0);
+        QCOMPARE(activated.size(), 0);
+        QCOMPARE(playback.size(), 0);
+    }
+
+    void failedTransportRestoreKeepsLeaseFrozenAndRetryable_data()
+    {
+        QTest::addColumn<bool>("recording");
+        QTest::newRow("playing") << false;
+        QTest::newRow("recording") << true;
+    }
+
+    void failedTransportRestoreKeepsLeaseFrozenAndRetryable()
+    {
+        QFETCH(bool, recording);
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 10, 1));
+        panel.MarkTimelineSaved();
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline");
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* timer = panel.findChild<QTimer*>();
+        QVERIFY(record && play && timer);
+        if (recording) record->setChecked(true);
+        else play->click();
+        const auto content = panel.Timeline();
+        const auto revision = panel.TimelineRevision();
+        const auto time = panel.TimelineTime();
+        const bool undo = panel.CanUndoTimeline(), redo = panel.CanRedoTimeline(), dirty = panel.HasUnsavedTimelineChanges();
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged);
+        CMotionPanel::PreviewTransportLease lease;
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        RefuseEnabledRestore failure;
+        bool resumeRejected = false, suspendRejected = false;
+        failure.beforeRefusal = [&] {
+            QString error;
+            CMotionPanel::PreviewTransportLease nested;
+            resumeRejected = !panel.ResumePreviewTransport(lease, &error);
+            suspendRejected = !panel.SuspendPreviewTransport(nested, &error);
+        };
+        panel.widget()->installEventFilter(&failure);
+        QString error;
+        QVERIFY(!panel.ResumePreviewTransport(lease, &error));
+        QCOMPARE(failure.calls, 1);
+        QVERIFY(error.contains(QStringLiteral("仍被禁用")));
+        QVERIFY(resumeRejected && suspendRejected);
+        QVERIFY(lease.IsValid() && panel.IsPreviewTransportSuspended());
+        QVERIFY(panel.signalsBlocked());
+        QVERIFY(!panel.widget()->isEnabled());
+        QVERIFY(!timer->isActive());
+        QCOMPARE(panel.Timeline().IsRecording(), recording);
+        QCOMPARE(panel.Timeline().IsRecordingClockPaused(), recording);
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(panel.TimelineTime(), time);
+        QVERIFY(panel.Timeline().HasSameContent(content));
+        QCOMPARE(panel.CanUndoTimeline(), undo);
+        QCOMPARE(panel.CanRedoTimeline(), redo);
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty);
+        QCOMPARE(frames.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(changed.size(), 0);
+        panel.widget()->removeEventFilter(&failure);
+        QVERIFY2(panel.ResumePreviewTransport(lease, &error), qPrintable(error));
+        QVERIFY(!lease.IsValid() && !panel.IsPreviewTransportSuspended());
+        QVERIFY(!panel.signalsBlocked());
+        QVERIFY(panel.widget()->isEnabled());
+        QCOMPARE(timer->isActive(), !recording);
+        QVERIFY(!timer->signalsBlocked());
+        QCOMPARE(panel.Timeline().IsRecording(), recording);
+        QVERIFY(!panel.Timeline().IsRecordingClockPaused());
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(frames.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+    }
+
+    void frozenPoseDraftCanBeSavedWithoutRuntimeOrPreviewSignals()
+    {
+        QTemporaryDir directory;
+        QFile model(directory.filePath("model.json"));
+        QVERIFY(model.open(QIODevice::WriteOnly));
+        QVERIFY(model.write(R"({"FileReferences":{"Moc":"absent.moc3"}})") > 0);
+        model.close();
+        QFile pose(directory.filePath("pose.json"));
+        QVERIFY(pose.open(QIODevice::WriteOnly));
+        QVERIFY(pose.write(R"({"Groups":[[{"Id":"A"},{"Id":"B"}]],"FadeInTime":0.4,"Extra":"keep"})") > 0);
+        pose.close();
+        CMotionPanel panel;
+        QString error;
+        QVERIFY(panel.BuildLists(model.fileName(), {"A", "B", "C"}, &error));
+        QVERIFY(panel.BuildPoseGroups(pose.fileName(), &error));
+        QPushButton* add = nullptr;
+        for (auto* button : panel.findChildren<QPushButton*>())
+            if (button->text() == QStringLiteral("添加 Part")) add = button;
+        QVERIFY(add);
+        QTimer::singleShot(0, [] {
+            auto* input = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            QVERIFY(input);
+            input->setTextValue("C");
+            input->accept();
+        });
+        add->click();
+        QVERIFY(panel.HasUnsavedPoseChanges());
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 1, 1));
+        const auto content = panel.Timeline();
+        const auto revision = panel.TimelineRevision();
+        QSignalSpy saved(&panel, &CMotionPanel::PoseSaved);
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        CMotionPanel::PreviewTransportLease lease;
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        QVERIFY(!panel.BuildLists(model.fileName(), {"foreign-part"}, &error));
+        QVERIFY2(panel.SavePose(&error), qPrintable(error));
+        QVERIFY(!panel.HasUnsavedPoseChanges());
+        QVERIFY(panel.IsPreviewTransportSuspended() && lease.IsValid());
+        QVERIFY(!panel.widget()->isEnabled() && panel.signalsBlocked());
+        QVERIFY(pose.open(QIODevice::ReadOnly));
+        const auto output = QJsonDocument::fromJson(pose.readAll()).object();
+        QCOMPARE(output.value("Groups").toArray().first().toArray().size(), 3);
+        QCOMPARE(output.value("Groups").toArray().first().toArray().last().toObject().value("Id").toString(), QString("C"));
+        QCOMPARE(output.value("FadeInTime").toDouble(), 0.4);
+        QCOMPARE(output.value("Extra").toString(), QString("keep"));
+        QCOMPARE(saved.size(), 0);
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QVERIFY(panel.ResumePreviewTransport(lease));
+        QVERIFY(!panel.HasUnsavedPoseChanges());
+        QVERIFY(panel.Timeline().HasSameContent(content));
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(frame.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(saved.size(), 0);
+    }
+
+    void transportLeaseIsMoveOnlyAndRejectsReentryAndForeignResume()
+    {
+        using Lease = CMotionPanel::PreviewTransportLease;
+        static_assert(!std::is_copy_constructible_v<Lease> && !std::is_copy_assignable_v<Lease>);
+        static_assert(std::is_nothrow_move_constructible_v<Lease> && std::is_nothrow_move_assignable_v<Lease>);
+        CMotionPanel first, second;
+        Lease lease, other;
+        QString error;
+        QVERIFY(first.SuspendPreviewTransport(lease));
+        QVERIFY(!first.SuspendPreviewTransport(other, &error));
+        QVERIFY(!error.isEmpty() && !other.IsValid());
+        QVERIFY(!second.SuspendPreviewTransport(lease));
+        QVERIFY(!second.ResumePreviewTransport(lease));
+        QVERIFY(first.IsPreviewTransportSuspended());
+        QVERIFY(!second.IsPreviewTransportSuspended());
+        QVERIFY(lease.IsValid());
+        Lease moved(std::move(lease));
+        QVERIFY(!lease.IsValid() && moved.IsValid());
+        QVERIFY(!first.ResumePreviewTransport(lease));
+        other = std::move(moved);
+        QVERIFY(!moved.IsValid() && other.IsValid());
+        QVERIFY(first.ResumePreviewTransport(other));
+        QVERIFY(!other.IsValid());
+        QVERIFY(!first.ResumePreviewTransport(other));
+        QVERIFY(first.SuspendPreviewTransport(other));
+        QVERIFY(!first.ResumePreviewTransport(lease));
+        QVERIFY(other.IsValid());
+        QVERIFY(first.ResumePreviewTransport(other));
+        {
+            Lease abandoned;
+            QVERIFY(first.SuspendPreviewTransport(abandoned));
+        }
+        QVERIFY(first.IsPreviewTransportSuspended());
+        QVERIFY(!first.SuspendPreviewTransport(lease));
+        QVERIFY(!first.ResumePreviewTransport(lease));
+        auto temporary = std::make_unique<CMotionPanel>();
+        QVERIFY(temporary->SuspendPreviewTransport(lease));
+        QVERIFY(lease.IsValid());
+        temporary.reset();
+        QVERIFY(!lease.IsValid());
+        QVERIFY(!second.ResumePreviewTransport(lease));
+    }
+
+    void transportRestoresInheritedDisabledAndSignalStates()
+    {
+        QWidget parent;
+        CMotionPanel panel(&parent);
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 1, 1));
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        auto* loop = panel.findChild<QCheckBox*>("motionLoop");
+        auto* speed = panel.findChild<QSlider*>("motionPlaybackSpeed");
+        end->setEnabled(false);
+        speed->blockSignals(true);
+        loop->blockSignals(true);
+        panel.blockSignals(true);
+        parent.setEnabled(false);
+        QVERIFY(!panel.widget()->testAttribute(Qt::WA_ForceDisabled));
+        CMotionPanel::PreviewTransportLease lease;
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        loop->setChecked(true);
+        speed->setValue(25);
+        QJsonObject frozen;
+        QVERIFY(panel.CaptureTimelineState(&frozen));
+        QCOMPARE(frozen.value("motion").toObject().value("Meta").toObject().value("Loop").toBool(), false);
+        QVERIFY(panel.ResumePreviewTransport(lease));
+        QVERIFY(panel.signalsBlocked());
+        QVERIFY(loop->signalsBlocked() && speed->signalsBlocked());
+        QVERIFY(!loop->isChecked());
+        QCOMPARE(speed->value(), 100);
+        QVERIFY(!panel.widget()->isEnabled());
+        QVERIFY(!panel.widget()->testAttribute(Qt::WA_ForceDisabled));
+        parent.setEnabled(true);
+        QVERIFY(panel.widget()->isEnabled());
+        QVERIFY(!end->isEnabled());
+        QVERIFY(speed->isEnabled());
+    }
+
+    void transportResumeDoesNotReplayEventsOrIncludeSuspensionTime()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState({QJsonObject{{"Time", 0}, {"Value", "start"}},
+                                                       QJsonObject{{"Time", 5}, {"Value", "later"}}}, 10, true)));
+        auto* timer = panel.findChild<QTimer*>();
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* end = panel.findChild<QPushButton*>("endTimelinePreview");
+        auto* speed = panel.findChild<QSlider*>("motionPlaybackSpeed");
+        speed->setValue(200);
+        QSignalSpy events(&panel, &CMotionPanel::TimelineEventsTriggered);
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        CMotionPanel::PreviewTransportLease lease;
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        QVERIFY(panel.ResumePreviewTransport(lease));
+        QVERIFY(!timer->isActive());
+        QCOMPARE(events.size(), 0);
+        QCOMPARE(frames.size(), 0);
+        play->click();
+        QCOMPARE(occurrences(events).size(), 1);
+        QCOMPARE(occurrences(events).first().value, QString("start"));
+        const double time = panel.TimelineTime();
+        const auto revision = panel.TimelineRevision();
+        events.clear(); frames.clear();
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        QTest::qWait(40);
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(events.size(), 0);
+        QCOMPARE(frames.size(), 0);
+        QElapsedTimer resumed;
+        resumed.start();
+        QVERIFY(panel.ResumePreviewTransport(lease));
+        QVERIFY(timer->isActive() && end->isEnabled());
+        QCOMPARE(events.size(), 0);
+        QCOMPARE(frames.size(), 0);
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+        const double wallTime = resumed.nsecsElapsed() / 1e9;
+        QVERIFY(panel.TimelineTime() >= time);
+        QVERIFY(panel.TimelineTime() - time <= wallTime * 2.0 + 0.000001);
+        QCOMPARE(events.size(), 0);
+        QCOMPARE(frames.size(), 1);
+        QCOMPARE(stopped.size(), 0);
+    }
+
+    void transportRejectsPendingEditorAndCurveDragWithoutCommitting()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("motion.json");
+        QVERIFY(makeClip(path));
+        CMotionPanel panel;
+        QVERIFY(panel.LoadTimeline(path));
+        panel.resize(1000, 850);
+        panel.show();
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        table->setCurrentCell(1, 2);
+        table->editItem(table->item(1, 2));
+        QPointer<QLineEdit> editor = table->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        editor->setText("0.75");
+        const auto original = panel.Timeline();
+        const auto revision = panel.TimelineRevision();
+        CMotionPanel::PreviewTransportLease lease;
+        QString error;
+        QVERIFY(!panel.SuspendPreviewTransport(lease, &error));
+        QVERIFY(!error.isEmpty() && !lease.IsValid());
+        QVERIFY(editor && editor->text() == "0.75");
+        QVERIFY(panel.widget()->isEnabled());
+        QVERIFY(!panel.signalsBlocked());
+        QVERIFY(panel.Timeline().HasSameContent(original));
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QTest::keyClick(editor, Qt::Key_Escape);
+        auto* curve = panel.findChild<CMotionCurveView*>("motionCurveView");
+        curve->setFixedSize(320, 190);
+        QTest::mousePress(curve, Qt::LeftButton, Qt::NoModifier, QPoint(34, 161));
+        QVERIFY(!panel.SuspendPreviewTransport(lease, &error));
+        QVERIFY(!lease.IsValid());
+        QTest::mouseRelease(curve, Qt::LeftButton, Qt::NoModifier, QPoint(34, 161));
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        QVERIFY(panel.ResumePreviewTransport(lease));
+    }
+
     void pauseKeepsTheDisplayedFrameAndHistory_data()
     {
         QTest::addColumn<bool>("clean");

@@ -40,17 +40,20 @@ public:
     void SetInitOpenName(const QString& Name);
     //改变模型
     bool do_ModelChange(const QString& name);
-    bool BeginTemporaryModel(const QString& name);
-    bool EndTemporaryModel();
+    bool LoadExportModel(const QString& name, QString* error = nullptr);
+    bool BeginTemporaryModel(const QString& name, QString* error = nullptr);
+    bool EndTemporaryModel(QString* error = nullptr);
+    bool SetExportSuspended(bool suspended, QString* error = nullptr);
+    bool IsExportSuspended() const { return m_exportSuspended; }
     bool IsModelReady() const { return m_ceditstate.IsContins(CEditState::ModelOpen); }
     bool HasInitializationResult() const { return m_initializationCompleted; }
     //进行离开屏幕渲染打印出psd文件
     bool do_OffSeceen(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
     // 批量导出静默版本（不弹窗、不自动打开文件夹）
-    bool do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
+    bool do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false, QString* error = nullptr);
     // 原始纹理提取导出（不需要OpenGL渲染）
     bool do_TextureExtract(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
-    bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
+    bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false, QString* error = nullptr);
     const QString& GetCurrentModelJson() const { return m_currentModelJson; }
     float ViewScale() const { return m_config.GeteScalefactor(); }
     QVector2D ViewPosition() const;
@@ -130,11 +133,14 @@ protected:
     QStringList m_lastRenderOrder;
     QString m_lastPreviewError;
     QString m_currentModelJson;
-    struct SuspendedModel { QString path; bool ready; };
+    struct SuspendedModel { QString path; bool ready; LAppModel* identity; };
     std::optional<SuspendedModel> m_suspendedModel;
+    bool m_exportSuspended = false;
+    std::optional<QSize> m_deferredResize;
     bool m_runtimeReady = false;
     bool m_initializationCompleted = false;
     bool MakeRuntimeCurrent();
+    bool ChangeModel(const QString& name, QString* error);
     bool m_meshEditEnabled = false;
     QString m_meshEditName;
     int m_activeKeyformIndex = 0;

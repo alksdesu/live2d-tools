@@ -8,6 +8,8 @@
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
+#include "ui/cpreviewexporttransaction.h"
+#include "ui/psdbatchresult.h"
 #include <QAction>
 #include <QLabel>
 #include <QPushButton>
@@ -15,6 +17,7 @@
 #include <QByteArray>
 #include <QVector>
 #include <QPointer>
+#include <memory>
 
 class CModelTreePanel;
 class CParamPanel;
@@ -30,6 +33,8 @@ class QCloseEvent;
 class QActionGroup;
 class PsdBatchJob;
 class QProgressDialog;
+class CExportResultsPanel;
+struct PreviewExportState;
 
 class MainWindow : public QMainWindow
 {
@@ -48,7 +53,10 @@ private slots:
     void on_actionCmo3Export_triggered();
     void on_actionSaveSession_triggered();
     void on_actionLoadSession_triggered();
-    bool doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu, bool isTexExtract = false, bool cubismCompat = false);
+    bool doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
+                     bool isTexExtract = false, bool cubismCompat = false, QString* error = nullptr,
+                     PsdExportStage* stage = nullptr, bool* outputCommitted = nullptr,
+                     bool savedParameterSnapshot = false);
 
 
 
@@ -56,12 +64,19 @@ private:
     void RestDock(const QString& name);
     bool CloseModel();
     void StopPsdBatch();
+    void StartPsdBatch(const QStringList& models, const QString& outputDirectory, bool all, bool groups,
+                       bool textures, bool cubismCompat);
+    void ReportExportStage(const QString& outputPath, PsdExportStage stage);
+    void RecoverExportPreview();
+    void RefreshExportActions();
     bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false);
+    bool SaveSession();
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
     bool RuntimeMatchesDocument(QString* error = nullptr) const;
     void SyncDocumentToRuntime();
+    void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
     void ClearTimelinePreview();
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
@@ -86,7 +101,7 @@ private:
 
     //一些成员
 private:
-    OpengGlForm* m_openglwindows;//主窗口保存一个模型
+    QPointer<OpengGlForm> m_openglwindows;
     QAction *myOpenAction;  // 打开模型
     QAction *myAction;  // 输出psd
     QAction *myBatchAction; // 批量导出psd
@@ -117,11 +132,23 @@ private:
     void createActions();
     void setupUI();
     QWidget* createEmptyState();
-    OpengGlForm* m_headless = nullptr; // 后台离屏导出上下文
+    QPointer<OpengGlForm> m_headless;
     QPointer<PsdBatchJob> m_psdBatch;
     QPointer<QProgressDialog> m_batchProgress;
     bool m_batchExporting = false;
     bool m_closeAfterExport = false;
+    CPreviewExportTransaction m_previewExport;
+    std::shared_ptr<PreviewExportState> m_exportState;
+    CExportResultsPanel* m_exportResultsPanel = nullptr;
+    QAction* m_recoverPreviewAction = nullptr;
+    QAction* m_exportResultsAction = nullptr;
+    struct BatchOptions {
+        QString outputDirectory;
+        bool all = false;
+        bool groups = false;
+        bool textures = false;
+        bool cubismCompat = false;
+    } m_lastBatchOptions;
     QWidget* m_placeholder = nullptr;
     QWidget* m_canvasHost = nullptr;
     live2dstruct::CModelDocument m_document;

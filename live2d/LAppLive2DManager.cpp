@@ -81,6 +81,7 @@ void LAppLive2DManager::ReleaseAllModel()
     m_suspendedModels.clear();
     m_suspendedSceneIndex = 0;
     m_temporaryScene = false;
+    m_temporaryModelsRestored = false;
 }
 
 void LAppLive2DManager::SetUpModel()
@@ -258,19 +259,24 @@ bool LAppLive2DManager::BeginTemporaryScene(const QString& modelJsonName)
     _models.swap(candidates);
     m_suspendedSceneIndex = _sceneIndex;
     m_temporaryScene = true;
+    m_temporaryModelsRestored = false;
     CommitModelTextures();
     return true;
 }
 
 bool LAppLive2DManager::EndTemporaryScene()
 {
-    if (!m_temporaryScene) return false;
-    _models.clear();
-    _models.swap(m_suspendedModels);
-    _sceneIndex = m_suspendedSceneIndex;
+    if (!m_temporaryScene) return true;
+    if (!m_temporaryModelsRestored) {
+        _models.clear();
+        _models.swap(m_suspendedModels);
+        _sceneIndex = m_suspendedSceneIndex;
+        m_temporaryModelsRestored = true;
+    }
+    CommitModelTextures();
     m_suspendedSceneIndex = 0;
     m_temporaryScene = false;
-    CommitModelTextures();
+    m_temporaryModelsRestored = false;
     return true;
 }
 

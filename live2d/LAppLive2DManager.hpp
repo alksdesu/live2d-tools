@@ -43,6 +43,7 @@ public:
     bool ChangeSceneFileName(const QString& name);
     bool BeginTemporaryScene(const QString& name);
     bool EndTemporaryScene();
+    bool HasTemporaryScene() const { return m_temporaryScene; }
     Csm::csmUint32 GetModelNum() const;
     void SetViewMatrix(Live2D::Cubism::Framework::CubismMatrix44* m);
 
@@ -59,6 +60,7 @@ private:
     std::vector<std::unique_ptr<LAppModel>> m_suspendedModels;
     Csm::csmInt32 m_suspendedSceneIndex = 0;
     bool m_temporaryScene = false;
+    bool m_temporaryModelsRestored = false;
     Csm::csmInt32 _sceneIndex; ///< 表示するシーンのインデックス値
     Csm::csmVector<Csm::csmString> _modelDir; ///< モデルディレクトリ名のコンテナ
 };

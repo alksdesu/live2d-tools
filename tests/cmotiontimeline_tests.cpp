@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <stdexcept>
 
 class CMotionTimelineTests : public QObject
 {
@@ -977,6 +978,162 @@ private slots:
             for (float time : {0.0f, 0.25f, 0.75f, 1.0f, 1.5f, 2.0f})
                 QVERIFY(qAbs(loaded.Evaluate("A", time) - timeline.Evaluate("A", time)) < 0.0001f);
         }
+    }
+
+    void recordingClockPauseExcludesExactElapsedTime()
+    {
+        qint64 now = 5000;
+        CMotionTimeline timeline([&] { return now; });
+        QVERIFY(timeline.AddPoint("A", 5, 0));
+        timeline.StartRecording();
+        now = 6000;
+        timeline.Record("A", 1);
+        QCOMPARE(timeline.Curves()["A"].last(), QPointF(6, 1));
+        now = 6500;
+        const auto content = timeline;
+        QVERIFY(timeline.PauseRecordingClock());
+        QVERIFY(timeline.IsRecording());
+        QVERIFY(timeline.IsRecordingClockPaused());
+        QVERIFY(!timeline.PauseRecordingClock());
+        now += 86400000;
+        timeline.Record("A", 2);
+        QVERIFY(timeline.HasSameContent(content));
+        QVERIFY(timeline.ResumeRecordingClock());
+        QVERIFY(!timeline.ResumeRecordingClock());
+        now += 250;
+        timeline.Record("A", 3);
+        QCOMPARE(timeline.Curves()["A"].last(), QPointF(6.75, 3));
+        QVERIFY(timeline.PauseRecordingClock());
+        now += 172800000;
+        QVERIFY(timeline.ResumeRecordingClock());
+        now += 250;
+        timeline.Record("A", 4);
+        QCOMPARE(timeline.Curves()["A"].last(), QPointF(7, 4));
+    }
+
+    void pausedRecordingCopiesHaveIndependentClocksAndResetState()
+    {
+        qint64 now = 1000;
+        CMotionTimeline original([&] { return now; });
+        original.StartRecording();
+        now = 1500;
+        original.Record("A", 1);
+        now = 1750;
+        QVERIFY(original.PauseRecordingClock());
+        CMotionTimeline copy = original;
+        QVERIFY(copy.IsRecordingClockPaused());
+        now = 100000;
+        QVERIFY(original.ResumeRecordingClock());
+        now = 100250;
+        original.Record("A", 2);
+        QCOMPARE(original.Curves()["A"].last(), QPointF(1, 2));
+        copy.Record("A", 9);
+        QCOMPARE(copy.TotalPointCount(), 1);
+        now = 100500;
+        QVERIFY(copy.ResumeRecordingClock());
+        now = 100750;
+        copy.Record("A", 3);
+        original.Record("A", 4);
+        QCOMPARE(copy.Curves()["A"].last(), QPointF(1, 3));
+        QCOMPARE(original.Curves()["A"].last(), QPointF(1.5, 4));
+        QVERIFY(copy.PauseRecordingClock());
+        QJsonObject saved;
+        QVERIFY(copy.SaveState(&saved, false, 0.5));
+        CMotionTimeline restored;
+        QVERIFY(restored.RestoreState(saved));
+        QVERIFY(!restored.IsRecording());
+        QVERIFY(!restored.IsRecordingClockPaused());
+        QVERIFY(copy.IsRecordingClockPaused());
+        copy.StopRecording();
+        QVERIFY(!copy.IsRecordingClockPaused());
+        QVERIFY(!copy.ResumeRecordingClock());
+        QVERIFY(copy.RestoreState(saved));
+        QVERIFY(!copy.IsRecording() && !copy.IsRecordingClockPaused());
+        now = 200000;
+        copy.StartRecording();
+        now += 1000;
+        copy.Record("A", 5);
+        QCOMPARE(copy.Curves()["A"].last(), QPointF(2, 5));
+        QVERIFY(copy.PauseRecordingClock());
+        QTemporaryDir directory;
+        const auto path = directory.filePath("recording.json");
+        QVERIFY(copy.Save(path, 30, false));
+        QVERIFY(copy.Load(path));
+        QVERIFY(!copy.IsRecording() && !copy.IsRecordingClockPaused());
+        copy.StartRecording();
+        QVERIFY(copy.PauseRecordingClock());
+        copy.Clear();
+        QVERIFY(!copy.IsRecording() && !copy.IsRecordingClockPaused());
+        QCOMPARE(copy.TotalPointCount(), 0);
+        copy.StartRecording();
+        now += 500;
+        copy.Record("B", 6);
+        QCOMPARE(copy.Curves()["B"].last(), QPointF(0.5, 6));
+    }
+
+    void recordingClockFailureAndRollbackKeepPauseStateAtomic()
+    {
+        qint64 now = 10;
+        bool throws = false;
+        CMotionTimeline timeline([&]() -> qint64 {
+            if (throws) throw std::runtime_error("clock failure");
+            return now;
+        });
+        throws = true;
+        timeline.StartRecording();
+        QVERIFY(!timeline.IsRecording());
+        throws = false;
+        timeline.StartRecording();
+        now = 1000;
+        timeline.Record("A", 1);
+        const auto content = timeline;
+        now = 500;
+        QVERIFY(!timeline.PauseRecordingClock());
+        QVERIFY(!timeline.IsRecordingClockPaused());
+        timeline.Record("A", 2);
+        QVERIFY(timeline.HasSameContent(content));
+        now = 1100;
+        QVERIFY(timeline.PauseRecordingClock());
+        throws = true;
+        QVERIFY(!timeline.ResumeRecordingClock());
+        timeline.StartRecording();
+        QVERIFY(timeline.IsRecording() && timeline.IsRecordingClockPaused());
+        QVERIFY(timeline.HasSameContent(content));
+        throws = false;
+        now = 1000;
+        QVERIFY(!timeline.ResumeRecordingClock());
+        QVERIFY(timeline.IsRecordingClockPaused());
+        now = 1110;
+        QVERIFY(timeline.ResumeRecordingClock());
+        now = 1120;
+        timeline.Record("A", 3);
+        QCOMPARE(float(timeline.Curves()["A"].last().x()), 1.1f);
+    }
+
+    void recordingClockDifferenceCannotOverflow()
+    {
+        qint64 now = std::numeric_limits<qint64>::min();
+        CMotionTimeline timeline([&] { return now; });
+        timeline.StartRecording();
+        now = 0;
+        timeline.Record("A", 1);
+        QCOMPARE(timeline.TotalPointCount(), 0);
+        QVERIFY(!timeline.PauseRecordingClock());
+        now = -1;
+        QVERIFY(timeline.PauseRecordingClock());
+        now = 0;
+        QVERIFY(!timeline.ResumeRecordingClock());
+        QVERIFY(timeline.IsRecordingClockPaused());
+        timeline.StopRecording();
+        now = std::numeric_limits<qint64>::max();
+        timeline.StartRecording();
+        now = std::numeric_limits<qint64>::min();
+        QVERIFY(!timeline.PauseRecordingClock());
+        now = std::numeric_limits<qint64>::max();
+        QVERIFY(timeline.PauseRecordingClock());
+        QVERIFY(timeline.ResumeRecordingClock());
+        timeline.Record("B", 2);
+        QCOMPARE(timeline.Curves()["B"].last(), QPointF(0, 2));
     }
 
     void recordingResumesAfterExistingClip()

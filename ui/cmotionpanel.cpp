@@ -3,6 +3,7 @@
 #include "cmotionsettingsdialog.h"
 #include "ctableeditdelegate.h"
 #include <QDebug>
+#include <QAbstractButton>
 #include <QKeyEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -33,6 +34,7 @@
 #include <QFileDialog>
 #include <QTimer>
 #include <QSignalBlocker>
+#include <QScopedValueRollback>
 #include <QUndoStack>
 #include <QUndoCommand>
 #include <functional>
@@ -40,6 +42,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <exception>
 
 
 namespace {
@@ -72,6 +75,187 @@ void clearLayoutItems(QLayout* layout)
     }
 }
 
+}
+
+struct CMotionPanel::PreviewTransportState
+{
+    quint64 serial = 0, revision = 0;
+    bool playing = false, recording = false, resumeRecordingClock = false;
+    bool explicitlyDisabled = false, signalsBlocked = false, timerSignalsBlocked = false;
+    bool eventStartPending = false, endEnabled = false, playEnabled = false, loop = false;
+    bool timerSingleShot = false;
+    int interval = 0, speedSlider = 0, playheadSlider = 0;
+    Qt::TimerType timerType = Qt::CoarseTimer;
+    double time = 0, speed = 1;
+    QString playText, timeText, speedText, eventText, eventTooltip, statusText;
+    QVector<QPair<QPointer<QAbstractButton>, bool>> checks;
+    QVector<QPair<QPointer<QWidget>, bool>> enabledStates;
+};
+
+CMotionPanel::PreviewTransportLease::PreviewTransportLease(PreviewTransportLease&& other) noexcept
+    : m_owner(std::exchange(other.m_owner, {})), m_serial(std::exchange(other.m_serial, 0)) {}
+
+CMotionPanel::PreviewTransportLease& CMotionPanel::PreviewTransportLease::operator=(PreviewTransportLease&& other) noexcept
+{
+    if (this != &other) {
+        m_owner = std::exchange(other.m_owner, {});
+        m_serial = std::exchange(other.m_serial, 0);
+    }
+    return *this;
+}
+
+bool CMotionPanel::PreviewTransportLease::IsValid() const
+{
+    return m_owner && m_owner->m_transport && m_serial == m_owner->m_transport->serial;
+}
+
+bool CMotionPanel::IsPreviewTransportSuspended() const { return bool(m_transport); }
+
+bool CMotionPanel::RequireTransportAvailable(QString* error) const
+{
+    if (!m_transport) return true;
+    if (error) *error = QStringLiteral("时间轴正为临时导出保持暂停");
+    return false;
+}
+
+bool CMotionPanel::SuspendPreviewTransport(PreviewTransportLease& lease, QString* error)
+{
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if (lease.IsValid() || m_transport || m_transportTransition) return fail(QStringLiteral("时间轴已经暂停，不能重复挂起"));
+    const QScopedValueRollback<bool> changing(m_transportTransition, true);
+    if (m_timelineDelegate->HasPendingChanges() || (m_editGroupActive && !m_timeline.IsRecording()))
+        return fail(QStringLiteral("请先结束当前时间轴编辑"));
+    if (!m_timelineTimer || m_timelineTimer->interval() < 0 || !std::isfinite(m_timelineTime) ||
+        !std::isfinite(m_timelinePlaybackSpeed) || m_timelinePlaybackSpeed <= 0 ||
+        m_recordTimelineCb->isChecked() != m_timeline.IsRecording() ||
+        (m_timelineTimer->isActive() && (!m_playbackClock.isValid() || m_timeline.IsRecording())) ||
+        m_transportSerial == std::numeric_limits<quint64>::max())
+        return fail(QStringLiteral("时间轴播放状态无效"));
+    std::unique_ptr<PreviewTransportState> state;
+    QPointer<CMotionPanel> owner;
+    try {
+        state = std::make_unique<PreviewTransportState>();
+        owner = this;
+        state->serial = m_transportSerial + 1;
+        state->revision = m_timelineRevision;
+        state->playing = m_timelineTimer->isActive();
+        state->recording = m_timeline.IsRecording();
+        state->resumeRecordingClock = state->recording && !m_timeline.IsRecordingClockPaused();
+        state->interval = m_timelineTimer->interval();
+        state->timerType = m_timelineTimer->timerType();
+        state->timerSingleShot = m_timelineTimer->isSingleShot();
+        state->timerSignalsBlocked = m_timelineTimer->signalsBlocked();
+        state->explicitlyDisabled = widget()->testAttribute(Qt::WA_ForceDisabled);
+        state->signalsBlocked = signalsBlocked();
+        state->time = m_timelineTime;
+        state->speed = m_timelinePlaybackSpeed;
+        state->speedSlider = m_speedSlider->value();
+        state->playheadSlider = m_timelinePlayhead->value();
+        state->eventStartPending = m_eventStartPending;
+        state->loop = m_loopCb->isChecked();
+        state->endEnabled = !m_endPreviewButton->testAttribute(Qt::WA_ForceDisabled);
+        state->playEnabled = !m_playTimelineButton->testAttribute(Qt::WA_ForceDisabled);
+        state->playText = m_playTimelineButton->text();
+        state->timeText = m_timelineTimeLabel->text();
+        state->speedText = m_speedLabel->text();
+        state->eventText = m_eventStatus->text();
+        state->eventTooltip = m_eventStatus->toolTip();
+        state->statusText = m_timelineStatus->text();
+        for (auto* check : {m_recordTimelineCb, m_loopCb, m_previewFades, m_eyeBlinkCb, m_breathCb, m_mouseFollowCb, m_physicsCb})
+            state->checks.append({check, check->isChecked()});
+        for (auto* control : widget()->findChildren<QWidget*>())
+            state->enabledStates.append({control, control->testAttribute(Qt::WA_ForceDisabled)});
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法保存时间轴播放状态"));
+    }
+    if (state->resumeRecordingClock && !m_timeline.PauseRecordingClock())
+        return fail(QStringLiteral("无法暂停录制时钟"));
+    m_transportSerial = state->serial;
+    m_transport = std::move(state);
+    lease.m_owner = std::move(owner);
+    lease.m_serial = m_transportSerial;
+    blockSignals(true);
+    m_timelineTimer->stop();
+    widget()->setEnabled(false);
+    if (error) error->clear();
+    return true;
+}
+
+void CMotionPanel::RestoreTransportControls()
+{
+    if (!m_transport) return;
+    for (const auto& check : m_transport->checks) if (check.first) {
+        const QSignalBlocker blocker(check.first);
+        check.first->setChecked(check.second);
+    }
+    const QSignalBlocker speed(m_speedSlider), playhead(m_timelinePlayhead);
+    m_speedSlider->setValue(m_transport->speedSlider);
+    m_timelinePlayhead->setValue(m_transport->playheadSlider);
+    m_playTimelineButton->setText(m_transport->playText);
+    m_playTimelineButton->setEnabled(m_transport->playEnabled);
+    m_endPreviewButton->setEnabled(m_transport->endEnabled);
+    m_timelineTimeLabel->setText(m_transport->timeText);
+    m_speedLabel->setText(m_transport->speedText);
+    m_eventStatus->setText(m_transport->eventText);
+    m_eventStatus->setToolTip(m_transport->eventTooltip);
+    m_timelineStatus->setText(m_transport->statusText);
+    for (const auto& control : m_transport->enabledStates)
+        if (control.first) control.first->setEnabled(!control.second);
+}
+
+bool CMotionPanel::ResumePreviewTransport(PreviewTransportLease& lease, QString* error)
+{
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if (m_transportTransition || !m_transport || lease.m_owner != this || lease.m_serial != m_transport->serial)
+        return fail(QStringLiteral("时间轴暂停凭据已失效、正在恢复或不属于当前面板"));
+    if (m_timelineRevision != m_transport->revision || m_timeline.IsRecording() != m_transport->recording)
+        return fail(QStringLiteral("时间轴已改变，继续保持暂停"));
+    const QScopedValueRollback<bool> changing(m_transportTransition, true);
+    const auto refreeze = [this] {
+        blockSignals(true);
+        m_timelineTimer->blockSignals(true);
+        try { m_timelineTimer->stop(); }
+        catch (...) {}
+        try { widget()->setEnabled(false); }
+        catch (...) {}
+    };
+    try {
+        RestoreTransportControls();
+        m_timelineTimer->stop();
+        m_timelineTimer->setInterval(m_transport->interval);
+        m_timelineTimer->setTimerType(m_transport->timerType);
+        m_timelineTimer->setSingleShot(m_transport->timerSingleShot);
+        m_timelineTimer->blockSignals(m_transport->timerSignalsBlocked);
+        widget()->setEnabled(!m_transport->explicitlyDisabled);
+        if (widget()->testAttribute(Qt::WA_ForceDisabled) != m_transport->explicitlyDisabled) {
+            refreeze();
+            return fail(QStringLiteral("时间轴控件仍被禁用，继续保持暂停"));
+        }
+        if (m_transport->resumeRecordingClock && !m_timeline.ResumeRecordingClock()) {
+            refreeze();
+            return fail(QStringLiteral("无法恢复录制时钟，继续保持暂停"));
+        }
+        m_timelineTime = m_transport->time;
+        m_timelinePlaybackSpeed = m_transport->speed;
+        m_eventStartPending = m_transport->eventStartPending;
+        if (m_transport->playing) {
+            m_playbackClock.start();
+            m_playbackLastNs = 0;
+            m_timelineTimer->start();
+        }
+    } catch (const std::exception& exception) {
+        refreeze();
+        return fail(QStringLiteral("无法恢复时间轴控件，继续保持暂停：%1").arg(QString::fromUtf8(exception.what())));
+    } catch (...) {
+        refreeze();
+        return fail(QStringLiteral("无法恢复时间轴控件，继续保持暂停"));
+    }
+    auto state = std::move(m_transport);
+    lease.m_owner.clear();
+    lease.m_serial = 0;
+    blockSignals(state->signalsBlocked);
+    if (error) error->clear();
+    return true;
 }
 
 bool CMotionPanel::ModelHasPart(const QString& id, bool* available) const
@@ -286,6 +470,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     editTools->addWidget(m_previewFades);
     editTools->addStretch(1);
     connect(m_previewFades, &QCheckBox::toggled, this, [this](){
+        if (m_transport) { RestoreTransportControls(); return; }
         ++m_timelineRevision;
         emit TimelineActivated();
         EmitTimelinePreview();
@@ -346,6 +531,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_curveSplitter->setStretchFactor(1, 1);
     timelineLayout->addWidget(m_curveSplitter, 1);
     connect(m_targetFilter, &QComboBox::currentIndexChanged, this, [this](){
+        if (IsPreviewTransportSuspended()) return;
         m_curveView->SetTargetFilter(m_targetFilter->currentData().toInt());
         RefreshTimelineTable();
     });
@@ -372,6 +558,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_workspaceSplitter->setStretchFactor(0, 0);
     m_workspaceSplitter->setStretchFactor(1, 1);
     connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
+        if (m_transport) { RestoreTransportControls(); return; }
         if (!m_restoringTimeline) {
             ++m_timelineRevision;
             emit TimelineActivated();
@@ -416,11 +603,13 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(m_curveView, &CMotionCurveView::EventSelected, this, [this](double time, const QString& value){
+        if (IsPreviewTransportSuspended()) return;
         SeekTimeline(time);
         m_eventStatus->setText(QStringLiteral("定位 %1s：%2").arg(time, 0, 'g', 8).arg(value));
     });
     connect(m_curveView, &CMotionCurveView::PointEdited, this, &CMotionPanel::ApplyTimelineCurveEdit);
     connect(m_curveView, &CMotionCurveView::EditStarted, this, [this](){
+        if (IsPreviewTransportSuspended()) return;
         emit TimelineActivated();
         BeginTimelineEditGroup(QStringLiteral("移动关键帧"));
     });
@@ -431,6 +620,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_playTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ToggleTimelinePlayback);
     connect(m_timelineTimer, &QTimer::timeout, this, &CMotionPanel::TickTimelinePlayback);
     connect(this, &CMotionPanel::MotionTimelineChanged, this, [this](){
+        if (IsPreviewTransportSuspended()) return;
         ++m_timelineRevision;
         if (!m_restoringTimeline) RefreshTimelineHistory();
         if (m_recordTimelineCb && m_recordTimelineCb->isChecked()) return;
@@ -465,11 +655,24 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     optLayout->addWidget(m_speedLabel);
     mainLayout->addLayout(optLayout);
 
-    connect(m_eyeBlinkCb, &QCheckBox::toggled, this, &CMotionPanel::AutoEyeBlinkChanged);
-    connect(m_breathCb, &QCheckBox::toggled, this, &CMotionPanel::AutoBreathChanged);
-    connect(m_mouseFollowCb, &QCheckBox::toggled, this, &CMotionPanel::MouseFollowChanged);
-    connect(m_physicsCb, &QCheckBox::toggled, this, &CMotionPanel::PhysicsChanged);
+    connect(m_eyeBlinkCb, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (m_transport) { RestoreTransportControls(); return; }
+        emit AutoEyeBlinkChanged(enabled);
+    });
+    connect(m_breathCb, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (m_transport) { RestoreTransportControls(); return; }
+        emit AutoBreathChanged(enabled);
+    });
+    connect(m_mouseFollowCb, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (m_transport) { RestoreTransportControls(); return; }
+        emit MouseFollowChanged(enabled);
+    });
+    connect(m_physicsCb, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (m_transport) { RestoreTransportControls(); return; }
+        emit PhysicsChanged(enabled);
+    });
     connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
+        if (m_transport) { RestoreTransportControls(); return; }
         emit MotionPlaybackChanged(m_speedSlider->value() / 100.0f, loop);
         if (!m_restoringTimeline && m_timeline.HasAnimation()) {
             auto before = CurrentTimelineSnapshot();
@@ -480,6 +683,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(m_speedSlider, &QSlider::valueChanged, this, [this](int value){
+        if (m_transport) { RestoreTransportControls(); return; }
         TickTimelinePlayback();
         m_timelinePlaybackSpeed = value / 100.0;
         m_speedLabel->setText(QStringLiteral("%1%").arg(value));
@@ -506,6 +710,7 @@ CMotionPanel::~CMotionPanel()
 
 bool CMotionPanel::BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error)
 {
+    if (!RequireTransportAvailable(error)) return false;
     QFile file(modelJsonPath);
     if (!file.open(QIODevice::ReadOnly)) {
         if (error) *error = file.errorString();
@@ -550,6 +755,7 @@ bool CMotionPanel::BuildLists(const QString& modelJsonPath, const QStringList& p
 
 void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_timeline.IsRecording() || (m_timelineTimer && m_timelineTimer->isActive())) return;
     const int before = m_timeline.TotalPointCount();
     m_timeline.Record(parameterId, value);
@@ -613,6 +819,7 @@ void CMotionPanel::RefreshTimelineTable()
 
 bool CMotionPanel::eventFilter(QObject* watched, QEvent* event)
 {
+    if (IsPreviewTransportSuspended() && event->type() == QEvent::KeyPress) return true;
     if (watched == m_eventTable && event->type() == QEvent::KeyPress) {
         const auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
@@ -625,6 +832,7 @@ bool CMotionPanel::eventFilter(QObject* watched, QEvent* event)
 
 void CMotionPanel::ActivateTimelineEvent(int row)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (row < 0 || row >= m_displayedEvents.size()) return;
     const auto event = m_displayedEvents.at(row).toObject();
     const double time = event.value(QStringLiteral("Time")).toDouble();
@@ -658,6 +866,7 @@ void CMotionPanel::RefreshTimelineEvents()
 
 void CMotionPanel::ShowTimelineEvents(const CMotionEventBatch& events)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!events.valid || events.occurrences.isEmpty()) return;
     const auto& last = events.occurrences.last();
     QString message = QStringLiteral("事件 %1s：%2").arg(last.time, 0, 'g', 8).arg(last.value.left(160));
@@ -680,6 +889,7 @@ void CMotionPanel::ShowTimelineEvents(const CMotionEventBatch& events)
 
 void CMotionPanel::ToggleTimelinePlayback()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_timelineTimer || !m_timeline.HasAnimation()) return;
     ++m_timelineRevision;
     emit TimelineActivated();
@@ -714,6 +924,7 @@ void CMotionPanel::ToggleTimelinePlayback()
 
 void CMotionPanel::TickTimelinePlayback()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_timelineTimer || !m_timelineTimer->isActive() || !m_playbackClock.isValid()) return;
     const double duration = m_timeline.Timing().duration;
     if (duration <= 0.0f) {
@@ -747,6 +958,7 @@ void CMotionPanel::TickTimelinePlayback()
 
 void CMotionPanel::EmitTimelinePreview()
 {
+    if (IsPreviewTransportSuspended()) return;
     const auto frame = m_timeline.EvaluateFrame(m_timelineTime);
     m_endPreviewButton->setEnabled(m_timeline.HasAnimation());
     emit TimelineFrameChanged(frame);
@@ -755,6 +967,7 @@ void CMotionPanel::EmitTimelinePreview()
 
 void CMotionPanel::PauseTimelinePreview()
 {
+    if (IsPreviewTransportSuspended()) return;
     ++m_timelineRevision;
     m_timelineTimer->stop();
     m_playTimelineButton->setText(QStringLiteral("预览"));
@@ -762,6 +975,7 @@ void CMotionPanel::PauseTimelinePreview()
 
 void CMotionPanel::StopTimelinePreview()
 {
+    if (IsPreviewTransportSuspended()) return;
     PauseTimelinePreview();
     m_endPreviewButton->setEnabled(false);
     emit TimelinePreviewStopped();
@@ -769,11 +983,13 @@ void CMotionPanel::StopTimelinePreview()
 
 void CMotionPanel::SetTimelinePreviewAvailable(bool available)
 {
+    if (IsPreviewTransportSuspended()) return;
     m_endPreviewButton->setEnabled(available);
 }
 
 bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float value)
 {
+    if (!RequireTransportAvailable()) return false;
     if (m_timeline.IsRecording()) return false;
     m_timelineDelegate->CommitEditor();
     const auto before = CurrentTimelineSnapshot();
@@ -798,6 +1014,7 @@ bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float
 
 void CMotionPanel::EditTimelineSettings()
 {
+    if (IsPreviewTransportSuspended()) return;
     m_timelineDelegate->CommitEditor();
     m_recordTimelineCb->setChecked(false);
     TickTimelinePlayback();
@@ -816,6 +1033,7 @@ void CMotionPanel::EditTimelineSettings()
 
 void CMotionPanel::AddTimelineKeyframe()
 {
+    if (IsPreviewTransportSuspended()) return;
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("添加关键帧"));
     auto* layout = new QFormLayout(&dialog);
@@ -873,12 +1091,14 @@ void CMotionPanel::AddTimelineKeyframe()
 
 void CMotionPanel::SetTimelineTimeFromSlider(int value)
 {
+    if (m_transport) { RestoreTransportControls(); return; }
     if (!m_timelinePlayhead || !m_timeline.HasAnimation()) return;
     SeekTimeline(m_timeline.Timing().duration * qBound(0, value, 1000) / 1000.0);
 }
 
 void CMotionPanel::SeekTimeline(double time)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!std::isfinite(time) || !m_timeline.HasAnimation()) return;
     m_recordTimelineCb->setChecked(false);
     ++m_timelineRevision;
@@ -901,6 +1121,7 @@ void CMotionPanel::SeekTimeline(double time)
 
 void CMotionPanel::ApplyTimelineCurveEdit(const CMotionTrack& track, int pointIndex, float time, float value)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_updatingTimeline) return;
     const auto before = CurrentTimelineSnapshot();
     if (!m_timeline.UpdatePoint(track, pointIndex, time, value)) return;
@@ -912,6 +1133,7 @@ void CMotionPanel::ApplyTimelineCurveEdit(const CMotionTrack& track, int pointIn
 
 void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_updatingTimeline || row < 0 || row >= m_timelineRows.size() ||
         (column != 0 && column != 2 && column != 3)) return;
     const TimelineRow reference = m_timelineRows.at(row);
@@ -954,6 +1176,7 @@ void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
 
 void CMotionPanel::RemoveTimelineKeyframe()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_timelineTable || m_timelineTable->currentRow() < 0 ||
         m_timelineTable->currentRow() >= m_timelineRows.size()) return;
     m_timelineDelegate->CommitEditor();
@@ -972,6 +1195,7 @@ void CMotionPanel::RemoveTimelineKeyframe()
 
 void CMotionPanel::ClearTimeline()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!ConfirmTimelineReplacement()) return;
     if (m_timelineTimer) m_timelineTimer->stop();
     if (m_playTimelineButton) m_playTimelineButton->setText(QStringLiteral("预览"));
@@ -998,6 +1222,7 @@ bool CMotionPanel::HasUnsavedTimelineChanges() const
 
 void CMotionPanel::SetTimelineDirty(bool dirty)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_timelineDirty == dirty) return;
     m_timelineDirty = dirty;
     emit TimelineDirtyChanged(dirty);
@@ -1005,6 +1230,7 @@ void CMotionPanel::SetTimelineDirty(bool dirty)
 
 void CMotionPanel::MarkTimelineSaved()
 {
+    if (IsPreviewTransportSuspended()) return;
     m_timelineDelegate->CommitEditor();
     FlushTimelineEditGroup();
     m_timelineHistory->setClean();
@@ -1013,12 +1239,14 @@ void CMotionPanel::MarkTimelineSaved()
 
 bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
 {
+    if (m_transport) return m_timeline.SaveState(state, m_transport->loop, m_transport->time, error);
     m_timelineDelegate->CommitEditor();
     return m_timeline.SaveState(state, m_loopCb->isChecked(), m_timelineTime, error);
 }
 
 bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error)
 {
+    if (!RequireTransportAvailable(error)) return false;
     CMotionTimeline candidate;
     if (!candidate.RestoreState(state, nullptr, error)) return false;
     const double playhead = state.value(QStringLiteral("playhead")).toDouble();
@@ -1085,6 +1313,7 @@ QByteArray CMotionPanel::SaveLayout() const
 
 void CMotionPanel::RestoreLayout(const QByteArray& state)
 {
+    if (IsPreviewTransportSuspended()) return;
     const auto object = QJsonDocument::fromJson(state).object();
     if (object.isEmpty()) return;
     m_workspaceSplitter->restoreState(QByteArray::fromBase64(object.value(QStringLiteral("assets")).toString().toLatin1()));
@@ -1098,6 +1327,7 @@ void CMotionPanel::RestoreLayout(const QByteArray& state)
 
 void CMotionPanel::RefreshTimelineHistory()
 {
+    if (IsPreviewTransportSuspended()) return;
     SetTimelineDirty(!m_timelineHistory->isClean() || PendingTimelineEdit());
     m_undoTimelineButton->setEnabled(CanUndoTimeline());
     m_redoTimelineButton->setEnabled(CanRedoTimeline());
@@ -1108,6 +1338,7 @@ void CMotionPanel::RefreshTimelineHistory()
 
 void CMotionPanel::PushTimelineEdit(const TimelineSnapshot& before, const QString& label)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_restoringTimeline || m_editGroupActive) return;
     const auto after = CurrentTimelineSnapshot();
     if (before.SameContent(after)) return;
@@ -1118,6 +1349,7 @@ void CMotionPanel::PushTimelineEdit(const TimelineSnapshot& before, const QStrin
 
 void CMotionPanel::BeginTimelineEditGroup(const QString& label)
 {
+    if (IsPreviewTransportSuspended()) return;
     EndTimelineEditGroup();
     m_editGroupBefore = CurrentTimelineSnapshot();
     m_editGroupLabel = label;
@@ -1126,6 +1358,7 @@ void CMotionPanel::BeginTimelineEditGroup(const QString& label)
 
 void CMotionPanel::EndTimelineEditGroup()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_editGroupActive) return;
     m_editGroupActive = false;
     PushTimelineEdit(m_editGroupBefore, m_editGroupLabel);
@@ -1134,6 +1367,7 @@ void CMotionPanel::EndTimelineEditGroup()
 
 void CMotionPanel::FlushTimelineEditGroup()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_editGroupActive) return;
     const auto label = m_editGroupLabel;
     EndTimelineEditGroup();
@@ -1142,6 +1376,7 @@ void CMotionPanel::FlushTimelineEditGroup()
 
 void CMotionPanel::ApplyTimelineSnapshot(const TimelineSnapshot& snapshot)
 {
+    if (IsPreviewTransportSuspended()) return;
     m_restoringTimeline = true;
     m_timelineTimer->stop();
     m_recordTimelineCb->setChecked(false);
@@ -1165,6 +1400,7 @@ void CMotionPanel::ApplyTimelineSnapshot(const TimelineSnapshot& snapshot)
 
 void CMotionPanel::UndoTimeline()
 {
+    if (IsPreviewTransportSuspended()) return;
     emit TimelineActivated();
     m_timelineDelegate->CommitEditor();
     m_recordTimelineCb->setChecked(false);
@@ -1176,6 +1412,7 @@ void CMotionPanel::UndoTimeline()
 
 void CMotionPanel::RedoTimeline()
 {
+    if (IsPreviewTransportSuspended()) return;
     emit TimelineActivated();
     m_timelineDelegate->CommitEditor();
     m_recordTimelineCb->setChecked(false);
@@ -1187,6 +1424,7 @@ void CMotionPanel::RedoTimeline()
 
 bool CMotionPanel::ConfirmTimelineReplacement()
 {
+    if (!RequireTransportAvailable()) return false;
     m_timelineDelegate->CommitEditor();
     if (!HasUnsavedTimelineChanges()) return true;
     QMessageBox prompt(this);
@@ -1206,6 +1444,7 @@ bool CMotionPanel::ConfirmTimelineReplacement()
 
 bool CMotionPanel::SaveTimeline(const QString& path, QString* error)
 {
+    if (!RequireTransportAvailable(error)) return false;
     m_timelineDelegate->CommitEditor();
     if (!m_timeline.Save(path, m_timeline.Fps(), m_loopCb->isChecked(), error)) return false;
     MarkTimelineSaved();
@@ -1215,6 +1454,7 @@ bool CMotionPanel::SaveTimeline(const QString& path, QString* error)
 
 void CMotionPanel::ExportTimeline()
 {
+    if (IsPreviewTransportSuspended()) return;
     const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 motion3"),
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));
     if (path.isEmpty()) return;
@@ -1224,6 +1464,7 @@ void CMotionPanel::ExportTimeline()
 
 bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
 {
+    if (!RequireTransportAvailable(error)) return false;
     CMotionTimeline candidate;
     if (!candidate.Load(path, error)) return false;
     if (!ConfirmTimelineReplacement()) return false;
@@ -1239,6 +1480,7 @@ bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
 
 void CMotionPanel::ImportTimeline()
 {
+    if (IsPreviewTransportSuspended()) return;
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("导入 motion3"),
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));
     if (path.isEmpty()) return;
@@ -1249,6 +1491,7 @@ void CMotionPanel::ImportTimeline()
 
 bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 {
+    if (!RequireTransportAvailable(error)) return false;
     QJsonObject candidate;
     if (!poseJsonPath.isEmpty()) {
         QFile file(poseJsonPath);
@@ -1383,6 +1626,7 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 
 void CMotionPanel::EmitPoseSelection(int poseIndex, int optionIndex)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (poseIndex < 0 || poseIndex >= m_poseGroups.size()) return;
     const PoseGroup& group = m_poseGroups.at(poseIndex);
     if (optionIndex < 0 || optionIndex >= group.partIds.size()) return;
@@ -1406,6 +1650,7 @@ void CMotionPanel::EmitPoseSelection(int poseIndex, int optionIndex)
 
 void CMotionPanel::EditPoseLinks()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_activePoseGroup < 0 || m_activePoseGroup >= m_poseGroups.size()) return;
     PoseGroup& group = m_poseGroups[m_activePoseGroup];
     const int optionIndex = group.combo ? group.combo->currentIndex() : -1;
@@ -1520,6 +1765,7 @@ bool CMotionPanel::SavePose(QString* error)
 
 void CMotionPanel::AddPosePart()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_activePoseGroup < 0 || m_activePoseGroup >= m_poseGroups.size()) return;
     bool accepted = false;
     const QString partId = QInputDialog::getText(this, QStringLiteral("添加 Pose Part"),
@@ -1549,6 +1795,7 @@ void CMotionPanel::AddPosePart()
 
 void CMotionPanel::RemovePosePart()
 {
+    if (IsPreviewTransportSuspended()) return;
     if (m_activePoseGroup < 0 || m_activePoseGroup >= m_poseGroups.size()) return;
     PoseGroup& group = m_poseGroups[m_activePoseGroup];
     const int index = group.combo->currentIndex();
@@ -1564,6 +1811,7 @@ void CMotionPanel::RemovePosePart()
 
 void CMotionPanel::LoadLipSyncWav()
 {
+    if (IsPreviewTransportSuspended()) return;
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("加载口型 WAV"),
                                                        QString(), QStringLiteral("WAV 音频 (*.wav)"));
     if (path.isEmpty()) return;
@@ -1572,11 +1820,13 @@ void CMotionPanel::LoadLipSyncWav()
 
 void CMotionPanel::StopLipSyncWav()
 {
+    if (IsPreviewTransportSuspended()) return;
     emit LipSyncWavChanged(QString());
 }
 
 void CMotionPanel::SetLipSyncWavStatus(bool loaded, const QString& path)
 {
+    if (IsPreviewTransportSuspended()) return;
     if (!m_lipSyncWavStatus) return;
     m_lipSyncWavStatus->setText(loaded
                                 ? QStringLiteral("口型：%1").arg(QFileInfo(path).fileName())
@@ -1585,6 +1835,7 @@ void CMotionPanel::SetLipSyncWavStatus(bool loaded, const QString& path)
 
 void CMotionPanel::EditSelectedExpression()
 {
+    if (IsPreviewTransportSuspended()) return;
     const int expressionIndex = m_exprList->currentRow();
     if (expressionIndex < 0 || expressionIndex >= m_exprEntries.size()) return;
     const ExpressionEntry entry = m_exprEntries.at(expressionIndex);

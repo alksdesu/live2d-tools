@@ -15,6 +15,7 @@
 #include <QStringList>
 
 class ModelRuntimeStateTests;
+class LAppExportPreviewTests;
 class CubismRendererPreparationTests;
 
 namespace live2dstruct {
@@ -31,6 +32,7 @@ class CubismModel
 {
     friend class CubismMoc;
     friend class ::ModelRuntimeStateTests;
+    friend class ::LAppExportPreviewTests;
     friend class ::CubismRendererPreparationTests;
 public:
 

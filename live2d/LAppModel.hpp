@@ -23,6 +23,7 @@
 
 class LAppModel : public Csm::CubismUserModel
 {
+    friend class LAppExportPreviewTests;
 public:
 
     LAppModel();
@@ -39,9 +40,14 @@ public:
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool HasEditorPreview() const { return m_editorEntryState != nullptr; }
+    bool BeginExportPreview(bool savedParameterSnapshot, QString* error = nullptr);
+    bool EndExportPreview(QString* error = nullptr);
+    bool HasExportPreview() const { return m_exportEntryState != nullptr; }
     QMap<QString, float> GetEditorBaseParameters() const { return m_editorBaseParameters; }
     void CommitTextureCache() { m_pendingTextureIds.clear(); m_textureCacheCommitted = true; }
     void Update();
+    void SetDragging(Csm::csmFloat32 x, Csm::csmFloat32 y) override
+    { if (!HasExportPreview()) CubismUserModel::SetDragging(x, y); }
     bool SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline = nullptr,
                             double time = 0, bool loop = false);
     void ClearTimelinePreview();
@@ -72,15 +78,15 @@ public:
     }
     QRectF GetCurModelRectF();
 
-    void SetAutoEyeBlink(bool v) { _autoEyeBlink = v; }
-    void SetAutoBreath(bool v) { _autoBreath = v; }
-    void SetAutoPhysics(bool v) { _autoPhysics = v; }
+    void SetAutoEyeBlink(bool v) { if (!HasExportPreview()) _autoEyeBlink = v; }
+    void SetAutoBreath(bool v) { if (!HasExportPreview()) _autoBreath = v; }
+    void SetAutoPhysics(bool v) { if (!HasExportPreview()) _autoPhysics = v; }
     void SetMotionSpeed(float v);
     void SetMotionLoop(bool v);
     bool GetAutoPhysics() const { return _autoPhysics; }
-    void SetEnableMouseFollow(bool v) { _enableMouseFollow = v; }
+    void SetEnableMouseFollow(bool v) { if (!HasExportPreview()) _enableMouseFollow = v; }
     bool GetEnableMouseFollow() const { return _enableMouseFollow; }
-    void SetSnapshotMode(bool v) { _snapshotMode = v; }
+    void SetSnapshotMode(bool v) { if (!HasExportPreview()) _snapshotMode = v; }
 
     // 物理参数控制
     void SetPhysicsGravity(float x, float y);
@@ -102,7 +108,7 @@ public:
     void SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                const QList<float>& maxVals, const QList<float>& defaultVals);
     void ApplyDeformerDrag(float viewX, float viewY);
-    void StopDeformerDrag() { m_deformerDrag.Stop(); }
+    void StopDeformerDrag() { if (!HasExportPreview()) m_deformerDrag.Stop(); }
     const QStringList& GetDeformerDragParamIds() const { return m_deformerDrag.Ids(); }
     // 运行时探测：找到影响指定 ArtMesh 的参数
     void ProbeParamsForArtMeshes(const QStringList& artMeshNames);
@@ -168,6 +174,11 @@ private:
     QByteArray m_previewMocDigest;
     QByteArray m_previewMocBytes;
     std::unique_ptr<Csm::CubismModel::RuntimeValueSnapshot> m_editorEntryState;
+    std::unique_ptr<Csm::CubismModel::RuntimeValueSnapshot> m_exportEntryState;
+    Csm::CubismModel* m_exportModel = nullptr;
+    bool m_exportSavedParameters = false;
+    bool m_exportPreviousSnapshotMode = false;
+    Csm::csmFloat32 m_exportPreviousOpacity = 1.0f;
     QMap<QString, float> m_editorPose;
     QMap<QString, float> m_editorBaseParameters;
     QSet<Csm::csmUint32> m_pendingTextureIds;

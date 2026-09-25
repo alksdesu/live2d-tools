@@ -83,6 +83,13 @@ void LAppPal::UpdateTime()
     s_lastFrame = s_currentFrame;
 }
 
+void LAppPal::ResetTime()
+{
+    s_currentFrame = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+    s_lastFrame = s_currentFrame;
+    s_deltaTime = 0.0;
+}
+
 void LAppPal::PrintLog(const csmChar* format, ...)
 {
     if (!format) return;

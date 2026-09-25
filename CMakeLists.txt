@@ -116,6 +116,12 @@ target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
+    add_executable(preview_export_transaction_tests tests/preview_export_transaction_tests.cpp
+        ui/cpreviewexporttransaction.cpp)
+    target_include_directories(preview_export_transaction_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(preview_export_transaction_tests PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME preview_export_transaction COMMAND preview_export_transaction_tests)
+
     add_executable(theme_tests tests/theme_tests.cpp
         ui/cxyparameterpad.cpp ui/cphysicsgraph.cpp ui/cmotioncurveview.cpp)
     target_link_libraries(theme_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
@@ -253,6 +259,11 @@ if(BUILD_TESTING)
         tests/cubism_model_fixture.cpp framework/Model/CubismModel.cpp
         framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp framework/Type/csmString.cpp
         edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp opengl/cglmeshbuffer.cpp)
+    add_executable(lapp_export_preview_tests tests/lapp_export_preview_tests.cpp
+        live2d/LAppModelUpdate.cpp ${cubism_model_test_sources} opengl/coffscreenbuffer.cpp)
+    target_link_libraries(lapp_export_preview_tests PRIVATE model_data Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Test)
+    add_test(NAME lapp_export_preview COMMAND lapp_export_preview_tests)
+    set_tests_properties(lapp_export_preview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(model_runtime_state_tests tests/model_runtime_state_tests.cpp ${cubism_model_test_sources})
     target_link_libraries(model_runtime_state_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::Test)
     add_test(NAME model_runtime_state COMMAND model_runtime_state_tests)
@@ -384,10 +395,17 @@ if(BUILD_TESTING)
     target_link_libraries(xy_parameter_pad_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME xy_parameter_pad COMMAND xy_parameter_pad_tests)
     set_tests_properties(xy_parameter_pad PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    add_executable(psd_batch_worker_tests tests/psd_batch_worker_tests.cpp ui/psdbatchworker.cpp ui/psdbatchjob.cpp)
+    add_executable(psd_batch_worker_tests tests/psd_batch_worker_tests.cpp
+        ui/psdbatchworker.cpp ui/psdbatchjob.cpp ui/psdbatchresult.cpp)
     target_include_directories(psd_batch_worker_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(psd_batch_worker_tests PRIVATE Qt6::Test Qt6::Core)
     add_test(NAME psd_batch_worker COMMAND psd_batch_worker_tests)
+    add_executable(export_results_panel_tests tests/export_results_panel_tests.cpp
+        ui/cexportresultspanel.cpp ui/psdbatchresult.cpp)
+    target_include_directories(export_results_panel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(export_results_panel_tests PRIVATE Qt6::Test Qt6::Widgets)
+    add_test(NAME export_results_panel COMMAND export_results_panel_tests)
+    set_tests_properties(export_results_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(psd_print_dialog_tests tests/psd_print_dialog_tests.cpp ui/cpsdprintdialog.cpp)
     target_include_directories(psd_print_dialog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)

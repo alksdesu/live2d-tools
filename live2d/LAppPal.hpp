@@ -19,6 +19,7 @@ public:
     static void ReleaseBytes(Csm::csmByte* byteData);
     static Csm::csmFloat32 GetDeltaTime();
     static void UpdateTime();
+    static void ResetTime();
     static void PrintLog(const Csm::csmChar* format, ...);
     static void PrintLogLn(const Csm::csmChar* format, ...);
     static void PrintMessage(const Csm::csmChar* message);
@@ -30,4 +31,3 @@ private:
 
 
 };
-

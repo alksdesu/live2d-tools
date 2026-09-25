@@ -196,9 +196,37 @@ bool validEvents(const QJsonArray& events, QString* error)
 }
 }
 
+CMotionTimeline::CMotionTimeline(std::function<qint64()> recordingClock)
+    : m_recordingClock(std::move(recordingClock)) {}
+
+std::optional<qint64> CMotionTimeline::RecordingElapsedMilliseconds() const
+{
+    qint64 elapsed = 0;
+    if (m_recordingClock) {
+        qint64 now;
+        try { now = m_recordingClock(); }
+        catch (...) { return std::nullopt; }
+        if (now < m_recordClockOrigin || (m_recordClockOrigin < 0 &&
+            now > std::numeric_limits<qint64>::max() + m_recordClockOrigin)) return std::nullopt;
+        elapsed = now - m_recordClockOrigin;
+    } else {
+        if (!m_clock.isValid()) return std::nullopt;
+        elapsed = m_clock.elapsed();
+    }
+    return elapsed >= m_recordLastMs ? std::optional<qint64>(elapsed) : std::nullopt;
+}
+
 void CMotionTimeline::StartRecording()
 {
+    qint64 origin = 0;
+    if (m_recordingClock) {
+        try { origin = m_recordingClock(); }
+        catch (...) { return; }
+    }
     m_recordStartTime = Duration();
+    m_recordClockOrigin = origin;
+    m_recordSkippedMs = m_recordPauseMs = m_recordLastMs = 0;
+    m_recordClockPaused = false;
     m_recording = true;
     m_clock.start();
 }
@@ -206,6 +234,31 @@ void CMotionTimeline::StartRecording()
 void CMotionTimeline::StopRecording()
 {
     m_recording = false;
+    m_recordClockPaused = false;
+    m_recordSkippedMs = m_recordPauseMs = m_recordLastMs = 0;
+    m_recordClockOrigin = 0;
+    m_clock.invalidate();
+}
+
+bool CMotionTimeline::PauseRecordingClock()
+{
+    if (!m_recording || m_recordClockPaused) return false;
+    const auto elapsed = RecordingElapsedMilliseconds();
+    if (!elapsed || *elapsed < m_recordSkippedMs) return false;
+    m_recordPauseMs = m_recordLastMs = *elapsed;
+    m_recordClockPaused = true;
+    return true;
+}
+
+bool CMotionTimeline::ResumeRecordingClock()
+{
+    if (!m_recording || !m_recordClockPaused) return false;
+    const auto elapsed = RecordingElapsedMilliseconds();
+    if (!elapsed || *elapsed < m_recordPauseMs || m_recordSkippedMs > m_recordPauseMs) return false;
+    m_recordSkippedMs += *elapsed - m_recordPauseMs;
+    m_recordLastMs = *elapsed;
+    m_recordClockPaused = false;
+    return true;
 }
 
 void CMotionTimeline::Clear()
@@ -221,8 +274,13 @@ void CMotionTimeline::Clear()
 
 void CMotionTimeline::Record(const QString& parameterId, float value)
 {
-    if (!m_recording || !m_clock.isValid()) return;
-    AddPoint(parameterId, m_recordStartTime + m_clock.elapsed() / 1000.0f, value);
+    if (!m_recording || m_recordClockPaused) return;
+    const auto elapsed = RecordingElapsedMilliseconds();
+    if (!elapsed || *elapsed < m_recordSkippedMs) return;
+    const double time = double(m_recordStartTime) + double(*elapsed - m_recordSkippedMs) / 1000.0;
+    if (!finiteFloat(time)) return;
+    m_recordLastMs = *elapsed;
+    AddPoint(parameterId, float(time), value);
 }
 
 bool CMotionTimeline::AddPoint(const CMotionTrack& track, float time, float value)
@@ -898,7 +956,7 @@ bool CMotionTimeline::RestoreState(const QJsonObject& state, float* playhead, QS
         if (error) *error = QStringLiteral("动画草稿格式或播放头无效");
         return false;
     }
-    CMotionTimeline candidate;
+    CMotionTimeline candidate(m_recordingClock);
     if (!candidate.LoadJson(state.value(QStringLiteral("motion")).toObject(), true, error)) return false;
     if (time.toDouble() > candidate.Timing().duration) {
         if (error) *error = QStringLiteral("动画播放头超出草稿时长");

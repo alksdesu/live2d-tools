@@ -12,6 +12,8 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QSet>
+#include <QPointer>
+#include <memory>
 #include "live2dstruct/cmotiontimeline.h"
 
 class QLabel;
@@ -28,6 +30,21 @@ class CMotionPanel : public QDockWidget
 {
     Q_OBJECT
 public:
+    class PreviewTransportLease
+    {
+    public:
+        PreviewTransportLease() = default;
+        PreviewTransportLease(PreviewTransportLease&& other) noexcept;
+        PreviewTransportLease& operator=(PreviewTransportLease&& other) noexcept;
+        PreviewTransportLease(const PreviewTransportLease&) = delete;
+        PreviewTransportLease& operator=(const PreviewTransportLease&) = delete;
+        bool IsValid() const;
+    private:
+        friend class CMotionPanel;
+        QPointer<CMotionPanel> m_owner;
+        quint64 m_serial = 0;
+    };
+
     explicit CMotionPanel(QWidget *parent = nullptr);
     ~CMotionPanel() override;
     bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
@@ -46,8 +63,11 @@ public:
     bool ConfirmTimelineReplacement();
     bool LoadTimeline(const QString& path, QString* error = nullptr);
     bool SaveTimeline(const QString& path, QString* error = nullptr);
-    void SetParameterIds(const QStringList& ids) { m_parameterIds = ids; }
+    void SetParameterIds(const QStringList& ids) { if (!IsPreviewTransportSuspended()) m_parameterIds = ids; }
     bool AddTimelinePoint(const CMotionTrack& track, float time, float value);
+    bool SuspendPreviewTransport(PreviewTransportLease& lease, QString* error = nullptr);
+    bool ResumePreviewTransport(PreviewTransportLease& lease, QString* error = nullptr);
+    bool IsPreviewTransportSuspended() const;
     void StopTimelinePreview();
     void PauseTimelinePreview();
     void SetTimelinePreviewAvailable(bool available);
@@ -92,6 +112,12 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    struct PreviewTransportState;
+    std::unique_ptr<PreviewTransportState> m_transport;
+    quint64 m_transportSerial = 0;
+    bool m_transportTransition = false;
+    bool RequireTransportAvailable(QString* error = nullptr) const;
+    void RestoreTransportControls();
     QListWidget* m_motionList;
     QListWidget* m_exprList;
     QLineEdit* m_motionSearch = nullptr;

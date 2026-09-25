@@ -529,3 +529,13 @@ RESOURCES += \
     assets/images/images.qrc\
     assets/shaders/shaders.qrc\
     assets/icc.qrc
+
+SOURCES += \
+    live2d/LAppModelUpdate.cpp \
+    ui/cpreviewexporttransaction.cpp \
+    ui/psdbatchresult.cpp \
+    ui/cexportresultspanel.cpp
+HEADERS += \
+    ui/cpreviewexporttransaction.h \
+    ui/psdbatchresult.h \
+    ui/cexportresultspanel.h

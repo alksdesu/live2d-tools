@@ -429,235 +429,9 @@ void LAppModel::ReleaseExpressions()
     _expressions.Clear();
 }
 
-void LAppModel::Update()
-{
-    if (!_initialized || _updating || !_model) return;
-    if (HasEditorPreview()) {
-        if (!_model->ApplyParameterPose(m_editorPose)) return;
-        ApplyPartVisibility();
-        _model->Update();
-        return;
-    }
-    // 快照模式：只应用已保存的参数，跳过所有自动效果
-    if (_snapshotMode) {
-        _model->LoadParameters();
-        ApplyTimelinePreview();
-        ApplyPartVisibility();
-        _opacity = _model->GetModelOpacity();
-        _model->Update();
-        return;
-    }
-
-    const csmFloat32 deltaTimeSeconds = LAppPal::GetDeltaTime();
-    _userTimeSeconds += deltaTimeSeconds;
-
-    _dragManager->Update(deltaTimeSeconds);
-    _dragX = _dragManager->GetX();
-    _dragY = _dragManager->GetY();
-
-    csmBool motionUpdated = false;
-    _model->LoadParameters();
-
-    // 动作更新（不自动播放随机动作，由 UI 触发）
-    if (!_timelinePreviewActive && !_motionManager->IsFinished())
-    {
-        motionUpdated = _motionManager->UpdateMotion(_model, deltaTimeSeconds * _motionSpeed);
-    }
-
-    _model->SaveParameters();
-
-    if (_lipSyncIds.GetSize() > 0)
-    {
-        _wavFileHandler.Update(deltaTimeSeconds);
-        const csmFloat32 value = _wavFileHandler.GetRms();
-        for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
-        {
-            _model->AddParameterValue(_lipSyncIds[i], value, 0.8f);
-        }
-    }
-
-    if (!motionUpdated)
-    {
-        if (_eyeBlink != NULL && _autoEyeBlink)
-        {
-            _eyeBlink->UpdateParameters(_model, deltaTimeSeconds);
-        }
-    }
-
-    // 表情
-    if (_expressionManager != NULL && !_timelinePreviewActive)
-    {
-        _expressionManager->UpdateMotion(_model, deltaTimeSeconds);
-    }
-
-    // 鼠标拖拽 → 头部跟随
-    if (_enableMouseFollow)
-    {
-        _model->AddParameterValue(_idParamAngleX, _dragX * 30);
-        _model->AddParameterValue(_idParamAngleY, _dragY * 30);
-        _model->AddParameterValue(_idParamAngleZ, _dragX * _dragY * -30);
-        _model->AddParameterValue(_idParamBodyAngleX, _dragX * 10);
-        _model->AddParameterValue(_idParamEyeBallX, _dragX);
-        _model->AddParameterValue(_idParamEyeBallY, _dragY);
-    }
-
-    // 呼吸
-    if (_breath != NULL && _autoBreath)
-    {
-       _breath->UpdateParameters(_model, deltaTimeSeconds);
-    }
-
-    ApplyTimelinePreview();
-    if (_physics != NULL && _autoPhysics)
-    {
-        _physics->Evaluate(_model, deltaTimeSeconds);
-    }
-
-    // Pose
-    if (_pose != NULL)
-    {
-        _pose->UpdateParameters(_model, deltaTimeSeconds);
-    }
-
-    ApplyTimelinePreview();
-    ApplyPartVisibility();
-    _opacity = _model->GetModelOpacity();
-
-    // 变形器拖拽参数覆盖（在所有效果之后、Update 之前强制设置）
-    if(m_deformerDrag.IsActive()){
-        const auto& ids = m_deformerDrag.Ids();
-        const auto& values = m_deformerDrag.Values();
-        for(qsizetype i = 0; i < ids.size(); i++){
-            const auto index = m_mapParaToIndex.constFind(ids[i]);
-            if (index == m_mapParaToIndex.cend()) continue;
-            _model->SetParameterValue(index.value(), values[i]);
-        }
-    }
-
-    _model->Update();
-
-}
-
-int LAppModel::FindPartIndex(const QString& id) const
-{
-    if (!_model) return -1;
-    for (int index = 0; index < _model->GetPartCount(); ++index)
-        if (id == QString::fromUtf8(_model->GetPartId(index)->GetString().GetRawString())) return index;
-    return -1;
-}
-
-QMap<QString, float> LAppModel::GetParameterValues() const
-{
-    QMap<QString, float> values;
-    if (_model) for (auto it = m_mapParaToIndex.cbegin(); it != m_mapParaToIndex.cend(); ++it)
-        values.insert(it.key(), _model->GetParameterValue(it.value()));
-    return values;
-}
-
-bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline,
-                                  double time, bool loop)
-{
-    if (HasEditorPreview()) return false;
-    if (!_model || !frame.IsFinite() || (fadeTimeline && !std::isfinite(time))) return false;
-    if (frame.IsEmpty()) { ClearTimelinePreview(); return true; }
-    _model->LoadParameters();
-    if (!_timelinePreviewActive) {
-        _timelineBaseOpacity = _model->GetModelOpacity();
-        _timelineBaseParameters = GetParameterValues();
-        for (int index = 0; index < _model->GetPartCount(); ++index)
-            _timelineBaseParts.insert(QString::fromUtf8(_model->GetPartId(index)->GetString().GetRawString()),
-                                      _model->GetPartOpacity(index));
-        _timelinePreviewActive = true;
-    }
-    for (auto it = _timelinePreview.parts.cbegin(); it != _timelinePreview.parts.cend(); ++it) {
-        if (frame.parts.contains(it.key())) continue;
-        const int index = FindPartIndex(it.key());
-        if (index >= 0) _model->SetPartOpacity(index, _timelineBaseParts.value(it.key(), 1.0f));
-    }
-    QSet<QString> eyeIds, lipIds;
-    for (csmUint32 i = 0; i < _eyeBlinkIds.GetSize(); ++i)
-        eyeIds.insert(QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString()));
-    for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
-        lipIds.insert(QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString()));
-    _timelinePreview = fadeTimeline
-        ? CMotionBlendPreview::Evaluate(*fadeTimeline, time, _timelineBaseParameters, eyeIds, lipIds, loop) : frame;
-    _timelineParameters = _timelinePreview.ResolveParameters(eyeIds, lipIds);
-    if (!_timelinePreview.model.contains(QStringLiteral("Opacity"))) _model->SetModelOpacity(_timelineBaseOpacity);
-    ApplyTimelinePreview();
-    ApplyPartVisibility();
-    _opacity = _model->GetModelOpacity();
-    _model->Update();
-    return true;
-}
-
-void LAppModel::ApplyTimelinePreview()
-{
-    if (!_model || !_timelinePreviewActive) return;
-    for (auto it = _timelineParameters.cbegin(); it != _timelineParameters.cend(); ++it)
-        if (m_mapParaToIndex.contains(it.key())) _model->SetParameterValue(m_mapParaToIndex.value(it.key()), it.value());
-    for (auto it = _timelinePreview.parts.cbegin(); it != _timelinePreview.parts.cend(); ++it) {
-        const int index = FindPartIndex(it.key());
-        if (index >= 0) _model->SetPartOpacity(index, qBound(0.0f, it.value(), 1.0f));
-    }
-    if (_timelinePreview.model.contains(QStringLiteral("Opacity")))
-        _model->SetModelOpacity(qBound(0.0f, _timelinePreview.model.value(QStringLiteral("Opacity")), 1.0f));
-}
-
-void LAppModel::ApplyPartVisibility()
-{
-    if (!_model) return;
-    ApplyPartVisibility(*_model);
-}
-
-void LAppModel::ApplyPartVisibility(CubismModel& model) const
-{
-    if (_hiddenPartIds.isEmpty()) return;
-    for (int index = 0; index < model.GetPartCount(); ++index)
-        if (_hiddenPartIds.contains(QString::fromUtf8(model.GetPartId(index)->GetString().GetRawString())))
-            model.SetPartOpacity(index, 0.0f);
-}
-
-void LAppModel::ClearTimelinePreview()
-{
-    if (HasEditorPreview()) return;
-    if (!_model || !_timelinePreviewActive) return;
-    _timelinePreviewActive = false;
-    _model->LoadParameters();
-    for (auto it = _timelineBaseParts.cbegin(); it != _timelineBaseParts.cend(); ++it) {
-        const int index = FindPartIndex(it.key());
-        if (index >= 0) _model->SetPartOpacity(index, it.value());
-    }
-    _model->SetModelOpacity(_timelineBaseOpacity);
-    _opacity = _timelineBaseOpacity;
-    _timelinePreview = {};
-    _timelineParameters.clear();
-    _timelineBaseParts.clear();
-    _timelineBaseParameters.clear();
-    ApplyPartVisibility();
-    _model->Update();
-}
-
-void LAppModel::UpdateParaValue(const QString &parId, float value,bool IsInit)
-{
-    if (HasEditorPreview()) return;
-    if(!_model || !std::isfinite(value) || !m_mapParaToIndex.contains(parId)) return;
-    if (!IsInit) ClearTimelinePreview();
-    int Id = m_mapParaToIndex[parId];
-
-    // 先恢复干净的快照，修改目标参数，再保存回去
-    // 避免把呼吸/物理等帧内叠加效果固化进快照
-    _model->LoadParameters();
-    _model->SetParameterValue(Id, value);
-    _model->SaveParameters();
-
-    if(IsInit){
-        _model->Update();
-        _model->InitMesh();
-    }
-}
-
 CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt32 no, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
 {
+    if (HasExportPreview()) return InvalidMotionQueueEntryHandleValue;
     if (!_modelSetting || !_motionManager || !group || no < 0 || no >= _modelSetting->GetMotionCount(group))
         return InvalidMotionQueueEntryHandleValue;
     if (priority == PriorityForce)
@@ -744,6 +518,7 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
 
 void LAppModel::SetMotionSpeed(float value)
 {
+    if (HasExportPreview()) return;
     if (!std::isfinite(value)) return;
     if (value < 0.25f) value = 0.25f;
     if (value > 2.0f) value = 2.0f;
@@ -752,6 +527,7 @@ void LAppModel::SetMotionSpeed(float value)
 
 void LAppModel::SetMotionLoop(bool value)
 {
+    if (HasExportPreview()) return;
     _motionLoop = value;
     for (csmMap<csmString, ACubismMotion*>::const_iterator iter = _motions.Begin(); iter != _motions.End(); ++iter) {
         if (iter->Second) static_cast<CubismMotion*>(iter->Second)->IsLoop(value);
@@ -760,6 +536,7 @@ void LAppModel::SetMotionLoop(bool value)
 
 CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
 {
+    if (HasExportPreview()) return InvalidMotionQueueEntryHandleValue;
     if (!_modelSetting || !group) return InvalidMotionQueueEntryHandleValue;
     if (_modelSetting->GetMotionCount(group) == 0)
     {
@@ -773,6 +550,7 @@ CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, 
 
 void LAppModel::StopAllMotions()
 {
+    if (HasExportPreview()) return;
     if (_motionManager) _motionManager->StopAllMotions();
     _wavFileHandler.Stop();
 }
@@ -828,6 +606,7 @@ csmBool LAppModel::HitTest(const csmChar* hitAreaName, csmFloat32 x, csmFloat32 
 
 void LAppModel::SetExpression(const csmChar* expressionID)
 {
+    if (HasExportPreview()) return;
     if (!_expressionManager || !expressionID) return;
     ACubismMotion* motion = _expressions[expressionID];
     if (_debugMode)
@@ -847,6 +626,7 @@ void LAppModel::SetExpression(const csmChar* expressionID)
 
 bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QString& path)
 {
+    if (HasExportPreview()) return false;
     if (expressionId.isEmpty() || path.isEmpty()) return false;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
@@ -867,6 +647,7 @@ bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QStr
 
 void LAppModel::SetRandomExpression()
 {
+    if (HasExportPreview()) return;
     if (_expressions.GetSize() == 0)
     {
         return;
@@ -889,6 +670,10 @@ void LAppModel::SetRandomExpression()
 
 bool LAppModel::ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error)
 {
+    if (HasExportPreview()) {
+        if (error) *error = QStringLiteral("导出期间不能替换模型预览");
+        return false;
+    }
     if (HasEditorPreview()) return ApplyEditorPreview(bytes, sourceDigest, m_editorPose, error);
     if (error) error->clear();
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
@@ -911,6 +696,10 @@ bool LAppModel::ApplyEditorPreview(const QByteArray& bytes, const QByteArray& so
                                   const QMap<QString, float>& pose, QString* error)
 {
     if (error) error->clear();
+    if (HasExportPreview()) {
+        if (error) *error = QStringLiteral("导出期间不能改变编辑姿态");
+        return false;
+    }
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
         if (error) *error = QStringLiteral("编辑姿态与当前模型的加载快照不匹配");
@@ -951,6 +740,10 @@ bool LAppModel::ApplyEditorPreview(const QByteArray& bytes, const QByteArray& so
 bool LAppModel::EndEditorPreview(QString* error)
 {
     if (error) error->clear();
+    if (HasExportPreview()) {
+        if (error) *error = QStringLiteral("导出期间不能改变编辑姿态");
+        return false;
+    }
     if (!HasEditorPreview()) return true;
     try {
         const auto restoreValues = [this](CubismModel* candidate, QString* preparationError) {
@@ -1001,6 +794,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
 
 bool LAppModel::ReloadRenderer()
 {
+    if (HasExportPreview()) return false;
     if (!_model || !_modelSetting || !_modelMatrix || _updating) return false;
     if (!CreateRenderer()) return false;
     _initialized = false;
@@ -1118,6 +912,7 @@ QRectF LAppModel::GetCurModelRectF()
 
 void LAppModel::SetPhysicsGravity(float x, float y)
 {
+    if (HasExportPreview()) return;
     if(_physics && std::isfinite(x) && std::isfinite(y)){
         auto opt = _physics->GetOptions();
         opt.Gravity.X = x;
@@ -1128,6 +923,7 @@ void LAppModel::SetPhysicsGravity(float x, float y)
 
 bool LAppModel::ReloadPhysicsFromFile(const QString& path)
 {
+    if (HasExportPreview()) return false;
     if (path.isEmpty()) return false;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return false;
@@ -1144,6 +940,7 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path)
 
 bool LAppModel::ReloadUserDataFromFile(const QString& path)
 {
+    if (HasExportPreview()) return false;
     if (!_model) return false;
     live2dstruct::CModelUserData document;
     if (!document.Load(path)) return false;
@@ -1168,12 +965,14 @@ bool LAppModel::ReloadUserDataFromFile(const QString& path)
 
 void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types)
 {
+    if (HasExportPreview()) return;
     _physicsDragParamIds = paramIds;
     _physicsDragTypes = types;
 }
 
 void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 {
+    if (HasExportPreview()) return;
     if(!_model || _physicsDragParamIds.isEmpty() || !std::isfinite(dx) || !std::isfinite(dy)) return;
     for(int i = 0; i < _physicsDragParamIds.size(); i++){
         const CubismId* paramId = CubismFramework::GetIdManager()->GetId(_physicsDragParamIds[i].toUtf8().constData());
@@ -1188,6 +987,7 @@ void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 
 void LAppModel::SetPhysicsWind(float x, float y)
 {
+    if (HasExportPreview()) return;
     if(_physics && std::isfinite(x) && std::isfinite(y)){
         auto opt = _physics->GetOptions();
         opt.Wind.X = x;
@@ -1198,6 +998,7 @@ void LAppModel::SetPhysicsWind(float x, float y)
 
 bool LAppModel::StartLipSyncWav(const QString& path)
 {
+    if (HasExportPreview()) return false;
     if (path.isEmpty()) return false;
     const QByteArray utf8Path = path.toUtf8();
     return _wavFileHandler.Start(csmString(utf8Path.constData()));
@@ -1205,11 +1006,13 @@ bool LAppModel::StartLipSyncWav(const QString& path)
 
 void LAppModel::StopLipSyncWav()
 {
+    if (HasExportPreview()) return;
     _wavFileHandler.Stop();
 }
 
 void LAppModel::SetPartVisible(const QString& partId, bool visible)
 {
+    if (HasExportPreview()) return;
     if (!_model) return;
     if(visible){
         _hiddenPartIds.remove(partId);
@@ -1221,19 +1024,22 @@ void LAppModel::SetPartVisible(const QString& partId, bool visible)
 }
 
 void LAppModel::SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
-                                       const QList<float>& maxVals, const QList<float>& defaultVals)
+                                     const QList<float>& maxVals, const QList<float>& defaultVals)
 {
+    if (HasExportPreview()) return;
     m_deformerDrag.SetParameters(paramIds, minVals, maxVals, defaultVals);
 }
 
 void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
 {
+    if (HasExportPreview()) return;
     if (!_model) return;
     m_deformerDrag.Apply(viewX, viewY);
 }
 
 void LAppModel::ProbeParamsForArtMeshes(const QStringList& artMeshNames)
 {
+    if (HasExportPreview()) return;
     if (!_model || _updating || HasEditorPreview() || artMeshNames.isEmpty()) return;
     const QScopedValueRollback<csmBool> updating(_updating, true);
     try {
