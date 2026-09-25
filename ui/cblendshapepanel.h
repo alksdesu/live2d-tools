@@ -2,6 +2,7 @@
 #define CBLENDSHAPEPANEL_H
 
 #include <QDockWidget>
+#include <QByteArray>
 #include <QSet>
 #include <memory>
 
@@ -20,6 +21,8 @@ public:
     void SetDocument(const live2dstruct::CModelDocument* document);
     void SyncParameterValue(const QString& paramId, float value);
     const QSet<QString>& getBlendShapeParamIds() const;
+    QByteArray SaveLayout() const;
+    bool RestoreLayout(const QByteArray& state);
 
 public slots:
     void RefreshParameterMetadata();
@@ -29,6 +32,9 @@ signals:
     void ParameterSelected(const QString& id);
     void ObjectSelected(const QString& id, const QString& type);
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
     struct State;
     std::unique_ptr<State> CreateState();
@@ -37,10 +43,16 @@ private:
     void ExpandDetails(QTreeWidgetItem* item);
     void ActivateItem(QTreeWidgetItem* item);
     void FilterParameters();
+    void ScheduleLayout();
+    void UpdateSplitterLayout();
     QString ParameterName(const QString& id) const;
     std::unique_ptr<State> m_state;
     const live2dstruct::CModelDocument* m_document = nullptr;
     bool m_rebuilding = false;
+    bool m_manualSplit = false;
+    bool m_applyingLayout = false;
+    bool m_layoutQueued = false;
+    double m_splitRatio = 0.5;
 };
 
 #endif

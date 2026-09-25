@@ -8,15 +8,21 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QPainter>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QScopedValueRollback>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
 #include <QTreeWidget>
+#include <QTimer>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -39,7 +45,49 @@ public:
         setEditTriggers(QAbstractItemView::NoEditTriggers);
     }
 
+    int ContentHeight(int ceiling)
+    {
+        doItemsLayout();
+        int height = (header()->isHidden() ? 0 : header()->height()) + frameWidth() * 2;
+        if (horizontalScrollBar()->isVisible()) height += horizontalScrollBar()->height();
+        QModelIndex first;
+        for (int row = 0; row < model()->rowCount(rootIndex()); ++row) {
+            if (isRowHidden(row, rootIndex())) continue;
+            first = model()->index(row, 0, rootIndex());
+            break;
+        }
+        for (auto index = first; index.isValid() && height < ceiling; index = indexBelow(index)) {
+            const int row = std::max(1, rowHeight(index));
+            height += std::min(row, ceiling - height);
+        }
+        return std::min(height, ceiling);
+    }
+
 protected:
+    void drawBranches(QPainter* painter, const QRect& rect, const QModelIndex& index) const override
+    {
+        if (!index.isValid() || !model()->hasChildren(index) || index.flags().testFlag(Qt::ItemNeverHasChildren) ||
+            (!rootIsDecorated() && index.parent() == rootIndex())) return;
+        QStyleOption option;
+        option.initFrom(this);
+        option.state.setFlag(QStyle::State_Enabled, isEnabled() && index.flags().testFlag(Qt::ItemIsEnabled));
+        option.rect = QRect(isRightToLeft() ? rect.left() : rect.right() - indentation() + 1,
+                            rect.top(), indentation(), rect.height());
+        const auto disclosure = style()->subElementRect(QStyle::SE_TreeViewDisclosureItem, &option, this);
+        const int extent = std::min({disclosure.width(), disclosure.height(),
+            style()->pixelMetric(QStyle::PM_SmallIconSize, &option, this)});
+        if (extent <= 0) return;
+        option.rect = QStyle::alignedRect(layoutDirection(), Qt::AlignCenter, QSize(extent, extent), disclosure);
+        for (auto group : {QPalette::Active, QPalette::Inactive, QPalette::Disabled})
+            option.palette.setColor(group, QPalette::ButtonText, option.palette.color(group, QPalette::Text));
+        const auto arrow = isExpanded(index) ? QStyle::PE_IndicatorArrowDown :
+            (isRightToLeft() ? QStyle::PE_IndicatorArrowLeft : QStyle::PE_IndicatorArrowRight);
+        painter->save();
+        painter->setClipRect(rect, Qt::IntersectClip);
+        style()->drawPrimitive(arrow, &option, painter, this);
+        painter->restore();
+    }
+
     void keyPressEvent(QKeyEvent* event) override
     {
         const auto modified = event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier | Qt::ShiftModifier);
@@ -92,7 +140,8 @@ struct CBlendShapePanel::State
     QHash<QString, QString> parameterNames, targetNames;
     QStringList extraDiagnostics;
     QString selectedParameter;
-    QTreeWidget* parameters = nullptr;
+    QSplitter* splitter = nullptr;
+    CBlendRelationTree* parameters = nullptr;
     QTreeWidget* details = nullptr;
     QLineEdit* search = nullptr;
     QLabel* summary = nullptr;
@@ -126,7 +175,8 @@ std::unique_ptr<CBlendShapePanel::State> CBlendShapePanel::CreateState()
     result->summary = new QLabel(result->wrapper.get());
     result->summary->setObjectName(QStringLiteral("blendSummary"));
     result->summary->setWordWrap(true);
-    auto* splitter = new QSplitter(Qt::Vertical, result->wrapper.get());
+    auto* splitter = result->splitter = new QSplitter(Qt::Vertical, result->wrapper.get());
+    splitter->setObjectName(QStringLiteral("blendRelationSplitter"));
     splitter->setChildrenCollapsible(false);
     result->parameters = new CBlendRelationTree(splitter);
     result->details = new CBlendRelationTree(splitter);
@@ -134,7 +184,7 @@ std::unique_ptr<CBlendShapePanel::State> CBlendShapePanel::CreateState()
     result->details->setObjectName(QStringLiteral("blendRelationTree"));
     result->parameters->setHeaderLabels({QStringLiteral("参数"), QStringLiteral("数值")});
     result->details->setHeaderLabels({QStringLiteral("关系"), QStringLiteral("说明")});
-    for (auto* tree : {result->parameters, result->details}) {
+    for (auto* tree : {static_cast<QTreeWidget*>(result->parameters), result->details}) {
         tree->setColumnCount(2);
         tree->setRootIsDecorated(true);
         tree->header()->setStretchLastSection(true);
@@ -148,12 +198,24 @@ std::unique_ptr<CBlendShapePanel::State> CBlendShapePanel::CreateState()
 
 void CBlendShapePanel::ConnectState()
 {
+    m_state->splitter->installEventFilter(this);
+    m_state->parameters->installEventFilter(this);
+    connect(m_state->splitter, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (m_rebuilding || m_applyingLayout) return;
+        const auto sizes = m_state->splitter->sizes();
+        const qint64 total = qint64(sizes.value(0)) + sizes.value(1);
+        if (sizes.size() != 2 || sizes[0] <= 0 || sizes[1] <= 0 || total <= 0) return;
+        m_manualSplit = true;
+        m_splitRatio = double(sizes[0]) / double(total);
+    });
+    connect(m_state->parameters, &QTreeWidget::itemExpanded, this, [this] { ScheduleLayout(); });
+    connect(m_state->parameters, &QTreeWidget::itemCollapsed, this, [this] { ScheduleLayout(); });
     connect(m_state->search, &QLineEdit::textChanged, this, [this] { FilterParameters(); });
     connect(m_state->parameters, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* item) {
         if (m_rebuilding || !item || item->data(0, KindRole) != QStringLiteral("parameter")) return;
         ShowParameterDetails(item->data(0, Qt::UserRole).toString());
     });
-    for (auto* tree : {m_state->parameters, m_state->details})
+    for (auto* tree : {static_cast<QTreeWidget*>(m_state->parameters), m_state->details})
         connect(tree, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item) { ActivateItem(item); });
     connect(m_state->details, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) { ExpandDetails(item); });
     for (auto controls = m_state->controls.cbegin(); controls != m_state->controls.cend(); ++controls) {
@@ -278,8 +340,79 @@ bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* 
     }
     if (selection) m_state->parameters->setCurrentItem(selection);
     ShowParameterDetails(selection ? selection->data(0, Qt::UserRole).toString() : QString());
+    ScheduleLayout();
     if (error) error->clear();
     return true;
+}
+
+QByteArray CBlendShapePanel::SaveLayout() const
+{
+    QJsonObject state{{QStringLiteral("version"), 1},
+                      {QStringLiteral("mode"), m_manualSplit ? QStringLiteral("manual") : QStringLiteral("auto")}};
+    if (m_manualSplit) state.insert(QStringLiteral("ratio"), m_splitRatio);
+    return QJsonDocument(state).toJson(QJsonDocument::Compact);
+}
+
+bool CBlendShapePanel::RestoreLayout(const QByteArray& state)
+{
+    const auto document = QJsonDocument::fromJson(state);
+    if (!document.isObject()) return false;
+    const auto object = document.object();
+    const auto version = object.value(QStringLiteral("version"));
+    const auto mode = object.value(QStringLiteral("mode"));
+    if (!version.isDouble() || version.toDouble() != 1.0 || !mode.isString()) return false;
+    const bool manual = mode.toString() == QLatin1String("manual");
+    if ((!manual && mode.toString() != QLatin1String("auto")) || object.size() != (manual ? 3 : 2)) return false;
+    double ratio = 0.5;
+    if (manual) {
+        const auto value = object.value(QStringLiteral("ratio"));
+        if (!value.isDouble()) return false;
+        ratio = value.toDouble();
+        if (!std::isfinite(ratio) || ratio <= 0.0 || ratio >= 1.0) return false;
+    }
+    m_manualSplit = manual;
+    m_splitRatio = ratio;
+    ScheduleLayout();
+    return true;
+}
+
+void CBlendShapePanel::ScheduleLayout()
+{
+    if (m_layoutQueued) return;
+    m_layoutQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_layoutQueued = false;
+        if (!m_rebuilding) UpdateSplitterLayout();
+    });
+}
+
+void CBlendShapePanel::UpdateSplitterLayout()
+{
+    if (!m_state || !m_state->splitter->isVisible() || m_applyingLayout) return;
+    const auto sizes = m_state->splitter->sizes();
+    const qint64 sum = qint64(sizes.value(0)) + sizes.value(1);
+    if (sizes.size() != 2 || sum <= 1 || sum > std::numeric_limits<int>::max()) return;
+    const int available = int(sum);
+    const QScopedValueRollback<bool> applying(m_applyingLayout, true);
+    const int requested = m_manualSplit ? qRound(available * m_splitRatio)
+        : m_state->parameters->ContentHeight(available / 2);
+    int minimum = 0, maximum = available;
+    m_state->splitter->getRange(1, &minimum, &maximum);
+    const int origin = m_state->splitter->contentsRect().top();
+    minimum = qBound(1, minimum - origin, available - 1);
+    maximum = qBound(minimum, maximum - origin, available - 1);
+    const int parameters = qBound(minimum, requested, maximum);
+    if (sizes[0] != parameters) m_state->splitter->setSizes({parameters, available - parameters});
+}
+
+bool CBlendShapePanel::eventFilter(QObject* watched, QEvent* event)
+{
+    if (m_state && !m_applyingLayout &&
+        ((watched == m_state->splitter && (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
+                                         event->type() == QEvent::LayoutRequest)) ||
+         (watched == m_state->parameters && (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange))))
+        ScheduleLayout();
+    return QDockWidget::eventFilter(watched, event);
 }
 
 void CBlendShapePanel::SetDocument(const CModelDocument* document)
@@ -371,6 +504,7 @@ void CBlendShapePanel::FilterParameters()
         parent->setHidden(!matches);
         if (matches && !query.isEmpty()) parent->setExpanded(true);
     }
+    ScheduleLayout();
 }
 
 void CBlendShapePanel::ShowParameterDetails(const QString& id)

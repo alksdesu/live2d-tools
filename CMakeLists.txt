@@ -116,6 +116,21 @@ target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
+    add_executable(theme_tests tests/theme_tests.cpp
+        ui/cxyparameterpad.cpp ui/cphysicsgraph.cpp ui/cmotioncurveview.cpp)
+    target_link_libraries(theme_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_include_directories(theme_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME theme COMMAND theme_tests)
+    set_tests_properties(theme PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(APPLE)
+        add_test(NAME theme_native COMMAND theme_tests)
+        set_tests_properties(theme_native PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=cocoa" RUN_SERIAL TRUE)
+    endif()
+
+    add_executable(caff_archive_tests tests/caff_archive_tests.cpp)
+    target_link_libraries(caff_archive_tests PRIVATE cmo3_data Qt6::Test)
+    add_test(NAME caff_archive COMMAND caff_archive_tests)
+
     foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit)
         add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
         target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)

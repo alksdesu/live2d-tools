@@ -1,6 +1,7 @@
 #include "ccaffarchive.h"
 #include "psd/psdSamples/Zip/Psdminiz.h"
 #include <QFile>
+#include <QSaveFile>
 #include <QtEndian>
 
 namespace cmo3 {
@@ -311,17 +312,24 @@ bool CCaffArchive::Save(const QString& filePath, QString* outError) const
     w.U8(98);
     w.U8(99);
 
-    QFile file(filePath);
+    QSaveFile file(filePath);
+    file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) {
-        setErr(outError, QString("无法写入文件: %1").arg(filePath));
+        setErr(outError, QStringLiteral("无法创建输出文件 %1：%2").arg(filePath, file.errorString()));
         return false;
     }
-    if (file.write(w.Data()) != w.Data().size()) {
-        setErr(outError, "写入不完整");
-        file.close();
+    const qint64 written = file.write(w.Data());
+    if (written != w.Data().size()) {
+        const QString reason = file.error() == QFileDevice::NoError ? QStringLiteral("写入不完整") : file.errorString();
+        file.cancelWriting();
+        setErr(outError, QStringLiteral("写入文件失败 %1（已写入 %2/%3 字节）：%4")
+                            .arg(filePath).arg(written).arg(w.Data().size()).arg(reason));
         return false;
     }
-    file.close();
+    if (!file.commit()) {
+        setErr(outError, QStringLiteral("提交文件失败 %1：%2").arg(filePath, file.errorString()));
+        return false;
+    }
     return true;
 }
 

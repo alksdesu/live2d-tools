@@ -86,6 +86,7 @@ MainWindow::~MainWindow()
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("windowState"), saveState());
     if (m_motionPanel) settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
+    if (m_blendShapePanel) settings.setValue(QStringLiteral("blendShapePanelLayout"), m_blendShapePanel->SaveLayout());
 
     if(m_openglwindows!=nullptr){
         m_openglwindows->makeCurrent();
@@ -1321,9 +1322,10 @@ bool MainWindow::CloseModel()
     m_loadSessionAction->setEnabled(false);
     StopPsdBatch();
     const QScopedValueRollback<bool> closing(m_closingModel, true);
-    if (m_motionPanel) {
+    if (m_motionPanel || m_blendShapePanel) {
         QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
-        settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
+        if (m_motionPanel) settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
+        if (m_blendShapePanel) settings.setValue(QStringLiteral("blendShapePanelLayout"), m_blendShapePanel->SaveLayout());
     }
     m_historySource = HistorySource::None;
 
@@ -1782,6 +1784,7 @@ void MainWindow::RestDock(const QString &name)
     wireToggle(m_btnToggleUserData, m_userDataPanel);
 
     m_motionPanel->RestoreLayout(settings.value(QStringLiteral("motionPanelLayout")).toByteArray());
+    m_blendShapePanel->RestoreLayout(settings.value(QStringLiteral("blendShapePanelLayout")).toByteArray());
     if (!m_savedWindowState.isEmpty()) {
         restoreState(m_savedWindowState);
         m_savedWindowState.clear();

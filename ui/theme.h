@@ -6,7 +6,7 @@
 
 namespace Theme {
 
-inline QString globalStyleSheet(bool dark = false)
+inline QMap<QString, QString> tokens(bool dark = false)
 {
     QMap<QString, QString> token = {
         {QStringLiteral("@window@"), QStringLiteral("#F5F7FA")},
@@ -16,15 +16,19 @@ inline QString globalStyleSheet(bool dark = false)
         {QStringLiteral("@border@"), QStringLiteral("#E2E6EC")},
         {QStringLiteral("@borderStrong@"), QStringLiteral("#D3D9E2")},
         {QStringLiteral("@text@"), QStringLiteral("#20242B")},
-        {QStringLiteral("@textMuted@"), QStringLiteral("#697384")},
-        {QStringLiteral("@textSubtle@"), QStringLiteral("#98A1AF")},
+        {QStringLiteral("@textMuted@"), QStringLiteral("#606B7A")},
+        {QStringLiteral("@textSubtle@"), QStringLiteral("#657182")},
         {QStringLiteral("@accent@"), QStringLiteral("#1677FF")},
-        {QStringLiteral("@accentHover@"), QStringLiteral("#0B63D9")},
+        {QStringLiteral("@accentFill@"), QStringLiteral("#0864D8")},
+        {QStringLiteral("@accentInk@"), QStringLiteral("#075DC7")},
+        {QStringLiteral("@accentHover@"), QStringLiteral("#0754B8")},
         {QStringLiteral("@accentSoft@"), QStringLiteral("#E8F1FF")},
-        {QStringLiteral("@danger@"), QStringLiteral("#D92D20")},
+        {QStringLiteral("@danger@"), QStringLiteral("#C72D22")},
         {QStringLiteral("@dangerSoft@"), QStringLiteral("#FDE8E7")},
         {QStringLiteral("@accentText@"), QStringLiteral("#FFFFFF")},
-        {QStringLiteral("@focus@"), QStringLiteral("#8DBBFF")},
+        {QStringLiteral("@focus@"), QStringLiteral("#0864D8")},
+        {QStringLiteral("@focusWidth@"), QStringLiteral("2px")},
+        {QStringLiteral("@focusInset@"), QStringLiteral("-2px")},
         {QStringLiteral("@radius@"), QStringLiteral("8px")},
         {QStringLiteral("@radiusSmall@"), QStringLiteral("6px")},
         {QStringLiteral("@space@"), QStringLiteral("8px")},
@@ -40,10 +44,18 @@ inline QString globalStyleSheet(bool dark = false)
         token.insert(QStringLiteral("@textMuted@"), QStringLiteral("#B7C0CC"));
         token.insert(QStringLiteral("@textSubtle@"), QStringLiteral("#8994A3"));
         token.insert(QStringLiteral("@accentSoft@"), QStringLiteral("#173B70"));
-        token.insert(QStringLiteral("@focus@"), QStringLiteral("#5B9DFF"));
+        token.insert(QStringLiteral("@focus@"), QStringLiteral("#8DBBFF"));
+        token.insert(QStringLiteral("@accentInk@"), QStringLiteral("#A2C8FF"));
+        token.insert(QStringLiteral("@danger@"), QStringLiteral("#FFB4AC"));
         token.insert(QStringLiteral("@dangerSoft@"), QStringLiteral("#52211F"));
     }
 
+    return token;
+}
+
+inline QString globalStyleSheet(bool dark = false)
+{
+    const auto token = tokens(dark);
     QString style = QStringLiteral(R"(
 * {
     font-family: "SF Pro Display", "Microsoft YaHei UI", "Segoe UI", sans-serif;
@@ -53,6 +65,12 @@ inline QString globalStyleSheet(bool dark = false)
 
 QMainWindow, QWidget {
     background: @window@;
+}
+
+CXYParameterPad, CPhysicsGraphWidget, CMotionCurveView {
+    background: @surface@;
+    selection-background-color: @accentInk@;
+    selection-color: @surface@;
 }
 
 QToolBar {
@@ -86,12 +104,12 @@ QToolBar QToolButton:hover {
 
 QToolBar QToolButton:pressed {
     background: @accentSoft@;
-    color: @accent@;
+    color: @accentInk@;
 }
 
 QToolBar QToolButton:checked {
     background: @accentSoft@;
-    color: @accent@;
+    color: @accentInk@;
     border-color: @accent@;
     font-weight: 600;
 }
@@ -111,7 +129,7 @@ QPushButton:hover {
 
 QPushButton:pressed {
     background: @accentSoft@;
-    color: @accent@;
+    color: @accentInk@;
 }
 
 QPushButton:disabled {
@@ -121,7 +139,7 @@ QPushButton:disabled {
 }
 
 QPushButton#primaryBtn {
-    background: @accent@;
+    background: @accentFill@;
     color: @accentText@;
     border-color: @accent@;
     font-weight: 600;
@@ -161,7 +179,7 @@ QFrame#emptyCard {
 }
 
 QLabel#emptyKicker {
-    color: @accent@;
+    color: @accentInk@;
     font-size: 12px;
     font-weight: 600;
 }
@@ -214,7 +232,7 @@ QLabel#texInfoLabel {
 
 QLabel#blendParamTag {
     background: @accentSoft@;
-    color: @accent@;
+    color: @accentInk@;
     padding: 2px;
     border-radius: @radiusSmall@;
 }
@@ -282,7 +300,7 @@ QTabWidget::pane {
 QTabBar::tab {
     background: transparent;
     color: @textMuted@;
-    border: none;
+    border: @focusWidth@ solid transparent;
     padding: 8px 12px;
     margin-right: 2px;
 }
@@ -294,7 +312,7 @@ QTabBar::tab:hover {
 }
 
 QTabBar::tab:selected {
-    color: @accent@;
+    color: @accentInk@;
     background: @accentSoft@;
     border-radius: @radiusSmall@;
     font-weight: 600;
@@ -306,6 +324,8 @@ QTreeWidget, QTreeView, CModelHierarchyView, QListWidget, QTableWidget {
     border: 1px solid @border@;
     border-radius: @radius@;
     outline: none;
+    selection-background-color: @accentSoft@;
+    selection-color: @accentInk@;
 }
 
 QTreeWidget::item, QTreeView::item, CModelHierarchyView::item, QListWidget::item {
@@ -320,7 +340,7 @@ QTreeWidget::item:hover, QTreeView::item:hover, CModelHierarchyView::item:hover,
 
 QTreeWidget::item:selected, QTreeView::item:selected, CModelHierarchyView::item:selected, QListWidget::item:selected {
     background: @accentSoft@;
-    color: @accent@;
+    color: @accentInk@;
 }
 
 QTreeWidget::indicator, CModelHierarchyView::indicator, QTableWidget::indicator {
@@ -356,6 +376,9 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     border-radius: @radiusSmall@;
     padding: 6px 8px;
     min-height: 18px;
+    placeholder-text-color: @textSubtle@;
+    selection-background-color: @accentSoft@;
+    selection-color: @accentInk@;
 }
 
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
@@ -366,12 +389,14 @@ QComboBox QAbstractItemView {
     background: @surface@;
     border: 1px solid @border@;
     selection-background-color: @accentSoft@;
-    selection-color: @accent@;
+    selection-color: @accentInk@;
 }
 
 QCheckBox, QRadioButton {
     spacing: 8px;
     color: @textMuted@;
+    border: @focusWidth@ solid transparent;
+    border-radius: @radiusSmall@;
 }
 
 QCheckBox::indicator, QRadioButton::indicator {
@@ -385,6 +410,11 @@ QCheckBox::indicator, QRadioButton::indicator {
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {
     background: @accent@;
     border-color: @accent@;
+}
+
+QSlider {
+    border: @focusWidth@ solid transparent;
+    border-radius: @radiusSmall@;
 }
 
 QSlider::groove:horizontal {
@@ -456,7 +486,7 @@ QStatusBar QPushButton {
     margin: 1px;
 }
 QStatusBar QPushButton:hover { background: @surfaceHover@; color: @text@; }
-QStatusBar QPushButton:checked { background: @accentSoft@; color: @accent@; }
+QStatusBar QPushButton:checked { background: @accentSoft@; color: @accentInk@; }
 
 QProgressBar {
     background: @surfaceMuted@;
@@ -473,11 +503,20 @@ QDialog, QMessageBox {
 }
 QToolTip {
     background: @text@;
-    color: @accentText@;
+    color: @window@;
     border: none;
     border-radius: @radiusSmall@;
     padding: 6px 8px;
 }
+QPushButton:focus, QToolButton:focus,
+QTreeWidget:focus, QTreeView:focus, CModelHierarchyView:focus, QListWidget:focus, QTableWidget:focus {
+    outline: @focusWidth@ solid @focus@;
+    outline-offset: @focusInset@;
+    outline-radius: @radiusSmall@;
+}
+QPushButton#primaryBtn:focus { outline-color: @accentText@; }
+QTableWidget:focus { border-color: @focus@; }
+QTabBar::tab:focus, QCheckBox:focus, QRadioButton:focus, QSlider:focus { border-color: @focus@; }
 )" );
     for (auto it = token.cbegin(); it != token.cend(); ++it) style.replace(it.key(), it.value());
     return style;

@@ -1,9 +1,20 @@
 #include "ui/cblendshapepanel.h"
+#include "ui/theme.h"
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/cmodeldocument.h"
 
 #include <QtTest>
 #include <QFile>
+#include <QAccessible>
+#include <QHeaderView>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMouseEvent>
+#include <QPointer>
+#include <QSettings>
+#include <QSplitter>
+#include <QStyleFactory>
+#include <QStyleOption>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSlider>
@@ -15,6 +26,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace {
@@ -129,6 +141,64 @@ QTreeWidgetItem* findItem(QTreeWidget* tree, const QString& kind, const QString&
     return nullptr;
 }
 
+QRect disclosureRect(QTreeWidget* tree, QTreeWidgetItem* item)
+{
+    const auto rect = tree->visualItemRect(item);
+    QStyleOption option;
+    option.initFrom(tree);
+    option.rect = QRect(tree->isRightToLeft() ? rect.right() + 1 : rect.left() - tree->indentation(),
+                        rect.top(), tree->indentation(), rect.height());
+    return tree->style()->subElementRect(QStyle::SE_TreeViewDisclosureItem, &option, tree);
+}
+
+double visibleContrast(const QImage& image)
+{
+    if (image.isNull()) return 1.0;
+    const auto luminance = [](QColor color) {
+        const auto channel = [](double value) { return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4); };
+        return 0.2126 * channel(color.redF()) + 0.7152 * channel(color.greenF()) + 0.0722 * channel(color.blueF());
+    };
+    const double background = luminance(image.pixelColor(0, 0));
+    double result = 1.0;
+    for (int y = 0; y < image.height(); ++y) for (int x = 0; x < image.width(); ++x) {
+        const double foreground = luminance(image.pixelColor(x, y));
+        result = std::max(result, (std::max(background, foreground) + 0.05) / (std::min(background, foreground) + 0.05));
+    }
+    return result;
+}
+
+class LayoutEventCounter : public QObject
+{
+public:
+    int count = 0;
+protected:
+    bool eventFilter(QObject*, QEvent* event) override
+    {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest) ++count;
+        return false;
+    }
+};
+
+double splitterRatio(QSplitter* splitter)
+{
+    const auto sizes = splitter->sizes();
+    const double total = double(sizes.value(0)) + sizes.value(1);
+    return sizes.size() == 2 && total > 0 ? sizes[0] / total : -1;
+}
+
+void dragSplitter(QSplitter* splitter, int delta)
+{
+    auto* handle = splitter->handle(1);
+    const QPoint start = handle->rect().center();
+    const QPoint end = handle->mapToGlobal(start) + QPoint(0, delta);
+    QTest::mousePress(handle, Qt::LeftButton, Qt::NoModifier, start);
+    const QPoint local = handle->mapFromGlobal(end);
+    QMouseEvent move(QEvent::MouseMove, local, handle->window()->mapFromGlobal(end), end,
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(handle, &move);
+    QTest::mouseRelease(handle, Qt::LeftButton, Qt::NoModifier, handle->mapFromGlobal(end));
+}
+
 QStringList treeText(QTreeWidget* tree)
 {
     QStringList result;
@@ -155,6 +225,264 @@ class BlendShapePanelTests : public QObject
     }
 
 private slots:
+    void disclosureUsesThemeColorsAndNativeInteraction_data()
+    {
+        QTest::addColumn<QString>("styleName");
+        QTest::addColumn<bool>("dark");
+        QTest::addColumn<bool>("rtl");
+        QStringList styles{QStringLiteral("Fusion"), QApplication::style()->objectName()};
+        styles.removeDuplicates();
+        for (const auto& style : styles) for (bool dark : {false, true}) for (bool rtl : {false, true}) {
+            const auto name = QStringLiteral("%1-%2-%3").arg(style, dark ? "dark" : "light", rtl ? "rtl" : "ltr").toLatin1();
+            QTest::newRow(name.constData()) << style << dark << rtl;
+        }
+    }
+
+    void disclosureUsesThemeColorsAndNativeInteraction()
+    {
+        QFETCH(QString, styleName);
+        QFETCH(bool, dark);
+        QFETCH(bool, rtl);
+        std::unique_ptr<QStyle> style(QStyleFactory::create(styleName));
+        QVERIFY(style);
+        CBlendShapePanel panel;
+        panel.setStyle(style.get());
+        panel.setStyleSheet(Theme::globalStyleSheet(dark));
+        panel.setLayoutDirection(rtl ? Qt::RightToLeft : Qt::LeftToRight);
+        QVERIFY(panel.BuildBlendShapesBytes(blendBytes(), nullptr));
+        panel.resize(640, 760);
+        panel.show();
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        QVERIFY(parameters && details);
+        for (auto* tree : {parameters, details}) tree->setStyle(style.get());
+        QCoreApplication::processEvents();
+        auto* group = parameters->topLevelItem(0);
+        auto* target = findItem(details, "target", "Shared", "warp");
+        QVERIFY(group && target);
+        QSignalSpy navigation(&panel, &CBlendShapePanel::ObjectSelected);
+        QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged);
+        for (const auto& entry : {qMakePair(parameters, group), qMakePair(details, target)}) {
+            auto* tree = entry.first;
+            auto* item = entry.second;
+            tree->scrollToItem(item);
+            QCoreApplication::processEvents();
+            const bool expanded = item->isExpanded();
+            const auto before = tree->viewport()->grab(disclosureRect(tree, item)).toImage();
+            QVERIFY2(visibleContrast(before) >= 3.0, "Disclosure must contrast with the actual themed background");
+            QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, disclosureRect(tree, item).center());
+            QCOMPARE(item->isExpanded(), !expanded);
+            QCoreApplication::processEvents();
+            const auto after = tree->viewport()->grab(disclosureRect(tree, item)).toImage();
+            QVERIFY(visibleContrast(after) >= 3.0);
+            QVERIFY(after != before);
+            tree->setCurrentItem(item);
+            tree->setFocus();
+            QTest::keyClick(tree, Qt::Key_Minus);
+            QVERIFY(!item->isExpanded());
+            QTest::keyClick(tree, Qt::Key_Plus);
+            QVERIFY(item->isExpanded());
+            auto* accessible = QAccessible::queryAccessibleInterface(tree);
+            QVERIFY(accessible && accessible->role() == QAccessible::Tree);
+            QVERIFY(accessible->focusChild());
+            QVERIFY(accessible->focusChild()->state().expandable);
+            QVERIFY(accessible->focusChild()->state().expanded);
+        }
+        QCOMPARE(target->childCount(), 1);
+        QVERIFY(navigation.isEmpty());
+        QVERIFY(values.isEmpty());
+    }
+
+    void automaticLayoutFitsShortParameterContentAndLeavesRoomForRelations()
+    {
+        CBlendShapePanel panel;
+        panel.setStyleSheet(Theme::globalStyleSheet(false));
+        QVERIFY(panel.BuildBlendShapesBytes(blendBytes(), nullptr));
+        panel.resize(560, 740);
+        panel.show();
+        auto* splitter = panel.findChild<QSplitter*>("blendRelationSplitter");
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        QVERIFY(splitter && parameters);
+        QTRY_VERIFY(splitter->sizes()[0] < splitter->sizes()[1]);
+        auto* last = findItem(parameters, "parameter", "Unbound");
+        QVERIFY(last);
+        QTRY_VERIFY(parameters->viewport()->rect().contains(parameters->visualItemRect(last)));
+        QTRY_COMPARE(parameters->viewport()->height(), parameters->visualItemRect(last).bottom() + 1);
+        const auto initial = splitter->sizes();
+        const auto state = panel.SaveLayout();
+        QCOMPARE(QJsonDocument::fromJson(state).object().value("mode").toString(), QString("auto"));
+        panel.resize(560, 940);
+        QTRY_COMPARE(splitter->sizes()[0], initial[0]);
+        QVERIFY(splitter->sizes()[1] > initial[1]);
+        QCOMPARE(panel.SaveLayout(), state);
+        panel.findChild<QLineEdit*>("blendParameterSearch")->setText("Unbound");
+        QTRY_VERIFY(splitter->sizes()[0] < initial[0]);
+        panel.findChild<QLineEdit*>("blendParameterSearch")->clear();
+        QTRY_COMPARE(splitter->sizes()[0], initial[0]);
+        QCOMPARE(panel.SaveLayout(), state);
+    }
+
+    void userSplitterRatioSurvivesReloadResizeAndSettingsRoundTrip()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto bytes = blendBytes();
+        CBlendShapePanel panel;
+        QVERIFY(panel.BuildBlendShapesBytes(bytes, nullptr));
+        panel.resize(560, 740);
+        panel.show();
+        auto* splitter = panel.findChild<QSplitter*>("blendRelationSplitter");
+        QVERIFY(splitter);
+        QTRY_VERIFY(splitter->sizes()[0] < splitter->sizes()[1]);
+        QSignalSpy moved(splitter, &QSplitter::splitterMoved);
+        QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged);
+        dragSplitter(splitter, splitter->height() / 5);
+        QVERIFY(!moved.isEmpty());
+        const auto layout = panel.SaveLayout();
+        const auto object = QJsonDocument::fromJson(layout).object();
+        QCOMPARE(object.value("version").toInt(), 1);
+        QCOMPARE(object.value("mode").toString(), QString("manual"));
+        const double ratio = object.value("ratio").toDouble();
+        QVERIFY(ratio > 0 && ratio < 1);
+        QVERIFY(std::abs(splitterRatio(splitter) - ratio) < 0.005);
+        const QPointer<QSplitter> previous = splitter;
+        QVERIFY(panel.BuildBlendShapesBytes(bytes, nullptr));
+        QVERIFY(previous.isNull());
+        splitter = panel.findChild<QSplitter*>("blendRelationSplitter");
+        QTRY_VERIFY(std::abs(splitterRatio(splitter) - ratio) < 0.005);
+        QCOMPARE(panel.SaveLayout(), layout);
+        const auto sizes = splitter->sizes();
+        QVERIFY(!panel.BuildBlendShapesBytes("invalid", nullptr));
+        QCOMPARE(panel.findChild<QSplitter*>("blendRelationSplitter"), splitter);
+        QCOMPARE(splitter->sizes(), sizes);
+        QCOMPARE(panel.SaveLayout(), layout);
+        panel.resize(560, 400);
+        QCoreApplication::processEvents();
+        QCOMPARE(panel.SaveLayout(), layout);
+        panel.resize(560, 960);
+        QTRY_VERIFY(std::abs(splitterRatio(splitter) - ratio) < 0.005);
+        panel.hide();
+        panel.show();
+        QTRY_VERIFY(std::abs(splitterRatio(splitter) - ratio) < 0.005);
+        QCOMPARE(panel.SaveLayout(), layout);
+        QVERIFY(values.isEmpty());
+        const QString path = directory.filePath("layout.ini");
+        { QSettings settings(path, QSettings::IniFormat); settings.setValue("blendShapePanelLayout", layout); }
+        CBlendShapePanel reopened;
+        QSettings settings(path, QSettings::IniFormat);
+        QVERIFY(reopened.RestoreLayout(settings.value("blendShapePanelLayout").toByteArray()));
+        QCOMPARE(reopened.SaveLayout(), layout);
+        QVERIFY(reopened.BuildBlendShapesBytes(bytes, nullptr));
+        reopened.resize(620, 800);
+        reopened.show();
+        auto* restored = reopened.findChild<QSplitter*>("blendRelationSplitter");
+        QVERIFY(restored);
+        QTRY_VERIFY(std::abs(splitterRatio(restored) - ratio) < 0.005);
+        QCOMPARE(reopened.SaveLayout(), layout);
+    }
+
+    void constrainedManualLayoutRetainsRatioAndSettles_data()
+    {
+        QTest::addColumn<double>("ratio");
+        QTest::addColumn<bool>("rtl");
+        QTest::newRow("near-zero-ltr") << 1e-12 << false;
+        QTest::newRow("near-one-rtl") << (1.0 - 1e-12) << true;
+        QTest::newRow("middle-rtl") << 0.4 << true;
+    }
+
+    void constrainedManualLayoutRetainsRatioAndSettles()
+    {
+        QFETCH(double, ratio);
+        QFETCH(bool, rtl);
+        CBlendShapePanel panel;
+        panel.setLayoutDirection(rtl ? Qt::RightToLeft : Qt::LeftToRight);
+        QVERIFY(panel.BuildBlendShapesBytes(blendBytes(), nullptr));
+        QVERIFY(panel.RestoreLayout(QJsonDocument(QJsonObject{{"version", 1}, {"mode", "manual"}, {"ratio", ratio}}).toJson()));
+        const auto saved = panel.SaveLayout();
+        panel.resize(480, 180);
+        panel.show();
+        auto* splitter = panel.findChild<QSplitter*>("blendRelationSplitter");
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        QVERIFY(splitter && parameters && details);
+        QTRY_VERIFY(splitter->sizes()[0] > 0 && splitter->sizes()[1] > 0);
+        QVERIFY(parameters->viewport()->height() > 0 && details->viewport()->height() > 0);
+        QCOMPARE(panel.SaveLayout(), saved);
+        auto font = panel.font();
+        font.setPixelSize(28);
+        panel.setFont(font);
+        panel.resize(560, 900);
+        QCoreApplication::processEvents();
+        QCOMPARE(panel.SaveLayout(), saved);
+        for (bool dark : {false, true}) {
+            panel.setStyleSheet(Theme::globalStyleSheet(dark));
+            QCoreApplication::processEvents();
+            QVERIFY(splitter->sizes()[0] > 0 && splitter->sizes()[1] > 0);
+            QCOMPARE(panel.SaveLayout(), saved);
+        }
+        LayoutEventCounter counter;
+        for (auto* widget : {static_cast<QWidget*>(splitter), static_cast<QWidget*>(parameters), static_cast<QWidget*>(details)})
+            widget->installEventFilter(&counter);
+        for (int pass = 0; pass < 8; ++pass) QCoreApplication::processEvents();
+        const int settled = counter.count;
+        const auto sizes = splitter->sizes();
+        for (int pass = 0; pass < 8; ++pass) QCoreApplication::processEvents();
+        QCOMPARE(counter.count, settled);
+        QCOMPARE(splitter->sizes(), sizes);
+        QCOMPARE(panel.SaveLayout(), saved);
+    }
+
+    void automaticLayoutRecomputesForLargerFonts()
+    {
+        CBlendShapePanel panel;
+        QVERIFY(panel.BuildBlendShapesBytes(blendBytes(), nullptr));
+        panel.resize(600, 900);
+        panel.show();
+        auto* splitter = panel.findChild<QSplitter*>("blendRelationSplitter");
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        QTRY_VERIFY(splitter->sizes()[0] < splitter->sizes()[1]);
+        const int before = splitter->sizes()[0];
+        auto font = panel.font();
+        font.setPixelSize(28);
+        panel.setFont(font);
+        QTRY_VERIFY(splitter->sizes()[0] > before);
+        auto* last = findItem(parameters, "parameter", "Unbound");
+        QVERIFY(last);
+        QTRY_VERIFY(parameters->viewport()->rect().contains(parameters->visualItemRect(last)));
+        QCOMPARE(QJsonDocument::fromJson(panel.SaveLayout()).object().value("mode").toString(), QString("auto"));
+    }
+
+    void malformedLayoutDoesNotChangeStateOrWidgets()
+    {
+        CBlendShapePanel panel;
+        QVERIFY(panel.BuildBlendShapesBytes(blendBytes(), nullptr));
+        const QByteArray good = R"({"version":1,"mode":"manual","ratio":0.35})";
+        QVERIFY(panel.RestoreLayout(good));
+        panel.resize(560, 740);
+        panel.show();
+        auto* splitter = panel.findChild<QSplitter*>("blendRelationSplitter");
+        QTRY_VERIFY(std::abs(splitterRatio(splitter) - 0.35) < 0.005);
+        const auto state = panel.SaveLayout();
+        const auto sizes = splitter->sizes();
+        const QList<QByteArray> invalid{
+            {}, "bad", "[]", "{}", R"({"version":2,"mode":"auto"})",
+            R"({"version":1.5,"mode":"auto"})", R"({"version":1,"mode":"unknown"})",
+            R"({"version":1,"mode":"manual"})", R"({"version":1,"mode":"manual","ratio":null})",
+            R"({"version":1,"mode":"manual","ratio":"0.5"})", R"({"version":1,"mode":"manual","ratio":0})",
+            R"({"version":1,"mode":"manual","ratio":1})", R"({"version":1,"mode":"manual","ratio":-0.1})",
+            R"({"version":1,"mode":"manual","ratio":1e999})", R"({"version":1,"mode":"manual","ratio":NaN})",
+            R"({"version":1,"mode":"auto","ratio":0.3})", R"({"version":1,"mode":"auto","extra":1})"};
+        for (const auto& bytes : invalid) {
+            QVERIFY2(!panel.RestoreLayout(bytes), bytes.constData());
+            QCOMPARE(panel.SaveLayout(), state);
+            QCOMPARE(panel.findChild<QSplitter*>("blendRelationSplitter"), splitter);
+            QCOMPARE(splitter->sizes(), sizes);
+        }
+        QVERIFY(panel.RestoreLayout(R"({"version":1,"mode":"auto"})"));
+        QTRY_VERIFY(splitter->sizes()[0] < splitter->sizes()[1]);
+        QCOMPARE(QJsonDocument::fromJson(panel.SaveLayout()).object().value("mode").toString(), QString("auto"));
+    }
+
     void finiteRangesSupportDefaultSliderAndSilentSync_data()
     {
         QTest::addColumn<float>("minimum");
