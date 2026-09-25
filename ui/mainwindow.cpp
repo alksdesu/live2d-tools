@@ -44,7 +44,6 @@
 #include <QSettings>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSharedPointer>
 #include <QPointer>
 #include <QScopedValueRollback>
 #include <QJsonArray>
@@ -338,8 +337,8 @@ void MainWindow::on_actionCmo3Export_triggered()
 
 void MainWindow::on_actionSaveSession_triggered()
 {
-    if (!m_openglwindows || !m_paramPanel || m_currentMoc.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("保存会话"), QStringLiteral("请先打开模型"));
+    if (!m_workspaceReady || !m_openglwindows || !m_paramPanel || m_currentMoc.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("保存会话"), QStringLiteral("请先打开模型并等待工作区准备完成"));
         return;
     }
     const QString defaultPath = QFileInfo(m_currentMoc).absolutePath() + "/" +
@@ -355,14 +354,13 @@ void MainWindow::on_actionSaveSession_triggered()
         return;
     }
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
-    session.sourceDigest = live2dstruct::CModelSession::ComputeSourceDigest(session.sourceMoc);
-    if (session.sourceDigest.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("保存会话失败"), QStringLiteral("无法读取当前 moc3 文件指纹"));
-        return;
-    }
+    session.sourceDigest = m_document.SourceDigest();
     const QMap<QString, float> currentValues = m_paramPanel->CurrentValues();
-    session.parameters = currentValues;
-    if (m_openglwindows->isValid()) {
+    for (const auto& parameter : m_document.Parameters())
+        session.parameters.insert(parameter.id, m_document.ParameterValue(parameter.id));
+    for (auto value = currentValues.cbegin(); value != currentValues.cend(); ++value)
+        session.parameters.insert(value.key(), value.value());
+    if (m_openglwindows->isValid() && RuntimeMatchesDocument()) {
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
@@ -397,6 +395,10 @@ void MainWindow::on_actionSaveSession_triggered()
 
 void MainWindow::on_actionLoadSession_triggered()
 {
+    if (!m_workspaceReady || !m_openglwindows || !m_motionPanel) {
+        QMessageBox::information(this, QStringLiteral("载入会话"), QStringLiteral("请先打开模型并等待工作区准备完成"));
+        return;
+    }
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("载入工作会话"),
                                                        QString(), QStringLiteral("Live2D 会话 (*.live2d-session.json);;JSON (*.json)"));
     if (path.isEmpty()) return;
@@ -406,105 +408,119 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    if (!m_openglwindows || session.sourceMoc.isEmpty() ||
+    if (session.sourceMoc.isEmpty() ||
         QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(session.sourceMoc).absoluteFilePath()) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的模型不是当前打开的模型"));
         return;
     }
-    if (!session.sourceDigest.isEmpty() &&
-        session.sourceDigest != live2dstruct::CModelSession::ComputeSourceDigest(session.sourceMoc)) {
-        QMessageBox::warning(this, QStringLiteral("载入会话失败"), QStringLiteral("会话对应的 moc3 文件内容已变化，无法安全恢复编辑状态"));
+    live2dstruct::CModelDocument candidate;
+    if (!RuntimeMatchesDocument(&loadError) || !session.RestoreDocument(m_document, candidate, &loadError)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
     if (!ConfirmCloseWithUnsavedChanges(true)) return;
-    const QString sourceMoc = session.sourceMoc;
-    const QPointer<CMotionPanel> motionPanel = m_motionPanel;
-    const auto applied = QSharedPointer<bool>::create(false);
-    const auto animationRevision = QSharedPointer<quint64>::create(0);
-    auto apply = [this, sourceMoc, session, applied, motionPanel, animationRevision]() {
-        if (!motionPanel || motionPanel != m_motionPanel) return;
-        if (*applied && (m_sessionDirty || motionPanel->TimelineRevision() != *animationRevision ||
-                         motionPanel->HasUnsavedTimelineChanges())) return;
-        if (!m_openglwindows || QFileInfo(m_currentMoc).absoluteFilePath() != QFileInfo(sourceMoc).absoluteFilePath()) return;
-        m_applyingSession = true;
-        QString resetError;
-        if (!m_document.Load(m_currentMoc, &resetError)) {
-            m_applyingSession = false;
-            statusBar()->showMessage(QStringLiteral("会话基线恢复失败：%1").arg(resetError), 8000);
-            return;
-        }
-        m_openglwindows->ClearEditorOverrides();
-        if (m_inspectorPanel) m_inspectorPanel->SetDocument(&m_document);
-        if (m_paramPanel) {
-            m_paramPanel->SetDocument(&m_document);
-            for (auto it = session.parameterMetadata.cbegin(); it != session.parameterMetadata.cend(); ++it)
-                m_document.SetParameterMetadata(it.key(), it.value());
-            m_paramPanel->RefreshParameterMetadata();
-            m_paramPanel->ResetAll();
-            m_paramPanel->ApplyValues(session.parameters);
-        }
-        m_document.ClearLocked();
-        for (auto it = session.locked.cbegin(); it != session.locked.cend(); ++it) {
-            const int separator = it.key().indexOf(QLatin1Char('|'));
-            if (separator <= 0 || separator >= it.key().size() - 1) continue;
-            m_document.SetLocked(it.key().left(separator), it.key().mid(separator + 1), it.value());
-        }
-        if (m_treePanel) m_treePanel->ApplyLockedState(session.locked);
-        if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
-        m_document.SetDeformerParentIndices(session.deformerParentIndices);
-        for (auto it = session.deformerRotationKeyforms.cbegin(); it != session.deformerRotationKeyforms.cend(); ++it)
-            m_document.SetDeformerRotationKeyforms(it.key(), it.value());
-        for (auto it = session.deformerWarpKeyforms.cbegin(); it != session.deformerWarpKeyforms.cend(); ++it)
-            m_document.SetDeformerWarpKeyforms(it.key(), it.value());
-        if (m_treePanel) m_treePanel->ApplyVisibilityState(session.visibility);
-        for (auto it = session.drawableOpacity.cbegin(); it != session.drawableOpacity.cend(); ++it) {
-            m_document.SetDrawableOpacity(it.key(), it.value());
-            if (m_openglwindows) m_openglwindows->do_SetDrawableOpacity(it.key(), it.value());
-        }
-        for (auto it = session.drawableDrawOrder.cbegin(); it != session.drawableDrawOrder.cend(); ++it) {
-            m_document.SetDrawableDrawOrder(it.key(), it.value());
-            if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(it.key(), it.value());
-        }
-        for (auto meshIt = session.drawableKeyformPositions.cbegin(); meshIt != session.drawableKeyformPositions.cend(); ++meshIt) {
-            for (int keyformIndex = 0; keyformIndex < meshIt.value().size(); ++keyformIndex) {
-                m_document.SetDrawableKeyformPositions(meshIt.key(), keyformIndex, meshIt.value().at(keyformIndex));
-            }
-        }
-        for (auto indexIt = session.drawableIndices.cbegin(); indexIt != session.drawableIndices.cend(); ++indexIt) {
-            if (!m_document.SetDrawableIndices(indexIt.key(), indexIt.value())) continue;
-            if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(indexIt.key(), indexIt.value());
-        }
-        for (auto maskIt = session.drawableMaskIndices.cbegin(); maskIt != session.drawableMaskIndices.cend(); ++maskIt)
-            m_document.SetDrawableMaskIndices(maskIt.key(), maskIt.value());
-        for (auto invertIt = session.drawableMaskInverted.cbegin(); invertIt != session.drawableMaskInverted.cend(); ++invertIt)
-            m_document.SetDrawableMaskInverted(invertIt.key(), invertIt.value());
-        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
-        if (m_openglwindows) m_openglwindows->SetViewState(session.viewScale,
-                                                            QVector2D(session.viewPosition.x(), session.viewPosition.y()));
-        QString animationError;
-        if (!motionPanel->RestoreTimelineState(session.animation, &animationError)) {
-            m_applyingSession = false;
-            statusBar()->showMessage(animationError, 8000);
-            return;
-        }
-        *animationRevision = motionPanel->TimelineRevision();
-        m_applyingSession = false;
-        if (m_inspectorPanel) m_inspectorPanel->ClearHistory();
-        m_historySource = HistorySource::None;
-        if (m_undoAction) m_undoAction->setEnabled(false);
-        if (m_redoAction) m_redoAction->setEnabled(false);
-        m_sessionDirty = false;
-        *applied = true;
-        setWindowTitle(QStringLiteral("live2d2psd"));
-        statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
-    };
-    apply();
-    QTimer::singleShot(300, this, apply);
+    const QScopedValueRollback<bool> restoring(m_applyingSession, true);
+    if (!m_motionPanel->RestoreTimelineState(session.animation, &loadError)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
+        return;
+    }
+    ClearTimelinePreview();
+    m_document = std::move(candidate);
+    if (m_inspectorPanel) m_inspectorPanel->SetDocument(&m_document);
+    if (m_paramPanel) {
+        const QSignalBlocker blocker(m_paramPanel);
+        QMap<QString, float> values;
+        for (const auto& parameter : m_document.Parameters())
+            values.insert(parameter.id, m_document.ParameterValue(parameter.id));
+        m_paramPanel->SetDocument(nullptr);
+        m_paramPanel->SetDocument(&m_document);
+        m_paramPanel->RefreshParameterMetadata();
+        m_paramPanel->ResetAll();
+        m_paramPanel->ApplyValues(values);
+    }
+    if (m_blendShapePanel) {
+        for (const auto& parameter : m_document.Parameters())
+            m_blendShapePanel->SyncParameterValue(parameter.id, m_document.ParameterValue(parameter.id));
+    }
+    if (m_treePanel) {
+        const QSignalBlocker blocker(m_treePanel);
+        m_treePanel->ApplyLockedState(session.locked);
+        QMap<QString, bool> visibility;
+        for (const auto& part : m_document.Parts())
+            visibility.insert(QStringLiteral("part|") + part.id, part.visible);
+        for (const auto& drawable : m_document.Drawables())
+            visibility.insert(QStringLiteral("artmesh|") + drawable.id, drawable.visible);
+        for (const auto& deformer : m_document.Deformers())
+            visibility.insert((deformer.type == live2dstruct::CModelDeformer::Warp
+                ? QStringLiteral("warp|") : QStringLiteral("rotation|")) + deformer.id, deformer.visible);
+        m_treePanel->ApplyVisibilityState(visibility);
+    }
+    if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
+    m_openglwindows->SetViewState(session.viewScale, QVector2D(session.viewPosition.x(), session.viewPosition.y()));
+    SyncDocumentToRuntime();
+    if (m_inspectorPanel) {
+        m_inspectorPanel->RefreshSelection();
+        m_inspectorPanel->ClearHistory();
+    }
+    if (m_diagnosticsPanel) m_diagnosticsPanel->Refresh();
+    m_historySource = HistorySource::None;
+    RefreshUndoActions();
+    m_sessionDirty = false;
+    setWindowTitle(QStringLiteral("live2d2psd"));
+    statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
+}
+
+bool MainWindow::RuntimeMatchesDocument(QString* error) const
+{
+    if (error) error->clear();
+    if (!m_document.IsLoaded()) {
+        if (error) *error = QStringLiteral("尚未加载模型数据");
+        return false;
+    }
+    if (!m_openglwindows || !m_openglwindows->IsModelReady()) return true;
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
+    if (!model || model->GetSourceMocDigest() != m_document.SourceDigest()) {
+        if (error) *error = QStringLiteral("预览模型与编辑数据的源文件不同，请重新打开模型");
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::SyncDocumentToRuntime()
+{
+    if (!m_openglwindows || !m_openglwindows->IsModelReady() || !RuntimeMatchesDocument()) return;
+    m_openglwindows->ClearEditorOverrides();
+    for (const auto& parameter : m_document.Parameters())
+        m_openglwindows->do_change_para_value(parameter.id, m_document.ParameterValue(parameter.id), false);
+    auto* model = LAppLive2DManager::GetInstance()->GetModel(0);
+    for (const auto& part : m_document.Parts()) {
+        if (!part.visible || model->GetHiddenPartIds().contains(part.id))
+            m_openglwindows->do_SetVisibility(part.id, QStringLiteral("part"), part.visible);
+    }
+    for (const auto& drawable : m_document.Drawables())
+        m_openglwindows->do_SetVisibility(drawable.id, QStringLiteral("artmesh"), drawable.visible);
+    m_openglwindows->SetHiddenDeformerDrawables(m_document.HiddenDeformerDrawables());
+    const auto& opacity = m_document.DrawableOpacityOverrides();
+    for (auto it = opacity.cbegin(); it != opacity.cend(); ++it)
+        m_openglwindows->do_SetDrawableOpacity(it.key(), it.value());
+    const auto& order = m_document.DrawableDrawOrderOverrides();
+    for (auto it = order.cbegin(); it != order.cend(); ++it)
+        m_openglwindows->do_SetDrawableDrawOrder(it.key(), it.value());
+    const auto& indices = m_document.DrawableIndexOverrides();
+    for (auto it = indices.cbegin(); it != indices.cend(); ++it)
+        m_openglwindows->do_SetDrawableIndices(it.key(), it.value());
+    m_openglwindows->SetViewState(m_openglwindows->ViewScale(), m_openglwindows->ViewPosition());
 }
 
 bool MainWindow::ConfirmExportReady(const QString& operation)
 {
     if (!m_document.IsLoaded()) return true;
+    QString sourceError;
+    if (!RuntimeMatchesDocument(&sourceError) || !m_document.SourceMatchesDisk(&sourceError)) {
+        QMessageBox::warning(this, operation + QStringLiteral("已阻止"), sourceError);
+        return false;
+    }
     int errors = 0;
     int warnings = 0;
     for (const auto& diagnostic : m_document.Validate()) {
@@ -1038,6 +1054,10 @@ bool MainWindow::CloseModel()
         return true;
     }
     if (!ConfirmCloseWithUnsavedChanges()) return false;
+    m_workspaceReady = false;
+    m_runtimePanelsInitialized = false;
+    m_saveSessionAction->setEnabled(false);
+    m_loadSessionAction->setEnabled(false);
     StopPsdBatch();
     const QScopedValueRollback<bool> closing(m_closingModel, true);
     if (m_motionPanel) {
@@ -1130,6 +1150,10 @@ void MainWindow::RestDock(const QString &name)
         QMessageBox::warning(this, "打开模型失败", documentError);
         return;
     }
+    m_workspaceReady = false;
+    m_runtimePanelsInitialized = false;
+    m_saveSessionAction->setEnabled(false);
+    m_loadSessionAction->setEnabled(false);
     if (m_headless) {
         m_headless->m_timer.stop();
         m_headless->makeCurrent();
@@ -1286,6 +1310,8 @@ void MainWindow::RestDock(const QString &name)
     m_inspectorPanel->SetDocument(&m_document);
     m_inspectorPanel->SetLockedState(m_document.LockedKeys());
     connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, this, [this](bool canUndo, bool){
+        if (m_openglwindows && RuntimeMatchesDocument())
+            m_openglwindows->SetHiddenDeformerDrawables(m_document.HiddenDeformerDrawables());
         if (m_historySource != HistorySource::Timeline) m_historySource = HistorySource::Inspector;
         RefreshUndoActions();
         if (canUndo && !m_applyingSession) {
@@ -1341,35 +1367,46 @@ void MainWindow::RestDock(const QString &name)
         m_blendShapePanel->BuildBlendShapes(moc, m_cidJson);
     }
 
-    // 参数和图集依赖 GL 初始化。
-    QString posePath = modeljson.m_Pose.isEmpty() ? QString() : (modeljson.m_parentPath + "/" + modeljson.m_Pose);
-    QTimer::singleShot(200, m_paramPanel, [this, posePath, moc](){
-        const QSet<QString>* bsParams = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
-        if(m_paramPanel) m_paramPanel->BuildParams(m_cidJson, bsParams);
-        if (m_paramPanel && m_blendShapePanel) {
-            const auto values = m_paramPanel->CurrentValues();
-            for (auto it = values.cbegin(); it != values.cend(); ++it) {
-                m_blendShapePanel->SyncParameterValue(it.key(), it.value());
-            }
+    const QSet<QString>* bsParams = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
+    m_paramPanel->BuildParams(m_cidJson, bsParams);
+    if (m_blendShapePanel) {
+        const auto values = m_paramPanel->CurrentValues();
+        for (auto it = values.cbegin(); it != values.cend(); ++it)
+            m_blendShapePanel->SyncParameterValue(it.key(), it.value());
+    }
+    const QString posePath = modeljson.m_Pose.isEmpty() ? QString() : (modeljson.m_parentPath + "/" + modeljson.m_Pose);
+    if (!posePath.isEmpty()) {
+        QString poseError;
+        if (!m_motionPanel->BuildPoseGroups(posePath, &poseError))
+            statusBar()->showMessage(poseError, 8000);
+    }
+    const auto initializeRuntimePanels = [this, moc, expectedWindow = m_openglwindows](bool loaded) {
+        if (!loaded || m_runtimePanelsInitialized || m_openglwindows != expectedWindow) return;
+        QString sourceError;
+        if (!RuntimeMatchesDocument(&sourceError)) {
+            statusBar()->showMessage(sourceError);
+            return;
         }
-        // Pose 切换
-        if(m_motionPanel && !posePath.isEmpty()){
-            QString poseError;
-            if (!m_motionPanel->BuildPoseGroups(posePath, &poseError))
-                statusBar()->showMessage(poseError, 8000);
+        SyncDocumentToRuntime();
+        if (m_texturePanel && m_document.SourceMatchesDisk(&sourceError)) {
+            auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
+            if (textures) m_texturePanel->LoadTextures(textures->GetModelTex(), moc);
         }
-        // 加载纹理（GL 初始化后 TextureManager 才有数据）；moc 用于 UV 线框解析
-        if(m_texturePanel){
-            LAppTextureManager* texMgr = LAppDelegate::GetInstance()->GetTextureManager();
-            if(texMgr) m_texturePanel->LoadTextures(texMgr->GetModelTex(), moc);
-        }
-        // 恢复背景色设置到新 delegate
         applyBgColor();
-    });
+        m_runtimePanelsInitialized = true;
+    };
+    connect(m_openglwindows, &OpengGlForm::RuntimeInitialized, m_paramPanel,
+            initializeRuntimePanels, Qt::QueuedConnection);
+    if (m_openglwindows->HasInitializationResult()) {
+        const bool loaded = m_openglwindows->IsModelReady();
+        QTimer::singleShot(0, m_paramPanel, [initializeRuntimePanels, loaded] { initializeRuntimePanels(loaded); });
+    }
 
     // 参数面板实时同步定时器（200ms 间隔，低频避免性能问题）
     QTimer* syncTimer = new QTimer(m_paramPanel);
-    connect(syncTimer, &QTimer::timeout, m_paramPanel, &CParamPanel::SyncFromModel);
+    connect(syncTimer, &QTimer::timeout, m_paramPanel, [this] {
+        if (m_runtimePanelsInitialized && RuntimeMatchesDocument()) m_paramPanel->SyncFromModel();
+    });
     syncTimer->start(200);
 
     // 面板切换按钮 ↔ Dock 面板双向同步
@@ -1426,6 +1463,7 @@ void MainWindow::RestDock(const QString &name)
                 if (!isInit) m_motionPanel->RecordParameterValue(name, value);
             });
     connect(m_motionPanel, &CMotionPanel::TimelineFrameChanged, this, [this](const CMotionPreviewFrame& frame){
+        if (m_applyingSession) return;
         if (frame.IsEmpty()) { ClearTimelinePreview(); return; }
         if (!m_openglwindows || !m_openglwindows->isValid()) return;
         auto* manager = LAppLive2DManager::GetInstance();
@@ -1455,32 +1493,6 @@ void MainWindow::RestDock(const QString &name)
     connect(m_openglwindows, &OpengGlForm::RenderOrderChanged, m_texturePanel, &CTexturePanel::SetRenderOrder);
     connect(m_treePanel, &CModelTreePanel::MeshSelected, m_texturePanel, &CTexturePanel::HighlightMesh);
 
-    // 信号连接：树面板可见性 → OpenGL 渲染控制
-    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this,
-            [this](const QString& name, const QString& type, bool visible){
-        if (!m_openglwindows) return;
-        if (m_motionPanel) m_motionPanel->StopTimelinePreview();
-        if (type != QLatin1String("warp") && type != QLatin1String("rotation")) {
-            m_openglwindows->do_SetVisibility(name, type, visible);
-            return;
-        }
-        int deformerIndex = -1;
-        for (int i = 0; i < m_document.Deformers().size(); ++i) {
-            if (m_document.Deformers()[i].id == name) { deformerIndex = i; break; }
-        }
-        if (deformerIndex < 0) return;
-        QStringList affected;
-        for (const auto& drawable : m_document.Drawables()) {
-            int current = drawable.parentDeformerIndex;
-            QSet<int> visited;
-            while (current >= 0 && current < m_document.Deformers().size() && !visited.contains(current)) {
-                if (current == deformerIndex) { affected.append(drawable.id); break; }
-                visited.insert(current);
-                current = m_document.DeformerParentIndex(m_document.Deformers()[current].id);
-            }
-        }
-        m_openglwindows->do_SetDeformerDrawableVisibility(affected, visible);
-    });
     connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this, [this](const QString& name, const QString& type, bool visible){
         if (m_syncingVisibility) return;
         bool found = false;
@@ -1495,6 +1507,13 @@ void MainWindow::RestDock(const QString &name)
         if (!found || before == visible) return;
         const live2dstruct::CModelEdit command{name, type, live2dstruct::CModelEdit::Visibility, before, visible};
         if (m_document.ExecuteEdit(command) && m_inspectorPanel) m_inspectorPanel->SyncHistoryState();
+    });
+    connect(m_treePanel, &CModelTreePanel::VisibilityChanged, this,
+            [this](const QString& name, const QString& type, bool visible) {
+        if (!m_openglwindows || !RuntimeMatchesDocument()) return;
+        if (m_motionPanel) m_motionPanel->StopTimelinePreview();
+        m_openglwindows->do_SetVisibility(name, type, visible);
+        m_openglwindows->SetHiddenDeformerDrawables(m_document.HiddenDeformerDrawables());
     });
     connect(m_inspectorPanel, &CInspectorPanel::VisibilityChanged, this,
             [this](const QString& name, const QString& type, bool visible){
@@ -1705,6 +1724,9 @@ void MainWindow::RestDock(const QString &name)
             if (!hideId.isEmpty()) model->SetPartVisible(hideId, false);
         }
     });
+    m_workspaceReady = true;
+    m_saveSessionAction->setEnabled(true);
+    m_loadSessionAction->setEnabled(true);
 
 }
 
@@ -1770,9 +1792,11 @@ void MainWindow::createActions()
         RefreshUndoActions();
     });
     m_saveSessionAction = new QAction(tr("保存会话"), this);
+    m_saveSessionAction->setEnabled(false);
     m_saveSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
     connect(m_saveSessionAction, &QAction::triggered, this, &MainWindow::on_actionSaveSession_triggered);
     m_loadSessionAction = new QAction(tr("载入会话"), this);
+    m_loadSessionAction->setEnabled(false);
     m_loadSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
     connect(m_loadSessionAction, &QAction::triggered, this, &MainWindow::on_actionLoadSession_triggered);
     m_darkTheme = QSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"))

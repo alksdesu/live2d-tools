@@ -44,6 +44,8 @@ SOURCES += \
     opengl/cmeshbounds.cpp \
     opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
+    live2dstruct/ckeyformbindinggrid.cpp \
+    live2dstruct/cmocpreviewbuilder.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
     edit/cgridlines.cpp \
@@ -246,6 +248,8 @@ HEADERS += \
     opengl/cmeshbounds.h \
     opengl/cuvgeometry.h \
     live2dstruct/cmodeldocument.h \
+    live2dstruct/ckeyformbindinggrid.h \
+    live2dstruct/cmocpreviewbuilder.h \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
     CPrecompileHead.h \

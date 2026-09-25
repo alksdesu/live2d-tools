@@ -10,6 +10,7 @@
 #include <QSet>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace live2dstruct {
 
@@ -515,6 +516,117 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     result.viewScale = static_cast<float>(scale);
     result.viewPosition = QPointF(x, y);
     *session = result;
+    return true;
+}
+
+bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error) const
+{
+    const auto fail = [error](const QString& field, const QString& id = QString()) {
+        setError(error, id.isEmpty() ? QStringLiteral("会话字段无效：%1").arg(field)
+                                    : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
+        return false;
+    };
+    if (version != 1) return fail(QStringLiteral("version"));
+    if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
+        setError(error, QStringLiteral("没有可恢复会话的模型快照"));
+        return false;
+    }
+    if (!sourceDigest.isEmpty() && (sourceDigest.size() != 32 || sourceDigest != loaded.SourceDigest())) {
+        setError(error, QStringLiteral("会话 sourceDigest 与模型快照不匹配"));
+        return false;
+    }
+    CMotionTimeline timeline;
+    if (!timeline.RestoreState(animation, nullptr, error)) return false;
+    if (!std::isfinite(viewScale) || viewScale <= 0.0f ||
+        !std::isfinite(viewPosition.x()) || !std::isfinite(viewPosition.y()) ||
+        std::abs(viewPosition.x()) > std::numeric_limits<float>::max() ||
+        std::abs(viewPosition.y()) > std::numeric_limits<float>::max()) return fail(QStringLiteral("view"));
+
+    const struct { const char* name; qsizetype count; } limitedMaps[] = {
+        {"drawableKeyformPositions", drawableKeyformPositions.size()},
+        {"drawableIndices", drawableIndices.size()},
+        {"drawableMaskIndices", drawableMaskIndices.size()},
+        {"deformerParentIndices", deformerParentIndices.size()},
+        {"deformerRotationKeyforms", deformerRotationKeyforms.size()},
+        {"deformerWarpKeyforms", deformerWarpKeyforms.size()}
+    };
+    for (const auto& map : limitedMaps)
+        if (map.count > 100000) return fail(QString::fromLatin1(map.name));
+
+    CModelDocument candidate;
+    if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
+    QSet<QString> objectKeys;
+    QHash<QString, const CModelDrawable*> meshes;
+    for (const auto& part : candidate.Parts())
+        if (!part.id.isEmpty()) objectKeys.insert(QStringLiteral("part|") + part.id);
+    for (const auto& deformer : candidate.Deformers()) {
+        const QString type = deformer.type == CModelDeformer::Warp ? QStringLiteral("warp|")
+                                                                 : QStringLiteral("rotation|");
+        if (!deformer.id.isEmpty()) objectKeys.insert(type + deformer.id);
+    }
+    for (const auto& mesh : candidate.Drawables()) {
+        if (!mesh.id.isEmpty()) objectKeys.insert(QStringLiteral("artmesh|") + mesh.id);
+        meshes.insert(mesh.id, &mesh);
+    }
+    for (auto it = visibility.cbegin(); it != visibility.cend(); ++it) {
+        if (!objectKeys.contains(it.key())) return fail(QStringLiteral("visibility"), it.key());
+        const int separator = it.key().indexOf(QLatin1Char('|'));
+        const QString type = it.key().left(separator), id = it.key().mid(separator + 1);
+        const bool applied = type == QStringLiteral("part") ? candidate.SetPartVisible(id, it.value())
+                           : type == QStringLiteral("artmesh") ? candidate.SetDrawableVisible(id, it.value())
+                                                                : candidate.SetDeformerVisible(id, it.value());
+        if (!applied) return fail(QStringLiteral("visibility"), it.key());
+    }
+    for (auto it = parameterMetadata.cbegin(); it != parameterMetadata.cend(); ++it)
+        if (!candidate.SetParameterMetadata(it.key(), it.value())) return fail(QStringLiteral("parameterMetadata"), it.key());
+    for (auto it = parameters.cbegin(); it != parameters.cend(); ++it)
+        if (!candidate.SetParameterValue(it.key(), it.value())) return fail(QStringLiteral("parameters"), it.key());
+    for (auto it = drawableOpacity.cbegin(); it != drawableOpacity.cend(); ++it) {
+        if (!std::isfinite(it.value()) || it.value() < 0.0f || it.value() > 1.0f ||
+            !candidate.SetDrawableOpacity(it.key(), it.value())) return fail(QStringLiteral("drawableOpacity"), it.key());
+    }
+    for (auto it = drawableDrawOrder.cbegin(); it != drawableDrawOrder.cend(); ++it) {
+        if (it.value() < 0 || it.value() > 1000 || !candidate.SetDrawableDrawOrder(it.key(), it.value()))
+            return fail(QStringLiteral("drawableDrawOrder"), it.key());
+    }
+    for (auto it = drawableKeyformPositions.cbegin(); it != drawableKeyformPositions.cend(); ++it) {
+        const auto mesh = meshes.value(it.key(), nullptr);
+        if (!mesh || it.value().size() > mesh->keyforms.size() || it.value().size() > 10000)
+            return fail(QStringLiteral("drawableKeyformPositions"), it.key());
+        for (int index = 0; index < it.value().size(); ++index) {
+            const auto& positions = it.value()[index];
+            if (positions.isEmpty()) continue;
+            if (positions.size() > 2000000 || !candidate.SetDrawableKeyformPositions(it.key(), index, positions))
+                return fail(QStringLiteral("drawableKeyformPositions"), QStringLiteral("%1[%2]").arg(it.key()).arg(index));
+        }
+    }
+    for (auto it = drawableIndices.cbegin(); it != drawableIndices.cend(); ++it)
+        if (!candidate.SetDrawableIndices(it.key(), it.value())) return fail(QStringLiteral("drawableIndices"), it.key());
+    for (auto it = drawableMaskIndices.cbegin(); it != drawableMaskIndices.cend(); ++it) {
+        if (it.value().size() > 10000 || !candidate.SetDrawableMaskIndices(it.key(), it.value()))
+            return fail(QStringLiteral("drawableMaskIndices"), it.key());
+    }
+    for (auto it = drawableMaskInverted.cbegin(); it != drawableMaskInverted.cend(); ++it) {
+        if (!candidate.SetDrawableMaskInverted(it.key(), it.value()))
+            return fail(QStringLiteral("drawableMaskInverted"), it.key());
+    }
+    if (!candidate.SetDeformerParentIndices(deformerParentIndices)) return fail(QStringLiteral("deformerParentIndices"));
+    for (auto it = deformerRotationKeyforms.cbegin(); it != deformerRotationKeyforms.cend(); ++it) {
+        if (!candidate.SetDeformerRotationKeyforms(it.key(), it.value()))
+            return fail(QStringLiteral("deformerRotationKeyforms"), it.key());
+    }
+    for (auto it = deformerWarpKeyforms.cbegin(); it != deformerWarpKeyforms.cend(); ++it) {
+        if (!candidate.SetDeformerWarpKeyforms(it.key(), it.value()))
+            return fail(QStringLiteral("deformerWarpKeyforms"), it.key());
+    }
+    for (auto it = locked.cbegin(); it != locked.cend(); ++it) {
+        if (!objectKeys.contains(it.key())) return fail(QStringLiteral("locked"), it.key());
+        const int separator = it.key().indexOf(QLatin1Char('|'));
+        candidate.SetLocked(it.key().left(separator), it.key().mid(separator + 1), it.value());
+    }
+    candidate.ClearEditHistory();
+    result = std::move(candidate);
+    setError(error, {});
     return true;
 }
 

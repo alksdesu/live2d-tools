@@ -30,6 +30,8 @@ add_library(model_data STATIC
     live2dstruct/cmotiontimeline.cpp
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
+    live2dstruct/ckeyformbindinggrid.cpp
+    live2dstruct/cmocpreviewbuilder.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
     std/cmodeljson.cpp
@@ -105,6 +107,16 @@ if(BUILD_TESTING)
     target_link_libraries(model_data_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_data_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_data COMMAND model_data_tests)
+    foreach(preview_test IN ITEMS keyform_binding_grid moc_preview_builder model_snapshot session_restore deformer_visibility)
+        set(preview_test_source ${preview_test})
+        if(preview_test STREQUAL "moc_preview_builder")
+            set(preview_test_source preview_moc_builder)
+        endif()
+        add_executable(${preview_test}_tests tests/${preview_test_source}_tests.cpp)
+        target_link_libraries(${preview_test}_tests PRIVATE model_data Qt6::Test)
+        target_compile_definitions(${preview_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME ${preview_test} COMMAND ${preview_test}_tests)
+    endforeach()
     add_executable(model_settings_tests tests/model_settings_tests.cpp)
     target_link_libraries(model_settings_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_settings_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -264,7 +276,7 @@ if(BUILD_TESTING)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(param_panel_tests tests/param_panel_tests.cpp tests/param_panel_runtime_stubs.cpp
-        ui/cparampanel.cpp ui/cxyparameterpad.cpp)
+        ui/cparampanel.cpp ui/cxyparameterpad.cpp ui/para/ccidjson.cpp)
     target_link_libraries(param_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets Qt6::OpenGL)
     target_compile_definitions(param_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME param_panel COMMAND param_panel_tests)

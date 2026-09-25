@@ -1,6 +1,17 @@
 #include "cfilereader.h"
 #include <limits>
 namespace live2dstruct {
+CReader CReader::FromBytes(QByteArray bytes)
+{
+    CReader reader;
+    if (bytes.size() > std::numeric_limits<int>::max()) {
+        reader.Fail(QStringLiteral("moc3 字节快照超出可读取范围"));
+        return reader;
+    }
+    reader.m_byte = QByteArray(bytes.constData(), bytes.size());
+    return reader;
+}
+
 CReader::CReader(const QString& filename) {
     QFile file(filename);
     if (!file.open(QIODevice::ReadOnly)) {

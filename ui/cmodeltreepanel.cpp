@@ -11,6 +11,9 @@
 #include <QCoreApplication>
 #include <QMenu>
 #include <QFont>
+#include <QSignalBlocker>
+#include <QScopedValueRollback>
+#include <QTreeWidgetItemIterator>
 
 using namespace live2dstruct;
 
@@ -22,6 +25,16 @@ static void initTree(QTreeWidget* tree, QObject* parent)
     tree->setAnimated(true);
     tree->setRootIsDecorated(true);
     tree->setItemDelegate(new CTreeNodeDelegate(tree));
+}
+
+static QList<QTreeWidgetItem*> findObjectItems(QTreeWidget* tree, const QString& name, const QString& type)
+{
+    QList<QTreeWidgetItem*> result;
+    for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+        if ((*it)->data(0, Qt::UserRole).toString() == name &&
+            (*it)->data(0, Qt::UserRole + 1).toString() == type) result.append(*it);
+    }
+    return result;
 }
 
 CModelTreePanel::CModelTreePanel(QWidget *parent)
@@ -213,8 +226,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
 {
     m_partTree->clear();
     m_deformerTree->clear();
-    m_nameToPartItem.clear();
-    m_nameToDeformerItem.clear();
 
     CReader reader(mocPath);
     CSectionTable sec(reader);
@@ -387,7 +398,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
                 : style()->standardIcon(QStyle::SP_BrowserReload));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             setVisible(item, def->is_visible);
-            m_nameToPartItem[defName] = item;
             buildDeformerSubtree(item, childIdx, visited);
         }
         for(int amIdx : deformerArtMeshes[defIdx]){
@@ -399,7 +409,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             setVisible(item, sec.art_meshes[amIdx]->is_visible);
-            m_nameToPartItem[amName] = item;
         }
     };
 
@@ -417,7 +426,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             setVisible(item, part->is_visible);
-            m_nameToPartItem[partId] = item;
             buildPartSubtree(item, childPartIdx, partPath, deformerPath);
         }
         for(int defIdx : partDeformers[partIdx]){
@@ -433,7 +441,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
                 : style()->standardIcon(QStyle::SP_BrowserReload));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             setVisible(item, def->is_visible);
-            m_nameToPartItem[defName] = item;
             QSet<int> branchVisited = deformerPath;
             buildDeformerSubtree(item, defIdx, branchVisited);
         }
@@ -446,7 +453,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             item->setIcon(0, style()->standardIcon(QStyle::SP_FileIcon));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             setVisible(item, sec.art_meshes[amIdx]->is_visible);
-            m_nameToPartItem[amName] = item;
         }
         partPath.remove(partIdx);
     };
@@ -462,7 +468,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         item->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         setVisible(item, part->is_visible);
-        m_nameToPartItem[partId] = item;
         QSet<int> partPath;
         QSet<int> deformerPath;
         buildPartSubtree(item, rootIdx, partPath, deformerPath);
@@ -496,7 +501,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
             childItem->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
             childItem->setFlags(childItem->flags() | Qt::ItemIsUserCheckable);
             setVisible(childItem, childPart->is_visible);
-            m_nameToDeformerItem[childPartId] = childItem;
             buildDeformerTreePart(childItem, childPartIdx, visited);
         }
         visited.remove(partIdx);
@@ -514,7 +518,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
                 : style()->standardIcon(QStyle::SP_BrowserReload));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             setVisible(item, def->is_visible);
-            m_nameToDeformerItem[defName] = item;
         }
     };
 
@@ -529,7 +532,6 @@ void CModelTreePanel::BuildTree(const QString& mocPath, CCidJson* cid)
         partItem->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
         partItem->setFlags(partItem->flags() | Qt::ItemIsUserCheckable);
         setVisible(partItem, part->is_visible);
-        m_nameToDeformerItem[partId] = partItem;
         QSet<int> visited;
         buildDeformerTreePart(partItem, rootIdx, visited);
     }
@@ -631,42 +633,20 @@ void CModelTreePanel::ApplyVisibilityState(const QMap<QString, bool>& state)
 
 void CModelTreePanel::SetVisibility(const QString& name, const QString& type, bool visible)
 {
-    const auto updateItem = [visible](QTreeWidgetItem* item, auto&& updateRef) -> void {
-        if (!item) return;
-        item->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
-        for (int i = 0; i < item->childCount(); ++i) updateRef(item->child(i), updateRef);
-    };
-    m_updatingChecks = true;
-    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) tree->blockSignals(true);
-    if (type == QLatin1String("part")) {
-        updateItem(m_nameToPartItem.value(name, nullptr), updateItem);
-        updateItem(m_nameToDeformerItem.value(name, nullptr), updateItem);
-    } else if (type == QLatin1String("artmesh")) {
-        if (m_nameToPartItem.contains(name)) m_nameToPartItem.value(name)->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
-        if (m_nameToDeformerItem.contains(name)) m_nameToDeformerItem.value(name)->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
-    } else {
-        updateItem(m_nameToPartItem.value(name, nullptr), updateItem);
-        updateItem(m_nameToDeformerItem.value(name, nullptr), updateItem);
+    if (name.isEmpty() || (type != QLatin1String("part") && type != QLatin1String("artmesh") &&
+                          type != QLatin1String("warp") && type != QLatin1String("rotation"))) return;
+    bool found = false;
+    {
+        const QScopedValueRollback<bool> updating(m_updatingChecks, true);
+        for (QTreeWidget* tree : {m_partTree, m_deformerTree}) {
+            const QSignalBlocker blocker(tree);
+            for (QTreeWidgetItem* item : findObjectItems(tree, name, type)) {
+                item->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+                found = true;
+            }
+        }
     }
-    for (QTreeWidget* tree : {m_partTree, m_deformerTree}) tree->blockSignals(false);
-    m_updatingChecks = false;
-
-    const auto emitItem = [this](QTreeWidgetItem* item, auto&& emitRef) -> void {
-        if (!item) return;
-        const QString itemType = item->data(0, Qt::UserRole + 1).toString();
-        const QString itemName = item->data(0, Qt::UserRole).toString();
-        if ((itemType == QLatin1String("part") || itemType == QLatin1String("artmesh") ||
-             itemType == QLatin1String("warp") || itemType == QLatin1String("rotation")) && !itemName.isEmpty())
-            emit VisibilityChanged(itemName, itemType, item->checkState(0) == Qt::Checked);
-        for (int i = 0; i < item->childCount(); ++i) emitRef(item->child(i), emitRef);
-    };
-    if (type == QLatin1String("artmesh")) {
-        if (m_nameToPartItem.contains(name)) emitItem(m_nameToPartItem.value(name), emitItem);
-        if (m_nameToDeformerItem.contains(name)) emitItem(m_nameToDeformerItem.value(name), emitItem);
-    } else {
-        if (m_nameToPartItem.contains(name)) emitItem(m_nameToPartItem.value(name), emitItem);
-        if (m_nameToDeformerItem.contains(name)) emitItem(m_nameToDeformerItem.value(name), emitItem);
-    }
+    if (found) emit VisibilityChanged(name, type, visible);
 }
 
 QStringList CModelTreePanel::collectDeformerNames(QTreeWidgetItem* item)
@@ -754,23 +734,22 @@ void CModelTreePanel::HighlightMesh(const QString& artName)
         m_deformerTree->clearSelection();
         return;
     }
-    // 部件树中高亮
-    if(m_nameToPartItem.contains(artName)){
-        m_partTree->clearSelection();
-        QTreeWidgetItem* item = m_nameToPartItem[artName];
-        item->setSelected(true);
-        m_partTree->scrollToItem(item);
+    const auto meshes = findObjectItems(m_partTree, artName, QStringLiteral("artmesh"));
+    if (meshes.isEmpty()) return;
+    QTreeWidgetItem* mesh = meshes.first();
+    m_partTree->clearSelection();
+    mesh->setSelected(true);
+    m_partTree->scrollToItem(mesh);
 
-        // 在变形器树中定位父变形器
-        QTreeWidgetItem* parent = item->parent();
-        if(parent){
-            QString parentName = parent->data(0, Qt::UserRole).toString();
-            if(m_nameToDeformerItem.contains(parentName)){
-                m_deformerTree->clearSelection();
-                QTreeWidgetItem* defItem = m_nameToDeformerItem[parentName];
-                defItem->setSelected(true);
-                m_deformerTree->scrollToItem(defItem);
-            }
-        }
+    auto linked = findObjectItems(m_deformerTree, artName, QStringLiteral("artmesh"));
+    if (linked.isEmpty() && mesh->parent()) {
+        const auto* parent = mesh->parent();
+        linked = findObjectItems(m_deformerTree, parent->data(0, Qt::UserRole).toString(),
+                                 parent->data(0, Qt::UserRole + 1).toString());
+    }
+    m_deformerTree->clearSelection();
+    if (!linked.isEmpty()) {
+        linked.first()->setSelected(true);
+        m_deformerTree->scrollToItem(linked.first());
     }
 }

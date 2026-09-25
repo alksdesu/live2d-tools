@@ -16,7 +16,7 @@ CXYParameterPad::CXYParameterPad(QWidget* parent)
 void CXYParameterPad::SetRange(float xMinimum, float xMaximum, float yMinimum, float yMaximum)
 {
     if (!qIsFinite(xMinimum) || !qIsFinite(xMaximum) || !qIsFinite(yMinimum) || !qIsFinite(yMaximum) ||
-        xMinimum >= xMaximum || yMinimum >= yMaximum) return;
+        xMinimum > xMaximum || yMinimum > yMaximum) return;
     m_xMinimum = xMinimum;
     m_xMaximum = xMaximum;
     m_yMinimum = yMinimum;
@@ -26,10 +26,10 @@ void CXYParameterPad::SetRange(float xMinimum, float xMaximum, float yMinimum, f
 
 void CXYParameterPad::SetValues(float xValue, float yValue)
 {
+    if (!qIsFinite(xValue) || !qIsFinite(yValue)) return;
     const float nextX = qBound(m_xMinimum, xValue, m_xMaximum);
     const float nextY = qBound(m_yMinimum, yValue, m_yMaximum);
-    if (qFuzzyCompare(nextX + 1.0f, m_xValue + 1.0f) &&
-        qFuzzyCompare(nextY + 1.0f, m_yValue + 1.0f)) {
+    if (nextX == m_xValue && nextY == m_yValue) {
         update();
         return;
     }
@@ -47,18 +47,21 @@ QRectF CXYParameterPad::PlotRect() const
 QPointF CXYParameterPad::PositionForValues() const
 {
     const QRectF plot = PlotRect();
-    const float xRatio = (m_xValue - m_xMinimum) / (m_xMaximum - m_xMinimum);
-    const float yRatio = (m_yValue - m_yMinimum) / (m_yMaximum - m_yMinimum);
+    const double xRatio = m_xMaximum > m_xMinimum
+        ? (double(m_xValue) - m_xMinimum) / (double(m_xMaximum) - m_xMinimum) : 0.5;
+    const double yRatio = m_yMaximum > m_yMinimum
+        ? (double(m_yValue) - m_yMinimum) / (double(m_yMaximum) - m_yMinimum) : 0.5;
     return {plot.left() + plot.width() * xRatio, plot.bottom() - plot.height() * yRatio};
 }
 
 void CXYParameterPad::SetValuesFromPosition(const QPointF& position)
 {
     const QRectF plot = PlotRect();
-    const float xRatio = qBound(0.0, (position.x() - plot.left()) / plot.width(), 1.0);
-    const float yRatio = qBound(0.0, (plot.bottom() - position.y()) / plot.height(), 1.0);
-    SetValues(m_xMinimum + (m_xMaximum - m_xMinimum) * xRatio,
-              m_yMinimum + (m_yMaximum - m_yMinimum) * yRatio);
+    if (!qIsFinite(position.x()) || !qIsFinite(position.y()) || plot.width() <= 0 || plot.height() <= 0) return;
+    const double xRatio = qBound(0.0, (position.x() - plot.left()) / plot.width(), 1.0);
+    const double yRatio = qBound(0.0, (plot.bottom() - position.y()) / plot.height(), 1.0);
+    SetValues(float(double(m_xMinimum) + (double(m_xMaximum) - m_xMinimum) * xRatio),
+              float(double(m_yMinimum) + (double(m_yMaximum) - m_yMinimum) * yRatio));
 }
 
 void CXYParameterPad::paintEvent(QPaintEvent*)
@@ -103,15 +106,17 @@ void CXYParameterPad::mouseReleaseEvent(QMouseEvent* event)
 
 void CXYParameterPad::keyPressEvent(QKeyEvent* event)
 {
-    const float xStep = (m_xMaximum - m_xMinimum) / (event->modifiers() & Qt::ShiftModifier ? 20.0f : 100.0f);
-    const float yStep = (m_yMaximum - m_yMinimum) / (event->modifiers() & Qt::ShiftModifier ? 20.0f : 100.0f);
-    float x = m_xValue;
-    float y = m_yValue;
+    const double divisor = event->modifiers() & Qt::ShiftModifier ? 20.0 : 100.0;
+    const double xStep = (double(m_xMaximum) - m_xMinimum) / divisor;
+    const double yStep = (double(m_yMaximum) - m_yMinimum) / divisor;
+    double x = m_xValue;
+    double y = m_yValue;
     if (event->key() == Qt::Key_Left) x -= xStep;
     else if (event->key() == Qt::Key_Right) x += xStep;
     else if (event->key() == Qt::Key_Down) y -= yStep;
     else if (event->key() == Qt::Key_Up) y += yStep;
     else { QWidget::keyPressEvent(event); return; }
-    SetValues(x, y);
+    SetValues(float(qBound(double(m_xMinimum), x, double(m_xMaximum))),
+              float(qBound(double(m_yMinimum), y, double(m_yMaximum))));
     event->accept();
 }

@@ -36,6 +36,7 @@ struct CModelSession
 
     QByteArray ToJson() const;
     static bool FromJson(const QByteArray& data, CModelSession* session, QString* error = nullptr);
+    bool RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error = nullptr) const;
     static QByteArray ComputeSourceDigest(const QString& path);
     bool Save(const QString& path, QString* error = nullptr) const;
     static bool Load(const QString& path, CModelSession* session, QString* error = nullptr);

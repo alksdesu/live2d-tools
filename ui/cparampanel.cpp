@@ -29,10 +29,51 @@
 #include <algorithm>
 #include <iterator>
 #include <cmath>
+#include <limits>
 
 using namespace Live2D::Cubism::Framework;
 
 namespace {
+class CParameterSpinBox final : public QDoubleSpinBox
+{
+public:
+    using QDoubleSpinBox::QDoubleSpinBox;
+
+    bool DisplaysValue(double value) const
+    {
+        return textFromValue(value) == textFromValue(this->value());
+    }
+};
+
+bool validParameterRange(float minimum, float maximum)
+{
+    return std::isfinite(minimum) && std::isfinite(maximum) && minimum <= maximum;
+}
+
+float boundedParameterValue(double value, float minimum, float maximum, float fallback)
+{
+    if (!validParameterRange(minimum, maximum)) return 0;
+    if (!std::isfinite(value)) value = std::isfinite(fallback) ? fallback : minimum;
+    return static_cast<float>(std::clamp(value, static_cast<double>(minimum), static_cast<double>(maximum)));
+}
+
+int parameterToSlider(float value, float minimum, float maximum)
+{
+    if (!validParameterRange(minimum, maximum) || minimum == maximum) return 0;
+    const double bounded = boundedParameterValue(value, minimum, maximum, minimum);
+    const double range = static_cast<double>(maximum) - minimum;
+    return qBound(0, qRound((bounded - minimum) * 1000.0 / range), 1000);
+}
+
+float sliderToParameter(int position, float minimum, float maximum)
+{
+    if (!validParameterRange(minimum, maximum)) return 0;
+    const double ratio = qBound(0, position, 1000) / 1000.0;
+    return boundedParameterValue(static_cast<double>(minimum) +
+                                 (static_cast<double>(maximum) - minimum) * ratio,
+                                 minimum, maximum, minimum);
+}
+
 bool parseParameterPreset(const QByteArray& data, QMap<QString, float>* values, QString* error)
 {
     QJsonParseError parseError;
@@ -50,7 +91,8 @@ bool parseParameterPreset(const QByteArray& data, QMap<QString, float>* values, 
     for (const QString& key : object.keys()) {
         if (key == QStringLiteral("format")) continue;
         const QJsonValue value = object.value(key);
-        if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+        if (!value.isDouble() || !std::isfinite(value.toDouble()) ||
+            std::abs(value.toDouble()) > std::numeric_limits<float>::max()) {
             if (error) *error = QStringLiteral("参数值无效：%1").arg(key);
             return false;
         }
@@ -159,7 +201,7 @@ void CParamPanel::SetPreviewValues(const QMap<QString, float>& values,
     if (!m_previewActive) {
         for (const ParamRow& row : m_rows) {
             const float value = baselineValues.value(row.paramId, m_lastValues.value(row.paramId, row.defaultVal));
-            if (std::isfinite(value)) m_previewBaseline.insert(row.paramId, qBound(row.minVal, value, row.maxVal));
+            if (std::isfinite(value)) m_previewBaseline.insert(row.paramId, boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal));
         }
         m_previewActive = true;
     }
@@ -187,11 +229,10 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     if (rowIt == m_rows.cend()) return;
     const int rowIndex = static_cast<int>(rowIt - m_rows.cbegin());
     ParamRow& row = m_rows[rowIndex];
-    value = qBound(row.minVal, value, row.maxVal);
+    value = boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal);
     const float before = ValueBeforeEdit(paramId, row.defaultVal);
     if (userEdit || writeDocument) m_previewBaseline.remove(paramId);
-    const int sliderValue = row.maxVal > row.minVal
-        ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+    const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
     QSignalBlocker sliderBlocker(row.slider);
     QSignalBlocker spinBlocker(row.spinBox);
     row.slider->setValue(sliderValue);
@@ -201,7 +242,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     if (m_document && writeDocument) m_document->SetParameterValue(paramId, value);
     emit ParamChanged(paramId, value, !userEdit);
     RefreshXYControls();
-    if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) PushEdit(paramId, before, value);
+    if (record && before != value) PushEdit(paramId, before, value);
 }
 
 void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapeParams)
@@ -236,49 +277,69 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
 
     QVBoxLayout* layout = new QVBoxLayout(m_container);
 
-    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    if(!mgr || mgr->GetModelNum() == 0) return;
-
-    LAppModel* model = mgr->GetModel(0);
-    if(!model) return;
-
-    CubismModel* cubismModel = model->GetModel();
-    if(!cubismModel) return;
-
-    // 收集所有参数信息
-    int count = cubismModel->GetParameterCount();
-    QMap<QString, int> paramIdToModelIndex;
-    for(int i = 0; i < count; i++){
-        QString paramId = cubismModel->GetParameterId(i)->GetString().GetRawString();
-        paramIdToModelIndex[paramId] = i;
-    }
-
-    // 添加一行参数滑条的 lambda
-    auto addParamRow = [&](QVBoxLayout* targetLayout, const QString& paramId, int modelIdx){
-        float minVal = cubismModel->GetParameterMinimumValue(modelIdx);
-        float maxVal = cubismModel->GetParameterMaximumValue(modelIdx);
-        float defVal = cubismModel->GetParameterDefaultValue(modelIdx);
+    struct ParameterSource {
+        QString id;
+        int modelIndex = -1;
         live2dstruct::CModelParameterMetadata metadata;
-        const bool hasMetadata = m_document && m_document->ParameterMetadataOverrides().contains(paramId);
-        if (hasMetadata) {
-            metadata = m_document->ParameterMetadata(paramId);
+        float value = 0;
+        bool hasMetadata = false;
+    };
+    QVector<ParameterSource> parameters;
+    const bool documentReady = m_document && m_document->IsLoaded();
+    if (documentReady) {
+        parameters.reserve(m_document->Parameters().size());
+        for (int index = 0; index < m_document->Parameters().size(); ++index) {
+            const auto& parameter = m_document->Parameters()[index];
+            const auto metadata = m_document->ParameterMetadata(parameter.id);
+            const float value = m_document->ParameterValue(parameter.id);
+            if (parameter.id.isEmpty() || !std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
+                !std::isfinite(metadata.defaultValue) || !std::isfinite(value) || metadata.minimum > metadata.maximum ||
+                metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum ||
+                value < metadata.minimum || value > metadata.maximum ||
+                metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9) continue;
+            parameters.append({parameter.id, index, metadata, value,
+                               m_document->ParameterMetadataOverrides().contains(parameter.id)});
         }
-        if (hasMetadata) {
-            minVal = metadata.minimum;
-            maxVal = metadata.maximum;
-            defVal = metadata.defaultValue;
+    } else {
+        LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
+        if (!manager || manager->GetModelNum() == 0) return;
+        LAppModel* model = manager->GetModel(0);
+        CubismModel* runtime = model ? model->GetModel() : nullptr;
+        if (!runtime) return;
+        for (int index = 0; index < runtime->GetParameterCount(); ++index) {
+            ParameterSource parameter;
+            parameter.id = QString::fromUtf8(runtime->GetParameterId(index)->GetString().GetRawString());
+            parameter.modelIndex = index;
+            parameter.metadata.minimum = runtime->GetParameterMinimumValue(index);
+            parameter.metadata.maximum = runtime->GetParameterMaximumValue(index);
+            parameter.metadata.defaultValue = runtime->GetParameterDefaultValue(index);
+            parameter.metadata.decimalPlaces = 3;
+            if (!std::isfinite(parameter.metadata.minimum) || !std::isfinite(parameter.metadata.maximum) ||
+                parameter.metadata.minimum > parameter.metadata.maximum) {
+                parameter.metadata.minimum = 0;
+                parameter.metadata.maximum = 1;
+            }
+            if (!std::isfinite(parameter.metadata.defaultValue)) parameter.metadata.defaultValue = parameter.metadata.minimum;
+            parameter.metadata.defaultValue = qBound(parameter.metadata.minimum, parameter.metadata.defaultValue,
+                                                     parameter.metadata.maximum);
+            const float current = runtime->GetParameterValue(index);
+            parameter.value = std::isfinite(current) ? qBound(parameter.metadata.minimum, current, parameter.metadata.maximum)
+                                                     : parameter.metadata.defaultValue;
+            parameters.append(parameter);
         }
-        if (!std::isfinite(minVal) || !std::isfinite(maxVal) || minVal > maxVal) {
-            minVal = 0.0f;
-            maxVal = 1.0f;
-        }
-        if (!std::isfinite(defVal)) defVal = minVal;
-        defVal = qBound(minVal, defVal, maxVal);
-        float initialVal = qBound(minVal, cubismModel->GetParameterValue(modelIdx), maxVal);
-        if (m_document) {
-            if (m_document->ParameterValues().contains(paramId)) initialVal = m_document->ParameterValue(paramId);
-            else m_document->SetParameterValue(paramId, initialVal);
-        }
+    }
+    QMap<QString, int> parameterRows;
+    for (int index = 0; index < parameters.size(); ++index) parameterRows.insert(parameters[index].id, index);
+
+    auto addParamRow = [&](QVBoxLayout* targetLayout, const QString& paramId, int sourceIndex) {
+        const ParameterSource& parameter = parameters[sourceIndex];
+        const auto& metadata = parameter.metadata;
+        const bool hasMetadata = parameter.hasMetadata;
+        const float minVal = metadata.minimum;
+        const float maxVal = metadata.maximum;
+        const float defVal = metadata.defaultValue;
+        const float initialVal = parameter.value;
+        const double range = static_cast<double>(maxVal) - minVal;
 
         QWidget* rowWidget = new QWidget(m_container);
         QHBoxLayout* row = new QHBoxLayout(rowWidget);
@@ -320,17 +381,13 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
 
         QSlider* slider = new QSlider(Qt::Horizontal, rowWidget);
         slider->setRange(0, 1000);
-        int sliderDefault = 0;
-        if(maxVal > minVal){
-            sliderDefault = qBound(0, qRound((initialVal - minVal) * 1000.0f / (maxVal - minVal)), 1000);
-        }
-        slider->setValue(sliderDefault);
+        slider->setValue(parameterToSlider(initialVal, minVal, maxVal));
         row->addWidget(slider);
 
-        QDoubleSpinBox* spinBox = new QDoubleSpinBox(rowWidget);
+        auto* spinBox = new CParameterSpinBox(rowWidget);
+        spinBox->setDecimals(metadata.decimalPlaces);
         spinBox->setRange(minVal, maxVal);
-        spinBox->setDecimals(3);
-        spinBox->setSingleStep((maxVal - minVal) > 0 ? (maxVal - minVal) / 100.0 : 1.0);
+        spinBox->setSingleStep(range > 0 ? range / 100.0 : 1.0);
         spinBox->setValue(initialVal);
         spinBox->setFixedWidth(92);
         row->addWidget(spinBox);
@@ -352,7 +409,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         pr.maxVal = maxVal;
         pr.defaultVal = defVal;
         pr.paramId = paramId;
-        pr.modelIndex = modelIdx;
+        pr.modelIndex = parameter.modelIndex;
         pr.blendShape = isBlendShape;
         m_rows.append(pr);
         m_lastValues.insert(paramId, initialVal);
@@ -361,9 +418,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         connect(resetButton, &QToolButton::clicked, this, [this, idx](){
             if (idx < 0 || idx >= m_rows.size()) return;
             ParamRow& r = m_rows[idx];
-            const int sliderValue = r.maxVal > r.minVal
-                ? qBound(0, qRound((r.defaultVal - r.minVal) * 1000.0f / (r.maxVal - r.minVal)), 1000)
-                : 0;
+            const int sliderValue = parameterToSlider(r.defaultVal, r.minVal, r.maxVal);
             QSignalBlocker sliderBlocker(r.slider);
             QSignalBlocker spinBlocker(r.spinBox);
             r.slider->setValue(sliderValue);
@@ -375,20 +430,22 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         connect(slider, &QSlider::sliderReleased, this, [this, idx](){ EndParameterDrag(idx); });
         connect(slider, &QSlider::valueChanged, this, [this, idx](int val){
             ParamRow& r = m_rows[idx];
-            float realVal = r.minVal + (r.maxVal - r.minVal) * val / 1000.0f;
+            const float realVal = sliderToParameter(val, r.minVal, r.maxVal);
             QSignalBlocker blocker(r.spinBox);
             r.spinBox->setValue(realVal);
             ApplyValue(idx, realVal, !m_userDragging.contains(idx));
         });
 
-        connect(spinBox, &QDoubleSpinBox::valueChanged, this, [this, idx](double value){
+        connect(spinBox, &QDoubleSpinBox::valueChanged, this, [this, idx, spinBox](double value){
             ParamRow& r = m_rows[idx];
+            if (spinBox->DisplaysValue(m_lastValues.value(r.paramId, r.defaultVal))) return;
             if (r.maxVal > r.minVal) {
-                const int sliderValue = qBound(0, qRound((value - r.minVal) * 1000.0f / (r.maxVal - r.minVal)), 1000);
+                const int sliderValue = parameterToSlider(
+                    boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), r.minVal, r.maxVal);
                 QSignalBlocker blocker(r.slider);
                 r.slider->setValue(sliderValue);
             }
-            ApplyValue(idx, static_cast<float>(value), true);
+            ApplyValue(idx, boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), true);
         });
         connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){ m_userLocked.insert(idx); });
 
@@ -426,25 +483,21 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
             });
 
             for(const QString& paramId : group.vetParam){
-                if(!paramIdToModelIndex.contains(paramId)) continue;
-                addParamRow(groupLayout, paramId, paramIdToModelIndex[paramId]);
+                if (!parameterRows.contains(paramId) || addedParams.contains(paramId)) continue;
+                addParamRow(groupLayout, paramId, parameterRows[paramId]);
                 addedParams.insert(paramId);
             }
         }
 
         // 未分组的参数放到最后
-        for(int i = 0; i < count; i++){
-            QString paramId = cubismModel->GetParameterId(i)->GetString().GetRawString();
-            if(!addedParams.contains(paramId)){
-                addParamRow(layout, paramId, i);
-            }
+        for (int index = 0; index < parameters.size(); ++index) {
+            const QString& paramId = parameters[index].id;
+            if (!addedParams.contains(paramId)) addParamRow(layout, paramId, index);
         }
     } else {
         // 无分组信息，全部平铺
-        for(int i = 0; i < count; i++){
-            QString paramId = cubismModel->GetParameterId(i)->GetString().GetRawString();
-            addParamRow(layout, paramId, i);
-        }
+        for (int index = 0; index < parameters.size(); ++index)
+            addParamRow(layout, parameters[index].id, index);
     }
 
     layout->addStretch();
@@ -501,7 +554,7 @@ void CParamPanel::RefreshXYControls()
 
 void CParamPanel::ApplyXYPad(float xValue, float yValue)
 {
-    if (m_updatingXY || !m_xyXSelector || !m_xyYSelector) return;
+    if (m_updatingXY || !m_xyXSelector || !m_xyYSelector || !std::isfinite(xValue) || !std::isfinite(yValue)) return;
     const auto findRow = [this](QComboBox* selector) {
         return std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
             return row.paramId == selector->currentText();
@@ -510,8 +563,8 @@ void CParamPanel::ApplyXYPad(float xValue, float yValue)
     const auto xRow = findRow(m_xyXSelector);
     const auto yRow = findRow(m_xyYSelector);
     if (xRow == m_rows.cend() || yRow == m_rows.cend()) return;
-    xValue = qBound(xRow->minVal, xValue, xRow->maxVal);
-    yValue = qBound(yRow->minVal, yValue, yRow->maxVal);
+    xValue = boundedParameterValue(xValue, xRow->minVal, xRow->maxVal, xRow->defaultVal);
+    yValue = boundedParameterValue(yValue, yRow->minVal, yRow->maxVal, yRow->defaultVal);
     const QMap<QString, float> before{{xRow->paramId, ValueBeforeEdit(xRow->paramId, xRow->defaultVal)},
                                       {yRow->paramId, ValueBeforeEdit(yRow->paramId, yRow->defaultVal)}};
     const QMap<QString, float> after{{xRow->paramId, xValue}, {yRow->paramId, yValue}};
@@ -535,18 +588,16 @@ void CParamPanel::ResetAll()
     m_dragStarts.clear();
     for(auto& r : m_rows){
         const float before = ValueBeforeEdit(r.paramId, r.defaultVal);
-        int sliderDefault = 0;
-        if(r.maxVal > r.minVal){
-            sliderDefault = static_cast<int>((r.defaultVal - r.minVal) / (r.maxVal - r.minVal) * 1000.0f);
-        }
+        const float defaultValue = boundedParameterValue(r.defaultVal, r.minVal, r.maxVal, r.minVal);
+        const int sliderDefault = parameterToSlider(defaultValue, r.minVal, r.maxVal);
         r.slider->blockSignals(true);
         r.slider->setValue(sliderDefault);
         r.slider->blockSignals(false);
         r.spinBox->blockSignals(true);
-        r.spinBox->setValue(r.defaultVal);
+        r.spinBox->setValue(defaultValue);
         r.spinBox->blockSignals(false);
-        ApplyValue(&r - m_rows.data(), r.defaultVal, false);
-        PushEdit(r.paramId, before, r.defaultVal);
+        ApplyValue(&r - m_rows.data(), defaultValue, false);
+        PushEdit(r.paramId, before, defaultValue);
     }
 }
 
@@ -565,12 +616,10 @@ void CParamPanel::SyncFromModel()
         auto& r = m_rows[i];
         if(r.modelIndex < 0) continue;
         if(m_userDragging.contains(i) || m_userLocked.contains(i)) continue;
-        float curVal = cubismModel->GetParameterValue(r.modelIndex);
-        int sliderVal = 0;
-        if(r.maxVal > r.minVal){
-            sliderVal = static_cast<int>((curVal - r.minVal) / (r.maxVal - r.minVal) * 1000.0f);
-            sliderVal = qBound(0, sliderVal, 1000);
-        }
+        const float rawValue = cubismModel->GetParameterValue(r.modelIndex);
+        if (!std::isfinite(rawValue)) continue;
+        const float curVal = boundedParameterValue(rawValue, r.minVal, r.maxVal, r.defaultVal);
+        const int sliderVal = parameterToSlider(curVal, r.minVal, r.maxVal);
         r.slider->blockSignals(true);
         r.slider->setValue(sliderVal);
         r.slider->blockSignals(false);
@@ -600,12 +649,10 @@ void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool r
         if (!values.contains(row.paramId)) continue;
         const float requested = values.value(row.paramId);
         if (!std::isfinite(requested)) continue;
-        const float value = qBound(row.minVal, requested, row.maxVal);
+        const float value = boundedParameterValue(requested, row.minVal, row.maxVal, row.defaultVal);
         const float before = ValueBeforeEdit(row.paramId, row.defaultVal);
         m_previewBaseline.remove(row.paramId);
-        const int sliderValue = row.maxVal > row.minVal
-            ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
-            : 0;
+        const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
         QSignalBlocker sliderBlocker(row.slider);
         QSignalBlocker spinBlocker(row.spinBox);
         row.slider->setValue(sliderValue);
@@ -614,7 +661,7 @@ void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool r
         m_userLocked.insert(i);
         if (m_document) m_document->SetParameterValue(row.paramId, value);
         emit ParamChanged(row.paramId, value, false);
-        if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) PushEdit(row.paramId, before, value);
+        if (record && before != value) PushEdit(row.paramId, before, value);
     }
     if (record) EmitHistoryState();
     else ClearHistory();
@@ -756,6 +803,9 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     if (!m_document || rowIndex < 0 || rowIndex >= m_rows.size()) return;
     ParamRow& row = m_rows[rowIndex];
     const auto metadata = m_document->ParameterMetadata(row.paramId);
+    if (!validParameterRange(metadata.minimum, metadata.maximum) || !std::isfinite(metadata.defaultValue) ||
+        metadata.defaultValue < metadata.minimum || metadata.defaultValue > metadata.maximum ||
+        metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9) return;
     row.minVal = metadata.minimum;
     row.maxVal = metadata.maximum;
     row.defaultVal = metadata.defaultValue;
@@ -764,16 +814,17 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     row.nameLabel->setText(displayName);
     row.nameLabel->setToolTip(row.paramId);
     row.widget->setProperty("searchText", (displayName + " " + row.paramId).toLower());
-    const float value = m_lastValues.value(row.paramId, metadata.defaultValue);
+    const float value = boundedParameterValue(m_lastValues.value(row.paramId, metadata.defaultValue),
+                                               row.minVal, row.maxVal, row.defaultVal);
+    m_lastValues.insert(row.paramId, value);
     QSignalBlocker sliderBlocker(row.slider);
     QSignalBlocker spinBlocker(row.spinBox);
-    row.spinBox->setRange(row.minVal, row.maxVal);
     row.spinBox->setDecimals(metadata.decimalPlaces);
-    row.spinBox->setSingleStep((row.maxVal - row.minVal) > 0 ? (row.maxVal - row.minVal) / 100.0 : 1.0);
+    row.spinBox->setRange(row.minVal, row.maxVal);
+    const double range = static_cast<double>(row.maxVal) - row.minVal;
+    row.spinBox->setSingleStep(range > 0 ? range / 100.0 : 1.0);
     row.spinBox->setValue(value);
-    row.slider->setValue(row.maxVal > row.minVal
-                             ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000)
-                             : 0);
+    row.slider->setValue(parameterToSlider(value, row.minVal, row.maxVal));
     row.resetButton->setToolTip(QStringLiteral("恢复默认值 %1").arg(QString::number(row.defaultVal, 'f', 3)));
     const QString query = m_search->text().trimmed().toLower();
     row.widget->setVisible(query.isEmpty() || row.widget->property("searchText").toString().contains(query));
@@ -803,8 +854,9 @@ void CParamPanel::EndParameterDrag(int rowIndex)
 
 void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
 {
-    if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
+    if (rowIndex < 0 || rowIndex >= m_rows.size() || !std::isfinite(value)) return;
     ParamRow& row = m_rows[rowIndex];
+    value = boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal);
     if (m_userDragging.contains(rowIndex)) {
         if (value == m_lastValues.value(row.paramId, row.defaultVal)) return;
         m_changedDrags.insert(rowIndex);
@@ -814,14 +866,14 @@ void CParamPanel::ApplyValue(int rowIndex, float value, bool record)
     m_lastValues.insert(row.paramId, value);
     emit ParamChanged(row.paramId, value, false);
     RefreshXYControls();
-    if (record && !qFuzzyCompare(before + 1.0f, value + 1.0f)) {
+    if (record && before != value) {
         PushEdit(row.paramId, before, value);
     }
 }
 
 void CParamPanel::PushEdit(const QString& paramId, float before, float after)
 {
-    if (qFuzzyCompare(before + 1.0f, after + 1.0f)) return;
+    if (before == after) return;
     if (m_document) {
         const live2dstruct::CModelEdit command{paramId, QStringLiteral("parameter"),
                                                live2dstruct::CModelEdit::ParameterValue, before, after};
@@ -862,7 +914,7 @@ void CParamPanel::Undo()
     const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
     if (rowIndex >= 0 && rowIndex < m_rows.size()) {
         ParamRow& row = m_rows[rowIndex];
-        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
         QSignalBlocker sliderBlocker(row.slider);
         QSignalBlocker spinBlocker(row.spinBox);
         row.slider->setValue(sliderValue);
@@ -886,7 +938,7 @@ void CParamPanel::Redo()
     const int rowIndex = rowIt == m_rows.cend() ? -1 : static_cast<int>(rowIt - m_rows.cbegin());
     if (rowIndex >= 0 && rowIndex < m_rows.size()) {
         ParamRow& row = m_rows[rowIndex];
-        const int sliderValue = row.maxVal > row.minVal ? qBound(0, qRound((value - row.minVal) * 1000.0f / (row.maxVal - row.minVal)), 1000) : 0;
+        const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
         QSignalBlocker sliderBlocker(row.slider);
         QSignalBlocker spinBlocker(row.spinBox);
         row.slider->setValue(sliderValue);

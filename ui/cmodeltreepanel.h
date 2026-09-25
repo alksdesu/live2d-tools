@@ -50,8 +50,6 @@ private:
     QLineEdit* m_search = nullptr;
     QTreeWidget* m_partTree;
     QTreeWidget* m_deformerTree;
-    QMap<QString, QTreeWidgetItem*> m_nameToPartItem;
-    QMap<QString, QTreeWidgetItem*> m_nameToDeformerItem;
     // 变形器 → 其下所有 ArtMesh 名称（含子变形器的）
     QMap<QString, QStringList> m_deformerToArtMeshes;
     // 变形器 → 绑定的参数信息

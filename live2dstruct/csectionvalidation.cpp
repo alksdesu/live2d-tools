@@ -2,6 +2,8 @@
 #include "csectionoffsettable.h"
 #include "live2dstruct/struct/ccount_info.h"
 #include "live2dstruct/util/cfilereader.h"
+#include <array>
+#include <iterator>
 
 namespace live2dstruct {
 namespace {
@@ -16,44 +18,9 @@ struct Count
     const void* offsets;
 };
 
-struct Column
+std::array<Count, 32> arrayCounts(const CSectionOffsetTable& offsets, const CCount_info& info)
 {
-    const char* name;
-    qint64 offset;
-    qint64 count;
-    qint64 width = 4;
-    bool optional = false;
-};
-
-bool overlaps(qint64 first, qint64 firstSize, qint64 second, qint64 secondSize)
-{
-    return first < second + secondSize && second < first + firstSize;
-}
-}
-
-bool CSectionValidation::ValidateMetadata(CReader& reader, const CSectionOffsetTable& offsets)
-{
-    if (!reader.IsValid()) return false;
-    if (!reader.RequireSpan(QStringLiteral("offset_table"), OffsetTableStart, OffsetTableCount, 4)) return false;
-    if (!offsets.count_info) return reader.Fail(QStringLiteral("moc3 缺少区段偏移：count_info"));
-    if (!offsets.canvas_info) return reader.Fail(QStringLiteral("moc3 缺少区段偏移：canvas_info"));
-    const qint64 countOffset = offsets.count_info->count_info_offset;
-    const qint64 canvasOffset = offsets.canvas_info->CanvasOffset;
-    if (!reader.RequireSpan(QStringLiteral("count_info"), countOffset, 1, CountInfoBytes) ||
-        !reader.RequireSpan(QStringLiteral("canvas_info"), canvasOffset, 1, CanvasInfoBytes)) return false;
-    if (countOffset < OffsetTableEnd)
-        return reader.Fail(QStringLiteral("moc3 count_info 与文件头或偏移表重叠"));
-    if (canvasOffset < OffsetTableEnd)
-        return reader.Fail(QStringLiteral("moc3 canvas_info 与文件头或偏移表重叠"));
-    if (overlaps(countOffset, CountInfoBytes, canvasOffset, CanvasInfoBytes))
-        return reader.Fail(QStringLiteral("moc3 count_info 与 canvas_info 重叠"));
-    return true;
-}
-
-bool CSectionValidation::ValidateArrays(CReader& reader, const CSectionOffsetTable& offsets, const CCount_info& info)
-{
-    if (!ValidateMetadata(reader, offsets)) return false;
-    const Count counts[]{
+    const std::array<Count, 32> counts{{
         {"parts", info.parts, offsets.parts},
         {"deformers", info.deformers, offsets.deformers},
         {"warp_deformers", info.warp_deformers, offsets.warp_deformers},
@@ -86,17 +53,43 @@ bool CSectionValidation::ValidateArrays(CReader& reader, const CSectionOffsetTab
         {"blend_shape_constraint_indices", info.blend_shape_constraint_indices, offsets.blend_shape_constraint_indices},
         {"blend_shape_constraints", info.blend_shape_constraints, offsets.blend_shape_constraints},
         {"blend_shape_constraint_values", info.blend_shape_constraint_values, offsets.blend_shape_constraint_values},
-    };
-    static_assert(sizeof(counts) / sizeof(counts[0]) * 4 == CountInfoBytes);
-    for (const Count& count : counts) {
-        const QString label = QString::fromLatin1(count.name);
-        if (count.value < 0 || count.value > MaximumCount)
-            return reader.Fail(QStringLiteral("moc3 count_info.%1 数量越界：%2，允许 0..%3")
-                                   .arg(label).arg(count.value).arg(MaximumCount));
-        if (!count.offsets)
-            return reader.Fail(QStringLiteral("moc3 缺少区段偏移：%1").arg(label));
-    }
-    const Column columns[]{
+    }};
+    static_assert(counts.size() * 4 == CountInfoBytes);
+    return counts;
+}
+
+bool overlaps(qint64 first, qint64 firstSize, qint64 second, qint64 secondSize)
+{
+    return first < second + secondSize && second < first + firstSize;
+}
+}
+
+bool CSectionValidation::ValidateMetadata(CReader& reader, const CSectionOffsetTable& offsets)
+{
+    if (!reader.IsValid()) return false;
+    if (!reader.RequireSpan(QStringLiteral("offset_table"), OffsetTableStart, OffsetTableCount, 4)) return false;
+    if (!offsets.count_info) return reader.Fail(QStringLiteral("moc3 缺少区段偏移：count_info"));
+    if (!offsets.canvas_info) return reader.Fail(QStringLiteral("moc3 缺少区段偏移：canvas_info"));
+    const qint64 countOffset = offsets.count_info->count_info_offset;
+    const qint64 canvasOffset = offsets.canvas_info->CanvasOffset;
+    if (!reader.RequireSpan(QStringLiteral("count_info"), countOffset, 1, CountInfoBytes) ||
+        !reader.RequireSpan(QStringLiteral("canvas_info"), canvasOffset, 1, CanvasInfoBytes)) return false;
+    if (countOffset < OffsetTableEnd)
+        return reader.Fail(QStringLiteral("moc3 count_info 与文件头或偏移表重叠"));
+    if (canvasOffset < OffsetTableEnd)
+        return reader.Fail(QStringLiteral("moc3 canvas_info 与文件头或偏移表重叠"));
+    if (overlaps(countOffset, CountInfoBytes, canvasOffset, CanvasInfoBytes))
+        return reader.Fail(QStringLiteral("moc3 count_info 与 canvas_info 重叠"));
+    return true;
+}
+
+QVector<CSectionValidation::ColumnSpan> CSectionValidation::ArraySpans(
+    const CSectionOffsetTable& offsets, const CCount_info& info)
+{
+    if (!offsets.count_info || !offsets.canvas_info) return {};
+    for (const Count& count : arrayCounts(offsets, info))
+        if (!count.offsets) return {};
+    const ColumnSpan columns[]{
         {"parts.runtime_space_0", offsets.parts->runtime_space_0, info.parts, 4, true},
         {"parts.ids", offsets.parts->ids, info.parts, 64},
         {"parts.keyform_binding_sources_indices", offsets.parts->keyform_binding_sources_indices, info.parts},
@@ -234,9 +227,25 @@ bool CSectionValidation::ValidateArrays(CReader& reader, const CSectionOffsetTab
         {"blend_shape_constraint_values.weights", offsets.blend_shape_constraint_values->weights, info.blend_shape_constraint_values},
     };
     static_assert(sizeof(columns) / sizeof(columns[0]) == OffsetTableCount - 2);
+    return QVector<ColumnSpan>(std::begin(columns), std::end(columns));
+}
+
+bool CSectionValidation::ValidateArrays(CReader& reader, const CSectionOffsetTable& offsets, const CCount_info& info)
+{
+    if (!ValidateMetadata(reader, offsets)) return false;
+    const auto counts = arrayCounts(offsets, info);
+    for (const Count& count : counts) {
+        const QString label = QString::fromLatin1(count.name);
+        if (count.value < 0 || count.value > MaximumCount)
+            return reader.Fail(QStringLiteral("moc3 count_info.%1 数量越界：%2，允许 0..%3")
+                                   .arg(label).arg(count.value).arg(MaximumCount));
+        if (!count.offsets)
+            return reader.Fail(QStringLiteral("moc3 缺少区段偏移：%1").arg(label));
+    }
+    const auto columns = ArraySpans(offsets, info);
     const qint64 countOffset = offsets.count_info->count_info_offset;
     const qint64 canvasOffset = offsets.canvas_info->CanvasOffset;
-    for (const Column& column : columns) {
+    for (const ColumnSpan& column : columns) {
         if (column.optional && column.offset == 0) continue;
         const QString label = QString::fromLatin1(column.name);
         if (!reader.RequireSpan(label, column.offset, column.count, column.width)) return false;

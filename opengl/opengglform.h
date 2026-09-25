@@ -65,7 +65,7 @@ public slots:
     void do_setPoint(float x,float y);
     void do_change_para_value(const QString& name,float value,bool IsInit);
     void do_SetVisibility(const QString& name, const QString& type, bool visible);
-    void do_SetDeformerDrawableVisibility(const QStringList& artMeshNames, bool visible);
+    void SetHiddenDeformerDrawables(const QSet<QString>& names);
     void ClearEditorOverrides();
     void do_SetDrawableOpacity(const QString& name, float opacity);
     void do_SetDrawableDrawOrder(const QString& name, int drawOrder);

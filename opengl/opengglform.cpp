@@ -258,16 +258,17 @@ void OpengGlForm::do_ResetView()
 
 void OpengGlForm::SetViewState(float scale, const QVector2D& position)
 {
+    if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(position.x()) || !std::isfinite(position.y())) return;
+    const float clampedScale = qBound(0.1f, scale, 20.0f);
+    m_config.SetScalefactor(clampedScale);
+    m_config.SetLastPos(position);
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if (!view) return;
-    const float clampedScale = qBound(0.1f, scale, 20.0f);
     QMatrix4x4 matrix;
     matrix.setToIdentity();
     matrix.scale(clampedScale);
     matrix.translate(position.x(), position.y(), 0.0f);
     view->SetViewMatrix(matrix);
-    m_config.SetScalefactor(clampedScale);
-    m_config.SetLastPos(position);
 }
 
 void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, bool visible)
@@ -288,15 +289,11 @@ void OpengGlForm::do_SetVisibility(const QString& name, const QString& type, boo
     qDebug() << "[Visibility]" << type << name << (visible ? "show" : "hide");
 }
 
-void OpengGlForm::do_SetDeformerDrawableVisibility(const QStringList& artMeshNames, bool visible)
+void OpengGlForm::SetHiddenDeformerDrawables(const QSet<QString>& names)
 {
     auto* delegate = LAppDelegate::GetInstance();
     if (!delegate) return;
-    for (const QString& name : artMeshNames) {
-        if (name.isEmpty()) continue;
-        if (visible) delegate->m_hiddenDeformerDrawables.remove(name);
-        else delegate->m_hiddenDeformerDrawables.insert(name);
-    }
+    delegate->m_hiddenDeformerDrawables = names;
 }
 
 void OpengGlForm::ClearEditorOverrides()

@@ -8,8 +8,14 @@
 #include <QHash>
 #include <QVariant>
 #include <QMetaType>
+#include <QByteArray>
+#include <QMap>
+#include <memory>
 
 namespace live2dstruct {
+class CReader;
+class CKeyformBindingGrid;
+class CMocPreviewBuilder;
 
 struct CModelDiagnostic
 {
@@ -162,10 +168,17 @@ class CModelDocument
 {
 public:
     bool Load(const QString& mocPath, QString* error = nullptr);
+    bool LoadBytes(const QByteArray& bytes, const QString& sourcePath, QString* error = nullptr);
     void Clear();
 
     bool IsLoaded() const { return m_loaded; }
     const QString& SourcePath() const { return m_sourcePath; }
+    const QByteArray& SourceBytes() const { return m_sourceBytes; }
+    const QByteArray& SourceDigest() const { return m_sourceDigest; }
+    bool SourceMatchesDisk(QString* error = nullptr) const;
+    bool KeyformParameterValues(const QString& id, const QString& type, int keyformIndex,
+                                QMap<QString, float>& values, QString* error = nullptr) const;
+    bool BuildPreviewMoc(QByteArray& bytes, QString* error = nullptr) const;
     const QSize& CanvasPixels() const { return m_canvasPixels; }
     const QVector<CModelParameter>& Parameters() const { return m_parameters; }
     bool SetParameterValue(const QString& id, float value);
@@ -182,6 +195,7 @@ public:
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     int DeformerParentIndex(const QString& id) const;
+    QSet<QString> HiddenDeformerDrawables() const;
     bool SetDeformerParentIndex(const QString& id, int parentIndex);
     bool SetDeformerParentIndices(const QHash<QString, int>& parents);
     const QHash<QString, int>& DeformerParentOverrides() const { return m_deformerParentOverrides; }
@@ -234,6 +248,11 @@ public:
 private:
     bool m_loaded = false;
     QString m_sourcePath;
+    QByteArray m_sourceBytes;
+    QByteArray m_sourceDigest;
+    std::shared_ptr<const CKeyformBindingGrid> m_keyformBindings;
+    std::shared_ptr<const CMocPreviewBuilder> m_previewBuilder;
+    QString m_previewError;
     QSize m_canvasPixels;
     QVector<CModelParameter> m_parameters;
     QVector<CModelPart> m_parts;
@@ -256,7 +275,7 @@ private:
     int m_editIndex = 0;
 
     bool ApplyEdit(const CModelEdit& edit, bool forward);
-    bool LoadInternal(const QString& mocPath, QString* error);
+    bool LoadInternal(CReader& reader, const QString& sourcePath, QString* error);
 };
 
 }

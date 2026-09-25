@@ -17,6 +17,7 @@
 #include <QRectF>
 #include <QMap>
 #include <QSet>
+#include <QByteArray>
 #include "live2dstruct/cmotiontimeline.h"
 
 class LAppModel : public Csm::CubismUserModel
@@ -28,6 +29,8 @@ public:
     bool LoadAssets(const Csm::csmChar* dir, const Csm::csmChar* fileName);
     bool ReloadRenderer();
     const QMap<int, QString>& GetTexturePaths() const { return m_texturePaths; }
+    const QByteArray& GetSourceMocBytes() const { return m_sourceMocBytes; }
+    const QByteArray& GetSourceMocDigest() const { return m_sourceMocDigest; }
     void CommitTextureCache() { m_pendingTextureIds.clear(); m_textureCacheCommitted = true; }
     void Update();
     bool SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline = nullptr,
@@ -147,6 +150,8 @@ private:
 
     QString m_mocName;
     QMap<int, QString> m_texturePaths;
+    QByteArray m_sourceMocBytes;
+    QByteArray m_sourceMocDigest;
     QSet<Csm::csmUint32> m_pendingTextureIds;
     bool m_textureCacheCommitted = false;
     QMap<QString,int> m_mapParaToIndex;

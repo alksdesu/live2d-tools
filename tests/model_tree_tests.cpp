@@ -1,15 +1,256 @@
 #include "ui/cmodeltreepanel.h"
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/csectiontable.h"
 #include <QtTest>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QSet>
+#include <QSignalBlocker>
+#include <QTreeWidgetItemIterator>
+
+namespace {
+QList<QTreeWidgetItem*> treeItems(CModelTreePanel& panel)
+{
+    QList<QTreeWidgetItem*> items;
+    for (QTreeWidget* tree : panel.findChildren<QTreeWidget*>())
+        for (QTreeWidgetItemIterator it(tree); *it; ++it) items.append(*it);
+    return items;
+}
+
+QMap<QTreeWidgetItem*, Qt::CheckState> checkStates(CModelTreePanel& panel)
+{
+    QMap<QTreeWidgetItem*, Qt::CheckState> states;
+    for (auto* item : treeItems(panel)) states.insert(item, item->checkState(0));
+    return states;
+}
+}
 
 class ModelTreeTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void programmaticVisibilityChangesOnlyTheSelectedObject_data()
+    {
+        QTest::addColumn<QString>("type");
+        for (const char* type : {"part", "warp", "rotation", "artmesh"})
+            QTest::newRow(type) << QString::fromLatin1(type);
+    }
+
+    void programmaticVisibilityChangesOnlyTheSelectedObject()
+    {
+        QFETCH(QString, type);
+        CModelTreePanel panel;
+        panel.BuildTree(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", nullptr);
+        const auto trees = panel.findChildren<QTreeWidget*>();
+        QCOMPARE(trees.size(), 2);
+        QTreeWidgetItem* target = nullptr;
+        for (auto* item : treeItems(panel)) {
+            if (item->data(0, Qt::UserRole + 1).toString() == type &&
+                (type == "artmesh" || item->childCount() > 0)) {
+                target = item;
+                break;
+            }
+        }
+        QVERIFY(target);
+        const QString name = target->data(0, Qt::UserRole).toString();
+        QList<QTreeWidgetItem*> targets;
+        for (auto* item : treeItems(panel)) {
+            if (item->data(0, Qt::UserRole).toString() == name &&
+                item->data(0, Qt::UserRole + 1).toString() == type) targets.append(item);
+        }
+        QCOMPARE(targets.size(), type == "artmesh" ? 1 : 2);
+        for (auto* tree : trees) {
+            const QSignalBlocker blocker(tree);
+            int index = 0;
+            for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+                const bool visible = targets.contains(*it) || index++ % 2 != 0;
+                (*it)->setCheckState(0, visible ? Qt::Checked : Qt::Unchecked);
+            }
+        }
+        const auto initial = checkStates(panel);
+        QSignalSpy changes(&panel, &CModelTreePanel::VisibilityChanged);
+        QSignalSpy firstTreeChanges(trees[0], &QTreeWidget::itemChanged);
+        QSignalSpy secondTreeChanges(trees[1], &QTreeWidget::itemChanged);
+        trees[0]->blockSignals(true);
+        for (bool visible : {false, true}) {
+            panel.SetVisibility(name, type, visible);
+            QCOMPARE(changes.size(), 1);
+            QCOMPARE(changes[0], (QList<QVariant>{name, type, visible}));
+            changes.clear();
+            for (auto it = initial.cbegin(); it != initial.cend(); ++it) {
+                const auto expected = targets.contains(it.key()) ? (visible ? Qt::Checked : Qt::Unchecked) : it.value();
+                QCOMPARE(it.key()->checkState(0), expected);
+            }
+            QVERIFY(trees[0]->signalsBlocked());
+            QVERIFY(!trees[1]->signalsBlocked());
+            QCOMPARE(firstTreeChanges.size(), 0);
+            QCOMPARE(secondTreeChanges.size(), 0);
+        }
+        QCOMPARE(checkStates(panel), initial);
+        panel.SetVisibility(name, "unknown-kind", false);
+        panel.SetVisibility("missing-object", type, false);
+        panel.SetVisibility({}, type, false);
+        QCOMPARE(changes.size(), 0);
+        QCOMPARE(checkStates(panel), initial);
+    }
+
+    void matchingIdsInDifferentObjectTypesStayIndependent()
+    {
+        const QString source = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CReader reader(source);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        QVERIFY(!table.parts.isEmpty());
+        QVERIFY(!table.art_meshes.isEmpty());
+        int warp = -1, rotation = -1;
+        for (int index = 0; index < table.deformers.size(); ++index) {
+            if (warp < 0 && table.deformers[index]->types == 0) warp = index;
+            if (rotation < 0 && table.deformers[index]->types == 1) rotation = index;
+        }
+        QVERIFY(warp >= 0);
+        QVERIFY(rotation >= 0);
+        const int meshParent = table.art_meshes.first()->parent_deformer_indices;
+        QVERIFY(meshParent >= 0 && meshParent < table.deformers.size());
+        if (table.deformers[meshParent]->types == 0) warp = meshParent;
+        else rotation = meshParent;
+        QByteArray bytes = reader.m_byte;
+        const QString sharedName = "SharedObjectId";
+        const QByteArray id = sharedName.toUtf8().leftJustified(64, '\0');
+        const auto& offsets = *table.sectionOffsetTable;
+        for (int offset : {offsets.parts->ids, offsets.art_meshes->ids,
+                           offsets.deformers->ids + warp * 64, offsets.deformers->ids + rotation * 64}) {
+            QVERIFY(offset >= 0 && offset <= bytes.size() - 64);
+            bytes.replace(offset, 64, id);
+        }
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath("shared-ids.moc3");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(bytes), bytes.size());
+        file.close();
+        CModelTreePanel panel;
+        panel.BuildTree(path, nullptr);
+        const auto trees = panel.findChildren<QTreeWidget*>();
+        QCOMPARE(trees.size(), 2);
+        for (auto* tree : trees) {
+            const QSignalBlocker blocker(tree);
+            for (QTreeWidgetItemIterator it(tree); *it; ++it) (*it)->setCheckState(0, Qt::Checked);
+        }
+        const auto initial = checkStates(panel);
+        QSignalSpy changes(&panel, &CModelTreePanel::VisibilityChanged);
+        for (const QString& type : {QStringLiteral("part"), QStringLiteral("artmesh"),
+                                    QStringLiteral("warp"), QStringLiteral("rotation")}) {
+            int targets = 0;
+            for (auto* item : treeItems(panel))
+                if (item->data(0, Qt::UserRole).toString() == sharedName &&
+                    item->data(0, Qt::UserRole + 1).toString() == type) ++targets;
+            QCOMPARE(targets, type == "artmesh" ? 1 : 2);
+            panel.SetVisibility(sharedName, type, false);
+            QCOMPARE(changes.size(), 1);
+            QCOMPARE(changes.takeFirst(), (QList<QVariant>{sharedName, type, false}));
+            for (auto* item : treeItems(panel)) {
+                const bool matches = item->data(0, Qt::UserRole).toString() == sharedName &&
+                                     item->data(0, Qt::UserRole + 1).toString() == type;
+                QCOMPARE(item->checkState(0), matches ? Qt::Unchecked : Qt::Checked);
+            }
+            panel.SetVisibility(sharedName, type, true);
+            QCOMPARE(changes.size(), 1);
+            QCOMPARE(changes.takeFirst(), (QList<QVariant>{sharedName, type, true}));
+            QCOMPARE(checkStates(panel), initial);
+        }
+
+        QTreeWidgetItem* mesh = nullptr;
+        QTreeWidgetItem* partOnly = nullptr;
+        for (auto* item : treeItems(panel)) {
+            const QString type = item->data(0, Qt::UserRole + 1).toString();
+            const QString id = item->data(0, Qt::UserRole).toString();
+            if (type == "artmesh" && id == sharedName) mesh = item;
+            if (type == "part" && id != sharedName) partOnly = item;
+        }
+        QVERIFY(mesh);
+        QVERIFY(mesh->parent());
+        QVERIFY(partOnly);
+        QCOMPARE(mesh->parent()->data(0, Qt::UserRole).toString(), sharedName);
+        const QString parentType = mesh->parent()->data(0, Qt::UserRole + 1).toString();
+        QTreeWidget* partTree = mesh->treeWidget();
+        QTreeWidget* deformerTree = trees[0] == partTree ? trees[1] : trees[0];
+        QSignalSpy selections(&panel, &CModelTreePanel::ObjectsSelected);
+        panel.HighlightMesh(sharedName);
+        QCOMPARE(partTree->selectedItems(), (QList<QTreeWidgetItem*>{mesh}));
+        QCOMPARE(deformerTree->selectedItems().size(), 1);
+        auto* selectedParent = deformerTree->selectedItems().first();
+        QCOMPARE(selectedParent->data(0, Qt::UserRole).toString(), sharedName);
+        QCOMPARE(selectedParent->data(0, Qt::UserRole + 1).toString(), parentType);
+        QVERIFY(selections.contains(QList<QVariant>{QStringList{sharedName}, QStringList{"artmesh"}}));
+        QVERIFY(selections.contains(QList<QVariant>{QStringList{sharedName}, QStringList{parentType}}));
+        selections.clear();
+        panel.HighlightMesh(partOnly->data(0, Qt::UserRole).toString());
+        QCOMPARE(partTree->selectedItems(), (QList<QTreeWidgetItem*>{mesh}));
+        QCOMPARE(deformerTree->selectedItems(), (QList<QTreeWidgetItem*>{selectedParent}));
+        QCOMPARE(selections.size(), 0);
+        panel.HighlightMesh({});
+        QVERIFY(partTree->selectedItems().isEmpty());
+        QVERIFY(deformerTree->selectedItems().isEmpty());
+        QVERIFY(!selections.isEmpty());
+        QVERIFY(selections.last()[0].toStringList().isEmpty());
+        QVERIFY(selections.last()[1].toStringList().isEmpty());
+        QCOMPARE(checkStates(panel), initial);
+        QVERIFY(changes.isEmpty());
+    }
+
+    void treeCheckChangesStillApplyToWholeSubtree_data()
+    {
+        QTest::addColumn<int>("treeIndex");
+        QTest::newRow("parts") << 0;
+        QTest::newRow("deformers") << 1;
+    }
+
+    void treeCheckChangesStillApplyToWholeSubtree()
+    {
+        QFETCH(int, treeIndex);
+        CModelTreePanel panel;
+        panel.BuildTree(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", nullptr);
+        const auto trees = panel.findChildren<QTreeWidget*>();
+        QCOMPARE(trees.size(), 2);
+        QTreeWidgetItem* parent = nullptr;
+        for (QTreeWidgetItemIterator it(trees[treeIndex]); *it; ++it) {
+            if ((*it)->childCount() > 0) { parent = *it; break; }
+        }
+        QVERIFY(parent);
+        QSet<QTreeWidgetItem*> subtree;
+        for (auto* item : treeItems(panel)) {
+            for (auto* ancestor = item; ancestor; ancestor = ancestor->parent()) {
+                if (ancestor == parent) { subtree.insert(item); break; }
+            }
+        }
+        QVERIFY(subtree.size() > 1);
+        {
+            const QSignalBlocker blocker(trees[treeIndex]);
+            for (auto* item : subtree) item->setCheckState(0, Qt::Checked);
+        }
+        const auto initial = checkStates(panel);
+        QSignalSpy changes(&panel, &CModelTreePanel::VisibilityChanged);
+        for (Qt::CheckState state : {Qt::Unchecked, Qt::Checked}) {
+            parent->setCheckState(0, state);
+            QCOMPARE(changes.size(), subtree.size());
+            QSet<QString> emitted;
+            for (const auto& event : changes) {
+                QCOMPARE(event[2].toBool(), state == Qt::Checked);
+                emitted.insert(event[1].toString() + '|' + event[0].toString());
+            }
+            for (auto* item : subtree) {
+                QVERIFY(emitted.contains(item->data(0, Qt::UserRole + 1).toString() + '|' + item->data(0, Qt::UserRole).toString()));
+                QCOMPARE(item->checkState(0), state);
+            }
+            for (auto it = initial.cbegin(); it != initial.cend(); ++it)
+                if (!subtree.contains(it.key())) QCOMPARE(it.key()->checkState(0), it.value());
+            changes.clear();
+        }
+    }
+
     void reparseCdiClearsPreviousState()
     {
         QTemporaryDir temp;

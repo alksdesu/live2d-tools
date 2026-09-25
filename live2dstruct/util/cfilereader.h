@@ -10,6 +10,7 @@ class CReader
 {
 public:
     CReader(const QString& filename );
+    static CReader FromBytes(QByteArray bytes);
     ~CReader();
     //QFile* file;
     QByteArray m_byte;
@@ -103,6 +104,7 @@ public:
     }
 
 private:
+    CReader() = default;
     bool canRead(int size) {
         if (!m_valid) return false;
         if (size < 0 || m_pos < 0 || m_pos > m_byte.size() - size) {

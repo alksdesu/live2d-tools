@@ -59,6 +59,8 @@ private:
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
+    bool RuntimeMatchesDocument(QString* error = nullptr) const;
+    void SyncDocumentToRuntime();
     void ClearTimelinePreview();
     QString m_parameterBeingEdited;
     void RefreshUndoActions();
@@ -91,6 +93,8 @@ private:
     bool m_closingModel = false;
     bool m_poseDirty = false;
     bool m_applyingSession = false;
+    bool m_workspaceReady = false;
+    bool m_runtimePanelsInitialized = false;
     bool m_syncingVisibility = false;
     enum class HistorySource { None, Parameters, Inspector, Timeline };
     HistorySource m_historySource = HistorySource::None;

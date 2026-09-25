@@ -1,11 +1,14 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/csectionvalidation.h"
 
 #include <QtTest>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QtEndian>
+#include <QHash>
+#include <QSet>
 #include <array>
 #include <limits>
 
@@ -73,12 +76,283 @@ void addModels()
 struct ColumnFixture { int slot; int countIndex; int width; };
 constexpr ColumnFixture columns[]{{0xc4, 4, 64}, {0xec, 4, 4}, {0x17c, 16, 2}, {0xe8, 4, 1}};
 constexpr int parameterExtensions[]{0x1d8, 0x1dc, 0x1e0, 0x208, 0x20c, 0x210};
+
+QStringList physicalColumnNames()
+{
+    struct Group { const char* section; const char* fields; };
+    const Group groups[]{
+        {"parts",
+            "runtime_space_0 ids keyform_binding_sources_indices keyform_sources_begin_indices"
+            " keyform_sources_counts is_visible is_enabled parent_part_indices"},
+        {"deformers",
+            "runtime_space_0 ids keyform_binding_sources_indices is_visible is_enabled"
+            " parent_part_indices parent_deformer_indices types specific_sources_indices"},
+        {"warp_deformers",
+            "keyform_binding_sources_indices keyform_sources_begin_indices keyform_sources_counts"
+            " vertex_counts rows columns"},
+        {"rotation_deformers",
+            "keyform_binding_sources_indices keyform_sources_begin_indices keyform_sources_counts"
+            " base_angles"},
+        {"art_meshes",
+            "runtime_space_0 runtime_space_1 runtime_space_2 runtime_space_3 ids"
+            " keyform_binding_sources_indices keyform_sources_begin_indices keyform_sources_counts"
+            " is_visible is_enabled parent_part_indices parent_deformer_indices texture_nos"
+            " drawable_flags vertex_counts uv_sources_begin_indices position_index_sources_begin_indices"
+            " position_index_sources_counts drawable_mask_sources_begin_indices"
+            " drawable_mask_sources_counts"},
+        {"parameters",
+            "runtime_space_0 ids max_values min_values default_values is_repeat decimal_places"
+            " parameter_binding_sources_begin_indices parameter_binding_sources_counts"},
+        {"part_keyforms",
+            "draw_orders"},
+        {"warp_deformer_keyforms",
+            "opacities keyform_position_sources_begin_indices"},
+        {"rotation_deformer_keyforms",
+            "opacities angles origin_x origin_y scales is_reflect_x is_reflect_y"},
+        {"art_mesh_keyforms",
+            "opacities draw_orders keyform_position_sources_begin_indices"},
+        {"keyform_positions",
+            "xys"},
+        {"parameter_binding_indices",
+            "binding_sources_indices"},
+        {"keyform_bindings",
+            "parameter_binding_index_sources_begin_indices parameter_binding_index_sources_counts"},
+        {"parameter_bindings",
+            "keys_sources_begin_indices keys_sources_counts"},
+        {"keys",
+            "values"},
+        {"uvs",
+            "uvs"},
+        {"position_indices",
+            "indices"},
+        {"drawable_masks",
+            "art_mesh_sources_indices"},
+        {"draw_order_groups",
+            "object_sources_begin_indices object_sources_counts object_sources_total_counts"
+            " maximum_draw_orders minimum_draw_orders"},
+        {"draw_order_group_objects",
+            "types indices self_indices"},
+        {"glue",
+            "runtime_space ids keyform_binding_sources_indices keyform_sources_begin_indices"
+            " keyform_sources_counts art_mesh_indices_a art_mesh_indices_b"
+            " glue_info_sources_begin_indices glue_info_sources_counts"},
+        {"glue_info",
+            "weights position_indices"},
+        {"glue_keyforms",
+            "intensities"},
+        {"warp_deformers",
+            "is_quad_source"},
+        {"parameters",
+            "extension_runtime_space_0 keys_sources_begin_indices keys_sources_counts"},
+        {"warp_deformers",
+            "keyform_color_sources_begin_indices"},
+        {"rotation_deformers",
+            "keyform_color_sources_begin_indices"},
+        {"art_meshes",
+            "keyform_color_sources_begin_indices"},
+        {"keyform_multiply_colors",
+            "r g b"},
+        {"keyform_screen_colors",
+            "r g b"},
+        {"parameters",
+            "parameter_types blend_shape_parameter_binding_sources_begin_indices"
+            " blend_shape_parameter_binding_sources_counts"},
+        {"blend_shape_parameter_bindings",
+            "keys_sources_begin_indices keys_sources_counts base_key_indices"},
+        {"blend_shape_keyform_bindings",
+            "parameter_binding_sources_indices keyform_sources_blend_shape_indices"
+            " keyform_sources_blend_shape_counts blend_shape_constraint_index_sources_begin_indices"
+            " blend_shape_constraint_index_sources_counts"},
+        {"blend_shapes_warp_deformers",
+            "target_indices blend_shape_keyform_binding_sources_begin_indices"
+            " blend_shape_keyform_binding_sources_counts"},
+        {"blend_shapes_art_meshes",
+            "target_indices blend_shape_keyform_binding_sources_begin_indices"
+            " blend_shape_keyform_binding_sources_counts"},
+        {"blend_shape_constraint_indices",
+            "blend_shape_constraint_sources_indices"},
+        {"blend_shape_constraints",
+            "parameter_indices blend_shape_constraint_value_sources_begin_indices"
+            " blend_shape_constraint_value_sources_counts"},
+        {"blend_shape_constraint_values",
+            "keys weights"},
+    };
+    QStringList names;
+    for (const auto& group : groups)
+        for (const QString& field : QString::fromLatin1(group.fields).split(QLatin1Char(' ')))
+            names.append(QString::fromLatin1(group.section) + QLatin1Char('.') + field);
+    return names;
+}
+
+QStringList countSections()
+{
+    return QStringLiteral(
+        "parts deformers warp_deformers rotation_deformers art_meshes parameters part_keyforms"
+        " warp_deformer_keyforms rotation_deformer_keyforms art_mesh_keyforms keyform_positions"
+        " parameter_binding_indices keyform_bindings parameter_bindings keys uvs position_indices"
+        " drawable_masks draw_order_groups draw_order_group_objects glue glue_info glue_keyforms"
+        " keyform_multiply_colors keyform_screen_colors blend_shape_parameter_bindings"
+        " blend_shape_keyform_bindings blend_shapes_warp_deformers blend_shapes_art_meshes"
+        " blend_shape_constraint_indices blend_shape_constraints blend_shape_constraint_values"
+    ).split(QLatin1Char(' '));
+}
+
+QSet<QString> optionalColumnNames()
+{
+    return {
+        QStringLiteral("parts.runtime_space_0"),
+        QStringLiteral("art_meshes.keyform_color_sources_begin_indices"),
+        QStringLiteral("parameters.blend_shape_parameter_binding_sources_begin_indices"),
+        QStringLiteral("parameters.blend_shape_parameter_binding_sources_counts"),
+        QStringLiteral("parameters.extension_runtime_space_0"),
+        QStringLiteral("parameters.keys_sources_begin_indices"),
+        QStringLiteral("parameters.keys_sources_counts"),
+        QStringLiteral("parameters.parameter_types"),
+        QStringLiteral("rotation_deformers.keyform_color_sources_begin_indices"),
+        QStringLiteral("warp_deformers.is_quad_source"),
+        QStringLiteral("warp_deformers.keyform_color_sources_begin_indices"),
+    };
+}
 }
 
 class SectionPreflightTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void arraySpansMatchEveryPhysicalColumn_data() { addModels(); }
+
+    void arraySpansMatchEveryPhysicalColumn()
+    {
+        QFETCH(QString, model);
+        const QByteArray bytes = sample(model);
+        QVERIFY(bytes.size() >= 0x264);
+        CReader reader(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3");
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        const auto spans = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
+        const auto names = physicalColumnNames();
+        const auto sections = countSections();
+        const auto optional = optionalColumnNames();
+        QCOMPARE(spans.size(), 135);
+        QCOMPARE(names.size(), spans.size());
+        QCOMPARE(sections.size(), 32);
+        QCOMPARE(optional.size(), 11);
+        QHash<QString, CSectionValidation::ColumnSpan> byName;
+        for (const auto& span : spans) {
+            QVERIFY(span.name);
+            const QString name = QString::fromLatin1(span.name);
+            QVERIFY2(!byName.contains(name), qPrintable(name));
+            byName.insert(name, span);
+        }
+        const int countOffset = integer(bytes, 0x40);
+        for (int index = 0; index < names.size(); ++index) {
+            const QString& name = names[index];
+            QVERIFY2(byName.contains(name), qPrintable(name));
+            const auto span = byName.value(name);
+            QCOMPARE(span.offset, qint64(integer(bytes, 0x48 + index * 4)));
+            const int countIndex = sections.indexOf(name.section(QLatin1Char('.'), 0, 0));
+            QVERIFY2(countIndex >= 0, qPrintable(name));
+            QCOMPARE(span.count, qint64(integer(bytes, countOffset + countIndex * 4)));
+            const int width = name.endsWith(QStringLiteral(".ids")) ? 64
+                : name == QStringLiteral("art_meshes.drawable_flags") ? 1
+                : name == QStringLiteral("position_indices.indices") || name == QStringLiteral("glue_info.position_indices") ? 2 : 4;
+            QCOMPARE(span.width, qint64(width));
+            QCOMPARE(span.optional, optional.contains(name));
+        }
+        auto changed = spans;
+        changed.first().offset = -1;
+        changed.first().count = -1;
+        const auto unchanged = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
+        QCOMPARE(unchanged.first().offset, spans.first().offset);
+        QCOMPARE(unchanged.first().count, spans.first().count);
+    }
+
+    void arraySpansRejectMissingOffsetObjects()
+    {
+        CReader reader(QString(TEST_RESOURCES) + QStringLiteral("/Mark/Mark.moc3"));
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        auto& offsets = *table.sectionOffsetTable;
+        const auto checkMissing = [&](auto*& field) {
+            auto* original = field;
+            field = nullptr;
+            const auto spans = CSectionValidation::ArraySpans(offsets, *table.count_info);
+            field = original;
+            QVERIFY(spans.isEmpty());
+        };
+        checkMissing(offsets.count_info);
+        checkMissing(offsets.canvas_info);
+        checkMissing(offsets.parts);
+        checkMissing(offsets.deformers);
+        checkMissing(offsets.warp_deformers);
+        checkMissing(offsets.rotation_deformers);
+        checkMissing(offsets.art_meshes);
+        checkMissing(offsets.parameters);
+        checkMissing(offsets.part_keyforms);
+        checkMissing(offsets.warp_deformer_keyforms);
+        checkMissing(offsets.rotation_deformer_keyforms);
+        checkMissing(offsets.art_mesh_keyforms);
+        checkMissing(offsets.keyform_positions);
+        checkMissing(offsets.parameter_binding_indices);
+        checkMissing(offsets.keyform_bindings);
+        checkMissing(offsets.parameter_bindings);
+        checkMissing(offsets.keys);
+        checkMissing(offsets.uvs);
+        checkMissing(offsets.position_indices);
+        checkMissing(offsets.drawable_masks);
+        checkMissing(offsets.draw_order_groups);
+        checkMissing(offsets.draw_order_group_objects);
+        checkMissing(offsets.glue);
+        checkMissing(offsets.glue_info);
+        checkMissing(offsets.glue_keyforms);
+        checkMissing(offsets.keyform_multiply_colors);
+        checkMissing(offsets.keyform_screen_colors);
+        checkMissing(offsets.blend_shape_parameter_bindings);
+        checkMissing(offsets.blend_shape_keyform_bindings);
+        checkMissing(offsets.blend_shapes_warp_deformers);
+        checkMissing(offsets.blend_shapes_art_meshes);
+        checkMissing(offsets.blend_shape_constraint_indices);
+        checkMissing(offsets.blend_shape_constraints);
+        checkMissing(offsets.blend_shape_constraint_values);
+        QCOMPARE(CSectionValidation::ArraySpans(offsets, *table.count_info).size(), 135);
+    }
+
+    void arraySpansPreservePhysicalAliases_data() { addModels(); }
+
+    void arraySpansPreservePhysicalAliases()
+    {
+        QFETCH(QString, model);
+        QByteArray bytes = sample(model);
+        QVERIFY(bytes.size() >= 0x264);
+        const auto names = physicalColumnNames();
+        const int positionSlot = 0x48 + names.indexOf(QStringLiteral("keyform_positions.xys")) * 4;
+        const int parameterSlot = 0x48 + names.indexOf(QStringLiteral("parameters.default_values")) * 4;
+        QCOMPARE(positionSlot, 0x15c);
+        QCOMPARE(parameterSlot, 0x114);
+        const int positionOffset = integer(bytes, positionSlot);
+        QVERIFY(positionOffset > 0);
+        setInteger(bytes, parameterSlot, positionOffset);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QString path = temporary.filePath(QStringLiteral("aliased.moc3"));
+        QVERIFY(save(path, bytes));
+        CReader reader(path);
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        const auto spans = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
+        QCOMPARE(spans.size(), 135);
+        QSet<QString> aliases;
+        for (const auto& span : spans) {
+            if (span.offset != positionOffset || span.count == 0) continue;
+            QCOMPARE(span.width, qint64(4));
+            aliases.insert(QString::fromLatin1(span.name));
+        }
+        QVERIFY(aliases.contains(QStringLiteral("keyform_positions.xys")));
+        QVERIFY(aliases.contains(QStringLiteral("parameters.default_values")));
+        aliases.remove(QStringLiteral("keyform_positions.xys"));
+        QVERIFY(aliases.contains(QStringLiteral("parameters.default_values")));
+    }
+
     void originalSamplesPassIndependentCountChecks_data() { addModels(); }
 
     void originalSamplesPassIndependentCountChecks()

@@ -3,9 +3,12 @@
 #include "cdrawableflags.h"
 #include "csectiontable.h"
 #include "ccanvasgeometry.h"
+#include "ckeyformbindinggrid.h"
+#include "cmocpreviewbuilder.h"
 #include "util/cfilereader.h"
 #include "struct/cart_mesh_keyforms.h"
 #include <QHash>
+#include <QCryptographicHash>
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
@@ -71,6 +74,11 @@ void CModelDocument::Clear()
 {
     m_loaded = false;
     m_sourcePath.clear();
+    m_sourceBytes.clear();
+    m_sourceDigest.clear();
+    m_keyformBindings.reset();
+    m_previewBuilder.reset();
+    m_previewError.clear();
     m_canvasPixels = {};
     m_parameters.clear();
     m_parts.clear();
@@ -94,23 +102,117 @@ void CModelDocument::Clear()
 
 bool CModelDocument::Load(const QString& mocPath, QString* error)
 {
+    CReader reader(mocPath);
     CModelDocument candidate;
-    if (!candidate.LoadInternal(mocPath, error)) return false;
+    if (!candidate.LoadInternal(reader, mocPath, error)) return false;
     *this = std::move(candidate);
     return true;
 }
 
-bool CModelDocument::LoadInternal(const QString& mocPath, QString* error)
+bool CModelDocument::LoadBytes(const QByteArray& bytes, const QString& sourcePath, QString* error)
+{
+    auto reader = CReader::FromBytes(bytes);
+    CModelDocument candidate;
+    if (!candidate.LoadInternal(reader, sourcePath, error)) return false;
+    *this = std::move(candidate);
+    return true;
+}
+
+bool CModelDocument::SourceMatchesDisk(QString* error) const
+{
+    if (error) error->clear();
+    if (!m_loaded || m_sourceDigest.isEmpty()) {
+        setError(error, QStringLiteral("尚未加载模型快照"));
+        return false;
+    }
+    QFile file(m_sourcePath);
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    if (!file.open(QIODevice::ReadOnly) || !digest.addData(&file) || file.error() != QFileDevice::NoError) {
+        setError(error, QStringLiteral("无法读取加载时的源模型：%1").arg(m_sourcePath));
+        return false;
+    }
+    if (digest.result() != m_sourceDigest) {
+        setError(error, QStringLiteral("源模型已在外部更改，当前编辑仍对应加载时的版本：%1").arg(m_sourcePath));
+        return false;
+    }
+    return true;
+}
+
+bool CModelDocument::KeyformParameterValues(const QString& id, const QString& type, int keyformIndex,
+                                           QMap<QString, float>& values, QString* error) const
+{
+    if (error) error->clear();
+    if (!m_loaded || !m_keyformBindings) {
+        setError(error, QStringLiteral("尚未加载关键形绑定"));
+        return false;
+    }
+    CKeyformBindingGrid::ObjectType objectType;
+    if (type == QStringLiteral("artmesh")) objectType = CKeyformBindingGrid::ArtMesh;
+    else if (type == QStringLiteral("warp")) objectType = CKeyformBindingGrid::Warp;
+    else if (type == QStringLiteral("rotation")) objectType = CKeyformBindingGrid::Rotation;
+    else {
+        setError(error, QStringLiteral("对象类型没有关键形绑定：%1").arg(type));
+        return false;
+    }
+    QMap<QString, float> candidate;
+    if (!m_keyformBindings->Pose(objectType, id, keyformIndex, candidate, error)) return false;
+    QHash<QString, const CModelParameter*> parameters;
+    for (const auto& parameter : m_parameters)
+        if (!parameters.contains(parameter.id)) parameters.insert(parameter.id, &parameter);
+    for (auto value = candidate.cbegin(); value != candidate.cend(); ++value) {
+        const auto* parameter = parameters.value(value.key(), nullptr);
+        if (!parameter) {
+            setError(error, QStringLiteral("关键形引用的参数不存在：%1").arg(value.key()));
+            return false;
+        }
+        const auto metadata = m_parameterMetadataOverrides.constFind(value.key());
+        const float minimum = metadata == m_parameterMetadataOverrides.cend() ? parameter->minimum : metadata->minimum;
+        const float maximum = metadata == m_parameterMetadataOverrides.cend() ? parameter->maximum : metadata->maximum;
+        if (value.value() < minimum || value.value() > maximum) {
+            setError(error, QStringLiteral("关键形的参数值超出当前范围：%1 = %2").arg(value.key()).arg(value.value()));
+            return false;
+        }
+    }
+    values = std::move(candidate);
+    return true;
+}
+
+bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
+{
+    if (error) error->clear();
+    if (!m_loaded) {
+        setError(error, QStringLiteral("尚未加载模型快照"));
+        return false;
+    }
+    if (m_drawableKeyformPositionOverrides.isEmpty()) {
+        bytes = m_sourceBytes;
+        return true;
+    }
+    if (!m_previewBuilder) {
+        setError(error, m_previewError);
+        return false;
+    }
+    return m_previewBuilder->Build(m_drawableKeyformPositionOverrides, bytes, error);
+}
+
+bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QString* error)
 {
     Clear();
-    CReader reader(mocPath);
+    if (error) error->clear();
     CSectionTable table(reader);
     if (!table.IsValid()) {
         setError(error, reader.Error().isEmpty() ? QStringLiteral("moc3 解析失败") : reader.Error());
         return false;
     }
 
-    m_sourcePath = mocPath;
+    m_sourcePath = sourcePath;
+    m_sourceBytes = reader.m_byte;
+    m_sourceDigest = QCryptographicHash::hash(m_sourceBytes, QCryptographicHash::Sha256);
+    auto bindings = std::make_shared<CKeyformBindingGrid>();
+    if (!bindings->Build(table, error)) return false;
+    m_keyformBindings = std::move(bindings);
+    auto preview = std::make_shared<CMocPreviewBuilder>();
+    if (preview->Initialize(m_sourceBytes, &m_previewError)) m_previewBuilder = std::move(preview);
     m_canvasPixels = CCanvasGeometry::PixelSize(table.canvas_info->width, table.canvas_info->height);
 
     m_parameters.reserve(table.parameters.size());
@@ -435,6 +537,38 @@ int CModelDocument::DeformerParentIndex(const QString& id) const
         if (deformer.id == id) return deformer.parentDeformerIndex;
     }
     return -1;
+}
+
+QSet<QString> CModelDocument::HiddenDeformerDrawables() const
+{
+    const int count = m_deformers.size();
+    QVector<int> firstChild(count, -1), nextSibling(count, -1), pending;
+    QVector<quint8> hidden(count, 0);
+    pending.reserve(count);
+    for (int index = 0; index < count; ++index) {
+        const auto& deformer = m_deformers[index];
+        const int parent = m_deformerParentOverrides.value(deformer.id, deformer.parentDeformerIndex);
+        if (inRange(parent, count)) {
+            nextSibling[index] = firstChild[parent];
+            firstChild[parent] = index;
+        }
+        if (!deformer.visible) {
+            hidden[index] = 1;
+            pending.append(index);
+        }
+    }
+    for (int next = 0; next < pending.size(); ++next) {
+        for (int child = firstChild[pending[next]]; child != -1; child = nextSibling[child]) {
+            if (hidden[child]) continue;
+            hidden[child] = 1;
+            pending.append(child);
+        }
+    }
+    QSet<QString> result;
+    for (const auto& drawable : m_drawables)
+        if (inRange(drawable.parentDeformerIndex, count) && hidden[drawable.parentDeformerIndex])
+            result.insert(drawable.id);
+    return result;
 }
 
 bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)

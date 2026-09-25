@@ -6,6 +6,7 @@
  */
 
 #include "LAppModel.hpp"
+#include <QCryptographicHash>
 #include "opengl/cmeshbounds.h"
 #include "live2dstruct/cmotionblendpreview.h"
 
@@ -172,9 +173,11 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
         buffer = CreateBuffer(path.GetRawString(), &size);
         if (buffer != NULL)
         {
+            const auto release = qScopeGuard([&] { DeleteBuffer(buffer, path.GetRawString()); });
             const bool loaded = LoadModel(buffer, size, _mocConsistency);
-            DeleteBuffer(buffer, path.GetRawString());
             if (!loaded) return false;
+            m_sourceMocBytes = QByteArray(reinterpret_cast<const char*>(buffer), size);
+            m_sourceMocDigest = QCryptographicHash::hash(m_sourceMocBytes, QCryptographicHash::Sha256);
         }
         else
         {
