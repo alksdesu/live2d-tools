@@ -6,6 +6,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/util/cfilereader.h"
+#include "opengl/ctextureextractor.h"
 #include <QtTest>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -19,6 +20,60 @@ class Cmo3Tests : public QObject
 {
     Q_OBJECT
 private slots:
+    void textureExtractionUsesValidatedTopologyOverrides()
+    {
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        QVERIFY(!table.art_meshes.isEmpty());
+        table.count_info->art_meshes = 1;
+        auto* mesh = table.art_meshes[0];
+        mesh->vertex_counts = 4;
+        mesh->texture_nos = 0;
+        mesh->uv_sources_begin_indices = 0;
+        mesh->position_index_sources_begin_indices = 0;
+        mesh->position_index_sources_counts = 6;
+        mesh->keyform_sources_begin_indices = -1;
+        table.uvs->uvs = {0, 0, 1, 0, 1, 1, 0, 1};
+        table.position_indices->indices = {0, 1, 2, 0, 2, 3};
+
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QImage atlas(16, 16, QImage::Format_ARGB32);
+        atlas.fill(QColor(80, 120, 200, 255));
+        const QString atlasPath = temp.filePath(QStringLiteral("atlas.png"));
+        QVERIFY(atlas.save(atlasPath));
+        CTextureExtractor extractor;
+        QVERIFY(extractor.LoadAtlases({atlasPath}));
+        const auto original = extractor.ExtractAll(&table, true);
+        QCOMPARE(original.size(), 1);
+        const auto opaquePixels = [](const QImage& image) {
+            int count = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if (qAlpha(image.pixel(x, y)) != 0) ++count;
+            return count;
+        };
+        const int fullPixels = opaquePixels(original[0].image);
+        QVERIFY(fullPixels > 0);
+        QHash<QString, QVector<quint16>> overrides{{mesh->ids, {0, 1, 2}}};
+        const auto edited = extractor.ExtractAll(&table, true, &overrides);
+        QCOMPARE(edited.size(), 1);
+        const int editedPixels = opaquePixels(edited[0].image);
+        QVERIFY(editedPixels > 0 && editedPixels < fullPixels);
+        QCOMPARE(edited[0].canvasRect, original[0].canvasRect);
+        overrides[mesh->ids] = {2, 1, 0};
+        QCOMPARE(extractor.ExtractAll(&table, true, &overrides)[0].image, edited[0].image);
+        for (const auto& invalid : {QVector<quint16>{}, QVector<quint16>{0, 1},
+                                    QVector<quint16>{0, 1, 4}, QVector<quint16>{0, 1, 32768}}) {
+            overrides[mesh->ids] = invalid;
+            const auto fallback = extractor.ExtractAll(&table, true, &overrides);
+            QCOMPARE(fallback.size(), 1);
+            QCOMPARE(fallback[0].image, original[0].image);
+        }
+        QCOMPARE(extractor.ExtractAll(&table, true)[0].image, original[0].image);
+    }
+
     void sparseKeyformOverridesExportAllForms()
     {
         const QString mocPath = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";

@@ -837,7 +837,7 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
                             if (keyform != it.value().cend()) meshMap->SetMeshPositions(it.key(), keyform.value());
                         }
                         for (auto it = previousMeshIndexOverrides.cbegin(); it != previousMeshIndexOverrides.cend(); ++it)
-                            meshMap->SetMeshIndices(it.key(), it.value());
+                            m_openglwindows->do_SetDrawableIndices(it.key(), it.value());
                     }
                 }
             }

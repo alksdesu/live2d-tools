@@ -14,6 +14,89 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void mergeTopologyDeduplicatesAndKeepsHistoryAtomic()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable) { return drawable.vertexCount >= 5 && !drawable.keyforms.isEmpty(); });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        const QVector<quint16> before{0, 2, 3, 0, 3, 4, 1, 2, 3};
+        const QVector<quint16> after{0, 2, 3, 0, 3, 4};
+        QVERIFY(document.SetDrawableIndices(id, before));
+        const auto positions = document.DrawableKeyformPositions(id, 0);
+        const auto uvs = mesh->uvs;
+        const int vertexCount = mesh->vertexCount;
+
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        auto* merge = panel.findChild<QPushButton*>("mergeSelectedVertices");
+        QVERIFY(table && merge);
+        QVERIFY(!merge->isEnabled());
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableIndicesChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        table->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+        QVERIFY(merge->isEnabled());
+        merge->click();
+        QCOMPARE(document.DrawableIndices(id), after);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        QVERIFY(document.CanUndoEdit());
+        merge->click();
+        QCOMPARE(document.DrawableIndices(id), after);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(history.count(), 1);
+        panel.Undo();
+        QCOMPARE(document.DrawableIndices(id), before);
+        QVERIFY(!document.CanUndoEdit());
+        panel.Redo();
+        QCOMPARE(document.DrawableIndices(id), after);
+        QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), positions);
+        QCOMPARE(mesh->uvs, uvs);
+        QCOMPARE(mesh->vertexCount, vertexCount);
+
+        panel.ClearHistory();
+        const QVector<quint16> collapsed{0, 1, 2};
+        QVERIFY(document.SetDrawableIndices(id, collapsed));
+        panel.RefreshSelection();
+        table->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+        changed.clear();
+        history.clear();
+        merge->click();
+        QCOMPARE(document.DrawableIndices(id), collapsed);
+        QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(history.count(), 0);
+    }
+
+    void invalidTopologyLeavesDocumentUnchanged()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& drawable) { return drawable.vertexCount >= 3; });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        const QVector<quint16> before{0, 1, 2};
+        QVERIFY(document.SetDrawableIndices(id, before));
+        for (const auto& invalid : {QVector<quint16>{}, QVector<quint16>{0, 1}, QVector<quint16>{0, 1, 32768}}) {
+            QVERIFY(!document.SetDrawableIndices(id, invalid));
+            QCOMPARE(document.DrawableIndices(id), before);
+        }
+        QVERIFY(!document.SetDrawableIndices(QStringLiteral("missing-artmesh"), before));
+        QCOMPARE(document.DrawableIndices(id), before);
+        const QVector<quint16> degenerate{0, 0, 1, 0, 0, 1};
+        QVERIFY(document.SetDrawableIndices(id, degenerate));
+        QCOMPARE(document.DrawableIndices(id), degenerate);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
     void keyformSelectionTracksDisplayedMesh()
     {
         live2dstruct::CModelDocument document;

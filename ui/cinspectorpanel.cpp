@@ -1,5 +1,6 @@
 #include "cinspectorpanel.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmeshtopology.h"
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -880,7 +881,7 @@ void CInspectorPanel::AutoTriangulate()
     const QVector<quint16> before = m_document->DrawableIndices(m_selectionName);
     if (keyformIndex < 0 || positions.size() < 6 || positions.size() % 2 != 0 || before.isEmpty()) return;
     const int pointCount = positions.size() / 2;
-    if (pointCount > 65535) {
+    if (pointCount > 32768) {
         QMessageBox::warning(this, QStringLiteral("自动三角剖分失败"), QStringLiteral("顶点数量超过 moc3 的索引范围"));
         return;
     }
@@ -968,22 +969,20 @@ void CInspectorPanel::AutoTriangulate()
         }
     }
 
-    QVector<quint16> after;
-    QSet<QString> seen;
+    QVector<quint16> generated;
     for (const Triangle& triangle : triangles) {
         if (triangle.a >= pointCount || triangle.b >= pointCount || triangle.c >= pointCount) continue;
         if (std::fabs(orientation(points[triangle.a], points[triangle.b], points[triangle.c])) < 1e-12) continue;
-        const QString key = QString::number(triangle.a) + QLatin1Char(':') + QString::number(triangle.b) + QLatin1Char(':') + QString::number(triangle.c);
-        if (seen.contains(key)) continue;
-        seen.insert(key);
-        after.append(static_cast<quint16>(triangle.a));
-        after.append(static_cast<quint16>(triangle.b));
-        after.append(static_cast<quint16>(triangle.c));
+        generated.append(static_cast<quint16>(triangle.a));
+        generated.append(static_cast<quint16>(triangle.b));
+        generated.append(static_cast<quint16>(triangle.c));
     }
-    if (after.isEmpty()) {
+    QVector<quint16> after;
+    if (!live2dstruct::CMeshTopology::CleanTriangles(generated, pointCount, &after)) {
         QMessageBox::warning(this, QStringLiteral("自动三角剖分失败"), QStringLiteral("顶点无法形成有效三角形"));
         return;
     }
+    if (after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MeshIndices,
                                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
@@ -1049,6 +1048,10 @@ void CInspectorPanel::PasteTopology()
             return;
         }
         after.append(static_cast<quint16>(number));
+    }
+    if (!live2dstruct::CMeshTopology::IsValid(after, vertexCount)) {
+        QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("索引超出目标网格范围"));
+        return;
     }
     if (after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
@@ -1269,27 +1272,12 @@ void CInspectorPanel::MergeSelectedVertices()
     for (const QTableWidgetSelectionRange& range : m_vertexTable->selectedRanges())
         for (int row = range.topRow(); row <= range.bottomRow(); ++row) selectedRows.insert(row);
     if (selectedRows.size() < 2) return;
-    QVector<int> selected;
-    for (int row : selectedRows) selected.append(row);
-    std::sort(selected.begin(), selected.end());
-    const int target = selected.first();
     const QVector<quint16> before = m_document->DrawableIndices(m_selectionName);
-    if (before.isEmpty()) return;
+    int vertexCount = 0;
+    for (const auto& drawable : m_document->Drawables())
+        if (drawable.id == m_selectionName) { vertexCount = drawable.vertexCount; break; }
     QVector<quint16> after;
-    after.reserve(before.size());
-    for (int i = 0; i + 2 < before.size(); i += 3) {
-        quint16 triangle[3] = {before[i], before[i + 1], before[i + 2]};
-        for (int vertex = 0; vertex < 3; ++vertex) {
-            if (selected.contains(static_cast<int>(triangle[vertex]))) triangle[vertex] = static_cast<quint16>(target);
-        }
-        if (triangle[0] == triangle[1] || triangle[1] == triangle[2] || triangle[0] == triangle[2]) continue;
-        if (!after.isEmpty() && after[after.size() - 3] == triangle[0] &&
-            after[after.size() - 2] == triangle[1] && after[after.size() - 1] == triangle[2]) continue;
-        after.append(triangle[0]);
-        after.append(triangle[1]);
-        after.append(triangle[2]);
-    }
-    if (after.isEmpty() || after == before) return;
+    if (!live2dstruct::CMeshTopology::MergeVertices(before, selectedRows, vertexCount, &after) || after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::MeshIndices,
                                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};

@@ -2,10 +2,8 @@
 #define CTRIANGL_H
 #include <QVector2D>
 #include <QVector>
-#include <opencv2/opencv.hpp>
-#include <QOpenGLFunctions_3_3_Core>
-#include <QMatrix4x4>
-#include <QPolygonF>
+#include <QRectF>
+#include <vector>
 
 class CPoint{
 public:
@@ -42,6 +40,8 @@ class CTrianglMesh{
 public:
     CTrianglMesh(int ebosize,const short* vetebo,int uvsize,const float* vetuv,const float* vetpos);
     ~CTrianglMesh();
+    CTrianglMesh(const CTrianglMesh&) = delete;
+    CTrianglMesh& operator=(const CTrianglMesh&) = delete;
     void normalizing();
     bool AddPoint(const QVector2D& pos);
     bool SetPositions(const QVector<float>& positions);
@@ -57,23 +57,16 @@ public:
     const std::vector<CPoint*>& GetWolrd() const;
     const std::vector<CEdge*>& GetEdge() const;
     std::vector<CPoint*>& GetCpoint();
-    const QRectF& GetRectF(){
+    const QRectF& GetRectF() const{
         return m_meshRect;
     }
-    const QRectF& GetUvRectF(){
+    const QRectF& GetUvRectF() const{
         return m_UvMeshRect;
     }
-    bool GetContentPoint(const QPointF& point){
-        return m_poly.containsPoint(point,Qt::WindingFill);
-    }
+    bool GetContentPoint(const QPointF& point) const;
 private:
-
-    QMatrix4x4 cvMatToQMatrix4x4(const cv::Mat& mat);
-
-    QVector2D GetNewTexPoint(const QVector2D& pos,const CTriangl& tri);//
-    float crossProduct(const QVector2D& a, const QVector2D& b);
-    bool isSameSide(const QVector2D& p1, const QVector2D& p2, const QVector2D& a, const QVector2D& b);
-    bool isPointInTriangle(const QVector2D& p, const QVector2D& a, const QVector2D& b, const QVector2D& c);
+    bool TriangleWeights(const QPointF& position, const CTriangl& triangle, double (&weights)[3]) const;
+    void RebuildEdges();
 
     std::vector<CEdge*> vetEdge;//1号边有点  0 ，1
     std::vector<CPoint*> vetPosPoint;//0号点的位置，1号点的位置  世界坐标系的位置
@@ -86,7 +79,6 @@ private:
     std::vector<float> vetpos;
     QRectF m_meshRect;
     QRectF m_UvMeshRect;
-    QPolygonF m_poly;
 };
 
 

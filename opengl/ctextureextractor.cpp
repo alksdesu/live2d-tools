@@ -1,5 +1,6 @@
 #include "ctextureextractor.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/cmeshtopology.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -102,18 +103,13 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         const short* idxPtr = &table->position_indices->indices[idxBegin];
         if (indexOverrides) {
             const auto overrideIt = indexOverrides->constFind(mesh->ids);
-            if (overrideIt != indexOverrides->cend() && !overrideIt.value().isEmpty() &&
-                overrideIt.value().size() % 3 == 0 && overrideIt.value().size() <= 3000000) {
-                bool validOverride = true;
+            if (overrideIt != indexOverrides->cend() &&
+                CMeshTopology::IsValid(overrideIt.value(), mesh->vertex_counts)) {
                 overrideIndices.reserve(overrideIt.value().size());
-                for (quint16 index : overrideIt.value()) {
-                    if (index >= mesh->vertex_counts || index > 32767) { validOverride = false; break; }
+                for (quint16 index : overrideIt.value())
                     overrideIndices.append(static_cast<short>(index));
-                }
-                if (validOverride) {
-                    idxPtr = overrideIndices.constData();
-                    idxCount = overrideIndices.size();
-                }
+                idxPtr = overrideIndices.constData();
+                idxCount = overrideIndices.size();
             }
         }
         bool indicesValid = true;

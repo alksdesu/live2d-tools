@@ -90,7 +90,6 @@ CMake builds the data, Qt panel and PSD tests independently of Cubism Core. Set 
 |---|---|
 | [Live2D Cubism SDK](https://www.live2d.com/en/sdk/about/) | Model loading, parameter control, rendering |
 | Qt 6 | GUI framework |
-| OpenCV 4.10 | Image processing |
 | [psd_sdk](https://molecular-matters.com/products_psd_sdk.html) | PSD file I/O (extended with luni/ICC support) |
 | miniz | ZIP compression for the cmo3 CAFF container |
 | stb_image | Image loading |
@@ -210,7 +209,6 @@ CMake 可独立构建数据层、Qt 面板和 PSD 测试，不依赖 Cubism Core
 |---|---|
 | [Live2D Cubism SDK](https://www.live2d.com/en/sdk/about/) | 模型加载、参数控制、渲染 |
 | Qt 6 | GUI 框架 |
-| OpenCV 4.10 | 图像处理 |
 | [psd_sdk](https://molecular-matters.com/products_psd_sdk.html) | PSD 文件读写（已扩展 luni/ICC 支持） |
 | miniz | cmo3 CAFF 容器的 ZIP 压缩 |
 | stb_image | 图像加载 |

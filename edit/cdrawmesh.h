@@ -8,7 +8,6 @@
 #include <QOpenGLFunctions_3_3_Core>
 #include <QTransform>
 #include <QOpenGLTexture>
-#include <opencv2/opencv.hpp>
 #include <QPointF>
 
 

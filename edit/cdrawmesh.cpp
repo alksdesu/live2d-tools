@@ -1,9 +1,5 @@
 #include "cdrawmesh.h"
 
-#include<opencv2/opencv.hpp>
-
-
-
 CDrawMesh::CDrawMesh(int ebosize,const short* vetebo,int uvsize,const float* vetuv,const float* vetpos)
 {
     initializeOpenGLFunctions();
@@ -89,18 +85,7 @@ void CDrawMesh::Draw(const QMatrix4x4 &projection)
 //传入世界坐标系点
 void CDrawMesh::MoveSelect(const QVector2D &vet)
 {
-    QMatrix4x4 move;
-    move.setToIdentity();
-    move.translate(QVector3D(vet,0));//世界坐标系的位置
-    std::vector<CPoint*>& point = mesh->GetCpoint();
-    for(int i = 0;i < point.size() ;i++){
-        if(point[i]->GetIsSelect()){
-            const QVector2D& p =  point[i]->GetPoint();
-            QVector4D out = move * QVector4D(p,0,1.0f);//移动点
-
-            point[i]->SetPoint(QVector2D(out));
-        }
-    }
+    MoveSelected(vet);
 }
 
 bool CDrawMesh::SetPositions(const QVector<float>& positions)

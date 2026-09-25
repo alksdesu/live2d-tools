@@ -1,19 +1,38 @@
 #include "ctriangl.h"
+#include "live2dstruct/cmeshtopology.h"
+
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
+namespace {
+constexpr int kMaxVertices = 1000000;
+constexpr int kMaxIndices = 3000000;
+constexpr int kMaxIndex = std::numeric_limits<short>::max();
+constexpr double kWeightTolerance = 32.0 * std::numeric_limits<double>::epsilon();
 
-
-CPoint::CPoint(const QVector2D &point)
+bool finitePoint(const QVector2D& point)
 {
-    m_IsSelect = false;
-    this->point = point;
+    return std::isfinite(point.x()) && std::isfinite(point.y());
 }
 
-void CPoint::SetPoint(const QVector2D &point)
+bool finiteFloat(double value)
 {
-    this->point = point;
+    return std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
 }
-const QVector2D &CPoint::GetPoint() const
+}
+
+CPoint::CPoint(const QVector2D& point) : m_IsSelect(false)
+{
+    SetPoint(point);
+}
+
+void CPoint::SetPoint(const QVector2D& point)
+{
+    if (finitePoint(point)) this->point = point;
+}
+
+const QVector2D& CPoint::GetPoint() const
 {
     return point;
 }
@@ -28,56 +47,54 @@ void CPoint::SetIsSelect(bool select)
     m_IsSelect = select;
 }
 
-CEdge::CEdge(int start, int end)
-{
-    this->start = start;
-    this->end = end;
-    IsEAdd = false;
-}
+CEdge::CEdge(int start, int end) : start(start), end(end), IsEAdd(false) {}
 
-CTriangl::CTriangl(int a, int b, int c)
-{
-    pointA = a;
-    pointB = b;
-    pointC = c;
-}
+CTriangl::CTriangl(int a, int b, int c) : pointA(a), pointB(b), pointC(c) {}
 
-
-CTrianglMesh::CTrianglMesh(int ebosize, const short *vetebo, int uvsize, const float *vetuv, const float *vetpos)
+CTrianglMesh::CTrianglMesh(int ebosize, const short* indices, int uvsize, const float* uvs, const float* positions)
 {
-    for(int i = 0 ;i < ebosize;i+=3){
-        vetTriangl.push_back(new CTriangl(vetebo[i],vetebo[i+1],vetebo[i+2]) );
-        vetEdge.push_back(new CEdge(vetebo[i],vetebo[i+1]));
-        vetEdge.push_back(new CEdge(vetebo[i],vetebo[i+2]));
-        vetEdge.push_back(new CEdge(vetebo[i+1],vetebo[i+2]));
+    if (ebosize < 0 || ebosize > kMaxIndices || ebosize % 3 != 0 ||
+        uvsize < 0 || uvsize > kMaxVertices * 2 || uvsize % 2 != 0 ||
+        (ebosize > 0 && !indices) || (uvsize > 0 && (!uvs || !positions))) return;
+    const int count = uvsize / 2;
+    for (int i = 0; i < ebosize; ++i) {
+        if (indices[i] < 0 || indices[i] >= count) return;
     }
-
-    for(int i = 0 ;i < uvsize;i+=2){
-        vetPosPoint.push_back(new CPoint(  QVector2D(vetpos[i],vetpos[i+1]) ));
-        vetTexPoint.push_back(new QVector2D(vetuv[i],vetuv[i+1]));
+    for (int i = 0; i < uvsize; ++i) {
+        if (!std::isfinite(uvs[i]) || !std::isfinite(positions[i])) return;
     }
+    vetPosPoint.reserve(count);
+    vetTexPoint.reserve(count);
+    vetTriangl.reserve(ebosize / 3);
+    for (int i = 0; i < uvsize; i += 2) {
+        vetPosPoint.push_back(new CPoint(QVector2D(positions[i], positions[i + 1])));
+        vetTexPoint.push_back(new QVector2D(uvs[i], uvs[i + 1]));
+    }
+    for (int i = 0; i < ebosize; i += 3) {
+        vetTriangl.push_back(new CTriangl(indices[i], indices[i + 1], indices[i + 2]));
+    }
+    RebuildEdges();
     normalizing();
-
-
 }
 
 CTrianglMesh::~CTrianglMesh()
 {
-    qDebug() << "CTrianglMesh::~CTrianglMesh()";
-    for(int i = 0 ;i < vetEdge.size();i++){
-        delete vetEdge[i];
-    }
-    for(int i = 0 ;i < vetPosPoint.size();i++){
-        delete vetPosPoint[i];
-    }
+    for (CEdge* edge : vetEdge) delete edge;
+    for (CPoint* point : vetPosPoint) delete point;
+    for (QVector2D* point : vetTexPoint) delete point;
+    for (CTriangl* triangle : vetTriangl) delete triangle;
+}
 
-    for(int i = 0 ;i < vetTexPoint.size();i++){
-        delete vetTexPoint[i];
+void CTrianglMesh::RebuildEdges()
+{
+    for (CEdge* edge : vetEdge) delete edge;
+    vetEdge.clear();
+    vetEdge.reserve(vetTriangl.size() * 3);
+    for (const CTriangl* triangle : vetTriangl) {
+        vetEdge.push_back(new CEdge(triangle->pointA, triangle->pointB));
+        vetEdge.push_back(new CEdge(triangle->pointB, triangle->pointC));
+        vetEdge.push_back(new CEdge(triangle->pointC, triangle->pointA));
     }
-    for(int i = 0 ;i < vetTriangl.size();i++){
-        delete vetTriangl[i];
-    }
-
 }
 
 void CTrianglMesh::normalizing()
@@ -85,98 +102,115 @@ void CTrianglMesh::normalizing()
     vetebo.clear();
     vetuv.clear();
     vetpos.clear();
-
-    for(int i = 0 ;i < vetTriangl.size();i++){
-        vetebo.push_back(vetTriangl[i]->pointA);
-        vetebo.push_back(vetTriangl[i]->pointB);
-        vetebo.push_back(vetTriangl[i]->pointC);
+    m_meshRect = QRectF();
+    m_UvMeshRect = QRectF();
+    vetebo.reserve(vetTriangl.size() * 3);
+    vetuv.reserve(vetTexPoint.size() * 2);
+    vetpos.reserve(vetPosPoint.size() * 2);
+    for (const CTriangl* triangle : vetTriangl) {
+        vetebo.push_back(static_cast<short>(triangle->pointA));
+        vetebo.push_back(static_cast<short>(triangle->pointB));
+        vetebo.push_back(static_cast<short>(triangle->pointC));
     }
-
-    std::vector<cv::Point2f> cvpoints;
-
-
-    QPolygonF poly;
-    QPolygonF uvpoly;
-    for(int i = 0 ;i < vetPosPoint.size() && i < vetTexPoint.size();i++){
-        vetuv.push_back(vetTexPoint[i]->x());
-        vetuv.push_back(vetTexPoint[i]->y());
-        uvpoly.push_back(QPointF(vetTexPoint[i]->x(),1.0f -vetTexPoint[i]->y()));
-        poly.push_back(QPointF(vetPosPoint[i]->GetPoint().x(),vetPosPoint[i]->GetPoint().y()));
-
-        cvpoints.push_back(cv::Point2f(vetPosPoint[i]->GetPoint().x(), vetPosPoint[i]->GetPoint().y()));
-        vetpos.push_back(vetPosPoint[i]->GetPoint().x());
-        vetpos.push_back(vetPosPoint[i]->GetPoint().y());
+    if (vetPosPoint.empty()) return;
+    double left = std::numeric_limits<double>::max();
+    double right = -left;
+    double top = left;
+    double bottom = right;
+    double uvLeft = left;
+    double uvRight = right;
+    double uvTop = top;
+    double uvBottom = bottom;
+    for (size_t i = 0; i < vetPosPoint.size(); ++i) {
+        const QVector2D& position = vetPosPoint[i]->GetPoint();
+        const QVector2D& uv = *vetTexPoint[i];
+        vetpos.push_back(position.x());
+        vetpos.push_back(position.y());
+        vetuv.push_back(uv.x());
+        vetuv.push_back(uv.y());
+        left = std::min(left, static_cast<double>(position.x()));
+        right = std::max(right, static_cast<double>(position.x()));
+        top = std::min(top, static_cast<double>(position.y()));
+        bottom = std::max(bottom, static_cast<double>(position.y()));
+        uvLeft = std::min(uvLeft, static_cast<double>(uv.x()));
+        uvRight = std::max(uvRight, static_cast<double>(uv.x()));
+        uvTop = std::min(uvTop, 1.0 - uv.y());
+        uvBottom = std::max(uvBottom, 1.0 - uv.y());
     }
-    m_meshRect = poly.boundingRect();
-    m_UvMeshRect = uvpoly.boundingRect();
-
-    m_poly.clear();
-    if(cvpoints.size() > 0){
-        std::vector<cv::Point2f> hull;
-        cv::approxPolyDP(cvpoints,hull,0,true);
-        for(int  i = 0 ;i < hull.size();i++){
-            m_poly.push_back(QPointF(hull[i].x,hull[i].y)) ;
-        }
-    }
-
-    //m_poly = poly;
+    m_meshRect = QRectF(left, top, right - left, bottom - top);
+    m_UvMeshRect = QRectF(uvLeft, uvTop, uvRight - uvLeft, uvBottom - uvTop);
 }
 
-bool CTrianglMesh::AddPoint(const QVector2D &pos)
+bool CTrianglMesh::TriangleWeights(const QPointF& position, const CTriangl& triangle, double (&weights)[3]) const
 {
-    //暂时只添加在三角形内部的点
-    bool result = false;
-    for(int i = 0 ;i < vetTriangl.size() ;i++){
-        CPoint* pointA = vetPosPoint[vetTriangl[i]->pointA];
-        CPoint* pointB = vetPosPoint[vetTriangl[i]->pointB];
-        CPoint* pointC = vetPosPoint[vetTriangl[i]->pointC];
-
-        result = isPointInTriangle(pos, pointA->GetPoint(), pointB->GetPoint(), pointC->GetPoint());
-        if(!result){//不在三角形内部，就continue
-            continue;
-        }
-
-        //添加一个pos点，三条边,一个纹理点,三个三角形
-        //删除这个三角形
-        //删除三条边
-        vetPosPoint.push_back(new  CPoint(pos));
-        int index = vetPosPoint.size() - 1;
-        vetEdge.push_back(new  CEdge(vetTriangl[i]->pointA,index));
-        vetEdge.push_back(new  CEdge(vetTriangl[i]->pointB,index));
-        vetEdge.push_back(new  CEdge(vetTriangl[i]->pointC,index));
-
-        QVector2D TexPoint = GetNewTexPoint(pos,*vetTriangl[i]);
-        qDebug() << TexPoint;
-        vetTexPoint.push_back(new QVector2D(TexPoint));
-
-
-        vetTriangl.push_back(new  CTriangl(index,vetTriangl[i]->pointA,vetTriangl[i]->pointB));
-        vetTriangl.push_back(new  CTriangl(index,vetTriangl[i]->pointA,vetTriangl[i]->pointC));
-        vetTriangl.push_back(new  CTriangl(index,vetTriangl[i]->pointB,vetTriangl[i]->pointC));
-
-
-
-        auto it = vetTriangl.begin() + i;
-        // 使用erase函数删除元素
-        delete (*it);
-        vetTriangl.erase(it);
-
-
-        if(result){
-            qDebug() << "CMesh::AddPoint 点在三角形内部";
-            break;//
-        }
-
+    if (!std::isfinite(position.x()) || !std::isfinite(position.y())) return false;
+    for (int index : {triangle.pointA, triangle.pointB, triangle.pointC}) {
+        if (index < 0 || static_cast<size_t>(index) >= vetPosPoint.size()) return false;
     }
+    const QPointF a = vetPosPoint[triangle.pointA]->GetPoint().toPointF();
+    const QPointF b = vetPosPoint[triangle.pointB]->GetPoint().toPointF();
+    const QPointF c = vetPosPoint[triangle.pointC]->GetPoint().toPointF();
+    const QPointF ab = b - a;
+    const QPointF ac = c - a;
+    const QPointF ap = position - a;
+    const double positive = ab.x() * ac.y();
+    const double negative = ab.y() * ac.x();
+    const double determinant = positive - negative;
+    if (std::abs(determinant) <= kWeightTolerance * (std::abs(positive) + std::abs(negative))) return false;
+    weights[1] = (ap.x() * ac.y() - ap.y() * ac.x()) / determinant;
+    weights[2] = (ab.x() * ap.y() - ab.y() * ap.x()) / determinant;
+    weights[0] = 1.0 - weights[1] - weights[2];
+    for (double weight : weights) {
+        if (!std::isfinite(weight) || weight < -kWeightTolerance || weight > 1.0 + kWeightTolerance) return false;
+    }
+    return true;
+}
 
-    return result;
+bool CTrianglMesh::GetContentPoint(const QPointF& point) const
+{
+    if (!std::isfinite(point.x()) || !std::isfinite(point.y()) || !m_meshRect.contains(point)) return false;
+    for (const CTriangl* triangle : vetTriangl) {
+        double weights[3];
+        if (TriangleWeights(point, *triangle, weights)) return true;
+    }
+    return false;
+}
+
+bool CTrianglMesh::AddPoint(const QVector2D& position)
+{
+    if (!finitePoint(position) || vetPosPoint.size() > kMaxIndex || vetTriangl.size() * 3 > kMaxIndices - 6) return false;
+    for (size_t i = 0; i < vetTriangl.size(); ++i) {
+        const CTriangl triangle = *vetTriangl[i];
+        double weights[3];
+        if (!TriangleWeights(position.toPointF(), triangle, weights)) continue;
+        if (weights[0] <= kWeightTolerance || weights[1] <= kWeightTolerance || weights[2] <= kWeightTolerance) continue;
+        const int sourceIndices[3] = {triangle.pointA, triangle.pointB, triangle.pointC};
+        double u = 0.0;
+        double v = 0.0;
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            const QVector2D& uv = *vetTexPoint[sourceIndices[vertex]];
+            u += weights[vertex] * uv.x();
+            v += weights[vertex] * uv.y();
+        }
+        if (!finiteFloat(u) || !finiteFloat(v)) return false;
+        const int index = static_cast<int>(vetPosPoint.size());
+        vetPosPoint.push_back(new CPoint(position));
+        vetTexPoint.push_back(new QVector2D(static_cast<float>(u), static_cast<float>(v)));
+        *vetTriangl[i] = CTriangl(triangle.pointA, triangle.pointB, index);
+        vetTriangl.push_back(new CTriangl(triangle.pointB, triangle.pointC, index));
+        vetTriangl.push_back(new CTriangl(triangle.pointC, triangle.pointA, index));
+        RebuildEdges();
+        normalizing();
+        return true;
+    }
+    return false;
 }
 
 bool CTrianglMesh::SetPositions(const QVector<float>& positions)
 {
-    if (positions.size() != static_cast<int>(vetPosPoint.size() * 2)) return false;
+    if (positions.size() != static_cast<qsizetype>(vetPosPoint.size() * 2)) return false;
     for (float value : positions) if (!std::isfinite(value)) return false;
-    for (int i = 0; i < vetPosPoint.size(); ++i) {
+    for (size_t i = 0; i < vetPosPoint.size(); ++i) {
         vetPosPoint[i]->SetPoint(QVector2D(positions[i * 2], positions[i * 2 + 1]));
     }
     normalizing();
@@ -185,37 +219,30 @@ bool CTrianglMesh::SetPositions(const QVector<float>& positions)
 
 bool CTrianglMesh::SetIndices(const QVector<quint16>& indices)
 {
-    if (indices.isEmpty() || indices.size() % 3 != 0 || indices.size() > 3000000) return false;
-    for (quint16 index : indices) {
-        if (index >= vetPosPoint.size() || index > 32767) return false;
-    }
-    for (CEdge* edge : vetEdge) delete edge;
+    if (!live2dstruct::CMeshTopology::IsValid(indices, static_cast<int>(vetPosPoint.size()))) return false;
     for (CTriangl* triangle : vetTriangl) delete triangle;
-    vetEdge.clear();
     vetTriangl.clear();
-    for (int i = 0; i < indices.size(); i += 3) {
-        const int a = static_cast<int>(indices[i]);
-        const int b = static_cast<int>(indices[i + 1]);
-        const int c = static_cast<int>(indices[i + 2]);
-        vetTriangl.push_back(new CTriangl(a, b, c));
-        vetEdge.push_back(new CEdge(a, b));
-        vetEdge.push_back(new CEdge(a, c));
-        vetEdge.push_back(new CEdge(b, c));
+    vetTriangl.reserve(indices.size() / 3);
+    for (qsizetype i = 0; i < indices.size(); i += 3) {
+        vetTriangl.push_back(new CTriangl(indices[i], indices[i + 1], indices[i + 2]));
     }
+    RebuildEdges();
     normalizing();
     return true;
 }
 
 bool CTrianglMesh::SelectNearestPoint(const QVector2D& position, float radius)
 {
-    if (!std::isfinite(radius) || radius < 0.0f) return false;
+    if (!finitePoint(position) || !std::isfinite(radius) || radius < 0.0f) return false;
     int nearest = -1;
-    float nearestDistance = radius * radius;
-    for (int i = 0; i < vetPosPoint.size(); ++i) {
-        const QVector2D delta = vetPosPoint[i]->GetPoint() - position;
-        const float distance = QVector2D::dotProduct(delta, delta);
+    double nearestDistance = static_cast<double>(radius) * radius;
+    for (size_t i = 0; i < vetPosPoint.size(); ++i) {
+        const QVector2D& point = vetPosPoint[i]->GetPoint();
+        const double dx = static_cast<double>(point.x()) - position.x();
+        const double dy = static_cast<double>(point.y()) - position.y();
+        const double distance = dx * dx + dy * dy;
         if (distance <= nearestDistance) {
-            nearest = i;
+            nearest = static_cast<int>(i);
             nearestDistance = distance;
         }
         vetPosPoint[i]->SetIsSelect(false);
@@ -227,7 +254,13 @@ bool CTrianglMesh::SelectNearestPoint(const QVector2D& position, float radius)
 
 void CTrianglMesh::MoveSelected(const QVector2D& delta)
 {
-    if (!std::isfinite(delta.x()) || !std::isfinite(delta.y())) return;
+    if (!finitePoint(delta)) return;
+    for (const CPoint* point : vetPosPoint) {
+        if (!point->GetIsSelect()) continue;
+        const double x = static_cast<double>(point->GetPoint().x()) + delta.x();
+        const double y = static_cast<double>(point->GetPoint().y()) + delta.y();
+        if (!finiteFloat(x) || !finiteFloat(y)) return;
+    }
     for (CPoint* point : vetPosPoint) {
         if (point->GetIsSelect()) point->SetPoint(point->GetPoint() + delta);
     }
@@ -237,7 +270,7 @@ void CTrianglMesh::MoveSelected(const QVector2D& delta)
 QVector<float> CTrianglMesh::Positions() const
 {
     QVector<float> positions;
-    positions.reserve(static_cast<int>(vetPosPoint.size() * 2));
+    positions.reserve(static_cast<qsizetype>(vetPosPoint.size() * 2));
     for (const CPoint* point : vetPosPoint) {
         positions.append(point->GetPoint().x());
         positions.append(point->GetPoint().y());
@@ -245,143 +278,39 @@ QVector<float> CTrianglMesh::Positions() const
     return positions;
 }
 
-void CTrianglMesh::DeleteEdge(int satat, int end)
-{
+void CTrianglMesh::DeleteEdge(int, int) {}
 
-}
-
-const short * CTrianglMesh::GetEBOIndex() const
+const short* CTrianglMesh::GetEBOIndex() const
 {
     return vetebo.data();
 }
 
 const int CTrianglMesh::GetEBOSize() const
 {
-    return vetebo.size();
+    return static_cast<int>(vetebo.size());
 }
 
-const float * CTrianglMesh::GetUV() const
+const float* CTrianglMesh::GetUV() const
 {
     return vetuv.data();
 }
 
-const float * CTrianglMesh::GetPos() const
+const float* CTrianglMesh::GetPos() const
 {
     return vetpos.data();
 }
 
-const std::vector<CPoint*> & CTrianglMesh::GetWolrd() const
+const std::vector<CPoint*>& CTrianglMesh::GetWolrd() const
 {
     return vetPosPoint;
 }
 
-const std::vector<CEdge*> & CTrianglMesh::GetEdge() const
+const std::vector<CEdge*>& CTrianglMesh::GetEdge() const
 {
     return vetEdge;
 }
 
-std::vector<CPoint*> & CTrianglMesh::GetCpoint()
+std::vector<CPoint*>& CTrianglMesh::GetCpoint()
 {
     return vetPosPoint;
-}
-
-QVector2D CTrianglMesh::GetNewTexPoint(const QVector2D &pos, const CTriangl &tri)
-{
-    CPoint* pointA = vetPosPoint[tri.pointA];
-    CPoint* pointB = vetPosPoint[tri.pointB];
-    CPoint* pointC = vetPosPoint[tri.pointC];
-
-    QVector2D* texA = vetTexPoint[tri.pointA];
-    QVector2D* texB = vetTexPoint[tri.pointB];
-    QVector2D* texC = vetTexPoint[tri.pointC];
-
-    QVector2D result;
-
-    cv::Point2f mop1[3];
-    cv::Point2f mop2[3];
-    // // 初始化点坐标
-    mop1[0] = cv::Point2f(pointA->GetPoint().x(), pointA->GetPoint().y());
-    mop1[1] = cv::Point2f(pointB->GetPoint().x(), pointB->GetPoint().y());
-    mop1[2] = cv::Point2f(pointC->GetPoint().x(), pointC->GetPoint().y());
-
-
-    mop2[0] = cv::Point2f(texA->x(), texA->y());
-    mop2[1] = cv::Point2f(texB->x(), texB->y());
-    mop2[2] = cv::Point2f(texC->x(), texC->y());
-
-
-    cv::Mat mat = getAffineTransform(mop1, mop2);
-
-    if (mat.type() == CV_64FC1) {
-
-        QMatrix4x4 data = cvMatToQMatrix4x4(mat);
-
-        QVector4D out = data * QVector4D(pos,0,1.0f);
-        result = QVector2D(out.x(),out.y()  );
-
-    } else {
-        qDebug() << "矩阵数据类型不正确，无法按预期访问元素" ;
-    }
-
-
-    return result;
-}
-
-float CTrianglMesh::crossProduct(const QVector2D &a, const QVector2D &b)
-{
-    return a.x() * b.y() - a.y() * b.x();
-}
-
-bool CTrianglMesh::isSameSide(const QVector2D &p1, const QVector2D &p2, const QVector2D &a, const QVector2D &b)
-{
-    QVector2D ab = b - a;
-    QVector2D ap1 = p1 - a;
-    QVector2D ap2 = p2 - a;
-
-    float cross1 = crossProduct(ab, ap1);
-    float cross2 = crossProduct(ab, ap2);
-
-    return (cross1 * cross2 >= 0);  // 同号则在同侧
-}
-
-bool CTrianglMesh::isPointInTriangle(const QVector2D &p, const QVector2D &a, const QVector2D &b, const QVector2D &c)
-{
-    return isSameSide(p, a, b, c) &&
-           isSameSide(p, b, c, a) &&
-           isSameSide(p, c, a, b);
-}
-
-QMatrix4x4 CTrianglMesh::cvMatToQMatrix4x4(const cv::Mat &mat)
-{
-    // 确保输入的cv::Mat是2行3列
-    if (mat.rows!= 2 || mat.cols!= 3)
-    {
-        // 如果不符合要求，可以抛出异常或者返回一个默认的QMatrix4x4
-        qWarning("输入的cv::Mat矩阵维度不符合2行3列要求");
-        return QMatrix4x4();
-    }
-
-    QMatrix4x4 qMatrix;
-    qMatrix(0, 0) = mat.at<double>(0, 0);
-    qMatrix(0, 1) = mat.at<double>(0, 1);
-    qMatrix(0, 2) = 0;
-    qMatrix(0, 3) = mat.at<double>(0, 2);
-
-    qMatrix(1, 0) = mat.at<double>(1, 0);
-    qMatrix(1, 1) = mat.at<double>(1, 1);
-    qMatrix(1, 2) = 0;
-    qMatrix(1, 3) = mat.at<double>(1, 2);
-
-    qMatrix(2, 0) = 0;
-    qMatrix(2, 1) = 0;
-    qMatrix(2, 2) = 1;
-    qMatrix(2, 3) = 0;
-
-    qMatrix(3, 0) = 0;
-    qMatrix(3, 1) = 0;
-    qMatrix(3, 2) = 0;
-    qMatrix(2, 3) = 1;
-
-
-    return qMatrix;
 }

@@ -92,6 +92,7 @@ void CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
     {
         // --- 実際に１つのマスクを描く ---
         CubismClippingContext_OpenGLES2* clipContext = _clippingContextListForMask[clipIndex];
+        if (!clipContext->_isUsing) continue;
         csmRectF* allClippedDrawRect = clipContext->_allClippedDrawRect; //このマスクを使う、全ての描画オブジェクトの論理座標上の囲み矩形
         csmRectF* layoutBoundsOnTex01 = clipContext->_layoutBounds; //この中にマスクを収める
         const csmFloat32 MARGIN = 0.05f;
@@ -124,7 +125,7 @@ void CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
         for (csmInt32 i = 0; i < clipDrawCount; i++)
         {
             const csmInt32 clipDrawIndex = clipContext->_clippingIdList[i];
-            if (!model.GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
+            if (!renderer->_forceMaskRedraw && !model.GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
             {
                 continue;
             }
@@ -453,6 +454,9 @@ void CubismRenderer_OpenGLES2::Initialize(CubismModel* model)
 
 void CubismRenderer_OpenGLES2::Initialize(CubismModel* model, csmInt32 maskBufferCount)
 {
+    _maskIndicesRevision = 0;
+    _forceMaskRedraw = false;
+    _maskTopologyUpdated = false;
 
     setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext());
 
@@ -523,6 +527,9 @@ void CubismRenderer_OpenGLES2::PreDraw()
 
 void CubismRenderer_OpenGLES2::DoDrawModel()
 {
+    const quint64 indicesRevision = GetModel()->GetDrawableIndicesRevision();
+    _forceMaskRedraw = GetModel()->HasDrawableIndicesOverrides() || indicesRevision != _maskIndicesRevision;
+    _maskTopologyUpdated = false;
 
     if (_clippingManager != NULL)
     {
@@ -619,10 +626,8 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
                                                                ? (*_clippingManager->GetClippingContextListForDraw())[drawableIndex]
                                                                : NULL;
 
-            if (clipContext != NULL && IsUsingHighPrecisionMask()) // マスクを書く必要がある
+            if (clipContext != NULL && clipContext->_isUsing && IsUsingHighPrecisionMask())
             {
-                qDebug("clipContext->_isUsing");
-                if(clipContext->_isUsing) // 書くことになっていた
                 {
                     // 生成したOffscreenSurfaceと同じサイズでビューポートを設定
                     glViewport(0, 0, _clippingManager->GetClippingMaskBufferSize().X, _clippingManager->GetClippingMaskBufferSize().Y);
@@ -646,7 +651,7 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
                         const csmInt32 clipDrawIndex = clipContext->_clippingIdList[index];
 
                         // 頂点情報が更新されておらず、信頼性がない場合は描画をパスする
-                        if (!GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
+                        if (!_forceMaskRedraw && !GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
                         {
                             continue;
                         }
@@ -731,10 +736,8 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
                 ? (*_clippingManager->GetClippingContextListForDraw())[drawableIndex]
                 : NULL;
 
-            if (clipContext != NULL && IsUsingHighPrecisionMask()) // マスクを書く必要がある
+            if (clipContext != NULL && clipContext->_isUsing && IsUsingHighPrecisionMask())
             {
-                qDebug("clipContext->_isUsing");
-                if(clipContext->_isUsing) // 書くことになっていた
                 {
                     // 生成したOffscreenSurfaceと同じサイズでビューポートを設定
                     glViewport(0, 0, _clippingManager->GetClippingMaskBufferSize().X, _clippingManager->GetClippingMaskBufferSize().Y);
@@ -758,7 +761,7 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
                         const csmInt32 clipDrawIndex = clipContext->_clippingIdList[index];
 
                         // 頂点情報が更新されておらず、信頼性がない場合は描画をパスする
-                        if (!GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
+                        if (!_forceMaskRedraw && !GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
                         {
                             continue;
                         }
@@ -824,15 +827,7 @@ void CubismRenderer_OpenGLES2::DoDrawModel()
         }
         PostDraw();
     }
-
-
-
-
-
-
-
-
-
+    if (_maskTopologyUpdated) _maskIndicesRevision = indicesRevision;
 }
 
 void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride)
@@ -860,6 +855,7 @@ void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
 
     if (IsGeneratingMask())  // マスク生成時
     {
+        _maskTopologyUpdated = true;
         CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForMask(this, model, index);
     }
     else{
@@ -869,7 +865,7 @@ void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
     // ポリゴンメッシュを描画する
     {
         csmInt32 indexCount = model.GetDrawableVertexIndexCount(index);
-        csmUint16* indexArray = const_cast<csmUint16*>(model.GetDrawableVertexIndices(index));
+        const csmUint16* indexArray = model.GetDrawableVertexIndices(index);
         glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_SHORT, indexArray);
     }
 

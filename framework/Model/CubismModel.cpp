@@ -671,6 +671,7 @@ csmInt32 CubismModel::GetDrawableTextureIndex(csmInt32 drawableIndex) const
 
 csmInt32 CubismModel::GetDrawableVertexIndexCount(csmInt32 drawableIndex) const
 {
+    if (const auto* indices = _drawableIndexOverrides.Find(drawableIndex)) return indices->size();
     const csmInt32* indexCounts = Core::csmGetDrawableIndexCounts(_model);
     return indexCounts[drawableIndex];
 }
@@ -683,8 +684,25 @@ csmInt32 CubismModel::GetDrawableVertexCount(csmInt32 drawableIndex) const
 
 const csmUint16* CubismModel::GetDrawableVertexIndices(csmInt32 drawableIndex) const
 {
+    if (const auto* indices = _drawableIndexOverrides.Find(drawableIndex)) return indices->constData();
     const csmUint16** indicesArray = Core::csmGetDrawableIndices(_model);
     return indicesArray[drawableIndex];
+}
+
+bool CubismModel::SetDrawableIndicesOverride(csmInt32 drawableIndex, const QVector<quint16>& indices)
+{
+    if (!_model || drawableIndex < 0 || drawableIndex >= GetDrawableCount()) return false;
+    const int vertexCount = GetDrawableVertexCount(drawableIndex);
+    if (!live2dstruct::CMeshTopology::IsValid(indices, vertexCount)) return false;
+    const auto id = GetDrawableId(drawableIndex);
+    if (!id || !m_vetDrawMesh.SetMeshIndices(QString::fromUtf8(id->GetString().GetRawString()), indices))
+        return false;
+    return _drawableIndexOverrides.Set(drawableIndex, vertexCount, indices);
+}
+
+void CubismModel::ClearDrawableIndicesOverrides()
+{
+    _drawableIndexOverrides.Clear();
 }
 
 const Core::csmVector2* CubismModel::GetDrawableVertexPositions(csmInt32 drawableIndex) const

@@ -9,6 +9,7 @@
 #include "framework/Rendering/CubismRenderer.hpp"
 #include "framework/Id/CubismId.hpp"
 #include "edit/cmeshmap.h"
+#include "live2dstruct/cmeshindexoverrides.h"
 #include <QMap>
 #include <QHash>
 
@@ -128,6 +129,10 @@ public:
     csmInt32            GetDrawableTextureIndex(csmInt32 drawableIndex) const;
     csmInt32            GetDrawableVertexIndexCount(csmInt32 drawableIndex) const;
     csmInt32            GetDrawableVertexCount(csmInt32 drawableIndex) const;
+    bool SetDrawableIndicesOverride(csmInt32 drawableIndex, const QVector<quint16>& indices);
+    void ClearDrawableIndicesOverrides();
+    quint64 GetDrawableIndicesRevision() const { return _drawableIndexOverrides.Revision(); }
+    bool HasDrawableIndicesOverrides() const { return !_drawableIndexOverrides.IsEmpty(); }
 
     const csmFloat32*   GetDrawableVertices(csmInt32 drawableIndex) const;
 
@@ -557,6 +562,7 @@ private:
     csmBool _isOverwrittenCullings; ///< モデルのカリング設定をすべて上書きするか？
 
     CMeshMap  m_vetDrawMesh;
+    live2dstruct::CMeshIndexOverrides _drawableIndexOverrides;
 
 
 };

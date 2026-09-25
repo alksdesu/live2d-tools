@@ -1,5 +1,6 @@
 #include "opengglform.h"
 #include "edit/cmeshmap.h"
+#include "framework/Id/CubismIdManager.hpp"
 #include <QSurfaceFormat>
 #include <cmath>
 
@@ -187,7 +188,8 @@ void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsI
                     }
                     for (auto it = LAppDelegate::GetInstance()->m_meshIndexOverrides.cbegin();
                          it != LAppDelegate::GetInstance()->m_meshIndexOverrides.cend(); ++it) {
-                        meshMap->SetMeshIndices(it.key(), it.value());
+                        const auto id = CubismFramework::GetIdManager()->GetId(it.key().toUtf8().constData());
+                        model->GetModel()->SetDrawableIndicesOverride(model->GetModel()->GetDrawableIndex(id), it.value());
                     }
                 }
             }
@@ -307,8 +309,11 @@ void OpengGlForm::ClearEditorOverrides()
     delegate->m_meshOverlayKeyformIndices.clear();
     delegate->m_meshIndexOverrides.clear();
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
-    if (manager && manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel())
-        manager->GetModel(0)->GetModel()->InitMesh();
+    if (manager && manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
+        auto* model = manager->GetModel(0)->GetModel();
+        model->ClearDrawableIndicesOverrides();
+        model->InitMesh();
+    }
 }
 
 void OpengGlForm::PublishRenderOrder(const QStringList& names)
@@ -357,13 +362,15 @@ void OpengGlForm::do_SetDrawableKeyformPositions(const QString& name, int keyfor
 
 void OpengGlForm::do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices)
 {
-    if (name.isEmpty() || indices.isEmpty() || indices.size() % 3 != 0) return;
-    LAppDelegate::GetInstance()->m_meshIndexOverrides.insert(name, indices);
+    if (name.isEmpty() || !live2dstruct::CMeshTopology::IsValid(indices, 32768)) return;
+    auto* delegate = LAppDelegate::GetInstance();
     LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
-    if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) || !manager->GetModel(0)->GetModel()) return;
-    CMeshMap* meshMap = manager->GetModel(0)->GetModel()->GetMeshMap();
-    if (!meshMap || meshMap->SetMeshIndices(name, indices)) return;
-    LAppDelegate::GetInstance()->m_meshIndexOverrides.remove(name);
+    if (manager && manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
+        auto* model = manager->GetModel(0)->GetModel();
+        const auto id = CubismFramework::GetIdManager()->GetId(name.toUtf8().constData());
+        if (!model->SetDrawableIndicesOverride(model->GetDrawableIndex(id), indices)) return;
+    }
+    delegate->m_meshIndexOverrides.insert(name, indices);
 }
 
 void OpengGlForm::do_ModelChange(const QString& fileName)

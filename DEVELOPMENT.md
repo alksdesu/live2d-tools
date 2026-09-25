@@ -276,6 +276,17 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 
 ## 完整应用构建探测
 
-- 在隔离临时目录用 Qt 6.8.3 qmake 编译完整应用，构建已到链接阶段；当前 macOS SDK 不含 Qt 配置仍引用的 AGL。仅在临时 Makefile 排除 AGL 后，缺失符号来自 Cubism Core 与 OpenCV，未生成可运行应用，也未修改已安装 Qt。
-- 本地 Framework 与官方 Native 5-r.1 最接近；该版本 macOS arm64 Core 路径为 `Core/lib/macos/arm64/libLive2DCubismCore.a`，可见[官方构建文件](https://raw.githubusercontent.com/Live2D/CubismNativeSamples/5-r.1/Samples/OpenGL/Demo/proj.mac.cmake/CMakeLists.txt)。仓库只含 Windows Core，macOS 还缺对应 OpenCV 库；没有替换 Framework 或使用未验证的新 Core。
+- 在隔离临时目录用 Qt 6.8.3 qmake 编译完整应用，构建已到链接阶段；当前 macOS SDK 不含 Qt 配置仍引用的 AGL。仅在临时 Makefile 排除 AGL 后，当前 40 组未定义符号全部来自 Cubism Core；OpenCV 依赖已移除，miniz 通过明确的 C++ 入口参与 qmake 和 CMake 编译，归档函数缺失符号已消除。未生成可运行应用，也未修改已安装 Qt。
+- 本地 Framework 与官方 Native 5-r.1 最接近；该版本 macOS arm64 Core 路径为 `Core/lib/macos/arm64/libLive2DCubismCore.a`，可见[官方构建文件](https://raw.githubusercontent.com/Live2D/CubismNativeSamples/5-r.1/Samples/OpenGL/Demo/proj.mac.cmake/CMakeLists.txt)。仓库只含 Windows Core，没有替换 Framework 或使用未验证的新 Core。
 - 完整 Core/GL、Windows GUI、第三方编辑器实际回读仍是待验证项；当前进展是可执行组件与二进制检查，不构成完整应用已运行的证明。
+
+## 网格拓扑、命中与绘制索引
+
+- 网格命中按实际索引三角形计算，支持未按边界排序的顶点、孔洞和分离区域；不再把顶点列表当作轮廓。构造和更新先检查指针、数量、范围与有限值，非法更新保留旧网格；移动共用缓存刷新路径，避免位置和命中范围不同步。
+- 内部 AddPoint 使用重心坐标插值 UV，保留三角形绕序和原始 UV 方向。边界插点、退化或数值上接近退化的三角形会拒绝；尚未开放改变顶点数的 UI，顶点/UV/全部关键形的一致增删仍待实现。
+- 拓扑验证供文档、Inspector、CPU 网格和纹理提取共用，保持既有 session 格式与有符号索引限制。合并会移除重复索引退化三角形，并在全列表去除循环排列等价的同绕序三角形；反向绕序保留，全部折叠和无变化不生成历史。
+- 每个 CubismModel 持有独立索引覆盖，普通纹理、遮罩与 FBO 绘制共用有效索引数量和指针；线框同步成功后才保存运行时覆盖，失败不会删掉旧缓存。清理会话、网格重建与跨模型批量导出恢复已接入同一路径。
+- 覆盖存在时重建完整遮罩组；清除覆盖的修订号保留到实际遮罩绘制后消费。低精度跳过未使用的 context，两条高精度路径只在启用的 context 内执行 BeginDraw、源网格绘制和 EndDraw，避免强制重绘时写入错误的 FBO。未更改 Core 动态标志的更新顺序。
+- OpenCV 的两处算法依赖已由上述几何计算替代，源码、qmake 与 CMake 不再依赖它；保留仓库中已有的第三方文件和许可证归属。miniz 增加独立编译入口，避免 qmake 将被头文件包含的实现文件仅视为依赖。
+- 新增 mesh_topology、mesh_index_overrides、triangl_mesh 测试，覆盖全局去重/绕序、原子失败、实例隔离、修订号、孔洞/分离网格、极值、UV 和移动缓存；真实 Inspector 测试覆盖启用条件、一步撤销/重做及无变化历史。纹理提取用已知图像验证覆盖改变导出像素、反向绕序一致及非法覆盖回退原图。
+- 本机 CTest 23/23 通过，网格三项、Inspector、cmo3、PSD 六项通过 ASAN/UBSAN；完整应用源码编译到最终链接，只缺 Core 符号。此处完成索引链路接入和 CPU/导出验证，实际 Core/GL 遮罩效果、父变形器局部坐标到运行时顶点的映射仍未验证或完成。

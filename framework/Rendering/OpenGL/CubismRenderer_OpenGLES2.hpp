@@ -292,6 +292,9 @@ private:
     CubismClippingContext_OpenGLES2* _clippingContextBufferForDraw;  ///< 画面上描画するためのクリッピングコンテキスト
 
     csmVector<CubismOffscreenSurface_OpenGLES2>   _offscreenSurfaces;          ///< マスク描画用のフレームバッファ
+    quint64 _maskIndicesRevision = 0;
+    bool _forceMaskRedraw = false;
+    bool _maskTopologyUpdated = false;
 };
 
 }}}}

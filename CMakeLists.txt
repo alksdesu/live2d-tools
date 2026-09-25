@@ -24,6 +24,7 @@ endif()
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
     live2dstruct/cdraworder.cpp
+    live2dstruct/cmeshtopology.cpp
     live2dstruct/cmotiontimeline.cpp
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
@@ -41,8 +42,7 @@ if(MSVC)
     target_compile_options(model_data PUBLIC /utf-8)
 endif()
 
-add_library(psd_zip STATIC psd/psdSamples/Zip/Psdminiz.c)
-set_source_files_properties(psd/psdSamples/Zip/Psdminiz.c PROPERTIES LANGUAGE CXX)
+add_library(psd_zip STATIC psd/psdSamples/Zip/PsdMiniz.cpp)
 target_include_directories(psd_zip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(psd_zip PROPERTIES AUTOMOC OFF)
 
@@ -65,7 +65,6 @@ add_library(ui_inspector STATIC
     ui/cxyparameterpad.cpp
 )
 target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(ui_inspector PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/opencv/include)
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
@@ -87,6 +86,15 @@ if(BUILD_TESTING)
     target_link_libraries(draw_order_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(draw_order_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME draw_order COMMAND draw_order_tests)
+    add_executable(mesh_topology_tests tests/mesh_topology_tests.cpp)
+    target_link_libraries(mesh_topology_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME mesh_topology COMMAND mesh_topology_tests)
+    add_executable(mesh_index_overrides_tests tests/mesh_index_overrides_tests.cpp)
+    target_link_libraries(mesh_index_overrides_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME mesh_index_overrides COMMAND mesh_index_overrides_tests)
+    add_executable(triangl_mesh_tests tests/triangl_mesh_tests.cpp edit/ctriangl.cpp)
+    target_link_libraries(triangl_mesh_tests PRIVATE model_data Qt6::Gui Qt6::Test)
+    add_test(NAME triangl_mesh COMMAND triangl_mesh_tests)
     add_executable(inspector_history_tests tests/inspector_history_tests.cpp)
     target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp)
     target_link_libraries(inspector_history_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
@@ -120,7 +128,6 @@ if(BUILD_TESTING)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(param_panel_tests tests/param_panel_tests.cpp tests/param_panel_runtime_stubs.cpp
         ui/cparampanel.cpp ui/cxyparameterpad.cpp)
-    target_include_directories(param_panel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/opencv/include)
     target_link_libraries(param_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets Qt6::OpenGL)
     target_compile_definitions(param_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME param_panel COMMAND param_panel_tests)

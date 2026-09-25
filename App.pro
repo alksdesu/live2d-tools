@@ -36,6 +36,7 @@ DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
     live2dstruct/cdraworder.cpp \
+    live2dstruct/cmeshtopology.cpp \
     ui/cinspectorpanel.cpp \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
@@ -208,7 +209,7 @@ SOURCES += \
     psd/psdSamples/Util/PsdSyncFileUtil.inl\
     psd/psdSamples/Util/PsdSyncFileWriter.cpp\
     psd/psdSamples/Util/PsdUnionCast.inl\
-    psd/psdSamples/Zip/Psdminiz.c\
+    psd/psdSamples/Zip/PsdMiniz.cpp\
     psd/psdSrc/PsdSamples.cpp\
     psd/psdSrc/PsdTgaExporter.cpp\
     edit/cdrawmesh.cpp \
@@ -224,6 +225,8 @@ SOURCES += \
 
 HEADERS += \
     live2dstruct/cdraworder.h \
+    live2dstruct/cmeshtopology.h \
+    live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
     ui/cmodeldiagnosticspanel.h \
     ui/cuserdatapanel.h \
@@ -467,20 +470,11 @@ HEADERS += \
 
 
 
-INCLUDEPATH += $$PWD/opencv/include \
-
-
 win32: LIBS += $$PWD/windows/x86_64/Live2DCubismCore.lib
 macx: LIBS += -framework OpenGL
 win32: LIBS += -luser32
 
 
-
-win32:CONFIG(debug, debug|release) {
-    LIBS += $$PWD/opencv/x64/vc16/lib/opencv_world4100d.lib
-} else:win32 {
-    LIBS += $$PWD/opencv/x64/vc16/lib/opencv_world4100.lib
-}
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

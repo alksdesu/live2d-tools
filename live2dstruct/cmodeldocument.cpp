@@ -1,4 +1,5 @@
 #include "cmodeldocument.h"
+#include "cmeshtopology.h"
 #include "csectiontable.h"
 #include "util/cfilereader.h"
 #include "struct/cart_mesh_keyforms.h"
@@ -409,8 +410,7 @@ bool CModelDocument::SetDrawableIndices(const QString& id, const QVector<quint16
 {
     for (const CModelDrawable& drawable : m_drawables) {
         if (drawable.id != id) continue;
-        if (indices.isEmpty() || indices.size() % 3 != 0 || indices.size() > 3000000) return false;
-        for (quint16 index : indices) if (index >= drawable.vertexCount || index > 32767) return false;
+        if (!CMeshTopology::IsValid(indices, drawable.vertexCount)) return false;
         m_drawableIndexOverrides.insert(id, indices);
         return true;
     }
@@ -1117,12 +1117,9 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("索引覆盖数量无效：%1").arg(indexIt.key()), -1});
             continue;
         }
-        for (quint16 index : indexIt.value()) {
-            if (index >= drawable->vertexCount || index > 32767) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_override_range"),
-                                     QStringLiteral("索引覆盖越界：%1").arg(indexIt.key()), -1});
-                break;
-            }
+        if (!CMeshTopology::IsValid(indexIt.value(), drawable->vertexCount)) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_override_range"),
+                                 QStringLiteral("索引覆盖越界：%1").arg(indexIt.key()), -1});
         }
     }
     for (auto maskIt = m_drawableMaskIndexOverrides.cbegin(); maskIt != m_drawableMaskIndexOverrides.cend(); ++maskIt) {
