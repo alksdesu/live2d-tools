@@ -15,6 +15,8 @@
 
 #include "LAppWavFileHandler.hpp"
 #include <QRectF>
+#include <QMap>
+#include <QSet>
 #include "live2dstruct/cmotiontimeline.h"
 
 class LAppModel : public Csm::CubismUserModel
@@ -23,8 +25,10 @@ public:
 
     LAppModel();
     virtual ~LAppModel();
-    void LoadAssets(const Csm::csmChar* dir, const  Csm::csmChar* fileName);
-    void ReloadRenderer();
+    bool LoadAssets(const Csm::csmChar* dir, const Csm::csmChar* fileName);
+    bool ReloadRenderer();
+    const QMap<int, QString>& GetTexturePaths() const { return m_texturePaths; }
+    void CommitTextureCache() { m_pendingTextureIds.clear(); m_textureCacheCommitted = true; }
     void Update();
     bool SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline = nullptr,
                             double time = 0, bool loop = false);
@@ -96,7 +100,7 @@ protected:
 
 private:
 
-    void SetupModel(Csm::ICubismModelSetting* setting);
+    bool SetupModel(Csm::ICubismModelSetting* setting);
     void ApplyTimelinePreview();
     void ApplyPartVisibility();
     int FindPartIndex(const QString& id) const;
@@ -107,7 +111,8 @@ private:
     float _timelineBaseOpacity = 1.0f;
     bool _timelinePreviewActive = false;
 
-    void SetupTextures();
+    bool SetupTextures();
+    void ReleasePendingTextures();
 
 
     void PreloadMotionGroup(const Csm::csmChar* group);
@@ -141,6 +146,9 @@ private:
     Csm::Rendering::CubismOffscreenSurface_OpenGLES2  _renderBuffer;   ///< フレームバッファ以外の描画先
 
     QString m_mocName;
+    QMap<int, QString> m_texturePaths;
+    QSet<Csm::csmUint32> m_pendingTextureIds;
+    bool m_textureCacheCommitted = false;
     QMap<QString,int> m_mapParaToIndex;
     bool _autoEyeBlink = true;
     bool _autoBreath = true;

@@ -72,7 +72,7 @@ public:
 
     virtual csmFloat32      GetOpacity();
 
-    virtual void            LoadModel(const csmByte* buffer, csmSizeInt size, csmBool shouldCheckMocConsistency = false);
+    virtual csmBool         LoadModel(const csmByte* buffer, csmSizeInt size, csmBool shouldCheckMocConsistency = false);
 
     virtual ACubismMotion*  LoadMotion(const csmByte* buffer, csmSizeInt size, const csmChar* name, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler = NULL);
 
@@ -117,7 +117,7 @@ public:
     template<class T> T*    GetRenderer() { return dynamic_cast<T*>(_renderer); }
 
 
-    void CreateRenderer(csmInt32 maskBufferCount = 1);
+    csmBool CreateRenderer(csmInt32 maskBufferCount = 1);
 
 
     void DeleteRenderer();

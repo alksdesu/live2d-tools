@@ -1,5 +1,6 @@
 #ifndef OPENGGLFORM_H
 #define OPENGGLFORM_H
+#include <optional>
 
 
 #include <QOpenGLFunctions_3_3_Core>
@@ -37,7 +38,11 @@ public:
     //初始化第一次打开模型文件
     void SetInitOpenName(const QString& Name);
     //改变模型
-    void do_ModelChange(const QString& name);
+    bool do_ModelChange(const QString& name);
+    bool BeginTemporaryModel(const QString& name);
+    bool EndTemporaryModel();
+    bool IsModelReady() const { return m_ceditstate.IsContins(CEditState::ModelOpen); }
+    bool HasInitializationResult() const { return m_initializationCompleted; }
     //进行离开屏幕渲染打印出psd文件
     bool do_OffSeceen(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
     // 批量导出静默版本（不弹窗、不自动打开文件夹）
@@ -82,6 +87,7 @@ public slots:
 
 
 signals:
+    void RuntimeInitialized(bool modelLoaded);
     void SendSelectMesh(const QString& artName);
     void RenderOrderChanged(const QStringList& names);
     void MeshKeyformEdited(const QString& name, int keyformIndex, const QVector<float>& positions);
@@ -109,6 +115,11 @@ protected:
     QStringList m_lastRenderOrder;
     std::vector<C2DTreeNode*> m_mapWarpNode;
     QString m_currentModelJson;
+    struct SuspendedModel { QString path; bool ready; };
+    std::optional<SuspendedModel> m_suspendedModel;
+    bool m_runtimeReady = false;
+    bool m_initializationCompleted = false;
+    bool MakeRuntimeCurrent();
     bool m_meshEditEnabled = false;
     bool m_meshPointDragging = false;
     QString m_meshEditName;

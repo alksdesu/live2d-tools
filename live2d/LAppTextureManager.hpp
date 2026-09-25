@@ -7,53 +7,52 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
-#include <framework/Type/csmVector.hpp>
-#include <QOpenGLFunctions_3_3_Core>
-#include "LAppDelegate.hpp"
+#include <vector>
 #include <QMap>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions_3_3_Core>
+#include <QPointer>
+#include <QSet>
+#include <QString>
 
 class LAppTextureManager : public QOpenGLFunctions_3_3_Core
 {
 public:
-
-    void setGlOwningContext(const QOpenGLContext *context){
-        initializeOpenGLFunctions();
-        setOwningContext(context);
-    }
-
     struct TextureInfo
     {
-        GLuint id;              ///< テクスチャID
-        int width;              ///< 横幅
-        int height;             ///< 高さ
-        std::string fileName;   ///< ファイル名
+        GLuint id = 0;
+        int width = 0;
+        int height = 0;
+        std::string fileName;
     };
+
     LAppTextureManager();
     ~LAppTextureManager();
-    inline unsigned int Premultiply(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha)
-    {
-        return static_cast<unsigned>(\
-            (red * (alpha + 1) >> 8) | \
-            ((green * (alpha + 1) >> 8) << 8) | \
-            ((blue * (alpha + 1) >> 8) << 16) | \
-            (((alpha)) << 24)   \
-            );
-    }
-
+    void setGlOwningContext(const QOpenGLContext* context);
     TextureInfo* CreateTextureFromPngFile(std::string fileName);
     void ReleaseTextures();
-    void ReleaseTexture(Csm::csmUint32 textureId);
+    void ReleaseTexture(GLuint textureId);
     void ReleaseTexture(std::string fileName);
+    void ReleaseUnusedTextures(const QSet<QString>& retainedPaths);
 
     TextureInfo* GetTextureInfoById(GLuint textureId) const;
-    void AddModelTex(int modlenum,const QString& modelname){
-        m_modelTex.insert(modlenum,modelname);
+    TextureInfo* GetTextureInfoByName(const std::string& fileName) const;
+    void SetModelTextures(const QMap<int, QString>& textures) { m_modelTex = textures; }
+    void AddModelTex(int modelNumber, const QString& modelName) { m_modelTex.insert(modelNumber, modelName); }
+    QMap<int, QString>& GetModelTex() { return m_modelTex; }
+
+    static unsigned int Premultiply(unsigned char red, unsigned char green, unsigned char blue, unsigned char alpha)
+    {
+        return (red * (alpha + 1) >> 8) | ((green * (alpha + 1) >> 8) << 8) |
+               ((blue * (alpha + 1) >> 8) << 16) | (static_cast<unsigned int>(alpha) << 24);
     }
-    QMap<int,QString>& GetModelTex(){
-        return m_modelTex;
-    }
+
 private:
-    Csm::csmVector<TextureInfo*> _textures;//这里包含了所有的tex
-    QMap<int,QString> m_modelTex;
+    bool CanUseContext();
+    void RemoveModelTexture(const std::string& fileName);
+    std::vector<std::unique_ptr<TextureInfo>> m_textures;
+    QMap<int, QString> m_modelTex;
+    QPointer<QOpenGLContext> m_context;
 };

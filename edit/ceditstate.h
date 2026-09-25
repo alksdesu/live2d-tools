@@ -37,7 +37,7 @@ public:
         return m_curState;
     }
 
-    const bool IsContins(const CState& des){
+    bool IsContins(const CState& des) const {
         return CState((int)m_curState & (int)des);
     }
 

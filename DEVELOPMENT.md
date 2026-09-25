@@ -365,5 +365,23 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 
 - 纹理提取固定读取第 0 关键形，但 Mark BrowR 的默认参数应选形 2，Rice ArtMesh39 与 Natori ArtMesh3 应选形 1，Wanko D_BOWL_02 应选形 3，且都有多级父链。应从源绑定关系及统一的参数/关键形/父级编辑状态求值，再转全局模型单位和像素；不能把界面的全局树当成批量导出的固定输入。
 - 现有 C2DTree/CCoordinateFrame 可承担基础 CPU 插值与父链组合，但未实现 Glue、Type 1 Blend Shape，混合反射标志也会失败。Natori/Rice 分别有 11/33 个 Glue；这些计算不能被当作已与 Core 一致。cmo3 顶层 CArtMeshSource.positions 的当前/默认/基准姿态语义还缺少 Editor 原生工程对照，应先取得证据再改变该字段的求值策略。
-- 运行时 LoadModel 尚未检查像素/PPU 得到的 float 单位尺寸以及默认 2/height 缩放；极小或极大正 PPU 会产生 Inf/零。应独立检查运行时可表示性，保留 CPU 元数据对正 subnormal PPU 的支持。
-- 运行时失败清理还需修复：CubismMoc 的 revive/initialize 失败存在临时内存未释放路径，DeleteModel(nullptr) 仍递减计数；Base 加载与上层 SetupModel/LoadAssets、Manager 入列应一致处理失败，避免半加载对象进入渲染。布局设置仍能再次改变矩阵，源画布检查不等于最终矩阵有效。
+- 此前发现的运行时单位尺寸、矩阵范围和加载失败清理问题已按下节处理；CPU 元数据仍支持正 subnormal PPU，运行时则单独检查派生矩阵能否表示。
+
+## 运行时加载与批量任务生命周期
+
+- CubismMoc 的临时对齐内存按所有权管理，拒绝空输入、零模型大小与分配失败，revive/initialize/包装对象异常不遗留缓冲区。DeleteModel(nullptr) 不再递减模型计数。回归直接编译真实 CubismMoc.cpp，但 Core 返回值与最小模型生命周期由测试替身控制，不代表真实 Core 加载已验证。
+- CubismUserModel 先构建候选 moc、model 和 matrix，完成尺寸校验与网格初始化后才发布。渲染器先于模型销毁；创建替代渲染器成功后才释放旧对象。Renderer::Initialize 仍是 void，其内部 FBO/着色器失败尚未完整传播。
+- CubismModelMatrix 用 double 计算像素/PPU 单位尺寸、默认缩放及布局中间值，结果必须是有限、非零的可用 float 矩阵。TrySetupFromLayout 使用候选矩阵整体提交；保留原两遍处理顺序与合法负尺寸反射，未知布局键忽略，失败不覆盖旧矩阵。
+- 运行时 model3 校验与原有文档 Parse 分离。已知布局键检查数值；未知扩展值保留兼容。缺少/空 Textures 数组及空纹理槽位允许，非空引用必须成功读取；不会因为 SDK 可跳过的未绑定纹理而拒绝模型。字段类型、嵌入 NUL 和资源读取失败有独立回归。
+- LoadAssets、SetupModel、SetupTextures 和场景切换返回明确结果；只有完整候选进入场景。失败候选只回收自己新建的纹理，原模型实例、场景编号和纹理映射保持有效。临时导出挂起原模型，结束时恢复同一实例，不重新读取可能已改变的源文件；活跃与挂起模型共用的纹理不会提前删除。
+- 纹理管理器限定所属当前 GL 上下文，先检查 PNG 头、GPU 尺寸上限和 RGBA 整数范围，再解码。上传时保存/恢复纹理绑定、UNPACK PBO、对齐、行长和跳过偏移，检查主级与所有 mip 尺寸；失败纹理不进入缓存。释放纹理同步清理映射，文件读取失败重置输出大小。
+- 两个纹理回归目标分别编译普通与预乘 alpha 路径，在本机 OpenGL 4.1 / M1 Pro 上实际验证像素、mip、状态恢复与 GL 资源删除，均无跳过。该结果不等于完整 Cubism 渲染器已兼容 Core Profile；共享上下文销毁边界仍需继续验证。
+- ASAN/UBSAN 发现 csmString 在普通 layout 键上的有符号哈希溢出，改为确定的无符号回绕，保留原反向顺序、字符符号扩展、碰撞比较和 -1 重映射。独立已知哈希与 UTF-8 用例核对兼容性。
+- 同类扫描修复字符串跨小缓冲区阈值时读空指针、自赋值/自追加和原始指针别名释放、短/空接管缓冲区的所有权问题。复制/扩容先构建候选；分配失败保持原值。protected Initialize 对同一起始指针原地处理，拒绝无可证容量的扩长和可识别的内部指针接管，未新增对象字段或改变实例身份。
+- GL 控件显式报告初始化结果并限制未就绪输入、切换与导出。headless 使用真实初始化信号及超时，不再靠固定 processEvents 延迟；可见窗口创建前先释放 headless。失败切换不会继续导出旧模型。
+- 离屏导出在当前所属上下文内保存并恢复实际 GL viewport、主模型矩阵、视图投影、打印标记和尺寸，所有 GL 清理发生在 doneCurrent 之前。导出不再重新初始化编辑覆盖层；View 以入口的导出状态跳过覆盖层，导出只绘制主模型，普通多模型路径分别使用 MVP 副本。成功场景提交统一刷新投影，包括同尺寸窗口和临时恢复。
+- PsdBatchJob 统一拥有调度线程，worker 与 GUI 两层检查当前输出回执，重复 start、错误/过期/重复回执不能跳过文件。取消阻止后续导出，shutdown 无需 GUI 事件循环即可 quit/wait；晚到信号按任务状态过滤。真实 QThread 测试覆盖未开始、等待导出、嵌套事件循环取消、进度回调关闭及析构。
+- MainWindow 在停止批次前先清除当前任务身份；GL 导出进行时收到关闭请求会先取消后续任务，等当前调用返回再关闭。无可见模型时也会停止批次并清理 headless。取消保留已写出的文件，不显示全部成功或自动打开输出目录。
+- 完整 CTest 42/42 套件通过，其中 Linux `/dev/full` 专用写出失败用例在 macOS 跳过；本轮六个相关目标通过 ASAN/UBSAN，均无跳过。native 重新编译 49 个源文件通过，仍仅缺 40 个 macOS Core 符号；两种渲染目标宏的 Manager 语法检查通过。批次主窗口接线与场景恢复已静态复核，但完整 Core GUI 的关闭/恢复仍未实机验证。
+- 独立 Qt 6.8.3 探针确认隐藏 1×1 控件可初始化；macOS 默认格式得到 OpenGL 2.1，无法初始化本项目的 QOpenGLFunctions_3_3_Core。显式请求 3.3 Core 可得到 4.1，但现有 SDK renderer、shader 与 Rotation 覆盖层仍使用客户端数组，不能仅改默认格式就宣称完整支持。
+- 尚待继续：渲染 PSD 的取景仍受既往竖屏预览 SetWidth(2) 与视图变换影响，需要明确画布坐标与 model3 Layout 的导出语义并独立构造变换；当前修复保证返回预览时状态恢复。FBO 创建仍未全面校验完整性，完整 Core/Photoshop/Cubism Editor 回读及 cmo3 默认姿态语义仍未验证。

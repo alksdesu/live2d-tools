@@ -13,6 +13,11 @@ public:
 
     CubismModelMatrix();
 
+    static csmBool TryComputeModelSize(csmFloat32 pixelWidth, csmFloat32 pixelHeight, csmFloat32 pixelsPerUnit,
+                                      csmFloat32& unitWidth, csmFloat32& unitHeight);
+    csmBool IsValid() const;
+    csmBool TrySetupFromLayout(const csmMap<csmString, csmFloat32>& layout);
+
     /**
      * @brief コンストラクタ
      *
@@ -152,6 +157,8 @@ public:
     void    SetupFromLayout(csmMap<csmString, csmFloat32>& layout);
 
 private:
+    csmBool TryScale(double value);
+    csmBool TryPosition(double x, double y);
     csmFloat32  _width;         ///< 横幅
     csmFloat32  _height;        ///< 縦幅
 };

@@ -77,6 +77,7 @@ SOURCES += \
     ui/cpsdprintdialog.cpp \
     ui/cpsdbatchdialog.cpp \
     ui/psdbatchworker.cpp \
+    ui/psdbatchjob.cpp \
     ui/cmodeltreepanel.cpp \
     ui/cparampanel.cpp \
     ui/cxyparameterpad.cpp \
@@ -335,6 +336,7 @@ HEADERS += \
     opengl/opengglform.h \
     ui/cpsdbatchdialog.h \
     ui/psdbatchworker.h \
+    ui/psdbatchjob.h \
     psd/cpsdlist.h \
     opengl/creadopengl.h \
     ui/para/ccidjson.h \

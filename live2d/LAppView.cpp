@@ -74,6 +74,7 @@ void LAppView::Render()
 {
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
     if (!Live2DManager) return;
+    const bool exporting = LAppDelegate::GetInstance()->IsOffScreen();
     Live2DManager->SetViewMatrix(_viewMatrix);//这里是视图模型
     int modelCount = Live2DManager->GetModelNum();
     if(modelCount > 0){
@@ -85,7 +86,7 @@ void LAppView::Render()
         Live2DManager->OnUpdate(mvp);
     }
 
-    if(!LAppDelegate::GetInstance()->IsOffScreen()){
+    if(!exporting){
         m_mouseselectrect->Draw(GetProjectionView());
         //在这里把移动绘制处理好,视图，投影，和模型矩阵
 
@@ -102,6 +103,7 @@ void LAppView::Render()
 
 void LAppView::InitializeSprite()
 {
+    m_projection->LoadIdentity();
     int width, height;
     width = LAppDelegate::GetInstance()->width();
     height = LAppDelegate::GetInstance()->height();
@@ -111,7 +113,7 @@ void LAppView::InitializeSprite()
     int modelCount = Live2DManager->GetModelNum();
     if(modelCount > 0){
         LAppModel* model =Live2DManager->GetModel(0);
-        if (model->GetModel() == NULL)
+        if (!model || !model->GetModel() || !model->GetModelMatrix())
         {
             LAppPal::PrintLogLn("Failed to model->GetModel().");
             return ;

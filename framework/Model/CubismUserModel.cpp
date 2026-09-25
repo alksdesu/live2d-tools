@@ -8,6 +8,7 @@
 #include "CubismUserModel.hpp"
 #include "framework/Motion/CubismMotion.hpp"
 #include "framework/Physics/CubismPhysics.hpp"
+#include <memory>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -52,9 +53,10 @@ CubismUserModel::CubismUserModel()
 
 CubismUserModel::~CubismUserModel()
 {
+    DeleteRenderer();
     CSM_DELETE(_motionManager);
     CSM_DELETE(_expressionManager);
-    if (_moc)
+    if (_moc && _model)
     {
         _moc->DeleteModel(_model);
     }
@@ -67,7 +69,6 @@ CubismUserModel::~CubismUserModel()
     CubismPhysics::Delete(_physics);
     CubismModelUserData::Delete(_modelUserData);
 
-    DeleteRenderer();
 }
 
 void CubismUserModel::SetAcceleration(csmFloat32 x, csmFloat32 y, csmFloat32 z)
@@ -77,29 +78,40 @@ void CubismUserModel::SetAcceleration(csmFloat32 x, csmFloat32 y, csmFloat32 z)
     _accelerationZ = z;
 }
 
-void CubismUserModel::LoadModel(const csmByte* buffer, csmSizeInt size, csmBool shouldCheckMocConsistency)
+csmBool CubismUserModel::LoadModel(const csmByte* buffer, csmSizeInt size, csmBool shouldCheckMocConsistency)
 {
-    _moc = CubismMoc::Create(buffer, size, shouldCheckMocConsistency);
-
-    if (_moc == NULL)
+    if (_moc || _model || _modelMatrix) return false;
+    std::unique_ptr<CubismMoc, decltype(&CubismMoc::Delete)> moc(
+        CubismMoc::Create(buffer, size, shouldCheckMocConsistency), &CubismMoc::Delete);
+    if (!moc)
     {
         CubismLogError("Failed to CubismMoc::Create().");
-        return;
+        return false;
     }
-
-    _model = _moc->CreateModel();
-
-    if (_model == NULL)
+    const auto deleteModel = [&moc](CubismModel* value) { moc->DeleteModel(value); };
+    std::unique_ptr<CubismModel, decltype(deleteModel)> model(moc->CreateModel(), deleteModel);
+    if (!model)
     {
         CubismLogError("Failed to CreateModel().");
-        return;
+        return false;
     }
-
-    _model->SaveParameters();
-    _modelMatrix = CSM_NEW CubismModelMatrix(_model->GetCanvasWidth(), _model->GetCanvasHeight());
-    _model->InitMesh();//初始mesh
-
-
+    csmFloat32 unitWidth, unitHeight;
+    if (!CubismModelMatrix::TryComputeModelSize(model->GetCanvasWidthPixel(), model->GetCanvasHeightPixel(),
+                                               model->GetPixelsPerUnit(), unitWidth, unitHeight))
+    {
+        CubismLogError("Invalid canvas dimensions for model matrix.");
+        return false;
+    }
+    const auto deleteMatrix = [](CubismModelMatrix* value) { CSM_DELETE(value); };
+    std::unique_ptr<CubismModelMatrix, decltype(deleteMatrix)> matrix(
+        CSM_NEW CubismModelMatrix(unitWidth, unitHeight), deleteMatrix);
+    if (!matrix || !matrix->IsValid()) return false;
+    model->SaveParameters();
+    model->InitMesh();
+    _moc = moc.release();
+    _model = model.release();
+    _modelMatrix = matrix.release();
+    return true;
 }
 
 ACubismMotion* CubismUserModel::LoadExpression(const csmByte* buffer, csmSizeInt size, const csmChar* name)
@@ -246,17 +258,16 @@ CubismModel* CubismUserModel::GetModel() const
     return _model;
 }
 
-void CubismUserModel::CreateRenderer(csmInt32 maskBufferCount)
+csmBool CubismUserModel::CreateRenderer(csmInt32 maskBufferCount)
 {
-
-    if (_renderer !=nullptr)
-    {
-        DeleteRenderer();
-    }
-    _renderer = Rendering::CubismRenderer::Create();
-
-
-    _renderer->Initialize(_model, maskBufferCount);
+    if (!_model || maskBufferCount < 1) return false;
+    using Renderer = Rendering::CubismRenderer;
+    std::unique_ptr<Renderer, decltype(&Renderer::Delete)> renderer(Renderer::Create(), &Renderer::Delete);
+    if (!renderer) return false;
+    renderer->Initialize(_model, maskBufferCount);
+    DeleteRenderer();
+    _renderer = renderer.release();
+    return true;
 }
 
 void CubismUserModel::DeleteRenderer()

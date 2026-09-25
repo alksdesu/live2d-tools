@@ -12,6 +12,7 @@
 #include <iostream>
 #include <fstream>
 #include <limits>
+#include <new>
 #include <framework/Model/CubismMoc.hpp>
 #include "LAppDefine.hpp"
 #include <QDebug>
@@ -27,6 +28,7 @@ double LAppPal::s_deltaTime = 0.0;
 csmByte* LAppPal::LoadFileAsBytes(const string filePath, csmSizeInt* outSize)
 {
     if (!outSize) return nullptr;
+    *outSize = 0;
 
     // 创建QFile对象
     QFile file(filePath.c_str());
@@ -39,14 +41,15 @@ csmByte* LAppPal::LoadFileAsBytes(const string filePath, csmSizeInt* outSize)
 
     // 获取文件大小
     qint64 size = file.size();
-    if (size <= 0 || size > std::numeric_limits<csmSizeInt>::max()) {
+    if (size <= 0 || size > std::numeric_limits<int>::max() || size > std::numeric_limits<csmSizeInt>::max()) {
         qDebug() << "File is empty or an error occurred.";
         file.close();
         return nullptr;
     }
 
     // 动态分配内存
-    char* buf = new char[size];
+    char* buf = new (std::nothrow) char[size];
+    if (!buf) return nullptr;
 
     // 读取文件内容到buf
     qint64 bytesRead = file.read(buf, size);

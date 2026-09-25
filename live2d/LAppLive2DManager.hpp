@@ -14,6 +14,8 @@
 #include <QFileInfo>
 #include <QDirIterator>
 #include <QMatrix4x4>
+#include <memory>
+#include <vector>
 class LAppModel;
 
 /**
@@ -37,8 +39,10 @@ public:
     void OnTap(Csm::csmFloat32 x, Csm::csmFloat32 y);
     void OnUpdate(Csm::CubismMatrix44& projection) const;
     void NextScene();
-    void ChangeScene(Csm::csmInt32 index);
-    void ChangeSceneFileName(const QString& name);
+    bool ChangeScene(Csm::csmInt32 index);
+    bool ChangeSceneFileName(const QString& name);
+    bool BeginTemporaryScene(const QString& name);
+    bool EndTemporaryScene();
     Csm::csmUint32 GetModelNum() const;
     void SetViewMatrix(Live2D::Cubism::Framework::CubismMatrix44* m);
 
@@ -48,9 +52,13 @@ private:
 
     LAppLive2DManager();
     virtual ~LAppLive2DManager();
+    void CommitModelTextures();
 
     Csm::CubismMatrix44* _viewMatrix; ///< モデル描画に用いるView行列
-    Csm::csmVector<LAppModel*> _models; ///< モデルインスタンスのコンテナ
+    std::vector<std::unique_ptr<LAppModel>> _models;
+    std::vector<std::unique_ptr<LAppModel>> m_suspendedModels;
+    Csm::csmInt32 m_suspendedSceneIndex = 0;
+    bool m_temporaryScene = false;
     Csm::csmInt32 _sceneIndex; ///< 表示するシーンのインデックス値
     Csm::csmVector<Csm::csmString> _modelDir; ///< モデルディレクトリ名のコンテナ
 };

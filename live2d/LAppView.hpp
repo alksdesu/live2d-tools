@@ -40,6 +40,8 @@ public:
     void Render();
     void InitializeSprite();
     void ResizeSprite();
+    Csm::CubismMatrix44 GetProjectionMatrix() const { return *m_projection; }
+    void SetProjectionMatrix(const Csm::CubismMatrix44& matrix) { *m_projection = matrix; }
 
     void PreModelDraw(LAppModel& refModel);
     void PostModelDraw(LAppModel& refModel);

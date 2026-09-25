@@ -1,6 +1,7 @@
 #ifndef CMODELJSON_H
 #define CMODELJSON_H
 #include <QString>
+#include <QByteArray>
 #include <QVector>
 #include <QFile>
 #include <QJsonDocument>
@@ -11,6 +12,7 @@ class CModelJson
 {
 public:
     CModelJson();
+    static bool ValidateRuntimeSettings(const QByteArray& data, QString* error = nullptr);
     void Parse(const QString& fileName);
     bool IsOpen();
     QStringList getAllZipFiles();

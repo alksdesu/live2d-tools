@@ -14,7 +14,7 @@
 #include <QEventLoop>
 #include <QDirIterator>
 #include "ui/cpsdbatchdialog.h"
-#include "ui/psdbatchworker.h"
+#include "ui/psdbatchjob.h"
 #include "ui/cmodeltreepanel.h"
 #include "ui/cparampanel.h"
 #include "ui/cmotionpanel.h"
@@ -35,7 +35,6 @@
 #include "live2d/LAppTextureManager.hpp"
 #include <framework/CubismFramework.hpp>
 #include <framework/Id/CubismIdManager.hpp>
-#include <QThread>
 #include <QProgressDialog>
 #include <QTimer>
 #include <QApplication>
@@ -81,6 +80,7 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     m_closingModel = true;
+    StopPsdBatch();
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
     settings.setValue(QStringLiteral("windowState"), saveState());
@@ -663,6 +663,7 @@ void MainWindow::RedoDocumentEdit()
 
 void MainWindow::on_actionBatchPsd_triggered()
 {
+    if (m_psdBatch || m_batchExporting || m_closingModel) return;
     // 1. 选择输入文件夹
     QString inDir = CFileOption::GetSelectDirectory(this);
     if(inDir.isEmpty()) return;
@@ -696,42 +697,53 @@ void MainWindow::on_actionBatchPsd_triggered()
     bool isTexExtract = dlg.isTexExtractChecked();
     bool isCubism = dlg.isCubismChecked();
 
-    // 5. 后台线程顺序导出（避免在主线程执行长循环）
-    QThread* thread = new QThread(this);
-    auto* worker = new PsdBatchWorker();
-    worker->moveToThread(thread);
-    worker->setTask(selected, outDir, isAll, isFenzu, isTexExtract, isCubism);
+    auto* job = new PsdBatchJob(this);
+    m_psdBatch = job;
+    myBatchAction->setEnabled(false);
 
     // 进度对话框
     QProgressDialog* progress = new QProgressDialog("正在批量导出...", "取消", 0, selected.size(), this);
+    m_batchProgress = progress;
     progress->setWindowModality(Qt::ApplicationModal);
     progress->setAutoClose(false);
     progress->setAutoReset(false);
     progress->setValue(0);
 
-    connect(progress, &QProgressDialog::canceled, worker, &PsdBatchWorker::cancel);
-    connect(worker, &PsdBatchWorker::progress, this, [progress](int cur, int total, const QString& name){
+    connect(progress, &QProgressDialog::canceled, job, &PsdBatchJob::cancel);
+    connect(job, &PsdBatchJob::progress, this, [this, job, progress](int cur, int total, const QString& name){
+        if (m_psdBatch != job) return;
         progress->setMaximum(total);
-        progress->setValue(cur-1);
         progress->setLabelText(QString("正在导出 %1/%2: %3").arg(cur).arg(total).arg(name));
-        QCoreApplication::processEvents();
+        progress->setValue(cur-1);
     });
 
-    // 请求导出信号 -> 在主线程中执行实际导出（GL上下文限制）
-    connect(worker, &PsdBatchWorker::requestExport, this, &MainWindow::doExportOne, Qt::QueuedConnection);
-    // 每个导出结束 -> 通知worker继续
-    connect(this, &MainWindow::oneExportFinished, worker, &PsdBatchWorker::onOneExportFinished, Qt::QueuedConnection);
+    connect(job, &PsdBatchJob::requestExport, this,
+            [this, job](const QString& model, const QString& output, bool all, bool groups, bool textures, bool cubism) {
+        if (m_psdBatch != job || m_closingModel) return;
+        m_batchExporting = true;
+        const bool ok = doExportOne(model, output, all, groups, textures, cubism);
+        m_batchExporting = false;
+        if (m_closeAfterExport) {
+            StopPsdBatch();
+            QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
+            return;
+        }
+        if (m_psdBatch == job) job->complete(ok, output);
+    });
 
-    // 线程生命周期管理
-    connect(thread, &QThread::started, worker, &PsdBatchWorker::start);
-    connect(worker, &PsdBatchWorker::finished, this, [this, thread, worker, progress, outDir](const QStringList& failedFiles){
-        progress->setValue(progress->maximum());
+    connect(job, &PsdBatchJob::finished, this,
+            [this, job, progress, outDir](const QStringList& failedFiles, bool canceled) {
+        if (m_psdBatch != job) return;
+        m_psdBatch.clear();
+        m_batchProgress.clear();
+        myBatchAction->setEnabled(true);
         progress->close();
         progress->deleteLater();
-        worker->deleteLater();
-        thread->quit();
-        thread->wait();
-        thread->deleteLater();
+        job->deleteLater();
+        if (canceled) {
+            statusBar()->showMessage(QStringLiteral("批量导出已取消，已写出的文件保留"));
+            return;
+        }
         if (failedFiles.isEmpty()) {
             QMessageBox::information(this, "批量导出", "导出完成");
         } else {
@@ -743,10 +755,26 @@ void MainWindow::on_actionBatchPsd_triggered()
         QDesktopServices::openUrl(QUrl::fromLocalFile(outDir));
     });
 
-    thread->start();
+    if (!job->start(selected, outDir, isAll, isFenzu, isTexExtract, isCubism)) StopPsdBatch();
 }
 
-void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract, bool cubismCompat)
+void MainWindow::StopPsdBatch()
+{
+    if (m_psdBatch) {
+        auto* job = m_psdBatch.data();
+        m_psdBatch.clear();
+        job->shutdown();
+        job->deleteLater();
+    }
+    if (m_batchProgress) {
+        m_batchProgress->close();
+        m_batchProgress->deleteLater();
+        m_batchProgress.clear();
+    }
+    if (myBatchAction) myBatchAction->setEnabled(true);
+}
+
+bool MainWindow::doExportOne(const QString &modelPath, const QString &outPath, bool isAll, bool isFenzu, bool isTexExtract, bool cubismCompat)
 {
     CModelJson preflightJson;
     preflightJson.Parse(modelPath);
@@ -755,13 +783,11 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
     live2dstruct::CModelDocument preflight;
     QString preflightError;
     if (preflightMoc.isEmpty() || !preflight.Load(preflightMoc, &preflightError)) {
-        emit oneExportFinished(false, outPath);
-        return;
+        return false;
     }
     for (const auto& diagnostic : preflight.Validate()) {
         if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error) {
-            emit oneExportFinished(false, outPath);
-            return;
+            return false;
         }
     }
 
@@ -780,14 +806,12 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
     QHash<QString, int> previousMeshOverlayKeyformIndices;
     QHash<QString, QVector<quint16>> previousMeshIndexOverrides;
     QSet<QString> previousDragTargets;
-    bool restoreVisibleModel = false;
 
     // 1) 优先复用已有窗口的 GL 上下文，暂停刷新以避免卡顿
     if(m_openglwindows){
         previousModelJson = m_openglwindows->GetCurrentModelJson();
         const bool changedModel = previousModelJson != modelPath;
         if (changedModel && m_motionPanel) m_motionPanel->StopTimelinePreview();
-        restoreVisibleModel = !previousModelJson.isEmpty();
         if (m_paramPanel) previousParameters = m_paramPanel->CurrentValues();
         if (m_treePanel) previousVisibility = m_treePanel->VisibilityState();
         previousViewScale = m_openglwindows->ViewScale();
@@ -806,17 +830,21 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
         }
         bool wasActive = m_openglwindows->m_timer.isActive();
         if (wasActive) m_openglwindows->m_timer.stop();
-        if (changedModel) m_openglwindows->do_ModelChange(modelPath);
+        if (changedModel && !m_openglwindows->BeginTemporaryModel(modelPath)) {
+            if (wasActive) m_openglwindows->m_timer.start(1000 / 60);
+            return false;
+        }
         bool ok;
         if (isTexExtract) {
             ok = m_openglwindows->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat);
         } else {
             ok = m_openglwindows->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
         }
-        if (wasActive) m_openglwindows->m_timer.start(1000/60);
-
-        if (restoreVisibleModel && changedModel) {
-            m_openglwindows->do_ModelChange(previousModelJson);
+        if (changedModel) {
+            if (!m_openglwindows->EndTemporaryModel()) {
+                statusBar()->showMessage(QStringLiteral("导出后无法恢复预览，已暂停画布刷新"));
+                return false;
+            }
             if (auto* delegate = LAppDelegate::GetInstance()) {
                 delegate->m_hiddenDrawables = previousHiddenDrawables;
                 delegate->m_hiddenDeformerDrawables = previousHiddenDeformerDrawables;
@@ -852,22 +880,36 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
             }
             m_openglwindows->SetViewState(previousViewScale, previousViewPosition);
         }
-        // 通知批量工作器继续
-        emit oneExportFinished(ok, outPath);
-        return;
+        if (wasActive) m_openglwindows->m_timer.start(1000 / 60);
+        return ok;
     }
 
     // 2) 若无窗口，则使用隐藏的离屏导出实例（只初始化一次）
     if(!m_headless){
         m_headless = new OpengGlForm();
+        m_headless->m_timer.stop();
         m_headless->setAttribute(Qt::WA_DontShowOnScreen);
         m_headless->resize(1,1);
         // 初始化需要一个初始文件名
         m_headless->SetInitOpenName(modelPath);
+        const QPointer<OpengGlForm> surface = m_headless;
+        QEventLoop initialized;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(surface, &OpengGlForm::RuntimeInitialized, &initialized, &QEventLoop::quit);
+        connect(surface, &QObject::destroyed, &initialized, &QEventLoop::quit);
+        connect(&timeout, &QTimer::timeout, &initialized, &QEventLoop::quit);
         m_headless->show();
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-    }else{
-        m_headless->do_ModelChange(modelPath);
+        if (surface && !surface->HasInitializationResult()) {
+            timeout.start(10000);
+            initialized.exec();
+        }
+        if (m_closeAfterExport || !surface || m_headless != surface || !surface->IsModelReady()) {
+            return false;
+        }
+        m_headless->m_timer.stop();
+    }else if (!m_headless->do_ModelChange(modelPath)) {
+        return false;
     }
     bool ok;
     if (isTexExtract) {
@@ -875,8 +917,7 @@ void MainWindow::doExportOne(const QString &modelPath, const QString &outPath, b
     } else {
         ok = m_headless->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat);
     }
-    // 通知批量工作器继续
-    emit oneExportFinished(ok, outPath);
+    return ok;
 }
 
 
@@ -990,8 +1031,14 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
-    if (!m_openglwindows) return true;
+    if (m_batchExporting) return false;
+    if (!m_openglwindows) {
+        StopPsdBatch();
+        if (m_headless) { delete m_headless; m_headless = nullptr; }
+        return true;
+    }
     if (!ConfirmCloseWithUnsavedChanges()) return false;
+    StopPsdBatch();
     const QScopedValueRollback<bool> closing(m_closingModel, true);
     if (m_motionPanel) {
         QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
@@ -1059,6 +1106,12 @@ bool MainWindow::CloseModel()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_batchExporting) {
+        m_closeAfterExport = true;
+        if (m_psdBatch) m_psdBatch->cancel();
+        event->ignore();
+        return;
+    }
     if (CloseModel()) event->accept();
     else event->ignore();
 }
@@ -1076,6 +1129,12 @@ void MainWindow::RestDock(const QString &name)
     if (!m_document.Load(moc, &documentError)) {
         QMessageBox::warning(this, "打开模型失败", documentError);
         return;
+    }
+    if (m_headless) {
+        m_headless->m_timer.stop();
+        m_headless->makeCurrent();
+        delete m_headless;
+        m_headless = nullptr;
     }
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     QStringList recent = settings.value(QStringLiteral("recentModels")).toStringList();
@@ -1122,10 +1181,21 @@ void MainWindow::RestDock(const QString &name)
     auto* canvasSpacer = new QWidget(canvasToolbar);
     canvasSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     auto* resetCanvas = new QPushButton("重置视图", canvasToolbar);
+    resetCanvas->setEnabled(false);
     resetCanvas->setToolTip("恢复模型缩放和位置（Home）");
     connect(resetCanvas, &QPushButton::clicked, this, [this](){
         if (m_openglwindows) m_openglwindows->do_ResetView();
     });
+    connect(m_openglwindows, &OpengGlForm::RuntimeInitialized, canvasMeta,
+            [this, canvasMeta, resetCanvas, expectedWindow = m_openglwindows](bool loaded) {
+        if (m_openglwindows != expectedWindow) return;
+        canvasMeta->setText(loaded ? QStringLiteral("预览") : QStringLiteral("预览不可用"));
+        resetCanvas->setEnabled(loaded);
+        if (!loaded) {
+            canvasMeta->setToolTip(QStringLiteral("请检查模型、纹理文件与图形环境"));
+            statusBar()->showMessage(QStringLiteral("模型数据已打开，但运行时预览加载失败"));
+        }
+    }, Qt::QueuedConnection);
     canvasToolbarLayout->addWidget(canvasTitle);
     canvasToolbarLayout->addWidget(canvasMeta);
     canvasToolbarLayout->addWidget(canvasSpacer);

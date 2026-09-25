@@ -1,6 +1,64 @@
 #include "cmodeljson.h"
+#include <cmath>
+#include <limits>
 
 CModelJson::CModelJson() { Clear(); }
+
+bool CModelJson::ValidateRuntimeSettings(const QByteArray& data, QString* error)
+{
+    if (error) error->clear();
+    const auto invalid = [error](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        return invalid(QStringLiteral("model3.json 必须是有效的 JSON 对象"));
+    const QJsonObject root = document.object();
+    if (!root.value("FileReferences").isObject())
+        return invalid(QStringLiteral("FileReferences 必须是对象"));
+    const QJsonObject references = root.value("FileReferences").toObject();
+    const QJsonValue moc = references.value("Moc");
+    if (!moc.isString() || moc.toString().isEmpty() || moc.toString().contains(QChar::Null))
+        return invalid(QStringLiteral("FileReferences.Moc 必须是非空且不含 NUL 的字符串"));
+    if (references.contains("Textures")) {
+        if (!references.value("Textures").isArray())
+            return invalid(QStringLiteral("FileReferences.Textures 必须是数组"));
+        const QJsonArray textures = references.value("Textures").toArray();
+        for (qsizetype index = 0; index < textures.size(); ++index) {
+            const QJsonValue texture = textures[index];
+            if (!texture.isString() || texture.toString().contains(QChar::Null))
+                return invalid(QStringLiteral("FileReferences.Textures[%1] 必须是不含 NUL 的字符串").arg(index));
+        }
+    }
+    if (root.contains("Layout")) {
+        if (!root.value("Layout").isObject()) return invalid(QStringLiteral("Layout 必须是对象"));
+        static const QStringList keys{"width", "height", "x", "y", "left", "right", "top", "bottom", "center_x", "center_y"};
+        const QJsonObject layout = root.value("Layout").toObject();
+        for (auto it = layout.constBegin(); it != layout.constEnd(); ++it) {
+            if (!keys.contains(it.key())) continue;
+            if (!it.value().isDouble() || !std::isfinite(it.value().toDouble()) ||
+                std::abs(it.value().toDouble()) > std::numeric_limits<float>::max())
+                return invalid(QStringLiteral("Layout.%1 必须是可表示为 float 的有限数字").arg(it.key()));
+        }
+    }
+    if (root.contains("Groups")) {
+        if (!root.value("Groups").isArray()) return invalid(QStringLiteral("Groups 必须是数组"));
+        const QJsonArray groups = root.value("Groups").toArray();
+        for (qsizetype index = 0; index < groups.size(); ++index) {
+            if (!groups[index].isObject()) return invalid(QStringLiteral("Groups[%1] 必须是对象").arg(index));
+            const QJsonObject group = groups[index].toObject();
+            if (!group.value("Name").isString() || group.value("Name").toString().contains(QChar::Null))
+                return invalid(QStringLiteral("Groups[%1].Name 必须是不含 NUL 的字符串").arg(index));
+            if (!group.value("Ids").isArray()) return invalid(QStringLiteral("Groups[%1].Ids 必须是数组").arg(index));
+            for (const QJsonValue& id : group.value("Ids").toArray())
+                if (!id.isString() || id.toString().contains(QChar::Null))
+                    return invalid(QStringLiteral("Groups[%1].Ids 必须只包含不含 NUL 的字符串").arg(index));
+        }
+    }
+    return true;
+}
 
 void CModelJson::Clear()
 {

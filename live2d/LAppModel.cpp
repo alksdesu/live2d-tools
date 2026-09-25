@@ -24,11 +24,15 @@
 #include "LAppView.hpp"
 #include "live2dstruct/ctreemanage.h"
 #include "live2dstruct/cmodeluserdata.h"
+#include "std/cmodeljson.h"
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
+#include <QDir>
+#include <QScopeGuard>
 #include <cmath>
 #include <limits>
+#include <memory>
 
 using namespace Live2D::Cubism::Framework;
 using namespace Live2D::Cubism::Framework::DefaultParameterId;
@@ -79,6 +83,8 @@ LAppModel::LAppModel()
 
 LAppModel::~LAppModel()
 {
+    DeleteRenderer();
+    ReleasePendingTextures();
     _renderBuffer.DestroyOffscreenSurface();
 
     ReleaseMotions();
@@ -95,49 +101,56 @@ LAppModel::~LAppModel()
     }
 }
 
-void LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
+bool LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
 {
-    m_mapParaToIndex.clear();
-    _modelHomeDir = dir;
+    if (!dir || !fileName || fileName[0] == '\0' || _modelSetting || _moc || _model ||
+        _modelMatrix || _initialized || _updating) return false;
 
     if (_debugMode)
     {
         LAppPal::PrintLogLn("[APP]load model setting: %s", fileName);
     }
 
-    csmSizeInt size;
+    csmSizeInt size = 0;
     const csmString path = csmString(dir) + fileName;
 
     csmByte* buffer = CreateBuffer(path.GetRawString(), &size);
     if (buffer == NULL)
     {
         LAppPal::PrintLogLn("[APP]Failed to load model setting: %s", path.GetRawString());
-        return;
+        return false;
     }
-    ICubismModelSetting* setting = new CubismModelSettingJson(buffer, size);
-    DeleteBuffer(buffer, path.GetRawString());
-
-    SetupModel(setting);
-
-    if (_model == NULL)
-    {
-        LAppPal::PrintLogLn("Failed to LoadAssets().");
-        return;
+    const auto releaseBuffer = qScopeGuard([&] { DeleteBuffer(buffer, path.GetRawString()); });
+    if (size == 0 || size > std::numeric_limits<int>::max()) return false;
+    QString settingsError;
+    if (!CModelJson::ValidateRuntimeSettings(
+            QByteArray(reinterpret_cast<const char*>(buffer), static_cast<int>(size)), &settingsError)) {
+        LAppPal::PrintLogLn("[APP]Invalid model settings: %s", settingsError.toUtf8().constData());
+        return false;
     }
-
-    m_mocName = setting->GetModelFileName();
-
-    CreateRenderer();
-
-    SetupTextures();
+    auto setting = std::make_unique<CubismModelSettingJson>(buffer, size);
+    if (!setting->GetJsonPointer()) return false;
+    _modelHomeDir = dir;
+    if (!SetupModel(setting.release())) return false;
+    m_mocName = QString::fromUtf8(_modelSetting->GetModelFileName());
+    if (!CreateRenderer()) return false;
+    if (!SetupTextures()) {
+        DeleteRenderer();
+        return false;
+    }
+    _initialized = true;
+    return true;
 }
 
-void LAppModel::SetupModel(ICubismModelSetting* setting)
+bool LAppModel::SetupModel(ICubismModelSetting* setting)
 {
     _updating = true;
+    const auto resetUpdating = qScopeGuard([this] { _updating = false; });
     _initialized = false;
 
     _modelSetting = setting;
+    if (!_modelSetting || !_modelSetting->GetModelFileName() ||
+        _modelSetting->GetModelFileName()[0] == '\0') return false;
 
     csmByte* buffer;
     csmSizeInt size;
@@ -159,8 +172,9 @@ void LAppModel::SetupModel(ICubismModelSetting* setting)
         buffer = CreateBuffer(path.GetRawString(), &size);
         if (buffer != NULL)
         {
-            LoadModel(buffer, size, _mocConsistency);
+            const bool loaded = LoadModel(buffer, size, _mocConsistency);
             DeleteBuffer(buffer, path.GetRawString());
+            if (!loaded) return false;
         }
         else
         {
@@ -170,7 +184,7 @@ void LAppModel::SetupModel(ICubismModelSetting* setting)
         if (_model == NULL)
         {
             LAppPal::PrintLogLn("Failed to SetupModel().");
-            return;
+            return false;
         }
 
         m_mapParaToIndex.clear();
@@ -290,13 +304,13 @@ void LAppModel::SetupModel(ICubismModelSetting* setting)
     if (_modelSetting == NULL || _modelMatrix == NULL)
     {
         LAppPal::PrintLogLn("Failed to SetupModel().");
-        return;
+        return false;
     }
 
     //Layout
     csmMap<csmString, csmFloat32> layout;
     _modelSetting->GetLayoutMap(layout);
-    _modelMatrix->SetupFromLayout(layout);
+    if (!_modelMatrix->TrySetupFromLayout(layout)) return false;
 
     _model->SaveParameters();
 
@@ -308,9 +322,7 @@ void LAppModel::SetupModel(ICubismModelSetting* setting)
 
     _motionManager->StopAllMotions();
 
-    _updating = false;
-    _initialized = true;
-
+    return true;
 }
 
 void LAppModel::PreloadMotionGroup(const csmChar* group)
@@ -410,7 +422,7 @@ void LAppModel::ReleaseExpressions()
 
 void LAppModel::Update()
 {
-    if (!_model) return;
+    if (!_initialized || _updating || !_model) return;
     // 快照模式：只应用已保存的参数，跳过所有自动效果
     if (_snapshotMode) {
         _model->LoadParameters();
@@ -742,12 +754,13 @@ void LAppModel::StopAllMotions()
 
 void LAppModel::DoDraw()
 {
-    if (_model == NULL)
+    if (!_initialized || _updating || !_model)
     {
         return;
     }
 
     auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    if (!renderer) return;
     const auto color = renderer->GetModelColor();
     renderer->SetModelColor(color.R, color.G, color.B, _model->GetModelOpacity());
     renderer->DrawModel();
@@ -755,13 +768,15 @@ void LAppModel::DoDraw()
 
 void LAppModel::Draw(CubismMatrix44& matrix)
 {
-    if (_model == NULL)
+    if (!_initialized || _updating || !_model || !_modelMatrix)
     {
         return;
     }
 
+    auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    if (!renderer) return;
     matrix.MultiplyByMatrix(_modelMatrix);
-    GetRenderer<Rendering::CubismRenderer_OpenGLES2>()->SetMvpMatrix(&matrix);
+    renderer->SetMvpMatrix(&matrix);
 
     DoDraw();
 }
@@ -847,44 +862,68 @@ void LAppModel::SetRandomExpression()
     }
 }
 
-void LAppModel::ReloadRenderer()
+bool LAppModel::ReloadRenderer()
 {
-    DeleteRenderer();
-
-    CreateRenderer();
-
-    SetupTextures();
+    if (!_model || !_modelSetting || !_modelMatrix || _updating) return false;
+    if (!CreateRenderer()) return false;
+    _initialized = false;
+    if (!SetupTextures()) {
+        DeleteRenderer();
+        return false;
+    }
+    _initialized = true;
+    if (m_textureCacheCommitted) CommitTextureCache();
+    return true;
 }
 
-void LAppModel::SetupTextures()
+bool LAppModel::SetupTextures()
 {
+    if (!_model || !_modelSetting) return false;
+    auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
+    if (!renderer) return false;
+    QMap<int, QString> paths;
+    QMap<int, GLuint> bindings;
+    QSet<GLuint> created;
+    auto rollback = qScopeGuard([&] {
+        for (GLuint textureId : created) textures->ReleaseTexture(textureId);
+    });
     for (csmInt32 modelTextureNumber = 0; modelTextureNumber < _modelSetting->GetTextureCount(); modelTextureNumber++)
     {
-        // テクスチャ名が空文字だった場合はロード・バインド処理をスキップ
-        if (strcmp(_modelSetting->GetTextureFileName(modelTextureNumber), "") == 0)
-        {
-            continue;
+        const csmChar* textureName = _modelSetting->GetTextureFileName(modelTextureNumber);
+        if (!textureName) return false;
+        if (textureName[0] == '\0') continue;
+        if (!textures) return false;
+        const QString path = QDir::cleanPath(QDir(QString::fromUtf8(_modelHomeDir.GetRawString()))
+                                                .absoluteFilePath(QString::fromUtf8(textureName)));
+        const std::string fileName = path.toUtf8().toStdString();
+        auto* texture = textures->GetTextureInfoByName(fileName);
+        if (!texture) {
+            texture = textures->CreateTextureFromPngFile(fileName);
+            if (texture && texture->id != 0) created.insert(texture->id);
         }
-
-        //OpenGLのテクスチャユニットにテクスチャをロードする
-        csmString texturePath = _modelSetting->GetTextureFileName(modelTextureNumber);
-        texturePath = _modelHomeDir + texturePath;
-
-        LAppTextureManager::TextureInfo* texture = LAppDelegate::GetInstance()->GetTextureManager()->CreateTextureFromPngFile(texturePath.GetRawString());
-        const csmInt32 glTextueNumber = texture->id;
-        LAppDelegate::GetInstance()->GetTextureManager()->AddModelTex(modelTextureNumber,QString(texturePath.GetRawString()));
-
-        LAppDelegate::GetInstance()->GetTextureManager()->CreateTextureFromPngFile(texturePath.GetRawString());
-        //OpenGL
-        GetRenderer<Rendering::CubismRenderer_OpenGLES2>()->BindTexture(modelTextureNumber, glTextueNumber);
+        if (!texture || texture->id == 0 || texture->width <= 0 || texture->height <= 0) return false;
+        paths.insert(modelTextureNumber, path);
+        bindings.insert(modelTextureNumber, texture->id);
     }
-
+    for (auto it = bindings.cbegin(); it != bindings.cend(); ++it) renderer->BindTexture(it.key(), it.value());
 #ifdef PREMULTIPLIED_ALPHA_ENABLE
-    GetRenderer<Rendering::CubismRenderer_OpenGLES2>()->IsPremultipliedAlpha(true);
+    renderer->IsPremultipliedAlpha(true);
 #else
-    GetRenderer<Rendering::CubismRenderer_OpenGLES2>()->IsPremultipliedAlpha(false);
+    renderer->IsPremultipliedAlpha(false);
 #endif
+    m_texturePaths = std::move(paths);
+    m_pendingTextureIds.unite(created);
+    rollback.dismiss();
+    return true;
+}
 
+void LAppModel::ReleasePendingTextures()
+{
+    if (m_pendingTextureIds.isEmpty()) return;
+    auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
+    if (textures) for (csmUint32 textureId : m_pendingTextureIds) textures->ReleaseTexture(textureId);
+    m_pendingTextureIds.clear();
 }
 
 void LAppModel::MotionEventFired(const csmString& eventValue)

@@ -2,6 +2,7 @@
 #include "edit/cmeshmap.h"
 #include "framework/Id/CubismIdManager.hpp"
 #include <QSurfaceFormat>
+#include <QScopeGuard>
 #include <cmath>
 
 
@@ -61,6 +62,8 @@ bool OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu,b
 
 bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat)
 {
+    if (fileName.isEmpty() || !IsModelReady() || !MakeRuntimeCurrent()) return false;
+    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
     if(IsALl){
         m_ceditstate.AddState(CEditState::PrintAllPsd);
     }
@@ -74,17 +77,11 @@ bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool I
         m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
     }
 
-    bool ok = false;
-    if (!fileName.isEmpty()) {
-        makeCurrent();
-        ok = LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat);
-        doneCurrent();
-        resizeGL(this->width(),this->height());
-    }
-
-    m_ceditstate.RemoveState(CEditState::PrintAllPsd);
-    m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
-    return ok;
+    const auto clearPrintState = qScopeGuard([this] {
+        m_ceditstate.RemoveState(CEditState::PrintAllPsd);
+        m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
+    });
+    return LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat);
 }
 
 bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
@@ -106,7 +103,7 @@ bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool is
 
 bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
 {
-    if (!fileName.isEmpty()) {
+    if (!fileName.isEmpty() && m_runtimeReady && IsModelReady()) {
         return LAppDelegate::GetInstance()->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat);
     }
     return false;
@@ -375,14 +372,48 @@ void OpengGlForm::do_SetDrawableIndices(const QString& name, const QVector<quint
     delegate->m_meshIndexOverrides.insert(name, indices);
 }
 
-void OpengGlForm::do_ModelChange(const QString& fileName)
+bool OpengGlForm::MakeRuntimeCurrent()
 {
-    if(m_ceditstate.IsContins(CEditState::ModelOpen)){
-        makeCurrent();
-        LAppDelegate::GetInstance()->ChangeScene(fileName);
-        doneCurrent();
-    }
+    if (!m_runtimeReady || !isValid()) return false;
+    if (LAppDelegate::GetInstance()->getGlOwningContext() != context()) return false;
+    makeCurrent();
+    return QOpenGLContext::currentContext() == context();
+}
+
+bool OpengGlForm::do_ModelChange(const QString& fileName)
+{
+    if (!MakeRuntimeCurrent()) return false;
+    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
+    const bool loaded = LAppDelegate::GetInstance()->ChangeScene(fileName);
+    if (!loaded) return false;
+    m_ceditstate.AddState(CEditState::ModelOpen);
     m_currentModelJson = fileName;
+    return true;
+}
+
+bool OpengGlForm::BeginTemporaryModel(const QString& fileName)
+{
+    if (m_suspendedModel.has_value() || !MakeRuntimeCurrent()) return false;
+    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
+    const bool loaded = LAppDelegate::GetInstance()->BeginTemporaryScene(fileName);
+    if (!loaded) return false;
+    m_suspendedModel = SuspendedModel{m_currentModelJson, IsModelReady()};
+    m_currentModelJson = fileName;
+    m_ceditstate.AddState(CEditState::ModelOpen);
+    return true;
+}
+
+bool OpengGlForm::EndTemporaryModel()
+{
+    if (!m_suspendedModel.has_value() || !MakeRuntimeCurrent()) return false;
+    const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
+    const bool restored = LAppDelegate::GetInstance()->EndTemporaryScene();
+    if (!restored) return false;
+    m_currentModelJson = m_suspendedModel->path;
+    if (m_suspendedModel->ready) m_ceditstate.AddState(CEditState::ModelOpen);
+    else m_ceditstate.RemoveState(CEditState::ModelOpen);
+    m_suspendedModel.reset();
+    return true;
 }
 
 void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
@@ -418,23 +449,23 @@ void OpengGlForm::SyncPreviewView(const QMap<QString, float>& values)
 
 void OpengGlForm::initializeGL()
 {
-
-    LAppDelegate::GetInstance()->Initialize(this,m_config.GetInitFileName());//初始化完成后
-
-
-
-    m_ceditstate.AddState(CEditState::ModelOpen);
-
+    auto* delegate = LAppDelegate::GetInstance();
+    const bool loaded = delegate->Initialize(this, m_config.GetInitFileName());
+    m_runtimeReady = delegate->IsRuntimeReady() && delegate->getGlOwningContext() == context();
+    if (loaded) m_ceditstate.AddState(CEditState::ModelOpen);
+    else m_ceditstate.RemoveState(CEditState::ModelOpen);
+    m_initializationCompleted = true;
+    emit RuntimeInitialized(loaded);
 }
 
 void OpengGlForm::resizeGL(int width, int height)
 {
-    LAppDelegate::GetInstance()->resize(width,height);
+    if (m_runtimeReady) LAppDelegate::GetInstance()->resize(width,height);
 }
 
 void OpengGlForm::paintGL()
 {
-    LAppDelegate::GetInstance()->paint();
+    if (m_runtimeReady) LAppDelegate::GetInstance()->paint();
 
 
 
@@ -443,6 +474,7 @@ void OpengGlForm::paintGL()
 
 void OpengGlForm::mousePressEvent(QMouseEvent *event)
 {
+    if (!IsModelReady()) return;
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
     QVector4D pos = view->GetWorldPoint(event->pos().x(),event->pos().y());
@@ -494,6 +526,7 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
 
 void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (!IsModelReady()) return;
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
     if (m_meshPointDragging) {
@@ -525,6 +558,7 @@ void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
+    if (!IsModelReady()) return;
 
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view || width() <= 0 || height() <= 0) return;
@@ -602,6 +636,7 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 
 void OpengGlForm::wheelEvent(QWheelEvent *event)
 {
+    if (!IsModelReady()) return;
     //为什么状态没有用
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view || width() <= 0 || height() <= 0) return;
@@ -646,6 +681,7 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 
 void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
+    if (!IsModelReady()) return;
 
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
@@ -727,6 +763,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
 
 void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 {
+    if (!IsModelReady()) return;
     switch (event->key()) {
     case Qt::Key_Up:;break;
     case Qt::Key_Down:;break;

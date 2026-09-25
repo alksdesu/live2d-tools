@@ -194,6 +194,9 @@ protected:
     csmInt32 CalcHashcode(const csmChar* c, csmInt32 length);
 
 private:
+    void InitializeBuffer(csmInt32 length);
+    void SwapValue(csmString& other);
+    static csmString Concat(const csmString& left, const csmChar* right, csmInt32 length);
     static const csmInt32 SmallLength = 64; ///< この長さ-1未満の文字列は内部バッファを使用
     static const csmInt32 DefaultSize = 10; ///< デフォルトの文字数
     static csmInt32 s_totalInstanceNo;      ///< 通算のインスタンス番号

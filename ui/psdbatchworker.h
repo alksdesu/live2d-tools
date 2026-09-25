@@ -22,6 +22,9 @@ signals:
     void finished(const QStringList& failedFiles);
 
 private:
+    void requestNext();
+    void finish();
+
     QStringList m_models;
     QString m_outDir;
     bool m_all = false;
@@ -30,6 +33,9 @@ private:
     bool m_cubismCompat = false;
     int m_index = 0;
     bool m_cancelled = false;
+    bool m_started = false;
+    bool m_finished = false;
+    QString m_pendingOutput;
     QStringList m_failedFiles;
     QStringList m_outputNames;
 };

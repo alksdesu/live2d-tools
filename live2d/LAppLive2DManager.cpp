@@ -17,8 +17,11 @@
 #include "LAppDefine.hpp"
 #include "LAppDelegate.hpp"
 #include "LAppModel.hpp"
+#include "LAppTextureManager.hpp"
 #include "LAppView.hpp"
 #include <QCoreApplication>
+#include <algorithm>
+#include <memory>
 using namespace Csm;
 using namespace LAppDefine;
 using namespace std;
@@ -74,12 +77,10 @@ LAppLive2DManager::~LAppLive2DManager()
 
 void LAppLive2DManager::ReleaseAllModel()
 {
-    for (csmUint32 i = 0; i < _models.GetSize(); i++)
-    {
-        delete _models[i];
-    }
-
-    _models.Clear();
+    _models.clear();
+    m_suspendedModels.clear();
+    m_suspendedSceneIndex = 0;
+    m_temporaryScene = false;
 }
 
 void LAppLive2DManager::SetUpModel()
@@ -108,9 +109,9 @@ csmInt32 LAppLive2DManager::GetModelDirSize() const
 
 LAppModel* LAppLive2DManager::GetModel(csmUint32 no) const
 {
-    if (no < _models.GetSize())
+    if (no < _models.size())
     {
-        return _models[no];
+        return _models[no].get();
     }
 
     return NULL;
@@ -118,10 +119,10 @@ LAppModel* LAppLive2DManager::GetModel(csmUint32 no) const
 
 void LAppLive2DManager::OnDrag(csmFloat32 x, csmFloat32 y) const
 {
-    for (csmUint32 i = 0; i < _models.GetSize(); i++)
+    for (csmUint32 i = 0; i < _models.size(); i++)
     {
         LAppModel* model = GetModel(i);
-        if (model) model->SetDragging(x, y);
+        if (model && model->IsInitialized()) model->SetDragging(x, y);
     }
 }
 
@@ -132,9 +133,9 @@ void LAppLive2DManager::OnTap(csmFloat32 x, csmFloat32 y)
         LAppPal::PrintLogLn("[APP]tap point: {x:%.2f y:%.2f}", x, y);
     }
 
-    for (csmUint32 i = 0; i < _models.GetSize(); i++)
+    for (csmUint32 i = 0; i < _models.size(); i++)
     {
-        if (!_models[i] || _models[i]->HasTimelinePreview()) continue;
+        if (!_models[i] || !_models[i]->IsInitialized() || _models[i]->HasTimelinePreview()) continue;
         if (_models[i]->HitTest(HitAreaNameHead, x, y))
         {
             if (DebugLogEnable)
@@ -157,15 +158,17 @@ void LAppLive2DManager::OnTap(csmFloat32 x, csmFloat32 y)
 void LAppLive2DManager::OnUpdate(CubismMatrix44& projection) const
 {
 
-    csmUint32 modelCount = _models.GetSize();
+    const csmUint32 modelCount = LAppDelegate::GetInstance()->IsOffScreen()
+        ? std::min(csmUint32(1), GetModelNum()) : GetModelNum();
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     for (csmUint32 i = 0; i < modelCount; ++i)
     {
         LAppModel* model = GetModel(i);
-        if (!model) continue;
+        if (!model || !model->IsInitialized()) continue;
         if (view) view->PreModelDraw(*model);//设置离屏渲染缓冲帧
         model->Update();
-        model->Draw(projection);
+        CubismMatrix44 modelProjection = projection;
+        model->Draw(modelProjection);
         if (view) view->PostModelDraw(*model);//删除离屏渲染缓冲区
 
     }
@@ -178,88 +181,117 @@ void LAppLive2DManager::NextScene()
     ChangeScene(no);
 }
 
-void LAppLive2DManager::ChangeScene(Csm::csmInt32 index)
+bool LAppLive2DManager::ChangeScene(Csm::csmInt32 index)
 {
-    if (index < 0 || index >= GetModelDirSize()) return;
-    _sceneIndex = index;
-    if (DebugLogEnable)
-    {
-        LAppPal::PrintLogLn("[APP]model index: %d", _sceneIndex);
-    }
-
-    // model3.jsonのパスを決定する.
-    // ディレクトリ名とmodel3.jsonの名前を一致していることが条件
-    const csmString& model = _modelDir[index];
-
-    csmString modelPath(LAppDelegate::GetInstance()->getResourcesPath().toStdString().c_str());
-    modelPath += model;
-    modelPath.Append(1, '/');
-
-    csmString modelJsonName(model);
-    modelJsonName += ".model3.json";
-
-    ReleaseAllModel();
-    _models.PushBack(new LAppModel());
-    _models[0]->LoadAssets(modelPath.GetRawString(), modelJsonName.GetRawString());
-
-    /*
-     * モデル半透明表示を行うサンプルを提示する。
-     * ここでUSE_RENDER_TARGET、USE_MODEL_RENDER_TARGETが定義されている場合
-     * 別のレンダリングターゲットにモデルを描画し、描画結果をテクスチャとして別のスプライトに張り付ける。
-     */
-    {
-#if defined(USE_RENDER_TARGET)
-        // LAppViewの持つターゲットに描画を行う場合、こちらを選択
-        LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_ViewFrameBuffer;
-#elif defined(USE_MODEL_RENDER_TARGET)
-        // 各LAppModelの持つターゲットに描画を行う場合、こちらを選択
-        LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_ModelFrameBuffer;
-#else
-        // デフォルトのメインフレームバッファへレンダリングする(通常)
-        LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_None;
-#endif
-
+    if (m_temporaryScene || index < 0 || index >= GetModelDirSize()) return false;
+    const QString modelName = QString::fromUtf8(_modelDir[index].GetRawString());
+    const QDir resources(LAppDelegate::GetInstance()->getResourcesPath());
+    const QByteArray modelPath = (resources.absoluteFilePath(modelName) + QLatin1Char('/')).toUtf8();
+    const QByteArray modelJsonName = (modelName + QStringLiteral(".model3.json")).toUtf8();
+    auto primary = std::make_unique<LAppModel>();
+    if (!primary->LoadAssets(modelPath.constData(), modelJsonName.constData())) return false;
+    std::unique_ptr<LAppModel> secondary;
 #if defined(USE_RENDER_TARGET) || defined(USE_MODEL_RENDER_TARGET)
-        // モデル個別にαを付けるサンプルとして、もう1体モデルを作成し、少し位置をずらす
-        _models.PushBack(new LAppModel());
-        _models[1]->LoadAssets(modelPath.GetRawString(), modelJsonName.GetRawString());
-        _models[1]->GetModelMatrix()->TranslateX(0.2f);
+    secondary = std::make_unique<LAppModel>();
+    if (!secondary->LoadAssets(modelPath.constData(), modelJsonName.constData()) || !secondary->GetModelMatrix()) return false;
+    secondary->GetModelMatrix()->TranslateX(0.2f);
 #endif
-
-        LAppView* view = LAppDelegate::GetInstance()->GetView();
-        if (view) view->SwitchRenderingTarget(useRenderTarget);
-
-        // 別レンダリング先を選択した際の背景クリア色
-        float clearColor[3] = { 1.0f, 1.0f, 1.0f };
-        if (view) view->SetRenderTargetClearColor(clearColor[0], clearColor[1], clearColor[2]);
+    std::vector<std::unique_ptr<LAppModel>> candidates;
+    candidates.reserve(secondary ? 2 : 1);
+    candidates.push_back(std::move(primary));
+    if (secondary) candidates.push_back(std::move(secondary));
+    _models.swap(candidates);
+    candidates.clear();
+    _sceneIndex = index;
+    CommitModelTextures();
+    if (DebugLogEnable) LAppPal::PrintLogLn("[APP]model index: %d", _sceneIndex);
+#if defined(USE_RENDER_TARGET)
+    const LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_ViewFrameBuffer;
+#elif defined(USE_MODEL_RENDER_TARGET)
+    const LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_ModelFrameBuffer;
+#else
+    const LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_None;
+#endif
+    LAppView* view = LAppDelegate::GetInstance()->GetView();
+    if (view) {
+        view->SwitchRenderingTarget(useRenderTarget);
+        view->SetRenderTargetClearColor(1.0f, 1.0f, 1.0f);
     }
+    return true;
 }
 
-void LAppLive2DManager::ChangeSceneFileName(const QString &modelJsonName)
+bool LAppLive2DManager::ChangeSceneFileName(const QString& modelJsonName)
 {
-    QFileInfo fileInfo(modelJsonName);
-    if (!(fileInfo.exists() && fileInfo.isFile())) {
-        // 文件不存在且不是一个文件
-        return;
-    }
-    QString modelPath = fileInfo.absolutePath()+"/"; // 获取绝对路径
-    qDebug().noquote() << modelPath;
-    QString fileName =    fileInfo.fileName();
-
-    ReleaseAllModel();
-    _models.PushBack(new LAppModel());
-    _models[0]->LoadAssets(modelPath.toStdString().c_str(), fileName.toStdString().c_str());
-
-    LAppView::SelectTarget useRenderTarget = LAppView::SelectTarget_None;
+    if (m_temporaryScene) return false;
+    const QFileInfo fileInfo(modelJsonName);
+    if (!fileInfo.exists() || !fileInfo.isFile()) return false;
+    const QByteArray modelPath = (fileInfo.absolutePath() + QLatin1Char('/')).toUtf8();
+    const QByteArray fileName = fileInfo.fileName().toUtf8();
+    auto candidate = std::make_unique<LAppModel>();
+    if (!candidate->LoadAssets(modelPath.constData(), fileName.constData())) return false;
+    std::vector<std::unique_ptr<LAppModel>> candidates;
+    candidates.push_back(std::move(candidate));
+    _models.swap(candidates);
+    candidates.clear();
+    CommitModelTextures();
     LAppView* view = LAppDelegate::GetInstance()->GetView();
-    if (view) view->SwitchRenderingTarget(useRenderTarget);
-    float clearColor[3] = { 1.0f, 1.0f, 1.0f };
-    if (view) view->SetRenderTargetClearColor(clearColor[0], clearColor[1], clearColor[2]);
+    if (view) {
+        view->SwitchRenderingTarget(LAppView::SelectTarget_None);
+        view->SetRenderTargetClearColor(1.0f, 1.0f, 1.0f);
+    }
+    return true;
+}
+
+bool LAppLive2DManager::BeginTemporaryScene(const QString& modelJsonName)
+{
+    if (m_temporaryScene) return false;
+    const QFileInfo fileInfo(modelJsonName);
+    if (!fileInfo.exists() || !fileInfo.isFile()) return false;
+    const QByteArray modelPath = (fileInfo.absolutePath() + QLatin1Char('/')).toUtf8();
+    const QByteArray fileName = fileInfo.fileName().toUtf8();
+    auto candidate = std::make_unique<LAppModel>();
+    if (!candidate->LoadAssets(modelPath.constData(), fileName.constData())) return false;
+    std::vector<std::unique_ptr<LAppModel>> candidates;
+    candidates.push_back(std::move(candidate));
+    m_suspendedModels.swap(_models);
+    _models.swap(candidates);
+    m_suspendedSceneIndex = _sceneIndex;
+    m_temporaryScene = true;
+    CommitModelTextures();
+    return true;
+}
+
+bool LAppLive2DManager::EndTemporaryScene()
+{
+    if (!m_temporaryScene) return false;
+    _models.clear();
+    _models.swap(m_suspendedModels);
+    _sceneIndex = m_suspendedSceneIndex;
+    m_suspendedSceneIndex = 0;
+    m_temporaryScene = false;
+    CommitModelTextures();
+    return true;
+}
+
+void LAppLive2DManager::CommitModelTextures()
+{
+    if (auto* view = LAppDelegate::GetInstance()->GetView()) view->InitializeSprite();
+    auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
+    if (!textures) return;
+    textures->SetModelTextures(!_models.empty() ? _models[0]->GetTexturePaths() : QMap<int, QString>());
+    QSet<QString> retained;
+    for (const auto& model : _models) {
+        for (const QString& path : model->GetTexturePaths()) retained.insert(path);
+        model->CommitTextureCache();
+    }
+    for (const auto& model : m_suspendedModels)
+        for (const QString& path : model->GetTexturePaths()) retained.insert(path);
+    textures->ReleaseUnusedTextures(retained);
 }
 
 csmUint32 LAppLive2DManager::GetModelNum() const
 {
-    return _models.GetSize();
+    return static_cast<csmUint32>(_models.size());
 }
 
 void LAppLive2DManager::SetViewMatrix(CubismMatrix44* m)

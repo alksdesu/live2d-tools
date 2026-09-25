@@ -7,6 +7,8 @@
 
 #include "LAppDelegate.hpp"
 #include <iostream>
+#include <QScopeGuard>
+#include <QScopedValueRollback>
 
 #include "LAppView.hpp"
 #include "LAppPal.hpp"
@@ -50,7 +52,7 @@ void LAppDelegate::ReleaseInstance()
 
 bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName)
 {
-    initializeOpenGLFunctions();
+    if (!windows || _view || _textureManager || !initializeOpenGLFunctions()) return false;
 
     _view = new LAppView();
     _textureManager = new LAppTextureManager();
@@ -88,17 +90,12 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
         LAppPal::PrintLogLn("START");
     }
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
     //透過設定 设置渲染的透明度
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     _view->Initialize();
-    InitializeCubism(strMoldeName);
-
-    return GL_TRUE;
+    return InitializeCubism(strMoldeName);
 }
 
 
@@ -106,10 +103,13 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
 void LAppDelegate::Release()
 {
     ClearModelRuntimeState(true);
-    delete _textureManager;
-    delete _view;
     LAppLive2DManager::ReleaseInstance();
-    CubismFramework::Dispose();
+    delete _view;
+    _view = nullptr;
+    delete _textureManager;
+    _textureManager = nullptr;
+    _windows = nullptr;
+    if (CubismFramework::IsInitialized()) CubismFramework::Dispose();
     CubismFramework::CleanUp();
 }
 
@@ -117,6 +117,9 @@ void LAppDelegate::Release()
 
 LAppDelegate::LAppDelegate():
     _cubismOption(),
+    _view(nullptr),
+    _windows(nullptr),
+    _textureManager(nullptr),
     _windowWidth(0),
     _windowHeight(0),
     _IsOffScreen(false),
@@ -132,23 +135,24 @@ LAppDelegate::~LAppDelegate()
 
 }
 
-void LAppDelegate::InitializeCubism(const QString &strMoldeName)
+bool LAppDelegate::InitializeCubism(const QString &strMoldeName)
 {
 
     //setup cubism
     _cubismOption.LogFunction = LAppPal::PrintMessage;
     _cubismOption.LoggingLevel = LAppDefine::CubismLoggingLevel;
-    Csm::CubismFramework::StartUp(&_cubismAllocator, &_cubismOption);
+    if (!Csm::CubismFramework::StartUp(&_cubismAllocator, &_cubismOption)) return false;
     CubismFramework::Initialize();
-    LAppLive2DManager::GetInstance();//加载默认的场景
-    if(strMoldeName==""){
-        LAppLive2DManager::GetInstance()->ChangeScene(0);
-    }else{
-        LAppLive2DManager::GetInstance()->ChangeSceneFileName(strMoldeName);
-    }
-    CubismMatrix44 projection;
+    if (!CubismFramework::IsInitialized()) return false;
+    auto* manager = LAppLive2DManager::GetInstance();
+    const bool loaded = strMoldeName.isEmpty() ? manager->ChangeScene(0) : manager->ChangeSceneFileName(strMoldeName);
     LAppPal::UpdateTime();
-    _view->InitializeSprite();
+    return loaded;
+}
+
+bool LAppDelegate::IsRuntimeReady() const
+{
+    return _view && _textureManager && CubismFramework::IsInitialized();
 }
 
 
@@ -265,72 +269,54 @@ CPsdWriteList *LAppDelegate::GetCPsdWriteList()
 
 bool LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool IsFenzu,bool cubismCompat)
 {
-    m_IsPrintALl =IsALl;
-    m_IsPrintFenzu=IsFenzu;
+    if (!IsRuntimeReady() || name.isEmpty() || _IsOffScreen || cpsdwriteList ||
+        QOpenGLContext::currentContext() != owningContext()) return false;
+    const QScopedValueRollback<bool> printAll(m_IsPrintALl, IsALl);
+    const QScopedValueRollback<bool> printGroups(m_IsPrintFenzu, IsFenzu);
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
-    if (!Live2DManager || Live2DManager->GetModelNum() == 0) {
-        m_IsPrintALl = false;
-        m_IsPrintFenzu = false;
-        return false;
-    }
+    if (!Live2DManager || Live2DManager->GetModelNum() == 0) return false;
     LAppModel* modelr = Live2DManager->GetModel(0);
-    if (!modelr) {
-        m_IsPrintALl = false;
-        m_IsPrintFenzu = false;
-        return false;
-    }
-    if (!modelr->GetModel()) {
-        m_IsPrintALl = false;
-        m_IsPrintFenzu = false;
-        return false;
-    }
+    if (!modelr || !modelr->GetModel() || !modelr->GetModelMatrix()) return false;
     const QSize canvasSize = live2dstruct::CCanvasGeometry::PixelSize(
         modelr->GetModel()->GetCanvasWidthPixel(), modelr->GetModel()->GetCanvasHeightPixel());
-    if (canvasSize.isEmpty()) {
-        m_IsPrintALl = false;
-        m_IsPrintFenzu = false;
-        return false;
-    }
+    if (canvasSize.isEmpty()) return false;
     const int width = canvasSize.width(), height = canvasSize.height();
-    cpsdwriteList = new CPsdWriteList();//要设置默认的帧缓冲，这样读取的时候才会读取默认位置
+    CPsdWriteList writer;
+    const QScopedValueRollback<CPsdWriteList*> psdWriter(cpsdwriteList, &writer);
     QString strhome = modelr->GetModelHomeDir().GetRawString();
     QString strcid =modelr->GetModelSetting()->GetDisplayInfoFileName();
     QString strmoc=modelr->GetModelSetting()->GetModelFileName();
     cpsdwriteList->SetCidName(strhome+"/"+strcid);
     cpsdwriteList->SetMocName(strhome+"/"+strmoc);
-    if (!cpsdwriteList->CreatePsd(name,width,height,cubismCompat)) {
-        delete cpsdwriteList;
-        cpsdwriteList = nullptr;
-        m_IsPrintALl = false;
-        m_IsPrintFenzu = false;
-        return false;
-    }
-    if (!coffscreen.CreateOffscreenSurface(width,height)) {
-        delete cpsdwriteList;
-        cpsdwriteList = nullptr;
-        m_IsPrintALl = false;
-        m_IsPrintFenzu = false;
-        return false;
-    }
+    if (!cpsdwriteList->CreatePsd(name,width,height,cubismCompat)) return false;
+    const auto closePsd = qScopeGuard([&] { writer.ClosePsd(); });
+    if (!coffscreen.CreateOffscreenSurface(width,height)) return false;
+    const auto destroySurface = qScopeGuard([&] { coffscreen.DestroyOffscreenSurface(); });
+    const auto projection = _view->GetProjectionMatrix();
+    const auto modelMatrix = *modelr->GetModelMatrix();
+    const QScopedValueRollback<bool> offscreen(_IsOffScreen);
+    const QScopedValueRollback<int> offWidth(_OffWidth), offHeight(_OffHeight);
+    const QScopedValueRollback<int> windowWidth(_windowWidth), windowHeight(_windowHeight);
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const auto restoreView = qScopeGuard([&] {
+        *modelr->GetModelMatrix() = modelMatrix;
+        _view->SetProjectionMatrix(projection);
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    });
     coffscreen.BeginDraw();
+    const auto endDraw = qScopeGuard([&] { coffscreen.EndDraw(); });
     SetIsOffset(true);//开始渲染
     SetOffsetWidthANDHeight(width,height);
-    InitOffset(width,height);
+    _view->InitializeSprite();
+    glViewport(0, 0, width, height);
     paint();
-    bool ok = cpsdwriteList->WritePsd();
-    cpsdwriteList->ClosePsd();
-    coffscreen.EndDraw();
-    coffscreen.DestroyOffscreenSurface();
-
-    delete cpsdwriteList;
-    cpsdwriteList = nullptr;
-    m_IsPrintALl =false;
-    m_IsPrintFenzu=false;
-    return ok;
+    return cpsdwriteList->WritePsd();
 }
 
 bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat)
 {
+    if (!IsRuntimeReady() || psdPath.isEmpty()) return false;
     LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
     LAppModel* model = live2DManager->GetModel(0);
     if (!model) {
@@ -432,11 +418,25 @@ bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHi
     return ok;
 }
 
-void LAppDelegate::ChangeScene(const QString &modelJsonName)
+bool LAppDelegate::ChangeScene(const QString &modelJsonName)
 {
+    if (!IsRuntimeReady() || !LAppLive2DManager::GetInstance()->ChangeSceneFileName(modelJsonName)) return false;
     ClearModelRuntimeState(true);
-    LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
-    live2DManager->ChangeSceneFileName(modelJsonName);
+    return true;
+}
+
+bool LAppDelegate::BeginTemporaryScene(const QString& modelJsonName)
+{
+    if (!IsRuntimeReady() || !LAppLive2DManager::GetInstance()->BeginTemporaryScene(modelJsonName)) return false;
+    ClearModelRuntimeState(true);
+    return true;
+}
+
+bool LAppDelegate::EndTemporaryScene()
+{
+    if (!IsRuntimeReady() || !LAppLive2DManager::GetInstance()->EndTemporaryScene()) return false;
+    ClearModelRuntimeState(true);
+    return true;
 }
 
 void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
@@ -446,6 +446,7 @@ void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
     m_drawableOpacityOverrides.clear();
     m_drawableDrawOrderOverrides.clear();
     m_meshOverlayPositions.clear();
+    m_meshOverlayKeyformIndices.clear();
     m_meshIndexOverrides.clear();
     m_dragTargetDrawables.clear();
     m_savedVertices.clear();

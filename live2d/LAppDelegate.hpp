@@ -87,7 +87,10 @@ public:
 
 
 
-    void ChangeScene(const QString& strMoldeName);//切换已经打开的场景
+    bool ChangeScene(const QString& strMoldeName);//切换已经打开的场景
+    bool BeginTemporaryScene(const QString& modelJsonName);
+    bool EndTemporaryScene();
+    bool IsRuntimeReady() const;
     bool Initialize(const QWidget* windows,const QString& strMoldeName="");//打开默认场景
 
     const QString& getResourcesPath(){
@@ -97,7 +100,7 @@ private:
 
     LAppDelegate();
     ~LAppDelegate();
-    void InitializeCubism(const QString& strMoldeName="");
+    bool InitializeCubism(const QString& strMoldeName="");
     void ClearModelRuntimeState(bool clearOrderGroups);
 
     LAppAllocator _cubismAllocator;              ///< Cubism SDK Allocator

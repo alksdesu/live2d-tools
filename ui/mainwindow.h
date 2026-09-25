@@ -13,6 +13,7 @@
 #include <QToolBar>
 #include <QByteArray>
 #include <QVector>
+#include <QPointer>
 
 class CModelTreePanel;
 class CParamPanel;
@@ -26,6 +27,8 @@ class CUserDataPanel;
 class CCidJson;
 class QCloseEvent;
 class QActionGroup;
+class PsdBatchJob;
+class QProgressDialog;
 
 class MainWindow : public QMainWindow
 {
@@ -44,13 +47,14 @@ private slots:
     void on_actionCmo3Export_triggered();
     void on_actionSaveSession_triggered();
     void on_actionLoadSession_triggered();
-    void doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu, bool isTexExtract = false, bool cubismCompat = false);
+    bool doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu, bool isTexExtract = false, bool cubismCompat = false);
 
 
 
 private:
     void RestDock(const QString& name);
     bool CloseModel();
+    void StopPsdBatch();
     bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false);
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
@@ -97,6 +101,10 @@ private:
     void setupUI();
     QWidget* createEmptyState();
     OpengGlForm* m_headless = nullptr; // 后台离屏导出上下文
+    QPointer<PsdBatchJob> m_psdBatch;
+    QPointer<QProgressDialog> m_batchProgress;
+    bool m_batchExporting = false;
+    bool m_closeAfterExport = false;
     QWidget* m_placeholder = nullptr;
     QWidget* m_canvasHost = nullptr;
     live2dstruct::CModelDocument m_document;
@@ -130,9 +138,6 @@ private:
 
     // 显示名称映射（持久化到模型关闭）
     CCidJson* m_cidJson = nullptr;
-
-signals:
-    void oneExportFinished(bool ok, const QString& outPath);
 
 private:
     QToolBar* m_titleBar = nullptr;

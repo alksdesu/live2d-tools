@@ -10,6 +10,7 @@ PsdBatchWorker::PsdBatchWorker(QObject *parent)
 
 void PsdBatchWorker::setTask(const QStringList &models, const QString &outDir, bool all, bool fenzu, bool texExtract, bool cubismCompat)
 {
+    if (m_started || m_finished) return;
     m_models = models;
     m_outDir = outDir;
     m_all = all;
@@ -45,32 +46,47 @@ void PsdBatchWorker::setTask(const QStringList &models, const QString &outDir, b
 
 void PsdBatchWorker::start()
 {
+    if (m_started || m_finished) return;
+    m_started = true;
+    requestNext();
+}
+
+void PsdBatchWorker::requestNext()
+{
     if (m_cancelled || m_index >= m_models.size()) {
-        emit finished(m_failedFiles);
+        finish();
         return;
     }
     const QString& modelPath = m_models[m_index];
     QFileInfo info(modelPath);
     const QString psdName = m_outputNames.value(m_index, info.completeBaseName() + QStringLiteral(".psd"));
     const QString outPath = QDir(m_outDir).filePath(psdName);
+    m_pendingOutput = outPath;
     emit progress(m_index + 1, m_models.size(), info.fileName());
     emit requestExport(modelPath, outPath, m_all, m_fenzu, m_texExtract, m_cubismCompat);
 }
 
 void PsdBatchWorker::cancel()
 {
+    if (m_finished) return;
     m_cancelled = true;
+    if (m_pendingOutput.isEmpty()) finish();
 }
 
 void PsdBatchWorker::onOneExportFinished(bool ok, const QString& outPath)
 {
+    if (m_finished || m_pendingOutput.isEmpty() || outPath != m_pendingOutput) return;
+    m_pendingOutput.clear();
     if (!ok) {
         m_failedFiles.append(outPath);
     }
-    if (m_cancelled) {
-        emit finished(m_failedFiles);
-        return;
-    }
     ++m_index;
-    start();
+    requestNext();
+}
+
+void PsdBatchWorker::finish()
+{
+    if (m_finished) return;
+    m_finished = true;
+    emit finished(m_failedFiles);
 }
