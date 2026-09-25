@@ -22,6 +22,8 @@ if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
 endif()
 
 add_library(model_data STATIC
+    live2dstruct/cparentgraph.cpp
+    live2dstruct/cblendshaperelations.cpp
     live2d/cdeformerdrag.cpp
     opengl/cmeshbounds.cpp
     opengl/cuvgeometry.cpp
@@ -47,6 +49,10 @@ target_link_libraries(model_data PUBLIC Qt6::Core)
 if(MSVC)
     target_compile_options(model_data PUBLIC /utf-8)
 endif()
+
+add_library(model_hierarchy_ui STATIC ui/cmodelhierarchymodel.cpp ui/cmodelhierarchyview.cpp)
+target_include_directories(model_hierarchy_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(model_hierarchy_ui PUBLIC model_data Qt6::Widgets)
 
 add_library(model_coordinates STATIC
     live2dstruct/coor/ccoordinateframe.cpp
@@ -110,6 +116,16 @@ target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
+    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit)
+        add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
+        target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)
+        target_compile_definitions(${data_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME ${data_test} COMMAND ${data_test}_tests)
+    endforeach()
+    add_executable(hierarchy_view_tests tests/hierarchy_view_tests.cpp)
+    target_link_libraries(hierarchy_view_tests PRIVATE model_hierarchy_ui Qt6::Test)
+    add_test(NAME hierarchy_view COMMAND hierarchy_view_tests)
+    set_tests_properties(hierarchy_view PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(model_data_tests tests/model_data_tests.cpp)
     target_link_libraries(model_data_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_data_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -168,7 +184,7 @@ if(BUILD_TESTING)
     set_tests_properties(clipping_editor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(deformer_editor_tests tests/deformer_editor_tests.cpp ui/cinspectorpanel.cpp
         ui/cmodeltreepanel.cpp ui/para/ccidjson.cpp)
-    target_link_libraries(deformer_editor_tests PRIVATE deformer_tree_data Qt6::Test Qt6::Widgets)
+    target_link_libraries(deformer_editor_tests PRIVATE deformer_tree_data model_hierarchy_ui Qt6::Test Qt6::Widgets)
     target_compile_definitions(deformer_editor_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
     add_test(NAME deformer_editor COMMAND deformer_editor_tests)
     set_tests_properties(deformer_editor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -338,7 +354,7 @@ if(BUILD_TESTING)
     add_test(NAME inspector_history COMMAND inspector_history_tests)
     set_tests_properties(inspector_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(model_tree_tests tests/model_tree_tests.cpp ui/cmodeltreepanel.cpp ui/cinspectorpanel.cpp ui/para/ccidjson.cpp)
-    target_link_libraries(model_tree_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_link_libraries(model_tree_tests PRIVATE model_data model_hierarchy_ui Qt6::Test Qt6::Widgets)
     target_compile_definitions(model_tree_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_tree COMMAND model_tree_tests)
     set_tests_properties(model_tree PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

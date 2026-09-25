@@ -36,6 +36,17 @@
 #include <utility>
 
 namespace {
+class VisibilityCheckBox : public QCheckBox
+{
+public:
+    using QCheckBox::QCheckBox;
+protected:
+    void nextCheckState() override
+    {
+        setCheckState(checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+    }
+};
+
 QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
 {
     return index < 0 ? fallback : QString::number(index);
@@ -70,7 +81,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_deformerParentCombo->setObjectName(QStringLiteral("deformerParentSelector"));
     m_deformerParentCombo->setEnabled(false);
     m_visibilityLabel = new QLabel(content);
-    m_visibilityCheck = new QCheckBox(QStringLiteral("显示"), content);
+    m_visibilityCheck = new VisibilityCheckBox(QStringLiteral("显示"), content);
     m_opacitySpin = new QDoubleSpinBox(content);
     m_opacitySpin->setRange(0.0, 1.0);
     m_opacitySpin->setDecimals(3);
@@ -379,26 +390,25 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         const bool visible = state == Qt::Checked;
         if (m_updatingVisibility || !m_document) return;
         if (m_selectionNames.size() > 1) {
+            const auto current = m_document->VisibilityState();
+            QMap<QString, bool> before, after;
             for (int i = 0; i < m_selectionNames.size(); ++i) {
                 const QString name = m_selectionNames[i];
                 const QString type = m_selectionTypes.value(i);
                 if (IsLocked(type, name)) continue;
-                bool before = visible;
-                if (type == QLatin1String("part")) {
-                    for (const auto& part : m_document->Parts()) if (part.id == name) { before = part.visible; break; }
-                } else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) {
-                    for (const auto& deformer : m_document->Deformers()) if (deformer.id == name) { before = deformer.visible; break; }
-                } else if (type == QLatin1String("artmesh")) {
-                    for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { before = drawable.visible; break; }
-                } else {
-                    continue;
-                }
-                if (before == visible) continue;
-                const live2dstruct::CModelEdit command{name, type, live2dstruct::CModelEdit::Visibility, before, visible};
-                if (!SubmitEdit(command)) return;
-                emit VisibilityChanged(name, type, visible);
-                emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+                const QString key = type + QLatin1Char('|') + name;
+                const auto value = current.constFind(key);
+                if (value == current.cend() || value.value() == visible) continue;
+                before.insert(key, value.value());
+                after.insert(key, visible);
             }
+            if (after.isEmpty()) { RefreshSelection(); return; }
+            const live2dstruct::CModelEdit command{QStringLiteral("selection"), QStringLiteral("objects"),
+                live2dstruct::CModelEdit::VisibilityValues, QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+            if (!SubmitEdit(command)) return;
+            emit VisibilityBatchChanged(after);
+            emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+            RefreshSelection();
             return;
         }
         if (m_selectionName.isEmpty()) return;
@@ -642,6 +652,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     bool allVisibleEditable = true;
     bool allArtMeshes = true;
     bool allUnlocked = true;
+    bool anyUnlocked = false;
+    const auto visibility = m_document ? m_document->VisibilityState() : QMap<QString, bool>();
     if (!m_document) {
         allVisibleEditable = false;
         allArtMeshes = false;
@@ -655,16 +667,14 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
         }
         const QString type = types.value(i);
         const QString name = names[i];
-        allUnlocked = allUnlocked && !IsLocked(type, name);
-        bool found = false;
-        if (type == QLatin1String("part")) {
-            for (const auto& part : m_document->Parts()) if (part.id == name) { anyVisible |= part.visible; anyHidden |= !part.visible; found = true; break; }
-        } else if (type == QLatin1String("warp") || type == QLatin1String("rotation")) {
-            for (const auto& deformer : m_document->Deformers()) if (deformer.id == name) { anyVisible |= deformer.visible; anyHidden |= !deformer.visible; found = true; break; }
-        } else if (type == QLatin1String("artmesh")) {
-            for (const auto& drawable : m_document->Drawables()) if (drawable.id == name) { anyVisible |= drawable.visible; anyHidden |= !drawable.visible; found = true; break; }
-        } else {
-            allVisibleEditable = false;
+        const bool unlocked = !IsLocked(type, name);
+        allUnlocked = allUnlocked && unlocked;
+        anyUnlocked = anyUnlocked || unlocked;
+        const auto value = visibility.constFind(type + QLatin1Char('|') + name);
+        const bool found = value != visibility.cend();
+        if (found) {
+            anyVisible = anyVisible || value.value();
+            anyHidden = anyHidden || !value.value();
         }
         if (!found) allVisibleEditable = false;
         allArtMeshes = allArtMeshes && type == QLatin1String("artmesh");
@@ -672,7 +682,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     }
     if (anyVisible && anyHidden) m_visibilityCheck->setCheckState(Qt::PartiallyChecked);
     else m_visibilityCheck->setChecked(anyVisible);
-    m_visibilityCheck->setEnabled(allVisibleEditable && allUnlocked);
+    m_visibilityCheck->setEnabled(allVisibleEditable && anyUnlocked);
     m_opacitySpin->setEnabled(allArtMeshes && allUnlocked);
     m_drawOrderSpin->setEnabled(allArtMeshes && allUnlocked);
     if (allArtMeshes && !names.isEmpty()) {
@@ -688,7 +698,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
         m_drawOrderSpin->setValue(0);
     }
     m_updatingVisibility = false;
-    m_emptyLabel->setText(QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围").arg(names.size()));
+    m_emptyLabel->setText((allUnlocked ? QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围") :
+        QStringLiteral("已选择 %1 个对象，锁定对象不受批量修改影响")).arg(names.size()));
     for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
@@ -1298,6 +1309,8 @@ void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forwar
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == live2dstruct::CModelEdit::Visibility) {
         emit VisibilityChanged(edit.name, edit.type, value.toBool());
+    } else if (edit.field == live2dstruct::CModelEdit::VisibilityValues) {
+        emit VisibilityBatchChanged(value.value<QMap<QString, bool>>());
     } else if (edit.field == live2dstruct::CModelEdit::Opacity) {
         emit DrawableOpacityChanged(edit.name, value.toFloat());
     } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
@@ -1309,7 +1322,7 @@ void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forwar
     } else if (edit.field == live2dstruct::CModelEdit::MaskIndices) {
         emit DrawableMaskIndicesChanged(edit.name, value.value<QVector<int>>());
     }
-    if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
+    RefreshSelection();
 }
 
 void CInspectorPanel::ClearHistory()

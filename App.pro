@@ -35,6 +35,10 @@ OBJECTS_DIR = $${OUTPUTDIR}/objs
 DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
+    live2dstruct/cparentgraph.cpp \
+    live2dstruct/cblendshaperelations.cpp \
+    ui/cmodelhierarchymodel.cpp \
+    ui/cmodelhierarchyview.cpp \
     live2d/cdeformerdrag.cpp \
     live2dstruct/ccanvasgeometry.cpp \
     live2dstruct/cdraworder.cpp \
@@ -242,6 +246,10 @@ SOURCES += \
     cmo3/ccmo3builder.cpp \
 
 HEADERS += \
+    live2dstruct/cparentgraph.h \
+    live2dstruct/cblendshaperelations.h \
+    ui/cmodelhierarchymodel.h \
+    ui/cmodelhierarchyview.h \
     live2d/cdeformerdrag.h \
     live2dstruct/ccanvasgeometry.h \
     live2dstruct/cdraworder.h \

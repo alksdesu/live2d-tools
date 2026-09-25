@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
 #include <QTemporaryDir>
 #include <QXmlStreamReader>
 #include <QtEndian>
@@ -114,12 +115,163 @@ void writeFloat(QByteArray& bytes, int offset, float value)
     std::memcpy(&bits, &value, sizeof(bits));
     qToLittleEndian<quint32>(bits, reinterpret_cast<uchar*>(bytes.data() + offset));
 }
+
+QMap<QString, bool> sourceVisibility(const live2dstruct::CSectionTable& table)
+{
+    QMap<QString, bool> result;
+    for (const auto* part : table.parts) result.insert("part|" + part->ids, part->is_visible);
+    for (const auto* mesh : table.art_meshes) result.insert("artmesh|" + mesh->ids, mesh->is_visible);
+    for (const auto* deformer : table.deformers)
+        result.insert((deformer->types == 0 ? QStringLiteral("warp|") : QStringLiteral("rotation|")) +
+                      deformer->ids, deformer->is_visible);
+    return result;
+}
+
+QMap<QString, bool> exportedVisibility(const ExportXml& xml)
+{
+    QMap<QString, bool> result;
+    for (int index = 0; index < xml.nodes.size(); ++index) {
+        const QString tag = xml.nodes[index].tag;
+        const QString type = tag == "CPartSource" ? QStringLiteral("part") :
+            tag == "CArtMeshSource" ? QStringLiteral("artmesh") :
+            tag == "CWarpDeformerSource" ? QStringLiteral("warp") :
+            tag == "CRotationDeformerSource" ? QStringLiteral("rotation") : QString();
+        if (type.isEmpty() || xml.attribute(index, "xs.id").isEmpty()) continue;
+        const int idParent = type == QLatin1String("part") ? index : xml.field(index, "super");
+        const QString id = xml.attribute(xml.field(idParent, "id"), "idstr");
+        const QString visible = xml.text(xml.field(xml.field(idParent, "super"), "isVisible"));
+        if (!id.isEmpty() && (visible == "true" || visible == "false"))
+            result.insert(type + '|' + id, visible == "true");
+    }
+    return result;
+}
+
+bool visibilityInputs(const QDir& directory, const QByteArray& bytes)
+{
+    auto reader = live2dstruct::CReader::FromBytes(bytes);
+    live2dstruct::CSectionTable table(reader);
+    if (!table.IsValid() || !saveBytes(directory.filePath("fixture.moc3"), bytes)) return false;
+    int atlases = 1;
+    for (const auto* mesh : table.art_meshes) atlases = qMax(atlases, mesh->texture_nos + 1);
+    QJsonArray textures;
+    for (int index = 0; index < atlases; ++index) textures.append("atlas.png");
+    const QJsonObject references{{"Moc", "fixture.moc3"}, {"Textures", textures}};
+    if (!saveBytes(directory.filePath("fixture.model3.json"), QJsonDocument(QJsonObject{{"FileReferences", references}}).toJson())) return false;
+    QImage atlas(32, 32, QImage::Format_ARGB32);
+    atlas.fill(qRgba(80, 130, 180, 255));
+    return atlas.save(directory.filePath("atlas.png"));
+}
 }
 
 class Cmo3DeformerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void originalVisibilitySurvivesCaffExport_data()
+    {
+        QTest::addColumn<QString>("model");
+        for (const char* model : {"Mark", "Natori", "Rice", "Wanko"}) QTest::newRow(model) << QString::fromLatin1(model);
+    }
+
+    void originalVisibilitySurvivesCaffExport()
+    {
+        QFETCH(QString, model);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        const auto expected = sourceVisibility(table);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        QVERIFY(visibilityInputs(QDir(temporary.path()), reader.m_byte));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = temporary.filePath("fixture.moc3");
+        options.outPath = temporary.filePath("original.cmo3");
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        const auto visible = exportedVisibility(xml);
+        for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+            QVERIFY2(visible.contains(it.key()), qPrintable(it.key()));
+            QCOMPARE(visible.value(it.key()), it.value());
+        }
+    }
+
+    void typedVisibilityOverridesSourceAndLegacyIds_data()
+    {
+        QTest::addColumn<QString>("type");
+        QTest::addColumn<int>("mode");
+        for (const char* type : {"part", "artmesh", "warp", "rotation"})
+            for (int mode = 0; mode < 3; ++mode)
+                QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(type).arg(mode))) << QString::fromLatin1(type) << mode;
+    }
+
+    void typedVisibilityOverridesSourceAndLegacyIds()
+    {
+        QFETCH(QString, type);
+        QFETCH(int, mode);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        const auto& offsets = *table.sectionOffsetTable;
+        int warp = -1, rotation = -1;
+        for (int index = 0; index < table.deformers.size(); ++index) {
+            if (table.deformers[index]->types == 0 && warp == -1) warp = index;
+            if (table.deformers[index]->types == 1 && rotation == -1) rotation = index;
+        }
+        QVERIFY(warp >= 0 && rotation >= 0 && !table.parts.isEmpty() && !table.art_meshes.isEmpty());
+        QByteArray bytes = reader.m_byte;
+        const QByteArray shared("SharedVisibility");
+        const auto rename = [&](int offset, int row, const QByteArray& id) {
+            bytes.replace(offset + row * 64, 64, id.leftJustified(64, '\0'));
+        };
+        rename(offsets.parts->ids, 0, shared);
+        rename(offsets.art_meshes->ids, 0, shared);
+        rename(offsets.deformers->ids, type == "rotation" ? rotation : warp, shared);
+        const bool sourceVisible = mode != 0;
+        writeInt(bytes, offsets.parts->is_visible, sourceVisible);
+        writeInt(bytes, offsets.art_meshes->is_visible, sourceVisible);
+        writeInt(bytes, offsets.deformers->is_visible + warp * 4, sourceVisible);
+        writeInt(bytes, offsets.deformers->is_visible + rotation * 4, sourceVisible);
+        auto patchedReader = live2dstruct::CReader::FromBytes(bytes);
+        live2dstruct::CSectionTable patched(patchedReader);
+        QVERIFY(patched.IsValid());
+        auto expected = sourceVisibility(patched);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        QVERIFY(visibilityInputs(QDir(temporary.path()), bytes));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = temporary.filePath("fixture.moc3");
+        options.outPath = temporary.filePath("visibility.cmo3");
+        if (mode == 2) options.hiddenIds.insert(QString::fromUtf8(shared));
+        for (auto it = expected.begin(); it != expected.end(); ++it)
+            it.value() = it.value() && !options.hiddenIds.contains(it.key().mid(it.key().indexOf('|') + 1));
+        const QString key = type + '|' + QString::fromUtf8(shared);
+        options.objectVisibility.insert(key, mode != 1);
+        options.objectVisibility.insert("wrong-type|SharedVisibility", false);
+        expected[key] = mode != 1;
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        const auto visible = exportedVisibility(xml);
+        for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+            QVERIFY2(visible.contains(it.key()), qPrintable(it.key()));
+            QCOMPARE(visible.value(it.key()), it.value());
+        }
+        QFile original(options.mocPath);
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        QCOMPARE(original.readAll(), bytes);
+    }
+
     void invalidCanvasPreservesExistingOutput_data()
     {
         QTest::addColumn<int>("field");

@@ -2,34 +2,45 @@
 #define CBLENDSHAPEPANEL_H
 
 #include <QDockWidget>
-#include <QTableWidget>
-#include <QTreeWidget>
-#include <QMap>
+#include <QSet>
+#include <memory>
 
 class CCidJson;
-class QSlider;
-class QLabel;
+class QTreeWidgetItem;
+namespace live2dstruct { class CModelDocument; }
 
 class CBlendShapePanel : public QDockWidget
 {
     Q_OBJECT
 public:
-    explicit CBlendShapePanel(QWidget *parent = nullptr);
+    explicit CBlendShapePanel(QWidget* parent = nullptr);
+    ~CBlendShapePanel() override;
     void BuildBlendShapes(const QString& mocPath, CCidJson* cid);
+    bool BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
+    void SetDocument(const live2dstruct::CModelDocument* document);
     void SyncParameterValue(const QString& paramId, float value);
+    const QSet<QString>& getBlendShapeParamIds() const;
 
-    // 获取所有 blend shape 关联的参数 ID
-    const QSet<QString>& getBlendShapeParamIds() const { return m_blendShapeParamIds; }
+public slots:
+    void RefreshParameterMetadata();
 
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
+    void ParameterSelected(const QString& id);
+    void ObjectSelected(const QString& id, const QString& type);
 
 private:
-    QTreeWidget* m_tree;
-    QSet<QString> m_blendShapeParamIds;
-    QMap<QString, QSlider*> m_paramSliders;
-    QMap<QString, QLabel*> m_paramValueLabels;
-    QMap<QString, QPair<float, float>> m_paramRanges;
+    struct State;
+    std::unique_ptr<State> CreateState();
+    void ConnectState();
+    void ShowParameterDetails(const QString& id);
+    void ExpandDetails(QTreeWidgetItem* item);
+    void ActivateItem(QTreeWidgetItem* item);
+    void FilterParameters();
+    QString ParameterName(const QString& id) const;
+    std::unique_ptr<State> m_state;
+    const live2dstruct::CModelDocument* m_document = nullptr;
+    bool m_rebuilding = false;
 };
 
-#endif // CBLENDSHAPEPANEL_H
+#endif

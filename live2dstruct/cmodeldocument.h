@@ -154,7 +154,7 @@ struct CModelDrawOrderGroup
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues };
     QString name;
     QString type;
     Field field = Visibility;
@@ -225,6 +225,8 @@ public:
     bool SetPartVisible(const QString& id, bool visible);
     bool SetDeformerVisible(const QString& id, bool visible);
     bool SetDrawableVisible(const QString& id, bool visible);
+    QMap<QString, bool> VisibilityState() const;
+    bool SetVisibilityValues(const QMap<QString, bool>& values);
     bool SetDrawableOpacity(const QString& id, float opacity);
     float DrawableOpacity(const CModelDrawable& drawable) const;
     const QHash<QString, float>& DrawableOpacityOverrides() const { return m_drawableOpacityOverrides; }
@@ -232,6 +234,7 @@ public:
     float DrawableDrawOrder(const CModelDrawable& drawable) const;
     const QHash<QString, int>& DrawableDrawOrderOverrides() const { return m_drawableDrawOrderOverrides; }
     void SetLocked(const QString& type, const QString& id, bool locked);
+    bool SetLockedValues(const QMap<QString, bool>& values);
     void ClearLocked();
     bool IsLocked(const QString& type, const QString& id) const;
     const QSet<QString>& LockedKeys() const { return m_lockedKeys; }

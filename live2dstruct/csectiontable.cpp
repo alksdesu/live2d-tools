@@ -61,6 +61,7 @@ CSectionTable::CSectionTable(CReader& bytes)
     if (!readItems(glue, *sectionOffsetTable->glue, count_info->glue)) return;
     if (!readItems(glue_info, *sectionOffsetTable->glue_info, count_info->glue_info)) return;
     if (!readItems(glue_keyforms, *sectionOffsetTable->glue_keyforms, count_info->glue_keyforms)) return;
+    if (!readItems(blend_shape_constraint_indices, *sectionOffsetTable->blend_shape_constraint_indices, count_info->blend_shape_constraint_indices)) return;
     if (!readItems(blend_shape_constraint_values, *sectionOffsetTable->blend_shape_constraint_values, count_info->blend_shape_constraint_values)) return;
     if (!readItems(blend_shape_constraints, *sectionOffsetTable->blend_shape_constraints, count_info->blend_shape_constraints)) return;
     if (!readItems(blend_shape_keyform_bindings, *sectionOffsetTable->blend_shape_keyform_bindings, count_info->blend_shape_keyform_bindings)) return;

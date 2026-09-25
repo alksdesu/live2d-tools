@@ -300,7 +300,7 @@ QTabBar::tab:selected {
     font-weight: 600;
 }
 
-QTreeWidget, QTreeView, QListWidget, QTableWidget {
+QTreeWidget, QTreeView, CModelHierarchyView, QListWidget, QTableWidget {
     background: @surface@;
     alternate-background-color: @surfaceMuted@;
     border: 1px solid @border@;
@@ -308,33 +308,33 @@ QTreeWidget, QTreeView, QListWidget, QTableWidget {
     outline: none;
 }
 
-QTreeWidget::item, QTreeView::item, QListWidget::item {
+QTreeWidget::item, QTreeView::item, CModelHierarchyView::item, QListWidget::item {
     padding: 6px 8px;
     border-radius: @radiusSmall@;
     margin: 1px 4px;
 }
 
-QTreeWidget::item:hover, QTreeView::item:hover, QListWidget::item:hover {
+QTreeWidget::item:hover, QTreeView::item:hover, CModelHierarchyView::item:hover, QListWidget::item:hover {
     background: @surfaceHover@;
 }
 
-QTreeWidget::item:selected, QTreeView::item:selected, QListWidget::item:selected {
+QTreeWidget::item:selected, QTreeView::item:selected, CModelHierarchyView::item:selected, QListWidget::item:selected {
     background: @accentSoft@;
     color: @accent@;
 }
 
-QTreeWidget::indicator, QTableWidget::indicator {
+QTreeWidget::indicator, CModelHierarchyView::indicator, QTableWidget::indicator {
     width: 14px;
     height: 14px;
 }
 
-QTreeWidget::indicator:checked, QTableWidget::indicator:checked {
+QTreeWidget::indicator:checked, CModelHierarchyView::indicator:checked, QTableWidget::indicator:checked {
     background: @accent@;
     border: 1px solid @accentHover@;
     border-radius: 3px;
 }
 
-QTreeWidget::indicator:unchecked, QTableWidget::indicator:unchecked {
+QTreeWidget::indicator:unchecked, CModelHierarchyView::indicator:unchecked, QTableWidget::indicator:unchecked {
     background: @surface@;
     border: 1px solid @borderStrong@;
     border-radius: 3px;

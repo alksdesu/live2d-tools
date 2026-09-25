@@ -1,6 +1,7 @@
 #include "live2dstruct/tree/c2dtree.h"
 #include <QtTest>
 #include <memory>
+#include <limits>
 #include <type_traits>
 
 using namespace live2dstruct;
@@ -26,12 +27,123 @@ void linkNodes(C2DTreeNode* parent, C2DTreeNode* child)
     parent->AddChild(child);
     child->AddFather(parent);
 }
+
+std::unique_ptr<C2DTree> rotationTree(const QVector<int>& parents, float scale = 1.0f)
+{
+    CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+    CSectionTable table(reader);
+    if (!table.IsValid() || table.deformers.empty() || table.rotation_deformers.empty() ||
+        table.rotation_deformer_keyforms.empty()) return {};
+    const CDeformers prototype = *table.deformers.front();
+    qDeleteAll(table.deformers);
+    table.deformers.clear();
+    qDeleteAll(table.parts);
+    table.parts.clear();
+    qDeleteAll(table.art_meshes);
+    table.art_meshes.clear();
+    qDeleteAll(table.parameters);
+    table.parameters.clear();
+    auto* source = table.rotation_deformers.front();
+    source->base_angles = 0;
+    source->keyform_binding_sources_indices = -1;
+    source->keyform_sources_begin_indices = 0;
+    source->keyform_sources_counts = 1;
+    auto* form = table.rotation_deformer_keyforms.front();
+    form->opacities = 1;
+    form->angles = 0;
+    form->origin_x = form->origin_y = 0;
+    form->scales = scale;
+    form->is_reflect_x = form->is_reflect_y = false;
+    for (int index = 0; index < parents.size(); ++index) {
+        auto node = std::make_unique<CDeformers>(prototype);
+        node->ids = QStringLiteral("R%1").arg(index);
+        node->keyform_binding_sources_indices = -1;
+        node->parent_part_indices = -1;
+        node->parent_deformer_indices = parents[index];
+        node->types = 1;
+        node->specific_sources_indices = 0;
+        table.deformers.push_back(node.release());
+    }
+    return std::make_unique<C2DTree>(table);
+}
 }
 
 class DeformerTreeTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void deepAndWideIdentityTreesKeepEveryNode_data()
+    {
+        QTest::addColumn<bool>("deep");
+        QTest::newRow("deep") << true;
+        QTest::newRow("wide") << false;
+    }
+
+    void deepAndWideIdentityTreesKeepEveryNode()
+    {
+        QFETCH(bool, deep);
+        constexpr int count = 30000;
+        QVector<int> parents(count, 0);
+        parents[0] = -1;
+        if (deep) for (int index = 1; index < count; ++index) parents[index] = index - 1;
+        auto tree = rotationTree(parents);
+        QVERIFY(tree);
+        auto nodes = tree->GetWarpKeys();
+        QCOMPARE(nodes.size(), size_t(count));
+        for (int index = 0; index < count; ++index) {
+            QCOMPARE(nodes[index]->getName(), QStringLiteral("R%1").arg(index));
+            QVERIFY(near(nodes[index]->GetCanvasPositions(), {0, 0}));
+        }
+        auto* root = dynamic_cast<CRotationNode*>(nodes.front());
+        QVERIFY(root);
+        root->GetKeyFormS()[0] = CRotationNodeKeyform(1, 90, 2, 3, 1, false, false);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            nodes = tree->GetWarpKeys();
+            QCOMPARE(nodes.size(), size_t(count));
+            for (auto* node : nodes) QVERIFY(near(node->GetCanvasPositions(), {2, 3}));
+            std::vector<float> world, restored;
+            QVERIFY(nodes.back()->MapToCanvas({1.25f, -2.5f}, world));
+            QVERIFY(near(world, {4.5f, 4.25f}));
+            QVERIFY(nodes.back()->MapFromCanvas(world, restored));
+            QVERIFY(near(restored, {1.25f, -2.5f}));
+        }
+        tree.reset();
+    }
+
+    void invalidParentComponentsDoNotDiscardOtherRoots()
+    {
+        auto tree = rotationTree({-1, 0, 3, 2, 3, -1, 9, 6});
+        QVERIFY(tree);
+        const auto nodes = tree->GetWarpKeys();
+        QCOMPARE(nodes.size(), size_t(3));
+        QCOMPARE(nodes[0]->getName(), QStringLiteral("R0"));
+        QCOMPARE(nodes[1]->getName(), QStringLiteral("R1"));
+        QCOMPARE(nodes[2]->getName(), QStringLiteral("R5"));
+        for (auto* node : nodes) QVERIFY(near(node->GetCanvasPositions(), {0, 0}));
+    }
+
+    void nonidentityChainsKeepPerLayerOverflowAndInverseChecks()
+    {
+        QVector<int> parents(256);
+        for (int index = 0; index < parents.size(); ++index) parents[index] = index - 1;
+        auto tree = rotationTree(parents, 2.0f);
+        QVERIFY(tree);
+        const auto nodes = tree->GetWarpKeys();
+        QCOMPARE(nodes.size(), size_t(256));
+        std::vector<float> values{7, 9};
+        QVERIFY(nodes.back()->MapToCanvas({0, 0}, values));
+        QVERIFY(near(values, {0, 0}));
+        values = {7, 9};
+        QVERIFY(!nodes.back()->MapToCanvas({std::numeric_limits<float>::max(), 0}, values));
+        QVERIFY(near(values, {7, 9}));
+        auto* root = dynamic_cast<CRotationNode*>(nodes.front());
+        QVERIFY(root);
+        root->GetKeyFormS()[0].Setscales(0);
+        tree->GetWarpKeys();
+        QVERIFY(!nodes.back()->MapFromCanvas({0, 0}, values));
+        QVERIFY(near(values, {7, 9}));
+    }
+
     void nestedRotationsKeepLocalKeyformsAndComposeAllParents()
     {
         static_assert(!std::is_copy_constructible_v<C2DTree>);

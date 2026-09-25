@@ -53,36 +53,40 @@ CRotationCoorType::CRotationCoorType(float base_angles, CRotationNodeKeyform& ke
     OriginY = keyform.Getorigin_y();
     m_valid = std::isfinite(base_angles) && std::isfinite(angle) && std::isfinite(Scale) &&
               std::isfinite(OriginX) && std::isfinite(OriginY);
+    if (!m_valid) return;
+    const double radians = qDegreesToRadians(std::remainder(GetAngle_forRotation(), 360.0));
+    m_cosine = std::cos(radians);
+    m_sine = std::sin(radians);
+    m_scaleX = static_cast<double>(Scale) * (isReflectX ? -1.0 : 1.0);
+    m_scaleY = static_cast<double>(Scale) * (isReflectY ? -1.0 : 1.0);
 }
 
 CRotationCoorType::~CRotationCoorType() = default;
 
+bool CRotationCoorType::IsIdentity() const
+{
+    return m_valid && OriginX == 0.0f && OriginY == 0.0f && m_cosine == 1.0 && m_sine == 0.0 &&
+        m_scaleX == 1.0 && m_scaleY == 1.0;
+}
+
 bool CRotationCoorType::transformLocalToCanvas(float* src, float* des, int vet, int offset, int step)
 {
     if (!m_valid) return false;
-    const double radians = qDegreesToRadians(std::remainder(GetAngle_forRotation(), 360.0));
-    const double cosine = std::cos(radians), sine = std::sin(radians);
-    const double scaleX = static_cast<double>(Scale) * (isReflectX ? -1.0 : 1.0);
-    const double scaleY = static_cast<double>(Scale) * (isReflectY ? -1.0 : 1.0);
     return transformPoints(src, des, vet, offset, step,
         [&](double x, double y, double& outputX, double& outputY) {
-            outputX = cosine * scaleX * x - sine * scaleY * y + OriginX;
-            outputY = sine * scaleX * x + cosine * scaleY * y + OriginY;
+            outputX = m_cosine * m_scaleX * x - m_sine * m_scaleY * y + OriginX;
+            outputY = m_sine * m_scaleX * x + m_cosine * m_scaleY * y + OriginY;
         });
 }
 
 bool CRotationCoorType::transformCanvasToLocal(float* src, float* des, int vet)
 {
     if (!m_valid || Scale == 0.0f) return false;
-    const double radians = qDegreesToRadians(std::remainder(GetAngle_forRotation(), 360.0));
-    const double cosine = std::cos(radians), sine = std::sin(radians);
-    const double scaleX = static_cast<double>(Scale) * (isReflectX ? -1.0 : 1.0);
-    const double scaleY = static_cast<double>(Scale) * (isReflectY ? -1.0 : 1.0);
     return transformPoints(src, des, vet, 0, 2,
         [&](double x, double y, double& outputX, double& outputY) {
             const double dx = x - OriginX, dy = y - OriginY;
-            outputX = (cosine * dx + sine * dy) / scaleX;
-            outputY = (-sine * dx + cosine * dy) / scaleY;
+            outputX = (m_cosine * dx + m_sine * dy) / m_scaleX;
+            outputY = (-m_sine * dx + m_cosine * dy) / m_scaleY;
         });
 }
 

@@ -5,6 +5,7 @@
 #include "ccanvasgeometry.h"
 #include "ckeyformbindinggrid.h"
 #include "cmocpreviewbuilder.h"
+#include "cparentgraph.h"
 #include "util/cfilereader.h"
 #include "struct/cart_mesh_keyforms.h"
 #include <QHash>
@@ -12,6 +13,7 @@
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
+#include <exception>
 #include <type_traits>
 #include <limits>
 #include <utility>
@@ -598,57 +600,30 @@ QSet<QString> CModelDocument::HiddenDeformerDrawables() const
 
 bool CModelDocument::SetDeformerParentIndex(const QString& id, int parentIndex)
 {
-    int deformerIndex = -1;
-    for (int i = 0; i < m_deformers.size(); ++i) {
-        if (m_deformers[i].id == id) { deformerIndex = i; break; }
-    }
-    if (deformerIndex < 0) return false;
-    if (parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex) return false;
-    if (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
-        m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex) return false;
-    QVector<int> states(m_deformers.size(), 0);
-    int current = parentIndex;
-    while (current >= 0) {
-        if (current >= m_deformers.size() || states[current] == 1) return false;
-        if (current == deformerIndex) return false;
-        states[current] = 1;
-        current = DeformerParentIndex(m_deformers[current].id);
-    }
-    m_deformerParentOverrides.insert(id, parentIndex);
-    ++m_revision;
-    return true;
+    return SetDeformerParentIndices({{id, parentIndex}});
 }
 
 bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents)
 {
-    QHash<QString, int> candidate = m_deformerParentOverrides;
+    QHash<QString, int> indices;
+    for (int index = 0; index < m_deformers.size(); ++index)
+        if (!indices.contains(m_deformers.at(index).id)) indices.insert(m_deformers.at(index).id, index);
+    auto candidate = m_deformerParentOverrides;
     for (auto it = parents.cbegin(); it != parents.cend(); ++it) {
-        int deformerIndex = -1;
-        for (int i = 0; i < m_deformers.size(); ++i) {
-            if (m_deformers[i].id == it.key()) { deformerIndex = i; break; }
-        }
-        const int parentIndex = it.value();
-        if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
-            (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
-             m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
-            return false;
-        }
-        candidate.insert(it.key(), parentIndex);
+        const int index = indices.value(it.key(), -1);
+        const int parent = it.value();
+        if (index < 0 || parent < -1 || parent >= m_deformers.size() || parent == index ||
+            (parent >= 0 && parent != m_deformers.at(index).parentDeformerIndex &&
+             m_deformers.at(parent).parentPartIndex != m_deformers.at(index).parentPartIndex)) return false;
+        candidate.insert(it.key(), parent);
     }
-    const auto parentOf = [&candidate, this](int index) {
-        if (index < 0 || index >= m_deformers.size()) return -1;
-        return candidate.value(m_deformers[index].id, m_deformers[index].parentDeformerIndex);
-    };
-    for (auto it = parents.cbegin(); it != parents.cend(); ++it) {
-        int current = it.value();
-        QSet<int> visited;
-        while (current >= 0) {
-            if (current >= m_deformers.size() || visited.contains(current)) return false;
-            visited.insert(current);
-            current = parentOf(current);
-        }
-    }
-    m_deformerParentOverrides = candidate;
+    QVector<int> effective;
+    effective.reserve(m_deformers.size());
+    for (const auto& deformer : m_deformers) effective.append(candidate.value(deformer.id, deformer.parentDeformerIndex));
+    const CParentGraph graph(effective);
+    for (auto it = parents.cbegin(); it != parents.cend(); ++it)
+        if (!graph.IsValid(indices.value(it.key(), -1))) return false;
+    m_deformerParentOverrides.swap(candidate);
     ++m_revision;
     return true;
 }
@@ -783,6 +758,61 @@ bool CModelDocument::SetDrawableVisible(const QString& id, bool visible)
     return false;
 }
 
+QMap<QString, bool> CModelDocument::VisibilityState() const
+{
+    QMap<QString, bool> result;
+    for (const auto& part : m_parts) result.insert(QStringLiteral("part|") + part.id, part.visible);
+    for (const auto& mesh : m_drawables) result.insert(QStringLiteral("artmesh|") + mesh.id, mesh.visible);
+    for (const auto& deformer : m_deformers)
+        result.insert((deformer.type == CModelDeformer::Warp ? QStringLiteral("warp|") : QStringLiteral("rotation|")) +
+                      deformer.id, deformer.visible);
+    return result;
+}
+
+bool CModelDocument::SetVisibilityValues(const QMap<QString, bool>& values)
+{
+    if (values.isEmpty()) return false;
+    try {
+        struct Change { int kind; int index; bool visible; };
+        QVector<Change> changes;
+        QSet<QString> matched;
+        const auto collect = [&](int kind, int index, const QString& prefix, const QString& id) {
+            const QString key = prefix + id;
+            const auto value = values.constFind(key);
+            if (value == values.cend()) return true;
+            if (id.isEmpty() || matched.contains(key)) return false;
+            matched.insert(key);
+            changes.append({kind, index, value.value()});
+            return true;
+        };
+        for (int index = 0; index < m_parts.size(); ++index)
+            if (!collect(0, index, QStringLiteral("part|"), m_parts.at(index).id)) return false;
+        for (int index = 0; index < m_drawables.size(); ++index)
+            if (!collect(1, index, QStringLiteral("artmesh|"), m_drawables.at(index).id)) return false;
+        for (int index = 0; index < m_deformers.size(); ++index) {
+            const auto& deformer = m_deformers.at(index);
+            if (!collect(2, index, deformer.type == CModelDeformer::Warp ? QStringLiteral("warp|") : QStringLiteral("rotation|"),
+                         deformer.id)) return false;
+        }
+        if (matched.size() != values.size()) return false;
+        auto parts = m_parts;
+        auto meshes = m_drawables;
+        auto deformers = m_deformers;
+        for (const auto& change : changes) {
+            if (change.kind == 0) parts[change.index].visible = change.visible;
+            else if (change.kind == 1) meshes[change.index].visible = change.visible;
+            else deformers[change.index].visible = change.visible;
+        }
+        m_parts.swap(parts);
+        m_drawables.swap(meshes);
+        m_deformers.swap(deformers);
+        ++m_revision;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 bool CModelDocument::SetDrawableOpacity(const QString& id, float opacity)
 {
     if (!std::isfinite(opacity)) return false;
@@ -833,6 +863,27 @@ void CModelDocument::ClearLocked()
     m_lockedKeys.clear();
 }
 
+bool CModelDocument::SetLockedValues(const QMap<QString, bool>& values)
+{
+    if (values.isEmpty()) return false;
+    try {
+        const auto objects = VisibilityState();
+        auto candidate = m_lockedKeys;
+        for (auto it = values.cbegin(); it != values.cend(); ++it) {
+            const int separator = it.key().indexOf(QLatin1Char('|'));
+            if (separator <= 0 || separator == it.key().size() - 1 || !objects.contains(it.key())) return false;
+            if (it.value()) candidate.insert(it.key());
+            else candidate.remove(it.key());
+        }
+        if (candidate == m_lockedKeys) return true;
+        m_lockedKeys.swap(candidate);
+        ++m_revision;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 bool CModelDocument::IsLocked(const QString& type, const QString& id) const
 {
     return m_lockedKeys.contains(type + QLatin1Char('|') + id);
@@ -841,6 +892,20 @@ bool CModelDocument::IsLocked(const QString& type, const QString& id) const
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
     const QVariant& value = forward ? edit.after : edit.before;
+    if (edit.field == CModelEdit::VisibilityValues) {
+        if (edit.type != QLatin1String("objects") || !edit.before.canConvert<QMap<QString, bool>>() ||
+            !edit.after.canConvert<QMap<QString, bool>>()) return false;
+        const auto before = edit.before.value<QMap<QString, bool>>();
+        const auto after = edit.after.value<QMap<QString, bool>>();
+        if (before.isEmpty() || before.size() != after.size()) return false;
+        const auto current = VisibilityState();
+        auto next = after.cbegin();
+        for (auto previous = before.cbegin(); previous != before.cend(); ++previous, ++next) {
+            if (previous.key() != next.key() || !current.contains(previous.key()) ||
+                current.value(previous.key()) != (forward ? previous.value() : next.value())) return false;
+        }
+        return SetVisibilityValues(forward ? after : before);
+    }
     if (edit.field == CModelEdit::Visibility) {
         const bool visible = value.toBool();
         if (edit.type == QLatin1String("part")) return SetPartVisible(edit.name, visible);
@@ -1153,7 +1218,8 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("ArtMesh 索引数量不是三角形的倍数"), i});
         }
         QSet<int> maskIndices;
-        for (int mask : DrawableMaskIndices(drawable.id)) {
+        const auto masks = m_drawableMaskIndexOverrides.constFind(drawable.id);
+        for (int mask : masks == m_drawableMaskIndexOverrides.cend() ? drawable.maskIndices : masks.value()) {
             if (!inRange(mask, m_drawables.size())) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_range"),
                                      QStringLiteral("Clipping mask 索引越界"), i});
@@ -1333,11 +1399,19 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             unique.insert(maskIndex);
         }
     }
-    for (auto parentIt = m_deformerParentOverrides.cbegin(); parentIt != m_deformerParentOverrides.cend(); ++parentIt) {
-        int deformerIndex = -1;
-        for (int i = 0; i < m_deformers.size(); ++i) {
-            if (m_deformers[i].id == parentIt.key()) { deformerIndex = i; break; }
+    QHash<QString, int> deformerIndices;
+    QVector<int> effectiveParents;
+    if (!m_deformerParentOverrides.isEmpty()) {
+        effectiveParents.reserve(m_deformers.size());
+        for (int index = 0; index < m_deformers.size(); ++index) {
+            const auto& deformer = m_deformers[index];
+            if (!deformerIndices.contains(deformer.id)) deformerIndices.insert(deformer.id, index);
+            effectiveParents.append(m_deformerParentOverrides.value(deformer.id, deformer.parentDeformerIndex));
         }
+    }
+    const CParentGraph effectiveGraph(effectiveParents);
+    for (auto parentIt = m_deformerParentOverrides.cbegin(); parentIt != m_deformerParentOverrides.cend(); ++parentIt) {
+        const int deformerIndex = deformerIndices.value(parentIt.key(), -1);
         const int parentIndex = parentIt.value();
         if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
             (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
@@ -1346,17 +1420,9 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("变形器父级覆盖无效：%1").arg(parentIt.key()), -1});
             continue;
         }
-        QSet<int> visited;
-        int current = parentIndex;
-        while (current >= 0 && current < m_deformers.size()) {
-            if (current == deformerIndex || visited.contains(current)) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent_cycle"),
-                                     QStringLiteral("变形器父级覆盖形成循环：%1").arg(parentIt.key()), -1});
-                break;
-            }
-            visited.insert(current);
-            current = DeformerParentIndex(m_deformers[current].id);
-        }
+        if (!effectiveGraph.IsValid(deformerIndex))
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent_cycle"),
+                                 QStringLiteral("变形器父级覆盖存在循环或无效祖先：%1").arg(parentIt.key()), -1});
     }
     for (auto invertIt = m_drawableMaskInvertedOverrides.cbegin(); invertIt != m_drawableMaskInvertedOverrides.cend(); ++invertIt) {
         bool found = false;

@@ -2,19 +2,21 @@
 #define CMODELTREEPANEL_H
 
 #include <QDockWidget>
-#include <QTreeWidget>
-#include <QTabWidget>
 #include <QMap>
-#include <QLineEdit>
+#include <QModelIndex>
+#include <QStringList>
 
 class CCidJson;
-namespace live2dstruct { class CSectionTable; }
+class QTabWidget;
+class QLineEdit;
+class CModelHierarchyModel;
+class CModelHierarchyView;
 
 class CModelTreePanel : public QDockWidget
 {
     Q_OBJECT
 public:
-    explicit CModelTreePanel(QWidget *parent = nullptr);
+    explicit CModelTreePanel(QWidget* parent = nullptr);
     void BuildTree(const QString& mocPath, CCidJson* cid);
     bool BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
     QMap<QString, bool> VisibilityState() const;
@@ -34,35 +36,28 @@ signals:
     void WarpSelected(const QString& artName);
     void ShowDeformers(const QStringList& names);
     void ShowDeformerMeshes(const QStringList& artMeshNames);
-    void DeformerDragParamsChanged(const QStringList& paramIds, const QList<float>& minVals, const QList<float>& maxVals, const QList<float>& defaultVals);
+    void DeformerDragParamsChanged(const QStringList& paramIds, const QList<float>& minVals,
+                                   const QList<float>& maxVals, const QList<float>& defaultVals);
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
+    void VisibilityBatchChanged(const QMap<QString, bool>& values);
     void ObjectLockChanged(const QString& name, const QString& type, bool locked);
+    void LocksBatchChanged(const QMap<QString, bool>& values);
 
 private:
-    void BuildTreeData(const live2dstruct::CSectionTable& section, CCidJson* cid);
-    void setupPartTree(QTreeWidget* tree);
-    void setupDeformerTree(QTreeWidget* tree);
-    void onPartItemChanged(QTreeWidgetItem* item, int column);
-    void onDeformerItemChanged(QTreeWidgetItem* item, int column);
-    void setChildrenChecked(QTreeWidgetItem* item, Qt::CheckState state);
-    void setItemLocked(QTreeWidgetItem* item, bool locked);
+    void InstallInteractions(CModelHierarchyView* view, CModelHierarchyModel* model, bool deformerTab);
+    void PublishVisibility(const QMap<QString, bool>& requested);
+    void PublishLocks(const QMap<QString, bool>& requested);
+    void EmitSelection(CModelHierarchyView* view);
+    void SelectObjects(const QModelIndex& part, const QModelIndex& deformer,
+                       const QString& id, const QString& type);
+    void ShowContextMenu(CModelHierarchyView* view, const QPoint& position);
 
-    // 从节点收集所有子变形器名称
-    QStringList collectDeformerNames(QTreeWidgetItem* item);
-
-    QTabWidget* m_tabWidget;
+    QTabWidget* m_tabWidget = nullptr;
     QLineEdit* m_search = nullptr;
-    QTreeWidget* m_partTree;
-    QTreeWidget* m_deformerTree;
-    // 变形器 → 其下所有 ArtMesh 名称（含子变形器的）
-    QMap<QString, QStringList> m_deformerToArtMeshes;
-    // 变形器 → 绑定的参数信息
-    struct DeformerParamInfo {
-        QStringList paramIds;
-        QList<float> minVals, maxVals, defaultVals;
-    };
-    QMap<QString, DeformerParamInfo> m_deformerToParams;
-    bool m_updatingChecks = false;
+    CModelHierarchyView* m_partTree = nullptr;
+    CModelHierarchyView* m_deformerTree = nullptr;
+    CModelHierarchyModel* m_partModel = nullptr;
+    CModelHierarchyModel* m_deformerModel = nullptr;
 };
 
-#endif // CMODELTREEPANEL_H
+#endif

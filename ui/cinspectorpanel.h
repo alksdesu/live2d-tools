@@ -4,6 +4,7 @@
 #include <QDockWidget>
 #include <QSet>
 #include <QVector>
+#include <QMap>
 #include <functional>
 
 namespace live2dstruct {
@@ -47,6 +48,7 @@ public slots:
 
 signals:
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
+    void VisibilityBatchChanged(const QMap<QString, bool>& values);
     void DrawableOpacityChanged(const QString& name, float opacity);
     void DrawableDrawOrderChanged(const QString& name, int drawOrder);
     void DrawableKeyformPositionsChanged(const QString& name, int keyformIndex, const QVector<float>& positions);

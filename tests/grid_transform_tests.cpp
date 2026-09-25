@@ -3,6 +3,8 @@
 #include <QtTest>
 #include <array>
 #include <limits>
+#include <type_traits>
+#include <utility>
 
 using namespace live2dstruct;
 
@@ -10,6 +12,33 @@ class GridTransformTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void preparedWarpOwnsItsGridAndSupportsRepeatedQueries()
+    {
+        static_assert(std::is_same_v<decltype(std::declval<const CWarpCoorType&>().GetPositions()),
+                                     const std::vector<float>&>);
+        std::vector<float> controls{10, 20, 12, 20, 10, 24, 12, 24};
+        CWarpCoorType warp(1, 1, controls, true);
+        CWarpCoorType copy = warp;
+        controls.assign(8, std::numeric_limits<float>::quiet_NaN());
+        for (int repeat = 0; repeat < 1000; ++repeat) {
+            float points[]{0.25f, 0.75f};
+            QVERIFY(warp.transformLocalToCanvas(points, points, 1, 0, 2));
+            QCOMPARE(points[0], 10.5f);
+            QCOMPARE(points[1], 23.0f);
+            QVERIFY(copy.transformCanvasToLocal(points, points, 1));
+            QCOMPARE(points[0], 0.25f);
+            QCOMPARE(points[1], 0.75f);
+        }
+        QVERIFY(warp.GetPositions() == std::vector<float>({10, 20, 12, 20, 10, 24, 12, 24}));
+        CWarpCoorType invalid(1, 1, controls, true);
+        controls.assign({0, 0, 1, 0, 0, 1, 1, 1});
+        float input[]{0.5f, 0.5f}, preserved[]{7, 9};
+        QVERIFY(!invalid.transformLocalToCanvas(input, preserved, 1, 0, 2));
+        QVERIFY(!invalid.transformCanvasToLocal(input, preserved, 1));
+        QCOMPARE(preserved[0], 7.0f);
+        QCOMPARE(preserved[1], 9.0f);
+    }
+
     void warpRoundTrip_data()
     {
         QTest::addColumn<bool>("quad");

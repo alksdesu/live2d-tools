@@ -3,12 +3,10 @@
 #include <limits>
 
 namespace live2dstruct {
-CWarpCoorType::CWarpCoorType(int Col, int Row, std::vector<float> &positions, bool isQuadTransform)
+CWarpCoorType::CWarpCoorType(int Col, int Row, const std::vector<float>& positions, bool isQuadTransform)
+    : Col(Col), Row(Row), Positions(positions), isQuadTransform(isQuadTransform),
+      m_grid(QRectF(0, 0, 1, 1), Positions, Col, Row)
 {
-    this->Col = Col;
-    this->Row = Row;
-    this->Positions = positions;
-    this->isQuadTransform = isQuadTransform;
 }
 
 CWarpCoorType::~CWarpCoorType()
@@ -26,7 +24,7 @@ int CWarpCoorType::GetRow()
     return Row;
 }
 
-std::vector<float>& CWarpCoorType::GetPositions()
+const std::vector<float>& CWarpCoorType::GetPositions() const
 {
     return Positions;
 }
@@ -42,8 +40,7 @@ bool CWarpCoorType::transformLocalToCanvas(float* src, float* des, int vetSize, 
     if (vetSize < 0 || vetSize > 1000000 || offset < 0 || step < 2 ||
         (vetSize > 0 && static_cast<qint64>(offset) + static_cast<qint64>(vetSize - 1) * step + 1 >
             std::numeric_limits<int>::max())) return false;
-    const CGridTransform grid(QRectF(0, 0, 1, 1), Positions, Col, Row);
-    if (!grid.IsValid()) return false;
+    if (!m_grid.IsValid()) return false;
     if (vetSize == 0) return true;
     if (!src || !des) return false;
     std::vector<float> input;
@@ -65,7 +62,7 @@ bool CWarpCoorType::transformLocalToCanvas(float* src, float* des, int vetSize, 
     return true;
 }
 
-void CWarpCoorType::transformLocalToCanvas_nation(float* src, float* des, int vetNum, int offset, int step, std::vector<float>& positions, int col, int row, bool IsQuad)
+void CWarpCoorType::transformLocalToCanvas_nation(float* src, float* des, int vetNum, int offset, int step, const std::vector<float>& positions, int col, int row, bool IsQuad)
 {
     const auto coordinate = [&positions](size_t index) { return static_cast<double>(positions[index]); };
     const auto output = [](double value) {
@@ -337,8 +334,7 @@ void CWarpCoorType::transformLocalToCanvas_nation(float* src, float* des, int ve
 
 bool CWarpCoorType::transformCanvasToLocal(float src[], float des[], int len)
 {
-    const CGridTransform grid(QRectF(0, 0, 1, 1), Positions, Col, Row);
-    return grid.inverseTransform(src, 0, des, 0, len, isQuadTransform);
+    return m_grid.inverseTransform(src, 0, des, 0, len, isQuadTransform);
 }
 
 bool CWarpCoorType::Test()

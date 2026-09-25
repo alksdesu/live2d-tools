@@ -32,12 +32,15 @@ public:
     void ClearPreviewValues(const QMap<QString, float>& restoredValues = {}, const QString& preservedParameterId = {});
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
     void RefreshParameterMetadata();
+    bool FocusParameter(const QString& id);
     QMap<QString, float> CurrentValues() const;
+    bool CurrentValue(const QString& id, float& value) const;
 
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
     void HistoryChanged(bool canUndo, bool canRedo);
     void EditRejected(const QString& error);
+    void ParameterMetadataChanged();
 
 public slots:
     void ResetAll();
@@ -83,6 +86,7 @@ private:
     PreEditGuard m_preEditGuard;
     QSet<int> m_rejectedSpinEdits;
     QVector<ParamRow> m_rows;
+    QHash<QWidget*, QToolButton*> m_groupButtons;
     QSet<int> m_userDragging;
     QSet<int> m_changedDrags;
     QSet<int> m_userLocked; // 用户手动修改过的参数，不再被 sync 覆盖

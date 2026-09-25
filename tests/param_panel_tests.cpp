@@ -580,14 +580,76 @@ private slots:
             QVERIFY(!seen.contains(row.paramId));
             seen.insert(row.paramId);
             QCOMPARE(document.Parameters()[row.modelIndex].id, row.paramId);
-            const bool blend = row.paramId == first || row.paramId == second || row.paramId == third;
+            const bool blend = row.paramId == second;
             QCOMPARE(row.blendShape, blend);
             QCOMPARE(row.nameLabel->objectName() == QStringLiteral("blendParamTag"), blend);
         }
-        QCOMPARE(panel.m_rows[0].nameLabel->text(), QStringLiteral("[融合] Third name"));
-        QCOMPARE(panel.m_rows[1].nameLabel->text(), QStringLiteral("[融合] Document name"));
+        QCOMPARE(panel.m_rows[0].nameLabel->text(), QStringLiteral("Third name"));
+        QCOMPARE(panel.m_rows[1].nameLabel->text(), QStringLiteral("Document name"));
         panel.m_search->setText(QStringLiteral("Third name"));
         for (const auto& row : panel.m_rows) QCOMPARE(row.widget->isHidden(), row.paramId != third);
+        panel.show();
+        panel.activateWindow();
+        QApplication::processEvents();
+        auto* group = panel.m_groupButtons.value(panel.m_rows[1].widget->parentWidget());
+        QVERIFY(group);
+        group->setChecked(false);
+        panel.m_search->setText(QStringLiteral("no matching parameter"));
+        const auto before = panel.CurrentValues();
+        const auto revision = document.Revision();
+        QSignalSpy changes(&panel, &CParamPanel::ParamChanged);
+        QSignalSpy history(&panel, &CParamPanel::HistoryChanged);
+        QVERIFY(panel.FocusParameter(first));
+        QVERIFY(group->isChecked());
+        QVERIFY(panel.m_search->text().isEmpty());
+        QVERIFY(panel.m_rows[1].widget->isVisibleTo(&panel));
+        QCOMPARE(panel.CurrentValues(), before);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(changes.size(), 0);
+        QCOMPARE(history.size(), 0);
+        float value = 42;
+        QVERIFY(panel.CurrentValue(first, value));
+        QCOMPARE(value, before.value(first));
+        value = 42;
+        QVERIFY(!panel.CurrentValue(QStringLiteral("missing"), value));
+        QCOMPARE(value, 42.f);
+        QVERIFY(!panel.FocusParameter(QStringLiteral("missing")));
+    }
+
+    void sourceBlendShapeTypeIsRecognizedWithoutCidHints()
+    {
+        QFile file(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QByteArray bytes = file.readAll();
+        const int counts = qFromLittleEndian<qint32>(bytes.constData() + 0x40);
+        const int parameters = qFromLittleEndian<qint32>(bytes.constData() + counts + 5 * 4);
+        QVERIFY(parameters > 1);
+        const int offset = (bytes.size() + 63) & ~63;
+        bytes.append(QByteArray(offset + parameters * 4 - bytes.size(), '\0'));
+        qToLittleEndian<qint32>(offset, bytes.data() + 0x208);
+        qToLittleEndian<qint32>(1, bytes.data() + offset);
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.LoadBytes(bytes, "typed.moc3", &error), qPrintable(error));
+        CParamPanel panel;
+        panel.SetDocument(&document);
+        panel.BuildParams();
+        QCOMPARE(panel.m_rows.size(), parameters);
+        for (int row = 0; row < panel.m_rows.size(); ++row) {
+            QCOMPARE(panel.m_rows[row].blendShape, row == 0);
+            QCOMPARE(panel.m_rows[row].nameLabel->objectName() == QStringLiteral("blendParamTag"), row == 0);
+        }
+        const auto values = panel.CurrentValues();
+        panel.SetPreEditGuard([](QString* issue) { *issue = QStringLiteral("rejected edit"); return false; });
+        panel.ApplyExternalValue(document.Parameters().front().id, 1, true);
+        float actual = 0;
+        QVERIFY(panel.CurrentValue(document.Parameters().front().id, actual));
+        QCOMPARE(actual, values.value(document.Parameters().front().id));
+        QSignalSpy metadata(&panel, &CParamPanel::ParameterMetadataChanged);
+        QSignalSpy changed(&panel, &CParamPanel::ParamChanged);
+        panel.RefreshParameterMetadata();
+        QCOMPARE(metadata.size(), 1);
+        QCOMPARE(changed.size(), 0);
     }
 
     void invalidSourceMetadataNeverReachesWidgetsOrRuntime()

@@ -78,6 +78,7 @@ private:
     void UndoDocumentEdit();
     void RedoDocumentEdit();
     void ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward);
+    void ApplyVisibilityValues(const QMap<QString, bool>& values);
     void SetWorkspaceMode(int mode);
 
 

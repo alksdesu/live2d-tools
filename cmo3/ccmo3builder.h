@@ -4,6 +4,7 @@
 #include <QString>
 #include <QSet>
 #include <QHash>
+#include <QMap>
 #include <QVector>
 #include "live2dstruct/cmodeldocument.h"
 
@@ -29,6 +30,7 @@ public:
         QHash<QString, float> parameterValues;
         QHash<QString, live2dstruct::CModelParameterMetadata> parameterMetadata;
         QSet<QString> hiddenIds;         // 当前会话中隐藏的 Part/Deformer/ArtMesh
+        QMap<QString, bool> objectVisibility;
         QHash<QString, float> drawableOpacityOverrides;
         QHash<QString, int> drawableDrawOrderOverrides;
         QHash<QString, QVector<QVector<float>>> drawableKeyformPositionOverrides;

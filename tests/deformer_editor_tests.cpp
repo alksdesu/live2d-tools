@@ -14,7 +14,9 @@
 #include <QSignalSpy>
 #include <QTableWidget>
 #include <QTemporaryDir>
-#include <QTreeWidgetItemIterator>
+#include "ui/cmodelhierarchymodel.h"
+#include "ui/cmodelhierarchyview.h"
+#include <QItemSelectionModel>
 #include <QtEndian>
 #include <algorithm>
 #include <limits>
@@ -160,41 +162,37 @@ struct Editor
     }
 };
 
-QTreeWidgetItem* item(QTreeWidget* tree, const QString& id, const QString& type)
+QModelIndex item(CModelHierarchyView* tree, const QString& id, const QString& type)
 {
-    for (QTreeWidgetItemIterator it(tree); *it; ++it)
-        if ((*it)->data(0, Qt::UserRole).toString() == id && (*it)->data(0, Qt::UserRole + 1).toString() == type) return *it;
-    return nullptr;
+    auto* model = qobject_cast<CModelHierarchyModel*>(tree->model());
+    return model ? model->IndexForObject(id, type) : QModelIndex();
 }
 
-QTreeWidgetItem* deformerAncestor(QTreeWidgetItem* value)
+QModelIndex deformerAncestor(QModelIndex value)
 {
-    for (auto* parent = value ? value->parent() : nullptr; parent; parent = parent->parent()) {
-        const auto type = parent->data(0, Qt::UserRole + 1).toString();
+    for (auto parent = value.parent(); parent.isValid(); parent = parent.parent()) {
+        const auto type = parent.data(Qt::UserRole + 1).toString();
         if (type == QLatin1String("warp") || type == QLatin1String("rotation")) return parent;
     }
-    return nullptr;
+    return {};
 }
 
-QTreeWidget* partTree(CModelTreePanel& panel)
+CModelHierarchyView* partTree(CModelTreePanel& panel)
 {
-    for (auto* tree : panel.findChildren<QTreeWidget*>())
-        for (QTreeWidgetItemIterator it(tree); *it; ++it)
-            if ((*it)->data(0, Qt::UserRole + 1).toString() == QLatin1String("artmesh")) return tree;
-    return nullptr;
+    return panel.findChild<CModelHierarchyView*>("partHierarchy");
 }
 
 QStringList treeSnapshot(CModelTreePanel& panel)
 {
     QStringList result;
-    for (auto* tree : panel.findChildren<QTreeWidget*>()) {
+    for (auto* tree : panel.findChildren<CModelHierarchyView*>()) {
         result.append(QStringLiteral("tree"));
-        for (QTreeWidgetItemIterator it(tree); *it; ++it) {
-            QStringList path;
-            for (auto* node = *it; node; node = node->parent())
-                path.prepend(node->data(0, Qt::UserRole + 1).toString() + '|' + node->data(0, Qt::UserRole).toString());
-            result.append(path.join('/') + QStringLiteral(":%1:%2:%3").arg((*it)->isSelected())
-                          .arg((*it)->isExpanded()).arg(int((*it)->checkState(0))));
+        auto* model = qobject_cast<CModelHierarchyModel*>(tree->model());
+        for (const auto& index : model->Indices()) {
+            const auto parent = index.parent();
+            result.append(CModelHierarchyModel::Key(index) + '/' + CModelHierarchyModel::Key(parent) +
+                          QStringLiteral(":%1:%2:%3").arg(tree->selectionModel()->isSelected(index))
+                          .arg(tree->isExpanded(index)).arg(index.data(Qt::CheckStateRole).toInt()));
         }
     }
     return result;
@@ -269,19 +267,20 @@ class DeformerEditorTests : public QObject
         panel.HighlightObject(target.id, typeOf(target));
         panel.ApplyLockedState({{typeOf(target) + '|' + target.id, true}});
         panel.ApplyVisibilityState({{QStringLiteral("artmesh|") + document.Drawables().front().id, false}});
-        const auto trees = panel.findChildren<QTreeWidget*>();
+        const auto trees = panel.findChildren<CModelHierarchyView*>();
         QCOMPARE(trees.size(), 2);
         auto* hierarchy = partTree(panel);
         QVERIFY(hierarchy);
         auto* deformers = trees[0] == hierarchy ? trees[1] : trees[0];
-        auto* targetItem = item(deformers, target.id, typeOf(target));
-        QVERIFY(targetItem);
+        auto targetItem = item(deformers, target.id, typeOf(target));
+        QVERIFY(targetItem.isValid());
         const auto snapshot = treeSnapshot(panel);
         const auto locks = panel.LockedState();
         const auto visibility = panel.VisibilityState();
         QSignalSpy meshes(&panel, &CModelTreePanel::ShowDeformerMeshes);
         QSignalSpy parameters(&panel, &CModelTreePanel::DeformerDragParamsChanged);
-        QVERIFY(QMetaObject::invokeMethod(deformers, "itemClicked", Q_ARG(QTreeWidgetItem*, targetItem), Q_ARG(int, 0)));
+        deformers->selectionModel()->setCurrentIndex(targetItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformers, "clicked", Q_ARG(QModelIndex, targetItem)));
         QCOMPARE(meshes.size(), 1);
         QCOMPARE(parameters.size(), 1);
         const auto meshMapping = meshes.takeFirst();
@@ -313,7 +312,8 @@ class DeformerEditorTests : public QObject
         QCOMPARE(selections.size(), 0);
         QCOMPARE(checked.size(), 0);
         QCOMPARE(locked.size(), 0);
-        QVERIFY(QMetaObject::invokeMethod(deformers, "itemClicked", Q_ARG(QTreeWidgetItem*, targetItem), Q_ARG(int, 0)));
+        deformers->selectionModel()->setCurrentIndex(targetItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformers, "clicked", Q_ARG(QModelIndex, targetItem)));
         QCOMPARE(meshes.size(), 1);
         QCOMPARE(parameters.size(), 1);
         QCOMPARE(meshes.first(), meshMapping);
@@ -446,16 +446,17 @@ private slots:
         QString error;
         QVERIFY2(panel.BuildTreeBytes(bytes, nullptr, &error), qPrintable(error));
         QVERIFY(partTree(panel));
-        const auto trees = panel.findChildren<QTreeWidget*>();
+        const auto trees = panel.findChildren<CModelHierarchyView*>();
         QCOMPARE(trees.size(), 2);
         auto* deformerTree = trees[0] == partTree(panel) ? trees[1] : trees[0];
         const int index = animatedDeformer(document, QStringLiteral("warp"));
         QVERIFY(index >= 0);
         const auto& target = document.Deformers()[index];
-        auto* targetItem = item(deformerTree, target.id, typeOf(target));
-        QVERIFY(targetItem);
+        auto targetItem = item(deformerTree, target.id, typeOf(target));
+        QVERIFY(targetItem.isValid());
         QSignalSpy parameters(&panel, &CModelTreePanel::DeformerDragParamsChanged);
-        QVERIFY(QMetaObject::invokeMethod(deformerTree, "itemClicked", Q_ARG(QTreeWidgetItem*, targetItem), Q_ARG(int, 0)));
+        deformerTree->selectionModel()->setCurrentIndex(targetItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformerTree, "clicked", Q_ARG(QModelIndex, targetItem)));
         QCOMPARE(parameters.size(), 1);
         QVERIFY(parameters.first()[0].toStringList().isEmpty());
     }
@@ -955,18 +956,19 @@ private slots:
         QVERIFY(!targetMeshes.isEmpty());
         CModelTreePanel panel;
         QVERIFY2(panel.BuildTreeBytes(document.SourceBytes(), nullptr, &error), qPrintable(error));
-        const auto trees = panel.findChildren<QTreeWidget*>();
+        const auto trees = panel.findChildren<CModelHierarchyView*>();
         QCOMPARE(trees.size(), 2);
         auto* hierarchy = partTree(panel);
         QVERIFY(hierarchy);
         auto* deformers = trees[0] == hierarchy ? trees[1] : trees[0];
-        auto* child = item(hierarchy, target.id, typeOf(target));
-        QVERIFY(child && deformerAncestor(child));
-        QCOMPARE(deformerAncestor(child)->data(0, Qt::UserRole).toString(), previousParent.id);
+        auto child = item(hierarchy, target.id, typeOf(target));
+        QVERIFY(child.isValid() && deformerAncestor(child).isValid());
+        QCOMPARE(deformerAncestor(child).data(Qt::UserRole).toString(), previousParent.id);
         QSignalSpy meshes(&panel, &CModelTreePanel::ShowDeformerMeshes);
-        auto* parentItem = item(deformers, previousParent.id, typeOf(previousParent));
-        QVERIFY(parentItem);
-        QVERIFY(QMetaObject::invokeMethod(deformers, "itemClicked", Q_ARG(QTreeWidgetItem*, parentItem), Q_ARG(int, 0)));
+        auto parentItem = item(deformers, previousParent.id, typeOf(previousParent));
+        QVERIFY(parentItem.isValid());
+        deformers->selectionModel()->setCurrentIndex(parentItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformers, "clicked", Q_ARG(QModelIndex, parentItem)));
         QCOMPARE(meshes.size(), 1);
         const auto oldList = meshes.takeFirst()[0].toStringList();
         QCOMPARE(QSet<QString>(oldList.cbegin(), oldList.cend()), before);
@@ -977,11 +979,12 @@ private slots:
         QVERIFY2(panel.BuildTreeBytes(preview, nullptr, &error), qPrintable(error));
         QCOMPARE(selections.size(), 0);
         child = item(hierarchy, target.id, typeOf(target));
-        QVERIFY(child);
-        QVERIFY(!deformerAncestor(child));
+        QVERIFY(child.isValid());
+        QVERIFY(!deformerAncestor(child).isValid());
         parentItem = item(deformers, previousParent.id, typeOf(previousParent));
-        QVERIFY(parentItem);
-        QVERIFY(QMetaObject::invokeMethod(deformers, "itemClicked", Q_ARG(QTreeWidgetItem*, parentItem), Q_ARG(int, 0)));
+        QVERIFY(parentItem.isValid());
+        deformers->selectionModel()->setCurrentIndex(parentItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformers, "clicked", Q_ARG(QModelIndex, parentItem)));
         QCOMPARE(meshes.size(), 1);
         const auto newList = meshes.takeFirst()[0].toStringList();
         QCOMPARE(QSet<QString>(newList.cbegin(), newList.cend()), meshesBelow(document, target.parentDeformerIndex));
@@ -1015,11 +1018,11 @@ private slots:
             QCOMPARE(selections.size(), 1);
             QCOMPARE(selections.takeFirst(), (QList<QVariant>{QStringList{shared}, QStringList{type}}));
             int selected = 0;
-            for (auto* tree : panel.findChildren<QTreeWidget*>())
-                for (auto* value : tree->selectedItems()) {
+            for (auto* tree : panel.findChildren<CModelHierarchyView*>())
+                for (const auto& value : tree->selectionModel()->selectedRows()) {
                     ++selected;
-                    QCOMPARE(value->data(0, Qt::UserRole).toString(), shared);
-                    QCOMPARE(value->data(0, Qt::UserRole + 1).toString(), type);
+                    QCOMPARE(value.data(Qt::UserRole).toString(), shared);
+                    QCOMPARE(value.data(Qt::UserRole + 1).toString(), type);
                 }
             QVERIFY(selected > 0);
         }
@@ -1057,20 +1060,21 @@ private slots:
         panel.HighlightObject(target.id, typeOf(target));
         panel.ApplyLockedState({{typeOf(target) + '|' + target.id, true}});
         panel.ApplyVisibilityState({{QStringLiteral("artmesh|") + document.Drawables().front().id, false}});
-        const auto trees = panel.findChildren<QTreeWidget*>();
+        const auto trees = panel.findChildren<CModelHierarchyView*>();
         QCOMPARE(trees.size(), 2);
         auto* hierarchy = partTree(panel);
         QVERIFY(hierarchy);
         auto* deformers = trees[0] == hierarchy ? trees[1] : trees[0];
-        auto* targetItem = item(deformers, target.id, typeOf(target));
-        QVERIFY(targetItem);
-        targetItem->setExpanded(false);
+        auto targetItem = item(deformers, target.id, typeOf(target));
+        QVERIFY(targetItem.isValid());
+        deformers->setExpanded(targetItem, false);
         const auto snapshot = treeSnapshot(panel);
         const auto locks = panel.LockedState();
         const auto visibility = panel.VisibilityState();
         QSignalSpy meshes(&panel, &CModelTreePanel::ShowDeformerMeshes);
         QSignalSpy parameters(&panel, &CModelTreePanel::DeformerDragParamsChanged);
-        QVERIFY(QMetaObject::invokeMethod(deformers, "itemClicked", Q_ARG(QTreeWidgetItem*, targetItem), Q_ARG(int, 0)));
+        deformers->selectionModel()->setCurrentIndex(targetItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformers, "clicked", Q_ARG(QModelIndex, targetItem)));
         QCOMPARE(meshes.size(), 1);
         QCOMPARE(parameters.size(), 1);
         const auto meshMapping = meshes.takeFirst();
@@ -1126,7 +1130,8 @@ private slots:
         QCOMPARE(selections.size(), 0);
         QCOMPARE(checked.size(), 0);
         QCOMPARE(locked.size(), 0);
-        QVERIFY(QMetaObject::invokeMethod(deformers, "itemClicked", Q_ARG(QTreeWidgetItem*, targetItem), Q_ARG(int, 0)));
+        deformers->selectionModel()->setCurrentIndex(targetItem, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(QMetaObject::invokeMethod(deformers, "clicked", Q_ARG(QModelIndex, targetItem)));
         QCOMPARE(meshes.size(), 1);
         QCOMPARE(parameters.size(), 1);
         QCOMPARE(meshes.first(), meshMapping);

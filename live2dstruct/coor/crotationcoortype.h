@@ -16,6 +16,7 @@ public:
     bool GetisReflectX() const;
     bool GetisReflectY() const;
     float GetCalculatedTotalScale() const;
+    bool IsIdentity() const;
 
     bool transformLocalToCanvas(float* src, float* des, int vet, int offset, int step) override;
     bool transformCanvasToLocal(float* src, float* des, int vet) override;
@@ -30,6 +31,10 @@ private:
     float OriginY = 0.0f;
     float base_angles;
     bool m_valid = false;
+    double m_cosine = 1.0;
+    double m_sine = 0.0;
+    double m_scaleX = 1.0;
+    double m_scaleY = 1.0;
 };
 }
 #endif // CROTATIONCOORTYPE_H

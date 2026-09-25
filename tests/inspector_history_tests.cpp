@@ -25,11 +25,230 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void hiddenSelectionBecomesVisibleWithOneClick()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString first = document.Drawables()[0].id, second = document.Drawables()[1].id;
+        const QMap<QString, bool> hidden{{"artmesh|" + first, false}, {"artmesh|" + second, false}};
+        QVERIFY(document.SetVisibilityValues(hidden));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelections({first, second}, {"artmesh", "artmesh"});
+        auto* check = panel.findChild<QCheckBox*>();
+        QVERIFY(check && check->isEnabled());
+        QCOMPARE(check->checkState(), Qt::Unchecked);
+        QSignalSpy batch(&panel, &CInspectorPanel::VisibilityBatchChanged);
+        const auto revision = document.Revision();
+        check->click();
+        QCOMPARE(check->checkState(), Qt::Checked);
+        QCOMPARE(document.Revision(), revision + 1);
+        QCOMPARE(batch.size(), 1);
+        const QMap<QString, bool> visible{{"artmesh|" + first, true}, {"artmesh|" + second, true}};
+        QCOMPARE((batch[0][0].value<QMap<QString, bool>>()), visible);
+        panel.Undo();
+        QCOMPARE(check->checkState(), Qt::Unchecked);
+        QVERIFY(!document.CanUndoEdit());
+        panel.Redo();
+        QCOMPARE(check->checkState(), Qt::Checked);
+        check->click();
+        QCOMPARE(check->checkState(), Qt::Unchecked);
+        QCOMPARE((batch.last()[0].value<QMap<QString, bool>>()), hidden);
+    }
+
+    void batchVisibilitySkipsLockedItemsAndKeepsMixedState()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QVERIFY(document.Drawables().size() >= 3);
+        const QString locked = document.Drawables()[0].id;
+        const QString editable = document.Drawables()[1].id;
+        const QString visible = document.Drawables()[2].id;
+        QVERIFY(document.SetVisibilityValues({{"artmesh|" + locked, false}, {"artmesh|" + editable, false},
+                                              {"artmesh|" + visible, true}}));
+        document.SetLocked("artmesh", locked, true);
+        const auto original = document.VisibilityState();
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelections({locked, editable, visible}, {"artmesh", "artmesh", "artmesh"});
+        panel.SetLockedState({"artmesh|" + locked});
+        auto* check = panel.findChild<QCheckBox*>();
+        QVERIFY(check && check->isEnabled());
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        auto* opacity = panel.findChild<QDoubleSpinBox*>();
+        auto* order = panel.findChild<QSpinBox*>();
+        QVERIFY(opacity && order);
+        QVERIFY(!opacity->isEnabled());
+        QVERIFY(!order->isEnabled());
+        QSignalSpy batch(&panel, &CInspectorPanel::VisibilityBatchChanged);
+        QSignalSpy single(&panel, &CInspectorPanel::VisibilityChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        const auto revision = document.Revision();
+        check->click();
+        const QMap<QString, bool> changed{{"artmesh|" + editable, true}};
+        auto expected = original;
+        expected["artmesh|" + editable] = true;
+        QCOMPARE(document.VisibilityState(), expected);
+        QCOMPARE(document.Revision(), revision + 1);
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        QCOMPARE(batch.size(), 1);
+        QCOMPARE((batch[0][0].value<QMap<QString, bool>>()), changed);
+        QCOMPARE(single.size(), 0);
+        QCOMPARE(history.size(), 1);
+        check->click();
+        QCOMPARE(document.VisibilityState(), expected);
+        QCOMPARE(document.Revision(), revision + 1);
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        QCOMPARE(batch.size(), 1);
+        QCOMPARE(history.size(), 1);
+        panel.Undo();
+        QCOMPARE(document.VisibilityState(), original);
+        QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        QCOMPARE(batch.size(), 2);
+        const QMap<QString, bool> restored{{"artmesh|" + editable, false}};
+        QCOMPARE((batch[1][0].value<QMap<QString, bool>>()), restored);
+        panel.Redo();
+        QCOMPARE(document.VisibilityState(), expected);
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        QCOMPARE(batch.size(), 3);
+        QCOMPARE((batch[2][0].value<QMap<QString, bool>>()), changed);
+        QCOMPARE(history.size(), 3);
+        QVERIFY(document.IsLocked("artmesh", locked));
+        panel.SetLockedState({"artmesh|" + locked, "artmesh|" + editable, "artmesh|" + visible});
+        QVERIFY(!check->isEnabled());
+        const auto acceptedRevision = document.Revision();
+        check->click();
+        QCOMPARE(document.Revision(), acceptedRevision);
+        QCOMPARE(document.VisibilityState(), expected);
+        QCOMPARE(batch.size(), 3);
+    }
+
+    void mixedTypedVisibilityPublishesOneAtomicBatch()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        auto bytes = document.SourceBytes();
+        const QByteArray shared("VisibilityShared");
+        for (int slot : {0x4c, 0xc4}) {
+            const int offset = qFromLittleEndian<qint32>(bytes.constData() + slot);
+            bytes.replace(offset, 64, shared.leftJustified(64, '\0'));
+        }
+        QVERIFY(document.LoadBytes(bytes, "typed-visibility"));
+        QString warp, rotation;
+        for (const auto& deformer : document.Deformers()) {
+            if (deformer.type == CModelDeformer::Warp && warp.isEmpty()) warp = deformer.id;
+            if (deformer.type == CModelDeformer::Rotation && rotation.isEmpty()) rotation = deformer.id;
+        }
+        QVERIFY(!warp.isEmpty() && !rotation.isEmpty());
+        const QMap<QString, bool> initial{{"part|VisibilityShared", false}, {"artmesh|VisibilityShared", false},
+            {"warp|" + warp, true}, {"rotation|" + rotation, true}};
+        QVERIFY(document.SetVisibilityValues(initial));
+        const auto allBefore = document.VisibilityState();
+        const QMap<QString, bool> before{{"part|VisibilityShared", false}, {"artmesh|VisibilityShared", false}};
+        const QMap<QString, bool> after{{"part|VisibilityShared", true}, {"artmesh|VisibilityShared", true}};
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelections({"VisibilityShared", "VisibilityShared", warp, rotation}, {"part", "artmesh", "warp", "rotation"});
+        auto* check = panel.findChild<QCheckBox*>();
+        QVERIFY(check && check->isEnabled());
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        bool accept = false;
+        int editCalls = 0, historyCalls = 0;
+        CModelEdit submitted;
+        panel.SetEditHandler([&](const CModelEdit& command, QString* error) {
+            ++editCalls;
+            submitted = command;
+            CModelDocument candidate = document;
+            if (!candidate.ExecuteEdit(command)) return false;
+            if (!accept) { *error = "controlled visibility rejection"; return false; }
+            document.CommitCandidate(std::move(candidate));
+            return true;
+        });
+        panel.SetHistoryHandler([&](bool undo, CModelEdit& command, QString* error) {
+            ++historyCalls;
+            CModelDocument candidate = document;
+            if (!(undo ? candidate.UndoEdit(&command) : candidate.RedoEdit(&command))) return false;
+            if (!accept) { *error = "controlled visibility history rejection"; return false; }
+            document.CommitCandidate(std::move(candidate));
+            return true;
+        });
+        QSignalSpy batch(&panel, &CInspectorPanel::VisibilityBatchChanged);
+        QSignalSpy single(&panel, &CInspectorPanel::VisibilityChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        const auto revision = document.Revision();
+        check->click();
+        QCOMPARE(editCalls, 1);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.VisibilityState(), allBefore);
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        QVERIFY(!document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(batch.size(), 0);
+        QCOMPARE(single.size(), 0);
+        QCOMPARE(history.size(), 0);
+        QCOMPARE(rejected.size(), 1);
+        QCOMPARE(submitted.field, CModelEdit::VisibilityValues);
+        QCOMPARE(submitted.type, QStringLiteral("objects"));
+        QCOMPARE((submitted.before.value<QMap<QString, bool>>()), before);
+        QCOMPARE((submitted.after.value<QMap<QString, bool>>()), after);
+
+        accept = true;
+        check->click();
+        QCOMPARE(editCalls, 2);
+        QCOMPARE(document.Revision(), revision + 1);
+        auto allAfter = allBefore;
+        for (auto it = after.cbegin(); it != after.cend(); ++it) allAfter[it.key()] = it.value();
+        QCOMPARE(document.VisibilityState(), allAfter);
+        QCOMPARE(check->checkState(), Qt::Checked);
+        QCOMPARE(batch.size(), 1);
+        QCOMPARE((batch[0][0].value<QMap<QString, bool>>()), after);
+        QCOMPARE(single.size(), 0);
+        QCOMPARE(history.size(), 1);
+        accept = false;
+        panel.Undo();
+        QCOMPARE(historyCalls, 1);
+        QCOMPARE(document.Revision(), revision + 1);
+        QCOMPARE(document.VisibilityState(), allAfter);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(check->checkState(), Qt::Checked);
+        QCOMPARE(batch.size(), 1);
+        QCOMPARE(history.size(), 1);
+        QCOMPARE(rejected.size(), 2);
+        accept = true;
+        panel.Undo();
+        QCOMPARE(document.VisibilityState(), allBefore);
+        QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(check->checkState(), Qt::PartiallyChecked);
+        QCOMPARE(batch.size(), 2);
+        QCOMPARE((batch[1][0].value<QMap<QString, bool>>()), before);
+        panel.Redo();
+        QCOMPARE(document.VisibilityState(), allAfter);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(check->checkState(), Qt::Checked);
+        QCOMPARE(batch.size(), 3);
+        QCOMPARE((batch[2][0].value<QMap<QString, bool>>()), after);
+        QCOMPARE(history.size(), 3);
+        QCOMPARE(single.size(), 0);
+
+        panel.SetSelection("VisibilityShared", "artmesh");
+        check->click();
+        QCOMPARE(single.size(), 1);
+        QCOMPARE(single[0], (QList<QVariant>{QStringLiteral("VisibilityShared"), QStringLiteral("artmesh"), false}));
+        QCOMPARE(batch.size(), 3);
+        QCOMPARE(document.VisibilityState().value("part|VisibilityShared"), true);
+        QCOMPARE(document.VisibilityState().value("artmesh|VisibilityShared"), false);
+    }
+
     void largeFiniteKeyformToolsKeepTheirHistoryAtomic_data()
     {
         QTest::addColumn<QString>("operation");
@@ -1584,10 +1803,10 @@ private slots:
         QCOMPARE(document.Drawables().first().visible, targetVisibility);
         QCOMPARE(document.Drawables().at(1).visible, targetVisibility);
         QVERIFY(visibilityChanges > 0);
-        for (int i = 0; i < visibilityChanges; ++i) panel.Undo();
+        panel.Undo();
         QCOMPARE(document.Drawables().first().visible, firstVisibilityBefore);
         QCOMPARE(document.Drawables().at(1).visible, secondVisibility);
-        for (int i = 0; i < visibilityChanges; ++i) panel.Redo();
+        panel.Redo();
         panel.ClearHistory();
 
         const float firstOpacityBefore = document.DrawableOpacity(document.Drawables().first());

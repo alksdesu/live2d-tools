@@ -315,6 +315,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
 
 void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapeParams)
 {
+    m_groupButtons.clear();
     m_rows.clear();
     m_lastValues.clear();
     m_previewBaseline.clear();
@@ -352,6 +353,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         live2dstruct::CModelParameterMetadata metadata;
         float value = 0;
         bool hasMetadata = false;
+        bool blendShape = false;
     };
     QVector<ParameterSource> parameters;
     const bool documentReady = m_document && m_document->IsLoaded();
@@ -367,7 +369,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
                 value < metadata.minimum || value > metadata.maximum ||
                 metadata.decimalPlaces < 0 || metadata.decimalPlaces > 9) continue;
             parameters.append({parameter.id, index, metadata, value,
-                               m_document->ParameterMetadataOverrides().contains(parameter.id)});
+                               m_document->ParameterMetadataOverrides().contains(parameter.id), parameter.type == 1});
         }
     } else {
         LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
@@ -379,6 +381,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
             ParameterSource parameter;
             parameter.id = QString::fromUtf8(runtime->GetParameterId(index)->GetString().GetRawString());
             parameter.modelIndex = index;
+            parameter.blendShape = runtime->GetParameterType(index) == Live2D::Cubism::Core::csmParameterType_BlendShape;
             parameter.metadata.minimum = runtime->GetParameterMinimumValue(index);
             parameter.metadata.maximum = runtime->GetParameterMaximumValue(index);
             parameter.metadata.defaultValue = runtime->GetParameterDefaultValue(index);
@@ -422,8 +425,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         }
 
         // 融合变形参数标记
-        bool isBlendShape = (blendShapeParams && blendShapeParams->contains(paramId))
-                         || (cid && cid->isCombinedParameter(paramId));
+        const bool isBlendShape = parameter.blendShape || (blendShapeParams && blendShapeParams->contains(paramId));
         if(isBlendShape){
             displayName = QString("[融合] %1").arg(displayName);
         }
@@ -530,6 +532,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
             groupButton->setChecked(true);
             groupButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
             auto* groupBody = new QWidget(m_container);
+            m_groupButtons.insert(groupBody, groupButton);
             auto* groupLayout = new QVBoxLayout(groupBody);
             groupLayout->setContentsMargins(8, 0, 0, 0);
             groupLayout->setSpacing(0);
@@ -577,6 +580,28 @@ void CParamPanel::RefreshParameterMetadata()
 {
     for (int rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex) RefreshParameterRow(rowIndex);
     RefreshXYControls();
+    emit ParameterMetadataChanged();
+}
+
+bool CParamPanel::FocusParameter(const QString& id)
+{
+    const auto found = std::find_if(m_rows.cbegin(), m_rows.cend(), [&](const auto& row) { return row.paramId == id; });
+    if (found == m_rows.cend()) return false;
+    const QPointer<CParamPanel> panel = this;
+    const QPointer<QWidget> widget = found->widget;
+    const QPointer<QDoubleSpinBox> spin = found->spinBox;
+    m_search->clear();
+    if (!panel || !widget || !spin) return false;
+    for (auto* parent = widget->parentWidget(); parent && parent != m_container; parent = parent->parentWidget()) {
+        if (auto* button = m_groupButtons.value(parent, nullptr)) button->setChecked(true);
+        if (!panel || !widget || !spin) return false;
+    }
+    if (m_container->layout()) m_container->layout()->activate();
+    m_scroll->ensureWidgetVisible(widget);
+    spin->setFocus(Qt::OtherFocusReason);
+    if (!panel || !widget || !spin) return false;
+    spin->selectAll();
+    return true;
 }
 
 void CParamPanel::RefreshXYControls()
@@ -697,6 +722,14 @@ QMap<QString, float> CParamPanel::CurrentValues() const
     QMap<QString, float> values;
     for (const ParamRow& row : m_rows) values.insert(row.paramId, m_lastValues.value(row.paramId, row.defaultVal));
     return values;
+}
+
+bool CParamPanel::CurrentValue(const QString& id, float& value) const
+{
+    const auto found = m_lastValues.constFind(id);
+    if (found == m_lastValues.cend()) return false;
+    value = found.value();
+    return true;
 }
 
 void CParamPanel::ApplyValues(const QMap<QString, float>& values)
@@ -860,6 +893,7 @@ void CParamPanel::EditParameterMetadata()
         return;
     }
     RefreshParameterRow(rowIndex);
+    emit ParameterMetadataChanged();
     EmitHistoryState();
 }
 

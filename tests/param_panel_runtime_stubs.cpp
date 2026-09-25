@@ -20,6 +20,7 @@ CubismModel* CubismUserModel::GetModel() const { unexpectedRuntimeAccess(); }
 CubismIdHandle CubismModel::GetParameterId(csmUint32) { unexpectedRuntimeAccess(); }
 csmFloat32 CubismModel::GetParameterValue(csmInt32) { unexpectedRuntimeAccess(); }
 csmInt32 CubismModel::GetParameterCount() const { unexpectedRuntimeAccess(); }
+Core::csmParameterType CubismModel::GetParameterType(csmUint32) const { unexpectedRuntimeAccess(); }
 csmFloat32 CubismModel::GetParameterDefaultValue(csmUint32) const { unexpectedRuntimeAccess(); }
 csmFloat32 CubismModel::GetParameterMaximumValue(csmUint32) const { unexpectedRuntimeAccess(); }
 csmFloat32 CubismModel::GetParameterMinimumValue(csmUint32) const { unexpectedRuntimeAccess(); }

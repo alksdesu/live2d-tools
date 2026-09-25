@@ -25,6 +25,36 @@ class RotationTransformTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void onlyExactIdentityIsEligibleForSkipping()
+    {
+        CRotationNodeKeyform key;
+        CRotationCoorType identity(0, key);
+        QVERIFY(identity.IsIdentity());
+        key.Setangles(360);
+        QVERIFY(CRotationCoorType(0, key).IsIdentity());
+        key.Setangles(0.000001f);
+        QVERIFY(!CRotationCoorType(0, key).IsIdentity());
+        key.Setangles(0);
+        key.Setscales(std::nextafter(1.0f, 2.0f));
+        QVERIFY(!CRotationCoorType(0, key).IsIdentity());
+        key.Setscales(0);
+        QVERIFY(!CRotationCoorType(0, key).IsIdentity());
+        key.Setscales(-1);
+        key.Setis_reflect_x(true);
+        QVERIFY(!CRotationCoorType(0, key).IsIdentity());
+        key.Setis_reflect_y(true);
+        QVERIFY(CRotationCoorType(0, key).IsIdentity());
+        key.Setorigin_x(std::numeric_limits<float>::denorm_min());
+        QVERIFY(!CRotationCoorType(0, key).IsIdentity());
+        key.Setorigin_x(std::numeric_limits<float>::infinity());
+        QVERIFY(!CRotationCoorType(0, key).IsIdentity());
+        QVERIFY(!CRotationCoorType(std::numeric_limits<float>::quiet_NaN(), key).IsIdentity());
+        float values[]{2, -3};
+        QVERIFY(identity.transformLocalToCanvas(values, values, 1, 0, 2));
+        QCOMPARE(values[0], 2.0f);
+        QCOMPARE(values[1], -3.0f);
+    }
+
     void defaultsAndExplicitReflectionAreCopied()
     {
         CRotationNodeKeyform defaults;
