@@ -27,8 +27,8 @@ public:
     }
 
 private:
-    float opacities;
-    float draw_orders;
+    float opacities = 1.0f;
+    float draw_orders = 0.0f;
     std::vector<float>  position;
 
 

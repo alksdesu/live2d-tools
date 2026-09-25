@@ -42,6 +42,36 @@ if(MSVC)
     target_compile_options(model_data PUBLIC /utf-8)
 endif()
 
+add_library(model_coordinates STATIC
+    live2dstruct/coor/ccoordinateframe.cpp
+    live2dstruct/coor/ccoortypeobject.cpp
+    live2dstruct/coor/cgridtransform.cpp
+    live2dstruct/coor/crotationcoortype.cpp
+    live2dstruct/coor/cwarpcoortype.cpp
+    live2dstruct/keyform/ckeyformobject.cpp
+    live2dstruct/keyform/crotationnodekeyform.cpp
+)
+target_include_directories(model_coordinates PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(model_coordinates PUBLIC Qt6::Gui)
+if(MSVC)
+    target_compile_options(model_coordinates PUBLIC /utf-8)
+endif()
+
+add_library(deformer_tree_data STATIC
+    live2dstruct/tree/c2dtree.cpp
+    live2dstruct/tree/c2dtreenode.cpp
+    live2dstruct/tree/cpartsnode.cpp
+    live2dstruct/tree/cparameternode.cpp
+    live2dstruct/tree/cdeformernode.cpp
+    live2dstruct/tree/crotationnode.cpp
+    live2dstruct/tree/cwarpnode.cpp
+    live2dstruct/tree/cartmeshnode.cpp
+    live2dstruct/keyform/cartmeshkeyform.cpp
+    live2dstruct/keyform/cwarpnodekeyform.cpp
+    live2dstruct/keyform/clinearinterpolation.cpp
+)
+target_link_libraries(deformer_tree_data PUBLIC model_coordinates model_data)
+
 add_library(psd_zip STATIC psd/psdSamples/Zip/PsdMiniz.cpp)
 target_include_directories(psd_zip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(psd_zip PROPERTIES AUTOMOC OFF)
@@ -95,18 +125,29 @@ if(BUILD_TESTING)
     add_executable(triangl_mesh_tests tests/triangl_mesh_tests.cpp edit/ctriangl.cpp)
     target_link_libraries(triangl_mesh_tests PRIVATE model_data Qt6::Gui Qt6::Test)
     add_test(NAME triangl_mesh COMMAND triangl_mesh_tests)
-    add_executable(grid_transform_tests tests/grid_transform_tests.cpp
-        live2dstruct/coor/cgridtransform.cpp live2dstruct/coor/cwarpcoortype.cpp
-        live2dstruct/coor/ccoortypeobject.cpp)
-    target_include_directories(grid_transform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(grid_transform_tests PRIVATE Qt6::Gui Qt6::Test)
+    add_executable(grid_transform_tests tests/grid_transform_tests.cpp)
+    target_link_libraries(grid_transform_tests PRIVATE model_coordinates Qt6::Test)
     add_test(NAME grid_transform COMMAND grid_transform_tests)
-    add_executable(rotation_transform_tests tests/rotation_transform_tests.cpp
-        live2dstruct/coor/crotationcoortype.cpp live2dstruct/coor/ccoortypeobject.cpp
-        live2dstruct/keyform/crotationnodekeyform.cpp live2dstruct/keyform/ckeyformobject.cpp)
-    target_include_directories(rotation_transform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(rotation_transform_tests PRIVATE Qt6::Gui Qt6::Test)
+    add_executable(rotation_transform_tests tests/rotation_transform_tests.cpp)
+    target_link_libraries(rotation_transform_tests PRIVATE model_coordinates Qt6::Test)
     add_test(NAME rotation_transform COMMAND rotation_transform_tests)
+    add_executable(coordinate_frame_tests tests/coordinate_frame_tests.cpp)
+    target_link_libraries(coordinate_frame_tests PRIVATE model_coordinates Qt6::Test)
+    add_test(NAME coordinate_frame COMMAND coordinate_frame_tests)
+    add_executable(grid_lines_tests tests/grid_lines_tests.cpp edit/cgridlines.cpp)
+    target_include_directories(grid_lines_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(grid_lines_tests PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME grid_lines COMMAND grid_lines_tests)
+    add_executable(deformer_tree_tests tests/deformer_tree_tests.cpp)
+    target_link_libraries(deformer_tree_tests PRIVATE deformer_tree_data Qt6::Test)
+    target_compile_definitions(deformer_tree_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME deformer_tree COMMAND deformer_tree_tests)
+    add_executable(warp_render_tests tests/warp_render_tests.cpp edit/cdrawobject.cpp
+        edit/cdrawwarp.cpp edit/cgridlines.cpp assets/shaders/shaders.qrc)
+    set_target_properties(warp_render_tests PROPERTIES AUTORCC ON)
+    target_link_libraries(warp_render_tests PRIVATE deformer_tree_data Qt6::OpenGL Qt6::Test)
+    target_compile_definitions(warp_render_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME warp_render COMMAND warp_render_tests)
     add_executable(inspector_history_tests tests/inspector_history_tests.cpp)
     target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp)
     target_link_libraries(inspector_history_tests PRIVATE model_data Qt6::Test Qt6::Widgets)

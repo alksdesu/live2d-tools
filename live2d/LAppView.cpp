@@ -17,6 +17,7 @@
 #include "LAppSprite.hpp"
 #include "LAppModel.hpp"
 #include "QCoreApplication"
+#include <QSet>
 
 using namespace std;
 using namespace LAppDefine;
@@ -49,6 +50,8 @@ LAppView::~LAppView()
     delete m_projection;
     delete m_selectrect;
     delete m_mouseselectrect;
+    qDeleteAll(m_drawWarpMap);
+    m_drawWarpMap.clear();
 
 
 }
@@ -283,13 +286,13 @@ QMatrix4x4 LAppView::GetViewMatrix()
 
 void LAppView::AddWrapKey(CWarpNode* node)
 {
-    if(m_drawWarpMap.contains(node->getName())){
-        CDrawWarp* warp = (CDrawWarp*)m_drawWarpMap[node->getName()];
+    if (auto* warp = dynamic_cast<CDrawWarp*>(m_drawWarpMap.value(node->getName(), nullptr))) {
         warp->Init(node);
 
     }
     else{
-        CDrawWarp* warp = new CDrawWarp();
+        delete m_drawWarpMap.take(node->getName());
+        warp = new CDrawWarp();
         warp->Init(node);
         m_drawWarpMap.insert(node->getName(),warp);
     }
@@ -323,13 +326,12 @@ void LAppView::AddWrapKeyTest(CWarpNode* node)
 
 void LAppView::AddRotationKey(CRotationNode *node)
 {
-    if(m_drawWarpMap.contains(node->getName())){
-
-        CDrawRotation* rotaion = (CDrawRotation*)m_drawWarpMap[node->getName()];
+    if (auto* rotaion = dynamic_cast<CDrawRotation*>(m_drawWarpMap.value(node->getName(), nullptr))) {
         rotaion->Init(node);
 
     }else{
-        CDrawRotation* rotaion = new CDrawRotation();
+        delete m_drawWarpMap.take(node->getName());
+        rotaion = new CDrawRotation();
         rotaion->Init(node);
         m_drawWarpMap.insert(node->getName(),rotaion);
 
@@ -343,7 +345,9 @@ void LAppView::InitWrapAndRotation()
     C2DTree* tree = CTreeManage::GetInstance();
     if (!tree) return;
     std::vector<C2DTreeNode*> m_mapWarpNode = tree->GetWarpKeys();
+    QSet<QString> activeNames;
     for(int i = 0 ;i < m_mapWarpNode.size() ;i++){
+        activeNames.insert(m_mapWarpNode[i]->getName());
         if(dynamic_cast<CWarpNode*>(m_mapWarpNode[i])){
             CWarpNode* wrap = (CWarpNode*)m_mapWarpNode[i];
             AddWrapKey(wrap);
@@ -352,6 +356,11 @@ void LAppView::InitWrapAndRotation()
             CRotationNode* rotiation = (CRotationNode*)m_mapWarpNode[i];
             AddRotationKey(rotiation);
         }
+    }
+    for (auto it = m_drawWarpMap.begin(); it != m_drawWarpMap.end();) {
+        if (activeNames.contains(it.key())) { ++it; continue; }
+        delete it.value();
+        it = m_drawWarpMap.erase(it);
     }
 
 }
@@ -391,18 +400,7 @@ void LAppView::HideAllWarps()
 
 void LAppView::UpdateWarpPositions()
 {
-    // 重新从 C2DTree 获取最新的变形器位置
-    C2DTree* tree = CTreeManage::GetInstance();
-    if (!tree) return;
-    std::vector<C2DTreeNode*> nodes = tree->GetWarpKeys();
-    for(auto* node : nodes){
-        if(auto* warp = dynamic_cast<CWarpNode*>(node)){
-            if(m_drawWarpMap.contains(warp->getName())){
-                CDrawWarp* dw = (CDrawWarp*)m_drawWarpMap[warp->getName()];
-                dw->UpdatePositions(warp);
-            }
-        }
-    }
+    InitWrapAndRotation();
 }
 
 

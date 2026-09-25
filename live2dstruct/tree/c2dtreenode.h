@@ -3,6 +3,7 @@
 #include <QString>
 #include <QList>
 #include <QDebug>
+#include "live2dstruct/coor/ccoordinateframe.h"
 // 析构过程
 // 当一个对象被销毁时，C++的析构过程遵循以下步骤：
 // 调用派生类的析构函数：首先调用最派生类的析构函数（即对象实际类型的析构函数）。
@@ -42,12 +43,19 @@ public:
     const QList<C2DTreeNode*>& getFathers() const {
         return father;
     }
+    void SetParentFrame(std::shared_ptr<const CCoordinateFrame> frame);
+    bool MapToCanvas(const std::vector<float>& positions, std::vector<float>& output) const;
+    bool MapFromCanvas(const std::vector<float>& positions, std::vector<float>& output) const;
+    bool UpdateCanvasPositions(const std::vector<float>& positions);
+    const std::vector<float>& GetCanvasPositions() const { return m_canvasPositions; }
 
 private:
     QString name;
     QList<C2DTreeNode*> father;
     QList<C2DTreeNode*> child;
     QString type;
+    std::shared_ptr<const CCoordinateFrame> m_parentFrame;
+    std::vector<float> m_canvasPositions;
 
 
 

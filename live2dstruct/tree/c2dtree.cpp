@@ -1,4 +1,6 @@
 #include "c2dtree.h"
+#include "live2dstruct/keyform/clinearinterpolation.h"
+#include <QSet>
 namespace live2dstruct {
 
 C2DTree::C2DTree(const CSectionTable &sectionTable)
@@ -6,48 +8,54 @@ C2DTree::C2DTree(const CSectionTable &sectionTable)
     InitDeformRoot(sectionTable);
 }
 
-C2DTree::~C2DTree()
-{
-    DeletPart(partRoot);
-}
+C2DTree::~C2DTree() = default;
 
-void C2DTree::DeletPart(QList<C2DTreeNode *> &noded)
-{
-    for(int  i = 0 ; i < noded.size() ;i++){
-        if(dynamic_cast<CPartsNode*>(noded[i])){//判断是群组
-            DeletPart(noded[i]->getChilds());
-        }
-        delete noded[i];
-    }
-    noded.clear();
-}
-
-void C2DTree::Test()
-{
-
-
-}
+void C2DTree::Test() {}
 
 void C2DTree::OnUpdate()
 {
-    //qDebug() << "C2DTree::OnUpdate() 1";
-    SetCurFrame(getDeformRoot());//变形器位置
-    //qDebug() << "C2DTree::OnUpdate() 2";
-    SetAllCurPoint(getDeformRoot());
-    //qDebug() << "C2DTree::OnUpdate() 3";
+    struct Entry {
+        C2DTreeNode* node;
+        std::shared_ptr<const CCoordinateFrame> parent;
+    };
+    std::vector<Entry> pending;
+    for (auto it = deformRoot.crbegin(); it != deformRoot.crend(); ++it) pending.push_back({*it, {}});
+    QSet<C2DTreeNode*> visited;
+    m_displayDeformers.clear();
+    while (!pending.empty()) {
+        Entry entry = std::move(pending.back());
+        pending.pop_back();
+        C2DTreeNode* node = entry.node;
+        if (!node || visited.contains(node)) continue;
+        visited.insert(node);
+        CLinearInterpolation::SetCKeyFormObject(node);
+        node->SetParentFrame(entry.parent);
+        std::shared_ptr<const CCoordinateFrame> childFrame = entry.parent;
+        if (auto* rotation = dynamic_cast<CRotationNode*>(node)) {
+            auto& key = rotation->GetCurKeyForm();
+            node->UpdateCanvasPositions(key.GetPosition());
+            childFrame = std::make_shared<CCoordinateFrame>(
+                std::make_unique<CRotationCoorType>(rotation->GetBaseAngles(), key), entry.parent);
+            m_displayDeformers.push_back(node);
+        } else if (auto* warp = dynamic_cast<CWarpNode*>(node)) {
+            auto& key = warp->GetCurKeyForm();
+            node->UpdateCanvasPositions(key.GetPosition());
+            childFrame = std::make_shared<CCoordinateFrame>(
+                std::make_unique<CWarpCoorType>(warp->GetColumns(), warp->GetRows(),
+                                              key.GetPosition(), warp->GetIs_quad_source()), entry.parent);
+            m_displayDeformers.push_back(node);
+        } else if (auto* mesh = dynamic_cast<CArtMeshNode*>(node)) {
+            node->UpdateCanvasPositions(mesh->GetCurKeyForm().GetPosition());
+        }
+        const auto& children = node->getChilds();
+        for (auto it = children.crbegin(); it != children.crend(); ++it) pending.push_back({*it, childFrame});
+    }
 }
 
 std::vector<C2DTreeNode*> C2DTree::GetWarpKeys()
 {
     OnUpdate();
-    std::vector<C2DTreeNode*> vetKeyform;//树结构线性化
-    for(int i = 0 ;i <deformRoot.size();i++){
-        if(dynamic_cast<CDeformerNode*>(deformRoot[i])){
-            vetKeyform.push_back(deformRoot[i]);
-        }
-        GetWarpKeys(deformRoot[i]->getChilds(),vetKeyform);
-    }
-    return vetKeyform;
+    return m_displayDeformers;
 }
 
 void C2DTree::SetParaValue(const QString &name, float value)
@@ -61,17 +69,6 @@ void C2DTree::SetParaValue(const QString &name, float value)
     }
 
 
-}
-
-void C2DTree::GetWarpKeys(QList<C2DTreeNode *> &list, std::vector<C2DTreeNode*> &data)
-{
-    for(int i = 0 ;i <list.size();i++){
-        if(dynamic_cast<CDeformerNode*>(list[i])){
-
-            data.push_back(list[i]);
-        }
-        GetWarpKeys(list[i]->getChilds(),data);
-    }
 }
 
 void C2DTree::AddEdge(C2DTreeNode *father, C2DTreeNode *child)
@@ -109,7 +106,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
 
             for (int i = 0 ;i < sectionTable.parameters.size();i++){
                 CParameters* paraSelect = sectionTable.parameters[i];
-                CParameterNode* parameterNode = new CParameterNode(paraSelect->ids);
+                CParameterNode* parameterNode = Own(new CParameterNode(paraSelect->ids));
                 parameterNode->InitParameterValue(sectionTable,*(paraSelect),0);
                 parametersTree.push_back(parameterNode);
                 //参数关键帧数量
@@ -118,7 +115,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                     paraSelect->parameter_binding_sources_begin_indices > sectionTable.parameter_bindings.size() - counts)
                     counts = 0;
                 for(int j = 1 ;j < counts;j++){
-                    CParameterNode* next = new CParameterNode(paraSelect->ids);
+                    CParameterNode* next = Own(new CParameterNode(paraSelect->ids));
                     next->InitParameterValue(sectionTable,*(paraSelect),j);
                     parametersTree.push_back(next);
                     parameterNode->AddParaNext(next);
@@ -148,7 +145,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
         QList<C2DTreeNode*> partutilList;
         {
             for (int i = 0 ;i < sectionTable.parts.size() ;i++){
-                C2DTreeNode* treeNode = new CPartsNode(sectionTable.parts[i]->ids);
+                C2DTreeNode* treeNode = Own(new CPartsNode(sectionTable.parts[i]->ids));
                 partutilList.push_back(treeNode);
 
                 int sources = sectionTable.parts[i]->keyform_binding_sources_indices;
@@ -182,7 +179,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                 CDeformers* deformers = sectionTable.deformers[i];
 
                 if(deformers->types == 1){
-                    treeNode = new CRotationNode(deformers->ids);
+                    treeNode = Own(new CRotationNode(deformers->ids));
                     if (deformers->specific_sources_indices >= 0 && deformers->specific_sources_indices < sectionTable.rotation_deformers.size()) {
                         CRotation_deformers* rdef= sectionTable.rotation_deformers[deformers->specific_sources_indices];
                         CRotationNode* ronode = (CRotationNode*)(treeNode);
@@ -190,7 +187,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
                         vetRotation.push_back(ronode);
                     }
                 }else{
-                    treeNode = new CWarpNode(deformers->ids);
+                    treeNode = Own(new CWarpNode(deformers->ids));
                     if (deformers->specific_sources_indices >= 0 && deformers->specific_sources_indices < sectionTable.warp_deformers.size()) {
                         CWarp_deformers* rdef = sectionTable.warp_deformers[deformers->specific_sources_indices];
                         CWarpNode* warpNode = (CWarpNode*) treeNode;
@@ -233,7 +230,7 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
         {
             for (int i = 0 ;i < sectionTable.art_meshes.size() ;i++){
                 CArt_meshes* art_meshes = sectionTable.art_meshes[i];
-                CArtMeshNode* treeNode = new CArtMeshNode(art_meshes->ids);
+                CArtMeshNode* treeNode = Own(new CArtMeshNode(art_meshes->ids));
                 treeNode->InitArtMesh(*art_meshes,sectionTable);
                 //初始化每一个art节点
 
@@ -319,187 +316,6 @@ void C2DTree::InitDeformRoot(const CSectionTable &sectionTable){
 
 
     }
-
-
-void C2DTree::SetAllCurPoint(QList<C2DTreeNode *> &list)
-{
-    //根据参数计算当前帧位置
-    for(int i = 0; i< list.size();i++){
-        if(dynamic_cast<CPartsNode*>(list[i])){
-            //直接跳过
-        }
-        else if(dynamic_cast<CParameterNode*>(list[i])){
-            //直接跳过
-        }
-        else if(dynamic_cast<CRotationNode*>(list[i])){
-            //qDebug() << "C2DTree::SetAllCurPointCRotationNode";
-            CRotationNode* roRep = (CRotationNode*) list[i];
-            CRotationNodeKeyform& keyForm = roRep->GetCurKeyForm();
-            CRotationCoorType rotationCoorType = CRotationCoorType(roRep->GetBaseAngles(),keyForm);
-            QList<C2DTreeNode*>& child = roRep->getChilds();
-            SetChildPoint(child,&rotationCoorType);//对所有的孩子节点进行旋转变换
-            SetAllCurPoint(list[i]->getChilds());//接着执行
-
-        }
-        else if(dynamic_cast<CWarpNode*>(list[i])){
-            //qDebug() << "C2DTree::SetAllCurPointCWarpNode";
-            CWarpNode* warpNode = (CWarpNode*) list[i];
-            CWarpNodeKeyform& keyForm = warpNode->GetCurKeyForm();
-            CWarpCoorType warpCoorType = CWarpCoorType(warpNode->GetColumns(),warpNode->GetRows(),keyForm.GetPosition(),warpNode->GetIs_quad_source());
-            QList<C2DTreeNode*>& child = warpNode->getChilds();
-            SetChildPoint(child,&warpCoorType);//会获取一个全局位置
-            SetAllCurPoint(list[i]->getChilds());//接着执行
-        }
-        else if(dynamic_cast<CArtMeshNode*>(list[i])){
-            //当前帧不计算
-
-        }
-
-    }
-
-
-
-}
-
-//根据参数信息设置当前帧数据
-void C2DTree::SetCurFrame(QList<C2DTreeNode*> &list)
-{
-    //如何根据当前参数求当前帧
-    for(int i = 0 ;i < list.size() ;i++){
-        if(dynamic_cast<CRotationNode*>(list[i])){
-            CRotationNode* roRep = (CRotationNode*) list[i];
-            //int index = GetKeyIndex(roRep->GetKeyForms().size());
-            //roRep->SetCurKeyForm(roRep->GetKeyForms()[index]);
-
-            CLinearInterpolation::SetCKeyFormObject(roRep);
-            //这个求关键帧算法有问题
-
-        }
-        else if(dynamic_cast<CWarpNode*>(list[i])){
-            CWarpNode* warpNode = (CWarpNode*) list[i];
-            //int index = GetKeyIndex(warpNode->GetKeyFormS().size());
-            //warpNode->SetCurKeyForm(warpNode->GetKeyFormS()[index]);
-            CLinearInterpolation::SetCKeyFormObject(warpNode);
-
-        }
-        else if(dynamic_cast<CArtMeshNode*>(list[i])){//当前帧不计算
-            CArtMeshNode* artnode = (CArtMeshNode*) list[i];
-            //int index = GetKeyIndex(artnode->GetKeyFormS().size());
-            //artnode->SetCurMeshKey(artnode->GetKeyFormS()[index]);
-
-
-            CLinearInterpolation::SetCKeyFormObject(artnode);
-        }
-        SetCurFrame(list[i]->getChilds());
-    }
-
-
-}
-
-void C2DTree::SetChildPoint(QList<C2DTreeNode *> &list, CCoorTypeObject *type)
-{
-    for(int i = 0 ;i < list.size() ;i++){
-        if(dynamic_cast<CRotationNode*>(list[i])){
-            CRotationNode* roRep = (CRotationNode*) list[i];
-            CRotationNodeKeyform& keyForm = roRep->GetCurKeyForm();
-            std::vector<float>& src = keyForm.GetPosition();
-            std::vector<float> vetdes;
-            vetdes.resize(src.size(),0.0f);
-            if (!type->transformLocalToCanvas(src.data(),vetdes.data(),1,0,2)) continue;
-            keyForm.SetPosition(vetdes);
-
-        }
-        else if(dynamic_cast<CWarpNode*>(list[i])){
-            CWarpNode* warpNode = (CWarpNode*) list[i];
-            CWarpNodeKeyform& keyForm = warpNode->GetCurKeyForm();
-            std::vector<float>& src = keyForm.GetPosition();
-            std::vector<float> vetdes;
-            vetdes.resize(src.size(),0.0f);
-            if (!type->transformLocalToCanvas(src.data(),vetdes.data(),src.size() / 2,0,2)) continue;
-            keyForm.SetPosition(vetdes);
-
-        }
-        else if(dynamic_cast<CArtMeshNode*>(list[i])){
-            //当前帧不计算
-            CArtMeshNode* artnode = (CArtMeshNode*) list[i];
-            CArtMeshKeyForm& keyForm =  artnode->GetCurKeyForm();
-            std::vector<float>& src = keyForm.GetPosition();
-            std::vector<float> vetdes;
-            vetdes.resize(src.size(),0.0f);
-            if (!type->transformLocalToCanvas(src.data(),vetdes.data(),src.size() / 2,0,2)) continue;
-            keyForm.SetPosition(vetdes);
-        }
-    }
-
-}
-
-// //传入的是变形树结构
-// void C2DTree::SetChildPointRop(QList<C2DTreeNode *> &list, CRotationCoorType &type)
-// {
-
-
-
-
-// }
-
-// void C2DTree::SetChildWarp(QList<C2DTreeNode *> &list, CWarpCoorType &type)
-// {
-//     for(int i = 0 ;i < list.size() ;i++){
-//         if(dynamic_cast<CRotationNode*>(list[i])){
-//             CRotationNode* roRep = (CRotationNode*) list[i];
-//             CRotationNodeKeyform& keyForm = roRep->GetCurKeyForm();
-//             float src[2];
-//             src[0] = keyForm.origin_x;
-//             src[1] = keyForm.origin_y;
-//             float des[2];
-//             type.transformLocalToCanvas(src,des,1,0,2);
-//             keyForm.origin_x =des[0];
-//             keyForm.origin_y = des[1];
-
-//         }
-//         else if(dynamic_cast<CWarpNode*>(list[i])){
-//             CWarpNode* warpNode = (CWarpNode*) list[i];
-//             CWarpNodeKeyform& keyForm = warpNode->GetCurKeyForm();
-//             std::vector<float>& src = keyForm.GetPosition();
-//             std::vector<float> des;
-//             des.resize(src.size(),0.0f);
-//             type.transformLocalToCanvas(src.data(),des.data(),src.size() / 2,0,2);
-//             keyForm.SetPosition(des);
-//         }
-//         else if(dynamic_cast<CArtMeshNode*>(list[i])){
-//             //当前帧不计算
-//             CArtMeshNode* artnode = (CArtMeshNode*) list[i];
-//             CArtMeshKeyForm& keyForm =  artnode->GetCurMeshKey();
-//             std::vector<float>& src = keyForm.getPosition();
-//             std::vector<float> des;
-//             des.resize(src.size(),0.0f);
-//             type.transformLocalToCanvas(src.data(),des.data(),src.size() / 2,0,2);
-//             keyForm.SetPosition(des);
-
-//         }
-//     }
-
-// }
-
-int C2DTree::GetKeyIndex(int size)
-{
-    int index = 0;
-    if(size == 3 ){
-        index = 1;
-    }
-    if(size == 9 ){
-        index = 4;
-
-    }
-    if(size == 2 ){
-        index = 0;
-
-    }
-    return index;
-}
-
-
-
 
 
 }

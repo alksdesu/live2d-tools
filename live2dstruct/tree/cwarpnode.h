@@ -42,10 +42,10 @@ private:
     std::vector<CWarpNodeKeyform> vetWarp;
     CWarpNodeKeyform curWarp;
 
-    int vertex_counts;
-    int rows;
-    int columns;
-    bool is_quad_source;
+    int vertex_counts = 0;
+    int rows = 0;
+    int columns = 0;
+    bool is_quad_source = true;
 };
 }
 

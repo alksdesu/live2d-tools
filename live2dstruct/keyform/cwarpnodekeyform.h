@@ -24,7 +24,7 @@ public:
         keyform_position = pos;
     }
 private:
-    float opacities;
+    float opacities = 1.0f;
     std::vector<float> keyform_position;//这个暂时未知
 };
 }

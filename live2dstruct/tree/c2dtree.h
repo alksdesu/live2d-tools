@@ -13,14 +13,14 @@
 #include <QDebug>
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/coor/crotationcoortype.h"
-//竟然在这里循环包含了。；；；；；；；；
-#include "live2dstruct/keyform/clinearinterpolation.h"
 namespace live2dstruct {
 class C2DTree
 {
 public:
     C2DTree(const CSectionTable& sectionTable);
     ~C2DTree();
+    C2DTree(const C2DTree&) = delete;
+    C2DTree& operator=(const C2DTree&) = delete;
 
     QList<C2DTreeNode*>& getArtTree() {
         return artTree;
@@ -47,22 +47,22 @@ public:
     const QList<C2DTreeNode*>& getPartRoot()const {
         return partRoot;
     }
-    void DeletPart(QList<C2DTreeNode*>& noded);
     void static Test();
     std::vector<C2DTreeNode*> GetWarpKeys();
     void SetParaValue(const QString& name,float value);
 
 private:
-    //设置每个变形器的位置
     void OnUpdate();
-    void GetWarpKeys(QList<C2DTreeNode*>& list ,std::vector<C2DTreeNode*>& data);
     void AddEdge(C2DTreeNode* father,C2DTreeNode* child);
     void InitDeformRoot(const CSectionTable& sectionTable);
-    void SetAllCurPoint(QList<C2DTreeNode*>& list );//设置当前模型point
-    void SetCurFrame(QList<C2DTreeNode*>& list);//设置当前帧
-    void SetChildPoint(QList<C2DTreeNode*>& list,CCoorTypeObject* type);
-    //void SetChildWarp(QList<C2DTreeNode*>& list,CWarpCoorType& type);
-    int GetKeyIndex(int size);
+    template <typename T> T* Own(T* node)
+    {
+        std::unique_ptr<T> owner(node);
+        m_nodes.push_back(std::move(owner));
+        return node;
+    }
+    std::vector<std::unique_ptr<C2DTreeNode>> m_nodes;
+    std::vector<C2DTreeNode*> m_displayDeformers;
     QList<C2DTreeNode*> deformRoot;//树结构
     QList<C2DTreeNode*> partRoot;//表示一体,一起移动,一起
     QList<C2DTreeNode*> artTree;

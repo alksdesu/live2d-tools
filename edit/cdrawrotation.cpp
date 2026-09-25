@@ -1,4 +1,5 @@
 #include "cdrawrotation.h"
+#include <cmath>
 
 CDrawRotation::CDrawRotation() {
 
@@ -37,16 +38,24 @@ CDrawRotation::~CDrawRotation()
 
 void CDrawRotation::Init(CRotationNode *node)
 {
+    vetrclPos.clear();
+    vetdirPos.clear();
+    if (!node || node->GetCurKeyForm().GetPosition().size() != 2) return;
     this->base_angles =node->GetBaseAngles();
     this->cur =node->GetCurKeyForm();
-    ClaRect();//计算当前rect
+    if (!std::isfinite(base_angles) || !std::isfinite(cur.Getangles())) return;
+    ClaRect();
+    if (!node->MapToCanvas(vetrclPos, vetrclPos) || !node->MapToCanvas(vetdirPos, vetdirPos)) {
+        vetrclPos.clear();
+        vetdirPos.clear();
+    }
 }
 
 
 void CDrawRotation::Draw(const QMatrix4x4 &mv)
 {
 
-    if(m_IsDraw){
+    if(m_IsDraw && vetrclPos.size() == 8 && vetdirPos.size() == 8){
         // 开始绘制
         //开启混合
         shader->bind();
@@ -140,8 +149,7 @@ void CDrawRotation::ClaRect()
 
     vetdirPos.resize(8,0.0f);
 
-    double  d = 0.017453292F;//弧度
-    double  angle = (base_angles + cur.Getangles()) /** d*/;
+    const double angle = std::remainder(static_cast<double>(base_angles) + cur.Getangles(), 360.0);
     QTransform transform;
     transform.translate(x, y);  // 将中心点移动到原点
     transform.rotate(angle);  // 旋转角度

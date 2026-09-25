@@ -22,8 +22,10 @@ OpengGlForm::OpengGlForm(QWidget *par):QOpenGLWidget(par)
 
 OpengGlForm::~OpengGlForm()
 {
+    if (context()) makeCurrent();
     LAppDelegate::GetInstance()->Release();
     LAppDelegate::ReleaseInstance();
+    if (context()) doneCurrent();
 }
 
 void OpengGlForm::SetInitOpenName(const QString &Name)

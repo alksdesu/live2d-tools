@@ -44,6 +44,8 @@ SOURCES += \
     live2dstruct/cmodeldocument.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
+    edit/cgridlines.cpp \
+    live2dstruct/coor/ccoordinateframe.cpp \
     edit/cdrawobject.cpp \
     edit/cdrawrotation.cpp \
     edit/cdrawwarp.cpp \
@@ -236,6 +238,8 @@ HEADERS += \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
     CPrecompileHead.h \
+    edit/cgridlines.h \
+    live2dstruct/coor/ccoordinateframe.h \
     edit/cdrawobject.h \
     edit/cdrawrotation.h \
     edit/cdrawwarp.h \

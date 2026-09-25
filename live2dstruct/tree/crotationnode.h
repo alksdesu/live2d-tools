@@ -36,7 +36,7 @@ public:
 private:
     std::vector<CRotationNodeKeyform> list;
     CRotationNodeKeyform cur;
-    float base_angles;
+    float base_angles = 0.0f;
 };
 }
 
