@@ -1,443 +1,247 @@
 #include "cgridtransform.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+
 namespace live2dstruct {
+namespace {
+constexpr int kMaxPoints = 1000000;
+constexpr double kCoordinateTolerance = 8.0 * std::numeric_limits<float>::epsilon();
+constexpr double kArithmeticTolerance = 64.0 * std::numeric_limits<double>::epsilon();
 
-CGridTransform::CGridTransform(QRectF rect, std::vector<float> &points, int Col, int Row)
+bool finite(const QPointF& point)
 {
-    this->points = points;
-    this->rect =rect ;
-    this->row = Row;
-    this->col = Col;
+    return std::isfinite(point.x()) && std::isfinite(point.y());
 }
 
-void CGridTransform::inverseTransform(float* var1, int var2, float* var3, int var4, int var5, bool var6)
+bool representable(const QPointF& point)
 {
-
-    QVector2D var7 ;
-    QVector2D var8 ;
-
-    for(int var9 = 0; var9 < var5; ++var9) {
-        int var10 = var2 + var9 * 2;
-        var7.setX(var1[var10]);
-        var7.setY(var1[var10 + 1]);
-        inverseTransform(var7, var8, var6);
-        int var11 = var4 + var9 * 2;
-        var3[var11] = var8.x();
-        var3[var11 + 1] = var8.y();
-    }
-
+    return finite(point) && std::abs(point.x()) <= std::numeric_limits<float>::max() &&
+           std::abs(point.y()) <= std::numeric_limits<float>::max();
 }
 
-QVector2D CGridTransform::inverseTransform(const QVector2D& var1,  QVector2D& var2, bool var3)
+double cross(const QPointF& a, const QPointF& b)
 {
-    return var3 ? inverseTransform_3_3_Quad(var1, var2) : inverseTransform_2_1(var1, var2);
+    return a.x() * b.y() - a.y() * b.x();
 }
 
-QVector2D CGridTransform::inverseTransform_3_3_Quad(const QVector2D& src,QVector2D& dst)
+double dot(const QPointF& a, const QPointF& b)
 {
-    float var16 = src.x();
-    float var5 = src.y();
-    float var6[2] ;//out
-    float var18[2] ;
-
-    //先进行一次计算，在进行一次计算
-    bool IsSecc = get01_ex_quad(var16, var5, nullptr, var6);
-    if(IsSecc){
-        getPtCRectangleGrid(var6[0], var6[1], var18);
-        dst.setX(var18[0]);
-        dst.setY(var18[1]);
-    }
-    return dst;
+    return a.x() * b.x() + a.y() * b.y();
 }
 
-QVector2D CGridTransform::inverseTransform_2_1(QVector2D var1, QVector2D var2)
+bool invertBasis(const QPointF& x, const QPointF& y, const QPointF& delta, QPointF& result)
 {
-    return QVector2D();
+    const double determinant = cross(x, y);
+    const double scale = std::abs(x.x() * y.y()) + std::abs(x.y() * y.x());
+    if (std::abs(determinant) <= kArithmeticTolerance * scale) return false;
+    result = QPointF(cross(delta, y) / determinant, cross(x, delta) / determinant);
+    return finite(result);
 }
 
-bool CGridTransform::get01_ex_quad(float var1, float var2, QVector2D* var3, float *var4)
+bool inUnit(double value)
 {
-    int var5 = this->col + 1;
-    QRectF var6 = this->getBoundsRect();
-    if (!var6.contains(var1, var2)) {
+    return std::isfinite(value) && value >= -kCoordinateTolerance && value <= 1.0 + kCoordinateTolerance;
+}
+
+bool invertTriangle(const QPointF& point, const QPointF& a, const QPointF& b,
+                    const QPointF& c, QPointF& result)
+{
+    if (!invertBasis(b - a, c - a, point - a, result)) return false;
+    if (!inUnit(result.x()) || !inUnit(result.y()) || result.x() + result.y() > 1.0 + kCoordinateTolerance)
         return false;
+    result.setX(std::clamp(result.x(), 0.0, 1.0));
+    result.setY(std::clamp(result.y(), 0.0, 1.0));
+    return true;
+}
+
+int invertQuad(const QPointF& point, const QPointF& a, const QPointF& b,
+               const QPointF& c, const QPointF& d, std::array<QPointF, 2>& results)
+{
+    const QPointF x = b - a;
+    const QPointF y = c - a;
+    const QPointF bend = d - b - c + a;
+    const QPointF delta = point - a;
+    const double qa = -cross(x, bend);
+    const double qb = cross(delta, bend) - cross(x, y);
+    const double qc = cross(delta, y);
+    const double scale = std::max({std::abs(qa), std::abs(qb), std::abs(qc)});
+    std::array<double, 2> roots{};
+    int rootCount = 0;
+    if (std::abs(qa) <= kArithmeticTolerance * scale) {
+        if (std::abs(qb) <= kArithmeticTolerance * scale) return 0;
+        roots[rootCount++] = -qc / qb;
     } else {
-        float var7 = NAN;
-        float var8 = 0.0F;
-        float var9 = 0.0F;
-        QVector2D var10 ;
-        QVector2D var11 ;
-        QVector2D var12;
-        QVector2D var13 ;
-        QVector2D var14 = QVector2D(var1, var2);
-        int var15 = 0;
-        int var16 = this->row - 1;
-        if (var15 <= var16) {
-            while(true) {
-                int var17 = 0;
-                int var18 = this->col - 1;
-                if (var17 <= var18) {
-                    while(true) {
-                        var10.setX(this->points[2 * (var17 + var15 * var5)]);
-                        var10.setY(this->points[2 * (var17 + var15 * var5) + 1]);
-                        var11.setX(this->points[2 * (var17 + 1 + var15 * var5)]);
-                        var11.setY(this->points[2 * (var17 + 1 + var15 * var5) + 1]);
-                        var12.setX(this->points[2 * (var17 + (var15 + 1) * var5)]);
-                        var12.setY(this->points[2 * (var17 + (var15 + 1) * var5) + 1]);
-                        var13.setX(this->points[2 * (var17 + 1 + (var15 + 1) * var5)]);
-                        var13.setY(this->points[2 * (var17 + 1 + (var15 + 1) * var5) + 1]);
-
-                        float* var19 = get01_ex_quad_Nation(var10, var11, var12, var13, var14, var4);
-
-                        if (var19 != nullptr) {
-                            var19[0] = ((float)var17 + var19[0]) / (float)this->col;
-                            var19[1] = ((float)var15 + var19[1]) / (float)this->row;
-                            if (var3 == nullptr) {
-                                return var19;
-                            }
-
-                            float var22;
-                            if (var7 == NAN) {
-                                var7 = var19[0];
-                                var8 = var19[1];
-                                float var21 = var19[0];
-                                var22 = var19[1];
-                                var9 = (var3->x() - var21) * (var3->x() - var21) + (var3->y() - var22) * (var3->y() - var22);
-                            } else {
-                                var22 = var19[0];
-                                float var25 = var19[1];
-                                float var20 = (var3->x() - var22) * (var3->x() - var22) + (var3->y() - var25) * (var3->y() - var25);
-                                if (var9 > var20) {
-                                    var7 = var19[0];
-                                    var8 = var19[1];
-                                    var9 = var20;
-                                }
-                            }
-                        }
-
-                        if (var17 == var18) {
-                            break;
-                        }
-
-                        ++var17;
-                    }
-                }
-
-                if (var15 == var16) {
-                    break;
-                }
-
-                ++var15;
-            }
+        double discriminant = qb * qb - 4.0 * qa * qc;
+        const double error = kArithmeticTolerance * (qb * qb + std::abs(4.0 * qa * qc));
+        if (discriminant < -error) return 0;
+        discriminant = std::max(0.0, discriminant);
+        const double q = -0.5 * (qb + std::copysign(std::sqrt(discriminant), qb));
+        if (q == 0.0) roots[rootCount++] = -qb / (2.0 * qa);
+        else {
+            roots[rootCount++] = q / qa;
+            if (discriminant > 0.0) roots[rootCount++] = qc / q;
         }
+    }
+    int count = 0;
+    for (int index = 0; index < rootCount; ++index) {
+        const double u = roots[index];
+        if (!inUnit(u)) continue;
+        const QPointF vertical = y + bend * u;
+        const double lengthSquared = dot(vertical, vertical);
+        if (lengthSquared == 0.0) continue;
+        const double v = dot(delta - x * u, vertical) / lengthSquared;
+        if (!inUnit(v)) continue;
+        QPointF inverse;
+        if (!invertBasis(x + bend * v, vertical, delta, inverse)) continue;
+        const QPointF residual = x * u + y * v + bend * (u * v) - delta;
+        const double extent = std::max({dot(x, x), dot(y, y), dot(bend, bend), dot(delta, delta)});
+        if (dot(residual, residual) > kCoordinateTolerance * kCoordinateTolerance * extent) continue;
+        results[count++] = QPointF(std::clamp(u, 0.0, 1.0), std::clamp(v, 0.0, 1.0));
+    }
+    return count;
+}
 
-        if (var7 ==NAN) {
-            return false;
-        } else {
-            var4[0] = var7;
-            var4[1] = var8;
+double gridCoordinate(int index, int divisions)
+{
+    if (index < 0) return -2.0;
+    if (index > divisions) return 3.0;
+    return static_cast<double>(index) / divisions;
+}
+}
+
+CGridTransform::CGridTransform(QRectF rect, const std::vector<float>& points, int columns, int rows)
+    : m_columns(columns), m_rows(rows), m_rect(rect)
+{
+    if (columns <= 0 || rows <= 0 || columns >= kMaxPoints || rows >= kMaxPoints ||
+        !finite(rect.topLeft()) || !std::isfinite(rect.width()) || !std::isfinite(rect.height()) ||
+        rect.width() == 0.0 || rect.height() == 0.0) return;
+    const qint64 count = (static_cast<qint64>(columns) + 1) * (static_cast<qint64>(rows) + 1);
+    if (count > kMaxPoints || static_cast<quint64>(count * 2) != points.size()) return;
+    for (float value : points) if (!std::isfinite(value)) return;
+    m_points.reserve(static_cast<size_t>(count));
+    for (size_t index = 0; index < points.size(); index += 2)
+        m_points.emplace_back(points[index], points[index + 1]);
+    const QPointF a = m_points.front();
+    const QPointF b = m_points[columns];
+    const QPointF c = m_points[static_cast<size_t>(rows) * (columns + 1)];
+    const QPointF d = m_points.back();
+    m_axisX = (d - a + b - c) * 0.5;
+    m_axisY = (d - a - b + c) * 0.5;
+    m_origin = (a + b + c + d) * 0.25 - (m_axisX + m_axisY) * 0.5;
+    m_valid = true;
+}
+
+QPointF CGridTransform::GridPoint(int column, int row) const
+{
+    if (column >= 0 && column <= m_columns && row >= 0 && row <= m_rows)
+        return m_points[static_cast<size_t>(row) * (m_columns + 1) + column];
+    return m_origin + m_axisX * gridCoordinate(column, m_columns) + m_axisY * gridCoordinate(row, m_rows);
+}
+
+bool CGridTransform::InversePoint(const QPointF& source, QPointF& destination, bool quad,
+                                  const QPointF* preferred) const
+{
+    if (!m_valid || !finite(source) || (preferred && !finite(*preferred))) return false;
+    QPointF best;
+    bool found = false;
+    double bestDistance = 0.0;
+    const auto accept = [&](QPointF normalized) {
+        const QPointF local(m_rect.x() + m_rect.width() * normalized.x(),
+                            m_rect.y() + m_rect.height() * normalized.y());
+        if (!representable(local)) return true;
+        if (!found) {
+            best = normalized;
+            found = true;
+            if (preferred) bestDistance = dot(local - *preferred, local - *preferred);
             return true;
         }
-    }
-
-}
-
-float *CGridTransform::get01_ex_quad_Nation(QVector2D var1, QVector2D var2, QVector2D var3, QVector2D var4, QVector2D var5, float *var6)
-{
-    float b =  1.0E-6F;//常量
-
-    QVector2D var10 = var3 - var5;
-    QVector2D var11 = var3 - var1;
-
-    float var13 = var10.x();
-
-    double var10000 = (double)var13;
-    var13 = var11.y();
-
-    var10000 *= (double)var13;
-    var13 = var10.y();
-
-    double var10001 = (double)var13;
-    var13 = var11.x();
-
-    double var7 = var10000 - var10001 * (double)var13;
-    QVector2D var38 = var3 - var5;
-    QVector2D var39 = var4 - var2;
-
-    float var15 = var38.x();
-
-    var10000 = (double)var15;
-    var15 = var39.y();
-
-    var10000 *= (double)var15;
-    var15 = var38.y();
-
-    var10001 = (double)var15;
-    var15 = var39.x();
-
-    var10000 -= var10001 * (double)var15;
-
-    var38 = var4 - var5;
-    var39 = var3 - var1;
-
-    var15 = var38.x();
-
-    var10001 = (double)var15;
-    var15 = var39.y();
-
-    var10001 *= (double)var15;
-    var15 = var38.y();
-
-    double var10002 = (double)var15;
-    var15 = var39.x();
-
-    double var35 = var10000 + (var10001 - var10002 * (double)var15);
-    double var37 = var35 / 2.0;
-
-    QVector2D var44 = var4 - var5;
-    QVector2D var17 = var4 - var2;
-
-    float var19 = var44.x();
-
-    var10000 = (double)var19;
-    var19 = var17.y();
-
-    var10000 *= (double)var19;
-    var19 = var44.y();
-
-    var10001 = (double)var19;
-    var19 = var17.x();
-
-    double var40 = var10000 - var10001 * (double)var19;
-    double var43 = var7 - var35 + var40;
-    double var41 = abs(var43);
-    double var45 = var37 * var37 - var7 * var40;
-    double var21 = NAN;
-    double var23 = 0.0;
-    double var25 = 1.0E-6;
-    bool var33;
-    bool var34;
-    if (!(var41 < var25) && !(var45 < 0.0)) {
-        double var27 = sqrt(var45);
-        double var29 = var7 - var37 + var27;
-        double var31 = var7 - var37 - var27;
-        var33 = var43 * var29 >= 0.0 && var41 >= abs(var29);
-        var34 = var43 * var31 >= 0.0 && var41 >= abs(var31);
-        if (!var33 && var34) {
-            var21 = var31 / var43;
-        } else {
-            var21 = var29 / var43;
+        if (dot(normalized - best, normalized - best) <= kCoordinateTolerance * kCoordinateTolerance) return true;
+        if (!preferred) return false;
+        const double distance = dot(local - *preferred, local - *preferred);
+        if (distance < bestDistance) {
+            best = normalized;
+            bestDistance = distance;
         }
-    } else {
-        var21 = var7 / (var7 - var40);
-    }
-
-    if (var21 == NAN) {
-        var21 = var7 / (var7 - var40);
-    }
-
-    double var46[2] ;
-    QVector2D var47 = var3 - var1;
-    QVector2D var30 = var4 - var2;
-    bool var51 = false;
-    float var32 = var47.x();
-    var33 = false;
-    var10002 = (double)var32;
-    var32 = var30.x();
-    var33 = false;
-    double var10003 = (double)var32;
-    var32 = var47.x();
-    var33 = false;
-    var46[0] = var10002 + (var10003 - (double)var32) * var21;
-    var32 = var47.y();
-    var33 = false;
-    var10002 = (double)var32;
-    var32 = var30.y();
-    var33 = false;
-    var10003 = (double)var32;
-    var32 = var47.y();
-    var33 = false;
-    var46[1] = var10002 + (var10003 - (double)var32) * var21;
-    if (var46[0] == 0.0 && var46[1] == 0.0) {
-        return nullptr;
-    } else {
-
-        bool var54;
-    label132: {
-        double var28[2] ;
-        var30 = var3 - var5;
-        QVector2D var52 = var4 - var5;
-        var54 = false;
-        float var56 = var30.x();
-        var34 = false;
-        var10002 = (double)var56;
-        var56 = var52.x();
-        var34 = false;
-        var10003 = (double)var56;
-        var56 = var30.x();
-        var34 = false;
-        var28[0] = var10002 + (var10003 - (double)var56) * var21;
-        var56 = var30.y();
-        var34 = false;
-        var10002 = (double)var56;
-        var56 = var52.y();
-        var34 = false;
-        var10003 = (double)var56;
-        var56 = var30.y();
-        var34 = false;
-        var28[1] = var10002 + (var10003 - (double)var56) * var21;
-        if (var46[1] == 0.0) {
-
-            double var49 = var28[0];
-            double var55 = 0.0;
-            var34 = false;
-            if (!(var49 - var25 <= var55) || !(var55 <= var49 + var25)) {
-                if (var46[0] == 0.0) {
-                    return nullptr;
-                }
-
-                var23 = 1.0 - var28[0] / var46[0];
-                goto label132;
+        return true;
+    };
+    for (int row = -1; row <= m_rows; ++row) {
+        for (int column = -1; column <= m_columns; ++column) {
+            const QPointF a = GridPoint(column, row);
+            const QPointF b = GridPoint(column + 1, row);
+            const QPointF c = GridPoint(column, row + 1);
+            const QPointF d = GridPoint(column + 1, row + 1);
+            const double left = std::min({a.x(), b.x(), c.x(), d.x()});
+            const double right = std::max({a.x(), b.x(), c.x(), d.x()});
+            const double top = std::min({a.y(), b.y(), c.y(), d.y()});
+            const double bottom = std::max({a.y(), b.y(), c.y(), d.y()});
+            const double margin = kCoordinateTolerance * std::max(right - left, bottom - top);
+            if (source.x() < left - margin || source.x() > right + margin ||
+                source.y() < top - margin || source.y() > bottom + margin) continue;
+            std::array<QPointF, 2> candidates;
+            int count = 0;
+            if (quad && column >= 0 && column < m_columns && row >= 0 && row < m_rows) {
+                count = invertQuad(source, a, b, c, d, candidates);
+            } else {
+                QPointF candidate;
+                if (invertTriangle(source, a, b, c, candidate)) candidates[count++] = candidate;
+                if (invertTriangle(source, d, c, b, candidate))
+                    candidates[count++] = QPointF(1.0 - candidate.x(), 1.0 - candidate.y());
+            }
+            const double u = gridCoordinate(column, m_columns);
+            const double v = gridCoordinate(row, m_rows);
+            const double width = gridCoordinate(column + 1, m_columns) - u;
+            const double height = gridCoordinate(row + 1, m_rows) - v;
+            for (int index = 0; index < count; ++index) {
+                if (!accept(QPointF(u + width * candidates[index].x(), v + height * candidates[index].y())))
+                    return false;
             }
         }
-
-        if (var46[1] == 0.0) {
-            return nullptr;
-        }
-
-        var23 = 1.0 - var28[1] / var46[1];
     }
-
-        if (var23 == NAN) {
-            return nullptr;
-        } else if ((double)(0.0F - b) < var21 && var21 < (double)(1.0F + b) && (double)(0.0F - b) < var23 && var23 < (double)(1.0F + b)) {
-
-            var54 = false;
-            float var50 = (float)var21;
-            float var53 = 0.0F;
-            var32 = 1.0F;
-            var33 = false;
-            var6[0] = var50 < var53 ? var53 : (var50 > var32 ? var32 : var50);
-
-            var54 = false;
-            var50 = (float)var23;
-            var53 = 0.0F;
-            var32 = 1.0F;
-            var33 = false;
-            var6[1] = var50 < var53 ? var53 : (var50 > var32 ? var32 : var50);
-            return var6;
-        } else {
-            return nullptr;
-        }
+    QPointF outside;
+    if (invertBasis(m_axisX, m_axisY, source - m_origin, outside) &&
+        (outside.x() <= -2.0 || outside.x() >= 3.0 || outside.y() <= -2.0 || outside.y() >= 3.0)) {
+        if (!accept(outside)) return false;
     }
-    return nullptr;
+    if (!found) return false;
+    destination = QPointF(m_rect.x() + m_rect.width() * best.x(), m_rect.y() + m_rect.height() * best.y());
+    return true;
 }
 
-QRectF CGridTransform::getBoundsRect()
+bool CGridTransform::inverseTransform(const QVector2D& source, QVector2D& destination, bool quad,
+                                      const QVector2D* preferred) const
 {
-    int var1 = this->points.size();
-
-
-    float var2 = 0;
-    float var3 = 0;
-    float var4 = 0;
-    float var5 = 0;
-
-    if(var1 > 1){
-
-        var2 = this->points[0];
-        var3 = this->points[1];
-        var4 = this->points[0];
-        var5 = this->points[1];
-    }
-
-    for(int var6 = 0; var6 < var1; var6 += 2) {
-        float var7 = this->points[var6];
-        float var8 = this->points[var6 + 1];
-        if (var7 > var4) {
-            var4 = var7;
-        }
-
-        if (var8 > var5) {
-            var5 = var8;
-        }
-
-        if (var7 < var2) {
-            var2 = var7;
-        }
-        if (var8 < var3) {
-            var3 = var8;
-        }
-    }
-
-    return  QRectF(var2, var3, var4 - var2, var5 - var3);
+    QPointF result;
+    const QPointF hint = preferred ? preferred->toPointF() : QPointF();
+    if (!InversePoint(source.toPointF(), result, quad, preferred ? &hint : nullptr)) return false;
+    destination = QVector2D(result);
+    return true;
 }
 
-void CGridTransform::getPtCRectangleGrid(float var1, float var2, float *var3)
+bool CGridTransform::inverseTransform(const float* source, int sourceOffset, float* destination,
+                                      int destinationOffset, int count, bool quad) const
 {
-
-    var3[0] = this->rect.x() + this->rect.width() * var1;
-    var3[1] = this->rect.y() + this->rect.height() * var2;
-
+    if (!m_valid || sourceOffset < 0 || destinationOffset < 0 || count < 0 || count > kMaxPoints ||
+        static_cast<qint64>(std::max(sourceOffset, destinationOffset)) + static_cast<qint64>(count) * 2 >
+            std::numeric_limits<int>::max()) return false;
+    if (count == 0) return true;
+    if (!source || !destination) return false;
+    std::vector<QPointF> results;
+    results.reserve(count);
+    for (int index = 0; index < count; ++index) {
+        const int offset = sourceOffset + index * 2;
+        QPointF result;
+        if (!InversePoint(QPointF(source[offset], source[offset + 1]), result, quad, nullptr)) return false;
+        results.push_back(result);
+    }
+    for (int index = 0; index < count; ++index) {
+        const int offset = destinationOffset + index * 2;
+        destination[offset] = static_cast<float>(results[index].x());
+        destination[offset + 1] = static_cast<float>(results[index].y());
+    }
+    return true;
 }
 
-float *CGridTransform::getPt(float var1, float var2, float *var3)
-{
-    int var4 = (int)(var1 * (float)this->col);
-    int var5 = (int)(var2 * (float)this->row);
-    if (var4 < 0) {
-        var4 = 0;
-    } else if (var4 > this->col - 1) {
-        var4 = this->col - 1;
-    }
-
-    if (var5 < 0) {
-        var5 = 0;
-    } else if (var5 > this->row - 1) {
-        var5 = this->row - 1;
-    }
-
-    float var6 = var1 * (float)this->col - (float)var4;
-    if (var6 < 0.0F) {
-        var6 = 0.0F;
-    } else if (var6 > 1.0F) {
-        var6 = 1.0F;
-    }
-
-    float var7 = var2 * (float)this->row - (float)var5;
-    if (var7 < 0.0F) {
-        var7 = 0.0F;
-    } else if (var7 > 1.0F) {
-        var7 = 1.0F;
-    }
-
-    int var8 = this->col + 1;
-    float var9;
-    float var10;
-    float var11;
-    float var12;
-    float var13;
-    float var14;
-    if (var6 + var7 < 1.0F) {
-        var9 = this->points[2 * (var4 + var5 * var8)];
-        var10 = this->points[2 * (var4 + var5 * var8) + 1];
-        var11 = this->points[2 * (var4 + 1 + var5 * var8)];
-        var12 = this->points[2 * (var4 + 1 + var5 * var8) + 1];
-        var13 = this->points[2 * (var4 + (var5 + 1) * var8)];
-        var14 = this->points[2 * (var4 + (var5 + 1) * var8) + 1];
-        var3[0] = var9 + var6 * (var11 - var9) + var7 * (var13 - var9);
-        var3[1] = var10 + var6 * (var12 - var10) + var7 * (var14 - var10);
-    } else {
-        var9 = this->points[2 * (var4 + 1 + var5 * var8)];
-        var10 = this->points[2 * (var4 + 1 + var5 * var8) + 1];
-        var11 = this->points[2 * (var4 + (var5 + 1) * var8)];
-        var12 = this->points[2 * (var4 + (var5 + 1) * var8) + 1];
-        var13 = this->points[2 * (var4 + 1 + (var5 + 1) * var8)];
-        var14 = this->points[2 * (var4 + 1 + (var5 + 1) * var8) + 1];
-        var3[0] = var13 + (1.0F - var6) * (var11 - var13) + (1.0F - var7) * (var9 - var13);
-        var3[1] = var14 + (1.0F - var6) * (var12 - var14) + (1.0F - var7) * (var10 - var14);
-    }
-
-    return var3;
-
-}
 }

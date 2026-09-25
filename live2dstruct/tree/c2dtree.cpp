@@ -405,7 +405,7 @@ void C2DTree::SetChildPoint(QList<C2DTreeNode *> &list, CCoorTypeObject *type)
             std::vector<float>& src = keyForm.GetPosition();
             std::vector<float> vetdes;
             vetdes.resize(src.size(),0.0f);
-            type->transformLocalToCanvas(src.data(),vetdes.data(),1,0,2);
+            if (!type->transformLocalToCanvas(src.data(),vetdes.data(),1,0,2)) continue;
             keyForm.SetPosition(vetdes);
 
         }
@@ -415,7 +415,7 @@ void C2DTree::SetChildPoint(QList<C2DTreeNode *> &list, CCoorTypeObject *type)
             std::vector<float>& src = keyForm.GetPosition();
             std::vector<float> vetdes;
             vetdes.resize(src.size(),0.0f);
-            type->transformLocalToCanvas(src.data(),vetdes.data(),src.size() / 2,0,2);
+            if (!type->transformLocalToCanvas(src.data(),vetdes.data(),src.size() / 2,0,2)) continue;
             keyForm.SetPosition(vetdes);
 
         }
@@ -426,7 +426,7 @@ void C2DTree::SetChildPoint(QList<C2DTreeNode *> &list, CCoorTypeObject *type)
             std::vector<float>& src = keyForm.GetPosition();
             std::vector<float> vetdes;
             vetdes.resize(src.size(),0.0f);
-            type->transformLocalToCanvas(src.data(),vetdes.data(),src.size() / 2,0,2);
+            if (!type->transformLocalToCanvas(src.data(),vetdes.data(),src.size() / 2,0,2)) continue;
             keyForm.SetPosition(vetdes);
         }
     }

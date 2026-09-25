@@ -95,6 +95,18 @@ if(BUILD_TESTING)
     add_executable(triangl_mesh_tests tests/triangl_mesh_tests.cpp edit/ctriangl.cpp)
     target_link_libraries(triangl_mesh_tests PRIVATE model_data Qt6::Gui Qt6::Test)
     add_test(NAME triangl_mesh COMMAND triangl_mesh_tests)
+    add_executable(grid_transform_tests tests/grid_transform_tests.cpp
+        live2dstruct/coor/cgridtransform.cpp live2dstruct/coor/cwarpcoortype.cpp
+        live2dstruct/coor/ccoortypeobject.cpp)
+    target_include_directories(grid_transform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(grid_transform_tests PRIVATE Qt6::Gui Qt6::Test)
+    add_test(NAME grid_transform COMMAND grid_transform_tests)
+    add_executable(rotation_transform_tests tests/rotation_transform_tests.cpp
+        live2dstruct/coor/crotationcoortype.cpp live2dstruct/coor/ccoortypeobject.cpp
+        live2dstruct/keyform/crotationnodekeyform.cpp live2dstruct/keyform/ckeyformobject.cpp)
+    target_include_directories(rotation_transform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(rotation_transform_tests PRIVATE Qt6::Gui Qt6::Test)
+    add_test(NAME rotation_transform COMMAND rotation_transform_tests)
     add_executable(inspector_history_tests tests/inspector_history_tests.cpp)
     target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp)
     target_link_libraries(inspector_history_tests PRIVATE model_data Qt6::Test Qt6::Widgets)

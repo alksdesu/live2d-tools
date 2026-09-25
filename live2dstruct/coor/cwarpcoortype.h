@@ -12,8 +12,8 @@ class CWarpCoorType : public CCoorTypeObject
 public:
     CWarpCoorType(int Col,int Row,std::vector<float>& positions,bool isQuadTransform);
     virtual ~CWarpCoorType();
-    virtual void transformLocalToCanvas(float* src, float* des, int vetSize, int offset, int step);
-    virtual void transformCanvasToLocal(float* src, float* des, int len) ;
+    bool transformLocalToCanvas(float* src, float* des, int vetSize, int offset, int step) override;
+    bool transformCanvasToLocal(float* src, float* des, int len) override;
 
 
 

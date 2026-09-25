@@ -69,11 +69,11 @@ public:
 
 private:
 
-    float opacities;
-    float angles;
-    float scales;
-    bool is_reflect_x;
-    bool is_reflect_y;
+    float opacities = 1.0f;
+    float angles = 0.0f;
+    float scales = 1.0f;
+    bool is_reflect_x = false;
+    bool is_reflect_y = false;
     std::vector<float> keyform_position;
 
 

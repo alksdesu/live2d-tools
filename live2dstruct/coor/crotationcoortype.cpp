@@ -1,106 +1,91 @@
 #include "crotationcoortype.h"
 
+#include <QtMath>
+#include <cmath>
+#include <limits>
+
+namespace {
+template <typename Transform>
+bool transformPoints(float* source, float* destination, int count, int offset, int stride,
+                     const Transform& transform)
+{
+    if (count < 0 || count > 1000000 || offset < 0 || stride < 2) return false;
+    if (count == 0) return true;
+    const qint64 last = static_cast<qint64>(offset) + static_cast<qint64>(count - 1) * stride + 1;
+    if (!source || !destination || last > std::numeric_limits<int>::max()) return false;
+    std::vector<float> result(static_cast<size_t>(count) * 2);
+    for (int vertex = 0; vertex < count; ++vertex) {
+        const size_t index = static_cast<size_t>(offset) + static_cast<size_t>(vertex) * stride;
+        const double x = source[index], y = source[index + 1];
+        if (!std::isfinite(x) || !std::isfinite(y)) return false;
+        double outputX, outputY;
+        transform(x, y, outputX, outputY);
+        const double limit = std::numeric_limits<float>::max();
+        if (!std::isfinite(outputX) || !std::isfinite(outputY) ||
+            std::abs(outputX) > limit || std::abs(outputY) > limit) return false;
+        result[static_cast<size_t>(vertex) * 2] = static_cast<float>(outputX);
+        result[static_cast<size_t>(vertex) * 2 + 1] = static_cast<float>(outputY);
+    }
+    for (int vertex = 0; vertex < count; ++vertex) {
+        const size_t index = static_cast<size_t>(offset) + static_cast<size_t>(vertex) * stride;
+        destination[index] = result[static_cast<size_t>(vertex) * 2];
+        destination[index + 1] = result[static_cast<size_t>(vertex) * 2 + 1];
+    }
+    return true;
+}
+}
+
 namespace live2dstruct {
 
+float CRotationCoorType::GetOriginX() const { return OriginX; }
+float CRotationCoorType::GetOriginY() const { return OriginY; }
+double CRotationCoorType::GetAngle_forRotation() const { return static_cast<double>(angle) + base_angles; }
+bool CRotationCoorType::GetisReflectX() const { return isReflectX; }
+bool CRotationCoorType::GetisReflectY() const { return isReflectY; }
+float CRotationCoorType::GetCalculatedTotalScale() const { return Scale; }
 
-
-float CRotationCoorType::GetOriginX()
+CRotationCoorType::CRotationCoorType(float base_angles, CRotationNodeKeyform& keyform)
+    : Scale(keyform.Getscales()), isReflectX(keyform.Getis_reflect_x()),
+      isReflectY(keyform.Getis_reflect_y()), angle(keyform.Getangles()), base_angles(base_angles)
 {
-    return OriginX;
+    if (keyform.GetPosition().size() != 2) return;
+    OriginX = keyform.Getorigin_x();
+    OriginY = keyform.Getorigin_y();
+    m_valid = std::isfinite(base_angles) && std::isfinite(angle) && std::isfinite(Scale) &&
+              std::isfinite(OriginX) && std::isfinite(OriginY);
 }
 
-float CRotationCoorType::GetOriginY()
+CRotationCoorType::~CRotationCoorType() = default;
+
+bool CRotationCoorType::transformLocalToCanvas(float* src, float* des, int vet, int offset, int step)
 {
-    return OriginY;
+    if (!m_valid) return false;
+    const double radians = qDegreesToRadians(std::remainder(GetAngle_forRotation(), 360.0));
+    const double cosine = std::cos(radians), sine = std::sin(radians);
+    const double scaleX = static_cast<double>(Scale) * (isReflectX ? -1.0 : 1.0);
+    const double scaleY = static_cast<double>(Scale) * (isReflectY ? -1.0 : 1.0);
+    return transformPoints(src, des, vet, offset, step,
+        [&](double x, double y, double& outputX, double& outputY) {
+            outputX = cosine * scaleX * x - sine * scaleY * y + OriginX;
+            outputY = sine * scaleX * x + cosine * scaleY * y + OriginY;
+        });
 }
 
-float CRotationCoorType::GetAngle_forRotation()
+bool CRotationCoorType::transformCanvasToLocal(float* src, float* des, int vet)
 {
-    return angle+base_angles;
+    if (!m_valid || Scale == 0.0f) return false;
+    const double radians = qDegreesToRadians(std::remainder(GetAngle_forRotation(), 360.0));
+    const double cosine = std::cos(radians), sine = std::sin(radians);
+    const double scaleX = static_cast<double>(Scale) * (isReflectX ? -1.0 : 1.0);
+    const double scaleY = static_cast<double>(Scale) * (isReflectY ? -1.0 : 1.0);
+    return transformPoints(src, des, vet, 0, 2,
+        [&](double x, double y, double& outputX, double& outputY) {
+            const double dx = x - OriginX, dy = y - OriginY;
+            outputX = (cosine * dx + sine * dy) / scaleX;
+            outputY = (-sine * dx + cosine * dy) / scaleY;
+        });
 }
 
-bool CRotationCoorType::GetisReflectX()
-{
-    return isReflectX;
-}
+void CRotationCoorType::Test() {}
 
-bool CRotationCoorType::GetisReflectY()
-{
-    return isReflectY;
-}
-
-float CRotationCoorType::GetCalculatedTotalScale()
-{
-    return Scale;
-}
-
-
-
-CRotationCoorType::CRotationCoorType(float base_angles, CRotationNodeKeyform &keyform)
-{
-    this->base_angles = base_angles;
-    this->Scale =keyform.Getscales();
-    this->angle =keyform.Getangles();
-    this->OriginX =keyform.Getorigin_x();
-    this->OriginY =keyform.Getorigin_y();
-    this->isReflectX =keyform.Getis_reflect_x();
-    this->isReflectY =keyform.Getis_reflect_y();
-}
-
-CRotationCoorType::~CRotationCoorType()
-{
-
-}
-
-void CRotationCoorType::transformLocalToCanvas(float* src, float* des, int vet, int offset, int step)
-{
-    double d = 0.017453292F;//弧度
-    double var7 = (double)(d * GetAngle_forRotation());
-    float var9 = (float)sin(var7);
-    float var10 = (float)cos(var7);
-
-    float var11 = GetCalculatedTotalScale();
-    float var12 = (float)(GetisReflectX() ? -1 : 1);
-    float var13 = (float)(GetisReflectY() ? -1 : 1);
-    float var14 = var10 * var11 * var12;
-    float var15 = -var9 * var11 * var13;
-    float var16 = var9 * var11 * var12;
-    float var17 = var10 * var11 * var13;
-    float var18 = GetOriginX();
-    float var19 = GetOriginY();
-
-    int size = vet * step;
-    for(int var21 = offset; var21 < size ; var21 += step) {
-        float var22 = src[var21];
-        float var23 = src[var21+1];
-        des[var21] =var14 * var22 + var15 * var23 + var18;
-        des[var21+1] =var16 * var22 + var17 * var23 + var19;
-    }
-}
-
-void CRotationCoorType::transformCanvasToLocal(float* src, float* des, int vet)
-{
-    QTransform var7 ;
-    var7.translate((double)GetOriginX(), (double)GetOriginY());
-    double d = 0.017453292F;//弧度
-    var7.rotate(GetAngle_forRotation() * d );
-    var7.scale(this->GetCalculatedTotalScale() * (GetisReflectX() ? -1.0 : 1.0),this->GetCalculatedTotalScale() * (GetisReflectY() ? -1.0 : 1.0));
-    QTransform temp = var7.inverted();
-    int step =2;
-    int size = vet * step;
-    for(int i = 0 ;i < size ;i+=step){
-        QPointF point =temp.map(QPointF(src[i],src[i+1]));
-        des[i] =point.x();
-        des[i+1] =point.y();
-    }
-}
-
-void CRotationCoorType::Test()
-{
-    // CRotationCoorType coorType;
-    // float src[]={-31.433937f,56.89307f,49.248287f,33.013363f,-58.61208f,-17.54509f,24.617792f,-43.050705f};
-    // float des[] =new float[src.length];
-    // coorType.transformLocalToCanvas(src,des,src.length/2,0,2);
-    // System.out.println(Arrays.toString(des) );
-}
 }

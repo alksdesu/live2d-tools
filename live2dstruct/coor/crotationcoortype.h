@@ -1,8 +1,5 @@
 #ifndef CROTATIONCOORTYPE_H
 #define CROTATIONCOORTYPE_H
-#include <QtCore/qmath.h>
-#include <QTransform>
-#include <QVector3D>
 #include "ccoortypeobject.h"
 #include "live2dstruct/keyform/crotationnodekeyform.h"
 
@@ -13,15 +10,15 @@ public:
     CRotationCoorType(float base_angles,CRotationNodeKeyform& keyform);
     virtual ~CRotationCoorType();
 
-    float GetOriginX() ;
-    float GetOriginY();
-    float GetAngle_forRotation() ;
-    bool GetisReflectX();
-    bool GetisReflectY();
-    float GetCalculatedTotalScale();
+    float GetOriginX() const;
+    float GetOriginY() const;
+    double GetAngle_forRotation() const;
+    bool GetisReflectX() const;
+    bool GetisReflectY() const;
+    float GetCalculatedTotalScale() const;
 
-    virtual void transformLocalToCanvas(float* src, float* des, int vet, int offset, int step);
-    virtual void transformCanvasToLocal(float* src, float* des, int vet);
+    bool transformLocalToCanvas(float* src, float* des, int vet, int offset, int step) override;
+    bool transformCanvasToLocal(float* src, float* des, int vet) override;
 
     void Test();
 private:
@@ -29,9 +26,10 @@ private:
     bool isReflectX;
     bool isReflectY;
     float angle;
-    float OriginX;
-    float OriginY;
+    float OriginX = 0.0f;
+    float OriginY = 0.0f;
     float base_angles;
+    bool m_valid = false;
 };
 }
 #endif // CROTATIONCOORTYPE_H
