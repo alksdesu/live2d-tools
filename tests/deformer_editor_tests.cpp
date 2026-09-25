@@ -2,6 +2,8 @@
 #include "live2dstruct/ckeyformmappingcontext.h"
 #include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/csectionvalidation.h"
+#include "deformer_snapshot_fixture.h"
 #include "ui/cinspectorpanel.h"
 #include "ui/cmodeltreepanel.h"
 
@@ -202,6 +204,51 @@ void models()
 {
     QTest::addColumn<QString>("model");
     for (const char* model : {"Mark", "Natori", "Rice", "Wanko"}) QTest::newRow(model) << QString::fromLatin1(model);
+}
+
+QByteArray sharedEditorBytes()
+{
+    DeformerSnapshotData::Fixture fixture;
+    if (!fixture.table.IsValid()) return {};
+    const auto& offsets = *fixture.table.sectionOffsetTable;
+    const auto spans = CSectionValidation::ArraySpans(offsets, *fixture.table.count_info);
+    for (const auto& span : spans) {
+        if (span.optional && !span.offset) continue;
+        const auto name = QByteArray(span.name);
+        if (name.startsWith("deformers.")) {
+            const auto original = fixture.bytes.mid(span.offset, span.width * 3);
+            fixture.bytes.replace(span.offset + span.width * 3, original.size(), original);
+        } else if (name.startsWith("art_meshes.")) {
+            const auto original = fixture.bytes.mid(span.offset, span.width);
+            for (int mesh = 1; mesh < 3; ++mesh)
+                fixture.bytes.replace(span.offset + span.width * mesh, original.size(), original);
+        }
+    }
+    fixture.count(1, 6);
+    fixture.count(4, 3);
+    for (int index = 3; index < 6; ++index) {
+        const QByteArray id = index == 3 ? QByteArray("RootSibling") : index == 4 ? QByteArray("WarpSibling") : QByteArray("ChildSibling");
+        fixture.id(offsets.deformers->ids, index, id);
+        fixture.column(offsets.deformers->parent_deformer_indices, index, index == 3 ? -1 : index - 1);
+    }
+    fixture.id(offsets.art_meshes->ids, 1, "MeshSibling");
+    fixture.id(offsets.art_meshes->ids, 2, "MeshOutside");
+    fixture.column(offsets.art_meshes->parent_deformer_indices, 1, 5);
+    fixture.column(offsets.art_meshes->parent_deformer_indices, 2, -1);
+    return fixture.bytes;
+}
+
+bool mappedVertices(const CModelDocument& document, const QString& mesh, const QMap<QString, float>& pose,
+                    QVector<float>& world, QString* error)
+{
+    CKeyformMappingContext mapping;
+    const auto local = document.DrawableKeyformPositions(mesh, 0);
+    QVector<float> roundtrip;
+    if (local.isEmpty() || !mapping.Build(document, mesh, 0, pose, error) ||
+        !mapping.ToModel(local, world, error) || !mapping.FromModel(world, roundtrip, error)) return false;
+    if (DeformerSnapshotData::near(roundtrip, local)) return true;
+    if (error) *error = QStringLiteral("CPU parent mapping did not round-trip");
+    return false;
 }
 }
 
@@ -634,37 +681,165 @@ private slots:
         QCOMPARE(editor.attempts, 2);
     }
 
-    void actualBuilderRejectionDoesNotCommitTheDocumentOrPose()
+    void sharedObjectsRemainIndependentThroughEditorHistoryAndSession_data()
     {
-        CModelDocument original;
-        const QString path = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
-        QVERIFY(original.Load(path));
-        QByteArray bytes = original.SourceBytes();
-        QVector<int> warps;
-        for (int index = 0; index < original.Deformers().size(); ++index)
-            if (original.Deformers()[index].type == CModelDeformer::Warp) warps.append(index);
-        QVERIFY(warps.size() >= 2);
-        const int specificColumn = qFromLittleEndian<qint32>(bytes.constData() + 0x88);
-        const qint32 first = qFromLittleEndian<qint32>(bytes.constData() + specificColumn + warps[0] * 4);
-        qToLittleEndian(first, bytes.data() + specificColumn + warps[1] * 4);
+        QTest::addColumn<QString>("type");
+        QTest::newRow("shared-artmesh-keyforms") << QStringLiteral("artmesh");
+        QTest::newRow("shared-warp-source") << QStringLiteral("warp");
+        QTest::newRow("shared-rotation-source") << QStringLiteral("rotation");
+    }
+
+    void sharedObjectsRemainIndependentThroughEditorHistoryAndSession()
+    {
+        QFETCH(QString, type);
+        const QString target = type == QLatin1String("artmesh") ? QStringLiteral("Mesh") :
+            type == QLatin1String("warp") ? QStringLiteral("Warp") : QStringLiteral("Child");
+        const auto bytes = sharedEditorBytes();
+        QVERIFY(!bytes.isEmpty());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath(QStringLiteral("shared.moc3"));
+        QVERIFY(DeformerSnapshotData::write(path, bytes));
         Editor editor;
         QString error;
-        QVERIFY2(editor.document.LoadBytes(bytes, path, &error), qPrintable(error));
+        QVERIFY2(editor.document.Load(path, &error), qPrintable(error));
+        QVERIFY(editor.document.SetDrawableMaskIndices("Mesh", {2}));
+        QVERIFY(editor.document.SetDrawableMaskInverted("Mesh", true));
+        QVERIFY(editor.document.SetDeformerParentIndex("RootSibling", 0));
         editor.bind();
-        const QString id = editor.document.Deformers()[warps[0]].id;
-        const auto before = editor.document.DeformerWarpKeyforms(id);
-        const auto command = changedForm(editor.document, id, QStringLiteral("warp"), 0);
+        editor.current = DeformerSnapshotData::pose(editor.document);
+        const CModelDocument baseline = editor.document;
+        QByteArray baselinePreview;
+        QVERIFY2(baseline.BuildPreviewMoc(baselinePreview, &error), qPrintable(error));
+        QVERIFY2(editor.controller.Activate(target, type, 0, editor.current, &error), qPrintable(error));
+        editor.inspector.SetSelection(target, type);
+        const auto frozenPose = editor.controller.Pose();
+        QCOMPARE(frozenPose.value("P"), 0.0f);
+        QMap<QString, QVector<float>> originalWorld;
+        for (const QString& mesh : {QStringLiteral("Mesh"), QStringLiteral("MeshSibling"), QStringLiteral("MeshOutside")}) {
+            QVector<float> world;
+            QVERIFY2(mappedVertices(baseline, mesh, frozenPose, world, &error), qPrintable(error));
+            QVERIFY(!world.isEmpty());
+            originalWorld.insert(mesh, world);
+        }
+        const QString tableName = type == QLatin1String("artmesh") ? QStringLiteral("keyformVertexTable") :
+            type == QLatin1String("warp") ? QStringLiteral("warpKeyformTable") : QStringLiteral("rotationKeyformTable");
+        auto* table = editor.inspector.findChild<QTableWidget*>(tableName);
+        QVERIFY(table && table->isEnabled() && table->rowCount() > 0 && table->item(0, 1));
+        const float originalValue = type == QLatin1String("artmesh") ? baseline.DrawableKeyformPositions(target, 0)[0] :
+            type == QLatin1String("warp") ? baseline.DeformerWarpKeyforms(target)[0].positions[0] :
+                                           baseline.DeformerRotationKeyforms(target)[0].angle;
+        const float changedValue = originalValue + (type == QLatin1String("rotation") ? 7.25f : 0.125f);
+        QSignalSpy rejected(&editor.inspector, &CInspectorPanel::EditRejected);
         const auto revision = editor.document.Revision();
-        QVERIFY(!editor.controller.Submit(command, editor.current, 0, &error));
-        QVERIFY2(error.contains(QStringLiteral("共享")), qPrintable(error));
-        QCOMPARE(editor.attempts, 1);
-        QCOMPARE(editor.builds, 0);
-        QCOMPARE(editor.accepted, 0);
+        const int acceptedBefore = editor.accepted, builtBefore = editor.builds;
+        editor.accept = false;
+        table->item(0, 1)->setText(QString::number(changedValue, 'g', 9));
+        QCOMPARE(rejected.size(), 1);
+        QCOMPARE(editor.builds, builtBefore + 1);
+        QCOMPARE(editor.accepted, acceptedBefore);
         QCOMPARE(editor.document.Revision(), revision);
-        QCOMPARE(editor.document.DeformerWarpKeyforms(id), before);
         QVERIFY(!editor.document.CanUndoEdit());
-        QVERIFY(!editor.controller.IsActive());
-        QVERIFY(editor.publishedBytes.isEmpty());
+        QVERIFY(!editor.document.CanRedoEdit());
+        QCOMPARE(editor.controller.Pose(), frozenPose);
+        QCOMPARE(editor.publishedBytes, baselinePreview);
+        QCOMPARE(table->item(0, 1)->text().toFloat(), originalValue);
+
+        editor.accept = true;
+        table->item(0, 1)->setText(QString::number(changedValue, 'g', 9));
+        QCOMPARE(rejected.size(), 1);
+        QCOMPARE(editor.accepted, acceptedBefore + 1);
+        QVERIFY(editor.document.Revision() > revision);
+        QVERIFY(editor.document.CanUndoEdit() && !editor.document.CanRedoEdit());
+        QCOMPARE(editor.controller.Target(), target);
+        QCOMPARE(editor.controller.Type(), type);
+        QCOMPARE(editor.controller.Pose(), frozenPose);
+        const QByteArray editedPreview = editor.publishedBytes;
+        QVERIFY(editedPreview != baselinePreview);
+        QVERIFY(editedPreview.size() > baselinePreview.size());
+        QCOMPARE(editor.document.SourceBytes(), bytes);
+        QCOMPARE(editor.document.SourceDigest(), baseline.SourceDigest());
+        CModelDocument published;
+        QVERIFY2(published.LoadBytes(editedPreview, path, &error), qPrintable(error));
+        QCOMPARE(published.DrawableMaskIndices("Mesh"), QVector<int>{2});
+        QVERIFY(published.DrawableMaskInverted("Mesh"));
+        QCOMPARE(published.DeformerParentIndex("RootSibling"), 0);
+        if (type == QLatin1String("artmesh")) {
+            QCOMPARE(published.DrawableKeyformPositions(target, 0)[0], changedValue);
+            QCOMPARE(published.DrawableKeyformPositions(target, 1), baseline.DrawableKeyformPositions(target, 1));
+        } else if (type == QLatin1String("warp")) {
+            QCOMPARE(published.DeformerWarpKeyforms(target)[0].positions[0], changedValue);
+        } else {
+            QCOMPARE(published.DeformerRotationKeyforms(target)[0].angle, changedValue);
+        }
+        QCOMPARE(published.DeformerWarpKeyforms("WarpSibling"), baseline.DeformerWarpKeyforms("WarpSibling"));
+        QCOMPARE(published.DeformerRotationKeyforms("ChildSibling"), baseline.DeformerRotationKeyforms("ChildSibling"));
+        for (int keyform = 0; keyform < 2; ++keyform) {
+            QCOMPARE(published.DrawableKeyformPositions("MeshSibling", keyform), baseline.DrawableKeyformPositions("MeshSibling", keyform));
+            QCOMPARE(published.DrawableKeyformPositions("MeshOutside", keyform), baseline.DrawableKeyformPositions("MeshOutside", keyform));
+        }
+        QMap<QString, QVector<float>> editedWorld;
+        for (const QString& mesh : {QStringLiteral("Mesh"), QStringLiteral("MeshSibling"), QStringLiteral("MeshOutside")}) {
+            QVector<float> world, fromBytes;
+            QVERIFY2(mappedVertices(editor.document, mesh, frozenPose, world, &error), qPrintable(error));
+            QVERIFY2(mappedVertices(published, mesh, frozenPose, fromBytes, &error), qPrintable(error));
+            QVERIFY(DeformerSnapshotData::near(world, fromBytes));
+            if (mesh == QLatin1String("Mesh")) QVERIFY(!DeformerSnapshotData::near(world, originalWorld.value(mesh)));
+            else QVERIFY(DeformerSnapshotData::near(world, originalWorld.value(mesh)));
+            editedWorld.insert(mesh, world);
+        }
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            QByteArray again;
+            QVERIFY2(editor.document.BuildPreviewMoc(again, &error), qPrintable(error));
+            QCOMPARE(again, editedPreview);
+        }
+
+        const auto acceptedRevision = editor.document.Revision();
+        editor.accept = false;
+        editor.inspector.Undo();
+        QCOMPARE(rejected.size(), 2);
+        QCOMPARE(editor.document.Revision(), acceptedRevision);
+        QVERIFY(editor.document.CanUndoEdit() && !editor.document.CanRedoEdit());
+        QCOMPARE(editor.publishedBytes, editedPreview);
+        QCOMPARE(editor.controller.Pose(), frozenPose);
+        editor.accept = true;
+        editor.inspector.Undo();
+        QCOMPARE(editor.publishedBytes, baselinePreview);
+        QVERIFY(!editor.document.CanUndoEdit() && editor.document.CanRedoEdit());
+        QVector<float> restoredWorld;
+        QVERIFY2(mappedVertices(editor.document, "Mesh", frozenPose, restoredWorld, &error), qPrintable(error));
+        QVERIFY(DeformerSnapshotData::near(restoredWorld, originalWorld.value("Mesh")));
+        editor.inspector.Redo();
+        QCOMPARE(editor.publishedBytes, editedPreview);
+        QVERIFY(editor.document.CanUndoEdit() && !editor.document.CanRedoEdit());
+
+        CModelSession session;
+        session.sourceMoc = path;
+        session.sourceDigest = editor.document.SourceDigest();
+        session.drawableKeyformPositions = editor.document.DrawableKeyformPositionOverrides();
+        session.deformerWarpKeyforms = editor.document.DeformerWarpKeyformOverrides();
+        session.deformerRotationKeyforms = editor.document.DeformerRotationKeyformOverrides();
+        session.deformerParentIndices = editor.document.DeformerParentOverrides();
+        session.drawableMaskIndices = editor.document.DrawableMaskIndexOverrides();
+        session.drawableMaskInverted = editor.document.DrawableMaskInvertedOverrides();
+        const auto sessionPath = directory.filePath(QStringLiteral("shared.session.json"));
+        QVERIFY2(session.Save(sessionPath, &error), qPrintable(error));
+        CModelSession decoded;
+        QVERIFY2(CModelSession::Load(sessionPath, &decoded, &error), qPrintable(error));
+        Editor reloaded;
+        QVERIFY2(reloaded.document.Load(decoded.sourceMoc, &error), qPrintable(error));
+        CModelDocument candidate;
+        QVERIFY2(decoded.RestoreDocument(reloaded.document, candidate, &error), qPrintable(error));
+        reloaded.bind();
+        QVERIFY2(reloaded.controller.Restore(candidate, &error), qPrintable(error));
+        QCOMPARE(reloaded.publishedBytes, editedPreview);
+        QCOMPARE(reloaded.document.SourceDigest(), baseline.SourceDigest());
+        QVERIFY(!reloaded.document.CanUndoEdit() && !reloaded.document.CanRedoEdit());
+        for (auto it = editedWorld.cbegin(); it != editedWorld.cend(); ++it) {
+            QVector<float> world;
+            QVERIFY2(mappedVertices(reloaded.document, it.key(), frozenPose, world, &error), qPrintable(error));
+            QVERIFY(DeformerSnapshotData::near(world, it.value()));
+        }
     }
 
     void deformerActivationCannotReplaceAnActiveMeshDrag()

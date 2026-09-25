@@ -14,6 +14,7 @@
 #include <framework/Rendering/OpenGL/CubismOffscreenSurface_OpenGLES2.hpp>
 
 #include "LAppWavFileHandler.hpp"
+#include "cdeformerdrag.h"
 #include <QRectF>
 #include <QMap>
 #include <QSet>
@@ -101,8 +102,8 @@ public:
     void SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                const QList<float>& maxVals, const QList<float>& defaultVals);
     void ApplyDeformerDrag(float viewX, float viewY);
-    void StopDeformerDrag() { _deformerDragActive = false; }
-    const QStringList& GetDeformerDragParamIds() const { return _deformerDragParamIds; }
+    void StopDeformerDrag() { m_deformerDrag.Stop(); }
+    const QStringList& GetDeformerDragParamIds() const { return m_deformerDrag.Ids(); }
     // 运行时探测：找到影响指定 ArtMesh 的参数
     void ProbeParamsForArtMeshes(const QStringList& artMeshNames);
 
@@ -185,10 +186,7 @@ private:
     QStringList _physicsDragTypes;
 
     // 变形器拖拽参数
-    QStringList _deformerDragParamIds;
-    QList<float> _deformerDragMinVals, _deformerDragMaxVals, _deformerDragDefaultVals;
-    QList<float> _deformerDragValues; // 当前拖拽值
-    bool _deformerDragActive = false;
+    CDeformerDrag m_deformerDrag;
 
     // Part 可见性控制
     QSet<QString> _hiddenPartIds;

@@ -22,6 +22,7 @@ if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
 endif()
 
 add_library(model_data STATIC
+    live2d/cdeformerdrag.cpp
     opengl/cmeshbounds.cpp
     opengl/cuvgeometry.cpp
     live2dstruct/ccanvasgeometry.cpp
@@ -149,6 +150,13 @@ if(BUILD_TESTING)
     target_link_libraries(moc_deformer_preview_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_deformer_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME moc_deformer_preview COMMAND moc_deformer_preview_tests)
+    add_executable(shared_keyform_preview_tests tests/shared_keyform_preview_tests.cpp)
+    target_link_libraries(shared_keyform_preview_tests PRIVATE deformer_tree_data Qt6::Test)
+    target_compile_definitions(shared_keyform_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME shared_keyform_preview COMMAND shared_keyform_preview_tests)
+    add_executable(deformer_drag_tests tests/deformer_drag_tests.cpp)
+    target_link_libraries(deformer_drag_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME deformer_drag COMMAND deformer_drag_tests)
     add_executable(mask_moc_preview_tests tests/mask_moc_preview_tests.cpp)
     target_link_libraries(mask_moc_preview_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(mask_moc_preview_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
@@ -360,6 +368,12 @@ if(BUILD_TESTING)
     target_compile_definitions(param_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME param_panel COMMAND param_panel_tests)
     set_tests_properties(param_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(blend_shape_panel_tests tests/blend_shape_panel_tests.cpp
+        ui/cblendshapepanel.cpp ui/para/ccidjson.cpp)
+    target_link_libraries(blend_shape_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(blend_shape_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME blend_shape_panel COMMAND blend_shape_panel_tests)
+    set_tests_properties(blend_shape_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(cmotiontimeline_tests tests/cmotiontimeline_tests.cpp)
     target_include_directories(cmotiontimeline_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(cmotiontimeline_tests PRIVATE model_data Qt6::Test Qt6::Core)

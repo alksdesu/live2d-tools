@@ -20,7 +20,11 @@ constexpr int MaskCountIndex = 17;
 enum class Kind { ArtMesh, Warp, Rotation };
 enum class ColumnId {
     Parent, WarpOpacity, WarpBegin, RotationOpacity, Angle, OriginX, OriginY, Scale,
-    ReflectX, ReflectY, ArtBegin, Positions, DrawableFlags, MaskBegin, MaskCount, Masks, Count
+    ReflectX, ReflectY, ArtBegin, Positions, DrawableFlags, MaskBegin, MaskCount, Masks,
+    ArtOpacity, ArtDrawOrder, ArtSourceBegin, Specific,
+    WarpBinding, WarpSourceBegin, WarpSourceCount, WarpVertices, WarpRows, WarpColumns, WarpQuad, WarpColor,
+    RotationBinding, RotationSourceBegin, RotationSourceCount, RotationBaseAngle, RotationColor,
+    BlendWarpTarget, BlendWarpBegin, BlendWarpCount, Count
 };
 constexpr size_t ColumnCount = static_cast<size_t>(ColumnId::Count);
 size_t Index(Kind kind) { return static_cast<size_t>(kind); }
@@ -112,6 +116,7 @@ struct Column
     int count;
     QVector<QPair<qint64, qint64>> aliases;
     int width = 4;
+    bool optional = false;
 
     bool Safe(qint64 first, qint64 bytes) const
     {
@@ -142,6 +147,13 @@ struct Row
 };
 
 struct Address { Kind kind; int row; };
+struct ObjectEdit
+{
+    Kind kind;
+    int index;
+    int specific;
+    QVector<int> changedRows;
+};
 struct Request
 {
     QVector<QByteArray> fields;
@@ -181,7 +193,9 @@ struct CMocPreviewBuilder::Snapshot
     std::array<Column, ColumnCount> columns;
     int positionCountOffset = 0;
     int maskCountOffset = 0;
+    int countInfoOffset = 0;
     int partCount = 0;
+    QHash<int, QVector<int>> blendShapesByWarp;
 
     const Column& Get(ColumnId column) const { return columns[Index(column)]; }
     QByteArray Cell(ColumnId column, int row) const
@@ -207,6 +221,8 @@ struct CMocPreviewBuilder::Snapshot
         return (Word(source, 0) != 0) == value ? source : EncodeWord(value ? 1 : 0);
     }
     bool Read(CSectionTable& table, QString* error);
+    bool Detach(const QVector<ObjectEdit>& objects, const std::array<QHash<int, Request>, 3>& requests,
+                QByteArray& output, bool& changed, QString* error) const;
     bool ParentPatches(const QHash<QString, int>& overrides, Patches& patches, QString* error) const;
     bool MaskPatches(const Overrides& overrides, Patches& patches, QMap<int, QByteArray>& masks, QString* error) const;
     bool Write(const Patches& patches, const QVector<Address>& positions,
@@ -238,8 +254,29 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
         {"art_meshes.drawable_flags", 0xe8, offsets.art_meshes->drawable_flags, counts.art_meshes, {}, 1},
         {"art_meshes.drawable_mask_sources_begin_indices", 0xfc, offsets.art_meshes->drawable_mask_sources_begin_indices, counts.art_meshes, {}},
         {"art_meshes.drawable_mask_sources_counts", 0x100, offsets.art_meshes->drawable_mask_sources_counts, counts.art_meshes, {}},
-        {"drawable_masks.art_mesh_sources_indices", 0x180, offsets.drawable_masks->art_mesh_sources_indices, counts.drawable_masks, {}}
+        {"drawable_masks.art_mesh_sources_indices", 0x180, offsets.drawable_masks->art_mesh_sources_indices, counts.drawable_masks, {}},
+        {"art_mesh_keyforms.opacities", 0x150, offsets.art_mesh_keyforms->opacities, counts.art_mesh_keyforms, {}},
+        {"art_mesh_keyforms.draw_orders", 0x154, offsets.art_mesh_keyforms->draw_orders, counts.art_mesh_keyforms, {}},
+        {"art_meshes.keyform_sources_begin_indices", 0xcc, offsets.art_meshes->keyform_sources_begin_indices, counts.art_meshes, {}},
+        {"deformers.specific_sources_indices", 0x88, offsets.deformers->specific_sources_indices, counts.deformers, {}},
+        {"warp_deformers.keyform_binding_sources_indices", 0x8c, offsets.warp_deformers->keyform_binding_sources_indices, counts.warp_deformers, {}},
+        {"warp_deformers.keyform_sources_begin_indices", 0x90, offsets.warp_deformers->keyform_sources_begin_indices, counts.warp_deformers, {}},
+        {"warp_deformers.keyform_sources_counts", 0x94, offsets.warp_deformers->keyform_sources_counts, counts.warp_deformers, {}},
+        {"warp_deformers.vertex_counts", 0x98, offsets.warp_deformers->vertex_counts, counts.warp_deformers, {}},
+        {"warp_deformers.rows", 0x9c, offsets.warp_deformers->rows, counts.warp_deformers, {}},
+        {"warp_deformers.columns", 0xa0, offsets.warp_deformers->columns, counts.warp_deformers, {}},
+        {"warp_deformers.is_quad_source", 0x1d4, offsets.warp_deformers->is_quad_source, counts.warp_deformers, {}, 4, true},
+        {"warp_deformers.keyform_color_sources_begin_indices", 0x1e4, offsets.warp_deformers->keyform_color_sources_begin_indices, counts.warp_deformers, {}, 4, true},
+        {"rotation_deformers.keyform_binding_sources_indices", 0xa4, offsets.rotation_deformers->keyform_binding_sources_indices, counts.rotation_deformers, {}},
+        {"rotation_deformers.keyform_sources_begin_indices", 0xa8, offsets.rotation_deformers->keyform_sources_begin_indices, counts.rotation_deformers, {}},
+        {"rotation_deformers.keyform_sources_counts", 0xac, offsets.rotation_deformers->keyform_sources_counts, counts.rotation_deformers, {}},
+        {"rotation_deformers.base_angles", 0xb0, offsets.rotation_deformers->base_angles, counts.rotation_deformers, {}},
+        {"rotation_deformers.keyform_color_sources_begin_indices", 0x1e8, offsets.rotation_deformers->keyform_color_sources_begin_indices, counts.rotation_deformers, {}, 4, true},
+        {"blend_shapes_warp_deformers.target_indices", 0x234, offsets.blend_shapes_warp_deformers->target_indices, counts.blend_shapes_warp_deformers, {}},
+        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_begin_indices", 0x238, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_begin_indices, counts.blend_shapes_warp_deformers, {}},
+        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_counts", 0x23c, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_counts, counts.blend_shapes_warp_deformers, {}}
     }};
+    countInfoOffset = offsets.count_info->count_info_offset;
     positionCountOffset = offsets.count_info->count_info_offset + PositionCountIndex * 4;
     maskCountOffset = offsets.count_info->count_info_offset + MaskCountIndex * 4;
     partCount = counts.parts;
@@ -358,6 +395,8 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
     if (!addBlendShapes(table.blend_shapes_art_meshes, table.art_meshes, Kind::ArtMesh, counts.art_mesh_keyforms) ||
         !addBlendShapes(table.blend_shapes_warp_deformers, table.warp_deformers, Kind::Warp, counts.warp_deformer_keyforms))
         return Fail(error, QStringLiteral("BlendShape 目标或关键形引用越界"));
+    for (int index = 0; index < table.blend_shapes_warp_deformers.size(); ++index)
+        blendShapesByWarp[table.blend_shapes_warp_deformers[index]->target_indices].append(index);
 
     struct Interval { int begin; int end; Kind kind; int row; };
     QVector<Interval> intervals;
@@ -399,6 +438,134 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
             (index + 1 == intervals.size() || intervals[index + 1].begin >= interval.end);
         previousEnd = std::max(previousEnd, interval.end);
     }
+    return true;
+}
+
+bool CMocPreviewBuilder::Snapshot::Detach(const QVector<ObjectEdit>& objects,
+                                          const std::array<QHash<int, Request>, 3>& requests,
+                                          QByteArray& output, bool& changed, QString* error) const
+{
+    changed = false;
+    QVector<const ObjectEdit*> selected;
+    std::array<QVector<int>, 2> sourceOwners{QVector<int>(warps.size(), 0), QVector<int>(rotations.size(), 0)};
+    for (const auto& object : objects) {
+        bool isolate = false;
+        for (int rowIndex : object.changedRows) {
+            const auto& row = rows[Index(object.kind)][rowIndex];
+            const auto& request = requests[Index(object.kind)].constFind(rowIndex).value();
+            isolate = isolate || row.blendShape || row.orphanSource || !request.equal || request.owners != row.owners;
+        }
+        if (!isolate) continue;
+        selected.append(&object);
+        if (object.kind != Kind::ArtMesh) ++sourceOwners[Index(object.kind) - 1][object.specific];
+    }
+    if (selected.isEmpty()) return true;
+
+    const std::array<QVector<ColumnId>, 6> groups{{
+        {ColumnId::ArtOpacity, ColumnId::ArtDrawOrder, ColumnId::ArtBegin},
+        {ColumnId::WarpOpacity, ColumnId::WarpBegin},
+        {ColumnId::RotationOpacity, ColumnId::Angle, ColumnId::OriginX, ColumnId::OriginY,
+         ColumnId::Scale, ColumnId::ReflectX, ColumnId::ReflectY},
+        {ColumnId::WarpBinding, ColumnId::WarpSourceBegin, ColumnId::WarpSourceCount, ColumnId::WarpVertices,
+         ColumnId::WarpRows, ColumnId::WarpColumns, ColumnId::WarpQuad, ColumnId::WarpColor},
+        {ColumnId::RotationBinding, ColumnId::RotationSourceBegin, ColumnId::RotationSourceCount,
+         ColumnId::RotationBaseAngle, ColumnId::RotationColor},
+        {ColumnId::BlendWarpTarget, ColumnId::BlendWarpBegin, ColumnId::BlendWarpCount}
+    }};
+    constexpr std::array<int, 6> countIndices{9, 7, 8, 2, 3, 27};
+    std::array<QVector<int>, 6> appended;
+    std::array<QSet<int>, 2> retained;
+    Patches patches;
+    const auto appendRows = [&](int group, int first, int count, int& destination) {
+        const auto& column = Get(groups[group].first());
+        const qint64 total = qint64(column.count) + appended[group].size() + count;
+        if (!Range(first, count, column.count) || total > MaximumCount)
+            return Fail(error, QStringLiteral("独立关键形数组超出范围：%1").arg(QString::fromLatin1(column.name)));
+        destination = column.count + appended[group].size();
+        for (int row = 0; row < count; ++row) appended[group].append(first + row);
+        return true;
+    };
+    for (const auto* object : selected) {
+        const Source& source = object->kind == Kind::ArtMesh ? meshes[object->index].source :
+            (object->kind == Kind::Warp ? warps : rotations)[object->specific];
+        int keyformBegin = 0;
+        if (!appendRows(int(Index(object->kind)), source.firstRow, source.rowCount, keyformBegin)) return false;
+        if (object->kind == Kind::ArtMesh) {
+            patches[Index(ColumnId::ArtSourceBegin)].insert(object->index, EncodeWord(quint32(keyformBegin)));
+            continue;
+        }
+        const int kind = int(Index(object->kind)) - 1;
+        int specific = object->specific;
+        if (source.owners > 1) {
+            if (sourceOwners[kind][specific] == source.owners && !retained[kind].contains(specific))
+                retained[kind].insert(specific);
+            else {
+                if (!appendRows(3 + kind, object->specific, 1, specific)) return false;
+                patches[Index(ColumnId::Specific)].insert(object->index, EncodeWord(quint32(specific)));
+            }
+        }
+        const ColumnId sourceBegin = object->kind == Kind::Warp ? ColumnId::WarpSourceBegin : ColumnId::RotationSourceBegin;
+        patches[Index(sourceBegin)].insert(specific, EncodeWord(quint32(keyformBegin)));
+        if (object->kind != Kind::Warp || specific == object->specific) continue;
+        const auto shapes = blendShapesByWarp.constFind(object->specific);
+        if (shapes == blendShapesByWarp.cend()) continue;
+        for (int row : shapes.value()) {
+            int appendedRow = 0;
+            if (!appendRows(5, row, 1, appendedRow)) return false;
+            patches[Index(ColumnId::BlendWarpTarget)].insert(appendedRow, EncodeWord(quint32(specific)));
+        }
+    }
+
+    std::array<int, ColumnCount> columnGroups;
+    columnGroups.fill(-1);
+    for (int group = 0; group < int(groups.size()); ++group)
+        for (ColumnId column : groups[group]) columnGroups[Index(column)] = group;
+    std::array<qint64, ColumnCount> destinations{};
+    std::array<int, ColumnCount> sizes{};
+    std::array<bool, ColumnCount> relocated{};
+    qint64 finalSize = bytes.size();
+    for (size_t index = 0; index < ColumnCount; ++index) {
+        const auto& column = columns[index];
+        const int group = columnGroups[index];
+        const int extra = group < 0 ? 0 : appended[group].size();
+        sizes[index] = column.count + extra;
+        if ((!extra && patches[index].isEmpty()) || (column.optional && !column.offset)) continue;
+        for (auto it = patches[index].cbegin(); it != patches[index].cend(); ++it) {
+            if (it.key() < 0 || it.key() >= sizes[index] || it->size() != column.width)
+                return Fail(error, QStringLiteral("独立关键形字段补丁越界"));
+        }
+        relocated[index] = true;
+        destinations[index] = Align64(finalSize);
+        finalSize = destinations[index] + qint64(sizes[index]) * column.width;
+    }
+    finalSize = Align64(finalSize);
+    if (finalSize > std::numeric_limits<int>::max()) return Fail(error, QStringLiteral("独立关键形文件长度超出范围"));
+    QByteArray candidate = bytes;
+    candidate.resize(finalSize);
+    std::memset(candidate.data() + bytes.size(), 0, finalSize - bytes.size());
+    for (int group = 0; group < int(groups.size()); ++group) {
+        if (!appended[group].isEmpty())
+            Put(candidate, countInfoOffset + countIndices[group] * 4,
+                quint32(Get(groups[group].first()).count + appended[group].size()));
+    }
+    for (size_t index = 0; index < ColumnCount; ++index) {
+        if (!relocated[index]) continue;
+        const auto& column = columns[index];
+        const qint64 destination = destinations[index];
+        if (column.count)
+            std::memcpy(candidate.data() + destination, bytes.constData() + column.offset, column.count * column.width);
+        const int group = columnGroups[index];
+        if (group >= 0) {
+            for (int row = 0; row < appended[group].size(); ++row)
+                std::memcpy(candidate.data() + destination + qint64(column.count + row) * column.width,
+                            bytes.constData() + column.offset + qint64(appended[group][row]) * column.width, column.width);
+        }
+        for (auto it = patches[index].cbegin(); it != patches[index].cend(); ++it)
+            std::memcpy(candidate.data() + destination + qint64(it.key()) * column.width, it->constData(), column.width);
+        Put(candidate, column.slot, quint32(destination));
+    }
+    output = std::move(candidate);
+    changed = true;
     return true;
 }
 
@@ -643,117 +810,147 @@ bool CMocPreviewBuilder::BuildOverrides(const Overrides& overrides, QByteArray& 
     if (error) error->clear();
     if (!m_snapshot) return Fail(error, QStringLiteral("预览补丁尚未初始化"));
     try {
-        const auto& state = *m_snapshot;
-        const auto& artMeshPositions = overrides.artMeshPositions;
-        const auto& warpKeyforms = overrides.warpKeyforms;
-        const auto& rotationKeyforms = overrides.rotationKeyforms;
-        for (auto it = artMeshPositions.cbegin(); it != artMeshPositions.cend(); ++it)
-            if (!state.meshIndices.contains(it.key())) return Fail(error, QStringLiteral("未知 ArtMesh：%1").arg(it.key()));
-        const auto knownDeformers = [&](const auto& overrides, int type) {
-            for (auto it = overrides.cbegin(); it != overrides.cend(); ++it) {
-                const auto found = state.deformerIndices.constFind(it.key());
-                if (found == state.deformerIndices.cend() || state.deformers[*found].type != type)
-                    return Fail(error, QStringLiteral("未知变形器或类型不匹配：%1").arg(it.key()));
-            }
-            return true;
-        };
-        if (!knownDeformers(warpKeyforms, 0) || !knownDeformers(rotationKeyforms, 1)) return false;
-        Patches patches;
-        QMap<int, QByteArray> masks;
-        if (!state.ParentPatches(overrides.deformerParents, patches, error) ||
-            !state.MaskPatches(overrides, patches, masks, error)) return false;
-        std::array<QHash<int, Request>, 3> requests;
-        QVector<Address> order;
-        const auto collect = [&](Kind kind, int row, QVector<QByteArray> fields, const QVector<QByteArray>& original) {
-            auto& table = requests[Index(kind)];
-            if (!table.contains(row)) order.append({kind, row});
-            auto& request = table[row];
-            if (!request.owners) request.fields = fields;
-            else request.equal = request.equal && request.fields == fields;
-            ++request.owners;
-            request.changed = request.changed || fields != original;
-        };
-        const auto finitePositions = [](const QVector<float>& values) {
-            return std::all_of(values.cbegin(), values.cend(), [](float value) { return std::isfinite(value); });
-        };
-        for (const auto& mesh : state.meshes) {
-            const auto found = artMeshPositions.constFind(mesh.id);
-            if (found == artMeshPositions.cend()) continue;
-            if (found->size() > mesh.source.rowCount) return Fail(error, QStringLiteral("关键形索引越界：%1").arg(mesh.id));
-            for (int local = 0; local < found->size(); ++local) {
-                const auto& values = (*found)[local];
-                if (values.isEmpty()) continue;
-                if (values.size() != mesh.source.vertices * 2 || !finitePositions(values))
-                    return Fail(error, QStringLiteral("关键形坐标数量或数值无效：%1[%2]").arg(mesh.id).arg(local));
-                const int row = mesh.source.firstRow + local;
-                collect(Kind::ArtMesh, row, {EncodePositions(values)}, {state.Positions(Kind::ArtMesh, row, mesh.source.vertices)});
-            }
-        }
-        for (const auto& deformer : state.deformers) {
-            if (deformer.type == 0 && warpKeyforms.contains(deformer.id)) {
-                const auto& forms = warpKeyforms[deformer.id];
-                const auto& source = state.warps[deformer.specific];
-                const qint64 vertices = (qint64(source.gridRows) + 1) * (qint64(source.gridColumns) + 1);
-                if (source.gridRows < 0 || source.gridColumns < 0 || source.gridRows > 1000 || source.gridColumns > 1000 ||
-                    vertices != source.vertices || forms.isEmpty() || forms.size() != source.rowCount)
-                    return Fail(error, QStringLiteral("Warp 网格或关键形数量无效：%1").arg(deformer.id));
-                for (int local = 0; local < forms.size(); ++local) {
-                    const auto& form = forms[local];
-                    const int row = source.firstRow + local;
-                    if (!Opacity(form.opacity) || form.positions.size() != source.vertices * 2 || !finitePositions(form.positions))
-                        return Fail(error, QStringLiteral("Warp 关键形数值无效：%1[%2]").arg(deformer.id).arg(local));
-                    collect(Kind::Warp, row, {EncodePositions(form.positions), state.FloatCell(ColumnId::WarpOpacity, row, form.opacity)},
-                            {state.Positions(Kind::Warp, row, source.vertices), state.Cell(ColumnId::WarpOpacity, row)});
+        std::unique_ptr<Snapshot> detached;
+        const Snapshot* working = m_snapshot.get();
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const auto& state = *working;
+            const auto& artMeshPositions = overrides.artMeshPositions;
+            const auto& warpKeyforms = overrides.warpKeyforms;
+            const auto& rotationKeyforms = overrides.rotationKeyforms;
+            for (auto it = artMeshPositions.cbegin(); it != artMeshPositions.cend(); ++it)
+                if (!state.meshIndices.contains(it.key())) return Fail(error, QStringLiteral("未知 ArtMesh：%1").arg(it.key()));
+            const auto knownDeformers = [&](const auto& overrides, int type) {
+                for (auto it = overrides.cbegin(); it != overrides.cend(); ++it) {
+                    const auto found = state.deformerIndices.constFind(it.key());
+                    if (found == state.deformerIndices.cend() || state.deformers[*found].type != type)
+                        return Fail(error, QStringLiteral("未知变形器或类型不匹配：%1").arg(it.key()));
                 }
-            } else if (deformer.type == 1 && rotationKeyforms.contains(deformer.id)) {
-                const auto& forms = rotationKeyforms[deformer.id];
-                const auto& source = state.rotations[deformer.specific];
-                if (forms.isEmpty() || forms.size() != source.rowCount)
-                    return Fail(error, QStringLiteral("Rotation 关键形数量无效：%1").arg(deformer.id));
-                for (int local = 0; local < forms.size(); ++local) {
-                    const auto& form = forms[local];
-                    const int row = source.firstRow + local;
-                    if (!Opacity(form.opacity) || !std::isfinite(form.angle) || !std::isfinite(form.originX) ||
-                        !std::isfinite(form.originY) || !std::isfinite(form.scale) || form.scale < 0)
-                        return Fail(error, QStringLiteral("Rotation 关键形数值无效：%1[%2]").arg(deformer.id).arg(local));
-                    QVector<QByteArray> original;
-                    for (int field = 0; field < 7; ++field) original.append(state.Cell(RotationColumn(field), row));
-                    collect(Kind::Rotation, row, {state.FloatCell(ColumnId::RotationOpacity, row, form.opacity),
-                        state.FloatCell(ColumnId::Angle, row, form.angle), state.FloatCell(ColumnId::OriginX, row, form.originX),
-                        state.FloatCell(ColumnId::OriginY, row, form.originY), state.FloatCell(ColumnId::Scale, row, form.scale),
-                        state.BoolCell(ColumnId::ReflectX, row, form.reflectX), state.BoolCell(ColumnId::ReflectY, row, form.reflectY)}, original);
+                return true;
+            };
+            if (!knownDeformers(warpKeyforms, 0) || !knownDeformers(rotationKeyforms, 1)) return false;
+            Patches patches;
+            QMap<int, QByteArray> masks;
+            if (!state.ParentPatches(overrides.deformerParents, patches, error) ||
+                !state.MaskPatches(overrides, patches, masks, error)) return false;
+            std::array<QHash<int, Request>, 3> requests;
+            QVector<Address> order;
+            QVector<ObjectEdit> objects;
+            const auto collect = [&](ObjectEdit& object, int row, QVector<QByteArray> fields, const QVector<QByteArray>& original) {
+                const Kind kind = object.kind;
+                auto& table = requests[Index(kind)];
+                if (!table.contains(row)) order.append({kind, row});
+                auto& request = table[row];
+                if (!request.owners) request.fields = fields;
+                else request.equal = request.equal && request.fields == fields;
+                ++request.owners;
+                request.changed = request.changed || fields != original;
+                if (fields != original) object.changedRows.append(row);
+            };
+            const auto finitePositions = [](const QVector<float>& values) {
+                return std::all_of(values.cbegin(), values.cend(), [](float value) { return std::isfinite(value); });
+            };
+            for (const auto& mesh : state.meshes) {
+                const auto found = artMeshPositions.constFind(mesh.id);
+                if (found == artMeshPositions.cend()) continue;
+                if (found->size() > mesh.source.rowCount) return Fail(error, QStringLiteral("关键形索引越界：%1").arg(mesh.id));
+                ObjectEdit object{Kind::ArtMesh, state.meshIndices.value(mesh.id), -1, {}};
+                for (int local = 0; local < found->size(); ++local) {
+                    const auto& values = (*found)[local];
+                    if (values.isEmpty()) continue;
+                    if (values.size() != mesh.source.vertices * 2 || !finitePositions(values))
+                        return Fail(error, QStringLiteral("关键形坐标数量或数值无效：%1[%2]").arg(mesh.id).arg(local));
+                    const int row = mesh.source.firstRow + local;
+                    collect(object, row, {EncodePositions(values)}, {state.Positions(Kind::ArtMesh, row, mesh.source.vertices)});
                 }
+                objects.append(std::move(object));
             }
-        }
-        QVector<Address> changedPositions;
-        for (const auto& address : order) {
-            const auto& request = GetRequest(requests, address);
-            if (!request.changed) continue;
-            const auto& row = state.rows[Index(address.kind)][address.row];
-            if (row.blendShape) return Fail(error, QStringLiteral("关键形行 %1 同时被 BlendShape 引用，无法独立修改").arg(address.row));
-            if (row.orphanSource) return Fail(error, QStringLiteral("关键形行 %1 仍被未映射的变形器专用源引用").arg(address.row));
-            if (!request.equal || request.owners != row.owners)
-                return Fail(error, QStringLiteral("共享关键形行 %1 必须由全部 %2 个引用者提交相同数据").arg(address.row).arg(row.owners));
-            if (address.kind != Kind::Rotation) {
-                const auto& values = request.fields[0];
-                const auto original = state.bytes.mid(state.Get(ColumnId::Positions).offset + row.begin * 4, values.size());
-                if (values != original) changedPositions.append(address);
-                if (address.kind == Kind::Warp && request.fields[1] != state.Cell(ColumnId::WarpOpacity, address.row))
-                    patches[Index(ColumnId::WarpOpacity)].insert(address.row, request.fields[1]);
-            } else {
-                for (int field = 0; field < 7; ++field) {
-                    const auto column = RotationColumn(field);
-                    if (request.fields[field] != state.Cell(column, address.row))
-                        patches[Index(column)].insert(address.row, request.fields[field]);
+            for (const auto& deformer : state.deformers) {
+                if (deformer.type == 0 && warpKeyforms.contains(deformer.id)) {
+                    const auto& forms = warpKeyforms[deformer.id];
+                    const auto& source = state.warps[deformer.specific];
+                    ObjectEdit object{Kind::Warp, state.deformerIndices.value(deformer.id), deformer.specific, {}};
+                    const qint64 vertices = (qint64(source.gridRows) + 1) * (qint64(source.gridColumns) + 1);
+                    if (source.gridRows < 0 || source.gridColumns < 0 || source.gridRows > 1000 || source.gridColumns > 1000 ||
+                        vertices != source.vertices || forms.isEmpty() || forms.size() != source.rowCount)
+                        return Fail(error, QStringLiteral("Warp 网格或关键形数量无效：%1").arg(deformer.id));
+                    for (int local = 0; local < forms.size(); ++local) {
+                        const auto& form = forms[local];
+                        const int row = source.firstRow + local;
+                        if (!Opacity(form.opacity) || form.positions.size() != source.vertices * 2 || !finitePositions(form.positions))
+                            return Fail(error, QStringLiteral("Warp 关键形数值无效：%1[%2]").arg(deformer.id).arg(local));
+                        collect(object, row, {EncodePositions(form.positions), state.FloatCell(ColumnId::WarpOpacity, row, form.opacity)},
+                                {state.Positions(Kind::Warp, row, source.vertices), state.Cell(ColumnId::WarpOpacity, row)});
+                    }
+                    objects.append(std::move(object));
+                } else if (deformer.type == 1 && rotationKeyforms.contains(deformer.id)) {
+                    const auto& forms = rotationKeyforms[deformer.id];
+                    const auto& source = state.rotations[deformer.specific];
+                    ObjectEdit object{Kind::Rotation, state.deformerIndices.value(deformer.id), deformer.specific, {}};
+                    if (forms.isEmpty() || forms.size() != source.rowCount)
+                        return Fail(error, QStringLiteral("Rotation 关键形数量无效：%1").arg(deformer.id));
+                    for (int local = 0; local < forms.size(); ++local) {
+                        const auto& form = forms[local];
+                        const int row = source.firstRow + local;
+                        if (!Opacity(form.opacity) || !std::isfinite(form.angle) || !std::isfinite(form.originX) ||
+                            !std::isfinite(form.originY) || !std::isfinite(form.scale) || form.scale < 0)
+                            return Fail(error, QStringLiteral("Rotation 关键形数值无效：%1[%2]").arg(deformer.id).arg(local));
+                        QVector<QByteArray> original;
+                        for (int field = 0; field < 7; ++field) original.append(state.Cell(RotationColumn(field), row));
+                        collect(object, row, {state.FloatCell(ColumnId::RotationOpacity, row, form.opacity),
+                            state.FloatCell(ColumnId::Angle, row, form.angle), state.FloatCell(ColumnId::OriginX, row, form.originX),
+                            state.FloatCell(ColumnId::OriginY, row, form.originY), state.FloatCell(ColumnId::Scale, row, form.scale),
+                            state.BoolCell(ColumnId::ReflectX, row, form.reflectX), state.BoolCell(ColumnId::ReflectY, row, form.reflectY)}, original);
+                    }
+                    objects.append(std::move(object));
                 }
             }
+            if (attempt == 0) {
+                QByteArray structure;
+                bool changed = false;
+                if (!state.Detach(objects, requests, structure, changed, error)) return false;
+                if (changed) {
+                    CReader reader = CReader::FromBytes(structure);
+                    CSectionTable table(reader);
+                    if (!table.IsValid()) return Fail(error, QStringLiteral("独立关键形结构校验失败：%1").arg(reader.Error()));
+                    detached = std::make_unique<Snapshot>();
+                    detached->bytes = std::move(structure);
+                    detached->digest = state.digest;
+                    if (!detached->Read(table, error)) return false;
+                    working = detached.get();
+                    continue;
+                }
+            }
+            QVector<Address> changedPositions;
+            for (const auto& address : order) {
+                const auto& request = GetRequest(requests, address);
+                if (!request.changed) continue;
+                const auto& row = state.rows[Index(address.kind)][address.row];
+                if (row.blendShape) return Fail(error, QStringLiteral("关键形行 %1 同时被 BlendShape 引用，无法独立修改").arg(address.row));
+                if (row.orphanSource) return Fail(error, QStringLiteral("关键形行 %1 仍被未映射的变形器专用源引用").arg(address.row));
+                if (!request.equal || request.owners != row.owners)
+                    return Fail(error, QStringLiteral("共享关键形行 %1 必须由全部 %2 个引用者提交相同数据").arg(address.row).arg(row.owners));
+                if (address.kind != Kind::Rotation) {
+                    const auto& values = request.fields[0];
+                    const auto original = state.bytes.mid(state.Get(ColumnId::Positions).offset + row.begin * 4, values.size());
+                    if (values != original) changedPositions.append(address);
+                    if (address.kind == Kind::Warp && request.fields[1] != state.Cell(ColumnId::WarpOpacity, address.row))
+                        patches[Index(ColumnId::WarpOpacity)].insert(address.row, request.fields[1]);
+                } else {
+                    for (int field = 0; field < 7; ++field) {
+                        const auto column = RotationColumn(field);
+                        if (request.fields[field] != state.Cell(column, address.row))
+                            patches[Index(column)].insert(address.row, request.fields[field]);
+                    }
+                }
+            }
+            const bool anyCells = std::any_of(patches.cbegin(), patches.cend(), [](const auto& patch) { return !patch.isEmpty(); });
+            if (!anyCells && changedPositions.isEmpty() && masks.isEmpty()) {
+                result = state.bytes;
+                return true;
+            }
+            return state.Write(patches, changedPositions, requests, masks, result, error);
         }
-        const bool anyCells = std::any_of(patches.cbegin(), patches.cend(), [](const auto& patch) { return !patch.isEmpty(); });
-        if (!anyCells && changedPositions.isEmpty() && masks.isEmpty()) {
-            result = state.bytes;
-            return true;
-        }
-        return state.Write(patches, changedPositions, requests, masks, result, error);
+        return Fail(error, QStringLiteral("无法完成独立关键形补丁"));
     } catch (const std::bad_alloc&) {
         return Fail(error, QStringLiteral("预览补丁内存不足"));
     } catch (const std::length_error&) {

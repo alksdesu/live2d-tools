@@ -32,6 +32,7 @@
 #include <cmath>
 #include <algorithm>
 #include <exception>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -738,8 +739,8 @@ void CInspectorPanel::RebuildKeyformTable()
         auto* indexItem = new QTableWidgetItem(QString::number(row));
         indexItem->setFlags(indexItem->flags() & ~Qt::ItemIsEditable);
         m_vertexTable->setItem(row, 0, indexItem);
-        m_vertexTable->setItem(row, 1, new QTableWidgetItem(QString::number(positions[row * 2], 'f', 6)));
-        m_vertexTable->setItem(row, 2, new QTableWidgetItem(QString::number(positions[row * 2 + 1], 'f', 6)));
+        m_vertexTable->setItem(row, 1, new QTableWidgetItem(QString::number(positions[row * 2], 'g', 9)));
+        m_vertexTable->setItem(row, 2, new QTableWidgetItem(QString::number(positions[row * 2 + 1], 'g', 9)));
     }
     m_vertexTable->setEnabled(true);
     m_updatingKeyform = false;
@@ -797,7 +798,7 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
     } else {
         bool ok = false;
         const double number = m_rotationKeyformTable->item(row, column)->text().toDouble(&ok);
-        if (!ok || !std::isfinite(number)) {
+        if (!ok || !std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max()) {
             RebuildRotationKeyformTable();
             return;
         }
@@ -861,12 +862,12 @@ void CInspectorPanel::ApplyWarpKeyformCellEdit(int row, int column)
     if (keyformIndex < 0 || keyformIndex >= before.size() || !m_warpKeyformTable->item(row, column)) return;
     QVector<live2dstruct::CModelWarpKeyform> after = before;
     bool ok = false;
-    const float value = static_cast<float>(m_warpKeyformTable->item(row, column)->text().toDouble(&ok));
-    if (!ok || !std::isfinite(value)) {
+    const double number = m_warpKeyformTable->item(row, column)->text().toDouble(&ok);
+    if (!ok || !std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max()) {
         RebuildWarpKeyformTable();
         return;
     }
-    after[keyformIndex].positions[row * 2 + (column - 1)] = value;
+    after[keyformIndex].positions[row * 2 + (column - 1)] = float(number);
     if (after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("warp"),
                                            live2dstruct::CModelEdit::WarpKeyforms,
@@ -886,15 +887,15 @@ void CInspectorPanel::ApplyKeyformCellEdit(int row, int column)
     if (keyformIndex < 0 || before.size() != m_vertexTable->rowCount() * 2) return;
     bool ok = false;
     const double parsed = m_vertexTable->item(row, column)->text().toDouble(&ok);
-    if (!ok || !std::isfinite(parsed)) {
+    if (!ok || !std::isfinite(parsed) || std::abs(parsed) > std::numeric_limits<float>::max()) {
         m_updatingKeyform = true;
-        m_vertexTable->item(row, column)->setText(QString::number(before[row * 2 + column - 1], 'f', 6));
+        m_vertexTable->item(row, column)->setText(QString::number(before[row * 2 + column - 1], 'g', 9));
         m_updatingKeyform = false;
         return;
     }
     QVector<float> after = before;
     after[row * 2 + column - 1] = static_cast<float>(parsed);
-    if (qFuzzyCompare(before[row * 2 + column - 1] + 1.0f, after[row * 2 + column - 1] + 1.0f)) return;
+    if (before[row * 2 + column - 1] == after[row * 2 + column - 1]) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex};
@@ -916,9 +917,9 @@ void CInspectorPanel::MirrorKeyform(bool horizontal)
         minimum = qMin(minimum, before[i]);
         maximum = qMax(maximum, before[i]);
     }
-    const float center = (minimum + maximum) * 0.5f;
+    const double sum = double(minimum) + maximum;
     QVector<float> after = before;
-    for (int i = horizontal ? 0 : 1; i < after.size(); i += 2) after[i] = 2.0f * center - after[i];
+    for (int i = horizontal ? 0 : 1; i < after.size(); i += 2) after[i] = float(sum - after[i]);
     if (after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
@@ -940,7 +941,7 @@ void CInspectorPanel::InterpolatePreviousKeyform()
     if (before.isEmpty() || before.size() != previous.size()) return;
     QVector<float> after;
     after.resize(before.size());
-    for (int i = 0; i < before.size(); ++i) after[i] = (before[i] + previous[i]) * 0.5f;
+    for (int i = 0; i < before.size(); ++i) after[i] = float((double(before[i]) + previous[i]) * 0.5);
     if (after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
@@ -1509,8 +1510,8 @@ void CInspectorPanel::TransformSelectedVertices()
     for (const QTableWidgetSelectionRange& range : m_vertexTable->selectedRanges())
         for (int row = range.topRow(); row <= range.bottomRow(); ++row) selectedRows.insert(row);
     if (selectedRows.isEmpty()) return;
-    float centerX = 0.0f;
-    float centerY = 0.0f;
+    double centerX = 0.0;
+    double centerY = 0.0;
     int count = 0;
     for (int row : selectedRows) {
         if (row < 0 || row * 2 + 1 >= before.size()) continue;
@@ -1521,17 +1522,25 @@ void CInspectorPanel::TransformSelectedVertices()
     if (count == 0) return;
     centerX /= count;
     centerY /= count;
-    const float radians = degrees * 0.0174532925199433f;
-    const float cosine = std::cos(radians);
-    const float sine = std::sin(radians);
+    const double radians = double(degrees) * 0.017453292519943295;
+    const double cosine = std::cos(radians);
+    const double sine = std::sin(radians);
     QVector<float> after = before;
     for (int row : selectedRows) {
         if (row < 0 || row * 2 + 1 >= after.size()) continue;
-        const float x = before[row * 2] - centerX;
-        const float y = before[row * 2 + 1] - centerY;
-        after[row * 2] = centerX + (x * cosine - y * sine) * scale;
-        after[row * 2 + 1] = centerY + (x * sine + y * cosine) * scale;
+        const double x = double(before[row * 2]) - centerX;
+        const double y = double(before[row * 2 + 1]) - centerY;
+        const double changedX = centerX + (x * cosine - y * sine) * scale;
+        const double changedY = centerY + (x * sine + y * cosine) * scale;
+        if (!std::isfinite(changedX) || !std::isfinite(changedY) ||
+            std::abs(changedX) > std::numeric_limits<float>::max() || std::abs(changedY) > std::numeric_limits<float>::max()) {
+            RejectEdit(QStringLiteral("变换结果超出坐标范围"));
+            return;
+        }
+        after[row * 2] = float(changedX);
+        after[row * 2 + 1] = float(changedY);
     }
+    if (after == before) return;
     const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
                                            live2dstruct::CModelEdit::KeyformPositions,
                                            QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};

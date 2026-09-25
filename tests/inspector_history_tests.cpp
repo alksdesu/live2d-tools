@@ -12,6 +12,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QListWidget>
+#include <QLineEdit>
 #include <QTimer>
 #include <QApplication>
 #include <QClipboard>
@@ -22,11 +23,209 @@
 #include <QtEndian>
 #include <stdexcept>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void largeFiniteKeyformToolsKeepTheirHistoryAtomic_data()
+    {
+        QTest::addColumn<QString>("operation");
+        QTest::addColumn<float>("sign");
+        for (const QString& operation : {QStringLiteral("mirrorHorizontal"), QStringLiteral("mirrorVertical"),
+             QStringLiteral("interpolatePreviousKeyform"), QStringLiteral("scale"), QStringLiteral("rotate")})
+            for (float sign : {-1.0f, 1.0f})
+                QTest::newRow(qPrintable(operation + QString::number(sign))) << operation << sign;
+    }
+
+    void largeFiniteKeyformToolsKeepTheirHistoryAtomic()
+    {
+        QFETCH(QString, operation);
+        QFETCH(float, sign);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto found = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& mesh) { return mesh.vertexCount >= 2 && mesh.keyforms.size() >= 2; });
+        QVERIFY(found != document.Drawables().cend());
+        const QString id = found->id;
+        const float h = std::ldexp(1.0f, 127) * sign;
+        const bool average = operation == QLatin1String("interpolatePreviousKeyform");
+        const int keyform = average ? 1 : 0;
+        QVector<float> before(found->vertexCount * 2);
+        for (int row = 0; row < found->vertexCount; ++row) {
+            before[row * 2] = row % 2 ? 1.5f * h : h;
+            before[row * 2 + 1] = row % 2 ? h : 1.5f * h;
+        }
+        if (average) {
+            before.fill(1.5f * h);
+            QVERIFY(document.SetDrawableKeyformPositions(id, 0, QVector<float>(before.size(), h)));
+        }
+        QVERIFY(document.SetDrawableKeyformPositions(id, keyform, before));
+        QVector<float> expected = before;
+        if (average) expected.fill(1.25f * h);
+        else if (operation.startsWith("mirror")) {
+            const int axis = operation == QLatin1String("mirrorHorizontal") ? 0 : 1;
+            for (int row = 0; row < found->vertexCount; ++row)
+                expected[row * 2 + axis] = before[row * 2 + axis] == h ? 1.5f * h : h;
+        } else if (operation == QLatin1String("scale")) {
+            expected[0] = 0.75f * h;
+            expected[1] = 1.75f * h;
+            expected[2] = 1.75f * h;
+            expected[3] = 0.75f * h;
+        } else {
+            expected[0] = h;
+            expected[1] = h;
+            expected[2] = 1.5f * h;
+            expected[3] = 1.5f * h;
+        }
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, "artmesh");
+        auto* selector = panel.findChild<QComboBox*>("keyformSelector");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(selector && table);
+        selector->setCurrentIndex(keyform);
+        const auto revision = document.Revision();
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        const bool transform = operation == QLatin1String("scale") || operation == QLatin1String("rotate");
+        if (transform) {
+            table->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+            auto* scale = panel.findChild<QDoubleSpinBox*>("vertexScale");
+            auto* rotation = panel.findChild<QDoubleSpinBox*>("vertexRotation");
+            QVERIFY(scale && rotation);
+            scale->setValue(operation == QLatin1String("scale") ? 2.0 : 1.0);
+            rotation->setValue(operation == QLatin1String("rotate") ? 90.0 : 0.0);
+        }
+        auto* button = panel.findChild<QPushButton*>(transform ? "transformSelectedVertices" : operation);
+        QVERIFY(button && button->isEnabled());
+        button->click();
+        QCOMPARE(document.DrawableKeyformPositions(id, keyform), expected);
+        for (float value : document.DrawableKeyformPositions(id, keyform)) QVERIFY(std::isfinite(value));
+        QCOMPARE(document.Revision(), revision + 1);
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(history.size(), 1);
+        QCOMPARE(rejected.size(), 0);
+        panel.Undo();
+        QCOMPARE(document.DrawableKeyformPositions(id, keyform), before);
+        QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(selector->currentIndex(), keyform);
+        panel.Redo();
+        QCOMPARE(document.DrawableKeyformPositions(id, keyform), expected);
+        QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(selector->currentIndex(), keyform);
+        QCOMPARE(changed.size(), 3);
+        QCOMPARE(history.size(), 3);
+        QCOMPARE(rejected.size(), 0);
+    }
+
+    void unrepresentableTransformRejectsWithoutPartialChanges_data()
+    {
+        QTest::addColumn<bool>("rotation");
+        QTest::newRow("scale-overflow") << false;
+        QTest::newRow("rotation-overflow") << true;
+    }
+
+    void unrepresentableTransformRejectsWithoutPartialChanges()
+    {
+        QFETCH(bool, rotation);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto found = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& mesh) { return mesh.vertexCount >= 2 && !mesh.keyforms.isEmpty(); });
+        QVERIFY(found != document.Drawables().cend());
+        const QString id = found->id;
+        const float h = std::ldexp(1.0f, 127) * (rotation ? 1.5f : 1.0f);
+        QVector<float> before(found->vertexCount * 2, 0.0f);
+        before[0] = before[1] = -h;
+        before[2] = before[3] = h;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, before));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        auto* scale = panel.findChild<QDoubleSpinBox*>("vertexScale");
+        auto* angle = panel.findChild<QDoubleSpinBox*>("vertexRotation");
+        auto* button = panel.findChild<QPushButton*>("transformSelectedVertices");
+        QVERIFY(table && scale && angle && button);
+        table->setRangeSelected(QTableWidgetSelectionRange(0, 0, 1, 2), true);
+        QVERIFY(button->isEnabled());
+        scale->setValue(rotation ? 1.0 : 2.0);
+        angle->setValue(rotation ? 45.0 : 0.0);
+        const auto revision = document.Revision();
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        button->click();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), before);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(history.size(), 0);
+        QCOMPARE(changed.size(), 0);
+        QCOMPARE(rejected.size(), 1);
+        QVERIFY(!document.CanUndoEdit());
+        QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(table->item(0, 1)->text(), QString::number(before[0], 'g', 9));
+        QCOMPARE(table->item(1, 2)->text(), QString::number(before[3], 'g', 9));
+    }
+
+    void tinyCoordinateEditsAndUnmodifiedConfirmationPreservePrecision()
+    {
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto found = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [](const auto& mesh) { return mesh.vertexCount > 0 && !mesh.keyforms.isEmpty(); });
+        QVERIFY(found != document.Drawables().cend());
+        const QString id = found->id;
+        auto before = document.DrawableKeyformPositions(id, 0);
+        before[0] = 1e-9f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, before));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, "artmesh");
+        panel.resize(700, 900);
+        panel.show();
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(table);
+        QCOMPARE(table->item(0, 1)->text(), QString::number(before[0], 'g', 9));
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableKeyformPositionsChanged);
+        const auto revision = document.Revision();
+        table->setCurrentCell(0, 1);
+        table->editItem(table->item(0, 1));
+        QApplication::processEvents();
+        auto* editor = table->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        QTest::keyClick(editor, Qt::Key_Return);
+        QApplication::processEvents();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), before);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(history.size(), 0);
+        QCOMPARE(changed.size(), 0);
+        table->item(0, 1)->setText(QString::number(2e-9f, 'g', 9));
+        auto expected = before;
+        expected[0] = 2e-9f;
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), expected);
+        QCOMPARE(history.size(), 1);
+        QCOMPARE(changed.size(), 1);
+        panel.Undo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), before);
+        panel.Redo();
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), expected);
+        const auto acceptedRevision = document.Revision();
+        for (const QString& invalid : {QStringLiteral("1e100"), QStringLiteral("-1e100"),
+                                      QStringLiteral("nan"), QStringLiteral("inf")}) {
+            table->item(0, 1)->setText(invalid);
+            QCOMPARE(document.DrawableKeyformPositions(id, 0), expected);
+            QCOMPARE(document.Revision(), acceptedRevision);
+            QCOMPARE(table->item(0, 1)->text(), QString::number(expected[0], 'g', 9));
+        }
+        QCOMPARE(history.size(), 3);
+        QCOMPARE(changed.size(), 3);
+    }
+
     void controllerBackedEditsAndHistoryPublishExactlyOnce_data()
     {
         QTest::addColumn<bool>("copyToNext");
@@ -122,7 +321,7 @@ private slots:
         QVERIFY(!controller.IsActive());
         QCOMPARE(panel.GetActiveKeyformIndex(), 1);
         QCOMPARE(combo->currentIndex(), 1);
-        QCOMPARE(table->item(0, 1)->text(), QString::number(previewPositions[0], 'f', 6));
+        QCOMPARE(table->item(0, 1)->text(), QString::number(previewPositions[0], 'g', 9));
         QCOMPARE(changed.count(), 0);
         QCOMPARE(history.count(), 0);
         QCOMPARE(activated.count(), 0);
@@ -320,7 +519,7 @@ private slots:
             QCOMPARE(history.count(), 0);
             QCOMPARE(rejected.count(), 1);
             QCOMPARE(rejected.first().first().toString(), QStringLiteral("candidate rejected"));
-            QCOMPARE(table->item(0, 1)->text(), QString::number(current[0], 'f', 6));
+            QCOMPARE(table->item(0, 1)->text(), QString::number(current[0], 'g', 9));
         }
     }
 
@@ -503,7 +702,7 @@ private slots:
         QVERIFY(document.KeyformParameterValues(mesh->id, QStringLiteral("artmesh"), 1, expectedPose));
         QCOMPARE(requestedPose, expectedPose);
         const auto selectedPositions = document.DrawableKeyformPositions(mesh->id, 1);
-        QCOMPARE(table->item(0, 1)->text(), QString::number(selectedPositions[0], 'f', 6));
+        QCOMPARE(table->item(0, 1)->text(), QString::number(selectedPositions[0], 'g', 9));
         panel.RefreshSelection();
         QVERIFY(QMetaObject::invokeMethod(combo, "activated", Q_ARG(int, 1)));
         QCOMPARE(requests.size(), 2);
@@ -775,7 +974,7 @@ private slots:
         QCOMPARE(changed.count(), 0);
         QCOMPARE(history.count(), 0);
         QCOMPARE(document.DrawableKeyformPositions(id, 0), positions);
-        QCOMPARE(table->item(0, 1)->text(), QString::number(positions[0], 'f', 6));
+        QCOMPARE(table->item(0, 1)->text(), QString::number(positions[0], 'g', 9));
         QVERIFY(!document.CanUndoEdit());
         panel.SetEditHandler({});
         table->item(0, 1)->setText(QString::number(positions[0] + 1.0f));

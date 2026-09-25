@@ -32,6 +32,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QScopeGuard>
+#include <QScopedValueRollback>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -522,11 +524,13 @@ void LAppModel::Update()
     _opacity = _model->GetModelOpacity();
 
     // 变形器拖拽参数覆盖（在所有效果之后、Update 之前强制设置）
-    if(!_deformerDragParamIds.isEmpty() && _deformerDragActive){
-        for(int i = 0; i < _deformerDragParamIds.size(); i++){
-            if(!m_mapParaToIndex.contains(_deformerDragParamIds[i])) continue;
-            int idx = m_mapParaToIndex[_deformerDragParamIds[i]];
-            _model->SetParameterValue(idx, _deformerDragValues[i]);
+    if(m_deformerDrag.IsActive()){
+        const auto& ids = m_deformerDrag.Ids();
+        const auto& values = m_deformerDrag.Values();
+        for(qsizetype i = 0; i < ids.size(); i++){
+            const auto index = m_mapParaToIndex.constFind(ids[i]);
+            if (index == m_mapParaToIndex.cend()) continue;
+            _model->SetParameterValue(index.value(), values[i]);
         }
     }
 
@@ -1219,154 +1223,86 @@ void LAppModel::SetPartVisible(const QString& partId, bool visible)
 void LAppModel::SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                        const QList<float>& maxVals, const QList<float>& defaultVals)
 {
-    _deformerDragParamIds.clear();
-    _deformerDragMinVals.clear();
-    _deformerDragMaxVals.clear();
-    _deformerDragDefaultVals.clear();
-    const int count = qMin(paramIds.size(), qMin(minVals.size(), qMin(maxVals.size(), defaultVals.size())));
-    for (int i = 0; i < count; ++i) {
-        if (paramIds[i].isEmpty() || !std::isfinite(minVals[i]) || !std::isfinite(maxVals[i]) ||
-            !std::isfinite(defaultVals[i]) || minVals[i] > maxVals[i]) continue;
-        _deformerDragParamIds.append(paramIds[i]);
-        _deformerDragMinVals.append(minVals[i]);
-        _deformerDragMaxVals.append(maxVals[i]);
-        _deformerDragDefaultVals.append(qBound(minVals[i], defaultVals[i], maxVals[i]));
-    }
+    m_deformerDrag.SetParameters(paramIds, minVals, maxVals, defaultVals);
 }
 
 void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
 {
-    if(!_model || _deformerDragParamIds.isEmpty() ||
-       _deformerDragParamIds.size() != _deformerDragMinVals.size() ||
-       _deformerDragParamIds.size() != _deformerDragMaxVals.size() ||
-       !std::isfinite(viewX) || !std::isfinite(viewY)) return;
-
-    _deformerDragActive = true;
-    _deformerDragValues.resize(_deformerDragParamIds.size());
-    for(int i = 0; i < _deformerDragParamIds.size(); i++){
-        float minV = _deformerDragMinVals[i];
-        float maxV = _deformerDragMaxVals[i];
-        float range = maxV - minV;
-        float input = (i % 2 == 0) ? viewX : viewY;
-        float value = minV + (input + 1.0f) * 0.5f * range;
-        _deformerDragValues[i] = qBound(minV, value, maxV);
-    }
-
+    if (!_model) return;
+    m_deformerDrag.Apply(viewX, viewY);
 }
 
 void LAppModel::ProbeParamsForArtMeshes(const QStringList& artMeshNames)
 {
-    _deformerDragParamIds.clear();
-    _deformerDragMinVals.clear();
-    _deformerDragMaxVals.clear();
-    _deformerDragDefaultVals.clear();
-
-    if(!_model || artMeshNames.isEmpty()) return;
-
-    // 找到目标 ArtMesh 的 drawable 索引
-    QVector<int> targetIndices;
-    QVector<int> allIndices;
-    int drawCount = _model->GetDrawableCount();
-    QSet<QString> targetSet(artMeshNames.begin(), artMeshNames.end());
-    for(int i = 0; i < drawCount; i++){
-        QString name(_model->GetDrawableId(i)->GetString().GetRawString());
-        allIndices.append(i);
-        if(targetSet.contains(name)){
-            targetIndices.append(i);
+    if (!_model || _updating || HasEditorPreview() || artMeshNames.isEmpty()) return;
+    const QScopedValueRollback<csmBool> updating(_updating, true);
+    try {
+        auto* model = _model;
+        auto* core = model->GetModel();
+        if (!core) return;
+        const int parameterCount = model->GetParameterCount();
+        const int drawableCount = model->GetDrawableCount();
+        if (parameterCount < 0 || drawableCount < 0) return;
+        auto* parameterValues = Live2D::Cubism::Core::csmGetParameterValues(core);
+        if (parameterCount && !parameterValues) return;
+        QVector<float> original;
+        QVector<CDeformerDrag::Parameter> parameters;
+        original.reserve(parameterCount);
+        parameters.reserve(parameterCount);
+        for (int index = 0; index < parameterCount; ++index) {
+            const auto id = model->GetParameterId(index);
+            if (!id) return;
+            original.append(parameterValues[index]);
+            parameters.append({QString::fromUtf8(id->GetString().GetRawString()),
+                model->GetParameterMinimumValue(index), model->GetParameterMaximumValue(index),
+                model->GetParameterDefaultValue(index)});
         }
-    }
-    if(targetIndices.isEmpty()) return;
-
-    // 保存当前参数快照
-    int paramCount = _model->GetParameterCount();
-    QVector<float> savedValues(paramCount);
-    for(int i = 0; i < paramCount; i++){
-        savedValues[i] = _model->GetParameterValue(i);
-    }
-
-    // 记录所有 drawable 的基准顶点（只取第一个顶点做快速比较）
-    _model->Update();
-    QVector<QPair<float,float>> baseFirstVert(drawCount);
-    for(int di = 0; di < drawCount; di++){
-        if(_model->GetDrawableVertexCount(di) > 0){
-            auto* v = _model->GetDrawableVertexPositions(di);
-            baseFirstVert[di] = {v[0].X, v[0].Y};
+        const QSet<QString> targetNames(artMeshNames.cbegin(), artMeshNames.cend());
+        QVector<int> targets;
+        for (int index = 0; index < drawableCount; ++index) {
+            const auto id = model->GetDrawableId(index);
+            if (id && targetNames.contains(QString::fromUtf8(id->GetString().GetRawString()))) targets.append(index);
         }
-    }
-
-    // 逐个参数微扰测试
-    struct ParamScore { int idx; bool affectsTarget; int totalAffected; };
-    QVector<ParamScore> candidates;
-
-    for(int p = 0; p < paramCount; p++){
-        float minV = _model->GetParameterMinimumValue(p);
-        float maxV = _model->GetParameterMaximumValue(p);
-        float curV = savedValues[p];
-        float testV = (curV < (minV + maxV) * 0.5f) ? maxV : minV;
-
-        for(int i = 0; i < paramCount; i++)
-            _model->SetParameterValue(i, savedValues[i]);
-        _model->SetParameterValue(p, testV);
-        _model->Update();
-
-        // 检查目标是否变化
-        bool affectsTarget = false;
-        for(int di : targetIndices){
-            if(_model->GetDrawableVertexCount(di) > 0){
-                auto* v = _model->GetDrawableVertexPositions(di);
-                float dx = v[0].X - baseFirstVert[di].first;
-                float dy = v[0].Y - baseFirstVert[di].second;
-                if(dx * dx + dy * dy > 1e-10f){
-                    affectsTarget = true;
-                    break;
+        const auto evaluate = [&](const QVector<float>& values, CDeformerDrag::Vertices& vertices, QString* error) {
+            if (model != _model || values.size() != parameterCount) return false;
+            if (parameterCount) std::copy(values.cbegin(), values.cend(), parameterValues);
+            model->Update();
+            const auto* counts = Live2D::Cubism::Core::csmGetDrawableVertexCounts(core);
+            const auto* positions = Live2D::Cubism::Core::csmGetDrawableVertexPositions(core);
+            if (drawableCount && (!counts || !positions)) return false;
+            CDeformerDrag::Vertices candidate;
+            candidate.reserve(drawableCount);
+            for (int drawable = 0; drawable < drawableCount; ++drawable) {
+                const int count = counts[drawable];
+                if (count < 0 || count > std::numeric_limits<int>::max() / 2 || (count && !positions[drawable])) {
+                    if (error) *error = QStringLiteral("参数探测网格缺少有效顶点");
+                    return false;
                 }
+                QVector<float> points;
+                points.reserve(count * 2);
+                for (int vertex = 0; vertex < count; ++vertex) {
+                    points.append(positions[drawable][vertex].X);
+                    points.append(positions[drawable][vertex].Y);
+                }
+                candidate.append(std::move(points));
             }
+            vertices.swap(candidate);
+            return true;
+        };
+        const auto restore = [&](QString*) {
+            if (model != _model) return false;
+            if (parameterCount) std::copy(original.cbegin(), original.cend(), parameterValues);
+            const auto exactValues = qScopeGuard([&] {
+                if (parameterCount) std::copy(original.cbegin(), original.cend(), parameterValues);
+            });
+            model->Update();
+            return true;
+        };
+        QString error;
+        if (!m_deformerDrag.ProbeParameters(parameters, original, drawableCount, targets, evaluate, restore, &error)) {
+            LAppPal::PrintLogLn("Parameter probing failed: %s", qPrintable(error));
         }
-        if(!affectsTarget) continue;
-
-        // 计算该参数影响了多少个 drawable
-        int totalAffected = 0;
-        for(int di = 0; di < drawCount; di++){
-            if(_model->GetDrawableVertexCount(di) > 0){
-                auto* v = _model->GetDrawableVertexPositions(di);
-                float dx = v[0].X - baseFirstVert[di].first;
-                float dy = v[0].Y - baseFirstVert[di].second;
-                if(dx * dx + dy * dy > 1e-10f) totalAffected++;
-            }
-        }
-        candidates.append({p, true, totalAffected});
-    }
-
-    // 恢复参数
-    for(int i = 0; i < paramCount; i++)
-        _model->SetParameterValue(i, savedValues[i]);
-    _model->Update();
-
-    // 过滤：只保留局部参数（影响不超过 50% 的 drawable）
-    int threshold = drawCount / 2;
-    QVector<ParamScore> localParams;
-    for(const auto& c : candidates){
-        if(c.totalAffected <= threshold)
-            localParams.append(c);
-    }
-    // 如果没有局部参数，退而取影响面最小的几个
-    if(localParams.isEmpty() && !candidates.isEmpty()){
-        std::sort(candidates.begin(), candidates.end(),
-                  [](const ParamScore& a, const ParamScore& b){ return a.totalAffected < b.totalAffected; });
-        for(int i = 0; i < qMin(candidates.size(), 4); i++)
-            localParams.append(candidates[i]);
-    }
-
-    // 按影响面从小到大排序，最多取4个
-    std::sort(localParams.begin(), localParams.end(),
-              [](const ParamScore& a, const ParamScore& b){ return a.totalAffected < b.totalAffected; });
-    int limit = qMin(localParams.size(), 4);
-    for(int i = 0; i < limit; i++){
-        int p = localParams[i].idx;
-        QString id(_model->GetParameterId(p)->GetString().GetRawString());
-        _deformerDragParamIds << id;
-        _deformerDragMinVals << _model->GetParameterMinimumValue(p);
-        _deformerDragMaxVals << _model->GetParameterMaximumValue(p);
-        _deformerDragDefaultVals << _model->GetParameterDefaultValue(p);
+    } catch (const std::exception&) {
+        LAppPal::PrintLogLn("Unable to prepare deformer drag bindings");
     }
 }

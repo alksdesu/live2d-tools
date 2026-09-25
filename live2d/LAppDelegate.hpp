@@ -80,7 +80,7 @@ public:
     QSet<QString> m_dragTargetDrawables;       // 目标 drawable（跟着参数动）
     bool m_isDraggingDeformer = false;
     QMap<int, std::vector<float>> m_savedVertices; // 非目标 drawable 的顶点快照
-    void StartDeformerDrag();   // Ctrl+按下时调用
+    bool StartDeformerDrag(QString* error = nullptr);
     void StopDeformerDrag();    // 松手时调用
     bool StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu,bool cubismCompat = false);
     bool StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat = false);

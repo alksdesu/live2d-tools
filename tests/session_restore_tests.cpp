@@ -410,7 +410,7 @@ private slots:
             QCOMPARE(restored.DrawableKeyformPositions(mesh().id, index), mesh().keyforms[index].positions);
     }
 
-    void unsupportedSharedRowPreviewDoesNotBlockRestoringEdits()
+    void sharedRowSessionRestoresIndependentPreview()
     {
         QByteArray bytes = loaded.SourceBytes();
         CReader reader = CReader::FromBytes(bytes);
@@ -448,10 +448,18 @@ private slots:
         CModelDocument restored;
         QVERIFY2(session.RestoreDocument(source, restored, &error), qPrintable(error));
         QCOMPARE(restored.DrawableKeyformPositions(id, 0), positions);
-        QByteArray preview("unchanged");
-        QVERIFY(!restored.BuildPreviewMoc(preview, &error));
-        QVERIFY2(error.contains(QStringLiteral("共享")), qPrintable(error));
-        QCOMPARE(preview, QByteArray("unchanged"));
+        QByteArray preview;
+        QVERIFY2(restored.BuildPreviewMoc(preview, &error), qPrintable(error));
+        CModelDocument evaluated;
+        QVERIFY2(evaluated.LoadBytes(preview, "preview.moc3", &error), qPrintable(error));
+        QCOMPARE(evaluated.Drawables().size(), source.Drawables().size());
+        for (const auto& mesh : source.Drawables()) {
+            for (int keyform = 0; keyform < mesh.keyforms.size(); ++keyform) {
+                const auto expected = mesh.id == id && keyform == 0 ? positions : source.DrawableKeyformPositions(mesh.id, keyform);
+                QCOMPARE(evaluated.DrawableKeyformPositions(mesh.id, keyform), expected);
+            }
+        }
+        QCOMPARE(restored.SourceBytes(), bytes);
     }
 };
 

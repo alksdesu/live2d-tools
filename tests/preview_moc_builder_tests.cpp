@@ -290,7 +290,7 @@ private slots:
         QVERIFY(Word(result, 0x158) != Word(source, 0x158));
     }
 
-    void sharedGlobalRowRequiresAllOwners()
+    void sharedGlobalRowsCanBeEditedIndependently()
     {
         QByteArray source = Fixture();
         QVERIFY(!source.isEmpty());
@@ -301,13 +301,13 @@ private slots:
         QByteArray result("sentinel");
         const auto original = Row(source, 0);
         const auto edited = Changed(original);
-        QVERIFY(!builder.Build({{"MeshA", {edited}}}, result, &error));
-        QVERIFY(error.contains("共享"));
-        QCOMPARE(result, QByteArray("sentinel"));
-        QVERIFY(!builder.Build({{"MeshA", {edited}}, {"MeshB", {original}}}, result, &error));
-        QCOMPARE(result, QByteArray("sentinel"));
+        QVERIFY2(builder.Build({{"MeshA", {edited}}}, result, &error), qPrintable(error));
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc))), edited);
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc) + 4)), original);
+        QVERIFY2(builder.Build({{"MeshA", {edited}}, {"MeshB", {original}}}, result, &error), qPrintable(error));
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc))), edited);
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc) + 4)), original);
         QVERIFY2(builder.Build({{"MeshA", {edited}}, {"MeshB", {edited}}}, result, &error), qPrintable(error));
-        QCOMPARE(Row(result, 0), edited);
         CModelDocument document;
         QVERIFY2(document.LoadBytes(result, "shared-row.moc3", &error), qPrintable(error));
         QCOMPARE(document.DrawableKeyformPositions("MeshA", 0), edited);
@@ -315,11 +315,12 @@ private slots:
         QVERIFY(builder.Build({{"MeshA", {original}}}, result));
         QCOMPARE(result, source);
         SetColumn(source, 0xec, 1, 2);
+        qToLittleEndian(quint16(1), source.data() + Word(source, 0x17c) + 5 * 2);
         QVERIFY(builder.Initialize(source));
         result = "sentinel";
-        QVERIFY(!builder.Build({{"MeshA", {edited}}, {"MeshB", {edited.mid(0, 4)}}}, result, &error));
-        QVERIFY(error.contains("共享"));
-        QCOMPARE(result, QByteArray("sentinel"));
+        QVERIFY2(builder.Build({{"MeshA", {edited}}, {"MeshB", {edited.mid(0, 4)}}}, result, &error), qPrintable(error));
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc))), edited);
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc) + 4), 2), edited.mid(0, 4));
     }
 
     void blendShapeReferencesProtectOnlyUsedRows()
@@ -336,10 +337,10 @@ private slots:
         QVERIFY2(builder.Build({{"MeshA", {a}}}, result, &error), qPrintable(error));
         QCOMPARE(Row(result, 0), a);
         QCOMPARE(Row(result, 1), Row(source, 1));
-        const auto previous = result;
-        QVERIFY(!builder.Build({{"MeshB", {b}}}, result, &error));
-        QVERIFY(error.contains("BlendShape"));
-        QCOMPARE(result, previous);
+        QVERIFY2(builder.Build({{"MeshB", {b}}}, result, &error), qPrintable(error));
+        QCOMPARE(Row(result, Word(result, Word(result, 0xcc) + 4)), b);
+        QCOMPARE(Row(result, 1), Row(source, 1));
+        QCOMPARE(Word(result, Word(result, 0x224)), 1);
         QVERIFY(builder.Build({{"MeshB", {Row(source, 1)}}}, result));
         QCOMPARE(result, source);
         SetColumn(source, 0x158, 1, 0);

@@ -9,6 +9,9 @@
 #include <iostream>
 #include <QScopeGuard>
 #include <QScopedValueRollback>
+#include <cmath>
+#include <exception>
+#include <limits>
 
 #include "LAppView.hpp"
 #include "LAppPal.hpp"
@@ -470,27 +473,52 @@ void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
 
 //通过文件直接打开，如果已经打开场景就
 
-void LAppDelegate::StartDeformerDrag()
+bool LAppDelegate::StartDeformerDrag(QString* error)
 {
-    m_isDraggingDeformer = true;
-    m_savedVertices.clear();
-    // 保存所有非目标 drawable 的当前顶点
-    LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
-    if(!mgr || mgr->GetModelNum() <= 0 || !mgr->GetModel(0) || !mgr->GetModel(0)->GetModel()) return;
-    auto* model = mgr->GetModel(0)->GetModel();
-    int drawCount = model->GetDrawableCount();
-    for(int i = 0; i < drawCount; i++){
-        QString name(model->GetDrawableId(i)->GetString().GetRawString());
-        if(m_dragTargetDrawables.contains(name)) continue;
-        int vCount = model->GetDrawableVertexCount(i);
-        if(vCount <= 0) continue;
-        auto* verts = model->GetDrawableVertexPositions(i);
-        std::vector<float> buf(vCount * 2);
-        for(int v = 0; v < vCount; v++){
-            buf[v * 2]     = verts[v].X;
-            buf[v * 2 + 1] = verts[v].Y;
+    if (error) error->clear();
+    StopDeformerDrag();
+    const auto fail = [&](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    auto* manager = LAppLive2DManager::GetInstance();
+    if (!manager || manager->GetModelNum() <= 0 || !manager->GetModel(0) ||
+        !manager->GetModel(0)->GetModel() || manager->GetModel(0)->HasEditorPreview() || m_dragTargetDrawables.isEmpty())
+        return fail(QStringLiteral("当前模型或变形器拖动目标不可用"));
+    try {
+        auto* model = manager->GetModel(0)->GetModel();
+        QMap<int, std::vector<float>> saved;
+        bool hasTarget = false;
+        const int drawCount = model->GetDrawableCount();
+        if (drawCount < 0) return fail(QStringLiteral("模型网格数量无效"));
+        for (int index = 0; index < drawCount; ++index) {
+            const auto id = model->GetDrawableId(index);
+            if (!id) return fail(QStringLiteral("模型网格缺少标识"));
+            if (m_dragTargetDrawables.contains(QString::fromUtf8(id->GetString().GetRawString()))) {
+                hasTarget = true;
+                continue;
+            }
+            const int count = model->GetDrawableVertexCount(index);
+            if (count < 0 || count > std::numeric_limits<int>::max() / 2)
+                return fail(QStringLiteral("模型网格顶点数量无效"));
+            if (!count) continue;
+            const auto* vertices = model->GetDrawableVertexPositions(index);
+            if (!vertices) return fail(QStringLiteral("模型网格缺少顶点"));
+            std::vector<float> points(count * 2);
+            for (int vertex = 0; vertex < count; ++vertex) {
+                if (!std::isfinite(vertices[vertex].X) || !std::isfinite(vertices[vertex].Y))
+                    return fail(QStringLiteral("模型网格坐标无效"));
+                points[vertex * 2] = vertices[vertex].X;
+                points[vertex * 2 + 1] = vertices[vertex].Y;
+            }
+            saved.insert(index, std::move(points));
         }
-        m_savedVertices[i] = std::move(buf);
+        if (!hasTarget) return fail(QStringLiteral("模型中没有指定的拖动目标"));
+        m_savedVertices.swap(saved);
+        m_isDraggingDeformer = true;
+        return true;
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备变形器拖动顶点"));
     }
 }
 

@@ -153,9 +153,11 @@ protected:
     MeshMove m_meshMove;
     MeshFinish m_meshFinish;
     bool m_meshEditCallbackActive = false;
+    bool m_controlDragActive = false;
     QPointF m_pointerAnchor;
     bool MeshDragFrameMatches() const;
     bool BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error);
+    void FinishDeformerDrag();
     QString SelectCoreMesh(const QPointF& pixel, bool hover);
 
 

@@ -35,6 +35,7 @@ OBJECTS_DIR = $${OUTPUTDIR}/objs
 DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
+    live2d/cdeformerdrag.cpp \
     live2dstruct/ccanvasgeometry.cpp \
     live2dstruct/cdraworder.cpp \
     live2dstruct/cmeshtopology.cpp \
@@ -241,6 +242,7 @@ SOURCES += \
     cmo3/ccmo3builder.cpp \
 
 HEADERS += \
+    live2d/cdeformerdrag.h \
     live2dstruct/ccanvasgeometry.h \
     live2dstruct/cdraworder.h \
     live2dstruct/cdrawableflags.h \

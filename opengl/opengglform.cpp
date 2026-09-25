@@ -278,6 +278,7 @@ void OpengGlForm::do_ShowDeformers(const QStringList& names)
 
 void OpengGlForm::do_ShowDeformerMeshes(const QStringList& artMeshNames)
 {
+    FinishDeformerDrag();
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(!mgr || mgr->GetModelNum() <= 0) return;
     LAppModel* model = mgr->GetModel(0);
@@ -300,6 +301,7 @@ void OpengGlForm::do_ShowDeformerMeshes(const QStringList& artMeshNames)
 void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                             const QList<float>& maxVals, const QList<float>& defaultVals)
 {
+    FinishDeformerDrag();
     LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
     if(mgr && mgr->GetModelNum() > 0 && mgr->GetModel(0)){
         if (mgr->GetModel(0)->HasEditorPreview()) return;
@@ -311,6 +313,7 @@ void OpengGlForm::do_ResetView()
 {
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    FinishDeformerDrag();
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
     QMatrix4x4 identity;
@@ -337,6 +340,7 @@ void OpengGlForm::SetViewState(float scale, const QVector2D& position)
     if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(position.x()) || !std::isfinite(position.y())) return;
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    FinishDeformerDrag();
     const float clampedScale = qBound(0.1f, scale, 20.0f);
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if (!view) return;
@@ -650,6 +654,7 @@ bool OpengGlForm::MakeRuntimeCurrent()
 bool OpengGlForm::do_ModelChange(const QString& fileName)
 {
     if (!MakeRuntimeCurrent()) return false;
+    FinishDeformerDrag();
     const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
     const bool loaded = LAppDelegate::GetInstance()->ChangeScene(fileName);
     if (!loaded) return false;
@@ -661,6 +666,7 @@ bool OpengGlForm::do_ModelChange(const QString& fileName)
 bool OpengGlForm::BeginTemporaryModel(const QString& fileName)
 {
     if (m_suspendedModel.has_value() || !MakeRuntimeCurrent()) return false;
+    FinishDeformerDrag();
     const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
     const bool loaded = LAppDelegate::GetInstance()->BeginTemporaryScene(fileName);
     if (!loaded) return false;
@@ -673,6 +679,7 @@ bool OpengGlForm::BeginTemporaryModel(const QString& fileName)
 bool OpengGlForm::EndTemporaryModel()
 {
     if (!m_suspendedModel.has_value() || !MakeRuntimeCurrent()) return false;
+    FinishDeformerDrag();
     const auto releaseContext = qScopeGuard([this] { doneCurrent(); });
     const bool restored = LAppDelegate::GetInstance()->EndTemporaryScene();
     if (!restored) return false;
@@ -737,6 +744,7 @@ void OpengGlForm::initializeGL()
 
 void OpengGlForm::resizeGL(int width, int height)
 {
+    FinishDeformerDrag();
     if (IsMeshDragging()) {
         QString error;
         if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
@@ -761,6 +769,7 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
 {
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    FinishDeformerDrag();
     if (!IsModelReady()) return;
     auto* view = LAppDelegate::GetInstance()->GetView();
     if (!view || !ViewPoint(*view, size(), event->position(), m_pointerAnchor)) return;
@@ -778,7 +787,12 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
             return;
         }
         auto* delegate = LAppDelegate::GetInstance();
-        if (!delegate->m_dragTargetDrawables.isEmpty()) delegate->StartDeformerDrag();
+        if (delegate->m_dragTargetDrawables.isEmpty() || delegate->StartDeformerDrag(&error)) {
+            m_controlDragActive = true;
+        } else {
+            m_ceditstate.RemoveState(CEditState::MousePress);
+            emit MeshEditRejected(error);
+        }
         return;
     }
     const QString name = SelectCoreMesh(event->position(), false);
@@ -797,10 +811,21 @@ void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
     }
     m_ceditstate.RemoveState(CEditState::MousePress);
     if (event->button() == Qt::RightButton) m_ceditstate.RemoveState(CEditState::ViewMove);
+    FinishDeformerDrag();
     if (!IsModelReady()) return;
     auto* delegate = LAppDelegate::GetInstance();
     if (auto* view = delegate->GetView()) view->GetMouseSelectRect()->SetStartAndEndPos({}, {});
-    if (delegate->m_isDraggingDeformer) delegate->StopDeformerDrag();
+}
+
+void OpengGlForm::FinishDeformerDrag()
+{
+    if (m_controlDragActive) m_ceditstate.RemoveState(CEditState::MousePress);
+    m_controlDragActive = false;
+    if (!m_runtimeReady) return;
+    auto* delegate = LAppDelegate::GetInstance();
+    if (delegate->getGlOwningContext() != context()) return;
+    if (delegate->m_isDraggingDeformer) m_ceditstate.RemoveState(CEditState::MousePress);
+    delegate->StopDeformerDrag();
 }
 
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
@@ -831,7 +856,13 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (!IsModelReady()) return;
-    auto* view = LAppDelegate::GetInstance()->GetView();
+    auto* delegate = LAppDelegate::GetInstance();
+    if (m_controlDragActive &&
+        (!(event->buttons() & Qt::LeftButton) || !(event->modifiers() & Qt::ControlModifier))) {
+        FinishDeformerDrag();
+        return;
+    }
+    auto* view = delegate->GetView();
     if (!view || width() <= 0 || height() <= 0) return;
     const float viewX = float(event->position().x() / width() * 2.0 - 1.0);
     const float viewY = float(1.0 - event->position().y() / height() * 2.0);
@@ -848,9 +879,10 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
             if (!FiniteMatrix(matrix)) return;
             view->SetViewMatrix(matrix);
         } else if (event->modifiers() & Qt::ControlModifier) {
+            if (!m_controlDragActive || !(event->buttons() & Qt::LeftButton)) return;
             auto* model = CurrentModel();
             if (!model || model->HasEditorPreview()) return;
-            if (!model->GetDeformerDragParamIds().isEmpty()) model->ApplyDeformerDrag(viewX, viewY);
+            if (delegate->m_isDraggingDeformer && !model->GetDeformerDragParamIds().isEmpty()) model->ApplyDeformerDrag(viewX, viewY);
             else model->SetDragging(viewX, viewY);
         } else {
             view->GetMouseSelectRect()->SetStartAndEndPos(QVector2D(m_pointerAnchor), QVector2D(current));
@@ -869,6 +901,7 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 {
     QString error;
     if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    FinishDeformerDrag();
     if (!IsModelReady() || !event->angleDelta().y()) return;
     auto* view = LAppDelegate::GetInstance()->GetView();
     QPointF before;
@@ -897,6 +930,13 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 
 void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
+    if (m_controlDragActive &&
+        (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Space || event->key() == Qt::Key_Up ||
+         event->key() == Qt::Key_Down || event->key() == Qt::Key_W || event->key() == Qt::Key_A ||
+         event->key() == Qt::Key_S || event->key() == Qt::Key_D)) {
+        FinishDeformerDrag();
+        if (event->key() == Qt::Key_Escape) return;
+    }
     if (event->key() == Qt::Key_Escape && !IsMeshDragging() && m_runtimeReady) {
         auto* model = CurrentModel();
         if (model && model->HasEditorPreview()) {
@@ -983,6 +1023,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
 
 void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 {
+    if (event->key() == Qt::Key_Control && !event->isAutoRepeat()) FinishDeformerDrag();
     if (!IsModelReady()) return;
     switch (event->key()) {
     case Qt::Key_Up:;break;
@@ -1003,6 +1044,9 @@ void OpengGlForm::focusOutEvent(QFocusEvent* event)
 {
     QString error;
     if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    FinishDeformerDrag();
+    m_ceditstate.RemoveState(CEditState::MousePress);
+    m_ceditstate.RemoveState(CEditState::ViewMove);
     QOpenGLWidget::focusOutEvent(event);
 }
 
@@ -1010,5 +1054,8 @@ void OpengGlForm::hideEvent(QHideEvent* event)
 {
     QString error;
     if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    FinishDeformerDrag();
+    m_ceditstate.RemoveState(CEditState::MousePress);
+    m_ceditstate.RemoveState(CEditState::ViewMove);
     QOpenGLWidget::hideEvent(event);
 }

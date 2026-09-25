@@ -11,8 +11,23 @@
 #include <QHash>
 #include <QSignalBlocker>
 #include <cmath>
+#include <limits>
 
 using namespace live2dstruct;
+
+namespace {
+int sliderPosition(float value, float minimum, float maximum)
+{
+    if (minimum == maximum) return 0;
+    const double ratio = (double(value) - minimum) / (double(maximum) - minimum);
+    return qRound(qBound(0.0, ratio, 1.0) * 1000.0);
+}
+
+QString parameterText(float value)
+{
+    return QString::number(value, 'g', std::numeric_limits<float>::max_digits10);
+}
+}
 
 CBlendShapePanel::CBlendShapePanel(QWidget *parent)
     : QDockWidget("融合变形", parent)
@@ -163,13 +178,12 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
             const float minValue = range.first;
             const float maxValue = range.second;
             const float defaultValue = parameterDefaults.value(paramId, minValue);
-            const int defaultSliderValue = maxValue > minValue
-                ? qBound(0, qRound((defaultValue - minValue) * 1000.0f / (maxValue - minValue)), 1000)
-                : 0;
+            const int defaultSliderValue = sliderPosition(defaultValue, minValue, maxValue);
             slider->setValue(defaultSliderValue);
-            QLabel* valLabel = new QLabel(QString::number(defaultValue, 'f', 2));
-            valLabel->setFixedWidth(40);
-            sl->addWidget(slider);
+            slider->setEnabled(minValue != maxValue);
+            QLabel* valLabel = new QLabel(parameterText(defaultValue));
+            valLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            sl->addWidget(slider, 1);
             sl->addWidget(valLabel);
 
             m_tree->setItemWidget(item, 1, sliderWidget);
@@ -179,10 +193,9 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
 
             QString pid = paramId;
             connect(slider, &QSlider::valueChanged, this, [this, pid, valLabel, minValue, maxValue](int val){
-                const float realVal = maxValue > minValue
-                    ? minValue + (maxValue - minValue) * val / 1000.0f
-                    : minValue;
-                valLabel->setText(QString::number(realVal, 'f', 2));
+                const double ratio = qBound(0, val, 1000) / 1000.0;
+                const float realVal = float(double(minValue) + (double(maxValue) - minValue) * ratio);
+                valLabel->setText(parameterText(realVal));
                 emit ParamChanged(pid, realVal, false);
             });
         }
@@ -208,15 +221,14 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
 
 void CBlendShapePanel::SyncParameterValue(const QString& paramId, float value)
 {
-    if (!m_paramSliders.contains(paramId)) return;
+    if (!std::isfinite(value) || !m_paramSliders.contains(paramId)) return;
     QSlider* slider = m_paramSliders.value(paramId);
     const auto range = m_paramRanges.value(paramId, qMakePair(0.0f, 1.0f));
     const float minValue = range.first;
     const float maxValue = range.second;
     const float bounded = qBound(minValue, value, maxValue);
-    const int sliderValue = maxValue > minValue
-        ? qBound(0, qRound((bounded - minValue) * 1000.0f / (maxValue - minValue)), 1000) : 0;
+    const int sliderValue = sliderPosition(bounded, minValue, maxValue);
     QSignalBlocker blocker(slider);
     slider->setValue(sliderValue);
-    if (m_paramValueLabels.contains(paramId)) m_paramValueLabels.value(paramId)->setText(QString::number(bounded, 'f', 2));
+    if (m_paramValueLabels.contains(paramId)) m_paramValueLabels.value(paramId)->setText(parameterText(bounded));
 }

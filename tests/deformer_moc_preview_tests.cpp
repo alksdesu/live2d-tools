@@ -413,7 +413,7 @@ private slots:
         QVERIFY2(parses(result, &error), qPrintable(error));
     }
 
-    void sharedOwnersMustSubmitIdenticalRecords_data()
+    void sharedOwnersCanSubmitIndependentRecords_data()
     {
         QTest::addColumn<bool>("rotation");
         QTest::addColumn<bool>("sameSpecific");
@@ -423,7 +423,7 @@ private slots:
                                         .arg(sameSpecific ? "specific" : "keyform-row"))) << rotation << sameSpecific;
     }
 
-    void sharedOwnersMustSubmitIdenticalRecords()
+    void sharedOwnersCanSubmitIndependentRecords()
     {
         QFETCH(bool, rotation);
         QFETCH(bool, sameSpecific);
@@ -440,9 +440,15 @@ private slots:
         if (rotation) { auto forms = rotationForms(source, 1); forms[0].angle += 0.25f; rotations.insert(first, forms); }
         else { auto forms = warpForms(source, 1); forms[0].opacity = 0.25f; warps.insert(first, forms); }
         QByteArray result("sentinel");
-        QVERIFY(!builder.Build({}, warps, rotations, {}, result, &error));
-        QCOMPARE(result, QByteArray("sentinel"));
-        QVERIFY(!error.isEmpty());
+        QVERIFY2(builder.Build({}, warps, rotations, {}, result, &error), qPrintable(error));
+        const int firstGeneric = rotation ? 1 : 0, secondGeneric = rotation ? 3 : 2;
+        if (rotation) {
+            QCOMPARE(rotationForms(result, column(result, 0x88, firstGeneric)), rotations.value(first));
+            QCOMPARE(rotationForms(result, column(result, 0x88, secondGeneric)), rotationForms(source, 1));
+        } else {
+            QCOMPARE(warpForms(result, column(result, 0x88, firstGeneric)), warps.value(first));
+            QCOMPARE(warpForms(result, column(result, 0x88, secondGeneric)), warpForms(source, 1));
+        }
         if (rotation) rotations.insert(second, rotations.value(first));
         else warps.insert(second, warps.value(first));
         QVERIFY2(builder.Build({}, warps, rotations, {}, result, &error), qPrintable(error));
@@ -458,8 +464,14 @@ private slots:
             warps[second][0].opacity = 0.75f;
         }
         result = "sentinel";
-        QVERIFY(!builder.Build({}, warps, rotations, {}, result, &error));
-        QCOMPARE(result, QByteArray("sentinel"));
+        QVERIFY2(builder.Build({}, warps, rotations, {}, result, &error), qPrintable(error));
+        if (rotation) {
+            QCOMPARE(rotationForms(result, column(result, 0x88, firstGeneric)), rotations.value(first));
+            QCOMPARE(rotationForms(result, column(result, 0x88, secondGeneric)), rotations.value(second));
+        } else {
+            QCOMPARE(warpForms(result, column(result, 0x88, firstGeneric)), warps.value(first));
+            QCOMPARE(warpForms(result, column(result, 0x88, secondGeneric)), warps.value(second));
+        }
     }
 
     void blendShapeWarpRowsRemainProtected()
@@ -475,12 +487,14 @@ private slots:
         QCOMPARE(result, source);
         forms[0].opacity = 0.5f;
         result = "sentinel";
-        QVERIFY(!builder.Build({}, {{"WarpA", forms}}, {}, {}, result, &error));
-        QCOMPARE(result, QByteArray("sentinel"));
+        QVERIFY2(builder.Build({}, {{"WarpA", forms}}, {}, {}, result, &error), qPrintable(error));
+        QCOMPARE(warpForms(result, column(result, 0x88, 0)), forms);
+        QCOMPARE(columnNumber(result, 0x12c, 1), columnNumber(source, 0x12c, 1));
         forms = warpForms(source, 1);
         forms[0].positions[0] += 0.5f;
-        QVERIFY(!builder.Build({}, {{"WarpA", forms}}, {}, {}, result, &error));
-        QCOMPARE(result, QByteArray("sentinel"));
+        QVERIFY2(builder.Build({}, {{"WarpA", forms}}, {}, {}, result, &error), qPrintable(error));
+        QCOMPARE(warpForms(result, column(result, 0x88, 0)), forms);
+        QCOMPARE(positions(result, 0x130, 1, 8), positions(source, 0x130, 1, 8));
         forms = warpForms(source, 0);
         forms[0].opacity = 0.75f;
         QVERIFY2(builder.Build({}, {{"WarpB", forms}}, {}, {}, result, &error), qPrintable(error));
