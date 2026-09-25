@@ -69,6 +69,10 @@ public:
         std::memcpy(&value, &uint_num, sizeof(value));
         return  value;
     }
+    const uint8_t readUByte() {
+        if (!canRead(1)) return 0;
+        return static_cast<uint8_t>(m_byte[m_pos++]);
+    }
     const uint16_t readUShort() {
         if (!canRead(2)) return 0;
         const uint16_t value = static_cast<uint16_t>(static_cast<uint8_t>(m_byte[m_pos]) |

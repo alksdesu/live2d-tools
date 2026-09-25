@@ -1,6 +1,7 @@
 #include "ctexturepanel.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "live2dstruct/csectiontable.h"
+#include "opengl/cuvgeometry.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGraphicsPixmapItem>
@@ -10,7 +11,10 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QImageReader>
+#include <QSignalBlocker>
 #include <QDebug>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -47,6 +51,8 @@ public:
 
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override
     {
+        painter->save();
+        painter->setClipRect(m_bounds, Qt::IntersectClip);
         painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setBrush(Qt::NoBrush);
 
@@ -67,9 +73,13 @@ public:
         }
         if (selected) {
             painter->setBrush(QColor(255, 120, 40, 40));
+            painter->setPen(Qt::NoPen);
+            painter->drawPath(selected->fillPath);
+            painter->setBrush(Qt::NoBrush);
             painter->setPen(selectedPen);
             painter->drawPath(selected->outline);
         }
+        painter->restore();
     }
 
 private:
@@ -159,6 +169,7 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     topBar->addWidget(m_selector, 1);
 
     m_checkWireframe = new QCheckBox("UV 线框", wrapper);
+    m_checkWireframe->setEnabled(false);
     topBar->addWidget(m_checkWireframe);
 
     m_btnFit = new QToolButton(wrapper);
@@ -173,6 +184,7 @@ CTexturePanel::CTexturePanel(QWidget *parent)
 
     m_btnExport = new QToolButton(wrapper);
     m_btnExport->setText("导出 PNG");
+    m_btnExport->setEnabled(false);
     m_btnExport->setToolTip("导出当前图集为 PNG（直通 alpha）");
     topBar->addWidget(m_btnExport);
 
@@ -207,18 +219,26 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     });
 }
 
-CTexturePanel::~CTexturePanel() = default;
+CTexturePanel::~CTexturePanel()
+{
+    m_scene->clear();
+    m_overlay = nullptr;
+}
 
 void CTexturePanel::LoadTextures(const QMap<int, QString>& texMap, const QString& mocPath)
 {
+    const QSignalBlocker selectorSignals(m_selector);
+    m_scene->clear();
+    m_overlay = nullptr;
+    m_scene->setSceneRect(QRectF());
     m_textures = texMap;
     m_meshes.clear();
     m_runtimeRenderOrder.clear();
     m_selectedMesh.clear();
     m_currentTexKey = -1;
     m_selector->clear();
-    m_scene->clear();
-    m_overlay = nullptr;
+    m_checkWireframe->setEnabled(false);
+    m_btnExport->setEnabled(false);
     m_infoLabel->setText("未加载纹理");
 
     if (texMap.isEmpty()) return;
@@ -277,6 +297,7 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
 
     const int meshCount = qMin(table.count_info->art_meshes, static_cast<int>(table.art_meshes.size()));
     m_meshes.reserve(meshCount);
+    QMap<int, QSize> atlasSizes;
 
     for (int i = 0; i < meshCount; ++i) {
         CArt_meshes* mesh = table.art_meshes[i];
@@ -301,11 +322,15 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
             if (std::isfinite(drawOrder)) uv.drawOrder = drawOrder;
         }
 
-        const QString& atlasPath = m_textures.value(uv.textureNo);
-        QImage probe(atlasPath);
-        if (probe.isNull()) continue;
-        const double w = probe.width();
-        const double h = probe.height();
+        if (!atlasSizes.contains(uv.textureNo)) {
+            QImageReader imageReader(m_textures.value(uv.textureNo));
+            atlasSizes.insert(uv.textureNo, imageReader.size());
+        }
+        const QSize atlasSize = atlasSizes.value(uv.textureNo);
+        if (atlasSize.isEmpty()) continue;
+        const double w = atlasSize.width();
+        const double h = atlasSize.height();
+        const QRectF atlasRect(0, 0, w, h);
 
         const float* uvPtr = &table.uvs->uvs[mesh->uv_sources_begin_indices];
         uv.points.reserve(mesh->vertex_counts);
@@ -313,8 +338,7 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
         for (int v = 0; v < mesh->vertex_counts; ++v) {
             const float u = uvPtr[v * 2];
             const float vCoord = uvPtr[v * 2 + 1];
-            if (!std::isfinite(u) || !std::isfinite(vCoord) || u < -0.001f || u > 1.001f ||
-                vCoord < -0.001f || vCoord > 1.001f) {
+            if (!std::isfinite(u) || !std::isfinite(vCoord)) {
                 uvValid = false;
                 break;
             }
@@ -333,16 +357,26 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
             }
             uv.triangles.append(index);
         }
+        if (uv.triangles.isEmpty()) continue;
 
-        // 预生成绘制路径
+        uv.fillPath.setFillRule(Qt::WindingFill);
         for (int t = 0; t + 2 < uv.triangles.size(); t += 3) {
             const QPointF& p0 = uv.points[uv.triangles[t]];
             const QPointF& p1 = uv.points[uv.triangles[t + 1]];
             const QPointF& p2 = uv.points[uv.triangles[t + 2]];
-            uv.outline.moveTo(p0);
-            uv.outline.lineTo(p1);
-            uv.outline.lineTo(p2);
-            uv.outline.closeSubpath();
+            const QPointF vertices[]{p0, p1, p2};
+            for (int edge = 0; edge < 3; ++edge) {
+                QPointF start = vertices[edge], end = vertices[(edge + 1) % 3];
+                if (!CUvGeometry::ClipSegment(start, end, atlasRect)) continue;
+                uv.outline.moveTo(start);
+                uv.outline.lineTo(end);
+            }
+            auto polygon = CUvGeometry::ClipTriangle(p0, p1, p2, atlasRect);
+            if (polygon.size() < 3) continue;
+            if (CUvGeometry::Orientation(p0, p1, p2) < 0) std::reverse(polygon.begin(), polygon.end());
+            uv.fillPath.moveTo(polygon.front());
+            for (std::size_t point = 1; point < polygon.size(); ++point) uv.fillPath.lineTo(polygon[point]);
+            uv.fillPath.closeSubpath();
         }
 
         m_meshes.append(uv);
@@ -356,6 +390,10 @@ void CTexturePanel::rebuildScene(int texKey)
 {
     m_scene->clear();
     m_overlay = nullptr;
+    m_scene->setSceneRect(QRectF());
+    m_currentTexKey = -1;
+    m_btnExport->setEnabled(false);
+    m_checkWireframe->setEnabled(false);
 
     const QString path = m_textures.value(texKey);
     QImage img(path);
@@ -383,6 +421,8 @@ void CTexturePanel::rebuildScene(int texKey)
     }
 
     m_currentTexKey = texKey;
+    m_btnExport->setEnabled(true);
+    m_checkWireframe->setEnabled(!current.isEmpty());
     m_view->FitInViewAll();
 
     QFileInfo fi(path);
@@ -402,7 +442,8 @@ void CTexturePanel::showTexture(int selectorIndex)
 
 QString CTexturePanel::hitTest(const QPointF& scenePos) const
 {
-    // 重心坐标点内测试；后添加的 mesh 渲染顺序靠上，倒序遍历优先命中上层
+    if (m_currentTexKey < 0 || !std::isfinite(scenePos.x()) || !std::isfinite(scenePos.y()) ||
+        !m_scene->sceneRect().contains(scenePos)) return {};
     QString hit;
     int hitOrder = -1;
     for (int m = m_meshes.size() - 1; m >= 0; --m) {
@@ -417,12 +458,7 @@ QString CTexturePanel::hitTest(const QPointF& scenePos) const
             const QPointF& b = mesh.points[mesh.triangles[t + 1]];
             const QPointF& c = mesh.points[mesh.triangles[t + 2]];
 
-            const double d = (b.y() - c.y()) * (a.x() - c.x()) + (c.x() - b.x()) * (a.y() - c.y());
-            if (qFuzzyIsNull(d)) continue;
-            const double w0 = ((b.y() - c.y()) * (scenePos.x() - c.x()) + (c.x() - b.x()) * (scenePos.y() - c.y())) / d;
-            const double w1 = ((c.y() - a.y()) * (scenePos.x() - c.x()) + (a.x() - c.x()) * (scenePos.y() - c.y())) / d;
-            const double w2 = 1.0 - w0 - w1;
-            if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
+            if (CUvGeometry::ContainsTriangle(scenePos, a, b, c)) {
                 const int order = m_runtimeRenderOrder.value(mesh.name, m);
                 if (order >= hitOrder) {
                     hit = mesh.name;

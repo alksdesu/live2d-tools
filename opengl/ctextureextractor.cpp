@@ -1,6 +1,8 @@
 #include "ctextureextractor.h"
+#include "cuvgeometry.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cmeshtopology.h"
+#include "live2dstruct/cdrawableflags.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -40,7 +42,7 @@ QSize CTextureExtractor::GetCanvasPixelSize(const CCanvas_info* canvasInfo)
 
 uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)
 {
-    switch (drawableFlags & 0x03) {
+    switch (CDrawableFlags::BlendMode(drawableFlags)) {
     case 1:  return 0x6C646467; // 'lddg' Linear Dodge (Additive)
     case 2:  return 0x6D756C20; // 'mul ' Multiply
     default: return 0x6E6F726D; // 'norm' Normal
@@ -188,163 +190,97 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
                                          const short* indexData, int indexCount,
                                          QRect& outUvRect)
 {
-    int atlasW = atlas.width();
-    int atlasH = atlas.height();
-    if (atlas.isNull() || !uvData || !indexData || vertexCount <= 0 || indexCount < 3) {
-        outUvRect = QRect();
-        return QImage();
+    outUvRect = QRect();
+    const int atlasW = atlas.width(), atlasH = atlas.height();
+    if (atlas.isNull() || !uvData || !indexData || vertexCount <= 0 || vertexCount > 1000000 ||
+        indexCount < 3 || indexCount > 3000000 || indexCount % 3 != 0) return {};
+    double minPx = std::numeric_limits<double>::max(), minPy = minPx;
+    double maxPx = -minPx, maxPy = -minPx;
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        const double u = uvData[vertex * 2], v = uvData[vertex * 2 + 1];
+        if (!std::isfinite(u) || !std::isfinite(v)) return {};
+        const double x = u * atlasW, y = v * atlasH;
+        minPx = std::min(minPx, x);
+        minPy = std::min(minPy, y);
+        maxPx = std::max(maxPx, x);
+        maxPy = std::max(maxPy, y);
     }
-
-    // 计算 UV 像素空间包围盒
-    float minPx = 1e9f, minPy = 1e9f, maxPx = -1e9f, maxPy = -1e9f;
-    for (int v = 0; v < vertexCount; ++v) {
-        float u = uvData[v * 2];
-        float vCoord = uvData[v * 2 + 1];
-        if (!std::isfinite(u) || !std::isfinite(vCoord) || u < -0.001f || u > 1.001f ||
-            vCoord < -0.001f || vCoord > 1.001f) {
-            outUvRect = QRect();
-            return QImage();
-        }
-        float px = u * atlasW;
-        float py = vCoord * atlasH;
-        minPx = std::min(minPx, px);
-        minPy = std::min(minPy, py);
-        maxPx = std::max(maxPx, px);
-        maxPy = std::max(maxPy, py);
-    }
-
-    // 扩展 1 像素边距，clamp 到图集边界
-    int left = std::max(0, static_cast<int>(std::floor(minPx)) - 1);
-    int top = std::max(0, static_cast<int>(std::floor(minPy)) - 1);
-    int right = std::min(atlasW, static_cast<int>(std::ceil(maxPx)) + 1);
-    int bottom = std::min(atlasH, static_cast<int>(std::ceil(maxPy)) + 1);
-
-    int outW = right - left;
-    int outH = bottom - top;
-    if (outW <= 0 || outH <= 0) {
-        outUvRect = QRect();
-        return QImage();
-    }
-
-    outUvRect = QRect(left, top, outW, outH);
-
-    // 创建输出图像（透明背景）
-    QImage output(outW, outH, QImage::Format_ARGB32);
+    if (maxPx < 0.0 || maxPy < 0.0 || minPx > atlasW || minPy > atlasH) return {};
+    const int left = static_cast<int>(std::max(0.0, std::floor(std::clamp(minPx, 0.0, double(atlasW))) - 1.0));
+    const int top = static_cast<int>(std::max(0.0, std::floor(std::clamp(minPy, 0.0, double(atlasH))) - 1.0));
+    const int right = static_cast<int>(std::min(double(atlasW), std::ceil(std::clamp(maxPx, 0.0, double(atlasW))) + 1.0));
+    const int bottom = static_cast<int>(std::min(double(atlasH), std::ceil(std::clamp(maxPy, 0.0, double(atlasH))) + 1.0));
+    if (right <= left || bottom <= top) return {};
+    QImage output(right - left, bottom - top, QImage::Format_ARGB32);
+    if (output.isNull()) return {};
     output.fill(Qt::transparent);
-
-    // 遍历每个三角形进行光栅化
-    int triCount = indexCount / 3;
-    for (int t = 0; t < triCount; ++t) {
-        int i0 = indexData[t * 3];
-        int i1 = indexData[t * 3 + 1];
-        int i2 = indexData[t * 3 + 2];
+    outUvRect = QRect(left, top, right - left, bottom - top);
+    for (int triangle = 0; triangle < indexCount; triangle += 3) {
+        const int i0 = indexData[triangle], i1 = indexData[triangle + 1], i2 = indexData[triangle + 2];
         if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
-
-        // atlas 中的像素坐标
-        float ax0 = uvData[i0 * 2] * atlasW;
-        float ay0 = uvData[i0 * 2 + 1] * atlasH;
-        float ax1 = uvData[i1 * 2] * atlasW;
-        float ay1 = uvData[i1 * 2 + 1] * atlasH;
-        float ax2 = uvData[i2 * 2] * atlasW;
-        float ay2 = uvData[i2 * 2 + 1] * atlasH;
-
-        // 输出图像中的坐标（相对于包围盒左上角偏移）
-        float ox0 = ax0 - left, oy0 = ay0 - top;
-        float ox1 = ax1 - left, oy1 = ay1 - top;
-        float ox2 = ax2 - left, oy2 = ay2 - top;
-
-        RasterizeTriangle(output, atlas,
-                          ox0, oy0, ox1, oy1, ox2, oy2,
-                          ax0, ay0, ax1, ay1, ax2, ay2);
+        const double x0 = double(uvData[i0 * 2]) * atlasW;
+        const double y0 = double(uvData[i0 * 2 + 1]) * atlasH;
+        const double x1 = double(uvData[i1 * 2]) * atlasW;
+        const double y1 = double(uvData[i1 * 2 + 1]) * atlasH;
+        const double x2 = double(uvData[i2 * 2]) * atlasW;
+        const double y2 = double(uvData[i2 * 2 + 1]) * atlasH;
+        RasterizeTriangle(output, atlas, x0, y0, x1, y1, x2, y2, left, top);
     }
-
     return output;
 }
 
 QRect CTextureExtractor::ComputeCanvasRect(const float* positions, int vertexCount,
                                             const CCanvas_info* canvasInfo)
 {
-    if (!positions || !canvasInfo || vertexCount <= 0 || !std::isfinite(canvasInfo->pixels_per_unit) ||
-        canvasInfo->pixels_per_unit <= 0.0f ||
-        !std::isfinite(canvasInfo->origin_x) || !std::isfinite(canvasInfo->origin_y)) return QRect();
-    float ppu = canvasInfo->pixels_per_unit;
-    float originX = canvasInfo->origin_x;
-    float originY = canvasInfo->origin_y;
-
-    float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
-    for (int v = 0; v < vertexCount; ++v) {
-        float mx = positions[v * 2];
-        float my = positions[v * 2 + 1];
-        if (!std::isfinite(mx) || !std::isfinite(my)) return QRect();
-        // 模型空间 → 像素空间
-        float px = (mx + originX) * ppu;
-        float py = (originY - my) * ppu;
-        minX = std::min(minX, px);
-        minY = std::min(minY, py);
-        maxX = std::max(maxX, px);
-        maxY = std::max(maxY, py);
+    if (!positions || !canvasInfo || vertexCount <= 0 || vertexCount > 1000000 ||
+        !std::isfinite(canvasInfo->pixels_per_unit) || canvasInfo->pixels_per_unit <= 0.0f ||
+        !std::isfinite(canvasInfo->origin_x) || !std::isfinite(canvasInfo->origin_y)) return {};
+    const double ppu = canvasInfo->pixels_per_unit;
+    const double originX = canvasInfo->origin_x, originY = canvasInfo->origin_y;
+    double minX = std::numeric_limits<double>::max(), minY = minX;
+    double maxX = -minX, maxY = -minX;
+    for (int vertex = 0; vertex < vertexCount; ++vertex) {
+        const double x = positions[vertex * 2], y = positions[vertex * 2 + 1];
+        if (!std::isfinite(x) || !std::isfinite(y)) return {};
+        const double pixelX = (x + originX) * ppu, pixelY = (originY - y) * ppu;
+        if (!std::isfinite(pixelX) || !std::isfinite(pixelY)) return {};
+        minX = std::min(minX, pixelX);
+        minY = std::min(minY, pixelY);
+        maxX = std::max(maxX, pixelX);
+        maxY = std::max(maxY, pixelY);
     }
-
-    int left = static_cast<int>(std::floor(minX));
-    int top = static_cast<int>(std::floor(minY));
-    int right = static_cast<int>(std::ceil(maxX));
-    int bottom = static_cast<int>(std::ceil(maxY));
-
-    return QRect(left, top, right - left, bottom - top);
+    const double left = std::floor(minX), top = std::floor(minY);
+    const double right = std::ceil(maxX), bottom = std::ceil(maxY);
+    const double minimum = std::numeric_limits<int>::min(), maximum = std::numeric_limits<int>::max();
+    if (left < minimum || top < minimum || right > maximum || bottom > maximum ||
+        right <= left || bottom <= top || right - left > maximum || bottom - top > maximum) return {};
+    return QRect(static_cast<int>(left), static_cast<int>(top),
+                 static_cast<int>(right - left), static_cast<int>(bottom - top));
 }
 
 void CTextureExtractor::RasterizeTriangle(QImage& output, const QImage& atlas,
-                                           float ox0, float oy0,
-                                           float ox1, float oy1,
-                                           float ox2, float oy2,
-                                           float ax0, float ay0,
-                                           float ax1, float ay1,
-                                           float ax2, float ay2)
+                                           double x0, double y0, double x1, double y1,
+                                           double x2, double y2, int atlasLeft, int atlasTop)
 {
-    // 三角形包围盒 (输出空间)
-    int minX = std::max(0, static_cast<int>(std::floor(std::min({ox0, ox1, ox2}))));
-    int minY = std::max(0, static_cast<int>(std::floor(std::min({oy0, oy1, oy2}))));
-    int maxX = std::min(output.width() - 1, static_cast<int>(std::ceil(std::max({ox0, ox1, ox2}))));
-    int maxY = std::min(output.height() - 1, static_cast<int>(std::ceil(std::max({oy0, oy1, oy2}))));
-
-    // 重心坐标计算的预计算分母
-    float denom = (oy1 - oy2) * (ox0 - ox2) + (ox2 - ox1) * (oy0 - oy2);
-    if (std::abs(denom) < 1e-6f) return; // 退化三角形
-
-    float invDenom = 1.0f / denom;
-
-    int atlasW = atlas.width();
-    int atlasH = atlas.height();
-
+    const double left = std::max(0.0, std::floor(std::min({x0, x1, x2}) - atlasLeft));
+    const double top = std::max(0.0, std::floor(std::min({y0, y1, y2}) - atlasTop));
+    const double right = std::min(double(output.width() - 1), std::ceil(std::max({x0, x1, x2}) - atlasLeft));
+    const double bottom = std::min(double(output.height() - 1), std::ceil(std::max({y0, y1, y2}) - atlasTop));
+    if (right < left || bottom < top) return;
+    const QPointF a(x0, y0), b(x1, y1), c(x2, y2);
+    if (CUvGeometry::Orientation(a, b, c) == 0) return;
+    const int minX = static_cast<int>(left), minY = static_cast<int>(top);
+    const int maxX = static_cast<int>(right), maxY = static_cast<int>(bottom);
     for (int py = minY; py <= maxY; ++py) {
-        QRgb* outScanLine = reinterpret_cast<QRgb*>(output.scanLine(py));
+        QRgb* outputRow = reinterpret_cast<QRgb*>(output.scanLine(py));
         for (int px = minX; px <= maxX; ++px) {
-            float x = px + 0.5f; // 像素中心
-            float y = py + 0.5f;
-
-            // 重心坐标
-            float w0 = ((oy1 - oy2) * (x - ox2) + (ox2 - ox1) * (y - oy2)) * invDenom;
-            float w1 = ((oy2 - oy0) * (x - ox2) + (ox0 - ox2) * (y - oy2)) * invDenom;
-            float w2 = 1.0f - w0 - w1;
-
-            // 允许微小负值容差（边缘抗锯齿）
-            const float eps = -0.001f;
-            if (w0 < eps || w1 < eps || w2 < eps) continue;
-
-            // 插值 atlas 坐标
-            float sampleX = w0 * ax0 + w1 * ax1 + w2 * ax2;
-            float sampleY = w0 * ay0 + w1 * ay1 + w2 * ay2;
-
-            // 最近邻采样（clamp）
-            int sx = std::clamp(static_cast<int>(sampleX), 0, atlasW - 1);
-            int sy = std::clamp(static_cast<int>(sampleY), 0, atlasH - 1);
-
-            QRgb pixel = reinterpret_cast<const QRgb*>(atlas.constScanLine(sy))[sx];
-
-            // 只写入有内容的像素（避免覆盖已有三角形的结果）
-            if (qAlpha(pixel) > 0 || qAlpha(outScanLine[px]) == 0) {
-                outScanLine[px] = pixel;
-            }
+            const QPointF point(double(px) + atlasLeft + 0.5, double(py) + atlasTop + 0.5);
+            if (!CUvGeometry::ContainsTriangle(point, a, b, c)) continue;
+            // UV 裁片只改变原点，直接采样可避免大坐标重心插值抵消。
+            const qint64 sampleX = qint64(px) + atlasLeft, sampleY = qint64(py) + atlasTop;
+            if (sampleX < 0 || sampleY < 0 || sampleX >= atlas.width() || sampleY >= atlas.height()) continue;
+            const QRgb pixel = reinterpret_cast<const QRgb*>(atlas.constScanLine(static_cast<int>(sampleY)))[sampleX];
+            if (qAlpha(pixel) > 0 || qAlpha(outputRow[px]) == 0) outputRow[px] = pixel;
         }
     }
 }

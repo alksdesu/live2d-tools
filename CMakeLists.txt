@@ -23,6 +23,7 @@ endif()
 
 add_library(model_data STATIC
     opengl/cmeshbounds.cpp
+    opengl/cuvgeometry.cpp
     live2dstruct/cdraworder.cpp
     live2dstruct/cmeshtopology.cpp
     live2dstruct/cmotiontimeline.cpp
@@ -120,6 +121,22 @@ if(BUILD_TESTING)
     target_link_libraries(draw_order_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(draw_order_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME draw_order COMMAND draw_order_tests)
+    add_executable(drawable_flags_tests tests/drawable_flags_tests.cpp)
+    target_link_libraries(drawable_flags_tests PRIVATE cmo3_data Qt6::Test)
+    target_compile_definitions(drawable_flags_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME drawable_flags COMMAND drawable_flags_tests)
+    add_executable(texture_extraction_tests tests/texture_extraction_tests.cpp)
+    target_link_libraries(texture_extraction_tests PRIVATE cmo3_data Qt6::Test)
+    target_compile_definitions(texture_extraction_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME texture_extraction COMMAND texture_extraction_tests)
+    add_executable(uv_geometry_tests tests/uv_geometry_tests.cpp)
+    target_link_libraries(uv_geometry_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME uv_geometry COMMAND uv_geometry_tests)
+    add_executable(texture_panel_tests tests/texture_panel_tests.cpp ui/ctexturepanel.cpp)
+    target_link_libraries(texture_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(texture_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME texture_panel COMMAND texture_panel_tests)
+    set_tests_properties(texture_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(mesh_topology_tests tests/mesh_topology_tests.cpp)
     target_link_libraries(mesh_topology_tests PRIVATE model_data Qt6::Test)
     add_test(NAME mesh_topology COMMAND mesh_topology_tests)

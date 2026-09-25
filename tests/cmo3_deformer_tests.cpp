@@ -279,6 +279,138 @@ private slots:
         }
     }
 
+    void drawableFlagsFollowSourceBytesAndExplicitOverrides_data()
+    {
+        QTest::addColumn<QString>("model");
+        QTest::addColumn<bool>("overrideMasks");
+        QTest::addColumn<int>("firstFlagOverride");
+        for (const QString& model : {QStringLiteral("Mark"), QStringLiteral("Wanko"),
+                                    QStringLiteral("Rice"), QStringLiteral("Natori")})
+            QTest::newRow(qPrintable(model)) << model << false << -1;
+        QTest::newRow("mask-overrides") << QStringLiteral("Rice") << true << -1;
+        QTest::newRow("additive-precedes-multiply") << QStringLiteral("Mark") << false << 0x07;
+    }
+
+    void drawableFlagsFollowSourceBytesAndExplicitOverrides()
+    {
+        QFETCH(QString, model);
+        QFETCH(bool, overrideMasks);
+        QFETCH(int, firstFlagOverride);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        const int count = table.art_meshes.size();
+        QVERIFY(count > 0);
+        const auto* offsets = table.sectionOffsetTable->art_meshes;
+        QByteArray bytes = reader.m_byte;
+        QVERIFY(offsets->drawable_flags > 0 && offsets->drawable_flags <= bytes.size() - count);
+        QVERIFY(offsets->ids > 0 && offsets->ids <= bytes.size() - count * 64);
+        QVERIFY(offsets->drawable_mask_sources_begin_indices > 0 &&
+                offsets->drawable_mask_sources_begin_indices <= bytes.size() - count * 4);
+        QVERIFY(offsets->drawable_mask_sources_counts > 0 &&
+                offsets->drawable_mask_sources_counts <= bytes.size() - count * 4);
+        if (firstFlagOverride >= 0) bytes[offsets->drawable_flags] = static_cast<char>(firstFlagOverride);
+        QStringList ids;
+        QVector<quint8> flags;
+        QVector<QVector<int>> sourceMasks;
+        QVector<int> invertedMasked;
+        QVector<int> normalMasked;
+        int additiveCount = 0;
+        int invertedCount = 0;
+        for (int index = 0; index < count; ++index) {
+            const QByteArray rawId = bytes.mid(offsets->ids + index * 64, 64);
+            ids.append(QString::fromUtf8(rawId.constData(), rawId.indexOf('\0') < 0 ? rawId.size() : rawId.indexOf('\0')));
+            QVERIFY(!ids.last().isEmpty());
+            const quint8 flag = static_cast<quint8>(bytes[offsets->drawable_flags + index]);
+            flags.append(flag);
+            if (flag & 0x01) ++additiveCount;
+            if (flag & 0x08) ++invertedCount;
+            const qint32 begin = qFromLittleEndian<qint32>(bytes.constData() + offsets->drawable_mask_sources_begin_indices + index * 4);
+            const qint32 maskCount = qFromLittleEndian<qint32>(bytes.constData() + offsets->drawable_mask_sources_counts + index * 4);
+            QVERIFY(begin >= 0 && maskCount >= 0 && begin <= table.drawable_masks.size() &&
+                    maskCount <= table.drawable_masks.size() - begin);
+            QVector<int> masks;
+            for (int mask = 0; mask < maskCount; ++mask) {
+                const qint64 position = static_cast<qint64>(table.sectionOffsetTable->drawable_masks->art_mesh_sources_indices) +
+                                        static_cast<qint64>(begin + mask) * 4;
+                QVERIFY(position > 0 && position <= bytes.size() - 4);
+                const qint32 meshIndex = qFromLittleEndian<qint32>(bytes.constData() + position);
+                QVERIFY(meshIndex >= 0 && meshIndex < count);
+                masks.append(meshIndex);
+            }
+            sourceMasks.append(masks);
+            if (!masks.isEmpty()) ((flag & 0x08) ? invertedMasked : normalMasked).append(index);
+        }
+        if (model == QLatin1String("Rice")) {
+            QCOMPARE(additiveCount, 21);
+            QCOMPARE(invertedCount, 7);
+        } else if (model == QLatin1String("Natori")) {
+            QCOMPARE(ids[150], QStringLiteral("ArtMesh7"));
+            QCOMPARE(flags[150], quint8(0x06));
+        } else if (model == QLatin1String("Wanko")) {
+            QVERIFY(ids.contains(QStringLiteral("HitArea")));
+            QCOMPARE(flags[ids.indexOf(QStringLiteral("HitArea"))], quint8(0x04));
+        } else {
+            for (quint8 flag : flags) QVERIFY(flag & 0x04);
+        }
+
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QDir directory(temporary.path());
+        QVERIFY(copyInputs(model, directory));
+        const QString mocPath = directory.filePath(model + ".moc3");
+        QVERIFY(saveBytes(mocPath, bytes));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = directory.filePath("drawable-flags.cmo3");
+        if (overrideMasks) {
+            QVERIFY(invertedMasked.size() >= 2 && !normalMasked.isEmpty());
+            options.drawableMaskInverted.insert(ids[invertedMasked[0]], false);
+            options.drawableMaskInverted.insert(ids[normalMasked[0]], true);
+            options.drawableMaskIndexOverrides.insert(ids[invertedMasked[1]], {});
+            options.drawableMaskInverted.insert(ids[invertedMasked[1]], true);
+        }
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        QHash<QString, int> sources;
+        for (int index = 0; index < xml.nodes.size(); ++index) {
+            if (xml.nodes[index].tag != QLatin1String("CArtMeshSource") || xml.attribute(index, "xs.id").isEmpty()) continue;
+            const QString id = xml.attribute(xml.field(xml.field(index, "super"), "id"), "idstr");
+            QVERIFY2(!id.isEmpty() && !sources.contains(id), qPrintable(id));
+            sources.insert(id, index);
+        }
+        QCOMPARE(sources.size(), count);
+        for (int index = 0; index < count; ++index) {
+            const QString& id = ids[index];
+            const int source = sources.value(id, -1);
+            QVERIFY2(source >= 0, qPrintable(id));
+            const quint8 flag = flags[index];
+            const QString composition = (flag & 0x01) ? QStringLiteral("ADD") :
+                                        (flag & 0x02) ? QStringLiteral("MULTIPLY") : QStringLiteral("NORMAL");
+            QCOMPARE(xml.attribute(xml.field(source, "colorComposition"), "v"), composition);
+            QCOMPARE(xml.text(xml.field(source, "culling")), (flag & 0x04) ? QStringLiteral("false") : QStringLiteral("true"));
+            const int base = xml.field(source, "super");
+            const int maskList = xml.field(base, "clipGuidList");
+            QVERIFY(maskList >= 0);
+            const QVector<int> masks = options.drawableMaskIndexOverrides.value(id, sourceMasks[index]);
+            QCOMPARE(xml.nodes[maskList].children.size(), masks.size());
+            QCOMPARE(xml.attribute(maskList, "count").toInt(), masks.size());
+            for (int mask = 0; mask < masks.size(); ++mask) {
+                const int guid = xml.resolve(xml.nodes[maskList].children[mask]);
+                QVERIFY(guid >= 0);
+                QCOMPARE(xml.attribute(guid, "note"), ids[masks[mask]]);
+            }
+            const bool inverted = options.drawableMaskInverted.value(id, (flag & 0x08) != 0) && !masks.isEmpty();
+            QCOMPARE(xml.text(xml.field(base, "invertClippingMask")), inverted ? QStringLiteral("true") : QStringLiteral("false"));
+        }
+    }
+
     void rejectInvalidSource_data()
     {
         QTest::addColumn<int>("mode");

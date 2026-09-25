@@ -4,6 +4,7 @@
 #include "ccmo3ids.h"
 #include "cxsxmlwriter.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/cdrawableflags.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "opengl/ctextureextractor.h"
@@ -866,7 +867,8 @@ void Generator::writeArtMeshEntities()
             }
         }
         m_xml.EndList();
-        const bool invertMask = m_opt.drawableMaskInverted.value(mesh->ids, false);
+        const bool invertMask = m_opt.drawableMaskInverted.value(mesh->ids,
+            CDrawableFlags::MaskInverted(mesh->drawable_flags));
         m_xml.B(QStringLiteral("invertClippingMask"), invertMask && !maskIndices.isEmpty());
         m_xml.EndObject(); // ACDrawableSource
 
@@ -956,13 +958,12 @@ void Generator::writeArtMeshEntities()
         }
 
         m_xml.Null(QStringLiteral("texture"));
-        // 混合模式：drawable_flags bits 0-1
-        const int blendBits = mesh->drawable_flags & 0x3;
-        const QString blend = (blendBits == 1) ? QStringLiteral("ADD")
-                            : (blendBits == 2) ? QStringLiteral("MULTIPLY")
+        const int blendMode = CDrawableFlags::BlendMode(mesh->drawable_flags);
+        const QString blend = (blendMode == 1) ? QStringLiteral("ADD")
+                            : (blendMode == 2) ? QStringLiteral("MULTIPLY")
                                                : QStringLiteral("NORMAL");
         m_xml.Enum(QStringLiteral("ColorComposition"), QStringLiteral("colorComposition"), blend);
-        m_xml.B(QStringLiteral("culling"), !(mesh->drawable_flags & 0x4));
+        m_xml.B(QStringLiteral("culling"), CDrawableFlags::Culling(mesh->drawable_flags));
         m_xml.Enum(QStringLiteral("TextureState"), QStringLiteral("textureState"),
                    QStringLiteral("MODEL_IMAGE"));
         m_xml.S(QStringLiteral("userData"), m_userData.value(mesh->ids));

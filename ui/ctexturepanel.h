@@ -20,6 +20,7 @@ struct CAtlasMeshUv {
     QVector<QPointF> points;    // 顶点（图集像素坐标）
     QVector<int> triangles;     // 三角形顶点索引（3 个一组）
     QPainterPath outline;       // 三角形边缘合并路径（绘制用）
+    QPainterPath fillPath;
 };
 
 // UV 线框叠加层：按 mesh 绘制三角网格，支持高亮选中项

@@ -51,7 +51,7 @@ public:
 private:
     /// 从 atlas 中通过 UV 三角形网格光栅化提取 mesh 图像
     /// @param atlas 纹理图集图像
-    /// @param uvData UV 坐标数组 (vertex_count * 2 floats, 归一化 [0,1])
+    /// @param uvData UV 坐标数组 (vertex_count * 2 floats)
     /// @param vertexCount 顶点数
     /// @param indexData 三角形索引数组
     /// @param indexCount 索引总数 (三角形数 * 3)
@@ -67,17 +67,11 @@ private:
                             const live2dstruct::CCanvas_info* canvasInfo);
 
     /// 光栅化单个三角形：从 atlas 采样写入输出图像
-    /// 所有坐标均为像素空间（相对于各自的图像原点）
+    /// 三角形顶点使用原始 atlas 像素坐标
     void RasterizeTriangle(QImage& output,
                            const QImage& atlas,
-                           // 输出图像中的三角形顶点 (相对于 output 图像左上角)
-                           float ox0, float oy0,
-                           float ox1, float oy1,
-                           float ox2, float oy2,
-                           // atlas 中的对应像素坐标
-                           float ax0, float ay0,
-                           float ax1, float ay1,
-                           float ax2, float ay2);
+                           double x0, double y0, double x1, double y1,
+                           double x2, double y2, int atlasLeft, int atlasTop);
 
     QVector<QImage> m_atlases;
 };

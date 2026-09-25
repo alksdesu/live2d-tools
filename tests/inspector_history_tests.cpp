@@ -8,12 +8,121 @@
 #include <QTableWidget>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QListWidget>
+#include <QTimer>
 #include <algorithm>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void clearingMasksPreservesInversionInOneHistoryEntry_data()
+    {
+        QTest::addColumn<bool>("sourceInverted");
+        QTest::newRow("source-inverted") << true;
+        QTest::newRow("user-inverted") << false;
+    }
+
+    void clearingMasksPreservesInversionInOneHistoryEntry()
+    {
+        QFETCH(bool, sourceInverted);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Rice/Rice.moc3", &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [sourceInverted](const CModelDrawable& drawable) {
+                return !drawable.maskIndices.isEmpty() && ((drawable.flags & 0x08) != 0) == sourceInverted;
+            });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        const QVector<int> originalMasks = document.DrawableMaskIndices(id);
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("artmesh"));
+        auto* inverted = panel.findChild<QCheckBox*>("maskInverted");
+        auto* editMasks = panel.findChild<QPushButton*>("editMasks");
+        QVERIFY(inverted && editMasks && inverted->isEnabled() && editMasks->isEnabled());
+        QCOMPARE(inverted->isChecked(), sourceInverted);
+        inverted->click();
+        if (sourceInverted) panel.Undo();
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(inverted->isChecked());
+        panel.ClearHistory();
+        QVERIFY(!document.CanUndoEdit());
+        QSignalSpy changed(&panel, &CInspectorPanel::DrawableMaskIndicesChanged);
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        bool clearedInDialog = false;
+        QTimer responder;
+        responder.setSingleShot(true);
+        connect(&responder, &QTimer::timeout, &panel, [&] {
+            auto* dialog = panel.findChild<QDialog*>();
+            if (!dialog) return;
+            auto* list = dialog->findChild<QListWidget*>();
+            auto* buttons = dialog->findChild<QDialogButtonBox*>();
+            if (!list || !buttons || !buttons->button(QDialogButtonBox::Ok)) {
+                dialog->reject();
+                return;
+            }
+            for (int row = 0; row < list->count(); ++row) list->item(row)->setCheckState(Qt::Unchecked);
+            clearedInDialog = true;
+            buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        responder.start(0);
+        editMasks->click();
+        QVERIFY(clearedInDialog);
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(history.size(), 1);
+        QVERIFY(document.DrawableMaskIndices(id).isEmpty());
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(inverted->isChecked());
+        QVERIFY(!inverted->isEnabled());
+        QVERIFY(document.Validate().isEmpty());
+        panel.Undo();
+        QCOMPARE(document.DrawableMaskIndices(id), originalMasks);
+        QVERIFY(inverted->isChecked() && inverted->isEnabled());
+        QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(changed.size(), 2);
+        panel.Redo();
+        QVERIFY(document.DrawableMaskIndices(id).isEmpty());
+        QVERIFY(inverted->isChecked() && !inverted->isEnabled());
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(changed.size(), 3);
+        QVERIFY(document.Validate().isEmpty());
+    }
+
+    void inspectorPreservesNativeInvertedMasksThroughHistory()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Rice/Rice.moc3", &error), qPrintable(error));
+        const QString maskedId = QStringLiteral("ArtMesh50");
+        QVERIFY(!document.DrawableMaskIndices(maskedId).isEmpty());
+        QVERIFY(document.DrawableMaskInverted(maskedId));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(maskedId, QStringLiteral("artmesh"));
+        auto* inverted = panel.findChild<QCheckBox*>("maskInverted");
+        QVERIFY(inverted && inverted->isEnabled() && inverted->isChecked());
+        inverted->click();
+        QVERIFY(!document.DrawableMaskInverted(maskedId));
+        QVERIFY(!inverted->isChecked());
+        panel.Undo();
+        QVERIFY(document.DrawableMaskInverted(maskedId));
+        QVERIFY(inverted->isChecked());
+        panel.Redo();
+        QVERIFY(!document.DrawableMaskInverted(maskedId));
+        QVERIFY(!inverted->isChecked());
+        const QString unmaskedId = QStringLiteral("ArtMesh168");
+        QVERIFY(document.DrawableMaskIndices(unmaskedId).isEmpty());
+        panel.SetSelection(unmaskedId, QStringLiteral("artmesh"));
+        QVERIFY(inverted->isChecked());
+        QVERIFY(!inverted->isEnabled());
+    }
+
     void mergeTopologyDeduplicatesAndKeepsHistoryAtomic()
     {
         live2dstruct::CModelDocument document;

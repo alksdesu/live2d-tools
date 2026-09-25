@@ -16,6 +16,88 @@ class ModelDataTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void emptyMasksRetainInversionAcrossHistoryAndSessions_data()
+    {
+        QTest::addColumn<bool>("sourceInverted");
+        QTest::newRow("source-inverted") << true;
+        QTest::newRow("user-inverted") << false;
+    }
+
+    void emptyMasksRetainInversionAcrossHistoryAndSessions()
+    {
+        QFETCH(bool, sourceInverted);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QString error;
+        const QString path = QString(TEST_RESOURCES) + QStringLiteral("/Rice/Rice.moc3");
+        QVERIFY2(document.Load(path, &error), qPrintable(error));
+        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [sourceInverted](const CModelDrawable& drawable) {
+                return !drawable.maskIndices.isEmpty() && ((drawable.flags & 0x08) != 0) == sourceInverted;
+            });
+        QVERIFY(mesh != document.Drawables().cend());
+        const QString id = mesh->id;
+        const QVector<int> masks = document.DrawableMaskIndices(id);
+        QCOMPARE(document.DrawableMaskInverted(id), sourceInverted);
+        if (sourceInverted) {
+            QVERIFY(document.ExecuteEdit({id, "artmesh", CModelEdit::MaskInverted, true, false, -1, false}));
+            QVERIFY(document.UndoEdit());
+        } else {
+            QVERIFY(document.ExecuteEdit({id, "artmesh", CModelEdit::MaskInverted, false, true, -1, false}));
+        }
+        QVERIFY(document.DrawableMaskInvertedOverrides().value(id));
+        document.ClearEditHistory();
+        const CModelEdit clearMasks{id, "artmesh", CModelEdit::MaskIndices,
+            QVariant::fromValue(masks), QVariant::fromValue(QVector<int>()), -1, false};
+        QVERIFY(document.ExecuteEdit(clearMasks));
+        QVERIFY(document.DrawableMaskIndices(id).isEmpty());
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(document.Validate().isEmpty());
+        CModelEdit undone;
+        QVERIFY(document.UndoEdit(&undone));
+        QCOMPARE(undone.field, CModelEdit::MaskIndices);
+        QCOMPARE(document.DrawableMaskIndices(id), masks);
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(!document.CanUndoEdit());
+        QVERIFY(document.RedoEdit());
+        QVERIFY(document.DrawableMaskIndices(id).isEmpty());
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(!document.CanRedoEdit());
+        QVERIFY(document.Validate().isEmpty());
+
+        CModelSession session;
+        session.sourceMoc = path;
+        session.drawableMaskIndices = document.DrawableMaskIndexOverrides();
+        session.drawableMaskInverted = document.DrawableMaskInvertedOverrides();
+        CModelSession decoded;
+        QVERIFY2(CModelSession::FromJson(session.ToJson(), &decoded, &error), qPrintable(error));
+        QVERIFY(decoded.drawableMaskIndices.contains(id));
+        QVERIFY(decoded.drawableMaskIndices.value(id).isEmpty());
+        QVERIFY(decoded.drawableMaskInverted.contains(id));
+        QVERIFY(decoded.drawableMaskInverted.value(id));
+        CModelDocument restored;
+        QVERIFY2(restored.Load(decoded.sourceMoc, &error), qPrintable(error));
+        for (auto it = decoded.drawableMaskIndices.cbegin(); it != decoded.drawableMaskIndices.cend(); ++it)
+            QVERIFY(restored.SetDrawableMaskIndices(it.key(), it.value()));
+        for (auto it = decoded.drawableMaskInverted.cbegin(); it != decoded.drawableMaskInverted.cend(); ++it)
+            QVERIFY(restored.SetDrawableMaskInverted(it.key(), it.value()));
+        QVERIFY(restored.DrawableMaskIndices(id).isEmpty());
+        QVERIFY(restored.DrawableMaskInverted(id));
+        QVERIFY(restored.Validate().isEmpty());
+        QVERIFY(restored.ExecuteEdit({id, "artmesh", CModelEdit::MaskIndices,
+            QVariant::fromValue(QVector<int>()), QVariant::fromValue(masks), -1, false}));
+        QCOMPARE(restored.DrawableMaskIndices(id), masks);
+        QVERIFY(restored.DrawableMaskInverted(id));
+        QVERIFY(restored.UndoEdit());
+        QVERIFY(restored.DrawableMaskIndices(id).isEmpty());
+        QVERIFY(restored.DrawableMaskInverted(id));
+        QVERIFY(!restored.CanUndoEdit());
+        QVERIFY(restored.RedoEdit());
+        QCOMPARE(restored.DrawableMaskIndices(id), masks);
+        QVERIFY(restored.DrawableMaskInverted(id));
+        QVERIFY(restored.Validate().isEmpty());
+    }
+
     void sparseKeyformOverridesPreserveOtherForms()
     {
         live2dstruct::CModelDocument document;
@@ -374,7 +456,11 @@ private slots:
         QVERIFY(document.SetDrawableMaskInverted(id, false));
         QVERIFY(!document.DrawableMaskInverted(id));
         QVERIFY(document.SetDrawableMaskIndices(id, {}));
-        QVERIFY(!document.SetDrawableMaskInverted(id, true));
+        QVERIFY(document.SetDrawableMaskInverted(id, true));
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(document.SetDrawableMaskIndices(id, masksAfter));
+        QVERIFY(document.DrawableMaskInverted(id));
+        QVERIFY(!document.SetDrawableMaskInverted(QStringLiteral("missing-mesh"), true));
         int deformerIndex = -1;
         int parentDeformerIndex = -1;
         for (int i = 0; i < document.Deformers().size(); ++i) {

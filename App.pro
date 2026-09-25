@@ -41,6 +41,7 @@ SOURCES += \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
     opengl/cmeshbounds.cpp \
+    opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
@@ -227,6 +228,7 @@ SOURCES += \
 
 HEADERS += \
     live2dstruct/cdraworder.h \
+    live2dstruct/cdrawableflags.h \
     live2dstruct/cmeshtopology.h \
     live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
@@ -234,6 +236,7 @@ HEADERS += \
     ui/cuserdatapanel.h \
     ui/ctableeditdelegate.h \
     opengl/cmeshbounds.h \
+    opengl/cuvgeometry.h \
     live2dstruct/cmodeldocument.h \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \

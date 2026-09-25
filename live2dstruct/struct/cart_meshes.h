@@ -101,8 +101,8 @@ public:
         bytes.seek(artMeshes.texture_nos + i*0x4);
         texture_nos = bytes.readInt();
 
-        bytes.seek(artMeshes.drawable_flags + i*0x4);
-        drawable_flags = bytes.readInt();
+        bytes.seek(artMeshes.drawable_flags + i);
+        drawable_flags = bytes.readUByte();
 
         bytes.seek(artMeshes.vertex_counts + i*0x4);
         vertex_counts = bytes.readInt();

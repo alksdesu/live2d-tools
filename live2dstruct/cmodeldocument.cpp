@@ -1,5 +1,6 @@
 #include "cmodeldocument.h"
 #include "cmeshtopology.h"
+#include "cdrawableflags.h"
 #include "csectiontable.h"
 #include "util/cfilereader.h"
 #include "struct/cart_mesh_keyforms.h"
@@ -202,8 +203,8 @@ bool CModelDocument::LoadInternal(const QString& mocPath, QString* error)
         drawable.parentDeformerIndex = source->parent_deformer_indices;
         drawable.textureIndex = source->texture_nos;
         drawable.flags = source->drawable_flags;
-        drawable.blendMode = source->drawable_flags & 0x3;
-        drawable.culling = (source->drawable_flags & 0x4) == 0;
+        drawable.blendMode = CDrawableFlags::BlendMode(source->drawable_flags);
+        drawable.culling = CDrawableFlags::Culling(source->drawable_flags);
         drawable.vertexCount = source->vertex_counts;
         drawable.visible = source->is_visible;
         drawable.enabled = source->is_enabled;
@@ -571,14 +572,17 @@ bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int
 
 bool CModelDocument::DrawableMaskInverted(const QString& id) const
 {
-    return m_drawableMaskInvertedOverrides.value(id, false);
+    const auto overrideIt = m_drawableMaskInvertedOverrides.constFind(id);
+    if (overrideIt != m_drawableMaskInvertedOverrides.cend()) return overrideIt.value();
+    for (const auto& drawable : m_drawables)
+        if (drawable.id == id) return CDrawableFlags::MaskInverted(drawable.flags);
+    return false;
 }
 
 bool CModelDocument::SetDrawableMaskInverted(const QString& id, bool inverted)
 {
     for (const CModelDrawable& drawable : m_drawables) {
         if (drawable.id != id) continue;
-        if (DrawableMaskIndices(id).isEmpty() && inverted) return false;
         m_drawableMaskInvertedOverrides.insert(id, inverted);
         return true;
     }
@@ -1176,10 +1180,6 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         for (const CModelDrawable& drawable : m_drawables) {
             if (drawable.id != invertIt.key()) continue;
             found = true;
-            if (invertIt.value() && DrawableMaskIndices(drawable.id).isEmpty()) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_inverted_empty"),
-                                     QStringLiteral("没有 Clipping mask 时不能启用反向蒙版：%1").arg(invertIt.key()), -1});
-            }
             break;
         }
         if (!found) {
