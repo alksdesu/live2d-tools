@@ -7,6 +7,8 @@
 #include <QVector>
 #include <QHash>
 
+class CExportControl;
+
 namespace live2dstruct {
 class CSectionTable;
 class CCanvas_info;
@@ -33,14 +35,15 @@ public:
     ~CTextureExtractor();
 
     /// 从文件路径列表加载纹理图集 PNG
-    bool LoadAtlases(const QVector<QString>& atlasPaths);
+    bool LoadAtlases(const QVector<QString>& atlasPaths, CExportControl* control = nullptr);
 
     /// 从 CSectionTable 提取所有 art mesh 的原始纹理
     /// @param table 已解析的 moc3 数据
     /// @param includeHidden 是否包括隐藏图层
     /// @return 按 mesh 索引顺序排列的提取结果
     QVector<ExtractedLayer> ExtractAll(live2dstruct::CSectionTable* table, bool includeHidden,
-                                       const QHash<QString, QVector<quint16>>* indexOverrides = nullptr);
+                                       const QHash<QString, QVector<quint16>>* indexOverrides = nullptr,
+                                       CExportControl* control = nullptr);
 
     /// 获取画布像素尺寸
     static QSize GetCanvasPixelSize(const live2dstruct::CCanvas_info* canvasInfo);
@@ -60,18 +63,18 @@ private:
     QImage RasterizeMesh(const QImage& atlas,
                          const float* uvData, int vertexCount,
                          const short* indexData, int indexCount,
-                         QRect& outUvRect);
+                         QRect& outUvRect, CExportControl* control);
 
     /// 计算模型空间顶点在画布上的像素包围盒
     QRect ComputeCanvasRect(const float* positions, int vertexCount,
-                            const live2dstruct::CCanvas_info* canvasInfo);
+                            const live2dstruct::CCanvas_info* canvasInfo, CExportControl* control);
 
     /// 光栅化单个三角形：从 atlas 采样写入输出图像
     /// 三角形顶点使用原始 atlas 像素坐标
-    void RasterizeTriangle(QImage& output,
+    bool RasterizeTriangle(QImage& output,
                            const QImage& atlas,
                            double x0, double y0, double x1, double y1,
-                           double x2, double y2, int atlasLeft, int atlasTop);
+                           double x2, double y2, int atlasLeft, int atlasTop, CExportControl* control);
 
     QVector<QImage> m_atlases;
 };

@@ -27,6 +27,8 @@ public slots:
     void complete(bool ok, const QString& outPath);
     void completeDetailed(bool ok, const QString& outPath, const QString& error,
                           PsdExportStage stage = PsdExportStage::Exporting, bool outputCommitted = false);
+    void completeCanceled(const QString& outPath, PsdExportStage stage = PsdExportStage::Exporting,
+                          const QString& reason = {});
     void setStage(const QString& outPath, PsdExportStage stage);
     void shutdown();
 
@@ -37,6 +39,7 @@ signals:
     void finished(const QStringList& failedFiles, bool canceled);
     void fileResultChanged(int index, const PsdBatchFileResult& result);
     void resultsReady(const PsdBatchResults& results, bool cancelRequested);
+    void cancelCurrentRequested();
 
 private:
     enum class State { Idle, Running, Finished, Shutdown };

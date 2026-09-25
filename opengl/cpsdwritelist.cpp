@@ -1,5 +1,6 @@
 #include "cpsdwritelist.h"
 #include "live2dstruct/cdraworder.h"
+#include "std/cexportcontrol.h"
 
 CPsdWriteList::CPsdWriteList() {
     m_list=nullptr;
@@ -11,6 +12,12 @@ CPsdWriteList::~CPsdWriteList()
     if(m_list!=nullptr){
         delete m_list;
     }
+}
+
+void CPsdWriteList::SetControl(CExportControl* control)
+{
+    m_control = control;
+    if (m_list) m_list->SetControl(control);
 }
 
 uint32_t CPsdWriteList::CubismBlendModeToPsd(Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode mode)
@@ -33,6 +40,7 @@ bool CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismComp
     m_groupNameStack.clear();
     m_nameUse.clear();
     m_list = new CPsdList();
+    m_list->SetControl(m_control);
     if (m_list->SetPsd(name,w,h,cubismCompat)) return true;
     delete m_list;
     m_list = nullptr;
@@ -55,51 +63,54 @@ QString CPsdWriteList::UniqueName(const QString &name)
 
 bool CPsdWriteList::WritePsd()
 {
-    if (!m_list) return false;
+    if (!m_list) {
+        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
+        return false;
+    }
     bool ok = m_list->CreatePsd();
     delete m_list;
     m_list= nullptr;
     return ok;
 }
 
-void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const QImage &image)
+bool CPsdWriteList::AddLayer(const QString& layerName, const QRect& rect, const QImage& image)
 {
-    if(m_list && rect.width() > 0 && rect.height() > 0 && !image.isNull()){
-        m_list->AddLayer(UniqueName(layerName),image,rect);
-    }else{
-        qDebug("CPsdWriteList::AddLayer skip empty: %s", layerName.toUtf8().constData());
-    }
+    return AddLayer(layerName, rect, image, 255, 0x6E6F726D, false, false);
 }
 
-void CPsdWriteList::AddLayer(const QString &layerName, const QRect &rect, const QImage &image,
-                             uint8_t opacity, uint32_t blendModeKey, bool isClipped,
-                             bool isPremultiplied)
+bool CPsdWriteList::AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
+                             uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied)
 {
-    if(m_list && rect.width() > 0 && rect.height() > 0 && !image.isNull()){
-        m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied);
-    }else{
-        qDebug("CPsdWriteList::AddLayer skip empty: %s", layerName.toUtf8().constData());
+    if (!m_list) {
+        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
+        return false;
     }
+    return m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied);
 }
 
-void CPsdWriteList::AddGroupStart(const QString &groupName)
+bool CPsdWriteList::AddGroupStart(const QString& groupName)
 {
-    if (!m_list) return;
-    // PSD 规范：GroupStart 必须命名为 "</Layer group>"，真实名称写在 GroupEnd。
-    // 为保持名称一致，这里将名称暂存到栈中，GroupEnd 时再取出写入。
+    if (!m_list) {
+        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
+        return false;
+    }
+    if (!m_list->AddGroupStart()) return false;
     m_groupNameStack.push_back(groupName);
-    m_list->AddGroupStart();
+    return true;
 }
 
-void CPsdWriteList::AddGroupEnd()
+bool CPsdWriteList::AddGroupEnd()
 {
-    if (!m_list) return;
-    QString name = m_groupNameStack.isEmpty() ? QString("Group") : m_groupNameStack.takeLast();
-    QByteArray utf8Text = UniqueName(name).toUtf8();
-    m_list->AddGroupEnd(utf8Text.constData());
+    if (!m_list) {
+        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
+        return false;
+    }
+    const QString name = m_groupNameStack.isEmpty() ? QStringLiteral("Group") : m_groupNameStack.last();
+    const QByteArray utf8 = UniqueName(name).toUtf8();
+    if (!m_list->AddGroupEnd(utf8.constData())) return false;
+    if (!m_groupNameStack.isEmpty()) m_groupNameStack.removeLast();
+    return true;
 }
-
-
 
 QVector<QPair<int, CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndexList(
     const QVector<int>& sortedDrawableIndexList, CubismModel* model)

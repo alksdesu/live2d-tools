@@ -18,6 +18,8 @@
 #include "opengl/cglmeshbuffer.h"
 
 class CubismRendererPreparationTests;
+class PsdCooperativeGlTests;
+class CExportControl;
 
 namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
 
@@ -38,10 +40,11 @@ public:
     bool setGlOwningContext(const QOpenGLContext *context){
         if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
             (owningContext() && owningContext() != context)) return false;
-        setOwningContext(context);
         return initializeOpenGLFunctions();
     }
     bool SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, const GLint lastViewport[4]);
+    int MaskContextCount() const { return static_cast<int>(_clippingContextListForMask.GetSize()); }
+    CubismClippingContext_OpenGLES2* MaskContextAt(int index) const { return _clippingContextListForMask[index]; }
 };
 
 
@@ -88,12 +91,12 @@ class CubismRenderer_OpenGLES2 : public  CubismRenderer,  QOpenGLFunctions_3_3_C
     friend class CubismClippingManager_OpenGLES2;
     friend class CubismShader_OpenGLES2;
     friend class ::CubismRendererPreparationTests;
+    friend class ::PsdCooperativeGlTests;
 
 public:
     bool setGlOwningContext(const QOpenGLContext *context){
         if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
             (owningContext() && owningContext() != context)) return false;
-        setOwningContext(context);
         return initializeOpenGLFunctions();
     }
 
@@ -109,6 +112,12 @@ public:
 
     bool PrepareModelReplacement(CubismModel* model, const CubismRenderer_OpenGLES2& previous,
                                  QString* error = nullptr);
+    bool BeginPsdExport(bool includeHidden, CExportControl* control = nullptr, QString* error = nullptr);
+    bool DrawPsdStep(int drawableIndex, float opacityOverride, const CubismMatrix44& matrix,
+                     const QSize& canvas, QImage& image, QRect& rect, bool& ready, QString* error = nullptr);
+    void EndPsdExport(bool completed);
+    void DetachPsdExportControl();
+    bool HasPsdExport() const { return _psdExport != nullptr; }
 
     /**
      * @brief   OpenGLテクスチャのバインド処理<br>
@@ -209,6 +218,9 @@ private:
     CubismRenderer_OpenGLES2& operator=(const CubismRenderer_OpenGLES2&);
     static void DoStaticRelease();
     struct PreparedMaskResources;
+    struct PsdExportState;
+    bool DoPsdStep();
+    bool DrawPsdMaskSource(CubismClippingContext_OpenGLES2* clip, int source, bool clear);
     bool PrepareMaskResources(CubismModel& model, csmInt32 count, const CubismVector2& size,
                               PreparedMaskResources& resources, QString* error);
     bool InitializeResources(CubismModel* model, csmInt32 maskBufferCount,
@@ -246,6 +258,7 @@ private:
     bool _maskBuffersNeedRedraw = false;
     csmInt32 _requestedMaskBufferCount = 1;
     CubismVector2 _requestedMaskBufferSize{256, 256};
+    std::unique_ptr<PsdExportState> _psdExport;
 };
 
 }}}}

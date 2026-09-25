@@ -72,7 +72,8 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForDraw(CubismRenderer_OpenGLES2*
 {
     if (!renderer || index < 0 || index >= model.GetDrawableCount() ||
         (mode != DrawMode::Preview && mode != DrawMode::IsolatedPsdLayer)) return false;
-    const auto* context = LAppDelegate::GetInstance()->getGlOwningContext();
+    const auto* context = renderer->owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
     if (!Initialize(context)) return false;
     auto* gl = functions(context);
     if (!gl) return false;
@@ -120,7 +121,8 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForMask(CubismRenderer_OpenGLES2*
     const CubismModel& model, csmInt32 index)
 {
     if (!renderer || index < 0 || index >= model.GetDrawableCount()) return false;
-    const auto* context = LAppDelegate::GetInstance()->getGlOwningContext();
+    const auto* context = renderer->owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
     if (!Initialize(context)) return false;
     auto* gl = functions(context);
     auto* clipping = renderer->GetClippingContextBufferForMask();

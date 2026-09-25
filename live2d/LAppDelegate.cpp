@@ -19,6 +19,13 @@
 #include "LAppLive2DManager.hpp"
 #include "LAppTextureManager.hpp"
 #include "opengl/ctextureextractor.h"
+#include "opengl/cpsdfiletask.h"
+#include "opengl/cpsdrendersession.h"
+#include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
+#include "ui/cexporttaskrunner.h"
+#include "std/cexportcontrol.h"
+#include <QOpenGLWidget>
+#include <QPointer>
 #include "live2dstruct/util/cfilereader.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/ccanvasgeometry.h"
@@ -104,6 +111,7 @@ bool LAppDelegate::Initialize(const QWidget* windows,const QString& strMoldeName
 
 void LAppDelegate::Release()
 {
+    m_psdExportSession.reset();
     ClearModelRuntimeState(true);
     LAppLive2DManager::ReleaseInstance();
     delete _view;
@@ -269,171 +277,236 @@ CPsdWriteList *LAppDelegate::GetCPsdWriteList()
 }
 
 
-bool LAppDelegate::StartOffset_FunpsdList(const QString &name,bool IsALl,bool IsFenzu,bool cubismCompat)
+bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidden, bool groups, bool cubismCompat,
+                                        QString* error, CExportControl* control)
 {
-    if (!IsRuntimeReady() || name.isEmpty() || _IsOffScreen || cpsdwriteList ||
-        QOpenGLContext::currentContext() != owningContext()) return false;
-    const QScopedValueRollback<bool> printAll(m_IsPrintALl, IsALl);
-    const QScopedValueRollback<bool> printGroups(m_IsPrintFenzu, IsFenzu);
-    LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
-    if (!Live2DManager || Live2DManager->GetModelNum() == 0) return false;
-    LAppModel* modelr = Live2DManager->GetModel(0);
-    if (!modelr || !modelr->GetModel() || !modelr->GetModelMatrix()) return false;
-    Live2D::Cubism::Core::csmVector2 sizeInPixels{}, originInPixels{};
-    csmFloat32 pixelsPerUnit = 0.0f;
-    Live2D::Cubism::Core::csmReadCanvasInfo(modelr->GetModel()->GetModel(), &sizeInPixels, &originInPixels, &pixelsPerUnit);
-    const QSize canvasSize = live2dstruct::CCanvasGeometry::PixelSize(sizeInPixels.X, sizeInPixels.Y);
-    std::array<float, 16> canvasProjection;
-    if (!live2dstruct::CCanvasGeometry::ModelToNdc(sizeInPixels.X, sizeInPixels.Y,
-            originInPixels.X, originInPixels.Y, pixelsPerUnit, canvasSize, canvasProjection)) return false;
-    const int width = canvasSize.width(), height = canvasSize.height();
-    CPsdWriteList writer;
-    const QScopedValueRollback<CPsdWriteList*> psdWriter(cpsdwriteList, &writer);
-    QString strhome = modelr->GetModelHomeDir().GetRawString();
-    QString strcid =modelr->GetModelSetting()->GetDisplayInfoFileName();
-    QString strmoc=modelr->GetModelSetting()->GetModelFileName();
-    cpsdwriteList->SetCidName(strhome+"/"+strcid);
-    cpsdwriteList->SetMocName(strhome+"/"+strmoc);
-    if (!cpsdwriteList->CreatePsd(name,width,height,cubismCompat)) return false;
-    const auto closePsd = qScopeGuard([&] { writer.ClosePsd(); });
-    if (!coffscreen.CreateOffscreenSurface(width,height)) return false;
-    const auto destroySurface = qScopeGuard([&] { coffscreen.DestroyOffscreenSurface(); });
-    const auto projection = _view->GetProjectionMatrix();
-    const auto viewMatrix = _view->GetViewMatrix();
-    const auto modelMatrix = *modelr->GetModelMatrix();
-    const QScopedValueRollback<bool> offscreen(_IsOffScreen);
-    const QScopedValueRollback<int> offWidth(_OffWidth), offHeight(_OffHeight);
-    GLint viewport[4];
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    const auto restoreView = qScopeGuard([&] {
-        *modelr->GetModelMatrix() = modelMatrix;
-        _view->SetProjectionMatrix(projection);
-        _view->SetViewMatrix(viewMatrix);
-        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-    });
-    if (!coffscreen.BeginDraw()) return false;
-    bool drawing = true;
-    const auto endDraw = qScopeGuard([&] { if (drawing) coffscreen.EndDraw(); });
-    SetIsOffset(true);//开始渲染
-    SetOffsetWidthANDHeight(width,height);
-    CubismMatrix44 exportProjection;
-    exportProjection.SetMatrix(canvasProjection.data());
-    _view->SetProjectionMatrix(exportProjection);
-    _view->SetViewMatrix(QMatrix4x4());
-    modelr->GetModelMatrix()->LoadIdentity();
-    glViewport(0, 0, width, height);
-    LAppPal::UpdateTime();
-    if (!_view->Render() || !coffscreen.EndDraw()) return false;
-    drawing = false;
-    return cpsdwriteList->WritePsd();
-}
-
-bool LAppDelegate::StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat)
-{
-    if (!IsRuntimeReady() || psdPath.isEmpty()) return false;
-    LAppLive2DManager* live2DManager = LAppLive2DManager::GetInstance();
-    LAppModel* model = live2DManager->GetModel(0);
-    if (!model) {
-        qWarning("StartTextureExtraction: 没有加载模型");
+    CExportControl localControl;
+    if (!control) control = &localControl;
+    const auto fail = [&](const QString& reason) {
+        control->Fail(reason);
+        if (error) *error = control->Error().isEmpty() ? reason : control->Error();
         return false;
-    }
-
-    QString homeDir = model->GetModelHomeDir().GetRawString();
-    QString cidFileName = model->GetModelSetting()->GetDisplayInfoFileName();
-    QString mocFileName = model->GetModelSetting()->GetModelFileName();
-    QString cidPath = homeDir + "/" + cidFileName;
-    QString mocPath = homeDir + "/" + mocFileName;
-
-    // 获取纹理路径
-    QMap<int, QString>& texMap = _textureManager->GetModelTex();
-    QVector<QString> atlasPaths;
-    for (auto it = texMap.begin(); it != texMap.end(); ++it) {
-        // 确保按索引顺序添加
-        while (atlasPaths.size() <= it.key()) {
-            atlasPaths.append(QString());
-        }
-        atlasPaths[it.key()] = it.value();
-    }
-
-    // 加载纹理图集
-    CTextureExtractor extractor;
-    if (!extractor.LoadAtlases(atlasPaths)) {
-        qWarning("StartTextureExtraction: 纹理加载失败");
-        return false;
-    }
-
-    // 解析 moc3
-    live2dstruct::CReader reader(mocPath);
-    live2dstruct::CSectionTable sectionTable(reader);
-    if (!sectionTable.IsValid()) {
-        qWarning("StartTextureExtraction: moc3 解析失败: %s", reader.Error().toUtf8().constData());
-        return false;
-    }
-
-    // 获取画布尺寸
-    QSize canvasSize = CTextureExtractor::GetCanvasPixelSize(sectionTable.canvas_info);
-    int canvasW = canvasSize.width();
-    int canvasH = canvasSize.height();
-    if (canvasW <= 0 || canvasH <= 0) {
-        qWarning("StartTextureExtraction: 画布尺寸无效");
-        return false;
-    }
-
-    CPsdWriteList writer;
-    if (!writer.CreatePsd(psdPath, canvasW, canvasH, cubismCompat)) return false;
-
-    // 提取所有图层
-    QVector<ExtractedLayer> layers = extractor.ExtractAll(&sectionTable, includeHidden, &m_meshIndexOverrides);
-
-    // 解析 CDI 显示名称
-    CCidJson cid;
-    cid.Parse(cidPath);
-
-    CubismModel* runtimeModel = model->GetModel();
-    if (!runtimeModel) return false;
-    QHash<QString, const ExtractedLayer*> layersById;
-    for (const ExtractedLayer& layer : layers) layersById.insert(layer.name, &layer);
-    QVector<int> sortedIndices;
-    for (int index : runtimeModel->GetSortedDrawableIndices(
-             m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups)) {
-        const auto id = runtimeModel->GetDrawableId(index);
-        if (id && layersById.contains(QString::fromUtf8(id->GetString().GetRawString()))) sortedIndices.append(index);
-    }
-    const auto writeLayer = [&](int index) {
-        const auto id = runtimeModel->GetDrawableId(index);
-        if (!id) return;
-        const auto* layer = layersById.value(QString::fromUtf8(id->GetString().GetRawString()), nullptr);
-        if (!layer) return;
-        QString displayName = cid.getPartName(layer->name);
-        if (displayName.isEmpty()) displayName = layer->name;
-        const float opacity = m_drawableOpacityOverrides.value(layer->name, layer->opacity);
-        writer.AddLayer(displayName, layer->canvasRect, layer->image,
-                        static_cast<uint8_t>(qBound(0.0f, opacity * 255.0f, 255.0f)),
-                        CTextureExtractor::BlendModeToPsd(layer->drawableFlags),
-                        false, false);
     };
-
-    if (groupByParts) {
-        writer.SetMocName(mocPath);
-        writer.SetCidName(cidPath);
-        const auto order = writer.GetSortDrawableIndexList(sortedIndices, runtimeModel);
-        const auto& names = writer.GetArtToName();
-        for (int i = 0; i < order.size(); ++i) {
-            if (order[i].second == CPsdWriteList::GroupStart) writer.AddGroupStart(names[i]);
-            else if (order[i].second == CPsdWriteList::GroupEnd) writer.AddGroupEnd();
-            else writeLayer(order[i].first);
+    if (error) error->clear();
+    if (!IsRuntimeReady() || name.isEmpty() || m_exportInProgress || m_psdExportSession || _IsOffScreen || cpsdwriteList ||
+        QOpenGLContext::currentContext() != owningContext()) return fail(QStringLiteral("PSD 导出状态或所属上下文无效"));
+    const QPointer<QOpenGLWidget> surface = qobject_cast<QOpenGLWidget*>(const_cast<QWidget*>(_windows));
+    const QPointer<QOpenGLContext> context = owningContext();
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    auto* renderer = model ? model->GetRenderer<Rendering::CubismRenderer_OpenGLES2>() : nullptr;
+    if (!surface || !model || !model->GetModel() || !renderer || !model->HasExportPreview())
+        return fail(QStringLiteral("PSD 导出需要已冻结的模型预览"));
+    m_exportInProgress = true;
+    const auto release = qScopeGuard([this, surface] { if (surface && s_instance == this) m_exportInProgress = false; });
+    const auto detach = qScopeGuard([this, surface] {
+        if (surface && s_instance == this && m_psdExportSession) m_psdExportSession->DetachControl();
+    });
+    if (!control->Report(CExportControl::Phase::Preparing)) { if (error) *error = control->Error(); return false; }
+    model->Update();
+    auto* core = model->GetModel();
+    Live2D::Cubism::Core::csmVector2 pixels{}, origin{};
+    csmFloat32 ppu = 0;
+    Live2D::Cubism::Core::csmReadCanvasInfo(core->GetModel(), &pixels, &origin, &ppu);
+    const QSize canvas = live2dstruct::CCanvasGeometry::PixelSize(pixels.X, pixels.Y);
+    std::array<float, 16> projection;
+    if (!live2dstruct::CCanvasGeometry::ModelToNdc(pixels.X, pixels.Y, origin.X, origin.Y, ppu, canvas, projection))
+        return fail(QStringLiteral("PSD 画布尺寸、原点或缩放无效"));
+    CubismMatrix44 matrix;
+    matrix.SetMatrix(projection.data());
+    const auto sorted = core->GetSortedDrawableIndices(m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups);
+    QVector<CPsdRenderSession::Entry> entries;
+    const auto appendLayer = [&](int index) {
+        if (!includeHidden && !core->GetDrawableDynamicFlagIsVisible(index)) return;
+        const QString id = QString::fromUtf8(core->GetDrawableId(index)->GetString().GetRawString());
+        if (m_hiddenDrawables.contains(id) || m_hiddenDeformerDrawables.contains(id)) return;
+        entries.append({CPsdExportItem::Type::Layer, index, id, m_drawableOpacityOverrides.value(id, -1.0f)});
+    };
+    if (groups) {
+        const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
+        const QString mocPath = home + "/" + QString::fromUtf8(model->GetModelSetting()->GetModelFileName());
+        live2dstruct::CModelDocument document;
+        QString sourceError;
+        if (!document.LoadBytes(model->GetSourceMocBytes(), mocPath, &sourceError))
+            return fail(QStringLiteral("PSD 分组源模型读取失败：%1").arg(sourceError));
+        if (document.Drawables().size() != core->GetDrawableCount())
+            return fail(QStringLiteral("PSD 分组源网格数量与运行时不一致"));
+        QHash<QString, int> sourceIndices;
+        for (int index = 0; index < document.Drawables().size(); ++index) {
+            const QString& id = document.Drawables()[index].id;
+            if (id.isEmpty() || sourceIndices.contains(id)) return fail(QStringLiteral("PSD 分组源网格身份无效或重复"));
+            sourceIndices.insert(id, index);
+        }
+        QVector<int> sources;
+        QHash<int, int> runtimeIndices;
+        for (int index : sorted) {
+            if (!control->Checkpoint()) { if (error) *error = control->Error(); return false; }
+            const QString id = QString::fromUtf8(core->GetDrawableId(index)->GetString().GetRawString());
+            const int sourceIndex = sourceIndices.value(id, -1);
+            if (sourceIndex < 0 || runtimeIndices.contains(sourceIndex)) return fail(QStringLiteral("PSD 分组无法映射运行时网格：%1").arg(id));
+            sources.append(sourceIndex);
+            runtimeIndices.insert(sourceIndex, index);
+        }
+        CCidJson names;
+        names.Parse(home + "/" + QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName()));
+        const auto order = live2dstruct::BuildGroupedLayerOrder(document.Parts(), document.Drawables(), sources);
+        if (!sorted.isEmpty() && order.isEmpty()) return fail(QStringLiteral("PSD 分组计划为空"));
+        for (const auto& entry : order) {
+            if (!control->Checkpoint()) { if (error) *error = control->Error(); return false; }
+            if (entry.type == live2dstruct::CLayerOrderItem::Layer) appendLayer(runtimeIndices.value(entry.drawableIndex));
+            else {
+                const QString display = names.getPartName(entry.id);
+                entries.append({entry.type == live2dstruct::CLayerOrderItem::GroupStart ? CPsdExportItem::Type::GroupStart
+                                                                                     : CPsdExportItem::Type::GroupEnd,
+                                 -1, display.isEmpty() ? entry.id : display, -1.0f});
+            }
         }
     } else {
-        for (int index : sortedIndices) writeLayer(index);
+        for (int index : sorted) appendLayer(index);
     }
+    auto candidate = std::make_unique<CPsdRenderSession>(surface, context, core, renderer, canvas, matrix, std::move(entries),
+        [surface, context] {
+            if (!surface || surface->context() != context) return false;
+            surface->makeCurrent();
+            return QOpenGLContext::currentContext() == context;
+        }, [surface, context, model, core, renderer](QString* detail) {
+            if (!surface || surface->context() != context) { if (detail) *detail = QStringLiteral("导出窗口的上下文已改变"); return false; }
+            auto* active = LAppLive2DManager::GetInstance();
+            if (!active || active->GetModel(0) != model || model->GetModel() != core ||
+                model->GetRenderer<Rendering::CubismRenderer_OpenGLES2>() != renderer || !model->HasExportPreview()) {
+                if (detail) *detail = QStringLiteral("导出模型或渲染器已改变");
+                return false;
+            }
+            return true;
+        }, control);
+    if (!candidate->Begin(includeHidden, error)) return false;
+    m_psdExportSession = std::move(candidate);
+    auto* session = m_psdExportSession.get();
+    const bool written = CPsdFileTask::Execute(name, canvas, cubismCompat,
+        [&](CPsdExportItem& item, QString* detail) {
+            if (!surface || s_instance != this || m_psdExportSession.get() != session) {
+                if (detail) *detail = QStringLiteral("PSD 导出窗口或会话已关闭");
+                return false;
+            }
+            return session->Next(item, detail);
+        }, control, error);
+    if (!surface || s_instance != this || m_psdExportSession.get() != session)
+        return fail(QStringLiteral("PSD 导出窗口或会话已关闭"));
+    QString cleanupError;
+    const bool restored = session->Finish(written, &cleanupError);
+    if (!restored) return fail(cleanupError);
+    m_psdExportSession.reset();
+    return written;
+}
 
-    bool ok = writer.WritePsd();
-    writer.ClosePsd();
-    return ok;
+bool LAppDelegate::RecoverPsdExport(QString* error)
+{
+    if (error) error->clear();
+    if (m_exportInProgress) {
+        if (error) *error = QStringLiteral("PSD 导出任务仍在执行，暂不能恢复资源");
+        return false;
+    }
+    if (!m_psdExportSession) return true;
+    if (!m_psdExportSession->Finish(false, error)) return false;
+    m_psdExportSession.reset();
+    return true;
+}
+
+bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidden, bool groups, bool cubismCompat,
+                                         QString* error, CExportControl* control)
+{
+    CExportControl localControl;
+    if (!control) control = &localControl;
+    if (error) error->clear();
+    const auto fail = [&](const QString& reason) {
+        control->Fail(reason);
+        if (error) *error = control->Error().isEmpty() ? reason : control->Error();
+        return false;
+    };
+    if (!IsRuntimeReady() || path.isEmpty() || m_exportInProgress || m_psdExportSession)
+        return fail(QStringLiteral("纹理导出尚未就绪或上次 GPU 资源尚未恢复"));
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    if (!model || !model->GetModel() || !model->HasExportPreview()) return fail(QStringLiteral("纹理导出需要已冻结的模型预览"));
+    const QPointer<QWidget> surface = const_cast<QWidget*>(_windows);
+    m_exportInProgress = true;
+    const auto release = qScopeGuard([this, surface] { if (surface && s_instance == this) m_exportInProgress = false; });
+    const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
+    const QString cidPath = home + "/" + QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName());
+    const QString mocPath = home + "/" + QString::fromUtf8(model->GetModelSetting()->GetModelFileName());
+    const QByteArray source(model->GetSourceMocBytes().constData(), model->GetSourceMocBytes().size());
+    const auto topology = m_meshIndexOverrides;
+    const auto opacity = m_drawableOpacityOverrides;
+    const QSet<QString> hidden = m_hiddenDrawables | m_hiddenDeformerDrawables;
+    QVector<QString> atlases;
+    const auto texturePaths = _textureManager->GetModelTex();
+    for (auto texture = texturePaths.cbegin(); texture != texturePaths.cend(); ++texture) {
+        while (atlases.size() <= texture.key()) atlases.append(QString());
+        atlases[texture.key()] = texture.value();
+    }
+    QStringList order;
+    auto* runtime = model->GetModel();
+    for (int index : runtime->GetSortedDrawableIndices(m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups))
+        order.append(QString::fromUtf8(runtime->GetDrawableId(index)->GetString().GetRawString()));
+    return CExportTaskRunner::Run([=](const CExportTaskRunner::GuiCall&, QString* detail) {
+        CTextureExtractor extractor;
+        if (!extractor.LoadAtlases(atlases, control)) { if (detail) *detail = control->Error(); return false; }
+        auto reader = live2dstruct::CReader::FromBytes(source);
+        live2dstruct::CSectionTable table(reader);
+        if (!table.IsValid()) { if (detail) *detail = QStringLiteral("moc3 解析失败：%1").arg(reader.Error()); return false; }
+        const QSize canvas = CTextureExtractor::GetCanvasPixelSize(table.canvas_info);
+        CPsdWriteList writer;
+        writer.SetControl(control);
+        if (!writer.CreatePsd(path, canvas.width(), canvas.height(), cubismCompat)) { if (detail) *detail = control->Error(); return false; }
+        const auto layers = extractor.ExtractAll(&table, includeHidden, &topology, control);
+        if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
+        QHash<QString, const ExtractedLayer*> byId;
+        for (const auto& layer : layers) byId.insert(layer.name, &layer);
+        CCidJson names;
+        names.Parse(cidPath);
+        const auto writeLayer = [&](const QString& id) {
+            if (hidden.contains(id)) return true;
+            const auto* layer = byId.value(id, nullptr);
+            if (!layer) return true;
+            QString name = names.getPartName(id);
+            if (name.isEmpty()) name = id;
+            const float alpha = opacity.value(id, layer->opacity);
+            return writer.AddLayer(name, layer->canvasRect, layer->image,
+                                   static_cast<quint8>(qBound(0.0f, alpha * 255.0f, 255.0f)),
+                                   CTextureExtractor::BlendModeToPsd(layer->drawableFlags), false, false);
+        };
+        if (groups) {
+            live2dstruct::CModelDocument document;
+            if (!document.LoadBytes(source, mocPath, detail)) return false;
+            QHash<QString, int> sourceIndices;
+            for (int index = 0; index < document.Drawables().size(); ++index) sourceIndices.insert(document.Drawables()[index].id, index);
+            QVector<int> sources;
+            for (const QString& id : order) {
+                if (!sourceIndices.contains(id)) { if (detail) *detail = QStringLiteral("纹理分组无法映射运行时网格：%1").arg(id); return false; }
+                if (byId.contains(id) && !hidden.contains(id)) sources.append(sourceIndices.value(id));
+            }
+            const auto grouped = live2dstruct::BuildGroupedLayerOrder(document.Parts(), document.Drawables(), sources);
+            for (const auto& entry : grouped) {
+                if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
+                if (entry.type == live2dstruct::CLayerOrderItem::Layer) { if (!writeLayer(entry.id)) return false; }
+                else if (entry.type == live2dstruct::CLayerOrderItem::GroupStart) {
+                    const QString display = names.getPartName(entry.id);
+                    if (!writer.AddGroupStart(display.isEmpty() ? entry.id : display)) return false;
+                } else if (!writer.AddGroupEnd()) return false;
+            }
+        } else {
+            for (const QString& id : order) {
+                if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
+                if (!writeLayer(id)) return false;
+            }
+        }
+        return writer.WritePsd();
+    }, control, error);
 }
 
 bool LAppDelegate::ChangeScene(const QString &modelJsonName)
 {
+    if (m_exportInProgress || m_psdExportSession) return false;
     if (!IsRuntimeReady() || !LAppLive2DManager::GetInstance()->ChangeSceneFileName(modelJsonName)) return false;
     ClearModelRuntimeState(true);
     return true;
@@ -441,6 +514,7 @@ bool LAppDelegate::ChangeScene(const QString &modelJsonName)
 
 bool LAppDelegate::BeginTemporaryScene(const QString& modelJsonName)
 {
+    if (m_exportInProgress || m_psdExportSession) return false;
     if (!IsRuntimeReady() || !LAppLive2DManager::GetInstance()->BeginTemporaryScene(modelJsonName)) return false;
     ClearModelRuntimeState(true);
     return true;
@@ -448,6 +522,7 @@ bool LAppDelegate::BeginTemporaryScene(const QString& modelJsonName)
 
 bool LAppDelegate::EndTemporaryScene()
 {
+    if (m_exportInProgress || m_psdExportSession) return false;
     if (!IsRuntimeReady() || !LAppLive2DManager::GetInstance()->EndTemporaryScene()) return false;
     ClearModelRuntimeState(true);
     return true;
@@ -455,6 +530,7 @@ bool LAppDelegate::EndTemporaryScene()
 
 void LAppDelegate::ClearModelRuntimeState(bool clearOrderGroups)
 {
+    if (m_exportInProgress || m_psdExportSession) return;
     m_hiddenDrawables.clear();
     m_hiddenDeformerDrawables.clear();
     m_drawableOpacityOverrides.clear();

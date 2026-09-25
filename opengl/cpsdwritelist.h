@@ -16,16 +16,18 @@ public:
     enum LayerType{ Layer,GroupStart,GroupEnd  };
     CPsdWriteList();
     ~CPsdWriteList();
+    void SetControl(CExportControl* control);
+    CExportControl* Control() const { return m_control; }
 
     bool CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
     bool WritePsd();
     static uint32_t CubismBlendModeToPsd(Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode mode);
-    void AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
-    void AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
+    bool AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
+    bool AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
                   uint8_t opacity, uint32_t blendModeKey, bool isClipped,
                   bool isPremultiplied = false);
-    void AddGroupStart(const QString& groupName);
-    void AddGroupEnd();
+    bool AddGroupStart(const QString& groupName);
+    bool AddGroupEnd();
     void ClosePsd(){
         partNameToName.clear();
         m_groupNameStack.clear();
@@ -58,6 +60,7 @@ private:
 
 private:
     CPsdList* m_list;
+    CExportControl* m_control = nullptr;
     QHash<QString,int> m_nameUse;
     bool m_cubismCompat = false;
     QVector<QString> partNameToName;

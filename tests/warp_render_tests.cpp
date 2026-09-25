@@ -66,6 +66,13 @@ bool foregroundNear(const QImage& image, int centerX, int centerY)
             if (foreground(image.pixel(x, y))) return true;
     return false;
 }
+
+class WarpProbe : public CDrawWarp
+{
+public:
+    QOpenGLContext* Context() const { return owningContext(); }
+    bool Initialized() const { return isInitialized(); }
+};
 }
 
 class WarpRenderTests : public QObject
@@ -293,6 +300,71 @@ private slots:
             QVERIFY(updated.save(output.filePath(QStringLiteral("warp-grid-updated.png"))));
             QVERIFY(empty.save(output.filePath(QStringLiteral("warp-grid-empty.png"))));
         }
+    }
+
+    void contextDestroyedBeforeWarpClearsQtOwner_data()
+    {
+        QTest::addColumn<bool>("initializeFirst");
+        QTest::newRow("init-opengl") << true;
+        QTest::newRow("prepare-opengl") << false;
+    }
+
+    void contextDestroyedBeforeWarpClearsQtOwner()
+    {
+        QFETCH(bool, initializeFirst);
+        CReader reader(QString(TEST_RESOURCES) + QStringLiteral("/Mark/Mark.moc3"));
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid() && !table.warp_deformers.empty());
+        CWarp_deformers definition = *table.warp_deformers.front();
+        definition.columns = 1;
+        definition.rows = 1;
+        definition.vertex_counts = 4;
+        definition.keyform_sources_counts = 1;
+        CWarpNode node(QStringLiteral("owner-test"));
+        node.InitWarp(definition, table);
+        QVERIFY(node.UpdateCanvasPositions({-.5f, -.5f, .5f, -.5f, -.5f, .5f, .5f, .5f}));
+        auto warp = std::make_unique<WarpProbe>();
+        QVERIFY(warp->Init(&node));
+        auto owner = std::make_unique<QOpenGLContext>();
+        owner->setFormat(m_context->format());
+        QVERIFY(owner->create());
+        QOffscreenSurface surface;
+        surface.setFormat(owner->format());
+        surface.create();
+        QVERIFY(surface.isValid());
+        m_context->doneCurrent();
+        QVERIFY(!warp->PrepareOpenGl());
+        warp->InitOpenGl();
+        QVERIFY(!warp->Context());
+        QVERIFY(owner->makeCurrent(&surface));
+        if (initializeFirst) warp->InitOpenGl();
+        QVERIFY(warp->PrepareOpenGl());
+        QCOMPARE(warp->Context(), owner.get());
+        QVERIFY(warp->Initialized());
+        QVERIFY(m_context->makeCurrent(m_surface.get()));
+        QVERIFY(!warp->PrepareOpenGl());
+        warp->InitOpenGl();
+        QCOMPARE(warp->Context(), owner.get());
+        QVERIFY(owner->makeCurrent(&surface));
+        QVERIFY(warp->PrepareOpenGl());
+        owner->doneCurrent();
+        owner.reset();
+        QVERIFY(!warp->Context());
+        QVERIFY(!warp->Initialized());
+        QVERIFY(m_context->makeCurrent(m_surface.get()));
+        GLuint sentinelArray = 0, sentinelBuffer = 0;
+        m_gl.glGenVertexArrays(1, &sentinelArray);
+        m_gl.glBindVertexArray(sentinelArray);
+        m_gl.glGenBuffers(1, &sentinelBuffer);
+        m_gl.glBindBuffer(GL_ARRAY_BUFFER, sentinelBuffer);
+        const auto cleanup = qScopeGuard([&] {
+            m_gl.glDeleteBuffers(1, &sentinelBuffer);
+            m_gl.glDeleteVertexArrays(1, &sentinelArray);
+        });
+        warp.reset();
+        QVERIFY(m_gl.glIsVertexArray(sentinelArray));
+        QVERIFY(m_gl.glIsBuffer(sentinelBuffer));
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
     void cleanupTestCase()

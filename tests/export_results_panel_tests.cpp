@@ -50,6 +50,78 @@ class ExportResultsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void canceledFileIsVisibleTerminalAndNotRetryable()
+    {
+        CExportResultsPanel panel;
+        auto canceled = result(0, PsdBatchFileState::Canceled, QStringLiteral("/canceled.json"), QStringLiteral("/canceled.psd"));
+        canceled.stage = PsdExportStage::Writing;
+        canceled.error = QStringLiteral("用户取消了当前文件 <literal>");
+        canceled.elapsedMs = 1240;
+        auto notRun = result(1, PsdBatchFileState::NotRun, QStringLiteral("/not-run.json"), QStringLiteral("/not-run.psd"));
+        auto failed = result(2, PsdBatchFileState::Failed, QStringLiteral("/failed.json"), QStringLiteral("/failed.psd"));
+        failed.stage = PsdExportStage::Encoding;
+        QVERIFY(panel.SetResults({canceled, notRun, failed}));
+        QVERIFY(showPanel(panel));
+        auto* table = panel.findChild<QTableWidget*>(QStringLiteral("exportResultsTable"));
+        auto* details = panel.findChild<QPlainTextEdit*>(QStringLiteral("exportResultDetails"));
+        auto* summary = panel.findChild<QLabel*>(QStringLiteral("exportResultsSummary"));
+        auto* retry = button(panel, "exportRetryFailed");
+        QVERIFY(table && details && summary && retry);
+        QCOMPARE(table->item(0, 2)->text(), QStringLiteral("已取消"));
+        QCOMPARE(table->item(0, 3)->text(), QStringLiteral("写入文件"));
+        QCOMPARE(table->item(0, 4)->text(), QStringLiteral("1.24 s"));
+        QVERIFY(details->toPlainText().startsWith(canceled.error));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("未提交新的输出文件。")));
+        QVERIFY(summary->text().contains(QStringLiteral("已取消 1")));
+        QVERIFY(summary->text().contains(QStringLiteral("未执行 1")));
+        QVERIFY(summary->text().contains(QStringLiteral("失败 1")));
+        QSignalSpy retries(&panel, &CExportResultsPanel::RetryRequested);
+        QTest::mouseClick(retry, Qt::LeftButton);
+        QCOMPARE(retries.size(), 1);
+        QCOMPARE(retries[0][0].toStringList(), QStringList{failed.sourcePath});
+        auto stale = canceled;
+        stale.state = PsdBatchFileState::Running;
+        QVERIFY(!panel.UpdateResult(0, stale));
+        const auto files = panel.ReportJson()[QStringLiteral("files")].toArray();
+        QCOMPARE(files[0].toObject()[QStringLiteral("state")].toString(), QStringLiteral("canceled"));
+        QCOMPARE(files[0].toObject()[QStringLiteral("stage")].toString(), QStringLiteral("writing"));
+        QCOMPARE(files[1].toObject()[QStringLiteral("state")].toString(), QStringLiteral("not_run"));
+        QCOMPARE(files[2].toObject()[QStringLiteral("stage")].toString(), QStringLiteral("encoding"));
+        QCOMPARE(static_cast<int>(PsdBatchFileState::NotRun), 4);
+        QCOMPARE(static_cast<int>(PsdBatchFileState::Canceled), 5);
+        QVERIFY(panel.SetResults({canceled, notRun}));
+        QVERIFY(!retry->isEnabled());
+    }
+
+    void stageDisplayTracksLayerEncodingButDoesNotLeaveFinalWriting()
+    {
+        CExportResultsPanel panel;
+        auto running = result(0, PsdBatchFileState::Running, QStringLiteral("/model.json"), QStringLiteral("/model.psd"));
+        QVERIFY(panel.SetResults({running}));
+        auto* table = panel.findChild<QTableWidget*>(QStringLiteral("exportResultsTable"));
+        QVERIFY(table);
+        for (auto stage : {PsdExportStage::Encoding, PsdExportStage::Exporting, PsdExportStage::Encoding, PsdExportStage::Writing}) {
+            running.stage = stage;
+            ++running.elapsedMs;
+            QVERIFY(panel.UpdateResult(0, running));
+            QCOMPARE(table->item(0, 3)->text(), PsdExportStageText(stage));
+        }
+        auto stale = running;
+        stale.stage = PsdExportStage::Encoding;
+        QVERIFY(!panel.UpdateResult(0, stale));
+        stale.stage = PsdExportStage::Exporting;
+        QVERIFY(!panel.UpdateResult(0, stale));
+        running.stage = PsdExportStage::Restoring;
+        QVERIFY(panel.UpdateResult(0, running));
+        stale.stage = PsdExportStage::Writing;
+        QVERIFY(!panel.UpdateResult(0, stale));
+        running.state = PsdBatchFileState::Canceled;
+        running.stage = PsdExportStage::Encoding;
+        QVERIFY(panel.UpdateResult(0, running));
+        QCOMPARE(table->item(0, 2)->text(), QStringLiteral("已取消"));
+        QCOMPARE(table->item(0, 3)->text(), QStringLiteral("压缩图层"));
+    }
+
     void displaysPlainPathsErrorsAndCancelableStates()
     {
         CExportResultsPanel panel;

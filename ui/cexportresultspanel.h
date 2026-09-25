@@ -29,6 +29,7 @@ signals:
     void RetryRequested(const QStringList& sourcePaths);
 
 private:
+    static constexpr int StateCount = static_cast<int>(PsdBatchFileState::Canceled) + 1;
     void WriteRow(int index);
     void RefreshSummary();
     void RefreshSelection();
@@ -36,7 +37,7 @@ private:
     bool CanOpen(int index) const;
 
     PsdBatchResults m_results;
-    std::array<int, 5> m_counts{};
+    std::array<int, StateCount> m_counts{};
     int m_retryable = 0;
     bool m_busy = false;
     bool m_retryAvailable = true;

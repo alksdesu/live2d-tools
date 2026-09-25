@@ -1,5 +1,6 @@
 #include "live2dstruct/csectiontable.h"
 #include "opengl/ctextureextractor.h"
+#include "std/cexportcontrol.h"
 
 #include <QtTest>
 #include <QJsonArray>
@@ -73,7 +74,31 @@ public:
         for (int index = 0; index < count; ++index)
             table.drawable_masks[index]->art_mesh_sources_indices = index + 1;
     }
-    QVector<ExtractedLayer> Extract() { return extractor.ExtractAll(&table, true); }
+    void MeshCount(int count)
+    {
+        table.count_info->art_meshes = count;
+        for (int index = 1; index < count; ++index) {
+            const QString id = table.art_meshes[index]->ids;
+            *table.art_meshes[index] = *table.art_meshes[0];
+            table.art_meshes[index]->ids = id;
+        }
+    }
+    const std::vector<float>& Uvs() const { return table.uvs->uvs; }
+    const std::vector<short>& Indices() const { return table.position_indices->indices; }
+    QString WriteAtlas(const QImage& image, const QString& name)
+    {
+        const QString path = temp.filePath(name);
+        return image.save(path, "PNG") ? path : QString();
+    }
+    bool Reload(const QVector<QString>& paths, CExportControl* control = nullptr)
+    {
+        return extractor.LoadAtlases(paths, control);
+    }
+    QVector<ExtractedLayer> Extract(CExportControl* control = nullptr,
+                                   const QHash<QString, QVector<quint16>>* overrides = nullptr)
+    {
+        return extractor.ExtractAll(&table, true, overrides, control);
+    }
 
 private:
     CReader reader;
@@ -87,6 +112,189 @@ class TextureExtractionTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void cancellationInsideSingleTriangleDiscardsEverythingAndAllowsRetry()
+    {
+        MeshFixture mesh;
+        QVERIFY(mesh.IsValid());
+        const QImage atlas = ColoredAtlas(512);
+        QVERIFY(mesh.LoadAtlas(atlas));
+        mesh.Geometry({0, 0, 1, 0, 0, 1});
+        const auto expected = mesh.Extract();
+        QCOMPARE(expected.size(), 1);
+        const auto originalUvs = mesh.Uvs();
+        const auto originalIndices = mesh.Indices();
+        CExportControl control;
+        bool reachedMiddle = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.phase == CExportControl::Phase::Extracting &&
+                progress.total == 512 && progress.current == 256) {
+                reachedMiddle = true;
+                control.Cancel();
+            }
+            return true;
+        }));
+        QVERIFY(mesh.Extract(&control).isEmpty());
+        QVERIFY(reachedMiddle);
+        QVERIFY(control.WasCanceled());
+        QVERIFY(!control.Error().isEmpty());
+        QVERIFY(mesh.Uvs() == originalUvs);
+        QVERIFY(mesh.Indices() == originalIndices);
+        const auto retry = mesh.Extract();
+        QCOMPARE(retry.size(), 1);
+        QCOMPARE(retry[0].image, expected[0].image);
+        QCOMPARE(retry[0].canvasRect, expected[0].canvasRect);
+        QCOMPARE(retry[0].image.pixel(16, 32), atlas.pixel(16, 32));
+        QCOMPARE(retry[0].image.pixel(500, 500), QRgb(0));
+    }
+
+    void cancellationBetweenMeshesDoesNotReturnCompletedLayers_data()
+    {
+        QTest::addColumn<int>("completed");
+        QTest::newRow("middle") << 3;
+        QTest::newRow("after-last") << 6;
+    }
+
+    void cancellationBetweenMeshesDoesNotReturnCompletedLayers()
+    {
+        QFETCH(int, completed);
+        MeshFixture mesh;
+        QVERIFY(mesh.IsValid());
+        QVERIFY(mesh.LoadAtlas(ColoredAtlas(8)));
+        mesh.Geometry({0, 0, 1, 0, 1, 1, 0, 1}, {0, 1, 2, 0, 2, 3});
+        mesh.MeshCount(6);
+        const auto expected = mesh.Extract();
+        QCOMPARE(expected.size(), 6);
+        CExportControl control;
+        bool canceledAtBoundary = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.phase == CExportControl::Phase::Extracting &&
+                progress.total == 6 && progress.current == completed) {
+                canceledAtBoundary = true;
+                control.Cancel();
+            }
+            return true;
+        }));
+        QVERIFY(mesh.Extract(&control).isEmpty());
+        QVERIFY(canceledAtBoundary);
+        QVERIFY(control.WasCanceled());
+        const auto retry = mesh.Extract();
+        QCOMPARE(retry.size(), expected.size());
+        for (qsizetype index = 0; index < retry.size(); ++index) {
+            QCOMPARE(retry[index].image, expected[index].image);
+            QCOMPARE(retry[index].name, expected[index].name);
+        }
+    }
+
+    void canceledOrFailedAtlasReloadPreservesPreviousAtlases()
+    {
+        MeshFixture mesh;
+        QVERIFY(mesh.IsValid());
+        const QImage original = ColoredAtlas();
+        QVERIFY(mesh.LoadAtlas(original));
+        mesh.Geometry({0, 0, 1, 0, 1, 1, 0, 1}, {0, 1, 2, 0, 2, 3});
+        QImage replacement(4, 4, QImage::Format_ARGB32);
+        replacement.fill(qRgba(200, 40, 20, 110));
+        const QString first = mesh.WriteAtlas(replacement, "new-first.png");
+        const QString second = mesh.WriteAtlas(replacement, "new-second.png");
+        QVERIFY(!first.isEmpty() && !second.isEmpty());
+        CExportControl canceled;
+        bool firstLoaded = false;
+        QVERIFY(canceled.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.phase == CExportControl::Phase::Preparing && progress.current == 1 && progress.total == 2) {
+                firstLoaded = true;
+                canceled.Cancel();
+            }
+            return true;
+        }));
+        QVERIFY(!mesh.Reload({first, second}, &canceled));
+        QVERIFY(firstLoaded);
+        QVERIFY(canceled.WasCanceled());
+        auto layers = mesh.Extract();
+        QCOMPARE(layers.size(), 1);
+        QCOMPARE(layers[0].image, original);
+        CExportControl failed;
+        QVERIFY(!mesh.Reload({first, second + ".missing"}, &failed));
+        QVERIFY(!failed.WasCanceled());
+        QVERIFY(failed.Error().contains(second + ".missing"));
+        layers = mesh.Extract();
+        QCOMPARE(layers.size(), 1);
+        QCOMPARE(layers[0].image, original);
+        QVERIFY(!mesh.Reload({}));
+        QCOMPARE(mesh.Extract()[0].image, original);
+        QVERIFY(mesh.Reload({first, second}));
+        QCOMPARE(mesh.Extract()[0].image, replacement);
+    }
+
+    void nonCancelingControlKeepsAllPixelsAndMetadata_data()
+    {
+        QTest::addColumn<QVector<quint16>>("indices");
+        QTest::newRow("source") << QVector<quint16>{};
+        QTest::newRow("override") << QVector<quint16>{0, 1, 2};
+        QTest::newRow("invalid-override-fallback") << QVector<quint16>{0, 1, 9};
+    }
+
+    void nonCancelingControlKeepsAllPixelsAndMetadata()
+    {
+        QFETCH(QVector<quint16>, indices);
+        MeshFixture mesh;
+        QVERIFY(mesh.IsValid());
+        const QImage atlas = ColoredAtlas(16);
+        QVERIFY(mesh.LoadAtlas(atlas));
+        mesh.Geometry({-.2f, .1f, .9f, .1f, .9f, 1.2f, -.2f, 1.2f}, {0, 1, 2, 0, 2, 3});
+        mesh.Masks(2, true);
+        mesh.MeshCount(3);
+        const auto source = mesh.Extract();
+        QCOMPARE(source.size(), 3);
+        QHash<QString, QVector<quint16>> overrides;
+        if (!indices.isEmpty()) for (const auto& layer : source) overrides.insert(layer.name, indices);
+        const auto expected = mesh.Extract(nullptr, &overrides);
+        CExportControl control;
+        int checkpoints = 0;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) { ++checkpoints; return true; }));
+        const auto actual = mesh.Extract(&control, &overrides);
+        QVERIFY(checkpoints > 3);
+        QVERIFY(!control.WasCanceled());
+        QVERIFY(control.Error().isEmpty());
+        QCOMPARE(actual.size(), expected.size());
+        for (qsizetype index = 0; index < actual.size(); ++index) {
+            const auto& a = actual[index];
+            const auto& b = expected[index];
+            QCOMPARE(a.image, b.image);
+            QCOMPARE(QByteArray(reinterpret_cast<const char*>(a.image.constBits()), a.image.sizeInBytes()),
+                     QByteArray(reinterpret_cast<const char*>(b.image.constBits()), b.image.sizeInBytes()));
+            QCOMPARE(a.canvasRect, b.canvasRect);
+            QCOMPARE(a.name, b.name);
+            QCOMPARE(a.meshIndex, b.meshIndex);
+            QCOMPARE(a.textureNo, b.textureNo);
+            QCOMPARE(a.drawableFlags, b.drawableFlags);
+            QCOMPARE(a.opacity, b.opacity);
+            QCOMPARE(a.isVisible, b.isVisible);
+            QCOMPARE(a.isEnabled, b.isEnabled);
+            QCOMPARE(a.parentPartIndex, b.parentPartIndex);
+            QCOMPARE(a.maskIndices, b.maskIndices);
+        }
+    }
+
+    void failedCheckpointDiscardsLayersWithoutMasqueradingAsCancellation()
+    {
+        MeshFixture mesh;
+        QVERIFY(mesh.IsValid());
+        QVERIFY(mesh.LoadAtlas(ColoredAtlas(16)));
+        mesh.Geometry({0, 0, 1, 0, 0, 1});
+        CExportControl control;
+        QVERIFY(control.SetHandler([](const CExportControl::Progress& progress, QString* error) {
+            if (progress.phase == CExportControl::Phase::Extracting && progress.total == 16 && progress.current == 8) {
+                *error = QStringLiteral("controlled extraction failure");
+                return false;
+            }
+            return true;
+        }));
+        QVERIFY(mesh.Extract(&control).isEmpty());
+        QVERIFY(!control.WasCanceled());
+        QCOMPARE(control.Error(), QStringLiteral("controlled extraction failure"));
+        QCOMPARE(mesh.Extract().size(), 1);
+    }
+
     void originalTexturePixelsDoNotBakeClipping_data()
     {
         QTest::addColumn<int>("count");

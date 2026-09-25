@@ -88,6 +88,13 @@ struct UploadState
             skipPixels == other.skipPixels && skipRows == other.skipRows;
     }
 };
+
+class TextureManagerProbe : public LAppTextureManager
+{
+public:
+    QOpenGLContext* Context() const { return owningContext(); }
+    bool Initialized() const { return isInitialized(); }
+};
 }
 
 class TextureLoaderTests : public QObject
@@ -325,6 +332,8 @@ private slots:
         manager.SetModelTextures({{0, path}});
         const auto restoreOwner = qScopeGuard([&] { m_context->makeCurrent(m_surface.get()); });
         m_context->doneCurrent();
+        manager.setGlOwningContext(nullptr);
+        manager.setGlOwningContext(m_context.get());
         QVERIFY(!manager.CreateTextureFromPngFile(pathBytes(path)));
         QVERIFY(!manager.CreateTextureFromPngFile(pathBytes(second)));
         manager.ReleaseTextures();
@@ -348,6 +357,7 @@ private slots:
             gl.glBindTexture(GL_TEXTURE_2D, sentinel);
             const auto releaseSentinel = qScopeGuard([&] { gl.glDeleteTextures(1, &sentinel); });
             QVERIFY(gl.glIsTexture(sentinel));
+            manager.setGlOwningContext(&foreign);
             QVERIFY(!manager.CreateTextureFromPngFile(pathBytes(path)));
             QVERIFY(!manager.CreateTextureFromPngFile(pathBytes(second)));
             manager.ReleaseTexture(ownedId);
@@ -368,6 +378,48 @@ private slots:
         manager.ReleaseTextures();
         QVERIFY(!m_gl.glIsTexture(ownedId));
         QVERIFY(manager.GetModelTex().isEmpty());
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+    }
+
+    void contextDestroyedBeforeManagerClearsQtOwnerAndPreservesForeignTextures()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QString path = temporary.filePath("context-owned.png");
+        QVERIFY(savePng(path));
+        auto manager = std::make_unique<TextureManagerProbe>();
+        auto owner = std::make_unique<QOpenGLContext>();
+        owner->setFormat(m_context->format());
+        QVERIFY(owner->create());
+        QOffscreenSurface surface;
+        surface.setFormat(owner->format());
+        surface.create();
+        QVERIFY(surface.isValid());
+        manager->setGlOwningContext(owner.get());
+        QVERIFY(!manager->Context());
+        QVERIFY(!manager->Initialized());
+        QVERIFY(owner->makeCurrent(&surface));
+        manager->setGlOwningContext(owner.get());
+        QCOMPARE(manager->Context(), owner.get());
+        QVERIFY(manager->Initialized());
+        QVERIFY(manager->CreateTextureFromPngFile(pathBytes(path)));
+        manager->SetModelTextures({{0, path}});
+        owner->doneCurrent();
+        owner.reset();
+        QVERIFY(!manager->Context());
+        QVERIFY(!manager->Initialized());
+        QVERIFY(m_context->makeCurrent(m_surface.get()));
+        GLuint sentinel = 0;
+        m_gl.glGenTextures(1, &sentinel);
+        m_gl.glBindTexture(GL_TEXTURE_2D, sentinel);
+        const auto cleanup = qScopeGuard([&] { m_gl.glDeleteTextures(1, &sentinel); });
+        QVERIFY(m_gl.glIsTexture(sentinel));
+        QVERIFY(!manager->CreateTextureFromPngFile(pathBytes(path)));
+        manager->ReleaseTextures();
+        QVERIFY(!manager->GetTextureInfoByName(pathBytes(path)));
+        QVERIFY(manager->GetModelTex().isEmpty());
+        manager.reset();
+        QVERIFY(m_gl.glIsTexture(sentinel));
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 

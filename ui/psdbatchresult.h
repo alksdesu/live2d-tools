@@ -5,8 +5,8 @@
 #include <QString>
 #include <QVector>
 
-enum class PsdBatchFileState { Pending, Running, Succeeded, Failed, NotRun };
-enum class PsdExportStage { Queued, Preflight, Preparing, Exporting, Restoring, Done };
+enum class PsdBatchFileState { Pending, Running, Succeeded, Failed, NotRun, Canceled };
+enum class PsdExportStage { Queued, Preflight, Preparing, Exporting, Encoding, Writing, Restoring, Done };
 
 struct PsdBatchFileResult
 {
@@ -32,6 +32,7 @@ using PsdBatchResults = QVector<PsdBatchFileResult>;
 
 bool IsPsdBatchTerminal(PsdBatchFileState state);
 bool IsPsdBatchResultValid(const PsdBatchFileResult& result);
+bool IsPsdExportStageTransitionValid(PsdExportStage current, PsdExportStage next);
 QString PsdBatchStateText(PsdBatchFileState state);
 QString PsdBatchStateKey(PsdBatchFileState state);
 QString PsdExportStageText(PsdExportStage stage);

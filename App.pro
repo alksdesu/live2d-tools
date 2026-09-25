@@ -531,11 +531,19 @@ RESOURCES += \
     assets/icc.qrc
 
 SOURCES += \
+    std/cexportcontrol.cpp \
+    ui/cexporttaskrunner.cpp \
+    opengl/cpsdfiletask.cpp \
+    opengl/cpsdrendersession.cpp \
     live2d/LAppModelUpdate.cpp \
     ui/cpreviewexporttransaction.cpp \
     ui/psdbatchresult.cpp \
     ui/cexportresultspanel.cpp
 HEADERS += \
+    std/cexportcontrol.h \
+    ui/cexporttaskrunner.h \
+    opengl/cpsdfiletask.h \
+    opengl/cpsdrendersession.h \
     ui/cpreviewexporttransaction.h \
     ui/psdbatchresult.h \
     ui/cexportresultspanel.h

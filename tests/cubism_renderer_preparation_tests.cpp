@@ -1,5 +1,6 @@
 #include "tests/cubism_model_fixture.h"
 #include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
+#include "opengl/cpsdrendersession.h"
 #include "framework/Id/CubismIdManager.hpp"
 #include "framework/Utils/CubismDebug.hpp"
 
@@ -85,6 +86,7 @@ void* LAppAllocator::AllocateAligned(csmSizeType, csmUint32) { UnexpectedRuntime
 void LAppAllocator::DeallocateAligned(void*) { UnexpectedRuntime(); }
 LAppDelegate::LAppDelegate() : m_IsPrintALl(false), m_IsPrintFenzu(false) {}
 LAppDelegate::~LAppDelegate() = default;
+CPsdRenderSession::~CPsdRenderSession() { UnexpectedRuntime(); }
 LAppDelegate* LAppDelegate::GetInstance()
 {
     if (!allowDraw && !allowLayerCapture) UnexpectedRuntime();
@@ -108,6 +110,7 @@ CPsdWriteList* LAppDelegate::GetCPsdWriteList()
     return &writer;
 }
 bool CReadOpengl::PreDraw() { UnexpectedRuntime(); }
+bool CReadOpengl::setGlOwningContext(const QOpenGLContext*) { UnexpectedRuntime(); }
 bool CReadOpengl::UpdateFrame() { if (!allowLayerCapture) UnexpectedRuntime(); ++frameClears; return true; }
 bool CReadOpengl::GetScreenNode(const float*, int, const float*, int width, int height, QImage& image, QRect& rect)
 {
@@ -117,9 +120,9 @@ bool CReadOpengl::GetScreenNode(const float*, int, const float*, int width, int 
     rect = image.rect();
     return true;
 }
-void CPsdWriteList::AddGroupStart(const QString&) { UnexpectedRuntime(); }
-void CPsdWriteList::AddGroupEnd() { UnexpectedRuntime(); }
-void CPsdWriteList::AddLayer(const QString&, const QRect&, const QImage& image, uint8_t opacity, uint32_t blendKey,
+bool CPsdWriteList::AddGroupStart(const QString&) { UnexpectedRuntime(); }
+bool CPsdWriteList::AddGroupEnd() { UnexpectedRuntime(); }
+bool CPsdWriteList::AddLayer(const QString&, const QRect&, const QImage& image, uint8_t opacity, uint32_t blendKey,
                            bool clipping, bool premultiplied)
 {
     if (!allowLayerCapture) UnexpectedRuntime();
@@ -129,6 +132,7 @@ void CPsdWriteList::AddLayer(const QString&, const QRect&, const QImage& image, 
     capturedOpacity = opacity;
     capturedBlendKey = blendKey;
     ++layerCalls;
+    return true;
 }
 uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mode)
 {

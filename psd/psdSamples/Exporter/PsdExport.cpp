@@ -16,6 +16,10 @@
 #include "psd/psdSamples/PsdThumbnail.h"
 #include "psd/psdSamples/Zip/Psdminiz.h"
 #include <string.h>
+#include <limits>
+#include <algorithm>
+#include <memory>
+#include <new>
 
 
 PSD_NAMESPACE_BEGIN
@@ -39,12 +43,6 @@ namespace
 
 	// ---------------------------------------------------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------------------------------------------------
-	template <typename T> struct Mask {};
-	template <> struct Mask<uint8_t> { static const uint32_t Value = 0xFFu; };
-	template <> struct Mask<uint16_t> { static const uint32_t Value = 0xFFFFu; };
-
-	const uint32_t Mask<uint8_t>::Value;
-	const uint32_t Mask<uint16_t>::Value;
 
 
 	// ---------------------------------------------------------------------------------------------------------------------
@@ -630,304 +628,166 @@ unsigned int AddLayerGroupEnd(ExportDocument* document, Allocator* allocator, co
 
 // ---------------------------------------------------------------------------------------------------------------------
 // ---------------------------------------------------------------------------------------------------------------------
-template <typename T>
-static void CreateDataRaw(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T* planarData, uint32_t width, uint32_t height)
+namespace {
+struct AllocatedDeleter
 {
-	const uint32_t size = width*height;
-
-	T* bigEndianData = memoryUtil::AllocateArray<T>(allocator, size);
-	for (unsigned int i = 0u; i < size; ++i)
-	{
-		bigEndianData[i] = endianUtil::NativeToBigEndian(planarData[i]);
-	}
-
-	layer->channelData[channelIndex] = bigEndianData;
-	layer->channelSize[channelIndex] = size*sizeof(T);
-}
+    Allocator* allocator;
+    void operator()(void* data) const { if (data) allocator->Free(data); }
+};
 
 template <typename T>
-static void CreateDataRawEmpty(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T*)
-{
-	T* emptyData = memoryUtil::AllocateArray<T>(allocator, 1u);
-	emptyData[0] = T{};
-	layer->channelData[channelIndex] = emptyData;
-	layer->channelSize[channelIndex] = 0u;
-}
+using AllocatedBuffer = std::unique_ptr<T, AllocatedDeleter>;
 
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
 template <typename T>
-static void CreateDataRLE(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T* planarData, uint32_t width, uint32_t height)
+AllocatedBuffer<T> MakeBuffer(Allocator* allocator, size_t count)
 {
-	const uint32_t size = width*height;
-
-	// each row needs two additional bytes for storing the size of the row's data.
-	// we pack the data row by row, and copy it into the final buffer.
-	uint8_t* rleData = memoryUtil::AllocateArray<uint8_t>(allocator, height*sizeof(uint16_t) + size*sizeof(T) * 2u);
-
-	uint8_t* rleRowData = memoryUtil::AllocateArray<uint8_t>(allocator, width*sizeof(T) * 2u);
-	T* bigEndianRowData = memoryUtil::AllocateArray<T>(allocator, width);
-	unsigned int offset = 0u;
-	for (unsigned int y = 0u; y < height; ++y)
-	{
-		for (unsigned int x = 0u; x < width; ++x)
-		{
-			bigEndianRowData[x] = endianUtil::NativeToBigEndian(planarData[y*width + x]);
-		}
-
-		const unsigned int compressedSize = imageUtil::CompressRle(reinterpret_cast<const uint8_t*>(bigEndianRowData), rleRowData, width*sizeof(T));
-		PSD_ASSERT(compressedSize <= width*sizeof(T) * 2u, "RLE compressed data doesn't fit into provided buffer.");
-
-		const uint16_t rleRowSize = endianUtil::NativeToBigEndian(static_cast<uint16_t>(compressedSize));
-
-		// copy 2 bytes row size, and copy RLE data
-		memcpy(rleData + y * sizeof(uint16_t), &rleRowSize, sizeof(uint16_t));
-		memcpy(rleData + height*sizeof(uint16_t) + offset, rleRowData, compressedSize);
-
-		offset += compressedSize;
-	}
-	memoryUtil::FreeArray(allocator, bigEndianRowData);
-	memoryUtil::FreeArray(allocator, rleRowData);
-
-	layer->channelData[channelIndex] = rleData;
-	layer->channelSize[channelIndex] = offset + height * sizeof(uint16_t);
+    if (count > std::numeric_limits<size_t>::max() / sizeof(T)) throw std::bad_alloc();
+    T* data = memoryUtil::AllocateArray<T>(allocator, count);
+    if (!data) throw std::bad_alloc();
+    return AllocatedBuffer<T>(data, AllocatedDeleter{allocator});
 }
 
+bool CheckExport(const ExportCheckpoint& checkpoint, uint32_t current, uint32_t total)
+{
+    return !checkpoint || checkpoint(current, total);
+}
 
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
 template <typename T>
-static void CreateDataZipPrediction(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T* planarData, uint32_t width, uint32_t height)
+bool CreateDataRaw(Allocator* allocator, ExportLayer& layer, unsigned int channelIndex,
+                   const T* planarData, uint32_t width, uint32_t height, const ExportCheckpoint& checkpoint)
 {
-	const uint32_t size = width*height;
-
-	T* deltaData = memoryUtil::AllocateArray<T>(allocator, size);
-	T* allocation = deltaData;
-	for (unsigned int y = 0; y < height; ++y)
-	{
-		*deltaData++ = *planarData++;
-		for (unsigned int x = 1; x < width; ++x)
-		{
-			const uint32_t previous = planarData[-1];
-			const uint32_t current = planarData[0];
-			const uint32_t value = current - previous;
-
-			*deltaData++ = static_cast<T>(value & Mask<T>::Value);
-			++planarData;
-		}
-	}
-
-	// convert to big endian
-	for (unsigned int i = 0u; i < size; ++i)
-	{
-		allocation[i] = endianUtil::NativeToBigEndian(allocation[i]);
-	}
-
-	size_t zipDataSize = 0u;
-    //void* zipData = tdefl_compress_mem_to_heap(allocation, size*sizeof(T), &zipDataSize, TDEFL_WRITE_ZLIB_HEADER);
-    void* zipData=nullptr;
-    //暂时设置为空
-
-	layer->channelData[channelIndex] = zipData;
-	layer->channelSize[channelIndex] = static_cast<uint32_t>(zipDataSize);
-
-	memoryUtil::FreeArray(allocator, allocation);
+    const size_t size = size_t(width) * height;
+    auto data = MakeBuffer<T>(allocator, size);
+    for (uint32_t y = 0; y < height; ++y) {
+        if (!CheckExport(checkpoint, y, height)) return false;
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t index = size_t(y) * width + x;
+            data.get()[index] = endianUtil::NativeToBigEndian(planarData[index]);
+        }
+    }
+    if (!CheckExport(checkpoint, height, height)) return false;
+    layer.channelData[channelIndex] = data.release();
+    layer.channelSize[channelIndex] = static_cast<uint32_t>(size * sizeof(T));
+    return true;
 }
 
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
-template <>
-void CreateDataZipPrediction<float32_t>(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const float32_t* planarData, uint32_t width, uint32_t height)
-{
-	const uint32_t size = width*height;
-
-	// float data is first converted into planar data to allow for better compression.
-	// this is done row by row, so if the bytes of the floats in a row consist of "1234123412341234" they will be turned into "1111222233334444".
-	// the data is also converted to big-endian in the same loop.
-	uint8_t* bigEndianPlanarData = memoryUtil::AllocateArray<uint8_t>(allocator, size*sizeof(float32_t));
-	for (unsigned int y = 0u; y < height; ++y)
-	{
-		for (unsigned int x = 0u; x < width; ++x)
-		{
-			uint8_t asBytes[sizeof(float32_t)] = {};
-			memcpy(asBytes, planarData + y*width + x, sizeof(float32_t));
-			bigEndianPlanarData[y*width * sizeof(float32_t) + x + width * 0] = asBytes[3];
-			bigEndianPlanarData[y*width * sizeof(float32_t) + x + width * 1] = asBytes[2];
-			bigEndianPlanarData[y*width * sizeof(float32_t) + x + width * 2] = asBytes[1];
-			bigEndianPlanarData[y*width * sizeof(float32_t) + x + width * 3] = asBytes[0];
-		}
-	}
-
-	// now delta encode the individual bytes row by row
-	uint8_t* deltaData = memoryUtil::AllocateArray<uint8_t>(allocator, size*sizeof(float32_t));
-	for (unsigned int y = 0; y < height; ++y)
-	{
-		deltaData[y*width * sizeof(float32_t)] = bigEndianPlanarData[y*width * sizeof(float32_t)];
-		for (unsigned int x = 1; x < width*4u; ++x)
-		{
-			const uint32_t previous = bigEndianPlanarData[y*width * sizeof(float32_t) + x - 1];
-			const uint32_t current = bigEndianPlanarData[y*width * sizeof(float32_t) + x];
-			const uint32_t value = current - previous;
-
-			deltaData[y*width * sizeof(float32_t) + x] = static_cast<uint8_t>(value & 0xFFu);
-		}
-	}
-
-	size_t zipDataSize = 0u;
-    //void* zipData = tdefl_compress_mem_to_heap(deltaData, size*sizeof(float32_t), &zipDataSize, TDEFL_WRITE_ZLIB_HEADER);
-//暂时设置为空
-    void* zipData=nullptr;
-	layer->channelData[channelIndex] = zipData;
-	layer->channelSize[channelIndex] = static_cast<uint32_t>(zipDataSize);
-
-	memoryUtil::FreeArray(allocator, deltaData);
-	memoryUtil::FreeArray(allocator, bigEndianPlanarData);
-}
-
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
 template <typename T>
-static void CreateDataZip(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const T* planarData, uint32_t width, uint32_t height)
+bool CreateDataRLE(Allocator* allocator, ExportLayer& layer, unsigned int channelIndex,
+                   const T* planarData, uint32_t width, uint32_t height, const ExportCheckpoint& checkpoint)
 {
-	const uint32_t size = width*height;
-
-	T* bigEndianData = memoryUtil::AllocateArray<T>(allocator, size);
-	for (unsigned int i = 0u; i < size; ++i)
-	{
-		bigEndianData[i] = endianUtil::NativeToBigEndian(planarData[i]);
-	}
-
-	size_t zipDataSize = 0u;
-    void* zipData=nullptr;
-    //void* zipData = tdefl_compress_mem_to_heap(bigEndianData, size*sizeof(T), &zipDataSize, TDEFL_WRITE_ZLIB_HEADER);
-
-	layer->channelData[channelIndex] = zipData;
-	layer->channelSize[channelIndex] = static_cast<uint32_t>(zipDataSize);
-
-	memoryUtil::FreeArray(allocator, bigEndianData);
+    const size_t capacity = size_t(height) * sizeof(uint16_t) + size_t(width) * height * sizeof(T) * 2u;
+    if (capacity > std::numeric_limits<uint32_t>::max()) return false;
+    auto data = MakeBuffer<uint8_t>(allocator, capacity);
+    auto row = MakeBuffer<uint8_t>(allocator, size_t(width) * sizeof(T) * 2u);
+    auto bigEndian = MakeBuffer<T>(allocator, width);
+    uint32_t offset = 0;
+    for (uint32_t y = 0; y < height; ++y) {
+        if (!CheckExport(checkpoint, y, height)) return false;
+        for (uint32_t x = 0; x < width; ++x)
+            bigEndian.get()[x] = endianUtil::NativeToBigEndian(planarData[size_t(y) * width + x]);
+        const unsigned int compressedSize = imageUtil::CompressRle(
+            reinterpret_cast<const uint8_t*>(bigEndian.get()), row.get(), width * sizeof(T));
+        if (compressedSize > width * sizeof(T) * 2u || compressedSize > std::numeric_limits<uint16_t>::max()) return false;
+        const uint16_t rowSize = endianUtil::NativeToBigEndian(static_cast<uint16_t>(compressedSize));
+        memcpy(data.get() + size_t(y) * sizeof(uint16_t), &rowSize, sizeof(rowSize));
+        memcpy(data.get() + size_t(height) * sizeof(uint16_t) + offset, row.get(), compressedSize);
+        offset += compressedSize;
+    }
+    if (!CheckExport(checkpoint, height, height)) return false;
+    layer.channelData[channelIndex] = data.release();
+    layer.channelSize[channelIndex] = offset + height * sizeof(uint16_t);
+    return true;
 }
 
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
-template <>
-void CreateDataZip<float32_t>(Allocator* allocator, ExportLayer* layer, unsigned int channelIndex, const float32_t* planarData, uint32_t width, uint32_t height)
-{
-	// yes, this specialization is *not *a bug.
-	// in 32 bit per channel mode, Photoshop treats ZIP and ZIP_WITH_PREDICTION as being the same compression mode.
-	// it insists on delta-encoding the data before zipping, presumably to get better compression.
-	return CreateDataZipPrediction(allocator, layer, channelIndex, planarData, width, height);
-}
-
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
 template <typename T>
-void UpdateLayerImpl(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const T* planarData, compressionType::Enum compression)
+bool UpdateLayerImpl(ExportDocument* document, Allocator* allocator, unsigned int layerIndex,
+                     exportChannel::Enum channel, int left, int top, int right, int bottom,
+                     const T* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint)
 {
-	if (document->colorMode == exportColorMode::GRAYSCALE)
-	{
-		PSD_ASSERT((channel == exportChannel::GRAY) || (channel == exportChannel::ALPHA), "Wrong channel for this color mode.");
-	}
-	else if (document->colorMode == exportColorMode::RGB)
-	{
-		PSD_ASSERT((channel == exportChannel::RED) || (channel == exportChannel::GREEN) || (channel == exportChannel::BLUE) || (channel == exportChannel::ALPHA), "Wrong channel for this color mode.");
-	}
-
-	ExportLayer* layer = document->layers + layerIndex;
-	const unsigned int channelIndex = GetChannelIndex(channel);
-
-	// free old data
-	{
-		void* data = layer->channelData[channelIndex];
-		if (data)
-		{
-			const uint16_t type = layer->channelCompression[channelIndex];
-			if ((type == compressionType::ZIP) ||
-				(type == compressionType::ZIP_WITH_PREDICTION))
-			{
-				// data was allocated by miniz
-				free(data);
-			}
-			else
-			{
-				memoryUtil::FreeArray(allocator, data);
-			}
-		}
-	}
-
-	// prepare new data
-	layer->top = top;
-	layer->left = left;
-	layer->bottom = bottom;
-	layer->right = right;
-	layer->channelCompression[channelIndex] = static_cast<uint16_t>(compression);
-
-	if (!layer->IsEmptyChannel) {
-		PSD_ASSERT(right >= left, "Invalid layer bounds.");
-		PSD_ASSERT(bottom >= top, "Invalid layer bounds.");
-	}
-
-	const uint32_t width = static_cast<uint32_t>(right - left);
-	const uint32_t height = static_cast<uint32_t>(bottom - top);
-
-	if (layer->IsEmptyChannel) {
-		CreateDataRawEmpty(allocator, layer, channelIndex, planarData);
-	}
-	else if (compression == compressionType::RAW)
-	{
-		// raw data, copy directly and convert to big endian
-		CreateDataRaw(allocator, layer, channelIndex, planarData, width, height);
-	}
-	else if (compression == compressionType::RLE)
-	{
-		// compress with RLE
-		CreateDataRLE(allocator, layer, channelIndex, planarData, width, height);
-	}
-	else if (compression == compressionType::ZIP)
-	{
-		// compress with ZIP
-		// note that this has a template specialization for 32-bit float data that forwards to ZipWithPrediction.
-		CreateDataZip(allocator, layer, channelIndex, planarData, width, height);
-	}
-	else if (compression == compressionType::ZIP_WITH_PREDICTION)
-	{
-		// delta-encode, then compress with ZIP
-		CreateDataZipPrediction(allocator, layer, channelIndex, planarData, width, height);
-	}
+    if (!document || !allocator || layerIndex >= document->layerCount ||
+        (channel != exportChannel::GRAY && channel != exportChannel::RED && channel != exportChannel::GREEN &&
+         channel != exportChannel::BLUE && channel != exportChannel::ALPHA) ||
+        (document->colorMode == exportColorMode::GRAYSCALE && channel != exportChannel::GRAY && channel != exportChannel::ALPHA) ||
+        (document->colorMode == exportColorMode::RGB && channel == exportChannel::GRAY) ||
+        (compression != compressionType::RAW && compression != compressionType::RLE)) return false;
+    ExportLayer& layer = document->layers[layerIndex];
+    const int64_t width = int64_t(right) - left, height = int64_t(bottom) - top;
+    if (!layer.IsEmptyChannel && (!planarData || width <= 0 || height <= 0 ||
+        width > std::numeric_limits<uint32_t>::max() / sizeof(T) ||
+        height > std::numeric_limits<uint32_t>::max() / sizeof(T) / width ||
+        document->bitsPerChannel != sizeof(T) * 8u)) return false;
+    try {
+        if (!CheckExport(checkpoint, 0, static_cast<uint32_t>(height > 0 ? height : 0))) return false;
+        const unsigned int channelIndex = GetChannelIndex(channel);
+        ExportLayer candidate = layer;
+        candidate.channelData[channelIndex] = nullptr;
+        candidate.channelSize[channelIndex] = 0;
+        if (layer.IsEmptyChannel) {
+            auto empty = MakeBuffer<T>(allocator, 1);
+            *empty = T{};
+            candidate.channelData[channelIndex] = empty.release();
+        } else if (compression == compressionType::RAW) {
+            if (!CreateDataRaw(allocator, candidate, channelIndex, planarData, width, height, checkpoint)) return false;
+        } else {
+            if (!CreateDataRLE(allocator, candidate, channelIndex, planarData, width, height, checkpoint)) return false;
+        }
+        AllocatedBuffer<void> replacement(candidate.channelData[channelIndex], AllocatedDeleter{allocator});
+        void* old = layer.channelData[channelIndex];
+        if (old) {
+            const uint16_t previous = layer.channelCompression[channelIndex];
+            if (previous == compressionType::ZIP || previous == compressionType::ZIP_WITH_PREDICTION) free(old);
+            else allocator->Free(old);
+        }
+        layer.top = top; layer.left = left; layer.bottom = bottom; layer.right = right;
+        layer.channelCompression[channelIndex] = static_cast<uint16_t>(compression);
+        layer.channelData[channelIndex] = replacement.release();
+        layer.channelSize[channelIndex] = candidate.channelSize[channelIndex];
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 }
 
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
 void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint8_t* planarData, compressionType::Enum compression)
 {
-	UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression);
+    UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, {});
+}
+
+void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint16_t* planarData, compressionType::Enum compression)
+{
+    UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, {});
+}
+
+void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const float32_t* planarData, compressionType::Enum compression)
+{
+    UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, {});
+}
+
+bool UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint8_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint)
+{
+    return UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, checkpoint);
+}
+
+bool UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint16_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint)
+{
+    return UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, checkpoint);
+}
+
+bool UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const float32_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint)
+{
+    return UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, checkpoint);
 }
 
 void UpdateLayerGroup(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint8_t* planarData, compressionType::Enum compression)
 {
-	UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression);
+    UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, {});
 }
 
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
-void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint16_t* planarData, compressionType::Enum compression)
+bool UpdateLayerGroup(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint8_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint)
 {
-	UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression);
+    return UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression, checkpoint);
 }
-
-
-// ---------------------------------------------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------------------------------------------
-void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const float32_t* planarData, compressionType::Enum compression)
-{
-	UpdateLayerImpl(document, allocator, layerIndex, channel, left, top, right, bottom, planarData, compression);
-}
-
 
 // ---------------------------------------------------------------------------------------------------------------------
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1050,7 +910,12 @@ void UpdateMergedImage(ExportDocument* document, Allocator* allocator, const flo
 // ---------------------------------------------------------------------------------------------------------------------
 bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 {
-	if (!document || !allocator || !file) return false;
+    return WriteDocument(document, allocator, file, {});
+}
+
+bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, const ExportCheckpoint& checkpoint)
+{
+    if (!document || !allocator || !file || !CheckExport(checkpoint, 0, document->layerCount)) return false;
 	SyncFileWriter writer(file);
 
 	// signature
@@ -1403,6 +1268,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 	// per-layer info
 	for (unsigned int i = 0u; i < document->layerCount; ++i)
 	{
+        if (!CheckExport(checkpoint, i, document->layerCount) || writer.HasError()) return false;
 		ExportLayer* layer = document->layers + i;
 		
 		fileUtil::WriteToFileBE(writer, layer->top);
@@ -1487,6 +1353,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 	// per-layer data
 	for (unsigned int i = 0u; i < document->layerCount; ++i)
 	{
+        if (!CheckExport(checkpoint, i, document->layerCount) || writer.HasError()) return false;
 		ExportLayer* layer = document->layers + i;
 
 		// per-channel data
@@ -1522,9 +1389,18 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 	//×îºóµÄÍ¼Ïñ²ãÊý¾Ý£¬ÕâÀï¿ÉÒÔ±£´æÏÂ»æÐÅÏ¢
 	// merged data section
 	{
-		const uint32_t size = document->width * document->height * document->bitsPerChannel / 8u;;
-		uint8_t* emptyMemory = memoryUtil::AllocateArray<uint8_t>(allocator, size);
-		memset(emptyMemory, 0, size);
+        const uint32_t bytesPerChannel = document->bitsPerChannel / 8u;
+        if (!bytesPerChannel || !document->width || !document->height ||
+            document->height > std::numeric_limits<uint32_t>::max() / bytesPerChannel / document->width) return false;
+        const uint32_t size = document->width * document->height * bytesPerChannel;
+        auto empty = MakeBuffer<uint8_t>(allocator, size);
+        uint8_t* emptyMemory = empty.get();
+        for (uint32_t offset = 0; offset < size;) {
+            if (!CheckExport(checkpoint, offset, size)) return false;
+            const uint32_t chunk = std::min(uint32_t(1024 * 1024), size - offset);
+            memset(emptyMemory + offset, 0, chunk);
+            offset += chunk;
+        }
 
 		// write merged image
 		fileUtil::WriteToFileBE(writer, static_cast<uint16_t>(compressionType::RAW));
@@ -1549,9 +1425,8 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 			writer.Write(document->alphaChannelData[i], size);
 		}
 
-		memoryUtil::FreeArray(allocator, emptyMemory);
 	}
-	return !writer.HasError();
+	return !writer.HasError() && CheckExport(checkpoint, document->layerCount, document->layerCount);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

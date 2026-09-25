@@ -5,6 +5,7 @@
 #include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
 #include "live2d/LAppPal.hpp"
 #include <QSurfaceFormat>
+#include <QSurface>
 #include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QFocusEvent>
@@ -17,16 +18,18 @@ namespace {
 class RestoreContext
 {
 public:
-    RestoreContext() : previous(QOpenGLContext::currentContext()), surface(previous ? previous->surface() : nullptr) {}
+    RestoreContext() : previous(QOpenGLContext::currentContext()), surface(previous ? previous->surface() : nullptr),
+        surfaceObject(dynamic_cast<QObject*>(surface)) {}
     ~RestoreContext()
     {
         if (QOpenGLContext::currentContext() == previous) return;
         if (auto* current = QOpenGLContext::currentContext()) current->doneCurrent();
-        if (previous && surface) previous->makeCurrent(surface);
+        if (previous && previous->isValid() && surfaceObject) previous->makeCurrent(surface);
     }
 private:
     QPointer<QOpenGLContext> previous;
     QSurface* surface;
+    QPointer<QObject> surfaceObject;
 };
 
 bool MeshError(QString* error, const QString& message)
@@ -127,7 +130,8 @@ bool OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu,b
     return ok;
 }
 
-bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat, QString* error)
+bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat, QString* error,
+                                   CExportControl* control)
 {
     if (error) error->clear();
     if (fileName.isEmpty()) return MeshError(error, QStringLiteral("PSD 导出路径为空"));
@@ -147,13 +151,13 @@ bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool I
         m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
     }
 
-    const auto clearPrintState = qScopeGuard([this] {
-        m_ceditstate.RemoveState(CEditState::PrintAllPsd);
-        m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
+    const QPointer<OpengGlForm> surface = this;
+    const auto clearPrintState = qScopeGuard([surface] {
+        if (!surface) return;
+        surface->m_ceditstate.RemoveState(CEditState::PrintAllPsd);
+        surface->m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
     });
-    if (!LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat))
-        return MeshError(error, QStringLiteral("PSD 渲染或写入失败：%1").arg(fileName));
-    return true;
+    return LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat,error,control);
 }
 
 bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
@@ -173,7 +177,8 @@ bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool is
     return ok;
 }
 
-bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat, QString* error)
+bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat, QString* error,
+                                         CExportControl* control)
 {
     if (error) error->clear();
     if (fileName.isEmpty()) return MeshError(error, QStringLiteral("PSD 导出路径为空"));
@@ -181,9 +186,7 @@ bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, b
     auto* delegate = LAppDelegate::GetInstance();
     if (!context() || delegate->getGlOwningContext() != context())
         return MeshError(error, QStringLiteral("当前模型不属于此预览窗口"));
-    if (!delegate->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat))
-        return MeshError(error, QStringLiteral("纹理读取、图层提取或 PSD 写入失败：%1").arg(fileName));
-    return true;
+    return delegate->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat,error,control);
 }
 
 void OpengGlForm::do_ShowMesh(const QString &artName)
@@ -769,14 +772,25 @@ bool OpengGlForm::SetExportSuspended(bool suspended, QString* error)
     if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复预览的 OpenGL 上下文"));
     if (m_suspendedModel.has_value() || LAppLive2DManager::GetInstance()->HasTemporaryScene())
         return MeshError(error, QStringLiteral("临时模型尚未恢复，预览保持暂停"));
-    if (auto* model = CurrentModel(); model && model->HasExportPreview())
-        return MeshError(error, QStringLiteral("导出姿态尚未恢复，预览保持暂停"));
+    if (auto* model = CurrentModel()) {
+        auto* renderer = model->GetRenderer<Live2D::Cubism::Framework::Rendering::CubismRenderer_OpenGLES2>();
+        if (model->HasExportPreview() || (renderer && renderer->HasPsdExport()))
+            return MeshError(error, QStringLiteral("导出姿态或 GPU 会话尚未恢复，预览保持暂停"));
+    }
     if (m_deferredResize && m_deferredResize->width() > 0 && m_deferredResize->height() > 0)
         LAppDelegate::GetInstance()->resize(m_deferredResize->width(), m_deferredResize->height());
     LAppPal::ResetTime();
     m_deferredResize.reset();
     m_exportSuspended = false;
     return true;
+}
+
+bool OpengGlForm::RecoverExportResources(QString* error)
+{
+    if (error) error->clear();
+    const RestoreContext restore;
+    if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复导出资源的所属 OpenGL 上下文"));
+    return LAppDelegate::GetInstance()->RecoverPsdExport(error);
 }
 
 bool OpengGlForm::HighPrecisionMasks() const
@@ -794,7 +808,7 @@ bool OpengGlForm::SetHighPrecisionMasks(bool enabled, QString* error)
     if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("模型预览尚未就绪"));
     auto* model = CurrentModel();
     auto* renderer = model ? model->GetRenderer<Live2D::Cubism::Framework::Rendering::CubismRenderer_OpenGLES2>() : nullptr;
-    if (!renderer || renderer->IsDrawing() || LAppDelegate::GetInstance()->IsOffScreen())
+    if (!renderer || renderer->IsDrawing() || renderer->HasPsdExport() || LAppDelegate::GetInstance()->IsOffScreen())
         return MeshError(error, QStringLiteral("请等待当前绘制或导出结束后更改蒙版精度"));
     renderer->UseHighPrecisionMask(enabled);
     update();

@@ -45,15 +45,18 @@ public:
     bool EndTemporaryModel(QString* error = nullptr);
     bool SetExportSuspended(bool suspended, QString* error = nullptr);
     bool IsExportSuspended() const { return m_exportSuspended; }
+    bool RecoverExportResources(QString* error = nullptr);
     bool IsModelReady() const { return m_ceditstate.IsContins(CEditState::ModelOpen); }
     bool HasInitializationResult() const { return m_initializationCompleted; }
     //进行离开屏幕渲染打印出psd文件
     bool do_OffSeceen(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
     // 批量导出静默版本（不弹窗、不自动打开文件夹）
-    bool do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false, QString* error = nullptr);
+    bool do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false, QString* error = nullptr,
+                            CExportControl* control = nullptr);
     // 原始纹理提取导出（不需要OpenGL渲染）
     bool do_TextureExtract(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
-    bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false, QString* error = nullptr);
+    bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false, QString* error = nullptr,
+                                 CExportControl* control = nullptr);
     const QString& GetCurrentModelJson() const { return m_currentModelJson; }
     float ViewScale() const { return m_config.GeteScalefactor(); }
     QVector2D ViewPosition() const;

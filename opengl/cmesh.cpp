@@ -8,7 +8,8 @@ CMesh::~CMesh()
 {
     delete textureMaskFrame;
     textureMaskFrame = nullptr;
-    if (!QOpenGLContext::currentContext()) {
+    if (!owningContext() || !owningContext()->isValid() ||
+        QOpenGLContext::currentContext() != owningContext() || !isInitialized()) {
         m_EBO = 0;
         m_VAO = 0;
         m_vboIdList.clear();
@@ -41,12 +42,16 @@ void clearMeshBuffers(QOpenGLFunctions_3_3_Core* functions, GLuint& vao, GLuint&
 
 void CMesh::setGlOwningContext(const QOpenGLContext *context)
 {
+    if (!context || !context->isValid() || QOpenGLContext::currentContext() != context ||
+        (owningContext() && owningContext() != context)) return;
+    if (!owningContext() && (m_VAO || m_EBO || !m_vboIdList.isEmpty() || textureMaskFrame)) return;
     initializeOpenGLFunctions();
-    setOwningContext(context);
 }
 
 void CMesh::SetConstPoint(float *uvVertex, float *positionVertex, unsigned int *indices)
 {
+    if (!owningContext() || !owningContext()->isValid() || QOpenGLContext::currentContext() != owningContext() ||
+        !isInitialized()) return;
     clearMeshBuffers(this, m_VAO, m_EBO, m_vboIdList);
     IsEbo =true;
     unsigned int VBO;
@@ -82,6 +87,8 @@ void CMesh::SetConstPoint(float *uvVertex, float *positionVertex, unsigned int *
 
 void CMesh::SetConstPointEBO(float *uvVertex, float *positionVertex)
 {
+    if (!owningContext() || !owningContext()->isValid() || QOpenGLContext::currentContext() != owningContext() ||
+        !isInitialized()) return;
     clearMeshBuffers(this, m_VAO, m_EBO, m_vboIdList);
     IsEbo =false;
     unsigned int VBO;
@@ -113,6 +120,8 @@ void CMesh::SetConstPointEBO(float *uvVertex, float *positionVertex)
 
 void CMesh::SetImage(const QString &name)
 {
+    if (!owningContext() || !owningContext()->isValid() || QOpenGLContext::currentContext() != owningContext() ||
+        !isInitialized()) return;
     delete textureMaskFrame;
     textureMaskFrame = nullptr;
     const QImage image(name);
@@ -121,6 +130,8 @@ void CMesh::SetImage(const QString &name)
 
 void CMesh::Draw()
 {
+    if (!owningContext() || !owningContext()->isValid() || QOpenGLContext::currentContext() != owningContext() ||
+        !isInitialized()) return;
     if (m_VAO == 0 || !textureMaskFrame) return;
     glBindVertexArray(m_VAO);//
     glActiveTexture(GL_TEXTURE0);
@@ -128,5 +139,4 @@ void CMesh::Draw()
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, NULL);
 
 }
-
 

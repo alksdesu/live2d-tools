@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -187,45 +187,63 @@ void CubismClippingManager<T_ClippingContext, T_OffscreenSurface>::SetupMatrixFo
     {
         // --- 実際に１つのマスクを描く ---
         T_ClippingContext* clipContext = _clippingContextListForMask[clipIndex];
-        csmRectF* allClippedDrawRect = clipContext->_allClippedDrawRect; //このマスクを使う、全ての描画オブジェクトの論理座標上の囲み矩形
-        csmRectF* layoutBoundsOnTex01 = clipContext->_layoutBounds; //この中にマスクを収める
-        const csmFloat32 MARGIN = 0.05f;
-        csmFloat32 scaleX = 0.0f;
-        csmFloat32 scaleY = 0.0f;
-        const csmFloat32 ppu = model.GetPixelsPerUnit();
-        const csmFloat32 maskPixelWidth = clipContext->GetClippingManager()->_clippingMaskBufferSize.X;
-        const csmFloat32 maskPixelHeight = clipContext->GetClippingManager()->_clippingMaskBufferSize.Y;
-        const csmFloat32 physicalMaskWidth = layoutBoundsOnTex01->Width * maskPixelWidth;
-        const csmFloat32 physicalMaskHeight = layoutBoundsOnTex01->Height * maskPixelHeight;
+        SetupMaskMatrix(model, clipContext, true, isRightHanded);
+    }
+}
 
-        _tmpBoundsOnModel.SetRect(allClippedDrawRect);
-        if (_tmpBoundsOnModel.Width * ppu > physicalMaskWidth)
-        {
-            _tmpBoundsOnModel.Expand(allClippedDrawRect->Width * MARGIN, 0.0f);
-            scaleX = layoutBoundsOnTex01->Width / _tmpBoundsOnModel.Width;
-        }
-        else
-        {
-            scaleX = ppu / physicalMaskWidth;
-        }
-
-        if (_tmpBoundsOnModel.Height * ppu > physicalMaskHeight)
-        {
-            _tmpBoundsOnModel.Expand(0.0f, allClippedDrawRect->Height * MARGIN);
-            scaleY = layoutBoundsOnTex01->Height / _tmpBoundsOnModel.Height;
-        }
-        else
-        {
-            scaleY = ppu / physicalMaskHeight;
-        }
-
-
-        // マスク生成時に使う行列を求める
-        createMatrixForMask(isRightHanded, layoutBoundsOnTex01, scaleX, scaleY);
-
+template <class T_ClippingContext, class T_OffscreenSurface>
+void CubismClippingManager<T_ClippingContext, T_OffscreenSurface>::SetupMaskMatrix(
+    CubismModel& model, T_ClippingContext* clipContext, csmBool highPrecision, csmBool isRightHanded)
+{
+    if (!highPrecision) {
+        auto* bounds = clipContext->_allClippedDrawRect;
+        auto* layout = clipContext->_layoutBounds;
+        _tmpBoundsOnModel.SetRect(bounds);
+        _tmpBoundsOnModel.Expand(bounds->Width * 0.05f, bounds->Height * 0.05f);
+        createMatrixForMask(isRightHanded, layout, layout->Width / _tmpBoundsOnModel.Width,
+                            layout->Height / _tmpBoundsOnModel.Height);
         clipContext->_matrixForMask.SetMatrix(_tmpMatrixForMask.GetArray());
         clipContext->_matrixForDraw.SetMatrix(_tmpMatrixForDraw.GetArray());
+        return;
     }
+    csmRectF* allClippedDrawRect = clipContext->_allClippedDrawRect; //このマスクを使う、全ての描画オブジェクトの論理座標上の囲み矩形
+    csmRectF* layoutBoundsOnTex01 = clipContext->_layoutBounds; //この中にマスクを収める
+    const csmFloat32 MARGIN = 0.05f;
+    csmFloat32 scaleX = 0.0f;
+    csmFloat32 scaleY = 0.0f;
+    const csmFloat32 ppu = model.GetPixelsPerUnit();
+    const csmFloat32 maskPixelWidth = clipContext->GetClippingManager()->_clippingMaskBufferSize.X;
+    const csmFloat32 maskPixelHeight = clipContext->GetClippingManager()->_clippingMaskBufferSize.Y;
+    const csmFloat32 physicalMaskWidth = layoutBoundsOnTex01->Width * maskPixelWidth;
+    const csmFloat32 physicalMaskHeight = layoutBoundsOnTex01->Height * maskPixelHeight;
+
+    _tmpBoundsOnModel.SetRect(allClippedDrawRect);
+    if (_tmpBoundsOnModel.Width * ppu > physicalMaskWidth)
+    {
+        _tmpBoundsOnModel.Expand(allClippedDrawRect->Width * MARGIN, 0.0f);
+        scaleX = layoutBoundsOnTex01->Width / _tmpBoundsOnModel.Width;
+    }
+    else
+    {
+        scaleX = ppu / physicalMaskWidth;
+    }
+
+    if (_tmpBoundsOnModel.Height * ppu > physicalMaskHeight)
+    {
+        _tmpBoundsOnModel.Expand(0.0f, allClippedDrawRect->Height * MARGIN);
+        scaleY = layoutBoundsOnTex01->Height / _tmpBoundsOnModel.Height;
+    }
+    else
+    {
+        scaleY = ppu / physicalMaskHeight;
+    }
+
+
+    // マスク生成時に使う行列を求める
+    createMatrixForMask(isRightHanded, layoutBoundsOnTex01, scaleX, scaleY);
+
+    clipContext->_matrixForMask.SetMatrix(_tmpMatrixForMask.GetArray());
+    clipContext->_matrixForDraw.SetMatrix(_tmpMatrixForDraw.GetArray());
 }
 
 template <class T_ClippingContext, class T_OffscreenSurface>

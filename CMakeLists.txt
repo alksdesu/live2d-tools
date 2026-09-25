@@ -21,6 +21,15 @@ if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
     endif()
 endif()
 
+add_library(export_control STATIC std/cexportcontrol.cpp)
+target_include_directories(export_control PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(export_control PUBLIC Qt6::Core)
+add_library(export_task_runner STATIC ui/cexporttaskrunner.cpp)
+target_link_libraries(export_task_runner PUBLIC export_control)
+if(MSVC)
+    target_compile_options(export_control PUBLIC /utf-8)
+endif()
+
 add_library(model_data STATIC
     live2dstruct/cparentgraph.cpp
     live2dstruct/cblendshaperelations.cpp
@@ -45,7 +54,7 @@ add_library(model_data STATIC
     live2dstruct/csectionvalidation.cpp
 )
 target_include_directories(model_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(model_data PUBLIC Qt6::Core)
+target_link_libraries(model_data PUBLIC Qt6::Core export_control)
 if(MSVC)
     target_compile_options(model_data PUBLIC /utf-8)
 endif()
@@ -116,6 +125,14 @@ target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
+    add_executable(export_control_tests tests/export_control_tests.cpp)
+    target_link_libraries(export_control_tests PRIVATE export_control Qt6::Test)
+    add_test(NAME export_control COMMAND export_control_tests)
+    add_executable(export_task_runner_tests tests/export_task_runner_tests.cpp)
+    target_link_libraries(export_task_runner_tests PRIVATE export_task_runner Qt6::Test Qt6::Widgets)
+    add_test(NAME export_task_runner COMMAND export_task_runner_tests)
+    set_tests_properties(export_task_runner PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(preview_export_transaction_tests tests/preview_export_transaction_tests.cpp
         ui/cpreviewexporttransaction.cpp)
     target_include_directories(preview_export_transaction_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -243,6 +260,11 @@ if(BUILD_TESTING)
     target_include_directories(offscreen_buffer_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(offscreen_buffer_tests PRIVATE Qt6::Gui Qt6::OpenGL Qt6::Test)
     add_test(NAME offscreen_buffer COMMAND offscreen_buffer_tests)
+    add_executable(mesh_context_tests tests/mesh_context_tests.cpp opengl/cmesh.cpp
+        live2d/LAppSprite.cpp live2d/LAppAllocator.cpp opengl/coffscreenbuffer.cpp)
+    target_include_directories(mesh_context_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(mesh_context_tests PRIVATE Qt6::Gui Qt6::OpenGL Qt6::Widgets Qt6::OpenGLWidgets Qt6::Core5Compat Qt6::Test)
+    add_test(NAME mesh_context COMMAND mesh_context_tests)
     add_executable(gl_mesh_buffer_tests tests/gl_mesh_buffer_tests.cpp opengl/cglmeshbuffer.cpp)
     target_include_directories(gl_mesh_buffer_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(gl_mesh_buffer_tests PRIVATE Qt6::Gui Qt6::OpenGL Qt6::Test)
@@ -472,7 +494,7 @@ if(BUILD_TESTING)
         psd/psdSamples/Util/PsdFixedSizeString.cpp
     )
     target_include_directories(psd_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui PRIVATE psd_zip)
+    target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui export_control PRIVATE psd_zip)
     if(MSVC)
         target_compile_options(psd_data PUBLIC /utf-8)
     endif()
@@ -480,6 +502,20 @@ if(BUILD_TESTING)
     set_target_properties(psd_tests PROPERTIES AUTORCC ON)
     target_link_libraries(psd_tests PRIVATE psd_data Qt6::Test)
     add_test(NAME psd COMMAND psd_tests)
+    add_executable(psd_cooperative_gl_tests tests/psd_cooperative_gl_tests.cpp
+        ${cubism_model_test_sources}
+        framework/Rendering/CubismRenderer.cpp
+        framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp
+        framework/Rendering/OpenGL/CubismShader_OpenGLES2.cpp
+        framework/Math/CubismMatrix44.cpp framework/Type/csmRectF.cpp
+        opengl/ccubismshaderprograms.cpp opengl/cglrenderstate.cpp
+        opengl/coffscreenbuffer.cpp opengl/creadopengl.cpp
+        opengl/cpsdfiletask.cpp opengl/cpsdrendersession.cpp opengl/cpsdwritelist.cpp
+        ui/para/ccidjson.cpp assets/icc.qrc)
+    set_target_properties(psd_cooperative_gl_tests PROPERTIES AUTORCC ON)
+    target_link_libraries(psd_cooperative_gl_tests PRIVATE psd_data model_data export_task_runner
+        Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test Qt6::Core5Compat)
+    add_test(NAME psd_cooperative_gl COMMAND psd_cooperative_gl_tests)
     add_executable(rendered_psd_tests tests/rendered_psd_tests.cpp
         opengl/creadopengl.cpp opengl/coffscreenbuffer.cpp opengl/ccubismshaderprograms.cpp assets/icc.qrc)
     set_target_properties(rendered_psd_tests PROPERTIES AUTORCC ON)

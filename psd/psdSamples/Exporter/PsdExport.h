@@ -8,12 +8,14 @@
 #include "psd/psdSamples/Types/PsdCompressionType.h"
 #include "psd/psdSamples/Types/PsdAlphaChannel.h"
 #include "psd/psdSamples/Types/PsdLayerType.h"
+#include <functional>
 
 PSD_NAMESPACE_BEGIN
 
 struct ExportDocument;
 class File;
 class Allocator;
+using ExportCheckpoint = std::function<bool(uint32_t current, uint32_t total)>;
 
 //#include "psd/psdSamples/Zip/Psdminiz.h"
 
@@ -82,6 +84,11 @@ void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int la
 /// Note that individual layers can be smaller and/or larger than the canvas in PSD documents.
 void UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const float32_t* planarData, compressionType::Enum compression);
 
+bool UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint8_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint);
+bool UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint16_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint);
+bool UpdateLayer(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const float32_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint);
+bool UpdateLayerGroup(ExportDocument* document, Allocator* allocator, unsigned int layerIndex, exportChannel::Enum channel, int left, int top, int right, int bottom, const uint8_t* planarData, compressionType::Enum compression, const ExportCheckpoint& checkpoint);
+
 
 /// \ingroup Exporter
 /// Adds an alpha channel to a document. The returned index can be used to update channel data by a call to \ref UpdateChannel.
@@ -135,5 +142,6 @@ void SetLayerClipping(ExportDocument* document, unsigned int layerIndex, uint8_t
 /// \ingroup Exporter
 /// Exports a document to the given file.
 bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file);
+bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, const ExportCheckpoint& checkpoint);
 
 PSD_NAMESPACE_END

@@ -28,6 +28,7 @@
 #include "ui/cuserdatapanel.h"
 #include "ui/para/ccidjson.h"
 #include "std/cmodeljsonwriter.h"
+#include "std/cexportcontrol.h"
 #include "cmo3/ccmo3builder.h"
 #include "ui/theme.h"
 #include <QFileDialog>
@@ -91,6 +92,39 @@ struct PreviewExportState
     QHash<QString, QVector<quint16>> meshIndexOverrides;
 };
 
+namespace {
+PsdExportStage exportStage(CExportControl::Phase phase)
+{
+    switch (phase) {
+    case CExportControl::Phase::Preparing: return PsdExportStage::Preparing;
+    case CExportControl::Phase::Rendering:
+    case CExportControl::Phase::Extracting: return PsdExportStage::Exporting;
+    case CExportControl::Phase::Encoding: return PsdExportStage::Encoding;
+    case CExportControl::Phase::Writing:
+    case CExportControl::Phase::Committing: return PsdExportStage::Writing;
+    }
+    return PsdExportStage::Exporting;
+}
+
+QProgressDialog* exportProgress(QWidget* parent, int maximum)
+{
+    auto* progress = new QProgressDialog(QStringLiteral("正在准备导出"), QStringLiteral("取消导出"),
+                                         0, maximum, parent);
+    auto* bar = new QProgressBar(progress);
+    bar->setTextVisible(false);
+    progress->setBar(bar);
+    auto* label = new QLabel(progress);
+    label->setTextFormat(Qt::PlainText);
+    label->setWordWrap(true);
+    progress->setLabel(label);
+    progress->setWindowModality(Qt::ApplicationModal);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    progress->setMinimumDuration(0);
+    return progress;
+}
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 
@@ -143,6 +177,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) { event->ignore(); return; }
     const auto list = event->mimeData()->urls();
     for (const QUrl& url : list) {
         const QString path = url.toLocalFile();
@@ -157,6 +192,7 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) { event->ignore(); return; }
     const auto list = event->mimeData()->urls();
     for (const QUrl& url : list) {
         const QString path = url.toLocalFile();
@@ -180,6 +216,7 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::OpenModelWithConfirm(const QString &jsonPath)
 {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
     if (m_openglwindows == nullptr) {
         RestDock(jsonPath);
         return;
@@ -238,6 +275,7 @@ QString MainWindow::ResolveMocToJson(const QString &mocPath)
 
 void MainWindow::on_actionOpen_triggered()
 {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
     QString fileName = CFileOption::GetDigModleFile(this);
     if(fileName.isEmpty()) return;
 
@@ -263,14 +301,29 @@ void MainWindow::on_actionpsdPrint_triggered()
     QString error;
     PsdExportStage stage = PsdExportStage::Preparing;
     bool committed = false;
+    bool canceled = false;
     bool ok = false;
-    try {
-        ok = doExportOne(m_openglwindows->GetCurrentModelJson(), output, dialog.m_IsAll, dialog.m_IsFenZu,
-                         dialog.m_IsTexExtract, dialog.m_IsCubismCompat, &error, &stage, &committed, dialog.m_IsSnapshot);
-    } catch (const std::exception& exception) {
-        error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
-    } catch (...) {
-        error = QStringLiteral("导出发生未知异常");
+    const QString modelPath = m_openglwindows->GetCurrentModelJson();
+    {
+        const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+        m_singleExportProgress = exportProgress(this, 0);
+        connect(m_singleExportProgress, &QProgressDialog::canceled, this, [this] {
+            if (m_activeExportControl) m_activeExportControl->Cancel();
+            statusBar()->showMessage(QStringLiteral("正在取消导出并恢复预览"));
+        });
+        const auto closeProgress = qScopeGuard([this] {
+            if (m_singleExportProgress) delete m_singleExportProgress;
+        });
+        m_singleExportProgress->show();
+        try {
+            ok = doExportOne(modelPath, output, dialog.m_IsAll, dialog.m_IsFenZu,
+                             dialog.m_IsTexExtract, dialog.m_IsCubismCompat, &error, &stage, &committed,
+                             dialog.m_IsSnapshot, &canceled);
+        } catch (const std::exception& exception) {
+            error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
+        } catch (...) {
+            error = QStringLiteral("导出发生未知异常");
+        }
     }
     RefreshExportActions();
     if (m_closeAfterExport) {
@@ -280,6 +333,8 @@ void MainWindow::on_actionpsdPrint_triggered()
     if (ok) {
         QMessageBox::information(this, QStringLiteral("PSD 导出完成"), QStringLiteral("已保存：%1").arg(output));
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(output).absolutePath()));
+    } else if (canceled) {
+        statusBar()->showMessage(QStringLiteral("导出已取消，目标文件未被替换"), 8000);
     } else {
         const QString message = committed ? QStringLiteral("文件已写出，但预览恢复未完成：\n%1\n%2").arg(output, error) : error;
         QMessageBox::warning(this, QStringLiteral("PSD 导出失败"), message);
@@ -451,7 +506,7 @@ bool MainWindow::SaveSession()
 
 void MainWindow::on_actionLoadSession_triggered()
 {
-    if (m_previewExport.IsBusy()) return;
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
     if (!m_workspaceReady || !m_openglwindows || !m_motionPanel) {
         QMessageBox::information(this, QStringLiteral("载入会话"), QStringLiteral("请先打开模型并等待工作区准备完成"));
         return;
@@ -792,6 +847,7 @@ void MainWindow::SyncDocumentToRuntime()
 
 bool MainWindow::ConfirmExportReady(const QString& operation)
 {
+    if (m_closingModel || m_batchExporting || m_psdBatch) return false;
     if (m_previewExport.IsBusy()) {
         statusBar()->showMessage(QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
         return false;
@@ -1036,23 +1092,16 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
     m_lastBatchOptions = {outputDirectory, all, groups, textures, cubismCompat};
     auto* job = new PsdBatchJob(this);
     m_psdBatch = job;
-    auto* progress = new QProgressDialog(QStringLiteral("正在准备导出"), QStringLiteral("完成当前文件后取消"),
-                                         0, models.size(), this);
-    auto* progressBar = new QProgressBar(progress);
-    progressBar->setTextVisible(false);
-    progress->setBar(progressBar);
-    auto* progressLabel = new QLabel(progress);
-    progressLabel->setTextFormat(Qt::PlainText);
-    progressLabel->setWordWrap(true);
-    progress->setLabel(progressLabel);
+    auto* progress = exportProgress(this, models.size());
     m_batchProgress = progress;
-    progress->setWindowModality(Qt::ApplicationModal);
-    progress->setAutoClose(false);
-    progress->setAutoReset(false);
-    progress->setValue(0);
     RefreshExportActions();
 
     connect(progress, &QProgressDialog::canceled, job, &PsdBatchJob::cancel);
+    connect(job, &PsdBatchJob::cancelCurrentRequested, this, [this, job] {
+        if (m_psdBatch != job) return;
+        if (m_activeExportControl) m_activeExportControl->Cancel();
+        statusBar()->showMessage(QStringLiteral("正在取消导出并恢复预览"));
+    });
     connect(job, &PsdBatchJob::progress, this, [this, job, progress](int current, int total, const QString& name) {
         if (m_psdBatch != job) return;
         progress->setMaximum(total);
@@ -1066,7 +1115,8 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
             progress->setLabelText(QStringLiteral("%1：%2\n已处理 %3/%4")
                 .arg(PsdExportStageText(result.stage), QFileInfo(result.sourcePath).fileName())
                 .arg(index).arg(progress->maximum()));
-        } else if (result.state == PsdBatchFileState::Succeeded || result.state == PsdBatchFileState::Failed) {
+        } else if (result.state == PsdBatchFileState::Succeeded || result.state == PsdBatchFileState::Failed ||
+                   result.state == PsdBatchFileState::Canceled) {
             progress->setValue(index + 1);
         }
     });
@@ -1076,11 +1126,12 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         QString error;
         PsdExportStage stage = PsdExportStage::Preflight;
         bool committed = false;
+        bool canceled = false;
         const auto refresh = qScopeGuard([this] { RefreshExportActions(); });
         const QScopedValueRollback<bool> exporting(m_batchExporting, true);
         bool ok = false;
         try {
-            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed);
+            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed, false, &canceled);
         } catch (const std::exception& exception) {
             error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
         } catch (...) {
@@ -1088,7 +1139,8 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         }
         if (m_psdBatch != job) return;
         if (m_previewExport.NeedsRecovery()) job->cancel();
-        job->completeDetailed(ok, output, error, stage, committed);
+        if (canceled) job->completeCanceled(output, stage, error);
+        else job->completeDetailed(ok, output, error, stage, committed);
         if (m_closeAfterExport) {
             StopPsdBatch();
             QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
@@ -1110,6 +1162,10 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         progress->deleteLater();
         job->deleteLater();
         RefreshExportActions();
+        if (m_closeAfterExport) {
+            QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
+            return;
+        }
         m_exportResultsPanel->show();
         m_exportResultsPanel->raise();
     });
@@ -1119,6 +1175,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
     }
     m_exportResultsPanel->SetResults(job->results());
     m_exportResultsPanel->show();
+    progress->show();
 }
 
 void MainWindow::StopPsdBatch()
@@ -1140,7 +1197,10 @@ void MainWindow::StopPsdBatch()
 
 void MainWindow::ReportExportStage(const QString& outputPath, PsdExportStage stage)
 {
+    if (IsPsdExportStageTransitionValid(m_activeExportStage, stage)) m_activeExportStage = stage;
     if (m_psdBatch) m_psdBatch->setStage(outputPath, stage);
+    if (m_singleExportProgress) m_singleExportProgress->setLabelText(
+        QStringLiteral("%1：%2").arg(PsdExportStageText(stage), QFileInfo(outputPath).fileName()));
 }
 
 void MainWindow::RefreshExportActions()
@@ -1190,19 +1250,46 @@ void MainWindow::RecoverExportPreview()
 
 bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
                              bool isTexExtract, bool cubismCompat, QString* error,
-                             PsdExportStage* stage, bool* outputCommitted, bool savedParameterSnapshot)
+                             PsdExportStage* stage, bool* outputCommitted, bool savedParameterSnapshot, bool* canceled)
 {
     if (error) error->clear();
     if (stage) *stage = PsdExportStage::Preflight;
     if (outputCommitted) *outputCommitted = false;
+    if (canceled) *canceled = false;
     const auto fail = [&](PsdExportStage failedStage, const QString& reason) {
         if (error) *error = reason;
         if (stage) *stage = failedStage;
         return false;
     };
-    if (m_previewExport.IsBusy())
+    if (m_previewExport.IsBusy() || m_activeExportControl)
         return fail(PsdExportStage::Restoring, QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
     if (outPath.isEmpty()) return fail(PsdExportStage::Preflight, QStringLiteral("未指定输出路径"));
+    const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+    auto control = std::make_shared<CExportControl>();
+    m_activeExportControl = control;
+    m_activeExportStage = PsdExportStage::Preflight;
+    const auto finish = qScopeGuard([&] {
+        if (outputCommitted && control->IsCommitted()) *outputCommitted = true;
+        if (canceled) *canceled = control->WasCanceled() && !control->IsCommitted() && !m_previewExport.NeedsRecovery();
+        m_activeExportControl.reset();
+    });
+    QTimer progressTimer;
+    progressTimer.setInterval(50);
+    connect(&progressTimer, &QTimer::timeout, this, [this, control, outPath] {
+        if (m_activeExportStage >= PsdExportStage::Restoring) return;
+        const auto progress = control->Snapshot();
+        ReportExportStage(outPath, exportStage(progress.phase));
+        QProgressDialog* dialog = m_singleExportProgress ? m_singleExportProgress.data() : m_batchProgress.data();
+        if (!dialog) return;
+        QString label = QStringLiteral("%1：%2").arg(PsdExportStageText(m_activeExportStage), QFileInfo(outPath).fileName());
+        if (control->IsCancellationRequested() && !control->IsCommitted()) label = QStringLiteral("正在取消导出并恢复预览");
+        else if (progress.total > 0) label += QStringLiteral("\n当前步骤 %1/%2").arg(progress.current).arg(progress.total);
+        if (m_batchProgress) label += QStringLiteral("\n已处理 %1/%2")
+            .arg(qMax(0, m_batchProgress->value())).arg(m_batchProgress->maximum());
+        if (!progress.detail.isEmpty()) label += QLatin1Char('\n') + progress.detail;
+        dialog->setLabelText(label);
+    });
+    progressTimer.start();
     ReportExportStage(outPath, PsdExportStage::Preflight);
     const bool currentModel = m_openglwindows && m_openglwindows->GetCurrentModelJson() == modelPath;
     live2dstruct::CModelDocument preflight;
@@ -1222,8 +1309,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
     for (const auto& diagnostic : validation->Validate())
         if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error)
             return fail(PsdExportStage::Preflight, diagnostic.message);
+    if (!control->Checkpoint()) return fail(PsdExportStage::Preflight, control->Error());
 
-    const QScopedValueRollback<bool> exporting(m_batchExporting, true);
     ReportExportStage(outPath, PsdExportStage::Preparing);
     if (m_openglwindows) {
         auto state = std::make_shared<PreviewExportState>();
@@ -1267,6 +1354,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         }
         m_exportState = state;
         const auto endExportPose = [state](QString* detail) {
+            if (!state->surface || !state->surface->RecoverExportResources(detail)) return false;
             if (!state->exportModel) return true;
             auto* manager = LAppLive2DManager::GetInstance();
             if (!manager || manager->GetModel(0) != state->exportModel) {
@@ -1293,7 +1381,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             return true;
         };
         if (!currentModel) {
-            steps.beginTemporary = [state, modelPath](QString* detail) {
+            steps.beginTemporary = [state, modelPath, control](QString* detail) {
+                if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
                 if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
                 return state->surface->BeginTemporaryModel(modelPath, detail);
             };
@@ -1305,7 +1394,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             };
         }
         steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat,
-                            savedParameterSnapshot, currentModel](QString* detail) {
+                            savedParameterSnapshot, currentModel, control](QString* detail) {
+            if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
             if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
             if (!currentModel && !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
             auto* manager = LAppLive2DManager::GetInstance();
@@ -1314,11 +1404,12 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             if (!model->BeginExportPreview(savedParameterSnapshot, detail)) return false;
             state->exportModel = model;
             state->failureStage = PsdExportStage::Exporting;
-            ReportExportStage(outPath, PsdExportStage::Exporting);
-            state->outputCommitted = isTexExtract
-                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail)
-                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail);
-            return state->outputCommitted;
+            const bool exported = isTexExtract
+                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get())
+                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get());
+            state->outputCommitted = exported || control->IsCommitted();
+            if (!exported) state->failureStage = exportStage(control->Snapshot().phase);
+            return exported;
         };
         steps.restorePreview = [this, state, outPath, endExportPose](QString* detail) {
             ReportExportStage(outPath, PsdExportStage::Restoring);
@@ -1428,13 +1519,17 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         connect(surface, &OpengGlForm::RuntimeInitialized, &initialized, &QEventLoop::quit);
         connect(surface, &QObject::destroyed, &initialized, &QEventLoop::quit);
         connect(&timeout, &QTimer::timeout, &initialized, &QEventLoop::quit);
+        connect(&progressTimer, &QTimer::timeout, &initialized, [&] {
+            if (control->IsCancellationRequested()) initialized.quit();
+        });
         m_headless->show();
         if (surface && !surface->HasInitializationResult()) {
             timeout.start(10000);
             initialized.exec();
         }
-        if (m_closeAfterExport || !surface || m_headless != surface || !surface->IsModelReady()) {
+        if (!control->Checkpoint() || m_closeAfterExport || !surface || m_headless != surface || !surface->IsModelReady()) {
             if (surface && m_headless == surface) delete m_headless;
+            if (control->WasCanceled()) return fail(PsdExportStage::Preparing, control->Error());
             return fail(PsdExportStage::Preparing, QStringLiteral("离屏模型初始化未完成、失败或已取消"));
         }
         m_headless->m_timer.stop();
@@ -1456,7 +1551,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         state->surface->m_timer.stop();
         return state->surface->SetExportSuspended(true, detail);
     };
-    steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat](QString* detail) {
+    steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat, control](QString* detail) {
+        if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
         if (!state->surface || !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
@@ -1464,11 +1560,12 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         if (!model->BeginExportPreview(false, detail)) return false;
         state->exportModel = model;
         state->failureStage = PsdExportStage::Exporting;
-        ReportExportStage(outPath, PsdExportStage::Exporting);
-        state->outputCommitted = isTexExtract
-            ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail)
-            : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail);
-        return state->outputCommitted;
+        const bool exported = isTexExtract
+            ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get())
+            : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get());
+        state->outputCommitted = exported || control->IsCommitted();
+        if (!exported) state->failureStage = exportStage(control->Snapshot().phase);
+        return exported;
     };
     steps.restorePreview = [this, state, outPath](QString* detail) {
         ReportExportStage(outPath, PsdExportStage::Restoring);
@@ -1476,6 +1573,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             if (detail) *detail = QStringLiteral("离屏导出窗口已改变");
             return false;
         }
+        if (!state->surface->RecoverExportResources(detail)) return false;
         if (!state->exportModel) return true;
         auto* manager = LAppLive2DManager::GetInstance();
         if (!manager || manager->GetModel(0) != state->exportModel) {
@@ -1608,7 +1706,8 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
-    if (m_batchExporting) return false;
+    if (m_batchExporting || m_closingModel) return false;
+    if (m_psdBatch) StopPsdBatch();
     if (!m_openglwindows) {
         StopPsdBatch();
         if (m_headless) delete m_headless;
@@ -1622,6 +1721,11 @@ bool MainWindow::CloseModel()
         statusBar()->showMessage(dragError, 8000);
         return false;
     }
+    const auto refreshAfterClose = qScopeGuard([this] {
+        if (m_openglwindows) RefreshUndoActions();
+        RefreshExportActions();
+    });
+    const QScopedValueRollback<bool> closing(m_closingModel, true);
     if (!ConfirmCloseWithUnsavedChanges()) return false;
     if (m_exportState) for (const auto& action : m_exportState->actions) if (action) action->setEnabled(true);
     m_workspaceReady = false;
@@ -1629,7 +1733,6 @@ bool MainWindow::CloseModel()
     m_saveSessionAction->setEnabled(false);
     m_loadSessionAction->setEnabled(false);
     StopPsdBatch();
-    const QScopedValueRollback<bool> closing(m_closingModel, true);
     if (m_motionPanel || m_blendShapePanel) {
         QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
         if (m_motionPanel) settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
@@ -1702,8 +1805,9 @@ bool MainWindow::CloseModel()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (m_batchExporting) {
+    if (m_batchExporting || m_psdBatch) {
         m_closeAfterExport = true;
+        if (m_activeExportControl) m_activeExportControl->Cancel();
         if (m_psdBatch) m_psdBatch->cancel();
         event->ignore();
         return;

@@ -38,9 +38,11 @@ QString detailText(const PsdBatchFileResult& result)
         case PsdBatchFileState::Succeeded: summary = QStringLiteral("导出成功。"); break;
         case PsdBatchFileState::Failed: summary = QStringLiteral("导出失败，未提供详细原因。"); break;
         case PsdBatchFileState::NotRun: summary = QStringLiteral("未执行导出。"); break;
+        case PsdBatchFileState::Canceled: summary = QStringLiteral("当前文件导出已取消。"); break;
         }
     }
     const QString writeStatus = result.outputCommitted ? QStringLiteral("文件已确认写出。") :
+        result.state == PsdBatchFileState::Canceled ? QStringLiteral("未提交新的输出文件。") :
         result.state == PsdBatchFileState::Pending || result.state == PsdBatchFileState::NotRun
             ? QStringLiteral("尚未开始写入文件。") : QStringLiteral("文件写入未确认。");
     return QStringLiteral("%1\n%2\n\n源模型：%3\n输出文件：%4\n状态：%5\n阶段：%6\n耗时：%7")
@@ -111,7 +113,7 @@ CExportResultsPanel::CExportResultsPanel(QWidget* parent) : QDockWidget(QStringL
 bool CExportResultsPanel::SetResults(const PsdBatchResults& results)
 {
     if (results.size() > std::numeric_limits<int>::max()) return false;
-    std::array<int, 5> counts{};
+    decltype(m_counts) counts{};
     int retryCount = 0;
     for (int index = 0; index < results.size(); ++index) {
         if (!IsPsdBatchResultValid(results[index]) || results[index].index != index) return false;
@@ -140,7 +142,7 @@ bool CExportResultsPanel::UpdateResult(int index, const PsdBatchFileResult& resu
     if (IsPsdBatchTerminal(before.state) ||
         (before.state == PsdBatchFileState::Running && result.state == PsdBatchFileState::Pending) ||
         (before.state == PsdBatchFileState::Running && result.state == PsdBatchFileState::Running &&
-         (result.stage < before.stage || result.elapsedMs < before.elapsedMs))) return false;
+         (!IsPsdExportStageTransitionValid(before.stage, result.stage) || result.elapsedMs < before.elapsedMs))) return false;
     --m_counts[int(before.state)];
     m_retryable -= retryable(before);
     m_results[index] = result;
@@ -182,8 +184,9 @@ void CExportResultsPanel::SetRetryAvailable(bool available, const QString& reaso
 void CExportResultsPanel::RefreshSummary()
 {
     m_summary->setText(m_results.isEmpty() ? QStringLiteral("尚无导出结果") :
-        QStringLiteral("共 %1 项 · 成功 %2 · 失败 %3 · 未执行 %4 · 进行中 %5 · 等待 %6")
+        QStringLiteral("共 %1 项 · 成功 %2 · 失败 %3 · 已取消 %4 · 未执行 %5 · 进行中 %6 · 等待 %7")
             .arg(m_results.size()).arg(m_counts[int(PsdBatchFileState::Succeeded)]).arg(m_counts[int(PsdBatchFileState::Failed)])
+            .arg(m_counts[int(PsdBatchFileState::Canceled)])
             .arg(m_counts[int(PsdBatchFileState::NotRun)]).arg(m_counts[int(PsdBatchFileState::Running)]).arg(m_counts[int(PsdBatchFileState::Pending)]));
     m_retry->setEnabled(!m_busy && m_retryAvailable && m_retryable > 0);
     m_copy->setEnabled(!m_results.isEmpty());

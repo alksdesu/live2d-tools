@@ -14,6 +14,199 @@ class PsdBatchWorkerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void canceledCurrentFileHasDistinctOutcomeAndStopsAfterAcknowledgment()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy canceled(&job, &PsdBatchJob::cancelCurrentRequested);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QVERIFY(job.start({QStringLiteral("/first.json"), QStringLiteral("/second.json"), QStringLiteral("/third.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const QString first = requests[0][1].toString();
+        job.completeDetailed(false, first, QStringLiteral("先前文件写入失败"), PsdExportStage::Writing);
+        QTRY_COMPARE(requests.size(), 2);
+        const QString second = requests[1][1].toString();
+        job.setStage(second, PsdExportStage::Encoding);
+        QCOMPARE(job.results()[1].stage, PsdExportStage::Encoding);
+        job.setStage(second, PsdExportStage::Writing);
+        QCOMPARE(job.results()[1].stage, PsdExportStage::Writing);
+        job.cancel();
+        job.cancel();
+        QCOMPARE(canceled.size(), 1);
+        QCOMPARE(job.results()[1].state, PsdBatchFileState::Running);
+        QCOMPARE(job.results()[2].state, PsdBatchFileState::NotRun);
+        QCOMPARE(ready.size(), 0);
+        const auto waiting = job.results();
+        job.completeCanceled(first, PsdExportStage::Encoding, QStringLiteral("stale"));
+        QVERIFY(job.results() == waiting);
+        QTest::qWait(12);
+        const QString reason = QStringLiteral("用户在写入时取消 <literal>");
+        job.completeCanceled(second, PsdExportStage::Writing, reason);
+        const auto completed = job.results();
+        QCOMPARE(completed[1].state, PsdBatchFileState::Canceled);
+        QCOMPARE(completed[1].stage, PsdExportStage::Writing);
+        QCOMPARE(completed[1].error, reason);
+        QVERIFY(!completed[1].outputCommitted);
+        QVERIFY(completed[1].elapsedMs >= 10);
+        QVERIFY(IsPsdBatchTerminal(completed[1].state));
+        QVERIFY(IsPsdBatchResultValid(completed[1]));
+        job.completeCanceled(second);
+        job.completeDetailed(true, second, {});
+        QVERIFY(job.results() == completed);
+        QTRY_COMPARE(ready.size(), 1);
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(ready[0][1].toBool());
+        QVERIFY(qvariant_cast<PsdBatchResults>(ready[0][0]) == completed);
+        QCOMPARE(finished[0][0].toStringList(), QStringList{first});
+        QCOMPARE(requests.size(), 2);
+        job.shutdown();
+        QVERIFY(job.results() == completed);
+    }
+
+    void cancelSignalSeesAllPendingStatesAndSupportsNestedAcknowledgment()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy ready(&job, &PsdBatchJob::resultsReady);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QSignalSpy canceled(&job, &PsdBatchJob::cancelCurrentRequested);
+        QVERIFY(job.start({QStringLiteral("/first.json"), QStringLiteral("/second.json"), QStringLiteral("/third.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const QString output = requests[0][1].toString();
+        connect(&job, &PsdBatchJob::cancelCurrentRequested, &job, [&] {
+            const auto snapshot = job.results();
+            QCOMPARE(snapshot[0].state, PsdBatchFileState::Running);
+            QCOMPARE(snapshot[1].state, PsdBatchFileState::NotRun);
+            QCOMPARE(snapshot[2].state, PsdBatchFileState::NotRun);
+            job.cancel();
+            job.completeCanceled(output, PsdExportStage::Encoding);
+            QTRY_COMPARE(ready.size(), 1);
+        });
+        job.cancel();
+        QCOMPARE(canceled.size(), 1);
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(finished[0][0].toStringList().isEmpty());
+        QCOMPARE(requests.size(), 1);
+        const auto snapshot = qvariant_cast<PsdBatchResults>(ready[0][0]);
+        QCOMPARE(snapshot[0].state, PsdBatchFileState::Canceled);
+        QCOMPARE(snapshot[1].state, PsdBatchFileState::NotRun);
+        QCOMPARE(snapshot[2].state, PsdBatchFileState::NotRun);
+        QVERIFY(!job.isRunning());
+    }
+
+    void currentCancellationAcknowledgmentDoesNotImplicitlyCancelBatch()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy canceled(&job, &PsdBatchJob::cancelCurrentRequested);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QVERIFY(job.start({QStringLiteral("/first.json"), QStringLiteral("/second.json")}, temp.path(), true, false));
+        job.completeCanceled(job.results()[0].outputPath);
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Pending);
+        QTRY_COMPARE(requests.size(), 1);
+        job.completeCanceled(requests[0][1].toString());
+        QTRY_COMPARE(requests.size(), 2);
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Canceled);
+        QVERIFY(!job.results()[0].error.isEmpty());
+        QCOMPARE(job.results()[1].state, PsdBatchFileState::Running);
+        QCOMPARE(canceled.size(), 0);
+        job.complete(true, requests[1][1].toString());
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(finished[0][0].toStringList().isEmpty());
+        QVERIFY(!finished[0][1].toBool());
+    }
+
+    void committedSuccessRemainsSuccessWhenCancelArrivesBeforeAcknowledgment()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QSignalSpy finished(&job, &PsdBatchJob::finished);
+        QVERIFY(job.start({QStringLiteral("/first.json"), QStringLiteral("/second.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const QString output = requests[0][1].toString();
+        job.setStage(output, PsdExportStage::Writing);
+        job.cancel();
+        job.completeDetailed(true, output, {});
+        job.completeCanceled(output, PsdExportStage::Writing);
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Succeeded);
+        QCOMPARE(job.results()[0].stage, PsdExportStage::Done);
+        QVERIFY(job.results()[0].outputCommitted);
+        QCOMPARE(job.results()[1].state, PsdBatchFileState::NotRun);
+        QVERIFY(finished[0][0].toStringList().isEmpty());
+        QVERIFY(finished[0][1].toBool());
+    }
+
+    void cancelSignalCanSynchronouslyShutdownOrDestroyJob_data()
+    {
+        QTest::addColumn<bool>("destroy");
+        QTest::newRow("shutdown") << false;
+        QTest::newRow("destroy") << true;
+    }
+
+    void renderingAndEncodingCanAlternateBeforeFinalWriting()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        PsdBatchJob job;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QVERIFY(job.start({QStringLiteral("/first.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const QString output = requests[0][1].toString();
+        for (auto stage : {PsdExportStage::Exporting, PsdExportStage::Encoding, PsdExportStage::Exporting,
+                           PsdExportStage::Encoding, PsdExportStage::Writing}) {
+            job.setStage(output, stage);
+            QCOMPARE(job.results()[0].stage, stage);
+        }
+        job.setStage(output, PsdExportStage::Encoding);
+        QCOMPARE(job.results()[0].stage, PsdExportStage::Writing);
+        job.setStage(output, PsdExportStage::Exporting);
+        QCOMPARE(job.results()[0].stage, PsdExportStage::Writing);
+        job.setStage(output, PsdExportStage::Restoring);
+        job.setStage(output, PsdExportStage::Writing);
+        QCOMPARE(job.results()[0].stage, PsdExportStage::Restoring);
+        job.shutdown();
+    }
+
+    void cancelSignalCanSynchronouslyShutdownOrDestroyJob()
+    {
+        QFETCH(bool, destroy);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        auto job = std::make_unique<PsdBatchJob>();
+        QPointer<PsdBatchJob> guard(job.get());
+        QSignalSpy requests(job.get(), &PsdBatchJob::requestExport);
+        QSignalSpy finished(job.get(), &PsdBatchJob::finished);
+        QSignalSpy canceled(job.get(), &PsdBatchJob::cancelCurrentRequested);
+        QVERIFY(job->start({QStringLiteral("/first.json"), QStringLiteral("/second.json")}, temp.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        connect(job.get(), &PsdBatchJob::cancelCurrentRequested, this, [&] {
+            QCOMPARE(job->results()[1].state, PsdBatchFileState::NotRun);
+            if (destroy) job.reset();
+            else job->shutdown();
+        });
+        job->cancel();
+        QCOMPARE(canceled.size(), 1);
+        QCoreApplication::processEvents();
+        QCOMPARE(requests.size(), 1);
+        QCOMPARE(finished.size(), 0);
+        if (destroy) QVERIFY(guard.isNull());
+        else {
+            QVERIFY(!job->isRunning());
+            job->completeCanceled(requests[0][1].toString());
+            QCOMPARE(job->results()[0].state, PsdBatchFileState::Failed);
+        }
+    }
+
     void plannedResultsAreAvailableBeforeAnyGuiEvent()
     {
         QTemporaryDir temp;

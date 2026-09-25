@@ -8,7 +8,15 @@
 #include "LAppSprite.hpp"
 
 LAppSprite::LAppSprite(float x, float y, float width, float height, GLuint textureId, GLuint programId)
-    : _rect()
+    : _textureId(textureId)
+    , _rect()
+    , _positionLocation(-1)
+    , _uvLocation(-1)
+    , _textureLocation(-1)
+    , _colorLocation(-1)
+    , _spriteColor{1.0f, 1.0f, 1.0f, 1.0f}
+    , _maxWidth(0)
+    , _maxHeight(0)
 {
 
     setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext());
@@ -16,7 +24,8 @@ LAppSprite::LAppSprite(float x, float y, float width, float height, GLuint textu
     _rect.right = (x + width * 0.5f);
     _rect.up = (y + height * 0.5f);
     _rect.down = (y - height * 0.5f);
-    _textureId = textureId;
+    if (!isInitialized() || !owningContext() || !owningContext()->isValid() ||
+        QOpenGLContext::currentContext() != owningContext()) return;
 
     // 何番目のattribute変数か
     _positionLocation = glGetAttribLocation(programId, "position");
@@ -24,10 +33,6 @@ LAppSprite::LAppSprite(float x, float y, float width, float height, GLuint textu
     _textureLocation = glGetUniformLocation(programId, "texture");
     _colorLocation = glGetUniformLocation(programId, "baseColor");
 
-    _spriteColor[0] = 1.0f;
-    _spriteColor[1] = 1.0f;
-    _spriteColor[2] = 1.0f;
-    _spriteColor[3] = 1.0f;
 }
 
 LAppSprite::~LAppSprite()
@@ -36,7 +41,8 @@ LAppSprite::~LAppSprite()
 
 void LAppSprite::Render()
 {
-
+    if (!isInitialized() || !owningContext() || !owningContext()->isValid() ||
+        QOpenGLContext::currentContext() != owningContext() || _positionLocation < 0 || _uvLocation < 0) return;
     if (_maxWidth == 0 || _maxHeight == 0)
     {
         return; // この際は描画できず
@@ -80,6 +86,8 @@ void LAppSprite::Render()
 
 void LAppSprite::RenderImmidiate(GLuint textureId, const GLfloat uvVertex[8])
 {
+    if (!isInitialized() || !owningContext() || !owningContext()->isValid() ||
+        QOpenGLContext::currentContext() != owningContext() || _positionLocation < 0 || _uvLocation < 0) return;
     if (_maxWidth == 0 || _maxHeight == 0)
     {
         return; // この際は描画できず

@@ -24,8 +24,9 @@ public:
     };
 
     void setGlOwningContext(const QOpenGLContext *context){
+        if (!context || !context->isValid() || QOpenGLContext::currentContext() != context ||
+            (owningContext() && owningContext() != context)) return;
         initializeOpenGLFunctions();
-        setOwningContext(context);
     }
 
 
@@ -102,4 +103,3 @@ private:
     int _maxWidth;  ///< ウインドウ幅
     int _maxHeight;  ///< ウインドウ高さ
 };
-

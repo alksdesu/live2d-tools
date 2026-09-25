@@ -19,9 +19,12 @@
 #include <QSet>
 #include <QHash>
 #include <QVector>
+#include <memory>
 
 class LAppView;
 class LAppTextureManager;
+class CExportControl;
+class CPsdRenderSession;
 using Live2D::Cubism::Framework::CubismModel;
 
 //这个渲染对象
@@ -82,8 +85,11 @@ public:
     QMap<int, std::vector<float>> m_savedVertices; // 非目标 drawable 的顶点快照
     bool StartDeformerDrag(QString* error = nullptr);
     void StopDeformerDrag();    // 松手时调用
-    bool StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu,bool cubismCompat = false);
-    bool StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat = false);
+    bool StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu,bool cubismCompat = false,
+                               QString* error = nullptr, CExportControl* control = nullptr);
+    bool StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat = false,
+                                QString* error = nullptr, CExportControl* control = nullptr);
+    bool RecoverPsdExport(QString* error = nullptr);
 
 
 
@@ -120,6 +126,8 @@ private:
     int _OffHeight;//离屏幕渲染高
     COffScreenLive coffscreen;
     CPsdWriteList* cpsdwriteList;
+    bool m_exportInProgress = false;
+    std::unique_ptr<CPsdRenderSession> m_psdExportSession;
     QString ResourcesPath;
 
 };

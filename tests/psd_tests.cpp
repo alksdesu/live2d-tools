@@ -2,13 +2,41 @@
 #include "psd/psdSamples/Exporter/PsdExportDocument.h"
 #include "psd/psdSamples/Util/PsdSyncFileWriter.h"
 #include "psd_binary_reader.h"
+#include "std/cexportcontrol.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QScopeGuard>
 #include <cstring>
 #include <limits>
+#include <QSet>
+#include <QCryptographicHash>
+#include <QtEndian>
+#include <type_traits>
+#include <vector>
 
 namespace {
+class TrackingAllocator : public psd::Allocator
+{
+public:
+    QSet<void*> active;
+    int untilFailure = -1;
+private:
+    void* DoAllocate(size_t size, size_t alignment) override
+    {
+        if (untilFailure == 0) return nullptr;
+        if (untilFailure > 0) --untilFailure;
+        void* result = backing.Allocate(size, alignment);
+        if (result) active.insert(result);
+        return result;
+    }
+    void DoFree(void* pointer) override
+    {
+        active.remove(pointer);
+        backing.Free(pointer);
+    }
+    psd::MallocAllocator backing;
+};
+
 class FaultFile : public psd::File
 {
 public:
@@ -82,6 +110,193 @@ class PsdTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void cancelableChannelsKeepOldDataOnAbort_data()
+    {
+        QTest::addColumn<int>("depth");
+        QTest::addColumn<bool>("rle");
+        for (int depth : {8, 16, 32}) for (bool rle : {false, true})
+            QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(depth).arg(rle ? "rle" : "raw"))) << depth << rle;
+    }
+
+    void cancelableChannelsKeepOldDataOnAbort()
+    {
+        QFETCH(int, depth);
+        QFETCH(bool, rle);
+        TrackingAllocator allocator;
+        auto* document = psd::CreateExportDocument(&allocator, 4, 6, depth, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        const auto layerIndex = psd::AddLayer(document, &allocator, "candidate");
+        const auto compression = rle ? psd::compressionType::RLE : psd::compressionType::RAW;
+        const auto exercise = [&](auto sample) {
+            using T = decltype(sample);
+            std::vector<T> original(24, sample), changed(24);
+            for (int i = 0; i < 24; ++i) changed[i] = static_cast<T>(i + 1);
+            QVERIFY(psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                                    0, 0, 4, 6, original.data(), psd::compressionType::RAW, {}));
+            auto& layer = document->layers[layerIndex];
+            void* old = layer.channelData[0];
+            const uint32_t oldSize = layer.channelSize[0];
+            const QByteArray oldBytes(static_cast<const char*>(old), oldSize);
+            const auto allocated = allocator.active;
+            for (int stop : {0, 3, 6}) {
+                const psd::ExportCheckpoint checkpoint = [stop](uint32_t current, uint32_t) { return current != uint32_t(stop); };
+                QVERIFY(!psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                                         5, 7, 9, 13, changed.data(), compression, checkpoint));
+                QCOMPARE(layer.channelData[0], old);
+                QCOMPARE(layer.channelSize[0], oldSize);
+                QCOMPARE(layer.channelCompression[0], uint16_t(psd::compressionType::RAW));
+                QCOMPARE(layer.left, 0);
+                QCOMPARE(layer.top, 0);
+                QCOMPARE(QByteArray(static_cast<const char*>(old), oldSize), oldBytes);
+                QVERIFY(allocator.active == allocated);
+            }
+            QVERIFY(!psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                5, 7, 9, 13, changed.data(), compression, [](uint32_t row, uint32_t) {
+                    if (row == 3) throw std::runtime_error("injected callback failure");
+                    return true;
+                }));
+            QVERIFY(allocator.active == allocated);
+            QCOMPARE(layer.channelData[0], old);
+            for (int failAt = 0; failAt < (rle ? 3 : 1); ++failAt) {
+                allocator.untilFailure = failAt;
+                QVERIFY(!psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                    5, 7, 9, 13, changed.data(), compression, {}));
+                allocator.untilFailure = -1;
+                QVERIFY(allocator.active == allocated);
+                QCOMPARE(layer.channelData[0], old);
+            }
+            for (auto unsupported : {psd::compressionType::ZIP, psd::compressionType::ZIP_WITH_PREDICTION}) {
+                QVERIFY(!psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                    5, 7, 9, 13, changed.data(), unsupported, {}));
+                psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                    5, 7, 9, 13, changed.data(), unsupported);
+                QCOMPARE(layer.channelData[0], old);
+                QVERIFY(allocator.active == allocated);
+            }
+            int rowsChecked = 0;
+            bool validTotal = true;
+            QVERIFY(psd::UpdateLayer(document, &allocator, layerIndex, psd::exportChannel::RED,
+                0, 0, 4, 6, changed.data(), compression, [&](uint32_t, uint32_t total) {
+                    validTotal = validTotal && total == 6;
+                    ++rowsChecked;
+                    return true;
+                }));
+            QVERIFY(rowsChecked >= 7);
+            QVERIFY(validTotal);
+            QByteArray expected;
+            for (T value : changed) {
+                quint32 bits = 0;
+                if constexpr (std::is_same_v<T, float>) memcpy(&bits, &value, sizeof(value));
+                else bits = value;
+                for (int byte = int(sizeof(T)) - 1; byte >= 0; --byte) expected.append(char(bits >> (byte * 8)));
+            }
+            const QByteArray bytes(static_cast<const char*>(layer.channelData[0]), layer.channelSize[0]);
+            if (!rle) QCOMPARE(bytes, expected);
+            else {
+                int offset = 12;
+                QByteArray decoded;
+                for (int row = 0; row < 6; ++row) {
+                    const quint16 size = qFromBigEndian<quint16>(reinterpret_cast<const uchar*>(bytes.constData() + row * 2));
+                    decoded += PsdBinary::DecodePackBits(bytes.mid(offset, size), 4 * sizeof(T));
+                    offset += size;
+                }
+                QCOMPARE(offset, bytes.size());
+                QCOMPARE(decoded, expected);
+            }
+        };
+        if (depth == 8) exercise(uint8_t(42));
+        else if (depth == 16) exercise(uint16_t(0x1234));
+        else exercise(float(0.5f));
+    }
+
+    void canceledExportNeverPublishesPartialDestination_data()
+    {
+        QTest::addColumn<QString>("point");
+        QTest::addColumn<bool>("existing");
+        for (const auto& point : {QStringLiteral("pixels"), QStringLiteral("rle"), QStringLiteral("writing"), QStringLiteral("commit"), QStringLiteral("exception")})
+            for (bool existing : {false, true})
+                QTest::newRow(qPrintable(point + (existing ? "-existing" : "-new"))) << point << existing;
+    }
+
+    void canceledExportNeverPublishesPartialDestination()
+    {
+        QFETCH(QString, point);
+        QFETCH(bool, existing);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = temp.filePath(QStringLiteral("output.psd"));
+        if (existing) QVERIFY(SeedDestination(path));
+        const int side = point == QStringLiteral("writing") ? 1024 : 32;
+        QImage image(side, side, QImage::Format_ARGB32);
+        image.fill(qRgba(43, 77, 101, 255));
+        CExportControl control;
+        bool reached = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            const bool cancel = (point == QStringLiteral("pixels") && progress.phase == CExportControl::Phase::Encoding && progress.current == side / 2) ||
+                (point == QStringLiteral("rle") && progress.phase == CExportControl::Phase::Encoding && progress.current == side + side / 2) ||
+                (point == QStringLiteral("writing") && progress.phase == CExportControl::Phase::Writing && progress.current >= 1024 * 1024) ||
+                (point == QStringLiteral("commit") && progress.phase == CExportControl::Phase::Committing) ||
+                (point == QStringLiteral("exception") && progress.phase == CExportControl::Phase::Writing && progress.current > 0);
+            if (cancel) {
+                reached = true;
+                if (point == QStringLiteral("exception")) throw std::runtime_error("injected write checkpoint failure");
+                control.Cancel();
+            }
+            return true;
+        }));
+        CPsdList writer;
+        writer.SetControl(&control);
+        QCOMPARE(writer.Control(), &control);
+        QVERIFY(writer.SetPsd(path, side, side));
+        const bool layer = writer.AddLayer(QStringLiteral("cancelable"), image, QRect(0, 0, side, side));
+        if (point == QStringLiteral("pixels") || point == QStringLiteral("rle")) QVERIFY(!layer);
+        else QVERIFY(layer);
+        QVERIFY(!writer.CreatePsd());
+        QVERIFY(reached);
+        QVERIFY(!control.IsCommitted());
+        QCOMPARE(control.WasCanceled(), point != QStringLiteral("exception"));
+        QVERIFY(!control.Error().isEmpty());
+        if (existing) QCOMPARE(ReadFile(path), QByteArray("original"));
+        else QVERIFY(!QFileInfo::exists(path));
+        QCOMPARE(QDir(temp.path()).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot).size(), existing ? 1 : 0);
+    }
+
+    void successfulControlKeepsOutputBytesAndLateCancelCannotRevokeCommit()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        QImage image(3, 2, QImage::Format_ARGB32);
+        image.fill(qRgba(100, 50, 20, 127));
+        const QString plain = temp.filePath(QStringLiteral("plain.psd"));
+        const QString controlled = temp.filePath(QStringLiteral("controlled.psd"));
+        CPsdList baseline;
+        QVERIFY(baseline.SetPsd(plain, 3, 2));
+        QVERIFY(baseline.AddGroupStart());
+        QVERIFY(baseline.AddLayer(QStringLiteral("内容"), image, QRect(0, 0, 3, 2)));
+        QVERIFY(baseline.AddGroupEnd("group"));
+        QVERIFY(baseline.CreatePsd());
+        CExportControl control;
+        int checkpoints = 0;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) { ++checkpoints; return true; }));
+        CPsdList writer;
+        writer.SetControl(&control);
+        QVERIFY(writer.SetPsd(controlled, 3, 2));
+        QVERIFY(writer.AddGroupStart());
+        QVERIFY(writer.AddLayer(QStringLiteral("内容"), image, QRect(0, 0, 3, 2)));
+        QVERIFY(writer.AddGroupEnd("group"));
+        QVERIFY(writer.CreatePsd());
+        QVERIFY(checkpoints > 20);
+        QCOMPARE(ReadFile(controlled), ReadFile(plain));
+        QCOMPARE(QCryptographicHash::hash(ReadFile(controlled), QCryptographicHash::Sha256).toHex(),
+                 QByteArray("7da358fac4b14ecd2cede9e3d260e4196e6a1a9bd2e8ebefb5a093d7e7f0ef00"));
+        QVERIFY(control.IsCommitted());
+        control.Cancel();
+        QVERIFY(control.Checkpoint());
+        QVERIFY(control.IsCommitted());
+        QVERIFY(!control.WasCanceled());
+        QCOMPARE(ReadFile(controlled), ReadFile(plain));
+    }
+
     void independentReaderRejectsMalformedData()
     {
         const QByteArray fixture = QByteArray::fromHex(

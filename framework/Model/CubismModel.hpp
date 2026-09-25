@@ -17,6 +17,7 @@
 class ModelRuntimeStateTests;
 class LAppExportPreviewTests;
 class CubismRendererPreparationTests;
+class PsdCooperativeGlTests;
 
 namespace live2dstruct {
 struct CDrawableOrderGroup;
@@ -34,6 +35,7 @@ class CubismModel
     friend class ::ModelRuntimeStateTests;
     friend class ::LAppExportPreviewTests;
     friend class ::CubismRendererPreparationTests;
+    friend class ::PsdCooperativeGlTests;
 public:
 
     void InitMesh();

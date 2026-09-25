@@ -12,8 +12,8 @@ CDrawWarp::~CDrawWarp()
 bool CDrawWarp::EnsureOpenGl()
 {
     QOpenGLContext* context = QOpenGLContext::currentContext();
-    if (!context || !context->isValid() || (m_context && m_context != context)) return false;
-    setOwningContext(context);
+    if (!context || !context->isValid() || (m_context && m_context != context) ||
+        (owningContext() && owningContext() != context)) return false;
     if (!initializeOpenGLFunctions()) return false;
     if (m_context != context) {
         m_vertexArray.destroy();
@@ -85,8 +85,8 @@ bool CDrawWarp::PrepareOpenGl()
 {
     if (m_grid.Indices().empty()) return false;
     QOpenGLContext* context = QOpenGLContext::currentContext();
-    if (!context || !context->isValid() || (m_context && m_context != context)) return false;
-    setOwningContext(context);
+    if (!context || !context->isValid() || (m_context && m_context != context) ||
+        (owningContext() && owningContext() != context)) return false;
     if (!initializeOpenGLFunctions()) return false;
     GLint previousVertexArray = 0;
     GLint previousArrayBuffer = 0;

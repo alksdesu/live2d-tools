@@ -100,6 +100,9 @@ void PsdBatchJob::cancel()
         result.elapsedMs = 0;
         changed.append(index);
     }
+    const QPointer<PsdBatchJob> guard(this);
+    emit cancelCurrentRequested();
+    if (!guard || m_state != State::Running) return;
     for (int index : changed) if (!publishResult(index)) return;
 }
 
@@ -108,7 +111,7 @@ void PsdBatchJob::setStage(const QString& outPath, PsdExportStage stage)
     if (m_state != State::Running || !m_exportDispatched || m_pendingIndex < 0 || outPath != m_pendingOutput ||
         stage < PsdExportStage::Preflight || stage > PsdExportStage::Restoring) return;
     auto& result = m_results[m_pendingIndex];
-    if (stage < result.stage) return;
+    if (!IsPsdExportStageTransitionValid(result.stage, stage)) return;
     result.stage = stage;
     result.elapsedMs = m_elapsed.isValid() ? qMax(qint64(0), m_elapsed.elapsed()) : 0;
     publishResult(m_pendingIndex);
@@ -133,6 +136,20 @@ void PsdBatchJob::completeDetailed(bool ok, const QString& outPath, const QStrin
     result.elapsedMs = m_elapsed.isValid() ? qMax(qint64(0), m_elapsed.elapsed()) : 0;
     clearPending();
     if (publishResult(index)) acknowledge(ok, outPath);
+}
+
+void PsdBatchJob::completeCanceled(const QString& outPath, PsdExportStage stage, const QString& reason)
+{
+    if (m_state != State::Running || !m_exportDispatched || m_pendingIndex < 0 || outPath != m_pendingOutput) return;
+    const int index = m_pendingIndex;
+    auto& result = m_results[index];
+    result.state = PsdBatchFileState::Canceled;
+    result.stage = stage >= PsdExportStage::Preflight && stage <= PsdExportStage::Restoring ? stage : result.stage;
+    result.error = reason.isEmpty() ? QStringLiteral("当前文件导出已取消") : reason;
+    result.outputCommitted = false;
+    result.elapsedMs = m_elapsed.isValid() ? qMax(qint64(0), m_elapsed.elapsed()) : 0;
+    clearPending();
+    if (publishResult(index)) skip(outPath);
 }
 
 void PsdBatchJob::acknowledge(bool ok, const QString& outPath)

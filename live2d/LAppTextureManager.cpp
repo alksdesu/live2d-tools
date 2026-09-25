@@ -25,18 +25,20 @@ LAppTextureManager::~LAppTextureManager()
 
 void LAppTextureManager::setGlOwningContext(const QOpenGLContext* context)
 {
+    if (!context || !context->isValid() || QOpenGLContext::currentContext() != context ||
+        (m_context && m_context != context) || (owningContext() && owningContext() != context)) return;
+    if (!initializeOpenGLFunctions()) return;
     if (m_context != context && !m_textures.empty()) {
         ReleaseTextures();
         if (!m_textures.empty()) return;
     }
     m_context = const_cast<QOpenGLContext*>(context);
-    setOwningContext(context);
-    if (context && QOpenGLContext::currentContext() == context) initializeOpenGLFunctions();
 }
 
 bool LAppTextureManager::CanUseContext()
 {
     return m_context && m_context->isValid() && QOpenGLContext::currentContext() == m_context &&
+           owningContext() == m_context &&
            initializeOpenGLFunctions();
 }
 

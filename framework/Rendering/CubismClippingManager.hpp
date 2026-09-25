@@ -48,6 +48,7 @@ public:
 
     T_ClippingContext* FindSameClip(const csmInt32* drawableMasks, csmInt32 drawableMaskCounts) const;
     void SetupMatrixForHighPrecision(CubismModel& model, csmBool isRightHanded);
+    void SetupMaskMatrix(CubismModel& model, T_ClippingContext* context, csmBool highPrecision, csmBool isRightHanded = false);
     void createMatrixForMask(csmBool isRightHanded, csmRectF* layoutBoundsOnTex01, csmFloat32 scaleX, csmFloat32 scaleY);
 
     /**
