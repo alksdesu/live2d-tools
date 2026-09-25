@@ -1,107 +1,105 @@
 #include "cdrawrotation.h"
+
+#include <QOpenGLVersionFunctionsFactory>
+#include <QScopeGuard>
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 
-CDrawRotation::CDrawRotation() {
+CDrawRotation::CDrawRotation() = default;
+CDrawRotation::~CDrawRotation() = default;
 
-    m_IsDraw =false;
-    initializeOpenGLFunctions();
-    setOwningContext(QOpenGLContext::currentContext());
-    shader = new QOpenGLShaderProgram();
-    bool success = shader->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/shader_rotation.vert");
-    if (!success) {
-        qDebug() << "shaderProgram addShaderFromSourceFile failed!" << shader->log();
-    }
-    success = shader->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/shader_rotation.frag");
-    if (!success) {
-        qDebug() << "shaderProgram addShaderFromSourceFile failed!" <<shader->log();
-    }
-
-    success = shader->link();
-    if(!success) {
-        qDebug() << "shaderProgram link failed!" << shader->log();
-    }
-
-    m_IsDraw = false;
-    m_rclTex = new QOpenGLTexture(QImage(":/awesomeface.png").mirrored());
-    m_dirTex = new QOpenGLTexture(QImage(":/read.png").mirrored());
-
-    m_IsDraw =false;
-
-}
-
-CDrawRotation::~CDrawRotation()
+bool CDrawRotation::EnsureOpenGl()
 {
-    delete shader;
-    delete m_rclTex;
-    delete m_dirTex;
+    auto* context = QOpenGLContext::currentContext();
+    if (!context || !context->isValid() || (m_context && m_context != context)) return false;
+    if (!m_context) {
+        shader.reset();
+        m_rclTex.reset();
+        m_dirTex.reset();
+        m_context = context;
+    }
+    if (!m_originGeometry.SetContext(context) || !m_directionGeometry.SetContext(context)) return false;
+    if (!shader) {
+        auto candidate = std::make_unique<QOpenGLShaderProgram>();
+        if (!candidate->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/shader_rotation.vert") ||
+            !candidate->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/shader_rotation.frag") ||
+            !candidate->link()) return false;
+        shader = std::move(candidate);
+    }
+    if (!m_rclTex || !m_dirTex) {
+        const QImage origin(":/awesomeface.png"), direction(":/read.png");
+        if (origin.isNull() || direction.isNull()) return false;
+        auto originTexture = std::make_unique<QOpenGLTexture>(origin.mirrored());
+        auto directionTexture = std::make_unique<QOpenGLTexture>(direction.mirrored());
+        if (!originTexture->isCreated() || !directionTexture->isCreated()) return false;
+        m_rclTex = std::move(originTexture);
+        m_dirTex = std::move(directionTexture);
+    }
+    return shader->isLinked();
 }
 
-void CDrawRotation::Init(CRotationNode *node)
+void CDrawRotation::Init(CRotationNode* node)
 {
     vetrclPos.clear();
     vetdirPos.clear();
     if (!node || node->GetCurKeyForm().GetPosition().size() != 2 || node->GetCanvasPositions().size() != 2) return;
-    this->base_angles =node->GetBaseAngles();
-    this->cur =node->GetCurKeyForm();
-    if (!std::isfinite(base_angles) || !std::isfinite(cur.Getangles())) return;
-    ClaRect();
+    base_angles = node->GetBaseAngles();
+    cur = node->GetCurKeyForm();
+    if (!std::isfinite(base_angles) || !std::isfinite(cur.Getangles()) ||
+        !std::isfinite(cur.Getorigin_x()) || !std::isfinite(cur.Getorigin_y()) || !ClaRect()) return;
     if (!node->MapToCanvas(vetrclPos, vetrclPos) || !node->MapToCanvas(vetdirPos, vetdirPos)) {
         vetrclPos.clear();
         vetdirPos.clear();
     }
 }
 
-
-void CDrawRotation::Draw(const QMatrix4x4 &mv)
+void CDrawRotation::Draw(const QMatrix4x4& projection)
 {
-
-    if(m_IsDraw && vetrclPos.size() == 8 && vetdirPos.size() == 8){
-        // 开始绘制
-        //开启混合
-        shader->bind();
-        shader->setUniformValue("projection",mv);
-        shader->setUniformValue("image",0);
-
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float),vetrclPos.data() );
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float),vetTex.data() );
-
-        glActiveTexture(GL_TEXTURE0);
-        m_rclTex->bind(0);
-        glDrawElements(GL_TRIANGLES, vetIndex.size(), GL_UNSIGNED_SHORT,vetIndex.data());
-
-
-
-
-
-
-        shader->bind();
-        shader->setUniformValue("projection",mv);
-        shader->setUniformValue("image",0);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), vetdirPos.data());
-
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float),vetTex.data() );
-
-        glActiveTexture(GL_TEXTURE0);
-        m_dirTex->bind(0);
-        glDrawElements(GL_TRIANGLES, vetIndex.size(), GL_UNSIGNED_SHORT,vetIndex.data());
-
-
-
-
-    }
-
-
-
-
-
-
-
-
-
+    if (!m_IsDraw || vetrclPos.size() != 8 || vetdirPos.size() != 8 || vetTex.size() != 8 || vetIndex.size() != 6 ||
+        !std::all_of(projection.constData(), projection.constData() + 16,
+                     [](float value) { return std::isfinite(value); })) return;
+    auto* context = QOpenGLContext::currentContext();
+    if (!context || !context->isValid() || (m_context && m_context != context)) return;
+    auto* gl = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_3_3_Core>(context);
+    if (!gl || !gl->initializeOpenGLFunctions()) return;
+    GLint program = 0, activeTexture = 0, texture = 0, unpackBuffer = 0;
+    GLint alignment = 0, rowLength = 0, skipPixels = 0, skipRows = 0;
+    gl->glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    gl->glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+    gl->glActiveTexture(GL_TEXTURE0);
+    gl->glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+    gl->glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpackBuffer);
+    gl->glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+    gl->glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rowLength);
+    gl->glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skipPixels);
+    gl->glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skipRows);
+    const auto restore = qScopeGuard([&] {
+        gl->glUseProgram(program);
+        gl->glActiveTexture(GL_TEXTURE0);
+        gl->glBindTexture(GL_TEXTURE_2D, texture);
+        gl->glActiveTexture(activeTexture);
+        gl->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpackBuffer);
+        gl->glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+        gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLength);
+        gl->glPixelStorei(GL_UNPACK_SKIP_PIXELS, skipPixels);
+        gl->glPixelStorei(GL_UNPACK_SKIP_ROWS, skipRows);
+    });
+    gl->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    gl->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    gl->glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    gl->glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    gl->glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    if (!EnsureOpenGl() ||
+        !m_originGeometry.Upload(vetrclPos.data(), 4, vetTex.data(), vetIndex.data(), 6) ||
+        !m_directionGeometry.Upload(vetdirPos.data(), 4, vetTex.data(), vetIndex.data(), 6) || !shader->bind()) return;
+    shader->setUniformValue("projection", projection);
+    shader->setUniformValue("image", 0);
+    m_rclTex->bind(0);
+    if (!m_originGeometry.Draw(GL_TRIANGLES)) return;
+    m_dirTex->bind(0);
+    m_directionGeometry.Draw(GL_TRIANGLES);
 }
 
 void CDrawRotation::SetDraw(bool flag)
@@ -110,80 +108,36 @@ void CDrawRotation::SetDraw(bool flag)
 }
 
 void CDrawRotation::InitOpenGl()
+{}
+
+bool CDrawRotation::ClaRect()
 {
-
-    initializeOpenGLFunctions();
-    setOwningContext(QOpenGLContext::currentContext());
-
-
-}
-
-
-
-void CDrawRotation::ClaRect()
-{
-
-    float x = cur.Getorigin_x();
-    float y = cur.Getorigin_y();//知道坐标点
-    float sideLength = 0.05;
-    float halfSide = sideLength / 2.0;
-    vetrclPos.resize(8,0.0f);
-
-    vetrclPos[0] = x - halfSide;vetrclPos[1] = y + halfSide;
-    vetrclPos[2] = x - halfSide;vetrclPos[3] = y - halfSide;
-    vetrclPos[4] = x + halfSide;vetrclPos[5] = y - halfSide;
-    vetrclPos[6] = x + halfSide;vetrclPos[7] = y + halfSide;
-
-
-
-
-
-    //--------------------------------------------
-    float wid = 0.01;
-    float hid = 0.1;
-    std::vector<QPointF> vetPoint;
-    vetPoint.push_back(QPointF(x - wid,y));
-    vetPoint.push_back(QPointF(x - wid,y - hid));
-    vetPoint.push_back(QPointF(x + wid,y - hid));
-    vetPoint.push_back(QPointF(x + wid,y));
-
-    vetdirPos.resize(8,0.0f);
-
-    const double angle = std::remainder(static_cast<double>(base_angles) + cur.Getangles(), 360.0);
+    const double x = cur.Getorigin_x(), y = cur.Getorigin_y();
+    constexpr double halfSide = 0.025;
+    const std::array<double, 8> origin{x - halfSide, y + halfSide, x - halfSide, y - halfSide,
+                                      x + halfSide, y - halfSide, x + halfSide, y + halfSide};
+    const std::array<QPointF, 4> direction{QPointF(x - 0.01, y), QPointF(x - 0.01, y - 0.1),
+                                          QPointF(x + 0.01, y - 0.1), QPointF(x + 0.01, y)};
     QTransform transform;
-    transform.translate(x, y);  // 将中心点移动到原点
-    transform.rotate(angle);  // 旋转角度
-    transform.translate(-x, -y);  // 将中心点移回原位置
-    for(int i = 0 ;i < vetPoint.size() ;i++){
-        QPointF temp = transform.map(vetPoint[i]);
-        vetdirPos[i*2] =temp.x();
-        vetdirPos[i*2+1] =temp.y();
+    transform.translate(x, y);
+    transform.rotate(std::remainder(static_cast<double>(base_angles) + cur.Getangles(), 360.0));
+    transform.translate(-x, -y);
+    std::vector<float> originPositions(8), directionPositions(8);
+    const double maximum = std::numeric_limits<float>::max();
+    for (size_t index = 0; index < direction.size(); ++index) {
+        const QPointF point = transform.map(direction[index]);
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y()) ||
+            std::abs(point.x()) > maximum || std::abs(point.y()) > maximum ||
+            !std::isfinite(origin[index * 2]) || !std::isfinite(origin[index * 2 + 1]) ||
+            std::abs(origin[index * 2]) > maximum || std::abs(origin[index * 2 + 1]) > maximum) return false;
+        directionPositions[index * 2] = static_cast<float>(point.x());
+        directionPositions[index * 2 + 1] = static_cast<float>(point.y());
+        originPositions[index * 2] = static_cast<float>(origin[index * 2]);
+        originPositions[index * 2 + 1] = static_cast<float>(origin[index * 2 + 1]);
     }
-
-
-
-
-
-
-
-    //------------------------------------
-
-    vetIndex.resize(6,0);
-    //求解这四个值
-    vetIndex[0] = 0;vetIndex[1] = 1;vetIndex[2] = 3;
-    vetIndex[3] = 1;vetIndex[4] = 2;vetIndex[5] = 3;
-
-    vetTex.resize(8,0.0f);
-    vetTex[0] = 0.0f; vetTex[1] = 0.0f;
-    vetTex[2] = 1.0f; vetTex[3] = 0.0f;
-    vetTex[4] = 1.0f; vetTex[5] = 1.0f;
-    vetTex[6] = 0.0f; vetTex[7] = 1.0f;
-
-
-
-
-
-
-
-
+    vetrclPos = std::move(originPositions);
+    vetdirPos = std::move(directionPositions);
+    vetIndex = {0, 1, 3, 1, 2, 3};
+    vetTex = {0, 0, 1, 0, 1, 1, 0, 1};
+    return true;
 }

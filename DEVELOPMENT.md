@@ -370,7 +370,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 ## 运行时加载与批量任务生命周期
 
 - CubismMoc 的临时对齐内存按所有权管理，拒绝空输入、零模型大小与分配失败，revive/initialize/包装对象异常不遗留缓冲区。DeleteModel(nullptr) 不再递减模型计数。回归直接编译真实 CubismMoc.cpp，但 Core 返回值与最小模型生命周期由测试替身控制，不代表真实 Core 加载已验证。
-- CubismUserModel 先构建候选 moc、model 和 matrix，完成尺寸校验与网格初始化后才发布。渲染器先于模型销毁；创建替代渲染器成功后才释放旧对象。Renderer 的 FBO 失败传播已在下节补齐，着色器等完整渲染错误仍需继续处理。
+- CubismUserModel 先构建候选 moc、model 和 matrix，完成尺寸校验与网格初始化后才发布。渲染器先于模型销毁；创建替代渲染器成功后才释放旧对象。Renderer 的 FBO 失败传播已在下节补齐，着色器初始化与绘制错误检查见后续 Core Profile 一节；完整应用运行仍需验证。
 - CubismModelMatrix 用 double 计算像素/PPU 单位尺寸、默认缩放及布局中间值，结果必须是有限、非零的可用 float 矩阵。TrySetupFromLayout 使用候选矩阵整体提交；保留原两遍处理顺序与合法负尺寸反射，未知布局键忽略，失败不覆盖旧矩阵。
 - 运行时 model3 校验与原有文档 Parse 分离。已知布局键检查数值；未知扩展值保留兼容。缺少/空 Textures 数组及空纹理槽位允许，非空引用必须成功读取；不会因为 SDK 可跳过的未绑定纹理而拒绝模型。字段类型、嵌入 NUL 和资源读取失败有独立回归。
 - LoadAssets、SetupModel、SetupTextures 和场景切换返回明确结果；只有完整候选进入场景。失败候选只回收自己新建的纹理，原模型实例、场景编号和纹理映射保持有效。临时导出挂起原模型，结束时恢复同一实例，不重新读取可能已改变的源文件；活跃与挂起模型共用的纹理不会提前删除。
@@ -383,7 +383,7 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - PsdBatchJob 统一拥有调度线程，worker 与 GUI 两层检查当前输出回执，重复 start、错误/过期/重复回执不能跳过文件。取消阻止后续导出，shutdown 无需 GUI 事件循环即可 quit/wait；晚到信号按任务状态过滤。真实 QThread 测试覆盖未开始、等待导出、嵌套事件循环取消、进度回调关闭及析构。
 - MainWindow 在停止批次前先清除当前任务身份；GL 导出进行时收到关闭请求会先取消后续任务，等当前调用返回再关闭。无可见模型时也会停止批次并清理 headless。取消保留已写出的文件，不显示全部成功或自动打开输出目录。
 - 完整 CTest 42/42 套件通过，其中 Linux `/dev/full` 专用写出失败用例在 macOS 跳过；本轮六个相关目标通过 ASAN/UBSAN，均无跳过。native 重新编译 49 个源文件通过，仍仅缺 40 个 macOS Core 符号；两种渲染目标宏的 Manager 语法检查通过。批次主窗口接线与场景恢复已静态复核，但完整 Core GUI 的关闭/恢复仍未实机验证。
-- 独立 Qt 6.8.3 探针确认隐藏 1×1 控件可初始化；macOS 默认格式得到 OpenGL 2.1，无法初始化本项目的 QOpenGLFunctions_3_3_Core。显式请求 3.3 Core 可得到 4.1，但现有 SDK renderer、shader 与 Rotation 覆盖层仍使用客户端数组，不能仅改默认格式就宣称完整支持。
+- 独立 Qt 6.8.3 探针确认隐藏 1×1 控件可初始化；macOS 默认格式得到 OpenGL 2.1，无法初始化本项目的 QOpenGLFunctions_3_3_Core。显式请求 3.3 Core 可得到 4.1；当时尚存的活跃客户端数组路径已在后续 Core Profile 一节替换，完整应用仍未实机运行。
 - 上述渲染 PSD 的取景与 FBO 完整性问题已在下节处理。完整 Core/Photoshop/Cubism Editor 回读及 cmo3 默认姿态语义仍未验证。
 
 ## 离屏缓冲、画布取景与 PSD 读回
@@ -400,4 +400,20 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - GL 裁片仍按左下原点读取，像素只垂直翻转一次，PSD 矩形 top 改为 canvasHeight - glY - height；修复仅翻图像、未翻图层位置造成的上下错位。两个旧 GetCanvasOriginInPixels getter 也恢复返回 Core 的原始 X/Y 像素，仓库中没有消费方；导出不依赖它们。
 - 画布测试覆盖四个真实 MOC、非中心及负原点、横竖画布、四舍五入、已知角点、系数范围和失败原子性。真实 OpenGL 4.1 / M1 Pro 测试用 GLSL 330、VAO/VBO 绘制不对称三角形，经实际 CReadOpengl 与 CPsdList 写出 PSD，再由独立二进制读取器核对上下像素、两层位置、RGBA 通道、裁边及空几何；PACK 哨兵数据未被覆盖，各项状态恢复保持相同。
 - 完整 CTest 44/44 套件通过，Linux `/dev/full` 专用用例在 macOS 跳过；画布、离屏缓冲、渲染 PSD 三项目标均通过常规及 ASAN/UBSAN 检查，无跳过。native 本轮增量编译通过，最终仍仅缺 40 个 Core 符号；两种模型渲染宏语法检查通过。真实 GL 测试使用独立三角形，不能代替完整 Cubism Core 渲染；Photoshop 与 Cubism Editor 回读仍待验证。
-- 资源析构若发生在仍存活但不为当前的所属上下文中，会拒绝 GL 删除，避免调用错误的上下文；测试明确恢复 owner 后手动回收该场景的残留。主路径在 widget 当前上下文中清理，但共享上下文/异常销毁场景仍需更完整的延迟回收机制。模型 GL Core Profile 适配、渲染层颜色/透明度/蒙版最终语义，以及 cmo3 默认姿态与父链还需继续完成。
+- 资源析构若发生在仍存活但不为当前的所属上下文中，会拒绝 GL 删除，避免调用错误的上下文；测试明确恢复 owner 后手动回收该场景的残留。主路径在 widget 当前上下文中清理，但共享上下文/异常销毁场景仍需更完整的延迟回收机制。Core Profile 源码适配与组件验证见下节；完整应用、渲染层颜色/透明度/蒙版最终语义，以及 cmo3 默认姿态与父链还需继续完成。
+
+## Core Profile 模型与编辑覆盖层
+
+- 程序在 QApplication 创建前请求 OpenGL 3.3 Core、24 位深度、8 位 stencil 和 4 samples，与现有 Qt 3.3 Core 函数要求一致。本次替换了模型/蒙版、网格点线、鼠标选框和旋转控制柄的全部活跃客户端数组绘制；Warp 已有的缓冲路径保留。LAppSprite 与旧 CMesh 全仓没有实例或绘制调用，未把死代码清理扩大到它们。
+- 新 CGlMeshBuffer 统一位置、可选 UV 与无符号 16 位索引，属性位置固定为 0/1；支持索引三角形和非索引点线。先验证指针、数量、有限值和索引范围，再写入非当前 GPU 缓冲，上传完整成功后才切换显示及 CPU 缓存。无变化不上传；两组持久 VAO/VBO/EBO 在容量足够时使用 glBufferSubData，增长时才分配存储，不逐帧创建/删除对象。
+- 几何测试实际绘制纹理四象限、修改 UV、索引、位置与几何类型，并验证七次动态更新只使用两组 GL 对象。还在 staging EBO 映射期间制造“VBO 已写、EBO 失败”，确认当前几何及 CPU 缓存保持原样、解除映射后可重试。调用方 VAO、ARRAY_BUFFER、EBO、program 和纹理状态保持不变。
+- Renderer 为每个 drawable 保留几何缓存，普通绘制与蒙版使用同一上传入口。拖拽冻结顶点从原 shader 迁到该入口，检查快照长度；UV 和索引仍来自同一模型 getter，保留拓扑 override 与修订号行为。缺失绑定纹理继续允许跳过，几何/着色器/绘制失败返回上层；失败的蒙版帧保留重画标记。
+- CCubismShaderPrograms 是运行时和测试共用的七程序库：mask 生成，以及 straight/premultiplied 各自的无 mask、正 mask、反 mask。原 19 个配置中 normal/add/multiply 的重复 program 所有权被移除；GLSL 330 Core 只改接口语法，保留原 UV 翻 Y、multiply/screen color、预乘及遮罩数学。符合[Apple Core Profile 迁移指引](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Conceptual/OpenGL-MacProgGuide/UpdatinganApplicationtoSupportOpenGL3/UpdatinganApplicationtoSupportOpenGL3.html)对着色器与缓冲区的要求。
+- 程序全量编译/链接/属性检查成功后才发布，坏源码不留下半成功缓存并可重试；Qt program 对象承担唯一释放，消除失败编译泄漏和共享程序多次删除。活动上下文不匹配时不替换或删除旧 owner 资源；旧 owner 销毁后可在新上下文重建。Renderer 初始化先检查 shader，失败不会发布新的模型渲染器。
+- shader 的 Bind 与测试共用原 normal/add/multiply blend factors，并明确设置 GL_FUNC_ADD，避免继承减法混合方程。真实 GL 测试覆盖 54 组独立 CPU 像素参考、straight/premult 等价、UV 方向、四通道 mask 生成与累积后正反遮罩、编译/链接失败原子性、释放与上下文迁移；该套件共 66 用例，无 Core 替身参与。
+- CGlRenderState 保存和恢复 caller VAO、ARRAY_BUFFER、program、纹理单元 0/1 与原 active unit、颜色写掩码、blend enable/factors/equations、cull/front face、READ/DRAW FBO、READ_BUFFER、视口和清屏颜色。Renderer 不再修改调用方 VAO 的属性/EBO，也不再用绑 0 的方式准备客户端数组；Qt 负责函数解析，删除无消费者的 Windows wgl 函数表。保存/恢复的布尔结果进入绘制失败链。
+- Mesh、Rect、Rotation 的构造及几何更新只处理 CPU 数据，首次绘制才初始化 GPU 资源。网格按选中/普通颜色批量画点并批量画线，显式恢复 GL_PROGRAM_POINT_SIZE；选框改用 GL_LINE_LOOP，保持 polygon mode。旋转柄共享几何层并隔离纹理上传状态，去掉 shader 对已处于模型全局坐标的 Y 的额外翻转。
+- 三类覆盖层的真实 GL 测试包含无上下文构造后首次绘制、实际选中/悬停颜色、顶点移动、空心框边界、旋转正 Y 与父级 90° 变换、非法输入、无/错误上下文、状态恢复及重复绘制资源复用。两个实际 InitMesh UI 入口也在所属上下文内重建，已有当前上下文的调用不提前 doneCurrent，避免恢复参数时删除 GPU 网格却没有当前 owner。
+- 本轮完整 CTest 48/48 套件通过，Linux `/dev/full` 专用用例在 macOS 跳过。几何缓冲、渲染状态、着色器和编辑覆盖层四项目标均通过常规及 ASAN/UBSAN，实际使用 M1 Pro / OpenGL 4.1 Metal，无跳过。native 源码编译通过，链接仍仅缺 40 个 Core 符号；两种渲染目标宏语法通过。额外 Windows 宏的 macOS 语法检查被既有 Microsoft CRT `_snprintf_s` 引用阻止，未添加替代声明，不将其记为 Windows 验证。
+- 调用链复核确认，m_meshOverlayPositions 仍只写入编辑线框的 CMeshMap；带纹理模型的 GetDrawableVertices 仍来自 Core。此轮保持原数据来源，尚未把编辑关键形应用到带纹理模型、遮罩范围和渲染 PSD，这是接下来必须补齐的功能。冻结顶点也尚未进入 CalcClippedDrawTotalBounds。高精度遮罩清白后跳过未变顶点的既有行为还需核对 Core 动态标记语义，并用真实模型验证。
+- 这些真实 GL 用例证明共用程序、缓冲和覆盖层，完整 Cubism Core、模型参数驱动、剪裁联动、Windows 窗口及最终 PSD/Editor 回读仍未实机验证。共享/异常上下文销毁后的裸 GL 缓冲延迟回收、编辑坐标父链与默认姿态、完整文档编辑和既定四阶段功能继续保持待办。

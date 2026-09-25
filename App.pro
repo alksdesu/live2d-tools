@@ -130,6 +130,9 @@ SOURCES += \
     opengl/cmesh.cpp \
     opengl/coffscreenlive.cpp \
     opengl/coffscreenbuffer.cpp \
+    opengl/cglmeshbuffer.cpp \
+    opengl/cglrenderstate.cpp \
+    opengl/ccubismshaderprograms.cpp \
     opengl/coffscreenmap.cpp \
     opengl/cpsdwritelist.cpp \
     opengl/ctextureextractor.cpp \
@@ -330,6 +333,9 @@ HEADERS += \
     opengl/cmesh.h \
     opengl/coffscreenlive.h \
     opengl/coffscreenbuffer.h \
+    opengl/cglmeshbuffer.h \
+    opengl/cglrenderstate.h \
+    opengl/ccubismshaderprograms.h \
     opengl/coffscreenmap.h \
     opengl/cpsdwritelist.h \
     opengl/ctextureextractor.h \

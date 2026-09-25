@@ -246,7 +246,7 @@ protected:
     /**
      * @brief   モデル描画直前のレンダラのステートを復帰させる
      */
-    virtual void RestoreProfile() = 0;
+    virtual csmBool RestoreProfile() = 0;
 
 private:
     // コピーコンストラクタを隠す

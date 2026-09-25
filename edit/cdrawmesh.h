@@ -9,6 +9,9 @@
 #include <QTransform>
 #include <QOpenGLTexture>
 #include <QPointF>
+#include <QPointer>
+#include <memory>
+#include "opengl/cglmeshbuffer.h"
 
 
 
@@ -43,15 +46,15 @@ public:
         return mesh;
     };//三角形mesh网格
 private:
-    void CreateShader();
-    void DrawPoint(const QVector2D& point);
-    void DrawLine(const QVector2D& pointA,const QVector2D& pointB);
-    void DrawMesh(const CTrianglMesh& mesh);
-    bool IsDraw;
-    bool IsOver;
-    QVector4D outerColor;//控制颜色
-    QOpenGLShaderProgram* shader;//控制渲染
-    QMatrix4x4 projection;//mvp投影矩阵
+    friend class EditorOverlayRenderTests;
+    bool EnsureOpenGl();
+    bool IsDraw = false;
+    bool IsOver = false;
+    QPointer<QOpenGLContext> m_context;
+    std::unique_ptr<QOpenGLShaderProgram> shader;
+    CGlMeshBuffer m_regularPoints;
+    CGlMeshBuffer m_selectedPoints;
+    std::vector<std::unique_ptr<CGlMeshBuffer>> m_lines;
     CTrianglMesh* mesh;//三角形mesh网格
     std::vector<CPoint*> m_vetSelectPoint;//保存所有被选择的点
 };

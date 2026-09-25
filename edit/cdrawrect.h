@@ -6,6 +6,9 @@
 #include <QOpenGLShaderProgram>
 #include <QRectF>
 #include "cdrawobject.h"
+#include "opengl/cglmeshbuffer.h"
+#include <QPointer>
+#include <memory>
 class CDrawRect : public CDrawObject
 {
 public:
@@ -27,12 +30,17 @@ public:
 
 
 private:
+    friend class EditorOverlayRenderTests;
+    bool EnsureOpenGl();
     void SetQRectF();
     QVector2D startPos;//世界坐标系下面的点
     QVector2D endPos;//世界坐标系下面的点
     QRectF m_rect;
-    QOpenGLShaderProgram* shader;
-    bool m_IsDraw;
+    std::unique_ptr<QOpenGLShaderProgram> shader;
+    QPointer<QOpenGLContext> m_context;
+    CGlMeshBuffer m_geometry;
+    QVector3D m_color;
+    bool m_IsDraw = false;
 };
 
 #endif // CDRAWRECT_H

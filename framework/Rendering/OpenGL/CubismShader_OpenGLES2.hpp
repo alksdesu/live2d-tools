@@ -1,193 +1,29 @@
 #pragma once
-#include <QOpenGLFunctions_3_3_Core>
+
 #include "framework/CubismFramework.hpp"
-#include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
+#include "opengl/ccubismshaderprograms.h"
 
-
-//------------ LIVE2D NAMESPACE ------------
-namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
-
+namespace Live2D { namespace Cubism { namespace Framework {
+class CubismModel;
+namespace Rendering {
 class CubismRenderer_OpenGLES2;
-class CubismClippingContext_OpenGLES2;
 
-/**
- * @brief   OpenGLES2用のシェーダプログラムを生成・破棄するクラス<br>
- *           シングルトンなクラスであり、CubismShader_OpenGLES2::GetInstance()からアクセスする。
- *
- */
-class CubismShader_OpenGLES2 : public  QOpenGLFunctions_3_3_Core
+class CubismShader_OpenGLES2
 {
 public:
-    void setGlOwningContext(const QOpenGLContext *context){
-        initializeOpenGLFunctions();
-        setOwningContext(context);
-    }
     static CubismShader_OpenGLES2* GetInstance();
-
-    /**
-     * @brief   インスタンスを解放する（シングルトン）。
-     */
-    static void DeleteInstance();
-
-    /**
-     * @brief   描画用のシェーダプログラムの一連のセットアップを実行する
-     *
-     * @param[in]   renderer              ->  レンダラー
-     * @param[in]   model                 ->  描画対象のモデル
-     * @param[in]   index                 ->  描画対象のメッシュのインデックス
-     */
-    void SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride = -1.0f);
-
-    /**
-     * @brief   マスク用のシェーダプログラムの一連のセットアップを実行する
-     *
-     * @param[in]   renderer              ->  レンダラー
-     * @param[in]   model                 ->  描画対象のモデル
-     * @param[in]   index                 ->  描画対象のメッシュのインデックス
-     */
-    void SetupShaderProgramForMask(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index);
-
-private:
-    /**
-    * @bref    シェーダープログラムとシェーダ変数のアドレスを保持する構造体
-    *
-    */
-    struct CubismShaderSet
-    {
-        GLuint ShaderProgram;               ///< シェーダプログラムのアドレス
-        GLuint AttributePositionLocation;   ///< シェーダプログラムに渡す変数のアドレス(Position)
-        GLuint AttributeTexCoordLocation;   ///< シェーダプログラムに渡す変数のアドレス(TexCoord)
-        GLint UniformMatrixLocation;        ///< シェーダプログラムに渡す変数のアドレス(Matrix)
-        GLint UniformClipMatrixLocation;    ///< シェーダプログラムに渡す変数のアドレス(ClipMatrix)
-        GLint SamplerTexture0Location;      ///< シェーダプログラムに渡す変数のアドレス(Texture0)
-        GLint SamplerTexture1Location;      ///< シェーダプログラムに渡す変数のアドレス(Texture1)
-        GLint UniformBaseColorLocation;     ///< シェーダプログラムに渡す変数のアドレス(BaseColor)
-        GLint UniformMultiplyColorLocation; ///< シェーダプログラムに渡す変数のアドレス(MultiplyColor)
-        GLint UniformScreenColorLocation;   ///< シェーダプログラムに渡す変数のアドレス(ScreenColor)
-        GLint UnifromChannelFlagLocation;   ///< シェーダプログラムに渡す変数のアドレス(ChannelFlag)
-    };
-
-    /**
-     * @brief   privateなコンストラクタ
-     */
-    CubismShader_OpenGLES2();
-
-    /**
-     * @brief   privateなデストラクタ
-     */
-    virtual ~CubismShader_OpenGLES2();
-
-    /**
-     * @brief   シェーダプログラムを解放する
-     */
-    void ReleaseShaderProgram();
-
-    /**
-     * @brief   シェーダプログラムを初期化する
-     */
-    void GenerateShaders();
-
-    /**
-     * @brief   シェーダプログラムをロードしてアドレス返す。
-     *
-     * @param[in]   vertShaderSrc   ->  頂点シェーダのソース
-     * @param[in]   fragShaderSrc   ->  フラグメントシェーダのソース
-     *
-     * @return  シェーダプログラムのアドレス
-     */
-    GLuint LoadShaderProgram(const csmChar* vertShaderSrc, const csmChar* fragShaderSrc);
-
-    /**
-     * @brief   シェーダプログラムをコンパイルする
-     *
-     * @param[out]  outShader       ->  コンパイルされたシェーダプログラムのアドレス
-     * @param[in]   shaderType      ->  シェーダタイプ(Vertex/Fragment)
-     * @param[in]   shaderSource    ->  シェーダソースコード
-     *
-     * @retval      true         ->      コンパイル成功
-     * @retval      false        ->      コンパイル失敗
-     */
-    csmBool CompileShaderSource(GLuint* outShader, GLenum shaderType, const csmChar* shaderSource);
-
-    /**
-     * @brief   シェーダプログラムをリンクする
-     *
-     * @param[in]   shaderProgram   ->  リンクするシェーダプログラムのアドレス
-     *
-     * @retval      true            ->  リンク成功
-     * @retval      false           ->  リンク失敗
-     */
-    csmBool LinkProgram(GLuint shaderProgram);
-
-    /**
-     * @brief   シェーダプログラムを検証する
-     *
-     * @param[in]   shaderProgram   ->  検証するシェーダプログラムのアドレス
-     *
-     * @retval      true            ->  正常
-     * @retval      false           ->  異常
-     */
-    csmBool ValidateProgram(GLuint shaderProgram);
-
-    /**
-     * @brief   必要な頂点属性を設定する
-     *
-     * @param[in]   model                 ->  描画対象のモデル
-     * @param[in]   index                 ->  描画対象のメッシュのインデックス
-     * @param[in]   shaderSet             ->  シェーダープログラムのセット
-     */
-    void SetVertexAttributes(const CubismModel& model, const csmInt32 index, CubismShaderSet* shaderSet);
-
-    /**
-     * @brief   テクスチャの設定を行う
-     *
-     * @param[in]   renderer              ->  レンダラー
-     * @param[in]   model                 ->  描画対象のモデル
-     * @param[in]   index                 ->  描画対象のメッシュのインデックス
-     * @param[in]   shaderSet             ->  シェーダープログラムのセット
-     */
-    void SetupTexture(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index, CubismShaderSet* shaderSet);
-
-    /**
-     * @brief   色関連のユニフォーム変数の設定を行う
-     *
-     * @param[in]   renderer              ->  レンダラー
-     * @param[in]   model                 ->  描画対象のモデル
-     * @param[in]   index                 ->  描画対象のメッシュのインデックス
-     * @param[in]   shaderSet             ->  シェーダープログラムのセット
-     * @param[in]   baseColor             ->  ベースカラー
-     * @param[in]   multiplyColor         ->  乗算カラー
-     * @param[in]   screenColor           ->  スクリーンカラー
-     */
-    void SetColorUniformVariables(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, const csmInt32 index, CubismShaderSet* shaderSet,
-                                  CubismRenderer::CubismTextureColor& baseColor, CubismRenderer::CubismTextureColor& multiplyColor, CubismRenderer::CubismTextureColor& screenColor);
-
-    /**
-     * @brief   カラーチャンネル関連のユニフォーム変数の設定を行う
-     *
-     * @param[in]   shaderSet             ->  シェーダープログラムのセット
-     * @param[in]   contextBuffer         ->  描画コンテクスト
-     */
-    void SetColorChannelUniformVariables(CubismShaderSet* shaderSet, CubismClippingContext_OpenGLES2* contextBuffer);
-
+    static bool DeleteInstance();
+    bool Initialize(const QOpenGLContext* context);
+    bool SetupShaderProgramForDraw(CubismRenderer_OpenGLES2* renderer, const CubismModel& model,
+                                   csmInt32 index, bool isAll, csmFloat32 opacityOverride = -1.0f);
+    bool SetupShaderProgramForMask(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, csmInt32 index);
 #ifdef CSM_TARGET_ANDROID_ES2
-public:
-    /**
-     * @brief   Tegraプロセッサ対応。拡張方式による描画の有効・無効
-     *
-     * @param[in]   extMode     ->  trueなら拡張方式で描画する
-     * @param[in]   extPAMode   ->  trueなら拡張方式のPA設定を有効にする
-     */
     static void SetExtShaderMode(csmBool extMode, csmBool extPAMode);
-
-private:
-    static csmBool  s_extMode;      ///< Tegra対応.拡張方式で描画
-    static csmBool  s_extPAMode;    ///< 拡張方式のPA設定用の変数
 #endif
 
-    csmVector<CubismShaderSet*> _shaderSets;   ///< ロードしたシェーダプログラムを保持する変数
-
+private:
+    CubismShader_OpenGLES2() = default;
+    ~CubismShader_OpenGLES2() = default;
+    CCubismShaderPrograms m_programs;
 };
-
 }}}}
-//------------ LIVE2D NAMESPACE ------------

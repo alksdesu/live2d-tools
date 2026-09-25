@@ -51,7 +51,7 @@ void DeleteClippingManager(CubismClippingManager_OpenGLES2* manager)
 /*********************************************************************************************************************
 *                                      CubismClippingManager_OpenGLES2
 ********************************************************************************************************************/
-bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, GLint lastViewport[4])
+bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, const GLint lastViewport[4])
 {
     if (!renderer || !setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext())) return false;
     int maskWidth = 0, maskHeight = 0;
@@ -163,7 +163,7 @@ bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
                 _clearedMaskBufferFlags[clipContext->_bufferIndex] = true;
             }
             renderer->SetClippingContextBufferForMask(clipContext);
-            renderer->DrawMeshOpenGL(model, clipDrawIndex,LAppDelegate::GetInstance()->m_IsPrintALl);
+            if (!renderer->DrawMeshOpenGL(model, clipDrawIndex,LAppDelegate::GetInstance()->m_IsPrintALl)) return false;
         }
     }
 
@@ -192,107 +192,6 @@ CubismClippingManager<CubismClippingContext_OpenGLES2, CubismOffscreenSurface_Op
 }
 
 /*********************************************************************************************************************
-*                                      CubismDrawProfile_OpenGL
-********************************************************************************************************************/
-void CubismRendererProfile_OpenGLES2::SetGlEnable(GLenum index, GLboolean enabled)
-{
-    if (enabled == GL_TRUE) glEnable(index);
-    else glDisable(index);
-}
-
-void CubismRendererProfile_OpenGLES2::SetGlEnableVertexAttribArray(GLuint index, GLint enabled)
-{
-    if (enabled) glEnableVertexAttribArray(index);
-    else glDisableVertexAttribArray(index);
-}
-
-bool CubismRendererProfile_OpenGLES2::Save()
-{
-    if (!setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext())) return false;
-
-    //-- push state --
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_lastArrayBufferBinding);
-    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &_lastElementArrayBufferBinding);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &_lastProgram);
-
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &_lastActiveTexture);
-    glActiveTexture(GL_TEXTURE1); //テクスチャユニット1をアクティブに（以後の設定対象とする）
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &_lastTexture1Binding2D);
-
-    glActiveTexture(GL_TEXTURE0); //テクスチャユニット0をアクティブに（以後の設定対象とする）
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &_lastTexture0Binding2D);
-
-    glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &_lastVertexAttribArrayEnabled[0]);
-    glGetVertexAttribiv(1, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &_lastVertexAttribArrayEnabled[1]);
-    glGetVertexAttribiv(2, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &_lastVertexAttribArrayEnabled[2]);
-    glGetVertexAttribiv(3, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &_lastVertexAttribArrayEnabled[3]);
-
-    _lastScissorTest = glIsEnabled(GL_SCISSOR_TEST);
-    _lastStencilTest = glIsEnabled(GL_STENCIL_TEST);
-    _lastDepthTest = glIsEnabled(GL_DEPTH_TEST);
-    _lastCullFace = glIsEnabled(GL_CULL_FACE);
-    _lastBlend = glIsEnabled(GL_BLEND);
-
-    glGetIntegerv(GL_FRONT_FACE, &_lastFrontFace);
-
-    glGetBooleanv(GL_COLOR_WRITEMASK, _lastColorMask);
-
-    // backup blending
-    glGetIntegerv(GL_BLEND_SRC_RGB, &_lastBlending[0]);
-    glGetIntegerv(GL_BLEND_DST_RGB, &_lastBlending[1]);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &_lastBlending[2]);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &_lastBlending[3]);
-
-    // モデル描画直前のFBOとビューポートを保存
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &_lastDrawFBO);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &_lastReadFBO);
-    glGetIntegerv(GL_READ_BUFFER, &_lastReadBuffer);
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, _lastClearColor);
-    glGetIntegerv(GL_VIEWPORT, _lastViewport);
-    return true;
-}
-
-void CubismRendererProfile_OpenGLES2::Restore()
-{
-    if (!setGlOwningContext(owningContext())) return;
-    glUseProgram(_lastProgram);
-
-    SetGlEnableVertexAttribArray(0, _lastVertexAttribArrayEnabled[0]);
-    SetGlEnableVertexAttribArray(1, _lastVertexAttribArrayEnabled[1]);
-    SetGlEnableVertexAttribArray(2, _lastVertexAttribArrayEnabled[2]);
-    SetGlEnableVertexAttribArray(3, _lastVertexAttribArrayEnabled[3]);
-
-    SetGlEnable(GL_SCISSOR_TEST, _lastScissorTest);
-    SetGlEnable(GL_STENCIL_TEST, _lastStencilTest);
-    SetGlEnable(GL_DEPTH_TEST, _lastDepthTest);
-    SetGlEnable(GL_CULL_FACE, _lastCullFace);
-    SetGlEnable(GL_BLEND, _lastBlend);
-
-    glFrontFace(_lastFrontFace);
-
-    glColorMask(_lastColorMask[0], _lastColorMask[1], _lastColorMask[2], _lastColorMask[3]);
-
-    glBindBuffer(GL_ARRAY_BUFFER, _lastArrayBufferBinding); //前にバッファがバインドされていたら破棄する必要がある
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _lastElementArrayBufferBinding);
-
-    glActiveTexture(GL_TEXTURE1); //テクスチャユニット1を復元
-    glBindTexture(GL_TEXTURE_2D, _lastTexture1Binding2D);
-
-    glActiveTexture(GL_TEXTURE0); //テクスチャユニット0を復元
-    glBindTexture(GL_TEXTURE_2D, _lastTexture0Binding2D);
-
-    glActiveTexture(_lastActiveTexture);
-
-    // restore blending
-    glBlendFuncSeparate(_lastBlending[0], _lastBlending[1], _lastBlending[2], _lastBlending[3]);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, _lastDrawFBO);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, _lastReadFBO);
-    glReadBuffer(_lastReadBuffer);
-    glViewport(_lastViewport[0], _lastViewport[1], _lastViewport[2], _lastViewport[3]);
-    glClearColor(_lastClearColor[0], _lastClearColor[1], _lastClearColor[2], _lastClearColor[3]);
-}
-
-/*********************************************************************************************************************
  *                                      CubismRenderer_OpenGLES2
  ********************************************************************************************************************/
 
@@ -310,136 +209,6 @@ void CubismRenderer_OpenGLES2::ReloadShader()
 #endif
 
 
-#ifdef CSM_TARGET_WIN_GL
-
-namespace {
-PFNGLACTIVETEXTUREPROC glActiveTexture;
-PFNGLBINDBUFFERPROC glBindBuffer;
-PFNGLUSEPROGRAMPROC glUseProgram;
-PFNGLUNIFORM1IPROC glUniform1i;
-PFNGLGETATTRIBLOCATIONPROC glGetAttribLocation;
-PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;
-PFNGLBLENDFUNCSEPARATEPROC glBlendFuncSeparate;
-//PFNGLBINDVERTEXARRAY            glBindVertexArrayOES ;
-PFNGLENABLEVERTEXATTRIBARRAYPROC glEnableVertexAttribArray;
-PFNGLDISABLEVERTEXATTRIBARRAYPROC glDisableVertexAttribArray;
-PFNGLVERTEXATTRIBPOINTERPROC glVertexAttribPointer;
-PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv;
-PFNGLUNIFORM1FPROC glUniform1f;
-PFNGLUNIFORM4FPROC glUniform4f;
-
-PFNGLLINKPROGRAMPROC glLinkProgram;
-PFNGLGETPROGRAMIVPROC glGetProgramiv;
-PFNGLVALIDATEPROGRAMPROC glValidateProgram;
-PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog;
-
-PFNGLCREATEPROGRAMPROC glCreateProgram;
-PFNGLDELETEPROGRAMPROC glDeleteProgram;
-
-PFNGLSHADERSOURCEPROC glShaderSource;
-PFNGLGETSHADERIVPROC glGetShaderiv;
-PFNGLCOMPILESHADERPROC glCompileShader;
-PFNGLCREATESHADERPROC glCreateShader;
-PFNGLATTACHSHADERPROC glAttachShader;
-PFNGLDETACHSHADERPROC glDetachShader;
-PFNGLDELETESHADERPROC glDeleteShader;
-
-PFNGLGENFRAMEBUFFERSEXTPROC glGenFramebuffers;
-PFNGLGENRENDERBUFFERSEXTPROC glGenRenderbuffers;
-PFNGLBINDFRAMEBUFFEREXTPROC glBindFramebuffer;
-PFNGLBINDRENDERBUFFEREXTPROC glBindRenderbuffer;
-PFNGLDELETERENDERBUFFERSEXTPROC glDeleteRenderbuffers;
-PFNGLDELETEFRAMEBUFFERSEXTPROC glDeleteFramebuffers;
-PFNGLFRAMEBUFFERTEXTURE2DEXTPROC glFramebufferTexture2D;
-
-PFNGLRENDERBUFFERSTORAGEEXTPROC glRenderbufferStorage;
-PFNGLFRAMEBUFFERRENDERBUFFEREXTPROC glFramebufferRenderbuffer;
-
-PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC glCheckFramebufferStatus;
-
-PFNGLGETVERTEXATTRIBIVPROC glGetVertexAttribiv;
-
-csmBool s_isInitializeGlFunctionsSuccess = false;     ///< 初期化が完了したかどうか。trueなら初期化完了
-csmBool s_isFirstInitializeGlFunctions = true;        ///< 最初の初期化実行かどうか。trueなら最初の初期化実行
-}
-
-void CubismRenderer_OpenGLES2::InitializeGlFunctions()
-{
-    if (!s_isFirstInitializeGlFunctions) return;
-
-    s_isInitializeGlFunctionsSuccess = true; //失敗した場合にフラグをfalseにする
-
-    glActiveTexture = (PFNGLACTIVETEXTUREPROC)WinGlGetProcAddress("glActiveTexture");
-    //最初の初期化処理が成功したら、以降は初期化処理を行わない
-    if (glActiveTexture) s_isFirstInitializeGlFunctions = false;
-    else return;
-
-    glBindBuffer = (PFNGLBINDBUFFERPROC)WinGlGetProcAddress("glBindBuffer");
-    glUseProgram = (PFNGLUSEPROGRAMPROC)WinGlGetProcAddress("glUseProgram");
-
-    glUniform1i = (PFNGLUNIFORM1IPROC)WinGlGetProcAddress("glUniform1i");
-    glGetAttribLocation = (PFNGLGETATTRIBLOCATIONPROC)WinGlGetProcAddress("glGetAttribLocation");
-    glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)WinGlGetProcAddress("glGetUniformLocation");
-    glBlendFuncSeparate = (PFNGLBLENDFUNCSEPARATEPROC)WinGlGetProcAddress("glBlendFuncSeparate");
-    glEnableVertexAttribArray = (PFNGLENABLEVERTEXATTRIBARRAYPROC)WinGlGetProcAddress("glEnableVertexAttribArray");
-    glDisableVertexAttribArray = (PFNGLDISABLEVERTEXATTRIBARRAYPROC)WinGlGetProcAddress("glDisableVertexAttribArray");
-    glVertexAttribPointer = (PFNGLVERTEXATTRIBPOINTERPROC)WinGlGetProcAddress("glVertexAttribPointer");
-
-    glUniformMatrix4fv = (PFNGLUNIFORMMATRIX4FVPROC)WinGlGetProcAddress("glUniformMatrix4fv");
-    glUniform1f = (PFNGLUNIFORM1FPROC)WinGlGetProcAddress("glUniform1f");
-    glUniform4f = (PFNGLUNIFORM4FPROC)WinGlGetProcAddress("glUniform4f");
-    glLinkProgram = (PFNGLLINKPROGRAMPROC)WinGlGetProcAddress("glLinkProgram");
-
-    glGetProgramiv = (PFNGLGETPROGRAMIVPROC)WinGlGetProcAddress("glGetProgramiv");
-    glValidateProgram = (PFNGLVALIDATEPROGRAMPROC)WinGlGetProcAddress("glValidateProgram");
-
-    glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)WinGlGetProcAddress("glGetProgramInfoLog");
-    glCreateProgram = (PFNGLCREATEPROGRAMPROC)WinGlGetProcAddress("glCreateProgram");
-
-    glDeleteProgram = (PFNGLDELETEPROGRAMPROC)WinGlGetProcAddress("glDeleteProgram");
-    glShaderSource = (PFNGLSHADERSOURCEPROC)WinGlGetProcAddress("glShaderSource");
-    glGetShaderiv = (PFNGLGETSHADERIVPROC)WinGlGetProcAddress("glGetShaderiv");
-    glCompileShader = (PFNGLCOMPILESHADERPROC)WinGlGetProcAddress("glCompileShader");
-    glCreateShader = (PFNGLCREATESHADERPROC)WinGlGetProcAddress("glCreateShader");
-    glAttachShader = (PFNGLATTACHSHADERPROC)WinGlGetProcAddress("glAttachShader");
-    glDetachShader = (PFNGLDETACHSHADERPROC)WinGlGetProcAddress("glDetachShader");
-    glDeleteShader = (PFNGLDELETESHADERPROC)WinGlGetProcAddress("glDeleteShader");
-
-    glGenFramebuffers = (PFNGLGENFRAMEBUFFERSEXTPROC)WinGlGetProcAddress("glGenFramebuffers");
-    glGenRenderbuffers = (PFNGLGENRENDERBUFFERSEXTPROC)WinGlGetProcAddress("glGenRenderbuffers");
-    glBindFramebuffer = (PFNGLBINDFRAMEBUFFEREXTPROC)WinGlGetProcAddress("glBindFramebuffer");
-    glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DEXTPROC)WinGlGetProcAddress("glFramebufferTexture2D");
-    glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSEXTPROC)WinGlGetProcAddress("glDeleteFramebuffers");
-    glBindRenderbuffer = (PFNGLBINDRENDERBUFFEREXTPROC)WinGlGetProcAddress("glBindRenderbuffer");
-    glDeleteRenderbuffers = (PFNGLDELETERENDERBUFFERSEXTPROC)WinGlGetProcAddress("glDeleteRenderbuffers");
-
-    glRenderbufferStorage = (PFNGLRENDERBUFFERSTORAGEEXTPROC)WinGlGetProcAddress("glRenderbufferStorage");
-    glFramebufferRenderbuffer = (PFNGLFRAMEBUFFERRENDERBUFFEREXTPROC)WinGlGetProcAddress("glFramebufferRenderbuffer");
-    glCheckFramebufferStatus = (PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC)WinGlGetProcAddress("glCheckFramebufferStatus");
-    glGetVertexAttribiv = (PFNGLGETVERTEXATTRIBIVPROC)WinGlGetProcAddress("glGetVertexAttribiv");
-}
-
-void* CubismRenderer_OpenGLES2::WinGlGetProcAddress(const csmChar* name)
-{
-    void* ptr = wglGetProcAddress(name);
-    if (ptr == NULL)
-    {
-        CubismLogError("WinGlGetProcAddress() failed :: %s" , name ) ;
-        s_isInitializeGlFunctionsSuccess = false;
-    }
-    return ptr;
-}
-
-void CubismRenderer_OpenGLES2::CheckGlError(const csmChar* message)
-{
-    GLenum errcode = glGetError();
-    if (errcode != GL_NO_ERROR)
-    {
-        CubismLogError("0x%04X(%4d) : %s", errcode, errcode, message);
-    }
-}
-
-#endif  //CSM_TARGET_WIN_GL
 
 CubismRenderer* CubismRenderer::Create()
 {
@@ -466,10 +235,7 @@ CubismRenderer_OpenGLES2::~CubismRenderer_OpenGLES2()
 
 void CubismRenderer_OpenGLES2::DoStaticRelease()
 {
-#ifdef CSM_TARGET_WINGL
-    s_isInitializeGlFunctionsSuccess = false;     ///< 初期化が完了したかどうか。trueなら初期化完了
-    s_isFirstInitializeGlFunctions = true;        ///< 最初の初期化実行かどうか。trueなら最初の初期化実行
-#endif
+
     CubismShader_OpenGLES2::DeleteInstance();
 }
 
@@ -481,7 +247,8 @@ csmBool CubismRenderer_OpenGLES2::Initialize(CubismModel* model)
 csmBool CubismRenderer_OpenGLES2::Initialize(CubismModel* model, csmInt32 maskBufferCount)
 {
     if (!model || maskBufferCount < 1 ||
-        !setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext())) return false;
+        !setGlOwningContext(LAppDelegate::GetInstance()->getGlOwningContext()) ||
+        !CubismShader_OpenGLES2::GetInstance()->Initialize(owningContext())) return false;
     std::unique_ptr<CubismClippingManager_OpenGLES2, decltype(&DeleteClippingManager)>
         clipping(nullptr, &DeleteClippingManager);
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> surfaces;
@@ -505,6 +272,8 @@ csmBool CubismRenderer_OpenGLES2::Initialize(CubismModel* model, csmInt32 maskBu
     CSM_DELETE_SELF(CubismClippingManager_OpenGLES2, _clippingManager);
     _clippingManager = clipping.release();
     _offscreenSurfaces.swap(surfaces);
+    _meshBuffers.clear();
+    _meshBuffers.resize(static_cast<size_t>(model->GetDrawableCount()));
     _sortedDrawableIndexList.Resize(model->GetDrawableCount(), 0);
     _clippingContextBufferForMask = nullptr;
     _clippingContextBufferForDraw = nullptr;
@@ -517,24 +286,12 @@ csmBool CubismRenderer_OpenGLES2::Initialize(CubismModel* model, csmInt32 maskBu
 
 void CubismRenderer_OpenGLES2::PreDraw()
 {
-#ifdef CSM_TARGET_WIN_GL
-    if (s_isFirstInitializeGlFunctions) InitializeGlFunctions();
-    if (!s_isInitializeGlFunctionsSuccess) return;
-#endif
-
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
 
     glEnable(GL_BLEND);
     glColorMask(1, 1, 1, 1);
-
-#ifdef CSM_TARGET_IPHONE_ES2
-    glBindVertexArrayOES(0);
-#endif
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0); //前にバッファがバインドされていたら破棄する必要がある
 
     //異方性フィルタリング。プラットフォームのOpenGLによっては未対応の場合があるので、未設定のときは設定しない
     if (GetAnisotropy() > 0.0f)
@@ -557,8 +314,8 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
     const auto restore = qScopeGuard([&] {
         if (drawing) surface->EndDraw();
         SetClippingContextBufferForMask(nullptr);
-        glViewport(_rendererProfile._lastViewport[0], _rendererProfile._lastViewport[1],
-                   _rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3]);
+        glViewport(_rendererProfile.Viewport()[0], _rendererProfile.Viewport()[1],
+                   _rendererProfile.Viewport()[2], _rendererProfile.Viewport()[3]);
     });
     glViewport(0, 0, surface->GetBufferWidth(), surface->GetBufferHeight());
     PreDraw();
@@ -568,7 +325,7 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
         if (!_forceMaskRedraw && !GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex)) continue;
         IsCulling(GetModel()->GetDrawableCulling(clipDrawIndex) != 0);
         SetClippingContextBufferForMask(clipContext);
-        DrawMeshOpenGL(*GetModel(), clipDrawIndex, LAppDelegate::GetInstance()->m_IsPrintALl);
+        if (!DrawMeshOpenGL(*GetModel(), clipDrawIndex, LAppDelegate::GetInstance()->m_IsPrintALl)) return false;
     }
     if (!surface->EndDraw()) return false;
     drawing = false;
@@ -586,7 +343,7 @@ bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QStri
     QRect rect;
     if (!delegate->read.GetScreenNode(GetModel()->GetDrawableVertices(drawableIndex),
             GetModel()->GetDrawableVertexCount(drawableIndex), GetMvpMatrix().GetArray(),
-            _rendererProfile._lastViewport[2], _rendererProfile._lastViewport[3], image, rect)) return false;
+            _rendererProfile.Viewport()[2], _rendererProfile.Viewport()[3], image, rect)) return false;
     if (!rect.isEmpty()) {
         if (image.isNull()) return false;
         const csmFloat32 effectiveOpacity = opacityOverride >= 0.0f ? opacityOverride :
@@ -602,9 +359,11 @@ bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QStri
 csmBool CubismRenderer_OpenGLES2::DoDrawModel()
 {
     if (!GetModel() || !setGlOwningContext(owningContext())) return false;
-    const auto clearClipping = qScopeGuard([this] {
+    bool complete = false;
+    const auto clearClipping = qScopeGuard([&] {
         SetClippingContextBufferForMask(nullptr);
         SetClippingContextBufferForDraw(nullptr);
+        if (!complete && _clippingManager) _maskBuffersNeedRedraw = true;
     });
     const quint64 indicesRevision = GetModel()->GetDrawableIndicesRevision();
     _forceMaskRedraw = _maskBuffersNeedRedraw || GetModel()->HasDrawableIndicesOverrides() ||
@@ -630,7 +389,7 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
         }
         if (IsUsingHighPrecisionMask()) {
             _clippingManager->SetupMatrixForHighPrecision(*GetModel(), false);
-        } else if (!_clippingManager->SetupClippingContext(*GetModel(), this, _rendererProfile._lastViewport)) {
+        } else if (!_clippingManager->SetupClippingContext(*GetModel(), this, _rendererProfile.Viewport().data())) {
             return false;
         }
     }
@@ -666,7 +425,7 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
         SetClippingContextBufferForDraw(clipContext);
         IsCulling(GetModel()->GetDrawableCulling(drawableIndex) != 0);
         const csmFloat32 opacityOverride = delegate->m_drawableOpacityOverrides.value(drawName, -1.0f);
-        DrawMeshOpenGL(*GetModel(), drawableIndex, delegate->m_IsPrintALl, opacityOverride);
+        if (!DrawMeshOpenGL(*GetModel(), drawableIndex, delegate->m_IsPrintALl, opacityOverride)) return false;
         return !offscreen || WritePsdLayer(drawableIndex, drawName, opacityOverride, clipContext != nullptr);
     };
 
@@ -712,62 +471,63 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
         _maskIndicesRevision = indicesRevision;
         _maskBuffersNeedRedraw = false;
     }
+    complete = true;
     return true;
 }
 
-void CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride)
+bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,
+                                             bool IsAll, csmFloat32 opacityOverride)
 {
-
-#ifdef CSM_TARGET_WIN_GL
-    if (s_isFirstInitializeGlFunctions) return;  // WindowsプラットフォームではGL命令のバインドを済ませておく必要がある
-#endif
-
-#ifndef CSM_DEBUG
-    if (_textures[model.GetDrawableTextureIndex(index)] == 0) return;    // モデルが参照するテクスチャがバインドされていない場合は描画をスキップする
-#endif
-
-    // 裏面描画の有効・無効
-    if (IsCulling())
-    {
-        glEnable(GL_CULL_FACE);
+    const auto clearClipping = qScopeGuard([this] {
+        SetClippingContextBufferForDraw(nullptr);
+        SetClippingContextBufferForMask(nullptr);
+    });
+    if (index < 0 || index >= model.GetDrawableCount() ||
+        static_cast<size_t>(index) >= _meshBuffers.size()) return false;
+    if (!GetBindedTextureId(model.GetDrawableTextureIndex(index))) return true;
+    const int vertexCount = model.GetDrawableVertexCount(index);
+    const int indexCount = model.GetDrawableVertexIndexCount(index);
+    if (vertexCount < 0 || vertexCount > CGlMeshBuffer::MaxVertices || indexCount < 0 ||
+        indexCount > CGlMeshBuffer::MaxIndices || indexCount % 3 != 0) return false;
+    if (!vertexCount || !indexCount) return true;
+    const float* positions = model.GetDrawableVertices(index);
+    auto* delegate = LAppDelegate::GetInstance();
+    if (delegate->m_isDraggingDeformer && !delegate->IsOffScreen()) {
+        const auto saved = delegate->m_savedVertices.constFind(index);
+        if (saved != delegate->m_savedVertices.cend()) {
+            if (saved.value().size() != static_cast<size_t>(vertexCount) * 2) return false;
+            positions = saved.value().data();
+        }
     }
-    else
-    {
-        glDisable(GL_CULL_FACE);
+    auto& mesh = _meshBuffers[static_cast<size_t>(index)];
+    if (!mesh) mesh = std::make_unique<CGlMeshBuffer>();
+    if (!mesh->SetContext(owningContext()) || !mesh->Upload(positions, vertexCount,
+            reinterpret_cast<const float*>(model.GetDrawableVertexUvs(index)),
+            model.GetDrawableVertexIndices(index), indexCount)) return false;
+    if (IsCulling()) glEnable(GL_CULL_FACE);
+    else glDisable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+    auto* shader = CubismShader_OpenGLES2::GetInstance();
+    const bool generatingMask = IsGeneratingMask();
+    if (generatingMask) {
+        if (!shader->SetupShaderProgramForMask(this, model, index)) return false;
+    } else if (!shader->SetupShaderProgramForDraw(this, model, index, IsAll, opacityOverride)) {
+        return false;
     }
-
-    glFrontFace(GL_CCW);    // Cubism SDK OpenGLはマスク・アートメッシュ共にCCWが表面
-
-    if (IsGeneratingMask())  // マスク生成時
-    {
-        _maskTopologyUpdated = true;
-        CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForMask(this, model, index);
-    }
-    else{
-        CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForDraw(this, model, index,IsAll, opacityOverride);
-    }
-
-    // ポリゴンメッシュを描画する
-    {
-        csmInt32 indexCount = model.GetDrawableVertexIndexCount(index);
-        const csmUint16* indexArray = model.GetDrawableVertexIndices(index);
-        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_SHORT, indexArray);
-    }
-
-    // 後処理
-    glUseProgram(0);
-    SetClippingContextBufferForDraw(NULL);
-    SetClippingContextBufferForMask(NULL);
+    if (!mesh->Draw(GL_TRIANGLES)) return false;
+    if (generatingMask) _maskTopologyUpdated = true;
+    return true;
 }
 
 csmBool CubismRenderer_OpenGLES2::SaveProfile()
 {
-    return _rendererProfile.Save();
+    return _rendererProfile.Save(LAppDelegate::GetInstance()->getGlOwningContext());
 }
 
-void CubismRenderer_OpenGLES2::RestoreProfile()
+csmBool CubismRenderer_OpenGLES2::RestoreProfile()
 {
-    _rendererProfile.Restore();
+    return _rendererProfile.Restore();
 }
 
 void CubismRenderer_OpenGLES2::BindTexture(csmUint32 modelTextureIndex, GLuint glTextureIndex)

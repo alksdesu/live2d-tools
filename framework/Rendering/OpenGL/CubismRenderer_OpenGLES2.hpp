@@ -14,6 +14,8 @@
 #include <QString>
 #include <memory>
 #include <vector>
+#include "opengl/cglrenderstate.h"
+#include "opengl/cglmeshbuffer.h"
 
 namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
 
@@ -37,7 +39,7 @@ public:
         setOwningContext(context);
         return initializeOpenGLFunctions();
     }
-    bool SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, GLint lastViewport[4]);
+    bool SetupClippingContext(CubismModel& model, CubismRenderer_OpenGLES2* renderer, const GLint lastViewport[4]);
 };
 
 
@@ -72,75 +74,7 @@ public:
  * @brief   Cubismモデルを描画する直前のOpenGLES2のステートを保持・復帰させるクラス
  *
  */
-class CubismRendererProfile_OpenGLES2 : public  QOpenGLFunctions_3_3_Core
-{
-    friend class CubismRenderer_OpenGLES2;
-public:
-    bool setGlOwningContext(const QOpenGLContext *context){
-        if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
-            (owningContext() && owningContext() != context)) return false;
-        setOwningContext(context);
-        return initializeOpenGLFunctions();
-    }
-private:
-    /**
-     * @biref   privateなコンストラクタ
-     */
-    CubismRendererProfile_OpenGLES2() {};
-
-    /**
-     * @biref   privateなデストラクタ
-     */
-    virtual ~CubismRendererProfile_OpenGLES2() {};
-
-    /**
-     * @brief   OpenGLES2のステートを保持する
-     */
-    bool Save();
-
-    /**
-     * @brief   保持したOpenGLES2のステートを復帰させる
-     *
-     */
-    void Restore();
-
-    /**
-     * @brief   OpenGLES2の機能の有効・無効をセットする
-     *
-     * @param[in]   index   ->  有効・無効にする機能
-     * @param[in]   enabled ->  trueなら有効にする
-     */
-    void SetGlEnable(GLenum index, GLboolean enabled);
-
-    /**
-     * @brief   OpenGLES2のVertex Attribute Array機能の有効・無効をセットする
-     *
-     * @param[in]   index   ->  有効・無効にする機能
-     * @param[in]   enabled ->  trueなら有効にする
-     */
-    void SetGlEnableVertexAttribArray(GLuint index, GLint enabled);
-
-    GLint _lastArrayBufferBinding;          ///< モデル描画直前の頂点バッファ
-    GLint _lastElementArrayBufferBinding;   ///< モデル描画直前のElementバッファ
-    GLint _lastProgram;                     ///< モデル描画直前のシェーダプログラムバッファ
-    GLint _lastActiveTexture;               ///< モデル描画直前のアクティブなテクスチャ
-    GLint _lastTexture0Binding2D;           ///< モデル描画直前のテクスチャユニット0
-    GLint _lastTexture1Binding2D;           ///< モデル描画直前のテクスチャユニット1
-    GLint _lastVertexAttribArrayEnabled[4]; ///< モデル描画直前のテクスチャユニット1
-    GLboolean _lastScissorTest;             ///< モデル描画直前のGL_VERTEX_ATTRIB_ARRAY_ENABLEDパラメータ
-    GLboolean _lastBlend;                   ///< モデル描画直前のGL_SCISSOR_TESTパラメータ
-    GLboolean _lastStencilTest;             ///< モデル描画直前のGL_STENCIL_TESTパラメータ
-    GLboolean _lastDepthTest;               ///< モデル描画直前のGL_DEPTH_TESTパラメータ
-    GLboolean _lastCullFace;                ///< モデル描画直前のGL_CULL_FACEパラメータ
-    GLint _lastFrontFace;                   ///< モデル描画直前のGL_CULL_FACEパラメータ
-    GLboolean _lastColorMask[4];            ///< モデル描画直前のGL_COLOR_WRITEMASKパラメータ
-    GLint _lastBlending[4];                 ///< モデル描画直前のカラーブレンディングパラメータ
-    GLint _lastDrawFBO;
-    GLint _lastReadFBO;
-    GLint _lastReadBuffer;
-    GLfloat _lastClearColor[4];
-    GLint _lastViewport[4];                 ///< モデル描画直前のビューポート
-};
+using CubismRendererProfile_OpenGLES2 = CGlRenderState;
 
 /**
  * @brief   OpenGLES2用の描画命令を実装したクラス
@@ -244,7 +178,7 @@ protected:
      * @param[in]   index       ->  描画対象のメッシュのインデックス
      *
      */
-    void DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride = -1.0f);
+    bool DrawMeshOpenGL(const CubismModel& model, const csmInt32 index,bool IsAll, csmFloat32 opacityOverride = -1.0f);
 
 #ifdef CSM_TARGET_ANDROID_ES2
 public:
@@ -270,7 +204,7 @@ private:
     void PreDraw();
     void PostDraw(){};
     csmBool SaveProfile() override;
-    void RestoreProfile() override;
+    csmBool RestoreProfile() override;
     bool DrawHighPrecisionMask(CubismClippingContext_OpenGLES2* clipContext);
     bool WritePsdLayer(csmInt32 drawableIndex, const QString& drawName,
                        csmFloat32 opacityOverride, bool hasMask);
@@ -281,22 +215,7 @@ private:
     const csmBool inline IsGeneratingMask() const;
     GLuint GetBindedTextureId(csmInt32 textureId);
 
-#ifdef CSM_TARGET_WIN_GL
-    /**
-     * @brief   Windows対応。OpenGL命令のバインドを行う。
-     */
-    void  InitializeGlFunctions();
 
-    /**
-     * @brief   Windows対応。OpenGL命令のバインドする際に関数ポインタを取得する。
-     */
-    void* WinGlGetProcAddress(const csmChar* name);
-
-    /**
-     * @brief   Windows対応。OpenGLのエラーチェック。
-     */
-    void  CheckGlError(const csmChar* message);
-#endif
 
     csmMap<csmInt32, GLuint> _textures;                      ///< モデルが参照するテクスチャとレンダラでバインドしているテクスチャとのマップ
     csmVector<csmInt32> _sortedDrawableIndexList;       ///< 描画オブジェクトのインデックスを描画順に並べたリスト
@@ -306,6 +225,7 @@ private:
     CubismClippingContext_OpenGLES2* _clippingContextBufferForDraw;  ///< 画面上描画するためのクリッピングコンテキスト
 
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _offscreenSurfaces;
+    std::vector<std::unique_ptr<CGlMeshBuffer>> _meshBuffers;
     quint64 _maskIndicesRevision = 0;
     bool _forceMaskRedraw = false;
     bool _maskTopologyUpdated = false;

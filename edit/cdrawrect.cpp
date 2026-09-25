@@ -1,42 +1,38 @@
 #include "cdrawrect.h"
 
+#include <QOpenGLVersionFunctionsFactory>
+#include <QScopeGuard>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 
+CDrawRect::CDrawRect(const QVector3D& color)
+    : m_color(color)
+{}
 
-CDrawRect::CDrawRect(const QVector3D &color)
-{
-    initializeOpenGLFunctions();
-    setOwningContext(QOpenGLContext::currentContext());
-    shader = new QOpenGLShaderProgram();
-    bool success = shader->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/drawshape.vert");
-    if (!success) {
-        qDebug() << "shaderProgram addShaderFromSourceFile failed!" << shader->log();
-    }
-    success = shader->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/drawshape.frag");
-    if (!success) {
-        qDebug() << "shaderProgram addShaderFromSourceFile failed!" <<shader->log();
-    }
-
-    success = shader->link();
-    if(!success) {
-        qDebug() << "shaderProgram link failed!" << shader->log();
-
-    }
-    shader->bind();
-    shader->setUniformValue("spriteColor",color);
-    m_IsDraw = false;
-    m_rect.setRect(0,0,0,0);
-
-}
-
-CDrawRect::~CDrawRect()
-{
-    delete shader;
-}
+CDrawRect::~CDrawRect() = default;
 
 void CDrawRect::InitOpenGl()
+{}
+
+bool CDrawRect::EnsureOpenGl()
 {
-    initializeOpenGLFunctions();
-    setOwningContext(QOpenGLContext::currentContext());
+    auto* context = QOpenGLContext::currentContext();
+    if (!context || !context->isValid() || (m_context && m_context != context)) return false;
+    if (!m_context) {
+        shader.reset();
+        m_context = context;
+    }
+    if (!m_geometry.SetContext(context)) return false;
+    if (!shader) {
+        auto candidate = std::make_unique<QOpenGLShaderProgram>();
+        if (!candidate->addShaderFromSourceFile(QOpenGLShader::Vertex, ":/drawshape.vert") ||
+            !candidate->addShaderFromSourceFile(QOpenGLShader::Fragment, ":/drawshape.frag") ||
+            !candidate->link()) return false;
+        shader = std::move(candidate);
+    }
+    return shader->isLinked();
 }
 
 void CDrawRect::SetDraw(bool flag)
@@ -44,39 +40,36 @@ void CDrawRect::SetDraw(bool flag)
     m_IsDraw = flag;
 }
 
-//如何修改这个点
-void CDrawRect::Draw(const QMatrix4x4 &mv)
+void CDrawRect::Draw(const QMatrix4x4& projection)
 {
-    if(m_IsDraw){
-        // 开始绘制
-        shader->bind();
-        shader->setUniformValue("projection",mv);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        // 设置线的宽度为5.0像素
-        glLineWidth(1.0f);
-        float vertices[8];
-
-        vertices[0] = m_rect.x();
-        vertices[1] = m_rect.y();
-        vertices[2] =m_rect.x() ;
-        vertices[3] =m_rect.y() + m_rect.height();
-
-        vertices[4] = m_rect.x()+ m_rect.width();
-        vertices[5] = m_rect.y() + m_rect.height();
-        vertices[6] =m_rect.x() + m_rect.width();
-        vertices[7] =m_rect.y() ;
-
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), vertices);
-        glDrawArrays(GL_QUADS, 0, 4);
-
-        // 恢复到填充模式
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-
+    if (!m_IsDraw || m_rect.isEmpty() ||
+        !std::isfinite(m_color.x()) || !std::isfinite(m_color.y()) || !std::isfinite(m_color.z()) ||
+        !std::all_of(projection.constData(), projection.constData() + 16,
+                     [](float value) { return std::isfinite(value); })) return;
+    const std::array<double, 8> corners{m_rect.left(), m_rect.top(), m_rect.left(), m_rect.bottom(),
+                                       m_rect.right(), m_rect.bottom(), m_rect.right(), m_rect.top()};
+    std::array<float, 8> positions;
+    for (size_t index = 0; index < corners.size(); ++index) {
+        if (!std::isfinite(corners[index]) || std::abs(corners[index]) > std::numeric_limits<float>::max()) return;
+        positions[index] = static_cast<float>(corners[index]);
     }
-
-
+    auto* context = QOpenGLContext::currentContext();
+    if (!context || !context->isValid() || (m_context && m_context != context)) return;
+    auto* gl = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_3_3_Core>(context);
+    if (!gl || !gl->initializeOpenGLFunctions()) return;
+    GLint program = 0;
+    GLfloat lineWidth = 0;
+    gl->glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    gl->glGetFloatv(GL_LINE_WIDTH, &lineWidth);
+    const auto restore = qScopeGuard([&] {
+        gl->glUseProgram(program);
+        gl->glLineWidth(lineWidth);
+    });
+    if (!EnsureOpenGl() || !m_geometry.Upload(positions.data(), 4, nullptr, nullptr, 0) || !shader->bind()) return;
+    shader->setUniformValue("projection", projection);
+    shader->setUniformValue("spriteColor", m_color);
+    gl->glLineWidth(1);
+    m_geometry.Draw(GL_LINE_LOOP);
 }
 
 void CDrawRect::SetStartAndEndPos(const QVector2D &startPos, const QVector2D &endPos)

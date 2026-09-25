@@ -167,6 +167,9 @@ void OpengGlForm::do_setPoint(float x, float y)
 
 void OpengGlForm::do_change_para_value(const QString &name, float value,bool IsInit)
 {
+    const bool wasCurrent = context() && QOpenGLContext::currentContext() == context();
+    if (!MakeRuntimeCurrent()) return;
+    const auto releaseContext = qScopeGuard([&] { if (!wasCurrent) doneCurrent(); });
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
     if(Live2DManager !=nullptr){
         int modelCount = Live2DManager->GetModelNum();
@@ -298,6 +301,9 @@ void OpengGlForm::do_SetDeformerDrawableVisibility(const QStringList& artMeshNam
 
 void OpengGlForm::ClearEditorOverrides()
 {
+    const bool wasCurrent = context() && QOpenGLContext::currentContext() == context();
+    if (!MakeRuntimeCurrent()) return;
+    const auto releaseContext = qScopeGuard([&] { if (!wasCurrent) doneCurrent(); });
     auto* delegate = LAppDelegate::GetInstance();
     if (!delegate) return;
     delegate->m_hiddenDrawables.clear();

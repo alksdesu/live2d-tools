@@ -47,8 +47,11 @@ csmBool CubismRenderer::Initialize(Framework::CubismModel* model, csmInt32 maskB
 csmBool CubismRenderer::DrawModel()
 {
     if (!GetModel() || !SaveProfile()) return false;
-    const auto restore = qScopeGuard([this] { RestoreProfile(); });
-    return DoDrawModel();
+    bool restored = false;
+    const auto restore = qScopeGuard([&] { if (!restored) RestoreProfile(); });
+    const bool drawn = DoDrawModel();
+    restored = RestoreProfile();
+    return drawn && restored;
 }
 
 void CubismRenderer::SetMvpMatrix(CubismMatrix44* matrix4x4)
