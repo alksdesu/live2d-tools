@@ -15,6 +15,7 @@ class CUserDataPanel : public QDockWidget
     Q_OBJECT
 public:
     explicit CUserDataPanel(QWidget* parent = nullptr);
+    ~CUserDataPanel() override;
 
     bool LoadModel(const QString& modelJsonPath, QString* error = nullptr);
     bool LoadUserData(const QString& path, QString* error = nullptr);

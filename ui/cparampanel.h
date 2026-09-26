@@ -34,6 +34,7 @@ public:
     using DeleteReferenceProvider = std::function<bool(const QString&, DeleteReferenceResult&, QString*)>;
     using ParameterOwner = live2dstruct::CMocParameterStructureBuilder::Owner;
     explicit CParamPanel(QWidget *parent = nullptr);
+    ~CParamPanel() override;
     void SetPreEditGuard(PreEditGuard guard);
     void SetMetadataEditHandler(MetadataEditHandler handler);
     void SetHistoryHandler(HistoryHandler handler);

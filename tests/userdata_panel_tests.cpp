@@ -1,6 +1,7 @@
 #include "ui/cuserdatapanel.h"
 #include "ui/theme.h"
 #include "live2dstruct/cmodeluserdata.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "std/cmodeljson.h"
 #include "cmo3/ccmo3builder.h"
 #include "cmo3/ccaffarchive.h"
@@ -11,12 +12,15 @@
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QLineEdit>
+#include <QMainWindow>
+#include <QPointer>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QScopeGuard>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <memory>
 
 class UserDataPanelTests : public QObject
 {
@@ -33,6 +37,65 @@ private:
     }
 
 private slots:
+    void destroyingFocusedFloatingEditorDoesNotPublish_data()
+    {
+        QTest::addColumn<int>("destruction");
+        QTest::newRow("panel") << 0;
+        QTest::newRow("parent") << 1;
+        QTest::newRow("remove-dock") << 2;
+    }
+
+    void destroyingFocusedFloatingEditorDoesNotPublish()
+    {
+        QFETCH(int, destruction);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QTemporaryDir directory;
+        const auto path = directory.filePath("labels.userdata3.json");
+        live2dstruct::CModelUserData data;
+        data.SetEntries({{QStringLiteral("ArtMesh"), document.Drawables().first().id, QStringLiteral("old"), {}}});
+        QVERIFY(data.Save(path));
+        auto window = std::make_unique<QMainWindow>();
+        QPointer<CUserDataPanel> panel = new CUserDataPanel(window.get());
+        panel->SetValidArtMeshIds({document.Drawables().first().id});
+        QVERIFY(panel->LoadUserData(path));
+        window->addDockWidget(Qt::RightDockWidgetArea, panel);
+        window->show();
+        panel->setFloating(true);
+        panel->resize(700, 500);
+        panel->show();
+        panel->activateWindow();
+        auto* table = panel->findChild<QTableWidget*>("userDataTable");
+        QVERIFY(table);
+        table->setCurrentCell(0, 1);
+        table->editItem(table->item(0, 1));
+        auto* editor = table->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        editor->setFocus();
+        QTRY_VERIFY(editor->hasFocus());
+        editor->selectAll();
+        QTest::keyClicks(editor, "pending label");
+        QCOMPARE(table->item(0, 1)->text(), QStringLiteral("old"));
+        QVERIFY(panel->HasUnsavedChanges());
+        QSignalSpy dirty(panel, &CUserDataPanel::DirtyChanged);
+        QSignalSpy saved(panel, &CUserDataPanel::UserDataSaved);
+        if (destruction == 2) {
+            window->removeDockWidget(panel);
+            QCOMPARE(dirty.size(), 1);
+            QCOMPARE(table->item(0, 1)->text(), QStringLiteral("pending label"));
+        }
+        const auto beforeDestruction = dirty.size();
+        if (destruction == 1) window.reset();
+        else delete panel.data();
+        QCoreApplication::processEvents();
+        QVERIFY(!panel);
+        QCOMPARE(dirty.size(), beforeDestruction);
+        QCOMPARE(saved.size(), 0);
+        live2dstruct::CModelUserData savedData;
+        QVERIFY(savedData.Load(path));
+        QCOMPARE(savedData.Entries().first().value, QStringLiteral("old"));
+    }
+
     void firstSaveRejectsChangedManifestAndPreservesDraft_data()
     {
         QTest::addColumn<QString>("change");

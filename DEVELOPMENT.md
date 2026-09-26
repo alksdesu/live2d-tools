@@ -797,3 +797,18 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 导出专项另有四个实际应用进程：有源和无源草稿均通过 MainWindow 捕获、标准包准备及目录发布，完整 Physics JSON 与草稿规范化后相等；移动到 Unicode 目录后新进程加载的力场、权重、倍率与粒子值正确。两例均实际执行 cmo3 导出对话框并回读 CAFF，确认相应组和已支持数值进入工程，草稿、历史及预览不变。摘要：`/tmp/live2d-physics-export-acceptance-proof/summary.json`，SHA-256 为 `682c93371c5146d0d4bcb9b3edd04c2c141a5b807187851ea13849aa8bcb75f8`。
 - cmo3 现有物理写入器仍缺少 FPS、有效力场和归一化字段；不能把组及粒子回读扩大为物理全字段与 Cubism Editor 等价。X/Y 输出倍率的 XML 字段映射也需结合原生工程验证，后续补齐这些消费端。
 - 本批未实现实时粒子/输出监视、物理预设或独立模型录制烘焙；关系图仍是配置关系显示。Windows、Photoshop/Cubism Editor 回读及后续九类扩展仍待完成，整体升级目标继续进行。
+
+## 浮动编辑面板的析构回调
+
+- 同类扫描使用真实参数、属性、标签面板及 Mark 文档，在 Cocoa 下确认三类浮动面板直接删除、或父窗口直接销毁时的内存错误。Qt 在 QWidget 基类析构阶段清除焦点，触发数值框或表格提交，而派生类的锁定集合、选区字符串及标签 ID 集合已释放。属性面板的 ArtMesh、Warp、Rotation 三张表格分别复现。
+- 三个面板增加显式析构，在派生成员释放前断开后代控件到面板的回调；正常编辑、失焦提交、共享 delegate 和数据格式保持不变。按现有主窗口 `removeDockWidget` 后 `delete` 的顺序，编辑会在派生对象仍有效时提交；这个路径原先未复现错误，修复后的测试继续验证其正常行为。
+- 新增 15 条仓库回归，用外部文档修订号、编辑处理器、公开信号和磁盘内容验证没有析构晚提交。参数测试先完成一次 Enter 编辑，确保锁定集合有实际存储；属性测试避免由测试自身共享选区字符串缓冲而掩盖释放错误。
+- UserData 23 项、Inspector 85 项、参数面板 160 项，普通及 ASAN/UBSAN 各 268 项全部通过。另在普通 Cocoa 与 ASAN Cocoa 环境分别通过 15 条新增场景。原实际错误调用栈、修复后日志及适用边界保留在 `/tmp/widgets-close-review/REPORT.md`。
+- 完整原生应用重新编译链接成功，7 个编译单元，1005 项生产输入和 69 个原资源在构建前后保持不变；记录为 `/tmp/live2d-widget-shutdown-native-inputs.json`。此批的运行证据是实际 Cocoa 组件生命周期，不扩称完整主程序所有关闭场景已验收。
+
+## cmo3 物理字段的原生格式依据
+
+- 从官方样本取得 Mark、Hiyori Free/Pro 和 Mao 原生工程，并与同包 physics3 对照；没有使用本工具生成的 cmo3 作为格式证据。35 组共 210 个归一化值一致。每个 `CPhysicsSettingsSource` 的直接 `f` 子项为 `normalizedPositionValueMin`、`normalizedPositionValueMax`、`normalizedPositionDefaultValue`、`normalizedAngleValueMin`、`normalizedAngleValueMax`、`normalizedAngleDefaultValue`。
+- Mao 的 `CPhysicsSettingsSourceSet` 直接 `i/settingFPS` 为 30，与运行时一致；Hiyori Pro 未指定时使用 `null/settingFPS`。旧样本没有该字段。整数 FPS 可据此补齐；0、小数及非默认力场不能静默猜测或截断转换。
+- 65 个原生输出全为 Angle，没有 X/Y 实例；四份 XML 均没有 gravity/wind 字段，配套运行时均为默认力场。现有资料不足以证明 X/Y 的 Editor 映射或非默认力场的存储方式，仍需专门原生样本或实现依据。
+- 具体官方来源、样本 SHA、逐字段核对和版本信息：`/tmp/live2d-native-physics-reference/README.md`、`audit.json`；后者 SHA-256 为 `fc5165012fb1d08fc92d199a12d288e4d5c5784a5919e4f94e99965a4ce08286`。此处是后续修复依据，尚未修改 cmo3 写入器。

@@ -15,6 +15,8 @@
 #include <QLineEdit>
 #include <QTimer>
 #include <QApplication>
+#include <QMainWindow>
+#include <QPointer>
 #include <QClipboard>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -26,11 +28,88 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <memory>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void destroyingFocusedFloatingKeyformEditorDoesNotSubmit_data()
+    {
+        QTest::addColumn<QString>("type");
+        QTest::addColumn<int>("destruction");
+        for (const auto* type : {"artmesh", "warp", "rotation"})
+            for (int destruction = 0; destruction < 3; ++destruction)
+                QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(destruction))) << QString(type) << destruction;
+    }
+
+    void destroyingFocusedFloatingKeyformEditorDoesNotSubmit()
+    {
+        using namespace live2dstruct;
+        QFETCH(QString, type);
+        QFETCH(int, destruction);
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QString id;
+        if (type == "artmesh") {
+            for (const auto& drawable : document.Drawables())
+                if (!drawable.keyforms.isEmpty()) { id = drawable.id; break; }
+        } else {
+            for (const auto& deformer : document.Deformers()) {
+                if (type == "warp" && deformer.type == CModelDeformer::Warp && !deformer.warpKeyforms.isEmpty()) {
+                    id = deformer.id; break;
+                }
+                if (type == "rotation" && deformer.type == CModelDeformer::Rotation && !deformer.rotationKeyforms.isEmpty()) {
+                    id = deformer.id; break;
+                }
+            }
+        }
+        QVERIFY(!id.isEmpty());
+        int calls = 0;
+        auto window = std::make_unique<QMainWindow>();
+        QPointer<CInspectorPanel> panel = new CInspectorPanel(window.get());
+        panel->SetDocument(&document);
+        panel->SetSelection(id, QString::fromUtf8(type.toUtf8()));
+        panel->SetEditHandler([&](const CModelEdit& edit, QString*) {
+            ++calls;
+            return document.ExecuteEdit(edit);
+        });
+        window->addDockWidget(Qt::RightDockWidgetArea, panel);
+        window->show();
+        panel->setFloating(true);
+        panel->resize(700, 1100);
+        panel->show();
+        panel->activateWindow();
+        const auto tableName = type == "artmesh" ? "keyformVertexTable" : type == "warp" ? "warpKeyformTable" : "rotationKeyformTable";
+        auto* table = panel->findChild<QTableWidget*>(tableName);
+        QVERIFY(table && table->isEnabled() && table->rowCount() > 0);
+        table->setCurrentCell(0, 1);
+        const auto previous = table->item(0, 1)->text();
+        table->editItem(table->item(0, 1));
+        auto* editor = table->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        editor->setFocus();
+        QTRY_VERIFY(editor->hasFocus());
+        editor->selectAll();
+        QTest::keyClicks(editor, qPrintable(QString::number(previous.toDouble() + 0.25, 'g', 9)));
+        QCOMPARE(table->item(0, 1)->text(), previous);
+        const auto revision = document.Revision();
+        QCOMPARE(calls, 0);
+        if (destruction == 2) {
+            window->removeDockWidget(panel);
+            QCOMPARE(calls, 1);
+            QCOMPARE(document.Revision(), revision + 1);
+        }
+        const auto beforeDestruction = document.Revision();
+        const int submitted = calls;
+        if (destruction == 1) window.reset();
+        else delete panel.data();
+        QCoreApplication::processEvents();
+        QVERIFY(!panel);
+        QCOMPARE(calls, submitted);
+        QCOMPARE(document.Revision(), beforeDestruction);
+    }
+
     void synchronizedKeyformTracksTheDocumentWithoutActivation_data()
     {
         QTest::addColumn<QString>("type");

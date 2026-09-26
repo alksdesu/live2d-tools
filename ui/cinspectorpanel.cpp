@@ -491,6 +491,12 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     ClearSelection();
 }
 
+CInspectorPanel::~CInspectorPanel()
+{
+    // 浮动窗口销毁时会提交编辑，须在派生成员释放前断开。
+    for (QObject* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
+}
+
 void CInspectorPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
     const bool sameDocument = m_document == document;

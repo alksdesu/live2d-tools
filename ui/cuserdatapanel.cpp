@@ -76,6 +76,12 @@ CUserDataPanel::CUserDataPanel(QWidget* parent)
     RefreshState();
 }
 
+CUserDataPanel::~CUserDataPanel()
+{
+    // 浮动窗口销毁时会提交编辑，须在派生成员释放前断开。
+    for (QObject* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
+}
+
 void CUserDataPanel::SetValidArtMeshIds(const QSet<QString>& ids)
 {
     m_validArtMeshIds = ids;

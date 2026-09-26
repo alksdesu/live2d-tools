@@ -25,6 +25,7 @@ class CInspectorPanel : public QDockWidget
     Q_OBJECT
 public:
     explicit CInspectorPanel(QWidget* parent = nullptr);
+    ~CInspectorPanel() override;
 
     void SetDocument(live2dstruct::CModelDocument* document);
     void SetSelection(const QString& name, const QString& type);

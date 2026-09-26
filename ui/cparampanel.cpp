@@ -266,6 +266,12 @@ CParamPanel::CParamPanel(QWidget *parent)
     UpdateStructureActions();
 }
 
+CParamPanel::~CParamPanel()
+{
+    // 浮动窗口销毁时会提交编辑，须在派生成员释放前断开。
+    for (QObject* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
+}
+
 void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
     if (m_document != document) {

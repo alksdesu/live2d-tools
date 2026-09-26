@@ -13,6 +13,7 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QApplication>
+#include <QMainWindow>
 #include <QClipboard>
 #include <QInputDialog>
 #include <QDialog>
@@ -166,6 +167,54 @@ private:
     }
 
 private slots:
+    void destroyingFocusedFloatingEditorDoesNotPublish_data()
+    {
+        QTest::addColumn<int>("destruction");
+        QTest::newRow("panel") << 0;
+        QTest::newRow("parent") << 1;
+        QTest::newRow("remove-dock") << 2;
+    }
+
+    void destroyingFocusedFloatingEditorDoesNotPublish()
+    {
+        QFETCH(int, destruction);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        auto window = std::make_unique<QMainWindow>();
+        QPointer<CParamPanel> panel = new CParamPanel(window.get());
+        panel->SetDocument(&document);
+        panel->BuildParams();
+        window->addDockWidget(Qt::RightDockWidgetArea, panel);
+        window->show();
+        panel->setFloating(true);
+        panel->resize(600, 900);
+        panel->show();
+        panel->activateWindow();
+        auto* spin = panel->m_rows.first().spinBox;
+        auto* editor = spin->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        spin->setFocus();
+        QTRY_VERIFY(spin->hasFocus());
+        editor->selectAll();
+        QTest::keyClicks(editor, "1");
+        QTest::keyClick(editor, Qt::Key_Return);
+        QVERIFY(panel->m_userLocked.contains(0));
+        editor->selectAll();
+        QTest::keyClicks(editor, "2");
+        QVERIFY(spin->hasFocus());
+        const auto revision = document.Revision();
+        QSignalSpy changes(panel, &CParamPanel::ParamChanged);
+        QSignalSpy history(panel, &CParamPanel::HistoryChanged);
+        if (destruction == 2) window->removeDockWidget(panel);
+        if (destruction == 1) window.reset();
+        else delete panel.data();
+        QCoreApplication::processEvents();
+        QVERIFY(!panel);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(changes.size(), 0);
+        QCOMPARE(history.size(), 0);
+    }
+
     void previewHistoryRestoresRuntimeAndDocumentBaselinesSeparately_data()
     {
         QTest::addColumn<bool>("explicitBaseline");
