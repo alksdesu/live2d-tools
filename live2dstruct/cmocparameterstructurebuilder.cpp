@@ -394,7 +394,7 @@ bool bindingOwners(const Layout& layout, QVector<int>& owners, QString* error)
     return true;
 }
 
-bool readOwner(const Layout& layout, const Builder::Owner& owner, int parameter,
+bool readOwnerGrid(const Layout& layout, const Builder::Owner& owner,
                const QVector<int>& owners, const QHash<QPair<int, QString>, int>& objectIndices,
                OwnerInfo& result, QString* error)
 {
@@ -422,7 +422,6 @@ bool readOwner(const Layout& layout, const Builder::Owner& owner, int parameter,
     if (candidate.count <= 0 || !range(candidate.first, candidate.count, layout.counts[mesh ? 9 : owner.type == Builder::Owner::Warp ? 7 : 8]))
         return fail(error, QStringLiteral("对象关键形范围无效：%1").arg(owner.id));
     qint64 product = 1;
-    QSet<int> parameters;
     if (binding != -1) {
         if (!range(binding, 1, layout.counts[12])) return fail(error, QStringLiteral("对象绑定索引无效"));
         const int first = layout.value(QStringLiteral("keyform_bindings.parameter_binding_index_sources_begin_indices"), binding);
@@ -433,10 +432,8 @@ bool readOwner(const Layout& layout, const Builder::Owner& owner, int parameter,
             if (!range(reference, 1, owners.size()) || owners[reference] < 0)
                 return fail(error, QStringLiteral("绑定轴缺少唯一参数"));
             const int ownerParameter = owners[reference];
-            if (ownerParameter == parameter) return fail(error, QStringLiteral("对象已绑定此参数：%1").arg(owner.id));
-            if (parameters.contains(ownerParameter) || layout.value(QStringLiteral("parameters.parameter_types"), ownerParameter) != 0)
-                return fail(error, QStringLiteral("对象含重复参数轴或不支持的绑定类型"));
-            parameters.insert(ownerParameter);
+            if (layout.value(QStringLiteral("parameters.parameter_types"), ownerParameter) != 0)
+                return fail(error, QStringLiteral("对象含非普通参数绑定轴"));
             const int begin = layout.value(QStringLiteral("parameter_bindings.keys_sources_begin_indices"), reference);
             const int keyCount = layout.value(QStringLiteral("parameter_bindings.keys_sources_counts"), reference);
             if (keyCount <= 0 || !range(begin, keyCount, layout.counts[14]) || product > candidate.count / keyCount)
@@ -470,20 +467,9 @@ bool requestKeys(const QVector<float>& values, float minimum, float maximum, QBy
     return true;
 }
 
-bool bind(Layout& layout, int parameter, const QVector<Builder::BindingRequest>& requests,
-          QVector<Builder::KeyformRemap>& remaps, QString* error)
+void ownerCatalog(const Layout& layout, QHash<QPair<int, QString>, int>& objectIndices,
+                  QHash<QPair<int, int>, int>& specificUsers)
 {
-    if (requests.isEmpty()) return true;
-    if (layout.value(QStringLiteral("parameters.parameter_types"), parameter) != 0)
-        return fail(error, QStringLiteral("融合参数不能绑定为普通关键形轴"));
-    const float minimum = layout.real(QStringLiteral("parameters.min_values"), parameter);
-    const float maximum = layout.real(QStringLiteral("parameters.max_values"), parameter);
-    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum)
-        return fail(error, QStringLiteral("参数范围无效"));
-    QVector<int> owners;
-    if (!bindingOwners(layout, owners, error)) return false;
-    QHash<QPair<int, QString>, int> objectIndices;
-    QHash<QPair<int, int>, int> specificUsers;
     const auto addObject = [&](int type, const QString& id, int index) {
         const auto key = qMakePair(type, id);
         objectIndices.insert(key, objectIndices.contains(key) ? -2 : index);
@@ -496,51 +482,40 @@ bool bind(Layout& layout, int parameter, const QVector<Builder::BindingRequest>&
         addObject(type + 1, layout.id(QStringLiteral("deformers.ids"), index), index);
         ++specificUsers[qMakePair(type, layout.value(QStringLiteral("deformers.specific_sources_indices"), index))];
     }
-    QVector<OwnerInfo> targets;
-    QVector<QByteArray> keySets;
-    QSet<QPair<int, QString>> uniqueOwners;
-    qint64 addedReferences = 0, addedColors = 0;
-    QMap<int, qint64> addedKeyforms;
-    for (const auto& request : requests) {
-        const auto key = qMakePair(int(request.owner.type), request.owner.id);
-        if (uniqueOwners.contains(key)) return fail(error, QStringLiteral("绑定请求包含重复对象"));
-        uniqueOwners.insert(key);
-        OwnerInfo owner;
-        QByteArray keys;
-        if (!readOwner(layout, request.owner, parameter, owners, objectIndices, owner, error) ||
-            !requestKeys(request.keys, minimum, maximum, keys, error)) return false;
-        if (owner.owner.type != Builder::Owner::ArtMesh &&
-            specificUsers.value(qMakePair(owner.owner.type == Builder::Owner::Warp ? 0 : 1, owner.source)) > 1)
-            return fail(error, QStringLiteral("共享专用变形器源无法保证无损拆分：%1").arg(owner.owner.id));
-        if (request.keys.size() > MaximumCount / owner.count)
-            return fail(error, QStringLiteral("新增参数轴后的关键形数量超出范围"));
-        const int keyformCountIndex = layout.column(owner.keyforms + QStringLiteral(".opacities")).countIndex;
-        const qint64 newRows = qint64(request.keys.size()) * owner.count;
-        addedReferences += owner.bindings.size() + 1;
-        addedKeyforms[keyformCountIndex] += newRows;
-        if (layout.present(owner.group + QStringLiteral(".keyform_color_sources_begin_indices"))) addedColors += newRows;
-        if (addedReferences > MaximumCount - layout.counts[11] || requests.size() > MaximumCount - layout.counts[12] ||
-            addedKeyforms[keyformCountIndex] > MaximumCount - layout.counts[keyformCountIndex] ||
-            addedColors > MaximumCount - layout.counts[23] || addedColors > MaximumCount - layout.counts[24])
-            return fail(error, QStringLiteral("绑定后的数组总量超出范围"));
-        targets.append(std::move(owner));
-        keySets.append(std::move(keys));
-    }
+}
+
+struct BindingInsertion
+{
+    QVector<int> references;
+    int position = 0;
+    int count = 0;
+};
+
+bool insertParameterBindings(Layout& layout, int parameter, const QVector<QByteArray>& sets,
+                             BindingInsertion& result, QString* error)
+{
     const int oldBegin = layout.value(QStringLiteral("parameters.parameter_binding_sources_begin_indices"), parameter);
     const int oldCount = layout.value(QStringLiteral("parameters.parameter_binding_sources_counts"), parameter);
     if (!range(oldBegin, oldCount, layout.counts[13])) return fail(error, QStringLiteral("参数原绑定范围无效"));
     QHash<QByteArray, int> existing;
+    QSet<QPair<int, int>> encodedSlices;
+    qint64 keyReferences = 0;
     for (int index = 0; index < oldCount; ++index) {
         const int binding = oldBegin + index;
         const int first = layout.value(QStringLiteral("parameter_bindings.keys_sources_begin_indices"), binding);
         const int count = layout.value(QStringLiteral("parameter_bindings.keys_sources_counts"), binding);
         if (!range(first, count, layout.counts[14]) || count <= 0) return fail(error, QStringLiteral("源参数绑定关键值范围无效"));
-        const auto keys = layout.data(QStringLiteral("keys.values")).mid(first * 4, count * 4);
+        const auto slice = qMakePair(first, count);
+        if (encodedSlices.contains(slice)) continue;
+        encodedSlices.insert(slice);
+        if (count > MaximumCount - keyReferences) return fail(error, QStringLiteral("参数绑定关键值引用总量超出范围"));
+        keyReferences += count;
+        const QByteArray keys(layout.address(QStringLiteral("keys.values"), first, 4), count * 4);
         if (!existing.contains(keys)) existing.insert(keys, binding);
     }
     QVector<QByteArray> added;
     QHash<QByteArray, int> addedIndex;
-    for (const auto& keys : keySets) if (!existing.contains(keys) && !addedIndex.contains(keys)) {
+    for (const auto& keys : sets) if (!existing.contains(keys) && !addedIndex.contains(keys)) {
         addedIndex.insert(keys, added.size());
         added.append(keys);
     }
@@ -569,9 +544,71 @@ bool bind(Layout& layout, int parameter, const QVector<Builder::BindingRequest>&
             if (!range(value, 1, layout.counts[13])) return fail(error, QStringLiteral("源关键形引用参数绑定越界"));
             if (value >= insertAt) layout.set(QStringLiteral("parameter_binding_indices.binding_sources_indices"), index, integer(value + added.size()));
         }
-        for (auto& owner : targets) for (int& reference : owner.bindings) if (reference >= insertAt) reference += added.size();
         layout.counts[13] += added.size();
     }
+    result.position = insertAt;
+    result.count = added.size();
+    for (const auto& keys : sets)
+        result.references.append(existing.contains(keys) ? existing.value(keys) : insertAt + addedIndex.value(keys));
+    return true;
+}
+
+bool bind(Layout& layout, int parameter, const QVector<Builder::BindingRequest>& requests,
+          QVector<Builder::KeyformRemap>& remaps, QString* error)
+{
+    if (requests.isEmpty()) return true;
+    if (layout.value(QStringLiteral("parameters.parameter_types"), parameter) != 0)
+        return fail(error, QStringLiteral("融合参数不能绑定为普通关键形轴"));
+    const float minimum = layout.real(QStringLiteral("parameters.min_values"), parameter);
+    const float maximum = layout.real(QStringLiteral("parameters.max_values"), parameter);
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum)
+        return fail(error, QStringLiteral("参数范围无效"));
+    QVector<int> owners;
+    if (!bindingOwners(layout, owners, error)) return false;
+    QHash<QPair<int, QString>, int> objectIndices;
+    QHash<QPair<int, int>, int> specificUsers;
+    ownerCatalog(layout, objectIndices, specificUsers);
+    QVector<OwnerInfo> targets;
+    QVector<QByteArray> keySets;
+    QSet<QPair<int, QString>> uniqueOwners;
+    qint64 addedReferences = 0, addedColors = 0;
+    QMap<int, qint64> addedKeyforms;
+    for (const auto& request : requests) {
+        const auto key = qMakePair(int(request.owner.type), request.owner.id);
+        if (uniqueOwners.contains(key)) return fail(error, QStringLiteral("绑定请求包含重复对象"));
+        uniqueOwners.insert(key);
+        OwnerInfo owner;
+        QByteArray keys;
+        if (!readOwnerGrid(layout, request.owner, owners, objectIndices, owner, error) ||
+            !requestKeys(request.keys, minimum, maximum, keys, error)) return false;
+        QSet<int> boundParameters;
+        for (int reference : owner.bindings) {
+            const int bound = owners[reference];
+            if (bound == parameter) return fail(error, QStringLiteral("对象已绑定此参数：%1").arg(request.owner.id));
+            if (boundParameters.contains(bound)) return fail(error, QStringLiteral("对象含重复参数轴或不支持的绑定类型"));
+            boundParameters.insert(bound);
+        }
+        if (owner.owner.type != Builder::Owner::ArtMesh &&
+            specificUsers.value(qMakePair(owner.owner.type == Builder::Owner::Warp ? 0 : 1, owner.source)) > 1)
+            return fail(error, QStringLiteral("共享专用变形器源无法保证无损拆分：%1").arg(owner.owner.id));
+        if (request.keys.size() > MaximumCount / owner.count)
+            return fail(error, QStringLiteral("新增参数轴后的关键形数量超出范围"));
+        const int keyformCountIndex = layout.column(owner.keyforms + QStringLiteral(".opacities")).countIndex;
+        const qint64 newRows = qint64(request.keys.size()) * owner.count;
+        addedReferences += owner.bindings.size() + 1;
+        addedKeyforms[keyformCountIndex] += newRows;
+        if (layout.present(owner.group + QStringLiteral(".keyform_color_sources_begin_indices"))) addedColors += newRows;
+        if (addedReferences > MaximumCount - layout.counts[11] || requests.size() > MaximumCount - layout.counts[12] ||
+            addedKeyforms[keyformCountIndex] > MaximumCount - layout.counts[keyformCountIndex] ||
+            addedColors > MaximumCount - layout.counts[23] || addedColors > MaximumCount - layout.counts[24])
+            return fail(error, QStringLiteral("绑定后的数组总量超出范围"));
+        targets.append(std::move(owner));
+        keySets.append(std::move(keys));
+    }
+    BindingInsertion inserted;
+    if (!insertParameterBindings(layout, parameter, keySets, inserted, error)) return false;
+    for (auto& owner : targets) for (int& reference : owner.bindings)
+        if (reference >= inserted.position) reference += inserted.count;
     if (layout.present(QStringLiteral("parameters.keys_sources_begin_indices")) &&
         layout.present(QStringLiteral("parameters.keys_sources_counts"))) {
         const int first = layout.value(QStringLiteral("parameters.keys_sources_begin_indices"), parameter);
@@ -594,8 +631,7 @@ bool bind(Layout& layout, int parameter, const QVector<Builder::BindingRequest>&
     for (int targetIndex = 0; targetIndex < targets.size(); ++targetIndex) {
         auto owner = targets[targetIndex];
         const auto& request = requests[targetIndex];
-        const auto& keys = keySets[targetIndex];
-        const int binding = existing.contains(keys) ? existing.value(keys) : insertAt + addedIndex.value(keys);
+        const int binding = inserted.references[targetIndex];
         const int axisBegin = layout.counts[11];
         for (int reference : owner.bindings) layout.append(QStringLiteral("parameter_binding_indices.binding_sources_indices"), integer(reference));
         layout.append(QStringLiteral("parameter_binding_indices.binding_sources_indices"), integer(binding));
@@ -896,7 +932,7 @@ struct DeleteAxis
     double fraction = 0;
 };
 
-struct DeleteReduction
+struct KeyformReduction
 {
     Builder::DeleteTarget::Type type;
     QString group;
@@ -916,12 +952,12 @@ struct DeletePlan
 {
     int parameter = -1;
     int constantHost = -1;
-    QVector<DeleteReduction> reductions;
+    QVector<KeyformReduction> reductions;
     QVector<FrozenConstraint> constraints;
     Builder::DeleteImpact impact;
 };
 
-QVector<QPair<int, double>> deleteContributors(const DeleteReduction& reduction, int local, int parameter)
+QVector<QPair<int, double>> deleteContributors(const KeyformReduction& reduction, int local, int parameter)
 {
     int base = reduction.first;
     for (const auto& axis : reduction.axes) {
@@ -947,12 +983,25 @@ QVector<QPair<int, double>> deleteContributors(const DeleteReduction& reduction,
     return result;
 }
 
+void keyInterval(const QVector<float>& values, float value, DeleteAxis& axis)
+{
+    axis.count = values.size();
+    axis.fraction = 0;
+    const auto high = std::lower_bound(values.cbegin(), values.cend(), value);
+    if (high == values.cend()) axis.first = axis.last = values.size() - 1;
+    else if (high == values.cbegin() || *high == value) axis.first = axis.last = int(high - values.cbegin());
+    else {
+        axis.last = int(high - values.cbegin());
+        axis.first = axis.last - 1;
+        axis.fraction = (double(value) - values[axis.first]) / (double(values[axis.last]) - values[axis.first]);
+    }
+}
+
 bool deleteInterval(const Layout& layout, const QString& keys, int first, int count,
                     float value, DeleteAxis& axis, QString* error)
 {
     if (count <= 0 || !range(first, count, layout.counts[layout.column(keys).countIndex]))
         return fail(error, QStringLiteral("冻结所需关键值区间无效"));
-    axis.count = count;
     float previous = 0;
     QVector<float> values;
     values.reserve(count);
@@ -963,14 +1012,7 @@ bool deleteInterval(const Layout& layout, const QString& keys, int first, int co
         values.append(key);
         previous = key;
     }
-    const auto high = std::lower_bound(values.cbegin(), values.cend(), value);
-    if (high == values.cend()) axis.first = axis.last = count - 1;
-    else if (high == values.cbegin() || *high == value) axis.first = axis.last = int(high - values.cbegin());
-    else {
-        axis.last = int(high - values.cbegin());
-        axis.first = axis.last - 1;
-        axis.fraction = (double(value) - values[axis.first]) / (double(values[axis.last]) - values[axis.first]);
-    }
+    keyInterval(values, value, axis);
     return true;
 }
 
@@ -1038,7 +1080,7 @@ bool makeDeletePlan(const Layout& layout, const Builder::DeleteRequest& request,
                 affected = affected || parameterOwners[reference] == plan.parameter;
             }
             if (!affected) continue;
-            DeleteReduction reduction{};
+            KeyformReduction reduction{};
             reduction.type = group.type;
             reduction.group = name;
             reduction.keyforms = keyforms;
@@ -1048,6 +1090,7 @@ bool makeDeletePlan(const Layout& layout, const Builder::DeleteRequest& request,
             if (reduction.count <= 0 || !range(reduction.first, reduction.count, layout.counts[keyformCountIndex]))
                 return fail(error, QStringLiteral("冻结对象关键形区间无效"));
             int product = 1, remaining = 1;
+            QStringList uncoveredAxes;
             for (int reference : references) {
                 DeleteAxis axis;
                 axis.parameter = parameterOwners[reference];
@@ -1060,8 +1103,12 @@ bool makeDeletePlan(const Layout& layout, const Builder::DeleteRequest& request,
                 if (axis.parameter != plan.parameter) remaining *= keyCount;
                 else {
                     reduction.interpolated = reduction.interpolated || axis.first != axis.last;
-                    if (keyCount == 1 && request.freezeValue != layout.real(QStringLiteral("keys.values"), keyBegin))
-                        plan.impact.blockingReasons.append(QStringLiteral("单关键值轴在键值外的显示状态尚不能无损冻结：%1[%2]").arg(name).arg(row));
+                    const float low = layout.real(QStringLiteral("keys.values"), keyBegin);
+                    const float high = layout.real(QStringLiteral("keys.values"), keyBegin + keyCount - 1);
+                    if (request.freezeValue < low || request.freezeValue > high)
+                        uncoveredAxes.append(QStringLiteral("参数 %1 的第 %2 轴关键值区间 [%3, %4] 不包含冻结值 %5")
+                            .arg(request.id).arg(reduction.axes.size() + 1).arg(double(low), 0, 'g', 9)
+                            .arg(double(high), 0, 'g', 9).arg(double(request.freezeValue), 0, 'g', 9));
                 }
                 if (layout.value(QStringLiteral("parameters.parameter_types"), axis.parameter) != 0)
                     plan.impact.blockingReasons.append(QStringLiteral("对象包含非普通参数轴：%1[%2]").arg(name).arg(row));
@@ -1095,6 +1142,9 @@ bool makeDeletePlan(const Layout& layout, const Builder::DeleteRequest& request,
                 }
             } else targetIds.append(layout.id(name + QStringLiteral(".ids"), row));
             if (targetIds.isEmpty()) targetIds.append(QString());
+            for (const auto& id : targetIds) for (const auto& detail : uncoveredAxes)
+                plan.impact.blockingReasons.append(QStringLiteral("%1：%2；区间外结果依赖历史姿态，不能静态冻结")
+                    .arg(id.isEmpty() ? QStringLiteral("%1[%2]").arg(name).arg(row) : id, detail));
             for (const auto& id : targetIds)
                 plan.impact.targets.append({group.type, id, row, reduction.count, remaining, reduction.interpolated});
             if (group.type == Builder::DeleteTarget::Rotation) {
@@ -1143,99 +1193,369 @@ bool makeDeletePlan(const Layout& layout, const Builder::DeleteRequest& request,
     return true;
 }
 
-bool reduceDeleteRows(Layout& layout, const DeletePlan& plan, QString* error)
+template<class Contributors>
+bool writeReducedForms(Layout& layout, const KeyformReduction& reduction, Contributors contributors, QString* error)
 {
-    for (const auto& reduction : plan.reductions) {
-        QVector<int> columns;
-        int countIndex = -1;
-        for (const auto& span : layout.columns) if (QString::fromLatin1(span.name).section('.', 0, 0) == reduction.keyforms) {
-            countIndex = span.countIndex;
-            if (span.offset || layout.changes.contains(span.slot) || !span.optional) columns.append(span.slot);
+    QVector<int> columns;
+    int countIndex = -1;
+    for (const auto& span : layout.columns) if (QString::fromLatin1(span.name).section('.', 0, 0) == reduction.keyforms) {
+        countIndex = span.countIndex;
+        if (span.offset || layout.changes.contains(span.slot) || !span.optional) columns.append(span.slot);
+    }
+    if (countIndex < 0) return fail(error, QStringLiteral("缺少关键形列定义"));
+    const int first = layout.counts[countIndex], colorBegin = layout.counts[23];
+    for (int local = 0; local < reduction.newCount; ++local) {
+        const auto terms = contributors(local);
+        long double weight = 0;
+        for (const auto& term : terms) {
+            if (!range(term.first - qint64(reduction.first), 1, reduction.count) ||
+                !std::isfinite(term.second) || term.second < 0)
+                return fail(error, QStringLiteral("关键形贡献的来源或权重无效"));
+            weight += term.second;
         }
-        if (countIndex < 0) return fail(error, QStringLiteral("缺少关键形列定义"));
-        const int first = layout.counts[countIndex], colorBegin = layout.counts[23];
-        for (int local = 0; local < reduction.newCount; ++local) {
-            const auto terms = deleteContributors(reduction, local, plan.parameter);
-            QHash<QString, int> colors;
-            if (reduction.colorBegin >= 0) {
-                for (const auto& channel : {QStringLiteral("multiply"), QStringLiteral("screen")}) {
-                    const QString pool = QStringLiteral("keyform_") + channel + QStringLiteral("_colors");
-                    const QString indices = reduction.keyforms + '.' + channel + QStringLiteral("_color_sources_indices");
-                    const int index = channel == QLatin1String("multiply") ? 23 : 24;
-                    colors.insert(channel, layout.counts[index]++);
-                    for (const auto& component : {QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}) {
-                        const QString field = pool + '.' + component;
-                        double value = 0;
-                        int source = 0;
-                        for (const auto& term : terms) {
-                            source = layout.present(indices) ? layout.value(indices, term.first)
-                                : reduction.colorBegin + term.first - reduction.first;
-                            if (!range(source, 1, layout.column(field).count)) return fail(error, QStringLiteral("冻结颜色索引越界"));
-                            const double cell = layout.real(field, source);
-                            if (!std::isfinite(cell)) return fail(error, QStringLiteral("源关键形颜色不是有限值"));
-                            value += cell * term.second;
-                        }
-                        QByteArray encoded;
-                        if (terms.size() == 1) encoded = layout.data(field).mid(source * 4, 4);
-                        else if (!deleteFloat(value, encoded, error)) return false;
-                        layout.append(field, encoded);
+        if (terms.isEmpty() || std::abs(weight - 1.0L) > 1e-12L)
+            return fail(error, QStringLiteral("关键形贡献权重必须归一化"));
+        QHash<QString, int> colors;
+        if (reduction.colorBegin >= 0) {
+            for (const auto& channel : {QStringLiteral("multiply"), QStringLiteral("screen")}) {
+                const QString pool = QStringLiteral("keyform_") + channel + QStringLiteral("_colors");
+                const QString indices = reduction.keyforms + '.' + channel + QStringLiteral("_color_sources_indices");
+                const int index = channel == QLatin1String("multiply") ? 23 : 24;
+                colors.insert(channel, layout.counts[index]++);
+                for (const auto& component : {QStringLiteral("r"), QStringLiteral("g"), QStringLiteral("b")}) {
+                    const QString field = pool + '.' + component;
+                    double value = 0;
+                    double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
+                    int source = 0;
+                    for (const auto& term : terms) {
+                        source = layout.present(indices) ? layout.value(indices, term.first)
+                            : reduction.colorBegin + term.first - reduction.first;
+                        if (!range(source, 1, layout.column(field).count)) return fail(error, QStringLiteral("冻结颜色索引越界"));
+                        const double cell = layout.real(field, source);
+                        if (!std::isfinite(cell)) return fail(error, QStringLiteral("源关键形颜色不是有限值"));
+                        value += cell * term.second;
+                        minimum = std::min(minimum, cell); maximum = std::max(maximum, cell);
                     }
+                    QByteArray encoded;
+                    if (terms.size() == 1) encoded = layout.data(field).mid(source * 4, 4);
+                    else if (!deleteFloat(std::clamp(value, minimum, maximum), encoded, error)) return false;
+                    layout.append(field, encoded);
                 }
             }
-            for (int slot : columns) {
-                const auto& column = layout.columns.constFind(slot).value();
-                const QString name = QString::fromLatin1(column.name), field = name.section('.', 1);
-                QByteArray encoded;
-                if (field == QLatin1String("multiply_color_sources_indices") && colors.contains(QStringLiteral("multiply"))) encoded = integer(colors.value(QStringLiteral("multiply")));
-                else if (field == QLatin1String("screen_color_sources_indices") && colors.contains(QStringLiteral("screen"))) encoded = integer(colors.value(QStringLiteral("screen")));
-                else if (field == QLatin1String("keyform_position_sources_begin_indices")) {
-                    const int position = layout.value(name, terms.first().first);
-                    if (!range(position, reduction.vertices * 2, layout.column(QStringLiteral("keyform_positions.xys")).count))
-                        return fail(error, QStringLiteral("冻结坐标区间越界"));
-                    if (terms.size() == 1) {
-                        for (int component = 0; component < reduction.vertices * 2; ++component)
-                            if (!std::isfinite(layout.real(QStringLiteral("keyform_positions.xys"), position + component)))
-                                return fail(error, QStringLiteral("源关键形坐标不是有限值"));
-                        encoded = integer(position);
-                    }
-                    else {
-                        const int destination = layout.counts[10];
-                        for (int component = 0; component < reduction.vertices * 2; ++component) {
-                            double value = 0;
-                            for (const auto& term : terms) {
-                                const int source = layout.value(name, term.first);
-                                if (!range(source, reduction.vertices * 2, layout.column(QStringLiteral("keyform_positions.xys")).count))
-                                    return fail(error, QStringLiteral("冻结坐标区间越界"));
-                                value += double(layout.real(QStringLiteral("keyform_positions.xys"), source + component)) * term.second;
-                            }
-                            QByteArray coordinate;
-                            if (!deleteFloat(value, coordinate, error)) return false;
-                            layout.append(QStringLiteral("keyform_positions.xys"), coordinate);
-                            ++layout.counts[10];
-                        }
-                        encoded = integer(destination);
-                    }
-                } else if (field.startsWith(QStringLiteral("is_reflect_"))) {
-                    // Core selects reflection flags from the lower corner instead of interpolating them.
-                    encoded = layout.data(slot).mid(terms.first().first * column.width, column.width);
-                } else if (terms.size() == 1) {
-                    if (!std::isfinite(layout.real(name, terms.first().first)))
-                        return fail(error, QStringLiteral("源关键形数值不是有限值"));
-                    encoded = layout.data(slot).mid(terms.first().first * column.width, column.width);
+        }
+        for (int slot : columns) {
+            const auto& column = layout.columns.constFind(slot).value();
+            const QString name = QString::fromLatin1(column.name), field = name.section('.', 1);
+            QByteArray encoded;
+            if (field == QLatin1String("multiply_color_sources_indices") && colors.contains(QStringLiteral("multiply"))) encoded = integer(colors.value(QStringLiteral("multiply")));
+            else if (field == QLatin1String("screen_color_sources_indices") && colors.contains(QStringLiteral("screen"))) encoded = integer(colors.value(QStringLiteral("screen")));
+            else if (field == QLatin1String("keyform_position_sources_begin_indices")) {
+                const int position = layout.value(name, terms.first().first);
+                if (!range(position, reduction.vertices * 2, layout.column(QStringLiteral("keyform_positions.xys")).count))
+                    return fail(error, QStringLiteral("冻结坐标区间越界"));
+                if (terms.size() == 1) {
+                    for (int component = 0; component < reduction.vertices * 2; ++component)
+                        if (!std::isfinite(layout.real(QStringLiteral("keyform_positions.xys"), position + component)))
+                            return fail(error, QStringLiteral("源关键形坐标不是有限值"));
+                    encoded = integer(position);
                 }
                 else {
-                    double value = 0;
-                    for (const auto& term : terms) value += double(layout.real(name, term.first)) * term.second;
-                    if (!deleteFloat(value, encoded, error)) return false;
+                    const int destination = layout.counts[10];
+                    for (int component = 0; component < reduction.vertices * 2; ++component) {
+                        double value = 0;
+                        double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
+                        for (const auto& term : terms) {
+                            const int source = layout.value(name, term.first);
+                            if (!range(source, reduction.vertices * 2, layout.column(QStringLiteral("keyform_positions.xys")).count))
+                                return fail(error, QStringLiteral("冻结坐标区间越界"));
+                            const double cell = layout.real(QStringLiteral("keyform_positions.xys"), source + component);
+                            if (!std::isfinite(cell)) return fail(error, QStringLiteral("源关键形坐标不是有限值"));
+                            value += cell * term.second;
+                            minimum = std::min(minimum, cell); maximum = std::max(maximum, cell);
+                        }
+                        QByteArray coordinate;
+                        if (!deleteFloat(std::clamp(value, minimum, maximum), coordinate, error)) return false;
+                        layout.append(QStringLiteral("keyform_positions.xys"), coordinate);
+                        ++layout.counts[10];
+                    }
+                    encoded = integer(destination);
                 }
-                layout.append(name, encoded);
+            } else if (field.startsWith(QStringLiteral("is_reflect_"))) {
+                // Core selects reflection flags from the lower corner instead of interpolating them.
+                encoded = layout.data(slot).mid(terms.first().first * column.width, column.width);
+            } else if (terms.size() == 1) {
+                if (!std::isfinite(layout.real(name, terms.first().first)))
+                    return fail(error, QStringLiteral("源关键形数值不是有限值"));
+                encoded = layout.data(slot).mid(terms.first().first * column.width, column.width);
             }
-            ++layout.counts[countIndex];
+            else {
+                double value = 0;
+                double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
+                for (const auto& term : terms) {
+                    const double cell = layout.real(name, term.first);
+                    if (!std::isfinite(cell)) return fail(error, QStringLiteral("源关键形数值不是有限值"));
+                    value += cell * term.second;
+                    minimum = std::min(minimum, cell); maximum = std::max(maximum, cell);
+                }
+                if (!deleteFloat(std::clamp(value, minimum, maximum), encoded, error)) return false;
+            }
+            layout.append(name, encoded);
         }
-        layout.set(reduction.group + QStringLiteral(".keyform_sources_begin_indices"), reduction.source, integer(first));
-        layout.set(reduction.group + QStringLiteral(".keyform_sources_counts"), reduction.source, integer(reduction.newCount));
-        if (reduction.colorBegin >= 0) layout.set(reduction.group + QStringLiteral(".keyform_color_sources_begin_indices"), reduction.source, integer(colorBegin));
+        ++layout.counts[countIndex];
     }
+    layout.set(reduction.group + QStringLiteral(".keyform_sources_begin_indices"), reduction.source, integer(first));
+    layout.set(reduction.group + QStringLiteral(".keyform_sources_counts"), reduction.source, integer(reduction.newCount));
+    if (reduction.colorBegin >= 0) layout.set(reduction.group + QStringLiteral(".keyform_color_sources_begin_indices"), reduction.source, integer(colorBegin));
+    return true;
+}
+
+bool reduceDeleteRows(Layout& layout, const DeletePlan& plan, QString* error)
+{
+    for (const auto& reduction : plan.reductions)
+        if (!writeReducedForms(layout, reduction, [&](int local) {
+            return deleteContributors(reduction, local, plan.parameter);
+        }, error)) return false;
+    return true;
+}
+
+bool bindingDisplayKeys(const Layout& layout, const OwnerInfo& owner, int axis, int parameter,
+                        const QVector<int>& parameterOwners, const QVector<float>& oldKeys,
+                        const QVector<Builder::BindingKey>& newKeys, QByteArray& result, QString* error)
+{
+    if (!layout.present(QStringLiteral("parameters.keys_sources_begin_indices")) ||
+        !layout.present(QStringLiteral("parameters.keys_sources_counts"))) return true;
+    QHash<int, int> activeBindings;
+    const struct { const char* name; int count; } groups[] {
+        {"art_meshes", 4}, {"deformers", 1}, {"parts", 0}, {"glue", 20}
+    };
+    for (const auto& group : groups) for (int row = 0; row < layout.counts[group.count]; ++row) {
+        const int binding = layout.value(QString::fromLatin1(group.name) + QStringLiteral(".keyform_binding_sources_indices"), row);
+        if (binding == -1) continue;
+        if (!range(binding, 1, layout.counts[12])) return fail(error, QStringLiteral("活跃对象的绑定索引无效"));
+        ++activeBindings[binding];
+    }
+    const QString objects = owner.owner.type == Builder::Owner::ArtMesh ? QStringLiteral("art_meshes") : QStringLiteral("deformers");
+    const int edited = layout.value(objects + QStringLiteral(".keyform_binding_sources_indices"), owner.index);
+    QMap<QPair<int, int>, bool> activeRanges;
+    for (auto binding = activeBindings.cbegin(); binding != activeBindings.cend(); ++binding) {
+        const int first = layout.value(QStringLiteral("keyform_bindings.parameter_binding_index_sources_begin_indices"), binding.key());
+        const int count = layout.value(QStringLiteral("keyform_bindings.parameter_binding_index_sources_counts"), binding.key());
+        if (!range(first, count, layout.counts[11])) return fail(error, QStringLiteral("活跃对象的绑定轴区间无效"));
+        const auto slice = qMakePair(first, count);
+        activeRanges[slice] = activeRanges.value(slice, false) || binding.key() != edited || binding.value() > 1;
+    }
+    QSet<int> includedBindings;
+    qint64 references = 0;
+    for (auto binding = activeRanges.cbegin(); binding != activeRanges.cend(); ++binding) {
+        const int first = binding.key().first, count = binding.key().second;
+        if (count > MaximumCount - references) return fail(error, QStringLiteral("活跃对象的绑定轴扫描总量超出范围"));
+        references += count;
+        for (int index = 0; index < count; ++index) {
+            if (!binding.value() && index == axis) continue;
+            const int reference = layout.value(QStringLiteral("parameter_binding_indices.binding_sources_indices"), first + index);
+            if (!range(reference, 1, parameterOwners.size()) || parameterOwners[reference] < 0)
+                return fail(error, QStringLiteral("活跃绑定轴缺少唯一参数"));
+            if (parameterOwners[reference] == parameter) includedBindings.insert(reference);
+        }
+    }
+    QSet<float> otherKeys;
+    QSet<QPair<int, int>> scannedKeys;
+    qint64 keyReferences = 0;
+    for (int binding : includedBindings) {
+        const int first = layout.value(QStringLiteral("parameter_bindings.keys_sources_begin_indices"), binding);
+        const int count = layout.value(QStringLiteral("parameter_bindings.keys_sources_counts"), binding);
+        if (count <= 0 || !range(first, count, layout.counts[14])) return fail(error, QStringLiteral("活跃参数关键值区间无效"));
+        const auto slice = qMakePair(first, count);
+        if (scannedKeys.contains(slice)) continue;
+        scannedKeys.insert(slice);
+        if (count > MaximumCount - keyReferences) return fail(error, QStringLiteral("活跃参数关键值扫描总量超出范围"));
+        keyReferences += count;
+        float previous = 0;
+        for (int index = 0; index < count; ++index) {
+            const float value = layout.real(QStringLiteral("keys.values"), first + index);
+            if (!std::isfinite(value) || (index && value <= previous))
+                return fail(error, QStringLiteral("活跃参数关键值不是有限严格递增序列"));
+            previous = value; otherKeys.insert(value);
+        }
+    }
+    const int first = layout.value(QStringLiteral("parameters.keys_sources_begin_indices"), parameter);
+    const int count = layout.value(QStringLiteral("parameters.keys_sources_counts"), parameter);
+    if (!range(first, count, layout.counts[14])) return fail(error, QStringLiteral("参数显示关键值区间无效"));
+    const QSet<float> previousKeys(oldKeys.cbegin(), oldKeys.cend());
+    QVector<float> values;
+    for (int index = 0; index < count; ++index) {
+        const float value = layout.real(QStringLiteral("keys.values"), first + index);
+        if (!std::isfinite(value)) return fail(error, QStringLiteral("参数显示关键值包含非有限值"));
+        if (!previousKeys.contains(value) || otherKeys.contains(value)) values.append(value);
+    }
+    for (float value : otherKeys) values.append(value);
+    for (const auto& key : newKeys) values.append(key.value);
+    std::stable_sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    if (values.size() > MaximumCount - layout.counts[14]) return fail(error, QStringLiteral("参数显示关键值总量超出范围"));
+    for (float value : values) result.append(floating(value));
+    return true;
+}
+
+bool editBindingKeys(Layout& layout, const Builder::EditBindingKeysRequest& request, Builder::Result& result, QString* error)
+{
+    QHash<QString, int> parameters;
+    if (!catalog(layout, parameters, error)) return false;
+    const int parameter = parameters.value(request.parameterId, -1);
+    if (parameter < 0 || layout.value(QStringLiteral("parameters.parameter_types"), parameter) != 0)
+        return fail(error, QStringLiteral("只能编辑现有普通参数的绑定轴"));
+    QVector<int> parameterOwners;
+    if (!bindingOwners(layout, parameterOwners, error)) return false;
+    QHash<QPair<int, QString>, int> objects;
+    QHash<QPair<int, int>, int> specificUsers;
+    ownerCatalog(layout, objects, specificUsers);
+    OwnerInfo owner;
+    if (!readOwnerGrid(layout, request.owner, parameterOwners, objects, owner, error)) return false;
+    if (request.axisIndex < 0 || request.axisIndex >= owner.bindings.size() ||
+        parameterOwners[owner.bindings[request.axisIndex]] != parameter)
+        return fail(error, QStringLiteral("绑定轴位置与参数 ID 不匹配"));
+    const int reference = owner.bindings[request.axisIndex];
+    const int keyBegin = layout.value(QStringLiteral("parameter_bindings.keys_sources_begin_indices"), reference);
+    const int oldKeyCount = layout.value(QStringLiteral("parameter_bindings.keys_sources_counts"), reference);
+    if (request.expectedKeys.size() != oldKeyCount) return fail(error, QStringLiteral("绑定轴关键值已改变，请重新读取"));
+    QVector<float> oldKeys;
+    for (int index = 0; index < oldKeyCount; ++index) {
+        const float value = layout.real(QStringLiteral("keys.values"), keyBegin + index);
+        if (std::memcmp(&value, &request.expectedKeys[index], sizeof(float)))
+            return fail(error, QStringLiteral("绑定轴关键值已改变，请重新读取"));
+        oldKeys.append(value);
+    }
+    if (request.keys.isEmpty() || request.keys.size() > MaximumCount ||
+        request.keys.size() > MaximumCount / (owner.count / oldKeyCount))
+        return fail(error, QStringLiteral("绑定轴必须保留至少一个关键值且关键形数量不能超出范围"));
+    const float minimum = layout.real(QStringLiteral("parameters.min_values"), parameter);
+    const float maximum = layout.real(QStringLiteral("parameters.max_values"), parameter);
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum)
+        return fail(error, QStringLiteral("参数范围无效"));
+    QVector<QVector<QPair<int, double>>> slices;
+    QSet<int> retained;
+    QByteArray encodedKeys;
+    bool noOp = request.keys.size() == oldKeyCount;
+    int interpolatedKeys = 0;
+    for (int index = 0; index < request.keys.size(); ++index) {
+        const auto& key = request.keys[index];
+        if (!std::isfinite(key.value) || (index && key.value <= request.keys[index - 1].value) ||
+            key.oldKeyIndex < -1 || key.oldKeyIndex >= oldKeyCount ||
+            (key.source != Builder::BindingKey::InterpolateOldAxis && key.source != Builder::BindingKey::CopyOldSlice))
+            return fail(error, QStringLiteral("新关键值、来源索引或插值方式无效"));
+        const bool unchanged = key.oldKeyIndex >= 0 &&
+            std::memcmp(&key.value, &oldKeys[key.oldKeyIndex], sizeof(float)) == 0;
+        if (!unchanged && (key.value < minimum || key.value > maximum))
+            return fail(error, QStringLiteral("移动或新增的关键值必须位于参数范围内"));
+        QVector<QPair<int, double>> terms;
+        if (key.oldKeyIndex >= 0) {
+            if (retained.contains(key.oldKeyIndex) || key.source != Builder::BindingKey::InterpolateOldAxis || key.copyOldKeyIndex != -1)
+                return fail(error, QStringLiteral("旧关键值重复保留或附带了不一致的复制来源"));
+            retained.insert(key.oldKeyIndex);
+            terms.append({key.oldKeyIndex, 1});
+        } else if (key.source == Builder::BindingKey::CopyOldSlice) {
+            if (key.copyOldKeyIndex < 0 || key.copyOldKeyIndex >= oldKeyCount)
+                return fail(error, QStringLiteral("复制的旧关键值索引越界"));
+            terms.append({key.copyOldKeyIndex, 1});
+        } else {
+            if (key.copyOldKeyIndex != -1) return fail(error, QStringLiteral("插值关键值不能附带复制来源"));
+            if (key.value < oldKeys.first() || key.value > oldKeys.last())
+                return fail(error, QStringLiteral("新增值不在旧轴关键值区间 [%1, %2] 内，区间外不能静态插值；请明确选择复制旧关键形（CopyOldSlice）")
+                    .arg(double(oldKeys.first()), 0, 'g', 9).arg(double(oldKeys.last()), 0, 'g', 9));
+            DeleteAxis interval;
+            keyInterval(oldKeys, key.value, interval);
+            if (interval.first == interval.last) terms.append({interval.first, 1});
+            else {
+                terms.append({interval.first, 1 - interval.fraction}); terms.append({interval.last, interval.fraction});
+                ++interpolatedKeys;
+            }
+        }
+        noOp = noOp && terms.size() == 1 && terms.first().first == index &&
+            std::memcmp(&key.value, &oldKeys[index], sizeof(float)) == 0;
+        slices.append(std::move(terms)); encodedKeys.append(floating(key.value));
+    }
+    int stride = 1;
+    for (int index = 0; index < request.axisIndex; ++index)
+        stride *= layout.value(QStringLiteral("parameter_bindings.keys_sources_counts"), owner.bindings[index]);
+    const int newCount = owner.count / oldKeyCount * request.keys.size();
+    const auto makeRemap = [&] {
+        Builder::KeyformRemap remap{owner.owner, owner.count, newCount, int(request.keys.size()), {}, {}};
+        remap.newLocalToOldLocal.reserve(newCount); remap.newLocalSources.reserve(newCount);
+        for (int local = 0; local < newCount; ++local) {
+            const int inner = local % stride, digit = (local / stride) % request.keys.size();
+            const int outer = local / (stride * request.keys.size());
+            QVector<Builder::KeyformRemap::Contribution> terms;
+            for (const auto& slice : slices[digit]) terms.append({inner + slice.first * stride + outer * stride * oldKeyCount, slice.second});
+            remap.newLocalToOldLocal.append(terms.size() == 1 ? terms.first().oldLocal : -1);
+            remap.newLocalSources.append(std::move(terms));
+        }
+        return remap;
+    };
+    result.oldParameterToNew = identity(layout.counts[5]);
+    if (noOp) { result.bytes = layout.bytes; result.keyforms.append(makeRemap()); return true; }
+    if (!understoodStructure(layout, error)) return false;
+    if (owner.owner.type != Builder::Owner::ArtMesh &&
+        specificUsers.value(qMakePair(owner.owner.type == Builder::Owner::Warp ? 0 : 1, owner.source)) > 1)
+        return fail(error, QStringLiteral("共享专用变形器源无法保证无损拆分：%1").arg(owner.owner.id));
+    KeyformReduction reduction{};
+    reduction.type = Builder::DeleteTarget::Type(owner.owner.type);
+    reduction.group = owner.group; reduction.keyforms = owner.keyforms; reduction.source = owner.source;
+    reduction.first = owner.first; reduction.count = owner.count; reduction.newCount = newCount;
+    reduction.interpolated = interpolatedKeys > 0;
+    const int countIndex = layout.column(owner.keyforms + QStringLiteral(".opacities")).countIndex;
+    if (newCount > MaximumCount - layout.counts[countIndex] || owner.bindings.size() > MaximumCount - layout.counts[11] ||
+        layout.counts[12] == MaximumCount)
+        return fail(error, QStringLiteral("编辑后的关键形或绑定引用总量超出范围"));
+    if (owner.owner.type != Builder::Owner::Rotation) {
+        reduction.vertices = layout.value(owner.group + QStringLiteral(".vertex_counts"), owner.source);
+        const qint64 positions = qint64(interpolatedKeys) * (owner.count / oldKeyCount) * reduction.vertices * 2;
+        if (reduction.vertices < 0 || reduction.vertices > MaximumCount / 2 || positions > MaximumCount - layout.counts[10])
+            return fail(error, QStringLiteral("插值后的关键形坐标总量超出范围"));
+    } else if (interpolatedKeys) {
+        for (int local = 0; local < owner.count; ++local)
+            for (const auto& field : {QStringLiteral("is_reflect_x"), QStringLiteral("is_reflect_y")}) {
+                const int value = layout.value(owner.keyforms + '.' + field, owner.first + local);
+                if (value != 0 && value != 1) return fail(error, QStringLiteral("旋转插值包含当前 Core 不支持的反射编码"));
+            }
+    }
+    const QString color = owner.group + QStringLiteral(".keyform_color_sources_begin_indices");
+    if (layout.present(color)) {
+        reduction.colorBegin = layout.value(color, owner.source);
+        if (reduction.colorBegin < 0 || layout.counts[23] != layout.counts[24] || newCount > MaximumCount - layout.counts[23])
+            return fail(error, QStringLiteral("连续颜色源无效、两种颜色池数量不同或编辑后的颜色总量超出范围"));
+    } else if (layout.present(owner.keyforms + QStringLiteral(".multiply_color_sources_indices")) ||
+               layout.present(owner.keyforms + QStringLiteral(".screen_color_sources_indices")))
+        return fail(error, QStringLiteral("颜色索引存在但对象的连续颜色源缺失，不能安全编辑关键值"));
+    QByteArray display;
+    if (!bindingDisplayKeys(layout, owner, request.axisIndex, parameter, parameterOwners, oldKeys, request.keys, display, error)) return false;
+    auto remap = makeRemap();
+    BindingInsertion inserted;
+    if (!insertParameterBindings(layout, parameter, {encodedKeys}, inserted, error)) return false;
+    if (!display.isEmpty()) {
+        if (display.size() / 4 > MaximumCount - layout.counts[14]) return fail(error, QStringLiteral("参数显示关键值总量超出范围"));
+        layout.set(QStringLiteral("parameters.keys_sources_begin_indices"), parameter, integer(layout.counts[14]));
+        layout.set(QStringLiteral("parameters.keys_sources_counts"), parameter, integer(display.size() / 4));
+        layout.append(QStringLiteral("keys.values"), display); layout.counts[14] += display.size() / 4;
+    }
+    const int axisBegin = layout.counts[11];
+    for (int index = 0; index < owner.bindings.size(); ++index) {
+        const int old = owner.bindings[index];
+        const int reference = index == request.axisIndex ? inserted.references.first() : old + (old >= inserted.position ? inserted.count : 0);
+        layout.append(QStringLiteral("parameter_binding_indices.binding_sources_indices"), integer(reference));
+    }
+    layout.counts[11] += owner.bindings.size();
+    const int binding = layout.counts[12]++;
+    layout.append(QStringLiteral("keyform_bindings.parameter_binding_index_sources_begin_indices"), integer(axisBegin));
+    layout.append(QStringLiteral("keyform_bindings.parameter_binding_index_sources_counts"), integer(owner.bindings.size()));
+    if (owner.owner.type != Builder::Owner::ArtMesh)
+        layout.set(QStringLiteral("deformers.keyform_binding_sources_indices"), owner.index, integer(binding));
+    layout.set(owner.group + QStringLiteral(".keyform_binding_sources_indices"), owner.source, integer(binding));
+    if (!writeReducedForms(layout, reduction, [&](int local) {
+        QVector<QPair<int, double>> terms;
+        for (const auto& source : remap.newLocalSources[local]) terms.append({owner.first + source.oldLocal, source.weight});
+        return terms;
+    }, error) || !writeLayout(layout, result.bytes, error)) return false;
+    result.keyforms.append(std::move(remap));
     return true;
 }
 
@@ -1349,6 +1669,19 @@ bool CMocParameterStructureBuilder::Delete(const QByteArray& base, const DeleteR
         candidate.affectedTargets = plan.impact.targets;
         if (!reduceDeleteRows(*layout, plan, error) || !deleteParameterRecords(*layout, plan, error) ||
             !writeLayout(*layout, candidate.bytes, error)) return false;
+        result = std::move(candidate);
+        return true;
+    });
+}
+
+bool CMocParameterStructureBuilder::EditBindingKeys(const QByteArray& base, const EditBindingKeysRequest& request,
+                                                   Result& result, QString* error)
+{
+    return guarded(error, [&] {
+        auto layout = load(base, error);
+        if (!layout) return false;
+        Result candidate;
+        if (!editBindingKeys(*layout, request, candidate, error)) return false;
         result = std::move(candidate);
         return true;
     });

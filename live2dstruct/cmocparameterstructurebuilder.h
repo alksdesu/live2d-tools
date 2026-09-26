@@ -43,6 +43,24 @@ public:
         QVector<BindingRequest> bindings;
     };
 
+    struct BindingKey
+    {
+        enum NewSource : int { InterpolateOldAxis, CopyOldSlice };
+        float value = 0;
+        int oldKeyIndex = -1;
+        NewSource source = InterpolateOldAxis;
+        int copyOldKeyIndex = -1;
+    };
+
+    struct EditBindingKeysRequest
+    {
+        Owner owner;
+        int axisIndex = -1;
+        QString parameterId;
+        QVector<float> expectedKeys;
+        QVector<BindingKey> keys;
+    };
+
     struct DeleteRequest
     {
         QString id;
@@ -71,11 +89,17 @@ public:
 
     struct KeyformRemap
     {
+        struct Contribution
+        {
+            int oldLocal = -1;
+            double weight = 0;
+        };
         Owner owner;
         int oldKeyformCount = 0;
         int newKeyformCount = 0;
         int newAxisKeyCount = 0;
         QVector<int> newLocalToOldLocal;
+        QVector<QVector<Contribution>> newLocalSources;
     };
 
     struct Result
@@ -106,6 +130,8 @@ public:
     static bool BindExistingParameter(const QByteArray& base, const QString& parameterId,
                                       const QVector<BindingRequest>& bindings,
                                       Result& result, QString* error = nullptr);
+    static bool EditBindingKeys(const QByteArray& base, const EditBindingKeysRequest& request,
+                                Result& result, QString* error = nullptr);
     static bool AnalyzeDelete(const QByteArray& base, const QString& parameterId,
                               QVector<Reference>& references, QString* error = nullptr);
     static bool AnalyzeDelete(const QByteArray& base, const DeleteRequest& request,

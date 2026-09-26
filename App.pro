@@ -55,6 +55,7 @@ SOURCES += \
     live2dstruct/cmeshtopology.cpp \
     live2dstruct/cmesheditplanner.cpp \
     ui/cinspectorpanel.cpp \
+    ui/ckeyformmatrix.cpp \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
     opengl/cmeshbounds.cpp \
@@ -67,6 +68,7 @@ SOURCES += \
     live2d/cparameterreferenceplan.cpp \
     live2d/cphysicsbake.cpp \
     live2dstruct/ckeyformbindinggrid.cpp \
+    live2dstruct/ckeyformgridsnapshot.cpp \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
@@ -298,6 +300,7 @@ HEADERS += \
     ui/cworkspacelayouts.h \
     live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
+    ui/ckeyformmatrix.h \
     ui/cmodeldiagnosticspanel.h \
     ui/cuserdatapanel.h \
     ui/ctableeditdelegate.h \
@@ -305,6 +308,7 @@ HEADERS += \
     opengl/cuvgeometry.h \
     live2dstruct/cmodeldocument.h \
     live2dstruct/ckeyformbindinggrid.h \
+    live2dstruct/ckeyformgridsnapshot.h \
     live2dstruct/ckeyformmappingcontext.h \
     live2dstruct/ckeyformeditcontroller.h \
     live2dstruct/cmocpreviewbuilder.h \

@@ -120,6 +120,54 @@ class KeyformBindingGridTests : public QObject
 {
     Q_OBJECT
 
+private slots:
+    void diagnosticDescriptionKeepsSafeAxesForMissingCorners()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.table.IsValid());
+        fixture.Binding(0, 0, {-1, 0, 1});
+        fixture.Binding(1, 1, {-2, 0, 2});
+        fixture.Grid({0, 1}, 8);
+        CKeyformBindingGrid grid;
+        QVERIFY(grid.Build(fixture.table));
+        const auto description = grid.Describe(CKeyformBindingGrid::ArtMesh, "target");
+        QVERIFY(description.axesValid);
+        QCOMPARE(description.keyformCount, 8);
+        QCOMPARE(description.expectedKeyformCount, 9);
+        QCOMPARE(description.axes.size(), 2);
+        QCOMPARE(description.axes[0].keys, QVector<float>({-1, 0, 1}));
+        QCOMPARE(description.axes[1].keys, QVector<float>({-2, 0, 2}));
+        QVERIFY(!description.diagnostic.isEmpty());
+        QVERIFY(grid.Axes(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QMap<QString, float> pose{{"unchanged", 1}};
+        QVERIFY(!grid.Pose(CKeyformBindingGrid::ArtMesh, "target", 0, pose));
+        QCOMPARE(pose, (QMap<QString, float>{{"unchanged", 1}}));
+        fixture.table.parameter_binding_indices[0]->binding_sources_indices = -1;
+        QVERIFY(grid.Build(fixture.table));
+        const auto invalid = grid.Describe(CKeyformBindingGrid::ArtMesh, "target");
+        QVERIFY(!invalid.axesValid);
+        QVERIFY(invalid.axes.isEmpty());
+        QVERIFY(!invalid.diagnostic.isEmpty());
+    }
+
+    void diagnosticDescriptionDistinguishesUnboundFromUnknown()
+    {
+        Fixture fixture;
+        CKeyformBindingGrid grid;
+        QVERIFY(grid.Build(fixture.table));
+        const auto unbound = grid.Describe(CKeyformBindingGrid::ArtMesh, "unaffected");
+        QVERIFY(unbound.axesValid);
+        QVERIFY(unbound.axes.isEmpty());
+        QCOMPARE(unbound.keyformCount, 1);
+        QCOMPARE(unbound.expectedKeyformCount, 1);
+        QVERIFY(unbound.diagnostic.isEmpty());
+        const auto missing = grid.Describe(CKeyformBindingGrid::ArtMesh, "absent");
+        QVERIFY(!missing.axesValid);
+        QVERIFY(!missing.diagnostic.isEmpty());
+    }
+
+private:
+
     void checkRawObject(const QByteArray& bytes, const CKeyformBindingGrid& grid,
                         CKeyformBindingGrid::ObjectType type, const QString& id, int binding, int frameCount)
     {

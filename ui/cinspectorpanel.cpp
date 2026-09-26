@@ -1,4 +1,5 @@
 #include "cinspectorpanel.h"
+#include "ckeyformmatrix.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmeshtopology.h"
 #include "live2dstruct/cmesheditplanner.h"
@@ -159,6 +160,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_keyformCombo = new InspectorComboBox(content);
     m_keyformCombo->setObjectName(QStringLiteral("keyformSelector"));
     m_keyformCombo->setEnabled(false);
+    m_keyformMatrix = new CKeyformMatrix(content);
+    m_keyformMatrix->setObjectName(QStringLiteral("keyformMatrix"));
+    m_keyformMatrix->setAccessibleName(QStringLiteral("关键形矩阵"));
     m_vertexTable = new QTableWidget(content);
     m_vertexTable->setObjectName(QStringLiteral("keyformVertexTable"));
     m_vertexTable->setColumnCount(3);
@@ -248,6 +252,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("蒙版关系"), m_editMasks);
     form->addRow(QStringLiteral("蒙版模式"), m_maskInvertedCheck);
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
+    form->addRow(m_keyformMatrix);
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
     auto* vertexTransformTools = new QWidget(content);
@@ -333,6 +338,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_deformerParentCombo->setProperty("inspectorTypes", QStringList{QStringLiteral("warp"), QStringLiteral("rotation")});
     m_geometryLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
     m_keyformLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh")});
+    m_keyformMatrix->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
     m_rotationKeyformTable->setProperty("inspectorTypes", QStringList{QStringLiteral("rotation")});
     for (QWidget* field : QList<QWidget*>{m_warpKeyformCombo, m_warpKeyformTable})
         field->setProperty("inspectorTypes", QStringList{QStringLiteral("warp")});
@@ -352,6 +358,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     scroll->setWidgetResizable(true);
     scroll->setWidget(content);
     setWidget(scroll);
+    connect(m_keyformMatrix, &CKeyformMatrix::KeyformRequested, this, &CInspectorPanel::RequestMatrixKeyform);
     connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingKeyform) return;
         if (m_keyformHandler) {
@@ -364,6 +371,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
             return;
         }
         m_activeKeyformIndex = index;
+        m_keyformMatrix->SetActiveKeyform(index);
         RebuildKeyformTable();
         if (index >= 0 && !m_selectionName.isEmpty()) {
             emit DrawableKeyformActivated(m_selectionName, index);
@@ -375,6 +383,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
             index < 0 || index >= m_keyformCombo->count() || m_selectionType != QLatin1String("artmesh")) return;
         if (!RequestKeyform(m_selectionName, index)) return;
         m_activeKeyformIndex = index;
+        m_keyformMatrix->SetActiveKeyform(index);
         {
             const QSignalBlocker blocker(m_keyformCombo);
             m_keyformCombo->setCurrentIndex(index);
@@ -394,6 +403,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         if (m_updatingRotationKeyform || row < 0 || m_selectionType != QLatin1String("rotation")) return;
         if (!RequestDeformerKeyform(row)) return;
         m_activeDeformerKeyform = row;
+        m_keyformMatrix->SetActiveKeyform(row);
     });
     connect(m_warpKeyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingWarpKeyform) return;
@@ -406,6 +416,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
             return;
         }
         m_activeDeformerKeyform = index;
+        m_keyformMatrix->SetActiveKeyform(index);
         RebuildWarpKeyformTable();
     });
     connect(m_warpKeyformCombo, QOverload<int>::of(&QComboBox::activated), this, [this](int index){
@@ -413,6 +424,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
             m_selectionType != QLatin1String("warp")) return;
         if (!RequestDeformerKeyform(index)) return;
         m_activeDeformerKeyform = index;
+        m_keyformMatrix->SetActiveKeyform(index);
         {
             const QSignalBlocker blocker(m_warpKeyformCombo);
             m_warpKeyformCombo->setCurrentIndex(index);
@@ -704,6 +716,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
         return;
     }
     m_selectionName.clear();
+    m_matrixSnapshot.reset();
+    m_keyformMatrix->Clear();
     m_selectionType.clear();
     m_activeKeyformIndex = -1;
     m_activeDeformerKeyform = -1;
@@ -844,6 +858,62 @@ bool CInspectorPanel::IsLocked(const QString& type, const QString& name) const
     return m_lockedKeys.contains(type + QLatin1Char('|') + name);
 }
 
+void CInspectorPanel::RefreshKeyformMatrix()
+{
+    live2dstruct::CKeyformGridSnapshot snapshot;
+    if (!m_document || m_selectionName.isEmpty() ||
+        !m_document->DescribeKeyformGrid(m_selectionName, m_selectionType, snapshot)) {
+        m_matrixSnapshot.reset();
+        m_keyformMatrix->Clear();
+        return;
+    }
+    const int active = m_selectionType == QLatin1String("artmesh") ? m_activeKeyformIndex : m_activeDeformerKeyform;
+    m_keyformMatrix->SetGrid(snapshot, active, IsLocked(m_selectionType, m_selectionName));
+    m_matrixSnapshot = std::make_shared<const live2dstruct::CKeyformGridSnapshot>(std::move(snapshot));
+}
+
+void CInspectorPanel::RequestMatrixKeyform(int keyform)
+{
+    if (!m_document || !m_matrixSnapshot || m_submitting || m_rebuildingTopology ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const auto previous = m_matrixSnapshot;
+    live2dstruct::CKeyformGridSnapshot current;
+    QString error;
+    if (!m_document->DescribeKeyformGrid(m_selectionName, m_selectionType, current, &error)) {
+        RejectEdit(error);
+        return;
+    }
+    bool same = previous->objectId == current.objectId && previous->objectType == current.objectType &&
+        previous->sourceDigest == current.sourceDigest && previous->keyformCount == current.keyformCount &&
+        previous->axes.size() == current.axes.size();
+    for (int axis = 0; same && axis < current.axes.size(); ++axis)
+        same = previous->axes[axis].parameterId == current.axes[axis].parameterId &&
+               previous->axes[axis].parameterType == current.axes[axis].parameterType &&
+               previous->axes[axis].keys == current.axes[axis].keys;
+    if (!same) {
+        RejectEdit(QStringLiteral("关键形绑定已改变，请在更新后的矩阵中重新选择"));
+        return;
+    }
+    QMap<QString, float> pose;
+    if (!current.Pose(keyform, pose, &error)) { RejectEdit(error); return; }
+    const QString id = m_selectionName, type = m_selectionType;
+    const auto* document = m_document;
+    const QString sourcePath = document->SourcePath();
+    const QPointer<CInspectorPanel> alive(this);
+    const bool accepted = type == QLatin1String("artmesh") ? RequestKeyform(id, keyform) : RequestDeformerKeyform(keyform);
+    if (!alive) return;
+    if (!accepted || m_document != document || m_selectionName != id || m_selectionType != type ||
+        m_document->SourceDigest() != current.sourceDigest || m_document->SourcePath() != sourcePath) return;
+    if (!SyncActiveKeyform(id, type, keyform)) {
+        RejectEdit(QStringLiteral("关键形在预览提交期间已改变，请重新选择"));
+        return;
+    }
+    if (type == QLatin1String("artmesh")) {
+        emit DrawableKeyformActivated(id, keyform);
+        emit DrawableKeyformSelected(id, keyform);
+    }
+}
+
 void CInspectorPanel::RebuildKeyformTable()
 {
     m_updatingKeyform = true;
@@ -945,6 +1015,7 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
                                            QVariant::fromValue(before), QVariant::fromValue(after), row};
     if (!SubmitEdit(command)) return;
     m_activeDeformerKeyform = row;
+    m_keyformMatrix->SetActiveKeyform(row);
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     RebuildRotationKeyformTable();
 }
@@ -1328,6 +1399,8 @@ void CInspectorPanel::PasteCurrentKeyform()
 
 void CInspectorPanel::ClearSelection()
 {
+    m_matrixSnapshot.reset();
+    m_keyformMatrix->Clear();
     m_activeKeyformIndex = -1;
     m_activeDeformerKeyform = -1;
     m_selectionName.clear();
@@ -1666,7 +1739,11 @@ void CInspectorPanel::Redo()
 void CInspectorPanel::showModelObject(const QString& name, const QString& type, bool preserveKeyforms)
 {
     const QPointer<CInspectorPanel> owner(this);
-    const auto rows = qScopeGuard([owner] { if (owner) updateObjectRows(owner, owner->GetSelectionType()); });
+    const auto rows = qScopeGuard([owner] {
+        if (!owner) return;
+        owner->RefreshKeyformMatrix();
+        updateObjectRows(owner, owner->GetSelectionType());
+    });
 
     if (!m_document || name.isEmpty()) {
         ClearSelection();

@@ -14,6 +14,7 @@
 #include <optional>
 #include "cmocparameterstructurebuilder.h"
 #include "cmocmeshstructurebuilder.h"
+#include "ckeyformgridsnapshot.h"
 
 namespace live2dstruct {
 class CReader;
@@ -205,7 +206,9 @@ public:
     const QByteArray& SourceDigest() const { return m_sourceDigest; }
     bool SourceMatchesDisk(QString* error = nullptr) const;
     bool KeyformParameterValues(const QString& id, const QString& type, int keyformIndex,
-                                QMap<QString, float>& values, QString* error = nullptr) const;
+                               QMap<QString, float>& values, QString* error = nullptr) const;
+    bool DescribeKeyformGrid(const QString& id, const QString& type, CKeyformGridSnapshot& snapshot,
+                             QString* error = nullptr) const;
     bool BuildPreviewMoc(QByteArray& bytes, QString* error = nullptr) const;
     bool BuildRuntimeMoc(QByteArray& bytes, QString* error = nullptr) const;
     const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }

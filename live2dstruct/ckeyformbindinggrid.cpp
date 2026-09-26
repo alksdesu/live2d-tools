@@ -4,6 +4,7 @@
 #include <QSet>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -133,7 +134,6 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
         grid.keyformCount = count;
         if (count <= 0 || !validSlice(begin, count, available)) {
             grid.error = QStringLiteral("关键形源区间无效");
-            return grid;
         }
         if (bindingIndex != -1) {
             if (bindingIndex < 0 || bindingIndex >= table.keyform_bindings.size() ||
@@ -157,19 +157,23 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
                 : QStringLiteral("关键形绑定轴引用无效");
             return grid;
         }
+        grid.axesValid = true;
         qint64 product = 1;
         for (qsizetype axis = nextNonSingleton[first]; axis < end; axis = nextNonSingleton[axis + 1]) {
             const int keyCount = bindings[references[axis]].keyCount;
-            if (product > count / keyCount) {
+            if (product > std::numeric_limits<qint64>::max() / keyCount) {
+                grid.expectedKeyformCount = -1;
                 grid.error = QStringLiteral("绑定轴关键值数量的乘积与关键形数量不符");
                 return grid;
             }
             product *= keyCount;
         }
+        grid.expectedKeyformCount = product;
         if (product != count) {
-            grid.error = QStringLiteral("绑定轴关键值数量的乘积与关键形数量不符");
+            if (grid.error.isEmpty()) grid.error = QStringLiteral("绑定轴关键值数量的乘积与关键形数量不符");
             return grid;
         }
+        if (!grid.error.isEmpty()) return grid;
         grid.structureValid = true;
         if (unsupportedReferences[end] != unsupportedReferences[first])
             grid.error = bindings[references[firstMarked(unsupportedReferences, first, end)]].error;
@@ -178,12 +182,14 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
     const auto insert = [&](ObjectType type, const QString& id, Grid grid) {
         if (id.isEmpty()) {
             grid.structureValid = false;
+            grid.axesValid = false;
             grid.error = QStringLiteral("对象标识为空");
         }
         auto& objects = grids[static_cast<size_t>(type)];
         auto previous = objects.find(id);
         if (previous != objects.end()) {
             previous->structureValid = false;
+            previous->axesValid = false;
             previous->error = QStringLiteral("对象标识重复：%1").arg(id);
         }
         else objects.insert(id, std::move(grid));
@@ -278,11 +284,16 @@ QVector<CKeyformBindingGrid::Axis> CKeyformBindingGrid::Axes(ObjectType type, co
 {
     const Grid* grid = Find(type, id);
     if (!grid || !grid->structureValid) return {};
+    return CollectAxes(*grid);
+}
+
+QVector<CKeyformBindingGrid::Axis> CKeyformBindingGrid::CollectAxes(const Grid& grid) const
+{
     QVector<Axis> axes;
-    axes.reserve(grid->axisCount);
+    axes.reserve(grid.axisCount);
     QHash<QPair<int, int>, QVector<float>> slices;
-    for (int offset = 0; offset < grid->axisCount; ++offset) {
-        const int reference = m_references[grid->axisBegin + offset];
+    for (int offset = 0; offset < grid.axisCount; ++offset) {
+        const int reference = m_references[grid.axisBegin + offset];
         const Binding& binding = m_bindings[reference];
         const QPair<int, int> range{binding.keyBegin, binding.keyCount};
         auto found = slices.constFind(range);
@@ -294,6 +305,14 @@ QVector<CKeyformBindingGrid::Axis> CKeyformBindingGrid::Axes(ObjectType type, co
         axes.append({reference, binding.parameterId, binding.parameterType, found.value()});
     }
     return axes;
+}
+
+CKeyformBindingGrid::Description CKeyformBindingGrid::Describe(ObjectType type, const QString& id) const
+{
+    const auto* grid = Find(type, id);
+    if (!grid) return {{}, 0, 0, false, QStringLiteral("未找到对象的关键形绑定：%1").arg(id)};
+    return {grid->axesValid ? CollectAxes(*grid) : QVector<Axis>{}, grid->keyformCount,
+            grid->expectedKeyformCount, grid->axesValid, grid->error};
 }
 
 QString CKeyformBindingGrid::Diagnostic(ObjectType type, const QString& id) const

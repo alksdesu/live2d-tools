@@ -232,6 +232,54 @@ bool CModelDocument::KeyformParameterValues(const QString& id, const QString& ty
     return true;
 }
 
+bool CModelDocument::DescribeKeyformGrid(const QString& id, const QString& type, CKeyformGridSnapshot& snapshot,
+                                        QString* error) const
+{
+    const auto fail = [&](const QString& message) { setError(error, message); return false; };
+    if (!m_loaded || !m_keyformBindings) return fail(QStringLiteral("尚未加载关键形绑定"));
+    CKeyformGridSnapshot candidate;
+    if (type == QLatin1String("artmesh")) candidate.m_type = CKeyformBindingGrid::ArtMesh;
+    else if (type == QLatin1String("warp")) candidate.m_type = CKeyformBindingGrid::Warp;
+    else if (type == QLatin1String("rotation")) candidate.m_type = CKeyformBindingGrid::Rotation;
+    else return fail(QStringLiteral("对象类型没有关键形绑定：%1").arg(type));
+    const bool exists = candidate.m_type == CKeyformBindingGrid::ArtMesh
+        ? std::any_of(m_drawables.cbegin(), m_drawables.cend(), [&](const auto& value) { return value.id == id; })
+        : std::any_of(m_deformers.cbegin(), m_deformers.cend(), [&](const auto& value) {
+            return value.id == id && ((candidate.m_type == CKeyformBindingGrid::Warp && value.type == CModelDeformer::Warp) ||
+                                     (candidate.m_type == CKeyformBindingGrid::Rotation && value.type == CModelDeformer::Rotation));
+        });
+    if (!exists) return fail(QStringLiteral("未找到关键形对象：%1").arg(id));
+    candidate.objectId = id;
+    candidate.objectType = type;
+    candidate.revision = m_revision;
+    candidate.sourceDigest = m_sourceDigest;
+    candidate.m_bindings = m_keyformBindings;
+    const auto description = m_keyformBindings->Describe(candidate.m_type, id);
+    candidate.keyformCount = description.keyformCount;
+    candidate.expectedKeyformCount = description.expectedKeyformCount;
+    candidate.axesValid = description.axesValid;
+    candidate.diagnostic = description.diagnostic;
+    QSet<QString> required;
+    for (const auto& axis : description.axes) required.insert(axis.parameterId);
+    QHash<QString, CModelParameterMetadata> metadataById;
+    for (const auto& parameter : m_parameters) if (required.contains(parameter.id)) {
+        auto metadata = m_parameterMetadataOverrides.value(parameter.id, sourceMetadata(parameter));
+        if (metadata.displayName.isEmpty()) metadata.displayName = parameter.id;
+        metadataById.insert(parameter.id, std::move(metadata));
+    }
+    for (const auto& axis : description.axes) {
+        const auto found = metadataById.constFind(axis.parameterId);
+        if (found == metadataById.cend()) return fail(QStringLiteral("关键形引用的参数不存在：%1").arg(axis.parameterId));
+        const auto& metadata = *found;
+        candidate.axes.append({axis.bindingIndex, axis.parameterId, metadata.displayName, axis.parameterType,
+                               axis.keys, metadata.minimum, metadata.maximum});
+        candidate.m_ranges.insert(axis.parameterId, {metadata.minimum, metadata.maximum});
+    }
+    snapshot = std::move(candidate);
+    if (error) error->clear();
+    return true;
+}
+
 bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
 {
     if (error) error->clear();

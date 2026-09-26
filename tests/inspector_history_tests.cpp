@@ -1,4 +1,5 @@
 #include "ui/cinspectorpanel.h"
+#include "ui/ckeyformmatrix.h"
 #include "ui/theme.h"
 #include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
@@ -96,6 +97,91 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void matrixNavigationUsesTheExistingPreviewHandler_data()
+    {
+        QTest::addColumn<QString>("model");
+        QTest::addColumn<QString>("id");
+        QTest::addColumn<QString>("type");
+        QTest::addColumn<bool>("accepted");
+        for (bool accepted : {false, true}) {
+            const auto suffix = accepted ? "accept" : "reject";
+            QTest::newRow(qPrintable(QString("mesh-") + suffix)) << QString("Mark") << QString("EyeL4") << QString("artmesh") << accepted;
+            QTest::newRow(qPrintable(QString("warp-") + suffix)) << QString("Mark") << QString("Warp6") << QString("warp") << accepted;
+            QTest::newRow(qPrintable(QString("rotation-") + suffix)) << QString("Natori") << QString("Rotation2") << QString("rotation") << accepted;
+        }
+    }
+
+    void matrixNavigationUsesTheExistingPreviewHandler()
+    {
+        QFETCH(QString, model);
+        QFETCH(QString, id);
+        QFETCH(QString, type);
+        QFETCH(bool, accepted);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, type);
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix");
+        QVERIFY(matrix);
+        QCOMPARE(matrix->ActiveKeyform(), 0);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int requests = 0;
+        const auto handler = [&](const QString& name, const QString& requestedType, int keyform, QString* error) {
+            ++requests;
+            if (name != id || requestedType != type || keyform != 5) return false;
+            if (!accepted) { *error = QStringLiteral("preview rejected"); return false; }
+            QMap<QString, float> pose;
+            return document.KeyformParameterValues(name, requestedType, keyform, pose, error);
+        };
+        panel.SetKeyformHandler([&](const QString& name, int keyform, QString* error) { return handler(name, "artmesh", keyform, error); });
+        panel.SetDeformerKeyformHandler(handler);
+        const auto revision = document.Revision();
+        matrix->KeyformRequested(5);
+        QCOMPARE(requests, 1);
+        QCOMPARE(rejected.count(), accepted ? 0 : 1);
+        QCOMPARE(matrix->ActiveKeyform(), accepted ? 5 : 0);
+        if (type == "artmesh") QCOMPARE(panel.GetActiveKeyformIndex(), accepted ? 5 : 0);
+        else if (type == "warp") QCOMPARE(panel.findChild<QComboBox*>("warpKeyformSelector")->currentIndex(), accepted ? 5 : 0);
+        else QCOMPARE(panel.findChild<QTableWidget*>("rotationKeyformTable")->currentRow(), accepted ? 5 : 0);
+        QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit());
+        panel.SetLockedState({type + '|' + id});
+        matrix->KeyformRequested(4);
+        QCOMPARE(requests, 1);
+        panel.ClearSelection();
+        QCOMPARE(matrix->ActiveKeyform(), -1);
+        QVERIFY(matrix->isHidden());
+    }
+
+    void matrixRechecksChangedRangesWithoutDiscardingParameterNavigation()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection("EyeL4", "artmesh");
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix");
+        QVERIFY(matrix);
+        int requests = 0;
+        panel.SetKeyformHandler([&](const QString&, int, QString*) { ++requests; return true; });
+        QVERIFY(document.SetParameterValue("ParamEyeBallX", .5f));
+        matrix->KeyformRequested(2);
+        QCOMPARE(requests, 1);
+        QCOMPARE(matrix->ActiveKeyform(), 2);
+        auto metadata = document.ParameterMetadata("ParamEyeBallX");
+        metadata.minimum = 0;
+        QVERIFY(document.SetParameterMetadata("ParamEyeBallX", metadata));
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        matrix->KeyformRequested(0);
+        QCOMPARE(requests, 1);
+        QCOMPARE(rejected.count(), 1);
+        QCOMPARE(matrix->ActiveKeyform(), 2);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
     void topologyActionsExplainAndPreserveTheirDomain_data()
     {
         QTest::addColumn<QString>("shape");

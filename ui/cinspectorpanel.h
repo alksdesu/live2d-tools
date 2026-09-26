@@ -6,11 +6,15 @@
 #include <QVector>
 #include <QMap>
 #include <functional>
+#include <memory>
 
 namespace live2dstruct {
 class CModelDocument;
 struct CModelEdit;
+class CKeyformGridSnapshot;
 }
+
+class CKeyformMatrix;
 
 class QLabel;
 class QCheckBox;
@@ -65,6 +69,8 @@ private:
     void showModelObject(const QString& name, const QString& type, bool preserveKeyforms = true);
     void EmitEdit(const live2dstruct::CModelEdit& edit, bool forward);
     void RebuildKeyformTable();
+    void RefreshKeyformMatrix();
+    void RequestMatrixKeyform(int keyform);
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
     void InterpolatePreviousKeyform();
@@ -118,6 +124,8 @@ private:
     QComboBox* m_keyformCombo = nullptr;
     QComboBox* m_deformerParentCombo = nullptr;
     QTableWidget* m_vertexTable = nullptr;
+    CKeyformMatrix* m_keyformMatrix = nullptr;
+    std::shared_ptr<const live2dstruct::CKeyformGridSnapshot> m_matrixSnapshot;
     QTableWidget* m_rotationKeyformTable = nullptr;
     QComboBox* m_warpKeyformCombo = nullptr;
     QTableWidget* m_warpKeyformTable = nullptr;

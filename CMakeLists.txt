@@ -61,6 +61,7 @@ add_library(model_data STATIC
     live2dstruct/cparameterresourceedits.cpp
     live2d/cparameterreferenceplan.cpp
     live2dstruct/ckeyformbindinggrid.cpp
+    live2dstruct/ckeyformgridsnapshot.cpp
     live2dstruct/cmocpreviewbuilder.cpp
     live2dstruct/cmocruntimebuilder.cpp
     live2dstruct/cmocdeformerorder.cpp
@@ -143,7 +144,7 @@ target_link_libraries(cmo3_data PUBLIC model_data Qt6::Core Qt6::Gui)
 target_link_libraries(cmo3_data PRIVATE psd_zip)
 
 add_library(ui_inspector STATIC
-    ui/cinspectorpanel.cpp
+    ui/cinspectorpanel.cpp ui/ckeyformmatrix.cpp
     ui/cmodeldiagnosticspanel.cpp
     ui/cuserdatapanel.cpp
     ui/cparampanel.cpp
@@ -215,6 +216,10 @@ if(BUILD_TESTING)
         target_link_libraries(runtime_moc_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(runtime_moc_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME runtime_moc_core COMMAND runtime_moc_core_tests)
+        add_executable(binding_keys_core_tests tests/binding_keys_core_tests.cpp)
+        target_link_libraries(binding_keys_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(binding_keys_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME binding_keys_core COMMAND binding_keys_core_tests)
         add_executable(real_core_preview_tests tests/real_core_preview_tests.cpp)
         target_link_libraries(real_core_preview_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(real_core_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -350,12 +355,12 @@ if(BUILD_TESTING)
     target_link_libraries(mask_moc_preview_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(mask_moc_preview_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
     add_test(NAME mask_moc_preview COMMAND mask_moc_preview_tests)
-    add_executable(clipping_editor_tests tests/clipping_editor_tests.cpp ui/cinspectorpanel.cpp)
+    add_executable(clipping_editor_tests tests/clipping_editor_tests.cpp ui/cinspectorpanel.cpp ui/ckeyformmatrix.cpp)
     target_link_libraries(clipping_editor_tests PRIVATE deformer_tree_data cmo3_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(clipping_editor_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
     add_test(NAME clipping_editor COMMAND clipping_editor_tests)
     set_tests_properties(clipping_editor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    add_executable(deformer_editor_tests tests/deformer_editor_tests.cpp ui/cinspectorpanel.cpp
+    add_executable(deformer_editor_tests tests/deformer_editor_tests.cpp ui/cinspectorpanel.cpp ui/ckeyformmatrix.cpp
         ui/cmodeltreepanel.cpp ui/para/ccidjson.cpp)
     target_link_libraries(deformer_editor_tests PRIVATE deformer_tree_data model_hierarchy_ui Qt6::Test Qt6::Widgets)
     target_compile_definitions(deformer_editor_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
@@ -552,13 +557,26 @@ if(BUILD_TESTING)
     target_link_libraries(warp_render_tests PRIVATE deformer_tree_data Qt6::OpenGL Qt6::Test)
     target_compile_definitions(warp_render_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME warp_render COMMAND warp_render_tests)
+    add_executable(keyform_grid_snapshot_tests tests/keyform_grid_snapshot_tests.cpp)
+    target_link_libraries(keyform_grid_snapshot_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(keyform_grid_snapshot_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME keyform_grid_snapshot COMMAND keyform_grid_snapshot_tests)
+    add_executable(binding_keys_moc_tests tests/binding_keys_moc_tests.cpp)
+    target_link_libraries(binding_keys_moc_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(binding_keys_moc_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME binding_keys_moc COMMAND binding_keys_moc_tests)
+    add_executable(keyform_matrix_tests tests/keyform_matrix_tests.cpp ui/ckeyformmatrix.cpp)
+    target_link_libraries(keyform_matrix_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    target_compile_definitions(keyform_matrix_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME keyform_matrix COMMAND keyform_matrix_tests)
+    set_tests_properties(keyform_matrix PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(inspector_history_tests tests/inspector_history_tests.cpp)
-    target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp)
+    target_sources(inspector_history_tests PRIVATE ui/cinspectorpanel.cpp ui/ckeyformmatrix.cpp)
     target_link_libraries(inspector_history_tests PRIVATE deformer_tree_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(inspector_history_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME inspector_history COMMAND inspector_history_tests)
     set_tests_properties(inspector_history PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    add_executable(model_tree_tests tests/model_tree_tests.cpp ui/cmodeltreepanel.cpp ui/cinspectorpanel.cpp ui/para/ccidjson.cpp)
+    add_executable(model_tree_tests tests/model_tree_tests.cpp ui/cmodeltreepanel.cpp ui/cinspectorpanel.cpp ui/ckeyformmatrix.cpp ui/para/ccidjson.cpp)
     target_link_libraries(model_tree_tests PRIVATE model_data model_hierarchy_ui Qt6::Test Qt6::Widgets)
     target_compile_definitions(model_tree_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME model_tree COMMAND model_tree_tests)
