@@ -163,10 +163,10 @@ MainWindow::MainWindow(QWidget *parent)
     if (settings.contains(QStringLiteral("windowGeometry"))) {
         restoreGeometry(settings.value(QStringLiteral("windowGeometry")).toByteArray());
     }
+    m_workspaceLayouts.Load(settings, settings.value(QStringLiteral("workspaceMode"), 0).toInt());
     m_openglwindows=nullptr;
     createActions();
     setupUI();
-    m_savedWindowState = settings.value(QStringLiteral("windowState")).toByteArray();
 
     // 启动时显示占位提示
     m_placeholder = createEmptyState();
@@ -175,11 +175,12 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    m_workspaceLayouts.Capture(*this);
     m_closingModel = true;
     StopPsdBatch();
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     settings.setValue(QStringLiteral("windowGeometry"), saveGeometry());
-    settings.setValue(QStringLiteral("windowState"), saveState());
+    m_workspaceLayouts.Save(settings);
     if (m_motionPanel) settings.setValue(QStringLiteral("motionPanelLayout"), m_motionPanel->SaveLayout());
     if (m_blendShapePanel) settings.setValue(QStringLiteral("blendShapePanelLayout"), m_blendShapePanel->SaveLayout());
 
@@ -1625,39 +1626,73 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
 
 void MainWindow::SetWorkspaceMode(int mode)
 {
-    if (mode != m_workspaceMode && !EndKeyformEditing()) {
-        for (int i = 0; i < m_workspaceActions.size(); ++i)
-            m_workspaceActions[i]->setChecked(i == m_workspaceMode);
+    mode = qBound(0, mode, CWorkspaceLayouts::Count - 1);
+    const auto refreshActions = [this] {
+        for (int index = 0; index < m_workspaceActions.size(); ++index)
+            m_workspaceActions[index]->setChecked(index == m_workspaceMode);
+    };
+    if (mode == m_workspaceMode && m_workspaceLayouts.ActiveMode() == mode) {
+        refreshActions();
         return;
     }
-    m_workspaceMode = qBound(0, mode, 2);
-    if (m_workspaceActionGroup) {
-        for (int i = 0; i < m_workspaceActions.size(); ++i)
-            m_workspaceActions[i]->setChecked(i == m_workspaceMode);
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
+        (mode != m_workspaceMode && !EndKeyformEditing())) {
+        refreshActions();
+        return;
     }
+    bool defaultLayout = false;
+    if (m_treePanel && !m_workspaceLayouts.Apply(*this, mode, [this, &defaultLayout](int selected) {
+        ApplyDefaultWorkspaceLayout(selected);
+        defaultLayout = true;
+    })) {
+        refreshActions();
+        statusBar()->showMessage(QStringLiteral("无法恢复工作区布局，当前布局保持不变"), 8000);
+        return;
+    }
+    const bool changed = mode != m_workspaceMode;
+    m_workspaceMode = mode;
+    if (defaultLayout) m_workspaceLayouts.DeferDefaultSizing(*this, m_openglwindows,
+        [this](int selected) { ApplyDefaultWorkspaceSizes(selected); }, [this] {
+            QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+            m_workspaceLayouts.Save(settings);
+        });
+    refreshActions();
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     settings.setValue(QStringLiteral("workspaceMode"), m_workspaceMode);
+    m_workspaceLayouts.Save(settings);
     if (m_openglwindows) {
-        m_openglwindows->SetMeshEditEnabled(m_workspaceMode == 0);
-        m_openglwindows->SetPhysicsDragEnabled(m_workspaceMode == 2);
+        m_openglwindows->SetMeshEditEnabled(mode == 0);
+        m_openglwindows->SetPhysicsDragEnabled(mode == 2);
     }
     if (!m_treePanel) return;
-
-    const bool modeling = m_workspaceMode == 0;
-    const bool animation = m_workspaceMode == 1;
-    const bool physics = m_workspaceMode == 2;
-    if (!animation && m_motionPanel) m_motionPanel->StopTimelinePreview();
-    m_treePanel->setVisible(true);
-    m_paramPanel->setVisible(modeling || animation);
-    m_inspectorPanel->setVisible(modeling || animation);
-    m_motionPanel->setVisible(animation);
-    m_physicsPanel->setVisible(physics);
-    m_blendShapePanel->setVisible(modeling);
-    m_texturePanel->setVisible(modeling);
-    m_diagnosticsPanel->setVisible(false);
-    if (m_userDataPanel) m_userDataPanel->setVisible(false);
-    m_historySource = animation ? HistorySource::Timeline : physics ? HistorySource::Physics : HistorySource::Parameters;
+    if (changed && mode != 1 && m_motionPanel) m_motionPanel->StopTimelinePreview();
+    m_historySource = mode == 1 ? HistorySource::Timeline : mode == 2 ? HistorySource::Physics : HistorySource::Parameters;
     RefreshUndoActions();
+}
+
+void MainWindow::ApplyDefaultWorkspaceLayout(int mode)
+{
+    m_treePanel->show();
+    m_paramPanel->setVisible(mode != 2);
+    m_inspectorPanel->setVisible(mode != 2);
+    m_motionPanel->setVisible(mode == 1);
+    m_physicsPanel->setVisible(mode == 2);
+    m_blendShapePanel->hide();
+    m_texturePanel->hide();
+    m_diagnosticsPanel->hide();
+    m_userDataPanel->hide();
+    auto* right = mode == 2 ? static_cast<QDockWidget*>(m_physicsPanel) : static_cast<QDockWidget*>(m_paramPanel);
+    right->raise();
+    if (mode == 1) m_motionPanel->raise();
+}
+
+void MainWindow::ApplyDefaultWorkspaceSizes(int mode)
+{
+    auto* right = mode == 2 ? static_cast<QDockWidget*>(m_physicsPanel) : static_cast<QDockWidget*>(m_paramPanel);
+    const int width = contentsRect().width();
+    const int unit = fontMetrics().horizontalAdvance(QLatin1Char('M'));
+    resizeDocks({m_treePanel, right}, {qMin(unit * 24, width / 4), qMin(unit * 30, width / 3)}, Qt::Horizontal);
+    if (mode == 1) resizeDocks({m_motionPanel}, {contentsRect().height() * 2 / 5}, Qt::Vertical);
 }
 
 void MainWindow::ClearTimelinePreview()
@@ -2441,6 +2476,9 @@ bool MainWindow::CloseModel()
     });
     const QScopedValueRollback<bool> closing(m_closingModel, true);
     if (!ConfirmCloseWithUnsavedChanges()) return false;
+    m_workspaceLayouts.Detach(*this);
+    QSettings workspaceSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    m_workspaceLayouts.Save(workspaceSettings);
     if (m_exportState) for (const auto& action : m_exportState->actions) if (action) action->setEnabled(true);
     RestorePhysicsBakeActions();
     m_workspaceReady = false;
@@ -2961,10 +2999,7 @@ void MainWindow::RestDock(const QString &name)
 
     m_motionPanel->RestoreLayout(settings.value(QStringLiteral("motionPanelLayout")).toByteArray());
     m_blendShapePanel->RestoreLayout(settings.value(QStringLiteral("blendShapePanelLayout")).toByteArray());
-    if (!m_savedWindowState.isEmpty()) {
-        restoreState(m_savedWindowState);
-        m_savedWindowState.clear();
-    }
+    m_workspaceLayouts.Attach(*this);
     SetWorkspaceMode(m_workspaceMode);
 
     // 信号连接：树面板 → OpenGL
@@ -3503,6 +3538,7 @@ void MainWindow::setupUI()
 
     // 工具栏（下排）
     QToolBar *mainToolBar = addToolBar(tr("主工具栏"));
+    mainToolBar->setObjectName(QStringLiteral("mainToolBar"));
     mainToolBar->setMovable(false);
     mainToolBar->setFloatable(false);
     mainToolBar->addAction(myOpenAction);

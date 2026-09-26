@@ -2,6 +2,7 @@
 #include "cmotioncurveview.h"
 #include "cmotionsettingsdialog.h"
 #include "ctableeditdelegate.h"
+#include "theme.h"
 #include <QDebug>
 #include <QAbstractButton>
 #include <QKeyEvent>
@@ -529,7 +530,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_workspaceSplitter->setChildrenCollapsible(false);
     m_assetTabs = new QTabWidget(m_workspaceSplitter);
     m_assetTabs->setObjectName(QStringLiteral("animationAssetTabs"));
-    m_assetTabs->setDocumentMode(true);
+    Theme::setDocumentMode(*m_assetTabs);
 
     // 动作部分
     QWidget* motionWidget = new QWidget();

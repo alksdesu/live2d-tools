@@ -367,6 +367,7 @@ void MainWindow::BakePhysicsAnimation()
     if (!applied) { report(error); return; }
     m_batchExporting = false;
     SetWorkspaceMode(1);
+    m_motionPanel->show();
     m_motionPanel->raise();
     report(QStringLiteral("已烘焙 %1 条物理曲线，可一次撤销；请保存动画或会话").arg(result->curves.size()));
 }

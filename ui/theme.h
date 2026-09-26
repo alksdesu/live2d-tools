@@ -3,8 +3,17 @@
 
 #include <QMap>
 #include <QString>
+#include <QTabBar>
+#include <QTabWidget>
 
 namespace Theme {
+
+inline void setDocumentMode(QTabWidget& tabs, bool enabled = true)
+{
+    tabs.setDocumentMode(enabled);
+    // Native document tab bases ignore the application palette.
+    tabs.tabBar()->setDrawBase(false);
+}
 
 inline QMap<QString, QString> tokens(bool dark = false)
 {

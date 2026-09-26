@@ -7,9 +7,11 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMainWindow>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSlider>
@@ -212,6 +214,92 @@ private slots:
                 verifyPair(image, QColor(colors.value(QStringLiteral("@accentInk@"))), QColor(colors.value(QStringLiteral("@accentSoft@"))));
             }
         }
+    }
+
+    void documentTabsKeepThemeColorsAcrossLifecycle_data()
+    {
+        QTest::addColumn<QString>("styleName");
+        QTest::addColumn<bool>("themeBeforeCreation");
+        for (const auto& style : styles())
+            for (bool themeFirst : {false, true})
+                QTest::newRow(qPrintable(style + (themeFirst ? "-theme-first" : "-widgets-first")))
+                    << style << themeFirst;
+    }
+
+    void documentTabsKeepThemeColorsAcrossLifecycle()
+    {
+        QFETCH(QString, styleName);
+        QFETCH(bool, themeBeforeCreation);
+        QVERIFY(applyTheme(styleName, false));
+        if (!themeBeforeCreation) qApp->setStyleSheet({});
+        QMainWindow host;
+        auto* content = new QWidget(&host);
+        auto* layout = new QVBoxLayout(content);
+        auto* documentTabs = new QTabWidget(content);
+        auto* ordinaryTabs = new QTabWidget(content);
+        for (auto* tabs : {documentTabs, ordinaryTabs}) {
+            tabs->addTab(new QLineEdit(QStringLiteral("Preserved input")), QStringLiteral("Selected HHHHHH"));
+            tabs->addTab(new QLabel(QStringLiteral("Second page")), QStringLiteral("Other HHHHHH"));
+            layout->addWidget(tabs);
+        }
+        Theme::setDocumentMode(*documentTabs);
+        host.setCentralWidget(content);
+        auto* firstDock = new QDockWidget(QStringLiteral("First HHHHHH"), &host);
+        auto* secondDock = new QDockWidget(QStringLiteral("Second HHHHHH"), &host);
+        firstDock->setWidget(new QLabel(QStringLiteral("First dock")));
+        secondDock->setWidget(new QLabel(QStringLiteral("Second dock")));
+        host.addDockWidget(Qt::BottomDockWidgetArea, firstDock);
+        host.addDockWidget(Qt::BottomDockWidgetArea, secondDock);
+        host.tabifyDockWidget(firstDock, secondDock);
+        host.resize(720, 480);
+        activateTestWindow(host);
+        QCoreApplication::processEvents();
+        const auto dockBars = host.findChildren<QTabBar*>(QString(), Qt::FindDirectChildrenOnly);
+        QCOMPARE(dockBars.size(), 1);
+        auto* dockTabs = dockBars.first();
+        QVERIFY(!dockTabs->documentMode());
+        const bool originalDockBase = dockTabs->drawBase();
+        const bool originalOrdinaryBase = ordinaryTabs->tabBar()->drawBase();
+        QSignalSpy changed(documentTabs, &QTabWidget::currentChanged);
+        const int dockIndex = dockTabs->currentIndex();
+
+        for (bool dark : {false, true, false, true}) {
+            qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+            Theme::setDocumentMode(*documentTabs, false);
+            Theme::setDocumentMode(*documentTabs);
+            QCoreApplication::processEvents();
+            QVERIFY(documentTabs->documentMode());
+            QVERIFY(!documentTabs->tabBar()->drawBase());
+            QCOMPARE(ordinaryTabs->tabBar()->drawBase(), originalOrdinaryBase);
+            QCOMPARE(dockTabs->drawBase(), originalDockBase);
+            QCOMPARE(dockTabs->currentIndex(), dockIndex);
+            QCOMPARE(documentTabs->currentIndex(), 0);
+            QCOMPARE(qobject_cast<QLineEdit*>(documentTabs->widget(0))->text(), QStringLiteral("Preserved input"));
+            QVERIFY(changed.isEmpty());
+            const auto colors = Theme::tokens(dark);
+            for (auto* bar : {documentTabs->tabBar(), ordinaryTabs->tabBar(), dockTabs}) {
+                const int selected = bar->currentIndex();
+                const int other = selected == 0 ? 1 : 0;
+                verifyPair(bar->grab(bar->tabRect(selected)).toImage(),
+                           QColor(colors.value(QStringLiteral("@accentInk@"))),
+                           QColor(colors.value(QStringLiteral("@accentSoft@"))));
+                verifyPair(bar->grab(bar->tabRect(other)).toImage(),
+                           QColor(colors.value(QStringLiteral("@textMuted@"))),
+                           QColor(colors.value(QStringLiteral("@window@"))));
+            }
+            auto* bar = documentTabs->tabBar();
+            const QRect unused(bar->tabRect(bar->count() - 1).right() + 1, 0,
+                               bar->width() - bar->tabRect(bar->count() - 1).right() - 1, bar->height());
+            QVERIFY(unused.width() > 40);
+            const auto background = bar->grab(unused).toImage();
+            QCOMPARE(pixelsOf(background, QColor(colors.value(QStringLiteral("@window@")))),
+                     background.width() * background.height());
+        }
+        auto* bar = documentTabs->tabBar();
+        bar->setFocus(Qt::TabFocusReason);
+        QTest::keyClick(bar, Qt::Key_Right);
+        QCOMPARE(documentTabs->currentIndex(), 1);
+        QCOMPARE(changed.size(), 1);
     }
 
     void listChecksUseThemeColors_data() { styleRows(); }

@@ -182,6 +182,7 @@ SOURCES += \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
     ui/cmeshtoolbar.cpp \
+    ui/cworkspacelayouts.cpp \
     framework/CubismCdiJson.cpp\
     framework/CubismDefaultParameterId.cpp\
     framework/CubismFramework.cpp\
@@ -292,6 +293,7 @@ HEADERS += \
     live2dstruct/cmesheditplanner.h \
     ui/cmeshtoolbar.h \
     ui/cdocktoggle.h \
+    ui/cworkspacelayouts.h \
     live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
     ui/cmodeldiagnosticspanel.h \

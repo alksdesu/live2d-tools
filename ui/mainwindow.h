@@ -9,6 +9,7 @@
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
 #include "ui/cpreviewexporttransaction.h"
+#include "ui/cworkspacelayouts.h"
 #include "ui/psdbatchresult.h"
 #include "live2dstruct/cruntimepackage.h"
 #include <QAction>
@@ -142,6 +143,8 @@ private:
     void ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward);
     void ApplyVisibilityValues(const QMap<QString, bool>& values);
     void SetWorkspaceMode(int mode);
+    void ApplyDefaultWorkspaceLayout(int mode);
+    void ApplyDefaultWorkspaceSizes(int mode);
 
 
 
@@ -174,7 +177,7 @@ private:
     bool m_syncingVisibility = false;
     enum class HistorySource { None, Parameters, Inspector, Timeline, Physics };
     HistorySource m_historySource = HistorySource::None;
-    QByteArray m_savedWindowState;
+    CWorkspaceLayouts m_workspaceLayouts;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
     QString m_currentModelDir;
     void createActions();

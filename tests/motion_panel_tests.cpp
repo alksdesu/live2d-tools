@@ -2474,6 +2474,9 @@ private slots:
         panel.show();
         QVERIFY(panel.BuildPoseGroups(pose.fileName()));
         auto* tabs = panel.findChild<QTabWidget*>("animationAssetTabs");
+        QVERIFY(tabs);
+        QVERIFY(tabs->documentMode());
+        QVERIFY(!tabs->tabBar()->drawBase());
         tabs->setCurrentIndex(2);
         QCoreApplication::processEvents();
         QVERIFY(panel.height() <= 540);
@@ -2489,6 +2492,8 @@ private slots:
         restored.show();
         restored.RestoreLayout(layout);
         auto* restoredTabs = restored.findChild<QTabWidget*>("animationAssetTabs");
+        QVERIFY(restoredTabs);
+        QVERIFY(!restoredTabs->tabBar()->drawBase());
         QVERIFY(!restoredTabs->isTabVisible(2));
         QVERIFY(restored.BuildPoseGroups(pose.fileName()));
         QCOMPARE(restoredTabs->currentIndex(), 2);
