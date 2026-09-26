@@ -68,6 +68,7 @@ add_library(model_data STATIC
     live2dstruct/cphysicsdocument.cpp
     live2dstruct/cmocparameterstructurebuilder.cpp
     live2dstruct/cmocmeshstructurebuilder.cpp
+    live2dstruct/cartmeshgeometrylayout.cpp
     live2dstruct/cmoclayoutrewriter.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp

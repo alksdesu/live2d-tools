@@ -2,6 +2,7 @@
 #include "cmeshtopology.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
+#include "cartmeshgeometrylayout.h"
 #include <QtEndian>
 #include <QSet>
 #include <algorithm>
@@ -222,31 +223,10 @@ bool checkAliasedGeometry(const CSectionTable& table, Plan& plan, bool uv, QStri
 {
     QSet<int> changed;
     for (const auto& mesh : plan.meshes) if (uv ? mesh.uvChanged : mesh.topology) changed.insert(mesh.index);
-    if (changed.isEmpty()) return true;
-    struct Interval { qint64 first, end; int mesh; };
-    QVector<Interval> intervals; intervals.reserve(table.art_meshes.size());
-    for (int index = 0; index < table.art_meshes.size(); ++index) {
-        const auto* mesh = table.art_meshes[index];
-        const qint64 first = uv ? mesh->uv_sources_begin_indices : mesh->position_index_sources_begin_indices;
-        const qint64 count = uv ? qint64(mesh->vertex_counts) * 2 : mesh->position_index_sources_counts;
-        const qint64 size = uv ? table.uvs->uvs.size() : table.position_indices->indices.size();
-        if (!count) continue;
-        if (!range(first, count, size)) return fail(error, QStringLiteral("源 ArtMesh 的 UV 或三角索引切片越界：%1").arg(mesh->ids));
-        intervals.append({first, first + count, index});
-    }
-    std::sort(intervals.begin(), intervals.end(), [](const Interval& a, const Interval& b) {
-        return a.first != b.first ? a.first < b.first : a.end != b.end ? a.end < b.end : a.mesh < b.mesh;
-    });
-    qint64 end = -1; int previous = -1;
-    for (int i = 0; i < intervals.size(); ++i) {
-        const auto& current = intervals[i];
-        const int other = end > current.first ? previous :
-            i + 1 < intervals.size() && intervals[i + 1].first < current.end ? intervals[i + 1].mesh : -1;
-        if (changed.contains(current.mesh) && other >= 0)
-            plan.impact.blockingReasons.append(QStringLiteral("ArtMesh %1 的%2存储与 %3 重叠；独立编辑会改变 Core 的原地转换，需要先规范化几何")
-                .arg(table.art_meshes[current.mesh]->ids, uv ? QStringLiteral(" UV ") : QStringLiteral("三角索引"), table.art_meshes[other]->ids));
-        if (current.end > end) { end = current.end; previous = current.mesh; }
-    }
+    QStringList conflicts;
+    if (!CArtMeshGeometryLayout::CheckIsolation(table, changed, uv ? CArtMeshGeometryLayout::Pool::Uvs :
+                                                CArtMeshGeometryLayout::Pool::Indices, conflicts, error)) return false;
+    plan.impact.blockingReasons.append(conflicts);
     return true;
 }
 

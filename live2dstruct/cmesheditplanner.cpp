@@ -113,7 +113,8 @@ Box bounds(QPointF a, QPointF b)
 class Planner
 {
 public:
-    Planner(const API::Input& input, API::Diagnostic* diagnostic) : input(input), diagnostic(diagnostic)
+    Planner(const API::Input& input, API::Diagnostic* diagnostic, qint64 initialWork = 0)
+        : input(input), diagnostic(diagnostic), work(initialWork)
     {
         if (input.artMeshId.isEmpty() || input.artMeshId.contains(QChar::Null) || input.positions.isEmpty() ||
             input.positions.size() % 2 || input.positions.size() / 2 > CMocMeshStructureBuilder::MaximumVertices ||
@@ -643,6 +644,117 @@ template<class Operation> bool execute(const API::Input& input, API::Result& res
         return false;
     }
 }
+
+API::Result triangulateVertices(const API::Input& input, API::Diagnostic* diagnostic)
+{
+    const auto reject = [&](Code code, const char* message, QVector<int> vertices = {}) {
+        if (diagnostic) *diagnostic = {code, QString::fromUtf8(message), std::move(vertices)};
+        throw Rejected{};
+    };
+    qint64 work = 0;
+    const auto tick = [&] {
+        if (++work > API::MaximumWork) reject(Code::LimitExceeded, "散点重建超过工作量限制");
+    };
+    if (input.artMeshId.isEmpty() || input.artMeshId.contains(QChar::Null) || input.positions.size() < 6 ||
+        input.positions.size() % 2 || input.positions.size() / 2 > CMocMeshStructureBuilder::MaximumVertices ||
+        input.indices.size() > 3000000)
+        reject(Code::InvalidInput, "散点名称、顶点数或输入大小无效");
+    if (!input.protectedEdges.isEmpty()) reject(Code::ProtectedEdge, "全重建不能丢弃保护边，请改用保留边界的优化");
+    QVector<QPointF> points;
+    QVector<int> order;
+    for (int i = 0; i < input.positions.size() / 2; ++i) {
+        tick();
+        const QPointF point(input.positions[i * 2], input.positions[i * 2 + 1]);
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y())) reject(Code::NonFinite, "散点包含非有限坐标", {i});
+        points.append(point); order.append(i);
+    }
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        tick();
+        return points[a].x() != points[b].x() ? points[a].x() < points[b].x() : points[a].y() < points[b].y();
+    });
+    for (int i = 1; i < order.size(); ++i) {
+        tick();
+        if (samePoint(points[order[i - 1]], points[order[i]]))
+            reject(Code::AmbiguousLocation, "多个顶点坐标重合，不能在不丢失顶点的情况下全重建", {order[i - 1], order[i]});
+    }
+    int winding = 1;
+    for (int i = 0; i + 2 < input.indices.size(); i += 3) {
+        tick();
+        const int a = input.indices[i], b = input.indices[i + 1], c = input.indices[i + 2];
+        if (a >= points.size() || b >= points.size() || c >= points.size()) continue;
+        const int sign = orient(points[a], points[b], points[c]);
+        if (sign) { winding = sign; break; }
+    }
+    QVector<int> hull;
+    const auto append = [&](int vertex, int first) {
+        tick();
+        while (hull.size() >= first + 2) {
+            tick();
+            if (orient(points[hull[hull.size() - 2]], points[hull.last()], points[vertex]) > 0) break;
+            hull.removeLast();
+        }
+        hull.append(vertex);
+    };
+    for (int vertex : order) append(vertex, 0);
+    const int lower = hull.size() - 1;
+    for (int i = order.size() - 2; i >= 0; --i) append(order[i], lower);
+    hull.removeLast();
+    if (hull.size() < 3) reject(Code::Degenerate, "全部散点共线，无法构建三角网格");
+    API::Input seed{input.artMeshId, input.positions, {}, {}};
+    QVector<bool> embedded(points.size(), false);
+    for (int vertex : hull) { tick(); embedded[vertex] = true; }
+    for (int i = 1; i + 1 < hull.size(); ++i) {
+        tick();
+        seed.indices += QVector<quint16>{quint16(hull[0]), quint16(hull[i]), quint16(hull[i + 1])};
+    }
+    Planner planner(seed, diagnostic, work);
+    for (int vertex : order) if (!embedded[vertex]) planner.insert(points[vertex], -1, vertex);
+    QVector<int> selection;
+    for (int i = 0; i < planner.faces.size(); ++i) if (planner.faces[i].active) selection.append(i);
+    planner.retriangulate(selection);
+    auto result = planner.finish();
+    QVector<std::array<quint16, 3>> triangles;
+    QSet<int> used;
+    std::map<Key, int> newEdges;
+    for (int i = 0; i < result.edit.indices.size(); i += 3) {
+        planner.tick();
+        std::array<quint16, 3> triangle{result.edit.indices[i], result.edit.indices[i + 1], result.edit.indices[i + 2]};
+        if (winding < 0) std::swap(triangle[1], triangle[2]);
+        std::rotate(triangle.begin(), std::min_element(triangle.begin(), triangle.end()), triangle.end());
+        triangles.append(triangle);
+        for (int side = 0; side < 3; ++side) {
+            used.insert(triangle[side]);
+            ++newEdges[key(triangle[side], triangle[(side + 1) % 3])];
+        }
+    }
+    int boundaryCount = 0;
+    std::set<Key> newBoundary;
+    for (const auto& item : newEdges) if (item.second == 1) { ++boundaryCount; newBoundary.insert(item.first); }
+    if (used.size() != points.size() || triangles.size() != points.size() * 2 - boundaryCount - 2)
+        reject(Code::PrecisionLoss, "重建结果未完整覆盖所有散点或凸包");
+    std::sort(triangles.begin(), triangles.end(), [&](const auto& a, const auto& b) { planner.tick(); return a < b; });
+    result.edit.indices.clear();
+    for (const auto& triangle : triangles) for (quint16 vertex : triangle) result.edit.indices.append(vertex);
+    std::map<Key, int> oldEdges;
+    bool validOldIndices = !input.indices.isEmpty() && input.indices.size() % 3 == 0;
+    for (int i = 0; validOldIndices && i < input.indices.size(); i += 3) {
+        planner.tick();
+        const int a = input.indices[i], b = input.indices[i + 1], c = input.indices[i + 2];
+        if (a >= points.size() || b >= points.size() || c >= points.size() || a == b || a == c || b == c ||
+            orient(points[a], points[b], points[c]) == 0) validOldIndices = false;
+        else { ++oldEdges[key(a, b)]; ++oldEdges[key(b, c)]; ++oldEdges[key(c, a)]; }
+    }
+    std::set<Key> oldBoundary;
+    for (const auto& item : oldEdges) {
+        if (item.second == 1) oldBoundary.insert(item.first);
+        if (item.second > 2) validOldIndices = false;
+    }
+    result.boundaryChanged = !validOldIndices || oldBoundary != newBoundary;
+    result.affectedTriangles.clear();
+    if (input.indices != result.edit.indices)
+        for (int i = 0; i < input.indices.size() / 3; ++i) { planner.tick(); result.affectedTriangles.append(i); }
+    return result;
+}
 }
 
 bool CMeshEditPlanner::Insert(const Input& input, QPointF point, int seedTriangle, Result& result, Diagnostic* diagnostic)
@@ -670,5 +782,18 @@ bool CMeshEditPlanner::Connect(const Input& input, int first, int second, Crossi
 bool CMeshEditPlanner::Retriangulate(const Input& input, const QVector<int>& triangles, Result& result, Diagnostic* diagnostic)
 {
     return execute(input, result, diagnostic, [&](Planner& planner) { planner.retriangulate(triangles); });
+}
+bool CMeshEditPlanner::TriangulateVertices(const Input& input, Result& result, Diagnostic* diagnostic)
+{
+    try {
+        auto candidate = triangulateVertices(input, diagnostic);
+        result = std::move(candidate);
+        if (diagnostic) *diagnostic = {};
+        return true;
+    } catch (const Rejected&) { return false; }
+    catch (const std::exception&) {
+        if (diagnostic) *diagnostic = {Code::LimitExceeded, QStringLiteral("无法分配散点重建数据")};
+        return false;
+    }
 }
 }

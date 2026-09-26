@@ -4,6 +4,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/cmesheditplanner.h"
 #include <QtTest>
 #include <QCheckBox>
 #include <QComboBox>
@@ -39,10 +40,215 @@
 #include <memory>
 #include <cstring>
 
+namespace {
+bool topologyDocument(const QVector<float>& positions, const QVector<quint16>& indices,
+                      live2dstruct::CModelDocument& document, QString& id, QString* error, bool multipleKeyforms = false)
+{
+    using namespace live2dstruct;
+    if (!document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", error)) return false;
+    const auto found = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(), [&](const auto& value) {
+        return value.vertexCount >= positions.size() / 2 && (!multipleKeyforms || value.keyforms.size() > 1);
+    });
+    if (found == document.Drawables().cend()) return false;
+    const auto& source = *found;
+    id = source.id;
+    if (source.vertexCount < positions.size() / 2) return false;
+    CMocMeshStructureBuilder::MeshEdit mesh;
+    mesh.artMeshId = id;
+    mesh.oldToNew = QVector<int>(source.vertexCount, -1);
+    for (int vertex = 0; vertex < positions.size() / 2; ++vertex) {
+        mesh.vertices.append({{vertex}, {1.0}});
+        mesh.oldToNew[vertex] = vertex;
+    }
+    mesh.indices = indices;
+    CMocMeshStructureBuilder::Request request;
+    request.meshes.append(mesh);
+    CModelEdit edit;
+    if (!document.MakeMeshStructureEdit(request, edit, error) || !document.ExecuteEdit(edit) ||
+        !document.SetDrawableKeyformPositions(id, 0, positions)) return false;
+    document.ClearEditHistory();
+    return true;
+}
+QSet<quint32> topologyBoundary(const QVector<quint16>& indices)
+{
+    QMap<quint32, int> edges;
+    for (int face = 0; face < indices.size(); face += 3) for (int side = 0; side < 3; ++side) {
+        const auto a = indices[face + side], b = indices[face + (side + 1) % 3];
+        ++edges[(quint32(qMin(a, b)) << 16) | qMax(a, b)];
+    }
+    QSet<quint32> boundary;
+    for (auto edge = edges.cbegin(); edge != edges.cend(); ++edge) if (edge.value() == 1) boundary.insert(edge.key());
+    return boundary;
+}
+double topologyArea(const QVector<float>& positions, const QVector<quint16>& indices)
+{
+    double area = 0;
+    for (int face = 0; face < indices.size(); face += 3) {
+        const int a = indices[face] * 2, b = indices[face + 1] * 2, c = indices[face + 2] * 2;
+        area += std::abs((double(positions[b]) - positions[a]) * (double(positions[c + 1]) - positions[a + 1]) -
+                         (double(positions[b + 1]) - positions[a + 1]) * (double(positions[c]) - positions[a])) / 2;
+    }
+    return area;
+}
+}
+
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void topologyActionsExplainAndPreserveTheirDomain_data()
+    {
+        QTest::addColumn<QString>("shape");
+        QTest::addColumn<QVector<float>>("positions");
+        QTest::addColumn<QVector<quint16>>("indices");
+        QTest::addColumn<QString>("action");
+        const QVector<QVector<float>> points{{0,0,4,0,4,1,1,1,1,4,0,4},
+            {-2,-2,2,-2,2,2,-2,2,-1,-1,1,-1,1,1,-1,1}, {0,0,1,0,0,1,3,0,4,0,4,1}, {0,0,4,0,3,1,0,3}};
+        const QVector<QVector<quint16>> faces{{0,1,3,1,2,3,0,3,5,3,4,5},
+            {0,1,5,0,5,4,1,2,6,1,6,5,2,3,7,2,7,6,3,0,4,3,4,7}, {0,1,2,3,4,5}, {0,1,3,1,2,3}};
+        const QStringList shapes{"concave", "ring", "disconnected", "quad"};
+        for (int index = 0; index < shapes.size(); ++index)
+            for (const QString& action : {QString("optimize"), QString("rebuild"), QString("cancel"), QString("reject")})
+                QTest::newRow(qPrintable(shapes[index] + '-' + action)) << shapes[index] << points[index] << faces[index] << action;
+    }
+
+    void topologyActionsExplainAndPreserveTheirDomain()
+    {
+        QFETCH(QString, shape);
+        QFETCH(QVector<float>, positions);
+        QFETCH(QVector<quint16>, indices);
+        QFETCH(QString, action);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QString id, error;
+        QVERIFY2(topologyDocument(positions, indices, document, id, &error), qPrintable(error));
+        const CModelDocument original = document;
+        const auto uvs = document.Drawables().first().uvs;
+        const auto revision = document.Revision();
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, "artmesh");
+        QSignalSpy changes(&panel, &CInspectorPanel::DrawableIndicesChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int submissions = 0, dialogs = 0;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* message) {
+            ++submissions;
+            if (action == "reject") { *message = "candidate rejected"; return false; }
+            return document.ExecuteEdit(edit);
+        });
+        auto* button = panel.findChild<QPushButton*>(action == "optimize" ? "optimizeTopology" : "autoTriangulate");
+        QVERIFY(button && button->isEnabled());
+        QVERIFY(button->toolTip().contains(QStringLiteral("孔洞")));
+        QTimer responder;
+        connect(&responder, &QTimer::timeout, &panel, [&] {
+            if (auto* dialog = panel.findChild<QMessageBox*>("rebuildTopologyConfirmation")) {
+                const auto close = qScopeGuard([&] { if (dialog->isVisible()) dialog->reject(); });
+                ++dialogs;
+                QCOMPARE(dialog->defaultButton(), dialog->button(QMessageBox::Cancel));
+                QVERIFY(dialog->text().contains(QString::number(positions.size() / 2)));
+                QVERIFY(dialog->informativeText().contains(QStringLiteral("所有关键形")));
+                dialog->done(action == "cancel" ? QMessageBox::Cancel : QMessageBox::Yes);
+            }
+        });
+        responder.start(0);
+        button->click();
+        responder.stop();
+        const auto after = document.DrawableIndices(id);
+        const bool changed = action == "optimize" ? after != indices : action == "rebuild";
+        QCOMPARE(dialogs, action == "optimize" ? 0 : 1);
+        QCOMPARE(submissions, action == "optimize" ? int(changed) : action == "cancel" ? 0 : 1);
+        QCOMPARE(changes.count(), int(changed));
+        QCOMPARE(rejected.count(), action == "reject" ? 1 : 0);
+        if (action == "optimize") {
+            QCOMPARE(topologyBoundary(after), topologyBoundary(indices));
+            QCOMPARE(topologyArea(positions, after), topologyArea(positions, indices));
+            if (shape == "quad") QVERIFY(changed);
+        } else if (action == "rebuild") {
+            QVERIFY(after != indices);
+            if (shape != "quad") QVERIFY(topologyArea(positions, after) > topologyArea(positions, indices));
+        } else {
+            QCOMPARE(after, indices);
+            QCOMPARE(document.Revision(), revision);
+        }
+        QCOMPARE(document.Drawables().first().uvs, uvs);
+        for (int form = 0; form < document.Drawables().first().keyforms.size(); ++form)
+            QCOMPARE(document.DrawableKeyformPositions(id, form), original.DrawableKeyformPositions(id, form));
+        QCOMPARE(document.SourceBytes(), original.SourceBytes());
+        QCOMPARE(document.CanUndoEdit(), changed);
+        if (changed) {
+            QByteArray compiled;
+            QVERIFY2(document.BuildRuntimeMoc(compiled, &error), qPrintable(error));
+            CModelDocument decoded;
+            QVERIFY2(decoded.LoadBytes(compiled, "rebuilt.moc3", &error), qPrintable(error));
+            QCOMPARE(decoded.DrawableIndices(id), after);
+            panel.Undo();
+            QCOMPARE(document.DrawableIndices(id), indices);
+            QVERIFY(!document.CanUndoEdit());
+            panel.Redo();
+            QCOMPARE(document.DrawableIndices(id), after);
+            QVERIFY(!document.CanRedoEdit());
+            const auto acceptedRevision = document.Revision();
+            const int acceptedSubmissions = submissions;
+            responder.start(0);
+            button->click();
+            responder.stop();
+            QCOMPARE(document.Revision(), acceptedRevision);
+            QCOMPARE(submissions, acceptedSubmissions);
+            QCOMPARE(dialogs, action == "optimize" ? 0 : 1);
+        }
+    }
+
+    void rebuildingTopologyRejectsStaleConfirmation_data()
+    {
+        QTest::addColumn<QString>("mutation");
+        for (const QString& mutation : {QString("document"), QString("keyform"), QString("selection"),
+                                       QString("locked"), QString("cleared"), QString("nested")})
+            QTest::newRow(qPrintable(mutation)) << mutation;
+    }
+
+    void rebuildingTopologyRejectsStaleConfirmation()
+    {
+        QFETCH(QString, mutation);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QString id, error;
+        const QVector<float> positions{0,0,4,0,4,1,1,1,1,4,0,4};
+        const QVector<quint16> indices{0,1,3,1,2,3,0,3,5,3,4,5};
+        QVERIFY2(topologyDocument(positions, indices, document, id, &error, mutation == "keyform"), qPrintable(error));
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, "artmesh");
+        auto* button = panel.findChild<QPushButton*>("autoTriangulate");
+        QVERIFY(button);
+        int submissions = 0, dialogs = 0;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString*) { ++submissions; return document.ExecuteEdit(edit); });
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        QTimer::singleShot(0, &panel, [&] {
+            auto* dialog = panel.findChild<QMessageBox*>("rebuildTopologyConfirmation");
+            QVERIFY(dialog);
+            const auto close = qScopeGuard([&] { if (dialog->isVisible()) dialog->reject(); });
+            ++dialogs;
+            if (mutation == "document") {
+                auto changed = positions; changed[0] += .125f;
+                QVERIFY(document.SetDrawableKeyformPositions(id, 0, changed));
+            } else if (mutation == "keyform") {
+                auto* combo = panel.findChild<QComboBox*>("keyformSelector");
+                QVERIFY(combo && combo->count() > 1);
+                combo->setCurrentIndex(1);
+            } else if (mutation == "selection") panel.SetSelection(document.Drawables().at(1).id, "artmesh");
+            else if (mutation == "locked") panel.SetLockedState({"artmesh|" + id});
+            else if (mutation == "cleared") panel.SetDocument(nullptr);
+            else { button->click(); dialog->done(QMessageBox::Cancel); return; }
+            dialog->done(QMessageBox::Yes);
+        });
+        button->click();
+        QCOMPARE(dialogs, 1);
+        QCOMPARE(submissions, 0);
+        QCOMPARE(rejected.count(), mutation == "nested" ? 0 : 1);
+        QCOMPARE(document.DrawableIndices(id), indices);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
     void signedRotationEditsUseHistoryAndCommitter_data()
     {
         QTest::addColumn<float>("sourceScale");
@@ -1530,7 +1736,8 @@ private slots:
             QTimer dialogGuard;
             dialogGuard.setSingleShot(true);
             connect(&dialogGuard, &QTimer::timeout, &panel, [&] {
-                if (auto* dialog = panel.findChild<QMessageBox*>()) dialog->reject();
+                if (auto* dialog = panel.findChild<QMessageBox*>("rebuildTopologyConfirmation"))
+                    dialog->done(QMessageBox::Yes);
             });
             dialogGuard.start(0);
             panel.findChild<QPushButton*>("autoTriangulate")->click();
@@ -2209,6 +2416,10 @@ private slots:
         }
         const QVector<quint16> topologyBefore = document.DrawableIndices(id);
         QSignalSpy topologyChanges(&panel, &CInspectorPanel::DrawableIndicesChanged);
+        QTimer::singleShot(0, &panel, [&] {
+            if (auto* dialog = panel.findChild<QMessageBox*>("rebuildTopologyConfirmation"))
+                dialog->done(QMessageBox::Yes);
+        });
         autoTriangulate->click();
         QVERIFY(topologyChanges.count() > 0);
         const QVector<quint16> topologyAfter = document.DrawableIndices(id);

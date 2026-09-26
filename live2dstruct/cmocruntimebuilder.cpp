@@ -4,6 +4,7 @@
 #include "cparentgraph.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
+#include "cartmeshgeometrylayout.h"
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
@@ -302,6 +303,7 @@ bool CMocRuntimeBuilder::Build(const QByteArray& source, const Overrides& overri
     QVector<QVector<int>> shapes;
     if (!blendRows(table, columns, shapes, error)) return false;
     QSet<QString> ids;
+    QSet<int> changedIndices;
     QHash<int, int> orderEdits;
     for (int index = 0; index < table.art_meshes.size(); ++index) {
         const auto* mesh = table.art_meshes[index];
@@ -346,6 +348,7 @@ bool CMocRuntimeBuilder::Build(const QByteArray& source, const Overrides& overri
             for (int row = 0; same && row < indices->size(); ++row)
                 same = (*indices)[row] == quint16(table.position_indices->indices[mesh->position_index_sources_begin_indices + row]);
             if (!same) {
+                changedIndices.insert(index);
                 int destination;
                 if (!columns.appendIndices(*indices, destination, error)) return false;
                 columns.setInteger("art_meshes.position_index_sources_begin_indices", index, destination);
@@ -360,6 +363,10 @@ bool CMocRuntimeBuilder::Build(const QByteArray& source, const Overrides& overri
     };
     if (!validObjects(overrides.drawableOpacity) || !validObjects(overrides.drawableDrawOrder) ||
         !validObjects(overrides.drawableIndices) || !updateOrderRanges(table, orderEdits, shapes, columns, error)) return false;
+    QStringList conflicts;
+    if (!CArtMeshGeometryLayout::CheckIsolation(table, changedIndices, CArtMeshGeometryLayout::Pool::Indices, conflicts, error))
+        return false;
+    if (!conflicts.isEmpty()) return fail(error, conflicts.join(QLatin1Char('\n')));
     return CMocParameterStructureBuilder::BuildColumnState(source, columns.state, result, error);
 }
 catch (const std::exception&)

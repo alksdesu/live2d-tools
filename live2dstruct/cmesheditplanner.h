@@ -52,6 +52,7 @@ public:
                         Result&, Diagnostic* = nullptr);
     static bool Retriangulate(const Input&, const QVector<int>& triangles,
                               Result&, Diagnostic* = nullptr);
+    static bool TriangulateVertices(const Input&, Result&, Diagnostic* = nullptr);
 };
 }
 

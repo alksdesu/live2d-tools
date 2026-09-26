@@ -1,4 +1,5 @@
 #include "live2dstruct/cmocruntimebuilder.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/csectionvalidation.h"
 #include "real_core_model_fixture.h"
@@ -30,12 +31,202 @@ bool validOrder(csmModel* model)
     for (int index = 0; index < size; ++index) if (order[index] != index) return false;
     return true;
 }
+
+QByteArray aliasedIndexFixture(int shift, int& first, int& second)
+{
+    auto bytes = read(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+    auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+    if (!table.IsValid()) return {};
+    first = second = -1;
+    for (int a = 0; a < table.art_meshes.size() && first < 0; ++a)
+        for (int b = a + 1; b < table.art_meshes.size(); ++b) {
+            const auto* x = table.art_meshes[a]; const auto* y = table.art_meshes[b];
+            if (x->vertex_counts >= 3 && x->vertex_counts == y->vertex_counts &&
+                x->keyform_sources_counts >= y->keyform_sources_counts && x->position_index_sources_counts >= 6 &&
+                x->keyform_sources_begin_indices != y->keyform_sources_begin_indices) {
+                first = a; second = b; break;
+            }
+        }
+    if (first < 0) return {};
+    const auto* source = table.art_meshes[first];
+    putInt(bytes, table.sectionOffsetTable->art_meshes->position_index_sources_begin_indices + second * 4,
+           source->position_index_sources_begin_indices + shift);
+    putInt(bytes, table.sectionOffsetTable->art_meshes->position_index_sources_counts + second * 4,
+           source->position_index_sources_counts - (shift ? 3 : 0));
+    return bytes;
+}
+
+QVector<quint16> indicesFor(const CSectionTable& table, int mesh)
+{
+    QVector<quint16> result;
+    const auto* source = table.art_meshes[mesh];
+    for (int index = 0; index < source->position_index_sources_counts; ++index)
+        result.append(quint16(table.position_indices->indices[source->position_index_sources_begin_indices + index]));
+    return result;
+}
+
+void compareAtExtremePoses(const QByteArray& expectedBytes, const QByteArray& actualBytes)
+{
+    CoreModel expected, actual;
+    QVERIFY(expected.load(expectedBytes)); QVERIFY(actual.load(actualBytes));
+    const auto values = poses(expected.value);
+    const QVector<int> selected{0, 1, csmGetParameterCount(expected.value) + 2};
+    for (int index : selected) {
+        expected.pose(values[index]); actual.pose(values[index]);
+        const auto a = frame(expected.value), b = frame(actual.value);
+        QVERIFY2(changed(a, b).isEmpty(), qPrintable(difference(a, b)));
+    }
+    QVERIFY(expected.intact()); QVERIFY(actual.intact());
+}
 }
 
 class RuntimeMocCoreTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void aliasedIndexEditsFailWithoutChangingOutputs_data()
+    {
+        QTest::addColumn<int>("shift"); QTest::addColumn<bool>("bothOwners");
+        for (bool both : {false, true}) {
+            QTest::newRow(both ? "exact-both" : "exact-one") << 0 << both;
+            QTest::newRow(both ? "aligned-partial-both" : "aligned-partial-one") << 3 << both;
+            QTest::newRow(both ? "unaligned-partial-both" : "unaligned-partial-one") << 1 << both;
+        }
+    }
+
+    void aliasedIndexEditsFailWithoutChangingOutputs()
+    {
+        QFETCH(int, shift); QFETCH(bool, bothOwners);
+        int first = -1, second = -1;
+        const auto bytes = aliasedIndexFixture(shift, first, second);
+        QVERIFY(!bytes.isEmpty());
+        const QByteArray immutable = bytes;
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        CoreModel baseline;
+        QVERIFY2(baseline.load(bytes), "The aliased source must itself be accepted by Core");
+        const QString firstId = table.art_meshes[first]->ids, secondId = table.art_meshes[second]->ids;
+        RuntimeBuilder::Overrides overrides;
+        overrides.drawableIndices.insert(firstId, indicesFor(table, first));
+        overrides.drawableIndices.insert(secondId, indicesFor(table, second));
+        QByteArray result; QString error;
+        QVERIFY2(RuntimeBuilder::Build(bytes, overrides, result, &error), qPrintable(error));
+        QCOMPARE(result, bytes);
+        compareAtExtremePoses(bytes, result);
+
+        CModelDocument document;
+        QVERIFY2(document.LoadBytes(bytes, "index-alias.moc3", &error), qPrintable(error));
+        QVERIFY(document.SetDrawableIndices(firstId, indicesFor(table, first)));
+        QVERIFY(document.SetDrawableIndices(secondId, indicesFor(table, second)));
+        QByteArray documentNoop;
+        QVERIFY2(document.BuildRuntimeMoc(documentNoop, &error), qPrintable(error));
+        QCOMPARE(documentNoop, bytes);
+        document.ClearEditHistory();
+        for (int mesh : (bothOwners ? QVector<int>{first, second} : QVector<int>{first})) {
+            const QString id = table.art_meshes[mesh]->ids;
+            const auto before = indicesFor(table, mesh);
+            auto after = before;
+            after.resize(after.size() - 3);
+            overrides.drawableIndices[id] = after;
+            QVERIFY(document.ExecuteEdit({id, "artmesh", CModelEdit::MeshIndices,
+                QVariant::fromValue(before), QVariant::fromValue(after), -1, false}));
+        }
+        result = "keep runtime output";
+        QVERIFY(!RuntimeBuilder::Build(bytes, overrides, result, &error));
+        QCOMPARE(result, QByteArray("keep runtime output"));
+        QVERIFY(!error.isEmpty());
+        const auto revision = document.Revision();
+        const auto current = document.DrawableIndices(firstId);
+        CModelEdit last;
+        QVERIFY(document.PeekUndoEdit(&last));
+        QByteArray documentResult("keep document output");
+        QVERIFY(!document.BuildRuntimeMoc(documentResult, &error));
+        QCOMPARE(documentResult, QByteArray("keep document output"));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.DrawableIndices(firstId), current);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        CModelEdit unchanged;
+        QVERIFY(document.PeekUndoEdit(&unchanged));
+        QCOMPARE(unchanged.name, last.name);
+        QCOMPARE(unchanged.field, last.field);
+        QCOMPARE(unchanged.before, last.before);
+        QCOMPARE(unchanged.after, last.after);
+        while (document.CanUndoEdit()) QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DrawableIndices(firstId), indicesFor(table, first));
+        QCOMPARE(document.DrawableIndices(secondId), indicesFor(table, second));
+        QVERIFY(document.BuildRuntimeMoc(documentResult, &error));
+        QCOMPARE(documentResult, bytes);
+        QCOMPARE(bytes, immutable);
+        QVERIFY(baseline.intact());
+    }
+
+    void indexAliasesAllowUnrelatedEdits_data()
+    {
+        QTest::addColumn<int>("shift");
+        QTest::newRow("exact") << 0;
+        QTest::newRow("aligned-partial") << 3;
+        QTest::newRow("unaligned-partial") << 1;
+    }
+
+    void indexAliasesAllowUnrelatedEdits()
+    {
+        QFETCH(int, shift);
+        int first = -1, second = -1;
+        const auto bytes = aliasedIndexFixture(shift, first, second);
+        QVERIFY(!bytes.isEmpty());
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        int isolated = -1;
+        for (int mesh = 0; mesh < table.art_meshes.size(); ++mesh) {
+            const auto* source = table.art_meshes[mesh];
+            if (source->position_index_sources_counts < 6) continue;
+            const qint64 begin = source->position_index_sources_begin_indices;
+            const qint64 end = begin + source->position_index_sources_counts;
+            bool overlap = false;
+            for (int other = 0; other < table.art_meshes.size(); ++other) {
+                if (mesh == other) continue;
+                const auto* peer = table.art_meshes[other];
+                const qint64 peerBegin = peer->position_index_sources_begin_indices;
+                overlap |= peer->position_index_sources_counts > 0 && begin < peerBegin + peer->position_index_sources_counts && peerBegin < end;
+            }
+            if (!overlap) { isolated = mesh; break; }
+        }
+        QVERIFY(isolated >= 0 && isolated != first && isolated != second);
+        const auto* mesh = table.art_meshes[isolated];
+        auto edited = indicesFor(table, isolated);
+        edited.resize(edited.size() - 3);
+        RuntimeBuilder::Overrides topology;
+        topology.drawableIndices.insert(mesh->ids, edited);
+        auto oracle = bytes;
+        putInt(oracle, table.sectionOffsetTable->art_meshes->position_index_sources_counts + isolated * 4, edited.size());
+        QByteArray result; QString error;
+        QVERIFY2(RuntimeBuilder::Build(bytes, topology, result, &error), qPrintable(error));
+        compareAtExtremePoses(oracle, result);
+        CModelDocument document;
+        QVERIFY(document.LoadBytes(bytes, "index-alias.moc3", &error));
+        QVERIFY(document.SetDrawableIndices(mesh->ids, edited));
+        QByteArray compiled;
+        QVERIFY2(document.BuildRuntimeMoc(compiled, &error), qPrintable(error));
+        compareAtExtremePoses(oracle, compiled);
+
+        RuntimeBuilder::Overrides opacity;
+        const auto* shared = table.art_meshes[first];
+        opacity.drawableIndices.insert(shared->ids, indicesFor(table, first));
+        opacity.drawableOpacity.insert(shared->ids, .4f);
+        oracle = bytes;
+        for (int row = shared->keyform_sources_begin_indices; row < shared->keyform_sources_begin_indices + shared->keyform_sources_counts; ++row)
+            putFloat(oracle, table.sectionOffsetTable->art_mesh_keyforms->opacities + row * 4, .4f);
+        QVERIFY2(RuntimeBuilder::Build(bytes, opacity, result, &error), qPrintable(error));
+        compareAtExtremePoses(oracle, result);
+        CModelDocument opacityDocument;
+        QVERIFY(opacityDocument.LoadBytes(bytes, "index-alias.moc3", &error));
+        QVERIFY(opacityDocument.SetDrawableOpacity(shared->ids, .4f));
+        QVERIFY(opacityDocument.SetDrawableIndices(shared->ids, indicesFor(table, first)));
+        QVERIFY2(opacityDocument.BuildRuntimeMoc(compiled, &error), qPrintable(error));
+        compareAtExtremePoses(oracle, compiled);
+    }
+
     void localOpacityUsesCoreParentAndBlendShapeEvaluation_data()
     {
         QTest::addColumn<QString>("path");

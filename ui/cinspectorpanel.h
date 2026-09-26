@@ -70,7 +70,9 @@ private:
     void InterpolatePreviousKeyform();
     void CopyKeyformToNext();
     void ResetCurrentKeyform();
+    void OptimizeTopology();
     void AutoTriangulate();
+    void ApplyTopology(const QVector<quint16>& before, const QVector<quint16>& after);
     void CopyTopology();
     void PasteTopology();
     void CopyCurrentKeyform();
@@ -96,6 +98,7 @@ private:
     std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> m_historyHandler;
     std::function<bool(const QString&, int, QString*)> m_keyformHandler;
     bool m_submitting = false;
+    bool m_rebuildingTopology = false;
     int m_activeKeyformIndex = -1;
     int m_activeDeformerKeyform = -1;
     std::function<bool(const QString&, const QString&, int, QString*)> m_deformerKeyformHandler;
@@ -125,6 +128,7 @@ private:
     QPushButton* m_resetKeyform = nullptr;
     QPushButton* m_copyKeyform = nullptr;
     QPushButton* m_pasteKeyform = nullptr;
+    QPushButton* m_optimizeTopology = nullptr;
     QPushButton* m_autoTriangulate = nullptr;
     QPushButton* m_copyTopology = nullptr;
     QPushButton* m_pasteTopology = nullptr;
