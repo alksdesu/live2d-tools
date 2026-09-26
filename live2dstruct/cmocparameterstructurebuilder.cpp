@@ -1193,8 +1193,14 @@ bool makeDeletePlan(const Layout& layout, const Builder::DeleteRequest& request,
     return true;
 }
 
+struct KeyformSourceValidation
+{
+    QSet<QPair<int, int>> positions;
+};
+
 template<class Contributors>
-bool writeReducedForms(Layout& layout, const KeyformReduction& reduction, Contributors contributors, QString* error)
+bool writeReducedForms(Layout& layout, const KeyformReduction& reduction, Contributors contributors,
+                       KeyformSourceValidation& validated, QString* error)
 {
     QVector<int> columns;
     int countIndex = -1;
@@ -1254,9 +1260,13 @@ bool writeReducedForms(Layout& layout, const KeyformReduction& reduction, Contri
                 if (!range(position, reduction.vertices * 2, layout.column(QStringLiteral("keyform_positions.xys")).count))
                     return fail(error, QStringLiteral("冻结坐标区间越界"));
                 if (terms.size() == 1) {
-                    for (int component = 0; component < reduction.vertices * 2; ++component)
-                        if (!std::isfinite(layout.real(QStringLiteral("keyform_positions.xys"), position + component)))
-                            return fail(error, QStringLiteral("源关键形坐标不是有限值"));
+                    const auto slice = qMakePair(position, reduction.vertices * 2);
+                    if (!validated.positions.contains(slice)) {
+                        for (int component = 0; component < slice.second; ++component)
+                            if (!std::isfinite(layout.real(QStringLiteral("keyform_positions.xys"), position + component)))
+                                return fail(error, QStringLiteral("源关键形坐标不是有限值"));
+                        validated.positions.insert(slice);
+                    }
                     encoded = integer(position);
                 }
                 else {
@@ -1311,10 +1321,11 @@ bool writeReducedForms(Layout& layout, const KeyformReduction& reduction, Contri
 
 bool reduceDeleteRows(Layout& layout, const DeletePlan& plan, QString* error)
 {
+    KeyformSourceValidation validated;
     for (const auto& reduction : plan.reductions)
         if (!writeReducedForms(layout, reduction, [&](int local) {
             return deleteContributors(reduction, local, plan.parameter);
-        }, error)) return false;
+        }, validated, error)) return false;
     return true;
 }
 
@@ -1550,11 +1561,12 @@ bool editBindingKeys(Layout& layout, const Builder::EditBindingKeysRequest& requ
     if (owner.owner.type != Builder::Owner::ArtMesh)
         layout.set(QStringLiteral("deformers.keyform_binding_sources_indices"), owner.index, integer(binding));
     layout.set(owner.group + QStringLiteral(".keyform_binding_sources_indices"), owner.source, integer(binding));
+    KeyformSourceValidation validated;
     if (!writeReducedForms(layout, reduction, [&](int local) {
         QVector<QPair<int, double>> terms;
         for (const auto& source : remap.newLocalSources[local]) terms.append({owner.first + source.oldLocal, source.weight});
         return terms;
-    }, error) || !writeLayout(layout, result.bytes, error)) return false;
+    }, validated, error) || !writeLayout(layout, result.bytes, error)) return false;
     result.keyforms.append(std::move(remap));
     return true;
 }

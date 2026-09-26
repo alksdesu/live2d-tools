@@ -700,6 +700,118 @@ private slots:
         for (int index = 0; index < constraint->blend_shape_constraint_value_sources_counts; ++index)
             QCOMPARE(after.blend_shape_constraint_values[constraint->blend_shape_constraint_value_sources_begin_indices + index]->weights, .75f);
     }
+    void repeatedSingleSourceSlicesKeepTheirExactBytes_data()
+    {
+        QTest::addColumn<bool>("deleting"); QTest::newRow("copy") << false; QTest::newRow("delete") << true;
+    }
+    void repeatedSingleSourceSlicesKeepTheirExactBytes()
+    {
+        QFETCH(bool, deleting);
+        QByteArray bytes; QString error; QVERIFY2(fixture(0, bytes, &error), qPrintable(error));
+        if (deleting) {
+            Builder::CreateRequest create; create.parameter.id = "Slow";
+            Builder::BindingRequest axis{owner(0), {}};
+            for (int key = 0; key < 64; ++key) axis.keys.append(-1 + key * 2.0f / 63);
+            create.bindings.append(axis);
+            Builder::Result expanded; QVERIFY2(Builder::Create(bytes, create, expanded, &error), qPrintable(error)); bytes = expanded.bytes;
+        }
+        auto reader = CReader::FromBytes(bytes); CSectionTable before(reader); QVERIFY(before.IsValid());
+        const auto positions = column(before, "keyform_positions.xys");
+        real(bytes, positions.offset, -0.0f);
+        real(bytes, positions.offset + 4, std::numeric_limits<float>::denorm_min());
+        for (int local = 0; local < before.art_meshes[0]->keyform_sources_counts; ++local)
+            put(bytes, before.sectionOffsetTable->art_mesh_keyforms->keyform_position_sources_begin_indices + (firstRow(before, 0) + local) * 4, 0);
+        const auto immutable = bytes;
+        const auto originalPool = bytes.mid(positions.offset, positions.count * 4);
+        Builder::Result result;
+        if (deleting) QVERIFY2(Builder::Delete(bytes, {"Axis0", -1}, result, &error), qPrintable(error));
+        else {
+            auto edit = request(0, 0); edit.keys.clear();
+            for (int key = 0; key < 64; ++key) edit.keys.append(inserted(-1 + key * 2.0f / 63, 0));
+            QVERIFY2(Builder::EditBindingKeys(bytes, edit, result, &error), qPrintable(error));
+        }
+        auto afterReader = CReader::FromBytes(result.bytes); CSectionTable after(afterReader); QVERIFY(after.IsValid());
+        const auto next = column(after, "keyform_positions.xys");
+        QCOMPARE(next.count, positions.count); QCOMPARE(result.bytes.mid(next.offset, next.count * 4), originalPool);
+        QCOMPARE(after.art_meshes[0]->keyform_sources_counts, 256);
+        for (int local = 0; local < after.art_meshes[0]->keyform_sources_counts; ++local)
+            QCOMPARE(after.art_mesh_keyforms[firstRow(after, 0) + local]->keyform_position_sources_begin_indices, 0);
+        QCOMPARE(bytes, immutable);
+    }
+    void cachedDeleteSlicesStillValidateDifferentLengthsAndOverlaps_data()
+    {
+        QTest::addColumn<int>("begin"); QTest::addColumn<int>("nanIndex");
+        QTest::newRow("same-start-longer-finite") << 0 << -1;
+        QTest::newRow("same-start-longer-nan-tail") << 0 << 6;
+        QTest::newRow("overlap-finite") << 2 << -1;
+        QTest::newRow("overlap-nan-tail") << 2 << 8;
+    }
+    void cachedDeleteSlicesStillValidateDifferentLengthsAndOverlaps()
+    {
+        QFETCH(int, begin); QFETCH(int, nanIndex);
+        QByteArray bytes; QString error; QVERIFY2(fixture(0, bytes, &error), qPrintable(error));
+        Builder::Result bound;
+        QVERIFY2(Builder::BindExistingParameter(bytes, "Axis0", {{owner(1), {-1, 1}}}, bound, &error), qPrintable(error)); bytes = bound.bytes;
+        auto reader = CReader::FromBytes(bytes); CSectionTable before(reader); QVERIFY(before.IsValid());
+        const auto pool = column(before, "keyform_positions.xys");
+        for (int local = 0; local < before.art_meshes[0]->keyform_sources_counts; ++local)
+            put(bytes, before.sectionOffsetTable->art_mesh_keyforms->keyform_position_sources_begin_indices + (firstRow(before, 0) + local) * 4, 0);
+        for (int local = 0; local < before.warp_deformers[0]->keyform_sources_counts; ++local)
+            put(bytes, before.sectionOffsetTable->warp_deformer_keyforms->keyform_position_sources_begin_indices + (firstRow(before, 1) + local) * 4, begin);
+        if (nanIndex >= 0) real(bytes, pool.offset + nanIndex * 4, std::numeric_limits<float>::quiet_NaN());
+        const auto immutable = bytes;
+        Builder::Result result; result.bytes = "keep"; result.oldParameterToNew = {7};
+        QCOMPARE(Builder::Delete(bytes, {"Axis0", -1}, result, &error), nanIndex < 0);
+        if (nanIndex >= 0) {
+            QVERIFY(error.contains(QStringLiteral("坐标"))); QCOMPARE(result.bytes, QByteArray("keep")); QCOMPARE(result.oldParameterToNew, QVector<int>{7});
+        } else {
+            auto afterReader = CReader::FromBytes(result.bytes); CSectionTable after(afterReader); QVERIFY(after.IsValid());
+            const auto next = column(after, "keyform_positions.xys");
+            QCOMPARE(result.bytes.mid(next.offset, next.count * 4), bytes.mid(pool.offset, pool.count * 4));
+            QCOMPARE(after.warp_deformer_keyforms[firstRow(after, 1)]->keyform_position_sources_begin_indices, begin);
+        }
+        QCOMPARE(bytes, immutable);
+    }
+    void overlappingCopySlicesRejectAnUnvalidatedNanTail()
+    {
+        QByteArray bytes; QString error; QVERIFY2(fixture(0, bytes, &error), qPrintable(error));
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        const auto pool = column(table, "keyform_positions.xys");
+        for (int local = 0; local < table.art_meshes[0]->keyform_sources_counts; ++local)
+            put(bytes, table.sectionOffsetTable->art_mesh_keyforms->keyform_position_sources_begin_indices + (firstRow(table, 0) + local) * 4, local % 2 ? 2 : 0);
+        real(bytes, pool.offset + 6 * 4, std::numeric_limits<float>::quiet_NaN());
+        auto edit = request(0, 1); edit.keys[1] = inserted(0, 0);
+        Builder::Result result; result.bytes = "keep";
+        QVERIFY(!Builder::EditBindingKeys(bytes, edit, result, &error)); QVERIFY(error.contains(QStringLiteral("坐标"))); QCOMPARE(result.bytes, QByteArray("keep"));
+    }
+    void deleteSharesFiniteValidationAcrossOwnersWithoutChangingData()
+    {
+        QByteArray bytes; QString error; QVERIFY2(fixture(0, bytes, &error), qPrintable(error));
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        Builder::ColumnState state; state.counts.insert(4, 2);
+        for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
+            if (span.countIndex != 4 || (span.optional && !span.offset)) continue;
+            const auto original = bytes.mid(span.offset, span.width);
+            auto values = original + original;
+            if (QByteArray(span.name) == "art_meshes.ids") values.replace(64, 64, QByteArray("Sibling").leftJustified(64, '\0'));
+            state.columns.insert(span.slot, values);
+        }
+        QByteArray shared; QVERIFY2(Builder::BuildColumnState(bytes, state, shared, &error), qPrintable(error));
+        auto sharedReader = CReader::FromBytes(shared); CSectionTable before(sharedReader); QVERIFY(before.IsValid());
+        for (int local = 0; local < before.art_meshes[0]->keyform_sources_counts; ++local)
+            put(shared, before.sectionOffsetTable->art_mesh_keyforms->keyform_position_sources_begin_indices + (firstRow(before, 0) + local) * 4, 0);
+        const auto originalPool = column(before, "keyform_positions.xys");
+        Builder::Result result; QVERIFY2(Builder::Delete(shared, {"Axis0", -1}, result, &error), qPrintable(error));
+        auto afterReader = CReader::FromBytes(result.bytes); CSectionTable after(afterReader); QVERIFY(after.IsValid());
+        QCOMPARE(after.art_meshes.size(), 2);
+        for (const auto* mesh : after.art_meshes) {
+            QCOMPARE(mesh->keyform_sources_counts, 4);
+            for (int local = 0; local < 4; ++local)
+                QCOMPARE(after.art_mesh_keyforms[mesh->keyform_sources_begin_indices + local]->keyform_position_sources_begin_indices, 0);
+        }
+        const auto next = column(after, "keyform_positions.xys");
+        QCOMPARE(result.bytes.mid(next.offset, next.count * 4), shared.mid(originalPool.offset, originalPool.count * 4));
+    }
 };
 QTEST_GUILESS_MAIN(BindingKeysMocTests)
 #include "binding_keys_moc_tests.moc"
