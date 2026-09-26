@@ -6,6 +6,8 @@
 #include <QString>
 #include <functional>
 
+struct CMeshGeometryMigration;
+
 namespace Live2D { namespace Cubism { namespace Framework {
 class CubismMoc;
 class CubismModel;
@@ -33,7 +35,8 @@ public:
     bool Prepare(const csmByte* bytes, csmSizeInt size, const CubismMoc& sourceMoc, const CubismModel& source,
                  const Rendering::CubismRenderer& renderer, const RendererPreparation& prepareRenderer,
                  CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                 QString* error = nullptr, const ModelPreparation& prepareModel = {});
+                 QString* error = nullptr, const ModelPreparation& prepareModel = {},
+                 const CMeshGeometryMigration* geometry = nullptr);
     CubismModel* GetModel() const { return _model; }
     bool Commit(CubismMoc*& moc, CubismModel*& model, Rendering::CubismRenderer*& renderer) noexcept;
 

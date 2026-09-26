@@ -112,12 +112,18 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                                                const QMap<QString, float>& baseValues, bool keepEditorPreview,
                                                QString* error, const ParameterDefinitionPreparation& preparePreview,
                                                const ParameterReferenceState* references, const EditorPreviewContext* restoreEditor,
-                                               const TimelinePreviewPreparation& prepareTimeline, const PhysicsDraft* physicsDraft)
+                                               const TimelinePreviewPreparation& prepareTimeline, const PhysicsDraft* physicsDraft,
+                                               const CMeshGeometryMigration* geometry)
 {
     if (error) error->clear();
     if (HasExportPreview() || !_initialized || _updating || !_model || sourceDigest.isEmpty() ||
         sourceDigest != m_sourceMocDigest || bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
         if (error) *error = QStringLiteral("当前模型状态不允许修改参数结构");
+        return false;
+    }
+    if (geometry && (m_physicsDragActive || geometry->sourcePreviewDigest.size() != 32 ||
+                     geometry->sourcePreviewDigest != m_previewMocDigest)) {
+        if (error) *error = QStringLiteral("会话顶点迁移与当前预览版本不一致，或画布仍在交互中");
         return false;
     }
     try {
@@ -325,10 +331,11 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
             if (editing && keepEditorPreview && !candidate->ApplyParameterPose(nextEditorPose, detail)) return false;
             return !preparePreview || preparePreview(*candidate, detail);
         };
-        const auto policy = CubismModelUpdatePolicy::AllowClippingEdits | CubismModelUpdatePolicy::AllowParameterDefinitionEdits |
+        auto policy = CubismModelUpdatePolicy::AllowClippingEdits | CubismModelUpdatePolicy::AllowParameterDefinitionEdits |
             CubismModelUpdatePolicy::AllowParameterStructureEdits;
+        if (geometry) policy = policy | CubismModelUpdatePolicy::AllowDrawableGeometryEdits;
         if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepare, error, policy, addedSeeds,
-                                     referenceCandidate ? &referenceCandidate->physics : nullptr, physicsDraft)) return false;
+                                     referenceCandidate ? &referenceCandidate->physics : nullptr, physicsDraft, geometry)) return false;
         if (commitReferences) commitReferences();
         m_mapParaToIndex.swap(nextIndices);
         _timelinePreview.parameters.swap(nextTimeline.frame.parameters);

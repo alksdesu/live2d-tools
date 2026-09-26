@@ -4,6 +4,7 @@
 #include <QScopeGuard>
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 
 CDrawMesh::CDrawMesh(int ebosize, const short* vetebo, int uvsize, const float* vetuv, const float* vetpos)
@@ -139,19 +140,83 @@ bool CDrawMesh::CanCopyEditorStateFrom(const CDrawMesh& source) const
 
 bool CDrawMesh::CopyEditorStateFrom(const CDrawMesh& source)
 {
-    if (!CanCopyEditorStateFrom(source)) return false;
+    EditorState state;
+    return source.CaptureEditorState(state) && RestoreEditorState(state);
+}
+
+bool CDrawMesh::CaptureEditorState(EditorState& state, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        if (!mesh || mesh->GetWolrd().size() > size_t(std::numeric_limits<int>::max())) {
+            if (error) *error = QStringLiteral("网格编辑状态无效");
+            return false;
+        }
+        EditorState candidate;
+        const auto& points = mesh->GetWolrd();
+        candidate.vertexCount = int(points.size());
+        candidate.shown = IsDraw;
+        candidate.hovered = IsOver;
+        for (int index = 0; index < candidate.vertexCount; ++index) {
+            if (!points[index]) {
+                if (error) *error = QStringLiteral("网格编辑状态包含空顶点");
+                return false;
+            }
+            if (points[index]->GetIsSelect()) candidate.selectedVertices.append(index);
+        }
+        state = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法保存网格选区");
+        return false;
+    }
+}
+
+bool CDrawMesh::PrepareEditorState(const EditorState& state, PreparedEditorState& prepared, QString* error) const
+{
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    if (!mesh || state.vertexCount < 0 || size_t(state.vertexCount) != mesh->GetWolrd().size() ||
+        state.selectedVertices.size() > state.vertexCount)
+        return fail(QStringLiteral("网格选区与候选顶点数量不一致"));
     const auto& points = mesh->GetWolrd();
-    const auto& sourcePoints = source.mesh->GetWolrd();
-    std::vector<CPoint*> selected;
-    selected.reserve(points.size());
-    for (size_t index = 0; index < points.size(); ++index)
-        if (sourcePoints[index]->GetIsSelect()) selected.push_back(points[index]);
-    for (size_t index = 0; index < points.size(); ++index)
-        points[index]->SetIsSelect(sourcePoints[index]->GetIsSelect());
-    IsDraw = source.IsDraw;
-    IsOver = source.IsOver;
-    m_vetSelectPoint.swap(selected);
+    for (const auto* point : points)
+        if (!point) return fail(QStringLiteral("网格选区包含空顶点"));
+    QVector<unsigned char> seen(state.vertexCount, 0);
+    PreparedEditorState candidate;
+    candidate.shown = state.shown;
+    candidate.hovered = state.hovered;
+    candidate.selected.reserve(size_t(state.selectedVertices.size()));
+    for (int index : state.selectedVertices) {
+        if (index < 0 || index >= state.vertexCount || seen[index])
+            return fail(QStringLiteral("网格选中的顶点索引无效或重复"));
+        seen[index] = 1;
+        candidate.selected.push_back(points[index]);
+    }
+    prepared = std::move(candidate);
     return true;
+}
+
+void CDrawMesh::CommitEditorState(PreparedEditorState&& prepared) noexcept
+{
+    for (auto* point : mesh->GetWolrd()) point->SetIsSelect(false);
+    for (auto* point : prepared.selected) point->SetIsSelect(true);
+    IsDraw = prepared.shown;
+    IsOver = prepared.hovered;
+    m_vetSelectPoint.swap(prepared.selected);
+}
+
+bool CDrawMesh::RestoreEditorState(const EditorState& state, QString* error)
+{
+    if (error) error->clear();
+    try {
+        PreparedEditorState prepared;
+        if (!PrepareEditorState(state, prepared, error)) return false;
+        CommitEditorState(std::move(prepared));
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法恢复网格选区");
+        return false;
+    }
 }
 
 void CDrawMesh::MoveSelected(const QVector2D& delta)

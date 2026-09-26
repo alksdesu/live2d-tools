@@ -159,6 +159,16 @@ if(BUILD_TESTING)
         target_link_libraries(moc_mesh_structure_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(moc_mesh_structure_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME moc_mesh_structure_core COMMAND moc_mesh_structure_core_tests)
+        add_executable(mesh_geometry_replacement_core_tests tests/mesh_geometry_replacement_core_tests.cpp
+            framework/CubismFramework.cpp framework/Model/CubismMoc.cpp framework/Model/CubismModel.cpp
+            framework/Model/CubismModelReplacement.cpp framework/Rendering/CubismRenderer.cpp
+            framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp framework/Type/csmString.cpp
+            framework/Utils/CubismJson.cpp framework/Utils/CubismString.cpp framework/Utils/CubismDebug.cpp
+            framework/Math/CubismMath.cpp framework/Math/CubismVector2.cpp framework/Math/CubismMatrix44.cpp
+            framework/Type/csmRectF.cpp edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp opengl/cglmeshbuffer.cpp)
+        target_link_libraries(mesh_geometry_replacement_core_tests PRIVATE model_data live2d_core Qt6::Gui Qt6::OpenGL Qt6::Test)
+        target_compile_definitions(mesh_geometry_replacement_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME mesh_geometry_replacement_core COMMAND mesh_geometry_replacement_core_tests)
         add_executable(physics_bake_tests tests/physics_bake_tests.cpp live2d/cphysicsbake.cpp
             framework/CubismFramework.cpp framework/Model/CubismMoc.cpp framework/Model/CubismModel.cpp
             framework/Physics/CubismPhysics.cpp framework/Physics/CubismPhysicsJson.cpp
@@ -224,7 +234,7 @@ if(BUILD_TESTING)
     target_link_libraries(caff_archive_tests PRIVATE cmo3_data Qt6::Test)
     add_test(NAME caff_archive COMMAND caff_archive_tests)
 
-    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit model_resource_path directory_export runtime_moc runtime_package physics_document parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete)
+    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit model_resource_path directory_export runtime_moc runtime_package physics_document parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete mesh_structure_session)
         add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
         target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${data_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -264,7 +274,7 @@ if(BUILD_TESTING)
     target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
     add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller parameter_definition_edit parameter_structure_controller tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -369,7 +379,7 @@ if(BUILD_TESTING)
     add_test(NAME model_runtime_state COMMAND model_runtime_state_tests)
     add_executable(model_replacement_tests tests/model_replacement_tests.cpp ${cubism_model_test_sources}
         live2d/LAppModelParameterDefinitions.cpp opengl/coffscreenbuffer.cpp
-        live2d/LAppModelParameterStructure.cpp framework/Model/CubismUserModelReplacement.cpp
+        live2d/LAppModelParameterStructure.cpp live2d/LAppModelMeshGeometry.cpp framework/Model/CubismUserModelReplacement.cpp
         live2d/LAppModelParameterReferences.cpp
         framework/Motion/ACubismMotion.cpp framework/Motion/CubismMotion.cpp framework/Motion/CubismMotionJson.cpp
         framework/Motion/CubismMotionManager.cpp framework/Motion/CubismMotionQueueManager.cpp framework/Motion/CubismMotionQueueEntry.cpp

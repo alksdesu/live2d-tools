@@ -771,7 +771,8 @@ bool LAppModel::EndEditorPreview(QString* error)
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
                                        const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
                                        CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft)
+                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
+                                       const CMeshGeometryMigration* geometry)
 {
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
@@ -813,7 +814,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     const bool hadPhysics = _physics != nullptr;
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
                       prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
-                      prepareCompiledModel, physicsReferences, preparePhysics))
+                      prepareCompiledModel, physicsReferences, preparePhysics, geometry))
         return false;
     if (preparePhysics && (hadPhysics || _physics)) ++m_physicsGeneration;
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
@@ -821,6 +822,10 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     m_previewMocDigest = digest;
     delegate->m_savedVertices.clear();
     delegate->m_meshOverlayPositions.clear();
+    if (geometry) {
+        delegate->m_meshIndexOverrides.clear();
+        delegate->m_meshOverlayKeyformIndices.clear();
+    }
     return true;
 }
 

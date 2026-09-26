@@ -279,7 +279,49 @@ private slots:
         QCOMPARE(candidate->GetModelOpacity(), 0.6f);
         candidate->LoadParameters(); QCOMPARE(candidate->GetParameterValue(0), 0.3f);
         QCOMPARE(next.updates, 0);
-        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, static_cast<CubismModelUpdatePolicy>(16)));
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, static_cast<CubismModelUpdatePolicy>(32)));
+    }
+
+    void geometryPolicyChangesCountsUvsAndDropsLegacyTopology()
+    {
+        auto source=create(), candidate=create(); source->InitMesh();
+        QVERIFY(source->SetDrawableIndicesOverride(0,{0,1,3}));
+        source->SetParameterValue(0,.3f);source->SaveParameters();source->SetParameterValue(0,.7f);
+        source->SetPartOpacity(0,.4f);source->SetModelOpacity(.6f);
+        auto& data=State(candidate->GetModel());data.vertexCounts[0]=3;data.indexCounts[0]=3;data.uvs[0][0].X=.25f;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source));
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source,CubismModelUpdatePolicy::AllowDrawableTopologyEdits));
+        QString error; QVERIFY2(candidate->CopyRuntimeStateFrom(*source,CubismModelUpdatePolicy::AllowDrawableGeometryEdits,&error),qPrintable(error));
+        QVERIFY(!candidate->HasDrawableIndicesOverrides());QVERIFY(source->HasDrawableIndicesOverrides());
+        QCOMPARE(candidate->GetDrawableVertexCount(0),3);QCOMPARE(candidate->GetDrawableVertexIndices(0)[2],quint16(2));
+        QCOMPARE(candidate->GetParameterValue(0),.7f);QCOMPARE(candidate->GetPartOpacity(0),.4f);QCOMPARE(candidate->GetModelOpacity(),.6f);
+        candidate->LoadParameters();QCOMPARE(candidate->GetParameterValue(0),.3f);
+    }
+
+    void geometryStillValidatesBothSidesAndOtherDefinitions_data()
+    {
+        QTest::addColumn<bool>("oldSide");QTest::addColumn<int>("mutation");
+        for(bool oldSide:{false,true}) for(int mutation=0;mutation<11;++mutation)
+            QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(oldSide).arg(mutation)))<<oldSide<<mutation;
+    }
+    void geometryStillValidatesBothSidesAndOtherDefinitions()
+    {
+        QFETCH(bool,oldSide);QFETCH(int,mutation);auto source=create(),candidate=create();auto& data=State((oldSide?source:candidate)->GetModel());
+        switch(mutation) {
+        case 0:data.vertexCounts[0]=-1;break;
+        case 1:data.nullGetters.insert("csmGetDrawableVertexCounts");break;
+        case 2:data.uvPointers[0]=nullptr;break;
+        case 3:data.uvs[0][0].X=std::numeric_limits<float>::quiet_NaN();break;
+        case 4:data.indices[0][0]=4;break;
+        case 5:data.indexCounts[0]=4;break;
+        case 6:data.textures[0]=3;break;
+        case 7:data.flags[0]^=Core::csmIsDoubleSided;break;
+        case 8:data.parameterIds[0]="Other";break;
+        case 9:data.maximum[0]=3;break;
+        case 10:data.keys[0][0]=-.5f;break;
+        }
+        QString error; QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source,CubismModelUpdatePolicy::AllowDrawableGeometryEdits,&error));
+        QVERIFY(!error.isEmpty());QCOMPARE(State(candidate->GetModel()).updates,0);QCOMPARE(State(source->GetModel()).updates,0);
     }
 
     void topologyValidationChecksBothModels_data()
@@ -330,6 +372,23 @@ private slots:
             QCOMPARE(mesh->GetMesh()->GetEBOSize(), 0);
             QCOMPARE(mesh->GetMesh()->GetWolrd().size(), size_t(4));
         }
+    }
+
+    void zeroVertexDrawablesKeepEditorIdentityWithoutCoreArrays()
+    {
+        auto source=create(),candidate=create();
+        for(auto* model:{source.get(),candidate.get()}) {
+            auto& data=State(model->GetModel());data.vertexCounts.fill(0);data.indexCounts.fill(0);
+            data.nullGetters.insert("csmGetDrawableVertexPositions");data.nullGetters.insert("csmGetDrawableVertexUvs");data.nullGetters.insert("csmGetDrawableIndices");
+            QCOMPARE(model->GetDrawableVertices(0),nullptr);QCOMPARE(model->GetDrawableVertexUvs(0),nullptr);
+            QVERIFY(model->HasFiniteDrawableState());model->InitMesh();
+            QCOMPARE(model->GetMeshMap()->GetMapMesh().size(),model->GetDrawableCount());
+            for(const auto* mesh:model->GetMeshMap()->GetMapMesh()){QVERIFY(mesh);QVERIFY(mesh->GetMesh()->GetWolrd().empty());QVERIFY(mesh->GetSelectPoint().empty());}
+        }
+        source->GetMeshMap()->GetDrawMesh("MeshA")->SetShow(true);
+        CMeshEditorSnapshot state;QVERIFY(source->GetMeshMap()->CaptureEditorState(state));QCOMPARE(state["MeshA"].vertexCount,0);
+        CMeshGeometryMigration migration;migration.targetState=state;migration.remaps.insert("MeshA",{0,0,{}});
+        QVERIFY(candidate->GetMeshMap()->CopyEditorStateFrom(*source->GetMeshMap(),migration));QVERIFY(candidate->GetMeshMap()->GetDrawMesh("MeshA")->IsShown());
     }
 
     void topologyPolicyKeepsOtherDrawableDefinitionsStrict_data()

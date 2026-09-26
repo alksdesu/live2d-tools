@@ -18,11 +18,13 @@ public:
         const QMap<QString, float>&, bool, QMap<QString, float>&, QString*)>;
     using StructurePoseProvider = std::function<bool(const CModelDocument&, const CModelEdit&, bool,
         QMap<QString, float>&, QString*)>;
+    using MeshPublisher = std::function<bool(const CModelDocument&, const CModelEdit&, bool, QString*)>;
 
     void SetDocument(CModelDocument* document);
     void SetPublisher(Publisher publisher, PreviewEnder ender);
     void SetDefinitionPublisher(DefinitionPublisher publisher);
     void SetStructurePublisher(StructurePublisher publisher, StructurePoseProvider poseProvider = {});
+    void SetMeshPublisher(MeshPublisher publisher);
     bool Activate(const QString& id, int keyform, const QMap<QString, float>& currentValues, QString* error = nullptr);
     bool Activate(const QString& id, const QString& type, int keyform,
                   const QMap<QString, float>& currentValues, QString* error = nullptr);
@@ -48,6 +50,7 @@ private:
     bool PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error);
     bool PublishStructure(CModelDocument candidate, const CModelEdit& command, bool forward,
                           bool restoreSession, QString* error);
+    bool PublishMesh(CModelDocument candidate, const CModelEdit& command, bool forward, QString* error);
     struct Drag
     {
         CModelDocument start;
@@ -70,6 +73,7 @@ private:
     DefinitionPublisher m_publishDefinitions;
     StructurePublisher m_publishStructure;
     StructurePoseProvider m_structurePose;
+    MeshPublisher m_publishMesh;
     PreviewEnder m_end;
     QString m_target;
     QString m_type;

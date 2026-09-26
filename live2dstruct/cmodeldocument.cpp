@@ -113,6 +113,7 @@ void CModelDocument::Clear()
     m_sourceDigest.clear();
     m_workingBaseBytes.clear();
     m_structure = {};
+    m_hasMeshStructure = false;
     m_sourceDeformerParents.clear();
     m_keyformBindings.reset();
     m_previewBuilder.reset();
@@ -1016,11 +1017,12 @@ bool CModelDocument::IsLocked(const QString& type, const QString& id) const
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
     const QVariant& value = forward ? edit.after : edit.before;
-    if (edit.field == CModelEdit::ParameterStructure) {
-        if (edit.type != QLatin1String("parameter") || edit.before.metaType() != QMetaType::fromType<QVariantMap>() ||
+    if (edit.field == CModelEdit::ParameterStructure || edit.field == CModelEdit::MeshStructure) {
+        const QString type = edit.field == CModelEdit::ParameterStructure ? QStringLiteral("parameter") : QStringLiteral("mesh");
+        if (edit.type != type || edit.before.metaType() != QMetaType::fromType<QVariantMap>() ||
             edit.after.metaType() != QMetaType::fromType<QVariantMap>() ||
             ParameterStructureState() != (forward ? edit.before : edit.after).toMap()) return false;
-        return ApplyParameterStructureState(value.toMap());
+        return ApplyStructureState(value.toMap(), edit, forward);
     }
     if (edit.field == CModelEdit::VisibilityValues) {
         if (edit.type != QLatin1String("objects") || !edit.before.canConvert<QMap<QString, bool>>() ||
@@ -1117,8 +1119,15 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
 {
     try {
-        if (edit.name.isEmpty() || edit.before == edit.after) return false;
+        if (edit.name.isEmpty() || (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
+        if (command.field != CModelEdit::MeshStructure && (!command.meshRemaps.isEmpty() || command.meshRequest)) return false;
+        if (command.field == CModelEdit::MeshStructure && command.before == command.after) {
+            bool remapped = false;
+            for (const auto& mesh : command.meshRemaps)
+                for (int index = 0; index < mesh.oldToNew.size(); ++index) remapped = remapped || mesh.oldToNew[index] != index;
+            if (!remapped) return false;
+        }
         switch (command.parameterChange) {
         case CModelEdit::ParameterChange::None: case CModelEdit::ParameterChange::Create:
         case CModelEdit::ParameterChange::Bind: case CModelEdit::ParameterChange::Delete: break;
@@ -1165,7 +1174,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         }
         CModelDocument candidate = *this;
         std::shared_ptr<CModelEditStorageState> storage;
-        if (command.field != CModelEdit::ParameterStructure) {
+        if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure) {
             storage = std::make_shared<CModelEditStorageState>();
             storage->before = EditStorage(command);
         }
@@ -1185,7 +1194,8 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         command.storage = std::move(storage);
         if (candidate.m_editIndex < candidate.m_editHistory.size()) candidate.m_editHistory.resize(candidate.m_editIndex);
         bool merged = false;
-        if (command.field != CModelEdit::ParameterStructure && command.coalesce && !candidate.m_editHistory.isEmpty()) {
+        if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure &&
+            command.coalesce && !candidate.m_editHistory.isEmpty()) {
             auto& last = candidate.m_editHistory.last();
             if (last.coalesce && last.name == command.name && last.type == command.type && last.field == command.field &&
                 last.index == command.index && last.after == command.before && last.storage && command.storage &&

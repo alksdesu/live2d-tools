@@ -37,6 +37,7 @@ class QProgressDialog;
 class CExportResultsPanel;
 class CExportControl;
 struct PreviewExportState;
+struct CMeshGeometryMigration;
 
 class MainWindow : public QMainWindow
 {
@@ -98,6 +99,10 @@ private:
     bool PublishParameterStructure(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                                    bool forward, bool restoring, const QMap<QString, float>& values,
                                    bool editing, QMap<QString, float>& pose, QString* error);
+    bool PrepareMeshMigration(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit* command,
+                              bool forward, CMeshGeometryMigration& migration, QVariant* leaving, QString* error) const;
+    bool PublishMeshStructure(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
+                              bool forward, QString* error);
     bool PrepareParameterStructurePose(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                                        bool forward, QMap<QString, float>& pose, QString* error) const;
     QStringList ParameterReferences(const QString& id, bool includeTimeline = true) const;

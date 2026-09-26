@@ -72,6 +72,16 @@ bool validPhysicsDraft(const CModelSession& session, int version, QString* error
         QJsonDocument(draft.document).toJson(QJsonDocument::Compact), {}, prepared, error);
 }
 
+bool validMeshStructure(const CModelSession& session, int version, QString* error)
+{
+    if (!session.meshStructure) return true;
+    if (version < 5 || session.sourceMoc.isEmpty() || session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32) {
+        setError(error, QStringLiteral("meshStructure 需要版本 5、sourceMoc 和有效的 sourceDigest"));
+        return false;
+    }
+    return true;
+}
+
 bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     qint64 bytes = 0;
@@ -145,16 +155,18 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 4) return {};
+    if (version < 1 || version > 5) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
     if (!validStructure(structure, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources)) return {};
     int storedVersion = hasStructure && version == 1 ? 2 : version;
     if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
-    if (physicsDraft && physicsDraft->sourcePath.isEmpty()) storedVersion = 4;
-    if (!validPhysicsDraft(*this, storedVersion, nullptr)) return {};
+    if (physicsDraft && physicsDraft->sourcePath.isEmpty() && storedVersion < 4) storedVersion = 4;
+    if (meshStructure) storedVersion = 5;
+    if (!validPhysicsDraft(*this, storedVersion, nullptr) || !validMeshStructure(*this, storedVersion, nullptr)) return {};
     root.insert(QStringLiteral("version"), storedVersion);
+    if (storedVersion == 5) root.insert(QStringLiteral("meshStructure"), meshStructure);
     if (!resources.isEmpty()) root.insert(QStringLiteral("parameterResources"), resources);
     if (physicsDraft) root.insert(QStringLiteral("physicsDraft"), QJsonObject{
         {QStringLiteral("sourcePath"), physicsDraft->sourcePath}, {QStringLiteral("document"), physicsDraft->document},
@@ -297,13 +309,19 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 4) {
+    if (parsedVersion < 1 || parsedVersion > 5) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    if ((parsedVersion < 5 && root.contains(QStringLiteral("meshStructure"))) ||
+        (parsedVersion == 5 && !root.value(QStringLiteral("meshStructure")).isBool())) {
+        setError(error, QStringLiteral("会话 meshStructure 字段需要版本 5 且必须为布尔值"));
+        return false;
+    }
+    result.meshStructure = root.value(QStringLiteral("meshStructure")).toBool(false);
     QJsonObject resources;
     if (!readObject(root, QStringLiteral("parameterResources"), &resources, error) ||
         !CParameterResourceEdits::FromJson(resources, result.parameterResources, error)) return false;
@@ -347,7 +365,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDigest = decoded;
     }
-    if (!validPhysicsDraft(result, parsedVersion, error)) return false;
+    if (!validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error)) return false;
 
     QJsonObject parameterObject;
     QJsonObject parameterMetadataObject;
@@ -670,12 +688,12 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 4) ||
+    if ((version < 1 || version > 5) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)))
         return fail(QStringLiteral("version"));
     if (!validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
-        !validPhysicsDraft(*this, version, error)) return false;
+        !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error)) return false;
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
         setError(error, QStringLiteral("没有可恢复会话的模型快照"));
         return false;
@@ -706,7 +724,9 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
     if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
     QSet<QString> removedParameters;
     for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
-    if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
+    if (meshStructure) {
+        if (!candidate.SetAuthoringStructure(structure, error)) return false;
+    } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
     for (const auto& parameter : candidate.Parameters()) removedParameters.remove(parameter.id);
     for (auto track = timeline.Tracks().cbegin(); track != timeline.Tracks().cend(); ++track)
         if (track.key().target == CMotionTarget::Parameter && removedParameters.contains(track.key().id))

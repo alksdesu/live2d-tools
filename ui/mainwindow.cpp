@@ -36,6 +36,7 @@
 #include "live2dstruct/cparameterreferences.h"
 #include "live2d/cparameterreferenceplan.h"
 #include "live2dstruct/cmotionblendpreview.h"
+#include "edit/cmeshmap.h"
 #include "ui/theme.h"
 #include <QFileDialog>
 #include "live2d/LAppDefine.hpp"
@@ -683,6 +684,7 @@ bool MainWindow::SaveSession()
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     session.sourceDigest = m_document.SourceDigest();
     session.structure = m_document.ParameterStructure();
+    session.meshStructure = m_document.HasMeshStructure();
     session.parameterResources = m_parameterResources;
     if (m_physicsPanel) {
         CPhysicsPanel::Snapshot physics;
@@ -871,7 +873,8 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
         QMap<QString, float> values;
         if (!m_runtimePanelsInitialized)
             for (const auto& parameter : document.Parameters()) values.insert(parameter.id, document.ParameterValue(parameter.id));
-        if (!m_runtimePanelsInitialized && (!document.ParameterStructure().columns.isEmpty() || !document.ParameterStructure().counts.isEmpty())) {
+        if (!m_runtimePanelsInitialized && (document.HasMeshStructure() || !document.ParameterStructure().columns.isEmpty() ||
+            !document.ParameterStructure().counts.isEmpty())) {
             auto* manager = LAppLive2DManager::GetInstance();
             auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
             if (!model) { if (error) *error = QStringLiteral("模型预览尚未就绪"); return false; }
@@ -884,7 +887,13 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
             for (auto value = values.cbegin(); value != values.cend(); ++value)
                 if (!previous.contains(value.key())) entering.insert(value.key(), ParameterStructureSeed());
             QMap<QString, float> prepared;
-            return m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, false, prepared, error);
+            std::optional<CMeshGeometryMigration> geometry;
+            if (document.HasMeshStructure()) {
+                geometry.emplace();
+                if (!PrepareMeshMigration(document, nullptr, true, *geometry, nullptr, error)) return false;
+            }
+            return m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, false, prepared,
+                error, nullptr, nullptr, {}, nullptr, geometry ? &*geometry : nullptr);
         }
         return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, false, error);
     }
@@ -1168,8 +1177,14 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     LAppModel::PhysicsDraft physicsDraft;
     if (changePhysics && !physics.Result().document.isEmpty())
         physicsDraft.bytes = QJsonDocument(physics.Result().document).toJson(QJsonDocument::Compact);
+    std::optional<CMeshGeometryMigration> geometry;
+    if (restoring && (document.HasMeshStructure() || m_document.HasMeshStructure())) {
+        geometry.emplace();
+        if (!PrepareMeshMigration(document, nullptr, true, *geometry, nullptr, error)) return false;
+    }
     if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error,
-        changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline, changePhysics ? &physicsDraft : nullptr))
+        changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline, changePhysics ? &physicsDraft : nullptr,
+        geometry ? &*geometry : nullptr))
         return false;
     if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
     if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
@@ -1311,6 +1326,7 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
         return false;
     }
     if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && edit.field != live2dstruct::CModelEdit::ParameterStructure &&
+        edit.field != live2dstruct::CModelEdit::MeshStructure &&
         m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(edit)) {
         const bool active = m_keyformEditor.IsActive();
@@ -1346,6 +1362,7 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
     if (pending.field != live2dstruct::CModelEdit::ParameterMetadata && pending.field != live2dstruct::CModelEdit::ParameterStructure &&
+        pending.field != live2dstruct::CModelEdit::MeshStructure &&
         m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(pending)) {
         if (!m_keyformEditor.History(undo, edit, error)) return false;
@@ -1549,7 +1566,7 @@ void MainWindow::ApplyVisibilityValues(const QMap<QString, bool>& values)
 void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward)
 {
     const QVariant& value = forward ? edit.after : edit.before;
-    if (edit.field == live2dstruct::CModelEdit::ParameterStructure) {
+    if (edit.field == live2dstruct::CModelEdit::ParameterStructure || edit.field == live2dstruct::CModelEdit::MeshStructure) {
         RefreshParameterStructureUi();
     } else if (edit.field == live2dstruct::CModelEdit::ParameterValue) {
         const float parameterValue = value.toFloat();
@@ -2577,6 +2594,9 @@ void MainWindow::RestDock(const QString &name)
     }, [this](const auto& document, const auto& command, bool forward, auto& pose, QString* error) {
         return PrepareParameterStructurePose(document, command, forward, pose, error);
     });
+    m_keyformEditor.SetMeshPublisher([this](const auto& document, const auto& command, bool forward, QString* error) {
+        return PublishMeshStructure(document, command, forward, error);
+    });
     m_selectedObjectIds.clear();
     m_selectedObjectTypes.clear();
     m_workspaceReady = false;
@@ -2798,7 +2818,7 @@ void MainWindow::RestDock(const QString &name)
         if (edit.field == live2dstruct::CModelEdit::ParameterValue ||
             edit.field == live2dstruct::CModelEdit::ParameterValues ||
             edit.field == live2dstruct::CModelEdit::ParameterMetadata ||
-            edit.field == live2dstruct::CModelEdit::ParameterStructure)
+            edit.field == live2dstruct::CModelEdit::ParameterStructure || edit.field == live2dstruct::CModelEdit::MeshStructure)
             ApplyDocumentEditToUi(edit, !undo);
         return true;
     });

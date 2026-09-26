@@ -376,7 +376,8 @@ class ModelReplacementTests : public QObject
     static bool publishPreview(LAppModel& preview, const QByteArray& bytes, const QByteArray& sourceDigest,
                                const CubismModelReplacement::ModelPreparation& prepareModel,
                                QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                               const ParameterPhysicsReferences* physicsReferences, const LAppModel::PhysicsDraft* physicsDraft)
+                               const ParameterPhysicsReferences* physicsReferences, const LAppModel::PhysicsDraft* physicsDraft,
+                               const CMeshGeometryMigration* geometry)
     {
         if (physicsDraft) qFatal("Physics draft integration is outside this renderer-boundary fixture");
         Q_UNUSED(sourceDigest);
@@ -385,7 +386,7 @@ class ModelReplacementTests : public QObject
             return normalPreparation()(renderer, model, source, detail);
         };
         if (!preview.ReplaceModel(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size(),
-            prepareRenderer, policy, seeds, error, prepareModel, physicsReferences)) return false;
+            prepareRenderer, policy, seeds, error, prepareModel, physicsReferences, {}, geometry)) return false;
         preview.m_previewMocBytes = bytes;
         preview.m_previewMocDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
         return true;
@@ -1353,6 +1354,103 @@ private slots:
         QVERIFY(preview.HasEditorPreview());
     }
 
+    void geometryReplacementRemapsSelectionAndDropsSourceEbo()
+    {
+        auto source=createSource();auto* oldMesh=source->model->GetMeshMap()->GetDrawMesh("MeshA");
+        oldMesh->GetMesh()->GetWolrd()[3]->SetIsSelect(true);
+        CMeshEditorSnapshot original;QVERIFY(source->model->GetMeshMap()->CaptureEditorState(original));
+        CMeshGeometryMigration migration;migration.remaps.insert("MeshA",{4,3,{2,0,1,-1}});
+        runtime.configureModel=[](GetterState& data){data.vertexCounts[0]=3;data.indexCounts[0]=3;data.uvs[0][0].X=.2f;};
+        const auto policy=CubismModelUpdatePolicy::AllowDrawableGeometryEdits;
+        CubismModelReplacement next;QString error;
+        QVERIFY2(next.Prepare(candidateBytes.data(),candidateBytes.size(),*source->moc,*source->model,*source->renderer,
+            normalPreparation(),policy,{},&error,{},&migration),qPrintable(error));
+        auto* model=next.GetModel();QVERIFY(!model->HasDrawableIndicesOverrides());QVERIFY(source->model->HasDrawableIndicesOverrides());
+        auto* mesh=model->GetMeshMap()->GetDrawMesh("MeshA");QVERIFY(mesh);QCOMPARE(mesh->GetSelectPoint().size(),size_t(1));
+        QCOMPARE(mesh->GetSelectPoint().front(),mesh->GetMesh()->GetWolrd()[2]);QVERIFY(mesh->IsShown());
+        QVERIFY(next.Commit(source->moc,source->model,source->renderer));
+        QCOMPARE(source->model->GetDrawableVertexCount(0),3);QCOMPARE(source->model->GetDrawableVertexIndices(0)[2],quint16(2));
+        QCOMPARE(source->model->GetParameterValue(0),.7f);QCOMPARE(source->model->GetPartOpacity(0),.45f);QCOMPARE(source->model->GetModelOpacity(),.6f);
+        runtime.configureModel={};CMeshGeometryMigration undo;undo.remaps.insert("MeshA",{3,4,{1,2,0}});undo.targetState=original;
+        CubismModelReplacement restored;
+        QVERIFY2(restored.Prepare(sourceBytes.data(),sourceBytes.size(),*source->moc,*source->model,*source->renderer,
+            normalPreparation(),policy,{},&error,{},&undo),qPrintable(error));
+        QVERIFY(restored.Commit(source->moc,source->model,source->renderer));
+        auto* restoredMesh=source->model->GetMeshMap()->GetDrawMesh("MeshA");QCOMPARE(restoredMesh->GetSelectPoint().size(),size_t(2));
+        QVERIFY(restoredMesh->GetMesh()->GetWolrd()[3]->GetIsSelect());
+        source->model->LoadParameters();QCOMPARE(source->model->GetParameterValue(0),.2f);
+    }
+
+    void geometryFailureKeepsOldObjectsAndSelection_data()
+    {
+        QTest::addColumn<int>("failure");for(int i=0;i<6;++i)QTest::newRow(qPrintable(QString::number(i)))<<i;
+    }
+    void geometryFailureKeepsOldObjectsAndSelection()
+    {
+        QFETCH(int,failure);auto source=createSource();auto* model=source->model;auto* renderer=source->renderer;auto* moc=source->moc;
+        auto* mesh=model->GetMeshMap()->GetDrawMesh("MeshA");auto* selected=mesh->GetSelectPoint().front();const auto allocations=runtime.allocations.size();
+        runtime.configureModel=[failure](GetterState& data){data.vertexCounts[0]=3;data.indexCounts[0]=3;data.uvs[0][0].X=.2f;if(failure==4)data.indices[0][2]=3;};
+        CMeshGeometryMigration migration;migration.remaps.insert("MeshA",{4,3,{2,0,1,-1}});
+        if(failure==0)migration.remaps.clear();if(failure==1)migration.remaps["MeshA"].oldToNew={0,0,1,-1};
+        if(failure==5){CMeshEditorSnapshot bad;QVERIFY(model->GetMeshMap()->CaptureEditorState(bad));migration.targetState=bad;}
+        const auto preparation=[failure](CubismRenderer* r,CubismModel* m,const CubismRenderer& old,QString* e){
+            if(failure==2){if(e)*e="GPU rejection";return false;}if(failure==3)throw std::runtime_error("GPU exception");return normalPreparation()(r,m,old,e);
+        };
+        CubismModelReplacement next;QString error;
+        QVERIFY(!next.Prepare(candidateBytes.data(),candidateBytes.size(),*moc,*model,*renderer,preparation,
+            CubismModelUpdatePolicy::AllowDrawableGeometryEdits,{},&error,{},&migration));QVERIFY(!error.isEmpty());
+        QVERIFY(!next.GetModel());QCOMPARE(source->model,model);QCOMPARE(source->moc,moc);QCOMPARE(source->renderer,renderer);
+        QCOMPARE(mesh->GetSelectPoint().front(),selected);QVERIFY(model->HasDrawableIndicesOverrides());
+        QCOMPARE(model->GetParameterValue(0),.7f);QCOMPARE(model->GetPartOpacity(0),.45f);QCOMPARE(runtime.allocations.size(),allocations);
+    }
+
+    void lappGeometryChecksDigestAndKeepsEditorTimelineValues()
+    {
+        LAppModel preview;setupPreview(preview);runtime.parameterMinimum=-2;runtime.parameterMaximum=2;
+        auto entry=std::make_unique<CubismModel::RuntimeValueSnapshot>(snapshot(preview));
+        preview.m_editorBaseParameters=entry->Parameters();preview.m_editorPose=entry->Parameters();
+        preview.m_editorPose["ParamA"]=.9f;preview.m_editorEntryState=std::move(entry);preview._model->SetParameterValue(0,.9f);
+        preview._timelinePreviewActive=true;preview._timelineBaseParameters={{"ParamA",.2f},{"ParamB",.3f}};
+        const auto baseline=preview._timelineBaseParameters;const auto editorBase=preview.m_editorBaseParameters;
+        const auto before=snapshot(preview);auto* old=preview._model;
+        CMeshGeometryMigration migration;migration.sourcePreviewDigest="stale";migration.remaps.insert("MeshA",{4,3,{2,0,1,-1}});
+        runtime.configureModel=[](GetterState& data){data.vertexCounts[0]=3;data.indexCounts[0]=3;data.uvs[0][0].X=.2f;};
+        QString error;QVERIFY(!preview.ApplyMeshGeometryPreview(metadataBytes(),preview.m_sourceMocDigest,migration,&error));QCOMPARE(preview._model,old);
+        migration.sourcePreviewDigest=preview.GetPreviewMocDigest();runtime.rejectMetadataRenderer=true;
+        QVERIFY(!preview.ApplyMeshGeometryPreview(metadataBytes(),preview.m_sourceMocDigest,migration,&error));QCOMPARE(preview._model,old);
+        runtime.rejectMetadataRenderer=false;QVERIFY2(preview.ApplyMeshGeometryPreview(metadataBytes(),preview.m_sourceMocDigest,migration,&error),qPrintable(error));
+        QVERIFY(preview._model!=old);QVERIFY(preview.HasEditorPreview());QVERIFY(preview.HasTimelinePreview());
+        QCOMPARE(preview._timelineBaseParameters,baseline);QCOMPARE(preview.m_editorBaseParameters,editorBase);
+        QCOMPARE(snapshot(preview).savedParameters,before.savedParameters);QCOMPARE(snapshot(preview).parameterValues,before.parameterValues);
+        QCOMPARE(snapshot(preview).partOpacities,before.partOpacities);QCOMPARE(snapshot(preview).modelOpacity,before.modelOpacity);
+        CMeshEditorSnapshot selected;QVERIFY(preview.CaptureMeshEditorState(selected));QCOMPARE(selected["MeshA"].selectedVertices,QVector<int>({2}));
+    }
+
+    void combinedParameterAndGeometryPreviewCommitsOneCandidate()
+    {
+        LAppModel preview;setupPreview(preview);runtime.editParameterDefinition=false;
+        runtime.configureModel=[](GetterState& data){
+            CubismModelFixture::SetParameterLayout(data,{"ParamA","ParamC"});data.minimum[0]=-2;data.maximum[0]=2;
+            data.vertexCounts[0]=3;data.indexCounts[0]=3;data.uvs[0][0].X=.25f;
+        };
+        auto entry=std::make_unique<CubismModel::RuntimeValueSnapshot>(snapshot(preview));
+        preview.m_editorPose=entry->Parameters();preview.m_editorBaseParameters=entry->Parameters();preview.m_editorEntryState=std::move(entry);
+        CMeshGeometryMigration geometry;geometry.sourcePreviewDigest=preview.GetPreviewMocDigest();geometry.remaps.insert("MeshA",{4,3,{-1,-1,-1,-1}});
+        auto* original=preview._model;const int calls=runtime.initializeCalls;
+        runtime.rejectMetadataRenderer=true;QString error;
+        QVERIFY(!preview.ApplyParameterStructurePreview(metadataBytes(),preview.m_sourceMocDigest,
+            {{"ParamC",ParameterStructureSeed{}}},{},false,&error,{},nullptr,nullptr,{},nullptr,&geometry));
+        QCOMPARE(preview._model,original);QVERIFY(preview.HasEditorPreview());QCOMPARE(runtime.initializeCalls,calls+1);
+        runtime.rejectMetadataRenderer=false;
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(),preview.m_sourceMocDigest,
+            {{"ParamC",ParameterStructureSeed{}}},{},false,&error,{},nullptr,nullptr,{},nullptr,&geometry),qPrintable(error));
+        QCOMPARE(runtime.initializeCalls,calls+2);QVERIFY(!preview.HasEditorPreview());QVERIFY(preview._model!=original);
+        QCOMPARE(preview._model->GetDrawableVertexCount(0),3);QCOMPARE(preview._model->GetParameterCount(),2);
+        QCOMPARE(preview._model->GetParameterId(1)->GetString().GetRawString(),QByteArray("ParamC").constData());
+        QVERIFY(preview._model->GetMeshMap()->GetDrawMesh("MeshA")->GetSelectPoint().empty());
+        QCOMPARE(preview._model->GetParameterValue(0),1.75f);
+    }
+
     void topologyReplacementPreservesSelectionAndRuntimeValues_data()
     {
         QTest::addColumn<int>("count"); QTest::addColumn<bool>("clipping");
@@ -1970,9 +2068,10 @@ private slots:
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArray& sourceDigest,
                                        const CubismModelReplacement::ModelPreparation& prepareModel,
                                        QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft)
+                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
+                                       const CMeshGeometryMigration* geometry)
 {
-    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences, physicsDraft);
+    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences, physicsDraft, geometry);
 }
 
 QTEST_GUILESS_MAIN(ModelReplacementTests)

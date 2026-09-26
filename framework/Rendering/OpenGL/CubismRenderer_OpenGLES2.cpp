@@ -555,9 +555,7 @@ bool CubismRenderer_OpenGLES2::InitializeResources(CubismModel* model, csmInt32 
         std::vector<std::unique_ptr<CGlMeshBuffer>> meshes(static_cast<size_t>(count));
         if (preuploadGeometry) {
             if (count && (!Core::csmGetDrawableVertexCounts(model->GetModel()) ||
-                !Core::csmGetDrawableIndexCounts(model->GetModel()) ||
-                !Core::csmGetDrawableVertexPositions(model->GetModel()) ||
-                !Core::csmGetDrawableVertexUvs(model->GetModel()) || !Core::csmGetDrawableIndices(model->GetModel())))
+                !Core::csmGetDrawableIndexCounts(model->GetModel())))
                 return PreparationFailed(error, QStringLiteral("渲染器缺少几何数组"));
             for (int index = 0; index < count; ++index)
                 if (!UploadDrawableGeometry(*model, index, model->GetDrawableVertices(index), meshes[index], error)) return false;

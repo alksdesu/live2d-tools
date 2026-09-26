@@ -94,6 +94,11 @@ void CKeyformEditController::SetStructurePublisher(StructurePublisher publisher,
     }
 }
 
+void CKeyformEditController::SetMeshPublisher(MeshPublisher publisher)
+{
+    if (!m_publishing) m_publishMesh = std::move(publisher);
+}
+
 bool CKeyformEditController::Ready(QString* error) const
 {
     if (error) error->clear();
@@ -108,7 +113,8 @@ bool CKeyformEditController::Handles(const CModelEdit& edit)
     return materialField(edit.field) || edit.field == CModelEdit::KeyformPositions || edit.field == CModelEdit::WarpKeyforms ||
            edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent ||
            edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted ||
-           edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure;
+           edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure ||
+           edit.field == CModelEdit::MeshStructure;
 }
 
 bool CKeyformEditController::CanEdit(const QString& id, int keyform, QString* error) const
@@ -261,6 +267,18 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
                                    int previewKeyform, QString* error)
 {
     if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
+    if (edit.field == CModelEdit::MeshStructure) {
+        if (!Ready(error)) return false;
+        if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+        try {
+            CModelDocument candidate = *m_document;
+            CModelEdit command = edit;
+            command.runtime = std::make_shared<CModelEditRuntimeState>();
+            command.coalesce = false;
+            if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("网格结构修改无效或数据已改变"));
+            return PublishMesh(std::move(candidate), command, true, error);
+        } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备网格结构，原文档和预览保持不变")); }
+    }
     if (materialField(edit.field)) {
         if (!Ready(error)) return false;
         if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
@@ -393,7 +411,9 @@ bool CKeyformEditController::History(bool undo, CModelEdit& edit, QString* error
         return fail(error, QStringLiteral("当前历史不是模型几何编辑"));
     if (!(undo ? candidate.UndoEdit() : candidate.RedoEdit()))
         return fail(error, QStringLiteral("无法恢复关键形历史"));
-    if (command.field == CModelEdit::ParameterStructure) {
+    if (command.field == CModelEdit::MeshStructure) {
+        if (!PublishMesh(std::move(candidate), command, !undo, error)) return false;
+    } else if (command.field == CModelEdit::ParameterStructure) {
         if (!PublishStructure(std::move(candidate), command, !undo, false, error)) return false;
     } else if (command.field == CModelEdit::ParameterMetadata) {
         if (!PublishDefinitions(std::move(candidate), false, error)) return false;
@@ -405,7 +425,8 @@ bool CKeyformEditController::History(bool undo, CModelEdit& edit, QString* error
 bool CKeyformEditController::Restore(CModelDocument candidate, QString* error, bool forceStructure)
 {
     if (!Ready(error)) return false;
-    if (forceStructure || candidate.ParameterStructure() != m_document->ParameterStructure()) {
+    if (forceStructure || candidate.ParameterStructure() != m_document->ParameterStructure() ||
+        candidate.HasMeshStructure() != m_document->HasMeshStructure()) {
         CModelEdit command;
         command.field = CModelEdit::ParameterStructure;
         command.runtime = std::make_shared<CModelEditRuntimeState>();
@@ -414,6 +435,26 @@ bool CKeyformEditController::Restore(CModelDocument candidate, QString* error, b
     if (m_publishDefinitions) return PublishDefinitions(std::move(candidate), true, error);
     if (IsActive() || m_drag) return fail(error, QStringLiteral("请先退出关键形编辑再恢复会话"));
     return Publish(std::move(candidate), {}, false, error);
+}
+
+bool CKeyformEditController::PublishMesh(CModelDocument candidate, const CModelEdit& command, bool forward, QString* error)
+{
+    if (!Ready(error)) return false;
+    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (!m_publishMesh || !command.runtime || candidate.SourceDigest() != m_source)
+        return fail(error, QStringLiteral("网格结构预览尚未连接或源模型已改变"));
+    const auto* document = m_document;
+    const auto revision = m_document->Revision();
+    const QScopedValueRollback<bool> publishing(m_publishing, true);
+    QScopedValueRollback<CModelEditRuntimeState> runtime(*command.runtime);
+    try {
+        if (!m_publishMesh(candidate, command, forward, error)) return false;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("网格预览提交失败，原文档和历史保持不变")); }
+    if (m_document != document || m_document->Revision() != revision || m_document->SourceDigest() != m_source)
+        return fail(error, QStringLiteral("提交网格结构期间文档已改变"));
+    m_document->CommitCandidate(std::move(candidate));
+    runtime.commit();
+    return true;
 }
 
 bool CKeyformEditController::PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error)
@@ -477,6 +518,7 @@ bool CKeyformEditController::PublishStructure(CModelDocument candidate, const CM
         const auto* document = m_document;
         const auto revision = m_document->Revision();
         const QScopedValueRollback<bool> publishing(m_publishing, true);
+        QScopedValueRollback<CModelEditRuntimeState> runtime(*command.runtime);
         QString nextTarget = restoreSession ? QString() : m_target;
         QString nextType = restoreSession ? QString() : m_type;
         QMap<QString, float> selectedPose = m_pose;
@@ -552,6 +594,7 @@ bool CKeyformEditController::PublishStructure(CModelDocument candidate, const CM
             return fail(error, QStringLiteral("发布参数结构期间文档已改变"));
         m_document->CommitCandidate(std::move(candidate));
         (forward ? command.runtime->beforeEditor : command.runtime->afterEditor).swap(capturedEditor);
+        runtime.commit();
         if (keepEditor) {
             m_target.swap(nextTarget);
             m_type.swap(nextType);

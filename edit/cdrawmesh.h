@@ -19,6 +19,12 @@
 class CDrawMesh : public QOpenGLFunctions_3_3_Core
 {
 public:
+    struct EditorState {
+        int vertexCount = 0;
+        QVector<int> selectedVertices;
+        bool shown = false;
+        bool hovered = false;
+    };
     CDrawMesh(int ebosize,const short* vetebo,int uvsize,const float* vetuv,const float* vetpos);
     ~CDrawMesh();
     void Draw(const QMatrix4x4& projection);
@@ -29,6 +35,8 @@ public:
     bool SelectNearestPoint(const QVector2D& position, float radius);
     bool CanCopyEditorStateFrom(const CDrawMesh& source) const;
     bool CopyEditorStateFrom(const CDrawMesh& source);
+    bool CaptureEditorState(EditorState& state, QString* error = nullptr) const;
+    bool RestoreEditorState(const EditorState& state, QString* error = nullptr);
     void MoveSelected(const QVector2D& delta);
     QVector<float> Positions() const;
     void SetSelect(const QRectF& rect);
@@ -51,6 +59,14 @@ public:
     };//三角形mesh网格
     const CTrianglMesh* GetMesh() const { return mesh; }
 private:
+    friend class CMeshMap;
+    struct PreparedEditorState {
+        std::vector<CPoint*> selected;
+        bool shown = false;
+        bool hovered = false;
+    };
+    bool PrepareEditorState(const EditorState& state, PreparedEditorState& prepared, QString* error) const;
+    void CommitEditorState(PreparedEditorState&& prepared) noexcept;
     friend class EditorOverlayRenderTests;
     bool EnsureOpenGl();
     void RefreshSelectedPoints() const;

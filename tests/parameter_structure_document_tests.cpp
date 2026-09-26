@@ -553,7 +553,7 @@ private slots:
         QJsonObject counts;
         int version = 2;
         if (kind == 0) version = 1;
-        if (kind == 1) version = 5;
+        if (kind == 1) version = 6;
         if (kind == 2) columns["268"] = "AA==garbage";
         if (kind == 3) columns["268"] = "AA";
         if (kind == 4) columns["268"] = "AA==\n";

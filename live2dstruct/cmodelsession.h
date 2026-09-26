@@ -26,6 +26,7 @@ struct CModelSession
     QString sourceMoc;
     QByteArray sourceDigest;
     CMocParameterStructureBuilder::ColumnState structure;
+    bool meshStructure = false;
     CParameterResourceEdits::State parameterResources;
     std::optional<PhysicsDraft> physicsDraft;
     QMap<QString, float> parameters;

@@ -64,6 +64,10 @@ public:
     const QByteArray& GetPreviewMocBytes() const { return m_previewMocBytes; }
     bool ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error = nullptr);
     using ParameterDefinitionPreparation = std::function<bool(const Csm::CubismModel&, QString*)>;
+    bool CaptureMeshEditorState(CMeshEditorSnapshot& state, QString* error = nullptr) const;
+    bool ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                   const CMeshGeometryMigration& migration, QString* error = nullptr,
+                                   const ParameterDefinitionPreparation& preparePreview = {});
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
@@ -82,7 +86,8 @@ public:
                                         const ParameterReferenceState* references = nullptr,
                                         const EditorPreviewContext* restoreEditor = nullptr,
                                         const TimelinePreviewPreparation& prepareTimeline = {},
-                                        const PhysicsDraft* physicsDraft = nullptr);
+                                        const PhysicsDraft* physicsDraft = nullptr,
+                                        const CMeshGeometryMigration* geometry = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -188,7 +193,8 @@ private:
                                  QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits,
                                  const ParameterStructureSeeds& seeds = {},
                                  const ParameterPhysicsReferences* physicsReferences = nullptr,
-                                 const PhysicsDraft* physicsDraft = nullptr);
+                                 const PhysicsDraft* physicsDraft = nullptr,
+                                 const CMeshGeometryMigration* geometry = nullptr);
     bool PreparePhysicsCandidate(const Csm::CubismModel& previous, const Csm::CubismModel& replacement,
                                  const ParameterPhysicsReferences& references, bool draftActive,
                                  const QByteArray& bytes, bool stabilize, bool keepOptions,

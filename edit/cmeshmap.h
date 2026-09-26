@@ -2,7 +2,22 @@
 #define CMESHMAP_H
 #include <QString>
 #include <QVector>
+#include <QByteArray>
+#include <QMetaType>
+#include <optional>
 #include "cdrawmesh.h"
+
+using CMeshEditorSnapshot = QMap<QString, CDrawMesh::EditorState>;
+struct CMeshVertexRemap {
+    int oldVertexCount = 0;
+    int newVertexCount = 0;
+    QVector<int> oldToNew;
+};
+struct CMeshGeometryMigration {
+    QByteArray sourcePreviewDigest;
+    QMap<QString, CMeshVertexRemap> remaps;
+    std::optional<CMeshEditorSnapshot> targetState;
+};
 
 class CMeshMap
 {
@@ -18,6 +33,9 @@ public:
     bool SelectNearestPoint(const QString& name, const QVector2D& position, float radius);
     bool MoveSelected(const QString& name, const QVector2D& delta);
     bool CopyEditorStateFrom(const CMeshMap& source);
+    bool CopyEditorStateFrom(const CMeshMap& source, const CMeshGeometryMigration& migration, QString* error = nullptr);
+    bool CaptureEditorState(CMeshEditorSnapshot& state, QString* error = nullptr) const;
+    bool RestoreEditorState(const CMeshEditorSnapshot& state, QString* error = nullptr);
     QVector<float> MeshPositions(const QString& name) const;
     void clear();
     void DrawMesh(const QString& drawKey,const QMatrix4x4 &mvp);
@@ -42,4 +60,5 @@ private:
 
 };
 
+Q_DECLARE_METATYPE(CMeshEditorSnapshot)
 #endif // CMESHMAP_H

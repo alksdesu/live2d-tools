@@ -179,6 +179,7 @@ SOURCES += \
     main.cpp \
     ui/mainwindow.cpp \
     ui/mainwindowphysics.cpp \
+    ui/mainwindowmesh.cpp \
     framework/CubismCdiJson.cpp\
     framework/CubismDefaultParameterId.cpp\
     framework/CubismFramework.cpp\
@@ -596,6 +597,7 @@ SOURCES += \
     live2d/LAppModelUpdate.cpp \
     live2d/LAppModelParameterDefinitions.cpp \
     live2d/LAppModelParameterStructure.cpp \
+    live2d/LAppModelMeshGeometry.cpp \
     live2d/LAppModelParameterReferences.cpp \
     ui/cpreviewexporttransaction.cpp \
     ui/psdbatchresult.cpp \

@@ -481,7 +481,7 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QStrin
 bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error) const
 {
     if (error) error->clear();
-    if (static_cast<unsigned int>(policy) & ~15u)
+    if (static_cast<unsigned int>(policy) & ~31u)
         return runtimeStateError(error, QStringLiteral("Invalid model update policy"));
     if (!_model || !source._model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
     const bool structureEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterStructureEdits);
@@ -550,6 +550,7 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     const auto* partParents = Core::csmGetPartParentPartIndices(_model);
     const auto* drawableParents = Core::csmGetDrawableParentPartIndices(_model);
     const auto* vertices = Core::csmGetDrawableVertexCounts(_model);
+    const auto* sourceVertices = Core::csmGetDrawableVertexCounts(source._model);
     const auto* indexCounts = Core::csmGetDrawableIndexCounts(_model);
     const auto* sourceIndexCounts = Core::csmGetDrawableIndexCounts(source._model);
     const auto* maskCounts = Core::csmGetDrawableMaskCounts(_model);
@@ -558,10 +559,12 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     const auto* flags = Core::csmGetDrawableConstantFlags(_model);
     const auto* sourceFlags = Core::csmGetDrawableConstantFlags(source._model);
     const bool clippingEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowClippingEdits);
-    const bool topologyEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableTopologyEdits);
+    const bool geometryEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableGeometryEdits);
+    const bool topologyEdits = geometryEdits || AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableTopologyEdits);
     if (!equalRuntimeArray(partParents, Core::csmGetPartParentPartIndices(source._model), parts) ||
         !equalRuntimeArray(drawableParents, Core::csmGetDrawableParentPartIndices(source._model), drawables) ||
-        !equalRuntimeArray(vertices, Core::csmGetDrawableVertexCounts(source._model), drawables) ||
+        (drawables && (!vertices || !sourceVertices)) ||
+        (!geometryEdits && !equalRuntimeArray(vertices, sourceVertices, drawables)) ||
         (drawables && (!indexCounts || !sourceIndexCounts)) ||
         (!topologyEdits && !equalRuntimeArray(indexCounts, sourceIndexCounts, drawables)) ||
         (!clippingEdits && !equalRuntimeArray(maskCounts, sourceMaskCounts, drawables)) ||
@@ -588,11 +591,14 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
         const unsigned int allowedFlags = clippingEdits ? Core::csmIsInvertedMask : 0;
         if ((flags[i] ^ sourceFlags[i]) & ~allowedFlags)
             return runtimeStateError(error, QStringLiteral("Drawable %1 constant flags differ").arg(i));
-        if (!validRuntimeCount(vertices[i]) || !validRuntimeCount(maskCounts[i], clippingEdits ? MaximumRuntimeIndices : drawables) || textures[i] < 0 ||
+        if (!validRuntimeCount(vertices[i]) || !validRuntimeCount(sourceVertices[i]) ||
+            !validRuntimeCount(maskCounts[i], clippingEdits ? MaximumRuntimeIndices : drawables) || textures[i] < 0 ||
             drawableParents[i] < -1 || drawableParents[i] >= parts ||
-            (vertices[i] && (!uvs || !sourceUvs || !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i]))) ||
+            (vertices[i] && (!uvs || !equalRuntimeArray(uvs[i], uvs[i], vertices[i]))) ||
+            (sourceVertices[i] && (!sourceUvs || !equalRuntimeArray(sourceUvs[i], sourceUvs[i], sourceVertices[i]))) ||
+            (!geometryEdits && vertices[i] && !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i])) ||
             !validIndices(indices ? indices[i] : nullptr, indexCounts[i], vertices[i]) ||
-            !validIndices(sourceIndices ? sourceIndices[i] : nullptr, sourceIndexCounts[i], vertices[i]) ||
+            !validIndices(sourceIndices ? sourceIndices[i] : nullptr, sourceIndexCounts[i], sourceVertices[i]) ||
             (!topologyEdits && indexCounts[i] && !equalRuntimeArray(indices[i], sourceIndices[i], indexCounts[i])) ||
             (!clippingEdits && maskCounts[i] && (!masks || !sourceMasks || !equalRuntimeArray(masks[i], sourceMasks[i], maskCounts[i]))))
             return runtimeStateError(error, QStringLiteral("Drawable %1 UVs, topology or masks differ or are invalid").arg(i));
@@ -688,7 +694,7 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
         if (!finiteRuntimeColor(source._userMultiplyColors[i].Color) || !finiteRuntimeColor(source._userScreenColors[i].Color))
             return runtimeStateError(error, QStringLiteral("Drawable %1 user color is non-finite").arg(i));
         const auto* indices = source._drawableIndexOverrides.Find(i);
-        if (indices && !live2dstruct::CMeshTopology::IsValid(*indices, GetDrawableVertexCount(i)))
+        if (indices && !live2dstruct::CMeshTopology::IsValid(*indices, source.GetDrawableVertexCount(i)))
             return runtimeStateError(error, QStringLiteral("Drawable %1 index override is invalid").arg(i));
     }
     RuntimeValueSnapshot values, migrated;
@@ -700,6 +706,7 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
         if (!RebaseRuntimeValues(values, migrated, error)) return false;
     }
     auto indexOverrides = source._drawableIndexOverrides;
+    if (AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableGeometryEdits)) indexOverrides.Clear();
     if (!RestoreRuntimeValues(migrated, error)) return false;
     std::swap(_drawableIndexOverrides, indexOverrides);
     for (int i = 0; i < parts; ++i) {
@@ -783,6 +790,8 @@ void CubismModel::InitMesh()
     qDebug() << "CubismModel::InitMesh()";
     m_vetDrawMesh.clear();
     const csmInt32 drawableCount = GetDrawableCount();
+    const auto* positions = Core::csmGetDrawableVertexPositions(_model);
+    const auto* uvs = Core::csmGetDrawableVertexUvs(_model);
     for(int index = 0 ;index < drawableCount;index++){
         const CubismIdHandle drawableId = GetDrawableId(index);
         if (!drawableId) continue;
@@ -793,10 +802,12 @@ void CubismModel::InitMesh()
         const short* indexArray = reinterpret_cast<const short*>(rawIndexArray);//Indices
         int drawableVertexCount = GetDrawableVertexCount(index);
 
-        const float* vertexArray =reinterpret_cast<const float*>(GetDrawableVertices(index)) ;//pos
-        const float* uvArray = reinterpret_cast<const float*>(GetDrawableVertexUvs(index));//Uv
         if (indexCount < 0 || indexCount % 3 != 0 || indexCount > 3000000 ||
-            drawableVertexCount <= 0 || drawableVertexCount > 1000000 || (indexCount && !indexArray) || !vertexArray || !uvArray) continue;
+            drawableVertexCount < 0 || drawableVertexCount > 1000000 ||
+            (!drawableVertexCount && indexCount) || (indexCount && !indexArray)) continue;
+        const float* vertexArray = drawableVertexCount && positions ? reinterpret_cast<const float*>(positions[index]) : nullptr;
+        const float* uvArray = drawableVertexCount && uvs ? reinterpret_cast<const float*>(uvs[index]) : nullptr;
+        if (drawableVertexCount && (!vertexArray || !uvArray)) continue;
         bool indicesValid = true;
         for (int i = 0; i < indexCount; ++i) {
             if (rawIndexArray[i] >= drawableVertexCount || rawIndexArray[i] > 32767) {
@@ -1423,13 +1434,13 @@ void CubismModel::ClearDrawableIndicesOverrides()
 const Core::csmVector2* CubismModel::GetDrawableVertexPositions(csmInt32 drawableIndex) const
 {
     const Core::csmVector2** verticesArray = Core::csmGetDrawableVertexPositions(_model);
-    return verticesArray[drawableIndex];
+    return verticesArray ? verticesArray[drawableIndex] : nullptr;
 }
 
 const Core::csmVector2* CubismModel::GetDrawableVertexUvs(csmInt32 drawableIndex) const
 {
     const Core::csmVector2** uvsArray = Core::csmGetDrawableVertexUvs(_model);
-    return uvsArray[drawableIndex];
+    return uvsArray ? uvsArray[drawableIndex] : nullptr;
 }
 
 csmFloat32 CubismModel::GetDrawableOpacity(csmInt32 drawableIndex) const

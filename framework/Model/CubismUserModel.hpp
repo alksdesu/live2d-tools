@@ -148,7 +148,7 @@ protected:
                       CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                       QString* error = nullptr, const CubismModelReplacement::ModelPreparation& prepareModel = {},
                       const ParameterPhysicsReferences* physicsReferences = nullptr,
-                      const PhysicsPreparation& preparePhysics = {});
+                      const PhysicsPreparation& preparePhysics = {}, const CMeshGeometryMigration* geometry = nullptr);
 
     CubismMoc*              _moc;                       ///< Mocデータ
     CubismModel*            _model;                     ///< Modelインスタンス

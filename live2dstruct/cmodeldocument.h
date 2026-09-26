@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include "cmocparameterstructurebuilder.h"
+#include "cmocmeshstructurebuilder.h"
 
 namespace live2dstruct {
 class CReader;
@@ -170,7 +171,7 @@ struct CModelEditStorageState
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure };
     QString name;
     QString type;
     Field field = Visibility;
@@ -183,6 +184,8 @@ struct CModelEdit
     enum class ParameterChange { None, Create, Bind, Delete };
     ParameterChange parameterChange = ParameterChange::None;
     std::optional<float> freezeValue;
+    QVector<CMocMeshStructureBuilder::MeshRemap> meshRemaps;
+    std::shared_ptr<const CMocMeshStructureBuilder::Request> meshRequest;
 };
 
 class CModelDocument
@@ -206,7 +209,12 @@ public:
     const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }
     const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
     bool SetParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
-    QVariantMap ParameterStructureState() const;
+    bool HasMeshStructure() const { return m_hasMeshStructure; }
+    bool SetAuthoringStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
+    QVariantMap AuthoringStructureState() const;
+    QVariantMap ParameterStructureState() const { return AuthoringStructureState(); }
+    bool MakeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request, CModelEdit& edit,
+                               QString* error = nullptr) const;
     bool MakeCreateParameterEdit(const CMocParameterStructureBuilder::CreateRequest& request,
                                  const QString& displayName, CModelEdit& edit, QString* error = nullptr) const;
     bool MakeBindParameterEdit(const QString& id, const QVector<CMocParameterStructureBuilder::BindingRequest>& bindings,
@@ -293,9 +301,14 @@ private:
     bool ValidateEditStorage(const CModelEdit& edit) const;
     bool PrepareParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure,
                                    CModelDocument& candidate, QString* error) const;
+    bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
+                           CModelDocument& candidate, QString* error) const;
     bool MakeParameterStructureEdit(const CMocParameterStructureBuilder::Result& result, const QString& id,
                                     const QString* displayName, bool created, CModelEdit& edit, QString* error) const;
-    bool ApplyParameterStructureState(const QVariantMap& state, QString* error = nullptr);
+    bool ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error = nullptr);
+    bool ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit, bool forward, QString* error) const;
+    bool PreserveStructureProperties(CModelDocument& candidate, QString* error) const;
+    bool BuildMeshBase(const CMocMeshStructureBuilder::Request& request, QByteArray& bytes, QString* error) const;
     bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);
     bool m_loaded = false;
     quint64 m_revision = 0;
@@ -304,6 +317,7 @@ private:
     QByteArray m_sourceDigest;
     QByteArray m_workingBaseBytes;
     CMocParameterStructureBuilder::ColumnState m_structure;
+    bool m_hasMeshStructure = false;
     QHash<QString, int> m_sourceDeformerParents;
     std::shared_ptr<const CKeyformBindingGrid> m_keyformBindings;
     std::shared_ptr<const CMocPreviewBuilder> m_previewBuilder;

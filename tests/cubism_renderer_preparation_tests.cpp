@@ -614,6 +614,49 @@ private slots:
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
+    void changedVertexCountsAndUvsAreUploadedBeforePublishing_data()
+    {
+        QTest::addColumn<int>("count");QTest::newRow("remove-vertex")<<3;QTest::newRow("add-vertex")<<5;
+    }
+    void changedVertexCountsAndUvsAreUploadedBeforePublishing()
+    {
+        QFETCH(int,count);GetterState oldState,newState;
+        std::array<Core::csmVector2,5> positions{{{-.8f,-.7f},{.8f,-.7f},{.8f,.7f},{-.8f,.7f},{0,.2f}}};
+        std::array<Core::csmVector2,5> uvs{{{.2f,.3f},{.8f,.3f},{.8f,.7f},{.2f,.7f},{.5f,.5f}}};
+        newState.vertexCounts[0]=count;newState.positionPointers[0]=positions.data();newState.uvPointers[0]=uvs.data();
+        newState.indexCounts[0]=count==3?3:6;newState.indices[0]={0,1,2,0,2,4};
+        auto previousModel=Model(oldState),nextModel=Model(newState);auto previous=Renderer(),candidate=Renderer();
+        QVERIFY(nextModel->CopyRuntimeStateFrom(*previousModel,CubismModelUpdatePolicy::AllowDrawableGeometryEdits));
+        QVERIFY(Gl(previous).setGlOwningContext(&m_context));QVERIFY(Gl(previous).Initialize(previousModel.get()));
+        QVERIFY(Gl(previous).UploadDrawableGeometry(*previousModel,0,previousModel->GetDrawableVertices(0),Gl(previous)._meshBuffers[0],nullptr));
+        const auto oldVao=Gl(previous)._meshBuffers[0]->GetVertexArray();const auto glState=State();QString error;
+        QVERIFY2(Gl(candidate).PrepareModelReplacement(nextModel.get(),Gl(previous),&error),qPrintable(error));QCOMPARE(State(),glState);
+        const auto vao=Gl(candidate)._meshBuffers[0]->GetVertexArray();QVERIFY(vao!=oldVao);QVERIFY(m_gl.glIsVertexArray(oldVao));
+        m_gl.glBindVertexArray(vao);GLint buffer=0;m_gl.glGetVertexAttribiv(0,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&buffer);m_gl.glBindBuffer(GL_ARRAY_BUFFER,buffer);
+        std::array<float,20> actual{};m_gl.glGetBufferSubData(GL_ARRAY_BUFFER,0,count*4*sizeof(float),actual.data());
+        for(int i=0;i<count;++i){QCOMPARE(actual[i*4],positions[i].X);QCOMPARE(actual[i*4+1],positions[i].Y);QCOMPARE(actual[i*4+2],uvs[i].X);QCOMPARE(actual[i*4+3],uvs[i].Y);}
+        std::array<quint16,6> indices{};m_gl.glGetBufferSubData(GL_ELEMENT_ARRAY_BUFFER,0,newState.indexCounts[0]*sizeof(quint16),indices.data());
+        for(int i=0;i<newState.indexCounts[0];++i)QCOMPARE(indices[i],newState.indices[0][i]);
+        m_gl.glBindVertexArray(glState[0]);m_gl.glBindBuffer(GL_ARRAY_BUFFER,glState[1]);candidate.reset();QVERIFY(!m_gl.glIsVertexArray(vao));QVERIFY(m_gl.glIsVertexArray(oldVao));
+        QCOMPARE(m_gl.glGetError(),GLenum(GL_NO_ERROR));
+    }
+
+    void emptyDrawableArraysPrepareWithoutTouchingPreviousResources()
+    {
+        GetterState oldState,newState;newState.vertexCounts.fill(0);newState.indexCounts.fill(0);
+        newState.nullGetters.insert("csmGetDrawableVertexPositions");newState.nullGetters.insert("csmGetDrawableVertexUvs");newState.nullGetters.insert("csmGetDrawableIndices");
+        auto previousModel=Model(oldState),nextModel=Model(newState);auto previous=Renderer(),candidate=Renderer();
+        QVERIFY(nextModel->CopyRuntimeStateFrom(*previousModel,CubismModelUpdatePolicy::AllowDrawableGeometryEdits));nextModel->InitMesh();
+        QCOMPARE(nextModel->GetMeshMap()->GetMapMesh().size(),nextModel->GetDrawableCount());
+        QVERIFY(Gl(previous).setGlOwningContext(&m_context));QVERIFY(Gl(previous).Initialize(previousModel.get()));
+        QVERIFY(Gl(previous).UploadDrawableGeometry(*previousModel,0,previousModel->GetDrawableVertices(0),Gl(previous)._meshBuffers[0],nullptr));
+        const auto vao=Gl(previous)._meshBuffers[0]->GetVertexArray();const auto mask=Gl(previous).GetMaskBuffer(0)->GetRenderTexture();const auto state=State();QString error;
+        QVERIFY2(Gl(candidate).PrepareModelReplacement(nextModel.get(),Gl(previous),&error),qPrintable(error));QCOMPARE(State(),state);
+        for(const auto& buffer:Gl(candidate)._meshBuffers)QVERIFY(!buffer);
+        QVERIFY(m_gl.glIsVertexArray(vao));QVERIFY(m_gl.glIsFramebuffer(mask));candidate.reset();QVERIFY(m_gl.glIsVertexArray(vao));QVERIFY(m_gl.glIsFramebuffer(mask));
+        QCOMPARE(previousModel->GetDrawableVertexCount(0),4);QCOMPARE(m_gl.glGetError(),GLenum(GL_NO_ERROR));
+    }
+
     void geometryFailuresPreservePreviousResources_data()
     {
         QTest::addColumn<QString>("failure");

@@ -1,4 +1,6 @@
 #include "cmeshmap.h"
+#include <exception>
+#include <utility>
 
 CMeshMap::CMeshMap() {}
 
@@ -44,14 +46,96 @@ bool CMeshMap::MoveSelected(const QString& name, const QVector2D& delta)
 
 bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source)
 {
-    if (m_vetDrawMesh.size() != source.m_vetDrawMesh.size()) return false;
-    for (auto it = source.m_vetDrawMesh.cbegin(); it != source.m_vetDrawMesh.cend(); ++it) {
-        const auto* target = m_vetDrawMesh.value(it.key(), nullptr);
-        if (!target || !it.value() || !target->CanCopyEditorStateFrom(*it.value())) return false;
+    CMeshEditorSnapshot state;
+    return source.CaptureEditorState(state) && RestoreEditorState(state);
+}
+
+bool CMeshMap::CaptureEditorState(CMeshEditorSnapshot& state, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        CMeshEditorSnapshot candidate;
+        for (auto it = m_vetDrawMesh.cbegin(); it != m_vetDrawMesh.cend(); ++it) {
+            CDrawMesh::EditorState value;
+            if (!it.value() || !it.value()->CaptureEditorState(value, error)) return false;
+            candidate.insert(it.key(), std::move(value));
+        }
+        state.swap(candidate);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法保存模型网格选区");
+        return false;
     }
-    for (auto it = source.m_vetDrawMesh.cbegin(); it != source.m_vetDrawMesh.cend(); ++it)
-        if (!m_vetDrawMesh.value(it.key())->CopyEditorStateFrom(*it.value())) return false;
-    return true;
+}
+
+bool CMeshMap::RestoreEditorState(const CMeshEditorSnapshot& state, QString* error)
+{
+    if (error) error->clear();
+    try {
+        if (state.size() != m_vetDrawMesh.size()) {
+            if (error) *error = QStringLiteral("模型网格选区的对象集合不一致");
+            return false;
+        }
+        std::vector<std::pair<CDrawMesh*, CDrawMesh::PreparedEditorState>> prepared;
+        prepared.reserve(size_t(state.size()));
+        for (auto it = state.cbegin(); it != state.cend(); ++it) {
+            auto* mesh = m_vetDrawMesh.value(it.key(), nullptr);
+            if (!mesh) {
+                if (error) *error = QStringLiteral("模型网格选区引用了未知对象：%1").arg(it.key());
+                return false;
+            }
+            CDrawMesh::PreparedEditorState value;
+            if (!mesh->PrepareEditorState(it.value(), value, error)) return false;
+            prepared.emplace_back(mesh, std::move(value));
+        }
+        for (auto& entry : prepared) entry.first->CommitEditorState(std::move(entry.second));
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法恢复模型网格选区");
+        return false;
+    }
+}
+
+bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source, const CMeshGeometryMigration& migration, QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    try {
+        CMeshEditorSnapshot state, target;
+        if (!source.CaptureEditorState(state, error) || !CaptureEditorState(target, error)) return false;
+        if (state.keys() != target.keys()) return fail(QStringLiteral("候选网格对象集合发生变化"));
+        for (auto it = migration.remaps.cbegin(); it != migration.remaps.cend(); ++it) {
+            const auto old = state.constFind(it.key());
+            const auto next = target.constFind(it.key());
+            const auto& remap = it.value();
+            if (old == state.cend() || next == target.cend() || old->vertexCount != remap.oldVertexCount ||
+                next->vertexCount != remap.newVertexCount || remap.oldToNew.size() != remap.oldVertexCount)
+                return fail(QStringLiteral("顶点映射与模型不一致：%1").arg(it.key()));
+            QVector<unsigned char> seen(remap.newVertexCount, 0);
+            for (int index : remap.oldToNew) {
+                if (index < -1 || index >= remap.newVertexCount || (index >= 0 && seen[index]))
+                    return fail(QStringLiteral("顶点映射越界或重复：%1").arg(it.key()));
+                if (index >= 0) seen[index] = 1;
+            }
+        }
+        for (auto it = state.begin(); it != state.end(); ++it) {
+            const auto remap = migration.remaps.constFind(it.key());
+            const int count = target.value(it.key()).vertexCount;
+            if (remap == migration.remaps.cend()) {
+                if (count != it->vertexCount) return fail(QStringLiteral("缺少顶点身份映射：%1").arg(it.key()));
+                continue;
+            }
+            QVector<int> selected;
+            selected.reserve(it->selectedVertices.size());
+            for (int index : it->selectedVertices)
+                if (remap->oldToNew[index] >= 0) selected.append(remap->oldToNew[index]);
+            it->selectedVertices.swap(selected);
+            it->vertexCount = count;
+        }
+        return RestoreEditorState(migration.targetState ? *migration.targetState : state, error);
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备顶点选区迁移"));
+    }
 }
 
 QVector<float> CMeshMap::MeshPositions(const QString& name) const

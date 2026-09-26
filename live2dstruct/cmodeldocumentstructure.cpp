@@ -3,6 +3,7 @@
 #include "ckeyformbindinggrid.h"
 #include "cparentgraph.h"
 #include "cmocpreviewbuilder.h"
+#include "cmocruntimebuilder.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
 #include <QCryptographicHash>
@@ -136,15 +137,18 @@ bool validSlice(qint64 begin, qint64 count, qint64 size)
 }
 
 bool auxiliaryIdentity(const QByteArray& original, const CSectionTable& before,
-                       const QByteArray& working, const CSectionTable& after, QString* error)
+                       const QByteArray& working, const CSectionTable& after, bool meshStructure, QString* error)
 {
     const auto originalSpans = CSectionValidation::ArraySpans(*before.sectionOffsetTable, *before.count_info);
     const auto workingSpans = CSectionValidation::ArraySpans(*after.sectionOffsetTable, *after.count_info);
     if (originalSpans.size() != workingSpans.size()) return fail(error, QStringLiteral("参数结构改变了区段目录"));
-    const QSet<QByteArray> fixed{
+    QSet<QByteArray> fixed{
         "parts.ids", "parts.is_visible", "parts.is_enabled", "parts.parent_part_indices",
         "glue.ids", "glue.art_mesh_indices_a", "glue.art_mesh_indices_b", "glue.glue_info_sources_begin_indices",
         "glue.glue_info_sources_counts", "glue_info.weights", "glue_info.position_indices"};
+    if (meshStructure)
+        for (const auto* column : {"glue.glue_info_sources_begin_indices", "glue.glue_info_sources_counts",
+                                  "glue_info.weights", "glue_info.position_indices"}) fixed.remove(column);
     for (int index = 0; index < originalSpans.size(); ++index) {
         const auto& a = originalSpans[index]; const auto& b = workingSpans[index];
         if (!fixed.contains(a.name)) continue;
@@ -158,12 +162,24 @@ bool auxiliaryIdentity(const QByteArray& original, const CSectionTable& before,
             return fail(error, QStringLiteral("Part 关键形范围无效：%1").arg(part->ids));
     for (const auto* form : after.part_keyforms)
         if (!std::isfinite(form->draw_orders)) return fail(error, QStringLiteral("Part 关键形数值无效"));
+    qint64 glueReferences = 0;
     for (const auto* glue : after.glue) {
         if (glue->art_mesh_indices_a < 0 || glue->art_mesh_indices_a >= after.art_meshes.size() ||
             glue->art_mesh_indices_b < 0 || glue->art_mesh_indices_b >= after.art_meshes.size() ||
             !validSlice(glue->glue_info_sources_begin_indices, glue->glue_info_sources_counts, after.glue_info.size()) ||
             !validSlice(glue->keyform_sources_begin_indices, glue->keyform_sources_counts, after.glue_keyforms.size()))
             return fail(error, QStringLiteral("Glue 连接或关键形范围无效：%1").arg(glue->ids));
+        if (meshStructure) {
+            if (glue->glue_info_sources_counts % 2 || glue->glue_info_sources_counts > 1000000 - glueReferences)
+                return fail(error, QStringLiteral("Glue 配对数量无效或超过检查总量"));
+            glueReferences += glue->glue_info_sources_counts;
+            for (int at = 0; at < glue->glue_info_sources_counts; ++at) {
+                const auto* endpoint = after.glue_info[glue->glue_info_sources_begin_indices + at];
+                const int mesh = at % 2 ? glue->art_mesh_indices_b : glue->art_mesh_indices_a;
+                if (endpoint->position_indices < 0 || endpoint->position_indices >= after.art_meshes[mesh]->vertex_counts ||
+                    !std::isfinite(endpoint->weights)) return fail(error, QStringLiteral("Glue 顶点或权重无效：%1").arg(glue->ids));
+            }
+        }
     }
     for (const auto* form : after.glue_keyforms)
         if (!std::isfinite(form->intensities)) return fail(error, QStringLiteral("Glue 关键形数值无效"));
@@ -333,10 +349,11 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     }
 }
 
-QVariantMap CModelDocument::ParameterStructureState() const
+QVariantMap CModelDocument::AuthoringStructureState() const
 {
     QVariantMap state{
-        {"sourceDigest", m_sourceDigest}, {"sourcePath", m_sourcePath}, {"columns", QVariant::fromValue(m_structure.columns)},
+        {"sourceDigest", m_sourceDigest}, {"sourcePath", m_sourcePath}, {"meshStructure", m_hasMeshStructure},
+        {"columns", QVariant::fromValue(m_structure.columns)},
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
         {"locked", QVariant::fromValue(m_lockedKeys)}, {"opacity", QVariant::fromValue(m_drawableOpacityOverrides)},
@@ -372,6 +389,12 @@ QVariantMap CModelDocument::ParameterStructureState() const
 
 bool CModelDocument::PrepareParameterStructure(const Builder::ColumnState& structure, CModelDocument& candidate, QString* error) const
 {
+    return PrepareStructure(structure, false, candidate, error);
+}
+
+bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, bool meshStructure,
+                                     CModelDocument& candidate, QString* error) const
+{
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
     QByteArray working;
     if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
@@ -379,7 +402,7 @@ bool CModelDocument::PrepareParameterStructure(const Builder::ColumnState& struc
         auto sourceReader = CReader::FromBytes(m_sourceBytes), workingReader = CReader::FromBytes(working);
         CSectionTable sourceTable(sourceReader), workingTable(workingReader);
         if (!sourceTable.IsValid() || !workingTable.IsValid()) return fail(error, sourceReader.Error() + workingReader.Error());
-        if (!auxiliaryIdentity(m_sourceBytes, sourceTable, working, workingTable, error)) return false;
+        if (!auxiliaryIdentity(m_sourceBytes, sourceTable, working, workingTable, meshStructure, error)) return false;
     }
     CModelDocument original, next;
     if (!original.LoadBytes(m_sourceBytes, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
@@ -409,13 +432,36 @@ bool CModelDocument::PrepareParameterStructure(const Builder::ColumnState& struc
         parents.append(after.parentDeformerIndex);
     }
     if (!CParentGraph(parents).IsValid()) return fail(error, QStringLiteral("参数结构包含无效父变形器关系"));
+    CMocMeshStructureBuilder::Request geometryValidation;
+    qint64 geometryVertices = 0;
     for (int index = 0; index < original.m_drawables.size(); ++index) {
         const auto& before = original.m_drawables[index]; const auto& after = next.m_drawables[index];
         if (before.id != after.id || before.parentPartIndex != after.parentPartIndex || before.parentDeformerIndex != after.parentDeformerIndex ||
-            before.vertexCount != after.vertexCount || before.textureIndex != after.textureIndex ||
-            (before.flags & ~8) != (after.flags & ~8) || before.uvs != after.uvs || before.indices != after.indices ||
+            before.textureIndex != after.textureIndex || (before.flags & ~8) != (after.flags & ~8) ||
             before.visible != after.visible || before.enabled != after.enabled)
             return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
+        if (before.vertexCount != after.vertexCount || before.uvs != after.uvs || before.indices != after.indices) {
+            if (!meshStructure) return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
+            if (after.vertexCount <= 0 || after.vertexCount > CMocMeshStructureBuilder::MaximumVertices)
+                return fail(error, QStringLiteral("网格结构顶点数量无效：%1").arg(before.id));
+            if (after.vertexCount > 1000000 - geometryVertices || after.uvs.size() != after.vertexCount * 2 ||
+                !std::all_of(after.uvs.cbegin(), after.uvs.cend(), [](float value) { return std::isfinite(value); }))
+                return fail(error, QStringLiteral("网格 UV 无效或检查总量超过限制：%1").arg(before.id));
+            geometryVertices += after.vertexCount;
+            CMocMeshStructureBuilder::MeshEdit identity;
+            identity.artMeshId = after.id;
+            identity.indices = after.indices;
+            for (int vertex = 0; vertex < after.vertexCount; ++vertex) {
+                identity.vertices.append({{vertex}, {1.0}});
+                identity.oldToNew.append(vertex);
+            }
+            geometryValidation.meshes.append(std::move(identity));
+        }
+    }
+    if (!geometryValidation.meshes.isEmpty()) {
+        CMocMeshStructureBuilder::Impact impact;
+        if (!CMocMeshStructureBuilder::Analyze(working, geometryValidation, impact, error)) return false;
+        if (!impact.blockingReasons.isEmpty()) return fail(error, impact.blockingReasons.join(QLatin1Char('\n')));
     }
     if (next.m_drawOrderGroups.size() != original.m_drawOrderGroups.size()) return fail(error, QStringLiteral("参数结构改变了绘制顺序组"));
     for (int index = 0; index < original.m_drawOrderGroups.size(); ++index) {
@@ -446,6 +492,7 @@ bool CModelDocument::PrepareParameterStructure(const Builder::ColumnState& struc
         if (!validateGrid(deformer.type == CModelDeformer::Warp ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation, deformer.id))
             return fail(error, QStringLiteral("参数结构破坏了变形器绑定：%1").arg(deformer.id));
     next.m_structure = structure;
+    next.m_hasMeshStructure = meshStructure;
     next.m_sourceDeformerParents = original.m_sourceDeformerParents;
     auto preview = std::make_shared<CMocPreviewBuilder>();
     if (!preview->Initialize(working, next.m_sourceDeformerParents, error)) return false;
@@ -469,7 +516,17 @@ bool CModelDocument::SetParameterStructure(const Builder::ColumnState& structure
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复参数结构")); }
 }
 
-bool CModelDocument::ApplyParameterStructureState(const QVariantMap& state, QString* error)
+bool CModelDocument::SetAuthoringStructure(const Builder::ColumnState& structure, QString* error)
+{
+    try {
+        CModelDocument candidate;
+        if (!PrepareStructure(structure, true, candidate, error)) return false;
+        CommitCandidate(std::move(candidate));
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法应用网格编辑结构")); }
+}
+
+bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error)
 {
     try {
         const auto current = ParameterStructureState();
@@ -478,7 +535,8 @@ bool CModelDocument::ApplyParameterStructureState(const QVariantMap& state, QStr
         CModelSession session;
         QHash<QString, float> parameters;
         QSet<QString> locks;
-        if (!read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
+        if (!read(state, "meshStructure", session.meshStructure) ||
+            !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
             !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
             !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
             !read(state, "opacity", session.drawableOpacity) || !read(state, "drawOrder", session.drawableDrawOrder) ||
@@ -490,10 +548,27 @@ bool CModelDocument::ApplyParameterStructureState(const QVariantMap& state, QStr
         session.parameters = ordered(parameters);
         for (const auto& lock : locks) session.locked.insert(lock, true);
         session.sourceDigest = m_sourceDigest;
-        session.version = session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+        session.sourceMoc = m_sourcePath;
+        session.version = session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
+        if (edit.field == CModelEdit::MeshStructure) {
+            if (!ValidateMeshTransition(candidate, edit, forward, error)) return false;
+        } else {
+            if (candidate.m_hasMeshStructure != m_hasMeshStructure || !edit.meshRemaps.isEmpty())
+                return fail(error, QStringLiteral("参数编辑不能改变网格结构模式"));
+            for (int index = 0; index < m_drawables.size(); ++index) {
+                const auto& before = m_drawables[index]; const auto& after = candidate.m_drawables[index];
+                if (before.vertexCount != after.vertexCount || before.uvs != after.uvs ||
+                    DrawableIndices(before.id) != candidate.DrawableIndices(after.id))
+                    return fail(error, QStringLiteral("参数编辑不能改变网格几何：%1").arg(before.id));
+            }
+            auto beforeReader = CReader::FromBytes(m_workingBaseBytes), afterReader = CReader::FromBytes(candidate.m_workingBaseBytes);
+            CSectionTable beforeTable(beforeReader), afterTable(afterReader);
+            if (!beforeTable.IsValid() || !afterTable.IsValid() ||
+                !auxiliaryIdentity(m_workingBaseBytes, beforeTable, candidate.m_workingBaseBytes, afterTable, false, error)) return false;
+        }
         QVector<Builder::BindingRequest> changed;
         const auto examine = [&](Builder::Owner::Type type, const QString& id) {
             const auto gridType = static_cast<CKeyformBindingGrid::ObjectType>(type);
@@ -517,22 +592,7 @@ bool CModelDocument::MakeParameterStructureEdit(const Builder::Result& result, c
     Builder::ColumnState structure;
     if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
     CModelDocument candidate;
-    if (!PrepareParameterStructure(structure, candidate, error)) return false;
-    const auto visibility = VisibilityState();
-    if (!visibility.isEmpty() && !candidate.SetVisibilityValues(visibility)) return fail(error, QStringLiteral("无法保留对象可见性"));
-    candidate.m_drawableOpacityOverrides = m_drawableOpacityOverrides;
-    candidate.m_drawableDrawOrderOverrides = m_drawableDrawOrderOverrides;
-    candidate.m_drawableIndexOverrides = m_drawableIndexOverrides;
-    candidate.m_lockedKeys = m_lockedKeys;
-    for (const auto& parameter : candidate.m_parameters) {
-        if (m_parameterValues.contains(parameter.id)) candidate.m_parameterValues.insert(parameter.id, m_parameterValues.value(parameter.id));
-        const auto previous = m_parameterMetadataOverrides.constFind(parameter.id);
-        if (previous != m_parameterMetadataOverrides.cend() && !previous->displayName.isEmpty() && previous->displayName != parameter.id) {
-            auto metadata = candidate.ParameterMetadata(parameter.id);
-            metadata.displayName = previous->displayName;
-            candidate.m_parameterMetadataOverrides.insert(parameter.id, metadata);
-        }
-    }
+    if (!PrepareStructure(structure, m_hasMeshStructure, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
     if (created) {
         if (candidate.ParameterMetadataState(id).isEmpty()) return fail(error, QStringLiteral("创建结果缺少唯一参数：%1").arg(id));
         if (displayName && displayName->contains(QChar::Null)) return fail(error, QStringLiteral("显示名包含空字符"));
@@ -548,6 +608,186 @@ bool CModelDocument::MakeParameterStructureEdit(const Builder::Result& result, c
     edit = std::move(command);
     if (error) error->clear();
     return true;
+}
+
+bool CModelDocument::PreserveStructureProperties(CModelDocument& candidate, QString* error) const
+{
+    const auto visibility = VisibilityState();
+    if (!visibility.isEmpty() && !candidate.SetVisibilityValues(visibility)) return fail(error, QStringLiteral("无法保留对象可见性"));
+    candidate.m_drawableOpacityOverrides = m_drawableOpacityOverrides;
+    candidate.m_drawableDrawOrderOverrides = m_drawableDrawOrderOverrides;
+    candidate.m_drawableIndexOverrides = m_drawableIndexOverrides;
+    candidate.m_lockedKeys = m_lockedKeys;
+    for (const auto& parameter : candidate.m_parameters) {
+        if (m_parameterValues.contains(parameter.id)) candidate.m_parameterValues.insert(parameter.id, m_parameterValues.value(parameter.id));
+        const auto previous = m_parameterMetadataOverrides.constFind(parameter.id);
+        if (previous != m_parameterMetadataOverrides.cend() && !previous->displayName.isEmpty() && previous->displayName != parameter.id) {
+            auto metadata = candidate.ParameterMetadata(parameter.id);
+            metadata.displayName = previous->displayName;
+            candidate.m_parameterMetadataOverrides.insert(parameter.id, metadata);
+        }
+    }
+    return true;
+}
+
+bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit,
+                                           bool forward, QString* error) const
+{
+    if (!edit.meshRequest || edit.meshRemaps.isEmpty() || !(forward ? candidate.m_hasMeshStructure : m_hasMeshStructure) ||
+        m_parameters.size() != candidate.m_parameters.size() || m_parameterValues != candidate.m_parameterValues ||
+        VisibilityState() != candidate.VisibilityState() || m_lockedKeys != candidate.m_lockedKeys ||
+        m_drawableOpacityOverrides != candidate.m_drawableOpacityOverrides ||
+        m_drawableDrawOrderOverrides != candidate.m_drawableDrawOrderOverrides)
+        return fail(error, QStringLiteral("网格结构不能改变参数、可见性、锁定或材质覆盖"));
+    for (int index = 0; index < m_parameters.size(); ++index) {
+        const auto& before = m_parameters[index]; const auto& after = candidate.m_parameters[index];
+        if (before.id != after.id || before.type != after.type || before.keyValues != after.keyValues ||
+            !(ParameterMetadata(before.id) == candidate.ParameterMetadata(after.id)))
+            return fail(error, QStringLiteral("网格结构不能改变参数定义：%1").arg(before.id));
+    }
+    QSet<QString> affected;
+    QHash<QString, int> meshIndices;
+    for (int index = 0; index < m_drawables.size(); ++index) {
+        const auto& id = m_drawables[index].id;
+        if (id.isEmpty() || meshIndices.contains(id)) return fail(error, QStringLiteral("网格结构需要唯一的对象 ID"));
+        meshIndices.insert(id, index);
+    }
+    QVector<Builder::BindingRequest> owners;
+    const auto addOwner = [&](const QString& id) {
+        if (affected.contains(id)) return;
+        affected.insert(id);
+        owners.append(Builder::BindingRequest{{Builder::Owner::ArtMesh, id}, {}});
+    };
+    for (const auto& remap : edit.meshRemaps) {
+        if (affected.contains(remap.artMeshId)) return fail(error, QStringLiteral("顶点映射对象重复"));
+        const int index = meshIndices.value(remap.artMeshId, -1);
+        if (index < 0 || candidate.m_drawables[index].id != remap.artMeshId ||
+            m_drawables[index].vertexCount != (forward ? remap.oldVertexCount : remap.newVertexCount) ||
+            candidate.m_drawables[index].vertexCount != (forward ? remap.newVertexCount : remap.oldVertexCount) ||
+            remap.oldToNew.size() != remap.oldVertexCount || remap.newToOld.size() != remap.newVertexCount)
+            return fail(error, QStringLiteral("顶点映射与编辑两侧数量不匹配：%1").arg(remap.artMeshId));
+        const auto valid = [](const QVector<int>& mapping, const QVector<int>& inverse) {
+            for (int index = 0; index < mapping.size(); ++index)
+                if (mapping[index] < -1 || mapping[index] >= inverse.size() ||
+                    (mapping[index] >= 0 && inverse[mapping[index]] != index)) return false;
+            return true;
+        };
+        if (!valid(remap.oldToNew, remap.newToOld) || !valid(remap.newToOld, remap.oldToNew))
+            return fail(error, QStringLiteral("顶点映射不是可逆的存活点对应：%1").arg(remap.artMeshId));
+        addOwner(remap.artMeshId);
+    }
+    for (int index = 0; index < m_drawables.size(); ++index) {
+        const auto& before = m_drawables[index]; const auto& after = candidate.m_drawables[index];
+        if (!sameAxes(m_keyformBindings->Axes(CKeyformBindingGrid::ArtMesh, before.id),
+                      candidate.m_keyformBindings->Axes(CKeyformBindingGrid::ArtMesh, after.id)) ||
+            before.keyforms.size() != after.keyforms.size() || DrawableMaskIndices(before.id) != candidate.DrawableMaskIndices(after.id) ||
+            DrawableMaskInverted(before.id) != candidate.DrawableMaskInverted(after.id))
+            return fail(error, QStringLiteral("网格结构不能改变绑定或蒙版：%1").arg(before.id));
+        if (!affected.contains(before.id) && (before.vertexCount != after.vertexCount || before.uvs != after.uvs ||
+            DrawableIndices(before.id) != candidate.DrawableIndices(after.id)))
+            return fail(error, QStringLiteral("网格结构改变了未映射的网格：%1").arg(before.id));
+        for (int form = 0; form < before.keyforms.size(); ++form) {
+            if (before.keyforms[form].opacity != after.keyforms[form].opacity || before.keyforms[form].drawOrder != after.keyforms[form].drawOrder ||
+                (!affected.contains(before.id) && DrawableKeyformPositions(before.id, form) != candidate.DrawableKeyformPositions(after.id, form)))
+                return fail(error, QStringLiteral("网格结构改变了无关关键形数据：%1").arg(before.id));
+        }
+    }
+    for (const auto& deformer : m_deformers) {
+        const auto type = deformer.type == CModelDeformer::Warp ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
+        if (!sameAxes(m_keyformBindings->Axes(type, deformer.id), candidate.m_keyformBindings->Axes(type, deformer.id)) ||
+            DeformerParentIndex(deformer.id) != candidate.DeformerParentIndex(deformer.id) ||
+            DeformerWarpKeyforms(deformer.id) != candidate.DeformerWarpKeyforms(deformer.id) ||
+            DeformerRotationKeyforms(deformer.id) != candidate.DeformerRotationKeyforms(deformer.id))
+            return fail(error, QStringLiteral("网格结构不能改变变形器：%1").arg(deformer.id));
+    }
+    auto beforeReader = CReader::FromBytes(m_workingBaseBytes), afterReader = CReader::FromBytes(candidate.m_workingBaseBytes);
+    CSectionTable beforeTable(beforeReader), afterTable(afterReader);
+    if (!beforeTable.IsValid() || !afterTable.IsValid()) return fail(error, QStringLiteral("无法验证网格结构的 Glue 数据"));
+    qint64 glueReferences = 0;
+    for (int index = 0; index < beforeTable.glue.size(); ++index) {
+        const auto* before = beforeTable.glue[index]; const auto* after = afterTable.glue[index];
+        if (before->art_mesh_indices_a < 0 || before->art_mesh_indices_b < 0 ||
+            before->art_mesh_indices_a >= beforeTable.art_meshes.size() || before->art_mesh_indices_b >= beforeTable.art_meshes.size() ||
+            !validSlice(before->glue_info_sources_begin_indices, before->glue_info_sources_counts, beforeTable.glue_info.size()) ||
+            !validSlice(after->glue_info_sources_begin_indices, after->glue_info_sources_counts, afterTable.glue_info.size()) ||
+            before->glue_info_sources_counts % 2 || after->glue_info_sources_counts % 2 ||
+            before->glue_info_sources_counts > 1000000 - glueReferences)
+            return fail(error, QStringLiteral("Glue 配对范围无效或超过检查总量"));
+        glueReferences += before->glue_info_sources_counts;
+        bool changed = before->glue_info_sources_counts != after->glue_info_sources_counts;
+        for (int endpoint = 0; !changed && endpoint < before->glue_info_sources_counts; ++endpoint) {
+            const auto* a = beforeTable.glue_info[before->glue_info_sources_begin_indices + endpoint];
+            const auto* b = afterTable.glue_info[after->glue_info_sources_begin_indices + endpoint];
+            changed = a->position_indices != b->position_indices || a->weights != b->weights;
+        }
+        if (!changed) continue;
+        if (IsLocked(QStringLiteral("glue"), before->ids)) return fail(error, QStringLiteral("Glue 已锁定：%1").arg(before->ids));
+        addOwner(beforeTable.art_meshes[before->art_mesh_indices_a]->ids);
+        addOwner(beforeTable.art_meshes[before->art_mesh_indices_b]->ids);
+    }
+    if (!canBind(*this, owners, error)) return false;
+    const auto& origin = forward ? *this : candidate;
+    const auto& destination = forward ? candidate : *this;
+    QByteArray base;
+    CMocMeshStructureBuilder::Result replay;
+    Builder::ColumnState expected;
+    if (!origin.BuildMeshBase(*edit.meshRequest, base, error) ||
+        !CMocMeshStructureBuilder::Build(base, *edit.meshRequest, replay, error) ||
+        !Builder::CaptureColumnState(m_sourceBytes, replay.bytes, expected, error)) return false;
+    if (!(expected == destination.m_structure) || replay.meshes.size() != edit.meshRemaps.size())
+        return fail(error, QStringLiteral("网格历史包含请求之外的结构修改"));
+    for (int index = 0; index < replay.meshes.size(); ++index) {
+        const auto& actual = replay.meshes[index]; const auto& recorded = edit.meshRemaps[index];
+        if (actual.artMeshId != recorded.artMeshId || actual.oldVertexCount != recorded.oldVertexCount ||
+            actual.newVertexCount != recorded.newVertexCount || actual.oldToNew != recorded.oldToNew || actual.newToOld != recorded.newToOld)
+            return fail(error, QStringLiteral("网格历史的顶点映射与请求不匹配"));
+    }
+    return true;
+}
+
+bool CModelDocument::BuildMeshBase(const CMocMeshStructureBuilder::Request& request, QByteArray& bytes, QString* error) const
+{
+    CMocRuntimeBuilder::Overrides indices;
+    for (const auto& mesh : request.meshes) {
+        const auto found = m_drawableIndexOverrides.constFind(mesh.artMeshId);
+        if (found != m_drawableIndexOverrides.cend()) indices.drawableIndices.insert(mesh.artMeshId, *found);
+    }
+    QByteArray preview;
+    return BuildPreviewMoc(preview, error) && CMocRuntimeBuilder::Build(preview, indices, bytes, error);
+}
+
+bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request,
+                                          CModelEdit& edit, QString* error) const
+{
+    try {
+        if (request.meshes.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格"));
+        QVector<Builder::BindingRequest> owners;
+        for (const auto& mesh : request.meshes) {
+            owners.append(Builder::BindingRequest{{Builder::Owner::ArtMesh, mesh.artMeshId}, {}});
+        }
+        if (!canBind(*this, owners, error)) return false;
+        QByteArray base;
+        if (!BuildMeshBase(request, base, error)) return false;
+        CMocMeshStructureBuilder::Result result;
+        if (!CMocMeshStructureBuilder::Build(base, request, result, error)) return false;
+        bool remapped = false;
+        for (const auto& mesh : result.meshes)
+            for (int index = 0; index < mesh.oldToNew.size(); ++index) remapped = remapped || mesh.oldToNew[index] != index;
+        if (result.bytes == base && !remapped) return fail(error, QStringLiteral("网格没有发生变化"));
+        Builder::ColumnState structure;
+        CModelDocument candidate;
+        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error) ||
+            !PrepareStructure(structure, true, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
+        for (const auto& mesh : result.meshes) candidate.m_drawableIndexOverrides.remove(mesh.artMeshId);
+        CModelEdit command{request.meshes.first().artMeshId, QStringLiteral("mesh"), CModelEdit::MeshStructure,
+                           AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
+        command.meshRemaps = result.meshes;
+        command.meshRequest = std::make_shared<const CMocMeshStructureBuilder::Request>(request);
+        if (!ValidateMeshTransition(candidate, command, true, error)) return false;
+        edit = std::move(command);
+        if (error) error->clear();
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法构建网格结构编辑")); }
 }
 
 bool CModelDocument::MakeCreateParameterEdit(const Builder::CreateRequest& request, const QString& displayName,

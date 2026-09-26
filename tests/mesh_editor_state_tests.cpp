@@ -151,6 +151,85 @@ private slots:
         QCOMPARE(selected(sourceA), (QVector<bool>{true, true, false}));
     }
 
+    void geometryRemapPreservesIdentityAndRestoresDeletedSelection()
+    {
+        const float quad[]{-1, -1, 1, -1, 1, 1, -1, 1};
+        const short triangles[]{0, 1, 2, 0, 2, 3};
+        CDrawMesh sourceMesh(6, triangles, 8, quad, quad);
+        CDrawMesh removedMesh(3, sourceIndices, 6, candidateUvs, candidatePositions);
+        CDrawMesh restoredMesh(6, triangles, 8, quad, quad);
+        sourceMesh.SetShow(true); sourceMesh.SetIsOver(true);
+        sourceMesh.GetMesh()->GetWolrd()[0]->SetIsSelect(true);
+        sourceMesh.GetMesh()->GetWolrd()[3]->SetIsSelect(true);
+        CMeshMap source, removed, restored;
+        source.insert("mesh", &sourceMesh); removed.insert("mesh", &removedMesh); restored.insert("mesh", &restoredMesh);
+        CMeshEditorSnapshot original;
+        QVERIFY(source.CaptureEditorState(original));
+        const auto stored = QVariant::fromValue(original).value<CMeshEditorSnapshot>();
+        QCOMPARE(stored.value("mesh").selectedVertices, QVector<int>({0, 3}));
+        CMeshGeometryMigration removal;
+        removal.remaps.insert("mesh", {4, 3, {2, 0, 1, -1}});
+        QVERIFY(removed.CopyEditorStateFrom(source, removal));
+        QCOMPARE(selected(removedMesh), QVector<bool>({false, false, true}));
+        QCOMPARE(removedMesh.GetSelectPoint().front(), removedMesh.GetMesh()->GetWolrd()[2]);
+        QVERIFY(removedMesh.IsShown()); QVERIFY(removedMesh.IsHovered());
+        CMeshGeometryMigration undo;
+        undo.remaps.insert("mesh", {3, 4, {1, 2, 0}});
+        undo.targetState = stored;
+        QVERIFY(restored.CopyEditorStateFrom(removed, undo));
+        QCOMPARE(selected(restoredMesh), QVector<bool>({true, false, false, true}));
+        QVERIFY(restoredMesh.GetSelectPoint().front() != sourceMesh.GetSelectPoint().front());
+        QCOMPARE(sourceMesh.Positions(), QVector<float>(quad, quad + 8));
+        QCOMPARE(removedMesh.Positions(), QVector<float>(candidatePositions, candidatePositions + 6));
+    }
+
+    void equalCountReorderingAndNewPointsUseExplicitMapping()
+    {
+        CDrawMesh sourceMesh(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CDrawMesh reorderedMesh(3, candidateIndices, 6, candidateUvs, candidatePositions);
+        const float quad[]{-1,-1,1,-1,1,1,-1,1};
+        CDrawMesh grownMesh(3, sourceIndices, 8, quad, quad);
+        sourceMesh.GetMesh()->GetWolrd()[1]->SetIsSelect(true);
+        CMeshMap source, reordered, grown;
+        source.insert("mesh", &sourceMesh); reordered.insert("mesh", &reorderedMesh); grown.insert("mesh", &grownMesh);
+        CMeshGeometryMigration reorder; reorder.remaps.insert("mesh", {3,3,{1,2,0}});
+        QVERIFY(reordered.CopyEditorStateFrom(source, reorder));
+        QCOMPARE(selected(reorderedMesh), QVector<bool>({false,false,true}));
+        CMeshGeometryMigration grow; grow.remaps.insert("mesh", {3,4,{2,0,3}});
+        QVERIFY(grown.CopyEditorStateFrom(source, grow));
+        QCOMPARE(selected(grownMesh), QVector<bool>({true,false,false,false}));
+    }
+
+    void invalidGeometryMigrationIsAtomic_data()
+    {
+        QTest::addColumn<int>("invalid");
+        for (int i=0; i<8; ++i) QTest::newRow(qPrintable(QString::number(i))) << i;
+    }
+    void invalidGeometryMigrationIsAtomic()
+    {
+        QFETCH(int, invalid);
+        CDrawMesh sourceA(3,sourceIndices,6,sourcePositions,sourcePositions), sourceZ(3,sourceIndices,6,sourcePositions,sourcePositions);
+        CDrawMesh targetA(3,candidateIndices,6,candidateUvs,candidatePositions), targetZ(3,candidateIndices,6,candidateUvs,candidatePositions);
+        sourceA.SetShow(true); sourceA.GetMesh()->GetWolrd()[0]->SetIsSelect(true);
+        targetA.GetMesh()->GetWolrd()[2]->SetIsSelect(true);
+        CMeshMap source, target; source.insert("A",&sourceA);source.insert("Z",&sourceZ);target.insert("A",&targetA);target.insert("Z",&targetZ);
+        CMeshGeometryMigration migration; migration.remaps.insert("A",{3,3,{2,0,1}});migration.remaps.insert("Z",{3,3,{0,1,2}});
+        switch(invalid) {
+        case 0:migration.remaps["Z"].oldToNew={0,0,2};break;
+        case 1:migration.remaps["Z"].oldToNew={0,1,3};break;
+        case 2:migration.remaps["Z"].oldToNew={0,1,-2};break;
+        case 3:migration.remaps["Z"].oldVertexCount=4;break;
+        case 4:migration.remaps["Z"].newVertexCount=4;break;
+        case 5:migration.remaps.insert("unknown",{3,3,{0,1,2}});break;
+        default:{ CMeshEditorSnapshot state; QVERIFY(source.CaptureEditorState(state));
+            if(invalid==6) state["Z"].selectedVertices={0,0};else state.remove("Z");
+            migration.targetState=state;break; }
+        }
+        QString error; QVERIFY(!target.CopyEditorStateFrom(source,migration,&error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(selected(targetA),QVector<bool>({false,false,true}));QVERIFY(!targetA.IsShown());
+        QCOMPARE(selected(sourceA),QVector<bool>({true,false,false}));QVERIFY(sourceA.IsShown());
+    }
+
     void everySelectionPathExposesTheCurrentPointFlags()
     {
         CDrawMesh mesh(3, sourceIndices, 6, sourcePositions, sourcePositions);

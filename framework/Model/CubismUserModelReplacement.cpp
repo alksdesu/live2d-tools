@@ -27,7 +27,7 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
                                  CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds, QString* error,
                                  const CubismModelReplacement::ModelPreparation& prepareModel,
                                  const ParameterPhysicsReferences* physicsReferences,
-                                 const PhysicsPreparation& preparePhysics)
+                                 const PhysicsPreparation& preparePhysics, const CMeshGeometryMigration* geometry)
 {
     if (error) error->clear();
     if (_updating || !_moc || !_model || !_renderer || !_modelMatrix ||
@@ -40,7 +40,7 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
     auto* sourcePose = _pose;
     const bool structure = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterStructureEdits);
     CubismModelReplacement candidate;
-    if (!candidate.Prepare(bytes, size, *_moc, *_model, *_renderer, prepareRenderer, policy, seeds, error, prepareModel)) return false;
+    if (!candidate.Prepare(bytes, size, *_moc, *_model, *_renderer, prepareRenderer, policy, seeds, error, prepareModel, geometry)) return false;
     if (_physics != sourcePhysics || _pose != sourcePose) {
         if (error) *error = QStringLiteral("模型效果在准备期间发生变化");
         return false;

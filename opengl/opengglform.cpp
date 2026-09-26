@@ -510,6 +510,54 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
     }
 }
 
+QByteArray OpengGlForm::CurrentPreviewDigest() const
+{
+    if (!m_runtimeReady || !IsModelReady() || !context() ||
+        LAppDelegate::GetInstance()->getGlOwningContext() != context()) return {};
+    const auto* model = CurrentModel();
+    return model ? model->GetPreviewMocDigest() : QByteArray{};
+}
+
+bool OpengGlForm::CaptureMeshEditorState(CMeshEditorSnapshot& state, QString* error) const
+{
+    if (error) error->clear();
+    if (CurrentPreviewDigest().isEmpty()) return MeshError(error, QStringLiteral("当前画布没有可用的模型选区"));
+    const auto* model = CurrentModel();
+    return model && model->CaptureMeshEditorState(state, error);
+}
+
+bool OpengGlForm::ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                          const CMeshGeometryMigration& migration, QString* error)
+{
+    if (error) error->clear();
+    if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改网格几何"));
+    if (IsMeshDragging() || m_controlDragActive)
+        return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent())
+        return MeshError(error, QStringLiteral("模型预览的 OpenGL 上下文尚未就绪"));
+    auto* model = CurrentModel();
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
+    try {
+        CTreeManage::Snapshot tree;
+        LAppView::PreparedDeformerOverlays overlays;
+        const auto prepare = [&](const CubismModel& candidate, QString* detail) {
+            CubismModel::RuntimeValueSnapshot values;
+            return candidate.CaptureRuntimeValues(values, detail) &&
+                CTreeManage::PrepareSnapshot(bytes, values.Parameters(), tree, detail) &&
+                view->PrepareDeformerOverlays(tree, overlays, detail);
+        };
+        if (!model->ApplyMeshGeometryPreview(bytes, sourceDigest, migration, error, prepare)) return false;
+        CTreeManage::SwapSnapshot(tree);
+        view->SwapDeformerOverlays(overlays);
+        update();
+        return true;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("无法准备网格几何的变形器预览"));
+    }
+}
+
 bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                                  const QMap<QString, float>& baseValues, bool keepEditorPreview,
                                                  QString* error)
@@ -548,7 +596,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                                                 const ParameterReferenceState* references,
                                                 const LAppModel::EditorPreviewContext* restoreEditor,
                                                 const LAppModel::TimelinePreviewPreparation& prepareTimeline,
-                                                const LAppModel::PhysicsDraft* physicsDraft)
+                                                const LAppModel::PhysicsDraft* physicsDraft,
+                                                const CMeshGeometryMigration* geometry)
 {
     if (error) error->clear();
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数结构"));
@@ -570,7 +619,7 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
         if (!model->ApplyParameterStructurePreview(bytes, sourceDigest, addedSeeds, baseValues,
-                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline, physicsDraft)) return false;
+                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline, physicsDraft, geometry)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         preparedPose.swap(pose);
@@ -742,20 +791,6 @@ bool OpengGlForm::BeginMeshDrag(const QString& name, const QPointF& pixel, QStri
     } catch (const std::exception&) {
         return MeshError(error, QStringLiteral("无法开始关键形拖拽"));
     }
-}
-
-void OpengGlForm::do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices)
-{
-    if (m_exportSuspended) return;
-    if (name.isEmpty() || !live2dstruct::CMeshTopology::IsValid(indices, 32768)) return;
-    auto* delegate = LAppDelegate::GetInstance();
-    LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
-    if (manager && manager->GetModelNum() > 0 && manager->GetModel(0) && manager->GetModel(0)->GetModel()) {
-        auto* model = manager->GetModel(0)->GetModel();
-        const auto id = CubismFramework::GetIdManager()->GetId(name.toUtf8().constData());
-        if (!model->SetDrawableIndicesOverride(model->GetDrawableIndex(id), indices)) return;
-    }
-    delegate->m_meshIndexOverrides.insert(name, indices);
 }
 
 bool OpengGlForm::MakeRuntimeCurrent()
