@@ -65,6 +65,7 @@ add_library(model_data STATIC
     live2dstruct/cruntimepackage.cpp
     live2dstruct/cphysicsdocument.cpp
     live2dstruct/cmocparameterstructurebuilder.cpp
+    live2dstruct/cmocmeshstructurebuilder.cpp
     live2dstruct/cmoclayoutrewriter.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
@@ -149,7 +150,15 @@ target_include_directories(ui_inspector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL)
 
 if(BUILD_TESTING)
+    add_executable(moc_mesh_structure_tests tests/mesh_structure_moc_tests.cpp)
+    target_link_libraries(moc_mesh_structure_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(moc_mesh_structure_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME moc_mesh_structure COMMAND moc_mesh_structure_tests)
     if(TARGET live2d_core)
+        add_executable(moc_mesh_structure_core_tests tests/mesh_structure_moc_core_tests.cpp)
+        target_link_libraries(moc_mesh_structure_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(moc_mesh_structure_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME moc_mesh_structure_core COMMAND moc_mesh_structure_core_tests)
         add_executable(physics_bake_tests tests/physics_bake_tests.cpp live2d/cphysicsbake.cpp
             framework/CubismFramework.cpp framework/Model/CubismMoc.cpp framework/Model/CubismModel.cpp
             framework/Physics/CubismPhysics.cpp framework/Physics/CubismPhysicsJson.cpp

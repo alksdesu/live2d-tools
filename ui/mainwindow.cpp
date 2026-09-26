@@ -1363,6 +1363,7 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
 
 void MainWindow::RefreshKeyformUi(bool changed)
 {
+    RefreshTextureGeometry();
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
     if (m_keyformEditor.IsActive()) {
         if (m_inspectorPanel)
@@ -1472,6 +1473,19 @@ void MainWindow::SyncDocumentToRuntime()
             m_openglwindows->do_SetVisibility(part.id, QStringLiteral("part"), part.visible);
     }
     m_openglwindows->SetViewState(m_openglwindows->ViewScale(), m_openglwindows->ViewPosition());
+    RefreshTextureGeometry();
+}
+
+void MainWindow::RefreshTextureGeometry()
+{
+    if (!m_texturePanel || !m_runtimePanelsInitialized || !m_openglwindows ||
+        !m_openglwindows->IsModelReady() || !RuntimeMatchesDocument()) return;
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    if (!model) return;
+    QString error;
+    if (!m_texturePanel->UpdateUvMeshes(model->GetPreviewMocBytes(), &error))
+        statusBar()->showMessage(QStringLiteral("图集网格刷新失败：%1").arg(error), 10000);
 }
 
 bool MainWindow::ConfirmExportReady(const QString& operation)
@@ -2524,10 +2538,11 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
     RefreshKeyformUi();
     if (m_texturePanel && m_document.SourceMatchesDisk(&sourceError)) {
         auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
-        if (textures) m_texturePanel->LoadTextures(textures->GetModelTex(), m_currentMoc);
+        if (textures) m_texturePanel->LoadTextures(textures->GetModelTex());
     }
     applyBgColor();
     m_runtimePanelsInitialized = true;
+    RefreshTextureGeometry();
     RefreshExportActions();
 }
 

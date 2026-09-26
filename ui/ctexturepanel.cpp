@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QGraphicsPixmapItem>
 #include <QFileDialog>
+#include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QWheelEvent>
@@ -14,9 +15,12 @@
 #include <QImageReader>
 #include <QSignalBlocker>
 #include <QDebug>
+#include <QSet>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <exception>
 
 using namespace live2dstruct;
 
@@ -232,6 +236,11 @@ void CTexturePanel::LoadTextures(const QMap<int, QString>& texMap, const QString
     m_overlay = nullptr;
     m_scene->setSceneRect(QRectF());
     m_textures = texMap;
+    m_atlasSizes.clear();
+    for (auto it = texMap.cbegin(); it != texMap.cend(); ++it) {
+        QImageReader image(it.value());
+        m_atlasSizes.insert(it.key(), image.size());
+    }
     m_meshes.clear();
     m_runtimeRenderOrder.clear();
     m_selectedMesh.clear();
@@ -244,7 +253,10 @@ void CTexturePanel::LoadTextures(const QMap<int, QString>& texMap, const QString
     if (texMap.isEmpty()) return;
 
     if (!mocPath.isEmpty()) {
-        buildUvMeshes(mocPath);
+        QFile source(mocPath);
+        QString error;
+        if (!source.open(QIODevice::ReadOnly) || !UpdateUvMeshes(source.readAll(), &error))
+            qWarning() << "CTexturePanel: UV 网格不可用:" << error;
     }
     m_checkWireframe->setEnabled(!m_meshes.isEmpty());
 
@@ -285,33 +297,43 @@ void CTexturePanel::SetRenderOrder(const QStringList& orderedNames)
     m_runtimeRenderOrder = next;
 }
 
-void CTexturePanel::buildUvMeshes(const QString& mocPath)
+bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, QVector<CAtlasMeshUv>& result, QString* error) const
 {
-    m_meshes.clear();
-    CReader reader(mocPath);
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if (mocBytes.isEmpty()) return fail(QStringLiteral("UV 网格缺少模型数据"));
+    auto reader = CReader::FromBytes(mocBytes);
     CSectionTable table(reader);
     if (!table.IsValid() || !table.count_info || !table.uvs || !table.position_indices) {
-        qWarning("CTexturePanel: moc3 解析失败，UV 线框不可用");
-        return;
+        return fail(QStringLiteral("无法解析 UV 网格：%1").arg(reader.Error()));
     }
 
-    const int meshCount = qMin(table.count_info->art_meshes, static_cast<int>(table.art_meshes.size()));
-    m_meshes.reserve(meshCount);
-    QMap<int, QSize> atlasSizes;
+    const int meshCount = table.count_info->art_meshes;
+    if (meshCount < 0 || meshCount != table.art_meshes.size()) return fail(QStringLiteral("UV 网格数量与模型不一致"));
+    QVector<CAtlasMeshUv> candidate;
+    candidate.reserve(meshCount);
+    QSet<QString> ids;
 
     for (int i = 0; i < meshCount; ++i) {
         CArt_meshes* mesh = table.art_meshes[i];
-        if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000 ||
-            mesh->vertex_counts > std::numeric_limits<int>::max() / 2) continue;
+        if (!mesh || mesh->ids.isEmpty() || mesh->ids.contains(QChar::Null) || ids.contains(mesh->ids))
+            return fail(QStringLiteral("UV 网格身份无效或重复"));
+        ids.insert(mesh->ids);
+        if (mesh->vertex_counts < 0 || mesh->vertex_counts > 1000000 ||
+            mesh->vertex_counts > std::numeric_limits<int>::max() / 2)
+            return fail(QStringLiteral("UV 顶点数量无效：%1").arg(mesh->ids));
         const int uvSize = static_cast<int>(table.uvs->uvs.size());
         const int uvCount = mesh->vertex_counts * 2;
         if (mesh->uv_sources_begin_indices < 0 || mesh->uv_sources_begin_indices > uvSize ||
-            uvCount > uvSize - mesh->uv_sources_begin_indices) continue;
+            uvCount > uvSize - mesh->uv_sources_begin_indices)
+            return fail(QStringLiteral("UV 顶点切片越界：%1").arg(mesh->ids));
         const int indexSize = static_cast<int>(table.position_indices->indices.size());
-        if (mesh->position_index_sources_begin_indices < 0 || mesh->position_index_sources_counts < 3 ||
+        if (mesh->position_index_sources_begin_indices < 0 || mesh->position_index_sources_counts < 0 || mesh->position_index_sources_counts > 3000000 ||
             mesh->position_index_sources_counts % 3 != 0 ||
             mesh->position_index_sources_begin_indices > indexSize ||
-            mesh->position_index_sources_counts > indexSize - mesh->position_index_sources_begin_indices) continue;
+            mesh->position_index_sources_counts > indexSize - mesh->position_index_sources_begin_indices)
+            return fail(QStringLiteral("UV 三角形切片无效：%1").arg(mesh->ids));
+        if (!mesh->vertex_counts && mesh->position_index_sources_counts)
+            return fail(QStringLiteral("空网格包含三角形：%1").arg(mesh->ids));
 
         CAtlasMeshUv uv;
         uv.name = mesh->ids;
@@ -319,20 +341,17 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
         if (mesh->keyform_sources_begin_indices >= 0 &&
             mesh->keyform_sources_begin_indices < table.art_mesh_keyforms.size()) {
             const float drawOrder = table.art_mesh_keyforms[mesh->keyform_sources_begin_indices]->draw_orders;
-            if (std::isfinite(drawOrder)) uv.drawOrder = drawOrder;
+            if (!std::isfinite(drawOrder)) return fail(QStringLiteral("UV 网格绘制顺序无效：%1").arg(mesh->ids));
+            uv.drawOrder = drawOrder;
         }
 
-        if (!atlasSizes.contains(uv.textureNo)) {
-            QImageReader imageReader(m_textures.value(uv.textureNo));
-            atlasSizes.insert(uv.textureNo, imageReader.size());
-        }
-        const QSize atlasSize = atlasSizes.value(uv.textureNo);
-        if (atlasSize.isEmpty()) continue;
+        const QSize atlasSize = m_atlasSizes.value(uv.textureNo);
+        if (atlasSize.isEmpty()) return fail(QStringLiteral("UV 网格引用的图集未加载：%1").arg(mesh->ids));
         const double w = atlasSize.width();
         const double h = atlasSize.height();
         const QRectF atlasRect(0, 0, w, h);
 
-        const float* uvPtr = &table.uvs->uvs[mesh->uv_sources_begin_indices];
+        const float* uvPtr = uvCount ? &table.uvs->uvs[mesh->uv_sources_begin_indices] : nullptr;
         uv.points.reserve(mesh->vertex_counts);
         bool uvValid = true;
         for (int v = 0; v < mesh->vertex_counts; ++v) {
@@ -344,16 +363,15 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
             }
             uv.points.append(QPointF(u * w, vCoord * h));
         }
-        if (!uvValid) continue;
+        if (!uvValid) return fail(QStringLiteral("UV 网格含非有限坐标：%1").arg(mesh->ids));
 
-        const short* idxPtr = &table.position_indices->indices[mesh->position_index_sources_begin_indices];
         const int idxCount = mesh->position_index_sources_counts;
+        const short* idxPtr = idxCount ? &table.position_indices->indices[mesh->position_index_sources_begin_indices] : nullptr;
         uv.triangles.reserve(idxCount);
         for (int t = 0; t < idxCount; ++t) {
             const int index = idxPtr[t];
             if (index < 0 || index >= uv.points.size()) {
-                uv.triangles.clear();
-                break;
+                return fail(QStringLiteral("UV 三角形索引越界：%1").arg(mesh->ids));
             }
             uv.triangles.append(index);
         }
@@ -379,11 +397,52 @@ void CTexturePanel::buildUvMeshes(const QString& mocPath)
             uv.fillPath.closeSubpath();
         }
 
-        m_meshes.append(uv);
+        candidate.append(std::move(uv));
     }
-    std::stable_sort(m_meshes.begin(), m_meshes.end(), [](const CAtlasMeshUv& left, const CAtlasMeshUv& right) {
+    std::stable_sort(candidate.begin(), candidate.end(), [](const CAtlasMeshUv& left, const CAtlasMeshUv& right) {
         return left.drawOrder < right.drawOrder;
     });
+    result.swap(candidate);
+    return true;
+}
+
+bool CTexturePanel::UpdateUvMeshes(const QByteArray& mocBytes, QString* error)
+{
+    if (error) error->clear();
+    QVector<CAtlasMeshUv> candidate;
+    std::unique_ptr<CUvOverlayItem> overlay;
+    QString information;
+    try {
+        if (!PrepareUvMeshes(mocBytes, candidate, error)) return false;
+        const auto same = [](const CAtlasMeshUv& left, const CAtlasMeshUv& right) {
+            return left.name == right.name && left.textureNo == right.textureNo && left.drawOrder == right.drawOrder &&
+                left.points == right.points && left.triangles == right.triangles;
+        };
+        if (candidate.size() == m_meshes.size() && std::equal(candidate.cbegin(), candidate.cend(), m_meshes.cbegin(), same)) return true;
+        QVector<const CAtlasMeshUv*> visible;
+        for (const auto& mesh : candidate) if (mesh.textureNo == m_currentTexKey) visible.append(&mesh);
+        if (m_currentTexKey >= 0 && !m_scene->sceneRect().isEmpty()) {
+            if (!visible.isEmpty()) {
+                overlay = std::make_unique<CUvOverlayItem>(m_scene->sceneRect().size());
+                overlay->SetMeshes(visible);
+                overlay->SetSelected(m_selectedMesh);
+                overlay->setVisible(m_checkWireframe->isChecked());
+                m_scene->addItem(overlay.get());
+            }
+            const auto size = m_atlasSizes.value(m_currentTexKey);
+            information = QStringLiteral("%1 | %2x%3 | 网格 %4 个")
+                .arg(QFileInfo(m_textures.value(m_currentTexKey)).fileName()).arg(size.width()).arg(size.height()).arg(visible.size());
+        }
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法准备 UV 网格，原图集保持不变");
+        return false;
+    }
+    m_meshes.swap(candidate);
+    delete m_overlay;
+    m_overlay = overlay.release();
+    m_checkWireframe->setEnabled(m_currentTexKey < 0 ? !m_meshes.isEmpty() : m_overlay != nullptr);
+    if (!information.isEmpty()) m_infoLabel->setText(information);
+    return true;
 }
 
 void CTexturePanel::rebuildScene(int texKey)

@@ -435,7 +435,8 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
     const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
     const QString cidPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName()));
     const QString mocPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetModelFileName()));
-    const QByteArray source(model->GetSourceMocBytes().constData(), model->GetSourceMocBytes().size());
+    const QByteArray source = model->GetPreviewMocBytes();
+    if (source.isEmpty()) return fail(QStringLiteral("当前模型缺少有效 MOC 快照，无法提取纹理"));
     const auto topology = m_meshIndexOverrides;
     const auto opacity = m_drawableOpacityOverrides;
     const QSet<QString> hidden = m_hiddenDrawables | m_hiddenDeformerDrawables;
@@ -446,7 +447,23 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
         atlases[texture.key()] = texture.value();
     }
     QStringList order;
+    QHash<QString, QVector<float>> modelPositions;
+    model->Update();
     auto* runtime = model->GetModel();
+    for (int index = 0; index < runtime->GetDrawableCount(); ++index) {
+        const auto id = QString::fromUtf8(runtime->GetDrawableId(index)->GetString().GetRawString());
+        const int count = runtime->GetDrawableVertexCount(index);
+        const auto* positions = runtime->GetDrawableVertices(index);
+        if (id.isEmpty() || modelPositions.contains(id) || count < 0 || count > 1000000 || (count && !positions))
+            return fail(QStringLiteral("当前网格坐标快照无效：%1").arg(id));
+        QVector<float> copy;
+        copy.reserve(count * 2);
+        for (int coordinate = 0; coordinate < count * 2; ++coordinate) {
+            if (!std::isfinite(positions[coordinate])) return fail(QStringLiteral("网格坐标不是有限数值：%1").arg(id));
+            copy.append(positions[coordinate]);
+        }
+        modelPositions.insert(id, std::move(copy));
+    }
     for (int index : runtime->GetSortedDrawableIndices(m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups))
         order.append(QString::fromUtf8(runtime->GetDrawableId(index)->GetString().GetRawString()));
     return CExportTaskRunner::Run([=](const CExportTaskRunner::GuiCall&, QString* detail) {
@@ -459,7 +476,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
         CPsdWriteList writer;
         writer.SetControl(control);
         if (!writer.CreatePsd(path, canvas.width(), canvas.height(), cubismCompat)) { if (detail) *detail = control->Error(); return false; }
-        const auto layers = extractor.ExtractAll(&table, includeHidden, &topology, control);
+        const auto layers = extractor.ExtractAll(&table, includeHidden, &topology, control, &modelPositions);
         if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
         QHash<QString, const ExtractedLayer*> byId;
         for (const auto& layer : layers) byId.insert(layer.name, &layer);

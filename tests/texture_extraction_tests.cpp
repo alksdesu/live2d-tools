@@ -95,10 +95,13 @@ public:
         return extractor.LoadAtlases(paths, control);
     }
     QVector<ExtractedLayer> Extract(CExportControl* control = nullptr,
-                                   const QHash<QString, QVector<quint16>>* overrides = nullptr)
+                                   const QHash<QString, QVector<quint16>>* overrides = nullptr,
+                                   const QHash<QString, QVector<float>>* positions = nullptr)
     {
-        return extractor.ExtractAll(&table, true, overrides, control);
+        return extractor.ExtractAll(&table, true, overrides, control, positions);
     }
+
+    QString Id() const { return table.art_meshes[0]->ids; }
 
 private:
     CReader reader;
@@ -112,6 +115,51 @@ class TextureExtractionTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void frozenModelCoordinatesReplaceParentLocalPlacement()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.Geometry({0, 0, 1, 0, 0, 1});
+        mesh.CanvasPositions({100, 100, 200, 100, 100, 300}, 100, 50, 50);
+        const auto original = mesh.Extract(); QCOMPARE(original.size(), 1);
+        QHash<QString, QVector<float>> positions{{mesh.Id(), {-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f}}};
+        const auto saved = positions;
+        CExportControl control;
+        const auto frozen = mesh.Extract(&control, nullptr, &positions);
+        QVERIFY(control.Checkpoint()); QCOMPARE(frozen.size(), 1);
+        QCOMPARE(frozen[0].canvasRect, QRect(0, 0, 100, 100));
+        QVERIFY(original[0].canvasRect != frozen[0].canvasRect);
+        QCOMPARE(frozen[0].image, original[0].image);
+        QCOMPARE(positions, saved);
+        QCOMPARE(mesh.Extract()[0].canvasRect, original[0].canvasRect);
+    }
+
+    void incompleteOrInvalidFrozenCoordinatesNeverFallBackToLocalPlacement()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.Geometry({0, 0, 1, 0, 0, 1});
+        mesh.CanvasPositions({0, 0, 1, 0, 0, 1}, 10);
+        const auto baseline = mesh.Extract(); QCOMPARE(baseline.size(), 1);
+        const float infinity = std::numeric_limits<float>::infinity();
+        const float largest = std::numeric_limits<float>::max();
+        const QVector<QHash<QString, QVector<float>>> inputs{
+            {}, {{"unknown", {0, 0, 1, 0, 0, 1}}}, {{mesh.Id(), {0, 0}}},
+            {{mesh.Id(), {0, 0, infinity, 0, 0, 1}}}, {{mesh.Id(), {0, 0, largest, 0, 0, 1}}},
+            {{mesh.Id(), {0, 0, 0, 0, 0, 0}}}};
+        for (const auto& input : inputs) {
+            CExportControl control;
+            QVERIFY(mesh.Extract(&control, nullptr, &input).isEmpty());
+            QVERIFY(!control.Checkpoint()); QVERIFY(!control.Error().isEmpty());
+            QCOMPARE(mesh.Extract()[0].image, baseline[0].image);
+        }
+        mesh.MeshCount(2);
+        const QHash<QString, QVector<float>> partial{{mesh.Id(), {0, 0, 1, 0, 0, 1}}};
+        CExportControl control;
+        QVERIFY(mesh.Extract(&control, nullptr, &partial).isEmpty());
+        QVERIFY(!control.Checkpoint());
+    }
+
     void cancellationInsideSingleTriangleDiscardsEverythingAndAllowsRetry()
     {
         MeshFixture mesh;

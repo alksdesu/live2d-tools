@@ -73,6 +73,7 @@ SOURCES += \
     live2dstruct/cruntimepackage.cpp \
     live2dstruct/cphysicsdocument.cpp \
     live2dstruct/cmocparameterstructurebuilder.cpp \
+    live2dstruct/cmocmeshstructurebuilder.cpp \
     live2dstruct/cmoclayoutrewriter.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
@@ -301,6 +302,7 @@ HEADERS += \
     live2dstruct/cruntimepackage.h \
     live2dstruct/cphysicsdocument.h \
     live2dstruct/cmocparameterstructurebuilder.h \
+    live2dstruct/cmocmeshstructurebuilder.h \
     live2dstruct/struct/cblend_shape_targets.h \
     live2dstruct/cparameterreferences.h \
     live2dstruct/cparameterreferenceeditor.h \

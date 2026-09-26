@@ -2,6 +2,7 @@
 #define CTEXTUREPANEL_H
 
 #include <QDockWidget>
+#include <QByteArray>
 #include <QGraphicsView>
 #include <QGraphicsScene>
 #include <QComboBox>
@@ -58,6 +59,7 @@ public:
 
     // texMap: 图集索引 → PNG 路径；mocPath: 用于解析 UV 网格（可为空，仅禁用线框/反查）
     void LoadTextures(const QMap<int, QString>& texMap, const QString& mocPath = QString());
+    bool UpdateUvMeshes(const QByteArray& mocBytes, QString* error = nullptr);
 
     // 外部选中联动：高亮该 mesh 并切换到其所属图集
     void HighlightMesh(const QString& meshName);
@@ -73,7 +75,7 @@ private slots:
     void onExportPng();
 
 private:
-    void buildUvMeshes(const QString& mocPath);
+    bool PrepareUvMeshes(const QByteArray& mocBytes, QVector<CAtlasMeshUv>& result, QString* error) const;
     void rebuildScene(int texKey);
     QString hitTest(const QPointF& scenePos) const;
 
@@ -91,6 +93,7 @@ private:
     CUvOverlayItem* m_overlay = nullptr;
 
     QMap<int, QString> m_textures;
+    QMap<int, QSize> m_atlasSizes;
     QVector<CAtlasMeshUv> m_meshes;     // 全部 mesh 的 UV 网格
     int m_currentTexKey = -1;
     QString m_selectedMesh;

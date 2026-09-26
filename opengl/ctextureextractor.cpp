@@ -69,7 +69,8 @@ uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)
 
 QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool includeHidden,
                                                       const QHash<QString, QVector<quint16>>* indexOverrides,
-                                                      CExportControl* control)
+                                                      CExportControl* control,
+                                                      const QHash<QString, QVector<float>>* modelPositions)
 {
     try {
         QVector<ExtractedLayer> results;
@@ -160,10 +161,20 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             if (meshImage.isNull() || meshImage.width() == 0 || meshImage.height() == 0) {
                 continue;
             }
-            // 计算画布位置：使用默认 keyform 的顶点位置
             QRect canvasRect;
             int keyformBegin = mesh->keyform_sources_begin_indices;
-            if (keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
+            if (modelPositions) {
+                const auto found = modelPositions->constFind(mesh->ids);
+                if (found == modelPositions->cend() || found->size() != uvCount) {
+                    if (control) control->Fail(QStringLiteral("纹理导出缺少完整的模型坐标：%1").arg(mesh->ids));
+                    return {};
+                }
+                canvasRect = ComputeCanvasRect(found->constData(), mesh->vertex_counts, table->canvas_info, control);
+                if (canvasRect.isEmpty()) {
+                    if (control && control->Checkpoint()) control->Fail(QStringLiteral("当前姿态的网格没有有效画布边界：%1").arg(mesh->ids));
+                    return {};
+                }
+            } else if (keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
                 int posBegin = table->art_mesh_keyforms[keyformBegin]->keyform_position_sources_begin_indices;
                 const int positionSize = static_cast<int>(table->keyform_positions->xys.size());
                 if (posBegin >= 0 && posBegin <= positionSize && uvCount <= positionSize - posBegin) {

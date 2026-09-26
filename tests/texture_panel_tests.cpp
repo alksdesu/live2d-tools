@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QPainter>
 #include <QTemporaryDir>
+#include <QScrollBar>
 #include <QtEndian>
 #include <cmath>
 #include <cstring>
@@ -82,6 +83,33 @@ bool makeSingleTriangle(const QString& path, const std::vector<float>& uvs, QStr
             table.sectionOffsetTable->position_indices->indices + (mesh->position_index_sources_begin_indices + index) * 2));
     QFile file(path);
     return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+
+QByteArray meshBytes(QString& id, const QVector<float>& uvs, const QVector<quint16>& indices)
+{
+    CReader reader(QString(TEST_RESOURCES) + QStringLiteral("/Mark/Mark.moc3"));
+    CSectionTable table(reader);
+    if (!table.IsValid() || table.art_meshes.isEmpty()) return {};
+    const auto* mesh = table.art_meshes[0];
+    const auto* offsets = table.sectionOffsetTable->art_meshes;
+    id = mesh->ids;
+    QByteArray bytes = reader.m_byte;
+    writeInt(bytes, table.sectionOffsetTable->count_info->count_info_offset + 4 * 4, 1);
+    writeInt(bytes, offsets->vertex_counts, uvs.size() / 2);
+    writeInt(bytes, offsets->texture_nos, 0);
+    writeInt(bytes, offsets->position_index_sources_counts, indices.size());
+    for (int i = 0; i < uvs.size(); ++i)
+        writeFloat(bytes, table.sectionOffsetTable->uvs->uvs + (mesh->uv_sources_begin_indices + i) * 4, uvs[i]);
+    for (int i = 0; i < indices.size(); ++i)
+        qToLittleEndian(indices[i], reinterpret_cast<uchar*>(bytes.data() + table.sectionOffsetTable->position_indices->indices +
+                                                           (mesh->position_index_sources_begin_indices + i) * 2));
+    return bytes;
+}
+
+QGraphicsPixmapItem* atlasItem(QGraphicsScene* scene)
+{
+    for (auto* item : scene->items()) if (auto* pixmap = qgraphicsitem_cast<QGraphicsPixmapItem*>(item)) return pixmap;
+    return nullptr;
 }
 }
 
@@ -265,6 +293,158 @@ private slots:
             view->ScenePosClicked(QPointF(16, 24));
             QCOMPARE(picked.size(), 0);
         }
+    }
+
+    void effectiveTopologyUpdatesHitTestWithoutResettingView()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("atlas.png");
+        QImage atlas(32, 32, QImage::Format_ARGB32); atlas.fill(Qt::white); QVERIFY(atlas.save(path));
+        QString id;
+        const QVector<float> uv{.1f,.1f,.9f,.1f,.1f,.9f,.9f,.9f};
+        const auto quad = meshBytes(id, uv, {0,1,2,1,3,2});
+        const auto triangle = meshBytes(id, uv, {0,1,2});
+        CTexturePanel panel; panel.resize(300,250); panel.LoadTextures({{0,path}});
+        QString error; QVERIFY2(panel.UpdateUvMeshes(quad,&error),qPrintable(error));
+        panel.HighlightMesh(id);
+        auto* view = panel.findChild<CAtlasView*>(); auto* wire = panel.findChild<QCheckBox*>();
+        wire->setChecked(true); panel.show(); QVERIFY(QTest::qWaitForWindowExposed(&panel));
+        view->scale(4,4); view->centerOn(20,19);
+        const auto transform = view->transform(); const auto center = view->mapToScene(view->viewport()->rect().center());
+        const int horizontal = view->horizontalScrollBar()->value(), vertical = view->verticalScrollBar()->value();
+        auto* pixmap = atlasItem(view->scene()); QVERIFY(pixmap);
+        const auto originalPixmap = pixmap->pixmap().cacheKey();
+        const auto oldImage = renderScene(view->scene());
+        QSignalSpy picked(&panel,&CTexturePanel::AtlasMeshPicked);
+        view->ScenePosClicked(QPointF(25,25)); QCOMPARE(picked.size(),1); picked.clear();
+        QVERIFY2(panel.UpdateUvMeshes(triangle,&error),qPrintable(error));
+        QCOMPARE(atlasItem(view->scene()),pixmap); QCOMPARE(pixmap->pixmap().cacheKey(),originalPixmap);
+        QCOMPARE(view->transform(),transform); QCOMPARE(view->horizontalScrollBar()->value(),horizontal);
+        QCOMPARE(view->verticalScrollBar()->value(),vertical); QCOMPARE(view->mapToScene(view->viewport()->rect().center()),center);
+        QVERIFY(wire->isChecked());
+        view->ScenePosClicked(QPointF(25,25)); QCOMPARE(picked.size(),0);
+        view->ScenePosClicked(QPointF(8,8)); QCOMPARE(picked.size(),1); QCOMPARE(picked.takeFirst()[0].toString(),id);
+        QVERIFY(renderScene(view->scene()) != oldImage);
+        QVERIFY2(panel.UpdateUvMeshes(quad,&error),qPrintable(error));
+        QCOMPARE(renderScene(view->scene()),oldImage);
+        view->ScenePosClicked(QPointF(25,25)); QCOMPARE(picked.size(),1);
+    }
+
+    void uvAndVertexCountChangesUsePassedBytes()
+    {
+        QTemporaryDir directory; const auto path=directory.filePath("atlas.png");
+        QImage atlas(32,32,QImage::Format_ARGB32); atlas.fill(Qt::white); QVERIFY(atlas.save(path));
+        QString id;
+        const auto original=meshBytes(id,{.1f,.1f,.9f,.1f,.1f,.9f,.9f,.9f},{0,1,2,1,3,2});
+        const auto moved=meshBytes(id,{.1f,.1f,.4f,.1f,.1f,.4f,.4f,.4f,.25f,.25f},{0,1,4,1,3,4,3,2,4,2,0,4});
+        CTexturePanel panel;panel.LoadTextures({{0,path}});QString error;
+        QVERIFY(panel.UpdateUvMeshes(original,&error));auto* view=panel.findChild<CAtlasView*>();
+        QSignalSpy picked(&panel,&CTexturePanel::AtlasMeshPicked);
+        view->ScenePosClicked(QPointF(25,25));QCOMPARE(picked.size(),1);picked.clear();
+        QVERIFY(panel.UpdateUvMeshes(moved,&error));
+        view->ScenePosClicked(QPointF(25,25));QCOMPARE(picked.size(),0);
+        view->ScenePosClicked(QPointF(8,8));QCOMPARE(picked.size(),1);QCOMPARE(picked.takeFirst()[0].toString(),id);
+        QVERIFY(panel.UpdateUvMeshes(original,&error));
+        view->ScenePosClicked(QPointF(25,25));QCOMPARE(picked.size(),1);
+    }
+
+    void invalidGeometryPreservesEverything_data()
+    {
+        QTest::addColumn<int>("kind");
+        for(int kind=0;kind<8;++kind)QTest::newRow(qPrintable(QString::number(kind)))<<kind;
+    }
+    void invalidGeometryPreservesEverything()
+    {
+        QFETCH(int,kind);
+        QTemporaryDir directory;const auto path=directory.filePath("atlas.png");
+        QImage atlas(32,32,QImage::Format_ARGB32);atlas.fill(Qt::white);QVERIFY(atlas.save(path));
+        QString id;const auto original=meshBytes(id,{.1f,.1f,.9f,.1f,.1f,.9f},{0,1,2});
+        CTexturePanel panel;panel.LoadTextures({{0,path}});QVERIFY(panel.UpdateUvMeshes(original));panel.HighlightMesh(id);
+        auto* view=panel.findChild<CAtlasView*>();panel.findChild<QCheckBox*>()->setChecked(true);
+        const auto items=view->scene()->items();const auto image=renderScene(view->scene());const auto transform=view->transform();
+        QByteArray invalid=original;auto reader=CReader::FromBytes(original);CSectionTable table(reader);
+        const auto* mesh=table.art_meshes[0];const auto* offsets=table.sectionOffsetTable->art_meshes;
+        if(kind==0)invalid.clear();
+        if(kind==1)invalid.truncate(17);
+        if(kind==2)writeFloat(invalid,table.sectionOffsetTable->uvs->uvs+mesh->uv_sources_begin_indices*4,std::numeric_limits<float>::quiet_NaN());
+        if(kind==3)writeFloat(invalid,table.sectionOffsetTable->uvs->uvs+mesh->uv_sources_begin_indices*4,std::numeric_limits<float>::infinity());
+        if(kind==4)qToLittleEndian<quint16>(3,reinterpret_cast<uchar*>(invalid.data()+table.sectionOffsetTable->position_indices->indices+mesh->position_index_sources_begin_indices*2));
+        if(kind==5)writeInt(invalid,offsets->position_index_sources_counts,4);
+        if(kind==6)writeInt(invalid,offsets->texture_nos,7);
+        if(kind==7)writeInt(invalid,offsets->uv_sources_begin_indices,INT_MAX);
+        QString error;QVERIFY(!panel.UpdateUvMeshes(invalid,&error));QVERIFY(!error.isEmpty());
+        QCOMPARE(view->scene()->items(),items);QCOMPARE(view->transform(),transform);QCOMPARE(renderScene(view->scene()),image);
+        QSignalSpy picked(&panel,&CTexturePanel::AtlasMeshPicked);view->ScenePosClicked(QPointF(8,8));QCOMPARE(picked.size(),1);
+    }
+
+    void unchangedGeometryKeepsSceneAndCachedAtlas()
+    {
+        QTemporaryDir directory;const auto path=directory.filePath("atlas.png");
+        QImage atlas(32,32,QImage::Format_ARGB32);atlas.fill(Qt::white);QVERIFY(atlas.save(path));
+        QString id;const auto original=meshBytes(id,{.1f,.1f,.9f,.1f,.1f,.9f},{0,1,2});
+        CTexturePanel panel;panel.LoadTextures({{0,path}});QVERIFY(panel.UpdateUvMeshes(original));panel.HighlightMesh(id);
+        auto* view=panel.findChild<CAtlasView*>();const auto items=view->scene()->items();
+        auto reader=CReader::FromBytes(original);CSectionTable table(reader);auto unrelated=original;
+        writeFloat(unrelated,table.sectionOffsetTable->art_mesh_keyforms->opacities+table.art_meshes[0]->keyform_sources_begin_indices*4,.25f);
+        QVERIFY(QFile::remove(path));
+        QVERIFY(panel.UpdateUvMeshes(unrelated));QCOMPARE(view->scene()->items(),items);
+        const auto changed=meshBytes(id,{.2f,.2f,.8f,.2f,.2f,.8f},{0,1,2});
+        auto* pixmap=atlasItem(view->scene());QVERIFY(panel.UpdateUvMeshes(changed));QCOMPARE(atlasItem(view->scene()),pixmap);
+        QVERIFY(!pixmap->pixmap().isNull());
+    }
+
+    void activeAtlasAndRuntimeOrderSurviveUpdates()
+    {
+        QTemporaryDir directory;const auto path=directory.filePath("atlas.png");const auto otherPath=directory.filePath("other.png");
+        QImage atlas(32,32,QImage::Format_ARGB32);atlas.fill(Qt::white);QVERIFY(atlas.save(path));
+        QImage other(48,16,QImage::Format_ARGB32);other.fill(Qt::green);QVERIFY(other.save(otherPath));
+        CReader source(QString(TEST_RESOURCES)+"/Mark/Mark.moc3");CSectionTable table(source);QVERIFY(table.IsValid());QVERIFY(table.art_meshes.size()>=2);
+        auto original=source.m_byte;writeInt(original,table.sectionOffsetTable->count_info->count_info_offset+4*4,2);
+        QStringList ids;
+        for(int row=0;row<2;++row){
+            const auto* mesh=table.art_meshes[row];ids.append(mesh->ids);const auto* offsets=table.sectionOffsetTable->art_meshes;
+            writeInt(original,offsets->vertex_counts+row*4,3);writeInt(original,offsets->position_index_sources_counts+row*4,3);writeInt(original,offsets->texture_nos+row*4,0);
+            const QVector<float> uv{.1f,.1f,.9f,.1f,.1f,.9f};
+            for(int i=0;i<uv.size();++i)writeFloat(original,table.sectionOffsetTable->uvs->uvs+(mesh->uv_sources_begin_indices+i)*4,uv[i]);
+            for(quint16 i=0;i<3;++i)qToLittleEndian(i,reinterpret_cast<uchar*>(original.data()+table.sectionOffsetTable->position_indices->indices+(mesh->position_index_sources_begin_indices+i)*2));
+        }
+        CTexturePanel panel;panel.LoadTextures({{0,path},{1,otherPath}});QVERIFY(panel.UpdateUvMeshes(original));
+        panel.HighlightMesh(ids[0]);panel.SetRenderOrder({ids[1],ids[0]});
+        auto* selector=panel.findChild<QComboBox*>();auto* view=panel.findChild<CAtlasView*>();selector->setCurrentIndex(1);
+        QCOMPARE(selector->currentData().toInt(),1);auto* pixmap=atlasItem(view->scene());const auto rect=view->sceneRect();const auto transform=view->transform();
+        auto changed=original;
+        for(int row=0;row<2;++row){
+            const auto* mesh=table.art_meshes[row];
+            writeFloat(changed,table.sectionOffsetTable->uvs->uvs+mesh->uv_sources_begin_indices*4,.2f);
+            writeFloat(changed,table.sectionOffsetTable->art_mesh_keyforms->draw_orders+mesh->keyform_sources_begin_indices*4,float(100+row*100));
+        }
+        QVERIFY(panel.UpdateUvMeshes(changed));QCOMPARE(selector->currentData().toInt(),1);QCOMPARE(atlasItem(view->scene()),pixmap);QCOMPARE(view->sceneRect(),rect);QCOMPARE(view->transform(),transform);
+        selector->setCurrentIndex(0);QSignalSpy picked(&panel,&CTexturePanel::AtlasMeshPicked);view->ScenePosClicked(QPointF(8,8));
+        QCOMPARE(picked.size(),1);QCOMPARE(picked.first()[0].toString(),ids[0]);
+    }
+
+    void originalModelGeometryIsStable_data()
+    {
+        QTest::addColumn<QString>("model");
+        for(const char* name:{"Mark","Natori","Rice","Wanko"})QTest::newRow(name)<<QString::fromLatin1(name);
+    }
+    void originalModelGeometryIsStable()
+    {
+        QFETCH(QString,model);const QString path=QString(TEST_RESOURCES)+'/'+model+'/'+model+".moc3";
+        QFile file(path);QVERIFY(file.open(QIODevice::ReadOnly));const auto bytes=file.readAll();
+        CTexturePanel panel;panel.LoadTextures(texturesFor(model),path);auto* view=panel.findChild<CAtlasView*>();
+        const auto items=view->scene()->items();QVERIFY(items.size()>1);QString error;
+        QVERIFY2(panel.UpdateUvMeshes(bytes,&error),qPrintable(error));QCOMPARE(view->scene()->items(),items);
+    }
+
+    void emptyTopologyClearsOnlyOverlayAndRestoresSelection()
+    {
+        QTemporaryDir directory;const auto path=directory.filePath("atlas.png");QImage atlas(32,32,QImage::Format_ARGB32);atlas.fill(Qt::white);QVERIFY(atlas.save(path));
+        QString id;const auto original=meshBytes(id,{.1f,.1f,.9f,.1f,.1f,.9f},{0,1,2});
+        CTexturePanel panel;panel.LoadTextures({{0,path}});QVERIFY(panel.UpdateUvMeshes(original));panel.HighlightMesh(id);
+        auto* view=panel.findChild<CAtlasView*>();auto* wire=panel.findChild<QCheckBox*>();wire->setChecked(true);const auto selected=renderScene(view->scene());auto* pixmap=atlasItem(view->scene());
+        QVERIFY(panel.UpdateUvMeshes(meshBytes(id,{},{})));QCOMPARE(view->scene()->items().size(),1);QCOMPARE(atlasItem(view->scene()),pixmap);QVERIFY(!wire->isEnabled());
+        QVERIFY(panel.UpdateUvMeshes(original));QVERIFY(wire->isEnabled());QVERIFY(wire->isChecked());QCOMPARE(renderScene(view->scene()),selected);
     }
 
     void nonfiniteMeshUvDoesNotEnterTheScene_data()

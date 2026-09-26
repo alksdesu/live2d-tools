@@ -43,7 +43,8 @@ public:
     /// @return 按 mesh 索引顺序排列的提取结果
     QVector<ExtractedLayer> ExtractAll(live2dstruct::CSectionTable* table, bool includeHidden,
                                        const QHash<QString, QVector<quint16>>* indexOverrides = nullptr,
-                                       CExportControl* control = nullptr);
+                                       CExportControl* control = nullptr,
+                                       const QHash<QString, QVector<float>>* modelPositions = nullptr);
 
     /// 获取画布像素尺寸
     static QSize GetCanvasPixelSize(const live2dstruct::CCanvas_info* canvasInfo);

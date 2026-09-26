@@ -89,6 +89,7 @@ private:
     bool RuntimeMatchesDocument(QString* error = nullptr) const;
     void SyncDocumentToRuntime();
     void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
+    void RefreshTextureGeometry();
     void ClearTimelinePreview();
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
