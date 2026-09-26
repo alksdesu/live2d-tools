@@ -15,6 +15,70 @@ class ModelUserDataTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void registrationRejectsChangedManifestBeforeCreatingFiles_data()
+    {
+        QTest::addColumn<QString>("change");
+        for (const char* change : {"moc", "textures", "groups", "layout", "extension", "userdata", "whitespace", "newlines", "malformed", "short-digest"})
+            QTest::newRow(change) << QString::fromLatin1(change);
+    }
+
+    void registrationRejectsChangedManifestBeforeCreatingFiles()
+    {
+        QFETCH(QString, change);
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        const auto path = temp.filePath("model.model3.json");
+        const QByteArray original = "{\r\n\"Version\":3,\"FileReferences\":{\"Moc\":\"model.moc3\"},\r\n\"Custom\":42}\r\n";
+        QByteArray updated;
+        auto root = QJsonDocument::fromJson(original).object();
+        auto files = root.value("FileReferences").toObject();
+        if (change == "moc") files["Moc"] = "different.moc3";
+        else if (change == "textures") files["Textures"] = QJsonArray{"different.png"};
+        else if (change == "userdata") files["UserData"] = "registered.json";
+        else if (change == "groups") root["Groups"] = QJsonArray{QJsonObject{{"Name", "EyeBlink"}, {"Ids", QJsonArray{"ParamA"}}}};
+        else if (change == "layout") root["Layout"] = QJsonObject{{"width", 3}};
+        else if (change == "extension") root["Custom"] = 43;
+        root["FileReferences"] = files;
+        if (change == "whitespace") updated = original + ' ';
+        else if (change == "newlines") { updated = original; updated.replace("\r\n", "\n"); }
+        else if (change == "malformed") updated = "{";
+        else if (change == "short-digest") updated = original;
+        else updated = QJsonDocument(root).toJson();
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(updated), updated.size()); file.close();
+        QFile unrelated(temp.filePath("keep.userdata3.json")); QVERIFY(unrelated.open(QIODevice::WriteOnly));
+        QCOMPARE(unrelated.write("keep"), 4); unrelated.close();
+        const auto entries = QDir(temp.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        CModelUserData data; data.SetEntries({{"ArtMesh", "Body", "tag", {}}});
+        const auto digest = change == "short-digest" ? QByteArray("short") : QCryptographicHash::hash(original, QCryptographicHash::Sha256);
+        QString result("unchanged"), error;
+        QVERIFY(!CModelJsonWriter::CreateUserData(path, data, &result, &error, digest));
+        QVERIFY(!error.isEmpty()); QCOMPARE(result, QString("unchanged"));
+        QCOMPARE(QDir(temp.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot), entries);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), updated); file.close();
+        QVERIFY(unrelated.open(QIODevice::ReadOnly)); QCOMPARE(unrelated.readAll(), QByteArray("keep"));
+    }
+
+    void registrationAcceptsExactRawManifestFingerprint()
+    {
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        const auto path = temp.filePath("model.model3.json");
+        const QByteArray original = "{\r\n\"Version\":3,\"FileReferences\":{\"Moc\":\"model.moc3\",\"UserData\":\"\"},\r\n\"Custom\":42}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(original), original.size()); file.close();
+        CModelJson loaded; loaded.Parse(path); QVERIFY(loaded.IsOpen());
+        QCOMPARE(loaded.SourceDigest(), QCryptographicHash::hash(original, QCryptographicHash::Sha256));
+        CModelUserData data; data.SetEntries({{"ArtMesh", "Body", "tag", {}}});
+        QString result("unchanged"), error;
+        QVERIFY2(CModelJsonWriter::CreateUserData(path, data, &result, &error, loaded.SourceDigest()), qPrintable(error));
+        QVERIFY(result != "unchanged"); QVERIFY(QFileInfo::exists(result));
+        CModelUserData saved; QVERIFY(saved.Load(result)); QCOMPARE(saved.ToJson(), data.ToJson());
+        QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes = file.readAll();
+        const auto root = QJsonDocument::fromJson(bytes).object();
+        QCOMPARE(root.value("Custom").toInt(), 42);
+        QCOMPARE(QDir(temp.path()).filePath(root.value("FileReferences").toObject().value("UserData").toString()), result);
+        CModelJson after; after.Parse(path); QVERIFY(after.IsOpen());
+        QCOMPARE(after.SourceDigest(), QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+        QVERIFY(after.SourceDigest() != loaded.SourceDigest());
+    }
+
     void loadAndSaveReportDigestsOfExactBinaryBytes()
     {
         QTemporaryDir temp; const auto path = temp.filePath("raw.userdata3.json");

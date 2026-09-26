@@ -2,6 +2,7 @@
 
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QCryptographicHash>
 #include <limits>
 
 namespace {
@@ -20,6 +21,116 @@ class ModelSettingsTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void parseFingerprintUsesExactBytesAndClearsOnEveryFailure()
+    {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const auto path = temporary.filePath("model.model3.json");
+        const QByteArray raw = "{\r\n\"Version\":3,\"FileReferences\":{\"Moc\":\"model.moc3\"}}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(raw), raw.size()); file.close();
+        CModelJson model; QVERIFY(model.SourceDigest().isEmpty()); model.Parse(path); QVERIFY(model.IsOpen());
+        QCOMPARE(model.SourceDigest(), QCryptographicHash::hash(raw, QCryptographicHash::Sha256));
+        auto textBytes = raw; textBytes.replace("\r\n", "\n");
+        QVERIFY(model.SourceDigest() != QCryptographicHash::hash(textBytes, QCryptographicHash::Sha256));
+        for (const auto& bad : {QByteArray("{"), QByteArray("[]"), QByteArray("{}"), QByteArray(R"({"FileReferences":{"Moc":""}})")}) {
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write(bad), bad.size()); file.close();
+            model.Parse(path); QVERIFY(!model.IsOpen()); QVERIFY(model.SourceDigest().isEmpty());
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write(raw), raw.size()); file.close();
+            model.Parse(path); QVERIFY(model.IsOpen()); QCOMPARE(model.SourceDigest().size(), 32);
+        }
+        model.Parse(temporary.filePath("missing")); QVERIFY(!model.IsOpen()); QVERIFY(model.SourceDigest().isEmpty());
+        model.Parse(path); QVERIFY(model.IsOpen());
+        model.Parse(temporary.path()); QVERIFY(!model.IsOpen()); QVERIFY(model.SourceDigest().isEmpty());
+    }
+
+    void userDataRegistrationOnlyAcceptsTheOneWayAddition()
+    {
+        auto before = settings();
+        before["Layout"] = QJsonObject{{"width", 2}, {"custom", QJsonArray{1, "two"}}};
+        before["Groups"] = QJsonArray{QJsonObject{{"Target", "Parameter"}, {"Name", "EyeBlink"}, {"Ids", QJsonArray{"P"}}}};
+        before["Custom"] = QJsonObject{{"nested", true}};
+        auto files = before["FileReferences"].toObject();
+        files["Vendor"] = QJsonObject{{"opaque", "preserved"}}; before["FileReferences"] = files;
+        for (const QString& path : {QString("labels.userdata3.json"), QString("../shared/标签.json"),
+             QString("/absolute/labels.json"), QString("C:\\assets\\labels.json"), QString("https://example.invalid/labels.json")}) {
+            for (bool empty : {false, true}) {
+                auto original = before;
+                auto previous = files;
+                if (empty) previous["UserData"] = "";
+                original["FileReferences"] = previous;
+                auto updated = original; auto registered = previous; registered["UserData"] = path; updated["FileReferences"] = registered;
+                QString reference("unchanged");
+                QVERIFY(CModelJson::IsUserDataRegistration(json(original), QJsonDocument(updated).toJson(), &reference));
+                QCOMPARE(reference, path);
+                QVERIFY(!CModelJson::IsUserDataRegistration(json(updated), json(original), &reference)); QCOMPARE(reference, path);
+                QVERIFY(!CModelJson::IsUserDataRegistration(json(updated), json(updated), &reference)); QCOMPARE(reference, path);
+            }
+        }
+        QString output("unchanged");
+        QVERIFY(!CModelJson::IsUserDataRegistration(json(before), json(before) + " \r\n", &output)); QCOMPARE(output, QString("unchanged"));
+        for (const QJsonValue& invalid : {QJsonValue(), QJsonValue(3), QJsonValue(false), QJsonValue(QJsonArray{}),
+             QJsonValue(""), QJsonValue(QString("a") + QChar::Null)}) {
+            auto after = before; auto changed = files; changed["UserData"] = invalid; after["FileReferences"] = changed;
+            QVERIFY(!CModelJson::IsUserDataRegistration(json(before), json(after), &output)); QCOMPARE(output, QString("unchanged"));
+        }
+        auto registered = before; files["UserData"] = "labels.json"; registered["FileReferences"] = files;
+        for (const QJsonValue& invalid : {QJsonValue(), QJsonValue(false), QJsonValue(3), QJsonValue("already.json")}) {
+            auto original = before; auto previous = files; previous["UserData"] = invalid; original["FileReferences"] = previous;
+            QVERIFY(!CModelJson::IsUserDataRegistration(json(original), json(registered), &output)); QCOMPARE(output, QString("unchanged"));
+        }
+        QVERIFY(!CModelJson::IsUserDataRegistration("{", json(registered), &output));
+        QVERIFY(!CModelJson::IsUserDataRegistration(json(before), "[]", &output)); QCOMPARE(output, QString("unchanged"));
+    }
+
+    void userDataRegistrationRetainsAllOtherSettings_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const char* field : {"Moc", "Textures", "Physics", "Pose", "DisplayInfo", "Motions", "Expressions", "Layout", "Groups", "Version", "UnknownRoot", "UnknownFileReference"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+    void userDataRegistrationRetainsAllOtherSettings()
+    {
+        QFETCH(QString, field);
+        auto before = settings();
+        before["Layout"] = QJsonObject{{"width", 2}};
+        before["Groups"] = QJsonArray{QJsonObject{{"Name", "EyeBlink"}, {"Ids", QJsonArray{"P"}}}};
+        before["UnknownRoot"] = QJsonObject{{"value", 1}};
+        auto files = before["FileReferences"].toObject();
+        files["Textures"] = QJsonArray{"texture.png"}; files["Physics"] = "rig.json"; files["Pose"] = "pose.json"; files["DisplayInfo"] = "names.json";
+        files["Motions"] = QJsonObject{{"Idle", QJsonArray{QJsonObject{{"File", "move.json"}, {"Sound", "voice.wav"}}}}};
+        files["Expressions"] = QJsonArray{QJsonObject{{"File", "face.json"}, {"Name", "Face"}}};
+        files["UnknownFileReference"] = QJsonObject{{"value", 1}}; before["FileReferences"] = files;
+        auto after = before; files["UserData"] = "labels.json"; after["FileReferences"] = files;
+        if (field == "Layout") after[field] = QJsonObject{{"width", 3}};
+        else if (field == "Groups") after[field] = QJsonArray{QJsonObject{{"Name", "EyeBlink"}, {"Ids", QJsonArray{"Q"}}}};
+        else if (field == "Version") after[field] = 4;
+        else if (field == "UnknownRoot") after[field] = QJsonObject{{"value", 2}};
+        else {
+            if (field == "Textures") files[field] = QJsonArray{"other.png"};
+            else if (field == "Motions") files[field] = QJsonObject{{"Idle", QJsonArray{QJsonObject{{"File", "move.json"}, {"Sound", "changed.wav"}}}}};
+            else if (field == "Expressions") files[field] = QJsonArray{QJsonObject{{"File", "face.json"}, {"Name", "Other"}}};
+            else if (field == "UnknownFileReference") files[field] = QJsonObject{{"value", 2}};
+            else files[field] = "other-file";
+            after["FileReferences"] = files;
+        }
+        QVERIFY(CModelJson::ValidateRuntimeSettings(json(before))); QVERIFY(CModelJson::ValidateRuntimeSettings(json(after)));
+        QString reference("unchanged");
+        QVERIFY(!CModelJson::IsUserDataRegistration(json(before), json(after), &reference)); QCOMPARE(reference, QString("unchanged"));
+    }
+
+    void userDataRegistrationChecksBothInputSizeBoundaries()
+    {
+        const auto before = json(settings()); auto root = settings(); auto files = root["FileReferences"].toObject();
+        files["UserData"] = "labels.json"; root["FileReferences"] = files; const auto after = json(root);
+        QByteArray maximumBefore = before + QByteArray(16 * 1024 * 1024 - before.size(), ' ');
+        QByteArray maximumAfter = after + QByteArray(16 * 1024 * 1024 - after.size(), ' ');
+        QString reference("unchanged");
+        QVERIFY(CModelJson::IsUserDataRegistration(maximumBefore, maximumAfter, &reference)); QCOMPARE(reference, QString("labels.json"));
+        maximumBefore.append(' '); QVERIFY(!CModelJson::IsUserDataRegistration(maximumBefore, after, &reference));
+        QCOMPARE(reference, QString("labels.json"));
+        maximumAfter.append(' '); QVERIFY(!CModelJson::IsUserDataRegistration(before, maximumAfter, &reference));
+        QCOMPARE(reference, QString("labels.json"));
+    }
+
     void acceptsOriginalModelSettings_data()
     {
         QTest::addColumn<QString>("model");

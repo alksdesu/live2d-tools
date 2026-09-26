@@ -13,8 +13,10 @@ class CModelJson
 public:
     CModelJson();
     static bool ValidateRuntimeSettings(const QByteArray& data, QString* error = nullptr);
+    static bool IsUserDataRegistration(const QByteArray& before, const QByteArray& after, QString* reference = nullptr);
     void Parse(const QString& fileName);
     bool IsOpen();
+    const QByteArray& SourceDigest() const { return m_sourceDigest; }
     QStringList getAllZipFiles();
     QString getMocFileName();
 
@@ -33,6 +35,7 @@ public:
 
 private:
     void Clear();
+    QByteArray m_sourceDigest;
 };
 
 #endif // CMODELJSON_H

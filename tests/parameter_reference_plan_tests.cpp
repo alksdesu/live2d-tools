@@ -1,4 +1,5 @@
 #include "live2d/cparameterreferenceplan.h"
+#include "live2dstruct/cmodelsession.h"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -95,6 +96,36 @@ class ParameterReferencePlanTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void oldSessionStateAcceptsRegistrationOnlyWithTheNewLoadedCatalog()
+    {
+        QTemporaryDir directory; QString path; ParameterReferenceCatalog catalog; QVERIFY(fixture(directory, path, catalog));
+        Plan::Prepared original; QString error; QVERIFY(Plan::Prepare(path, {}, {"P"}, catalog, original, &error));
+        const auto originalState = persistent(original.resources.state);
+        live2dstruct::CModelSession saved; saved.parameterResources = original.resources.state;
+        const auto sessionPath = directory.filePath("old.live2d-session.json"); QVERIFY(saved.Save(sessionPath, &error));
+        auto root = model(); auto files = root["FileReferences"].toObject(); files["UserData"] = "labels.json"; root["FileReferences"] = files;
+        const auto updated = encode(root); QVERIFY(write(path, updated));
+        live2dstruct::CModelSession loaded; QVERIFY(live2dstruct::CModelSession::Load(sessionPath, &loaded, &error));
+        QCOMPARE(persistent(loaded.parameterResources), originalState);
+        Plan::Prepared result = original;
+        QVERIFY(!Plan::Prepare(path, loaded.parameterResources, {}, catalog, result, &error));
+        QVERIFY(error.contains(QStringLiteral("模型设置与磁盘计划不是同一版本"))); QCOMPARE(persistent(result.resources.state), originalState);
+        QVERIFY(!Plan::Prepare(path, {}, {}, catalog, result, &error)); QCOMPARE(persistent(result.resources.state), originalState);
+        auto updatedCatalog = catalog; updatedCatalog.modelSettingsDigest = digest(updated);
+        QVERIFY2(Plan::Prepare(path, loaded.parameterResources, {}, updatedCatalog, result, &error), qPrintable(error));
+        QCOMPARE(result.resources.state.modelSource, updated); QCOMPARE(result.runtime.modelSettingsDigest, updatedCatalog.modelSettingsDigest);
+        QCOMPARE(result.runtime.physics.suppressedInputs, original.runtime.physics.suppressedInputs);
+        QCOMPARE(result.runtime.motions.first().suppressedParameters, original.runtime.motions.first().suppressedParameters);
+        QCOMPARE(persistent(loaded.parameterResources), originalState);
+        Plan::Prepared undo; QVERIFY(Plan::Prepare(path, {}, {}, updatedCatalog, undo, &error)); QVERIFY(undo.resources.state.IsEmpty());
+        Plan::Prepared redo; QVERIFY(Plan::Prepare(path, loaded.parameterResources, {"P"}, updatedCatalog, redo, &error));
+        QCOMPARE(persistent(redo.resources.state), persistent(result.resources.state));
+        auto tampered = root; tampered["Layout"] = QJsonObject{{"width", 3}}; QVERIFY(write(path, encode(tampered)));
+        updatedCatalog.modelSettingsDigest = digest(encode(tampered));
+        const auto accepted = persistent(result.resources.state);
+        QVERIFY(!Plan::Prepare(path, loaded.parameterResources, {}, updatedCatalog, result, &error)); QCOMPARE(persistent(result.resources.state), accepted);
+    }
+
     void originalRowsAndTypedChannelsArePreserved()
     {
         QTemporaryDir directory; QString path; ParameterReferenceCatalog catalog;

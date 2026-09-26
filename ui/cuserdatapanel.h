@@ -49,6 +49,7 @@ private:
     QString m_path;
     QByteArray m_sourceDigest;
     QString m_modelJsonPath;
+    QByteArray m_modelSourceDigest;
     QSet<QString> m_validArtMeshIds;
     bool m_hasModelIds = false;
     bool m_dirty = false;

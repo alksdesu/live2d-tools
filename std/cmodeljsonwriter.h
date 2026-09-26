@@ -1,5 +1,6 @@
 #ifndef CMODELJSONWRITER_H
 #define CMODELJSONWRITER_H
+#include <QByteArray>
 #include <QString>
 namespace live2dstruct { class CModelUserData; }
 
@@ -19,7 +20,8 @@ public:
     // 目标生成路径 <mocDir>/<mocBaseName>.model3.json
     static QString TargetJsonPath(const QString& mocPath);
     static bool CreateUserData(const QString& modelJsonPath, const live2dstruct::CModelUserData& data,
-                               QString* savedPath, QString* error = nullptr);
+                               QString* savedPath, QString* error = nullptr,
+                               const QByteArray& expectedModelDigest = {});
 };
 
 #endif // CMODELJSONWRITER_H

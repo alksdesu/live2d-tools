@@ -81,6 +81,35 @@ private slots:
         if (index != 0) { QVERIFY(!error.isEmpty()); QVERIFY(prepared.entries.isEmpty()); }
         else QCOMPARE(entry(prepared, prepared.model["FileReferences"].toObject()["UserData"].toString()), data);
     }
+    void updatedLoadedManifestCanPackageOldReferenceStateWithoutChangingHistory()
+    {
+        Fixture fixture; const QString id = "ParamAngleX";
+        fixture.root["Groups"] = QJsonArray{QJsonObject{{"Name", "EyeBlink"}, {"Target", "Parameter"}, {"Ids", QJsonArray{id}}}};
+        QVERIFY(fixture.save());
+        CParameterResourceEdits::Prepared references; QString error;
+        QVERIFY(CParameterResourceEdits::Prepare(fixture.path, {}, {id}, references, &error));
+        const auto oldSource = references.state.modelSource;
+        const auto data = json({{"Version", 3}, {"UserData", QJsonArray{QJsonObject{{"Target", "ArtMesh"},
+            {"Id", fixture.document.Drawables().first().id}, {"Value", "saved"}}}}});
+        fixture.resource("UserData", "created.userdata3.json", data);
+        auto input = request(fixture.path); input.loadedModelSettingsBytes = read(fixture.path); input.references = references.state;
+        CMocParameterStructureBuilder::Result deleted;
+        QVERIFY(CMocParameterStructureBuilder::Delete(input.mocBytes, {id, 0}, deleted, &error)); input.mocBytes = deleted.bytes;
+        CRuntimePackage::Prepared prepared;
+        QVERIFY2(CRuntimePackage::Prepare(input, prepared, nullptr, &error), qPrintable(error));
+        QCOMPARE(input.references.modelSource, oldSource);
+        QCOMPARE(prepared.model["Groups"].toArray().first().toObject()["Ids"].toArray(), QJsonArray{});
+        QCOMPARE(entry(prepared, prepared.model["FileReferences"].toObject()["UserData"].toString()), data);
+        const auto acceptedModel = prepared.model;
+        QMap<QString, QByteArray> acceptedEntries;
+        for (const auto& file : prepared.entries) acceptedEntries.insert(file.relativePath, file.bytes);
+        fixture.root["Custom"] = "external change"; QVERIFY(fixture.save());
+        input.loadedModelSettingsBytes = read(fixture.path); input.modelSettingsDigest = digest(input.loadedModelSettingsBytes);
+        QVERIFY(!CRuntimePackage::Prepare(input, prepared, nullptr, &error));
+        QVERIFY(error.contains(QStringLiteral("引用状态"))); QCOMPARE(prepared.model, acceptedModel); QCOMPARE(prepared.entries.size(), acceptedEntries.size());
+        for (const auto& file : prepared.entries) QCOMPARE(file.bytes, acceptedEntries.value(file.relativePath));
+    }
+
     void optionalEmptyResourcesRemainPortable_data()
     {
         QTest::addColumn<int>("index");

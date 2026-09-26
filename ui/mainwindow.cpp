@@ -94,6 +94,7 @@ struct PreviewExportState
     bool timelineSaved = false;
     QMap<QString, float> timelineBaseline;
     QString physicsReload, userDataReload;
+    QByteArray userDataReloadDigest;
     bool surfacePaused = false;
     bool timerActive = false;
     int timerInterval = 0;
@@ -2058,11 +2059,11 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
                 state->physicsReload.clear();
             }
             if (!state->userDataReload.isEmpty()) {
-                if (!state->originalModel->ReloadUserDataFromFile(state->userDataReload)) {
-                    if (detail) *detail = QStringLiteral("无法重新载入已保存的网格标签：%1").arg(state->userDataReload);
+                if (!state->originalModel->ReloadUserDataFromFile(state->userDataReload, state->userDataReloadDigest, detail)) {
                     return false;
                 }
                 state->userDataReload.clear();
+                state->userDataReloadDigest.clear();
             }
             bool complete = false;
             const auto refreeze = qScopeGuard([&] {
@@ -2267,8 +2268,10 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession, bool repl
             QMessageBox::warning(this, QStringLiteral("保存 Pose 失败"), poseError);
         QString userDataError;
         const bool userDataSaved = !userDataDirty || m_userDataPanel->SaveUserData(&userDataError);
-        if (userDataDirty && userDataSaved && m_exportState)
+        if (userDataDirty && userDataSaved && m_exportState) {
             m_exportState->userDataReload = m_userDataPanel->FilePath();
+            m_exportState->userDataReloadDigest = m_userDataPanel->SourceDigest();
+        }
         if (!userDataSaved)
             QMessageBox::warning(this, QStringLiteral("保存 UserData 失败"), userDataError);
         return sessionSaved && physicsSaved && poseSaved && userDataSaved;
@@ -2778,13 +2781,24 @@ void MainWindow::RestDock(const QString &name)
         if (dirty) statusBar()->showMessage(QStringLiteral("网格标签有未保存的修改"));
     });
     connect(m_userDataPanel, &CUserDataPanel::UserDataSaved, this, [this](const QString& path){
+        const auto digest = m_userDataPanel->SourceDigest();
+        if (m_exportState && m_previewExport.IsBusy()) {
+            m_exportState->userDataReload = path;
+            m_exportState->userDataReloadDigest = digest;
+            statusBar()->showMessage(QStringLiteral("网格标签已保存，恢复预览后更新"), 5000);
+            return;
+        }
         LAppLive2DManager* manager = LAppLive2DManager::GetInstance();
         LAppModel* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
-        if (model && model->ReloadUserDataFromFile(path)) {
+        QString error;
+        if (model && model->ReloadUserDataFromFile(path, digest, &error)) {
             statusBar()->showMessage(QStringLiteral("网格标签已保存并更新：%1").arg(path), 5000);
         } else {
-            QMessageBox::warning(this, QStringLiteral("UserData 已保存"),
-                                 QStringLiteral("文件保存成功，但运行时刷新失败。请重新打开模型。"));
+            QMessageBox message(QMessageBox::Warning, QStringLiteral("网格标签已保存"),
+                QStringLiteral("文件保存成功，预览更新失败：\n%1").arg(error.isEmpty() ? QStringLiteral("当前没有可更新的模型") : error),
+                QMessageBox::Ok, this);
+            message.setTextFormat(Qt::PlainText);
+            message.exec();
         }
     });
     connect(m_userDataPanel, &CUserDataPanel::ArtMeshSelected, m_treePanel, &CModelTreePanel::HighlightMesh);

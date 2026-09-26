@@ -2,6 +2,7 @@
 #include "cmodeljson.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include <QDir>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -211,17 +212,31 @@ QString CModelJsonWriter::GenerateFor(const QString& mocPath, QString* outError,
 }
 
 bool CModelJsonWriter::CreateUserData(const QString& modelJsonPath, const live2dstruct::CModelUserData& data,
-                                     QString* savedPath, QString* error)
+                                     QString* savedPath, QString* error, const QByteArray& expectedModelDigest)
 {
     if (!data.Validate(error)) return false;
+    if (!expectedModelDigest.isEmpty() && expectedModelDigest.size() != 32) {
+        if (error) *error = QStringLiteral("模型设置的加载摘要无效");
+        return false;
+    }
     QFile source(modelJsonPath);
     if (!source.open(QIODevice::ReadOnly)) {
         if (error) *error = source.errorString();
         return false;
     }
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(source.readAll(), &parseError);
+    const QByteArray sourceBytes = source.readAll();
+    if (source.error() != QFileDevice::NoError) {
+        if (error) *error = source.errorString();
+        return false;
+    }
     source.close();
+    if (!expectedModelDigest.isEmpty() &&
+        QCryptographicHash::hash(sourceBytes, QCryptographicHash::Sha256) != expectedModelDigest) {
+        if (error) *error = QStringLiteral("模型设置自加载后已改变，请重新打开模型后保存标签");
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(sourceBytes, &parseError);
     QJsonObject root = document.object();
     QJsonObject references = root.value(QStringLiteral("FileReferences")).toObject();
     if (parseError.error != QJsonParseError::NoError ||
@@ -249,6 +264,20 @@ bool CModelJsonWriter::CreateUserData(const QString& modelJsonPath, const live2d
     references.insert(QStringLiteral("UserData"), directory.relativeFilePath(path));
     root.insert(QStringLiteral("FileReferences"), references);
     const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (!source.open(QIODevice::ReadOnly)) {
+        if (error) *error = source.errorString();
+        return false;
+    }
+    const QByteArray latestSource = source.readAll();
+    if (source.error() != QFileDevice::NoError) {
+        if (error) *error = source.errorString();
+        return false;
+    }
+    source.close();
+    if (latestSource != sourceBytes) {
+        if (error) *error = QStringLiteral("模型设置在保存标签期间已改变，请重新打开模型后重试");
+        return false;
+    }
     QSaveFile modelFile(modelJsonPath);
     if (!modelFile.open(QIODevice::WriteOnly) || modelFile.write(bytes) != bytes.size() || !modelFile.commit()) {
         if (error) *error = modelFile.errorString();

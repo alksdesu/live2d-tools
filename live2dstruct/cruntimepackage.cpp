@@ -321,24 +321,16 @@ bool motionSync(const QByteArray& bytes, const QSet<QString>& removed, QString* 
 bool registeredUserData(const Package::Request& request, const QByteArray& current)
 {
     if (!request.userData || request.registeredUserDataPath.isEmpty() || request.loadedModelSettingsBytes.isEmpty() ||
-        QCryptographicHash::hash(request.loadedModelSettingsBytes, QCryptographicHash::Sha256) != request.modelSettingsDigest ||
-        !CModelJson::ValidateRuntimeSettings(request.loadedModelSettingsBytes)) return false;
-    auto before = QJsonDocument::fromJson(request.loadedModelSettingsBytes).object();
-    auto after = QJsonDocument::fromJson(current).object();
-    auto oldFiles = before.value(QStringLiteral("FileReferences")).toObject();
-    auto newFiles = after.value(QStringLiteral("FileReferences")).toObject();
-    const auto previous = oldFiles.value(QStringLiteral("UserData"));
-    if (!previous.isUndefined() && (!previous.isString() || !previous.toString().isEmpty())) return false;
+        QCryptographicHash::hash(request.loadedModelSettingsBytes, QCryptographicHash::Sha256) != request.modelSettingsDigest) return false;
+    QString reference;
+    if (!CModelJson::IsUserDataRegistration(request.loadedModelSettingsBytes, current, &reference)) return false;
     const auto home = QFileInfo(request.modelJsonPath).absolutePath();
-    const auto path = CModelResourcePath::Resolve(home, newFiles.value(QStringLiteral("UserData")).toString());
+    const auto path = CModelResourcePath::Resolve(home, reference);
     if (path.isEmpty() || path != CModelResourcePath::Resolve(home, request.registeredUserDataPath)) return false;
     bool loaded = false;
     for (auto it = request.expectedSourceDigests.cbegin(); it != request.expectedSourceDigests.cend(); ++it)
         if (CModelResourcePath::Resolve(home, it.key()) == path && it->size() == 32) loaded = true;
-    if (!loaded) return false;
-    oldFiles.remove(QStringLiteral("UserData")); newFiles.remove(QStringLiteral("UserData"));
-    before.insert(QStringLiteral("FileReferences"), oldFiles); after.insert(QStringLiteral("FileReferences"), newFiles);
-    return before == after;
+    return loaded;
 }
 }
 
@@ -358,7 +350,7 @@ bool CRuntimePackage::Prepare(const Request& request, Prepared& prepared, CExpor
         if (QCryptographicHash::hash(sourceSettings, QCryptographicHash::Sha256) != request.modelSettingsDigest && !userDataAdded)
             return fail(error, QStringLiteral("模型设置与已加载的来源不一致"));
         if (!request.references.IsEmpty() && ((request.references.modelSource != sourceSettings &&
-            (!userDataAdded || request.references.modelSource != request.loadedModelSettingsBytes)) ||
+            !CModelJson::IsUserDataRegistration(request.references.modelSource, sourceSettings)) ||
             request.references.modelPath != QDir::cleanPath(QFileInfo(request.modelJsonPath).absoluteFilePath())))
             return fail(error, QStringLiteral("模型包引用状态与当前模型设置不一致"));
         Editor::Prepared settings;

@@ -1,4 +1,5 @@
 #include "cparameterresourceedits.h"
+#include "std/cmodeljson.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -189,7 +190,8 @@ bool CParameterResourceEdits::Prepare(const QString& modelPath, const State& cur
         QByteArray modelBytes;
         if (!read(modelPath, modelBytes, total, error)) return false;
         const QFileInfo modelInfo(modelPath);
-        if (!current.IsEmpty() && (current.modelPath != QDir::cleanPath(modelInfo.absoluteFilePath()) || current.modelSource != modelBytes))
+        if (!current.IsEmpty() && (current.modelPath != QDir::cleanPath(modelInfo.absoluteFilePath()) ||
+            (current.modelSource != modelBytes && !CModelJson::IsUserDataRegistration(current.modelSource, modelBytes))))
             return fail(error, QStringLiteral("模型设置已改变，无法沿用参数引用修改：%1").arg(modelPath));
         candidate.state.modelPath = QDir::cleanPath(modelInfo.absoluteFilePath());
         candidate.state.modelSource = modelBytes;

@@ -25,7 +25,6 @@
 #include "LAppDelegate.hpp"
 #include "LAppView.hpp"
 #include "live2dstruct/ctreemanage.h"
-#include "live2dstruct/cmodeluserdata.h"
 #include "std/cmodeljson.h"
 #include "std/cmodelresourcepath.h"
 #include <QFile>
@@ -142,6 +141,7 @@ bool LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
     if (!setting->GetJsonPointer()) return false;
     const QString modelDirectory = QFileInfo(QString::fromUtf8(path.GetRawString())).absolutePath() + QLatin1Char('/');
     _modelHomeDir = csmString(modelDirectory.toUtf8().constData());
+    m_modelSettingsPath = QDir::cleanPath(QFileInfo(QString::fromUtf8(path.GetRawString())).absoluteFilePath());
     m_modelSettingsBytes = QByteArray(reinterpret_cast<const char*>(buffer), int(size));
     m_modelSettingsDigest = QCryptographicHash::hash(m_modelSettingsBytes, QCryptographicHash::Sha256);
     if (!SetupModel(setting.release())) return false;
@@ -968,32 +968,6 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path)
     return true;
 }
 
-bool LAppModel::ReloadUserDataFromFile(const QString& path)
-{
-    if (HasExportPreview() || (_initialized && _updating)) return false;
-    const QString resolved = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
-    if (resolved.isEmpty()) return false;
-    if (!_model) return false;
-    live2dstruct::CModelUserData document;
-    if (!document.Load(resolved)) return false;
-    QSet<QString> drawableIds;
-    for (int index = 0; index < _model->GetDrawableCount(); ++index)
-        drawableIds.insert(QString::fromUtf8(_model->GetDrawableId(index)->GetString().GetRawString()));
-    for (const auto& entry : document.Entries())
-        if (!drawableIds.contains(entry.id)) return false;
-    const QByteArray bytes = document.ToJson();
-    if (bytes.size() > std::numeric_limits<csmSizeInt>::max()) return false;
-    CubismModelUserData* replacement = CubismModelUserData::Create(
-        reinterpret_cast<const csmByte*>(bytes.constData()), static_cast<csmSizeInt>(bytes.size()));
-    if (!replacement) return false;
-    if (replacement->GetArtMeshUserDatas().GetSize() != document.Entries().size()) {
-        CubismModelUserData::Delete(replacement);
-        return false;
-    }
-    CubismModelUserData::Delete(_modelUserData);
-    _modelUserData = replacement;
-    return true;
-}
 
 void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types)
 {

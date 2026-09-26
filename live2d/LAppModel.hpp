@@ -68,6 +68,7 @@ public:
     const ParameterReferenceState& GetParameterReferenceState() const { return m_parameterReferences; }
     const QByteArray& GetModelSettingsDigest() const { return m_modelSettingsDigest; }
     const QByteArray& GetModelSettingsBytes() const { return m_modelSettingsBytes; }
+    const QString& GetModelSettingsPath() const { return m_modelSettingsPath; }
     bool CaptureParameterReferenceCatalog(ParameterReferenceCatalog& result, QString* error = nullptr) const;
     bool ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                         const ParameterStructureSeeds& addedSeeds,
@@ -134,7 +135,7 @@ public:
     void SetPhysicsGravity(float x, float y);
     void SetPhysicsWind(float x, float y);
     bool ReloadPhysicsFromFile(const QString& path);
-    bool ReloadUserDataFromFile(const QString& path);
+    bool ReloadUserDataFromFile(const QString& path, const QByteArray& expectedSourceDigest = {}, QString* error = nullptr);
     bool StartLipSyncWav(const QString& path);
     void StopLipSyncWav();
 
@@ -233,6 +234,7 @@ private:
     ParameterReferenceState m_parameterReferences;
     QByteArray m_modelSettingsDigest;
     QByteArray m_modelSettingsBytes;
+    QString m_modelSettingsPath;
     QString m_physicsReferencePath;
     QVector<quint8> m_suppressedLipSync;
     QVector<quint8> m_suppressedMouseFollow;

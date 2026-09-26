@@ -93,7 +93,8 @@ bool CUserDataPanel::LoadModel(const QString& modelJsonPath, QString* error)
     }
     const QString path = model.m_UserData.isEmpty() ? QString() : QDir(model.m_parentPath).filePath(model.m_UserData);
     if (!LoadUserData(path, error)) return false;
-    m_modelJsonPath = modelJsonPath;
+    m_modelJsonPath = QDir::cleanPath(QFileInfo(modelJsonPath).absoluteFilePath());
+    m_modelSourceDigest = model.SourceDigest();
     RefreshState();
     return true;
 }
@@ -108,6 +109,7 @@ bool CUserDataPanel::LoadUserData(const QString& path, QString* error)
     m_path = sourcePath;
     m_sourceDigest.swap(digest);
     m_modelJsonPath.clear();
+    m_modelSourceDigest.clear();
     RebuildTable();
     SetDirty(false);
     RefreshState();
@@ -180,12 +182,12 @@ bool CUserDataPanel::SaveUserData(QString* error)
     QByteArray digest;
     QString savedPath = m_path;
     if (m_path.isEmpty()) {
-        if (m_modelJsonPath.isEmpty()) {
+        if (m_modelJsonPath.isEmpty() || m_modelSourceDigest.size() != 32) {
             if (error) *error = QStringLiteral("请先打开模型");
             return false;
         }
         digest = QCryptographicHash::hash(data.ToJson(), QCryptographicHash::Sha256);
-        if (!CModelJsonWriter::CreateUserData(m_modelJsonPath, data, &savedPath, error)) return false;
+        if (!CModelJsonWriter::CreateUserData(m_modelJsonPath, data, &savedPath, error, m_modelSourceDigest)) return false;
     } else if (!data.Save(m_path, error, &digest)) {
         return false;
     }

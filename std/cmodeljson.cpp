@@ -1,6 +1,8 @@
 #include "cmodeljson.h"
+#include <QCryptographicHash>
 #include "cmodelresourcepath.h"
 #include <cmath>
+#include <exception>
 #include <limits>
 
 namespace {
@@ -107,8 +109,36 @@ bool CModelJson::ValidateRuntimeSettings(const QByteArray& data, QString* error)
     return true;
 }
 
+bool CModelJson::IsUserDataRegistration(const QByteArray& before, const QByteArray& after, QString* reference)
+{
+    constexpr qint64 maximumBytes = 16 * 1024 * 1024;
+    if (before.size() > maximumBytes || after.size() > maximumBytes) return false;
+    try {
+        if (!ValidateRuntimeSettings(before) || !ValidateRuntimeSettings(after)) return false;
+        auto original = QJsonDocument::fromJson(before).object();
+        auto updated = QJsonDocument::fromJson(after).object();
+        auto oldFiles = original.value(QStringLiteral("FileReferences")).toObject();
+        auto newFiles = updated.value(QStringLiteral("FileReferences")).toObject();
+        const auto oldValue = oldFiles.value(QStringLiteral("UserData"));
+        const auto newValue = newFiles.value(QStringLiteral("UserData"));
+        if ((!oldValue.isUndefined() && (!oldValue.isString() || !oldValue.toString().isEmpty())) ||
+            !newValue.isString() || newValue.toString().isEmpty()) return false;
+        oldFiles.remove(QStringLiteral("UserData"));
+        newFiles.remove(QStringLiteral("UserData"));
+        original.insert(QStringLiteral("FileReferences"), oldFiles);
+        updated.insert(QStringLiteral("FileReferences"), newFiles);
+        if (original != updated) return false;
+        if (reference) {
+            auto value = newValue.toString();
+            reference->swap(value);
+        }
+        return true;
+    } catch (const std::exception&) { return false; }
+}
+
 void CModelJson::Clear()
 {
+    m_sourceDigest.clear();
     m_IsOpen = false;
     m_parentPath.clear();
     m_modelName.clear();
@@ -127,7 +157,7 @@ void CModelJson::Parse(const QString &fileName)
 {
     Clear();
     QFile file(fileName);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
         return;
     }
     QByteArray jsonData = file.readAll();
@@ -180,6 +210,7 @@ void CModelJson::Parse(const QString &fileName)
     }
 
 
+    m_sourceDigest = QCryptographicHash::hash(jsonData, QCryptographicHash::Sha256);
     m_IsOpen = true;
 
 }

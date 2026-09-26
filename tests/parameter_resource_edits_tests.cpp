@@ -101,6 +101,31 @@ private slots:
         QCOMPARE(cleared.resources.first().effectiveBytes, expression());
     }
 
+    void registeredUserDataUpdatesOnlyThePreparedModelSource()
+    {
+        QTemporaryDir directory; QString path; QVERIFY(fixture(directory, path));
+        Edits::Prepared original; QVERIFY(Edits::Prepare(path, {}, {"A"}, original));
+        const auto preserved = json(original.state);
+        auto root = QJsonDocument::fromJson(model()).object(); auto files = root["FileReferences"].toObject();
+        files["UserData"] = "../labels.userdata3.json"; root["FileReferences"] = files;
+        const auto registered = bytes(root); QVERIFY(write(path, registered));
+        Edits::Prepared result; QString error;
+        QVERIFY2(Edits::Prepare(path, original.state, {"B"}, result, &error), qPrintable(error));
+        QCOMPARE(result.state.modelSource, registered); QCOMPARE(json(original.state), preserved);
+        QCOMPARE(result.state.resources.first().source, expression());
+        QCOMPARE(result.resources.first().parameterRows, (QMap<int, QString>{{0, "A"}, {1, "B"}}));
+        const auto accepted = json(result.state);
+        root["UnknownExtension"] = "external"; QVERIFY(write(path, bytes(root)));
+        QVERIFY(!Edits::Prepare(path, original.state, {}, result, &error)); QCOMPARE(json(result.state), accepted);
+        QVERIFY(write(path, registered)); QVERIFY(write(directory.filePath("face.exp3.json"), expression() + " "));
+        QVERIFY(!Edits::Prepare(path, original.state, {}, result, &error)); QCOMPARE(json(result.state), accepted);
+        QVERIFY(error.contains(QStringLiteral("关联资源已改变")));
+        QVERIFY(write(directory.filePath("face.exp3.json"), expression()));
+        auto changedFiles = files; changedFiles["UserData"] = "../retarget.json";
+        root.remove("UnknownExtension"); root["FileReferences"] = changedFiles; QVERIFY(write(path, bytes(root)));
+        QVERIFY(!Edits::Prepare(path, result.state, {}, result, &error)); QCOMPARE(json(result.state), accepted);
+    }
+
     void sourceDriftAndMissingResourcesRejectAtomically_data()
     {
         QTest::addColumn<int>("kind");

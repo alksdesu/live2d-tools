@@ -13,6 +13,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -32,6 +33,92 @@ private:
     }
 
 private slots:
+    void firstSaveRejectsChangedManifestAndPreservesDraft_data()
+    {
+        QTest::addColumn<QString>("change");
+        for (const char* change : {"moc", "textures", "groups", "layout", "extension", "userdata", "whitespace", "newlines", "malformed"})
+            QTest::newRow(change) << QString::fromLatin1(change);
+    }
+
+    void firstSaveRejectsChangedManifestAndPreservesDraft()
+    {
+        QFETCH(QString, change);
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        const auto path = temp.filePath("model.model3.json");
+        const QByteArray original = "{\r\n\"Version\":3,\"FileReferences\":{\"Moc\":\"model.moc3\"},\r\n\"Custom\":42}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(original), original.size()); file.close();
+        CUserDataPanel panel; panel.SetValidArtMeshIds({"Body"}); QVERIFY(panel.LoadModel(path)); panel.show();
+        auto* add = panel.findChild<QPushButton*>("addUserData"); auto* table = panel.findChild<QTableWidget*>("userDataTable");
+        QVERIFY(add && table); answerPicker(true); add->click(); QCOMPARE(table->rowCount(), 1);
+        auto* editor = table->findChild<QLineEdit*>(); QVERIFY(editor); editor->setText(QStringLiteral("保留的草稿"));
+        QTest::keyClick(editor, Qt::Key_Return); QVERIFY(panel.HasUnsavedChanges());
+        QTRY_COMPARE(table->item(0, 1)->text(), QStringLiteral("保留的草稿"));
+        QByteArray draft; QVERIFY(panel.CaptureUserDataBytes(draft));
+        const auto sourcePath = panel.SourcePath(); const auto sourceDigest = panel.SourceDigest();
+        auto root = QJsonDocument::fromJson(original).object(); auto files = root.value("FileReferences").toObject();
+        if (change == "moc") files["Moc"] = "different.moc3";
+        else if (change == "textures") files["Textures"] = QJsonArray{"different.png"};
+        else if (change == "userdata") files["UserData"] = "registered.json";
+        else if (change == "groups") root["Groups"] = QJsonArray{QJsonObject{{"Name", "EyeBlink"}, {"Ids", QJsonArray{"ParamA"}}}};
+        else if (change == "layout") root["Layout"] = QJsonObject{{"width", 3}};
+        else if (change == "extension") root["Custom"] = 43;
+        root["FileReferences"] = files;
+        QByteArray updated;
+        if (change == "whitespace") updated = original + ' ';
+        else if (change == "newlines") { updated = original; updated.replace("\r\n", "\n"); }
+        else if (change == "malformed") updated = "{";
+        else updated = QJsonDocument(root).toJson();
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write(updated), updated.size()); file.close();
+        const auto entries = QDir(temp.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        QSignalSpy saved(&panel, &CUserDataPanel::UserDataSaved), dirty(&panel, &CUserDataPanel::DirtyChanged);
+        QString error; QVERIFY(!panel.SaveUserData(&error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(saved.size(), 0); QCOMPARE(dirty.size(), 0); QVERIFY(panel.HasUnsavedChanges());
+        QCOMPARE(panel.SourcePath(), sourcePath); QCOMPARE(panel.SourceDigest(), sourceDigest);
+        QByteArray after; QVERIFY(panel.CaptureUserDataBytes(after)); QCOMPARE(after, draft);
+        QCOMPARE(QDir(temp.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot), entries);
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), updated); file.close();
+        QVERIFY(!panel.LoadModel(temp.filePath("missing"), &error)); QVERIFY(panel.HasUnsavedChanges());
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write(original), original.size()); file.close();
+        QVERIFY2(panel.SaveUserData(&error), qPrintable(error)); QCOMPARE(saved.size(), 1); QVERIFY(!panel.HasUnsavedChanges());
+        QFile output(panel.SourcePath()); QVERIFY(output.open(QIODevice::ReadOnly));
+        const auto bytes = output.readAll(); QCOMPARE(bytes, draft);
+        QCOMPARE(panel.SourceDigest(), QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+    }
+
+    void firstSaveRetainsAbsoluteModelIdentityAcrossWorkingDirectoryChanges()
+    {
+        QTemporaryDir modelDirectory, unrelated; QVERIFY(modelDirectory.isValid() && unrelated.isValid());
+        const auto path = modelDirectory.filePath("model.model3.json");
+        const QByteArray raw = "{\r\n\"Version\":3,\"FileReferences\":{\"Moc\":\"model.moc3\",\"UserData\":\"\"}}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(raw), raw.size()); file.close();
+        CUserDataPanel panel; QVERIFY(panel.LoadModel(QDir::current().relativeFilePath(path)));
+        const auto previous = QDir::currentPath(); const auto restore = qScopeGuard([&] { QDir::setCurrent(previous); });
+        QVERIFY(QDir::setCurrent(unrelated.path())); QString error;
+        QVERIFY2(panel.SaveUserData(&error), qPrintable(error));
+        QCOMPARE(QFileInfo(panel.SourcePath()).absolutePath(), modelDirectory.path());
+        QCOMPARE(QDir(unrelated.path()).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot), QStringList());
+        CModelJson loaded; loaded.Parse(path); QVERIFY(loaded.IsOpen()); QVERIFY(!loaded.m_UserData.isEmpty());
+        QFile output(panel.SourcePath()); QVERIFY(output.open(QIODevice::ReadOnly));
+        QCOMPARE(panel.SourceDigest(), QCryptographicHash::hash(output.readAll(), QCryptographicHash::Sha256));
+    }
+
+    void existingUserDataSaveDoesNotRewriteChangedManifest()
+    {
+        QTemporaryDir temp; const auto path = temp.filePath("model.model3.json");
+        live2dstruct::CModelUserData data; data.SetEntries({{"ArtMesh", "Body", "old", {}}});
+        QVERIFY(data.Save(temp.filePath("labels.json")));
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray original = R"({"Version":3,"FileReferences":{"Moc":"model.moc3","UserData":"labels.json"}})";
+        QCOMPARE(file.write(original), original.size()); file.close();
+        CUserDataPanel panel; panel.SetValidArtMeshIds({"Body"}); QVERIFY(panel.LoadModel(path));
+        auto* table = panel.findChild<QTableWidget*>("userDataTable"); QVERIFY(table); table->item(0, 1)->setText("new");
+        const auto updated = original + ' ';
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write(updated), updated.size()); file.close();
+        QString error; QVERIFY2(panel.SaveUserData(&error), qPrintable(error));
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), updated);
+        QVERIFY(data.Load(temp.filePath("labels.json"))); QCOMPARE(data.Entries().first().value, QString("new"));
+    }
+
     void sourceFingerprintOnlyChangesAfterSuccessfulLoadOrSave()
     {
         QTemporaryDir temp; const auto path = temp.filePath("labels.json");
