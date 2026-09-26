@@ -10,7 +10,12 @@
 #include "CubismPhysicsJson.hpp"
 #include "framework/Model/CubismModel.hpp"
 #include "framework/Model/CubismParameterReferences.hpp"
+#include "live2dstruct/cphysicsdocument.h"
 #include <QCryptographicHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSet>
 #include "framework/Utils/CubismString.hpp"
 #include "framework/Math/CubismMath.hpp"
 #include "framework/Math/CubismVector2.hpp"
@@ -40,6 +45,55 @@ const csmFloat32 MovementThreshold = 0.001f;
 
 /// Constant of maximum allowed delta time
 const csmFloat32 MaxDeltaTime = 5.0f;
+
+bool PhysicsError(QString* error, const QString& message)
+{
+    if (error) *error = message;
+    return false;
+}
+
+void NormalizeDirection(CubismVector2& direction, const CubismVector2& fallback)
+{
+    if (direction.X == 0 && direction.Y == 0) direction = fallback;
+    if (direction.X == 0 && direction.Y == 0) direction = CubismVector2(0, 1);
+    direction.Normalize();
+}
+
+QByteArray PhysicsTopology(const QJsonObject& document)
+{
+    QJsonArray groups;
+    QSet<QString> ids;
+    for (const auto& value : document.value(QStringLiteral("PhysicsSettings")).toArray())
+    {
+        const auto group = value.toObject();
+        const auto id = group.value(QStringLiteral("Id"));
+        if (!id.isString() || id.toString().isEmpty() || id.toString().contains(QChar::Null) || ids.contains(id.toString())) return {};
+        ids.insert(id.toString());
+        QJsonArray inputs, outputs, particles;
+        for (const auto& item : group.value(QStringLiteral("Input")).toArray())
+        {
+            const auto row = item.toObject();
+            inputs.append(QJsonArray{row.value(QStringLiteral("Source")).toObject().value(QStringLiteral("Id")),
+                row.value(QStringLiteral("Type")), row.value(QStringLiteral("Reflect")).toBool()});
+        }
+        for (const auto& item : group.value(QStringLiteral("Output")).toArray())
+        {
+            const auto row = item.toObject();
+            outputs.append(QJsonArray{row.value(QStringLiteral("Destination")).toObject().value(QStringLiteral("Id")),
+                row.value(QStringLiteral("Type")), row.value(QStringLiteral("Reflect")).toBool(), row.value(QStringLiteral("VertexIndex"))});
+        }
+        for (const auto& item : group.value(QStringLiteral("Vertices")).toArray())
+        {
+            const auto row = item.toObject();
+            const auto position = row.value(QStringLiteral("Position")).toObject();
+            particles.append(QJsonArray{row.value(QStringLiteral("Radius")).toDouble(),
+                position.value(QStringLiteral("X")).toDouble(), position.value(QStringLiteral("Y")).toDouble()});
+        }
+        groups.append(QJsonArray{id, inputs, outputs, particles});
+    }
+    return QJsonDocument(QJsonArray{document.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("Fps")).toDouble(), groups})
+        .toJson(QJsonDocument::Compact);
+}
 
 csmFloat32 NormalizeParameterValue(
     csmFloat32 value,
@@ -246,7 +300,7 @@ void UpdateParticles(CubismPhysicsParticle* strand, csmInt32 strandCount, Cubism
 
         newDirection = strand[i].Position - strand[i - 1].Position;
 
-        newDirection.Normalize();
+        NormalizeDirection(newDirection, direction);
 
         strand[i].Position = strand[i - 1].Position + (newDirection * strand[i].Radius);
 
@@ -301,7 +355,7 @@ void UpdateParticlesForStabilization(CubismPhysicsParticle* strand, csmInt32 str
         strand[i].Velocity = CubismVector2(0.0, 0.0);
 
         force = strand[i].Force;
-        force.Normalize();
+        NormalizeDirection(force, currentGravity);
 
         force *= strand[i].Radius;
         strand[i].Position = strand[i - 1].Position + force;
@@ -369,6 +423,7 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
 
 CubismPhysics::CubismPhysics()
     : _physicsRig(NULL)
+    , _isJsonValid(false)
 {
     // set default options.
     _options.Gravity.Y = -1.0f;
@@ -383,6 +438,156 @@ CubismPhysics::~CubismPhysics()
     CSM_DELETE(_physicsRig);
     _parameterCaches.clear();
     _parameterInputCaches.clear();
+}
+
+CubismPhysics::PreparedRuntimeState::PreparedRuntimeState()
+    : work(nullptr, CubismPhysics::Delete)
+{}
+
+CubismPhysics::PreparedRuntimeState::~PreparedRuntimeState() = default;
+CubismPhysics::PreparedRuntimeState::PreparedRuntimeState(PreparedRuntimeState&&) noexcept = default;
+CubismPhysics::PreparedRuntimeState& CubismPhysics::PreparedRuntimeState::operator=(PreparedRuntimeState&&) noexcept = default;
+
+bool CubismPhysics::PrepareModelBinding(const CubismModel& model, const ParameterPhysicsReferences& references,
+                                       ParameterDefinitionState& result, QString* error) const
+{
+    if (!model.GetModel()) return PhysicsError(error, QStringLiteral("物理绑定缺少模型"));
+    const int count = model.GetParameterCount();
+    const auto* values = Core::csmGetParameterValues(model.GetModel());
+    if (count < 0 || (count && !values)) return PhysicsError(error, QStringLiteral("物理绑定缺少参数值"));
+    for (int i = 0; i < count; ++i)
+        if (!std::isfinite(values[i]) || !std::isfinite(model.GetParameterDefaultValue(i)))
+            return PhysicsError(error, QStringLiteral("物理绑定的参数值无效"));
+    return PrepareParameterStructureChange(model, model, result, error, &references);
+}
+
+bool CubismPhysics::HasFiniteRuntimeState(QString* error) const
+{
+    const auto finiteVector = [](const CubismVector2& value) { return std::isfinite(value.X) && std::isfinite(value.Y); };
+    if (!_physicsRig || !std::isfinite(_currentRemainTime) || _currentRemainTime < 0 ||
+        !finiteVector(_options.Gravity) || !finiteVector(_options.Wind) ||
+        _activeInputs.size() != _physicsRig->Inputs.GetSize() || _activeOutputs.size() != _physicsRig->Outputs.GetSize() ||
+        _currentRigOutputs.GetSize() != _physicsRig->Settings.GetSize() ||
+        _previousRigOutputs.GetSize() != _physicsRig->Settings.GetSize())
+        return PhysicsError(error, QStringLiteral("物理运行状态与配置不匹配"));
+    for (const auto* values : {&_parameterCaches, &_parameterInputCaches})
+        for (float value : *values) if (!std::isfinite(value)) return PhysicsError(error, QStringLiteral("物理缓存含非有限值"));
+    for (int i = 0; i < _physicsRig->Particles.GetSize(); ++i)
+    {
+        const auto& particle = _physicsRig->Particles[i];
+        for (const auto* value : {&particle.InitialPosition, &particle.Position, &particle.LastPosition,
+                                 &particle.LastGravity, &particle.Force, &particle.Velocity})
+            if (!finiteVector(*value)) return PhysicsError(error, QStringLiteral("物理摆锤含非有限值"));
+    }
+    for (int i = 0; i < _physicsRig->Settings.GetSize(); ++i)
+    {
+        const auto count = _physicsRig->Settings[i].OutputCount;
+        if (_currentRigOutputs[i].outputs.GetSize() != count || _previousRigOutputs[i].outputs.GetSize() != count)
+            return PhysicsError(error, QStringLiteral("物理输出缓存与配置不匹配"));
+        for (int j = 0; j < count; ++j)
+            if (!std::isfinite(_currentRigOutputs[i].outputs[j]) || !std::isfinite(_previousRigOutputs[i].outputs[j]))
+                return PhysicsError(error, QStringLiteral("物理输出缓存含非有限值"));
+    }
+    for (int i = 0; i < _physicsRig->Outputs.GetSize(); ++i)
+        if (!std::isfinite(_physicsRig->Outputs[i].ValueBelowMinimum) || !std::isfinite(_physicsRig->Outputs[i].ValueExceededMaximum))
+            return PhysicsError(error, QStringLiteral("物理输出统计含非有限值"));
+    return true;
+}
+
+void CubismPhysics::CopyDynamicStateFrom(const CubismPhysics& previous)
+{
+    _currentRemainTime = previous._currentRemainTime;
+    for (int i = 0; i < _physicsRig->Particles.GetSize(); ++i)
+    {
+        auto& target = _physicsRig->Particles[i];
+        const auto& source = previous._physicsRig->Particles[i];
+        target.Position = source.Position;
+        target.LastPosition = source.LastPosition;
+        target.LastGravity = source.LastGravity;
+        target.Velocity = source.Velocity;
+        target.Force = source.Force;
+    }
+    for (int i = 0; i < _physicsRig->Settings.GetSize(); ++i)
+        for (int j = 0; j < _physicsRig->Settings[i].OutputCount; ++j)
+        {
+            _currentRigOutputs[i].outputs[j] = previous._currentRigOutputs[i].outputs[j];
+            _previousRigOutputs[i].outputs[j] = previous._previousRigOutputs[i].outputs[j];
+        }
+    for (int i = 0; i < _physicsRig->Outputs.GetSize(); ++i)
+    {
+        _physicsRig->Outputs[i].ValueBelowMinimum = previous._physicsRig->Outputs[i].ValueBelowMinimum;
+        _physicsRig->Outputs[i].ValueExceededMaximum = previous._physicsRig->Outputs[i].ValueExceededMaximum;
+    }
+}
+
+bool CubismPhysics::PrepareRuntimeState(const CubismPhysics* previous, const CubismModel& previousModel,
+                                       const CubismModel& replacementModel, const ParameterPhysicsReferences& references,
+                                       PreparedRuntimeState& result, StatePolicy policy, QString* error) const
+{
+    if (error) error->clear();
+    if ((policy != StatePolicy::PreserveCompatible && policy != StatePolicy::Stabilize) || _normalizedBytes.isEmpty())
+        return PhysicsError(error, QStringLiteral("物理运行状态准备请求无效"));
+    if (!HasFiniteRuntimeState(error)) return false;
+    try
+    {
+        PreparedRuntimeState candidate;
+        candidate.work.reset(Create(reinterpret_cast<const csmByte*>(_normalizedBytes.constData()), _normalizedBytes.size(), error));
+        if (!candidate.work) return false;
+        auto& work = *candidate.work;
+        work._sourceDigest = _sourceDigest;
+        work._options = _options;
+        ParameterDefinitionState binding;
+        if (!work.PrepareModelBinding(replacementModel, references, binding, error)) return false;
+        work.CommitParameterDefinitionChange(binding);
+        const bool compatible = policy == StatePolicy::PreserveCompatible && previous && !_topology.isEmpty() &&
+            _topology == previous->_topology && work._activeInputs == previous->_activeInputs && work._activeOutputs == previous->_activeOutputs;
+        if (compatible)
+        {
+            if (!previous->HasFiniteRuntimeState(error)) return false;
+            ParameterDefinitionState migration;
+            if (!previous->PrepareParameterStructureChange(previousModel, replacementModel, migration, error)) return false;
+            work._parameterCaches.swap(migration.parameters);
+            work._parameterInputCaches.swap(migration.inputs);
+            work.CopyDynamicStateFrom(*previous);
+        }
+        else
+        {
+            QVector<float> values;
+            if (!work.StabilizeValues(replacementModel, values, error)) return false;
+            candidate.stabilized = true;
+        }
+        if (!work.HasFiniteRuntimeState(error)) return false;
+        candidate.owner = this;
+        candidate.revision = _stateRevision;
+        result = std::move(candidate);
+        return true;
+    }
+    catch (const std::exception&)
+    {
+        return PhysicsError(error, QStringLiteral("无法准备物理运行状态"));
+    }
+}
+
+bool CubismPhysics::ValidatePreparedRuntimeState(const PreparedRuntimeState& state) const noexcept
+{
+    return state.owner == this && state.revision == _stateRevision && state.work && state.work->_physicsRig;
+}
+
+bool CubismPhysics::CommitRuntimeState(PreparedRuntimeState& state) noexcept
+{
+    if (!ValidatePreparedRuntimeState(state)) return false;
+    auto& work = *state.work;
+    std::swap(_physicsRig, work._physicsRig);
+    _currentRigOutputs.Swap(work._currentRigOutputs);
+    _previousRigOutputs.Swap(work._previousRigOutputs);
+    std::swap(_currentRemainTime, work._currentRemainTime);
+    _parameterCaches.swap(work._parameterCaches);
+    _parameterInputCaches.swap(work._parameterInputCaches);
+    _activeInputs.swap(work._activeInputs);
+    _activeOutputs.swap(work._activeOutputs);
+    ++_stateRevision;
+    state.owner = nullptr;
+    return true;
 }
 
 bool CubismPhysics::PrepareParameterDefinitionChange(const CubismModel& previous, const CubismModel& replacement,
@@ -529,6 +734,7 @@ void CubismPhysics::CommitParameterDefinitionChange(ParameterDefinitionState& st
     } else if (state.parameters.size() != _parameterCaches.size() || state.inputs.size() != _parameterInputCaches.size()) return;
     _parameterCaches.swap(state.parameters);
     _parameterInputCaches.swap(state.inputs);
+    ++_stateRevision;
     state.owner = nullptr;
 }
 
@@ -593,6 +799,7 @@ void CubismPhysics::Initialize()
 /// Reset the physics states.
 void CubismPhysics::Reset()
 {
+    ++_stateRevision;
     // set default options.
     _options.Gravity.Y = -1.0f;
     _options.Gravity.X = 0.0f;
@@ -607,23 +814,63 @@ void CubismPhysics::Reset()
     Initialize();
 }
 
-CubismPhysics* CubismPhysics::Create(const csmByte* buffer, csmSizeInt size)
+CubismPhysics* CubismPhysics::Create(const csmByte* buffer, csmSizeInt size, QString* error)
 {
-    if (!buffer || size <= 0) return NULL;
-    QByteArray digest = QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char*>(buffer), size), QCryptographicHash::Sha256);
-    CubismPhysics* ret = CSM_NEW CubismPhysics();
-
-    ret->Parse(buffer, size);
-
-    if (!ret->_isJsonValid)
+    if (error) error->clear();
+    if (!buffer || size <= 0 || size > 16 * 1024 * 1024)
     {
-        Delete(ret);
-        return NULL;
+        PhysicsError(error, QStringLiteral("物理配置数据为空或过大"));
+        return nullptr;
     }
-
-    ret->_physicsRig->Gravity.Y = 0;
-    ret->_sourceDigest.swap(digest);
-    return ret;
+    try
+    {
+        const QByteArray source(reinterpret_cast<const char*>(buffer), size);
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(source, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        {
+            PhysicsError(error, QStringLiteral("物理配置不是有效的 JSON 对象"));
+            return nullptr;
+        }
+        QJsonObject normalized;
+        if (!live2dstruct::CPhysicsDocument::Normalize(document.object(), normalized, error)) return nullptr;
+        auto groups = normalized.value(QStringLiteral("PhysicsSettings")).toArray();
+        for (qsizetype i = 0; i < groups.size(); ++i)
+        {
+            auto group = groups[i].toObject();
+            for (const auto& field : {QStringLiteral("Input"), QStringLiteral("Output")})
+                if (!group.contains(field)) group.insert(field, QJsonArray{});
+            groups[i] = group;
+        }
+        normalized.insert(QStringLiteral("PhysicsSettings"), groups);
+        const auto bytes = QJsonDocument(normalized).toJson(QJsonDocument::Compact);
+        if (bytes.size() > 16 * 1024 * 1024)
+        {
+            PhysicsError(error, QStringLiteral("规范化的物理配置过大"));
+            return nullptr;
+        }
+        std::unique_ptr<CubismPhysics, void (*)(CubismPhysics*)> ret(CSM_NEW CubismPhysics(), Delete);
+        ret->Parse(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size());
+        if (!ret->_isJsonValid)
+        {
+            PhysicsError(error, QStringLiteral("无法解析物理配置"));
+            return nullptr;
+        }
+        const auto forces = normalized.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("EffectiveForces")).toObject();
+        const auto gravity = forces.value(QStringLiteral("Gravity")).toObject();
+        const auto wind = forces.value(QStringLiteral("Wind")).toObject();
+        ret->_options.Gravity = CubismVector2(gravity.value(QStringLiteral("X")).toDouble(0), gravity.value(QStringLiteral("Y")).toDouble(-1));
+        ret->_options.Wind = CubismVector2(wind.value(QStringLiteral("X")).toDouble(0), wind.value(QStringLiteral("Y")).toDouble(0));
+        ret->_sourceDigest = QCryptographicHash::hash(source, QCryptographicHash::Sha256);
+        ret->_normalizedBytes = bytes;
+        ret->_topology = PhysicsTopology(normalized);
+        return ret.release();
+    }
+    catch (const std::exception&)
+    {
+        PhysicsError(error, QStringLiteral("无法创建物理配置"));
+        return nullptr;
+    }
 }
 
 void CubismPhysics::Delete(CubismPhysics* physics)
@@ -635,13 +882,13 @@ void CubismPhysics::Parse(const csmByte* physicsJson, csmSizeInt size)
 {
     _physicsRig = CSM_NEW CubismPhysicsRig;
 
-    CubismPhysicsJson* json = CSM_NEW CubismPhysicsJson(physicsJson, size);
+    const auto deleteJson = [](CubismPhysicsJson* value) { CSM_DELETE(value); };
+    const std::unique_ptr<CubismPhysicsJson, decltype(deleteJson)> json(CSM_NEW CubismPhysicsJson(physicsJson, size), deleteJson);
 
     _isJsonValid = json->IsValid();
 
     if (!_isJsonValid)
     {
-        CSM_DELETE(json);
         return;
     }
 
@@ -725,12 +972,14 @@ void CubismPhysics::Parse(const csmByte* physicsJson, csmSizeInt size)
             _physicsRig->Outputs[outputIndex + j].Destination.Id = json->GetOutputsDestinationId(i, j);
             if (strcmp(json->GetOutputType(i, j), PhysicsTypeTagX) == 0)
             {
+                _physicsRig->Outputs[outputIndex + j].TranslationScale.X = json->GetOutputAngleScale(i, j);
                 _physicsRig->Outputs[outputIndex + j].Type = CubismPhysicsSource_X;
                 _physicsRig->Outputs[outputIndex + j].GetValue = GetOutputTranslationX;
                 _physicsRig->Outputs[outputIndex + j].GetScale = GetOutputScaleTranslationX;
             }
             else if (strcmp(json->GetOutputType(i, j), PhysicsTypeTagY) == 0)
             {
+                _physicsRig->Outputs[outputIndex + j].TranslationScale.Y = json->GetOutputAngleScale(i, j);
                 _physicsRig->Outputs[outputIndex + j].Type = CubismPhysicsSource_Y;
                 _physicsRig->Outputs[outputIndex + j].GetValue = GetOutputTranslationY;
                 _physicsRig->Outputs[outputIndex + j].GetScale = GetOutputScaleTranslationY;
@@ -763,13 +1012,45 @@ void CubismPhysics::Parse(const csmByte* physicsJson, csmSizeInt size)
 
     Initialize();
 
-    CSM_DELETE(json);
 }
 
 
 void CubismPhysics::Stabilization(CubismModel* model)
 {
-    if (!ResolveParameterIndices(model)) return;
+    if (!model || !HasFiniteRuntimeState()) return;
+    try
+    {
+        ParameterPhysicsReferences references;
+        references.sourceDigest = _sourceDigest;
+        for (int i = 0; i < _activeInputs.size(); ++i)
+            if (!_activeInputs[i]) references.suppressedInputs.insert(i, QString::fromUtf8(_physicsRig->Inputs[i].Source.Id->GetString().GetRawString()));
+        for (int i = 0; i < _activeOutputs.size(); ++i)
+            if (!_activeOutputs[i]) references.suppressedOutputs.insert(i, QString::fromUtf8(_physicsRig->Outputs[i].Destination.Id->GetString().GetRawString()));
+        PreparedRuntimeState prepared;
+        prepared.work.reset(Create(reinterpret_cast<const csmByte*>(_normalizedBytes.constData()), _normalizedBytes.size()));
+        if (!prepared.work) return;
+        auto& work = *prepared.work;
+        work._sourceDigest = _sourceDigest;
+        work._options = _options;
+        ParameterDefinitionState binding;
+        if (!work.PrepareModelBinding(*model, references, binding)) return;
+        work.CommitParameterDefinitionChange(binding);
+        work.CopyDynamicStateFrom(*this);
+        QVector<float> output;
+        if (!work.StabilizeValues(*model, output)) return;
+        auto* values = Core::csmGetParameterValues(model->GetModel());
+        if (model->GetParameterCount() && !values) return;
+        prepared.owner = this;
+        prepared.revision = _stateRevision;
+        prepared.stabilized = true;
+        if (!CommitRuntimeState(prepared)) return;
+        for (int i = 0; i < output.size(); ++i) values[i] = output.at(i);
+    }
+    catch (const std::exception&) {}
+}
+
+bool CubismPhysics::StabilizeValues(const CubismModel& model, QVector<float>& values, QString* error)
+{
     csmFloat32 totalAngle;
     csmFloat32 weight;
     csmFloat32 radAngle;
@@ -786,21 +1067,29 @@ void CubismPhysics::Stabilization(CubismModel* model)
     const csmFloat32* parameterMinimumValues;
     const csmFloat32* parameterDefaultValues;
 
-    parameterValues = Core::csmGetParameterValues(model->GetModel());
-    parameterMaximumValues = Core::csmGetParameterMaximumValues(model->GetModel());
-    parameterMinimumValues = Core::csmGetParameterMinimumValues(model->GetModel());
-    parameterDefaultValues = Core::csmGetParameterDefaultValues(model->GetModel());
-
-    if (_parameterCaches.size() < model->GetParameterCount())
+    const auto* sourceValues = Core::csmGetParameterValues(model.GetModel());
+    if (model.GetParameterCount() && !sourceValues) return PhysicsError(error, QStringLiteral("物理稳定化缺少参数值"));
+    values.resize(model.GetParameterCount());
+    for (int index = 0; index < values.size(); ++index)
     {
-        _parameterCaches.resize(model->GetParameterCount());
+        if (!std::isfinite(sourceValues[index])) return PhysicsError(error, QStringLiteral("物理稳定化的参数值无效"));
+        values[index] = sourceValues[index];
     }
-    if (_parameterInputCaches.size() < model->GetParameterCount())
+    parameterValues = values.data();
+    parameterMaximumValues = Core::csmGetParameterMaximumValues(model.GetModel());
+    parameterMinimumValues = Core::csmGetParameterMinimumValues(model.GetModel());
+    parameterDefaultValues = Core::csmGetParameterDefaultValues(model.GetModel());
+
+    if (_parameterCaches.size() < model.GetParameterCount())
     {
-        _parameterInputCaches.resize(model->GetParameterCount());
+        _parameterCaches.resize(model.GetParameterCount());
+    }
+    if (_parameterInputCaches.size() < model.GetParameterCount())
+    {
+        _parameterInputCaches.resize(model.GetParameterCount());
     }
 
-    for (int j = 0; j < model->GetParameterCount(); ++j)
+    for (int j = 0; j < model.GetParameterCount(); ++j)
     {
         _parameterCaches[j] = parameterValues[j];
         _parameterInputCaches[j] = parameterValues[j];
@@ -812,8 +1101,8 @@ void CubismPhysics::Stabilization(CubismModel* model)
         totalTranslation.X = 0.0f;
         totalTranslation.Y = 0.0f;
         currentSetting = &_physicsRig->Settings[settingIndex];
-        currentInputs = &_physicsRig->Inputs[currentSetting->BaseInputIndex];
-        currentOutputs = &_physicsRig->Outputs[currentSetting->BaseOutputIndex];
+        currentInputs = currentSetting->InputCount ? &_physicsRig->Inputs[currentSetting->BaseInputIndex] : nullptr;
+        currentOutputs = currentSetting->OutputCount ? &_physicsRig->Outputs[currentSetting->BaseOutputIndex] : nullptr;
         currentParticles = &_physicsRig->Particles[currentSetting->BaseParticleIndex];
 
         // Load input parameters
@@ -824,7 +1113,7 @@ void CubismPhysics::Stabilization(CubismModel* model)
 
             if (currentInputs[i].SourceParameterIndex == -1)
             {
-                currentInputs[i].SourceParameterIndex = model->FindRealParameterIndex(currentInputs[i].Source.Id);
+                currentInputs[i].SourceParameterIndex = model.FindRealParameterIndex(currentInputs[i].Source.Id);
             }
 
             currentInputs[i].GetNormalizedParameterValue(
@@ -867,7 +1156,7 @@ void CubismPhysics::Stabilization(CubismModel* model)
 
             if (currentOutputs[i].DestinationParameterIndex == -1)
             {
-                currentOutputs[i].DestinationParameterIndex = model->FindRealParameterIndex(
+                currentOutputs[i].DestinationParameterIndex = model.FindRealParameterIndex(
                     currentOutputs[i].Destination.Id);
             }
 
@@ -901,6 +1190,9 @@ void CubismPhysics::Stabilization(CubismModel* model)
             _parameterCaches[currentOutputs[i].DestinationParameterIndex] = parameterValues[currentOutputs[i].DestinationParameterIndex];
         }
     }
+    for (float value : values)
+        if (!std::isfinite(value)) return PhysicsError(error, QStringLiteral("物理稳定化产生非有限参数值"));
+    return HasFiniteRuntimeState(error);
 }
 
 /// Pendulum interpolation weights
@@ -943,7 +1235,8 @@ void CubismPhysics::Stabilization(CubismModel* model)
 /// @param deltaTimeSeconds  rendering delta time.
 void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
 {
-    if (!ResolveParameterIndices(model)) return;
+    if (!std::isfinite(deltaTimeSeconds) || deltaTimeSeconds <= 0 || !ResolveParameterIndices(model)) return;
+    ++_stateRevision;
     csmFloat32 totalAngle;
     csmFloat32 weight;
     csmFloat32 radAngle;
@@ -1004,7 +1297,7 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
         for (settingIndex = 0; settingIndex < _physicsRig->SubRigCount; ++settingIndex)
         {
             currentSetting = &_physicsRig->Settings[settingIndex];
-            currentOutputs = &_physicsRig->Outputs[currentSetting->BaseOutputIndex];
+            currentOutputs = currentSetting->OutputCount ? &_physicsRig->Outputs[currentSetting->BaseOutputIndex] : nullptr;
             for (i = 0; i < currentSetting->OutputCount; ++i)
             {
                 if (!_activeOutputs[currentSetting->BaseOutputIndex + i]) continue;
@@ -1029,8 +1322,8 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
             totalTranslation.X = 0.0f;
             totalTranslation.Y = 0.0f;
             currentSetting = &_physicsRig->Settings[settingIndex];
-            currentInputs = &_physicsRig->Inputs[currentSetting->BaseInputIndex];
-            currentOutputs = &_physicsRig->Outputs[currentSetting->BaseOutputIndex];
+            currentInputs = currentSetting->InputCount ? &_physicsRig->Inputs[currentSetting->BaseInputIndex] : nullptr;
+            currentOutputs = currentSetting->OutputCount ? &_physicsRig->Outputs[currentSetting->BaseOutputIndex] : nullptr;
             currentParticles = &_physicsRig->Particles[currentSetting->BaseParticleIndex];
 
             // Load input parameters.
@@ -1138,7 +1431,7 @@ void CubismPhysics::Interpolate(CubismModel* model, csmFloat32 weight)
     for (settingIndex = 0; settingIndex < _physicsRig->SubRigCount; ++settingIndex)
     {
         currentSetting = &_physicsRig->Settings[settingIndex];
-        currentOutputs = &_physicsRig->Outputs[currentSetting->BaseOutputIndex];
+        currentOutputs = currentSetting->OutputCount ? &_physicsRig->Outputs[currentSetting->BaseOutputIndex] : nullptr;
 
         // Load input parameters.
         for (i = 0; i < currentSetting->OutputCount; ++i)
@@ -1162,6 +1455,9 @@ void CubismPhysics::Interpolate(CubismModel* model, csmFloat32 weight)
 
 void CubismPhysics::SetOptions(const Options& options)
 {
+    if (!std::isfinite(options.Gravity.X) || !std::isfinite(options.Gravity.Y) ||
+        !std::isfinite(options.Wind.X) || !std::isfinite(options.Wind.Y)) return;
+    ++_stateRevision;
     _options = options;
 }
 

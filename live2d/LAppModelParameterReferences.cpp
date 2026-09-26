@@ -156,13 +156,13 @@ bool LAppModel::PrepareParameterReferences(const ParameterReferenceState& state,
             return fail(error, error && !error->isEmpty() ? *error : QStringLiteral("表情引用资源不存在：%1").arg(it.key()));
         for (const auto& id : it->suppressedParameters) prepared->expressionIds.insert(CubismFramework::GetIdManager()->GetId(id.toUtf8().constData()));
     }
-    if (!_physics && (!state.physics.sourcePath.isEmpty() || !state.physics.sourceDigest.isEmpty() ||
+    if (m_physicsSourceBytes.isEmpty() && (!state.physics.sourcePath.isEmpty() || !state.physics.sourceDigest.isEmpty() ||
                      !state.physics.suppressedInputs.isEmpty() || !state.physics.suppressedOutputs.isEmpty()))
         return fail(error, QStringLiteral("物理引用资源尚未加载"));
-    if (_physics && (!state.physics.sourcePath.isEmpty() || !state.physics.sourceDigest.isEmpty() ||
+    if (!m_physicsSourceBytes.isEmpty() && (!state.physics.sourcePath.isEmpty() || !state.physics.sourceDigest.isEmpty() ||
                      !state.physics.suppressedInputs.isEmpty() || !state.physics.suppressedOutputs.isEmpty())) {
         QFile file(directory.filePath(state.physics.sourcePath));
-        if (state.physics.sourcePath != m_physicsReferencePath || state.physics.sourceDigest != _physics->SourceDigest() ||
+        if (state.physics.sourcePath != m_physicsReferencePath || state.physics.sourceDigest != m_physicsSourceDigest ||
             !QFileInfo(file).isFile() || !file.open(QIODevice::ReadOnly) || file.size() > 16 * 1024 * 1024 ||
             file.size() > 64 * 1024 * 1024 - bytesRead)
             return fail(error, QStringLiteral("物理引用与加载快照不匹配"));
@@ -228,9 +228,9 @@ bool LAppModel::CaptureParameterReferenceCatalog(ParameterReferenceCatalog& resu
             for (int index = 0; index < entries->GetSize(); ++index)
                 if ((*entries)[index] && !expression((*entries)[index]->GetCubismMotion())) return false;
         }
-        if (_physics) {
+        if (!m_physicsSourceBytes.isEmpty()) {
             candidate.physicsPath = m_physicsReferencePath;
-            candidate.physicsDigest = _physics->SourceDigest();
+            candidate.physicsDigest = m_physicsSourceDigest;
             if (candidate.physicsPath.isEmpty() || candidate.physicsDigest.size() != 32)
                 return fail(error, QStringLiteral("运行中的物理资源缺少来源"));
         }

@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtEndian>
+#include <algorithm>
 #include <functional>
 #include <limits>
 
@@ -133,6 +134,161 @@ private slots:
         QVERIFY(withoutAngle.ExecuteEdit(deletion));
         QCOMPARE(withoutAngle.Parameters().size(), loaded.Parameters().size() - 1);
         QCOMPARE(withoutAngle.SourceBytes(), loaded.SourceBytes());
+    }
+
+    void newPhysicsDraftWritesV4AndRestoresFromTheModelSnapshot_data()
+    {
+        QTest::addColumn<int>("version"); QTest::addColumn<bool>("dirty");
+        for (int version : {1, 2, 3, 4}) for (bool dirty : {false, true})
+            QTest::newRow(qPrintable(QStringLiteral("v%1-%2").arg(version).arg(dirty))) << version << dirty;
+    }
+
+    void newPhysicsDraftWritesV4AndRestoresFromTheModelSnapshot()
+    {
+        QFETCH(int, version); QFETCH(bool, dirty);
+        CModelSession session; session.version = version;
+        session.sourceMoc = loaded.SourcePath(); session.sourceDigest = loaded.SourceDigest();
+        const QJsonObject draft{{"Version", 3}, {"PhysicsSettings", QJsonArray{}}, {"Custom", "preserved"}};
+        session.physicsDraft = CModelSession::PhysicsDraft{QString(), draft, dirty};
+        const auto bytes = session.ToJson(); QVERIFY(!bytes.isEmpty());
+        QCOMPARE(QJsonDocument::fromJson(bytes).object()["version"].toInt(), 4); QCOMPARE(session.version, version);
+        CModelSession decoded; QString error;
+        QVERIFY2(CModelSession::FromJson(bytes, &decoded, &error), qPrintable(error));
+        QCOMPARE(decoded.version, 4); QVERIFY(decoded.physicsDraft); QVERIFY(decoded.physicsDraft->sourcePath.isEmpty());
+        QCOMPARE(decoded.physicsDraft->document, draft); QCOMPARE(decoded.physicsDraft->dirty, dirty);
+        QCOMPARE(decoded.sourceMoc, session.sourceMoc); QCOMPARE(decoded.sourceDigest, session.sourceDigest);
+        QTemporaryDir directory; const auto path = directory.filePath("new-physics.session.json");
+        QVERIFY2(session.Save(path, &error), qPrintable(error));
+        CModelSession saved; QVERIFY2(CModelSession::Load(path, &saved, &error), qPrintable(error));
+        QCOMPARE(saved.ToJson(), bytes);
+        CModelDocument restored = loaded;
+        QVERIFY(restored.ExecuteEdit({mesh().id, "artmesh", CModelEdit::Opacity, restored.DrawableOpacity(mesh()), .375f}));
+        QVERIFY2(saved.RestoreDocument(loaded, restored, &error), qPrintable(error));
+        QCOMPARE(restored.SourceBytes(), loaded.SourceBytes()); QCOMPARE(restored.SourceDigest(), loaded.SourceDigest());
+        QCOMPARE(state(restored).ToJson(), state(loaded).ToJson()); QVERIFY(!restored.CanUndoEdit()); QVERIFY(!restored.CanRedoEdit());
+    }
+
+    void sourcedPhysicsDraftKeepsLegacyReferenceOnlyValidation_data()
+    {
+        QTest::addColumn<int>("version");
+        for (int version : {1, 2, 3, 4}) QTest::newRow(qPrintable(QString::number(version))) << version;
+    }
+
+    void sourcedPhysicsDraftKeepsLegacyReferenceOnlyValidation()
+    {
+        QFETCH(int, version);
+        const QJsonObject draft{{"PhysicsSettings", QJsonArray{QJsonObject{
+            {"Input", QJsonArray{QJsonObject{{"Source", QJsonObject{{"Target", "Parameter"}, {"Id", "ExternalVirtualParameter"}}}}}},
+            {"Output", QJsonArray{}}}}}};
+        CModelSession session; session.version = version;
+        session.physicsDraft = CModelSession::PhysicsDraft{QStringLiteral("/unread/original.physics3.json"), draft, true};
+        CModelSession decoded; QString error; const auto bytes = session.ToJson();
+        QVERIFY2(CModelSession::FromJson(bytes, &decoded, &error), qPrintable(error));
+        QCOMPARE(decoded.version, std::max(3, version)); QVERIFY(decoded.sourceMoc.isEmpty()); QVERIFY(decoded.sourceDigest.isEmpty());
+        QCOMPARE(decoded.physicsDraft->document, draft);
+        CModelDocument restored; QVERIFY2(decoded.RestoreDocument(loaded, restored, &error), qPrintable(error));
+        session.physicsDraft->sourcePath.clear(); session.sourceMoc = loaded.SourcePath(); session.sourceDigest = loaded.SourceDigest();
+        QVERIFY2(CModelSession::FromJson(session.ToJson(), &decoded, &error), qPrintable(error));
+        QCOMPARE(decoded.version, 4); QCOMPARE(decoded.physicsDraft->document, draft);
+        QVERIFY2(decoded.RestoreDocument(loaded, restored, &error), qPrintable(error));
+    }
+
+    void v4DraftCannotBeReadOrRestoredAsAnOlderVersion_data()
+    {
+        QTest::addColumn<int>("version");
+        for (int version : {1, 2, 3}) QTest::newRow(qPrintable(QString::number(version))) << version;
+    }
+
+    void v4DraftCannotBeReadOrRestoredAsAnOlderVersion()
+    {
+        QFETCH(int, version);
+        CModelSession session; session.version = 4; session.sourceMoc = loaded.SourcePath(); session.sourceDigest = loaded.SourceDigest();
+        session.physicsDraft = CModelSession::PhysicsDraft{QStringLiteral(""), QJsonObject{{"PhysicsSettings", QJsonArray{}}}, true};
+        auto root = QJsonDocument::fromJson(session.ToJson()).object(); root["version"] = version;
+        CModelSession result; result.viewScale = 2; const auto before = result.ToJson(); QString error;
+        QVERIFY(!CModelSession::FromJson(QJsonDocument(root).toJson(), &result, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(result.ToJson(), before);
+        session.version = version; rejectsWithoutMutation(session, version < 3 ? QStringLiteral("version") : QStringLiteral("physicsDraft"));
+        QVERIFY2(CModelSession::FromJson(QJsonDocument(QJsonObject{{"version", version}}).toJson(), &result, &error), qPrintable(error));
+        QCOMPARE(result.version, version); QVERIFY(!result.physicsDraft);
+    }
+
+    void invalidNewDraftJsonKeepsTheExistingSession_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const char* field : {"missing-source", "empty-source", "null-source", "nul-source", "missing-digest", "empty-digest", "null-digest",
+             "short-digest", "long-digest", "bad-digest", "missing-path", "null-path", "nul-path", "empty-document", "null-document", "missing-document", "bad-dirty"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+
+    void invalidNewDraftJsonKeepsTheExistingSession()
+    {
+        QFETCH(QString, field);
+        CModelSession source; source.version = 4; source.sourceMoc = loaded.SourcePath(); source.sourceDigest = loaded.SourceDigest();
+        source.physicsDraft = CModelSession::PhysicsDraft{QStringLiteral(""), QJsonObject{{"PhysicsSettings", QJsonArray{}}}, true};
+        auto root = QJsonDocument::fromJson(source.ToJson()).object(); auto draft = root["physicsDraft"].toObject();
+        if (field == "missing-source") root.remove("sourceMoc");
+        else if (field == "empty-source") root["sourceMoc"] = "";
+        else if (field == "null-source") root["sourceMoc"] = QJsonValue();
+        else if (field == "nul-source") root["sourceMoc"] = QString("model") + QChar::Null;
+        else if (field == "missing-digest") root.remove("sourceDigest");
+        else if (field == "empty-digest") root["sourceDigest"] = "";
+        else if (field == "null-digest") root["sourceDigest"] = QJsonValue();
+        else if (field == "short-digest") root["sourceDigest"] = QString(62, 'a');
+        else if (field == "long-digest") root["sourceDigest"] = QString(66, 'a');
+        else if (field == "bad-digest") root["sourceDigest"] = QString(64, 'z');
+        else if (field == "missing-path") draft.remove("sourcePath");
+        else if (field == "null-path") draft["sourcePath"] = QJsonValue();
+        else if (field == "nul-path") draft["sourcePath"] = QString("rig") + QChar::Null;
+        else if (field == "empty-document") draft["document"] = QJsonObject{};
+        else if (field == "null-document") draft["document"] = QJsonValue();
+        else if (field == "missing-document") draft.remove("document");
+        else if (field == "bad-dirty") draft["dirty"] = "true";
+        root["physicsDraft"] = draft;
+        CModelSession result; result.parameters["unchanged"] = .25f; result.viewScale = 3;
+        const auto before = result.ToJson(); QString error;
+        const auto bytes = QJsonDocument(root).toJson();
+        QVERIFY(!CModelSession::FromJson(bytes, &result, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(result.ToJson(), before);
+        QTemporaryDir directory; const auto path = directory.filePath("bad.session.json"); QVERIFY(write(path, bytes));
+        QVERIFY(!CModelSession::Load(path, &result, &error)); QCOMPARE(result.ToJson(), before);
+    }
+
+    void invalidNewDraftCannotOverwriteFilesOrDocumentHistory_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const char* field : {"source", "nul-source", "digest", "short-digest", "long-digest", "nul-path", "document", "version"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+
+    void invalidNewDraftCannotOverwriteFilesOrDocumentHistory()
+    {
+        QFETCH(QString, field);
+        CModelSession session; session.version = 4; session.sourceMoc = loaded.SourcePath(); session.sourceDigest = loaded.SourceDigest();
+        session.physicsDraft = CModelSession::PhysicsDraft{QString(), QJsonObject{{"PhysicsSettings", QJsonArray{}}}, true};
+        if (field == "source") session.sourceMoc.clear();
+        else if (field == "nul-source") session.sourceMoc.append(QChar::Null);
+        else if (field == "digest") session.sourceDigest.clear();
+        else if (field == "short-digest") session.sourceDigest = QByteArray(31, 'x');
+        else if (field == "long-digest") session.sourceDigest = QByteArray(33, 'x');
+        else if (field == "nul-path") session.physicsDraft->sourcePath = QString("rig") + QChar::Null;
+        else if (field == "document") session.physicsDraft->document = {};
+        else session.version = 5;
+        QVERIFY(session.ToJson().isEmpty());
+        QTemporaryDir directory; const auto path = directory.filePath("existing.json"); QVERIFY(write(path, "unchanged")); QString error;
+        QVERIFY(!session.Save(path, &error)); QVERIFY(!error.isEmpty());
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("unchanged"));
+        const auto fresh = directory.filePath("new.json"); QVERIFY(!session.Save(fresh, &error)); QVERIFY(!QFileInfo::exists(fresh));
+        const QString expected = field == "version" ? QStringLiteral("version")
+            : field == "document" || field == "nul-path" ? QStringLiteral("物理草稿") : QStringLiteral("physicsDraft");
+        rejectsWithoutMutation(session, expected);
+    }
+
+    void newDraftRequiresTheSameModelDigestAtRestore()
+    {
+        CModelSession session; session.version = 4; session.sourceMoc = loaded.SourcePath(); session.sourceDigest = QByteArray(32, 'x');
+        session.physicsDraft = CModelSession::PhysicsDraft{QString(), QJsonObject{{"PhysicsSettings", QJsonArray{}}}, true};
+        CModelSession decoded; QString error;
+        QVERIFY(CModelSession::FromJson(session.ToJson(), &decoded, &error));
+        rejectsWithoutMutation(decoded, QStringLiteral("sourceDigest"));
     }
 
     void legacyDefaultsRestoreSourceAndClearPreviousEdits_data()

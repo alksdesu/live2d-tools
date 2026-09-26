@@ -8,6 +8,7 @@
 
 #include <QtTest>
 #include <QCryptographicHash>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -100,6 +101,53 @@ class PhysicsParameterDefinitionTests : public QObject
         if (!value) qFatal("Physics fixture JSON was rejected");
         return value;
     }
+    static QByteArray changedPhysics(const std::function<void(QJsonObject&, QJsonObject&)>& change)
+    {
+        auto root = QJsonDocument::fromJson(physicsJson()).object();
+        auto group = root["PhysicsSettings"].toArray()[0].toObject();
+        change(root, group);
+        root["PhysicsSettings"] = QJsonArray{group};
+        return QJsonDocument(root).toJson(QJsonDocument::Compact);
+    }
+    static QByteArray dynamicState(const CubismPhysics& physics)
+    {
+        QByteArray result;
+        const auto append = [&](const auto& value) { result.append(reinterpret_cast<const char*>(&value), sizeof(value)); };
+        append(physics._currentRemainTime);
+        for (const auto* values : {&physics._parameterCaches, &physics._parameterInputCaches}) {
+            const auto count = values->size(); append(count);
+            for (float value : *values) append(value);
+        }
+        for (int i = 0; i < physics._physicsRig->Particles.GetSize(); ++i) {
+            const auto& particle = physics._physicsRig->Particles[i];
+            for (const auto* value : {&particle.Position, &particle.LastPosition, &particle.LastGravity, &particle.Velocity, &particle.Force}) {
+                append(value->X); append(value->Y);
+            }
+        }
+        for (int i = 0; i < physics._physicsRig->Settings.GetSize(); ++i)
+            for (int j = 0; j < physics._physicsRig->Settings[i].OutputCount; ++j) {
+                append(physics._currentRigOutputs[i].outputs[j]); append(physics._previousRigOutputs[i].outputs[j]);
+            }
+        for (int i = 0; i < physics._physicsRig->Outputs.GetSize(); ++i) {
+            append(physics._physicsRig->Outputs[i].ValueBelowMinimum); append(physics._physicsRig->Outputs[i].ValueExceededMaximum);
+        }
+        return result;
+    }
+    static void warm(CubismPhysics& physics)
+    {
+        physics._currentRemainTime = 0.0125f;
+        physics._parameterCaches = {0.6f, -0.0f};
+        physics._parameterInputCaches = {-0.4f, 1.25f};
+        physics._physicsRig->Particles[1].Position = CubismVector2(0.25f, 0.75f);
+        physics._physicsRig->Particles[1].LastPosition = CubismVector2(-0.125f, 0.875f);
+        physics._physicsRig->Particles[1].LastGravity = CubismVector2(0.125f, 0.875f);
+        physics._physicsRig->Particles[1].Velocity = CubismVector2(0.375f, -0.625f);
+        physics._physicsRig->Particles[1].Force = CubismVector2(-0.25f, 0.5f);
+        physics._currentRigOutputs[0].outputs[0] = 0.375f;
+        physics._previousRigOutputs[0].outputs[0] = -0.625f;
+        physics._physicsRig->Outputs[0].ValueBelowMinimum = -3.0f;
+        physics._physicsRig->Outputs[0].ValueExceededMaximum = 4.0f;
+    }
 private slots:
     void init()
     {
@@ -114,6 +162,340 @@ private slots:
         idManager.reset();
         QVERIFY(coreStates.empty());
         QVERIFY(allocations.empty());
+    }
+
+    void createNormalizesCountsBeforeSdkAllocationAndKeepsRawDigest()
+    {
+        auto root = QJsonDocument::fromJson(physicsJson()).object();
+        auto meta = root["Meta"].toObject();
+        for (const auto& field : {"PhysicsSettingCount", "TotalInputCount", "TotalOutputCount", "VertexCount"}) meta[field] = 2147483647;
+        root["Meta"] = meta;
+        auto bytes = QJsonDocument(root).toJson(); bytes.replace("\n", "\r\n");
+        auto simulation = physics(bytes);
+        QCOMPARE(simulation->SourceDigest(), QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+        QCOMPARE(simulation->_physicsRig->Settings.GetSize(), 1u);
+        QCOMPARE(simulation->_physicsRig->Inputs.GetSize(), 1u);
+        QCOMPARE(simulation->_physicsRig->Outputs.GetSize(), 1u);
+        QCOMPARE(simulation->_physicsRig->Particles.GetSize(), 2u);
+        QVERIFY(simulation->SourceDigest() != QCryptographicHash::hash(simulation->_normalizedBytes, QCryptographicHash::Sha256));
+    }
+
+    void originalModelsCreateWithTheDeclaredForces_data()
+    {
+        QTest::addColumn<QString>("name");
+        for (const auto& name : {"Mark", "Natori", "Rice", "Wanko"}) QTest::newRow(name) << QString::fromLatin1(name);
+    }
+    void originalModelsCreateWithTheDeclaredForces()
+    {
+        QFETCH(QString, name);
+        const auto path = QFINDTESTDATA(qPrintable(QStringLiteral("../Resources/%1/%1.physics3.json").arg(name)));
+        QVERIFY(!path.isEmpty()); QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes = file.readAll();
+        const auto root = QJsonDocument::fromJson(bytes).object(); const auto forces = root["Meta"].toObject()["EffectiveForces"].toObject();
+        auto simulation = physics(bytes); const auto options = simulation->GetOptions();
+        QCOMPARE(options.Gravity.X, float(forces["Gravity"].toObject()["X"].toDouble(0)));
+        QCOMPARE(options.Gravity.Y, float(forces["Gravity"].toObject()["Y"].toDouble(-1)));
+        QCOMPARE(options.Wind.X, float(forces["Wind"].toObject()["X"].toDouble(0)));
+        QCOMPARE(options.Wind.Y, float(forces["Wind"].toObject()["Y"].toDouble(0)));
+        QCOMPARE(simulation->_physicsRig->Settings.GetSize(), root["PhysicsSettings"].toArray().size());
+        QCOMPARE(simulation->SourceDigest(), QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+    }
+
+    void invalidJsonIsRejectedBeforeSdkAllocation_data()
+    {
+        QTest::addColumn<QByteArray>("bytes");
+        QTest::newRow("empty") << QByteArray();
+        QTest::newRow("broken") << QByteArray("{");
+        QTest::newRow("array") << QByteArray("[]");
+        QTest::newRow("invalid-input") << changedPhysics([](QJsonObject&, QJsonObject& group) { group["Input"] = false; });
+        QTest::newRow("weight") << changedPhysics([](QJsonObject&, QJsonObject& group) { auto rows = group["Input"].toArray(); auto row = rows[0].toObject(); row["Weight"] = 101; rows[0] = row; group["Input"] = rows; });
+        QTest::newRow("missing-root") << changedPhysics([](QJsonObject&, QJsonObject& group) { group["Vertices"] = QJsonArray{}; });
+        QTest::newRow("invalid-output") << changedPhysics([](QJsonObject&, QJsonObject& group) { auto rows = group["Output"].toArray(); auto row = rows[0].toObject(); row["VertexIndex"] = 2; rows[0] = row; group["Output"] = rows; });
+        QTest::newRow("invalid-force") << changedPhysics([](QJsonObject& root, QJsonObject&) { auto meta = root["Meta"].toObject(); meta["EffectiveForces"] = QJsonObject{{"Gravity", QJsonObject{{"Y", "bad"}}}}; root["Meta"] = meta; });
+        QJsonArray groups; const QJsonValue group = QJsonDocument::fromJson(physicsJson()).object()["PhysicsSettings"].toArray()[0];
+        for (int i = 0; i < 10001; ++i) groups.append(group);
+        QTest::newRow("group-limit") << QJsonDocument(QJsonObject{{"PhysicsSettings", groups}}).toJson(QJsonDocument::Compact);
+        QTest::newRow("byte-limit") << QByteArray(16 * 1024 * 1024 + 1, ' ');
+    }
+    void invalidJsonIsRejectedBeforeSdkAllocation()
+    {
+        QFETCH(QByteArray, bytes);
+        const auto before = sdkAllocationCalls; QString error;
+        auto* result = CubismPhysics::Create(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size(), &error);
+        QVERIFY(!result); QVERIFY(!error.isEmpty()); QCOMPARE(sdkAllocationCalls, before);
+    }
+
+    void optionsReadOnlyExplicitComponents_data()
+    {
+        QTest::addColumn<QJsonObject>("forces"); QTest::addColumn<float>("gx"); QTest::addColumn<float>("gy");
+        QTest::addColumn<float>("wx"); QTest::addColumn<float>("wy");
+        QTest::newRow("missing") << QJsonObject{} << 0.f << -1.f << 0.f << 0.f;
+        QTest::newRow("gravity-x") << QJsonObject{{"Gravity", QJsonObject{{"X", .25}}}} << .25f << -1.f << 0.f << 0.f;
+        QTest::newRow("gravity-zero") << QJsonObject{{"Gravity", QJsonObject{{"Y", 0}}}} << 0.f << 0.f << 0.f << 0.f;
+        QTest::newRow("wind-y") << QJsonObject{{"Wind", QJsonObject{{"Y", -.75}}}} << 0.f << -1.f << 0.f << -.75f;
+        QTest::newRow("all") << QJsonObject{{"Gravity", QJsonObject{{"X", .25}, {"Y", -.5}}}, {"Wind", QJsonObject{{"X", .75}, {"Y", -.125}}}} << .25f << -.5f << .75f << -.125f;
+    }
+    void optionsReadOnlyExplicitComponents()
+    {
+        QFETCH(QJsonObject, forces); QFETCH(float, gx); QFETCH(float, gy); QFETCH(float, wx); QFETCH(float, wy);
+        const auto bytes = changedPhysics([&](QJsonObject& root, QJsonObject&) {
+            auto meta = root["Meta"].toObject(); meta.remove("EffectiveForces");
+            if (!forces.isEmpty()) meta["EffectiveForces"] = forces; root["Meta"] = meta;
+        });
+        auto simulation = physics(bytes); const auto options = simulation->GetOptions();
+        QCOMPARE(options.Gravity.X, gx); QCOMPARE(options.Gravity.Y, gy); QCOMPARE(options.Wind.X, wx); QCOMPARE(options.Wind.Y, wy);
+    }
+
+    void emptyAndMissingInputOutputArraysAreSafe_data()
+    {
+        QTest::addColumn<int>("mode");
+        for (int mode = 0; mode < 5; ++mode) QTest::newRow(qPrintable(QString::number(mode))) << mode;
+    }
+    void emptyAndMissingInputOutputArraysAreSafe()
+    {
+        QFETCH(int, mode);
+        auto bytes = changedPhysics([&](QJsonObject&, QJsonObject& group) {
+            if (mode == 0 || mode == 2) group.remove("Input");
+            if (mode == 1 || mode == 2) group.remove("Output");
+            if (mode == 3) { group["Input"] = QJsonArray{}; group["Output"] = QJsonArray{}; group["Vertices"] = QJsonArray{group["Vertices"].toArray()[0]}; }
+        });
+        if (mode == 4) bytes = R"({"Version":3,"PhysicsSettings":[]})";
+        auto simulation = physics(bytes); auto target = model();
+        CubismPhysics::ParameterDefinitionState binding; QVERIFY(simulation->PrepareModelBinding(*target, {}, binding));
+        simulation->CommitParameterDefinitionChange(binding);
+        simulation->Stabilization(target.get()); simulation->Evaluate(target.get(), 1.f / 30);
+        QVERIFY(simulation->HasFiniteRuntimeState());
+        for (float value : State(target->GetModel()).values) QVERIFY(std::isfinite(value));
+    }
+
+    void translationsUseTheirScaleDuringStabilization_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<float>("expected");
+        QTest::newRow("x") << QString("X") << .75f;
+        QTest::newRow("y") << QString("Y") << 1.f;
+    }
+    void translationsUseTheirScaleDuringStabilization()
+    {
+        QFETCH(QString, type); QFETCH(float, expected);
+        const auto bytes = changedPhysics([&](QJsonObject& root, QJsonObject& group) {
+            auto meta = root["Meta"].toObject(); auto forces = meta["EffectiveForces"].toObject();
+            forces["Wind"] = QJsonObject{{"X", 3}, {"Y", 3}}; meta["EffectiveForces"] = forces; root["Meta"] = meta;
+            auto output = group["Output"].toArray()[0].toObject(); output["Type"] = type; output["Scale"] = 1.25;
+            group["Output"] = QJsonArray{output};
+        });
+        auto simulation = physics(bytes); auto target = model();
+        simulation->Stabilization(target.get());
+        QVERIFY(std::abs(target->GetParameterValue(1) - expected) < .000001f);
+    }
+
+    void preparedRuntimePreservesDynamicsAndMigratesCachesByIdWithoutTouchingModels()
+    {
+        auto previousModel = model();
+        State(previousModel->GetModel()).minimum[0] = -2; State(previousModel->GetModel()).maximum[0] = 2;
+        auto nextModel = model([](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB", "ParamA", "ParamC"}); state.maximum[1] = .5f; });
+        auto previous = physics(); warm(*previous);
+        const auto oldState = dynamicState(*previous);
+        auto changed = physics(changedPhysics([](QJsonObject& root, QJsonObject& group) {
+            auto meta = root["Meta"].toObject(); meta["EffectiveForces"] = QJsonObject{{"Wind", QJsonObject{{"X", .25}}}}; root["Meta"] = meta;
+            auto inputs = group["Input"].toArray(); auto input = inputs[0].toObject(); input["Weight"] = 50; inputs[0] = input; group["Input"] = inputs;
+            auto outputs = group["Output"].toArray(); auto output = outputs[0].toObject(); output["Scale"] = 2; output["Weight"] = 25; outputs[0] = output; group["Output"] = outputs;
+            auto vertices = group["Vertices"].toArray(); auto vertex = vertices[1].toObject(); vertex["Mobility"] = .5; vertex["Delay"] = .4; vertex["Acceleration"] = .75; vertices[1] = vertex; group["Vertices"] = vertices;
+        }));
+        const auto newState = dynamicState(*changed);
+        const auto oldValues = State(previousModel->GetModel()).values, newValues = State(nextModel->GetModel()).values;
+        const auto oldSaved = previousModel->_savedParameters, newSaved = nextModel->_savedParameters;
+        CubismPhysics::PreparedRuntimeState prepared; QString error;
+        QVERIFY2(changed->PrepareRuntimeState(previous.get(), *previousModel, *nextModel, {}, prepared,
+            CubismPhysics::StatePolicy::PreserveCompatible, &error), qPrintable(error));
+        QVERIFY(!prepared.WasStabilized()); QVERIFY(changed->ValidatePreparedRuntimeState(prepared));
+        QCOMPARE(dynamicState(*previous), oldState); QCOMPARE(dynamicState(*changed), newState);
+        QCOMPARE(State(previousModel->GetModel()).values, oldValues); QCOMPARE(State(nextModel->GetModel()).values, newValues);
+        QCOMPARE(previousModel->_savedParameters, oldSaved); QCOMPARE(nextModel->_savedParameters, newSaved);
+        const int calls = sdkAllocationCalls; rejectSdkAllocation = true;
+        const bool committed = changed->CommitRuntimeState(prepared); rejectSdkAllocation = false;
+        QVERIFY(committed); QCOMPARE(sdkAllocationCalls, calls); QVERIFY(!changed->CommitRuntimeState(prepared));
+        QVERIFY(!changed->ValidatePreparedRuntimeState(prepared));
+        QCOMPARE(changed->_parameterCaches.size(), 3);
+        QVERIFY(std::signbit(changed->_parameterCaches[0])); QCOMPARE(changed->_parameterCaches[1], .5f); QCOMPARE(changed->_parameterCaches[2], .4f);
+        QCOMPARE(changed->_parameterInputCaches, QVector<float>({1.25f, -.4f, .4f}));
+        QCOMPARE(changed->_currentRemainTime, .0125f);
+        QCOMPARE(changed->_physicsRig->Particles[1].Position.X, .25f); QCOMPARE(changed->_physicsRig->Particles[1].Velocity.Y, -.625f);
+        QCOMPARE(changed->_physicsRig->Particles[1].Force.Y, .5f); QCOMPARE(changed->_physicsRig->Particles[1].LastGravity.X, .125f);
+        QCOMPARE(changed->_currentRigOutputs[0].outputs[0], .375f); QCOMPARE(changed->_previousRigOutputs[0].outputs[0], -.625f);
+        QCOMPARE(changed->_physicsRig->Outputs[0].ValueBelowMinimum, -3.f); QCOMPARE(changed->_physicsRig->Outputs[0].ValueExceededMaximum, 4.f);
+        QCOMPARE(changed->_physicsRig->Inputs[0].SourceParameterIndex, 1); QCOMPARE(changed->_physicsRig->Outputs[0].DestinationParameterIndex, 0);
+        QCOMPARE(changed->_physicsRig->Inputs[0].Weight, 50.f); QCOMPARE(changed->_physicsRig->Outputs[0].Weight, 25.f);
+        QCOMPARE(changed->_physicsRig->Outputs[0].TranslationScale.X, 2.f); QCOMPARE(changed->_physicsRig->Particles[1].Mobility, .5f);
+        QCOMPARE(changed->GetOptions().Wind.X, .25f);
+        QCOMPARE(dynamicState(*previous), oldState); QCOMPARE(State(nextModel->GetModel()).values, newValues); QCOMPARE(nextModel->_savedParameters, newSaved);
+    }
+
+    void topologyChangesStabilizeInPrivateBuffers_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const char* field : {"group-id", "missing-id", "input-id", "input-type", "input-reflect", "output-id", "output-type",
+             "output-reflect", "output-vertex", "particle-count", "radius", "position", "fps", "forced"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+    void topologyChangesStabilizeInPrivateBuffers()
+    {
+        QFETCH(QString, field); auto target = model(); target->SetParameterValue(0, .4f);
+        auto previous = physics(); warm(*previous);
+        const auto bytes = changedPhysics([&](QJsonObject& root, QJsonObject& group) {
+            if (field == "group-id") group["Id"] = "different";
+            if (field == "missing-id") group.remove("Id");
+            auto inputs = group["Input"].toArray(); auto input = inputs[0].toObject();
+            if (field == "input-id") input["Source"] = QJsonObject{{"Id", "ParamB"}, {"Target", "Parameter"}};
+            if (field == "input-type") input["Type"] = "Y";
+            if (field == "input-reflect") input["Reflect"] = false;
+            inputs[0] = input; group["Input"] = inputs;
+            auto outputs = group["Output"].toArray(); auto output = outputs[0].toObject();
+            if (field == "output-id") output["Destination"] = QJsonObject{{"Id", "ParamA"}, {"Target", "Parameter"}};
+            if (field == "output-type") output["Type"] = "Angle";
+            if (field == "output-reflect") output["Reflect"] = true;
+            if (field == "output-vertex") output["VertexIndex"] = 0;
+            outputs[0] = output; group["Output"] = outputs;
+            auto vertices = group["Vertices"].toArray(); auto vertex = vertices[1].toObject();
+            if (field == "radius") vertex["Radius"] = 1.5;
+            if (field == "position") vertex["Position"] = QJsonObject{{"X", .25}, {"Y", 1}};
+            vertices[1] = vertex;
+            if (field == "particle-count") vertices.append(vertex);
+            group["Vertices"] = vertices;
+            if (field == "fps") { auto meta = root["Meta"].toObject(); meta["Fps"] = 60; root["Meta"] = meta; }
+        });
+        auto changed = physics(bytes); const auto oldState = dynamicState(*previous), before = dynamicState(*changed);
+        const auto values = State(target->GetModel()).values; const auto saved = target->_savedParameters;
+        CubismPhysics::PreparedRuntimeState prepared; QString error;
+        const auto policy = field == "forced" ? CubismPhysics::StatePolicy::Stabilize : CubismPhysics::StatePolicy::PreserveCompatible;
+        QVERIFY2(changed->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared, policy, &error), qPrintable(error));
+        QVERIFY(prepared.WasStabilized()); QCOMPARE(dynamicState(*previous), oldState); QCOMPARE(dynamicState(*changed), before);
+        QCOMPARE(State(target->GetModel()).values, values); QCOMPARE(target->_savedParameters, saved);
+        QVERIFY(changed->CommitRuntimeState(prepared)); QCOMPARE(changed->_currentRemainTime, 0.f);
+        QVERIFY(changed->HasFiniteRuntimeState()); QCOMPARE(State(target->GetModel()).values, values); QCOMPARE(target->_savedParameters, saved);
+        QCOMPARE(changed->_currentRigOutputs[0].outputs[0], changed->_previousRigOutputs[0].outputs[0]);
+    }
+
+    void missingAndDuplicateGroupIdsNeverPretendToPreserveDynamics()
+    {
+        for (bool duplicate : {false, true}) {
+            auto root = QJsonDocument::fromJson(physicsJson()).object(); auto groups = root["PhysicsSettings"].toArray();
+            if (duplicate) groups.append(groups[0]);
+            else { auto group = groups[0].toObject(); group.remove("Id"); groups[0] = group; }
+            root["PhysicsSettings"] = groups; const auto bytes = QJsonDocument(root).toJson();
+            auto previous = physics(bytes), replacement = physics(bytes); warm(*previous); auto target = model();
+            CubismPhysics::PreparedRuntimeState prepared;
+            QVERIFY(replacement->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared)); QVERIFY(prepared.WasStabilized());
+        }
+    }
+
+    void explicitBindingRejectsUnknownRealIdsAndCanClearMasks()
+    {
+        auto target = model(), missing = model([](GetterState& value) { CubismModelFixture::SetParameterLayout(value, {"ParamC"}); });
+        auto simulation = physics(); CubismPhysics::ParameterDefinitionState state; QString error;
+        QVERIFY(!simulation->PrepareModelBinding(*missing, {}, state, &error)); QVERIFY(error.contains("ParamA"));
+        ParameterPhysicsReferences refs; refs.sourceDigest = simulation->SourceDigest(); refs.suppressedInputs[0] = "ParamA"; refs.suppressedOutputs[0] = "ParamB";
+        QVERIFY(simulation->PrepareModelBinding(*missing, refs, state, &error)); simulation->CommitParameterDefinitionChange(state);
+        QCOMPARE(simulation->_activeInputs, QVector<quint8>{0}); QCOMPARE(simulation->_activeOutputs, QVector<quint8>{0});
+        QVERIFY(!simulation->PrepareModelBinding(*missing, {}, state, &error));
+        QCOMPARE(simulation->_activeInputs, QVector<quint8>{0});
+        QVERIFY(simulation->PrepareModelBinding(*target, {}, state, &error)); simulation->CommitParameterDefinitionChange(state);
+        QCOMPARE(simulation->_activeInputs, QVector<quint8>{1}); QCOMPARE(simulation->_activeOutputs, QVector<quint8>{1});
+        const auto before = State(target->GetModel()).values; State(target->GetModel()).values[0] = std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!simulation->PrepareModelBinding(*target, {}, state, &error)); State(target->GetModel()).values = before;
+        refs.sourceDigest = QByteArray(32, 'x'); QVERIFY(!simulation->PrepareModelBinding(*target, refs, state, &error));
+        QCOMPARE(simulation->_activeInputs, QVector<quint8>{1});
+    }
+
+    void failedPreparationAndForeignOrStaleCommitKeepPreviousCandidates()
+    {
+        auto target = model(); auto previous = physics(), replacement = physics(), other = physics(); warm(*previous);
+        CubismPhysics::PreparedRuntimeState prepared; QString error;
+        QVERIFY(replacement->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared));
+        QVERIFY(!other->CommitRuntimeState(prepared)); QVERIFY(replacement->ValidatePreparedRuntimeState(prepared));
+        const auto oldState = dynamicState(*replacement);
+        rejectSdkAllocation = true;
+        const bool accepted = replacement->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared,
+            CubismPhysics::StatePolicy::PreserveCompatible, &error);
+        rejectSdkAllocation = false;
+        QVERIFY(!accepted); QVERIFY(!error.isEmpty()); QVERIFY(replacement->ValidatePreparedRuntimeState(prepared));
+        QCOMPARE(dynamicState(*replacement), oldState);
+        QVERIFY(!replacement->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared,
+            static_cast<CubismPhysics::StatePolicy>(9), &error)); QVERIFY(replacement->ValidatePreparedRuntimeState(prepared));
+        previous->_parameterCaches[0] = std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!replacement->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared));
+        QVERIFY(replacement->CommitRuntimeState(prepared)); QCOMPARE(replacement->_parameterCaches[0], .6f);
+        previous->_parameterCaches[0] = .6f;
+        QVERIFY(replacement->PrepareRuntimeState(previous.get(), *target, *target, {}, prepared));
+        auto options = replacement->GetOptions(); options.Wind.X = .25f; replacement->SetOptions(options);
+        const auto state = dynamicState(*replacement); QVERIFY(!replacement->CommitRuntimeState(prepared)); QCOMPARE(dynamicState(*replacement), state);
+    }
+
+    void masksChangingRequireStabilizationAndUseCandidateSourceRows()
+    {
+        auto target = model(); auto previous = physics(), replacement = physics(); warm(*previous);
+        ParameterPhysicsReferences mask; mask.sourceDigest = replacement->SourceDigest();
+        mask.suppressedInputs[0] = "ParamA"; mask.suppressedOutputs[0] = "ParamB";
+        CubismPhysics::PreparedRuntimeState prepared;
+        QVERIFY(replacement->PrepareRuntimeState(previous.get(), *target, *target, mask, prepared)); QVERIFY(prepared.WasStabilized());
+        QVERIFY(replacement->CommitRuntimeState(prepared));
+        QCOMPARE(replacement->_activeInputs, QVector<quint8>{0}); QCOMPARE(replacement->_activeOutputs, QVector<quint8>{0});
+        auto restored = physics();
+        QVERIFY(restored->PrepareRuntimeState(replacement.get(), *target, *target, {}, prepared)); QVERIFY(prepared.WasStabilized());
+        QVERIFY(restored->CommitRuntimeState(prepared));
+        QCOMPARE(restored->_activeInputs, QVector<quint8>{1}); QCOMPARE(restored->_activeOutputs, QVector<quint8>{1});
+    }
+
+    void sdkVectorSwapTransfersOwnershipWithoutAllocation()
+    {
+        csmVector<int> first, second; first.PushBack(11); first.PushBack(12); second.PushBack(21);
+        const auto* firstPointer = first.GetPtr(); const auto* secondPointer = second.GetPtr();
+        const auto calls = sdkAllocationCalls; rejectSdkAllocation = true;
+        first.Swap(second); first.Swap(first); rejectSdkAllocation = false;
+        QCOMPARE(sdkAllocationCalls, calls); QCOMPARE(first.GetPtr(), secondPointer); QCOMPARE(second.GetPtr(), firstPointer);
+        QCOMPARE(first.GetSize(), 1u); QCOMPARE(first[0], 21); QCOMPARE(second.GetSize(), 2u); QCOMPARE(second[1], 12);
+        csmVector<int> empty; second.Swap(empty); QCOMPARE(second.GetSize(), 0u); QCOMPARE(empty.GetPtr(), firstPointer);
+    }
+
+    void preservedRigContinuesTheSameMultiFrameSimulation()
+    {
+        auto first = model(), second = model(); auto previous = physics();
+        for (int i = 0; i < 5; ++i) { first->SetParameterValue(0, float(i) / 5); previous->Evaluate(first.get(), 1.f / 60); }
+        auto replacement = physics();
+        State(second->GetModel()).values = State(first->GetModel()).values;
+        CubismPhysics::PreparedRuntimeState prepared;
+        QVERIFY(replacement->PrepareRuntimeState(previous.get(), *first, *second, {}, prepared)); QVERIFY(!prepared.WasStabilized());
+        QVERIFY(replacement->CommitRuntimeState(prepared)); QCOMPARE(dynamicState(*replacement), dynamicState(*previous));
+        for (int i = 0; i < 24; ++i) {
+            const float input = std::sin(float(i) / 5); first->SetParameterValue(0, input); second->SetParameterValue(0, input);
+            previous->Evaluate(first.get(), 1.f / 60); replacement->Evaluate(second.get(), 1.f / 60);
+            QCOMPARE(State(first->GetModel()).values, State(second->GetModel()).values);
+            QCOMPARE(dynamicState(*previous), dynamicState(*replacement));
+        }
+    }
+
+    void zeroForceAndZeroRadiusRemainFiniteAcrossFrames_data()
+    {
+        QTest::addColumn<float>("radius"); QTest::addColumn<float>("acceleration");
+        QTest::newRow("stationary") << 1.f << 0.f;
+        QTest::newRow("coincident") << 0.f << 1.f;
+        QTest::newRow("stationary-coincident") << 0.f << 0.f;
+    }
+    void zeroForceAndZeroRadiusRemainFiniteAcrossFrames()
+    {
+        QFETCH(float, radius); QFETCH(float, acceleration);
+        auto simulation = physics(changedPhysics([&](QJsonObject&, QJsonObject& group) {
+            auto vertices = group["Vertices"].toArray(); auto vertex = vertices[1].toObject();
+            vertex["Radius"] = radius; vertex["Acceleration"] = acceleration; vertex["Mobility"] = 0; vertex["Delay"] = 0;
+            vertices[1] = vertex; group["Vertices"] = vertices;
+        }));
+        auto target = model(); const auto before = State(target->GetModel()).values;
+        CubismPhysics::PreparedRuntimeState prepared;
+        QVERIFY(simulation->PrepareRuntimeState(nullptr, *target, *target, {}, prepared)); QVERIFY(prepared.WasStabilized());
+        QCOMPARE(State(target->GetModel()).values, before); QVERIFY(simulation->CommitRuntimeState(prepared));
+        for (int i = 0; i < 12; ++i) {
+            target->SetParameterValue(0, float(i) / 12); simulation->Evaluate(target.get(), 1.f / 30);
+            QVERIFY(simulation->HasFiniteRuntimeState());
+            for (float value : State(target->GetModel()).values) QVERIFY(std::isfinite(value));
+        }
     }
     void suppressedReferencesMigrateWithoutChangingSimulationState_data()
     {

@@ -29,6 +29,10 @@ class LAppModel : public Csm::CubismUserModel
     friend class LAppExportPreviewTests;
     friend class ModelReplacementTests;
 public:
+    struct PhysicsDraft {
+        QByteArray bytes;
+        bool stabilize = false;
+    };
 
     struct EditorPreviewContext
     {
@@ -76,7 +80,8 @@ public:
                                         QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {},
                                         const ParameterReferenceState* references = nullptr,
                                         const EditorPreviewContext* restoreEditor = nullptr,
-                                        const TimelinePreviewPreparation& prepareTimeline = {});
+                                        const TimelinePreviewPreparation& prepareTimeline = {},
+                                        const PhysicsDraft* physicsDraft = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -134,7 +139,12 @@ public:
     // 物理参数控制
     void SetPhysicsGravity(float x, float y);
     void SetPhysicsWind(float x, float y);
-    bool ReloadPhysicsFromFile(const QString& path);
+    bool ReloadPhysicsFromFile(const QString& path, QString* error = nullptr);
+    bool ApplyPhysicsDraft(const PhysicsDraft& draft, QString* error = nullptr);
+    const QByteArray& GetPhysicsSourceDigest() const { return m_physicsSourceDigest; }
+    const QByteArray& GetPhysicsSourceBytes() const { return m_physicsSourceBytes; }
+    const QByteArray& GetPhysicsDraftBytes() const { return m_physicsDraftBytes; }
+    bool HasPhysicsDraft() const { return m_hasPhysicsDraft; }
     bool ReloadUserDataFromFile(const QString& path, const QByteArray& expectedSourceDigest = {}, QString* error = nullptr);
     bool StartLipSyncWav(const QString& path);
     void StopLipSyncWav();
@@ -142,6 +152,8 @@ public:
     // 物理组拖拽：设置拖拽驱动的参数列表
     void SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types);
     void ApplyPhysicsDrag(float dx, float dy);
+    void EndPhysicsDrag() noexcept;
+    bool CanPhysicsDrag() const { return _physics && _autoPhysics && !_physicsDragParamIds.isEmpty(); }
 
     // Part 可见性控制
     void SetPartVisible(const QString& partId, bool visible);
@@ -169,7 +181,12 @@ private:
                                  const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
                                  QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits,
                                  const ParameterStructureSeeds& seeds = {},
-                                 const ParameterPhysicsReferences* physicsReferences = nullptr);
+                                 const ParameterPhysicsReferences* physicsReferences = nullptr,
+                                 const PhysicsDraft* physicsDraft = nullptr);
+    bool PreparePhysicsCandidate(const Csm::CubismModel& previous, const Csm::CubismModel& replacement,
+                                 const ParameterPhysicsReferences& references, bool draftActive,
+                                 const QByteArray& bytes, bool stabilize, bool keepOptions,
+                                 PhysicsOwner& result, QString* error) const;
     bool PrepareParameterReferences(const ParameterReferenceState& state, std::function<void()>& commit,
                                     QString* error);
     QString ReferenceSourcePath(const QString& path) const;
@@ -236,6 +253,8 @@ private:
     QByteArray m_modelSettingsBytes;
     QString m_modelSettingsPath;
     QString m_physicsReferencePath;
+    QByteArray m_physicsSourceBytes, m_physicsSourceDigest, m_physicsDraftBytes;
+    bool m_hasPhysicsDraft = false;
     QVector<quint8> m_suppressedLipSync;
     QVector<quint8> m_suppressedMouseFollow;
     QSet<Csm::csmUint32> m_pendingTextureIds;
@@ -252,6 +271,10 @@ private:
     // 物理拖拽参数
     QStringList _physicsDragParamIds;
     QStringList _physicsDragTypes;
+    bool m_physicsDragActive = false;
+    float m_physicsDragX = 0.0f;
+    float m_physicsDragY = 0.0f;
+    void ApplyPhysicsDragInputs();
 
     // 变形器拖拽参数
     CDeformerDrag m_deformerDrag;

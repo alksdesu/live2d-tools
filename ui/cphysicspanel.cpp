@@ -1,7 +1,15 @@
 #include "cphysicspanel.h"
 #include "live2dstruct/cphysicsdocument.h"
 #include "cphysicsgraph.h"
-#include "ctableeditdelegate.h"
+#include <QStyledItemDelegate>
+#include <QKeyEvent>
+#include <QTimer>
+#include <QLineEdit>
+#include <QToolTip>
+#include <QApplication>
+#include <QScrollArea>
+#include <QGridLayout>
+#include <QLocale>
 #include "live2dstruct/cparameterreferenceeditor.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,6 +31,282 @@
 #include <limits>
 #include <exception>
 #include <cmath>
+#include <algorithm>
+
+struct CPhysicsHistoryCheckpoint
+{
+    QPointer<CPhysicsPanel> owner;
+    QVector<CPhysicsPanel::Snapshot> states;
+    int cursor = 0;
+    QString mergeKey;
+};
+
+class CPhysicsEditDelegate : public QStyledItemDelegate
+{
+public:
+    using Submit = std::function<bool(const QModelIndex&, const QString&, quint64, QString*)>;
+    CPhysicsEditDelegate(QObject* parent, Submit submit, std::function<quint64()> revision,
+                         std::function<void()> finished)
+        : QStyledItemDelegate(parent), m_submit(std::move(submit)), m_revision(std::move(revision)),
+          m_finished(std::move(finished)) {}
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&, const QModelIndex& index) const override
+    {
+        auto* editor = new QLineEdit(parent);
+        m_editor = editor;
+        m_index = index;
+        m_original = index.data(Qt::EditRole).toString();
+        m_startRevision = m_revision();
+        return editor;
+    }
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    { static_cast<QLineEdit*>(editor)->setText(index.data(Qt::EditRole).toString()); }
+    void setModelData(QWidget*, QAbstractItemModel*, const QModelIndex&) const override {}
+    void destroyEditor(QWidget* editor, const QModelIndex& index) const override
+    {
+        if (m_editor == editor) { m_editor.clear(); m_index = QPersistentModelIndex(); }
+        QStyledItemDelegate::destroyEditor(editor, index);
+    }
+    bool HasPendingChanges() const { return !m_finishing && m_editor && m_index.isValid() && m_editor->text() != m_original; }
+    void Detach() { m_submit = {}; m_revision = {}; m_finished = {}; }
+    bool eventFilter(QObject* object, QEvent* event) override
+    {
+        if (object != m_editor || !m_submit) return QStyledItemDelegate::eventFilter(object, event);
+        if (event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Escape) {
+                emit closeEditor(m_editor, QAbstractItemDelegate::RevertModelCache);
+                return true;
+            }
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
+                key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) return Finish();
+        }
+        if (event->type() == QEvent::FocusOut) { Finish(); return true; }
+        return QStyledItemDelegate::eventFilter(object, event);
+    }
+private:
+    bool Finish()
+    {
+        if (m_finishing || !m_editor) return true;
+        const QScopedValueRollback<bool> guard(m_finishing, true);
+        const QPointer<QLineEdit> editor = m_editor;
+        QString error;
+        if (m_index.isValid() && editor->text() != m_original && !m_submit(m_index, editor->text(), m_startRevision, &error)) {
+            editor->setToolTip(error);
+            QToolTip::showText(editor->mapToGlobal(QPoint(0, editor->height())), QStringLiteral("<qt>%1</qt>").arg(error.toHtmlEscaped()), editor);
+            QTimer::singleShot(0, editor, [editor] { if (editor) editor->setFocus(Qt::OtherFocusReason); });
+            return true;
+        }
+        QToolTip::hideText();
+        emit closeEditor(editor, QAbstractItemDelegate::NoHint);
+        if (m_finished) m_finished();
+        return true;
+    }
+    Submit m_submit;
+    std::function<quint64()> m_revision;
+    std::function<void()> m_finished;
+    mutable QPointer<QLineEdit> m_editor;
+    mutable QPersistentModelIndex m_index;
+    mutable QString m_original;
+    mutable quint64 m_startRevision = 0;
+    bool m_finishing = false;
+};
+
+namespace {
+void fitPhysicsRows(QTableWidget* table)
+{
+    const int rowHeight = qMax(table->verticalHeader()->defaultSectionSize(), table->rowHeight(0));
+    const int visibleRows = qBound(1, table->rowCount(), 4);
+    table->setMinimumHeight(table->horizontalHeader()->height() + visibleRows * rowHeight +
+        table->horizontalScrollBar()->sizeHint().height() + 2 * table->frameWidth());
+}
+QString physicsNumber(double value)
+{
+    return QLocale::c().toString(value, 'g', QLocale::FloatingPointShortest);
+}
+double physicsForceValue(const QJsonObject& document, bool gravity, bool xAxis)
+{
+    return document.value("Meta").toObject().value("EffectiveForces").toObject()
+        .value(gravity ? "Gravity" : "Wind").toObject().value(xAxis ? "X" : "Y")
+        .toDouble(gravity && !xAxis ? -1.0 : 0.0);
+}
+QJsonArray physicsDictionary(const QJsonObject& document)
+{
+    const auto meta = document.value("Meta").toObject();
+    return meta.contains("PhysicsDictionary") ? meta.value("PhysicsDictionary").toArray()
+                                               : document.value("PhysicsDictionary").toArray();
+}
+QJsonObject normalizedPhysics(const QJsonObject& document)
+{
+    QJsonObject normalized;
+    if (!document.isEmpty() && live2dstruct::CPhysicsDocument::Normalize(document, normalized)) return normalized;
+    return document;
+}
+}
+
+CPhysicsPanel::~CPhysicsPanel()
+{
+    m_updating = true;
+    for (auto* child : findChildren<QObject*>()) {
+        QObject::disconnect(child, nullptr, this, nullptr);
+        child->removeEventFilter(this);
+    }
+    for (auto* delegate : m_editDelegates) if (delegate) delegate->Detach();
+}
+
+void CPhysicsPanel::SetEditPublisher(EditPublisher publisher) { m_editPublisher = std::move(publisher); }
+bool CPhysicsPanel::CanUndo() const { return m_history && m_history->cursor > 0; }
+bool CPhysicsPanel::CanRedo() const { return m_history && m_history->cursor + 1 < m_history->states.size(); }
+bool CPhysicsPanel::Undo(QString* error) { return MoveHistory(true, error); }
+bool CPhysicsPanel::Redo(QString* error) { return MoveHistory(false, error); }
+
+void CPhysicsPanel::RejectEdit(const QString& error)
+{
+    m_errorLabel->setText(error);
+    m_errorLabel->setVisible(!error.isEmpty());
+    if (!error.isEmpty()) {
+        auto* focused = QApplication::focusWidget();
+        if (focused && isAncestorOf(focused))
+            QToolTip::showText(focused->mapToGlobal(QPoint(0, focused->height())), QStringLiteral("<qt>%1</qt>").arg(error.toHtmlEscaped()), focused);
+        emit EditRejected(error);
+    }
+}
+
+void CPhysicsPanel::RefreshHistoryControls()
+{
+    m_undoButton->setEnabled(CanUndo());
+    m_redoButton->setEnabled(CanRedo());
+    emit HistoryChanged(CanUndo(), CanRedo());
+}
+
+void CPhysicsPanel::MarkSessionSaved()
+{
+    if (m_publishing || HasPendingCellEdits()) return;
+    QJsonObject saved = normalizedPhysics(m_physicsDocument);
+    QString path = m_physicsPath;
+    m_savedDocument.swap(saved);
+    m_savedPath.swap(path);
+    m_dirty = false;
+}
+
+bool CPhysicsPanel::PublishPrepared(PreparedSnapshot& prepared, QString* error)
+{
+    if (m_publishing || !ValidatePreparedSnapshot(prepared, error)) return false;
+    const QScopedValueRollback<bool> guard(m_publishing, true);
+    try {
+        const auto publisher = m_editPublisher;
+        if (publisher && !publisher(prepared.m_expected, prepared.m_target, error)) {
+            if (error && error->isEmpty()) *error = QStringLiteral("运行时未接受物理修改");
+            return false;
+        }
+        InstallPrepared(prepared);
+        return true;
+    } catch (...) {
+        if (error) *error = QStringLiteral("无法发布物理修改，原配置已保留");
+        return false;
+    }
+}
+
+bool CPhysicsPanel::CommitDocument(const Snapshot& before, QJsonObject document, int selectedRow,
+                                  QString* error, const QString& mergeKey)
+{
+    QString detail;
+    if (!error) error = &detail;
+    error->clear();
+    try {
+        QJsonObject normalized;
+        if (m_publishing) { *error = QStringLiteral("物理修改正在提交"); return false; }
+        if (!live2dstruct::CPhysicsDocument::Normalize(document, normalized, error)) { RejectEdit(*error); return false; }
+        Snapshot current;
+        if (!(m_committingCell ? CaptureAcceptedSnapshot(current, error) : CaptureSnapshot(current, error)) || !current.SameDocument(before)) {
+            if (error->isEmpty()) *error = QStringLiteral("物理草稿已改变，请重新编辑"); RejectEdit(*error); return false;
+        }
+        if (normalizedPhysics(before.document) == normalized) {
+            for (const auto* control : m_committingControls) {
+                auto* edit = const_cast<QLineEdit*>(control);
+                edit->setText(edit->property("physicsAcceptedText").toString());
+            }
+            m_errorLabel->clear(); m_errorLabel->hide(); QToolTip::hideText(); return true;
+        }
+        Snapshot target = before;
+        target.document = std::move(normalized);
+        target.selectedGroupRow = selectedRow;
+        const auto groups = target.document.value("PhysicsSettings").toArray();
+        target.selectedGroupRow = groups.isEmpty() ? -1 : qBound(0, selectedRow, int(groups.size()) - 1);
+        target.selectedGroupId = target.selectedGroupRow < 0 ? QString() : groups[target.selectedGroupRow].toObject().value("Id").toString();
+        if (target.selectedGroupId != before.selectedGroupId) target.tables = {};
+        else {
+            const auto selected = target.selectedGroupRow >= 0 ? groups[target.selectedGroupRow].toObject() : QJsonObject();
+            const std::array<int, 3> rows{int(selected.value("Input").toArray().size()), int(selected.value("Output").toArray().size()),
+                qMax(0, int(selected.value("Vertices").toArray().size()) - 1)};
+            for (int i = 0; i < 3; ++i) {
+                if (target.tables[i].current.y() >= rows[i]) target.tables[i].current = QPoint(-1, -1);
+                auto& selection = target.tables[i].selection;
+                selection.erase(std::remove_if(selection.begin(), selection.end(), [&](const QRect& range) {
+                    return range.bottom() >= rows[i];
+                }), selection.end());
+            }
+        }
+        target.dirty = normalizedPhysics(target.document) != m_savedDocument || target.path != m_savedPath;
+        auto history = m_history ? std::make_shared<CPhysicsHistoryCheckpoint>(*m_history)
+                                 : std::make_shared<CPhysicsHistoryCheckpoint>();
+        history->owner = this;
+        if (history->states.isEmpty()) { Snapshot initial = before; initial.history.reset(); history->states.append(initial); }
+        history->states.resize(history->cursor + 1);
+        Snapshot stored = target; stored.history.reset();
+        if (!mergeKey.isEmpty() && history->mergeKey == mergeKey && history->cursor > 0)
+            history->states[history->cursor] = stored;
+        else { history->states.append(stored); ++history->cursor; }
+        history->mergeKey = mergeKey;
+        target.history = history;
+        PreparedSnapshot prepared;
+        if (!PrepareSnapshot(before, target, prepared, error) || !PublishPrepared(prepared, error)) {
+            RejectEdit(*error); return false;
+        }
+        m_errorLabel->clear(); m_errorLabel->hide(); QToolTip::hideText();
+        if (!m_committingCell) { try { NotifySnapshotCommitted(); } catch (...) {} }
+        return true;
+    } catch (...) { *error = QStringLiteral("无法准备物理修改"); RejectEdit(*error); return false; }
+}
+
+bool CPhysicsPanel::MoveHistory(bool undo, QString* error)
+{
+    QString detail;
+    if (!error) error = &detail;
+    error->clear();
+    try {
+        if (m_publishing || (undo ? !CanUndo() : !CanRedo())) { *error = QStringLiteral("没有可执行的物理历史"); return false; }
+        Snapshot before;
+        if (!CaptureSnapshot(before, error)) return false;
+        auto history = std::make_shared<CPhysicsHistoryCheckpoint>(*m_history);
+        history->cursor += undo ? -1 : 1;
+        history->mergeKey.clear();
+        Snapshot target = history->states[history->cursor];
+        target.path = m_physicsPath;
+        target.dirty = normalizedPhysics(target.document) != m_savedDocument || target.path != m_savedPath;
+        target.history = history;
+        PreparedSnapshot prepared;
+        if (!PrepareSnapshot(before, target, prepared, error) || !PublishPrepared(prepared, error)) { RejectEdit(*error); return false; }
+        m_errorLabel->clear(); m_errorLabel->hide(); QToolTip::hideText();
+        try { NotifySnapshotCommitted(); } catch (...) {}
+        return true;
+    } catch (...) { *error = QStringLiteral("无法准备物理历史"); RejectEdit(*error); return false; }
+}
+
+bool CPhysicsPanel::NewPhysics(QString* error)
+{
+    Snapshot before;
+    if (!CaptureSnapshot(before, error)) return false;
+    if (!before.document.isEmpty()) { if (error) *error = QStringLiteral("已有物理草稿，请先保存并关闭当前模型"); return false; }
+    QJsonObject forces{{"Gravity", QJsonObject{{"X", 0.0}, {"Y", -1.0}}}, {"Wind", QJsonObject{{"X", 0.0}, {"Y", 0.0}}}};
+    QJsonObject document{{"Version", 3}, {"Meta", QJsonObject{{"Fps", 30.0}, {"EffectiveForces", forces}, {"PhysicsDictionary", QJsonArray{}}}},
+                         {"PhysicsSettings", QJsonArray{}}};
+    return CommitDocument(before, document, -1, error);
+}
+
+void CPhysicsPanel::RefreshAfterEditor()
+{
+    QTimer::singleShot(0, this, [this] { if (!HasPendingCellEdits()) NotifySnapshotCommitted(); });
+}
 
 CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     : QDockWidget("物理设置", parent)
@@ -31,20 +315,65 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     QWidget* wrapper = new QWidget(this);
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
 
-    // FPS
-    m_fpsLabel = new QLabel("计算FPS: -", wrapper);
+    auto* toolbar = new QGridLayout;
+    auto* newButton = new QPushButton(QStringLiteral("新建"), wrapper);
+    newButton->setObjectName(QStringLiteral("newPhysicsButton"));
+    m_undoButton = new QPushButton(QStringLiteral("撤销"), wrapper);
+    m_redoButton = new QPushButton(QStringLiteral("重做"), wrapper);
+    m_undoButton->setObjectName(QStringLiteral("undoPhysicsButton"));
+    m_redoButton->setObjectName(QStringLiteral("redoPhysicsButton"));
+    m_saveButton = new QPushButton(QStringLiteral("保存物理配置"), wrapper);
+    m_saveButton->setObjectName(QStringLiteral("savePhysicsButton"));
+    auto* exportButton = new QPushButton(QStringLiteral("导出配置"), wrapper);
+    exportButton->setObjectName(QStringLiteral("exportPhysicsButton"));
+    toolbar->addWidget(newButton, 0, 0); toolbar->addWidget(m_undoButton, 0, 1); toolbar->addWidget(m_redoButton, 0, 2);
+    toolbar->addWidget(m_saveButton, 1, 0, 1, 2); toolbar->addWidget(exportButton, 1, 2);
+    connect(exportButton, &QPushButton::clicked, this, [this] {
+        const auto target = QFileDialog::getSaveFileName(this, QStringLiteral("导出物理配置"), {}, QStringLiteral("Physics (*.physics3.json)"));
+        if (target.isEmpty()) return;
+        QString error;
+        if (!ExportPhysics(target, &error)) RejectEdit(error);
+        else { m_errorLabel->setText(QStringLiteral("已导出配置")); m_errorLabel->show(); }
+    });
+    mainLayout->addLayout(toolbar);
+    connect(newButton, &QPushButton::clicked, this, [this] { QString error; if (!NewPhysics(&error)) RejectEdit(error); });
+    connect(m_undoButton, &QPushButton::clicked, this, [this] { QString error; if (!Undo(&error)) RejectEdit(error); });
+    connect(m_redoButton, &QPushButton::clicked, this, [this] { QString error; if (!Redo(&error)) RejectEdit(error); });
+    connect(m_saveButton, &QPushButton::clicked, this, [this] { QString error; if (!SavePhysics({}, &error)) RejectEdit(error); });
+    auto* fpsRow = new QHBoxLayout;
+    m_fpsLabel = new QLabel(QStringLiteral("计算 FPS"), wrapper);
     m_fpsLabel->setObjectName(QStringLiteral("physicsFpsLabel"));
-    mainLayout->addWidget(m_fpsLabel);
-    auto* saveButton = new QPushButton(QStringLiteral("保存物理配置"), wrapper);
-    m_saveButton = saveButton;
-    saveButton->setObjectName(QStringLiteral("savePhysicsButton"));
-    mainLayout->addWidget(saveButton);
-    connect(saveButton, &QPushButton::clicked, this, [this](){ SavePhysics(); });
+    m_fpsEdit = new QLineEdit(wrapper);
+    m_fpsEdit->setObjectName(QStringLiteral("physicsFps"));
+    m_fpsEdit->setToolTip(QStringLiteral("0 表示跟随运行时；有效范围 0–1000"));
+    fpsRow->addWidget(m_fpsLabel); fpsRow->addWidget(m_fpsEdit);
+    mainLayout->addLayout(fpsRow);
+    connect(m_fpsEdit, &QLineEdit::editingFinished, this, [this] {
+        const QScopedValueRollback<QSet<const QLineEdit*>> committing(m_committingControls, {m_fpsEdit});
+        if (m_updating || m_physicsDocument.isEmpty()) return;
+        bool valid = false; const double value = m_fpsEdit->text().toDouble(&valid);
+        if (!valid || !std::isfinite(value) || value < 0 || value > 1000) { RejectEdit(QStringLiteral("计算 FPS 必须为 0–1000 的有限数值")); return; }
+        Snapshot before; QString error;
+        if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+        auto document = before.document; auto meta = document.value("Meta").toObject();
+        if (meta.value("Fps").toDouble(0) == value) {
+            m_fpsEdit->setText(m_fpsEdit->property("physicsAcceptedText").toString());
+            m_errorLabel->clear(); m_errorLabel->hide(); QToolTip::hideText(); return;
+        }
+        meta.insert("Fps", value); document.insert("Meta", meta);
+        CommitDocument(before, document, before.selectedGroupRow);
+    });
+    m_errorLabel = new QLabel(wrapper);
+    m_errorLabel->setObjectName(QStringLiteral("physicsEditError"));
+    m_errorLabel->setTextFormat(Qt::PlainText); m_errorLabel->setWordWrap(true);
+    m_errorLabel->setTextInteractionFlags(Qt::TextSelectableByMouse); m_errorLabel->hide();
+    mainLayout->addWidget(m_errorLabel);
 
     // 重力/风力控制
     QGroupBox* forceBox = new QGroupBox("力场控制", wrapper);
     QVBoxLayout* forceLayout = new QVBoxLayout(forceBox);
 
+    int forceRow = 0;
     auto makeSliderRow = [&](const QString& label, QSlider*& slider, QLabel*& valLabel) {
         QHBoxLayout* row = new QHBoxLayout();
         row->addWidget(new QLabel(label, forceBox));
@@ -53,8 +382,13 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
         slider->setValue(0);
         row->addWidget(slider);
         valLabel = new QLabel("0.00", forceBox);
-        valLabel->setFixedWidth(50);
-        row->addWidget(valLabel);
+        valLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        valLabel->hide();
+        auto* edit = new QLineEdit(forceBox);
+        m_forceEdits[forceRow] = edit;
+        edit->setObjectName(QStringLiteral("physicsForceValue%1").arg(forceRow++));
+        edit->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        row->addWidget(edit);
         forceLayout->addLayout(row);
     };
 
@@ -68,35 +402,39 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     m_windY->setObjectName(QStringLiteral("physicsWindY"));
     mainLayout->addWidget(forceBox);
 
-    // 重力/风力信号
-    auto connectSlider = [this](QSlider* slider, QLabel* label, bool isGravity, bool isX) {
-        connect(slider, &QSlider::valueChanged, this, [this, label, isGravity, isX](int val){
+    auto connectSlider = [this](QSlider* slider, bool isGravity, bool isX) {
+        slider->installEventFilter(this);
+        connect(slider, &QSlider::sliderPressed, this, [this, slider] {
+            m_forceMergeKey = slider->objectName() + QString::number(++m_forceGesture);
+        });
+        connect(slider, &QSlider::sliderReleased, this, [this] { m_forceMergeKey.clear(); });
+        connect(slider, &QSlider::valueChanged, this, [this, isGravity, isX](int val) {
             if (m_updating || m_physicsDocument.isEmpty()) return;
-            const double value = val / 100.0;
-            label->setText(QString::number(value, 'f', 2));
-            updateForceDocument(isGravity, isX, value);
-            const QJsonObject force = m_physicsDocument.value(QStringLiteral("Meta")).toObject()
-                .value(QStringLiteral("EffectiveForces")).toObject()
-                .value(isGravity ? QStringLiteral("Gravity") : QStringLiteral("Wind")).toObject();
-            if (isGravity) emit GravityChanged(force.value("X").toDouble(), force.value("Y").toDouble());
-            else emit WindChanged(force.value("X").toDouble(), force.value("Y").toDouble());
-            m_dirty = true;
-            ++m_documentRevision;
-            m_snapshotNotificationPending = false;
-            m_pendingSnapshotRefresh.reset();
-            emit PhysicsConfigChanged();
+            updateForceDocument(isGravity, isX, val / 100.0);
         });
     };
-    connectSlider(m_gravityX, m_gravityXLabel, true, true);
-    connectSlider(m_gravityY, m_gravityYLabel, true, false);
-    connectSlider(m_windX, m_windXLabel, false, true);
-    connectSlider(m_windY, m_windYLabel, false, false);
+    connectSlider(m_gravityX, true, true); connectSlider(m_gravityY, true, false);
+    connectSlider(m_windX, false, true); connectSlider(m_windY, false, false);
+
+    for (int i = 0; i < 4; ++i) {
+        auto* edit = m_forceEdits[i];
+        connect(edit, &QLineEdit::editingFinished, this, [this, edit, i] {
+            const QScopedValueRollback<QSet<const QLineEdit*>> committing(m_committingControls, {edit});
+            if (m_updating || m_physicsDocument.isEmpty()) return;
+            bool valid = false; const double value = edit->text().toDouble(&valid);
+            if (!valid || !std::isfinite(value) || std::abs(value) > 100000) {
+                RejectEdit(QStringLiteral("力场必须为 -100000 至 100000 的有限数值")); return;
+            }
+            updateForceDocument(i < 2, i % 2 == 0, value);
+        });
+    }
+
 
     // 物理组列表
     QGroupBox* groupBox = new QGroupBox("物理组", wrapper);
     QVBoxLayout* groupLayout = new QVBoxLayout(groupBox);
 
-    auto* groupTools = new QHBoxLayout();
+    auto* groupTools = new QGridLayout();
     m_addGroupButton = new QPushButton(QStringLiteral("添加组"), groupBox);
     m_removeGroupButton = new QPushButton(QStringLiteral("删除组"), groupBox);
     m_renameGroupButton = new QPushButton(QStringLiteral("重命名"), groupBox);
@@ -106,10 +444,14 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     m_addGroupButton->setEnabled(false);
     m_removeGroupButton->setEnabled(false);
     m_renameGroupButton->setEnabled(false);
-    groupTools->addWidget(m_addGroupButton);
-    groupTools->addWidget(m_removeGroupButton);
-    groupTools->addWidget(m_renameGroupButton);
-    groupTools->addStretch(1);
+    groupTools->addWidget(m_addGroupButton, 0, 0);
+    groupTools->addWidget(m_removeGroupButton, 0, 1);
+    groupTools->addWidget(m_renameGroupButton, 1, 0);
+    m_copyGroupButton = new QPushButton(QStringLiteral("复制组"), groupBox);
+    m_copyGroupButton->setObjectName(QStringLiteral("copyPhysicsGroup"));
+    groupTools->addWidget(m_copyGroupButton, 1, 1);
+    connect(m_copyGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::copyPhysicsGroup);
+
     groupLayout->addLayout(groupTools);
 
     m_groupTable = new QTableWidget(0, 3, groupBox);
@@ -128,7 +470,10 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     groupLayout->addWidget(m_dragModeCb);
 
     connect(m_groupTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int){
-        if (!m_updating) showGroupDetail(row);
+        if (!m_updating) {
+            if (m_publishing || HasPendingCellEdits()) { const QSignalBlocker blocker(m_groupTable); m_groupTable->setCurrentCell(m_detailGroupRow, 0); return; }
+            showGroupDetail(row);
+        }
     });
     connect(m_dragModeCb, &QCheckBox::toggled, this, [this](){
         if (!m_updating) emitDragParams(m_groupTable->currentRow());
@@ -136,8 +481,29 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
 
     mainLayout->addWidget(groupBox);
 
+    auto* normalizationBox = new QGroupBox(QStringLiteral("输入归一化"), wrapper);
+    auto* normalizationLayout = new QGridLayout(normalizationBox);
+    const QStringList limits{QStringLiteral("最小值"), QStringLiteral("默认值"), QStringLiteral("最大值")};
+    for (int column = 0; column < 3; ++column) normalizationLayout->addWidget(new QLabel(limits[column], normalizationBox), 0, column + 1);
+    for (int row = 0; row < 2; ++row) {
+        normalizationLayout->addWidget(new QLabel(row == 0 ? QStringLiteral("位置") : QStringLiteral("角度"), normalizationBox), row + 1, 0);
+        for (int column = 0; column < 3; ++column) {
+            auto* edit = new QLineEdit(normalizationBox); m_normalizationEdits[row * 3 + column] = edit;
+            edit->setObjectName(QStringLiteral("physicsNormalization%1").arg(row * 3 + column));
+            edit->setMinimumWidth(edit->fontMetrics().horizontalAdvance(QStringLiteral("-100")));
+            edit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            normalizationLayout->addWidget(edit, row + 1, column + 1);
+        }
+    }
+    auto* applyNormalization = new QPushButton(QStringLiteral("应用归一化"), normalizationBox);
+    applyNormalization->setObjectName(QStringLiteral("applyPhysicsNormalization"));
+    normalizationLayout->addWidget(applyNormalization, 3, 1, 1, 3);
+    connect(applyNormalization, &QPushButton::clicked, this, &CPhysicsPanel::ApplyNormalization);
+    mainLayout->addWidget(normalizationBox);
+
     // 详情区域（输入/输出/摆锤）
     QSplitter* detailSplitter = new QSplitter(Qt::Vertical, wrapper);
+    detailSplitter->setChildrenCollapsible(false);
     m_graph = new CPhysicsGraphWidget(wrapper);
     detailSplitter->addWidget(m_graph);
 
@@ -214,10 +580,18 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     detailSplitter->addWidget(vertexSection);
 
     mainLayout->addWidget(detailSplitter);
-    setWidget(wrapper);
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("physicsWorkspaceScroll"));
+    scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(wrapper); setWidget(scroll);
+    for (auto* table : {m_groupTable, m_inputTable, m_outputTable, m_vertexTable}) table->installEventFilter(this);
     const std::array<QTableWidget*, 3> editTables{m_inputTable, m_outputTable, m_vertexTable};
     for (int index = 0; index < 3; ++index) {
-        m_editDelegates[index] = new CTableEditDelegate(editTables[index]);
+        m_editDelegates[index] = new CPhysicsEditDelegate(editTables[index],
+            [this, index](const QModelIndex& cell, const QString& text, quint64 revision, QString* error) {
+                const QScopedValueRollback<bool> committing(m_committingCell, true);
+                return SubmitCell(index, cell.row(), cell.column(), text, revision, error);
+            }, [this] { return m_documentRevision; }, [this] { RefreshAfterEditor(); });
         editTables[index]->setItemDelegate(m_editDelegates[index]);
     }
     connect(m_inputTable, &QTableWidget::cellChanged, this, &CPhysicsPanel::updateInputCell);
@@ -241,12 +615,13 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     connect(m_addGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::addPhysicsGroup);
     connect(m_removeGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::removePhysicsGroup);
     connect(m_renameGroupButton, &QPushButton::clicked, this, &CPhysicsPanel::renamePhysicsGroup);
+    RefreshHistoryControls();
 }
 
 bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
 {
     if (error) error->clear();
-    if (HasPendingCellEdits()) {
+    if (m_publishing || HasPendingCellEdits()) {
         if (error) *error = QStringLiteral("请先完成或取消正在编辑的物理单元格");
         return false;
     }
@@ -280,60 +655,53 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
         if (error) *error = validationError;
         return false;
     }
+    if (m_publishing) { if (error) *error = QStringLiteral("物理修改正在提交"); return false; }
     m_physicsDocument = root;
-    m_snapshotNotificationPending = false;
-    m_pendingSnapshotRefresh.reset();
-    ++m_documentRevision;
+    m_physicsSettings = root.value("PhysicsSettings").toArray();
+    m_physicsDictionary = physicsDictionary(root);
     m_physicsPath = physicsPath;
-    m_dirty = false;
-    m_updating = true;
-    QJsonObject meta = root["Meta"].toObject();
-
-    // FPS
-    int fps = meta["Fps"].toInt(30);
-    m_fpsLabel->setText(QString("计算FPS: %1").arg(fps));
-
-    // 重力/风力初始值
-    QJsonObject forces = meta["EffectiveForces"].toObject();
-    QJsonObject gravity = forces["Gravity"].toObject();
-    QJsonObject wind = forces["Wind"].toObject();
-    m_gravityX->blockSignals(true);
-    m_gravityY->blockSignals(true);
-    m_windX->blockSignals(true);
-    m_windY->blockSignals(true);
-    m_gravityX->setValue(static_cast<int>(gravity["X"].toDouble() * 100));
-    m_gravityY->setValue(static_cast<int>(gravity["Y"].toDouble() * 100));
-    m_windX->setValue(static_cast<int>(wind["X"].toDouble() * 100));
-    m_windY->setValue(static_cast<int>(wind["Y"].toDouble() * 100));
-    m_gravityXLabel->setText(QString::number(gravity["X"].toDouble(), 'f', 2));
-    m_gravityYLabel->setText(QString::number(gravity["Y"].toDouble(), 'f', 2));
-    m_windXLabel->setText(QString::number(wind["X"].toDouble(), 'f', 2));
-    m_windYLabel->setText(QString::number(wind["Y"].toDouble(), 'f', 2));
-    m_gravityX->blockSignals(false);
-    m_gravityY->blockSignals(false);
-    m_windX->blockSignals(false);
-    m_windY->blockSignals(false);
-
-    // 物理字典（名称映射）
-    m_physicsDictionary = meta["PhysicsDictionary"].toArray();
-    m_physicsSettings = root["PhysicsSettings"].toArray();
-    if (m_addGroupButton) m_addGroupButton->setEnabled(true);
-    m_updating = false;
-    refreshGroupTable(0);
+    m_savedDocument = normalizedPhysics(root); m_savedPath = physicsPath;
+    m_history.reset(); m_dirty = false; ++m_documentRevision;
+    auto snapshot = std::make_unique<Snapshot>();
+    snapshot->document = root; snapshot->path = physicsPath; snapshot->revision = m_documentRevision;
+    snapshot->selectedGroupRow = m_physicsSettings.isEmpty() ? -1 : 0;
+    m_pendingSnapshotRefresh = std::move(snapshot); m_snapshotNotificationPending = true;
+    { const QSignalBlocker blocker(this); NotifySnapshotCommitted(); }
+    RefreshHistoryControls();
     return true;
 }
 
 void CPhysicsPanel::updateForceDocument(bool gravity, bool xAxis, double value)
 {
-    if (m_physicsDocument.isEmpty()) return;
-    QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
-    QJsonObject forces = meta.value(QStringLiteral("EffectiveForces")).toObject();
-    const QString forceName = gravity ? QStringLiteral("Gravity") : QStringLiteral("Wind");
-    QJsonObject force = forces.value(forceName).toObject();
-    force.insert(xAxis ? QStringLiteral("X") : QStringLiteral("Y"), value);
-    forces.insert(forceName, force);
-    meta.insert(QStringLiteral("EffectiveForces"), forces);
-    m_physicsDocument.insert(QStringLiteral("Meta"), meta);
+    const auto restoreSliders = [this] {
+        const std::array<QSlider*, 4> sliders{m_gravityX, m_gravityY, m_windX, m_windY};
+        for (int i = 0; i < 4; ++i) {
+            const QSignalBlocker blocker(sliders[i]);
+            sliders[i]->setValue(qRound(physicsForceValue(m_physicsDocument, i < 2, i % 2 == 0) * 100));
+        }
+    };
+    Snapshot before; QString error;
+    if (m_physicsDocument.isEmpty() || !CaptureSnapshot(before, &error)) {
+        restoreSliders(); if (!error.isEmpty()) RejectEdit(error); return;
+    }
+    if (physicsForceValue(before.document, gravity, xAxis) == value) {
+        for (const auto* control : m_committingControls) {
+            auto* edit = const_cast<QLineEdit*>(control);
+            edit->setText(edit->property("physicsAcceptedText").toString());
+        }
+        m_errorLabel->clear(); m_errorLabel->hide(); QToolTip::hideText(); return;
+    }
+    QJsonObject document = before.document;
+    auto meta = document.value("Meta").toObject(); auto forces = meta.value("EffectiveForces").toObject();
+    const QString name = gravity ? QStringLiteral("Gravity") : QStringLiteral("Wind");
+    auto force = forces.value(name).toObject(); force.insert(xAxis ? "X" : "Y", value);
+    forces.insert(name, force); meta.insert("EffectiveForces", forces); document.insert("Meta", meta);
+    if (!CommitDocument(before, document, before.selectedGroupRow, &error, m_forceMergeKey)) {
+        restoreSliders();
+    } else if (!m_editPublisher && before.document != m_physicsDocument) {
+        if (gravity) emit GravityChanged(physicsForceValue(m_physicsDocument, true, true), physicsForceValue(m_physicsDocument, true, false));
+        else emit WindChanged(physicsForceValue(m_physicsDocument, false, true), physicsForceValue(m_physicsDocument, false, false));
+    }
 }
 
 QJsonObject CPhysicsPanel::DocumentSnapshot() const
@@ -346,7 +714,7 @@ QJsonObject CPhysicsPanel::DocumentSnapshot() const
 bool CPhysicsPanel::SavePhysics(const QString& path, QString* error)
 {
     if (error) error->clear();
-    if (HasPendingCellEdits()) {
+    if (m_publishing || HasPendingCellEdits()) {
         if (error) *error = QStringLiteral("请先完成或取消正在编辑的物理单元格");
         return false;
     }
@@ -375,6 +743,8 @@ bool CPhysicsPanel::SavePhysics(const QString& path, QString* error)
         QMessageBox::warning(this, QStringLiteral("保存物理配置失败"), validationError);
         return false;
     }
+    QJsonObject marker = updated;
+    QString savedPath = target;
     QSaveFile file(target);
     const QByteArray data = QJsonDocument(updated).toJson(QJsonDocument::Indented);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
@@ -387,9 +757,48 @@ bool CPhysicsPanel::SavePhysics(const QString& path, QString* error)
     m_pendingSnapshotRefresh.reset();
     ++m_documentRevision;
     m_physicsPath = target;
+    m_savedDocument.swap(marker); m_savedPath.swap(savedPath);
     m_dirty = false;
     emit PhysicsSaved(target);
     return true;
+}
+
+bool CPhysicsPanel::ExportPhysics(const QString& path, QString* error) const
+{
+    if (error) error->clear();
+    Snapshot current;
+    if (!CaptureSnapshot(current, error)) return false;
+    if (path.isEmpty() || path.contains(QChar::Null) || current.document.isEmpty()) {
+        if (error) *error = QStringLiteral("没有可导出的物理草稿或路径无效"); return false;
+    }
+    QJsonObject document;
+    if (!live2dstruct::CPhysicsDocument::Normalize(current.document, document, error)) return false;
+    const auto bytes = QJsonDocument(document).toJson(QJsonDocument::Indented);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+        if (error) *error = QStringLiteral("无法导出物理配置：%1").arg(file.errorString()); return false;
+    }
+    return true;
+}
+
+bool CPhysicsPanel::eventFilter(QObject* watched, QEvent* event)
+{
+    if (auto* slider = qobject_cast<QSlider*>(watched)) {
+        if (event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (!key->isAutoRepeat() && (key->key() == Qt::Key_Left || key->key() == Qt::Key_Right ||
+                key->key() == Qt::Key_Up || key->key() == Qt::Key_Down || key->key() == Qt::Key_PageUp ||
+                key->key() == Qt::Key_PageDown || key->key() == Qt::Key_Home || key->key() == Qt::Key_End))
+                m_forceMergeKey = slider->objectName() + QString::number(++m_forceGesture);
+        } else if (event->type() == QEvent::FocusOut || event->type() == QEvent::Hide ||
+                   (event->type() == QEvent::KeyRelease && !static_cast<QKeyEvent*>(event)->isAutoRepeat()))
+            m_forceMergeKey.clear();
+    }
+    if (auto* table = qobject_cast<QTableWidget*>(watched)) {
+        if (event->type() == QEvent::Show || event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange)
+            QTimer::singleShot(0, table, [table] { fitPhysicsRows(table); });
+    }
+    return QDockWidget::eventFilter(watched, event);
 }
 
 void CPhysicsPanel::SetSessionSaveHandler(std::function<bool(QString*)> handler)
@@ -408,116 +817,132 @@ bool CPhysicsPanel::ValidateDocument(const QJsonObject& document, QString* error
     return live2dstruct::CPhysicsDocument::Validate(document, error);
 }
 
+bool CPhysicsPanel::SubmitCell(int table, int row, int column, const QString& text, quint64 revision, QString* error)
+{
+    QString detail;
+    if (!error) error = &detail;
+    const auto fail = [&](const QString& message) { *error = message; RejectEdit(message); return false; };
+    if (m_publishing || revision != m_documentRevision) return fail(QStringLiteral("物理草稿已改变，请重新编辑"));
+    Snapshot before;
+    if (!CaptureAcceptedSnapshot(before, error)) return fail(*error);
+    const int groupRow = before.selectedGroupRow;
+    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return fail(QStringLiteral("物理组已不存在"));
+    auto settings = m_physicsSettings;
+    auto group = settings[groupRow].toObject();
+    const QString field = table == 0 ? QStringLiteral("Input") : table == 1 ? QStringLiteral("Output") : QStringLiteral("Vertices");
+    auto entries = group.value(field).toArray();
+    const int index = row + (table == 2 ? 1 : 0);
+    if (index < 0 || index >= entries.size()) return fail(QStringLiteral("物理行已不存在"));
+    auto entry = entries[index].toObject();
+    if (table < 2 && column == 0) {
+        const QString id = text.trimmed();
+        if (id.isEmpty() || id.contains(QChar::Null)) return fail(QStringLiteral("参数 ID 不能为空或包含空字符"));
+        const QString key = table == 0 ? QStringLiteral("Source") : QStringLiteral("Destination");
+        auto target = entry.value(key).toObject(); target.insert("Id", id); entry.insert(key, target);
+    } else if (table < 2 && column == 1) {
+        const QString type = text.trimmed();
+        if (type != "X" && type != "Y" && type != "Angle") return fail(QStringLiteral("类型必须为 X、Y 或 Angle"));
+        entry.insert("Type", type);
+    } else if ((table == 0 && column == 3) || (table == 1 && column == 4)) {
+        const QString value = text.trimmed().toLower();
+        if (value == "是" || value == "true" || value == "1") entry.insert("Reflect", true);
+        else if (value == "否" || value == "false" || value == "0") entry.insert("Reflect", false);
+        else return fail(QStringLiteral("反转必须为 是 或 否"));
+    } else {
+        bool valid = false; const double value = text.toDouble(&valid);
+        if (!valid || !std::isfinite(value)) return fail(QStringLiteral("请输入有限数值，支持科学计数法"));
+        QString key;
+        if (table == 0 && column == 2) key = QStringLiteral("Weight");
+        else if (table == 1) {
+            if (column == 2) key = QStringLiteral("Weight");
+            else if (column == 3) key = QStringLiteral("Scale");
+            else if (column == 5) key = QStringLiteral("VertexIndex");
+        } else if (table == 2 && column >= 1 && column <= 4)
+            key = QStringList{"Radius", "Mobility", "Delay", "Acceleration"}[column - 1];
+        if (key.isEmpty()) return fail(QStringLiteral("该单元格不可编辑"));
+        entry.insert(key, value);
+    }
+    entries[index] = entry; group.insert(field, entries); settings[groupRow] = group;
+    auto document = before.document; document.insert("PhysicsSettings", settings);
+    return CommitDocument(before, document, groupRow, error);
+}
+
 void CPhysicsPanel::updateInputCell(int row, int column)
 {
-    const int groupRow = m_groupTable->currentRow();
-    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || column < 0 || column > 3) return;
-    QJsonObject setting = m_physicsSettings[groupRow].toObject();
-    QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
-    if (row >= inputs.size()) return;
-    if (row < 0 || row >= inputs.size() || !m_inputTable->item(row, column)) return;
-    QJsonObject input = inputs[row].toObject();
-    if (column == 0) {
-        const QString id = m_inputTable->item(row, column)->text().trimmed();
-        if (id.isEmpty()) { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
-        QJsonObject source = input.value(QStringLiteral("Source")).toObject();
-        source.insert(QStringLiteral("Id"), id);
-        input.insert(QStringLiteral("Source"), source);
-    } else if (column == 1) {
-        const QString type = m_inputTable->item(row, column)->text().trimmed();
-        if (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) {
-            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
-        }
-        input.insert(QStringLiteral("Type"), type);
-    } else if (column == 2) {
-        bool ok = false;
-        const double value = m_inputTable->item(row, column)->text().toDouble(&ok);
-        if (!ok || !std::isfinite(value) || value < 0.0 || value > 100.0) {
-            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
-        }
-        input.insert(QStringLiteral("Weight"), value);
-    } else {
-        const QString text = m_inputTable->item(row, column)->text().trimmed().toLower();
-        if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) input.insert(QStringLiteral("Reflect"), true);
-        else if (text == QStringLiteral("否") || text == QStringLiteral("false") || text == QStringLiteral("0")) input.insert(QStringLiteral("Reflect"), false);
-        else { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
+    if (m_updating || !m_inputTable->item(row, column)) return;
+    QString error;
+    if (!SubmitCell(0, row, column, m_inputTable->item(row, column)->text(), m_documentRevision, &error)) {
+        const QScopedValueRollback<bool> updating(m_updating, true); showGroupDetail(m_detailGroupRow);
     }
-    inputs[row] = input;
-    setting.insert(QStringLiteral("Input"), inputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::updateOutputCell(int row, int column)
 {
-    const int groupRow = m_groupTable->currentRow();
-    if (m_updating || groupRow < 0 || groupRow >= m_physicsSettings.size() || column < 0 || column > 5) return;
-    const int detailRow = row;
-    QJsonObject setting = m_physicsSettings[groupRow].toObject();
-    QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
-    if (detailRow < 0 || detailRow >= outputs.size() || !m_outputTable->item(detailRow, column)) return;
-    QJsonObject output = outputs[detailRow].toObject();
-    if (column == 0) {
-        const QString id = m_outputTable->item(detailRow, column)->text().trimmed();
-        if (id.isEmpty()) { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
-        QJsonObject destination = output.value(QStringLiteral("Destination")).toObject();
-        destination.insert(QStringLiteral("Id"), id);
-        output.insert(QStringLiteral("Destination"), destination);
-    } else if (column == 1) {
-        const QString type = m_outputTable->item(detailRow, column)->text().trimmed();
-        if (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) {
-            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
-        }
-        output.insert(QStringLiteral("Type"), type);
-    } else if (column == 2 || column == 3) {
-        bool ok = false;
-        const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
-        if (!ok || !std::isfinite(value) || (column == 2 && (value < 0.0 || value > 100.0))) {
-            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
-        }
-        output.insert(column == 2 ? QStringLiteral("Weight") : QStringLiteral("Scale"), value);
-    } else if (column == 4) {
-        const QString text = m_outputTable->item(detailRow, column)->text().trimmed().toLower();
-        if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) output.insert(QStringLiteral("Reflect"), true);
-        else if (text == QStringLiteral("否") || text == QStringLiteral("false") || text == QStringLiteral("0")) output.insert(QStringLiteral("Reflect"), false);
-        else { m_updating = true; showGroupDetail(groupRow); m_updating = false; return; }
-    } else {
-        bool ok = false;
-        const double value = m_outputTable->item(detailRow, column)->text().toDouble(&ok);
-        const int vertexCount = setting.value(QStringLiteral("Vertices")).toArray().size();
-        if (!ok || !std::isfinite(value) || std::floor(value) != value || value < 0.0 || value >= vertexCount) {
-            m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
-        }
-        output.insert(QStringLiteral("VertexIndex"), static_cast<int>(value));
+    if (m_updating || !m_outputTable->item(row, column)) return;
+    QString error;
+    if (!SubmitCell(1, row, column, m_outputTable->item(row, column)->text(), m_documentRevision, &error)) {
+        const QScopedValueRollback<bool> updating(m_updating, true); showGroupDetail(m_detailGroupRow);
     }
-    outputs[detailRow] = output;
-    setting.insert(QStringLiteral("Output"), outputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
 }
 
 void CPhysicsPanel::updateVertexCell(int row, int column)
 {
-    if (m_updating || row < 0 || (column < 1 || column > 4)) return;
-    const int groupRow = m_groupTable->currentRow();
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || !m_vertexTable->item(row, column)) return;
-    QJsonObject setting = m_physicsSettings[groupRow].toObject();
-    QJsonArray vertices = setting.value(QStringLiteral("Vertices")).toArray();
-    const int vertexIndex = row + 1;
-    if (vertexIndex >= vertices.size()) return;
-    bool ok = false;
-    const double value = m_vertexTable->item(row, column)->text().toDouble(&ok);
-    if (!ok || !std::isfinite(value) || value < 0.0 || (column == 2 && value > 1.0)) {
-        m_updating = true; showGroupDetail(groupRow); m_updating = false; return;
+    if (m_updating || !m_vertexTable->item(row, column)) return;
+    QString error;
+    if (!SubmitCell(2, row, column, m_vertexTable->item(row, column)->text(), m_documentRevision, &error)) {
+        const QScopedValueRollback<bool> updating(m_updating, true); showGroupDetail(m_detailGroupRow);
     }
-    QJsonObject vertex = vertices[vertexIndex].toObject();
-    const QString key = column == 1 ? QStringLiteral("Radius") : column == 2 ? QStringLiteral("Mobility")
-                         : column == 3 ? QStringLiteral("Delay") : QStringLiteral("Acceleration");
-    vertex.insert(key, value);
-    vertices[vertexIndex] = vertex;
-    setting.insert(QStringLiteral("Vertices"), vertices);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+}
+
+void CPhysicsPanel::ApplyNormalization()
+{
+    QSet<const QLineEdit*> controls;
+    for (auto* edit : m_normalizationEdits) controls.insert(edit);
+    const QScopedValueRollback<QSet<const QLineEdit*>> committing(m_committingControls, controls);
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    if (before.selectedGroupRow < 0) return;
+    auto settings = m_physicsSettings; auto group = settings[before.selectedGroupRow].toObject();
+    auto normalization = group.value("Normalization").toObject();
+    const QStringList keys{"Minimum", "Default", "Maximum"};
+    for (int row = 0; row < 2; ++row) {
+        const QString kind = row == 0 ? QStringLiteral("Position") : QStringLiteral("Angle");
+        auto values = normalization.value(kind).toObject();
+        for (int column = 0; column < 3; ++column) {
+            bool valid = false; const double value = m_normalizationEdits[row * 3 + column]->text().toDouble(&valid);
+            if (!valid || !std::isfinite(value)) { RejectEdit(QStringLiteral("归一化范围必须为有限数值")); return; }
+            values.insert(keys[column], value);
+        }
+        normalization.insert(kind, values);
+    }
+    group.insert("Normalization", normalization); settings[before.selectedGroupRow] = group;
+    auto document = before.document; document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, before.selectedGroupRow);
+}
+
+void CPhysicsPanel::copyPhysicsGroup()
+{
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const int row = before.selectedGroupRow;
+    if (row < 0 || row >= m_physicsSettings.size() || m_physicsSettings.size() >= 10000) return;
+    const QPointer<CPhysicsPanel> alive(this);
+    auto group = m_physicsSettings[row].toObject();
+    bool accepted = false;
+    const QString id = QInputDialog::getText(this, QStringLiteral("复制物理组"), QStringLiteral("新组 ID"),
+        QLineEdit::Normal, group.value("Id").toString() + QStringLiteral("Copy"), &accepted).trimmed();
+    if (!alive || !accepted) return;
+    if (id.isEmpty() || id.contains(QChar::Null)) { RejectEdit(QStringLiteral("组 ID 无效")); return; }
+    auto settings = before.document.value("PhysicsSettings").toArray();
+    for (const auto& value : settings) if (value.toObject().value("Id").toString() == id) {
+        RejectEdit(QStringLiteral("该组 ID 已存在")); return;
+    }
+    group.insert("Id", id); settings.append(group);
+    auto document = before.document; auto meta = document.value("Meta").toObject();
+    auto dictionary = meta.value("PhysicsDictionary").toArray();
+    dictionary.append(QJsonObject{{"Id", id}, {"Name", id}}); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, settings.size() - 1);
 }
 
 void CPhysicsPanel::refreshGroupTable(int selectedRow, bool preserveNoSelection)
@@ -540,6 +965,7 @@ void CPhysicsPanel::refreshGroupTable(int selectedRow, bool preserveNoSelection)
         m_groupTable->setItem(i, 2, new QTableWidgetItem(QString::number(setting.value(QStringLiteral("Output")).toArray().size())));
     }
     m_groupTable->resizeColumnsToContents();
+    fitPhysicsRows(m_groupTable);
     selectedRow = m_physicsSettings.isEmpty() || (preserveNoSelection && selectedRow < 0) ? -1 : qBound(0, selectedRow, static_cast<int>(m_physicsSettings.size()) - 1);
     m_groupTable->setCurrentCell(selectedRow, selectedRow >= 0 ? 0 : -1);
     if (selectedRow >= 0) m_groupTable->selectRow(selectedRow);
@@ -547,29 +973,19 @@ void CPhysicsPanel::refreshGroupTable(int selectedRow, bool preserveNoSelection)
     showGroupDetail(selectedRow);
 }
 
-void CPhysicsPanel::commitGroupChanges(int selectedRow)
-{
-    QJsonObject meta = m_physicsDocument.value(QStringLiteral("Meta")).toObject();
-    meta.insert(QStringLiteral("PhysicsDictionary"), m_physicsDictionary);
-    m_physicsDocument.insert(QStringLiteral("Meta"), meta);
-    m_physicsDocument.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
-    m_dirty = true;
-    ++m_documentRevision;
-    m_snapshotNotificationPending = false;
-    m_pendingSnapshotRefresh.reset();
-    refreshGroupTable(selectedRow);
-    emit PhysicsConfigChanged();
-}
-
 void CPhysicsPanel::addPhysicsGroup()
 {
-    if (m_physicsDocument.isEmpty() || m_physicsSettings.size() >= 10000) return;
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
+    if (m_physicsDocument.isEmpty() || settings.size() >= 10000) return;
     bool accepted = false;
     const QString id = QInputDialog::getText(this, QStringLiteral("添加物理组"),
                                               QStringLiteral("组 ID"), QLineEdit::Normal,
                                               QString(), &accepted).trimmed();
-    if (!accepted || id.isEmpty()) return;
-    for (const QJsonValue& value : m_physicsSettings) {
+    if (!alive || !accepted || id.isEmpty()) return;
+    for (const QJsonValue& value : settings) {
         if (value.toObject().value(QStringLiteral("Id")).toString() == id) {
             QMessageBox::warning(this, QStringLiteral("添加物理组"), QStringLiteral("该组 ID 已存在"));
             return;
@@ -578,7 +994,7 @@ void CPhysicsPanel::addPhysicsGroup()
     const QString name = QInputDialog::getText(this, QStringLiteral("添加物理组"),
                                                 QStringLiteral("显示名称"), QLineEdit::Normal,
                                                 id, &accepted).trimmed();
-    if (!accepted || name.isEmpty()) return;
+    if (!alive || !accepted || name.isEmpty()) return;
     QJsonObject position;
     position.insert(QStringLiteral("Minimum"), -10.0);
     position.insert(QStringLiteral("Default"), 0.0);
@@ -603,34 +1019,48 @@ void CPhysicsPanel::addPhysicsGroup()
     setting.insert(QStringLiteral("Output"), QJsonArray());
     setting.insert(QStringLiteral("Vertices"), vertices);
     setting.insert(QStringLiteral("Normalization"), normalization);
-    m_physicsSettings.append(setting);
+    settings.append(setting);
     QJsonObject dictionaryEntry;
     dictionaryEntry.insert(QStringLiteral("Id"), id);
     dictionaryEntry.insert(QStringLiteral("Name"), name);
-    m_physicsDictionary.append(dictionaryEntry);
-    commitGroupChanges(m_physicsSettings.size() - 1);
+    dictionary.append(dictionaryEntry);
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, settings.size() - 1);
 }
 
 void CPhysicsPanel::removePhysicsGroup()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int row = m_groupTable ? m_groupTable->currentRow() : -1;
-    if (row < 0 || row >= m_physicsSettings.size()) return;
-    const QString id = m_physicsSettings.at(row).toObject().value(QStringLiteral("Id")).toString();
-    m_physicsSettings.removeAt(row);
-    for (int i = m_physicsDictionary.size() - 1; i >= 0; --i) {
-        if (m_physicsDictionary.at(i).toObject().value(QStringLiteral("Id")).toString() == id)
-            m_physicsDictionary.removeAt(i);
+    if (row < 0 || row >= settings.size()) return;
+    const QString id = settings.at(row).toObject().value(QStringLiteral("Id")).toString();
+    settings.removeAt(row);
+    for (int i = dictionary.size() - 1; i >= 0; --i) {
+        if (dictionary.at(i).toObject().value(QStringLiteral("Id")).toString() == id)
+            dictionary.removeAt(i);
     }
-    commitGroupChanges(row);
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, row);
 }
 
 void CPhysicsPanel::renamePhysicsGroup()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int row = m_groupTable ? m_groupTable->currentRow() : -1;
-    if (row < 0 || row >= m_physicsSettings.size()) return;
-    const QString id = m_physicsSettings.at(row).toObject().value(QStringLiteral("Id")).toString();
+    if (row < 0 || row >= settings.size()) return;
+    const QString id = settings.at(row).toObject().value(QStringLiteral("Id")).toString();
     QString currentName = id;
-    for (const QJsonValue& value : m_physicsDictionary) {
+    for (const QJsonValue& value : dictionary) {
         const QJsonObject entry = value.toObject();
         if (entry.value(QStringLiteral("Id")).toString() == id) { currentName = entry.value(QStringLiteral("Name")).toString(); break; }
     }
@@ -638,13 +1068,13 @@ void CPhysicsPanel::renamePhysicsGroup()
     const QString name = QInputDialog::getText(this, QStringLiteral("重命名物理组"),
                                                 QStringLiteral("显示名称"), QLineEdit::Normal,
                                                 currentName, &accepted).trimmed();
-    if (!accepted || name.isEmpty()) return;
+    if (!alive || !accepted || name.isEmpty()) return;
     bool dictionaryFound = false;
-    for (int i = 0; i < m_physicsDictionary.size(); ++i) {
-        QJsonObject entry = m_physicsDictionary.at(i).toObject();
+    for (int i = 0; i < dictionary.size(); ++i) {
+        QJsonObject entry = dictionary.at(i).toObject();
         if (entry.value(QStringLiteral("Id")).toString() != id) continue;
         entry.insert(QStringLiteral("Name"), name);
-        m_physicsDictionary[i] = entry;
+        dictionary[i] = entry;
         dictionaryFound = true;
         break;
     }
@@ -652,27 +1082,34 @@ void CPhysicsPanel::renamePhysicsGroup()
         QJsonObject entry;
         entry.insert(QStringLiteral("Id"), id);
         entry.insert(QStringLiteral("Name"), name);
-        m_physicsDictionary.append(entry);
+        dictionary.append(entry);
     }
-    commitGroupChanges(row);
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, row);
 }
 
 void CPhysicsPanel::addPhysicsInput()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return;
+    if (groupRow < 0 || groupRow >= settings.size()) return;
     bool accepted = false;
     const QString id = QInputDialog::getText(this, QStringLiteral("添加物理输入"),
                                               QStringLiteral("参数 ID"), QLineEdit::Normal,
                                               QString(), &accepted).trimmed();
-    if (!accepted || id.isEmpty()) return;
+    if (!alive || !accepted || id.isEmpty()) return;
     const QStringList types = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Angle")};
     const QString type = QInputDialog::getItem(this, QStringLiteral("添加物理输入"),
                                                 QStringLiteral("输入类型"), types, 0, false, &accepted);
-    if (!accepted) return;
+    if (!alive || !accepted) return;
     const double weight = QInputDialog::getDouble(this, QStringLiteral("添加物理输入"),
                                                    QStringLiteral("影响度（0-100）"), 100.0, 0.0, 100.0, 2, &accepted);
-    if (!accepted) return;
+    if (!alive || !accepted) return;
     QJsonObject source;
     source.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
     source.insert(QStringLiteral("Id"), id);
@@ -681,33 +1118,47 @@ void CPhysicsPanel::addPhysicsInput()
     input.insert(QStringLiteral("Weight"), weight);
     input.insert(QStringLiteral("Type"), type);
     input.insert(QStringLiteral("Reflect"), false);
-    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonObject setting = settings.at(groupRow).toObject();
     QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
     inputs.append(input);
     setting.insert(QStringLiteral("Input"), inputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+    settings[groupRow] = setting;
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, groupRow);
 }
 
 void CPhysicsPanel::removePhysicsInput()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
     const int row = m_inputTable ? m_inputTable->currentRow() : -1;
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || row < 0) return;
-    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    if (groupRow < 0 || groupRow >= settings.size() || row < 0) return;
+    QJsonObject setting = settings.at(groupRow).toObject();
     QJsonArray inputs = setting.value(QStringLiteral("Input")).toArray();
     if (row >= inputs.size()) return;
     inputs.removeAt(row);
     setting.insert(QStringLiteral("Input"), inputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+    settings[groupRow] = setting;
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, groupRow);
 }
 
 void CPhysicsPanel::addPhysicsOutput()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return;
-    const QJsonObject current = m_physicsSettings.at(groupRow).toObject();
+    if (groupRow < 0 || groupRow >= settings.size()) return;
+    const QJsonObject current = settings.at(groupRow).toObject();
     const int vertexCount = current.value(QStringLiteral("Vertices")).toArray().size();
     if (vertexCount <= 0) {
         QMessageBox::warning(this, QStringLiteral("添加物理输出"), QStringLiteral("当前物理组没有可用摆锤"));
@@ -717,17 +1168,17 @@ void CPhysicsPanel::addPhysicsOutput()
     const QString id = QInputDialog::getText(this, QStringLiteral("添加物理输出"),
                                               QStringLiteral("参数 ID"), QLineEdit::Normal,
                                               QString(), &accepted).trimmed();
-    if (!accepted || id.isEmpty()) return;
+    if (!alive || !accepted || id.isEmpty()) return;
     const QStringList types = {QStringLiteral("X"), QStringLiteral("Y"), QStringLiteral("Angle")};
     const QString type = QInputDialog::getItem(this, QStringLiteral("添加物理输出"),
                                                 QStringLiteral("输出类型"), types, 0, false, &accepted);
-    if (!accepted) return;
+    if (!alive || !accepted) return;
     const int vertexIndex = QInputDialog::getInt(this, QStringLiteral("添加物理输出"),
                                                  QStringLiteral("摆锤索引"), 0, 0, vertexCount - 1, 1, &accepted);
-    if (!accepted) return;
+    if (!alive || !accepted) return;
     const double scale = QInputDialog::getDouble(this, QStringLiteral("添加物理输出"),
                                                  QStringLiteral("倍率"), 1.0, -100000.0, 100000.0, 3, &accepted);
-    if (!accepted) return;
+    if (!alive || !accepted) return;
     QJsonObject destination;
     destination.insert(QStringLiteral("Target"), QStringLiteral("Parameter"));
     destination.insert(QStringLiteral("Id"), id);
@@ -742,29 +1193,43 @@ void CPhysicsPanel::addPhysicsOutput()
     QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
     outputs.append(output);
     setting.insert(QStringLiteral("Output"), outputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+    settings[groupRow] = setting;
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, groupRow);
 }
 
 void CPhysicsPanel::removePhysicsOutput()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
     const int row = m_outputTable ? m_outputTable->currentRow() : -1;
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || row < 0) return;
-    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    if (groupRow < 0 || groupRow >= settings.size() || row < 0) return;
+    QJsonObject setting = settings.at(groupRow).toObject();
     QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
     if (row >= outputs.size()) return;
     outputs.removeAt(row);
     setting.insert(QStringLiteral("Output"), outputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+    settings[groupRow] = setting;
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, groupRow);
 }
 
 void CPhysicsPanel::addPhysicsVertex()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size()) return;
-    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    if (groupRow < 0 || groupRow >= settings.size()) return;
+    QJsonObject setting = settings.at(groupRow).toObject();
     QJsonArray vertices = setting.value(QStringLiteral("Vertices")).toArray();
     if (vertices.size() >= 10000) return;
     QJsonObject position;
@@ -778,17 +1243,24 @@ void CPhysicsPanel::addPhysicsVertex()
     vertex.insert(QStringLiteral("Radius"), 1.0);
     vertices.append(vertex);
     setting.insert(QStringLiteral("Vertices"), vertices);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+    settings[groupRow] = setting;
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, groupRow);
 }
 
 void CPhysicsPanel::removePhysicsVertex()
 {
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const QPointer<CPhysicsPanel> alive(this);
+    QJsonArray settings = m_physicsSettings, dictionary = m_physicsDictionary;
     const int groupRow = m_groupTable ? m_groupTable->currentRow() : -1;
     const int row = m_vertexTable ? m_vertexTable->currentRow() : -1;
-    if (groupRow < 0 || groupRow >= m_physicsSettings.size() || row < 0) return;
+    if (groupRow < 0 || groupRow >= settings.size() || row < 0) return;
     const int vertexIndex = row + 1;
-    QJsonObject setting = m_physicsSettings.at(groupRow).toObject();
+    QJsonObject setting = settings.at(groupRow).toObject();
     QJsonArray vertices = setting.value(QStringLiteral("Vertices")).toArray();
     if (vertexIndex <= 0 || vertexIndex >= vertices.size()) return;
     QJsonArray outputs = setting.value(QStringLiteral("Output")).toArray();
@@ -808,12 +1280,16 @@ void CPhysicsPanel::removePhysicsVertex()
     vertices.removeAt(vertexIndex);
     setting.insert(QStringLiteral("Vertices"), vertices);
     setting.insert(QStringLiteral("Output"), outputs);
-    m_physicsSettings[groupRow] = setting;
-    commitGroupChanges(groupRow);
+    settings[groupRow] = setting;
+    auto document = before.document;
+    auto meta = document.value("Meta").toObject(); meta.insert("PhysicsDictionary", dictionary);
+    document.insert("Meta", meta); document.insert("PhysicsSettings", settings);
+    CommitDocument(before, document, groupRow);
 }
 
 void CPhysicsPanel::showGroupDetail(int row)
 {
+    m_detailGroupRow = row;
     const bool validGroup = row >= 0 && row < m_physicsSettings.size();
     const bool wasUpdating = m_updating;
     m_updating = true;
@@ -824,6 +1300,15 @@ void CPhysicsPanel::showGroupDetail(int row)
     m_addVertexButton->setEnabled(validGroup);
     m_removeGroupButton->setEnabled(validGroup);
     m_renameGroupButton->setEnabled(validGroup);
+    m_copyGroupButton->setEnabled(validGroup);
+    const auto normalization = setting.value("Normalization").toObject();
+    const QStringList keys{"Minimum", "Default", "Maximum"};
+    for (int index = 0; index < 6; ++index) {
+        auto* edit = m_normalizationEdits[index]; edit->setEnabled(validGroup);
+        const auto values = normalization.value(index < 3 ? "Position" : "Angle").toObject();
+        edit->setText(validGroup ? physicsNumber(values.value(keys[index % 3]).toDouble()) : QString());
+        edit->setProperty("physicsAcceptedText", edit->text());
+    }
     for (auto* table : {m_inputTable, m_outputTable, m_vertexTable}) {
         table->clearSelection();
         table->setCurrentCell(-1, -1);
@@ -838,10 +1323,11 @@ void CPhysicsPanel::showGroupDetail(int row)
         QString paramId = inp["Source"].toObject()["Id"].toString();
         m_inputTable->setItem(i, 0, new QTableWidgetItem(paramId));
         m_inputTable->setItem(i, 1, new QTableWidgetItem(inp["Type"].toString()));
-        m_inputTable->setItem(i, 2, new QTableWidgetItem(QString::number(inp["Weight"].toDouble())));
+        m_inputTable->setItem(i, 2, new QTableWidgetItem(physicsNumber(inp["Weight"].toDouble())));
         m_inputTable->setItem(i, 3, new QTableWidgetItem(inp["Reflect"].toBool() ? "是" : "否"));
     }
     m_inputTable->resizeColumnsToContents();
+    fitPhysicsRows(m_inputTable);
 
     // 输出设置
     QJsonArray outputs = setting["Output"].toArray();
@@ -851,12 +1337,13 @@ void CPhysicsPanel::showGroupDetail(int row)
         QString paramId = out["Destination"].toObject()["Id"].toString();
         m_outputTable->setItem(i, 0, new QTableWidgetItem(paramId));
         m_outputTable->setItem(i, 1, new QTableWidgetItem(out["Type"].toString()));
-        m_outputTable->setItem(i, 2, new QTableWidgetItem(QString::number(out["Weight"].toDouble())));
-        m_outputTable->setItem(i, 3, new QTableWidgetItem(QString::number(out["Scale"].toDouble(), 'f', 2)));
+        m_outputTable->setItem(i, 2, new QTableWidgetItem(physicsNumber(out["Weight"].toDouble())));
+        m_outputTable->setItem(i, 3, new QTableWidgetItem(physicsNumber(out["Scale"].toDouble())));
         m_outputTable->setItem(i, 4, new QTableWidgetItem(out["Reflect"].toBool() ? "是" : "否"));
         m_outputTable->setItem(i, 5, new QTableWidgetItem(QString::number(out["VertexIndex"].toInt())));
     }
     m_outputTable->resizeColumnsToContents();
+    fitPhysicsRows(m_outputTable);
 
     // 摆锤参数 (Vertices，跳过第一个固定点)
     QJsonArray vertices = setting["Vertices"].toArray();
@@ -866,12 +1353,14 @@ void CPhysicsPanel::showGroupDetail(int row)
         QJsonObject v = vertices[i].toObject();
         int row = i - 1;
         m_vertexTable->setItem(row, 0, new QTableWidgetItem(QString::number(i)));
-        m_vertexTable->setItem(row, 1, new QTableWidgetItem(QString::number(v["Radius"].toDouble(), 'f', 1)));
-        m_vertexTable->setItem(row, 2, new QTableWidgetItem(QString::number(v["Mobility"].toDouble(), 'f', 2)));
-        m_vertexTable->setItem(row, 3, new QTableWidgetItem(QString::number(v["Delay"].toDouble(), 'f', 2)));
-        m_vertexTable->setItem(row, 4, new QTableWidgetItem(QString::number(v["Acceleration"].toDouble(), 'f', 2)));
+        m_vertexTable->item(row, 0)->setFlags(m_vertexTable->item(row, 0)->flags() & ~Qt::ItemIsEditable);
+        m_vertexTable->setItem(row, 1, new QTableWidgetItem(physicsNumber(v["Radius"].toDouble())));
+        m_vertexTable->setItem(row, 2, new QTableWidgetItem(physicsNumber(v["Mobility"].toDouble())));
+        m_vertexTable->setItem(row, 3, new QTableWidgetItem(physicsNumber(v["Delay"].toDouble())));
+        m_vertexTable->setItem(row, 4, new QTableWidgetItem(physicsNumber(v["Acceleration"].toDouble())));
     }
     m_vertexTable->resizeColumnsToContents();
+    fitPhysicsRows(m_vertexTable);
     if (m_removeInputButton) m_removeInputButton->setEnabled(false);
     if (m_removeOutputButton) m_removeOutputButton->setEnabled(false);
     if (m_removeVertexButton) m_removeVertexButton->setEnabled(false);
@@ -897,10 +1386,25 @@ bool CPhysicsPanel::HasPendingCellEdits() const
 {
     for (const auto* delegate : m_editDelegates)
         if (delegate && delegate->HasPendingChanges()) return true;
+    const auto pending = [this](const QLineEdit* edit) {
+        return edit && edit->isEnabled() && !m_committingControls.contains(edit) &&
+            edit->text() != edit->property("physicsAcceptedText").toString();
+    };
+    if (pending(m_fpsEdit)) return true;
+    for (auto* edit : m_forceEdits) if (pending(edit)) return true;
+    for (auto* edit : m_normalizationEdits) if (pending(edit)) return true;
     return false;
 }
 
 bool CPhysicsPanel::CaptureSnapshot(Snapshot& result, QString* error) const
+{
+    if (m_publishing || HasPendingCellEdits()) {
+        if (error) *error = QStringLiteral("请先完成或取消正在编辑的物理单元格"); return false;
+    }
+    return CaptureAcceptedSnapshot(result, error);
+}
+
+bool CPhysicsPanel::CaptureAcceptedSnapshot(Snapshot& result, QString* error) const
 {
     if (error) error->clear();
     if (m_updating || HasPendingCellEdits()) {
@@ -914,6 +1418,7 @@ bool CPhysicsPanel::CaptureSnapshot(Snapshot& result, QString* error) const
         candidate.path = m_physicsPath;
         candidate.dirty = m_dirty;
         candidate.revision = m_documentRevision;
+        candidate.history = m_history;
         if (m_pendingSnapshotRefresh) { result = std::move(candidate); return true; }
         candidate.selectedGroupRow = m_groupTable->currentRow();
         if (candidate.selectedGroupRow >= 0 && candidate.selectedGroupRow < m_physicsSettings.size())
@@ -943,13 +1448,13 @@ bool CPhysicsPanel::PrepareSnapshot(const Snapshot& expected, const Snapshot& ta
     if (error) error->clear();
     try {
         Snapshot current;
-        if (!CaptureSnapshot(current, error)) return false;
+        if (!(m_committingCell ? CaptureAcceptedSnapshot(current, error) : CaptureSnapshot(current, error))) return false;
         if (!current.SameDocument(expected)) {
             if (error) *error = QStringLiteral("物理草稿已独立修改，不能覆盖当前内容");
             return false;
         }
         if (!target.document.isEmpty() && !ValidateDocument(target.document, error)) return false;
-        if (target.path.contains(QChar::Null) || (target.document.isEmpty() && (!target.path.isEmpty() || target.dirty))) {
+        if (target.path.contains(QChar::Null) || (target.document.isEmpty() && !target.path.isEmpty())) {
             if (error) *error = QStringLiteral("物理草稿路径或空快照状态无效");
             return false;
         }
@@ -993,15 +1498,22 @@ bool CPhysicsPanel::PrepareSnapshot(const Snapshot& expected, const Snapshot& ta
                     return false;
                 }
         }
-        const bool changed = current.document != target.document || current.path != target.path || current.dirty != target.dirty;
+        if (target.history && (target.history->owner != this || target.history->states.isEmpty() ||
+            target.history->cursor < 0 || target.history->cursor >= target.history->states.size() ||
+            normalizedPhysics(target.history->states[target.history->cursor].document) != normalizedPhysics(target.document))) {
+            if (error) *error = QStringLiteral("物理历史快照无效或属于其他面板"); return false;
+        }
+        candidate.m_target.dirty = normalizedPhysics(target.document) != m_savedDocument || target.path != m_savedPath;
+        const bool changed = current.document != target.document || current.path != target.path || current.history != target.history;
         if ((changed && m_documentRevision == std::numeric_limits<quint64>::max()) || m_prepareSerial == std::numeric_limits<quint64>::max()) {
             if (error) *error = QStringLiteral("物理草稿版本计数已耗尽");
             return false;
         }
         candidate.m_target.revision = current.revision + (changed ? 1 : 0);
         candidate.m_document = candidate.m_target.document;
+        candidate.m_normalizedDocument = normalizedPhysics(candidate.m_document);
         candidate.m_settings = candidate.m_target.document.value("PhysicsSettings").toArray();
-        candidate.m_dictionary = candidate.m_target.document.value("Meta").toObject().value("PhysicsDictionary").toArray();
+        candidate.m_dictionary = physicsDictionary(candidate.m_target.document);
         candidate.m_path = candidate.m_target.path;
         candidate.m_refresh = std::make_unique<Snapshot>(candidate.m_target);
         candidate.m_owner = const_cast<CPhysicsPanel*>(this);
@@ -1024,7 +1536,7 @@ bool CPhysicsPanel::PrepareReferenceRemoval(const Snapshot& expected, const QSet
             return false;
         }
         Snapshot current;
-        if (!CaptureSnapshot(current, error)) return false;
+        if (!(m_committingCell ? CaptureAcceptedSnapshot(current, error) : CaptureSnapshot(current, error))) return false;
         if (!current.SameDocument(expected)) {
             if (error) *error = QStringLiteral("物理草稿已独立修改，不能移除引用");
             return false;
@@ -1058,6 +1570,7 @@ bool CPhysicsPanel::PrepareReferenceRemoval(const Snapshot& expected, const QSet
                 }
             }
         }
+        target.history.reset();
         return PrepareSnapshot(expected, target, prepared, error);
     } catch (const std::exception&) {
         if (error) *error = QStringLiteral("无法准备物理参数引用移除");
@@ -1077,7 +1590,7 @@ bool CPhysicsPanel::ValidatePreparedSnapshot(const PreparedSnapshot& prepared, Q
         return false;
     }
     const auto& expected = prepared.m_expected;
-    if (m_documentRevision != expected.revision || m_dirty != expected.dirty ||
+    if (m_documentRevision != expected.revision || m_history != expected.history ||
         m_physicsPath != expected.path || m_physicsDocument != expected.document) {
         if (error) *error = QStringLiteral("物理草稿在准备后发生变化");
         return false;
@@ -1088,15 +1601,20 @@ bool CPhysicsPanel::ValidatePreparedSnapshot(const PreparedSnapshot& prepared, Q
 void CPhysicsPanel::RefreshSnapshotControls(const Snapshot& snapshot)
 {
     const auto meta = m_physicsDocument.value("Meta").toObject();
-    m_fpsLabel->setText(m_physicsDocument.isEmpty() ? QStringLiteral("计算FPS: -")
-        : QStringLiteral("计算FPS: %1").arg(meta.value("Fps").toInt(30)));
-    const auto forces = meta.value("EffectiveForces").toObject();
+    m_fpsEdit->setEnabled(!m_physicsDocument.isEmpty());
+    m_fpsEdit->setText(m_physicsDocument.isEmpty() ? QString() : physicsNumber(meta.value("Fps").toDouble(0)));
+    m_fpsEdit->setProperty("physicsAcceptedText", m_fpsEdit->text());
     const std::array<QSlider*, 4> sliders{m_gravityX, m_gravityY, m_windX, m_windY};
     const std::array<QLabel*, 4> labels{m_gravityXLabel, m_gravityYLabel, m_windXLabel, m_windYLabel};
     for (int index = 0; index < 4; ++index) {
-        const double value = forces.value(index < 2 ? "Gravity" : "Wind").toObject().value(index % 2 ? "Y" : "X").toDouble();
-        sliders[index]->setValue(static_cast<int>(value * 100));
-        labels[index]->setText(QString::number(value, 'f', 2));
+        const double value = physicsForceValue(m_physicsDocument, index < 2, index % 2 == 0);
+        const int bound = qMax(100, int(std::ceil(std::abs(value) * 100)));
+        if (!m_forceMergeKey.startsWith(sliders[index]->objectName())) sliders[index]->setRange(-bound, bound);
+        sliders[index]->setValue(qRound(value * 100));
+        labels[index]->setText(QString::number(value, 'g', 6));
+        m_forceEdits[index]->setText(physicsNumber(value));
+        m_forceEdits[index]->setProperty("physicsAcceptedText", m_forceEdits[index]->text());
+        m_forceEdits[index]->setEnabled(!m_physicsDocument.isEmpty());
     }
     m_dragModeCb->setChecked(snapshot.dragEnabled);
     m_addGroupButton->setEnabled(!m_physicsDocument.isEmpty());
@@ -1119,18 +1637,25 @@ void CPhysicsPanel::RefreshSnapshotControls(const Snapshot& snapshot)
 
 bool CPhysicsPanel::CommitPreparedSnapshot(PreparedSnapshot& prepared, QString* error)
 {
+    if (m_publishing) { if (error) *error = QStringLiteral("物理修改正在提交"); return false; }
     if (!ValidatePreparedSnapshot(prepared, error)) return false;
+    InstallPrepared(prepared);
+    return true;
+}
+
+void CPhysicsPanel::InstallPrepared(PreparedSnapshot& prepared) noexcept
+{
     m_physicsDocument.swap(prepared.m_document);
     m_physicsSettings.swap(prepared.m_settings);
     m_physicsDictionary.swap(prepared.m_dictionary);
     m_physicsPath.swap(prepared.m_path);
-    m_dirty = prepared.m_target.dirty;
+    m_dirty = prepared.m_normalizedDocument != m_savedDocument || m_physicsPath != m_savedPath;
+    m_history = prepared.m_target.history;
     m_documentRevision = prepared.m_target.revision;
     m_pendingSnapshotRefresh.swap(prepared.m_refresh);
     prepared.m_token = 0;
     prepared.m_owner.clear();
     m_snapshotNotificationPending = true;
-    return true;
 }
 
 void CPhysicsPanel::NotifySnapshotCommitted()
@@ -1148,5 +1673,5 @@ void CPhysicsPanel::NotifySnapshotCommitted()
     }
     const QPointer<CPhysicsPanel> panel(this);
     emit PhysicsConfigChanged();
-    if (panel) emitDragParams(m_groupTable->currentRow());
+    if (panel) { RefreshHistoryControls(); emitDragParams(m_groupTable->currentRow()); }
 }

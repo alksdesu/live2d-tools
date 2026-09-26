@@ -16,6 +16,7 @@
 #include "framework/Rendering/CubismRenderer.hpp"
 #include "framework/Model/CubismModelUserData.hpp"
 #include "framework/Motion/CubismExpressionMotionManager.hpp"
+#include <memory>
 
 class ModelReplacementTests;
 
@@ -30,6 +31,9 @@ class CubismUserModel
 {
     friend class ::ModelReplacementTests;
 public:
+    struct PhysicsDeleter { void operator()(CubismPhysics* value) const noexcept { CubismPhysics::Delete(value); } };
+    using PhysicsOwner = std::unique_ptr<CubismPhysics, PhysicsDeleter>;
+    using PhysicsPreparation = std::function<bool(const CubismModel&, const CubismModel&, PhysicsOwner&, QString*)>;
     /**
      * @brief コンストラクタ
      *
@@ -143,7 +147,8 @@ protected:
                       const CubismModelReplacement::RendererPreparation& prepareRenderer,
                       CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                       QString* error = nullptr, const CubismModelReplacement::ModelPreparation& prepareModel = {},
-                      const ParameterPhysicsReferences* physicsReferences = nullptr);
+                      const ParameterPhysicsReferences* physicsReferences = nullptr,
+                      const PhysicsPreparation& preparePhysics = {});
 
     CubismMoc*              _moc;                       ///< Mocデータ
     CubismModel*            _model;                     ///< Modelインスタンス

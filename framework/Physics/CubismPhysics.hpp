@@ -7,6 +7,7 @@
 #include <QVector>
 #include <QString>
 #include <QByteArray>
+#include <memory>
 
 struct ParameterPhysicsReferences;
 
@@ -26,6 +27,24 @@ class CubismPhysics
 {
     friend class ::PhysicsParameterDefinitionTests;
 public:
+    enum class StatePolicy { PreserveCompatible, Stabilize };
+    class PreparedRuntimeState
+    {
+        friend class CubismPhysics;
+    public:
+        PreparedRuntimeState();
+        ~PreparedRuntimeState();
+        PreparedRuntimeState(PreparedRuntimeState&&) noexcept;
+        PreparedRuntimeState& operator=(PreparedRuntimeState&&) noexcept;
+        PreparedRuntimeState(const PreparedRuntimeState&) = delete;
+        PreparedRuntimeState& operator=(const PreparedRuntimeState&) = delete;
+        bool WasStabilized() const { return stabilized; }
+    private:
+        const CubismPhysics* owner = nullptr;
+        quint64 revision = 0;
+        bool stabilized = false;
+        std::unique_ptr<CubismPhysics, void (*)(CubismPhysics*)> work;
+    };
     class ParameterDefinitionState
     {
         friend class CubismPhysics;
@@ -41,6 +60,14 @@ public:
     bool PrepareParameterStructureChange(const CubismModel& previous, const CubismModel& replacement,
                                          ParameterDefinitionState& result, QString* error = nullptr,
                                          const ParameterPhysicsReferences* references = nullptr) const;
+    bool PrepareModelBinding(const CubismModel& model, const ParameterPhysicsReferences& references,
+                             ParameterDefinitionState& result, QString* error = nullptr) const;
+    bool PrepareRuntimeState(const CubismPhysics* previous, const CubismModel& previousModel,
+                             const CubismModel& replacementModel, const ParameterPhysicsReferences& references,
+                             PreparedRuntimeState& result, StatePolicy policy = StatePolicy::PreserveCompatible,
+                             QString* error = nullptr) const;
+    bool ValidatePreparedRuntimeState(const PreparedRuntimeState& state) const noexcept;
+    bool CommitRuntimeState(PreparedRuntimeState& state) noexcept;
     const QByteArray& SourceDigest() const { return _sourceDigest; }
 
     /**
@@ -73,7 +100,7 @@ public:
      * @param[in]   size        バッファのサイズ
      * @return  作成されたインスタンス
      */
-    static CubismPhysics* Create(const csmByte* buffer, csmSizeInt size);
+    static CubismPhysics* Create(const csmByte* buffer, csmSizeInt size, QString* error = nullptr);
 
     /**
      * @brief インスタンスの破棄
@@ -183,7 +210,13 @@ private:
     QVector<csmFloat32> _parameterInputCaches; ///< UpdateParticlesが動くときの入力をキャッシュ
     QVector<quint8> _activeInputs, _activeOutputs;
     QByteArray _sourceDigest;
+    QByteArray _normalizedBytes;
+    QByteArray _topology;
+    quint64 _stateRevision = 0;
     bool ResolveParameterIndices(CubismModel* model);
+    bool StabilizeValues(const CubismModel& model, QVector<float>& values, QString* error = nullptr);
+    bool HasFiniteRuntimeState(QString* error = nullptr) const;
+    void CopyDynamicStateFrom(const CubismPhysics& previous);
 
     csmBool _isJsonValid; ///< 正しくJsonデータが取得出来たか
 };

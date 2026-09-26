@@ -17,7 +17,9 @@
 
 class CPhysicsGraphWidget;
 class QPushButton;
-class CTableEditDelegate;
+class CPhysicsEditDelegate;
+class QLineEdit;
+struct CPhysicsHistoryCheckpoint;
 
 class CPhysicsPanel : public QDockWidget
 {
@@ -34,12 +36,13 @@ public:
         QString path;
         bool dirty = false;
         quint64 revision = 0;
+        std::shared_ptr<const CPhysicsHistoryCheckpoint> history;
         QString selectedGroupId;
         int selectedGroupRow = -1;
         bool dragEnabled = false;
         std::array<TableState, 3> tables;
         bool SameDocument(const Snapshot& other) const
-        { return document == other.document && path == other.path && dirty == other.dirty && revision == other.revision; }
+        { return document == other.document && path == other.path && revision == other.revision; }
     };
     class PreparedSnapshot {
         friend class CPhysicsPanel;
@@ -54,14 +57,24 @@ public:
         QPointer<CPhysicsPanel> m_owner;
         quint64 m_token = 0;
         Snapshot m_expected, m_target;
-        QJsonObject m_document;
+        QJsonObject m_document, m_normalizedDocument;
         QJsonArray m_settings, m_dictionary;
         QString m_path;
         std::unique_ptr<Snapshot> m_refresh;
     };
+    using EditPublisher = std::function<bool(const Snapshot&, const Snapshot&, QString*)>;
     explicit CPhysicsPanel(QWidget *parent = nullptr);
+    ~CPhysicsPanel() override;
+    void SetEditPublisher(EditPublisher publisher);
+    bool CanUndo() const;
+    bool CanRedo() const;
+    bool Undo(QString* error = nullptr);
+    bool Redo(QString* error = nullptr);
+    bool NewPhysics(QString* error = nullptr);
+    void MarkSessionSaved();
     bool LoadPhysics(const QString& physicsPath, QString* error = nullptr);
     bool SavePhysics(const QString& path = QString(), QString* error = nullptr);
+    bool ExportPhysics(const QString& path, QString* error = nullptr) const;
     void SetSessionSaveHandler(std::function<bool(QString*)> handler);
     bool HasUnsavedChanges() const { return m_dirty || HasPendingCellEdits(); }
     const QString& FilePath() const { return m_physicsPath; }
@@ -80,13 +93,29 @@ signals:
     void WindChanged(float x, float y);
     void PhysicsConfigChanged();
     void PhysicsSaved(const QString& path);
+    void HistoryChanged(bool canUndo, bool canRedo);
+    void EditRejected(const QString& reason);
     // 选择物理组后发射输入参数列表，用于鼠标拖拽驱动
     void PhysicsDragParamsChanged(const QStringList& paramIds, const QStringList& types);
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void showGroupDetail(int row);
     void refreshGroupTable(int selectedRow, bool preserveNoSelection = false);
-    void commitGroupChanges(int selectedRow);
+    bool CommitDocument(const Snapshot& before, QJsonObject document, int selectedRow, QString* error = nullptr,
+                        const QString& mergeKey = QString());
+    bool PublishPrepared(PreparedSnapshot& prepared, QString* error);
+    void InstallPrepared(PreparedSnapshot& prepared) noexcept;
+    bool MoveHistory(bool undo, QString* error);
+    void RejectEdit(const QString& error);
+    void RefreshHistoryControls();
+    bool CaptureAcceptedSnapshot(Snapshot& result, QString* error = nullptr) const;
+    bool SubmitCell(int table, int row, int column, const QString& text, quint64 revision, QString* error);
+    void RefreshAfterEditor();
+    void ApplyNormalization();
+    void copyPhysicsGroup();
     void emitDragParams(int row);
     void updateInputCell(int row, int column);
     void updateOutputCell(int row, int column);
@@ -107,6 +136,13 @@ private:
     void RefreshSnapshotControls(const Snapshot& snapshot);
 
     QLabel* m_fpsLabel;
+    QLineEdit* m_fpsEdit = nullptr;
+    QLabel* m_errorLabel = nullptr;
+    QPushButton* m_undoButton = nullptr;
+    QPushButton* m_redoButton = nullptr;
+    QPushButton* m_copyGroupButton = nullptr;
+    std::array<QLineEdit*, 6> m_normalizationEdits{};
+    std::array<QLineEdit*, 4> m_forceEdits{};
     QTableWidget* m_groupTable;
     QCheckBox* m_dragModeCb;
 
@@ -141,11 +177,21 @@ private:
     QJsonArray m_physicsDictionary;
     QJsonObject m_physicsDocument;
     QString m_physicsPath;
+    int m_detailGroupRow = -1;
     bool m_updating = false;
     bool m_dirty = false;
     quint64 m_documentRevision = 0;
     mutable quint64 m_prepareSerial = 0;
-    std::array<CTableEditDelegate*, 3> m_editDelegates{};
+    std::array<CPhysicsEditDelegate*, 3> m_editDelegates{};
+    std::shared_ptr<const CPhysicsHistoryCheckpoint> m_history;
+    QJsonObject m_savedDocument;
+    QString m_savedPath;
+    EditPublisher m_editPublisher;
+    bool m_publishing = false;
+    bool m_committingCell = false;
+    QSet<const QLineEdit*> m_committingControls;
+    quint64 m_forceGesture = 0;
+    QString m_forceMergeKey;
     bool m_snapshotNotificationPending = false;
     std::unique_ptr<Snapshot> m_pendingSnapshotRefresh;
     std::function<bool(QString*)> m_sessionSaveHandler;

@@ -4,6 +4,7 @@
  */
 #include "CubismUserModel.hpp"
 #include <QScopedValueRollback>
+#include <exception>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
@@ -25,7 +26,8 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
                                  const CubismModelReplacement::RendererPreparation& prepareRenderer,
                                  CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds, QString* error,
                                  const CubismModelReplacement::ModelPreparation& prepareModel,
-                                 const ParameterPhysicsReferences* physicsReferences)
+                                 const ParameterPhysicsReferences* physicsReferences,
+                                 const PhysicsPreparation& preparePhysics)
 {
     if (error) error->clear();
     if (_updating || !_moc || !_model || !_renderer || !_modelMatrix ||
@@ -45,8 +47,19 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
     }
     CubismModel* previous = _model;
     CubismModel* replacement = candidate.GetModel();
+    PhysicsOwner physicsCandidate;
+    try {
+        if (preparePhysics && !preparePhysics(*previous, *replacement, physicsCandidate, error)) return false;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法准备物理预览，原模型保持不变");
+        return false;
+    }
+    if (_physics != sourcePhysics || _pose != sourcePose) {
+        if (error) *error = QStringLiteral("模型效果在准备期间发生变化");
+        return false;
+    }
     CubismPhysics::ParameterDefinitionState physicsState;
-    const bool migratePhysics = _physics && (structure || AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterDefinitionEdits));
+    const bool migratePhysics = !preparePhysics && _physics && (structure || AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterDefinitionEdits));
     if (migratePhysics && !(structure ? _physics->PrepareParameterStructureChange(*previous, *replacement, physicsState, error, physicsReferences)
                                      : _physics->PrepareParameterDefinitionChange(*previous, *replacement, physicsState, error))) return false;
     CubismPose::RebindState poseState;
@@ -61,6 +74,11 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
         return false;
     }
     if (migratePhysics) _physics->CommitParameterDefinitionChange(physicsState);
+    if (preparePhysics) {
+        auto* retired = _physics;
+        _physics = physicsCandidate.release();
+        physicsCandidate.reset(retired);
+    }
     if (_pose && structure) _pose->CommitRebindModel(poseState);
     return true;
 }

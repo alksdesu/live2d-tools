@@ -52,6 +52,23 @@ bool LAppModel::EndExportPreview(QString* error)
     return true;
 }
 
+void LAppModel::ApplyPhysicsDragInputs()
+{
+    if (!m_physicsDragActive || !CanPhysicsDrag() || !_model) return;
+    for (qsizetype row = 0; row < _physicsDragParamIds.size() && row < _physicsDragTypes.size(); ++row) {
+        const auto found = m_mapParaToIndex.constFind(_physicsDragParamIds[row]);
+        if (found == m_mapParaToIndex.cend() || *found < 0 || *found >= _model->GetParameterCount()) continue;
+        const auto& type = _physicsDragTypes[row];
+        if (type != QLatin1String("X") && type != QLatin1String("Y") && type != QLatin1String("Angle")) continue;
+        const double drive = type == QLatin1String("X") ? m_physicsDragX : type == QLatin1String("Y") ? m_physicsDragY
+            : (double(m_physicsDragX) + m_physicsDragY) * 0.5;
+        const double current = _model->GetParameterValue(*found);
+        const double bound = drive >= 0 ? _model->GetParameterMaximumValue(*found) : _model->GetParameterMinimumValue(*found);
+        const double value = current + std::abs(drive) * (bound - current);
+        if (std::isfinite(value)) _model->SetParameterValue(*found, static_cast<float>(value));
+    }
+}
+
 void LAppModel::Update()
 {
     if (!_initialized || _updating || !_model) return;
@@ -145,6 +162,7 @@ void LAppModel::Update()
     ApplyTimelinePreview();
     if (_physics != NULL && _autoPhysics)
     {
+        ApplyPhysicsDragInputs();
         _physics->Evaluate(_model, deltaTimeSeconds);
     }
 

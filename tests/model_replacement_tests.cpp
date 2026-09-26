@@ -376,8 +376,9 @@ class ModelReplacementTests : public QObject
     static bool publishPreview(LAppModel& preview, const QByteArray& bytes, const QByteArray& sourceDigest,
                                const CubismModelReplacement::ModelPreparation& prepareModel,
                                QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                               const ParameterPhysicsReferences* physicsReferences)
+                               const ParameterPhysicsReferences* physicsReferences, const LAppModel::PhysicsDraft* physicsDraft)
     {
+        if (physicsDraft) qFatal("Physics draft integration is outside this renderer-boundary fixture");
         Q_UNUSED(sourceDigest);
         const auto prepareRenderer = [&](CubismRenderer* renderer, CubismModel* model, const CubismRenderer& source, QString* detail) {
             if (runtime.rejectMetadataRenderer) { if (detail) *detail = QStringLiteral("GPU preparation rejected"); return false; }
@@ -419,7 +420,200 @@ class ModelReplacementTests : public QObject
         if (!preview._model->CaptureRuntimeValues(result)) qFatal("Unable to capture fixture model");
         return result;
     }
+    static QByteArray physicsBytes()
+    {
+        return R"({"Version":3,"Meta":{"PhysicsSettingCount":1,"TotalInputCount":1,"TotalOutputCount":1,"VertexCount":2,"Fps":30,"EffectiveForces":{"Gravity":{"X":0,"Y":-1},"Wind":{"X":0,"Y":0}}},"PhysicsSettings":[{"Id":"one","Input":[{"Source":{"Target":"Parameter","Id":"ParamA"},"Weight":100,"Type":"X","Reflect":true}],"Output":[{"Destination":{"Target":"Parameter","Id":"ParamB"},"VertexIndex":1,"Scale":1,"Weight":100,"Type":"Angle","Reflect":false}],"Vertices":[{"Position":{"X":0,"Y":0},"Mobility":1,"Delay":1,"Acceleration":1,"Radius":0},{"Position":{"X":0,"Y":1},"Mobility":0.8,"Delay":0.5,"Acceleration":1,"Radius":1}],"Normalization":{"Position":{"Minimum":-1,"Maximum":1,"Default":0},"Angle":{"Minimum":-30,"Maximum":30,"Default":0}}}]})";
+    }
+    static CubismUserModel::PhysicsOwner makePhysics(float wind)
+    {
+        const auto bytes = physicsBytes();
+        CubismUserModel::PhysicsOwner result(CubismPhysics::Create(
+            reinterpret_cast<const csmByte*>(bytes.constData()), csmSizeInt(bytes.size())));
+        if (!result) return result;
+        auto options = result->GetOptions();
+        options.Wind.X = wind;
+        result->SetOptions(options);
+        return result;
+    }
+    static void setupPhysicsPreview(LAppModel& preview)
+    {
+        auto source = createSource();
+        preview._moc = std::exchange(source->moc, nullptr);
+        preview._model = std::exchange(source->model, nullptr);
+        preview._renderer = std::exchange(source->renderer, nullptr);
+        preview._modelMatrix = CSM_NEW CubismModelMatrix(5.0f, 4.0f);
+        preview._initialized = true;
+        preview._physics = makePhysics(0.45f).release();
+        if (!preview._physics) qFatal("Cannot create source physics");
+        preview._physics->Evaluate(preview._model, 1.0f / 30.0f);
+    }
+    static void compareValues(const CubismModel::RuntimeValueSnapshot& actual,
+                              const CubismModel::RuntimeValueSnapshot& expected)
+    {
+        QCOMPARE(actual.valid, expected.valid);
+        QCOMPARE(actual.parameterIds, expected.parameterIds);
+        QCOMPARE(actual.parameterValues, expected.parameterValues);
+        QCOMPARE(actual.savedParameters, expected.savedParameters);
+        QCOMPARE(actual.savedPresence, expected.savedPresence);
+        QCOMPARE(actual.minimums, expected.minimums);
+        QCOMPARE(actual.maximums, expected.maximums);
+        QCOMPARE(actual.parameterTypes, expected.parameterTypes);
+        QCOMPARE(actual.virtualParameterIds, expected.virtualParameterIds);
+        QCOMPARE(actual.virtualParameterValues, expected.virtualParameterValues);
+        QCOMPARE(actual.partIds, expected.partIds);
+        QCOMPARE(actual.partOpacities, expected.partOpacities);
+        QCOMPARE(actual.virtualPartIds, expected.virtualPartIds);
+        QCOMPARE(actual.virtualPartOpacities, expected.virtualPartOpacities);
+        QCOMPARE(actual.modelOpacity, expected.modelOpacity);
+    }
 private slots:
+    void physicsCandidatePublishesAfterModelAndRenderer_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("replace-rig") << 0;
+        QTest::newRow("clear-rig") << 1;
+        QTest::newRow("omitted-callback-keeps-rig") << 2;
+    }
+
+    void physicsCandidatePublishesAfterModelAndRenderer()
+    {
+        QFETCH(int, mode);
+        LAppModel preview;
+        setupPhysicsPreview(preview);
+        const auto before = snapshot(preview);
+        auto* oldModel = preview._model;
+        auto* oldCore = oldModel->GetModel();
+        auto* oldRenderer = preview._renderer;
+        auto* oldPhysics = preview._physics;
+        auto* oldMatrix = preview._modelMatrix;
+        auto* oldMesh = oldModel->GetMeshMap()->GetDrawMesh(QStringLiteral("MeshA"));
+        const auto selected = oldMesh->GetSelectPoint().front()->GetPoint();
+        CubismPhysics* preparedPhysics = nullptr;
+        CubismModel* preparedModel = nullptr;
+        int physicsCalls = 0;
+        bool observedPreparedResources = false;
+        const auto callback = [&](const CubismModel& source, const CubismModel& candidate,
+                                  CubismUserModel::PhysicsOwner& physics, QString*) {
+            ++physicsCalls;
+            observedPreparedResources = &source == oldModel && &candidate != oldModel &&
+                preview._model == oldModel && preview._renderer == oldRenderer && preview._physics == oldPhysics &&
+                State(candidate.GetModel()).updates == 1 && runtime.renderers.size() == 2;
+            preparedModel = const_cast<CubismModel*>(&candidate);
+            if (mode == 0) physics = makePhysics(0.7f);
+            preparedPhysics = physics.get();
+            return mode == 1 || bool(physics);
+        };
+        QString error;
+        QVERIFY2(preview.ReplaceModel(candidateBytes.data(), candidateBytes.size(), normalPreparation(),
+            CubismModelUpdatePolicy::Strict, {}, &error, {}, nullptr,
+            mode == 2 ? CubismUserModel::PhysicsPreparation{} : callback), qPrintable(error));
+        QCOMPARE(physicsCalls, mode == 2 ? 0 : 1);
+        if (mode != 2) {
+            QVERIFY(observedPreparedResources);
+            QCOMPARE(preview._model, preparedModel);
+            QCOMPARE(preview._physics, preparedPhysics);
+            QVERIFY(!runtime.allocations.count(oldPhysics));
+        } else QCOMPARE(preview._physics, oldPhysics);
+        if (mode == 0) QCOMPARE(preview._physics->GetOptions().Wind.X, 0.7f);
+        if (mode == 1) QVERIFY(!preview._physics);
+        QVERIFY(preview._model != oldModel);
+        QVERIFY(preview._renderer != oldRenderer);
+        QVERIFY(!runtime.models.count(oldCore));
+        QVERIFY(!runtime.renderers.count(oldRenderer));
+        QCOMPARE(preview._renderer->GetModel(), preview._model);
+        QCOMPARE(preview._modelMatrix, oldMatrix);
+        QCOMPARE(State(preview._model->GetModel()).updates, 1);
+        compareValues(snapshot(preview), before);
+        auto* mesh = preview._model->GetMeshMap()->GetDrawMesh(QStringLiteral("MeshA"));
+        QCOMPARE(mesh->GetSelectPoint().size(), size_t(1));
+        QCOMPARE(mesh->GetSelectPoint().front()->GetPoint(), selected + QVector2D(0.5f, 0.25f));
+        QVERIFY(!preview._updating);
+    }
+
+    void physicsCandidateFailurePreservesSource_data()
+    {
+        QTest::addColumn<int>("failure");
+        QTest::newRow("callback-false-before-allocation") << 0;
+        QTest::newRow("callback-false-with-owned-rig") << 1;
+        QTest::newRow("callback-throws-with-owned-rig") << 2;
+        QTest::newRow("commit-source-identity-changed") << 3;
+        QTest::newRow("renderer-fails-before-physics") << 4;
+    }
+
+    void physicsCandidateFailurePreservesSource()
+    {
+        QFETCH(int, failure);
+        LAppModel preview;
+        setupPhysicsPreview(preview);
+        const auto before = snapshot(preview);
+        auto* oldMoc = preview._moc;
+        auto* oldModel = preview._model;
+        auto* oldCore = oldModel->GetModel();
+        auto* oldRenderer = preview._renderer;
+        auto* oldPhysics = preview._physics;
+        auto* oldMatrix = preview._modelMatrix;
+        const auto digest = oldPhysics->SourceDigest();
+        auto* oldMesh = oldModel->GetMeshMap()->GetDrawMesh(QStringLiteral("MeshA"));
+        auto* selected = oldMesh->GetSelectPoint().front();
+        const auto allocationCount = runtime.allocations.size();
+        const auto rendererCount = runtime.renderers.size();
+        const auto modelCount = runtime.models.size();
+        const auto mocCount = runtime.mocs.size();
+        CubismPhysics* discarded = nullptr;
+        int physicsCalls = 0;
+        const auto callback = [&](const CubismModel&, const CubismModel&,
+                                  CubismUserModel::PhysicsOwner& physics, QString* detail) {
+            ++physicsCalls;
+            if (failure != 0) physics = makePhysics(0.7f);
+            discarded = physics.get();
+            if (failure == 2) throw std::runtime_error("controlled physics preparation exception");
+            if (failure == 3) {
+                preview._moc = nullptr;
+                return true;
+            }
+            if (detail) *detail = QStringLiteral("controlled physics preparation rejection");
+            return false;
+        };
+        const auto renderer = [&](CubismRenderer* candidate, CubismModel* model,
+                                  const CubismRenderer& previous, QString* detail) {
+            if (failure == 4) { if (detail) *detail = QStringLiteral("controlled renderer rejection"); return false; }
+            return normalPreparation()(candidate, model, previous, detail);
+        };
+        QString error;
+        const bool accepted = preview.ReplaceModel(candidateBytes.data(), candidateBytes.size(), renderer,
+            CubismModelUpdatePolicy::Strict, {}, &error, {}, nullptr, callback);
+        const bool externalIdentityRetained = failure != 3 || !preview._moc;
+        preview._moc = oldMoc;
+        QVERIFY(!accepted);
+        QVERIFY(!error.isEmpty());
+        QVERIFY(externalIdentityRetained);
+        QCOMPARE(physicsCalls, failure == 4 ? 0 : 1);
+        QCOMPARE(preview._model, oldModel);
+        QCOMPARE(preview._renderer, oldRenderer);
+        QCOMPARE(preview._physics, oldPhysics);
+        QCOMPARE(preview._modelMatrix, oldMatrix);
+        QCOMPARE(preview._physics->SourceDigest(), digest);
+        QCOMPARE(preview._physics->GetOptions().Wind.X, 0.45f);
+        QCOMPARE(runtime.allocations.size(), allocationCount);
+        QCOMPARE(runtime.renderers.size(), rendererCount);
+        QCOMPARE(runtime.models.size(), modelCount);
+        QCOMPARE(runtime.mocs.size(), mocCount);
+        if (discarded) QVERIFY(!runtime.allocations.count(discarded));
+        QVERIFY(runtime.models.count(oldCore));
+        QCOMPARE(State(oldCore).updates, 0);
+        compareValues(snapshot(preview), before);
+        QCOMPARE(oldModel->GetMeshMap()->GetDrawMesh(QStringLiteral("MeshA")), oldMesh);
+        QCOMPARE(oldMesh->GetSelectPoint().front(), selected);
+        QVERIFY(!preview._updating);
+        QVERIFY2(preview.ReplaceModel(candidateBytes.data(), candidateBytes.size(), normalPreparation(),
+            CubismModelUpdatePolicy::Strict, {}, &error, {}, nullptr,
+            [&](const CubismModel&, const CubismModel&, CubismUserModel::PhysicsOwner& physics, QString*) {
+                physics = makePhysics(0.7f);
+                return bool(physics);
+            }), qPrintable(error));
+        QCOMPARE(preview._physics->GetOptions().Wind.X, 0.7f);
+    }
+
     void editorContextRestoresAfterStructuralExit_data()
     {
         QTest::addColumn<int>("failure");
@@ -1776,9 +1970,9 @@ private slots:
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArray& sourceDigest,
                                        const CubismModelReplacement::ModelPreparation& prepareModel,
                                        QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                                       const ParameterPhysicsReferences* physicsReferences)
+                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft)
 {
-    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences);
+    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences, physicsDraft);
 }
 
 QTEST_GUILESS_MAIN(ModelReplacementTests)

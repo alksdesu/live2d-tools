@@ -54,10 +54,17 @@ bool readFloat(const QJsonValue& value, float* number)
     return std::isfinite(*number);
 }
 
-bool validPhysicsDraft(const CModelSession::PhysicsDraft& draft, QString* error)
+bool validPhysicsDraft(const CModelSession& session, int version, QString* error)
 {
-    if (draft.sourcePath.isEmpty() || draft.sourcePath.contains(QChar::Null)) {
+    if (!session.physicsDraft) return true;
+    const auto& draft = *session.physicsDraft;
+    if (draft.document.isEmpty() || draft.sourcePath.contains(QChar::Null)) {
         setError(error, QStringLiteral("会话物理草稿来源无效"));
+        return false;
+    }
+    if (draft.sourcePath.isEmpty() && (version < 4 || session.sourceMoc.isEmpty() ||
+        session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32)) {
+        setError(error, QStringLiteral("无源文件的 physicsDraft 需要版本 4、sourceMoc 和有效的 sourceDigest"));
         return false;
     }
     CParameterReferenceEditor::Prepared prepared;
@@ -138,13 +145,15 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
+    if (version < 1 || version > 4) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
-    if (!validStructure(structure, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources) ||
-        (physicsDraft && !validPhysicsDraft(*physicsDraft, nullptr))) return {};
+    if (!validStructure(structure, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources)) return {};
     int storedVersion = hasStructure && version == 1 ? 2 : version;
     if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
+    if (physicsDraft && physicsDraft->sourcePath.isEmpty()) storedVersion = 4;
+    if (!validPhysicsDraft(*this, storedVersion, nullptr)) return {};
     root.insert(QStringLiteral("version"), storedVersion);
     if (!resources.isEmpty()) root.insert(QStringLiteral("parameterResources"), resources);
     if (physicsDraft) root.insert(QStringLiteral("physicsDraft"), QJsonObject{
@@ -288,7 +297,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion != 1 && parsedVersion != 2 && parsedVersion != 3) {
+    if (parsedVersion < 1 || parsedVersion > 4) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
@@ -308,7 +317,6 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.physicsDraft = PhysicsDraft{draft.value(QStringLiteral("sourcePath")).toString(),
             draft.value(QStringLiteral("document")).toObject(), draft.value(QStringLiteral("dirty")).toBool()};
-        if (!validPhysicsDraft(*result.physicsDraft, error)) return false;
     }
     if (parsedVersion < 3 && (!result.parameterResources.IsEmpty() || result.physicsDraft)) {
         setError(error, QStringLiteral("资源引用或物理草稿需要版本 3 会话"));
@@ -339,6 +347,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDigest = decoded;
     }
+    if (!validPhysicsDraft(result, parsedVersion, error)) return false;
 
     QJsonObject parameterObject;
     QJsonObject parameterMetadataObject;
@@ -661,12 +670,12 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version != 1 && version != 2 && version != 3) ||
+    if ((version < 1 || version > 4) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)))
         return fail(QStringLiteral("version"));
     if (!validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
-        (physicsDraft && !validPhysicsDraft(*physicsDraft, error))) return false;
+        !validPhysicsDraft(*this, version, error)) return false;
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
         setError(error, QStringLiteral("没有可恢复会话的模型快照"));
         return false;

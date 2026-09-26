@@ -223,6 +223,13 @@ void OpengGlForm::SetMeshEditEnabled(bool enabled)
     }
 }
 
+void OpengGlForm::SetPhysicsDragEnabled(bool enabled)
+{
+    if (m_exportSuspended) return;
+    FinishDeformerDrag();
+    m_physicsDragEnabled = enabled;
+}
+
 void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
 {
     if (m_exportSuspended) return;
@@ -540,7 +547,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                                                 QMap<QString, float>& preparedPose, QString* error,
                                                 const ParameterReferenceState* references,
                                                 const LAppModel::EditorPreviewContext* restoreEditor,
-                                                const LAppModel::TimelinePreviewPreparation& prepareTimeline)
+                                                const LAppModel::TimelinePreviewPreparation& prepareTimeline,
+                                                const LAppModel::PhysicsDraft* physicsDraft)
 {
     if (error) error->clear();
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数结构"));
@@ -562,7 +570,7 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
         if (!model->ApplyParameterStructurePreview(bytes, sourceDigest, addedSeeds, baseValues,
-                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline)) return false;
+                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline, physicsDraft)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         preparedPose.swap(pose);
@@ -956,6 +964,17 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
         return;
     }
     if (m_ceditstate.IsContins(CEditState::ViewMove) || event->button() != Qt::LeftButton) return;
+    if (auto* model = CurrentModel(); m_physicsDragEnabled && model && model->CanPhysicsDrag()) {
+        if (model->HasEditorPreview()) {
+            m_ceditstate.RemoveState(CEditState::MousePress);
+            emit MeshEditRejected(QStringLiteral("请先退出关键形编辑再测试物理"));
+            return;
+        }
+        m_physicsDragActive = true;
+        m_physicsDragStart = event->position();
+        model->ApplyPhysicsDrag(0, 0);
+        return;
+    }
     if (event->modifiers() & Qt::ControlModifier) {
         if (auto* model = CurrentModel(); model && model->HasEditorPreview()) {
             m_ceditstate.RemoveState(CEditState::MousePress);
@@ -996,11 +1015,14 @@ void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 
 void OpengGlForm::FinishDeformerDrag()
 {
+    if (m_physicsDragActive) m_ceditstate.RemoveState(CEditState::MousePress);
+    m_physicsDragActive = false;
     if (m_controlDragActive) m_ceditstate.RemoveState(CEditState::MousePress);
     m_controlDragActive = false;
     if (!m_runtimeReady) return;
     auto* delegate = LAppDelegate::GetInstance();
     if (delegate->getGlOwningContext() != context()) return;
+    if (auto* model = CurrentModel()) model->EndPhysicsDrag();
     if (delegate->m_isDraggingDeformer) m_ceditstate.RemoveState(CEditState::MousePress);
     delegate->StopDeformerDrag();
 }
@@ -1008,6 +1030,17 @@ void OpengGlForm::FinishDeformerDrag()
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
     if (m_exportSuspended) { event->accept(); return; }
+    if (m_physicsDragActive) {
+        if (!(event->buttons() & Qt::LeftButton) || !m_physicsDragEnabled || !IsModelReady() || width() <= 0 || height() <= 0) {
+            FinishDeformerDrag();
+            return;
+        }
+        if (auto* model = CurrentModel()) {
+            const QPointF delta = event->position() - m_physicsDragStart;
+            model->ApplyPhysicsDrag(float(delta.x() * 2.0 / width()), float(-delta.y() * 2.0 / height()));
+        }
+        return;
+    }
     if (IsMeshDragging()) {
         QString error;
         if (!(event->buttons() & Qt::LeftButton) || !m_meshEditEnabled || !MeshDragFrameMatches()) {
@@ -1070,7 +1103,6 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
         auto* model = CurrentModel();
         if (model && !model->HasEditorPreview()) {
             if (model->GetEnableMouseFollow()) model->SetDragging(viewX, viewY);
-            model->ApplyPhysicsDrag(viewX, viewY);
         }
     }
 }
@@ -1110,6 +1142,10 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
     if (m_exportSuspended) { event->accept(); return; }
+    if (m_physicsDragActive && event->key() == Qt::Key_Escape) {
+        FinishDeformerDrag();
+        return;
+    }
     if (m_controlDragActive &&
         (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Space || event->key() == Qt::Key_Up ||
          event->key() == Qt::Key_Down || event->key() == Qt::Key_W || event->key() == Qt::Key_A ||

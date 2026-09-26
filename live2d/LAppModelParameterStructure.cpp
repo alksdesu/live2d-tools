@@ -112,7 +112,7 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                                                const QMap<QString, float>& baseValues, bool keepEditorPreview,
                                                QString* error, const ParameterDefinitionPreparation& preparePreview,
                                                const ParameterReferenceState* references, const EditorPreviewContext* restoreEditor,
-                                               const TimelinePreviewPreparation& prepareTimeline)
+                                               const TimelinePreviewPreparation& prepareTimeline, const PhysicsDraft* physicsDraft)
 {
     if (error) error->clear();
     if (HasExportPreview() || !_initialized || _updating || !_model || sourceDigest.isEmpty() ||
@@ -328,7 +328,7 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
         const auto policy = CubismModelUpdatePolicy::AllowClippingEdits | CubismModelUpdatePolicy::AllowParameterDefinitionEdits |
             CubismModelUpdatePolicy::AllowParameterStructureEdits;
         if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepare, error, policy, addedSeeds,
-                                     referenceCandidate ? &referenceCandidate->physics : nullptr)) return false;
+                                     referenceCandidate ? &referenceCandidate->physics : nullptr, physicsDraft)) return false;
         if (commitReferences) commitReferences();
         m_mapParaToIndex.swap(nextIndices);
         _timelinePreview.parameters.swap(nextTimeline.frame.parameters);

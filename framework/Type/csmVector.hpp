@@ -508,6 +508,18 @@ public:
         return *this;
     }
 
+    void Swap(csmVector& other) noexcept
+    {
+        T* pointer = _ptr;
+        _ptr = other._ptr;
+        other._ptr = pointer;
+        const csmInt32 size = _size, capacity = _capacity;
+        _size = other._size;
+        _capacity = other._capacity;
+        other._size = size;
+        other._capacity = capacity;
+    }
+
 private:
     static const csmInt32 s_defaultSize = 10;   ///< コンテナ初期化のデフォルトサイズ
 

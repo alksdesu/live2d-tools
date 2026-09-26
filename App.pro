@@ -223,6 +223,7 @@ SOURCES += \
     live2d/LAppLive2DManager.cpp\
     live2d/LAppModel.cpp\
     live2d/LAppModelUserData.cpp\
+    live2d/LAppModelPhysics.cpp\
     live2d/LAppPal.cpp\
     live2d/LAppSprite.cpp\
     live2d/LAppTextureManager.cpp\

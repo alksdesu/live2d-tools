@@ -76,7 +76,8 @@ public:
                                         QMap<QString, float>& preparedPose, QString* error = nullptr,
                                         const ParameterReferenceState* references = nullptr,
                                         const LAppModel::EditorPreviewContext* restoreEditor = nullptr,
-                                        const LAppModel::TimelinePreviewPreparation& prepareTimeline = {});
+                                        const LAppModel::TimelinePreviewPreparation& prepareTimeline = {},
+                                        const LAppModel::PhysicsDraft* physicsDraft = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);
@@ -97,6 +98,7 @@ public slots:
     void do_SetDrawableOpacity(const QString& name, float opacity);
     void do_SetDrawableDrawOrder(const QString& name, int drawOrder);
     void SetMeshEditEnabled(bool enabled);
+    void SetPhysicsDragEnabled(bool enabled);
     void SetActiveKeyform(const QString& name, int keyformIndex);
     void do_SetDrawableIndices(const QString& name, const QVector<quint16>& indices);
     void do_ShowDeformers(const QStringList& names);
@@ -173,6 +175,9 @@ protected:
     MeshFinish m_meshFinish;
     bool m_meshEditCallbackActive = false;
     bool m_controlDragActive = false;
+    bool m_physicsDragEnabled = false;
+    bool m_physicsDragActive = false;
+    QPointF m_physicsDragStart;
     QPointF m_pointerAnchor;
     bool MeshDragFrameMatches() const;
     bool BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error);

@@ -250,12 +250,10 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
     {
         const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetPhysicsFileName());
 
-        buffer = CreateBuffer(path.GetRawString(), &size);
-        if (buffer != NULL)
-        {
-            LoadPhysics(buffer, size);
-            if (_physics) m_physicsReferencePath = ReferenceSourcePath(QString::fromUtf8(path.GetRawString()));
-            DeleteBuffer(buffer, path.GetRawString());
+        QString physicsError;
+        if (!ReloadPhysicsFromFile(QString::fromUtf8(path.GetRawString()), &physicsError)) {
+            LAppPal::PrintLogLn("[APP]Failed to load physics: %s", physicsError.toUtf8().constData());
+            return false;
         }
     }
 
@@ -686,7 +684,7 @@ bool LAppModel::ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourc
     }
     if (HasEditorPreview()) return ApplyEditorPreview(bytes, sourceDigest, m_editorPose, error);
     if (error) error->clear();
-    if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
+    if (!_initialized || _updating || m_physicsDragActive || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
         if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
         return false;
@@ -773,7 +771,7 @@ bool LAppModel::EndEditorPreview(QString* error)
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
                                        const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
                                        CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                                       const ParameterPhysicsReferences* physicsReferences)
+                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft)
 {
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
@@ -798,10 +796,21 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         candidate->ClearDrawableIndicesOverrides();
         return !prepareModel || prepareModel(candidate, detail);
     };
+    QByteArray draftBytes = physicsDraft ? physicsDraft->bytes : m_physicsDraftBytes;
+    const bool draftActive = physicsDraft || m_hasPhysicsDraft;
+    PhysicsPreparation preparePhysics;
+    if (draftActive || !m_physicsSourceBytes.isEmpty() || _physics) {
+        preparePhysics = [&](const CubismModel& previousModel, const CubismModel& replacement, PhysicsOwner& result, QString* detail) {
+            return PreparePhysicsCandidate(previousModel, replacement, physicsReferences ? *physicsReferences : m_parameterReferences.physics,
+                draftActive, draftActive ? draftBytes : m_physicsSourceBytes, physicsDraft && physicsDraft->stabilize,
+                !physicsDraft, result, detail);
+        };
+    }
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
                       prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
-                      prepareCompiledModel, physicsReferences))
+                      prepareCompiledModel, physicsReferences, preparePhysics))
         return false;
+    if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
     m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;
     delegate->m_savedVertices.clear();
@@ -937,58 +946,37 @@ void LAppModel::SetPhysicsGravity(float x, float y)
     }
 }
 
-bool LAppModel::ReloadPhysicsFromFile(const QString& path)
-{
-    if (HasExportPreview() || (_initialized && _updating)) return false;
-    const QString resolved = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
-    if (resolved.isEmpty()) return false;
-    if (path.isEmpty()) return false;
-    QFile file(resolved);
-    if (!file.open(QIODevice::ReadOnly)) return false;
-    const QByteArray data = file.readAll();
-    if (file.error() != QFileDevice::NoError || data.isEmpty() ||
-        data.size() > std::numeric_limits<csmSizeInt>::max()) return false;
-    CubismPhysics* replacement = CubismPhysics::Create(
-        reinterpret_cast<const csmByte*>(data.constData()), static_cast<csmSizeInt>(data.size()));
-    if (!replacement) return false;
-    const QString referencePath = ReferenceSourcePath(resolved);
-    const auto& references = m_parameterReferences.physics;
-    const bool hasReferences = !references.sourcePath.isEmpty() || !references.sourceDigest.isEmpty() ||
-        !references.suppressedInputs.isEmpty() || !references.suppressedOutputs.isEmpty();
-    CubismPhysics::ParameterDefinitionState prepared;
-    if (hasReferences && (references.sourcePath != referencePath || !_model ||
-        !replacement->PrepareParameterStructureChange(*_model, *_model, prepared, nullptr, &references))) {
-        CubismPhysics::Delete(replacement);
-        return false;
-    }
-    if (hasReferences) replacement->CommitParameterDefinitionChange(prepared);
-    CubismPhysics::Delete(_physics);
-    _physics = replacement;
-    m_physicsReferencePath = referencePath;
-    return true;
-}
-
 
 void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types)
 {
     if (HasExportPreview() || (_initialized && _updating)) return;
-    _physicsDragParamIds = paramIds;
-    _physicsDragTypes = types;
+    EndPhysicsDrag();
+    QStringList ids, acceptedTypes;
+    QSet<QString> seen;
+    for (qsizetype row = 0; row < paramIds.size() && row < types.size(); ++row) {
+        if (paramIds[row].isEmpty() || seen.contains(paramIds[row]) ||
+            (types[row] != QLatin1String("X") && types[row] != QLatin1String("Y") && types[row] != QLatin1String("Angle"))) continue;
+        seen.insert(paramIds[row]);
+        ids.append(paramIds[row]);
+        acceptedTypes.append(types[row]);
+    }
+    _physicsDragParamIds.swap(ids);
+    _physicsDragTypes.swap(acceptedTypes);
 }
 
 void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 {
-    if (HasExportPreview() || (_initialized && _updating)) return;
-    if(!_model || _physicsDragParamIds.isEmpty() || !std::isfinite(dx) || !std::isfinite(dy)) return;
-    for(int i = 0; i < _physicsDragParamIds.size(); i++){
-        const CubismId* paramId = CubismFramework::GetIdManager()->GetId(_physicsDragParamIds[i].toUtf8().constData());
-        float value = 0;
-        QString type = (i < _physicsDragTypes.size()) ? _physicsDragTypes[i] : "X";
-        if(type == "X") value = dx * 30.0f;
-        else if(type == "Y") value = dy * 30.0f;
-        else if(type == "Angle") value = (dx + dy) * 15.0f;
-        _model->AddParameterValue(paramId, value);
-    }
+    if (HasExportPreview() || HasEditorPreview() || _snapshotMode || _updating || !CanPhysicsDrag() ||
+        !_model || !std::isfinite(dx) || !std::isfinite(dy)) return;
+    m_physicsDragX = qBound(-1.0f, dx, 1.0f);
+    m_physicsDragY = qBound(-1.0f, dy, 1.0f);
+    m_physicsDragActive = true;
+}
+
+void LAppModel::EndPhysicsDrag() noexcept
+{
+    m_physicsDragActive = false;
+    m_physicsDragX = m_physicsDragY = 0.0f;
 }
 
 void LAppModel::SetPhysicsWind(float x, float y)

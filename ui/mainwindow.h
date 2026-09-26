@@ -154,7 +154,7 @@ private:
     bool m_workspaceReady = false;
     bool m_runtimePanelsInitialized = false;
     bool m_syncingVisibility = false;
-    enum class HistorySource { None, Parameters, Inspector, Timeline };
+    enum class HistorySource { None, Parameters, Inspector, Timeline, Physics };
     HistorySource m_historySource = HistorySource::None;
     QByteArray m_savedWindowState;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
