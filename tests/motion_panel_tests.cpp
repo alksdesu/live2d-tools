@@ -1548,6 +1548,92 @@ private slots:
         QVERIFY(!restored.HasUnsavedTimelineChanges());
     }
 
+    void compactWorkspaceScrollKeepsPreviewAndHistory_data()
+    {
+        QTest::addColumn<QSize>("size");
+        QTest::addColumn<bool>("dark");
+        for (const bool dark : {false, true}) {
+            QTest::newRow(dark ? "dark-sidebar" : "light-sidebar") << QSize(300, 420) << dark;
+            QTest::newRow(dark ? "dark-short" : "light-short") << QSize(700, 300) << dark;
+        }
+    }
+
+    void compactWorkspaceScrollKeepsPreviewAndHistory()
+    {
+        QFETCH(QSize, size);
+        QFETCH(bool, dark);
+        CMotionPanel panel;
+        panel.setStyleSheet(Theme::globalStyleSheet(dark));
+        QVERIFY(panel.RestoreTimelineState(settingsState()));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 1, 2));
+        panel.UndoTimeline();
+        auto* outer = panel.findChild<QScrollArea*>("motionWorkspaceScroll");
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* timer = panel.findChild<QTimer*>();
+        auto* history = panel.findChild<QUndoStack*>();
+        auto* settings = panel.findChild<QPushButton*>("editMotionSettings");
+        QVERIFY(outer && play && timer && history && settings);
+        QCOMPARE(panel.widget(), outer);
+        QCOMPARE(outer->frameShape(), QFrame::NoFrame);
+        QVERIFY(outer->widgetResizable());
+        panel.resize(size);
+        panel.show();
+        panel.activateWindow();
+        QCoreApplication::processEvents();
+        QCOMPARE(panel.size(), size);
+        QVERIFY(outer->verticalScrollBar()->maximum() > 0);
+        const auto content = panel.Timeline();
+        const auto revision = panel.TimelineRevision();
+        const int count = history->count(), index = history->index();
+        const bool dirty = panel.HasUnsavedTimelineChanges();
+        const double time = panel.TimelineTime();
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy changes(&panel, &CMotionPanel::MotionTimelineChanged);
+        auto* previous = settings->previousInFocusChain();
+        while (previous != settings && (!previous->isEnabled() || !previous->isVisible() ||
+               !(previous->focusPolicy() & Qt::TabFocus))) previous = previous->previousInFocusChain();
+        QVERIFY(previous != settings);
+        previous->setFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(previous->hasFocus());
+        QTest::keyClick(previous, Qt::Key_Tab);
+        QTRY_VERIFY(settings->hasFocus());
+        QVERIFY(outer->viewport()->rect().contains(settings->mapTo(outer->viewport(), settings->rect().center())));
+        if (!qEnvironmentVariableIsEmpty("WORKSPACE_SCREENSHOT_DIR"))
+            QVERIFY(panel.grab().save(qEnvironmentVariable("WORKSPACE_SCREENSHOT_DIR") +
+                QStringLiteral("/motion-%1-%2x%3.png").arg(dark ? "dark" : "light").arg(size.width()).arg(size.height())));
+        QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(frames.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(changes.size(), 0);
+        outer->ensureWidgetVisible(play);
+        QTest::mouseClick(play, Qt::LeftButton);
+        QVERIFY(timer->isActive());
+        timer->setInterval(60000);
+        const auto playingRevision = panel.TimelineRevision();
+        const auto playingTime = panel.TimelineTime();
+        frames.clear();
+        panel.resize(QSize(size.height(), size.width()));
+        QCoreApplication::processEvents();
+        CMotionPanel::PreviewTransportLease lease;
+        QVERIFY(panel.SuspendPreviewTransport(lease));
+        QVERIFY(!timer->isActive());
+        QVERIFY(panel.ResumePreviewTransport(lease));
+        QVERIFY(timer->isActive());
+        QCOMPARE(timer->interval(), 60000);
+        QCOMPARE(panel.TimelineRevision(), playingRevision);
+        QCOMPARE(panel.TimelineTime(), playingTime);
+        QCOMPARE(frames.size(), 0);
+        QCOMPARE(stopped.size(), 0);
+        QCOMPARE(changes.size(), 0);
+        QVERIFY(panel.Timeline().HasSameContent(content));
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty);
+        QCOMPARE(history->count(), count);
+        QCOMPARE(history->index(), index);
+        panel.PauseTimelinePreview();
+    }
+
     void eventListsFitCompactWorkspaceInBothThemes()
     {
         QJsonArray events;

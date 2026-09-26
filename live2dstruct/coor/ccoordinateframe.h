@@ -3,13 +3,27 @@
 
 #include "ccoortypeobject.h"
 #include <memory>
+#include <QPointF>
 #include <vector>
 
 namespace live2dstruct {
 
+class CRotationNodeKeyform;
+
 class CCoordinateFrame
 {
 public:
+    struct RotationBasis {
+        QPointF origin;
+        QPointF xAxis;
+        QPointF yAxis;
+    };
+    static bool CreateRotation(float baseAngle, CRotationNodeKeyform& keyform,
+                               const std::shared_ptr<const CCoordinateFrame>& parent,
+                               std::shared_ptr<const CCoordinateFrame>& result, RotationBasis& basis);
+    static bool CreateWarp(int columns, int rows, const std::vector<float>& canvasPositions, bool quad,
+                           const std::shared_ptr<const CCoordinateFrame>& parent,
+                           std::shared_ptr<const CCoordinateFrame>& result);
     CCoordinateFrame(std::unique_ptr<CCoorTypeObject> transform,
                      std::shared_ptr<const CCoordinateFrame> parent = {});
     ~CCoordinateFrame();
@@ -20,6 +34,8 @@ public:
 private:
     struct Link;
     std::shared_ptr<const Link> m_link;
+    float m_totalScale = 1.0f;
+    bool m_rotation = false;
 };
 
 }

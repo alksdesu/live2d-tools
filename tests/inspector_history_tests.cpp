@@ -1,9 +1,16 @@
 #include "ui/cinspectorpanel.h"
+#include "ui/theme.h"
+#include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include <QtTest>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QFormLayout>
+#include <QLabel>
+#include <QHeaderView>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -34,6 +41,167 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void narrowInspectorKeepsLongChoicesScrollableAndRowsSynchronized_data()
+    {
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("light") << false;
+        QTest::newRow("dark") << true;
+    }
+
+    void narrowInspectorKeepsLongChoicesScrollableAndRowsSynchronized()
+    {
+        QFETCH(bool, dark);
+        const auto previousStyle = qApp->styleSheet();
+        const auto restoreStyle = qScopeGuard([&] { qApp->setStyleSheet(previousStyle); });
+        qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString mesh = document.Drawables().first().id;
+        QString warp, rotation;
+        for (const auto& deformer : document.Deformers()) {
+            if (warp.isEmpty() && deformer.type == CModelDeformer::Warp) warp = deformer.id;
+            if (rotation.isEmpty() && deformer.type == CModelDeformer::Rotation) rotation = deformer.id;
+        }
+        QVERIFY(!warp.isEmpty() && !rotation.isEmpty());
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(mesh, "artmesh");
+        panel.resize(300, 420);
+        panel.show();
+        auto* scroll = panel.findChild<QScrollArea*>("inspectorScrollArea");
+        auto* form = panel.findChild<QFormLayout*>("inspectorForm");
+        QVERIFY(scroll && form);
+        QVERIFY(scroll->widgetResizable());
+        QCOMPARE(scroll->frameShape(), QFrame::NoFrame);
+        QTRY_COMPARE(panel.size(), QSize(300, 420));
+        QVERIFY(panel.minimumSizeHint().width() <= 300);
+        QVERIFY(panel.minimumSizeHint().height() <= 420);
+        auto* art = panel.findChild<QComboBox*>("keyformSelector");
+        auto* parent = panel.findChild<QComboBox*>("deformerParentSelector");
+        auto* warpCombo = panel.findChild<QComboBox*>("warpKeyformSelector");
+        auto* artTable = panel.findChild<QTableWidget*>("keyformVertexTable");
+        auto* warpTable = panel.findChild<QTableWidget*>("warpKeyformTable");
+        auto* rotationTable = panel.findChild<QTableWidget*>("rotationKeyformTable");
+        const QString longName = QStringLiteral("长关键形和父变形器名称_").repeated(40);
+        const auto revision = document.Revision();
+        for (const auto& selection : QVector<QPair<QString, QString>>{{mesh, "artmesh"}, {warp, "warp"}, {rotation, "rotation"}, {mesh, "artmesh"}}) {
+            panel.SetSelection(selection.first, selection.second);
+            for (QComboBox* combo : {art, parent, warpCombo}) if (combo->count()) {
+                const int current = combo->currentIndex();
+                combo->setItemText(current, longName);
+                QCOMPARE(combo->currentText(), longName);
+                QVERIFY(combo->toolTip().contains(longName));
+                QCOMPARE(combo->view()->textElideMode(), Qt::ElideNone);
+                QCOMPARE(combo->view()->horizontalScrollBarPolicy(), Qt::ScrollBarAsNeeded);
+            }
+            QCoreApplication::processEvents();
+            QCOMPARE(panel.size(), QSize(300, 420));
+            QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+            for (QTableWidget* table : {artTable, warpTable, rotationTable}) if (!table->isHidden() && table->rowCount()) {
+                for (int column : {1, 2}) {
+                    QVERIFY(table->item(0, column));
+                    QVERIFY(table->columnWidth(column) >= table->fontMetrics().horizontalAdvance(table->item(0, column)->text()));
+                }
+            }
+            for (const auto& pair : QVector<QPair<QWidget*, bool>>{{artTable, selection.second == "artmesh"},
+                     {warpTable, selection.second == "warp"}, {rotationTable, selection.second == "rotation"},
+                     {warpCombo, selection.second == "warp"}, {parent, selection.second != "artmesh"}}) {
+                QCOMPARE(form->isRowVisible(pair.first), pair.second);
+                auto* label = form->labelForField(pair.first);
+                QVERIFY(label);
+                QCOMPARE(label->isHidden(), !pair.second);
+                QCOMPARE(pair.first->isHidden(), !pair.second);
+            }
+        }
+        QVERIFY(scroll->verticalScrollBar()->maximum() > 0);
+        qInfo() << "narrow inspector" << panel.size() << "minimum" << panel.minimumSizeHint()
+                << "content minimum" << scroll->widget()->minimumSizeHint();
+        const QString pictures = qEnvironmentVariable("LIVE2D_INSPECTOR_SCREENSHOTS");
+        const QString appearance = dark ? QStringLiteral("dark") : QStringLiteral("light");
+        if (!pictures.isEmpty()) {
+            QVERIFY(QDir().mkpath(pictures));
+            scroll->verticalScrollBar()->setValue(0);
+            QCoreApplication::processEvents();
+            QVERIFY(panel.grab().save(pictures + '/' + appearance + "-top.png"));
+            scroll->ensureWidgetVisible(artTable);
+            QCoreApplication::processEvents();
+            QVERIFY(panel.grab().save(pictures + '/' + appearance + "-table.png"));
+        }
+        scroll->ensureWidgetVisible(art);
+        art->showPopup();
+        QTRY_VERIFY(art->view()->isVisible());
+        QCOMPARE(art->view()->model()->index(art->currentIndex(), 0).data().toString(), longName);
+        const int completeWidth = art->view()->fontMetrics().horizontalAdvance(longName);
+        qInfo() << "popup text width" << completeWidth << "viewport" << art->view()->viewport()->width()
+                << "horizontal range" << art->view()->horizontalScrollBar()->maximum();
+        QVERIFY(completeWidth <= art->view()->viewport()->width() || art->view()->horizontalScrollBar()->maximum() > 0);
+        if (!pictures.isEmpty()) QVERIFY(art->view()->window()->grab().save(pictures + '/' + appearance + "-choices.png"));
+        art->hidePopup();
+        QCOMPARE(document.Revision(), revision);
+        panel.ClearSelection();
+        for (int row = 0; row < form->rowCount(); ++row) QVERIFY(!form->isRowVisible(row));
+    }
+
+    void inspectorKeyboardScrollAndPendingCellSurviveResize()
+    {
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString id = document.Drawables().first().id;
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, "artmesh");
+        panel.resize(300, 420);
+        panel.show();
+        panel.activateWindow();
+        auto* scroll = panel.findChild<QScrollArea*>("inspectorScrollArea");
+        auto* combo = panel.findChild<QComboBox*>("keyformSelector");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        QVERIFY(scroll && combo && table && table->rowCount() > 0);
+        combo->setFocus();
+        QTRY_VERIFY(combo->hasFocus());
+        bool reached = false;
+        for (int step = 0; step < 50; ++step) {
+            auto* focused = QApplication::focusWidget();
+            if (focused == table || (focused && table->isAncestorOf(focused))) { reached = true; break; }
+            QVERIFY(focused);
+            QTest::keyClick(focused, Qt::Key_Tab);
+        }
+        QVERIFY(reached);
+        QVERIFY(scroll->verticalScrollBar()->value() > 0);
+        table->setCurrentCell(0, 1);
+        table->editItem(table->item(0, 1));
+        auto* editor = table->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        editor->setFocus();
+        QTRY_VERIFY(editor->hasFocus());
+        const QString original = table->item(0, 1)->text();
+        editor->selectAll();
+        QTest::keyClicks(editor, "0.123456");
+        const auto revision = document.Revision();
+        QSignalSpy changed(&panel, &CInspectorPanel::HistoryChanged);
+        const QPointer<QLineEdit> savedEditor(editor);
+        panel.resize(360, 460);
+        scroll->verticalScrollBar()->setValue(0);
+        QCoreApplication::processEvents();
+        QVERIFY(savedEditor);
+        QCOMPARE(savedEditor->text(), QString("0.123456"));
+        QCOMPARE(table->item(0, 1)->text(), original);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(changed.size(), 0);
+        panel.resize(300, 420);
+        scroll->ensureWidgetVisible(savedEditor);
+        QCoreApplication::processEvents();
+        QVERIFY(savedEditor && savedEditor->hasFocus());
+        QCOMPARE(savedEditor->text(), QString("0.123456"));
+        QTest::keyClick(savedEditor, Qt::Key_Escape);
+        QCoreApplication::processEvents();
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(changed.size(), 0);
+        QCOMPARE(table->item(0, 1)->text(), original);
+    }
+
     void destroyingFocusedFloatingKeyformEditorDoesNotSubmit_data()
     {
         QTest::addColumn<QString>("type");

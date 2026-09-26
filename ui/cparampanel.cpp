@@ -189,8 +189,37 @@ CParamPanel::CParamPanel(QWidget *parent)
     : QDockWidget("参数控制", parent)
 {
     setObjectName(QStringLiteral("paramPanel"));
+    auto* workspaceScroll = new QScrollArea(this);
+    workspaceScroll->setObjectName(QStringLiteral("parameterWorkspaceScroll"));
+    workspaceScroll->setFrameShape(QFrame::NoFrame);
+    workspaceScroll->setWidgetResizable(true);
     QWidget* wrapper = new QWidget(this);
+    wrapper->setObjectName(QStringLiteral("parameterWorkspaceContent"));
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
+    mainLayout->setSizeConstraint(QLayout::SetMinimumSize);
+    const auto addSection = [wrapper, mainLayout](const QString& text, const QString& name, QWidget* body) {
+        auto* toggle = new QToolButton(wrapper);
+        toggle->setText(text);
+        toggle->setObjectName(name);
+        toggle->setCheckable(true);
+        toggle->setArrowType(Qt::RightArrow);
+        toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        toggle->setFocusPolicy(Qt::StrongFocus);
+        mainLayout->addWidget(toggle);
+        mainLayout->addWidget(body);
+        body->hide();
+        QObject::connect(toggle, &QToolButton::toggled, body, [toggle, body](bool expanded) {
+            body->setVisible(expanded);
+            toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        });
+    };
+
+    auto* actions = new QWidget(wrapper);
+    actions->setObjectName(QStringLiteral("parameterActionsSection"));
+    auto* actionsLayout = new QVBoxLayout(actions);
+    actionsLayout->setContentsMargins(0, 0, 0, 0);
+    addSection(QStringLiteral("参数操作"), QStringLiteral("parameterActionsToggle"), actions);
 
     auto* buttonRow = new QGridLayout();
     buttonRow->setHorizontalSpacing(6);
@@ -209,7 +238,7 @@ CParamPanel::CParamPanel(QWidget *parent)
     buttonRow->addWidget(savePresetBtn, 1, 1);
     buttonRow->addWidget(loadPresetBtn, 2, 0, 1, 2);
     buttonRow->addWidget(metadataBtn, 3, 0, 1, 2);
-    mainLayout->addLayout(buttonRow);
+    actionsLayout->addLayout(buttonRow);
     connect(copyBtn, &QPushButton::clicked, this, &CParamPanel::CopyValues);
     connect(pasteBtn, &QPushButton::clicked, this, &CParamPanel::PasteValues);
     connect(savePresetBtn, &QPushButton::clicked, this, &CParamPanel::SavePreset);
@@ -228,41 +257,49 @@ CParamPanel::CParamPanel(QWidget *parent)
     m_createParameter = structureButton(QStringLiteral("新增参数"), QStringLiteral("createParameter"), &CParamPanel::CreateParameter);
     m_bindParameter = structureButton(QStringLiteral("绑定选区"), QStringLiteral("bindParameter"), &CParamPanel::BindParameter);
     m_deleteParameter = structureButton(QStringLiteral("删除参数"), QStringLiteral("deleteParameter"), &CParamPanel::DeleteParameter);
-    mainLayout->addLayout(structureRow);
+    actionsLayout->addLayout(structureRow);
 
     m_search = new QLineEdit(wrapper);
     m_search->setPlaceholderText("搜索参数名称或 ID");
     m_search->setClearButtonEnabled(true);
     mainLayout->addWidget(m_search);
 
-    m_xyBox = new QGroupBox(QStringLiteral("XY 参数控制"), wrapper);
+    m_xyBox = new QGroupBox(wrapper);
+    m_xyBox->setObjectName(QStringLiteral("parameterXYSection"));
     auto* xyLayout = new QGridLayout(m_xyBox);
     m_xyXSelector = new QComboBox(m_xyBox);
     m_xyYSelector = new QComboBox(m_xyBox);
     m_xyXSelector->setObjectName(QStringLiteral("xyXParameter"));
     m_xyYSelector->setObjectName(QStringLiteral("xyYParameter"));
+    for (auto* selector : {m_xyXSelector, m_xyYSelector}) {
+        selector->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        selector->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
     m_xyPad = new CXYParameterPad(m_xyBox);
     m_xyPad->setObjectName(QStringLiteral("xyParameterPad"));
     xyLayout->addWidget(new QLabel(QStringLiteral("X"), m_xyBox), 0, 0);
     xyLayout->addWidget(m_xyXSelector, 0, 1);
     xyLayout->addWidget(new QLabel(QStringLiteral("Y"), m_xyBox), 1, 0);
     xyLayout->addWidget(m_xyYSelector, 1, 1);
-    xyLayout->addWidget(m_xyPad, 0, 2, 2, 1);
+    xyLayout->addWidget(m_xyPad, 2, 0, 1, 2);
+    xyLayout->setColumnStretch(1, 1);
     m_xyBox->setEnabled(false);
-    mainLayout->addWidget(m_xyBox);
+    addSection(QStringLiteral("XY 参数控制"), QStringLiteral("parameterXYToggle"), m_xyBox);
     connect(m_xyXSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
     connect(m_xyYSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
     connect(m_xyPad, &CXYParameterPad::ValuesChanged, this, &CParamPanel::ApplyXYPad);
 
     m_scroll = new QScrollArea(wrapper);
+    m_scroll->setObjectName(QStringLiteral("parameterListScroll"));
     m_scroll->setWidgetResizable(true);
     m_container = new QWidget();
     m_scroll->setWidget(m_container);
-    mainLayout->addWidget(m_scroll);
+    mainLayout->addWidget(m_scroll, 1);
 
     connect(m_search, &QLineEdit::textChanged, this, &CParamPanel::FilterParameters);
 
-    setWidget(wrapper);
+    workspaceScroll->setWidget(wrapper);
+    setWidget(workspaceScroll);
     UpdateStructureActions();
 }
 
@@ -820,9 +857,10 @@ bool CParamPanel::FocusParameter(const QString& id)
         if (!panel || !widget || !spin) return false;
     }
     if (m_container->layout()) m_container->layout()->activate();
-    m_scroll->ensureWidgetVisible(widget);
     spin->setFocus(Qt::OtherFocusReason);
     if (!panel || !widget || !spin) return false;
+    m_scroll->ensureWidgetVisible(spin);
+    if (auto* outer = qobject_cast<QScrollArea*>(this->widget())) outer->ensureWidgetVisible(spin);
     spin->selectAll();
     return true;
 }

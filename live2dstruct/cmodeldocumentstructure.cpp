@@ -790,6 +790,20 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法构建网格结构编辑")); }
 }
 
+bool CModelDocument::AnalyzeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request,
+                                             CMocMeshStructureBuilder::Impact& impact, QString* error) const
+{
+    try {
+        if (request.meshes.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格"));
+        QVector<Builder::BindingRequest> owners;
+        for (const auto& mesh : request.meshes)
+            owners.append(Builder::BindingRequest{{Builder::Owner::ArtMesh, mesh.artMeshId}, {}});
+        if (!canBind(*this, owners, error)) return false;
+        QByteArray bytes;
+        return BuildMeshBase(request, bytes, error) && CMocMeshStructureBuilder::Analyze(bytes, request, impact, error);
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法分析网格结构编辑")); }
+}
+
 bool CModelDocument::MakeCreateParameterEdit(const Builder::CreateRequest& request, const QString& displayName,
                                            CModelEdit& edit, QString* error) const
 {

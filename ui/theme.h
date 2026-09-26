@@ -35,6 +35,7 @@ inline QMap<QString, QString> tokens(bool dark = false)
         {QStringLiteral("@itemCheckRadius@"), QStringLiteral("3px")},
         {QStringLiteral("@borderWidth@"), QStringLiteral("1px")},
         {QStringLiteral("@space@"), QStringLiteral("8px")},
+        {QStringLiteral("@spaceNone@"), QStringLiteral("0px")},
     };
     if (dark) {
         token.insert(QStringLiteral("@window@"), QStringLiteral("#16181D"));
@@ -89,6 +90,25 @@ QToolBar#titleBar {
     border-bottom: 1px solid @border@;
     padding: 0 8px;
     spacing: 2px;
+}
+
+QToolBar#meshTools {
+    padding: @space@;
+    spacing: @space@;
+}
+
+QToolBar#meshTools QToolButton:disabled {
+    color: @textSubtle@;
+}
+
+QLabel#meshToolContext {
+    color: @textMuted@;
+}
+
+QToolButton#qt_toolbar_ext_button {
+    padding: @spaceNone@;
+    qproperty-arrowType: RightArrow;
+    color: @text@;
 }
 
 QToolBar QToolButton {

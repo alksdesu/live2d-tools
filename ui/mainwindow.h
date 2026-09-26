@@ -36,8 +36,11 @@ class PsdBatchJob;
 class QProgressDialog;
 class CExportResultsPanel;
 class CExportControl;
+class CMeshToolBar;
+class QVBoxLayout;
 struct PreviewExportState;
 struct CMeshGeometryMigration;
+struct MeshToolCommitState;
 
 class MainWindow : public QMainWindow
 {
@@ -103,6 +106,11 @@ private:
                               bool forward, CMeshGeometryMigration& migration, QVariant* leaving, QString* error) const;
     bool PublishMeshStructure(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                               bool forward, QString* error);
+    void InitializeMeshTools(QVBoxLayout* layout);
+    void RefreshMeshTools();
+    bool SetMeshToolsEnabled(bool enabled, QString* error);
+    bool ApplyMeshTool(OpengGlForm::MeshTool tool, const OpengGlForm::MeshToolSnapshot& snapshot, QString* error);
+    void OptimizeSelectedMesh();
     bool PrepareParameterStructurePose(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                                        bool forward, QMap<QString, float>& pose, QString* error) const;
     QStringList ParameterReferences(const QString& id, bool includeTimeline = true) const;
@@ -199,6 +207,8 @@ private:
     live2dstruct::CKeyformEditController m_keyformEditor;
     QMap<QString, float> m_keyformBaseValues;
     QPointer<QPushButton> m_finishKeyformButton;
+    QPointer<CMeshToolBar> m_meshTools;
+    std::shared_ptr<const MeshToolCommitState> m_meshToolCommit;
 
     // Dock 面板
     CModelTreePanel* m_treePanel = nullptr;

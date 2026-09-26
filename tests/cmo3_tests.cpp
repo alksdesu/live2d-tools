@@ -540,7 +540,7 @@ private slots:
             if (mesh->parentDeformerIndex < 0) {
                 for (int vertex = 0; vertex < positions.size(); vertex += 2) {
                     positions[vertex] = static_cast<float>(double(positions[vertex]) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x);
-                    positions[vertex + 1] = static_cast<float>(table.canvas_info->origin_y - double(positions[vertex + 1]) * table.canvas_info->pixels_per_unit);
+                    positions[vertex + 1] = static_cast<float>(table.canvas_info->origin_y + double(positions[vertex + 1]) * table.canvas_info->pixels_per_unit);
                 }
             }
             QStringList expected;

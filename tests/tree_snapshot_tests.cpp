@@ -43,7 +43,7 @@ private slots:
         QString error;
         QVERIFY2(CTreeManage::PrepareSnapshot(fixture.bytes, {{"P", 0}}, first, &error), qPrintable(error));
         QVERIFY(!CTreeManage::GetInstance());
-        const QVector<float> firstPoints{8.875f, -3.375f, 9.3125f, -2.3125f, 9.4375f, -3.4375f};
+        const auto firstPoints = rigidMeshCanvasPositions();
         QVERIFY(near(meshPositions(*first.tree), firstPoints));
         auto* original = first.tree.get();
         CTreeManage::SwapSnapshot(first);
@@ -183,7 +183,7 @@ private slots:
         CKeyformMappingContext mapping;
         QVERIFY2(mapping.Build(document, "Mesh", 0, {{"P", 0.5f}}, &error), qPrintable(error));
         const QVector<float> expected{0.5f, 0.5f, 0.75f, 0.25f, 0.25f, 0.25f};
-        QVERIFY(mapping.MatchesRuntime(expected));
+        QVERIFY(mapping.MatchesRuntime(coreCoordinates(expected)));
         QVERIFY(near(meshPositions(*snapshot.tree), expected));
         CTreeManage::SwapSnapshot(snapshot);
         CTreeManage::GetInstance()->SetParaValue("P", 0);
@@ -194,7 +194,7 @@ private slots:
         QCOMPARE(CTreeManage::UnsupportedDeformers(), (QSet<QString>{"Root", "Warp"}));
         QVERIFY(document.SetDeformerParentIndex("Child", 1));
         QVERIFY(!mapping.Build(document, "Mesh", 0, {{"P", 0.5f}}, &error));
-        QVERIFY(mapping.MatchesRuntime(expected));
+        QVERIFY(mapping.MatchesRuntime(coreCoordinates(expected)));
     }
 
     void batchPoseSyncEvaluatesOnceAndKeepsTheMocDigest()

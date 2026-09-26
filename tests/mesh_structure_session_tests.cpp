@@ -75,6 +75,25 @@ private slots:
         for(const auto& mesh:m_original.Drawables()) if(mesh.vertexCount>=3&&mesh.indices.size()>=6&&!mesh.keyforms.isEmpty()) {m_target=mesh.id;break;}
         QVERIFY(!m_target.isEmpty());
     }
+    void analysisPreservesDocumentAndRejectsLockedOrInvalidTargets() {
+        CModelDocument document=m_original; QString error;
+        auto mesh=identity(document,m_target); mesh.vertices.append({{0,1},{.5,.5}});
+        MeshBuilder::Request request; request.meshes.append(mesh);
+        const auto state=document.AuthoringStructureState(); const auto revision=document.Revision();
+        MeshBuilder::Impact impact;
+        QVERIFY2(document.AnalyzeMeshStructureEdit(request,impact,&error),qPrintable(error));
+        QCOMPARE(impact.meshes.size(),1); QCOMPARE(impact.meshes[0].newVertexCount,mesh.vertices.size());
+        QCOMPARE(document.AuthoringStructureState(),state); QCOMPARE(document.Revision(),revision); QVERIFY(!document.CanUndoEdit());
+        document.SetLocked("artmesh",m_target,true);
+        impact.blockingReasons={"keep"};
+        QVERIFY(!document.AnalyzeMeshStructureEdit(request,impact,&error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(impact.blockingReasons,QStringList{"keep"});
+        document.SetLocked("artmesh",m_target,false);
+        request.meshes[0].artMeshId="missing";
+        QVERIFY(!document.AnalyzeMeshStructureEdit(request,impact,&error)); QCOMPARE(impact.blockingReasons,QStringList{"keep"});
+        request.meshes.clear();
+        QVERIFY(!document.AnalyzeMeshStructureEdit(request,impact,&error)); QCOMPARE(impact.blockingReasons,QStringList{"keep"});
+    }
     void mixedMeshParameterHistoryAndSessionStayIndependent() {
         CModelDocument document=m_original; QString error; QVector<QVariantMap> states{document.AuthoringStructureState()}; QVector<QByteArray> previews;
         QByteArray preview; QVERIFY(document.BuildPreviewMoc(preview,&error)); previews.append(preview);

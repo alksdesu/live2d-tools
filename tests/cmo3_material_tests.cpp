@@ -252,7 +252,7 @@ private slots:
                 for(int at=0;at<actual.size();++at) {
                     float value=table.keyform_positions->xys[old->keyform_position_sources_begin_indices+at];
                     if(editForm && mesh==table.art_meshes[parented] && k==0 && at==0) value+=.125f;
-                    const float expected=root ? float(at%2 ? double(table.canvas_info->origin_y)-double(value)*table.canvas_info->pixels_per_unit : double(table.canvas_info->origin_x)+double(value)*table.canvas_info->pixels_per_unit) : value;
+                    const float expected=root ? float(at%2 ? double(table.canvas_info->origin_y)+double(value)*table.canvas_info->pixels_per_unit : double(table.canvas_info->origin_x)+double(value)*table.canvas_info->pixels_per_unit) : value;
                     QCOMPARE(actual[at],expected);
                 }
             }

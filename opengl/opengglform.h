@@ -33,6 +33,32 @@ class OpengGlForm : public QOpenGLWidget
     //支持信号和槽
     Q_OBJECT
 public:
+    enum class MeshTool { Select, Insert, Connect, Delete };
+    Q_ENUM(MeshTool)
+    struct MeshToolSnapshot {
+        QString artMeshId;
+        int keyformIndex = -1;
+        QByteArray previewDigest;
+        QMatrix4x4 mvp;
+        QSize viewportSize;
+        QMap<QString, float> parameterValues;
+        QVector<float> coreVertices;
+        QVector<quint16> indices;
+        QVector<int> selectedVertices;
+        QVector<int> operationVertices;
+        QPointF pixelPosition;
+        QPointF modelPosition;
+    };
+    using MeshToolHandler = std::function<bool(MeshTool, const MeshToolSnapshot&, QString*)>;
+    bool SetMeshTool(MeshTool tool, const QString& target, QString* error = nullptr);
+    bool CanSetMeshTool(MeshTool tool, const QString& target, QString* error = nullptr) const;
+    bool ClearMeshTool(QString* error = nullptr);
+    void SetMeshToolHandler(MeshToolHandler handler);
+    MeshTool CurrentMeshTool() const { return m_meshTool; }
+    const QString& MeshToolTarget() const { return m_meshToolTarget; }
+    bool MeshToolSnapshotMatches(const MeshToolSnapshot& snapshot, QString* error = nullptr) const;
+    bool CaptureMeshToolSnapshot(const QPointF& pixel, MeshToolSnapshot& snapshot, QString* error = nullptr) const;
+    bool SetMeshToolSelection(const MeshToolSnapshot& snapshot, const QVector<int>& selected, QString* error = nullptr);
     explicit OpengGlForm(QWidget *par = nullptr);
     ~OpengGlForm();
 
@@ -126,6 +152,8 @@ signals:
     void MeshEditRejected(const QString& error);
     void PreviewFailed(const QString& error);
     void KeyformEditingFinishedRequested();
+    void MeshToolChanged(OpengGlForm::MeshTool tool, const QString& target);
+    void MeshSelectionChanged(const QString& target, const QVector<int>& vertices);
 
 protected:
     void initializeGL() override;
@@ -183,8 +211,33 @@ protected:
     bool m_physicsDragActive = false;
     QPointF m_physicsDragStart;
     QPointF m_pointerAnchor;
+    MeshTool m_meshTool = MeshTool::Select;
+    QString m_meshToolTarget;
+    MeshToolHandler m_meshToolHandler;
+    bool m_meshToolDispatchActive = false;
+    bool m_meshSelectionNotificationPending = false;
+    struct MeshToolGesture {
+        MeshToolSnapshot snapshot;
+        CMeshEditorSnapshot selection;
+        QPointF currentPixel;
+        Qt::KeyboardModifiers modifiers;
+        int pickedVertex = -1;
+        bool rectangle = false;
+    };
+    std::optional<MeshToolGesture> m_meshToolGesture;
+    bool CaptureMeshToolState(const QString& target, const QPointF& pixel, bool requireEditor,
+                             MeshToolSnapshot& snapshot, QString* error) const;
+    bool SetToolSelection(const QVector<int>& selected, QString* error);
+    void ResetMeshToolState();
+    void NotifyMeshSelection();
+    void CancelMeshToolGesture();
+    bool BeginMeshToolGesture(QMouseEvent* event, QString* error);
+    bool MoveMeshToolGesture(QMouseEvent* event, QString* error);
+    void FinishMeshToolGesture(QMouseEvent* event);
+    void DispatchMeshTool(MeshTool tool, MeshToolSnapshot snapshot);
+    bool MoveMeshDrag(const QPointF& pixel, QString* error);
     bool MeshDragFrameMatches() const;
-    bool BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error);
+    bool BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error, bool activate = true);
     void FinishDeformerDrag();
     QString SelectCoreMesh(const QPointF& pixel, bool hover);
 

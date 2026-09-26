@@ -99,6 +99,57 @@ private slots:
         QVERIFY(restored.Commit(source.moc,source.model,source.renderer));QVERIFY(source.model->GetMeshMap()->GetDrawMesh(name)->GetMesh()->GetWolrd()[count-1]->GetIsSelect());
     }
 
+    void newPointIsCheckedAgainstEvaluatedCoreBeforeRenderer()
+    {
+        const auto bytes = read(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        auto reader = live2dstruct::CReader::FromBytes(bytes);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        auto edit = identity(table, 0);
+        const int oldCount = edit.vertices.size();
+        QVERIFY(oldCount > 0);
+        const int a = edit.indices[0], b = edit.indices[1], c = edit.indices[2];
+        edit.vertices.append({{a, b, c}, {0.2, 0.3, 0.5}});
+        edit.indices[1] = quint16(oldCount);
+        edit.indices += QVector<quint16>{quint16(oldCount), quint16(b), quint16(c)};
+        Builder::Request request;
+        request.meshes.append(edit);
+        Builder::Result built;
+        QString error;
+        QVERIFY2(Builder::Build(bytes, request, built, &error), qPrintable(error));
+        ModelOwner source, independent;
+        QVERIFY(source.Load(bytes));
+        QVERIFY(independent.Load(built.bytes));
+        const auto* positions = independent.model->GetDrawableVertexPositions(0);
+        const QPointF expected(positions[oldCount].X, positions[oldCount].Y);
+        auto mapping = migration(built.meshes.first());
+        mapping.expectation = CMeshGeometryExpectation{{{edit.artMeshId, oldCount, expected}}, 0.000001};
+        CubismModelReplacement replacement;
+        bool rendererCalled = false;
+        const auto render = [&](CubismRenderer* next, CubismModel* model, const CubismRenderer& previous, QString* detail) {
+            rendererCalled = true;
+            return prepareRenderer()(next, model, previous, detail);
+        };
+        const auto policy = CubismModelUpdatePolicy::AllowDrawableGeometryEdits;
+        QVERIFY2(replacement.Prepare(reinterpret_cast<const csmByte*>(built.bytes.constData()), built.bytes.size(),
+            *source.moc, *source.model, *source.renderer, render, policy, {}, &error, {}, &mapping), qPrintable(error));
+        QVERIFY(rendererCalled);
+        QVERIFY(replacement.GetModel());
+        mapping.expectation->points[0].modelPosition += QPointF(0.01, 0.02);
+        rendererCalled = false;
+        CubismModelReplacement rejected;
+        const auto allocationCount = allocator.aligned.size();
+        auto* old = source.model;
+        QVERIFY(!rejected.Prepare(reinterpret_cast<const csmByte*>(built.bytes.constData()), built.bytes.size(),
+            *source.moc, *source.model, *source.renderer, render, policy, {}, &error, {}, &mapping));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!rendererCalled);
+        QVERIFY(!rejected.GetModel());
+        QCOMPARE(source.model, old);
+        QCOMPARE(source.model->GetDrawableVertexCount(0), oldCount);
+        QCOMPARE(allocator.aligned.size(), allocationCount);
+    }
+
     void realCandidatesPreserveRuntimeAndVertexIdentity_data() {
         QTest::addColumn<QString>("path");QTest::addColumn<QString>("operation");
         for(const auto& name:{QString("Mark"),QString("Natori"),QString("Rice"),QString("Wanko")})

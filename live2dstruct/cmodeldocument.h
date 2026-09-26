@@ -215,6 +215,8 @@ public:
     QVariantMap ParameterStructureState() const { return AuthoringStructureState(); }
     bool MakeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request, CModelEdit& edit,
                                QString* error = nullptr) const;
+    bool AnalyzeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request,
+                                  CMocMeshStructureBuilder::Impact& impact, QString* error = nullptr) const;
     bool MakeCreateParameterEdit(const CMocParameterStructureBuilder::CreateRequest& request,
                                  const QString& displayName, CModelEdit& edit, QString* error = nullptr) const;
     bool MakeBindParameterEdit(const QString& id, const QVector<CMocParameterStructureBuilder::BindingRequest>& bindings,

@@ -60,6 +60,32 @@ class CoordinateFrameTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void preparedFramesRejectInvalidInputsAtomically()
+    {
+        auto existing = std::make_shared<CCoordinateFrame>(Rotation(0, 3, 4));
+        std::shared_ptr<const CCoordinateFrame> result = existing;
+        CCoordinateFrame::RotationBasis basis{{7, 8}, {1, 2}, {3, 4}};
+        CRotationNodeKeyform key(1, 0, 0.25f, 0.4f, 1, false, false);
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!CCoordinateFrame::CreateRotation(nan, key, {}, result, basis));
+        QCOMPARE(result.get(), existing.get());
+        QCOMPARE(basis.origin, QPointF(7, 8));
+        QCOMPARE(basis.xAxis, QPointF(1, 2));
+        QCOMPARE(basis.yAxis, QPointF(3, 4));
+        auto overflow = std::make_shared<CCoordinateFrame>(Rotation(0, 0, 0, std::numeric_limits<float>::max()));
+        key.Setscales(2);
+        QVERIFY(!CCoordinateFrame::CreateRotation(0, key, overflow, result, basis));
+        QCOMPARE(result.get(), existing.get());
+        QCOMPARE(basis.origin, QPointF(7, 8));
+        QVERIFY(!CCoordinateFrame::CreateWarp(1, 1, {0, 0, 1, 0}, false, {}, result));
+        QCOMPARE(result.get(), existing.get());
+        auto invalid = std::make_shared<CCoordinateFrame>(Rotation(nan));
+        key.Setscales(1);
+        QVERIFY(!CCoordinateFrame::CreateRotation(0, key, invalid, result, basis));
+        QCOMPARE(result.get(), existing.get());
+        QCOMPARE(basis.origin, QPointF(7, 8));
+    }
+
     void parentRotationAppliesAfterChildOrigin()
     {
         auto parent = std::make_shared<CCoordinateFrame>(Rotation(90));

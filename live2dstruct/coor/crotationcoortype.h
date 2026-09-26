@@ -8,6 +8,7 @@ class CRotationCoorType : public CCoorTypeObject
 {
 public:
     CRotationCoorType(float base_angles,CRotationNodeKeyform& keyform);
+    CRotationCoorType(float originX, float originY, double angle, float scale, bool reflectX, bool reflectY);
     virtual ~CRotationCoorType();
 
     float GetOriginX() const;
@@ -23,10 +24,11 @@ public:
 
     void Test();
 private:
+    void Prepare();
     float Scale;
     bool isReflectX;
     bool isReflectY;
-    float angle;
+    double angle;
     float OriginX = 0.0f;
     float OriginY = 0.0f;
     float base_angles;

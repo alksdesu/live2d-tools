@@ -218,7 +218,9 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         for (auto* node : candidate->tree->getArtTree()) {
             if (node->getName() != artMeshId) continue;
             auto* mesh = dynamic_cast<CArtMeshNode*>(node);
-            if (!mesh || !sameSlice(mesh->GetCurKeyForm().GetPosition(), 0, local) ||
+            if (!mesh || mesh->GetCanvasPositions().empty())
+                return fail(error, QStringLiteral("目标关键形的父链无法求值：%1").arg(artMeshId));
+            if (!sameSlice(mesh->GetCurKeyForm().GetPosition(), 0, local) ||
                 mesh->GetCurKeyForm().GetPosition().size() != size_t(local.size()))
                 return fail(error, QStringLiteral("目标关键形的求值坐标与角点不一致：%1").arg(artMeshId));
             candidate->target = mesh;
@@ -226,8 +228,12 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         if (!candidate->target || candidate->target->GetCanvasPositions().empty())
             return fail(error, QStringLiteral("目标关键形的父链无法求值：%1").arg(artMeshId));
         if (!map(*candidate->target, local, candidate->expected, false, error)) return false;
-        QVector<float> restored;
-        if (!map(*candidate->target, candidate->expected, restored, true, error) || !compare(restored, local, error)) return false;
+        QVector<float> restored, reprojected;
+        if (!map(*candidate->target, candidate->expected, restored, true, error) ||
+            !map(*candidate->target, restored, reprojected, false, error) ||
+            !compare(reprojected, candidate->expected, error)) return false;
+        for (qsizetype index = 1; index < candidate->expected.size(); index += 2)
+            candidate->expected[index] = -candidate->expected[index];
         m_state = std::move(candidate);
         if (error) error->clear();
         return true;
@@ -238,14 +244,20 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
 
 bool CKeyformMappingContext::ToModel(const QVector<float>& local, QVector<float>& world, QString* error) const
 {
-    return m_state ? map(*m_state->target, local, world, false, error)
-                   : fail(error, QStringLiteral("关键形映射上下文尚未构建"));
+    if (!m_state) return fail(error, QStringLiteral("关键形映射上下文尚未构建"));
+    QVector<float> candidate;
+    if (!map(*m_state->target, local, candidate, false, error)) return false;
+    for (qsizetype index = 1; index < candidate.size(); index += 2) candidate[index] = -candidate[index];
+    world.swap(candidate);
+    return true;
 }
 
 bool CKeyformMappingContext::FromModel(const QVector<float>& world, QVector<float>& local, QString* error) const
 {
-    return m_state ? map(*m_state->target, world, local, true, error)
-                   : fail(error, QStringLiteral("关键形映射上下文尚未构建"));
+    if (!m_state) return fail(error, QStringLiteral("关键形映射上下文尚未构建"));
+    auto canvas = world;
+    for (qsizetype index = 1; index < canvas.size(); index += 2) canvas[index] = -canvas[index];
+    return map(*m_state->target, canvas, local, true, error);
 }
 
 bool CKeyformMappingContext::MatchesRuntime(const QVector<float>& actualModelVertices, QString* error) const

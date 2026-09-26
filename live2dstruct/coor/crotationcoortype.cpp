@@ -51,6 +51,17 @@ CRotationCoorType::CRotationCoorType(float base_angles, CRotationNodeKeyform& ke
     if (keyform.GetPosition().size() != 2) return;
     OriginX = keyform.Getorigin_x();
     OriginY = keyform.Getorigin_y();
+    Prepare();
+}
+
+CRotationCoorType::CRotationCoorType(float originX, float originY, double angle, float scale, bool reflectX, bool reflectY)
+    : Scale(scale), isReflectX(reflectX), isReflectY(reflectY), angle(angle), OriginX(originX), OriginY(originY), base_angles(0)
+{
+    Prepare();
+}
+
+void CRotationCoorType::Prepare()
+{
     m_valid = std::isfinite(base_angles) && std::isfinite(angle) && std::isfinite(Scale) &&
               std::isfinite(OriginX) && std::isfinite(OriginY);
     if (!m_valid) return;

@@ -44,17 +44,12 @@ bool CDrawRotation::Init(CRotationNode* node)
 {
     vetrclPos.clear();
     vetdirPos.clear();
-    if (!node || node->GetCurKeyForm().GetPosition().size() != 2 || node->GetCanvasPositions().size() != 2) return false;
-    base_angles = node->GetBaseAngles();
-    cur = node->GetCurKeyForm();
-    if (!std::isfinite(base_angles) || !std::isfinite(cur.Getangles()) ||
-        !std::isfinite(cur.Getorigin_x()) || !std::isfinite(cur.Getorigin_y()) || !ClaRect()) return false;
-    if (!node->MapToCanvas(vetrclPos, vetrclPos) || !node->MapToCanvas(vetdirPos, vetdirPos)) {
-        vetrclPos.clear();
-        vetdirPos.clear();
-        return false;
-    }
-    return true;
+    if (!node || !node->GetCanvasBasis() || node->GetCurKeyForm().GetPosition().size() != 2 ||
+        node->GetCanvasPositions().size() != 2) return false;
+    auto& form = node->GetCurKeyForm();
+    if (!std::isfinite(node->GetBaseAngles()) || !std::isfinite(form.Getangles()) ||
+        !std::isfinite(form.Getorigin_x()) || !std::isfinite(form.Getorigin_y())) return false;
+    return ClaRect(*node->GetCanvasBasis());
 }
 
 bool CDrawRotation::PrepareOpenGl()
@@ -102,6 +97,7 @@ void CDrawRotation::Draw(const QMatrix4x4& projection)
                                  [](float value) { return std::isfinite(value); }) || !PrepareOpenGl()) return;
     auto* gl = QOpenGLVersionFunctionsFactory::get<QOpenGLFunctions_3_3_Core>(QOpenGLContext::currentContext());
     GLint program = 0, activeTexture = 0, texture = 0;
+    const GLboolean culling = gl->glIsEnabled(GL_CULL_FACE);
     gl->glGetIntegerv(GL_CURRENT_PROGRAM, &program);
     gl->glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
     gl->glActiveTexture(GL_TEXTURE0);
@@ -110,7 +106,9 @@ void CDrawRotation::Draw(const QMatrix4x4& projection)
         gl->glUseProgram(program);
         gl->glBindTexture(GL_TEXTURE_2D, texture);
         gl->glActiveTexture(activeTexture);
+        if (culling) gl->glEnable(GL_CULL_FACE);
     });
+    gl->glDisable(GL_CULL_FACE);
     if (!shader->bind()) return;
     shader->setUniformValue("projection", projection);
     shader->setUniformValue("image", 0);
@@ -128,30 +126,26 @@ void CDrawRotation::SetDraw(bool flag)
 void CDrawRotation::InitOpenGl()
 {}
 
-bool CDrawRotation::ClaRect()
+bool CDrawRotation::ClaRect(const CCoordinateFrame::RotationBasis& basis)
 {
-    const double x = cur.Getorigin_x(), y = cur.Getorigin_y();
+    const double x = basis.origin.x(), y = basis.origin.y();
     constexpr double halfSide = 0.025;
     const std::array<double, 8> origin{x - halfSide, y + halfSide, x - halfSide, y - halfSide,
                                       x + halfSide, y - halfSide, x + halfSide, y + halfSide};
-    const std::array<QPointF, 4> direction{QPointF(x - 0.01, y), QPointF(x - 0.01, y - 0.1),
-                                          QPointF(x + 0.01, y - 0.1), QPointF(x + 0.01, y)};
-    QTransform transform;
-    transform.translate(x, y);
-    transform.rotate(std::remainder(static_cast<double>(base_angles) + cur.Getangles(), 360.0));
-    transform.translate(-x, -y);
+    const std::array<QPointF, 4> direction{QPointF(-0.01, 0), QPointF(-0.01, -0.1),
+                                          QPointF(0.01, -0.1), QPointF(0.01, 0)};
     std::vector<float> originPositions(8), directionPositions(8);
     const double maximum = std::numeric_limits<float>::max();
     for (size_t index = 0; index < direction.size(); ++index) {
-        const QPointF point = transform.map(direction[index]);
+        const QPointF point = basis.origin + basis.xAxis * direction[index].x() + basis.yAxis * direction[index].y();
         if (!std::isfinite(point.x()) || !std::isfinite(point.y()) ||
             std::abs(point.x()) > maximum || std::abs(point.y()) > maximum ||
             !std::isfinite(origin[index * 2]) || !std::isfinite(origin[index * 2 + 1]) ||
             std::abs(origin[index * 2]) > maximum || std::abs(origin[index * 2 + 1]) > maximum) return false;
         directionPositions[index * 2] = static_cast<float>(point.x());
-        directionPositions[index * 2 + 1] = static_cast<float>(point.y());
+        directionPositions[index * 2 + 1] = -static_cast<float>(point.y());
         originPositions[index * 2] = static_cast<float>(origin[index * 2]);
-        originPositions[index * 2 + 1] = static_cast<float>(origin[index * 2 + 1]);
+        originPositions[index * 2 + 1] = -static_cast<float>(origin[index * 2 + 1]);
     }
     vetrclPos = std::move(originPositions);
     vetdirPos = std::move(directionPositions);

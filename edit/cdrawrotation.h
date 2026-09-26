@@ -28,9 +28,7 @@ public:
 private:
     friend class EditorOverlayRenderTests;
     bool EnsureOpenGl();
-    bool ClaRect();
-    CRotationNodeKeyform cur;
-    float base_angles = 0;
+    bool ClaRect(const CCoordinateFrame::RotationBasis& basis);
     bool m_IsDraw = false;
 
 

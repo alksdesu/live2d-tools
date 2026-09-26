@@ -395,11 +395,45 @@ private slots:
         QTest::addColumn<QPointF>("center");
         QTest::addColumn<QPointF>("shifted");
         QTest::addColumn<bool>("customCanvas");
-        QTest::newRow("Mark") << QString("Mark") << QPointF(1200, 1500) << QPointF(6000, 8700) << false;
-        QTest::newRow("Rice") << QString("Rice") << QPointF(2250, 1500) << QPointF(8250, 10500) << false;
-        QTest::newRow("Natori") << QString("Natori") << QPointF(2000, 3500) << QPointF(10000, 15500) << false;
-        QTest::newRow("Wanko") << QString("Wanko") << QPointF(600, 600) << QPointF(3000, 4200) << false;
-        QTest::newRow("independent-canvas-origin") << QString("Mark") << QPointF(30, 40) << QPointF(50, 70) << true;
+        QTest::newRow("Mark") << QString("Mark") << QPointF(1200, 1500) << QPointF(6000, -5700) << false;
+        QTest::newRow("Rice") << QString("Rice") << QPointF(2250, 1500) << QPointF(8250, -7500) << false;
+        QTest::newRow("Natori") << QString("Natori") << QPointF(2000, 3500) << QPointF(10000, -8500) << false;
+        QTest::newRow("Wanko") << QString("Wanko") << QPointF(600, 600) << QPointF(3000, -3000) << false;
+        QTest::newRow("independent-canvas-origin") << QString("Mark") << QPointF(30, 40) << QPointF(50, 10) << true;
+    }
+
+    void rotationUnitOverflowPreservesExistingOutput_data()
+    {
+        QTest::addColumn<float>("scale");
+        QTest::newRow("positive") << std::numeric_limits<float>::max();
+        QTest::newRow("negative") << -std::numeric_limits<float>::max();
+    }
+    void rotationUnitOverflowPreservesExistingOutput()
+    {
+        QFETCH(float, scale);
+        const QString source = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CModelDocument document; QString error; QVERIFY(document.Load(source, &error));
+        cmo3::CCmo3Builder::Options options; options.mocPath = source;
+        QString id;
+        for (const auto& deformer : document.Deformers()) if (deformer.type == live2dstruct::CModelDeformer::Rotation) {
+            auto forms = document.DeformerRotationKeyforms(deformer.id); if (forms.isEmpty()) continue;
+            forms[0].scale = scale; options.deformerRotationKeyformOverrides.insert(deformer.id, forms);
+            options.deformerParentOverrides.insert(deformer.id, -1); id = deformer.id; break;
+        }
+        QVERIFY(!id.isEmpty()); QTemporaryDir temporary; QVERIFY(temporary.isValid()); options.outPath = temporary.filePath("keep.cmo3");
+        QVERIFY(saveBytes(options.outPath, "original target")); QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(error.contains(QStringLiteral("缩放")), qPrintable(error)); QFile preserved(options.outPath); QVERIFY(preserved.open(QIODevice::ReadOnly)); QCOMPARE(preserved.readAll(), QByteArray("original target"));
+    }
+    void cyclicEffectiveParentsPreserveExistingOutput()
+    {
+        const QString source = QString(TEST_RESOURCES) + "/Mark/Mark.moc3";
+        live2dstruct::CReader reader(source); live2dstruct::CSectionTable table(reader); QVERIFY(table.IsValid()); QVERIFY(table.deformers.size() >= 2);
+        cmo3::CCmo3Builder::Options options; options.mocPath = source;
+        options.deformerParentOverrides.insert(table.deformers[0]->ids, 1);
+        options.deformerParentOverrides.insert(table.deformers[1]->ids, 0);
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); options.outPath = temporary.filePath("keep.cmo3");
+        QVERIFY(saveBytes(options.outPath, "original target")); QString error; QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(error.contains(QStringLiteral("父链")), qPrintable(error)); QFile preserved(options.outPath); QVERIFY(preserved.open(QIODevice::ReadOnly)); QCOMPARE(preserved.readAll(), QByteArray("original target"));
     }
 
     void rootCoordinatesUsePixelOrigins()
@@ -641,7 +675,7 @@ private slots:
                         float expectedValue = expected[k].positions[v];
                         if (parent < 0) expectedValue = v % 2 == 0
                             ? static_cast<float>(double(expectedValue) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x)
-                            : static_cast<float>(table.canvas_info->origin_y - double(expectedValue) * table.canvas_info->pixels_per_unit);
+                            : static_cast<float>(table.canvas_info->origin_y + double(expectedValue) * table.canvas_info->pixels_per_unit);
                         QCOMPARE(values[v].toFloat(), expectedValue);
                     }
                     QCOMPARE(xml.text(xml.field(xml.field(forms[k], "super"), "opacity")).toFloat(), expected[k].opacity);
@@ -657,8 +691,12 @@ private slots:
                     QCOMPARE(xml.attribute(forms[k], "originX").toFloat(), parent >= 0 ? form.originX :
                              static_cast<float>(double(form.originX) * table.canvas_info->pixels_per_unit + table.canvas_info->origin_x));
                     QCOMPARE(xml.attribute(forms[k], "originY").toFloat(), parent >= 0 ? form.originY :
-                             static_cast<float>(table.canvas_info->origin_y - double(form.originY) * table.canvas_info->pixels_per_unit));
-                    QCOMPARE(xml.attribute(forms[k], "scale").toFloat(), form.scale);
+                             static_cast<float>(table.canvas_info->origin_y + double(form.originY) * table.canvas_info->pixels_per_unit));
+                    bool rotationAncestor = false;
+                    for (int ancestor = parent; ancestor >= 0; ancestor = table.deformers[ancestor]->parent_deformer_indices)
+                        rotationAncestor = rotationAncestor || table.deformers[ancestor]->types == 1;
+                    QCOMPARE(xml.attribute(forms[k], "scale").toFloat(), rotationAncestor ? form.scale :
+                             static_cast<float>(double(form.scale) * table.canvas_info->pixels_per_unit));
                     QCOMPARE(xml.attribute(forms[k], "isReflectX"), form.reflectX ? QString("true") : QString("false"));
                     QCOMPARE(xml.attribute(forms[k], "isReflectY"), form.reflectY ? QString("true") : QString("false"));
                     QCOMPARE(xml.text(xml.field(xml.field(forms[k], "super"), "opacity")).toFloat(), form.opacity);

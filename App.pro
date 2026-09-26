@@ -53,6 +53,7 @@ SOURCES += \
     live2dstruct/ccanvasgeometry.cpp \
     live2dstruct/cdraworder.cpp \
     live2dstruct/cmeshtopology.cpp \
+    live2dstruct/cmesheditplanner.cpp \
     ui/cinspectorpanel.cpp \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
@@ -180,6 +181,7 @@ SOURCES += \
     ui/mainwindow.cpp \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
+    ui/cmeshtoolbar.cpp \
     framework/CubismCdiJson.cpp\
     framework/CubismDefaultParameterId.cpp\
     framework/CubismFramework.cpp\
@@ -287,6 +289,9 @@ HEADERS += \
     live2dstruct/cdraworder.h \
     live2dstruct/cdrawableflags.h \
     live2dstruct/cmeshtopology.h \
+    live2dstruct/cmesheditplanner.h \
+    ui/cmeshtoolbar.h \
+    ui/cdocktoggle.h \
     live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
     ui/cmodeldiagnosticspanel.h \

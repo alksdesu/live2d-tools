@@ -37,6 +37,8 @@
 #include "live2d/cparameterreferenceplan.h"
 #include "live2dstruct/cmotionblendpreview.h"
 #include "edit/cmeshmap.h"
+#include "ui/cmeshtoolbar.h"
+#include "ui/cdocktoggle.h"
 #include "ui/theme.h"
 #include <QFileDialog>
 #include "live2d/LAppDefine.hpp"
@@ -1316,6 +1318,7 @@ bool MainWindow::EndKeyformEditing(QString* error)
         if (it.key() != m_parameterBeingEdited) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
     m_keyformBaseValues.clear();
     if (m_finishKeyformButton) m_finishKeyformButton->hide();
+    RefreshMeshTools();
     return true;
 }
 
@@ -1397,6 +1400,7 @@ void MainWindow::RefreshKeyformUi(bool changed)
         if (m_blendShapePanel) for (auto it = m_keyformEditor.Pose().cbegin(); it != m_keyformEditor.Pose().cend(); ++it)
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
     }
+    RefreshMeshTools();
     if (!changed) return;
     m_sessionDirty = true;
     m_historySource = HistorySource::Inspector;
@@ -1476,6 +1480,7 @@ void MainWindow::SelectModelObjects(const QStringList& ids, const QStringList& t
         }
         if (m_texturePanel) m_texturePanel->HighlightMesh({});
     }
+    RefreshMeshTools();
 }
 
 void MainWindow::SyncDocumentToRuntime()
@@ -2560,6 +2565,7 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
     applyBgColor();
     m_runtimePanelsInitialized = true;
     RefreshTextureGeometry();
+    RefreshMeshTools();
     RefreshExportActions();
 }
 
@@ -2715,6 +2721,7 @@ void MainWindow::RestDock(const QString &name)
     canvasToolbarLayout->addWidget(maskQuality);
     canvasToolbarLayout->addWidget(resetCanvas);
     canvasLayout->addWidget(canvasToolbar);
+    InitializeMeshTools(canvasLayout);
     canvasLayout->addWidget(m_openglwindows, 1);
     this->setCentralWidget(m_canvasHost);
 
@@ -2942,19 +2949,15 @@ void MainWindow::RestDock(const QString &name)
     m_btnToggleDiagnostics->setVisible(true);
     m_btnToggleUserData->setVisible(true);
 
-    auto wireToggle = [](QPushButton* btn, QDockWidget* dock){
-        QObject::connect(btn, &QPushButton::toggled, dock, &QDockWidget::setVisible);
-        QObject::connect(dock, &QDockWidget::visibilityChanged, btn, &QPushButton::setChecked);
-    };
-    wireToggle(m_btnToggleTree, m_treePanel);
-    wireToggle(m_btnToggleParam, m_paramPanel);
-    wireToggle(m_btnToggleMotion, m_motionPanel);
-    wireToggle(m_btnTogglePhysics, m_physicsPanel);
-    wireToggle(m_btnToggleBlend, m_blendShapePanel);
-    wireToggle(m_btnToggleTexture, m_texturePanel);
-    wireToggle(m_btnToggleInspector, m_inspectorPanel);
-    wireToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
-    wireToggle(m_btnToggleUserData, m_userDataPanel);
+    ConnectDockToggle(m_btnToggleTree, m_treePanel);
+    ConnectDockToggle(m_btnToggleParam, m_paramPanel);
+    ConnectDockToggle(m_btnToggleMotion, m_motionPanel);
+    ConnectDockToggle(m_btnTogglePhysics, m_physicsPanel);
+    ConnectDockToggle(m_btnToggleBlend, m_blendShapePanel);
+    ConnectDockToggle(m_btnToggleTexture, m_texturePanel);
+    ConnectDockToggle(m_btnToggleInspector, m_inspectorPanel);
+    ConnectDockToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
+    ConnectDockToggle(m_btnToggleUserData, m_userDataPanel);
 
     m_motionPanel->RestoreLayout(settings.value(QStringLiteral("motionPanelLayout")).toByteArray());
     m_blendShapePanel->RestoreLayout(settings.value(QStringLiteral("blendShapePanelLayout")).toByteArray());

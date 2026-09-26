@@ -13,10 +13,20 @@ struct CMeshVertexRemap {
     int newVertexCount = 0;
     QVector<int> oldToNew;
 };
+struct CMeshExpectedPoint {
+    QString artMeshId;
+    int vertexIndex = -1;
+    QPointF modelPosition;
+};
+struct CMeshGeometryExpectation {
+    QVector<CMeshExpectedPoint> points;
+    double tolerance = 0;
+};
 struct CMeshGeometryMigration {
     QByteArray sourcePreviewDigest;
     QMap<QString, CMeshVertexRemap> remaps;
     std::optional<CMeshEditorSnapshot> targetState;
+    std::optional<CMeshGeometryExpectation> expectation;
 };
 
 class CMeshMap

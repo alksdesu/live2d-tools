@@ -1404,6 +1404,76 @@ private slots:
         QCOMPARE(model->GetParameterValue(0),.7f);QCOMPARE(model->GetPartOpacity(0),.45f);QCOMPARE(runtime.allocations.size(),allocations);
     }
 
+    void geometryExpectationRejectsBeforeRenderer_data()
+    {
+        QTest::addColumn<int>("failure");
+        const char* names[] = {"wrong-point", "empty", "zero-tolerance", "negative-tolerance", "nan-tolerance",
+                               "infinite-tolerance", "missing-id", "negative-index", "past-end", "duplicate",
+                               "nan-point", "infinite-point", "unrepresentable-point"};
+        for (int index = 0; index < int(std::size(names)); ++index) QTest::newRow(names[index]) << index;
+    }
+
+    void geometryExpectationRejectsBeforeRenderer()
+    {
+        QFETCH(int, failure);
+        auto source = createSource();
+        const auto allocations = runtime.allocations.size();
+        const auto rendererCalls = runtime.rendererCalls;
+        auto* mesh = source->model->GetMeshMap()->GetDrawMesh("MeshA");
+        auto* selected = mesh->GetSelectPoint().front();
+        CMeshGeometryMigration migration;
+        migration.expectation = CMeshGeometryExpectation{{{"MeshA", 0, {-1, -1}}}, 0.001};
+        auto& expectation = *migration.expectation;
+        switch (failure) {
+        case 0: expectation.points[0].modelPosition.setX(-0.99); break;
+        case 1: expectation.points.clear(); break;
+        case 2: expectation.tolerance = 0; break;
+        case 3: expectation.tolerance = -1; break;
+        case 4: expectation.tolerance = std::numeric_limits<double>::quiet_NaN(); break;
+        case 5: expectation.tolerance = std::numeric_limits<double>::infinity(); break;
+        case 6: expectation.points[0].artMeshId = "Missing"; break;
+        case 7: expectation.points[0].vertexIndex = -1; break;
+        case 8: expectation.points[0].vertexIndex = 4; break;
+        case 9: expectation.points.append(expectation.points.first()); break;
+        case 10: expectation.points[0].modelPosition.setY(std::numeric_limits<double>::quiet_NaN()); break;
+        case 11: expectation.points[0].modelPosition.setX(std::numeric_limits<double>::infinity()); break;
+        case 12: expectation.points[0].modelPosition.setX(std::numeric_limits<double>::max()); break;
+        }
+        QString error;
+        CubismModelReplacement replacement;
+        QVERIFY(!replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+            *source->renderer, normalPreparation(), CubismModelUpdatePolicy::AllowDrawableGeometryEdits, {}, &error, {}, &migration));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!replacement.GetModel());
+        QCOMPARE(runtime.rendererCalls, rendererCalls);
+        QCOMPARE(runtime.allocations.size(), allocations);
+        QCOMPARE(runtime.releasedModelUpdates, QVector<int>{1});
+        verifySourceUnchanged(*source, mesh, selected);
+    }
+
+    void geometryExpectationUsesPreparedCandidateAndAcceptsTolerance()
+    {
+        auto source = createSource();
+        CMeshGeometryMigration migration;
+        migration.expectation = CMeshGeometryExpectation{{{"MeshA", 0, {0.2502, 0.5}}, {"MeshB", 0, {-2, -2}}}, 0.001};
+        QString error;
+        CubismModelReplacement replacement;
+        bool checked = false;
+        const auto renderer = [&](CubismRenderer* next, CubismModel* model, const CubismRenderer& old, QString* detail) {
+            checked = State(model->GetModel()).updates == 1 && model->GetDrawableVertexPositions(0)[0].X == 0.25f;
+            return normalPreparation()(next, model, old, detail);
+        };
+        const auto pose = [](CubismModel* model, QString*) {
+            State(model->GetModel()).positions[0][0] = {0.25f, 0.5f};
+            return true;
+        };
+        QVERIFY2(replacement.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+            *source->renderer, renderer, CubismModelUpdatePolicy::AllowDrawableGeometryEdits, {}, &error, pose, &migration), qPrintable(error));
+        QVERIFY(checked);
+        QCOMPARE(source->model->GetDrawableVertexPositions(0)[0].X, -1.0f);
+        QCOMPARE(replacement.GetModel()->GetDrawableVertexPositions(0)[0].X, 0.25f);
+    }
+
     void lappGeometryChecksDigestAndKeepsEditorTimelineValues()
     {
         LAppModel preview;setupPreview(preview);runtime.parameterMinimum=-2;runtime.parameterMaximum=2;

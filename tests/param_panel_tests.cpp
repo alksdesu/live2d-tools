@@ -5,6 +5,7 @@
 #include "ui/para/ccidjson.h"
 #include <QtTest>
 #include <QComboBox>
+#include <QGroupBox>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -48,6 +49,8 @@ private:
         panel.resize(800, 600);
         panel.show();
         panel.activateWindow();
+        QCoreApplication::processEvents();
+        if (auto* toggle = panel.findChild<QToolButton*>("parameterActionsToggle")) toggle->setChecked(true);
         QCoreApplication::processEvents();
         const auto visited = std::make_shared<int>(0);
         QTimer::singleShot(0, &panel, [edit, retained, save, visited] {
@@ -167,6 +170,95 @@ private:
     }
 
 private slots:
+    void compactWorkspaceKeepsControlsReachable_data()
+    {
+        QTest::addColumn<QSize>("size");
+        QTest::addColumn<bool>("dark");
+        for (const bool dark : {false, true}) {
+            QTest::newRow(dark ? "dark-sidebar" : "light-sidebar") << QSize(300, 420) << dark;
+            QTest::newRow(dark ? "dark-short" : "light-short") << QSize(700, 300) << dark;
+        }
+    }
+
+    void compactWorkspaceKeepsControlsReachable()
+    {
+        QFETCH(QSize, size);
+        QFETCH(bool, dark);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CParamPanel panel;
+        panel.setStyleSheet(Theme::globalStyleSheet(dark));
+        panel.SetDocument(&document);
+        panel.BuildParams();
+        QVERIFY(panel.m_rows.size() > 2);
+        panel.m_xyXSelector->setCurrentIndex(1);
+        panel.m_xyYSelector->setCurrentIndex(2);
+        panel.ApplyExternalValue(panel.m_rows.first().paramId, panel.m_rows.first().maxVal, true);
+        const auto values = panel.CurrentValues();
+        const auto revision = document.Revision();
+        const bool undo = document.CanUndoEdit(), redo = document.CanRedoEdit();
+        const QString x = panel.m_xyXSelector->currentText(), y = panel.m_xyYSelector->currentText();
+        const float padX = panel.m_xyPad->XValue(), padY = panel.m_xyPad->YValue();
+        QSignalSpy changes(&panel, &CParamPanel::ParamChanged), history(&panel, &CParamPanel::HistoryChanged);
+        auto* outer = panel.findChild<QScrollArea*>("parameterWorkspaceScroll");
+        auto* actions = panel.findChild<QToolButton*>("parameterActionsToggle");
+        auto* xy = panel.findChild<QToolButton*>("parameterXYToggle");
+        QVERIFY(outer && actions && xy);
+        QCOMPARE(panel.widget(), outer);
+        QCOMPARE(outer->frameShape(), QFrame::NoFrame);
+        QVERIFY(outer->widgetResizable());
+        panel.resize(size);
+        panel.show();
+        panel.activateWindow();
+        QCoreApplication::processEvents();
+        QCOMPARE(panel.size(), size);
+        QVERIFY(!actions->isChecked() && !xy->isChecked());
+        QVERIFY(panel.findChild<QWidget*>("parameterActionsSection")->isHidden());
+        QVERIFY(panel.m_xyBox->isHidden());
+        QVERIFY(outer->viewport()->rect().contains(panel.m_search->mapTo(outer->viewport(), panel.m_search->rect().center())));
+        QVERIFY(panel.m_scroll->viewport()->height() >= panel.m_rows.first().spinBox->height());
+        if (!qEnvironmentVariableIsEmpty("WORKSPACE_SCREENSHOT_DIR"))
+            QVERIFY(panel.grab().save(qEnvironmentVariable("WORKSPACE_SCREENSHOT_DIR") +
+                QStringLiteral("/param-%1-%2x%3-collapsed.png").arg(dark ? "dark" : "light").arg(size.width()).arg(size.height())));
+        QTest::mouseClick(actions, Qt::LeftButton);
+        outer->ensureWidgetVisible(xy);
+        QTest::mouseClick(xy, Qt::LeftButton);
+        QCoreApplication::processEvents();
+        QVERIFY(actions->isChecked() && xy->isChecked());
+        QCOMPARE(panel.size(), size);
+        QVERIFY(outer->verticalScrollBar()->maximum() > 0);
+        QVERIFY(panel.m_xyXSelector->geometry().bottom() < panel.m_xyYSelector->geometry().top());
+        QVERIFY(panel.m_xyYSelector->geometry().bottom() < panel.m_xyPad->geometry().top());
+        panel.m_xyYSelector->setFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(panel.m_xyYSelector->hasFocus());
+        QTest::keyClick(panel.m_xyYSelector, Qt::Key_Tab);
+        QTRY_VERIFY(panel.m_xyPad->hasFocus());
+        QVERIFY(outer->viewport()->rect().contains(panel.m_xyPad->mapTo(outer->viewport(), panel.m_xyPad->rect().center())));
+        if (!qEnvironmentVariableIsEmpty("WORKSPACE_SCREENSHOT_DIR"))
+            QVERIFY(panel.grab().save(qEnvironmentVariable("WORKSPACE_SCREENSHOT_DIR") +
+                QStringLiteral("/param-%1-%2x%3-expanded.png").arg(dark ? "dark" : "light").arg(size.width()).arg(size.height())));
+        outer->ensureWidgetVisible(xy);
+        QTest::mouseClick(xy, Qt::LeftButton);
+        QTest::keyClick(xy, Qt::Key_Space);
+        QVERIFY(xy->isChecked());
+        QCOMPARE(panel.m_xyXSelector->currentText(), x);
+        QCOMPARE(panel.m_xyYSelector->currentText(), y);
+        QCOMPARE(panel.m_xyPad->XValue(), padX);
+        QCOMPARE(panel.m_xyPad->YValue(), padY);
+        QVERIFY(panel.FocusParameter(panel.m_rows.last().paramId));
+        auto* spin = panel.m_rows.last().spinBox;
+        QTRY_VERIFY(spin->hasFocus());
+        QCoreApplication::processEvents();
+        QVERIFY(panel.m_scroll->viewport()->rect().contains(spin->mapTo(panel.m_scroll->viewport(), spin->rect().center())));
+        QVERIFY(outer->viewport()->rect().contains(spin->mapTo(outer->viewport(), spin->rect().center())));
+        QCOMPARE(panel.CurrentValues(), values);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.CanUndoEdit(), undo);
+        QCOMPARE(document.CanRedoEdit(), redo);
+        QCOMPARE(changes.size(), 0);
+        QCOMPARE(history.size(), 0);
+    }
+
     void destroyingFocusedFloatingEditorDoesNotPublish_data()
     {
         QTest::addColumn<int>("destruction");

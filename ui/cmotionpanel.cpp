@@ -515,8 +515,14 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     setObjectName(QStringLiteral("motionPanel"));
     m_timelineHistory = new QUndoStack(this);
     m_timelineHistory->setUndoLimit(100);
+    auto* workspaceScroll = new QScrollArea(this);
+    workspaceScroll->setObjectName(QStringLiteral("motionWorkspaceScroll"));
+    workspaceScroll->setFrameShape(QFrame::NoFrame);
+    workspaceScroll->setWidgetResizable(true);
     QWidget* wrapper = new QWidget(this);
+    wrapper->setObjectName(QStringLiteral("motionWorkspaceContent"));
     QVBoxLayout* mainLayout = new QVBoxLayout(wrapper);
+    mainLayout->setSizeConstraint(QLayout::SetMinimumSize);
 
     m_workspaceSplitter = new QSplitter(Qt::Horizontal, wrapper);
     m_workspaceSplitter->setObjectName(QStringLiteral("animationWorkspaceSplitter"));
@@ -947,7 +953,8 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_timelineHistory, &QUndoStack::cleanChanged, this, &CMotionPanel::RefreshTimelineHistory);
     m_savedTimelineContent = CurrentTimelineSnapshot();
     RefreshTimelineHistory();
-    setWidget(wrapper);
+    workspaceScroll->setWidget(wrapper);
+    setWidget(workspaceScroll);
 }
 
 CMotionPanel::~CMotionPanel()

@@ -3,7 +3,10 @@
 #include "CubismModel.hpp"
 #include "framework/Rendering/CubismRenderer.hpp"
 
+#include <QSet>
 #include <exception>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 namespace Live2D { namespace Cubism { namespace Framework {
@@ -12,6 +15,36 @@ bool fail(QString* error, const QString& message)
 {
     if (error) *error = message;
     return false;
+}
+
+bool verifyGeometry(const CubismModel& model, const CMeshGeometryExpectation& expectation, QString* error)
+{
+    if (expectation.points.isEmpty() || expectation.points.size() > 1000000 ||
+        !std::isfinite(expectation.tolerance) || expectation.tolerance <= 0)
+        return fail(error, QStringLiteral("新顶点落点校验的数量或容差无效"));
+    QHash<QString, int> drawables;
+    for (int index = 0; index < model.GetDrawableCount(); ++index)
+        drawables.insert(QString::fromUtf8(model.GetDrawableId(index)->GetString().GetRawString()), index);
+    QHash<QString, QSet<int>> seen;
+    for (const auto& point : expectation.points) {
+        const auto found = drawables.constFind(point.artMeshId);
+        if (found == drawables.cend() || point.vertexIndex < 0 ||
+            point.vertexIndex >= model.GetDrawableVertexCount(*found) || seen[point.artMeshId].contains(point.vertexIndex) ||
+            !std::isfinite(point.modelPosition.x()) || !std::isfinite(point.modelPosition.y()) ||
+            std::abs(point.modelPosition.x()) > std::numeric_limits<float>::max() ||
+            std::abs(point.modelPosition.y()) > std::numeric_limits<float>::max())
+            return fail(error, QStringLiteral("新顶点落点校验的对象、索引或坐标无效"));
+        seen[point.artMeshId].insert(point.vertexIndex);
+        const auto* positions = model.GetDrawableVertexPositions(*found);
+        if (!positions) return fail(error, QStringLiteral("Core 缺少新顶点坐标"));
+        const auto& actual = positions[point.vertexIndex];
+        const double distance = std::hypot(double(actual.X) - point.modelPosition.x(),
+                                           double(actual.Y) - point.modelPosition.y());
+        if (!std::isfinite(distance) || distance > expectation.tolerance)
+            return fail(error, QStringLiteral("Core 新顶点未落在预期位置：%1[%2]，偏差 %3")
+                        .arg(point.artMeshId).arg(point.vertexIndex).arg(distance, 0, 'g', 9));
+    }
+    return true;
 }
 }
 
@@ -68,6 +101,7 @@ bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
         }
         candidate._model->Update();
         if (!candidate._model->HasFiniteDrawableState(error)) return false;
+        if (geometry && geometry->expectation && !verifyGeometry(*candidate._model, *geometry->expectation, error)) return false;
         candidate._model->InitMesh();
         if (geometry) {
             for (int index = 0; index < source.GetDrawableCount(); ++index) {

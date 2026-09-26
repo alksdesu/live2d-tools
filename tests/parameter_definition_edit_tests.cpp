@@ -568,7 +568,7 @@ private slots:
         QVector<float> world, restored;
         const auto local = document.DrawableKeyformPositions("Mesh", 0);
         QVERIFY(mapping.ToModel(local, world));
-        QVERIFY(DeformerSnapshotData::near(world, {8.875f, -3.375f, 9.3125f, -2.3125f, 9.4375f, -3.4375f}));
+        QVERIFY(DeformerSnapshotData::near(world, DeformerSnapshotData::coreCoordinates(DeformerSnapshotData::rigidMeshCanvasPositions())));
         QVERIFY(mapping.FromModel(world, restored));
         QVERIFY(DeformerSnapshotData::near(restored, local));
         QByteArray bytes;

@@ -58,7 +58,9 @@ bool CDrawWarp::Init(CWarpNode* node)
         m_grid.Clear();
         return false;
     }
-    return m_grid.SetGrid(node->GetColumns(), node->GetRows(), node->GetCanvasPositions());
+    auto positions = node->GetCanvasPositions();
+    for (size_t index = 1; index < positions.size(); index += 2) positions[index] = -positions[index];
+    return m_grid.SetGrid(node->GetColumns(), node->GetRows(), positions);
 }
 
 void CDrawWarp::UpdatePositions(CWarpNode* node)
@@ -78,6 +80,7 @@ void CDrawWarp::InitTest(int i, CWarpNode* node)
         m_grid.Clear();
         return;
     }
+    for (size_t index = 1; index < positions.size(); index += 2) positions[index] = -positions[index];
     m_grid.SetGrid(node->GetColumns(), node->GetRows(), positions);
 }
 

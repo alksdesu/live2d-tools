@@ -56,6 +56,20 @@ inline bool near(const QVector<float>& actual, const QVector<float>& expected)
     return true;
 }
 
+inline QVector<float> rigidMeshCanvasPositions(bool quad = true)
+{
+    if (!quad) return {9.25f, -3.5f, 9.5f, -3.0f, 9.5f, -3.5f};
+    const float unit = 1.0f / std::sqrt(82.0f);
+    return {9.4375f - 2.25f * unit, -3.4375f + 0.25f * unit,
+            9.4375f + 0.5f * unit, -3.4375f + 4.5f * unit, 9.4375f, -3.4375f};
+}
+
+inline QVector<float> coreCoordinates(QVector<float> canvas)
+{
+    for (int index = 1; index < canvas.size(); index += 2) canvas[index] = -canvas[index];
+    return canvas;
+}
+
 class Fixture
 {
 public:

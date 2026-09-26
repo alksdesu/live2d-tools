@@ -69,8 +69,7 @@ private slots:
         QVERIFY2(document.LoadBytes(fixture.bytes, "nested.moc3", &error), qPrintable(error));
         CKeyformMappingContext context;
         QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
-        const QVector<float> expected = quad ? QVector<float>{8.875f, -3.375f, 9.3125f, -2.3125f, 9.4375f, -3.4375f}
-                                             : QVector<float>{9, -3.5f, 9.5f, -2.5f, 9.5f, -3.5f};
+        const auto expected = coreCoordinates(rigidMeshCanvasPositions(quad));
         const auto local = document.DrawableKeyformPositions("Mesh", 0);
         for (int repeat = 0; repeat < 10; ++repeat) {
             QVector<float> world;
@@ -154,6 +153,8 @@ private slots:
         if (invalid == "cycle") fixture.column(o.deformers->parent_deformer_indices, 0, 2);
         if (invalid == "missing-parent") fixture.column(o.deformers->parent_deformer_indices, 0, 3);
         if (invalid == "rotation-collapse") real(fixture.bytes, o.rotation_deformer_keyforms->scales, 0);
+        if (invalid == "folded-warp" || invalid == "edited-folded")
+            fixture.column(o.art_meshes->parent_deformer_indices, 0, 1);
         if (invalid == "folded-warp") {
             const QVector<float> folded{0, 0, 2, 2, 0, 2, 2, 0};
             for (int i = 0; i < folded.size(); ++i) real(fixture.bytes, o.keyform_positions->xys + (12 + i) * 4, folded[i]);
@@ -229,11 +230,16 @@ private slots:
     {
         QTest::addColumn<QString>("edit");
         QTest::addColumn<QVector<float>>("expected");
-        QTest::newRow("detach-parent") << QString("detach") << QVector<float>{0.25f, 0.5f, 0.75f, 0.25f, 0.25f, 0.25f};
-        QTest::newRow("skip-warp-parent") << QString("parent") << QVector<float>{9.5f, -3.75f, 9.75f, -3.25f, 9.75f, -3.75f};
-        QTest::newRow("warp") << QString("warp") << QVector<float>{10.875f, -0.375f, 11.3125f, 0.6875f, 11.4375f, -0.4375f};
-        QTest::newRow("rotation") << QString("rotation") << QVector<float>{-0.75f, -1.25f, 1.375f, -0.375f, -0.875f, -0.125f};
-        QTest::newRow("combined-with-local") << QString("combined") << QVector<float>{-1.25f, 0, -0.5f, 0.5f, -1.5f, 0.5f};
+        QTest::newRow("detach-parent") << QString("detach") << QVector<float>{0.25f, -0.5f, 0.75f, -0.25f, 0.25f, -0.25f};
+        QTest::newRow("skip-warp-parent") << QString("parent") << QVector<float>{9.5f, 3.75f, 9.75f, 3.25f, 9.75f, 3.75f};
+        auto translated = coreCoordinates(rigidMeshCanvasPositions());
+        for (int index = 0; index < translated.size(); index += 2) { translated[index] += 2; translated[index + 1] -= 3; }
+        QTest::newRow("warp") << QString("warp") << translated;
+        const float unit = 1.0f / std::sqrt(82.0f);
+        QTest::newRow("rotation") << QString("rotation")
+            << QVector<float>{-0.875f + 0.5f * unit, 0.125f + 4.5f * unit,
+                              -0.875f - 9 * unit, 0.125f + unit, -0.875f, 0.125f};
+        QTest::newRow("combined-with-local") << QString("combined") << QVector<float>{-1.75f, 0, -2.5f, -0.5f, -1.5f, -0.5f};
     }
 
     void patchedParentsAndKeyformsUseTheSameCoordinates()
@@ -298,7 +304,8 @@ private slots:
         CKeyformMappingContext context;
         QString error;
         QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0.25f}}, &error), qPrintable(error));
-        const QVector<float> expected{10.875f, -3.375f, 11.3125f, -2.3125f, 11.4375f, -3.4375f};
+        auto expected = coreCoordinates(rigidMeshCanvasPositions());
+        for (int index = 0; index < expected.size(); index += 2) expected[index] += 2;
         QVERIFY(context.MatchesRuntime(expected));
         QVector<float> restored;
         QVERIFY(context.FromModel(expected, restored));

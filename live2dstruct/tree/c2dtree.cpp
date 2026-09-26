@@ -30,26 +30,34 @@ void C2DTree::OnUpdate()
         C2DTreeNode* node = entry.node;
         if (!node || visited.contains(node)) continue;
         visited.insert(node);
-        const bool valid = entry.valid && CLinearInterpolation::SetCKeyFormObject(node);
+        bool valid = entry.valid && CLinearInterpolation::SetCKeyFormObject(node);
         node->SetParentFrame(entry.parent, valid);
         if (!valid) node->UpdateCanvasPositions({});
         std::shared_ptr<const CCoordinateFrame> childFrame = entry.parent;
         if (auto* rotation = dynamic_cast<CRotationNode*>(node)) {
             auto& key = rotation->GetCurKeyForm();
+            rotation->SetCanvasBasis(std::nullopt);
             if (valid) {
-                node->UpdateCanvasPositions(key.GetPosition());
-                auto transform = std::make_unique<CRotationCoorType>(rotation->GetBaseAngles(), key);
-                if (!transform->IsIdentity())
-                    childFrame = std::make_shared<CCoordinateFrame>(std::move(transform), entry.parent);
+                CCoordinateFrame::RotationBasis basis;
+                valid = node->UpdateCanvasPositions(key.GetPosition()) &&
+                    CCoordinateFrame::CreateRotation(rotation->GetBaseAngles(), key, entry.parent, childFrame, basis);
+                if (valid) rotation->SetCanvasBasis(basis);
+                else {
+                    node->SetParentFrame(entry.parent, false);
+                    node->UpdateCanvasPositions({});
+                }
             }
             m_displayDeformers.push_back(node);
         } else if (auto* warp = dynamic_cast<CWarpNode*>(node)) {
             auto& key = warp->GetCurKeyForm();
             if (valid) {
-                node->UpdateCanvasPositions(key.GetPosition());
-                childFrame = std::make_shared<CCoordinateFrame>(
-                    std::make_unique<CWarpCoorType>(warp->GetColumns(), warp->GetRows(),
-                                                  key.GetPosition(), warp->GetIs_quad_source()), entry.parent);
+                valid = node->UpdateCanvasPositions(key.GetPosition()) &&
+                    CCoordinateFrame::CreateWarp(warp->GetColumns(), warp->GetRows(), node->GetCanvasPositions(),
+                                                 warp->GetIs_quad_source(), entry.parent, childFrame);
+                if (!valid) {
+                    node->SetParentFrame(entry.parent, false);
+                    node->UpdateCanvasPositions({});
+                }
             }
             m_displayDeformers.push_back(node);
         } else if (auto* mesh = dynamic_cast<CArtMeshNode*>(node)) {

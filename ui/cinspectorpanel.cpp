@@ -2,10 +2,16 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmeshtopology.h"
 #include <QFormLayout>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QScopeGuard>
+#include <QPointer>
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QListView>
+#include <QStyledItemDelegate>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QPushButton>
@@ -47,6 +53,53 @@ protected:
     }
 };
 
+class InspectorComboBox : public QComboBox
+{
+public:
+    explicit InspectorComboBox(QWidget* parent) : QComboBox(parent)
+    {
+        setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        setMinimumContentsLength(12);
+        setMinimumWidth(0);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        auto* choices = new QListView(this);
+        setView(choices);
+        setItemDelegate(new QStyledItemDelegate(choices));
+        choices->setTextElideMode(Qt::ElideNone);
+        choices->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        connect(this, &QComboBox::currentTextChanged, this, [this](const QString& text) {
+            setToolTip(QStringLiteral("<qt>%1</qt>").arg(text.toHtmlEscaped()));
+        });
+    }
+};
+
+void setRowVisible(QWidget* field, bool visible)
+{
+    auto* form = field->parentWidget()->findChild<QFormLayout*>(QStringLiteral("inspectorForm"));
+    int row = -1;
+    QFormLayout::ItemRole role;
+    if (form) form->getWidgetPosition(field, &row, &role);
+    if (row >= 0) form->setRowVisible(row, visible);
+    else field->setVisible(visible);
+}
+
+void updateObjectRows(CInspectorPanel* panel, const QString& type)
+{
+    auto* form = panel->findChild<QFormLayout*>(QStringLiteral("inspectorForm"));
+    if (!form) return;
+    for (int row = 0; row < form->rowCount(); ++row) {
+        auto* item = form->itemAt(row, QFormLayout::FieldRole);
+        if (!item) item = form->itemAt(row, QFormLayout::SpanningRole);
+        auto* field = item ? item->widget() : nullptr;
+        if (!field) continue;
+        const auto types = field->property("inspectorTypes").toStringList();
+        bool visible = types.isEmpty() ? !type.isEmpty() && type != QLatin1String("multiple") : types.contains(type);
+        if (auto* table = qobject_cast<QTableWidget*>(field)) visible = visible && table->rowCount() > 0;
+        if (auto* combo = qobject_cast<QComboBox*>(field)) visible = visible && combo->count() > 0;
+        form->setRowVisible(row, visible);
+    }
+}
+
 QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
 {
     return index < 0 ? fallback : QString::number(index);
@@ -68,8 +121,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     layout->addWidget(m_emptyLabel);
 
     auto* form = new QFormLayout();
+    form->setObjectName(QStringLiteral("inspectorForm"));
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setVerticalSpacing(9);
     form->setHorizontalSpacing(12);
 
@@ -77,7 +131,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_idLabel = new QLabel(content);
     m_parentLabel = new QLabel(content);
     m_deformerLabel = new QLabel(content);
-    m_deformerParentCombo = new QComboBox(content);
+    m_deformerParentCombo = new InspectorComboBox(content);
     m_deformerParentCombo->setObjectName(QStringLiteral("deformerParentSelector"));
     m_deformerParentCombo->setEnabled(false);
     m_visibilityLabel = new QLabel(content);
@@ -101,7 +155,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_maskInvertedCheck->setObjectName(QStringLiteral("maskInverted"));
     m_maskInvertedCheck->setEnabled(false);
     m_keyformLabel = new QLabel(content);
-    m_keyformCombo = new QComboBox(content);
+    m_keyformCombo = new InspectorComboBox(content);
     m_keyformCombo->setObjectName(QStringLiteral("keyformSelector"));
     m_keyformCombo->setEnabled(false);
     m_vertexTable = new QTableWidget(content);
@@ -109,8 +163,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_vertexTable->setColumnCount(3);
     m_vertexTable->setHorizontalHeaderLabels({QStringLiteral("顶点"), QStringLiteral("X"), QStringLiteral("Y")});
     m_vertexTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_vertexTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_vertexTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_vertexTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_vertexTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_vertexTable->verticalHeader()->setVisible(false);
     m_vertexTable->setSelectionBehavior(QAbstractItemView::SelectItems);
     m_vertexTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
@@ -168,6 +222,8 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         value->setTextFormat(Qt::PlainText);
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         value->setWordWrap(true);
+        value->setMinimumWidth(0);
+        value->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     }
     form->addRow(QStringLiteral("类型"), m_typeLabel);
     form->addRow(QStringLiteral("ID"), m_idLabel);
@@ -189,47 +245,45 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
     auto* vertexTransformTools = new QWidget(content);
-    auto* vertexTransformLayout = new QHBoxLayout(vertexTransformTools);
+    auto* vertexTransformLayout = new QFormLayout(vertexTransformTools);
+    vertexTransformLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    vertexTransformLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     vertexTransformLayout->setContentsMargins(0, 0, 0, 0);
-    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("ΔX"), vertexTransformTools));
     m_vertexDeltaX = new QDoubleSpinBox(vertexTransformTools);
     m_vertexDeltaX->setObjectName(QStringLiteral("vertexDeltaX"));
     m_vertexDeltaX->setRange(-10000.0, 10000.0);
     m_vertexDeltaX->setDecimals(4);
     m_vertexDeltaX->setSingleStep(0.01);
-    vertexTransformLayout->addWidget(m_vertexDeltaX);
-    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("ΔY"), vertexTransformTools));
+    vertexTransformLayout->addRow(QStringLiteral("ΔX"), m_vertexDeltaX);
     m_vertexDeltaY = new QDoubleSpinBox(vertexTransformTools);
     m_vertexDeltaY->setObjectName(QStringLiteral("vertexDeltaY"));
     m_vertexDeltaY->setRange(-10000.0, 10000.0);
     m_vertexDeltaY->setDecimals(4);
     m_vertexDeltaY->setSingleStep(0.01);
-    vertexTransformLayout->addWidget(m_vertexDeltaY);
+    vertexTransformLayout->addRow(QStringLiteral("ΔY"), m_vertexDeltaY);
     m_moveVertices = new QPushButton(QStringLiteral("移动选中顶点"), vertexTransformTools);
     m_moveVertices->setObjectName(QStringLiteral("moveSelectedVertices"));
     m_moveVertices->setEnabled(false);
-    vertexTransformLayout->addWidget(m_moveVertices, 1);
+    vertexTransformLayout->addRow(m_moveVertices);
     m_mergeVertices = new QPushButton(QStringLiteral("合并拓扑顶点"), vertexTransformTools);
     m_mergeVertices->setObjectName(QStringLiteral("mergeSelectedVertices"));
     m_mergeVertices->setEnabled(false);
-    vertexTransformLayout->addWidget(m_mergeVertices);
-    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("缩放"), vertexTransformTools));
+    vertexTransformLayout->addRow(m_mergeVertices);
     m_vertexScale = new QDoubleSpinBox(vertexTransformTools);
     m_vertexScale->setObjectName(QStringLiteral("vertexScale"));
     m_vertexScale->setRange(0.01, 100.0);
     m_vertexScale->setDecimals(3);
     m_vertexScale->setValue(1.0);
-    vertexTransformLayout->addWidget(m_vertexScale);
-    vertexTransformLayout->addWidget(new QLabel(QStringLiteral("旋转°"), vertexTransformTools));
+    vertexTransformLayout->addRow(QStringLiteral("缩放"), m_vertexScale);
     m_vertexRotation = new QDoubleSpinBox(vertexTransformTools);
     m_vertexRotation->setObjectName(QStringLiteral("vertexRotation"));
     m_vertexRotation->setRange(-3600.0, 3600.0);
     m_vertexRotation->setDecimals(2);
-    vertexTransformLayout->addWidget(m_vertexRotation);
+    vertexTransformLayout->addRow(QStringLiteral("旋转°"), m_vertexRotation);
     m_transformVertices = new QPushButton(QStringLiteral("应用变换"), vertexTransformTools);
     m_transformVertices->setObjectName(QStringLiteral("transformSelectedVertices"));
     m_transformVertices->setEnabled(false);
-    vertexTransformLayout->addWidget(m_transformVertices);
+    vertexTransformLayout->addRow(m_transformVertices);
     form->addRow(QStringLiteral("顶点变换"), vertexTransformTools);
     form->addRow(QStringLiteral("顶点位置"), m_vertexTable);
     m_rotationKeyformTable = new QTableWidget(content);
@@ -241,13 +295,13 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
                                                         QStringLiteral("反射 Y")});
     m_rotationKeyformTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     for (int column = 1; column < 7; ++column)
-        m_rotationKeyformTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::Stretch);
+        m_rotationKeyformTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
     m_rotationKeyformTable->verticalHeader()->setVisible(false);
     m_rotationKeyformTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                              QAbstractItemView::SelectedClicked);
-    m_rotationKeyformTable->setVisible(false);
+    setRowVisible(m_rotationKeyformTable, false);
     form->addRow(QStringLiteral("旋转关键形"), m_rotationKeyformTable);
-    m_warpKeyformCombo = new QComboBox(content);
+    m_warpKeyformCombo = new InspectorComboBox(content);
     m_warpKeyformCombo->setObjectName(QStringLiteral("warpKeyformSelector"));
     m_warpKeyformCombo->setEnabled(false);
     m_warpKeyformTable = new QTableWidget(content);
@@ -255,17 +309,43 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_warpKeyformTable->setColumnCount(3);
     m_warpKeyformTable->setHorizontalHeaderLabels({QStringLiteral("网格点"), QStringLiteral("X"), QStringLiteral("Y")});
     m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_warpKeyformTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_warpKeyformTable->verticalHeader()->setVisible(false);
     m_warpKeyformTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                                         QAbstractItemView::SelectedClicked);
-    m_warpKeyformTable->setVisible(false);
+    setRowVisible(m_warpKeyformTable, false);
     form->addRow(QStringLiteral("Warp 关键形"), m_warpKeyformCombo);
     form->addRow(QStringLiteral("Warp 网格坐标"), m_warpKeyformTable);
+    for (QWidget* field : QList<QWidget*>{m_keyformCombo, keyformTools, vertexTransformTools, m_vertexTable,
+                                         m_textureLabel, m_drawOrderLabel, m_blendLabel, m_maskLabel, m_editMasks, m_maskInvertedCheck})
+        field->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh")});
+    for (QWidget* field : QList<QWidget*>{m_opacitySpin, m_drawOrderSpin})
+        field->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("multiple")});
+    m_visibilityCheck->setProperty("inspectorTypes", QStringList{QStringLiteral("part"), QStringLiteral("artmesh"),
+        QStringLiteral("warp"), QStringLiteral("rotation"), QStringLiteral("multiple")});
+    m_deformerParentCombo->setProperty("inspectorTypes", QStringList{QStringLiteral("warp"), QStringLiteral("rotation")});
+    m_geometryLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
+    m_keyformLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh")});
+    m_rotationKeyformTable->setProperty("inspectorTypes", QStringList{QStringLiteral("rotation")});
+    for (QWidget* field : QList<QWidget*>{m_warpKeyformCombo, m_warpKeyformTable})
+        field->setProperty("inspectorTypes", QStringList{QStringLiteral("warp")});
+    for (QTableWidget* table : {m_vertexTable, m_rotationKeyformTable, m_warpKeyformTable}) {
+        table->setMinimumHeight(120);
+        table->setMaximumHeight(280);
+        table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    }
+    const int headerMargin = m_rotationKeyformTable->style()->pixelMetric(QStyle::PM_HeaderMargin);
+    m_rotationKeyformTable->horizontalHeader()->setMinimumSectionSize(
+        m_rotationKeyformTable->fontMetrics().horizontalAdvance(QStringLiteral("原点 X")) + 2 * headerMargin);
     layout->addLayout(form);
     layout->addStretch(1);
-    setWidget(content);
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("inspectorScrollArea"));
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(content);
+    setWidget(scroll);
     connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingKeyform) return;
         if (m_keyformHandler) {
@@ -628,12 +708,12 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_keyformCombo->setEnabled(false);
     m_vertexTable->setRowCount(0);
     m_rotationKeyformTable->setRowCount(0);
-    m_rotationKeyformTable->setVisible(false);
+    setRowVisible(m_rotationKeyformTable, false);
     m_rotationKeyformTable->setEnabled(false);
     m_warpKeyformCombo->clear();
     m_warpKeyformCombo->setEnabled(false);
     m_warpKeyformTable->setRowCount(0);
-    m_warpKeyformTable->setVisible(false);
+    setRowVisible(m_warpKeyformTable, false);
     m_warpKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
@@ -715,6 +795,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     for (const QString& type : types) uniqueTypes.insert(type);
     m_typeLabel->setText(uniqueTypes.values().join(QStringLiteral("、")));
     m_idLabel->setText(QStringLiteral("%1 个对象").arg(names.size()));
+    updateObjectRows(this, QStringLiteral("multiple"));
 }
 
 void CInspectorPanel::RefreshSelection()
@@ -1301,12 +1382,12 @@ void CInspectorPanel::ClearSelection()
     m_keyformCombo->setEnabled(false);
     m_vertexTable->setRowCount(0);
     m_rotationKeyformTable->setRowCount(0);
-    m_rotationKeyformTable->setVisible(false);
+    setRowVisible(m_rotationKeyformTable, false);
     m_rotationKeyformTable->setEnabled(false);
     m_warpKeyformCombo->clear();
     m_warpKeyformCombo->setEnabled(false);
     m_warpKeyformTable->setRowCount(0);
-    m_warpKeyformTable->setVisible(false);
+    setRowVisible(m_warpKeyformTable, false);
     m_warpKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
@@ -1329,6 +1410,7 @@ void CInspectorPanel::ClearSelection()
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         label->clear();
     }
+    updateObjectRows(this, QString());
 }
 
 void CInspectorPanel::EmitEdit(const live2dstruct::CModelEdit& edit, bool forward)
@@ -1614,6 +1696,9 @@ void CInspectorPanel::Redo()
 
 void CInspectorPanel::showModelObject(const QString& name, const QString& type, bool preserveKeyforms)
 {
+    const QPointer<CInspectorPanel> owner(this);
+    const auto rows = qScopeGuard([owner] { if (owner) updateObjectRows(owner, owner->GetSelectionType()); });
+
     if (!m_document || name.isEmpty()) {
         ClearSelection();
         return;
@@ -1653,12 +1738,12 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
     m_vertexTable->setRowCount(0);
     m_vertexTable->setEnabled(false);
     m_rotationKeyformTable->setRowCount(0);
-    m_rotationKeyformTable->setVisible(false);
+    setRowVisible(m_rotationKeyformTable, false);
     m_rotationKeyformTable->setEnabled(false);
     m_warpKeyformCombo->clear();
     m_warpKeyformCombo->setEnabled(false);
     m_warpKeyformTable->setRowCount(0);
-    m_warpKeyformTable->setVisible(false);
+    setRowVisible(m_warpKeyformTable, false);
     m_warpKeyformTable->setEnabled(false);
     m_mirrorHorizontal->setEnabled(false);
     m_mirrorVertical->setEnabled(false);
@@ -1770,7 +1855,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
                 for (int keyformIndex = 0; keyformIndex < keyforms.size(); ++keyformIndex)
                     m_warpKeyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
                 m_warpKeyformCombo->setEnabled(unlocked && !keyforms.isEmpty());
-                m_warpKeyformTable->setVisible(!keyforms.isEmpty());
+                setRowVisible(m_warpKeyformTable, !keyforms.isEmpty());
                 m_warpKeyformTable->setEnabled(unlocked && !keyforms.isEmpty());
                 if (!keyforms.isEmpty()) {
                     m_activeDeformerKeyform = selectedDeformerKeyform >= 0 && selectedDeformerKeyform < keyforms.size()
@@ -1781,7 +1866,7 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
                 RebuildWarpKeyformTable();
             } else {
                 m_geometryLabel->setText(QStringLiteral("Rotation Deformer"));
-                m_rotationKeyformTable->setVisible(true);
+                setRowVisible(m_rotationKeyformTable, true);
                 m_rotationKeyformTable->setEnabled(unlocked);
                 m_activeDeformerKeyform = selectedDeformerKeyform >= 0 && selectedDeformerKeyform < deformer.rotationKeyforms.size()
                     ? selectedDeformerKeyform : 0;

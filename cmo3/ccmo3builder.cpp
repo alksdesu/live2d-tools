@@ -6,6 +6,7 @@
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cdrawableflags.h"
 #include "live2dstruct/ccanvasgeometry.h"
+#include "live2dstruct/cparentgraph.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "live2dstruct/cphysicsdocument.h"
 #include "live2dstruct/util/cfilereader.h"
@@ -238,6 +239,7 @@ private:
     SBindingChain chainFor(int keyformBindingSourceIndex) const;
     void loadDisplayNames();
     bool prepareMaterials(QString* error);
+    bool prepareDeformerUnits(QString* error);
 
     // ---- shared 池写出 ----
     void writeParameterGuids();
@@ -246,7 +248,7 @@ private:
     void writeArtMeshEntities();
     void writeWarpDeformerEntities();
     void writeRotationDeformerEntities();
-    bool modelToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY);
+    bool rawCanvasToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY);
     void writeGlueEntities();
 
     // ---- 复用块 ----
@@ -299,6 +301,7 @@ private:
     QVector<SPartIds> m_partIds;
     QVector<int> m_partParentIndices;
     QVector<SDeformerIds> m_deformerIds;        // 与 deformers 表对齐
+    QVector<bool> m_hasRotationAncestor;
     QVector<QString> m_meshGuidIds;             // 与 art_meshes 表对齐
     QVector<QString> m_meshSourceIds;           // CArtMeshSource xs.id
     QVector<QString> m_deformerSourceIds;       // 与 deformers 表对齐
@@ -327,10 +330,10 @@ private:
     QString m_geometryError;
 };
 
-bool Generator::modelToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY)
+bool Generator::rawCanvasToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY)
 {
     QPointF pixels;
-    if (!CCanvasGeometry::ModelToPixels(m_table.canvas_info, QPointF(x, y), pixels) ||
+    if (!CCanvasGeometry::ModelToPixels(m_table.canvas_info, QPointF(x, -double(y)), pixels) ||
         !std::isfinite(pixels.x()) || !std::isfinite(pixels.y()) ||
         std::abs(pixels.x()) > std::numeric_limits<float>::max() ||
         std::abs(pixels.y()) > std::numeric_limits<float>::max()) {
@@ -339,6 +342,24 @@ bool Generator::modelToPixels(const QString& owner, float x, float y, float& pix
     }
     pixelX = static_cast<float>(pixels.x());
     pixelY = static_cast<float>(pixels.y());
+    return true;
+}
+
+bool Generator::prepareDeformerUnits(QString* error)
+{
+    QVector<int> parents;
+    parents.reserve(m_table.deformers.size());
+    for (int index = 0; index < m_table.deformers.size(); ++index) parents.append(effectiveDeformerParentIndex(index));
+    const CParentGraph graph(parents);
+    if (!graph.IsValid()) {
+        if (error) *error = QStringLiteral("变形器父链无效，无法确定画布缩放单位");
+        return false;
+    }
+    m_hasRotationAncestor.fill(false, parents.size());
+    for (int index : graph.TopologicalOrder()) {
+        const int parent = parents[index];
+        m_hasRotationAncestor[index] = parent >= 0 && (m_table.deformers[parent]->types == 1 || m_hasRotationAncestor[parent]);
+    }
     return true;
 }
 
@@ -1012,7 +1033,7 @@ void Generator::writeArtMeshEntities()
                 const float my = sourcePositions[v * 2 + 1];
                 if (onCanvas) {
                     float px, py;
-                    if (!modelToPixels(mesh->ids, mx, my, px, py)) return;
+                    if (!rawCanvasToPixels(mesh->ids, mx, my, px, py)) return;
                     positions.append(px);
                     positions.append(py);
                 } else {
@@ -1156,7 +1177,7 @@ void Generator::writeWarpDeformerEntities()
                 const float my = kf.positions[v * 2 + 1];
                 if (onCanvas) {
                     float px, py;
-                    if (!modelToPixels(deformer->ids, mx, my, px, py)) return;
+                    if (!rawCanvasToPixels(deformer->ids, mx, my, px, py)) return;
                     positions.append(px);
                     positions.append(py);
                 } else {
@@ -1244,13 +1265,18 @@ void Generator::writeRotationDeformerEntities()
             float px = kf.originX;
             float py = kf.originY;
             if (onCanvas) {
-                if (!modelToPixels(deformer->ids, kf.originX, kf.originY, px, py)) return;
+                if (!rawCanvasToPixels(deformer->ids, kf.originX, kf.originY, px, py)) return;
+            }
+            const double scale = double(kf.scale) * (m_hasRotationAncestor[d] ? 1.0 : double(m_table.canvas_info->pixels_per_unit));
+            if (!std::isfinite(scale) || std::abs(scale) > std::numeric_limits<float>::max()) {
+                m_geometryError = QStringLiteral("旋转变形器的画布缩放超出 float 范围：%1").arg(deformer->ids);
+                return;
             }
             m_xml.BeginObject(QStringLiteral("CRotationDeformerForm"));
             m_xml.FloatAttribute(QStringLiteral("angle"), kf.angle);
             m_xml.FloatAttribute(QStringLiteral("originX"), px);
             m_xml.FloatAttribute(QStringLiteral("originY"), py);
-            m_xml.FloatAttribute(QStringLiteral("scale"), kf.scale);
+            m_xml.FloatAttribute(QStringLiteral("scale"), static_cast<float>(scale));
             m_xml.Attribute(QStringLiteral("isReflectX"),
                             kf.reflectX ? QStringLiteral("true") : QStringLiteral("false"));
             m_xml.Attribute(QStringLiteral("isReflectY"),
@@ -1506,7 +1532,7 @@ bool Generator::Run(QString* outError)
     m_canvasH = canvasSize.height();
     loadDisplayNames();
 
-    if (!prepareMaterials(outError)) return false;
+    if (!prepareDeformerUnits(outError) || !prepareMaterials(outError)) return false;
 
     // ---- 文档骨架 ----
     const QStringList versionPIs = {

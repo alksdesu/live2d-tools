@@ -3,6 +3,7 @@
 #include "edit/cdrawrect.h"
 #include "edit/cdrawrotation.h"
 #include "live2dstruct/coor/crotationcoortype.h"
+#include "live2dstruct/coor/cwarpcoortype.h"
 
 #include <QtTest>
 #include <QGuiApplication>
@@ -23,10 +24,11 @@ struct GlState
     std::array<GLint, 16> integers{};
     std::array<GLfloat, 2> sizes{};
     GLboolean programPointSize = false;
+    GLboolean culling = false;
 
     bool operator==(const GlState& other) const
     {
-        return integers == other.integers && sizes == other.sizes && programPointSize == other.programPointSize;
+        return integers == other.integers && sizes == other.sizes && programPointSize == other.programPointSize && culling == other.culling;
     }
 };
 
@@ -49,6 +51,19 @@ QRect Near(float x, float y, int radius = 7)
 {
     const QPoint center(qRound((x + 1) * 128), qRound((1 - y) * 128));
     return QRect(center.x() - radius, center.y() - radius, radius * 2 + 1, radius * 2 + 1);
+}
+
+bool rotationFrame(live2dstruct::CRotationNode& node, live2dstruct::CRotationNodeKeyform& form,
+                   const std::shared_ptr<const live2dstruct::CCoordinateFrame>& parent = {})
+{
+    using namespace live2dstruct;
+    std::shared_ptr<const CCoordinateFrame> frame;
+    CCoordinateFrame::RotationBasis basis;
+    if (!CCoordinateFrame::CreateRotation(node.GetBaseAngles(), form, parent, frame, basis)) return false;
+    node.SetParentFrame(parent);
+    node.SetCurKeyForm(form);
+    node.SetCanvasBasis(basis);
+    return node.UpdateCanvasPositions(form.GetPosition());
 }
 }
 
@@ -83,6 +98,7 @@ class EditorOverlayRenderTests : public QObject
         gl.glGetFloatv(GL_POINT_SIZE, &state.sizes[0]);
         gl.glGetFloatv(GL_LINE_WIDTH, &state.sizes[1]);
         state.programPointSize = gl.glIsEnabled(GL_PROGRAM_POINT_SIZE);
+        state.culling = gl.glIsEnabled(GL_CULL_FACE);
         return state;
     }
 
@@ -365,13 +381,12 @@ private slots:
         QCOMPARE(Count(m_framebuffer->toImage(), initial.rect()), 0);
     }
 
-    void rotationUsesCanvasYAndParentTransform()
+    void rotationUsesCoreYAndParentTransform()
     {
         using namespace live2dstruct;
         CRotationNode node(QStringLiteral("rotation"));
         CRotationNodeKeyform key(1, 0, 0.25f, 0.5f, 1, false, false);
-        node.SetCurKeyForm(key);
-        QVERIFY(node.UpdateCanvasPositions({0.25f, 0.5f}));
+        QVERIFY(rotationFrame(node, key));
         m_context->doneCurrent();
         CDrawRotation rotation;
         rotation.InitOpenGl();
@@ -384,8 +399,8 @@ private slots:
         QVERIFY(Prepare());
         QVERIFY(Draw([&] { rotation.Draw(projection); }));
         const QImage initial = m_framebuffer->toImage();
-        QVERIFY(Count(initial, Near(0.25f, 0.5f)) > 8);
-        QCOMPARE(Count(initial, Near(0.25f, -0.5f, 16)), 0);
+        QVERIFY(Count(initial, Near(0.25f, -0.5f)) > 8);
+        QCOMPARE(Count(initial, Near(0.25f, 0.5f, 16)), 0);
         const GLuint origin = rotation.m_originGeometry.GetVertexArray();
         const GLuint direction = rotation.m_directionGeometry.GetVertexArray();
         const GLuint originTexture = rotation.m_rclTex->textureId();
@@ -400,17 +415,16 @@ private slots:
         QCOMPARE(rotation.m_dirTex->textureId(), directionTexture);
         QCOMPARE(rotation.shader.get(), shader);
         CRotationNodeKeyform parentKey(1, 90, 0, 0, 1, false, false);
-        node.SetParentFrame(std::make_shared<CCoordinateFrame>(std::make_unique<CRotationCoorType>(0, parentKey)));
+        auto parent = std::make_shared<CCoordinateFrame>(std::make_unique<CRotationCoorType>(0, parentKey));
         key.Setorigin_x(0.4f);
         key.Setorigin_y(0.2f);
-        node.SetCurKeyForm(key);
-        QVERIFY(node.UpdateCanvasPositions({0.4f, 0.2f}));
+        QVERIFY(rotationFrame(node, key, parent));
         rotation.Init(&node);
         QVERIFY(Prepare());
         QVERIFY(Draw([&] { rotation.Draw(projection); }));
         const QImage moved = m_framebuffer->toImage();
-        QVERIFY(Count(moved, Near(-0.2f, 0.4f)) > 8);
-        QCOMPARE(Count(moved, Near(0.25f, 0.5f)), 0);
+        QVERIFY(Count(moved, Near(-0.2f, -0.4f)) > 8);
+        QCOMPARE(Count(moved, Near(0.25f, -0.5f)), 0);
         key.Setangles(std::numeric_limits<float>::infinity());
         node.SetCurKeyForm(key);
         rotation.Init(&node);
@@ -430,6 +444,42 @@ private slots:
         QCOMPARE(Count(m_framebuffer->toImage(), initial.rect()), 0);
     }
 
+    void rotationGlyphKeepsItsSizeUnderWarpAndAtZeroScale()
+    {
+        using namespace live2dstruct;
+        const std::vector<float> grid{-0.3f, -0.5f, 1.7f, -0.5f, 0.7f, 2.5f, 2.7f, 2.5f};
+        auto parent = std::make_shared<CCoordinateFrame>(std::make_unique<CWarpCoorType>(1, 1, grid, true));
+        QImage baseline;
+        for (float scale : {0.0f, 1.0f / 2400, 2.0f}) {
+            CRotationNode node("rotation");
+            CRotationNodeKeyform form(1, 0, 0.1f, 0.1f, scale, false, false);
+            QVERIFY(rotationFrame(node, form, parent));
+            CDrawRotation rotation; QVERIFY(rotation.Init(&node)); rotation.SetDraw(true);
+            QVERIFY(Prepare()); m_gl.glEnable(GL_CULL_FACE);
+            QVERIFY(Draw([&] { rotation.Draw(QMatrix4x4()); }));
+            const auto rendered = m_framebuffer->toImage();
+            QVERIFY(Count(rendered, Near(0, 0.2f)) > 8);
+            QVERIFY(std::abs(rotation.vetdirPos[2] - (-0.01 / std::sqrt(1.0 + 1.0 / 9) - 0.1 / std::sqrt(10.0))) < 1e-5);
+            if (baseline.isNull()) baseline = rendered;
+            else QCOMPARE(rendered, baseline);
+        }
+    }
+
+    void rotationGlyphFollowsNegativeScaleAndRestoresCulling()
+    {
+        using namespace live2dstruct;
+        CRotationNode node("rotation");
+        CRotationNodeKeyform form(1, 0, 0.25f, 0.5f, -2, false, false);
+        QVERIFY(rotationFrame(node, form));
+        CDrawRotation rotation; QVERIFY(rotation.Init(&node)); rotation.SetDraw(true);
+        QVERIFY(std::abs(rotation.vetdirPos[2] - 0.26f) < 1e-6);
+        QVERIFY(std::abs(rotation.vetdirPos[3] - (-0.6f)) < 1e-6);
+        QVERIFY(Prepare()); m_gl.glEnable(GL_CULL_FACE);
+        QVERIFY(Draw([&] { rotation.Draw(QMatrix4x4()); }));
+        QVERIFY(Count(m_framebuffer->toImage(), Near(0.25f, -0.5f)) > 8);
+        QVERIFY(m_gl.glIsEnabled(GL_CULL_FACE));
+    }
+
     void establishedOverlaysRejectForeignAndMissingContexts()
     {
         const float positions[]{-0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f};
@@ -438,8 +488,7 @@ private slots:
         CDrawRect rectangle(QVector3D(1, 1, 1));
         live2dstruct::CRotationNode node(QStringLiteral("rotation"));
         live2dstruct::CRotationNodeKeyform key(1, 0, 0.25f, 0.5f, 1, false, false);
-        node.SetCurKeyForm(key);
-        QVERIFY(node.UpdateCanvasPositions({0.25f, 0.5f}));
+        QVERIFY(rotationFrame(node, key));
         CDrawRotation rotation;
         mesh.SetShow(true);
         rectangle.SetSelectRect(QRectF(-0.5, 0, 1, 0.5));
