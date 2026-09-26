@@ -64,6 +64,7 @@ SOURCES += \
     live2dstruct/cparameterreferenceeditor.cpp \
     live2dstruct/cparameterresourceedits.cpp \
     live2d/cparameterreferenceplan.cpp \
+    live2d/cphysicsbake.cpp \
     live2dstruct/ckeyformbindinggrid.cpp \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
@@ -106,6 +107,7 @@ SOURCES += \
     ui/cpsdprintdialog.cpp \
     ui/cpsdbatchdialog.cpp \
     ui/cruntimeexportdialog.cpp \
+    ui/cphysicsbakedialog.cpp \
     ui/psdbatchworker.cpp \
     ui/psdbatchjob.cpp \
     ui/cmodeltreepanel.cpp \
@@ -175,6 +177,7 @@ SOURCES += \
     ui/para/ccidjson.cpp \
     main.cpp \
     ui/mainwindow.cpp \
+    ui/mainwindowphysics.cpp \
     framework/CubismCdiJson.cpp\
     framework/CubismDefaultParameterId.cpp\
     framework/CubismFramework.cpp\
@@ -303,6 +306,7 @@ HEADERS += \
     live2dstruct/cparameterreferenceeditor.h \
     live2dstruct/cparameterresourceedits.h \
     live2d/cparameterreferenceplan.h \
+    live2d/cphysicsbake.h \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
     CPrecompileHead.h \
@@ -402,6 +406,7 @@ HEADERS += \
     opengl/opengglform.h \
     ui/cpsdbatchdialog.h \
     ui/cruntimeexportdialog.h \
+    ui/cphysicsbakedialog.h \
     ui/psdbatchworker.h \
     ui/psdbatchjob.h \
     psd/cpsdlist.h \
@@ -447,6 +452,7 @@ HEADERS += \
     framework/Motion/CubismMotionQueueEntry.hpp\
     framework/Motion/CubismMotionQueueManager.hpp\
     framework/Physics/CubismPhysics.hpp\
+    framework/Physics/CubismPhysicsObservation.hpp\
     framework/Physics/CubismPhysicsInternal.hpp\
     framework/Physics/CubismPhysicsJson.hpp\
     framework/Rendering/CubismClippingManager.hpp\

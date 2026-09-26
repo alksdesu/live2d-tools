@@ -15,7 +15,7 @@
 
 namespace {
 constexpr qint64 maximumMotionBytes = 16 * 1024 * 1024;
-constexpr int maximumMotionPoints = 100000;
+constexpr int maximumMotionPoints = CMotionTimeline::MaximumPointCount;
 constexpr int maximumMotionEvents = 100000;
 constexpr int maximumEventOccurrences = 10000;
 
@@ -431,6 +431,71 @@ bool CMotionTimeline::AddPoint(const CMotionTrack& track, float time, float valu
     return true;
 }
 
+bool CMotionTimeline::ReplaceParameterSamples(const QMap<QString, QVector<QPointF>>& samples, QString* error,
+                                              bool resetFades)
+{
+    if (error) error->clear();
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (m_recording || samples.isEmpty()) return fail(QStringLiteral("请结束录制并提供待写入的参数曲线"));
+    try {
+        qint64 count = TotalPointCount();
+        for (auto curve = samples.cbegin(); curve != samples.cend(); ++curve) {
+            if (curve.key().trimmed().isEmpty() || curve.key().contains(QChar::Null) || curve->isEmpty())
+                return fail(QStringLiteral("参数曲线 ID 为空或没有采样点"));
+            count -= m_curves.value({CMotionTarget::Parameter, curve.key()}).size();
+            count += curve->size();
+        }
+        if (count > MaximumPointCount) return fail(QStringLiteral("写入后关键帧总数超过 100000"));
+        for (auto curve = samples.cbegin(); curve != samples.cend(); ++curve) {
+            float previous = -1;
+            for (const auto& point : *curve) {
+                if (!finiteFloat(point.x()) || !finiteFloat(point.y()) || point.x() < 0 ||
+                    static_cast<float>(point.x()) <= previous)
+                    return fail(QStringLiteral("采样时间必须递增，且时间与参数值必须为有限数值：%1").arg(curve.key()));
+                previous = static_cast<float>(point.x());
+            }
+        }
+        const double previousDuration = Timing().duration;
+        CMotionTimeline candidate = *this;
+        for (auto curve = samples.cbegin(); curve != samples.cend(); ++curve) {
+            const CMotionTrack track{CMotionTarget::Parameter, curve.key()};
+            candidate.m_curves.insert(track, *curve);
+            candidate.m_segmentTypes.insert(track, QVector<int>(curve->size(), 0));
+            candidate.m_bezierControls.insert(track, QVector<QVector<QPointF>>(curve->size()));
+        }
+        if (resetFades) {
+            auto curves = candidate.m_source.value(QStringLiteral("Curves")).toArray();
+            QSet<QString> updated;
+            for (int i = 0; i < curves.size(); ++i) {
+                auto curve = curves.at(i).toObject();
+                const auto id = curve.value(QStringLiteral("Id")).toString();
+                if (curve.value(QStringLiteral("Target")).toString() != QStringLiteral("Parameter") ||
+                    !samples.contains(id)) continue;
+                writeFadeTimes(&curve, {0.0, 0.0});
+                curves.replace(i, curve);
+                updated.insert(id);
+            }
+            for (auto sample = samples.cbegin(); sample != samples.cend(); ++sample) {
+                if (updated.contains(sample.key())) continue;
+                curves.append(QJsonObject{{QStringLiteral("Target"), QStringLiteral("Parameter")},
+                    {QStringLiteral("Id"), sample.key()}, {QStringLiteral("FadeInTime"), 0.0},
+                    {QStringLiteral("FadeOutTime"), 0.0}});
+            }
+            candidate.m_source.insert(QStringLiteral("Curves"), curves);
+        }
+        if (candidate.Timing().duration < previousDuration) {
+            auto meta = candidate.m_source.value(QStringLiteral("Meta")).toObject();
+            meta.insert(QStringLiteral("Duration"), previousDuration);
+            candidate.m_source.insert(QStringLiteral("Meta"), meta);
+        }
+        if (!candidate.BuildJson(nullptr, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+        SwapContent(candidate);
+        return true;
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备参数采样曲线，原动画保持不变"));
+    }
+}
+
 bool CMotionTimeline::UpdatePoint(const CMotionTrack& track, int index, float time, float value)
 {
     if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
@@ -746,43 +811,43 @@ float CMotionTimeline::Evaluate(const CMotionTrack& track, float time, bool* ok)
     }
     if (ok) *ok = true;
     if (time < static_cast<float>(points.first().x())) return static_cast<float>(points.first().y());
-    for (int i = 1; i < points.size(); ++i) {
-        const QPointF start = points[i - 1];
-        const QPointF end = points[i];
-        if (time >= static_cast<float>(end.x())) continue;
-        const double span = end.x() - start.x();
-        const double ratio = span > 0.0 ? qBound(0.0, (time - start.x()) / span, 1.0) : 1.0;
-        const int type = SegmentType(track, i);
-        if (type == 2) return static_cast<float>(start.y());
-        if (type == 3) return static_cast<float>(end.y());
-        if (type != 1) return static_cast<float>(start.y() + (end.y() - start.y()) * ratio);
-        const auto cubic = [](double a, double b, double c, double d, double t) {
-            const double inverse = 1.0 - t;
-            return inverse * inverse * inverse * a + 3.0f * inverse * inverse * t * b +
-                   3.0f * inverse * t * t * c + t * t * t * d;
-        };
-        const bool restricted = m_source.value(QStringLiteral("Meta")).toObject()
-                                    .value(QStringLiteral("AreBeziersRestricted")).toBool();
-        const QVector<QPointF> controls = m_bezierControls.value(track).value(i);
-        const QVector<QPointF> fallback = defaultBezierControls(start, end);
-        const QVector<QPointF> selectedControls = (restricted && controls.size() == 2) || validBezierControls(controls, start, end)
-            ? controls : fallback;
-        const QPointF first = selectedControls.at(0);
-        const QPointF second = selectedControls.at(1);
-        const float firstRatio = qBound(0.0f, static_cast<float>((first.x() - start.x()) / span), 1.0f);
-        const float secondRatio = qBound(0.0f, static_cast<float>((second.x() - start.x()) / span), 1.0f);
-        double low = restricted ? ratio : 0.0;
-        double high = restricted ? ratio : 1.0;
-        for (int step = 0; !restricted && step < 24; ++step) {
-            const double middle = (low + high) * 0.5;
-            if (cubic(0.0f, firstRatio, secondRatio, 1.0f, middle) < ratio) low = middle;
-            else high = middle;
-        }
-        const double valueControl = (low + high) * 0.5;
-        return cubic(static_cast<float>(start.y()), static_cast<float>(first.y()),
-                     static_cast<float>(second.y()), static_cast<float>(end.y()), valueControl);
+    const auto next = std::upper_bound(points.cbegin() + 1, points.cend(), time,
+        [](float value, const QPointF& point) { return value < static_cast<float>(point.x()); });
+    if (next == points.cend()) return static_cast<float>(points.last().y());
+    const int i = static_cast<int>(next - points.cbegin());
+    const QPointF start = points[i - 1];
+    const QPointF end = *next;
+    const double span = end.x() - start.x();
+    const double ratio = span > 0.0 ? qBound(0.0, (time - start.x()) / span, 1.0) : 1.0;
+    const int type = SegmentType(track, i);
+    if (type == 2) return static_cast<float>(start.y());
+    if (type == 3) return static_cast<float>(end.y());
+    if (type != 1) return static_cast<float>(start.y() + (end.y() - start.y()) * ratio);
+    const auto cubic = [](double a, double b, double c, double d, double t) {
+        const double inverse = 1.0 - t;
+        return inverse * inverse * inverse * a + 3.0f * inverse * inverse * t * b +
+               3.0f * inverse * t * t * c + t * t * t * d;
+    };
+    const bool restricted = m_source.value(QStringLiteral("Meta")).toObject()
+                                .value(QStringLiteral("AreBeziersRestricted")).toBool();
+    const QVector<QPointF> controls = m_bezierControls.value(track).value(i);
+    const QVector<QPointF> fallback = defaultBezierControls(start, end);
+    const QVector<QPointF> selectedControls = (restricted && controls.size() == 2) || validBezierControls(controls, start, end)
+        ? controls : fallback;
+    const QPointF first = selectedControls.at(0);
+    const QPointF second = selectedControls.at(1);
+    const float firstRatio = qBound(0.0f, static_cast<float>((first.x() - start.x()) / span), 1.0f);
+    const float secondRatio = qBound(0.0f, static_cast<float>((second.x() - start.x()) / span), 1.0f);
+    double low = restricted ? ratio : 0.0;
+    double high = restricted ? ratio : 1.0;
+    for (int step = 0; !restricted && step < 24; ++step) {
+        const double middle = (low + high) * 0.5;
+        if (cubic(0.0f, firstRatio, secondRatio, 1.0f, middle) < ratio) low = middle;
+        else high = middle;
     }
-    return static_cast<float>(points.last().y());
+    const double valueControl = (low + high) * 0.5;
+    return cubic(static_cast<float>(start.y()), static_cast<float>(first.y()),
+                 static_cast<float>(second.y()), static_cast<float>(end.y()), valueControl);
 }
 
 QMap<QString, float> CMotionTimeline::EvaluateAll(float time) const

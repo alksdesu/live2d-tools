@@ -18,6 +18,8 @@
 #include <QXmlStreamReader>
 #include <QMessageBox>
 #include <QLineEdit>
+#include <QComboBox>
+#include <limits>
 #include <type_traits>
 #include <stdexcept>
 
@@ -91,6 +93,240 @@ class PhysicsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void topObservationGroupSynchronizesKeyboardAndTableWithoutEditing()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path)); panel.resize(460, 500); panel.show();
+        auto* picker = panel.findChild<QComboBox*>("physicsObservationGroup"); auto* table = panel.findChild<QTableWidget*>("physicsGroupTable");
+        QVERIFY(picker); QCOMPARE(picker->count(), 2); QCOMPARE(picker->currentText(), QStringLiteral("头发（hair）"));
+        const auto before = panel.DocumentSnapshot(); QSignalSpy changed(&panel, &CPhysicsPanel::ObservationGroupChanged);
+        picker->setFocus(); QTest::keyClick(picker, Qt::Key_Down);
+        QCOMPARE(picker->currentIndex(), 1); QCOMPARE(table->currentRow(), 1); QCOMPARE(panel.SelectedGroupIndex(), 1);
+        QCOMPARE(changed.size(), 1); QCOMPARE(changed.last()[0].toInt(), 1);
+        table->setCurrentCell(0, 0); QCOMPARE(picker->currentIndex(), 0); QCOMPARE(panel.SelectedGroupIndex(), 0); QCOMPARE(changed.size(), 2);
+        picker->setCurrentIndex(-1); QCOMPARE(table->currentRow(), -1); QCOMPARE(panel.SelectedGroupIndex(), -1); QCOMPARE(changed.last()[0].toInt(), -1);
+        CPhysicsPanel::Snapshot current; QVERIFY(panel.CaptureSnapshot(current)); auto target = current; target.selectedGroupRow = 1; target.selectedGroupId = "tail";
+        CPhysicsPanel::PreparedSnapshot prepared; QVERIFY(panel.PrepareSnapshot(current, target, prepared));
+        QVERIFY(panel.CommitPreparedSnapshot(prepared)); panel.NotifySnapshotCommitted();
+        QCOMPARE(picker->currentIndex(), 1); QCOMPARE(table->currentRow(), 1); QCOMPARE(picker->currentText(), QStringLiteral("尾巴（tail）"));
+        QCOMPARE(panel.DocumentSnapshot(), before); QVERIFY(!panel.CanUndo()); QVERIFY(!panel.CanRedo()); QVERIFY(!panel.HasUnsavedChanges());
+    }
+
+    void topObservationGroupRejectsPendingAndPublishingWithoutLosingText()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path)); panel.resize(800, 700); panel.show();
+        auto* picker = panel.findChild<QComboBox*>("physicsObservationGroup"); auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable");
+        auto* inputs = panel.findChild<QTableWidget*>("physicsInputTable");
+        const auto before = panel.DocumentSnapshot(); QSignalSpy rejected(&panel, &CPhysicsPanel::EditRejected), selected(&panel, &CPhysicsPanel::ObservationGroupChanged);
+        inputs->setCurrentCell(0, 2); inputs->editItem(inputs->item(0, 2)); QTRY_VERIFY(inputs->findChild<QLineEdit*>());
+        QPointer<QLineEdit> editor = inputs->findChild<QLineEdit*>(); editor->setText("invalid weight");
+        picker->setCurrentIndex(1); QCOMPARE(picker->currentIndex(), 0); QCOMPARE(groups->currentRow(), 0); QCOMPARE(panel.SelectedGroupIndex(), 0);
+        QVERIFY(editor); QCOMPARE(editor->text(), QString("invalid weight")); QCOMPARE(panel.DocumentSnapshot(), before); QCOMPARE(selected.size(), 0); QVERIFY(!rejected.isEmpty());
+        groups->setCurrentCell(1, 0); QCOMPARE(picker->currentIndex(), 0); QCOMPARE(groups->currentRow(), 0); QCOMPARE(editor->text(), QString("invalid weight"));
+        QTest::keyClick(editor, Qt::Key_Escape); QTRY_VERIFY(!panel.HasUnsavedChanges());
+        panel.SetEditPublisher([&](const auto&, const auto&, QString* error) {
+            picker->setCurrentIndex(1); if (error) *error = "rejected candidate"; return false;
+        });
+        panel.findChild<QPushButton*>("addPhysicsVertex")->click();
+        QCOMPARE(picker->currentIndex(), 0); QCOMPARE(groups->currentRow(), 0); QCOMPARE(panel.DocumentSnapshot(), before);
+        QVERIFY(!panel.CanUndo()); QVERIFY(!panel.HasUnsavedChanges()); QCOMPARE(selected.size(), 0);
+    }
+
+    void topObservationGroupLabelsFollowRenameAddDeleteAndUndo()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path)); auto* picker = panel.findChild<QComboBox*>("physicsObservationGroup");
+        QVERIFY(answerTextDialogs(panel.findChild<QPushButton*>("renamePhysicsGroup"), {QStringLiteral("发梢摆动")}));
+        QCOMPARE(picker->currentText(), QStringLiteral("发梢摆动（hair）")); QVERIFY(panel.Undo()); QCOMPARE(picker->currentText(), QStringLiteral("头发（hair）"));
+        QVERIFY(panel.Redo()); QCOMPARE(picker->currentText(), QStringLiteral("发梢摆动（hair）"));
+        QVERIFY(answerTextDialogs(panel.findChild<QPushButton*>("addPhysicsGroup"), {"extra", "extra"}));
+        QCOMPARE(picker->count(), 3); QCOMPARE(picker->currentText(), QString("extra")); QCOMPARE(picker->currentIndex(), 2);
+        QVERIFY(panel.Undo()); QCOMPARE(picker->count(), 2); QCOMPARE(picker->currentIndex(), 0);
+        QVERIFY(panel.Redo()); QCOMPARE(picker->count(), 3); QCOMPARE(picker->currentIndex(), 2);
+        panel.findChild<QPushButton*>("removePhysicsGroup")->click(); QCOMPARE(picker->count(), 2); QCOMPARE(picker->currentIndex(), 1);
+        QVERIFY(panel.Undo()); QCOMPARE(picker->count(), 3); QCOMPARE(picker->currentText(), QString("extra"));
+        CPhysicsPanel empty; auto* emptyPicker = empty.findChild<QComboBox*>("physicsObservationGroup");
+        QCOMPARE(emptyPicker->currentIndex(), -1); QVERIFY(!emptyPicker->isEnabled());
+        QVERIFY(empty.NewPhysics()); QCOMPARE(emptyPicker->currentIndex(), -1); QVERIFY(!emptyPicker->isEnabled());
+    }
+
+    void topObservationGroupIsVisibleInShortThemedWindows_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::newRow("light") << false; QTest::newRow("dark") << true;
+    }
+    void topObservationGroupIsVisibleInShortThemedWindows()
+    {
+        QFETCH(bool, dark); QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; panel.setStyleSheet(Theme::globalStyleSheet(dark)); QVERIFY(panel.LoadPhysics(path)); panel.resize(460, 500); panel.show();
+        auto* picker = panel.findChild<QComboBox*>("physicsObservationGroup"); auto* scroll = panel.findChild<QScrollArea*>("physicsWorkspaceScroll");
+        QTRY_VERIFY(picker->isVisible()); QTRY_COMPARE(scroll->verticalScrollBar()->value(), 0);
+        const QRect position(picker->mapTo(scroll->viewport(), QPoint()), picker->size());
+        QVERIFY(scroll->viewport()->rect().contains(position)); QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+        auto* status = panel.findChild<QLabel*>("physicsObservationStatus"); QVERIFY(picker->mapTo(scroll->viewport(), QPoint()).y() < status->mapTo(scroll->viewport(), QPoint()).y());
+        picker->setFocus(); QTest::keyClick(picker, Qt::Key_Down); QCOMPARE(panel.SelectedGroupIndex(), 1);
+        QCOMPARE(scroll->verticalScrollBar()->value(), 0); QVERIFY(!panel.HasUnsavedChanges()); QVERIFY(!panel.CanUndo());
+    }
+
+    void observationSamplesDoNotChangeTheDocumentOrHistory()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json");
+        QVERIFY(writePhysics(path, physicsFixture())); CPhysicsPanel panel;
+        QSignalSpy groups(&panel, &CPhysicsPanel::ObservationGroupChanged);
+        QVERIFY(panel.LoadPhysics(path)); QCOMPARE(panel.SelectedGroupIndex(), 0); QVERIFY(!groups.isEmpty());
+        QCOMPARE(groups.last()[0].toInt(), 0);
+        const auto before = panel.DocumentSnapshot(); QSignalSpy changed(&panel, &CPhysicsPanel::PhysicsConfigChanged);
+        QSignalSpy drag(&panel, &CPhysicsPanel::PhysicsDragParamsChanged);
+        Live2D::Cubism::Framework::PhysicsObservation sample;
+        sample.groupIndex = 0; sample.groupId = "hair"; sample.sourceDigest = QByteArray(32, 'a'); sample.generation = 1;
+        sample.sequence = 1; sample.time = .1; sample.sampled = true; sample.particles = {{0, 0}, {.3, 1}};
+        Live2D::Cubism::Framework::PhysicsInputObservation input;
+        input.id = "ParamHair"; input.type = "X"; input.active = input.sampled = input.hasRange = true;
+        input.minimum = -30; input.maximum = 30; input.value = 17; sample.inputs = {input};
+        Live2D::Cubism::Framework::PhysicsOutputObservation output;
+        output.id = "<ParamOutput>"; output.type = "Angle"; output.active = output.sampled = output.hasRange = true;
+        output.minimum = -1; output.maximum = 1; output.rawValue = 2; output.clampedValue = 1; output.value = .7; output.clipped = true;
+        sample.outputs = {output}; panel.SetObservation(sample);
+        auto* table = panel.findChild<QTableWidget*>("physicsObservationTable"); auto* graph = panel.findChild<CPhysicsGraphWidget*>();
+        QCOMPARE(table->rowCount(), 2); QCOMPARE(table->item(0, 2)->text(), QString("17"));
+        QCOMPARE(table->item(1, 1)->text(), QString("<ParamOutput>")); QVERIFY(table->item(1, 1)->toolTip().contains("&lt;ParamOutput&gt;"));
+        QCOMPARE(table->item(1, 2)->text(), QString("0.7")); QCOMPARE(table->item(1, 4)->text(), QStringLiteral("2 → 1"));
+        QCOMPARE(table->item(1, 5)->text(), QStringLiteral("超限，已裁剪"));
+        QCOMPARE(graph->HistorySize(), 1); QCOMPARE(graph->History().last(), QPointF(.1, double(output.value)));
+        panel.SetObservation(sample, QStringLiteral("已暂停")); QCOMPARE(graph->HistorySize(), 1);
+        QCOMPARE(panel.findChild<QLabel*>("physicsObservationStatus")->text(), QStringLiteral("已暂停"));
+        sample.sequence = 0; sample.time = .05; sample.outputs[0].value = -.9; panel.SetObservation(sample);
+        QCOMPARE(table->item(1, 2)->text(), QString("0.7")); QCOMPARE(graph->HistorySize(), 1);
+        sample.sequence = 2; sample.time = .2; sample.outputs[0].active = false; panel.SetObservation(sample);
+        QCOMPARE(table->item(1, 2)->text(), QStringLiteral("—")); QCOMPARE(table->item(1, 5)->text(), QStringLiteral("已屏蔽"));
+        QCOMPARE(graph->HistorySize(), 1);
+        sample.sequence = 3; sample.sampled = false; panel.SetObservation(sample);
+        QVERIFY(!graph->HasObservation()); QCOMPARE(graph->HistorySize(), 0);
+        QCOMPARE(table->item(0, 2)->text(), QStringLiteral("—"));
+        QCOMPARE(panel.DocumentSnapshot(), before); QCOMPARE(changed.size(), 0); QCOMPARE(drag.size(), 0);
+        QVERIFY(!panel.CanUndo()); QVERIFY(!panel.CanRedo()); QVERIFY(!panel.HasUnsavedChanges());
+    }
+
+    void observationHistoryIsBoundedAndResetsForItsActualIdentity()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path));
+        Live2D::Cubism::Framework::PhysicsObservation sample;
+        sample.groupIndex = 0; sample.groupId = "hair"; sample.sourceDigest = QByteArray(32, 'a'); sample.generation = 1; sample.sampled = true;
+        Live2D::Cubism::Framework::PhysicsInputObservation row; row.id = "ParamHair"; row.type = "X"; row.active = row.sampled = true;
+        sample.inputs = {row}; sample.particles = {{0, 0}, {0, 1}};
+        auto* graph = panel.findChild<CPhysicsGraphWidget*>();
+        for (int i = 1; i <= CPhysicsGraphWidget::HistoryCapacity + 30; ++i) {
+            sample.sequence = i; sample.time = i / 30.0; sample.inputs[0].value = i;
+            panel.SetObservation(sample);
+        }
+        QCOMPARE(graph->HistorySize(), CPhysicsGraphWidget::HistoryCapacity);
+        QCOMPARE(graph->History().first().y(), 31.0);
+        ++sample.generation; sample.sequence = 1; sample.time = .1; panel.SetObservation(sample); QCOMPARE(graph->HistorySize(), 1);
+        sample.sourceDigest = QByteArray(32, 'b'); panel.SetObservation(sample); QCOMPARE(graph->HistorySize(), 1);
+        ++sample.sequence; sample.time = .01; panel.SetObservation(sample); QCOMPARE(graph->HistorySize(), 1);
+        sample.groupIndex = 1; sample.groupId = "tail"; ++sample.sequence; panel.SetObservation(sample); QCOMPARE(graph->HistorySize(), 1);
+        auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable"); QSignalSpy selection(&panel, &CPhysicsPanel::ObservationGroupChanged);
+        groups->setCurrentCell(1, 0); QCOMPARE(selection.size(), 1); QCOMPARE(selection.first()[0].toInt(), 1); QCOMPARE(graph->HistorySize(), 0);
+        QCOMPARE(panel.SelectedGroupIndex(), 1); panel.SetObservation(sample); QCOMPARE(graph->HistorySize(), 1);
+        sample.inputs[0].value = std::numeric_limits<float>::infinity(); ++sample.sequence; panel.SetObservation(sample);
+        QCOMPARE(graph->HistorySize(), 0); QVERIFY(!graph->HasObservation());
+        QVERIFY(panel.findChild<QLabel*>("physicsObservationStatus")->text().contains(QStringLiteral("无效")));
+        panel.ClearObservation(QStringLiteral("编辑姿态已暂停物理")); QCOMPARE(graph->HistorySize(), 0);
+        QCOMPARE(panel.findChild<QTableWidget*>("physicsObservationTable")->rowCount(), 0);
+        QCOMPARE(panel.findChild<QLabel*>("physicsObservationStatus")->text(), QStringLiteral("编辑姿态已暂停物理"));
+    }
+
+    void observationChannelAndBakeButtonAreUserControlled()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path)); panel.resize(650, 700); panel.show();
+        Live2D::Cubism::Framework::PhysicsObservation sample;
+        sample.groupIndex = 0; sample.groupId = "hair"; sample.sequence = 1; sample.time = .1; sample.sampled = true;
+        Live2D::Cubism::Framework::PhysicsInputObservation input; input.id = "in"; input.type = "X"; input.active = input.sampled = true; input.value = 9;
+        Live2D::Cubism::Framework::PhysicsOutputObservation output; output.id = "out"; output.type = "Y"; output.active = output.sampled = true; output.value = 3;
+        sample.inputs = {input}; sample.outputs = {output}; panel.SetObservation(sample);
+        auto* channels = panel.findChild<QComboBox*>("physicsObservationChannel"); auto* graph = panel.findChild<CPhysicsGraphWidget*>();
+        QCOMPARE(channels->count(), 2); QCOMPARE(graph->History().last().y(), 3.0);
+        channels->setFocus(); QTest::keyClick(channels, Qt::Key_Down); QCOMPARE(channels->currentIndex(), 1); QCOMPARE(graph->HistorySize(), 0);
+        sample.sequence = 2; sample.time = .2; panel.SetObservation(sample); QCOMPARE(graph->History().last().y(), 9.0);
+        auto* button = panel.findChild<QPushButton*>("bakePhysicsButton"); QSignalSpy baked(&panel, &CPhysicsPanel::BakeRequested);
+        QVERIFY(!button->isEnabled()); panel.SetBakeAvailable(true);
+        auto* scroll = panel.findChild<QScrollArea*>("physicsWorkspaceScroll"); scroll->ensureWidgetVisible(button); QCoreApplication::processEvents();
+        QTest::mouseClick(button, Qt::LeftButton); QCOMPARE(baked.size(), 1);
+        panel.SetBakeAvailable(false); QTest::mouseClick(button, Qt::LeftButton); QCOMPARE(baked.size(), 1);
+        QVERIFY(!panel.CanUndo()); QVERIFY(!panel.HasUnsavedChanges());
+    }
+
+    void particlePresetsUseOneAtomicHistoryEntry_data()
+    {
+        QTest::addColumn<int>("preset"); QTest::addColumn<double>("mobility"); QTest::addColumn<double>("delay"); QTest::addColumn<double>("acceleration");
+        QTest::newRow("light") << 0 << .85 << .1 << .7;
+        QTest::newRow("standard") << 1 << .8 << .2 << 1.0;
+        QTest::newRow("heavy") << 2 << .7 << .4 << 1.3;
+    }
+    void particlePresetsUseOneAtomicHistoryEntry()
+    {
+        QFETCH(int, preset); QFETCH(double, mobility); QFETCH(double, delay); QFETCH(double, acceleration);
+        auto source = physicsFixture(); auto groups = source["PhysicsSettings"].toArray(); auto group = groups[0].toObject();
+        auto vertices = group["Vertices"].toArray();
+        auto vertex = vertices[0].toObject(); vertex["Position"] = QJsonObject{{"X", .3}, {"Y", 2.0}}; vertex["Radius"] = 2;
+        vertex["Extension"] = QJsonObject{{"Keep", true}}; vertices.append(vertex); vertices.append(vertex);
+        group["Vertices"] = vertices; group["Extension"] = "kept"; groups[0] = group; source["PhysicsSettings"] = groups;
+        QTemporaryDir directory; const auto path = directory.filePath("source.physics3.json"); QVERIFY(writePhysics(path, source));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path)); const auto before = panel.DocumentSnapshot();
+        int calls = 0; bool accept = false;
+        panel.SetEditPublisher([&](const auto&, const auto&, QString* error) { ++calls; if (!accept) *error = "runtime rejected"; return accept; });
+        auto* picker = panel.findChild<QComboBox*>("physicsParticlePreset"); picker->setCurrentIndex(preset);
+        auto* button = panel.findChild<QPushButton*>("applyPhysicsPreset"); QVERIFY(button->isEnabled()); button->click();
+        QCOMPARE(calls, 1); QCOMPARE(panel.DocumentSnapshot(), before); QVERIFY(!panel.CanUndo()); QVERIFY(!panel.HasUnsavedChanges());
+        accept = true; button->click(); QCOMPARE(calls, 2); QVERIFY(panel.CanUndo()); QVERIFY(panel.HasUnsavedChanges());
+        const auto after = panel.DocumentSnapshot(); auto afterGroups = after["PhysicsSettings"].toArray();
+        QCOMPARE(afterGroups[1], groups[1]); auto actual = afterGroups[0].toObject(); auto expected = group;
+        auto expectedVertices = vertices;
+        for (int i = 1; i < expectedVertices.size(); ++i) { auto v = expectedVertices[i].toObject(); v["Mobility"] = mobility; v["Delay"] = delay; v["Acceleration"] = acceleration; expectedVertices[i] = v; }
+        expected["Vertices"] = expectedVertices; QCOMPARE(actual, expected);
+        QCOMPARE(actual["Vertices"].toArray()[0], vertices[0]);
+        button->click(); QCOMPARE(calls, 2);
+        QVERIFY(panel.Undo()); QCOMPARE(panel.DocumentSnapshot(), before); QVERIFY(!panel.CanUndo()); QVERIFY(panel.CanRedo());
+        QVERIFY(panel.Redo()); QCOMPARE(panel.DocumentSnapshot(), after); QCOMPARE(readPhysics(path), source);
+    }
+
+    void physicsPositiveYHangsBelowTheFixedRoot()
+    {
+        CPhysicsGraphWidget graph; graph.setStyleSheet(Theme::globalStyleSheet(false)); graph.resize(440, 260); graph.show();
+        Live2D::Cubism::Framework::PhysicsObservation sample; sample.sampled = true; sample.sequence = 1;
+        sample.particles = {{0, 0}, {0, 1}}; graph.SetObservation(sample);
+        const auto image = graph.grab().toImage(); const auto accent = graph.palette().color(QPalette::Highlight);
+        const double dpr = image.devicePixelRatio(); QVector<int> runs; int length = 0;
+        for (int y = qRound(30 * dpr); y < qRound(160 * dpr); ++y) {
+            bool ink = false;
+            for (int x = image.width() / 2 - 1; x <= image.width() / 2 + 1; ++x) {
+                const auto color = image.pixelColor(x, y);
+                ink = ink || (std::abs(color.red() - accent.red()) + std::abs(color.green() - accent.green()) + std::abs(color.blue() - accent.blue()) < 15);
+            }
+            if (ink) ++length;
+            else if (length) { runs.append(length); length = 0; }
+        }
+        if (length) runs.append(length);
+        QVERIFY(runs.size() >= 2);
+        QVERIFY2(runs.first() < runs.last(), "The hollow fixed root must be above the filled particle in positive physics Y");
+    }
+
+    void observedLargeParticleGraphsRenderWithRealPositions_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::newRow("light") << false; QTest::newRow("dark") << true;
+    }
+    void observedLargeParticleGraphsRenderWithRealPositions()
+    {
+        QFETCH(bool, dark); CPhysicsGraphWidget graph; graph.setStyleSheet(Theme::globalStyleSheet(dark)); graph.resize(440, 260); graph.show();
+        Live2D::Cubism::Framework::PhysicsObservation sample; sample.sampled = true; sample.sequence = 1;
+        for (int i = 0; i < 10000; ++i) sample.particles.append(QPointF(double(i) / 10000, std::sin(double(i) / 600)));
+        graph.SetObservation(sample); QVERIFY(graph.HasObservation()); const auto first = graph.grab().toImage(); QVERIFY(!first.isNull());
+        ++sample.sequence; for (auto& point : sample.particles) point.setX(-point.x()); graph.SetObservation(sample);
+        const auto second = graph.grab().toImage(); QVERIFY(first != second);
+        graph.ClearObservation(); QVERIFY(!graph.HasObservation()); QVERIFY(graph.grab().toImage() != second);
+    }
     void missingAndPartialFieldsUseRuntimeDefaults_data()
     {
         QTest::addColumn<bool>("partial");

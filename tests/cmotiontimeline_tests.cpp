@@ -37,6 +37,113 @@ private:
 
 private slots:
 
+    void replaceSamplesPreservesChannelsMetadataAndResetsOnlySelectedFades()
+    {
+        auto selected = curve("Parameter", "A", {0, 0, 1, 0.3, 0.2, 0.7, 0.8, 1, 1});
+        selected["FadeInTime"] = 0.7; selected["FadeOutTime"] = 1.2; selected["Extension"] = "keep";
+        const QJsonObject motion{{"Version", 3}, {"RootExtra", true}, {"Curves", QJsonArray{
+            selected, curve("PartOpacity", "A", {0, 0.4, 0, 1, 0.6}),
+            curve("Model", "EyeBlink", {0, 0.3, 0, 1, 1}), curve("Parameter", "B", {0, 2, 0, 1, 3})}},
+            {"Meta", QJsonObject{{"Fps", 59.940000123}, {"Duration", 5}, {"FadeInTime", 2.0}}},
+            {"UserData", QJsonArray{QJsonObject{{"Time", 2}, {"Value", "event"}}}}};
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState({{"version", 1}, {"motion", motion}, {"playhead", 0}}));
+        const auto before = timeline;
+        const QMap<QString, QVector<QPointF>> samples{{"A", {{0, 5}, {0.5, 8}, {1, 3}}}, {"C", {{0, 7}, {1, 9}}}};
+        QString error;
+        QVERIFY2(timeline.ReplaceParameterSamples(samples, &error), qPrintable(error));
+        QCOMPARE(timeline.TrackFadeTimes({CMotionTarget::Parameter, "A"}).fadeIn.value(), 0.7);
+        QVERIFY(!timeline.TrackFadeTimes({CMotionTarget::Parameter, "C"}).fadeIn);
+        QVERIFY2(timeline.ReplaceParameterSamples(samples, &error, true), qPrintable(error));
+        QCOMPARE(timeline.Timing().fps, before.Timing().fps); QCOMPARE(timeline.Timing().duration, 5.0);
+        QCOMPARE(timeline.Events(), before.Events()); QCOMPARE(timeline.FadeTimes().fadeIn.value(), 2.0);
+        for (const auto& track : QVector<CMotionTrack>{{CMotionTarget::PartOpacity, "A"}, {CMotionTarget::Model, "EyeBlink"}, {CMotionTarget::Parameter, "B"}})
+            QCOMPARE(timeline.Tracks().value(track), before.Tracks().value(track));
+        for (const auto& id : {QString("A"), QString("C")}) {
+            const CMotionTrack track{CMotionTarget::Parameter, id};
+            QCOMPARE(timeline.TrackFadeTimes(track).fadeIn.value(), 0.0);
+            QCOMPARE(timeline.TrackFadeTimes(track).fadeOut.value(), 0.0);
+            QCOMPARE(timeline.Tracks().value(track), samples.value(id));
+            QCOMPARE(timeline.SegmentType(track, 1), 0);
+        }
+        QByteArray bytes; QVERIFY(timeline.ToJson(bytes, timeline.Fps(), false));
+        const auto root = QJsonDocument::fromJson(bytes).object();
+        QCOMPARE(root.value("RootExtra"), QJsonValue(true));
+        bool found = false;
+        for (const auto& entry : root.value("Curves").toArray()) {
+            const auto output = entry.toObject();
+            if (output.value("Target") != QJsonValue("Parameter") || output.value("Id") != QJsonValue("A")) continue;
+            QCOMPARE(output.value("Extension"), QJsonValue("keep"));
+            found = true;
+        }
+        QVERIFY(found);
+        CMotionTimeline restored;
+        QVERIFY(restored.RestoreState({{"version", 1}, {"motion", root}, {"playhead", 0}}));
+        QCOMPARE(restored.Evaluate("A", 0.25f), 6.5f);
+        QCOMPARE(restored.TrackFadeTimes({CMotionTarget::Parameter, "C"}).fadeIn.value(), 0.0);
+    }
+
+    void replaceSamplesRejectsInvalidInputAtomically()
+    {
+        CMotionTimeline timeline; QVERIFY(timeline.AddPoint("Keep", 0, 3));
+        const auto before = timeline;
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double large = std::numeric_limits<double>::max();
+        const QVector<QMap<QString, QVector<QPointF>>> invalid{
+            {}, {{"", {{0, 1}}}}, {{QString("A") + QChar::Null, {{0, 1}}}}, {{"A", {}}},
+            {{"A", {{-1, 1}}}}, {{"A", {{0, nan}}}}, {{"A", {{large, 1}}}},
+            {{"A", {{0, large}}}}, {{"A", {{0, 1}, {0, 2}}}},
+            {{"A", {{2, 1}, {1, 2}}}}, {{"A", {{1, 1}, {1.00000000001, 2}}}}};
+        for (const auto& samples : invalid) {
+            QString error;
+            QVERIFY(!timeline.ReplaceParameterSamples(samples, &error, true));
+            QVERIFY(!error.isEmpty()); QVERIFY(timeline.HasSameContent(before));
+        }
+        timeline.StartRecording();
+        const auto recording = timeline;
+        QVERIFY(!timeline.ReplaceParameterSamples({{"A", {{0, 1}}}}));
+        QVERIFY(timeline.IsRecording()); QVERIFY(timeline.HasSameContent(recording));
+    }
+
+    void replaceSamplesEnforcesCombinedPointBudgetAndEvaluatesDenseCurves()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint({CMotionTarget::PartOpacity, "A"}, 0, 0.5));
+        QVector<QPointF> points;
+        for (int i = 0; i < CMotionTimeline::MaximumPointCount; ++i) points.append({i / 60.0, double(i % 7)});
+        const auto before = timeline;
+        QVERIFY(!timeline.ReplaceParameterSamples({{"A", points}})); QVERIFY(timeline.HasSameContent(before));
+        points.removeLast();
+        QVERIFY(timeline.ReplaceParameterSamples({{"A", points}}, nullptr, true));
+        QCOMPARE(timeline.TotalPointCount(), CMotionTimeline::MaximumPointCount);
+        for (int i = 0; i < points.size() - 1; i += 131) {
+            const float time = float(points[i].x() + 0.002);
+            const double ratio = (time - points[i].x()) / (points[i + 1].x() - points[i].x());
+            const float expected = float(points[i].y() + (points[i + 1].y() - points[i].y()) * ratio);
+            QCOMPARE(timeline.Evaluate("A", time), expected);
+        }
+        QVERIFY(timeline.ReplaceParameterSamples({{"A", {{0, 2}, {1, 3}}}}));
+        QCOMPARE(timeline.TotalPointCount(), 3);
+    }
+
+    void endpointSearchKeepsSteppedBoundariesAndFloatRounding()
+    {
+        CMotionTimeline timeline;
+        const QJsonObject motion{{"Version", 3}, {"Curves", QJsonArray{
+            curve("Parameter", "Step", {0, 2, 2, 1.00000000001, 4, 3, 2.0, 8, 0, 3, 6})}}};
+        QVERIFY(timeline.RestoreState({{"version", 1}, {"motion", motion}, {"playhead", 0}}));
+        QCOMPARE(timeline.Evaluate("Step", -1), 2.0f);
+        QCOMPARE(timeline.Evaluate("Step", std::nextafter(1.0f, 0.0f)), 2.0f);
+        QCOMPARE(timeline.Evaluate("Step", 1.0f), 8.0f);
+        QCOMPARE(timeline.Evaluate("Step", std::nextafter(2.0f, 0.0f)), 8.0f);
+        QCOMPARE(timeline.Evaluate("Step", 2.0f), 8.0f);
+        QCOMPARE(timeline.Evaluate("Step", 2.5f), 7.0f);
+        QCOMPARE(timeline.Evaluate("Step", 3.0f), 6.0f);
+        bool ok = true;
+        QCOMPARE(timeline.Evaluate("Step", std::numeric_limits<float>::infinity(), &ok), 0.0f);
+        QVERIFY(!ok);
+    }
+
     void exportBytesMatchSaveAndKeepSourceRecordingState()
     {
         qint64 clock = 1000; CMotionTimeline timeline([&] { return clock; });

@@ -1517,6 +1517,92 @@ bool CMotionPanel::CaptureTimelineBytes(QByteArray& bytes, QString* error) const
     }
 }
 
+bool CMotionPanel::CaptureBakeTimeline(CMotionTimeline& result, quint64& revision, QString* error) const
+{
+    if (error) error->clear();
+    if (m_transport || m_transportTransition || m_timeline.IsRecording() || m_recordTimelineCb->isChecked() ||
+        m_editGroupActive || m_timelineMutation || m_restoringTimeline || m_updatingTimeline ||
+        m_refreshingParameterTracks || m_parameterTrackUiPending || m_timelineDelegate->HasPendingChanges()) {
+        if (error) *error = QStringLiteral("请先结束录制、时间轴编辑或临时暂停，再烘焙物理");
+        return false;
+    }
+    try {
+        CMotionTimeline candidate = m_timeline;
+        result = std::move(candidate);
+        revision = m_timelineRevision;
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法捕获时间轴，原内容保持不变");
+        return false;
+    }
+}
+
+bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, quint64 expectedRevision,
+                                             const QMap<QString, QVector<QPointF>>& samples, bool newAnimation,
+                                             double fps, QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    CMotionTimeline current; quint64 revision = 0;
+    if (!CaptureBakeTimeline(current, revision, error)) return false;
+    if (revision != expectedRevision || !current.HasSameContent(expected))
+        return fail(QStringLiteral("烘焙期间时间轴已改变，请重新烘焙"));
+    if (m_timelineRevision == std::numeric_limits<quint64>::max() ||
+        m_snapshotSerial > std::numeric_limits<quint64>::max() - 2 || m_registryRevision > std::numeric_limits<quint64>::max() - 2)
+        return fail(QStringLiteral("时间轴历史版本计数已耗尽"));
+    try {
+        const QSet<QString> ids(m_parameterIds.cbegin(), m_parameterIds.cend());
+        for (auto it = samples.cbegin(); it != samples.cend(); ++it)
+            if (!ids.contains(it.key())) return fail(QStringLiteral("烘焙输出参数已不存在：%1").arg(it.key()));
+        CMotionTimeline candidate = newAnimation ? CMotionTimeline() : current;
+        if (newAnimation && !candidate.SetTiming(fps, 0, error)) return false;
+        if (!candidate.ReplaceParameterSamples(samples, error, true)) return false;
+        const auto before = CurrentTimelineSnapshot();
+        TimelineSnapshot after{candidate, newAnimation ? false : before.loop, newAnimation ? 0.0 : before.playhead};
+        after.playhead = qBound(0.0, after.playhead, candidate.Timing().duration);
+        if (before.SameContent(after)) return true;
+        auto archives = m_parameterTrackArchives;
+        auto origins = m_currentTrackOrigins;
+        for (auto it = archives.begin(); it != archives.end();)
+            if (it->expired()) { origins.remove(it.key()); it = archives.erase(it); } else ++it;
+        for (auto it = origins.begin(); it != origins.end();)
+            if (!archives.contains(it.key())) it = origins.erase(it); else ++it;
+        auto registrySlots = m_timelineSnapshots;
+        registrySlots.erase(std::remove_if(registrySlots.begin(), registrySlots.end(), [](const auto& value) { return value.expired(); }), registrySlots.end());
+        auto previous = std::make_shared<TimelineSnapshotSlot>();
+        auto next = std::make_shared<TimelineSnapshotSlot>();
+        previous->serial = m_snapshotSerial + 1; previous->value = before; previous->origins = origins;
+        next->serial = m_snapshotSerial + 2; next->value = std::move(after); next->origins = origins;
+        registrySlots.append(previous); registrySlots.append(next);
+        auto command = std::make_unique<CTimelineEdit>(QStringLiteral("烘焙物理"), [this, previous, next](bool forward) {
+            const auto& selected = forward ? next : previous;
+            m_currentTrackOrigins = selected->origins;
+            ApplyTimelineSnapshot(selected->value);
+        });
+        {
+            const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
+            const QSignalBlocker historySignals(m_timelineHistory), loopSignals(m_loopCb);
+            m_timelineHistory->push(command.release());
+            m_timeline.SwapContent(candidate);
+            m_parameterTrackArchives.swap(archives); m_currentTrackOrigins.swap(origins); m_timelineSnapshots.swap(registrySlots);
+            m_snapshotSerial += 2; m_registryRevision += 2;
+            m_timelineTime = next->value.playhead;
+            m_loopCb->setChecked(next->value.loop);
+            m_eventStartPending = true;
+            m_timelineTimer->stop();
+            m_playTimelineButton->setText(QStringLiteral("预览"));
+        }
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备烘焙时间轴，原内容保持不变"));
+    }
+    const QPointer<CMotionPanel> alive(this);
+    RefreshTimelineTable();
+    m_timelineStatus->setText(QStringLiteral("%1 个关键帧").arg(m_timeline.TotalPointCount()));
+    emit TimelineActivated();
+    if (alive) emit MotionTimelineChanged();
+    return true;
+}
+
 bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
 {
     if (m_transport) return m_timeline.SaveState(state, m_transport->loop, m_transport->time, error);

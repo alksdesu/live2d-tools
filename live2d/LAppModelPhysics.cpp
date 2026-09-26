@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QScopedValueRollback>
 #include <exception>
+#include <limits>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -60,6 +61,7 @@ bool LAppModel::ApplyPhysicsDraft(const PhysicsDraft& draft, QString* error)
     if (!_initialized || _updating || m_physicsDragActive || !_model || HasExportPreview())
         return fail(error, QStringLiteral("当前模型状态不允许更新物理预览"));
     if (draft.bytes.size() > 16 * 1024 * 1024) return fail(error, QStringLiteral("物理草稿大小超出限制"));
+    if (m_physicsGeneration == std::numeric_limits<quint64>::max()) return fail(error, QStringLiteral("物理实例版本计数已耗尽"));
     try {
         const QScopedValueRollback<csmBool> updating(_updating, true);
         auto bytes = draft.bytes;
@@ -68,6 +70,7 @@ bool LAppModel::ApplyPhysicsDraft(const PhysicsDraft& draft, QString* error)
             draft.stabilize, false, candidate, error)) return false;
         auto* retired = _physics;
         _physics = candidate.release();
+        if (retired != _physics) ++m_physicsGeneration;
         candidate.reset(retired);
         m_physicsDraftBytes.swap(bytes);
         m_hasPhysicsDraft = true;
@@ -82,6 +85,7 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path, QString* error)
     if (error) error->clear();
     if (HasExportPreview() || m_physicsDragActive || (_initialized && _updating) || !_model || !_modelSetting)
         return fail(error, QStringLiteral("当前模型状态不允许重载物理配置"));
+    if (m_physicsGeneration == std::numeric_limits<quint64>::max()) return fail(error, QStringLiteral("物理实例版本计数已耗尽"));
     try {
         const auto home = QString::fromUtf8(_modelHomeDir.GetRawString());
         const auto resolved = CModelResourcePath::Resolve(home, path);
@@ -106,6 +110,7 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path, QString* error)
         if (!candidate->CommitRuntimeState(state)) return fail(error, QStringLiteral("物理模拟候选在提交前失效"));
         auto* retired = _physics;
         _physics = candidate.release();
+        ++m_physicsGeneration;
         candidate.reset(retired);
         m_physicsSourceBytes.swap(data);
         m_physicsSourceDigest.swap(digest);
@@ -116,4 +121,34 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path, QString* error)
     } catch (const std::exception&) {
         return fail(error, QStringLiteral("物理重载失败，原预览保持不变"));
     }
+}
+
+bool LAppModel::SetPhysicsObservationGroup(int groupIndex)
+{
+    if (!_physics) return groupIndex == -1;
+    if (!_initialized || _updating || !_model || !_model->GetModel()) return false;
+    return _physics->SetObservationGroup(groupIndex);
+}
+
+bool LAppModel::CapturePhysicsObservation(Csm::PhysicsObservation& result, QString* error) const
+{
+    if (error) error->clear();
+    if (!_initialized || _updating || !_model || !_model->GetModel() || !_physics)
+        return fail(error, QStringLiteral("物理预览尚未就绪"));
+    Csm::PhysicsObservation candidate;
+    if (!_physics->CaptureObservation(*_model, candidate, error)) return false;
+    candidate.generation = m_physicsGeneration;
+    result = std::move(candidate);
+    return true;
+}
+
+bool LAppModel::CapturePhysicsConfiguration(QJsonObject& result, QString* error) const
+{
+    if (error) error->clear();
+    if (!_initialized || _updating || !_model || !_model->GetModel())
+        return fail(error, QStringLiteral("物理预览尚未就绪"));
+    QJsonObject candidate;
+    if (_physics && !_physics->CaptureConfiguration(candidate, error)) return false;
+    result.swap(candidate);
+    return true;
 }

@@ -23,6 +23,8 @@
 #include <cmath>
 #include <exception>
 #include <utility>
+#include <limits>
+#include <type_traits>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -377,7 +379,7 @@ void UpdateParticlesForStabilization(CubismPhysicsParticle* strand, csmInt32 str
 /// @param  parameterValueMaximum  Maximum of parameter value.
 /// @param  translation            Translation value.
 void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameterValueMinimum, csmFloat32 parameterValueMaximum,
-    csmFloat32 translation, CubismPhysicsOutput* output)
+    csmFloat32 translation, CubismPhysicsOutput* output, PhysicsOutputObservation* observation = nullptr)
 {
     csmFloat32 outputScale;
     csmFloat32 value;
@@ -386,9 +388,11 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
     outputScale = output->GetScale(output->TranslationScale, output->AngleScale);
 
     value = translation * outputScale;
+    if (observation) { observation->rawValue = value; observation->clipped = false; }
 
     if (value < parameterValueMinimum)
     {
+        if (observation) observation->clipped = true;
         if (value < output->ValueBelowMinimum)
         {
             output->ValueBelowMinimum = value;
@@ -398,6 +402,7 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
     }
     else if (value > parameterValueMaximum)
     {
+        if (observation) observation->clipped = true;
         if (value > output->ValueExceededMaximum)
         {
             output->ValueExceededMaximum = value;
@@ -405,6 +410,7 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
 
         value = parameterValueMaximum;
     }
+    if (observation) observation->clampedValue = value;
 
     weight = (output->Weight / MaximumWeight);
 
@@ -417,6 +423,7 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
         value = (*parameterValue * (1.0f - weight)) + (value * weight);
         *parameterValue = value;
     }
+    if (observation) { observation->value = *parameterValue; observation->sampled = true; }
 }
 
 }
@@ -438,6 +445,259 @@ CubismPhysics::~CubismPhysics()
     CSM_DELETE(_physicsRig);
     _parameterCaches.clear();
     _parameterInputCaches.clear();
+}
+
+bool CubismPhysics::CaptureConfiguration(QJsonObject& result, QString* error) const
+{
+    if (error) error->clear();
+    try
+    {
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(_normalizedBytes, &parseError);
+        if (!_physicsRig || parseError.error != QJsonParseError::NoError || !document.isObject() ||
+            _activeInputs.size() != _physicsRig->Inputs.GetSize() || _activeOutputs.size() != _physicsRig->Outputs.GetSize())
+            return PhysicsError(error, QStringLiteral("物理配置快照与当前运行实例不匹配"));
+        auto candidate = document.object();
+        auto groups = candidate.value(QStringLiteral("PhysicsSettings")).toArray();
+        if (groups.size() != _physicsRig->Settings.GetSize())
+            return PhysicsError(error, QStringLiteral("物理配置快照的分组数量不匹配"));
+        int inputIndex = 0, outputIndex = 0;
+        for (int i = 0; i < groups.size(); ++i)
+        {
+            auto group = groups[i].toObject();
+            const auto inputs = group.value(QStringLiteral("Input")).toArray();
+            const auto outputs = group.value(QStringLiteral("Output")).toArray();
+            const auto& rig = _physicsRig->Settings[i];
+            if (inputs.size() != rig.InputCount || outputs.size() != rig.OutputCount ||
+                rig.BaseInputIndex != inputIndex || rig.BaseOutputIndex != outputIndex ||
+                inputs.size() > _activeInputs.size() - inputIndex || outputs.size() > _activeOutputs.size() - outputIndex)
+                return PhysicsError(error, QStringLiteral("物理配置快照的输入输出行不匹配"));
+            QJsonArray activeInputs, activeOutputs;
+            for (const auto& input : inputs)
+            {
+                const auto active = _activeInputs[inputIndex++];
+                if (active > 1) return PhysicsError(error, QStringLiteral("物理输入的屏蔽状态无效"));
+                if (active) activeInputs.append(input);
+            }
+            for (const auto& output : outputs)
+            {
+                const auto active = _activeOutputs[outputIndex++];
+                if (active > 1) return PhysicsError(error, QStringLiteral("物理输出的屏蔽状态无效"));
+                if (active) activeOutputs.append(output);
+            }
+            group.insert(QStringLiteral("Input"), activeInputs);
+            group.insert(QStringLiteral("Output"), activeOutputs);
+            groups[i] = group;
+        }
+        if (inputIndex != _activeInputs.size() || outputIndex != _activeOutputs.size())
+            return PhysicsError(error, QStringLiteral("物理配置快照存在未归属的输入输出行"));
+        candidate.insert(QStringLiteral("PhysicsSettings"), groups);
+        auto meta = candidate.value(QStringLiteral("Meta")).toObject();
+        auto forces = meta.value(QStringLiteral("EffectiveForces")).toObject();
+        const auto updateForce = [&](const QString& key, const CubismVector2& actual, float defaultY) {
+            auto values = forces.value(key).toObject();
+            bool changed = false;
+            if (float(values.value(QStringLiteral("X")).toDouble(0)) != actual.X) {
+                values.insert(QStringLiteral("X"), double(actual.X)); changed = true;
+            }
+            if (float(values.value(QStringLiteral("Y")).toDouble(defaultY)) != actual.Y) {
+                values.insert(QStringLiteral("Y"), double(actual.Y)); changed = true;
+            }
+            if (changed) forces.insert(key, values);
+            return changed;
+        };
+        if (!std::isfinite(_options.Gravity.X) || !std::isfinite(_options.Gravity.Y) ||
+            !std::isfinite(_options.Wind.X) || !std::isfinite(_options.Wind.Y))
+            return PhysicsError(error, QStringLiteral("物理运行时力场不是有限数值"));
+        const bool gravityChanged = updateForce(QStringLiteral("Gravity"), _options.Gravity, -1);
+        const bool windChanged = updateForce(QStringLiteral("Wind"), _options.Wind, 0);
+        if (gravityChanged || windChanged) {
+            meta.insert(QStringLiteral("EffectiveForces"), forces);
+            candidate.insert(QStringLiteral("Meta"), meta);
+        }
+        QJsonObject normalized;
+        if (!live2dstruct::CPhysicsDocument::Normalize(candidate, normalized, error)) return false;
+        result.swap(normalized);
+        return true;
+    }
+    catch (const std::exception&)
+    {
+        return PhysicsError(error, QStringLiteral("无法捕获物理运行配置"));
+    }
+}
+
+void CubismPhysics::InvalidateObservation() noexcept
+{
+    _observation.sampled = false;
+    _observationModel = nullptr;
+    _observationTime = 0;
+}
+
+bool CubismPhysics::SetObservationGroup(int groupIndex)
+{
+    if (!_physicsRig || groupIndex < -1 || groupIndex >= int(_physicsRig->Settings.GetSize())) return false;
+    if (groupIndex == _observationGroup) return true;
+    try
+    {
+        QString id;
+        if (groupIndex >= 0)
+        {
+            const auto groups = QJsonDocument::fromJson(_normalizedBytes).object().value(QStringLiteral("PhysicsSettings")).toArray();
+            if (groupIndex >= groups.size()) return false;
+            id = groups[groupIndex].toObject().value(QStringLiteral("Id")).toString();
+        }
+        _observationGroupId.swap(id);
+        _observationGroup = groupIndex;
+        _observation = {};
+        InvalidateObservation();
+        return true;
+    }
+    catch (...) { return false; }
+}
+
+bool CubismPhysics::PrepareObservation(const CubismModel& model, PhysicsObservation& result, QString* error) const
+{
+    if (!_physicsRig || _observationGroup < 0 || _observationGroup >= int(_physicsRig->Settings.GetSize()) || !model.GetModel())
+        return PhysicsError(error, QStringLiteral("尚未选择可观察的物理组"));
+    const int count = model.GetParameterCount();
+    const auto* minimum = Core::csmGetParameterMinimumValues(model.GetModel());
+    const auto* maximum = Core::csmGetParameterMaximumValues(model.GetModel());
+    const auto* defaults = Core::csmGetParameterDefaultValues(model.GetModel());
+    if (count < 0 || (count && (!minimum || !maximum || !defaults)))
+        return PhysicsError(error, QStringLiteral("物理观察缺少参数范围"));
+    const auto& group = _physicsRig->Settings[_observationGroup];
+    if (group.InputCount < 0 || group.OutputCount < 0 || group.ParticleCount < 0 ||
+        group.BaseInputIndex < 0 || group.BaseOutputIndex < 0 || group.BaseParticleIndex < 0 ||
+        qint64(group.BaseInputIndex) + group.InputCount > _physicsRig->Inputs.GetSize() ||
+        qint64(group.BaseOutputIndex) + group.OutputCount > _physicsRig->Outputs.GetSize() ||
+        qint64(group.BaseParticleIndex) + group.ParticleCount > _physicsRig->Particles.GetSize() ||
+        _activeInputs.size() != _physicsRig->Inputs.GetSize() || _activeOutputs.size() != _physicsRig->Outputs.GetSize())
+        return PhysicsError(error, QStringLiteral("物理观察与当前配置不匹配"));
+    PhysicsObservation candidate;
+    candidate.groupIndex = _observationGroup;
+    candidate.groupId = _observationGroupId;
+    candidate.sourceDigest = _sourceDigest;
+    candidate.sequence = _observationSequence;
+    candidate.time = _observationTime;
+    candidate.inputs.resize(group.InputCount);
+    candidate.outputs.resize(group.OutputCount);
+    QHash<CubismIdHandle, int> indices;
+    bool indexed = false;
+    const auto fill = [&](PhysicsInputObservation& row, CubismIdHandle id, int type, bool active, int index) {
+        if (!id || type < CubismPhysicsSource_X || type > CubismPhysicsSource_Angle) return false;
+        row.id = QString::fromUtf8(id->GetString().GetRawString());
+        row.type = type == CubismPhysicsSource_X ? QStringLiteral("X") : type == CubismPhysicsSource_Y ? QStringLiteral("Y") : QStringLiteral("Angle");
+        row.active = active;
+        if (index < 0 || index >= count || model.GetParameterId(index) != id)
+        {
+            if (!indexed)
+            {
+                for (int i = 0; i < count; ++i) indices.insert(model.GetParameterId(i), i);
+                indexed = true;
+            }
+            index = indices.value(id, -1);
+        }
+        if (index < 0) return !active;
+        row.hasRange = true;
+        row.minimum = minimum[index]; row.maximum = maximum[index]; row.defaultValue = defaults[index];
+        return std::isfinite(row.minimum) && std::isfinite(row.maximum) && std::isfinite(row.defaultValue) && row.minimum <= row.maximum;
+    };
+    for (int i = 0; i < group.InputCount; ++i)
+    {
+        const auto index = group.BaseInputIndex + i;
+        const auto& input = _physicsRig->Inputs[index];
+        if (!fill(candidate.inputs[i], input.Source.Id, input.Type, _activeInputs[index], input.SourceParameterIndex))
+            return PhysicsError(error, QStringLiteral("物理观察的输入引用或范围无效"));
+    }
+    for (int i = 0; i < group.OutputCount; ++i)
+    {
+        const auto index = group.BaseOutputIndex + i;
+        const auto& output = _physicsRig->Outputs[index];
+        if (!fill(candidate.outputs[i], output.Destination.Id, output.Type, _activeOutputs[index], output.DestinationParameterIndex))
+            return PhysicsError(error, QStringLiteral("物理观察的输出引用或范围无效"));
+    }
+    result = std::move(candidate);
+    return true;
+}
+
+namespace {
+bool SameObservationRange(const PhysicsInputObservation& first, const PhysicsInputObservation& second)
+{
+    return first.id == second.id && first.type == second.type && first.active == second.active && first.hasRange == second.hasRange &&
+        first.minimum == second.minimum && first.maximum == second.maximum && first.defaultValue == second.defaultValue;
+}
+}
+
+bool CubismPhysics::CaptureObservation(const CubismModel& model, PhysicsObservation& result, QString* error) const
+{
+    if (error) error->clear();
+    try
+    {
+        if (_observation.sampled && _observationModel != &model)
+            return PhysicsError(error, QStringLiteral("物理观察样本属于其他模型"));
+        PhysicsObservation candidate;
+        if (!PrepareObservation(model, candidate, error)) return false;
+        if (_observation.sampled)
+        {
+            if (_observation.inputs.size() != candidate.inputs.size() || _observation.outputs.size() != candidate.outputs.size())
+                return PhysicsError(error, QStringLiteral("物理观察样本已失效"));
+            for (int i = 0; i < candidate.inputs.size(); ++i)
+                if (!SameObservationRange(candidate.inputs[i], _observation.inputs[i]))
+                    return PhysicsError(error, QStringLiteral("物理观察的输入定义已改变"));
+            for (int i = 0; i < candidate.outputs.size(); ++i)
+                if (!SameObservationRange(candidate.outputs[i], _observation.outputs[i]))
+                    return PhysicsError(error, QStringLiteral("物理观察的输出定义已改变"));
+            candidate = _observation;
+        }
+        result = std::move(candidate);
+        return true;
+    }
+    catch (...) { return PhysicsError(error, QStringLiteral("无法读取物理观察样本")); }
+}
+
+bool CubismPhysics::BeginObservation(const CubismModel& model, csmFloat32 deltaTime, PhysicsObservation& result) noexcept
+{
+    if (_observationGroup < 0 || _observationSequence == std::numeric_limits<quint64>::max()) return false;
+    try
+    {
+        PhysicsObservation candidate;
+        if (!PrepareObservation(model, candidate)) return false;
+        if (_observation.sampled && _observationModel == &model && _observation.inputs.size() == candidate.inputs.size())
+            for (int i = 0; i < candidate.inputs.size(); ++i)
+                if (SameObservationRange(candidate.inputs[i], _observation.inputs[i]))
+                {
+                    candidate.inputs[i].value = _observation.inputs[i].value;
+                    candidate.inputs[i].sampled = _observation.inputs[i].sampled;
+                }
+        candidate.sequence = _observationSequence + 1;
+        candidate.time = _observationTime + double(deltaTime);
+        if (!std::isfinite(candidate.time)) return false;
+        candidate.particles.resize(_physicsRig->Settings[_observationGroup].ParticleCount);
+        result = std::move(candidate);
+        return true;
+    }
+    catch (...) { return false; }
+}
+
+void CubismPhysics::FinishObservation(const CubismModel& model, PhysicsObservation& result) noexcept
+{
+    const auto& group = _physicsRig->Settings[_observationGroup];
+    for (int i = 0; i < group.ParticleCount; ++i)
+    {
+        const auto& position = _physicsRig->Particles[group.BaseParticleIndex + i].Position;
+        if (!std::isfinite(position.X) || !std::isfinite(position.Y)) return;
+        result.particles[i] = QPointF(position.X, position.Y);
+    }
+    for (const auto& input : result.inputs)
+        if (input.sampled && !std::isfinite(input.value)) return;
+    for (const auto& output : result.outputs)
+        if (output.sampled && (!std::isfinite(output.value) || !std::isfinite(output.rawValue) || !std::isfinite(output.clampedValue))) return;
+    result.sampled = true;
+    _observationSequence = result.sequence;
+    _observationTime = result.time;
+    static_assert(std::is_nothrow_move_assignable_v<PhysicsObservation>);
+    _observation = std::move(result);
+    _observationModel = &model;
 }
 
 CubismPhysics::PreparedRuntimeState::PreparedRuntimeState()
@@ -585,6 +845,7 @@ bool CubismPhysics::CommitRuntimeState(PreparedRuntimeState& state) noexcept
     _parameterInputCaches.swap(work._parameterInputCaches);
     _activeInputs.swap(work._activeInputs);
     _activeOutputs.swap(work._activeOutputs);
+    InvalidateObservation();
     ++_stateRevision;
     state.owner = nullptr;
     return true;
@@ -734,6 +995,7 @@ void CubismPhysics::CommitParameterDefinitionChange(ParameterDefinitionState& st
     } else if (state.parameters.size() != _parameterCaches.size() || state.inputs.size() != _parameterInputCaches.size()) return;
     _parameterCaches.swap(state.parameters);
     _parameterInputCaches.swap(state.inputs);
+    InvalidateObservation();
     ++_stateRevision;
     state.owner = nullptr;
 }
@@ -799,6 +1061,7 @@ void CubismPhysics::Initialize()
 /// Reset the physics states.
 void CubismPhysics::Reset()
 {
+    InvalidateObservation();
     ++_stateRevision;
     // set default options.
     _options.Gravity.Y = -1.0f;
@@ -1235,7 +1498,12 @@ bool CubismPhysics::StabilizeValues(const CubismModel& model, QVector<float>& va
 /// @param deltaTimeSeconds  rendering delta time.
 void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
 {
-    if (!std::isfinite(deltaTimeSeconds) || deltaTimeSeconds <= 0 || !ResolveParameterIndices(model)) return;
+    if (!std::isfinite(deltaTimeSeconds) || deltaTimeSeconds <= 0 || !ResolveParameterIndices(model))
+    {
+        _observation.sampled = false;
+        _observationModel = nullptr;
+        return;
+    }
     ++_stateRevision;
     csmFloat32 totalAngle;
     csmFloat32 weight;
@@ -1269,6 +1537,10 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
     parameterMaximumValues = Core::csmGetParameterMaximumValues(model->GetModel());
     parameterMinimumValues = Core::csmGetParameterMinimumValues(model->GetModel());
     parameterDefaultValues = Core::csmGetParameterDefaultValues(model->GetModel());
+    PhysicsObservation observation;
+    const bool observing = BeginObservation(*model, deltaTimeSeconds, observation);
+    _observation.sampled = false;
+    _observationModel = nullptr;
 
     if (_parameterCaches.size() < model->GetParameterCount())
     {
@@ -1335,6 +1607,12 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
                 if (currentInputs[i].SourceParameterIndex == -1)
                 {
                     currentInputs[i].SourceParameterIndex = model->FindRealParameterIndex(currentInputs[i].Source.Id);
+                }
+
+                if (observing && settingIndex == _observationGroup)
+                {
+                    observation.inputs[i].value = _parameterCaches[currentInputs[i].SourceParameterIndex];
+                    observation.inputs[i].sampled = true;
                 }
 
                 currentInputs[i].GetNormalizedParameterValue(
@@ -1411,10 +1689,11 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
     }
 
     const float alpha = _currentRemainTime / physicsDeltaTime;
-    Interpolate(model, alpha);
+    Interpolate(model, alpha, observing ? &observation : nullptr);
+    if (observing) FinishObservation(*model, observation);
 }
 
-void CubismPhysics::Interpolate(CubismModel* model, csmFloat32 weight)
+void CubismPhysics::Interpolate(CubismModel* model, csmFloat32 weight, PhysicsObservation* observation)
 {
     if (!ResolveParameterIndices(model)) return;
     csmInt32 i, settingIndex;
@@ -1447,7 +1726,7 @@ void CubismPhysics::Interpolate(CubismModel* model, csmFloat32 weight)
                 parameterMinimumValues[currentOutputs[i].DestinationParameterIndex],
                 parameterMaximumValues[currentOutputs[i].DestinationParameterIndex],
                 _previousRigOutputs[settingIndex].outputs[i] * (1 - weight) + _currentRigOutputs[settingIndex].outputs[i] * weight,
-                &currentOutputs[i]
+                &currentOutputs[i], observation && settingIndex == _observationGroup ? &observation->outputs[i] : nullptr
             );
         }
     }
@@ -1457,6 +1736,7 @@ void CubismPhysics::SetOptions(const Options& options)
 {
     if (!std::isfinite(options.Gravity.X) || !std::isfinite(options.Gravity.Y) ||
         !std::isfinite(options.Wind.X) || !std::isfinite(options.Wind.Y)) return;
+    InvalidateObservation();
     ++_stateRevision;
     _options = options;
 }

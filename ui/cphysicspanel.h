@@ -14,11 +14,13 @@
 #include <array>
 #include <memory>
 #include <functional>
+#include "framework/Physics/CubismPhysicsObservation.hpp"
 
 class CPhysicsGraphWidget;
 class QPushButton;
 class CPhysicsEditDelegate;
 class QLineEdit;
+class QComboBox;
 struct CPhysicsHistoryCheckpoint;
 
 class CPhysicsPanel : public QDockWidget
@@ -87,6 +89,10 @@ public:
     bool ValidatePreparedSnapshot(const PreparedSnapshot& prepared, QString* error = nullptr) const;
     bool CommitPreparedSnapshot(PreparedSnapshot& prepared, QString* error = nullptr);
     void NotifySnapshotCommitted();
+    int SelectedGroupIndex() const;
+    void SetObservation(const Live2D::Cubism::Framework::PhysicsObservation& sample, const QString& status = {});
+    void ClearObservation(const QString& status = {});
+    void SetBakeAvailable(bool available);
 
 signals:
     void GravityChanged(float x, float y);
@@ -95,6 +101,8 @@ signals:
     void PhysicsSaved(const QString& path);
     void HistoryChanged(bool canUndo, bool canRedo);
     void EditRejected(const QString& reason);
+    void ObservationGroupChanged(int groupIndex);
+    void BakeRequested();
     // 选择物理组后发射输入参数列表，用于鼠标拖拽驱动
     void PhysicsDragParamsChanged(const QStringList& paramIds, const QStringList& types);
 
@@ -134,6 +142,9 @@ private:
     static bool ValidateDocument(const QJsonObject& document, QString* error);
     bool HasPendingCellEdits() const;
     void RefreshSnapshotControls(const Snapshot& snapshot);
+    void ApplyParticlePreset();
+    void RefreshObservationRows();
+    void RefreshObservationChannel();
 
     QLabel* m_fpsLabel;
     QLineEdit* m_fpsEdit = nullptr;
@@ -151,6 +162,15 @@ private:
     QTableWidget* m_outputTable;
     QTableWidget* m_vertexTable;
     CPhysicsGraphWidget* m_graph = nullptr;
+    QLabel* m_observationStatus = nullptr;
+    QComboBox* m_observationGroup = nullptr;
+    QTableWidget* m_observationTable = nullptr;
+    QComboBox* m_observationChannel = nullptr;
+    QPushButton* m_bakeButton = nullptr;
+    QComboBox* m_particlePreset = nullptr;
+    QPushButton* m_applyPreset = nullptr;
+    Live2D::Cubism::Framework::PhysicsObservation m_observation;
+    bool m_hasObservation = false;
     QPushButton* m_addInputButton = nullptr;
     QPushButton* m_saveButton = nullptr;
     QPushButton* m_removeInputButton = nullptr;

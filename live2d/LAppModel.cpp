@@ -800,16 +800,22 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     const bool draftActive = physicsDraft || m_hasPhysicsDraft;
     PhysicsPreparation preparePhysics;
     if (draftActive || !m_physicsSourceBytes.isEmpty() || _physics) {
+        if (m_physicsGeneration == std::numeric_limits<quint64>::max()) {
+            if (error) *error = QStringLiteral("物理实例版本计数已耗尽");
+            return false;
+        }
         preparePhysics = [&](const CubismModel& previousModel, const CubismModel& replacement, PhysicsOwner& result, QString* detail) {
             return PreparePhysicsCandidate(previousModel, replacement, physicsReferences ? *physicsReferences : m_parameterReferences.physics,
                 draftActive, draftActive ? draftBytes : m_physicsSourceBytes, physicsDraft && physicsDraft->stabilize,
                 !physicsDraft, result, detail);
         };
     }
+    const bool hadPhysics = _physics != nullptr;
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
                       prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
                       prepareCompiledModel, physicsReferences, preparePhysics))
         return false;
+    if (preparePhysics && (hadPhysics || _physics)) ++m_physicsGeneration;
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
     m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;

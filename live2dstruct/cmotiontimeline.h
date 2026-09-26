@@ -69,6 +69,9 @@ struct CMotionEventBatch
 class CMotionTimeline
 {
 public:
+    static constexpr int MaximumPointCount = 100000;
+    bool ReplaceParameterSamples(const QMap<QString, QVector<QPointF>>& samples, QString* error = nullptr,
+                                 bool resetFades = false);
     class ParameterTracks
     {
         friend class CMotionTimeline;

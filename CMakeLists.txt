@@ -150,6 +150,16 @@ target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Wid
 
 if(BUILD_TESTING)
     if(TARGET live2d_core)
+        add_executable(physics_bake_tests tests/physics_bake_tests.cpp live2d/cphysicsbake.cpp
+            framework/CubismFramework.cpp framework/Model/CubismMoc.cpp framework/Model/CubismModel.cpp
+            framework/Physics/CubismPhysics.cpp framework/Physics/CubismPhysicsJson.cpp
+            framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp framework/Type/csmString.cpp
+            framework/Utils/CubismJson.cpp framework/Utils/CubismString.cpp framework/Utils/CubismDebug.cpp
+            framework/Math/CubismMath.cpp framework/Math/CubismVector2.cpp
+            edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp opengl/cglmeshbuffer.cpp)
+        target_link_libraries(physics_bake_tests PRIVATE model_data live2d_core Qt6::Gui Qt6::OpenGL Qt6::Test)
+        target_compile_definitions(physics_bake_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME physics_bake COMMAND physics_bake_tests)
         add_executable(runtime_moc_core_tests tests/runtime_moc_core_tests.cpp)
         target_link_libraries(runtime_moc_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(runtime_moc_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -167,6 +177,10 @@ if(BUILD_TESTING)
         target_compile_definitions(parameter_delete_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME parameter_delete_core COMMAND parameter_delete_core_tests)
     endif()
+    add_executable(physics_bake_dialog_tests tests/physics_bake_dialog_tests.cpp ui/cphysicsbakedialog.cpp)
+    target_link_libraries(physics_bake_dialog_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    add_test(NAME physics_bake_dialog COMMAND physics_bake_dialog_tests)
+    set_tests_properties(physics_bake_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(runtime_export_dialog_tests tests/runtime_export_dialog_tests.cpp ui/cruntimeexportdialog.cpp)
     target_include_directories(runtime_export_dialog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(runtime_export_dialog_tests PRIVATE Qt6::Widgets Qt6::Test)

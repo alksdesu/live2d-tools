@@ -76,6 +76,10 @@ private:
     bool UsesSessionPhysics() const;
     bool HasUnsavedPhysicsChanges() const;
     void ConfigurePhysicsSaving();
+    void ConfigurePhysicsTools();
+    void RefreshPhysicsObservation();
+    void BakePhysicsAnimation();
+    void RestorePhysicsBakeActions();
     bool SaveSession();
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
@@ -171,6 +175,7 @@ private:
     bool m_batchExporting = false;
     bool m_closeAfterExport = false;
     CPreviewExportTransaction m_previewExport;
+    QVector<QPointer<QAction>> m_physicsBakeActions;
     std::shared_ptr<PreviewExportState> m_exportState;
     CExportResultsPanel* m_exportResultsPanel = nullptr;
     QAction* m_recoverPreviewAction = nullptr;

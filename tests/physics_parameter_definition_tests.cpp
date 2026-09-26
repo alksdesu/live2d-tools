@@ -7,6 +7,7 @@
 #include "framework/Utils/CubismJson.hpp"
 
 #include <QtTest>
+#include "live2dstruct/cphysicsdocument.h"
 #include <QCryptographicHash>
 #include <QFile>
 #include <QJsonDocument>
@@ -147,6 +148,23 @@ class PhysicsParameterDefinitionTests : public QObject
         physics._previousRigOutputs[0].outputs[0] = -0.625f;
         physics._physicsRig->Outputs[0].ValueBelowMinimum = -3.0f;
         physics._physicsRig->Outputs[0].ValueExceededMaximum = 4.0f;
+    }
+    static QJsonObject observationState(const PhysicsObservation& observation)
+    {
+        const auto row = [](const PhysicsInputObservation& value) {
+            return QJsonObject{{"id", value.id}, {"type", value.type}, {"active", value.active}, {"sampled", value.sampled},
+                {"range", value.hasRange}, {"value", value.value}, {"minimum", value.minimum}, {"maximum", value.maximum}, {"default", value.defaultValue}};
+        };
+        QJsonArray inputs, outputs, particles;
+        for (const auto& value : observation.inputs) inputs.append(row(value));
+        for (const auto& value : observation.outputs) {
+            auto fields = row(value); fields["raw"] = value.rawValue; fields["clamped"] = value.clampedValue;
+            fields["clipped"] = value.clipped; outputs.append(fields);
+        }
+        for (const auto& point : observation.particles) particles.append(QJsonArray{point.x(), point.y()});
+        return {{"group", observation.groupIndex}, {"id", observation.groupId}, {"digest", QString::fromLatin1(observation.sourceDigest.toHex())},
+            {"generation", QString::number(observation.generation)}, {"sequence", QString::number(observation.sequence)}, {"time", observation.time},
+            {"sampled", observation.sampled}, {"particles", particles}, {"inputs", inputs}, {"outputs", outputs}};
     }
 private slots:
     void init()
@@ -495,6 +513,244 @@ private slots:
             target->SetParameterValue(0, float(i) / 12); simulation->Evaluate(target.get(), 1.f / 30);
             QVERIFY(simulation->HasFiniteRuntimeState());
             for (float value : State(target->GetModel()).values) QVERIFY(std::isfinite(value));
+        }
+    }
+
+    void capturedConfigurationUsesActualRowMasksWithoutChangingSimulation()
+    {
+        auto root = QJsonDocument::fromJson(physicsJson()).object(); auto groups = root["PhysicsSettings"].toArray();
+        auto first = groups[0].toObject(); first["Extra"] = QJsonObject{{"keep", 9}}; groups[0] = first;
+        auto second = first; second["Id"] = "second"; groups.append(second); root["PhysicsSettings"] = groups;
+        root["RootExtension"] = "preserved"; const auto bytes = QJsonDocument(root).toJson(); auto simulation = physics(bytes); auto target = model();
+        ParameterPhysicsReferences refs; refs.sourceDigest = simulation->SourceDigest(); refs.suppressedInputs[0] = "ParamA"; refs.suppressedOutputs[1] = "ParamB";
+        CubismPhysics::ParameterDefinitionState binding; QVERIFY(simulation->PrepareModelBinding(*target, refs, binding)); simulation->CommitParameterDefinitionChange(binding);
+        QVERIFY(simulation->SetObservationGroup(1)); simulation->Evaluate(target.get(), 1.f / 30);
+        const auto before = dynamicState(*simulation); const auto revision = simulation->_stateRevision; const auto values = State(target->GetModel()).values;
+        PhysicsObservation observation; QVERIFY(simulation->CaptureObservation(*target, observation)); const auto observed = observationState(observation);
+        QJsonObject actual; QString error; QVERIFY2(simulation->CaptureConfiguration(actual, &error), qPrintable(error));
+        first["Input"] = QJsonArray{}; second["Output"] = QJsonArray{}; root["PhysicsSettings"] = QJsonArray{first, second};
+        QJsonObject expected; QVERIFY(live2dstruct::CPhysicsDocument::Normalize(root, expected)); QCOMPARE(actual, expected);
+        QCOMPARE(actual["Meta"].toObject()["TotalInputCount"].toInt(), 1); QCOMPARE(actual["Meta"].toObject()["TotalOutputCount"].toInt(), 1);
+        QCOMPARE(actual["Meta"].toObject()["VertexCount"].toInt(), 4); QCOMPARE(actual["PhysicsSettings"].toArray()[1].toObject()["Id"].toString(), QString("second"));
+        QCOMPARE(dynamicState(*simulation), before); QCOMPARE(simulation->_stateRevision, revision); QCOMPARE(State(target->GetModel()).values, values);
+        QVERIFY(simulation->CaptureObservation(*target, observation)); QCOMPARE(observationState(observation), observed);
+        QCOMPARE(simulation->SourceDigest(), QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+        auto filtered = physics(QJsonDocument(actual).toJson()); QVERIFY(filtered->PrepareModelBinding(*target, {}, binding)); filtered->CommitParameterDefinitionChange(binding);
+        QJsonObject again; QVERIFY(filtered->CaptureConfiguration(again)); QCOMPARE(again, actual);
+    }
+
+    void capturedConfigurationPreservesSourcePrecisionAndTracksLiveForces_data()
+    {
+        QTest::addColumn<bool>("present"); QTest::newRow("default-omitted") << false; QTest::newRow("precise-explicit") << true;
+    }
+    void capturedConfigurationPreservesSourcePrecisionAndTracksLiveForces()
+    {
+        QFETCH(bool, present); auto root = QJsonDocument::fromJson(physicsJson()).object(); auto meta = root["Meta"].toObject();
+        if (present) meta["EffectiveForces"] = QJsonObject{{"Extra", "keep"}, {"Gravity", QJsonObject{{"X", .1234567890123}, {"Y", -.999999999}, {"Extra", 5}}},
+            {"Wind", QJsonObject{{"X", 1e-50}, {"Y", -0.0}}}};
+        else meta.remove("EffectiveForces");
+        root["Meta"] = meta; auto simulation = physics(QJsonDocument(root).toJson());
+        QJsonObject actual, expected; QVERIFY(simulation->CaptureConfiguration(actual)); QVERIFY(live2dstruct::CPhysicsDocument::Normalize(root, expected)); QCOMPARE(actual, expected);
+        const auto before = dynamicState(*simulation); const auto revision = simulation->_stateRevision;
+        auto options = simulation->GetOptions(); options.Wind.Y = .75f; simulation->SetOptions(options);
+        QVERIFY(simulation->CaptureConfiguration(actual));
+        auto forces = expected["Meta"].toObject()["EffectiveForces"].toObject(); auto wind = forces["Wind"].toObject(); wind["Y"] = .75; forces["Wind"] = wind;
+        auto expectedMeta = expected["Meta"].toObject(); expectedMeta["EffectiveForces"] = forces; expected["Meta"] = expectedMeta;
+        QCOMPARE(actual, expected); QCOMPARE(simulation->_stateRevision, revision + 1);
+        QCOMPARE(dynamicState(*simulation), before);
+        if (present) QCOMPARE(actual["Meta"].toObject()["EffectiveForces"].toObject()["Gravity"].toObject()["X"].toDouble(), .1234567890123);
+        auto recreated = physics(QJsonDocument(actual).toJson()); QCOMPARE(recreated->GetOptions().Wind.Y, .75f);
+        QCOMPARE(recreated->GetOptions().Gravity.X, options.Gravity.X); QCOMPARE(recreated->GetOptions().Gravity.Y, options.Gravity.Y);
+    }
+
+    void configurationCaptureHandlesEmptyAndRejectsInvalidCandidatesAtomically()
+    {
+        auto empty = physics(R"({"PhysicsSettings":[]})"); QJsonObject output{{"sentinel", 7}};
+        QVERIFY(empty->CaptureConfiguration(output)); QCOMPARE(output["PhysicsSettings"].toArray().size(), 0);
+        auto source = physics(changedPhysics([](QJsonObject&, QJsonObject& group) { group.remove("Input"); group.remove("Output"); }));
+        QVERIFY(source->CaptureConfiguration(output)); const auto group = output["PhysicsSettings"].toArray()[0].toObject();
+        QVERIFY(group["Input"].isArray() && group["Output"].isArray()); QVERIFY(group["Input"].toArray().isEmpty() && group["Output"].toArray().isEmpty());
+        auto simulation = physics(); const auto sentinel = output; QString error;
+        const auto raw = simulation->_normalizedBytes; simulation->_normalizedBytes = "{";
+        QVERIFY(!simulation->CaptureConfiguration(output, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(output, sentinel); simulation->_normalizedBytes = raw;
+        simulation->_activeInputs[0] = 2; QVERIFY(!simulation->CaptureConfiguration(output, &error)); QCOMPARE(output, sentinel); simulation->_activeInputs[0] = 1;
+        simulation->_activeOutputs.clear(); QVERIFY(!simulation->CaptureConfiguration(output, &error)); QCOMPARE(output, sentinel); simulation->_activeOutputs = {1};
+        auto options = simulation->GetOptions(); options.Gravity.X = 100001; simulation->SetOptions(options);
+        QVERIFY(!simulation->CaptureConfiguration(output, &error)); QCOMPARE(output, sentinel);
+        simulation->_options.Gravity.X = std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!simulation->CaptureConfiguration(output, &error)); QCOMPARE(output, sentinel);
+    }
+
+    void observationSelectionAndColdCaptureDoNotChangePhysicsOrResolveIndices()
+    {
+        auto simulation = physics(); auto target = model();
+        const auto before = dynamicState(*simulation); const auto revision = simulation->_stateRevision;
+        PhysicsObservation result; result.groupId = "sentinel"; result.sequence = 71; result.particles = {{3, 4}};
+        const auto sentinel = observationState(result); QString error;
+        QVERIFY(!simulation->CaptureObservation(*target, result, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(observationState(result), sentinel);
+        QVERIFY(!simulation->SetObservationGroup(-2)); QVERIFY(!simulation->SetObservationGroup(1));
+        QVERIFY(simulation->SetObservationGroup(0));
+        QCOMPARE(simulation->_physicsRig->Inputs[0].SourceParameterIndex, -1);
+        QCOMPARE(simulation->_physicsRig->Outputs[0].DestinationParameterIndex, -1);
+        QVERIFY2(simulation->CaptureObservation(*target, result, &error), qPrintable(error));
+        QVERIFY(error.isEmpty()); QVERIFY(!result.sampled); QVERIFY(result.particles.isEmpty());
+        QCOMPARE(result.groupIndex, 0); QCOMPARE(result.groupId, QString("one")); QCOMPARE(result.sourceDigest, simulation->SourceDigest());
+        QCOMPARE(result.generation, quint64(0)); QCOMPARE(result.sequence, quint64(0)); QCOMPARE(result.time, 0.0);
+        QCOMPARE(result.inputs.size(), 1); QCOMPARE(result.outputs.size(), 1);
+        QCOMPARE(result.inputs[0].id, QString("ParamA")); QCOMPARE(result.inputs[0].type, QString("X"));
+        QVERIFY(result.inputs[0].active && result.inputs[0].hasRange && !result.inputs[0].sampled);
+        QCOMPARE(result.inputs[0].minimum, -1.f); QCOMPARE(result.inputs[0].maximum, 1.f); QCOMPARE(result.inputs[0].defaultValue, 0.f);
+        QCOMPARE(result.outputs[0].id, QString("ParamB")); QVERIFY(result.outputs[0].active && !result.outputs[0].sampled);
+        QCOMPARE(simulation->_physicsRig->Inputs[0].SourceParameterIndex, -1);
+        QCOMPARE(simulation->_physicsRig->Outputs[0].DestinationParameterIndex, -1);
+        QCOMPARE(dynamicState(*simulation), before); QCOMPARE(simulation->_stateRevision, revision); QCOMPARE(State(target->GetModel()).updates, 0);
+        QVERIFY(simulation->SetObservationGroup(-1)); const auto old = observationState(result);
+        QVERIFY(!simulation->CaptureObservation(*target, result)); QCOMPARE(observationState(result), old);
+        simulation->Evaluate(target.get(), 1.f / 30);
+        QCOMPARE(simulation->_observationSequence, quint64(0)); QVERIFY(simulation->_observation.inputs.isEmpty()); QVERIFY(simulation->_observation.particles.isEmpty());
+        auto empty = physics(R"({"PhysicsSettings":[]})"); QVERIFY(!empty->SetObservationGroup(0)); QVERIFY(empty->SetObservationGroup(-1));
+        QVERIFY(!empty->CaptureObservation(*target, result)); QCOMPARE(observationState(result), old);
+    }
+
+    void observationInputsComeFromTheLastSubstepAndSurviveLaterParameterWrites()
+    {
+        auto simulation = physics(changedPhysics([](QJsonObject&, QJsonObject& group) {
+            auto output = group["Output"].toArray()[0].toObject();
+            output["Destination"] = QJsonObject{{"Target", "Parameter"}, {"Id", "ParamA"}};
+            output["Type"] = "Y"; output["Scale"] = 2; group["Output"] = QJsonArray{output};
+        }));
+        auto target = model(); target->SetParameterValue(0, .8f); QVERIFY(simulation->SetObservationGroup(0));
+        simulation->Evaluate(target.get(), 1.f / 30);
+        PhysicsObservation first; QVERIFY(simulation->CaptureObservation(*target, first));
+        QVERIFY(first.sampled); QVERIFY(first.inputs[0].sampled); QVERIFY(first.outputs[0].sampled);
+        QCOMPARE(first.inputs[0].value, .8f); QCOMPARE(target->GetParameterValue(0), 0.f);
+        QVERIFY(simulation->_parameterCaches[0] != first.inputs[0].value);
+        QCOMPARE(first.particles.size(), 2);
+        QCOMPARE(first.particles[0].x(), double(simulation->_physicsRig->Particles[0].Position.X));
+        QCOMPARE(first.particles[1].y(), double(simulation->_physicsRig->Particles[1].Position.Y));
+        simulation->_parameterInputCaches[0] = -.6f; target->SetParameterValue(0, 1);
+        simulation->Evaluate(target.get(), 2.f / 30);
+        PhysicsObservation last; QVERIFY(simulation->CaptureObservation(*target, last));
+        QCOMPARE(last.inputs[0].value, 1.f); QCOMPARE(last.sequence, first.sequence + 1); QVERIFY(last.time > first.time);
+        target->SetParameterValue(0, -.5f); simulation->Evaluate(target.get(), 1.f / 120);
+        PhysicsObservation between; QVERIFY(simulation->CaptureObservation(*target, between));
+        QVERIFY(between.inputs[0].sampled); QCOMPARE(between.inputs[0].value, 1.f);
+        QCOMPARE(between.sequence, last.sequence + 1); QVERIFY(between.time > last.time);
+        const auto recorded = observationState(between); const auto revision = simulation->_stateRevision;
+        target->SetParameterValue(0, -1); target->SetParameterValue(1, 1.5f);
+        PhysicsObservation captured; QVERIFY(simulation->CaptureObservation(*target, captured));
+        QCOMPARE(observationState(captured), recorded); QCOMPARE(simulation->_stateRevision, revision);
+        captured.inputs[0].value = 999; captured.particles[0] = QPointF(999, 999); captured.generation = 17;
+        QVERIFY(simulation->CaptureObservation(*target, captured)); QCOMPARE(observationState(captured), recorded);
+    }
+
+    void observationOutputsIncludeScaleClampingAndTheAppliedWeight_data()
+    {
+        QTest::addColumn<float>("translation"); QTest::addColumn<float>("scale"); QTest::addColumn<float>("weight");
+        QTest::addColumn<float>("raw"); QTest::addColumn<float>("clamped"); QTest::addColumn<float>("applied"); QTest::addColumn<bool>("clipped");
+        QTest::newRow("upper") << .75f << 8.f << 25.f << 6.f << 2.f << .875f << true;
+        QTest::newRow("lower") << -.75f << 8.f << 25.f << -6.f << -2.f << -.125f << true;
+        QTest::newRow("negative-scale") << .75f << -8.f << 25.f << -6.f << -2.f << -.125f << true;
+        QTest::newRow("zero-weight") << .75f << 8.f << 0.f << 6.f << 2.f << .5f << true;
+        QTest::newRow("full-weight") << .75f << 8.f << 100.f << 6.f << 2.f << 2.f << true;
+        QTest::newRow("unclipped") << .5f << 2.f << 50.f << 1.f << 1.f << .75f << false;
+    }
+    void observationOutputsIncludeScaleClampingAndTheAppliedWeight()
+    {
+        QFETCH(float, translation); QFETCH(float, scale); QFETCH(float, weight);
+        QFETCH(float, raw); QFETCH(float, clamped); QFETCH(float, applied); QFETCH(bool, clipped);
+        auto simulation = physics(changedPhysics([&](QJsonObject&, QJsonObject& group) {
+            auto output = group["Output"].toArray()[0].toObject(); output["Scale"] = scale; output["Weight"] = weight;
+            group["Output"] = QJsonArray{output};
+        }));
+        auto target = model(); target->SetParameterValue(1, .5f);
+        simulation->_previousRigOutputs[0].outputs[0] = translation; simulation->_currentRigOutputs[0].outputs[0] = translation;
+        QVERIFY(simulation->SetObservationGroup(0)); simulation->Evaluate(target.get(), 1.f / 120);
+        PhysicsObservation sample; QVERIFY(simulation->CaptureObservation(*target, sample));
+        QVERIFY(sample.sampled); QVERIFY(!sample.inputs[0].sampled); QCOMPARE(sample.outputs.size(), 1);
+        const auto& output = sample.outputs[0]; QVERIFY(output.active && output.sampled && output.hasRange);
+        QCOMPARE(output.rawValue, raw); QCOMPARE(output.clampedValue, clamped); QCOMPARE(output.value, applied); QCOMPARE(output.clipped, clipped);
+        QCOMPARE(output.minimum, -2.f); QCOMPARE(output.maximum, 2.f); QCOMPARE(output.defaultValue, .25f);
+        QCOMPARE(target->GetParameterValue(1), applied);
+        target->SetParameterValue(1, -1.5f); PhysicsObservation after; QVERIFY(simulation->CaptureObservation(*target, after));
+        QCOMPARE(observationState(after), observationState(sample));
+    }
+
+    void observationSelectsOnlyItsGroupAndHonorsInactiveSourceRows()
+    {
+        auto root = QJsonDocument::fromJson(physicsJson()).object(); auto groups = root["PhysicsSettings"].toArray();
+        auto second = groups[0].toObject(); second["Id"] = "second";
+        auto input = second["Input"].toArray()[0].toObject(); input["Source"] = QJsonObject{{"Target", "Parameter"}, {"Id", "ParamC"}};
+        auto output = second["Output"].toArray()[0].toObject(); output["Destination"] = QJsonObject{{"Target", "Parameter"}, {"Id", "ParamD"}};
+        second["Input"] = QJsonArray{input}; second["Output"] = QJsonArray{output}; groups.append(second); root["PhysicsSettings"] = groups;
+        auto simulation = physics(QJsonDocument(root).toJson()); auto target = model();
+        ParameterPhysicsReferences refs; refs.sourceDigest = simulation->SourceDigest(); refs.suppressedInputs[1] = "ParamC"; refs.suppressedOutputs[1] = "ParamD";
+        CubismPhysics::ParameterDefinitionState binding; QVERIFY(simulation->PrepareModelBinding(*target, refs, binding)); simulation->CommitParameterDefinitionChange(binding);
+        const auto virtuals = target->_notExistParameterValues; const auto virtualIds = target->_notExistParameterId;
+        QVERIFY(simulation->SetObservationGroup(1)); simulation->Evaluate(target.get(), 1.f / 30);
+        PhysicsObservation sample; QVERIFY(simulation->CaptureObservation(*target, sample));
+        QCOMPARE(sample.groupIndex, 1); QCOMPARE(sample.groupId, QString("second")); QCOMPARE(sample.inputs.size(), 1); QCOMPARE(sample.outputs.size(), 1); QCOMPARE(sample.particles.size(), 2);
+        QVERIFY(sample.sampled); QVERIFY(!sample.inputs[0].active && !sample.inputs[0].sampled && !sample.inputs[0].hasRange);
+        QVERIFY(!sample.outputs[0].active && !sample.outputs[0].sampled && !sample.outputs[0].hasRange);
+        QCOMPARE(sample.inputs[0].id, QString("ParamC")); QCOMPARE(sample.outputs[0].id, QString("ParamD"));
+        QCOMPARE(target->_notExistParameterValues, virtuals); QCOMPARE(target->_notExistParameterId, virtualIds);
+        const auto previous = observationState(sample); const auto revision = simulation->_stateRevision;
+        QVERIFY(!simulation->SetObservationGroup(2)); QVERIFY(simulation->CaptureObservation(*target, sample)); QCOMPARE(observationState(sample), previous);
+        QVERIFY(simulation->SetObservationGroup(1)); QVERIFY(simulation->CaptureObservation(*target, sample)); QCOMPARE(observationState(sample), previous);
+        QVERIFY(simulation->SetObservationGroup(0)); QVERIFY(simulation->CaptureObservation(*target, sample));
+        QVERIFY(!sample.sampled); QVERIFY(sample.particles.isEmpty()); QCOMPARE(sample.groupId, QString("one")); QCOMPARE(sample.time, 0.0);
+        QCOMPARE(simulation->_stateRevision, revision);
+        simulation->Evaluate(target.get(), 1.f / 30); QVERIFY(simulation->CaptureObservation(*target, sample)); QCOMPARE(sample.sequence, quint64(2));
+    }
+
+    void observationRejectsForeignModelsAndInvalidatesResetsAndRigCommits()
+    {
+        auto simulation = physics(); auto target = model(), foreign = model();
+        QVERIFY(simulation->SetObservationGroup(0)); simulation->Evaluate(target.get(), 1.f / 30);
+        PhysicsObservation sample; QVERIFY(simulation->CaptureObservation(*target, sample)); const auto old = observationState(sample); QString error;
+        QVERIFY(!simulation->CaptureObservation(*foreign, sample, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(observationState(sample), old);
+        State(target->GetModel()).minimum[0] = -2;
+        QVERIFY(!simulation->CaptureObservation(*target, sample, &error)); QCOMPARE(observationState(sample), old);
+        State(target->GetModel()).minimum[0] = -1;
+        simulation->Reset(); QVERIFY(simulation->CaptureObservation(*target, sample)); QVERIFY(!sample.sampled); QVERIFY(sample.particles.isEmpty()); QCOMPARE(sample.time, 0.0);
+        simulation->Evaluate(target.get(), 1.f / 30); QVERIFY(simulation->CaptureObservation(*target, sample)); QCOMPARE(sample.sequence, quint64(2));
+        simulation->Evaluate(target.get(), std::numeric_limits<float>::quiet_NaN());
+        QVERIFY(simulation->CaptureObservation(*target, sample)); QVERIFY(!sample.sampled); QCOMPARE(sample.sequence, quint64(2));
+        simulation->Evaluate(target.get(), 1.f / 30);
+        CubismPhysics::ParameterDefinitionState binding; QVERIFY(simulation->PrepareModelBinding(*target, {}, binding)); simulation->CommitParameterDefinitionChange(binding);
+        QVERIFY(simulation->CaptureObservation(*target, sample)); QVERIFY(!sample.sampled);
+        simulation->Evaluate(target.get(), 1.f / 30); QVERIFY(simulation->CaptureObservation(*target, sample));
+        const auto sourceFrame = observationState(sample);
+        auto replacement = physics(); CubismPhysics::PreparedRuntimeState prepared;
+        QVERIFY(replacement->PrepareRuntimeState(simulation.get(), *target, *target, {}, prepared)); QVERIFY(replacement->CommitRuntimeState(prepared));
+        QVERIFY(!replacement->CaptureObservation(*target, sample)); QCOMPARE(observationState(sample), sourceFrame);
+        QVERIFY(replacement->SetObservationGroup(0)); QVERIFY(replacement->CaptureObservation(*target, sample)); QVERIFY(!sample.sampled); QCOMPARE(sample.sequence, quint64(0));
+        replacement->Evaluate(target.get(), 1.f / 30); QVERIFY(replacement->CaptureObservation(*target, sample)); QVERIFY(sample.sampled);
+        QVERIFY(replacement->PrepareRuntimeState(simulation.get(), *target, *target, {}, prepared)); QVERIFY(replacement->CommitRuntimeState(prepared));
+        QVERIFY(replacement->CaptureObservation(*target, sample)); QVERIFY(!sample.sampled); QVERIFY(sample.particles.isEmpty());
+        QVERIFY(simulation->CaptureObservation(*target, sample)); QCOMPARE(observationState(sample), sourceFrame);
+    }
+
+    void observingNeverChangesTheOriginalFrameSequence()
+    {
+        auto baseline = physics(), observed = physics(); auto first = model(), second = model();
+        quint64 sequence = 0;
+        for (int frame = 0; frame < 48; ++frame) {
+            const bool enabled = frame % 9 < 6;
+            const auto revision = observed->_stateRevision; const auto before = dynamicState(*observed);
+            QVERIFY(observed->SetObservationGroup(enabled ? 0 : -1)); QCOMPARE(observed->_stateRevision, revision); QCOMPARE(dynamicState(*observed), before);
+            const float input = std::sin(float(frame) / 5), output = std::cos(float(frame) / 7);
+            first->SetParameterValue(0, input); second->SetParameterValue(0, input); first->SetParameterValue(1, output); second->SetParameterValue(1, output);
+            const float dt = frame % 3 == 0 ? 1.f / 20 : 1.f / 120;
+            baseline->Evaluate(first.get(), dt); observed->Evaluate(second.get(), dt);
+            QCOMPARE(State(first->GetModel()).values, State(second->GetModel()).values);
+            QCOMPARE(dynamicState(*baseline), dynamicState(*observed)); QCOMPARE(baseline->_stateRevision, observed->_stateRevision);
+            PhysicsObservation snapshot;
+            if (enabled) {
+                QVERIFY(observed->CaptureObservation(*second, snapshot)); QVERIFY(snapshot.sampled); QVERIFY(snapshot.sequence > sequence); sequence = snapshot.sequence;
+                const auto captured = observationState(snapshot); QVERIFY(observed->CaptureObservation(*second, snapshot)); QCOMPARE(observationState(snapshot), captured);
+                QCOMPARE(baseline->_stateRevision, observed->_stateRevision); QCOMPARE(dynamicState(*baseline), dynamicState(*observed));
+            } else QVERIFY(!observed->CaptureObservation(*second, snapshot));
         }
     }
     void suppressedReferencesMigrateWithoutChangingSimulationState_data()

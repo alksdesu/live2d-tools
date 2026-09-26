@@ -84,6 +84,10 @@ public:
     bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
     bool CaptureTimelineState(QJsonObject* state, QString* error = nullptr);
     bool CaptureTimelineBytes(QByteArray& bytes, QString* error = nullptr) const;
+    bool CaptureBakeTimeline(CMotionTimeline& result, quint64& revision, QString* error = nullptr) const;
+    bool ApplyBakedParameterSamples(const CMotionTimeline& expected, quint64 expectedRevision,
+                                   const QMap<QString, QVector<QPointF>>& samples, bool newAnimation,
+                                   double fps, QString* error = nullptr);
     bool RestoreTimelineState(const QJsonObject& state, QString* error = nullptr);
     bool HasUnsavedTimelineChanges() const;
     void MarkTimelineSaved();

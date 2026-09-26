@@ -21,6 +21,7 @@
 #include <QByteArray>
 #include "live2dstruct/cmotiontimeline.h"
 #include "framework/Model/CubismParameterReferences.hpp"
+#include "framework/Physics/CubismPhysicsObservation.hpp"
 
 namespace Live2D { namespace Cubism { namespace Framework { class CubismMotion; }}}
 
@@ -101,6 +102,7 @@ public:
     PreparedTimelinePreview GetTimelinePreviewContext() const
     { return {_timelinePreview, m_timelineExplicitParameterIds, _timelinePreviewActive}; }
     QMap<QString, float> GetTimelineBaseParameters() const { return _timelineBaseParameters; }
+    void GetTimelineEffectIds(QSet<QString>& eye, QSet<QString>& lip) const;
     QMap<QString, float> GetParameterValues() const;
     void UpdateParaValue(const QString& parId,float value,bool IsInit);
     bool Draw(Csm::CubismMatrix44& matrix);
@@ -135,12 +137,16 @@ public:
     void SetEnableMouseFollow(bool v) { if (!HasExportPreview()) _enableMouseFollow = v; }
     bool GetEnableMouseFollow() const { return _enableMouseFollow; }
     void SetSnapshotMode(bool v) { if (!HasExportPreview()) _snapshotMode = v; }
+    bool GetSnapshotMode() const { return _snapshotMode; }
 
     // 物理参数控制
     void SetPhysicsGravity(float x, float y);
     void SetPhysicsWind(float x, float y);
     bool ReloadPhysicsFromFile(const QString& path, QString* error = nullptr);
     bool ApplyPhysicsDraft(const PhysicsDraft& draft, QString* error = nullptr);
+    bool SetPhysicsObservationGroup(int groupIndex);
+    bool CapturePhysicsObservation(Csm::PhysicsObservation& result, QString* error = nullptr) const;
+    bool CapturePhysicsConfiguration(QJsonObject& result, QString* error = nullptr) const;
     const QByteArray& GetPhysicsSourceDigest() const { return m_physicsSourceDigest; }
     const QByteArray& GetPhysicsSourceBytes() const { return m_physicsSourceBytes; }
     const QByteArray& GetPhysicsDraftBytes() const { return m_physicsDraftBytes; }
@@ -255,6 +261,7 @@ private:
     QString m_physicsReferencePath;
     QByteArray m_physicsSourceBytes, m_physicsSourceDigest, m_physicsDraftBytes;
     bool m_hasPhysicsDraft = false;
+    quint64 m_physicsGeneration = 0;
     QVector<quint8> m_suppressedLipSync;
     QVector<quint8> m_suppressedMouseFollow;
     QSet<Csm::csmUint32> m_pendingTextureIds;

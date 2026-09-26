@@ -4,9 +4,11 @@
 
 #include "framework/Math/CubismVector2.hpp"
 #include "framework/Physics/CubismPhysicsInternal.hpp"
+#include "framework/Physics/CubismPhysicsObservation.hpp"
 #include <QVector>
 #include <QString>
 #include <QByteArray>
+#include <QJsonObject>
 #include <memory>
 
 struct ParameterPhysicsReferences;
@@ -69,6 +71,10 @@ public:
     bool ValidatePreparedRuntimeState(const PreparedRuntimeState& state) const noexcept;
     bool CommitRuntimeState(PreparedRuntimeState& state) noexcept;
     const QByteArray& SourceDigest() const { return _sourceDigest; }
+    bool SetObservationGroup(int groupIndex);
+    bool CaptureObservation(const CubismModel& model, PhysicsObservation& result, QString* error = nullptr) const;
+    bool CaptureConfiguration(QJsonObject& result, QString* error = nullptr) const;
+    bool HasFiniteRuntimeState(QString* error = nullptr) const;
 
     /**
      * @brief オプション
@@ -196,7 +202,7 @@ private:
      * @param model 物理演算の結果を適用するモデル
      * @param weight 最新結果の重み
      */
-    void Interpolate(CubismModel* model, csmFloat32 weight);
+    void Interpolate(CubismModel* model, csmFloat32 weight, PhysicsObservation* observation = nullptr);
 
     CubismPhysicsRig* _physicsRig; ///< 物理演算のデータ
     Options _options; ///< オプション
@@ -215,8 +221,17 @@ private:
     quint64 _stateRevision = 0;
     bool ResolveParameterIndices(CubismModel* model);
     bool StabilizeValues(const CubismModel& model, QVector<float>& values, QString* error = nullptr);
-    bool HasFiniteRuntimeState(QString* error = nullptr) const;
     void CopyDynamicStateFrom(const CubismPhysics& previous);
+    int _observationGroup = -1;
+    QString _observationGroupId;
+    PhysicsObservation _observation;
+    const CubismModel* _observationModel = nullptr;
+    quint64 _observationSequence = 0;
+    double _observationTime = 0;
+    void InvalidateObservation() noexcept;
+    bool PrepareObservation(const CubismModel& model, PhysicsObservation& result, QString* error = nullptr) const;
+    bool BeginObservation(const CubismModel& model, csmFloat32 deltaTime, PhysicsObservation& result) noexcept;
+    void FinishObservation(const CubismModel& model, PhysicsObservation& result) noexcept;
 
     csmBool _isJsonValid; ///< 正しくJsonデータが取得出来たか
 };

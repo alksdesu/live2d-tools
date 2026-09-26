@@ -28,6 +28,7 @@
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QItemSelectionModel>
+#include <QComboBox>
 #include <limits>
 #include <exception>
 #include <cmath>
@@ -340,6 +341,59 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     connect(m_undoButton, &QPushButton::clicked, this, [this] { QString error; if (!Undo(&error)) RejectEdit(error); });
     connect(m_redoButton, &QPushButton::clicked, this, [this] { QString error; if (!Redo(&error)) RejectEdit(error); });
     connect(m_saveButton, &QPushButton::clicked, this, [this] { QString error; if (!SavePhysics({}, &error)) RejectEdit(error); });
+    auto* monitorTitle = new QLabel(QStringLiteral("物理监视"), wrapper);
+    mainLayout->addWidget(monitorTitle);
+    auto* observationGroupRow = new QHBoxLayout;
+    auto* observationGroupLabel = new QLabel(QStringLiteral("当前物理组"), wrapper);
+    m_observationGroup = new QComboBox(wrapper);
+    m_observationGroup->setObjectName(QStringLiteral("physicsObservationGroup"));
+    m_observationGroup->setAccessibleName(QStringLiteral("当前物理组"));
+    m_observationGroup->setPlaceholderText(QStringLiteral("请选择物理组"));
+    m_observationGroup->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_observationGroup->setMinimumContentsLength(8);
+    m_observationGroup->setEnabled(false);
+    observationGroupLabel->setBuddy(m_observationGroup);
+    observationGroupRow->addWidget(observationGroupLabel);
+    observationGroupRow->addWidget(m_observationGroup, 1);
+    mainLayout->addLayout(observationGroupRow);
+    connect(m_observationGroup, &QComboBox::currentIndexChanged, this, [this](int row) {
+        if (!m_updating) m_groupTable->setCurrentCell(row, row >= 0 ? 0 : -1);
+    });
+    m_observationStatus = new QLabel(QStringLiteral("尚未实时：选择物理组并开始预览"), wrapper);
+    m_observationStatus->setObjectName(QStringLiteral("physicsObservationStatus"));
+    m_observationStatus->setTextFormat(Qt::PlainText);
+    m_observationStatus->setWordWrap(true);
+    mainLayout->addWidget(m_observationStatus);
+    m_graph = new CPhysicsGraphWidget(wrapper);
+    mainLayout->addWidget(m_graph);
+    m_observationChannel = new QComboBox(wrapper);
+    m_observationChannel->setObjectName(QStringLiteral("physicsObservationChannel"));
+    m_observationChannel->setAccessibleName(QStringLiteral("趋势通道"));
+    m_observationChannel->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_observationChannel->setMinimumContentsLength(8);
+    auto* channelLabel = new QLabel(QStringLiteral("趋势通道"), wrapper);
+    channelLabel->setBuddy(m_observationChannel);
+    auto* channelRow = new QHBoxLayout;
+    channelRow->addWidget(channelLabel); channelRow->addWidget(m_observationChannel, 1);
+    mainLayout->addLayout(channelRow);
+    connect(m_observationChannel, &QComboBox::currentIndexChanged, this, [this] { RefreshObservationChannel(); });
+    m_observationTable = new QTableWidget(0, 6, wrapper);
+    m_observationTable->setObjectName(QStringLiteral("physicsObservationTable"));
+    m_observationTable->setAccessibleName(QStringLiteral("物理输入输出实时数值"));
+    m_observationTable->setHorizontalHeaderLabels({QStringLiteral("通道"), QStringLiteral("参数"), QStringLiteral("实值"),
+        QStringLiteral("范围"), QStringLiteral("原始 → 裁剪"), QStringLiteral("状态")});
+    m_observationTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_observationTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_observationTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_observationTable->verticalHeader()->hide();
+    m_observationTable->horizontalHeader()->setStretchLastSection(true);
+    fitPhysicsRows(m_observationTable);
+    mainLayout->addWidget(m_observationTable);
+    m_bakeButton = new QPushButton(QStringLiteral("烘焙物理到时间轴…"), wrapper);
+    m_bakeButton->setObjectName(QStringLiteral("bakePhysicsButton"));
+    m_bakeButton->setEnabled(false);
+    connect(m_bakeButton, &QPushButton::clicked, this, &CPhysicsPanel::BakeRequested);
+    mainLayout->addWidget(m_bakeButton);
     auto* fpsRow = new QHBoxLayout;
     m_fpsLabel = new QLabel(QStringLiteral("计算 FPS"), wrapper);
     m_fpsLabel->setObjectName(QStringLiteral("physicsFpsLabel"));
@@ -471,7 +525,15 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
 
     connect(m_groupTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int){
         if (!m_updating) {
-            if (m_publishing || HasPendingCellEdits()) { const QSignalBlocker blocker(m_groupTable); m_groupTable->setCurrentCell(m_detailGroupRow, 0); return; }
+            if (m_publishing || HasPendingCellEdits()) {
+                {
+                    const QSignalBlocker table(m_groupTable), picker(m_observationGroup);
+                    m_groupTable->setCurrentCell(m_detailGroupRow, m_detailGroupRow >= 0 ? 0 : -1);
+                    m_observationGroup->setCurrentIndex(m_detailGroupRow);
+                }
+                RejectEdit(QStringLiteral("请先完成或取消正在编辑的物理内容，再切换物理组"));
+                return;
+            }
             showGroupDetail(row);
         }
     });
@@ -504,8 +566,6 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     // 详情区域（输入/输出/摆锤）
     QSplitter* detailSplitter = new QSplitter(Qt::Vertical, wrapper);
     detailSplitter->setChildrenCollapsible(false);
-    m_graph = new CPhysicsGraphWidget(wrapper);
-    detailSplitter->addWidget(m_graph);
 
     // 输入设置
     auto* inputSection = new QWidget(wrapper);
@@ -569,6 +629,19 @@ CPhysicsPanel::CPhysicsPanel(QWidget *parent)
     vertexTools->addWidget(m_removeVertexButton);
     vertexTools->addStretch(1);
     vertexSectionLayout->addLayout(vertexTools);
+    auto* presetRow = new QHBoxLayout;
+    m_particlePreset = new QComboBox(vertexSection);
+    m_particlePreset->setObjectName(QStringLiteral("physicsParticlePreset"));
+    m_particlePreset->setAccessibleName(QStringLiteral("摆锤预设"));
+    m_particlePreset->addItems({QStringLiteral("轻"), QStringLiteral("标准"), QStringLiteral("重")});
+    m_particlePreset->setCurrentIndex(1);
+    m_particlePreset->setToolTip(QStringLiteral("仅设置可动节点的摆幅度、反应速度和收敛速度；不改变长度、位置或输入输出"));
+    m_applyPreset = new QPushButton(QStringLiteral("应用预设"), vertexSection);
+    m_applyPreset->setObjectName(QStringLiteral("applyPhysicsPreset"));
+    m_applyPreset->setEnabled(false);
+    presetRow->addWidget(m_particlePreset, 1); presetRow->addWidget(m_applyPreset);
+    vertexSectionLayout->addLayout(presetRow);
+    connect(m_applyPreset, &QPushButton::clicked, this, &CPhysicsPanel::ApplyParticlePreset);
     m_vertexTable = new QTableWidget(0, 5, vertexSection);
     m_vertexTable->setObjectName(QStringLiteral("physicsVertexTable"));
     m_vertexTable->setHorizontalHeaderLabels({"序号", "长度", "摆幅度", "反应速度", "收敛速度"});
@@ -668,6 +741,7 @@ bool CPhysicsPanel::LoadPhysics(const QString& physicsPath, QString* error)
     m_pendingSnapshotRefresh = std::move(snapshot); m_snapshotNotificationPending = true;
     { const QSignalBlocker blocker(this); NotifySnapshotCommitted(); }
     RefreshHistoryControls();
+    emit ObservationGroupChanged(SelectedGroupIndex());
     return true;
 }
 
@@ -948,7 +1022,7 @@ void CPhysicsPanel::copyPhysicsGroup()
 void CPhysicsPanel::refreshGroupTable(int selectedRow, bool preserveNoSelection)
 {
     if (!m_groupTable) return;
-    const QSignalBlocker blocker(m_groupTable);
+    const QSignalBlocker blocker(m_groupTable), picker(m_observationGroup);
     const bool wasUpdating = m_updating;
     m_updating = true;
     QMap<QString, QString> idToName;
@@ -957,9 +1031,14 @@ void CPhysicsPanel::refreshGroupTable(int selectedRow, bool preserveNoSelection)
         idToName.insert(entry.value(QStringLiteral("Id")).toString(), entry.value(QStringLiteral("Name")).toString());
     }
     m_groupTable->setRowCount(m_physicsSettings.size());
+    m_observationGroup->clear();
+    m_observationGroup->setEnabled(!m_physicsSettings.isEmpty());
     for (int i = 0; i < m_physicsSettings.size(); ++i) {
         const QJsonObject setting = m_physicsSettings.at(i).toObject();
         const QString id = setting.value(QStringLiteral("Id")).toString();
+        const QString name = idToName.value(id, id);
+        const QString label = name.isEmpty() || name == id ? id : QStringLiteral("%1（%2）").arg(name, id);
+        m_observationGroup->addItem(label.isEmpty() ? QStringLiteral("组 %1").arg(i + 1) : label, id);
         m_groupTable->setItem(i, 0, new QTableWidgetItem(id));
         m_groupTable->setItem(i, 1, new QTableWidgetItem(idToName.value(id, id)));
         m_groupTable->setItem(i, 2, new QTableWidgetItem(QString::number(setting.value(QStringLiteral("Output")).toArray().size())));
@@ -1289,8 +1368,13 @@ void CPhysicsPanel::removePhysicsVertex()
 
 void CPhysicsPanel::showGroupDetail(int row)
 {
+    const int previousRow = m_detailGroupRow;
     m_detailGroupRow = row;
     const bool validGroup = row >= 0 && row < m_physicsSettings.size();
+    {
+        const QSignalBlocker picker(m_observationGroup);
+        m_observationGroup->setCurrentIndex(validGroup ? row : -1);
+    }
     const bool wasUpdating = m_updating;
     m_updating = true;
 
@@ -1314,6 +1398,9 @@ void CPhysicsPanel::showGroupDetail(int row)
         table->setCurrentCell(-1, -1);
     }
     if (m_graph) m_graph->SetGroup(setting);
+    ClearObservation();
+    m_applyPreset->setEnabled(validGroup && setting.value("Vertices").toArray().size() > 1);
+    m_particlePreset->setEnabled(m_applyPreset->isEnabled());
 
     // 输入设置
     QJsonArray inputs = setting["Input"].toArray();
@@ -1365,7 +1452,9 @@ void CPhysicsPanel::showGroupDetail(int row)
     if (m_removeOutputButton) m_removeOutputButton->setEnabled(false);
     if (m_removeVertexButton) m_removeVertexButton->setEnabled(false);
     m_updating = wasUpdating;
-    if (!m_updating) emitDragParams(row);
+    const QPointer<CPhysicsPanel> alive(this);
+    if (previousRow != row) emit ObservationGroupChanged(SelectedGroupIndex());
+    if (alive && !m_updating) emitDragParams(row);
 }
 
 void CPhysicsPanel::emitDragParams(int row)
@@ -1673,5 +1762,125 @@ void CPhysicsPanel::NotifySnapshotCommitted()
     }
     const QPointer<CPhysicsPanel> panel(this);
     emit PhysicsConfigChanged();
+    if (panel) emit ObservationGroupChanged(SelectedGroupIndex());
     if (panel) { RefreshHistoryControls(); emitDragParams(m_groupTable->currentRow()); }
+}
+
+int CPhysicsPanel::SelectedGroupIndex() const
+{
+    const int row = m_pendingSnapshotRefresh ? m_pendingSnapshotRefresh->selectedGroupRow : m_detailGroupRow;
+    return row >= 0 && row < m_physicsSettings.size() ? row : -1;
+}
+
+void CPhysicsPanel::SetBakeAvailable(bool available)
+{
+    m_bakeButton->setEnabled(available);
+}
+
+void CPhysicsPanel::ClearObservation(const QString& status)
+{
+    m_observation = {};
+    m_hasObservation = false;
+    m_graph->ClearObservation();
+    const QSignalBlocker blocker(m_observationChannel);
+    m_observationChannel->clear(); m_observationChannel->setEnabled(false);
+    m_observationTable->setRowCount(0);
+    fitPhysicsRows(m_observationTable);
+    m_observationStatus->setText(status.isEmpty() ? QStringLiteral("尚未实时：等待选中组的运行时物理样本") : status);
+}
+
+void CPhysicsPanel::SetObservation(const Live2D::Cubism::Framework::PhysicsObservation& sample, const QString& status)
+{
+    const int group = SelectedGroupIndex();
+    if (group < 0 || sample.groupIndex != group || sample.groupId != m_physicsSettings[group].toObject().value("Id").toString()) return;
+    const bool same = m_hasObservation && sample.generation == m_observation.generation && sample.groupIndex == m_observation.groupIndex &&
+        sample.groupId == m_observation.groupId && sample.sourceDigest == m_observation.sourceDigest;
+    if (same && sample.sampled && m_observation.sampled && sample.sequence < m_observation.sequence) return;
+    const auto validRow = [](const Live2D::Cubism::Framework::PhysicsInputObservation& row) {
+        return (!row.sampled || std::isfinite(row.value)) && (!row.hasRange ||
+            (std::isfinite(row.minimum) && std::isfinite(row.maximum) && std::isfinite(row.defaultValue) && row.minimum <= row.maximum));
+    };
+    bool valid = std::isfinite(sample.time) && sample.time >= 0;
+    for (const auto& point : sample.particles) valid = valid && std::isfinite(point.x()) && std::isfinite(point.y());
+    for (const auto& row : sample.inputs) valid = valid && validRow(row);
+    for (const auto& row : sample.outputs) valid = valid && validRow(row) &&
+        (!row.sampled || (std::isfinite(row.rawValue) && std::isfinite(row.clampedValue)));
+    if (!valid) { ClearObservation(QStringLiteral("物理样本无效，等待下一帧")); return; }
+    m_observationStatus->setText(status.isEmpty() ? (sample.sampled ? QStringLiteral("实时 · %1 · %2 秒").arg(sample.groupId, QString::number(sample.time, 'f', 2))
+                                                                      : QStringLiteral("尚未实时：选中组还没有完成物理帧")) : status);
+    if (same && sample.sampled && m_observation.sampled && sample.sequence == m_observation.sequence) return;
+    const auto channelNames = [](const Live2D::Cubism::Framework::PhysicsObservation& value) {
+        QStringList names;
+        for (const auto& row : value.outputs) names.append(QStringLiteral("输出 %1 (%2)").arg(row.id, row.type));
+        for (const auto& row : value.inputs) names.append(QStringLiteral("输入 %1 (%2)").arg(row.id, row.type));
+        return names;
+    };
+    const auto names = channelNames(sample);
+    const bool rebuild = !same || names != channelNames(m_observation);
+    m_observation = sample; m_hasObservation = true;
+    if (rebuild) {
+        const QSignalBlocker blocker(m_observationChannel);
+        m_observationChannel->clear();
+        for (int i = 0; i < sample.outputs.size(); ++i) m_observationChannel->addItem(names[i], i);
+        for (int i = 0; i < sample.inputs.size(); ++i) m_observationChannel->addItem(names[sample.outputs.size() + i], -i - 1);
+        m_observationChannel->setEnabled(!names.isEmpty());
+        m_graph->ClearObservation();
+        RefreshObservationChannel();
+    }
+    m_graph->SetObservation(sample);
+    RefreshObservationRows();
+}
+
+void CPhysicsPanel::RefreshObservationChannel()
+{
+    const int channel = m_observationChannel->currentData().toInt();
+    m_graph->SetChannel(channel >= 0, m_observationChannel->currentIndex() < 0 ? -1 : channel >= 0 ? channel : -channel - 1);
+}
+
+void CPhysicsPanel::RefreshObservationRows()
+{
+    using namespace Live2D::Cubism::Framework;
+    const int count = m_observation.inputs.size() + m_observation.outputs.size();
+    const bool changed = m_observationTable->rowCount() != count;
+    m_observationTable->setRowCount(count);
+    const auto number = [](float value) { return QString::number(value, 'g', 7); };
+    const auto write = [&](int row, const PhysicsInputObservation& value, const PhysicsOutputObservation* output) {
+        const bool sampled = m_observation.sampled && value.sampled && value.active;
+        const QString range = value.hasRange ? QStringLiteral("%1 … %2").arg(number(value.minimum), number(value.maximum)) : QStringLiteral("—");
+        const QString detail = sampled && output ? QStringLiteral("%1 → %2").arg(number(output->rawValue), number(output->clampedValue)) : QStringLiteral("—");
+        const QString state = !value.active ? QStringLiteral("已屏蔽") : !sampled ? QStringLiteral("尚未采样") :
+            output && output->clipped ? QStringLiteral("超限，已裁剪") : QStringLiteral("有效");
+        const QStringList cells{QStringLiteral("%1 %2").arg(output ? QStringLiteral("输出") : QStringLiteral("输入"), value.type), value.id,
+            sampled ? number(value.value) : QStringLiteral("—"), range, detail, state};
+        for (int column = 0; column < cells.size(); ++column) {
+            auto* item = m_observationTable->item(row, column);
+            if (!item) { item = new QTableWidgetItem; m_observationTable->setItem(row, column, item); }
+            if (item->text() != cells[column]) item->setText(cells[column]);
+            item->setToolTip(QStringLiteral("<qt>%1</qt>").arg(cells[column].toHtmlEscaped()));
+        }
+    };
+    int index = 0;
+    for (const auto& row : m_observation.inputs) write(index++, row, nullptr);
+    for (const auto& row : m_observation.outputs) write(index++, row, &row);
+    if (changed) { m_observationTable->resizeColumnsToContents(); fitPhysicsRows(m_observationTable); }
+}
+
+void CPhysicsPanel::ApplyParticlePreset()
+{
+    Snapshot before; QString error;
+    if (!CaptureSnapshot(before, &error)) { RejectEdit(error); return; }
+    const int row = before.selectedGroupRow;
+    const int preset = m_particlePreset->currentIndex();
+    if (row < 0 || row >= m_physicsSettings.size() || preset < 0 || preset > 2) return;
+    const std::array<std::array<double, 3>, 3> coefficients{{{{.85, .1, .7}}, {{.8, .2, 1.0}}, {{.7, .4, 1.3}}}};
+    auto groups = before.document.value("PhysicsSettings").toArray();
+    auto group = groups[row].toObject(); auto vertices = group.value("Vertices").toArray();
+    for (int i = 1; i < vertices.size(); ++i) {
+        auto vertex = vertices[i].toObject();
+        vertex.insert("Mobility", coefficients[preset][0]); vertex.insert("Delay", coefficients[preset][1]); vertex.insert("Acceleration", coefficients[preset][2]);
+        vertices[i] = vertex;
+    }
+    group.insert("Vertices", vertices); groups[row] = group;
+    auto document = before.document; document.insert("PhysicsSettings", groups);
+    CommitDocument(before, document, row, &error);
 }

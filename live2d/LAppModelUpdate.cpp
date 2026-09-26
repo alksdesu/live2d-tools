@@ -207,6 +207,20 @@ QMap<QString, float> LAppModel::GetParameterValues() const
     return values;
 }
 
+void LAppModel::GetTimelineEffectIds(QSet<QString>& eye, QSet<QString>& lip) const
+{
+    eye.clear();
+    lip.clear();
+    for (csmUint32 i = 0; i < _eyeBlinkIds.GetSize(); ++i) {
+        const auto id = QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString());
+        if (!m_parameterReferences.eyeBlink.contains(id)) eye.insert(id);
+    }
+    for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i) {
+        const auto id = QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString());
+        if (!m_parameterReferences.lipSync.contains(id)) lip.insert(id);
+    }
+}
+
 bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame, const CMotionTimeline* fadeTimeline,
                                   double time, bool loop)
 {
@@ -228,14 +242,7 @@ bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame, const CMoti
         if (index >= 0) _model->SetPartOpacity(index, _timelineBaseParts.value(it.key(), 1.0f));
     }
     QSet<QString> eyeIds, lipIds;
-    for (csmUint32 i = 0; i < _eyeBlinkIds.GetSize(); ++i) {
-        const auto id = QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString());
-        if (!m_parameterReferences.eyeBlink.contains(id)) eyeIds.insert(id);
-    }
-    for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i) {
-        const auto id = QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString());
-        if (!m_parameterReferences.lipSync.contains(id)) lipIds.insert(id);
-    }
+    GetTimelineEffectIds(eyeIds, lipIds);
     m_timelineExplicitParameterIds = QSet<QString>(frame.parameters.keyBegin(), frame.parameters.keyEnd());
     _timelinePreview = fadeTimeline
         ? CMotionBlendPreview::Evaluate(*fadeTimeline, time, _timelineBaseParameters, eyeIds, lipIds, loop) : frame;

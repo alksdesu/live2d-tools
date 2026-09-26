@@ -111,6 +111,112 @@ private:
     }
 
 private slots:
+    void bakeCaptureAllowsEmptyAndDoesNotPublishOrStopPlayback()
+    {
+        CMotionPanel panel; CMotionTimeline captured; quint64 revision = 99; QString error;
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged), frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QVERIFY(panel.CaptureBakeTimeline(captured, revision, &error)); QVERIFY(!captured.HasAnimation()); QCOMPARE(revision, panel.TimelineRevision());
+        QCOMPARE(changed.size(), 0); QCOMPARE(frames.size(), 0); QCOMPARE(stopped.size(), 0); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 1, 2)); panel.MarkTimelineSaved();
+        auto* preview = panel.findChild<QPushButton*>("previewTimeline"); preview->click(); const auto label = preview->text();
+        const auto before = panel.Timeline(); const auto version = panel.TimelineRevision(); const int frameCount = frames.size();
+        QVERIFY(panel.CaptureBakeTimeline(captured, revision, &error)); QVERIFY(captured.HasSameContent(before));
+        QCOMPARE(revision, version); QCOMPARE(preview->text(), label); QCOMPARE(frames.size(), frameCount); QCOMPARE(stopped.size(), 0);
+    }
+
+    void bakedSamplesMergeAndNewAnimationAreSingleUndo_data()
+    {
+        QTest::addColumn<bool>("newAnimation"); QTest::newRow("merge") << false; QTest::newRow("new") << true;
+    }
+    void bakedSamplesMergeAndNewAnimationAreSingleUndo()
+    {
+        QFETCH(bool, newAnimation); CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(settingsState()));
+        panel.SetParameterIds({"Opacity", "B"});
+        CMotionTimeline expected; quint64 revision; QVERIFY(panel.CaptureBakeTimeline(expected, revision));
+        const QMap<QString, QVector<QPointF>> samples{{"Opacity", {{0, .2}, {.5, .8}, {1, .4}}}, {"B", {{0, -1}, {1, 1}}}};
+        const auto previousTime = panel.TimelineTime(); const bool previousLoop = panel.TimelineLoop();
+        auto* history = panel.findChild<QUndoStack*>(); const int oldCount = history->count();
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged), stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QString error; QVERIFY2(panel.ApplyBakedParameterSamples(expected, revision, samples, newAnimation, 120, &error), qPrintable(error));
+        QCOMPARE(history->count(), oldCount + 1); QCOMPARE(history->undoText(), QStringLiteral("烘焙物理"));
+        QCOMPARE(changed.size(), 1); QCOMPARE(stopped.size(), 0); QVERIFY(panel.HasUnsavedTimelineChanges());
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}), samples["Opacity"]);
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "B"}), samples["B"]);
+        const auto fades = panel.Timeline().TrackFadeTimes({CMotionTarget::Parameter, "Opacity"});
+        QCOMPARE(fades.fadeIn, std::optional<double>(0)); QCOMPARE(fades.fadeOut, std::optional<double>(0));
+        if (newAnimation) { QCOMPARE(panel.Timeline().Timing().fps, 120.0); QVERIFY(panel.Timeline().Events().isEmpty()); QCOMPARE(panel.Timeline().Tracks().size(), 2); }
+        else {
+            QCOMPARE(panel.Timeline().Timing().fps, expected.Timing().fps); QCOMPARE(panel.Timeline().Events(), expected.Events());
+            for (auto target : {CMotionTarget::PartOpacity, CMotionTarget::Model}) {
+                const CMotionTrack track{target, "Opacity"}; QCOMPARE(panel.Timeline().Tracks().value(track), expected.Tracks().value(track));
+                QCOMPARE(panel.Timeline().TrackFadeTimes(track).fadeIn, expected.TrackFadeTimes(track).fadeIn);
+            }
+        }
+        const auto baked = panel.Timeline(); panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(expected));
+        QCOMPARE(panel.TimelineTime(), previousTime); QCOMPARE(panel.TimelineLoop(), previousLoop); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline(); QVERIFY(panel.Timeline().HasSameContent(baked));
+        CMotionTimeline again; quint64 againRevision; QVERIFY(panel.CaptureBakeTimeline(again, againRevision));
+        QVERIFY(panel.ApplyBakedParameterSamples(again, againRevision, samples, false, 24)); QCOMPARE(history->count(), oldCount + 1);
+    }
+
+    void bakedSamplesRejectStaleIdsAndInvalidDataWithoutLosingRedo()
+    {
+        CMotionPanel panel; panel.SetParameterIds({"A"}); QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 1, 1)); panel.UndoTimeline();
+        auto* history = panel.findChild<QUndoStack*>(); const int index = history->index(), count = history->count();
+        CMotionTimeline expected; quint64 revision; QVERIFY(panel.CaptureBakeTimeline(expected, revision));
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged), frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        const QMap<QString, QVector<QPointF>> valid{{"A", {{0, .2}, {1, .3}}}}; QString error;
+        QVERIFY(!panel.ApplyBakedParameterSamples(expected, revision + 1, valid, false, 30, &error)); QVERIFY(!error.isEmpty());
+        auto wrong = expected; QVERIFY(wrong.AddPoint("A", 2, 3)); QVERIFY(!panel.ApplyBakedParameterSamples(wrong, revision, valid, false, 30));
+        QVERIFY(!panel.ApplyBakedParameterSamples(expected, revision, {{"unknown", {{0, 1}}}}, false, 30));
+        QVERIFY(!panel.ApplyBakedParameterSamples(expected, revision, {{"A", {{0, 1}, {0, 2}}}}, false, 30));
+        QVERIFY(!panel.ApplyBakedParameterSamples(expected, revision, valid, true, 0));
+        QVERIFY(!panel.ApplyBakedParameterSamples(expected, revision, {}, false, 30));
+        QVERIFY(panel.Timeline().HasSameContent(expected)); QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(history->index(), index); QCOMPARE(history->count(), count); QVERIFY(panel.CanRedoTimeline());
+        QCOMPARE(changed.size(), 0); QCOMPARE(frames.size(), 0);
+        panel.RedoTimeline(); QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "A"}).size(), 2);
+    }
+
+    void bakeCaptureRejectsRecordingPendingEditorDragAndTransport()
+    {
+        CMotionPanel panel; panel.SetParameterIds({"A"}); QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 1, 1));
+        CMotionTimeline result; QVERIFY(result.AddPoint("sentinel", 3, 9)); const auto original = result; quint64 revision = 777; QString error;
+        const auto unchanged = [&] { return result.HasSameContent(original) && revision == 777; };
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline"); record->setChecked(true);
+        QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); record->setChecked(false);
+        auto* curve = panel.findChild<CMotionCurveView*>(); QVERIFY(QMetaObject::invokeMethod(curve, "EditStarted"));
+        QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); QVERIFY(QMetaObject::invokeMethod(curve, "EditFinished"));
+        CMotionPanel::PreviewTransportLease lease; QVERIFY(panel.SuspendPreviewTransport(lease, &error));
+        QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); QVERIFY(panel.ResumePreviewTransport(lease, &error));
+        panel.resize(800, 650); panel.show(); auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        table->setCurrentCell(0, 2); table->editItem(table->item(0, 2)); QTRY_VERIFY(table->findChild<QLineEdit*>());
+        auto* editor = table->findChild<QLineEdit*>(); editor->setText(".75");
+        QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); QCOMPARE(editor->text(), QString(".75"));
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "A"}).first().y(), 1.0);
+        QTest::keyClick(editor, Qt::Key_Escape);
+        bool rejectedDuringRestore = false;
+        connect(&panel, &CMotionPanel::MotionTimelineChanged, &panel, [&] { rejectedDuringRestore = !panel.CaptureBakeTimeline(result, revision); });
+        QVERIFY(panel.RestoreTimelineState(settingsState())); QVERIFY(rejectedDuringRestore); QVERIFY(unchanged());
+    }
+
+    void bakedHistoryParticipatesInParameterTrackRemovalAndRestoration()
+    {
+        const CMotionTrack a{CMotionTarget::Parameter, "A"}, b{CMotionTarget::Parameter, "B"};
+        CMotionPanel panel; panel.SetParameterIds({"A", "B"}); QVERIFY(panel.AddTimelinePoint(a, 0, 2));
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared)); QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        panel.SetParameterIds({"B"}); CMotionTimeline expected; quint64 revision; QVERIFY(panel.CaptureBakeTimeline(expected, revision));
+        const QMap<QString, QVector<QPointF>> samples{{"B", {{0, 4}, {1, 5}}}};
+        QVERIFY(panel.ApplyBakedParameterSamples(expected, revision, samples, false, 30));
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared)); QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 2}})); QCOMPARE(panel.Timeline().Tracks().value(b), samples["B"]);
+        panel.UndoTimeline(); QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 2}})); QVERIFY(!panel.Timeline().Tracks().contains(b));
+        panel.RedoTimeline(); QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 2}})); QCOMPARE(panel.Timeline().Tracks().value(b), samples["B"]);
+    }
+
     void parameterTracksCommitIsSilentAndPreservesTypedPeers()
     {
         CMotionPanel panel;

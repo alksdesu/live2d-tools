@@ -1892,6 +1892,7 @@ void MainWindow::RecoverExportPreview()
     }
     if (recovered) {
         m_exportState.reset();
+        RestorePhysicsBakeActions();
         statusBar()->showMessage(QStringLiteral("预览已恢复"), 5000);
     } else {
         statusBar()->showMessage(error);
@@ -2389,6 +2390,7 @@ bool MainWindow::CloseModel()
         if (m_headless) delete m_headless;
         m_previewExport.ResetAfterPreviewClosed();
         m_exportState.reset();
+        RestorePhysicsBakeActions();
         RefreshExportActions();
         return true;
     }
@@ -2404,6 +2406,7 @@ bool MainWindow::CloseModel()
     const QScopedValueRollback<bool> closing(m_closingModel, true);
     if (!ConfirmCloseWithUnsavedChanges()) return false;
     if (m_exportState) for (const auto& action : m_exportState->actions) if (action) action->setEnabled(true);
+    RestorePhysicsBakeActions();
     m_workspaceReady = false;
     m_runtimePanelsInitialized = false;
     m_saveSessionAction->setEnabled(false);
@@ -2714,6 +2717,7 @@ void MainWindow::RestDock(const QString &name)
     QStringList parameterIds;
     for (const auto& parameter : m_document.Parameters()) parameterIds.append(parameter.id);
     m_motionPanel->SetParameterIds(parameterIds);
+    ConfigurePhysicsTools();
     addDockWidget(Qt::BottomDockWidgetArea, m_motionPanel);
     QStringList partIds;
     for (const auto& part : m_document.Parts()) partIds.append(part.id);
