@@ -1,6 +1,7 @@
 #include "live2dstruct/tree/c2dtree.h"
 #include <QtTest>
 #include <memory>
+#include <cmath>
 #include <limits>
 #include <type_traits>
 
@@ -122,7 +123,7 @@ private slots:
         for (auto* node : nodes) QVERIFY(near(node->GetCanvasPositions(), {0, 0}));
     }
 
-    void nonidentityChainsKeepPerLayerOverflowAndInverseChecks()
+    void overflowingResolvedScaleRejectsEvenTheOrigin()
     {
         QVector<int> parents(256);
         for (int index = 0; index < parents.size(); ++index) parents[index] = index - 1;
@@ -130,18 +131,105 @@ private slots:
         QVERIFY(tree);
         const auto nodes = tree->GetWarpKeys();
         QCOMPARE(nodes.size(), size_t(256));
+        QVERIFY(!nodes.front()->GetCanvasPositions().empty());
+        QVERIFY(nodes.back()->GetCanvasPositions().empty());
         std::vector<float> values{7, 9};
-        QVERIFY(nodes.back()->MapToCanvas({0, 0}, values));
-        QVERIFY(near(values, {0, 0}));
-        values = {7, 9};
-        QVERIFY(!nodes.back()->MapToCanvas({std::numeric_limits<float>::max(), 0}, values));
-        QVERIFY(near(values, {7, 9}));
+        QVERIFY(!nodes.back()->MapToCanvas({0, 0}, values));
+        QCOMPARE(values, (std::vector<float>{7, 9}));
+        QVERIFY(!nodes.back()->MapFromCanvas({0, 0}, values));
+        QCOMPARE(values, (std::vector<float>{7, 9}));
+    }
+
+    void finiteResolvedScaleKeepsPointOverflowAndInverseChecks_data()
+    {
+        QTest::addColumn<float>("scale");
+        QTest::newRow("enlarge") << 2.0f;
+        QTest::newRow("shrink") << 0.5f;
+    }
+
+    void finiteResolvedScaleKeepsPointOverflowAndInverseChecks()
+    {
+        QFETCH(float, scale);
+        QVector<int> parents(8);
+        for (int index = 0; index < parents.size(); ++index) parents[index] = index - 1;
+        auto tree = rotationTree(parents, scale);
+        QVERIFY(tree);
+        const auto nodes = tree->GetWarpKeys();
+        QCOMPARE(nodes.size(), size_t(8));
+        CArtMeshNode witness("witness");
+        witness.GetKeyFormS().emplace_back(1, 0, std::vector<float>{0, 0, 1, 2});
+        linkNodes(nodes.back(), &witness);
+        tree->GetWarpKeys();
+        const float total = scale > 1 ? 256.0f : 1.0f / 256;
+        QVERIFY(near(witness.GetCanvasPositions(), {0, 0, total, 2 * total}));
+        std::vector<float> mapped, restored;
+        QVERIFY(witness.MapToCanvas({0, 0, 1, 2}, mapped));
+        QVERIFY(witness.MapFromCanvas(mapped, restored));
+        QVERIFY(near(restored, {0, 0, 1, 2}));
+        std::vector<float> values{7, 9};
+        const std::vector<float> extreme{std::numeric_limits<float>::max(), 0};
+        if (scale > 1) {
+            QVERIFY(!witness.MapToCanvas(extreme, values));
+            QCOMPARE(values, (std::vector<float>{7, 9}));
+            QVERIFY(witness.MapFromCanvas(extreme, values));
+            QCOMPARE(values[0], std::numeric_limits<float>::max() / total);
+        } else {
+            QVERIFY(!witness.MapFromCanvas(extreme, values));
+            QCOMPARE(values, (std::vector<float>{7, 9}));
+            QVERIFY(witness.MapToCanvas(extreme, values));
+            QCOMPARE(values[0], std::numeric_limits<float>::max() * total);
+        }
         auto* root = dynamic_cast<CRotationNode*>(nodes.front());
         QVERIFY(root);
         root->GetKeyFormS()[0].Setscales(0);
         tree->GetWarpKeys();
-        QVERIFY(!nodes.back()->MapFromCanvas({0, 0}, values));
-        QVERIFY(near(values, {7, 9}));
+        QVERIFY(witness.GetCanvasPositions().empty());
+        values = {7, 9};
+        QVERIFY(!witness.MapFromCanvas({0, 0}, values));
+        QCOMPARE(values, (std::vector<float>{7, 9}));
+    }
+
+    void sevenRotationScaleBoundaryWithWitness_data()
+    {
+        QTest::addColumn<int>("exponent");
+        for (int exponent : {16, 126, 127, 128, 129, 256})
+            QTest::newRow(qPrintable(QStringLiteral("2^%1").arg(exponent))) << exponent;
+    }
+
+    void sevenRotationScaleBoundaryWithWitness()
+    {
+        QFETCH(int, exponent);
+        QVector<int> parents(7);
+        for (int index = 0; index < parents.size(); ++index) parents[index] = index - 1;
+        auto tree = rotationTree(parents);
+        QVERIFY(tree);
+        const auto nodes = tree->GetWarpKeys();
+        QCOMPARE(nodes.size(), size_t(7));
+        for (int index = 0; index < parents.size(); ++index) {
+            auto* rotation = dynamic_cast<CRotationNode*>(nodes[index]);
+            QVERIFY(rotation);
+            rotation->GetKeyFormS()[0].Setscales(std::ldexp(1.0f, exponent / 7 + (index < exponent % 7 ? 1 : 0)));
+        }
+        CArtMeshNode witness("witness");
+        const std::vector<float> points{0, 0, 1e-40f, 0, 1, 0};
+        witness.GetKeyFormS().emplace_back(1, 0, points);
+        linkNodes(nodes.back(), &witness);
+        tree->GetWarpKeys();
+        std::vector<float> result{7, 9};
+        if (exponent >= 128) {
+            QVERIFY(witness.GetCanvasPositions().empty());
+            QVERIFY(!witness.MapToCanvas({0, 0}, result));
+            QCOMPARE(result, (std::vector<float>{7, 9}));
+            QVERIFY(!witness.MapFromCanvas({0, 0}, result));
+            QCOMPARE(result, (std::vector<float>{7, 9}));
+        } else {
+            QVERIFY(witness.MapToCanvas(points, result));
+            QCOMPARE(result, (std::vector<float>{0, 0, std::ldexp(1e-40f, exponent), 0, std::ldexp(1.0f, exponent), 0}));
+            QCOMPARE(witness.GetCanvasPositions(), result);
+            std::vector<float> restored;
+            QVERIFY(witness.MapFromCanvas(result, restored));
+            QCOMPARE(restored, points);
+        }
     }
 
     void nestedRotationsKeepLocalKeyformsAndComposeAllParents()

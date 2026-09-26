@@ -430,6 +430,51 @@ private slots:
         rejectsWithoutMutation(session, field);
     }
 
+    void finiteSignedRotationScaleSurvivesSessionRestore_data()
+    {
+        QTest::addColumn<float>("scale");
+        QTest::newRow("negative") << -2.0f;
+        QTest::newRow("negative-zero") << -0.0f;
+        QTest::newRow("zero") << 0.0f;
+        QTest::newRow("positive") << 2.0f;
+    }
+
+    void finiteSignedRotationScaleSurvivesSessionRestore()
+    {
+        QFETCH(float, scale);
+        auto forms = rotation().rotationKeyforms;
+        forms[0].scale = scale;
+        auto session = state(loaded);
+        session.deformerRotationKeyforms.insert(rotation().id, forms);
+        CModelSession parsed;
+        QString error;
+        QVERIFY2(CModelSession::FromJson(session.ToJson(), &parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.deformerRotationKeyforms.value(rotation().id), forms);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("signed-scale.session.json");
+        QVERIFY2(parsed.Save(path, &error), qPrintable(error));
+        CModelSession saved;
+        QVERIFY2(CModelSession::Load(path, &saved, &error), qPrintable(error));
+        CModelDocument restored = loaded;
+        QVERIFY(restored.ExecuteEdit({mesh().id, "artmesh", CModelEdit::Opacity,
+                                      restored.DrawableOpacity(mesh()), .375f, -1, false}));
+        QVERIFY2(saved.RestoreDocument(loaded, restored, &error), qPrintable(error));
+        QCOMPARE(restored.DeformerRotationKeyforms(rotation().id), forms);
+        QCOMPARE(restored.SourceBytes(), loaded.SourceBytes());
+        QCOMPARE(restored.SourceDigest(), loaded.SourceDigest());
+        QVERIFY(!restored.CanUndoEdit());
+        QVERIFY(!restored.CanRedoEdit());
+        QByteArray preview;
+        QVERIFY2(restored.BuildPreviewMoc(preview, &error), qPrintable(error));
+        auto reader = CReader::FromBytes(preview);
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        const auto* definition = table.deformers[rotationIndex];
+        const auto* source = table.rotation_deformers[definition->specific_sources_indices];
+        QCOMPARE(table.rotation_deformer_keyforms[source->keyform_sources_begin_indices]->scales, scale);
+    }
+
     void rejectsInvalidValuesWithoutClampingOrLosingHistory()
     {
         const auto& parameter = loaded.Parameters().first();
@@ -484,8 +529,14 @@ private slots:
             {"deformerRotationKeyforms", "wrong-count", [&](auto& s) {
                 auto forms = rotation().rotationKeyforms; forms.append(forms.first()); s.deformerRotationKeyforms.insert(rotation().id, forms);
             }},
-            {"deformerRotationKeyforms", "negative-scale", [&](auto& s) {
-                auto forms = rotation().rotationKeyforms; forms[0].scale = -1; s.deformerRotationKeyforms.insert(rotation().id, forms);
+            {"deformerRotationKeyforms", "nan-scale", [&](auto& s) {
+                auto forms = rotation().rotationKeyforms; forms[0].scale = nan; s.deformerRotationKeyforms.insert(rotation().id, forms);
+            }},
+            {"deformerRotationKeyforms", "infinite-scale", [&](auto& s) {
+                auto forms = rotation().rotationKeyforms; forms[0].scale = infinity; s.deformerRotationKeyforms.insert(rotation().id, forms);
+            }},
+            {"deformerRotationKeyforms", "negative-infinite-scale", [&](auto& s) {
+                auto forms = rotation().rotationKeyforms; forms[0].scale = -infinity; s.deformerRotationKeyforms.insert(rotation().id, forms);
             }},
             {"deformerRotationKeyforms", "bad-opacity", [&](auto& s) {
                 auto forms = rotation().rotationKeyforms; forms[0].opacity = 2; s.deformerRotationKeyforms.insert(rotation().id, forms);

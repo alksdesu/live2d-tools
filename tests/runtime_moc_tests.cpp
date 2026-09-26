@@ -91,8 +91,19 @@ private slots:
         QCOMPARE(source(name), bytes);
     }
 
-    void sharedNormalRowsAndIndexPoolsDoNotChangeSiblings()
+    void sharedRowsRespectIndexIsolation_data()
     {
+        QTest::addColumn<bool>("sharedIndices");
+        QTest::addColumn<bool>("changeIndices");
+        QTest::newRow("shared-forms-independent-indices") << false << true;
+        QTest::newRow("shared-forms-shared-indices-no-op") << true << false;
+        QTest::newRow("shared-forms-shared-indices-rejected") << true << true;
+    }
+
+    void sharedRowsRespectIndexIsolation()
+    {
+        QFETCH(bool, sharedIndices);
+        QFETCH(bool, changeIndices);
         auto bytes = source("Mark");
         auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
         QVERIFY(table.IsValid());
@@ -106,21 +117,43 @@ private slots:
         const auto* mesh = table.art_meshes[first];
         const auto* offsets = table.sectionOffsetTable->art_meshes;
         qToLittleEndian(qint32(mesh->keyform_sources_begin_indices), bytes.data() + offsets->keyform_sources_begin_indices + second * 4);
-        qToLittleEndian(qint32(mesh->position_index_sources_begin_indices), bytes.data() + offsets->position_index_sources_begin_indices + second * 4);
-        qToLittleEndian(qint32(mesh->position_index_sources_counts), bytes.data() + offsets->position_index_sources_counts + second * 4);
+        if (sharedIndices) {
+            qToLittleEndian(qint32(mesh->position_index_sources_begin_indices), bytes.data() + offsets->position_index_sources_begin_indices + second * 4);
+            qToLittleEndian(qint32(mesh->position_index_sources_counts), bytes.data() + offsets->position_index_sources_counts + second * 4);
+        }
+        const auto immutable = bytes;
         RuntimeBuilder::Overrides overrides;
         overrides.drawableOpacity.insert(mesh->ids, .25f);
-        auto topology = indices(table, first); topology.resize(3);
+        auto topology = indices(table, first);
+        if (changeIndices) topology.resize(3);
         overrides.drawableIndices.insert(mesh->ids, topology);
-        QByteArray result;
+        QByteArray result("unchanged output");
         QString error;
+        if (sharedIndices && changeIndices) {
+            QVERIFY(!RuntimeBuilder::Build(bytes, overrides, result, &error));
+            QCOMPARE(result, QByteArray("unchanged output"));
+            QCOMPARE(bytes, immutable);
+            QVERIFY2(error.contains(mesh->ids) && error.contains(table.art_meshes[second]->ids), qPrintable(error));
+            return;
+        }
         QVERIFY2(RuntimeBuilder::Build(bytes, overrides, result, &error), qPrintable(error));
+        QCOMPARE(bytes, immutable);
         auto changedReader = CReader::FromBytes(result); CSectionTable after(changedReader);
         QVERIFY(after.IsValid());
         QCOMPARE(after.art_meshes[second]->keyform_sources_begin_indices, mesh->keyform_sources_begin_indices);
-        QCOMPARE(indices(after, second), indices(table, first));
+        QCOMPARE(indices(after, second), indices(table, sharedIndices ? first : second));
         QCOMPARE(indices(after, first), topology);
         QVERIFY(after.art_meshes[first]->keyform_sources_begin_indices != after.art_meshes[second]->keyform_sources_begin_indices);
+        for (int local = 0; local < mesh->keyform_sources_counts; ++local) {
+            const auto* original = table.art_mesh_keyforms[mesh->keyform_sources_begin_indices + local];
+            const auto* changed = after.art_mesh_keyforms[after.art_meshes[first]->keyform_sources_begin_indices + local];
+            const auto* sibling = after.art_mesh_keyforms[after.art_meshes[second]->keyform_sources_begin_indices + local];
+            QCOMPARE(changed->opacities, .25f);
+            QCOMPARE(sibling->opacities, original->opacities);
+            QCOMPARE(sibling->draw_orders, original->draw_orders);
+            QCOMPARE(sibling->keyform_position_sources_begin_indices, original->keyform_position_sources_begin_indices);
+            QCOMPARE(changed->keyform_position_sources_begin_indices, original->keyform_position_sources_begin_indices);
+        }
     }
 
     void hiddenAncestorsPreserveGeometry_data()

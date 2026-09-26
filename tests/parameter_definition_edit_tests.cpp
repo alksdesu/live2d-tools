@@ -549,10 +549,22 @@ private slots:
         QCOMPARE(document.SourceDigest(), candidate.SourceDigest());
     }
 
+    void expandedRangeMappingUsesThePatchedDefinition_data()
+    {
+        QTest::addColumn<bool>("boundParent");
+        QTest::newRow("unbound-parent") << false;
+        QTest::newRow("bound-parent-outside-key-coverage") << true;
+    }
+
     void expandedRangeMappingUsesThePatchedDefinition()
     {
+        QFETCH(bool, boundParent);
         DeformerSnapshotData::Fixture fixture;
         fixture.BindRoot(false);
+        if (!boundParent) {
+            fixture.column(fixture.table.sectionOffsetTable->deformers->keyform_binding_sources_indices, 0, -1);
+            fixture.column(fixture.table.sectionOffsetTable->rotation_deformers->keyform_sources_counts, 0, 1);
+        }
         CModelDocument document;
         QVERIFY(document.LoadBytes(fixture.bytes, "mapping.moc3"));
         CKeyformMappingContext before;
@@ -564,7 +576,10 @@ private slots:
         QVERIFY(document.MakeParameterMetadataEdit("P", metadata, command));
         QVERIFY(document.ExecuteEdit(command));
         CKeyformMappingContext mapping;
-        QVERIFY2(mapping.Build(document, "Mesh", 0, {{"P", 2}}, &error), qPrintable(error));
+        QVERIFY2(mapping.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+        const bool mapped = mapping.Build(document, "Mesh", 0, {{"P", 2}}, &error);
+        QCOMPARE(mapped, !boundParent);
+        if (boundParent) QVERIFY2(error.contains(QStringLiteral("父链无法求值")), qPrintable(error));
         QVector<float> world, restored;
         const auto local = document.DrawableKeyformPositions("Mesh", 0);
         QVERIFY(mapping.ToModel(local, world));

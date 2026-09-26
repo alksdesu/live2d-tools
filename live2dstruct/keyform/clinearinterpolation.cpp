@@ -27,10 +27,10 @@ bool weightsFor(C2DTreeNode& node, size_t formCount, std::vector<WeightedKeyform
         if (!std::isfinite(value) || keys.empty() || keys.size() > formCount / stride) return false;
         for (size_t index = 0; index < keys.size(); ++index)
             if (!std::isfinite(keys[index]) || (index > 0 && keys[index] <= keys[index - 1])) return false;
+        if (value < keys.front() || value > keys.back()) return false;
         std::vector<WeightedKeyform> choices;
         const auto upper = std::lower_bound(keys.cbegin(), keys.cend(), value);
-        if (upper == keys.cend()) choices.push_back({keys.size() - 1, 1.0});
-        else if (upper == keys.cbegin() || *upper == value)
+        if (*upper == value)
             choices.push_back({static_cast<size_t>(upper - keys.cbegin()), 1.0});
         else {
             const size_t high = static_cast<size_t>(upper - keys.cbegin());

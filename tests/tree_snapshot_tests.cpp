@@ -197,6 +197,88 @@ private slots:
         QVERIFY(mapping.MatchesRuntime(coreCoordinates(expected)));
     }
 
+    void uncoveredAxesInvalidateOnlyTheirChain_data()
+    {
+        QTest::addColumn<QString>("owner");
+        QTest::addColumn<bool>("singleton");
+        QTest::addColumn<bool>("detached");
+        for (const QString& owner : {QString("Root"), QString("Warp"), QString("Mesh")})
+            for (bool singleton : {false, true})
+                for (bool detached : {false, true})
+                    QTest::newRow(qPrintable(QString("%1-singleton%2-detached%3").arg(owner).arg(singleton).arg(detached)))
+                        << owner << singleton << detached;
+    }
+
+    void uncoveredAxesInvalidateOnlyTheirChain()
+    {
+        QFETCH(QString, owner);
+        QFETCH(bool, singleton);
+        QFETCH(bool, detached);
+        Fixture fixture;
+        const auto& offsets = *fixture.table.sectionOffsetTable;
+        if (owner == "Root") fixture.BindRoot(false);
+        else if (owner == "Warp") {
+            fixture.column(offsets.art_meshes->keyform_binding_sources_indices, 0, -1);
+            fixture.column(offsets.art_meshes->keyform_sources_counts, 0, 1);
+            fixture.column(offsets.deformers->keyform_binding_sources_indices, 1, 0);
+            fixture.column(offsets.warp_deformers->keyform_binding_sources_indices, 0, 0);
+            fixture.column(offsets.warp_deformers->keyform_sources_counts, 0, 2);
+            fixture.count(7, 2);
+            fixture.column(offsets.warp_deformer_keyforms->keyform_position_sources_begin_indices, 1, 12);
+            real(fixture.bytes, offsets.warp_deformer_keyforms->opacities + 4, 1);
+        }
+        if (singleton) {
+            fixture.column(offsets.parameter_bindings->keys_sources_counts, 0, 1);
+            fixture.column(owner == "Root" ? offsets.rotation_deformers->keyform_sources_counts
+                : owner == "Warp" ? offsets.warp_deformers->keyform_sources_counts
+                : offsets.art_meshes->keyform_sources_counts, 0, 1);
+        }
+        if (detached) fixture.column(offsets.deformers->parent_deformer_indices, 2, -1);
+        real(fixture.bytes, offsets.parameters->min_values, -2);
+        real(fixture.bytes, offsets.parameters->max_values, 2);
+        CModelDocument document;
+        QString error;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "uncovered-axis.moc3", &error), qPrintable(error));
+        CKeyformMappingContext mapping;
+        QVERIFY2(mapping.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVector<float> oldWorld;
+        QVERIFY(mapping.ToModel(document.DrawableKeyformPositions("Mesh", 0), oldWorld));
+        CTreeManage::Snapshot snapshot;
+        QVERIFY(CTreeManage::PrepareSnapshot(fixture.bytes, {{"P", 0}}, snapshot, &error));
+        const auto validPositions = meshPositions(*snapshot.tree);
+        QSet<QString> unsupported;
+        if (owner == "Root") unsupported = {"Root", "Warp"};
+        if (owner == "Warp") unsupported = {"Warp"};
+        if (owner != "Mesh" && !detached) unsupported.insert("Child");
+        const bool affectedMesh = owner == "Mesh" || !detached;
+        for (float outside : {-0.5f, singleton ? 0.5f : 1.5f}) {
+            bool changed = false;
+            QVERIFY2(CTreeManage::SyncPose(snapshot, {{"P", outside}}, changed, &error), qPrintable(error));
+            QVERIFY(changed);
+            QVERIFY(snapshot.HasValidEvaluation());
+            QCOMPARE(snapshot.unsupportedDeformers, unsupported);
+            QCOMPARE(meshPositions(*snapshot.tree).isEmpty(), affectedMesh);
+            if (!affectedMesh) QCOMPARE(meshPositions(*snapshot.tree), validPositions);
+            for (auto* node : snapshot.Deformers())
+                QCOMPARE(node->GetCanvasPositions().empty(), unsupported.contains(node->getName()));
+            const auto revision = snapshot.PoseRevision();
+            QVERIFY(CTreeManage::SyncPose(snapshot, {{"P", outside}}, changed, &error));
+            QVERIFY(!changed);
+            QCOMPARE(snapshot.PoseRevision(), revision);
+            QCOMPARE(mapping.Build(document, "Mesh", 0, {{"P", outside}}, &error), !affectedMesh);
+            QVERIFY(mapping.MatchesRuntime(oldWorld));
+            CTreeManage::Snapshot directlyLoaded;
+            QVERIFY2(CTreeManage::PrepareSnapshot(fixture.bytes, {{"P", outside}}, directlyLoaded, &error), qPrintable(error));
+            QCOMPARE(directlyLoaded.unsupportedDeformers, unsupported);
+            QCOMPARE(meshPositions(*directlyLoaded.tree).isEmpty(), affectedMesh);
+            QVERIFY(CTreeManage::SyncPose(snapshot, {{"P", 0}}, changed, &error));
+            QVERIFY(changed);
+            QVERIFY(snapshot.unsupportedDeformers.isEmpty());
+            QCOMPARE(meshPositions(*snapshot.tree), validPositions);
+            QVERIFY(mapping.Build(document, "Mesh", 0, {{"P", 0}}, &error));
+        }
+    }
+
     void batchPoseSyncEvaluatesOnceAndKeepsTheMocDigest()
     {
         Fixture fixture;

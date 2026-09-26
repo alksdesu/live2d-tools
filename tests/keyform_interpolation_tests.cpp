@@ -85,7 +85,7 @@ private slots:
         QCOMPARE(key.Getangles(), 720.0f);
     }
 
-    void singleAxisClampsAndKeepsUnwrappedAngles()
+    void singleAxisEndpointsAndUnwrappedAngles()
     {
         Parameters parameters;
         QVERIFY(parameters.IsValid());
@@ -103,18 +103,93 @@ private slots:
         QVERIFY(Near(key.Getopacities(), 0.5f));
         QVERIFY(key.Getis_reflect_x());
         QVERIFY(!key.Getis_reflect_y());
-        for (float value : {-10.0f, 0.0f}) {
-            axis->SetCurValue(value);
-            QVERIFY(CLinearInterpolation::SetCKeyFormObject(&rotation));
-            QCOMPARE(key.Getangles(), 350.0f);
-            QCOMPARE(key.Getopacities(), 0.2f);
+        axis->SetCurValue(0);
+        QVERIFY(CLinearInterpolation::SetCKeyFormObject(&rotation));
+        QCOMPARE(key.Getangles(), 350.0f);
+        QCOMPARE(key.Getopacities(), 0.2f);
+        axis->SetCurValue(1);
+        QVERIFY(CLinearInterpolation::SetCKeyFormObject(&rotation));
+        QCOMPARE(key.Getangles(), 10.0f);
+        QCOMPARE(key.Getopacities(), 0.8f);
+    }
+
+    void outsideCoveragePreservesAllTypedKeyforms_data()
+    {
+        QTest::addColumn<int>("type");
+        QTest::addColumn<int>("axisIndex");
+        QTest::addColumn<bool>("singleton");
+        QTest::addColumn<int>("outside");
+        for (int type = 0; type < 3; ++type)
+            for (int axis = 0; axis < 3; ++axis)
+                for (bool singleton : {false, true})
+                    for (int outside = 0; outside < 4; ++outside)
+                        QTest::newRow(qPrintable(QString("type%1-axis%2-singleton%3-outside%4")
+                            .arg(type).arg(axis).arg(singleton).arg(outside))) << type << axis << singleton << outside;
+    }
+
+    void outsideCoveragePreservesAllTypedKeyforms()
+    {
+        QFETCH(int, type);
+        QFETCH(int, axisIndex);
+        QFETCH(bool, singleton);
+        QFETCH(int, outside);
+        Parameters parameters;
+        QVERIFY(parameters.IsValid());
+        CArtMeshNode mesh("mesh");
+        CWarpNode warp("warp");
+        CRotationNode rotation("rotation");
+        C2DTreeNode* node = type == 0 ? static_cast<C2DTreeNode*>(&mesh)
+            : type == 1 ? static_cast<C2DTreeNode*>(&warp) : static_cast<C2DTreeNode*>(&rotation);
+        CParameterNode* edited = nullptr;
+        const std::vector<float> editedKeys = singleton ? std::vector<float>{0} : std::vector<float>{-1, 0, 1};
+        for (int axis = 0; axis < 3; ++axis) {
+            auto* parameter = parameters.Add(axis == axisIndex ? editedKeys : std::vector<float>{0, 1},
+                                             axis == axisIndex ? 0 : 0.25f);
+            node->AddFather(parameter);
+            if (axis == axisIndex) edited = parameter;
         }
-        for (float value : {1.0f, 10.0f}) {
-            axis->SetCurValue(value);
-            QVERIFY(CLinearInterpolation::SetCKeyFormObject(&rotation));
-            QCOMPARE(key.Getangles(), 10.0f);
-            QCOMPARE(key.Getopacities(), 0.8f);
+        for (int index = 0; index < int(editedKeys.size()) * 4; ++index) {
+            const float opacity = 0.25f + index * 0.03125f;
+            mesh.GetKeyFormS().emplace_back(opacity, 20 + index, std::vector<float>{float(index), float(-index)});
+            warp.GetKeyFormS().push_back(WarpKey(opacity, {float(index), float(-index)}));
+            rotation.GetKeyFormS().emplace_back(opacity, 350 + index, index, -index, -1 - index, true, false);
         }
+        const auto values = [&]() {
+            std::vector<float> result;
+            if (type == 0) {
+                auto& key = mesh.GetCurKeyForm();
+                result = key.GetPosition();
+                result.insert(result.end(), {key.getOpacities(), key.getDraw_orders()});
+            } else if (type == 1) {
+                auto& key = warp.GetCurKeyForm();
+                result = key.GetPosition();
+                result.push_back(key.GetOpacities());
+            } else {
+                auto& key = rotation.GetCurKeyForm();
+                result = key.GetPosition();
+                result.insert(result.end(), {key.Getopacities(), key.Getangles(), key.Getscales(),
+                                             float(key.Getis_reflect_x()), float(key.Getis_reflect_y())});
+            }
+            return result;
+        };
+        QVERIFY(CLinearInterpolation::SetCKeyFormObject(node));
+        const auto previous = values();
+        const float infinity = std::numeric_limits<float>::infinity();
+        const float value = outside == 0 ? std::nextafter(editedKeys.front(), -infinity)
+            : outside == 1 ? std::nextafter(editedKeys.back(), infinity)
+            : outside == 2 ? -std::numeric_limits<float>::max() : std::numeric_limits<float>::max();
+        edited->SetCurValue(value);
+        QVERIFY(!CLinearInterpolation::SetCKeyFormObject(node));
+        QCOMPARE(values(), previous);
+        QVERIFY(!CLinearInterpolation::SetCKeyFormObject(node));
+        QCOMPARE(values(), previous);
+        for (float endpoint : {editedKeys.front(), editedKeys.back()}) {
+            edited->SetCurValue(endpoint);
+            QVERIFY(CLinearInterpolation::SetCKeyFormObject(node));
+        }
+        edited->SetCurValue(-0.0f);
+        QVERIFY(CLinearInterpolation::SetCKeyFormObject(node));
+        QCOMPARE(values(), previous);
     }
 
     void twoAxesPreserveFirstAxisFastestOrder()
@@ -166,7 +241,7 @@ private slots:
         QVERIFY(parameters.IsValid());
         CWarpNode warp("warp");
         warp.AddFather(parameters.Add({0, 1}, 0.5f));
-        warp.AddFather(parameters.Add({10}, -999));
+        warp.AddFather(parameters.Add({10}, 10));
         warp.AddFather(parameters.Add({0, 1}, 0.25f));
         warp.AddFather(parameters.Add({0, 1}, 0.75f));
         for (int index = 0; index < 8; ++index)
@@ -176,7 +251,7 @@ private slots:
         QCOMPARE(warp.GetCurKeyForm().GetPosition()[1], 5.0f);
         QVERIFY(Near(warp.GetCurKeyForm().GetOpacities(), 0.4f));
         CRotationNode constant("constant");
-        for (int index = 0; index < 30; ++index) constant.AddFather(parameters.Add({float(index)}, 42));
+        for (int index = 0; index < 30; ++index) constant.AddFather(parameters.Add({float(index)}, float(index)));
         constant.GetKeyFormS() = {CRotationNodeKeyform(0.6f, 37, 1, 2, 3, false, true)};
         QVERIFY(CLinearInterpolation::SetCKeyFormObject(&constant));
         QCOMPARE(constant.GetCurKeyForm().Getangles(), 37.0f);
