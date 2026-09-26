@@ -593,7 +593,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
                 !readFloat(object.value(QStringLiteral("originX")), &keyform.originX) ||
                 !readFloat(object.value(QStringLiteral("originY")), &keyform.originY) ||
                 !readFloat(object.value(QStringLiteral("scale")), &keyform.scale) ||
-                keyform.opacity < 0.0f || keyform.opacity > 1.0f || keyform.scale < 0.0f ||
+                !keyform.IsValid() ||
                 !object.value(QStringLiteral("reflectX")).isBool() ||
                 !object.value(QStringLiteral("reflectY")).isBool()) {
                 setError(error, QStringLiteral("Rotation Deformer 关键形数值无效：%1").arg(key));

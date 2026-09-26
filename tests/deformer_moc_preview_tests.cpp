@@ -627,7 +627,7 @@ private slots:
         QTest::addColumn<int>("mutation");
         const QStringList names{QStringLiteral("warp-position-count"), QStringLiteral("warp-position-nan"),
             QStringLiteral("warp-opacity-nan"), QStringLiteral("warp-opacity-range"), QStringLiteral("rotation-angle-inf"),
-            QStringLiteral("rotation-origin-nan"), QStringLiteral("rotation-negative-scale"),
+            QStringLiteral("rotation-origin-nan"), QStringLiteral("rotation-scale-inf"),
             QStringLiteral("unknown-warp"), QStringLiteral("wrong-object-type"), QStringLiteral("extra-keyform")};
         for (int index = 0; index < names.size(); ++index) QTest::newRow(qPrintable(names[index])) << index;
     }
@@ -649,7 +649,7 @@ private slots:
         case 3: warps["WarpA"][0].opacity = 1.5f; break;
         case 4: rotations["RotationA"][0].angle = std::numeric_limits<float>::infinity(); break;
         case 5: rotations["RotationA"][0].originX = nan; break;
-        case 6: rotations["RotationA"][0].scale = -1; break;
+        case 6: rotations["RotationA"][0].scale = -std::numeric_limits<float>::infinity(); break;
         case 7: warps.insert("Absent", warps.take("WarpA")); break;
         case 8: warps.insert("RotationA", warps.take("WarpA")); break;
         case 9: rotations["RotationA"].append(rotations["RotationA"].first()); break;

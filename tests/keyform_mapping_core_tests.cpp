@@ -1,6 +1,9 @@
 #include "core/Live2DCubismCore.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ckeyformmappingcontext.h"
+#include "live2dstruct/cmocdeformerorder.h"
+#include "live2dstruct/cmocpreviewbuilder.h"
+#include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/tree/c2dtree.h"
 #include "deformer_snapshot_fixture.h"
@@ -10,6 +13,7 @@
 #include <QFile>
 #include <new>
 #include <cstring>
+#include <limits>
 
 using namespace live2dstruct;
 
@@ -176,12 +180,233 @@ QMap<QString, float> poseFor(const CModelDocument& document, const QString& id, 
     return result;
 }
 
+QByteArray patchRotationForm(const QByteArray& baseline, const QString& id, int keyform,
+                            const CModelRotationKeyform& form)
+{
+    auto reader = CReader::FromBytes(baseline);
+    CSectionTable table(reader);
+    if (!table.IsValid()) return {};
+    for (const auto* deformer : table.deformers) {
+        if (deformer->ids != id || deformer->types != 1) continue;
+        const auto* source = table.rotation_deformers.value(deformer->specific_sources_indices);
+        if (!source || keyform < 0 || keyform >= source->keyform_sources_counts) return {};
+        const int row = source->keyform_sources_begin_indices + keyform;
+        const auto* offsets = table.sectionOffsetTable->rotation_deformer_keyforms;
+        QByteArray result = baseline;
+        for (const auto& field : {qMakePair(offsets->opacities, form.opacity), qMakePair(offsets->angles, form.angle),
+                                 qMakePair(offsets->origin_x, form.originX), qMakePair(offsets->origin_y, form.originY),
+                                 qMakePair(offsets->scales, form.scale)}) {
+            quint32 bits;
+            std::memcpy(&bits, &field.second, sizeof(bits));
+            qToLittleEndian(bits, result.data() + field.first + row * 4);
+        }
+        qToLittleEndian(qint32(form.reflectX), result.data() + offsets->is_reflect_x + row * 4);
+        qToLittleEndian(qint32(form.reflectY), result.data() + offsets->is_reflect_y + row * 4);
+        return result;
+    }
+    return {};
+}
+
+void compareCoreAtPose(const QByteArray& candidateBytes, const QByteArray& expectedBytes, const QMap<QString, float>& pose)
+{
+    CoreModel candidate(candidateBytes), expected(expectedBytes);
+    QVERIFY(candidate.model);
+    QVERIFY(expected.model);
+    candidate.SetPose(pose);
+    expected.SetPose(pose);
+    QCOMPARE(csmGetDrawableCount(candidate.model), csmGetDrawableCount(expected.model));
+    for (int mesh = 0; mesh < csmGetDrawableCount(candidate.model); ++mesh) {
+        const QString id = QString::fromUtf8(csmGetDrawableIds(expected.model)[mesh]);
+        QCOMPARE(QString::fromUtf8(csmGetDrawableIds(candidate.model)[mesh]), id);
+        const auto actualPositions = candidate.Positions(id), expectedPositions = expected.Positions(id);
+        QCOMPARE(actualPositions.size(), expectedPositions.size());
+        for (int index = 0; index < actualPositions.size(); ++index) {
+            QVERIFY(std::isfinite(actualPositions[index]));
+            QCOMPARE(actualPositions[index], expectedPositions[index]);
+        }
+        QCOMPARE(csmGetDrawableOpacities(candidate.model)[mesh], csmGetDrawableOpacities(expected.model)[mesh]);
+        QCOMPARE(csmGetDrawableDrawOrders(candidate.model)[mesh], csmGetDrawableDrawOrders(expected.model)[mesh]);
+        QCOMPARE(csmGetDrawableRenderOrders(candidate.model)[mesh], csmGetDrawableRenderOrders(expected.model)[mesh]);
+        QCOMPARE(csmGetDrawableConstantFlags(candidate.model)[mesh], csmGetDrawableConstantFlags(expected.model)[mesh]);
+        QCOMPARE(csmGetDrawableTextureIndices(candidate.model)[mesh], csmGetDrawableTextureIndices(expected.model)[mesh]);
+        QCOMPARE(csmGetDrawableMaskCounts(candidate.model)[mesh], csmGetDrawableMaskCounts(expected.model)[mesh]);
+        for (int mask = 0; mask < csmGetDrawableMaskCounts(candidate.model)[mesh]; ++mask)
+            QCOMPARE(csmGetDrawableMasks(candidate.model)[mesh][mask], csmGetDrawableMasks(expected.model)[mesh][mask]);
+        for (int vertex = 0; vertex < actualPositions.size() / 2; ++vertex) {
+            const auto actual = csmGetDrawableVertexUvs(candidate.model)[mesh][vertex];
+            const auto reference = csmGetDrawableVertexUvs(expected.model)[mesh][vertex];
+            QCOMPARE(actual.X, reference.X);
+            QCOMPARE(actual.Y, reference.Y);
+        }
+        QCOMPARE(csmGetDrawableIndexCounts(candidate.model)[mesh], csmGetDrawableIndexCounts(expected.model)[mesh]);
+        for (int index = 0; index < csmGetDrawableIndexCounts(candidate.model)[mesh]; ++index)
+            QCOMPARE(csmGetDrawableIndices(candidate.model)[mesh][index], csmGetDrawableIndices(expected.model)[mesh][index]);
+        for (bool multiply : {false, true}) {
+            const auto actual = multiply ? csmGetDrawableMultiplyColors(candidate.model)[mesh] : csmGetDrawableScreenColors(candidate.model)[mesh];
+            const auto reference = multiply ? csmGetDrawableMultiplyColors(expected.model)[mesh] : csmGetDrawableScreenColors(expected.model)[mesh];
+            QCOMPARE(actual.X, reference.X); QCOMPARE(actual.Y, reference.Y);
+            QCOMPARE(actual.Z, reference.Z); QCOMPARE(actual.W, reference.W);
+        }
+    }
+}
+
 }
 
 class KeyformMappingCoreTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void signedRotationEditsSurviveHistoryAndSession_data()
+    {
+        QTest::addColumn<QString>("variant");
+        QTest::addColumn<QString>("field");
+        for (const auto* field : {"angle", "origin", "reflectX", "reflectY"})
+            QTest::newRow(qPrintable(QStringLiteral("negative-source-") + field)) << QString("own-negative") << QString(field);
+        QTest::newRow("new-negative-scale") << QString("scale") << QString("negative");
+        QTest::newRow("new-zero-scale") << QString("scale") << QString("zero");
+        QTest::newRow("zero-source-origin") << QString("own-zero") << QString("origin");
+    }
+
+    void signedRotationEditsSurviveHistoryAndSession()
+    {
+        QFETCH(QString, variant);
+        QFETCH(QString, field);
+        QByteArray baseline;
+        QString error;
+        QVERIFY2(CMocDeformerOrder::Normalize(rotationFixture(variant), baseline, &error), qPrintable(error));
+        CModelDocument document;
+        QVERIFY2(document.LoadBytes(baseline, "signed-rotation.moc3", &error), qPrintable(error));
+        const auto sourceDigest = document.SourceDigest();
+        const QString target = QStringLiteral("Rotation8");
+        const auto before = document.DeformerRotationKeyforms(target);
+        QVERIFY(before.size() > 1);
+        const int keyform = before.size() - 1;
+        QMap<QString, float> pose, corner;
+        for (const auto& parameter : document.Parameters()) pose.insert(parameter.id, parameter.defaultValue);
+        QVERIFY2(document.KeyformParameterValues(target, "rotation", keyform, corner, &error), qPrintable(error));
+        bool nonDefault = false;
+        for (auto value = corner.cbegin(); value != corner.cend(); ++value) {
+            nonDefault |= pose.value(value.key()) != value.value();
+            pose[value.key()] = value.value();
+        }
+        QVERIFY(nonDefault);
+        for (auto value = pose.cbegin(); value != pose.cend(); ++value) QVERIFY(document.SetParameterValue(value.key(), value.value()));
+        document.ClearEditHistory();
+        const CModelDocument loaded = document;
+        for (const auto& diagnostic : document.Validate()) QVERIFY(diagnostic.code != "rotation_keyform");
+        auto after = before;
+        if (field == "angle") after[keyform].angle = 37;
+        if (field == "origin") { after[keyform].originX += .17f; after[keyform].originY -= .23f; }
+        if (field == "reflectX") after[keyform].reflectX = !after[keyform].reflectX;
+        if (field == "reflectY") after[keyform].reflectY = !after[keyform].reflectY;
+        if (field == "negative") after[keyform].scale = -1.5f;
+        if (field == "zero") after[keyform].scale = 0;
+        const auto expected = patchRotationForm(baseline, target, keyform, after[keyform]);
+        QVERIFY(!expected.isEmpty());
+        CoreModel sourceCore(baseline), editedCore(expected);
+        QVERIFY(sourceCore.model && editedCore.model);
+        sourceCore.SetPose(pose); editedCore.SetPose(pose);
+        const auto sourcePositions = sourceCore.Positions("LegL"), changedPositions = editedCore.Positions("LegL");
+        QCOMPARE(sourcePositions.size(), changedPositions.size());
+        double maximumChange = 0;
+        for (int index = 0; index < sourcePositions.size(); ++index)
+            maximumChange = std::max(maximumChange, std::abs(double(sourcePositions[index]) - changedPositions[index]));
+        QVERIFY2(maximumChange > .001, "The chosen non-default corner must actually use the edited form");
+        QVERIFY(document.ExecuteEdit({target, "rotation", CModelEdit::RotationKeyforms,
+            QVariant::fromValue(before), QVariant::fromValue(after), keyform, false}));
+        QCOMPARE(document.DeformerRotationKeyforms(target), after);
+        QByteArray runtime;
+        QVERIFY2(document.BuildRuntimeMoc(runtime, &error), qPrintable(error));
+        compareCoreAtPose(runtime, expected, pose);
+
+        QMap<QString, float> uneditedPose = pose, uneditedCorner;
+        QVERIFY(document.KeyformParameterValues(target, "rotation", 0, uneditedCorner, &error));
+        for (auto value = uneditedCorner.cbegin(); value != uneditedCorner.cend(); ++value) uneditedPose[value.key()] = value.value();
+        compareCoreAtPose(runtime, baseline, uneditedPose);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.DeformerRotationKeyforms(target), before);
+        QVERIFY(!document.CanUndoEdit());
+        QVERIFY(document.DeformerRotationKeyformOverrides().isEmpty());
+        QByteArray undone;
+        QVERIFY2(document.BuildRuntimeMoc(undone, &error), qPrintable(error));
+        compareCoreAtPose(undone, baseline, pose);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DeformerRotationKeyforms(target), after);
+        QByteArray redone;
+        QVERIFY2(document.BuildRuntimeMoc(redone, &error), qPrintable(error));
+        QCOMPARE(redone, runtime);
+
+        CModelSession captured;
+        captured.sourceMoc = document.SourcePath();
+        captured.sourceDigest = document.SourceDigest();
+        captured.deformerRotationKeyforms = document.DeformerRotationKeyformOverrides();
+        for (const auto& parameter : document.Parameters()) captured.parameters.insert(parameter.id, document.ParameterValue(parameter.id));
+        CModelSession parsed;
+        QVERIFY2(CModelSession::FromJson(captured.ToJson(), &parsed, &error), qPrintable(error));
+        CModelDocument restored;
+        QVERIFY2(parsed.RestoreDocument(loaded, restored, &error), qPrintable(error));
+        QCOMPARE(restored.DeformerRotationKeyforms(target), after);
+        QCOMPARE(restored.SourceDigest(), sourceDigest);
+        for (auto value = pose.cbegin(); value != pose.cend(); ++value) QCOMPARE(restored.ParameterValue(value.key()), value.value());
+        QByteArray restoredBytes;
+        QVERIFY2(restored.BuildRuntimeMoc(restoredBytes, &error), qPrintable(error));
+        compareCoreAtPose(restoredBytes, expected, pose);
+        QCOMPARE(document.SourceBytes(), baseline);
+        QCOMPARE(document.SourceDigest(), sourceDigest);
+    }
+
+    void nonFiniteRotationScalePreservesOutputs_data()
+    {
+        QTest::addColumn<float>("scale");
+        QTest::newRow("nan") << std::numeric_limits<float>::quiet_NaN();
+        QTest::newRow("positive-infinity") << std::numeric_limits<float>::infinity();
+        QTest::newRow("negative-infinity") << -std::numeric_limits<float>::infinity();
+    }
+
+    void nonFiniteRotationScalePreservesOutputs()
+    {
+        QFETCH(float, scale);
+        QByteArray baseline;
+        QString error;
+        QVERIFY(CMocDeformerOrder::Normalize(rotationFixture("own-negative"), baseline, &error));
+        CModelDocument document;
+        QVERIFY(document.LoadBytes(baseline, "signed-rotation.moc3", &error));
+        const auto before = document.DeformerRotationKeyforms("Rotation8");
+        const auto revision = document.Revision();
+        auto invalid = before;
+        invalid[0].scale = scale;
+        QByteArray runtime;
+        QVERIFY(document.BuildRuntimeMoc(runtime, &error));
+        QVERIFY(!document.SetDeformerRotationKeyforms("Rotation8", invalid));
+        QVERIFY(!document.ExecuteEdit({"Rotation8", "rotation", CModelEdit::RotationKeyforms,
+            QVariant::fromValue(before), QVariant::fromValue(invalid), 0, false}));
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.DeformerRotationKeyforms("Rotation8"), before);
+        QVERIFY(!document.CanUndoEdit() && !document.CanRedoEdit());
+        QByteArray afterFailure;
+        QVERIFY(document.BuildRuntimeMoc(afterFailure, &error));
+        QCOMPARE(afterFailure, runtime);
+        CMocPreviewBuilder builder;
+        QVERIFY(builder.Initialize(baseline, &error));
+        CMocPreviewBuilder::Overrides overrides;
+        overrides.rotationKeyforms.insert("Rotation8", invalid);
+        QByteArray result("unchanged output");
+        QVERIFY(!builder.BuildOverrides(overrides, result, &error));
+        QCOMPARE(result, QByteArray("unchanged output"));
+        QVERIFY(!error.isEmpty());
+        CModelSession session;
+        session.sourceMoc = document.SourcePath(); session.sourceDigest = document.SourceDigest();
+        session.deformerRotationKeyforms.insert("Rotation8", invalid);
+        CModelSession parsed; parsed.sourceMoc = "unchanged";
+        QVERIFY(!CModelSession::FromJson(session.ToJson(), &parsed, &error));
+        QCOMPARE(parsed.sourceMoc, QString("unchanged"));
+        CModelDocument restored = document;
+        QVERIFY(!session.RestoreDocument(document, restored, &error));
+        QCOMPARE(restored.Revision(), revision);
+        QCOMPARE(restored.DeformerRotationKeyforms("Rotation8"), before);
+        compareCoreAtPose(runtime, baseline, poseFor(document, "LegL", 0));
+    }
+
     void rotationBasisMatchesRealCore_data()
     {
         QTest::addColumn<QString>("variant");

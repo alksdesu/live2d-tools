@@ -105,6 +105,12 @@ bool metadataFromVariant(const QVariant& value, const CModelParameterMetadata& c
 }
 }
 
+bool CModelRotationKeyform::IsValid() const
+{
+    return std::isfinite(opacity) && opacity >= 0.0f && opacity <= 1.0f &&
+           std::isfinite(angle) && std::isfinite(originX) && std::isfinite(originY) && std::isfinite(scale);
+}
+
 void CModelDocument::Clear()
 {
     ++m_revision;
@@ -775,9 +781,7 @@ bool CModelDocument::SetDeformerRotationKeyforms(const QString& id,
         if (keyforms.isEmpty() || keyforms.size() != deformer.rotationKeyforms.size() || keyforms.size() > 10000)
             return false;
         for (const CModelRotationKeyform& keyform : keyforms) {
-            if (!std::isfinite(keyform.opacity) || keyform.opacity < 0.0f || keyform.opacity > 1.0f ||
-                !std::isfinite(keyform.angle) || !std::isfinite(keyform.originX) ||
-                !std::isfinite(keyform.originY) || !std::isfinite(keyform.scale) || keyform.scale < 0.0f)
+            if (!keyform.IsValid())
                 return false;
         }
         m_deformerRotationKeyformOverrides.insert(id, keyforms);
@@ -1365,9 +1369,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         }
         if (m_deformers[i].type == CModelDeformer::Rotation) {
             for (const CModelRotationKeyform& keyform : DeformerRotationKeyforms(m_deformers[i].id)) {
-                if (!std::isfinite(keyform.opacity) || keyform.opacity < 0.0f || keyform.opacity > 1.0f ||
-                    !std::isfinite(keyform.angle) || !std::isfinite(keyform.originX) ||
-                    !std::isfinite(keyform.originY) || !std::isfinite(keyform.scale) || keyform.scale < 0.0f) {
+                if (!keyform.IsValid()) {
                     diagnostics.append({CModelDiagnostic::Error, QStringLiteral("rotation_keyform"),
                                          QStringLiteral("Rotation Deformer 关键形数值无效"), i});
                     break;

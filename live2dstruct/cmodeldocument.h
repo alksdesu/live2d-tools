@@ -82,6 +82,8 @@ struct CModelRotationKeyform
     bool reflectX = false;
     bool reflectY = false;
 
+    bool IsValid() const;
+
     bool operator==(const CModelRotationKeyform& other) const
     {
         return opacity == other.opacity && angle == other.angle && originX == other.originX &&

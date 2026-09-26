@@ -3,6 +3,7 @@
 #include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
+#include "live2dstruct/csectiontable.h"
 #include <QtTest>
 #include <QCheckBox>
 #include <QComboBox>
@@ -36,11 +37,134 @@
 #include <limits>
 #include <utility>
 #include <memory>
+#include <cstring>
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void signedRotationEditsUseHistoryAndCommitter_data()
+    {
+        QTest::addColumn<float>("sourceScale");
+        QTest::addColumn<int>("column");
+        QTest::addColumn<bool>("accepted");
+        for (float scale : {-2.0f, 0.0f, 2.0f})
+            for (int column = 1; column <= 6; ++column)
+                for (bool accepted : {false, true})
+                    QTest::newRow(qPrintable(QStringLiteral("%1-column%2-%3").arg(scale).arg(column)
+                                            .arg(accepted ? "accept" : "reject"))) << scale << column << accepted;
+    }
+
+    void signedRotationEditsUseHistoryAndCommitter()
+    {
+        QFETCH(float, sourceScale);
+        QFETCH(int, column);
+        QFETCH(bool, accepted);
+        using namespace live2dstruct;
+        QFile file(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        auto bytes = file.readAll();
+        auto reader = CReader::FromBytes(bytes);
+        CSectionTable sections(reader);
+        QVERIFY(sections.IsValid());
+        const auto deformer = std::find_if(sections.deformers.cbegin(), sections.deformers.cend(),
+                                         [](const auto* value) { return value->types == 1; });
+        QVERIFY(deformer != sections.deformers.cend());
+        const QString id = (*deformer)->ids;
+        const auto* rotation = sections.rotation_deformers[(*deformer)->specific_sources_indices];
+        quint32 scaleBits;
+        std::memcpy(&scaleBits, &sourceScale, sizeof(scaleBits));
+        for (int row = 0; row < rotation->keyform_sources_counts; ++row)
+            qToLittleEndian(scaleBits, bytes.data() + sections.sectionOffsetTable->rotation_deformer_keyforms->scales +
+                            (rotation->keyform_sources_begin_indices + row) * 4);
+        CModelDocument document;
+        QVERIFY(document.LoadBytes(bytes, file.fileName()));
+        const auto before = document.DeformerRotationKeyforms(id);
+        QVERIFY(!before.isEmpty());
+        auto after = before;
+        QString text;
+        if (column == 1) { after[0].angle += 7.5f; text = QString::number(after[0].angle, 'g', 9); }
+        else if (column == 2) { after[0].originX += 0.25f; text = QString::number(after[0].originX, 'g', 9); }
+        else if (column == 3) { after[0].originY -= 0.25f; text = QString::number(after[0].originY, 'g', 9); }
+        else if (column == 4) { after[0].scale = -3.0f; text = QStringLiteral("-3"); }
+        else if (column == 5) { after[0].reflectX = !after[0].reflectX; text = after[0].reflectX ? "true" : "false"; }
+        else { after[0].reflectY = !after[0].reflectY; text = after[0].reflectY ? "true" : "false"; }
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("rotation"));
+        auto* table = panel.findChild<QTableWidget*>("rotationKeyformTable");
+        QVERIFY(table && table->rowCount() == before.size() && table->isEnabled());
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int calls = 0;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++calls;
+            if (!accepted) { *error = QStringLiteral("candidate rejected"); return false; }
+            return document.ExecuteEdit(edit);
+        });
+        const auto revision = document.Revision();
+        table->item(0, column)->setText(text);
+        QCOMPARE(calls, 1);
+        QCOMPARE(history.count(), accepted ? 1 : 0);
+        QCOMPARE(rejected.count(), accepted ? 0 : 1);
+        QCOMPARE(document.DeformerRotationKeyforms(id), accepted ? after : before);
+        QCOMPARE(table->item(0, 4)->text().toFloat(), accepted ? after[0].scale : before[0].scale);
+        QCOMPARE(document.CanUndoEdit(), accepted);
+        if (accepted) {
+            panel.Undo();
+            QCOMPARE(document.DeformerRotationKeyforms(id), before);
+            QVERIFY(!document.CanUndoEdit());
+            panel.Redo();
+            QCOMPARE(document.DeformerRotationKeyforms(id), after);
+            QVERIFY(!document.CanRedoEdit());
+        } else {
+            QCOMPARE(document.Revision(), revision);
+            QVERIFY(!document.CanRedoEdit());
+        }
+        QCOMPARE(document.SourceBytes(), bytes);
+    }
+
+    void invalidRotationNumbersLeaveTableAndHistoryUnchanged_data()
+    {
+        QTest::addColumn<int>("column");
+        QTest::addColumn<QString>("text");
+        for (int column = 1; column <= 4; ++column)
+            for (const QString& text : {QStringLiteral("nan"), QStringLiteral("inf"), QStringLiteral("-inf"),
+                                        QStringLiteral("1e100"), QStringLiteral("-1e100")})
+                QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(column).arg(text))) << column << text;
+    }
+
+    void invalidRotationNumbersLeaveTableAndHistoryUnchanged()
+    {
+        QFETCH(int, column);
+        QFETCH(QString, text);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto deformer = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(),
+                                         [](const auto& value) { return value.type == CModelDeformer::Rotation; });
+        QVERIFY(deformer != document.Deformers().cend());
+        const QString id = deformer->id;
+        auto forms = document.DeformerRotationKeyforms(id);
+        forms[0].scale = -2.0f;
+        QVERIFY(document.SetDeformerRotationKeyforms(id, forms));
+        const auto revision = document.Revision();
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, QStringLiteral("rotation"));
+        int calls = 0;
+        panel.SetEditHandler([&](const CModelEdit&, QString*) { ++calls; return true; });
+        auto* table = panel.findChild<QTableWidget*>("rotationKeyformTable");
+        QVERIFY(table && table->rowCount());
+        const QString before = table->item(0, column)->text();
+        table->item(0, column)->setText(text);
+        QCOMPARE(table->item(0, column)->text(), before);
+        QCOMPARE(calls, 0);
+        QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.DeformerRotationKeyforms(id), forms);
+        QVERIFY(!document.CanUndoEdit());
+    }
+
     void narrowInspectorKeepsLongChoicesScrollableAndRowsSynchronized_data()
     {
         QTest::addColumn<bool>("dark");

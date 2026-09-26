@@ -436,6 +436,120 @@ private slots:
         QVERIFY2(error.contains(QStringLiteral("父链")), qPrintable(error)); QFile preserved(options.outPath); QVERIFY(preserved.open(QIODevice::ReadOnly)); QCOMPARE(preserved.readAll(), QByteArray("original target"));
     }
 
+    void signedRotationScaleUsesEffectiveAncestorUnits_data()
+    {
+        QTest::addColumn<int>("chain");
+        QTest::addColumn<float>("scale");
+        QTest::addColumn<bool>("edited");
+        const QStringList chains{"root", "first-through-warp", "nested-through-warp"};
+        for (int chain = 0; chain < chains.size(); ++chain)
+            for (float scale : {-2.0f, 0.0f, 2.0f})
+                for (bool edited : {false, true}) {
+                    const auto name = QString("%1-%2-%3").arg(chains[chain])
+                        .arg(scale).arg(edited ? "edited" : "source");
+                    QTest::newRow(qPrintable(name)) << chain << scale << edited;
+                }
+    }
+
+    void signedRotationScaleUsesEffectiveAncestorUnits()
+    {
+        QFETCH(int, chain);
+        QFETCH(float, scale);
+        QFETCH(bool, edited);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        QVector<int> rotations;
+        int warp = -1;
+        for (int index = 0; index < table.deformers.size(); ++index) {
+            if (table.deformers[index]->types == 1) rotations.append(index);
+            else if (warp < 0) warp = index;
+        }
+        QVERIFY(rotations.size() >= 2 && warp >= 0);
+        const int ancestor = rotations.first(), target = rotations.last();
+        const auto* specific = table.rotation_deformers[table.deformers[target]->specific_sources_indices];
+        QVERIFY(specific->keyform_sources_counts > 0);
+        const int row = specific->keyform_sources_begin_indices;
+        const auto* offsets = table.sectionOffsetTable->rotation_deformer_keyforms;
+        QByteArray bytes = reader.m_byte;
+        if (!edited) {
+            writeFloat(bytes, offsets->scales + row * 4, scale);
+            writeFloat(bytes, offsets->angles + row * 4, -27.5f);
+            writeFloat(bytes, offsets->origin_x + row * 4, 0.25f);
+            writeFloat(bytes, offsets->origin_y + row * 4, -0.75f);
+        }
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        QVERIFY(visibilityInputs(QDir(temporary.path()), bytes));
+        live2dstruct::CModelDocument document;
+        QString error;
+        const QString mocPath = temporary.filePath("fixture.moc3");
+        QVERIFY2(document.Load(mocPath, &error), qPrintable(error));
+        const QString targetId = table.deformers[target]->ids;
+        auto forms = document.DeformerRotationKeyforms(targetId);
+        QVERIFY(!forms.isEmpty());
+        if (edited) {
+            forms[0].scale = scale;
+            forms[0].angle = -27.5f;
+            forms[0].originX = 0.25f;
+            forms[0].originY = -0.75f;
+            forms[0].reflectX = !forms[0].reflectX;
+            QVERIFY(document.SetDeformerRotationKeyforms(targetId, forms));
+        }
+        QCOMPARE(forms[0].scale, scale);
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temporary.filePath("signed.cmo3");
+        options.deformerParentOverrides.insert(table.deformers[ancestor]->ids, -1);
+        options.deformerParentOverrides.insert(table.deformers[warp]->ids, chain == 2 ? ancestor : -1);
+        options.deformerParentOverrides.insert(targetId, chain == 0 ? -1 : warp);
+        options.deformerRotationKeyformOverrides = document.DeformerRotationKeyformOverrides();
+        if (chain == 2) {
+            auto ancestorForms = document.DeformerRotationKeyforms(table.deformers[ancestor]->ids);
+            QVERIFY(!ancestorForms.isEmpty());
+            ancestorForms[0].scale = -3.0f;
+            options.deformerRotationKeyformOverrides.insert(table.deformers[ancestor]->ids, ancestorForms);
+        }
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        QHash<QString, int> sources;
+        for (int index = 0; index < xml.nodes.size(); ++index)
+            if (xml.nodes[index].tag == "CRotationDeformerSource" && !xml.attribute(index, "xs.id").isEmpty())
+                sources.insert(xml.attribute(xml.field(xml.field(index, "super"), "id"), "idstr"), index);
+        QVERIFY(sources.contains(targetId));
+        const int source = sources.value(targetId);
+        const int list = xml.field(source, "keyforms");
+        QVERIFY(list >= 0);
+        QCOMPARE(xml.nodes[list].children.size(), forms.size());
+        const double ppu = table.canvas_info->pixels_per_unit;
+        for (int index = 0; index < forms.size(); ++index) {
+            const int node = xml.nodes[list].children[index];
+            const auto& form = forms[index];
+            QCOMPARE(xml.attribute(node, "scale").toFloat(), static_cast<float>(double(form.scale) * (chain == 2 ? 1.0 : ppu)));
+            QCOMPARE(xml.attribute(node, "angle").toFloat(), form.angle);
+            QCOMPARE(xml.attribute(node, "originX").toFloat(), chain == 0
+                ? static_cast<float>(double(form.originX) * ppu + table.canvas_info->origin_x) : form.originX);
+            QCOMPARE(xml.attribute(node, "originY").toFloat(), chain == 0
+                ? static_cast<float>(double(form.originY) * ppu + table.canvas_info->origin_y) : form.originY);
+            QCOMPARE(xml.attribute(node, "isReflectX"), form.reflectX ? QString("true") : QString("false"));
+            QCOMPARE(xml.attribute(node, "isReflectY"), form.reflectY ? QString("true") : QString("false"));
+        }
+        if (chain == 2) {
+            QVERIFY(sources.contains(table.deformers[ancestor]->ids));
+            const int ancestorList = xml.field(sources.value(table.deformers[ancestor]->ids), "keyforms");
+            QVERIFY(ancestorList >= 0 && !xml.nodes[ancestorList].children.isEmpty());
+            QCOMPARE(xml.attribute(xml.nodes[ancestorList].children.first(), "scale").toFloat(), static_cast<float>(-3.0 * ppu));
+        }
+        QFile sourceFile(mocPath);
+        QVERIFY(sourceFile.open(QIODevice::ReadOnly));
+        QCOMPARE(sourceFile.readAll(), bytes);
+    }
+
     void rootCoordinatesUsePixelOrigins()
     {
         QFETCH(QString, model);

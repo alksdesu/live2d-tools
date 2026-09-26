@@ -927,7 +927,7 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
         else if (column == 3) after[row].originY = value;
         else if (column == 4) after[row].scale = value;
     }
-    if (after[row].scale < 0.0f) {
+    if (!after[row].IsValid()) {
         RebuildRotationKeyformTable();
         return;
     }

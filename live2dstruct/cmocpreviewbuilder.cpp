@@ -996,8 +996,7 @@ bool CMocPreviewBuilder::BuildOverrides(const Overrides& overrides, QByteArray& 
                     for (int local = 0; local < forms.size(); ++local) {
                         const auto& form = forms[local];
                         const int row = source.firstRow + local;
-                        if (!Opacity(form.opacity) || !std::isfinite(form.angle) || !std::isfinite(form.originX) ||
-                            !std::isfinite(form.originY) || !std::isfinite(form.scale) || form.scale < 0)
+                        if (!form.IsValid())
                             return Fail(error, QStringLiteral("Rotation 关键形数值无效：%1[%2]").arg(deformer.id).arg(local));
                         QVector<QByteArray> original;
                         for (int field = 0; field < 7; ++field) original.append(state.Cell(RotationColumn(field), row));
