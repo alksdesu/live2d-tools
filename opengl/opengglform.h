@@ -108,7 +108,8 @@ public:
                                         const LAppModel::EditorPreviewContext* restoreEditor = nullptr,
                                         const LAppModel::TimelinePreviewPreparation& prepareTimeline = {},
                                         const LAppModel::PhysicsDraft* physicsDraft = nullptr,
-                                        const CMeshGeometryMigration* geometry = nullptr);
+                                        const CMeshGeometryMigration* geometry = nullptr,
+                                        const QMap<QString, float>* requestedEditorPose = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);

@@ -90,7 +90,8 @@ CModelSession session(const CModelDocument& document)
     result.sourceMoc = document.SourcePath();
     result.sourceDigest = document.SourceDigest();
     result.structure = document.ParameterStructure();
-    result.version = result.structure.columns.isEmpty() && result.structure.counts.isEmpty() ? 1 : 2;
+    result.meshStructure = document.HasMeshStructure();
+    result.version = result.meshStructure ? 5 : result.structure.columns.isEmpty() && result.structure.counts.isEmpty() ? 1 : 2;
     for (auto it = document.ParameterValues().cbegin(); it != document.ParameterValues().cend(); ++it) result.parameters.insert(it.key(), it.value());
     result.parameterMetadata = document.ParameterMetadataOverrides();
     result.visibility = document.VisibilityState();
@@ -106,12 +107,256 @@ CModelSession session(const CModelDocument& document)
     result.deformerWarpKeyforms = document.DeformerWarpKeyformOverrides();
     return result;
 }
+
+Builder::Owner bindingOwner(int type)
+{
+    return {Builder::Owner::Type(type), type == 0 ? "Mesh" : type == 1 ? "Warp" : "Child"};
+}
+
+Builder::EditBindingKeysRequest bindingRequest(int type)
+{
+    return {bindingOwner(type), 0, "P", {0, 1}, {{0, 0}, {.5f, -1}, {1, 1}}};
+}
+
+bool bindingDocument(int type, bool meshStructure, CModelDocument& document, QString* error)
+{
+    DeformerSnapshotData::Fixture fixture;
+    if (!document.LoadBytes(fixture.bytes, "binding-document.moc3", error)) return false;
+    if (type != 0) {
+        CModelEdit bind;
+        if (!document.MakeBindParameterEdit("P", {{bindingOwner(type), {0, 1}}}, bind, error) || !document.ExecuteEdit(bind)) return false;
+    }
+    if (meshStructure) {
+        CMocMeshStructureBuilder::MeshEdit mesh;
+        mesh.artMeshId = "Mesh"; mesh.oldToNew = {0, 1, 2};
+        mesh.vertices = {{{0}, {1}}, {{1}, {1}}, {{2}, {1}}, {{0, 1}, {.5, .5}}};
+        mesh.indices = {0, 3, 2, 3, 1, 2};
+        CMocMeshStructureBuilder::Request request; request.meshes.append(mesh);
+        CModelEdit edit;
+        if (!document.MakeMeshStructureEdit(request, edit, error) || !document.ExecuteEdit(edit)) return false;
+    }
+    document.ClearEditHistory();
+    return true;
+}
+
+QVector<float> bindingRow(const CModelDocument& document, int type, int local)
+{
+    if (type == 0) return document.DrawableKeyformPositions("Mesh", local);
+    if (type == 1) return document.DeformerWarpKeyforms("Warp")[local].positions;
+    const auto form = document.DeformerRotationKeyforms("Child")[local];
+    return {form.opacity, form.angle, form.originX, form.originY, form.scale, float(form.reflectX), float(form.reflectY)};
+}
 }
 
 class ParameterStructureDocumentTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void bindingKeysHistoryPreservesAuthoringStateAndSession_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("meshStructure"); QTest::addColumn<QString>("operation");
+        for (int type = 0; type < 3; ++type) for (bool mesh : {false, true})
+            for (const QString& operation : {QString("insert"), QString("move"), QString("delete"), QString("copy")})
+                QTest::newRow(qPrintable(QString("type%1-mesh%2-%3").arg(type).arg(mesh).arg(operation))) << type << mesh << operation;
+    }
+    void bindingKeysHistoryPreservesAuthoringStateAndSession()
+    {
+        QFETCH(int, type); QFETCH(bool, meshStructure); QFETCH(QString, operation);
+        CModelDocument document; QString error;
+        QVERIFY2(bindingDocument(type, meshStructure, document, &error), qPrintable(error));
+        auto metadata = document.ParameterMetadata("P"); metadata.displayName = QStringLiteral("自定义参数"); metadata.decimalPlaces = 5;
+        QVERIFY(document.SetParameterMetadata("P", metadata)); QVERIFY(document.SetParameterValue("P", .375f));
+        QVERIFY(document.SetDrawableVisible("Mesh", false)); QVERIFY(document.SetDrawableOpacity("Mesh", .625f));
+        QVERIFY(document.SetDrawableDrawOrder("Mesh", 37)); QVERIFY(document.SetDrawableMaskInverted("Mesh", true));
+        auto indices = document.DrawableIndices("Mesh"); std::swap(indices[0], indices[1]);
+        QVERIFY(document.SetDrawableIndices("Mesh", indices));
+        if (type == 0) {
+            auto points = document.DrawableKeyformPositions("Mesh", 0); points[0] += .125f;
+            QVERIFY(document.SetDrawableKeyformPositions("Mesh", 0, points));
+        } else if (type == 1) {
+            auto forms = document.DeformerWarpKeyforms("Warp"); forms[0].positions[0] += .125f;
+            QVERIFY(document.SetDeformerWarpKeyforms("Warp", forms));
+        } else {
+            auto forms = document.DeformerRotationKeyforms("Child"); forms[0].angle += 7.5f; forms[0].scale = -1.5f;
+            QVERIFY(document.SetDeformerRotationKeyforms("Child", forms));
+        }
+        const auto before = document.AuthoringStructureState(); const auto revision = document.Revision();
+        const auto source = document.SourceBytes(), digest = document.SourceDigest(); const auto sourcePath = document.SourcePath();
+        const auto first = bindingRow(document, type, 0), last = bindingRow(document, type, 1);
+        auto request = bindingRequest(type);
+        if (operation == "move") request.keys = {{.25f, 0}, {.75f, 1}};
+        if (operation == "delete") request.keys = {{1, 1}};
+        if (operation == "copy") request.keys[1] = {.5f, -1, Builder::BindingKey::CopyOldSlice, 0};
+        CModelEdit edit;
+        QVERIFY2(document.MakeBindingKeysEdit(request, edit, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), before); QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(edit.parameterChange, CModelEdit::ParameterChange::BindingKeys); QCOMPARE(edit.field, CModelEdit::ParameterStructure);
+        QVERIFY(edit.bindingKeysRequest); QVERIFY(!edit.freezeValue); QVERIFY(edit.meshRemaps.isEmpty()); QVERIFY(!edit.meshRequest);
+        QVector<float> expectedKeys; for (const auto& key : request.keys) expectedKeys.append(key.value);
+        request.keys[0].value = .125f;
+        QCOMPARE(edit.bindingKeysRequest->keys.first().value, expectedKeys.first());
+        edit.runtime = std::make_shared<CModelEditRuntimeState>(); edit.runtime->before = QStringLiteral("runtime-only");
+        QVERIFY(document.ExecuteEdit(edit)); QCOMPARE(document.Revision(), revision + 1);
+        QCOMPARE(document.HasMeshStructure(), meshStructure); QCOMPARE(document.SourceBytes(), source); QCOMPARE(document.SourceDigest(), digest);
+        QCOMPARE(document.SourcePath(), sourcePath); QCOMPARE(document.ParameterValue("P"), .375f);
+        QCOMPARE(document.ParameterMetadata("P"), metadata); QCOMPARE(document.DrawableIndices("Mesh"), indices);
+        QCOMPARE(document.DrawableOpacityOverrides().value("Mesh"), .625f); QCOMPARE(document.DrawableDrawOrderOverrides().value("Mesh"), 37);
+        QVERIFY(document.DrawableMaskInverted("Mesh")); QVERIFY(!document.VisibilityState().value("artmesh|Mesh", true));
+        QVERIFY(document.DrawableKeyformPositionOverrides().isEmpty()); QVERIFY(document.DeformerWarpKeyformOverrides().isEmpty());
+        QVERIFY(document.DeformerRotationKeyformOverrides().isEmpty()); QVERIFY(document.DrawableMaskInvertedOverrides().isEmpty());
+        for (int local = 0; local < expectedKeys.size(); ++local) {
+            QMap<QString, float> pose;
+            const QString typeName = type == 0 ? "artmesh" : type == 1 ? "warp" : "rotation";
+            QVERIFY2(document.KeyformParameterValues(bindingOwner(type).id, typeName, local, pose, &error), qPrintable(error));
+            QCOMPARE(pose.value("P"), expectedKeys[local]);
+        }
+        if (operation == "delete") QCOMPARE(bindingRow(document, type, 0), last);
+        else {
+            QCOMPARE(bindingRow(document, type, 0), first);
+            QCOMPARE(bindingRow(document, type, expectedKeys.size() - 1), last);
+            if (operation == "copy") QCOMPARE(bindingRow(document, type, 1), first);
+        }
+        const auto after = document.AuthoringStructureState();
+        CModelEdit stored; QVERIFY(document.PeekUndoEdit(&stored)); QCOMPARE(stored.bindingKeysRequest, edit.bindingKeysRequest); QCOMPARE(stored.runtime, edit.runtime);
+        QVERIFY(document.UndoEdit(&stored)); QCOMPARE(document.AuthoringStructureState(), before); QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+        QVERIFY(document.RedoEdit(&stored)); QCOMPARE(document.AuthoringStructureState(), after); QVERIFY(!document.CanRedoEdit());
+        const auto encoded = session(document).ToJson(); QVERIFY(!encoded.isEmpty()); QVERIFY(!encoded.contains("runtime-only")); QVERIFY(!encoded.contains("bindingKeysRequest"));
+        CModelSession loaded; QVERIFY2(CModelSession::FromJson(encoded, &loaded, &error), qPrintable(error));
+        CModelDocument baseline, restored;
+        QVERIFY(baseline.LoadBytes(source, sourcePath, &error)); QVERIFY2(loaded.RestoreDocument(baseline, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), after); QVERIFY(!restored.CanUndoEdit());
+        QVERIFY(!restored.CanRedoEdit()); QCOMPARE(restored.SourceBytes(), source);
+    }
+    void bindingKeysFailuresPreserveOutputAndExistingHistory_data()
+    {
+        QTest::addColumn<QString>("failure");
+        for (const char* failure : {"noop", "stale-keys", "missing-owner", "missing-parameter", "outside", "target-locked", "ancestor-locked"})
+            QTest::newRow(failure) << QString::fromLatin1(failure);
+    }
+    void bindingKeysFailuresPreserveOutputAndExistingHistory()
+    {
+        QFETCH(QString, failure); CModelDocument document; QString error;
+        QVERIFY2(bindingDocument(0, false, document, &error), qPrintable(error));
+        CModelEdit value{"P", "parameter", CModelEdit::ParameterValue, 0.0f, .25f, -1, false};
+        QVERIFY(document.ExecuteEdit(value)); QVERIFY(document.UndoEdit());
+        auto positions = document.DrawableKeyformPositions("Mesh", 0); positions[0] += .25f;
+        QVERIFY(document.SetDrawableKeyformPositions("Mesh", 0, positions));
+        auto request = bindingRequest(0);
+        if (failure == "noop") request.keys = {{0, 0}, {1, 1}};
+        if (failure == "stale-keys") request.expectedKeys[0] = .1f;
+        if (failure == "missing-owner") request.owner.id = "Missing";
+        if (failure == "missing-parameter") request.parameterId = "Missing";
+        if (failure == "outside") request.keys[1].value = 2;
+        if (failure == "target-locked") document.SetLocked("artmesh", "Mesh", true);
+        if (failure == "ancestor-locked") document.SetLocked("rotation", "Root", true);
+        const auto state = document.AuthoringStructureState(); const auto revision = document.Revision();
+        CModelEdit result{"keep", "unchanged", CModelEdit::DrawOrder, 2, 3, 7, true};
+        QVERIFY(!document.MakeBindingKeysEdit(request, result, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(result.name, QString("keep")); QCOMPARE(result.type, QString("unchanged")); QCOMPARE(result.before.toInt(), 2); QCOMPARE(result.after.toInt(), 3);
+        QCOMPARE(result.index, 7); QCOMPARE(result.field, CModelEdit::DrawOrder); QVERIFY(!result.bindingKeysRequest);
+        QCOMPARE(document.AuthoringStructureState(), state); QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+    }
+    void forgedBindingKeysCommandsAreRejected_data()
+    {
+        QTest::addColumn<int>("mutation");
+        for (int index = 0; index < 15; ++index) QTest::newRow(qPrintable(QString::number(index))) << index;
+    }
+    void forgedBindingKeysCommandsAreRejected()
+    {
+        QFETCH(int, mutation); CModelDocument document; QString error;
+        QVERIFY2(bindingDocument(0, false, document, &error), qPrintable(error));
+        CModelEdit command; QVERIFY(document.MakeBindingKeysEdit(bindingRequest(0), command, &error));
+        auto request = *command.bindingKeysRequest;
+        if (mutation == 0) command.bindingKeysRequest.reset();
+        if (mutation == 1) command.parameterChange = CModelEdit::ParameterChange::None;
+        if (mutation == 2) command.parameterChange = CModelEdit::ParameterChange::Bind;
+        if (mutation == 3) command.field = CModelEdit::MeshStructure;
+        if (mutation == 4) command.field = CModelEdit::ParameterValue;
+        if (mutation == 5) command.freezeValue = .5f;
+        if (mutation == 6) command.meshRequest = std::make_shared<const CMocMeshStructureBuilder::Request>();
+        if (mutation == 7) command.meshRemaps.append(CMocMeshStructureBuilder::MeshRemap{});
+        if (mutation == 8) request.axisIndex = 9;
+        if (mutation == 9) request.expectedKeys[0] = .25f;
+        if (mutation == 10) request.owner.id = "Missing";
+        if (mutation == 11) request.keys[1].value = .75f;
+        if (mutation >= 8 && mutation <= 11) command.bindingKeysRequest = std::make_shared<const Builder::EditBindingKeysRequest>(request);
+        if (mutation == 12) command.name = "WrongParameter";
+        if (mutation == 13) { auto state = command.after.toMap(); state["sourceDigest"] = QByteArray(32, 'x'); command.after = state; }
+        if (mutation == 14) { auto state = command.before.toMap(); state["sourcePath"] = QString("other.moc3"); command.before = state; }
+        const auto state = document.AuthoringStructureState(); const auto revision = document.Revision();
+        QVERIFY(!document.ExecuteEdit(command)); QCOMPARE(document.AuthoringStructureState(), state); QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+    }
+    void bindingKeysReplayRejectsUnrelatedStructureAndPropertyChanges_data()
+    {
+        QTest::addColumn<QString>("change");
+        for (const char* change : {"opacity", "visibility", "parameter", "metadata", "other-keyform", "part-row", "glue-row"})
+            QTest::newRow(change) << QString::fromLatin1(change);
+    }
+    void bindingKeysReplayRejectsUnrelatedStructureAndPropertyChanges()
+    {
+        QFETCH(QString, change); CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(fiveOwnerFixture(), "five-owner-binding.moc3", &error), qPrintable(error));
+        CModelEdit edit; QVERIFY2(document.MakeBindingKeysEdit(bindingRequest(0), edit, &error), qPrintable(error));
+        CModelDocument altered = document; QVERIFY(altered.ExecuteEdit(edit));
+        if (change == "opacity") QVERIFY(altered.SetDrawableOpacity("Mesh", .375f));
+        if (change == "visibility") QVERIFY(altered.SetDrawableVisible("MeshOther", false));
+        if (change == "parameter") QVERIFY(altered.SetParameterValue("P", .25f));
+        if (change == "metadata") { auto metadata = altered.ParameterMetadata("P"); metadata.displayName = "Extra"; QVERIFY(altered.SetParameterMetadata("P", metadata)); }
+        if (change == "other-keyform") { auto points = altered.DrawableKeyformPositions("MeshOther", 0); points[0] += .125f; QVERIFY(altered.SetDrawableKeyformPositions("MeshOther", 0, points)); }
+        auto state = altered.AuthoringStructureState();
+        if (change == "part-row" || change == "glue-row") {
+            const int slot = change == "part-row" ? 0x128 : 0x1d0;
+            const int offset = word(document.SourceBytes(), slot);
+            auto columns = state["columns"].value<QMap<int, QByteArray>>();
+            auto values = document.SourceBytes().mid(offset, 8);
+            DeformerSnapshotData::real(values, 0, change == "part-row" ? 125.0f : .5f);
+            columns.insert(slot, values); state["columns"] = QVariant::fromValue(columns);
+        }
+        edit.after = state;
+        const auto before = document.AuthoringStructureState(); const auto revision = document.Revision();
+        QVERIFY(!document.ExecuteEdit(edit)); QCOMPARE(document.AuthoringStructureState(), before); QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+    }
+    void bindingKeysHistoryRechecksTheFrozenOperation()
+    {
+        CModelDocument document; QString error;
+        QVERIFY2(bindingDocument(0, false, document, &error), qPrintable(error));
+        CModelEdit command; QVERIFY(document.MakeBindingKeysEdit(bindingRequest(0), command, &error));
+        auto request = std::make_shared<Builder::EditBindingKeysRequest>(*command.bindingKeysRequest);
+        command.bindingKeysRequest = request;
+        const auto before = document.AuthoringStructureState();
+        QVERIFY(document.ExecuteEdit(command)); const auto after = document.AuthoringStructureState();
+        request->keys[1].value = .75f;
+        auto revision = document.Revision();
+        QVERIFY(!document.UndoEdit()); QCOMPARE(document.AuthoringStructureState(), after); QCOMPARE(document.Revision(), revision);
+        QVERIFY(document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+        request->keys[1].value = .5f;
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.AuthoringStructureState(), before);
+        request->keys[1].value = .25f; revision = document.Revision();
+        QVERIFY(!document.RedoEdit()); QCOMPARE(document.AuthoringStructureState(), before); QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+        request->keys[1].value = .5f;
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.AuthoringStructureState(), after);
+    }
+    void legacySessionsCanStartBindingKeysHistory_data()
+    {
+        QTest::addColumn<int>("version");
+        for (int version = 1; version <= 4; ++version) QTest::newRow(qPrintable(QString::number(version))) << version;
+    }
+    void legacySessionsCanStartBindingKeysHistory()
+    {
+        QFETCH(int, version); CModelDocument baseline; QString error;
+        QVERIFY2(bindingDocument(0, false, baseline, &error), qPrintable(error));
+        auto saved = session(baseline); saved.version = version;
+        const auto bytes = saved.ToJson(); QVERIFY(!bytes.isEmpty());
+        CModelSession parsed; QVERIFY2(CModelSession::FromJson(bytes, &parsed, &error), qPrintable(error));
+        CModelDocument restored; QVERIFY2(parsed.RestoreDocument(baseline, restored, &error), qPrintable(error));
+        QVERIFY(!restored.CanUndoEdit()); const auto before = restored.AuthoringStructureState();
+        CModelEdit command; QVERIFY2(restored.MakeBindingKeysEdit(bindingRequest(0), command, &error), qPrintable(error));
+        QVERIFY(restored.ExecuteEdit(command)); QVERIFY(restored.UndoEdit()); QCOMPARE(restored.AuthoringStructureState(), before);
+        QCOMPARE(restored.SourceBytes(), baseline.SourceBytes());
+    }
     void deletionFreezesFiveOwnerKindsAndRestoresExactHistory()
     {
         CModelDocument document;

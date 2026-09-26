@@ -62,6 +62,7 @@ signals:
     void DrawableKeyformSelected(const QString& name, int keyformIndex);
     void DrawableIndicesChanged(const QString& name, const QVector<quint16>& indices);
     void DrawableMaskIndicesChanged(const QString& name, const QVector<int>& maskIndices);
+    void StructureChanged();
     void HistoryChanged(bool canUndo, bool canRedo);
     void EditRejected(const QString& error);
 
@@ -71,6 +72,7 @@ private:
     void RebuildKeyformTable();
     void RefreshKeyformMatrix();
     void RequestMatrixKeyform(int keyform);
+    void EditBindingKeys();
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
     void InterpolatePreviousKeyform();
@@ -105,6 +107,7 @@ private:
     std::function<bool(const QString&, int, QString*)> m_keyformHandler;
     bool m_submitting = false;
     bool m_rebuildingTopology = false;
+    bool m_editingBindingKeys = false;
     int m_activeKeyformIndex = -1;
     int m_activeDeformerKeyform = -1;
     std::function<bool(const QString&, const QString&, int, QString*)> m_deformerKeyformHandler;
@@ -125,6 +128,7 @@ private:
     QComboBox* m_deformerParentCombo = nullptr;
     QTableWidget* m_vertexTable = nullptr;
     CKeyformMatrix* m_keyformMatrix = nullptr;
+    QPushButton* m_editBindingKeys = nullptr;
     std::shared_ptr<const live2dstruct::CKeyformGridSnapshot> m_matrixSnapshot;
     QTableWidget* m_rotationKeyformTable = nullptr;
     QComboBox* m_warpKeyformCombo = nullptr;

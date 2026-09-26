@@ -60,6 +60,61 @@ bool fail(QString* error, const QString& message)
     if (error) *error = message;
     return false;
 }
+
+int keyformAtPose(const CKeyformGridSnapshot& grid, const QMap<QString, float>& pose)
+{
+    if (!grid.axesValid || grid.keyformCount < 1 || grid.expectedKeyformCount != grid.keyformCount) return -1;
+    qint64 local = 0, stride = 1;
+    for (const auto& axis : grid.axes) {
+        const auto value = pose.constFind(axis.parameterId);
+        if (value == pose.cend() || axis.keys.isEmpty()) return -1;
+        const auto key = std::lower_bound(axis.keys.cbegin(), axis.keys.cend(), *value);
+        if (key == axis.keys.cend() || *key != *value || stride > grid.keyformCount / axis.keys.size()) return -1;
+        local += stride * (key - axis.keys.cbegin());
+        stride *= axis.keys.size();
+    }
+    QMap<QString, float> corner;
+    return local < grid.keyformCount && grid.Pose(int(local), corner) ? int(local) : -1;
+}
+
+bool editsBindingOwner(const CMocParameterStructureBuilder::EditBindingKeysRequest& request,
+                       const QString& target, const QString& type)
+{
+    using Owner = CMocParameterStructureBuilder::Owner;
+    return request.owner.id == target &&
+        ((request.owner.type == Owner::ArtMesh && type == QLatin1String("artmesh")) ||
+         (request.owner.type == Owner::Warp && type == QLatin1String("warp")) ||
+         (request.owner.type == Owner::Rotation && type == QLatin1String("rotation")));
+}
+
+int remapBindingKeyform(const CKeyformGridSnapshot& before, const CKeyformGridSnapshot& after,
+                       const CMocParameterStructureBuilder::EditBindingKeysRequest& request,
+                       bool forward, int local, QMap<QString, float>& pose)
+{
+    if (local < 0 || local >= before.keyformCount || request.axisIndex < 0 ||
+        request.axisIndex >= before.axes.size() || before.axes.size() != after.axes.size()) return -1;
+    const int oldCount = before.axes[request.axisIndex].keys.size();
+    const int newCount = after.axes[request.axisIndex].keys.size();
+    if (oldCount < 1 || newCount < 1) return -1;
+    qint64 stride = 1;
+    for (int axis = 0; axis < request.axisIndex; ++axis) {
+        const auto count = before.axes[axis].keys.size();
+        if (count < 1 || stride > before.keyformCount / count) return -1;
+        stride *= count;
+    }
+    const int digit = (local / stride) % oldCount;
+    int next = -1;
+    if (forward) {
+        for (int key = 0; key < request.keys.size(); ++key)
+            if (request.keys[key].oldKeyIndex == digit) { next = key; break; }
+    } else if (digit < request.keys.size()) next = request.keys[digit].oldKeyIndex;
+    if (next < 0 || next >= newCount) return -1;
+    const qint64 mapped = local % stride + next * stride + (local / (stride * oldCount)) * stride * newCount;
+    QMap<QString, float> corner;
+    if (mapped < 0 || mapped >= after.keyformCount || !after.Pose(int(mapped), corner)) return -1;
+    for (auto value = corner.cbegin(); value != corner.cend(); ++value) pose[value.key()] = value.value();
+    return int(mapped);
+}
 }
 
 void CKeyformEditController::SetDocument(CModelDocument* document)
@@ -568,21 +623,15 @@ bool CKeyformEditController::PublishStructure(CModelDocument candidate, const CM
                 if (found == pose.cend() || !std::isfinite(*found) || *found < metadata.minimum || *found > metadata.maximum)
                     return fail(error, QStringLiteral("恢复的编辑姿态无效：%1").arg(parameter.id));
             }
-            int count = 0;
-            if (nextType == QLatin1String("artmesh")) {
-                for (const auto& mesh : candidate.Drawables())
-                    if (mesh.id == nextTarget) count = mesh.keyforms.size();
-            } else {
-                for (const auto& deformer : candidate.Deformers()) if (deformer.id == nextTarget)
-                    count = deformer.type == CModelDeformer::Warp ? deformer.warpKeyforms.size() : deformer.rotationKeyforms.size();
-            }
-            for (int index = 0; index < count; ++index) {
-                QMap<QString, float> corner;
-                if (!candidate.KeyformParameterValues(nextTarget, nextType, index, corner)) break;
-                bool matches = true;
-                for (auto value = corner.cbegin(); value != corner.cend(); ++value)
-                    if (!pose.contains(value.key()) || pose.value(value.key()) != value.value()) { matches = false; break; }
-                if (matches) { nextKeyform = index; break; }
+            CKeyformGridSnapshot grid;
+            if (candidate.DescribeKeyformGrid(nextTarget, nextType, grid)) {
+                if (!restoringSelection && command.bindingKeysRequest &&
+                    editsBindingOwner(*command.bindingKeysRequest, nextTarget, nextType)) {
+                    CKeyformGridSnapshot previous;
+                    if (m_document->DescribeKeyformGrid(nextTarget, nextType, previous))
+                        nextKeyform = remapBindingKeyform(previous, grid, *command.bindingKeysRequest,
+                                                        forward, m_keyform, pose);
+                } else nextKeyform = keyformAtPose(grid, pose);
             }
             if (nextKeyform >= 0 && !CanEditIn(candidate, nextTarget, nextType, nextKeyform, error)) return false;
             if (restoringSelection && nextKeyform < 0)

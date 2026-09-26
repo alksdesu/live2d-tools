@@ -56,6 +56,7 @@ SOURCES += \
     live2dstruct/cmesheditplanner.cpp \
     ui/cinspectorpanel.cpp \
     ui/ckeyformmatrix.cpp \
+    ui/cbindingkeysdialog.cpp \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
     opengl/cmeshbounds.cpp \
@@ -301,6 +302,7 @@ HEADERS += \
     live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
     ui/ckeyformmatrix.h \
+    ui/cbindingkeysdialog.h \
     ui/cmodeldiagnosticspanel.h \
     ui/cuserdatapanel.h \
     ui/ctableeditdelegate.h \

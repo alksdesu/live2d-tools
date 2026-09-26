@@ -113,7 +113,8 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                                                QString* error, const ParameterDefinitionPreparation& preparePreview,
                                                const ParameterReferenceState* references, const EditorPreviewContext* restoreEditor,
                                                const TimelinePreviewPreparation& prepareTimeline, const PhysicsDraft* physicsDraft,
-                                               const CMeshGeometryMigration* geometry)
+                                               const CMeshGeometryMigration* geometry,
+                                               const QMap<QString, float>* requestedEditorPose)
 {
     if (error) error->clear();
     if (HasExportPreview() || !_initialized || _updating || !_model || sourceDigest.isEmpty() ||
@@ -127,9 +128,14 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
         return false;
     }
     try {
+        const auto requestedPose = requestedEditorPose ? std::make_unique<QMap<QString, float>>(*requestedEditorPose) : nullptr;
         const auto restoredContext = restoreEditor ? std::make_unique<EditorPreviewContext>(*restoreEditor) : nullptr;
         if (restoredContext && (restoredContext->sourceDigest != sourceDigest || restoredContext->active != keepEditorPreview)) {
             if (error) *error = QStringLiteral("恢复的编辑上下文来源或模式不匹配");
+            return false;
+        }
+        if (requestedPose && (!keepEditorPreview || (!HasEditorPreview() && !(restoredContext && restoredContext->active)))) {
+            if (error) *error = QStringLiteral("指定编辑姿态需要保留现有或恢复的编辑上下文");
             return false;
         }
         const auto referenceCandidate = references ? std::make_unique<ParameterReferenceState>(*references) : nullptr;
@@ -221,6 +227,17 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                              !migrateMap(editorBase, nextEditorBase, PreviewContext::EditorBase))) ||
                 (_timelinePreviewActive && !migrateMap(_timelineBaseParameters, nextTimelineBase, PreviewContext::TimelineBase)))
                 return reject(QStringLiteral("参数编辑或时间轴基线无法迁移"));
+            if (requestedPose) {
+                if (requestedPose->size() != values.parameterIds.size())
+                    return reject(QStringLiteral("指定编辑姿态的参数集合与候选模型不一致"));
+                for (int index = 0; index < values.parameterIds.size(); ++index) {
+                    const auto value = requestedPose->constFind(values.parameterIds[index]);
+                    if (value == requestedPose->cend() || !std::isfinite(*value) ||
+                        *value < values.minimums[index] || *value > values.maximums[index])
+                        return reject(QStringLiteral("指定编辑姿态缺少参数或超出候选范围：%1").arg(values.parameterIds[index]));
+                }
+                nextEditorPose = *requestedPose;
+            }
             for (auto it = baseValues.cbegin(); it != baseValues.cend(); ++it) {
                 const auto index = nextIndices.constFind(it.key());
                 if (index == nextIndices.cend() || !std::isfinite(it.value()) ||

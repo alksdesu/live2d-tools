@@ -184,11 +184,12 @@ struct CModelEdit
     bool coalesce = true;
     std::shared_ptr<CModelEditRuntimeState> runtime;
     std::shared_ptr<const CModelEditStorageState> storage;
-    enum class ParameterChange { None, Create, Bind, Delete };
+    enum class ParameterChange { None, Create, Bind, Delete, BindingKeys };
     ParameterChange parameterChange = ParameterChange::None;
     std::optional<float> freezeValue;
     QVector<CMocMeshStructureBuilder::MeshRemap> meshRemaps;
     std::shared_ptr<const CMocMeshStructureBuilder::Request> meshRequest;
+    std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysRequest> bindingKeysRequest;
 };
 
 class CModelDocument
@@ -226,6 +227,8 @@ public:
                                  const QString& displayName, CModelEdit& edit, QString* error = nullptr) const;
     bool MakeBindParameterEdit(const QString& id, const QVector<CMocParameterStructureBuilder::BindingRequest>& bindings,
                                CModelEdit& edit, QString* error = nullptr) const;
+    bool MakeBindingKeysEdit(const CMocParameterStructureBuilder::EditBindingKeysRequest& request,
+                             CModelEdit& edit, QString* error = nullptr) const;
     bool MakeDeleteParameterEdit(const QString& id, CModelEdit& edit, QString* error = nullptr) const;
     bool MakeDeleteParameterEdit(const CMocParameterStructureBuilder::DeleteRequest& request,
                                  CModelEdit& edit, QString* error = nullptr) const;
@@ -303,6 +306,7 @@ public:
     QVector<CModelDiagnostic> Validate() const;
 
 private:
+    static bool HasValidBindingKeysRequest(const CModelEdit& edit);
     QVariantMap EditStorage(const CModelEdit& edit) const;
     bool RestoreEditStorage(const QVariantMap& state);
     bool ValidateEditStorage(const CModelEdit& edit) const;
@@ -314,6 +318,8 @@ private:
                                     const QString* displayName, bool created, CModelEdit& edit, QString* error) const;
     bool ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit, bool forward, QString* error) const;
+    bool ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,
+                                       bool forward, QString* error) const;
     bool PreserveStructureProperties(CModelDocument& candidate, QString* error) const;
     bool BuildMeshBase(const CMocMeshStructureBuilder::Request& request, QByteArray& bytes, QString* error) const;
     bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);

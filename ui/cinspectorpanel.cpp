@@ -1,5 +1,6 @@
 #include "cinspectorpanel.h"
 #include "ckeyformmatrix.h"
+#include "cbindingkeysdialog.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmeshtopology.h"
 #include "live2dstruct/cmesheditplanner.h"
@@ -163,6 +164,9 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_keyformMatrix = new CKeyformMatrix(content);
     m_keyformMatrix->setObjectName(QStringLiteral("keyformMatrix"));
     m_keyformMatrix->setAccessibleName(QStringLiteral("关键形矩阵"));
+    m_editBindingKeys = new QPushButton(QStringLiteral("编辑关键值…"), content);
+    m_editBindingKeys->setObjectName(QStringLiteral("editBindingKeys"));
+    m_editBindingKeys->setToolTip(QStringLiteral("增删或移动当前对象参数轴的关键值，复制或插值生成对应关键形"));
     m_vertexTable = new QTableWidget(content);
     m_vertexTable->setObjectName(QStringLiteral("keyformVertexTable"));
     m_vertexTable->setColumnCount(3);
@@ -253,6 +257,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(QStringLiteral("蒙版模式"), m_maskInvertedCheck);
     form->addRow(QStringLiteral("Keyform"), m_keyformLabel);
     form->addRow(m_keyformMatrix);
+    form->addRow(QStringLiteral("关键值"), m_editBindingKeys);
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
     auto* vertexTransformTools = new QWidget(content);
@@ -339,6 +344,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_geometryLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
     m_keyformLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh")});
     m_keyformMatrix->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
+    m_editBindingKeys->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
     m_rotationKeyformTable->setProperty("inspectorTypes", QStringList{QStringLiteral("rotation")});
     for (QWidget* field : QList<QWidget*>{m_warpKeyformCombo, m_warpKeyformTable})
         field->setProperty("inspectorTypes", QStringList{QStringLiteral("warp")});
@@ -359,6 +365,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     scroll->setWidget(content);
     setWidget(scroll);
     connect(m_keyformMatrix, &CKeyformMatrix::KeyformRequested, this, &CInspectorPanel::RequestMatrixKeyform);
+    connect(m_editBindingKeys, &QPushButton::clicked, this, &CInspectorPanel::EditBindingKeys);
     connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingKeyform) return;
         if (m_keyformHandler) {
@@ -628,15 +635,20 @@ bool CInspectorPanel::RequestDeformerKeyform(int index)
 {
     if (!m_deformerKeyformHandler) return true;
     if (m_submitting) return false;
-    const QScopedValueRollback<bool> guard(m_submitting, true);
+    const QPointer<CInspectorPanel> alive(this);
+    m_submitting = true;
+    const auto guard = qScopeGuard([alive] { if (alive) alive->m_submitting = false; });
+    const QString id = m_selectionName, type = m_selectionType;
     QString error;
     try {
         const auto handler = m_deformerKeyformHandler;
-        if (handler(m_selectionName, m_selectionType, index, &error)) return true;
+        const bool accepted = handler(id, type, index, &error);
+        if (!alive) return false;
+        if (accepted) return true;
     } catch (const std::exception& exception) {
         error = QStringLiteral("变形器关键形选择失败：%1").arg(QString::fromUtf8(exception.what()));
     }
-    RejectEdit(error);
+    if (alive) RejectEdit(error);
     return false;
 }
 
@@ -652,32 +664,39 @@ void CInspectorPanel::RejectEdit(const QString& error)
 bool CInspectorPanel::SubmitEdit(const live2dstruct::CModelEdit& edit)
 {
     if (!m_document || m_submitting) return false;
-    const QScopedValueRollback<bool> guard(m_submitting, true);
+    const QPointer<CInspectorPanel> alive(this);
+    m_submitting = true;
+    const auto guard = qScopeGuard([alive] { if (alive) alive->m_submitting = false; });
     QString error;
     try {
         const auto handler = m_editHandler;
-        if (handler ? handler(edit, &error) : m_document->ExecuteEdit(edit)) return true;
+        const bool accepted = handler ? handler(edit, &error) : m_document->ExecuteEdit(edit);
+        if (!alive) return false;
+        if (accepted) return true;
     } catch (const std::exception& exception) {
         error = QStringLiteral("编辑提交失败：%1").arg(QString::fromUtf8(exception.what()));
     }
-    RejectEdit(error);
+    if (alive) RejectEdit(error);
     return false;
 }
 
 bool CInspectorPanel::SubmitHistory(bool undo, live2dstruct::CModelEdit& edit)
 {
     if (!m_document || m_submitting) return false;
-    const QScopedValueRollback<bool> guard(m_submitting, true);
+    const QPointer<CInspectorPanel> alive(this);
+    m_submitting = true;
+    const auto guard = qScopeGuard([alive] { if (alive) alive->m_submitting = false; });
     QString error;
     try {
         const auto handler = m_historyHandler;
         const bool accepted = handler ? handler(undo, edit, &error)
                                       : (undo ? m_document->UndoEdit(&edit) : m_document->RedoEdit(&edit));
+        if (!alive) return false;
         if (accepted) return true;
     } catch (const std::exception& exception) {
         error = QStringLiteral("历史操作失败：%1").arg(QString::fromUtf8(exception.what()));
     }
-    RejectEdit(error);
+    if (alive) RejectEdit(error);
     return false;
 }
 
@@ -685,15 +704,20 @@ bool CInspectorPanel::RequestKeyform(const QString& name, int index)
 {
     if (!m_keyformHandler) return true;
     if (m_submitting) return false;
-    const QScopedValueRollback<bool> guard(m_submitting, true);
+    const QPointer<CInspectorPanel> alive(this);
+    m_submitting = true;
+    const auto guard = qScopeGuard([alive] { if (alive) alive->m_submitting = false; });
+    const QString target = name;
     QString error;
     try {
         const auto handler = m_keyformHandler;
-        if (handler(name, index, &error)) return true;
+        const bool accepted = handler(target, index, &error);
+        if (!alive) return false;
+        if (accepted) return true;
     } catch (const std::exception& exception) {
         error = QStringLiteral("关键形选择失败：%1").arg(QString::fromUtf8(exception.what()));
     }
-    RejectEdit(error);
+    if (alive) RejectEdit(error);
     return false;
 }
 
@@ -860,6 +884,7 @@ bool CInspectorPanel::IsLocked(const QString& type, const QString& name) const
 
 void CInspectorPanel::RefreshKeyformMatrix()
 {
+    m_editBindingKeys->setEnabled(false);
     live2dstruct::CKeyformGridSnapshot snapshot;
     if (!m_document || m_selectionName.isEmpty() ||
         !m_document->DescribeKeyformGrid(m_selectionName, m_selectionType, snapshot)) {
@@ -869,7 +894,57 @@ void CInspectorPanel::RefreshKeyformMatrix()
     }
     const int active = m_selectionType == QLatin1String("artmesh") ? m_activeKeyformIndex : m_activeDeformerKeyform;
     m_keyformMatrix->SetGrid(snapshot, active, IsLocked(m_selectionType, m_selectionName));
+    m_editBindingKeys->setEnabled(snapshot.axesValid && snapshot.expectedKeyformCount == snapshot.keyformCount &&
+        !IsLocked(m_selectionType, m_selectionName) && std::any_of(snapshot.axes.cbegin(), snapshot.axes.cend(),
+            [](const auto& axis) { return axis.parameterType == 0; }));
     m_matrixSnapshot = std::make_shared<const live2dstruct::CKeyformGridSnapshot>(std::move(snapshot));
+}
+
+void CInspectorPanel::EditBindingKeys()
+{
+    if (!m_document || !m_editBindingKeys->isEnabled() || m_submitting || m_rebuildingTopology || m_editingBindingKeys) return;
+    live2dstruct::CKeyformGridSnapshot snapshot;
+    QString error;
+    if (!m_document->DescribeKeyformGrid(m_selectionName, m_selectionType, snapshot, &error)) { RejectEdit(error); return; }
+    const auto* document = m_document;
+    const QString path = document->SourcePath();
+    const int active = m_selectionType == QLatin1String("artmesh") ? m_activeKeyformIndex : m_activeDeformerKeyform;
+    const QPointer<CInspectorPanel> alive(this);
+    const QPointer<CBindingKeysDialog> pending(new CBindingKeysDialog(snapshot, active, this));
+    connect(this, &CInspectorPanel::EditRejected, pending, &CBindingKeysDialog::SetError);
+    connect(pending, &CBindingKeysDialog::ApplyRequested, this, [this, alive, pending, document, path, snapshot, active] {
+        if (!alive || !pending || m_submitting) return;
+        const int current = m_selectionType == QLatin1String("artmesh") ? m_activeKeyformIndex : m_activeDeformerKeyform;
+        if (m_document != document || m_document->Revision() != snapshot.revision ||
+            m_document->SourceDigest() != snapshot.sourceDigest || m_document->SourcePath() != path ||
+            m_selectionName != snapshot.objectId || m_selectionType != snapshot.objectType || current != active ||
+            IsLocked(m_selectionType, m_selectionName)) {
+            pending->SetError(QStringLiteral("编辑期间模型、关键形或选区已改变，请关闭后重新打开"));
+            return;
+        }
+        live2dstruct::CMocParameterStructureBuilder::EditBindingKeysRequest request;
+        live2dstruct::CModelEdit edit;
+        QString error;
+        if (!pending->BuildRequest(request, &error) || !m_document->MakeBindingKeysEdit(request, edit, &error)) {
+            pending->SetError(error);
+            emit EditRejected(error);
+            return;
+        }
+        if (!SubmitEdit(edit) || !alive || !pending) return;
+        if (m_document != document || m_document->SourceDigest() != snapshot.sourceDigest || m_document->SourcePath() != path) {
+            pending->SetError(QStringLiteral("提交期间模型已改变，请关闭后重新打开"));
+            return;
+        }
+        pending->accept();
+        RefreshSelection();
+        if (!alive) return;
+        emit StructureChanged();
+        if (alive && m_document) emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    });
+    m_editingBindingKeys = true;
+    pending->exec();
+    if (pending) delete pending.data();
+    if (alive) m_editingBindingKeys = false;
 }
 
 void CInspectorPanel::RequestMatrixKeyform(int keyform)
@@ -1401,6 +1476,7 @@ void CInspectorPanel::ClearSelection()
 {
     m_matrixSnapshot.reset();
     m_keyformMatrix->Clear();
+    m_editBindingKeys->setEnabled(false);
     m_activeKeyformIndex = -1;
     m_activeDeformerKeyform = -1;
     m_selectionName.clear();

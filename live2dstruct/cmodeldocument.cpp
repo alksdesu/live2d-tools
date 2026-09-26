@@ -1069,8 +1069,17 @@ bool CModelDocument::IsLocked(const QString& type, const QString& id) const
     return m_lockedKeys.contains(type + QLatin1Char('|') + id);
 }
 
+bool CModelDocument::HasValidBindingKeysRequest(const CModelEdit& edit)
+{
+    if (!edit.bindingKeysRequest) return edit.parameterChange != CModelEdit::ParameterChange::BindingKeys;
+    return edit.parameterChange == CModelEdit::ParameterChange::BindingKeys && edit.field == CModelEdit::ParameterStructure &&
+        edit.type == QLatin1String("parameter") && edit.name == edit.bindingKeysRequest->parameterId &&
+        !edit.freezeValue && edit.meshRemaps.isEmpty() && !edit.meshRequest;
+}
+
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
+    if (!HasValidBindingKeysRequest(edit)) return false;
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == CModelEdit::ParameterStructure || edit.field == CModelEdit::MeshStructure) {
         const QString type = edit.field == CModelEdit::ParameterStructure ? QStringLiteral("parameter") : QStringLiteral("mesh");
@@ -1174,7 +1183,8 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
 {
     try {
-        if (edit.name.isEmpty() || (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
+        if (edit.name.isEmpty() || !HasValidBindingKeysRequest(edit) ||
+            (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
         if (command.field != CModelEdit::MeshStructure && (!command.meshRemaps.isEmpty() || command.meshRequest)) return false;
         if (command.field == CModelEdit::MeshStructure && command.before == command.after) {
@@ -1185,7 +1195,8 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         }
         switch (command.parameterChange) {
         case CModelEdit::ParameterChange::None: case CModelEdit::ParameterChange::Create:
-        case CModelEdit::ParameterChange::Bind: case CModelEdit::ParameterChange::Delete: break;
+        case CModelEdit::ParameterChange::Bind: case CModelEdit::ParameterChange::Delete:
+        case CModelEdit::ParameterChange::BindingKeys: break;
         default: return false;
         }
         if ((command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue) &&

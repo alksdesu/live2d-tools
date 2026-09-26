@@ -87,7 +87,8 @@ public:
                                         const EditorPreviewContext* restoreEditor = nullptr,
                                         const TimelinePreviewPreparation& prepareTimeline = {},
                                         const PhysicsDraft* physicsDraft = nullptr,
-                                        const CMeshGeometryMigration* geometry = nullptr);
+                                        const CMeshGeometryMigration* geometry = nullptr,
+                                        const QMap<QString, float>* requestedEditorPose = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);

@@ -959,7 +959,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                                                 const LAppModel::EditorPreviewContext* restoreEditor,
                                                 const LAppModel::TimelinePreviewPreparation& prepareTimeline,
                                                 const LAppModel::PhysicsDraft* physicsDraft,
-                                                const CMeshGeometryMigration* geometry)
+                                                const CMeshGeometryMigration* geometry,
+                                                const QMap<QString, float>* requestedEditorPose)
 {
     if (error) error->clear();
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
@@ -984,7 +985,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
         if (!model->ApplyParameterStructurePreview(compiled, sourceDigest, addedSeeds, baseValues,
-                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline, physicsDraft, geometry)) return false;
+                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline,
+                                                   physicsDraft, geometry, requestedEditorPose)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         preparedPose.swap(pose);

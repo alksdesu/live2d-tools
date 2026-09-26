@@ -467,7 +467,172 @@ class ModelReplacementTests : public QObject
         QCOMPARE(actual.virtualPartOpacities, expected.virtualPartOpacities);
         QCOMPARE(actual.modelOpacity, expected.modelOpacity);
     }
+    static void setupStructuralEditor(LAppModel& preview, bool timeline, bool sparseSaved)
+    {
+        setupPreview(preview);
+        runtime.parameterMinimum = -2;
+        runtime.parameterMaximum = 2;
+        auto entry = snapshot(preview);
+        if (sparseSaved) {
+            entry.savedPresence = {0, 1};
+            entry.savedParameters[0] = 0;
+            if (!preview._model->RestoreRuntimeValues(entry)) qFatal("Cannot prepare sparse saved parameters");
+            entry = snapshot(preview);
+        }
+        preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>(entry);
+        preview.m_editorBaseParameters = entry.Parameters();
+        preview.m_editorPose = {{"ParamA", .5f}, {"ParamB", .7f}};
+        if (!preview._model->ApplyParameterPose(preview.m_editorPose)) qFatal("Cannot prepare editor pose");
+        preview._model->SetPartOpacity(0, .35f);
+        preview._model->SetModelOpacity(.45f);
+        if (timeline) {
+            preview._timelinePreviewActive = true;
+            preview._timelineBaseParameters = {{"ParamA", .2f}, {"ParamB", .3f}};
+            preview._timelineBaseParts = {{entry.partIds[0], .6f}, {entry.partIds[1], .7f}};
+            preview._timelineBaseOpacity = .75f;
+            preview._timelinePreview.parameters = {{"ParamA", .9f}};
+            preview._timelineParameters = preview._timelinePreview.parameters;
+            preview.m_timelineExplicitParameterIds = {"ParamA"};
+        }
+    }
 private slots:
+    void requestedStructuralPoseChangesOnlyTheEditorPose_data()
+    {
+        QTest::addColumn<bool>("restore"); QTest::addColumn<bool>("timeline"); QTest::addColumn<bool>("sparseSaved");
+        for (bool restore : {false, true}) for (bool timeline : {false, true}) for (bool sparse : {false, true})
+            QTest::newRow(qPrintable(QString("restore%1-timeline%2-sparse%3").arg(restore).arg(timeline).arg(sparse))) << restore << timeline << sparse;
+    }
+
+    void requestedStructuralPoseChangesOnlyTheEditorPose()
+    {
+        QFETCH(bool, restore); QFETCH(bool, timeline); QFETCH(bool, sparseSaved);
+        LAppModel preview; setupStructuralEditor(preview, timeline, sparseSaved);
+        const auto entry = *preview.m_editorEntryState;
+        const auto editorBase = preview.m_editorBaseParameters;
+        const auto editorCurrent = snapshot(preview);
+        LAppModel::EditorPreviewContext context;
+        QString error;
+        QVERIFY(preview.CaptureEditorPreviewContext(context, &error));
+        if (restore) {
+            QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, false, &error), qPrintable(error));
+            QVERIFY(!preview.HasEditorPreview());
+            compareValues(snapshot(preview), entry);
+        }
+        const auto oldPose = preview.m_editorPose;
+        const auto timelineBase = preview._timelineBaseParameters, timelineParts = preview._timelineBaseParts;
+        const auto timelineFrame = preview._timelinePreview;
+        const auto timelineParameters = preview._timelineParameters;
+        const auto explicitIds = preview.m_timelineExplicitParameterIds;
+        QMap<QString, float> requested{{"ParamA", -.25f}, {"ParamB", .65f}};
+        const auto expected = requested;
+        runtime.configureModel = [&](GetterState&) { requested["ParamA"] = std::numeric_limits<float>::quiet_NaN(); };
+        int preparations = 0;
+        bool candidateMatches = false, sourceUnchanged = false;
+        const auto check = [&](const CubismModel& candidate, QString*) {
+            ++preparations;
+            CubismModel::RuntimeValueSnapshot values;
+            candidateMatches = candidate.CaptureRuntimeValues(values) && values.Parameters() == expected &&
+                values.savedParameters == entry.savedParameters && values.savedPresence == entry.savedPresence &&
+                values.partOpacities == editorCurrent.partOpacities && values.modelOpacity == editorCurrent.modelOpacity;
+            sourceUnchanged = preview.m_editorPose == oldPose;
+            return candidateMatches && sourceUnchanged;
+        };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, true,
+            &error, check, nullptr, restore ? &context : nullptr, {}, nullptr, nullptr, &requested), qPrintable(error));
+        QVERIFY(std::isnan(requested.value("ParamA")));
+        QCOMPARE(preparations, 1); QVERIFY(candidateMatches && sourceUnchanged); QVERIFY(preview.HasEditorPreview());
+        QCOMPARE(preview.m_editorPose, expected); QCOMPARE(snapshot(preview).Parameters(), expected);
+        compareValues(*preview.m_editorEntryState, entry); QCOMPARE(preview.m_editorBaseParameters, editorBase);
+        QCOMPARE(snapshot(preview).savedParameters, entry.savedParameters); QCOMPARE(snapshot(preview).savedPresence, entry.savedPresence);
+        QCOMPARE(preview._timelineBaseParameters, timelineBase); QCOMPARE(preview._timelineBaseParts, timelineParts);
+        QCOMPARE(preview._timelinePreview.parameters, timelineFrame.parameters); QCOMPARE(preview._timelineParameters, timelineParameters);
+        QCOMPARE(preview._timelinePreview.parts, timelineFrame.parts); QCOMPARE(preview._timelinePreview.model, timelineFrame.model);
+        QCOMPARE(preview.m_timelineExplicitParameterIds, explicitIds); QCOMPARE(preview._timelinePreviewActive, timeline);
+        QCOMPARE(preview._timelineBaseOpacity, timeline ? .75f : 1.0f);
+        runtime.configureModel = {};
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, false, &error), qPrintable(error));
+        QVERIFY(!preview.HasEditorPreview()); QVERIFY(preview.m_editorPose.isEmpty()); QVERIFY(preview.m_editorBaseParameters.isEmpty());
+        compareValues(snapshot(preview), entry);
+        QCOMPARE(preview._timelineBaseParameters, timelineBase); QCOMPARE(preview._userTimeSeconds, 23.0f);
+    }
+
+    void requestedStructuralPoseCanAliasTheExistingPose()
+    {
+        LAppModel preview; setupStructuralEditor(preview, false, false);
+        const auto expected = preview.m_editorPose, base = preview.m_editorBaseParameters;
+        const auto entry = *preview.m_editorEntryState;
+        QString error;
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, true,
+            &error, {}, nullptr, nullptr, {}, nullptr, nullptr, &preview.m_editorPose), qPrintable(error));
+        QCOMPARE(preview.m_editorPose, expected); QCOMPARE(snapshot(preview).Parameters(), expected);
+        QCOMPARE(preview.m_editorBaseParameters, base); compareValues(*preview.m_editorEntryState, entry);
+    }
+
+    void rejectedRequestedStructuralPoseKeepsAllRuntimeState_data()
+    {
+        QTest::addColumn<int>("failure");
+        const QStringList names{"missing", "extra", "wrong-id", "nan", "infinity", "candidate-range", "inactive", "ending",
+                                "prepare-refusal", "prepare-exception", "renderer-refusal", "nonfinite-core-output",
+                                "archived-prepare-refusal", "archived-renderer-refusal"};
+        for (int failure = 0; failure < names.size(); ++failure) QTest::newRow(qPrintable(names[failure])) << failure;
+    }
+
+    void rejectedRequestedStructuralPoseKeepsAllRuntimeState()
+    {
+        QFETCH(int, failure);
+        LAppModel preview; setupStructuralEditor(preview, true, true);
+        QString error;
+        LAppModel::EditorPreviewContext context;
+        if (failure >= 12) QVERIFY(preview.CaptureEditorPreviewContext(context, &error));
+        if (failure == 6 || failure >= 12) QVERIFY(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, false, &error));
+        const auto before = snapshot(preview);
+        const auto entry = preview.m_editorEntryState ? *preview.m_editorEntryState : CubismModel::RuntimeValueSnapshot{};
+        const auto* entryPointer = preview.m_editorEntryState.get();
+        const auto oldPose = preview.m_editorPose, editorBase = preview.m_editorBaseParameters;
+        const auto timelineBase = preview._timelineBaseParameters, timelineParts = preview._timelineBaseParts;
+        const auto timelineFrame = preview._timelinePreview;
+        const auto timelineParameters = preview._timelineParameters;
+        const auto map = preview.m_mapParaToIndex;
+        const auto bytes = preview.m_previewMocBytes, digest = preview.m_previewMocDigest;
+        const float opacity = preview._opacity;
+        auto* model = preview._model; auto* moc = preview._moc; auto* renderer = preview._renderer;
+        const auto explicitIds = preview.m_timelineExplicitParameterIds;
+        QMap<QString, float> requested{{"ParamA", -.25f}, {"ParamB", .65f}};
+        if (failure == 0) requested.remove("ParamB");
+        else if (failure == 1) requested.insert("VirtualParameter", .3f);
+        else if (failure == 2) { requested.remove("ParamB"); requested.insert("VirtualParameter", .3f); }
+        else if (failure == 3) requested["ParamA"] = std::numeric_limits<float>::quiet_NaN();
+        else if (failure == 4) requested["ParamA"] = std::numeric_limits<float>::infinity();
+        else if (failure == 5) { runtime.parameterMaximum = 1; requested["ParamA"] = 1.5f; }
+        else if (failure == 10 || failure == 13) runtime.rejectMetadataRenderer = true;
+        else if (failure == 11) runtime.failure = NonFiniteOutput;
+        int preparations = 0;
+        const auto prepare = [&](const CubismModel& candidate, QString* detail) {
+            ++preparations;
+            CubismModel::RuntimeValueSnapshot values;
+            if (!candidate.CaptureRuntimeValues(values) || values.Parameters() != requested) return false;
+            if (failure == 9) throw std::runtime_error("requested pose preparation exception");
+            if (failure == 8 || failure == 12) { *detail = QStringLiteral("requested pose preparation refused"); return false; }
+            return true;
+        };
+        QVERIFY(!preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, failure != 7,
+            &error, prepare, nullptr, failure >= 12 ? &context : nullptr, {}, nullptr, nullptr, &requested));
+        QVERIFY(!error.isEmpty()); if (failure == 8 || failure == 9 || failure == 12) QCOMPARE(preparations, 1);
+        QCOMPARE(preview._model, model); QCOMPARE(preview._moc, moc); QCOMPARE(preview._renderer, renderer);
+        QCOMPARE(preview.m_previewMocBytes, bytes); QCOMPARE(preview.m_previewMocDigest, digest);
+        QCOMPARE(preview.m_mapParaToIndex, map); compareValues(snapshot(preview), before);
+        QCOMPARE(preview.m_editorEntryState.get(), entryPointer);
+        if (entryPointer) compareValues(*preview.m_editorEntryState, entry);
+        QCOMPARE(preview.m_editorPose, oldPose); QCOMPARE(preview.m_editorBaseParameters, editorBase);
+        QCOMPARE(preview._timelineBaseParameters, timelineBase); QCOMPARE(preview._timelineBaseParts, timelineParts);
+        QCOMPARE(preview._timelinePreview.parameters, timelineFrame.parameters); QCOMPARE(preview._timelineParameters, timelineParameters);
+        QCOMPARE(preview._timelinePreview.parts, timelineFrame.parts); QCOMPARE(preview._timelinePreview.model, timelineFrame.model);
+        QCOMPARE(preview.m_timelineExplicitParameterIds, explicitIds); QVERIFY(preview._timelinePreviewActive);
+        QCOMPARE(preview._timelineBaseOpacity, .75f); QCOMPARE(preview._userTimeSeconds, 23.0f);
+        QCOMPARE(preview._opacity, opacity);
+        QVERIFY(!preview._updating); QCOMPARE(preview.m_sourceMocDigest, QByteArray("original-source-digest"));
+    }
+
     void physicsCandidatePublishesAfterModelAndRenderer_data()
     {
         QTest::addColumn<int>("mode");

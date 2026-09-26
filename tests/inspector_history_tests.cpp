@@ -1,5 +1,6 @@
 #include "ui/cinspectorpanel.h"
 #include "ui/ckeyformmatrix.h"
+#include "ui/cbindingkeysdialog.h"
 #include "ui/theme.h"
 #include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
@@ -17,6 +18,7 @@
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QTableView>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QDialog>
@@ -91,12 +93,301 @@ double topologyArea(const QVector<float>& positions, const QVector<quint16>& ind
     }
     return area;
 }
+
+bool withBindingDialog(CInspectorPanel* panel, const std::function<void(QPointer<CBindingKeysDialog>)>& action)
+{
+    const QPointer<CInspectorPanel> owner(panel);
+    const QPointer<QPushButton> button(panel->findChild<QPushButton*>("editBindingKeys"));
+    if (!button || !button->isEnabled()) return false;
+    bool invoked = false;
+    QTimer::singleShot(0, qApp, [&, owner] {
+        if (!owner) return;
+        const QPointer<CBindingKeysDialog> dialog(owner->findChild<CBindingKeysDialog*>("bindingKeysDialog"));
+        if (!dialog) {
+            for (auto* pending : owner->findChildren<QDialog*>()) pending->reject();
+            return;
+        }
+        const auto close = qScopeGuard([dialog] { if (dialog && dialog->isVisible()) dialog->reject(); });
+        invoked = true;
+        action(dialog);
+    });
+    button->clicked(false);
+    return invoked;
+}
 }
 
 class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void bindingKeyDialogCommitsOneHistoryEntry_data()
+    {
+        QTest::addColumn<QString>("model"); QTest::addColumn<QString>("id"); QTest::addColumn<QString>("type");
+        QTest::addColumn<float>("original"); QTest::addColumn<float>("moved");
+        QTest::newRow("artmesh") << QString("Mark") << QString("EyeL4") << QString("artmesh") << -1.0f << -.5f;
+        QTest::newRow("warp") << QString("Mark") << QString("Warp6") << QString("warp") << -30.0f << -15.0f;
+        QTest::newRow("rotation") << QString("Natori") << QString("Rotation2") << QString("rotation") << -10.0f << -5.0f;
+    }
+
+    void bindingKeyDialogCommitsOneHistoryEntry()
+    {
+        QFETCH(QString, model); QFETCH(QString, id); QFETCH(QString, type); QFETCH(float, original); QFETCH(float, moved);
+        using namespace live2dstruct;
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        const auto source = document.SourceBytes(), digest = document.SourceDigest();
+        const auto before = document.ParameterStructureState();
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type);
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix");
+        QVERIFY(matrix);
+        auto* view = matrix->findChild<QTableView*>("keyformMatrixTable");
+        QVERIFY(view);
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toFloat(), original);
+        QSignalSpy structure(&panel, &CInspectorPanel::StructureChanged), history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int calls = 0;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString*) {
+            ++calls;
+            return edit.parameterChange == CModelEdit::ParameterChange::BindingKeys && document.ExecuteEdit(edit);
+        });
+        QPointer<CBindingKeysDialog> pending;
+        QVERIFY(withBindingDialog(&panel, [&](auto dialog) {
+            pending = dialog;
+            auto* table = dialog->template findChild<QTableView*>("bindingKeysTable");
+            auto* apply = dialog->template findChild<QPushButton*>("bindingKeysApply");
+            QVERIFY(table && apply); QCOMPARE(dialog->SelectedAxis(), 0);
+            QVERIFY(table->model()->setData(table->model()->index(0, 0), QString::number(moved, 'g', 9), Qt::EditRole));
+            CMocParameterStructureBuilder::EditBindingKeysRequest request;
+            QString error;
+            QVERIFY2(dialog->BuildRequest(request, &error), qPrintable(error));
+            QCOMPARE(request.expectedKeys.first(), original); QCOMPARE(request.keys.first().value, moved);
+            QVERIFY(apply->isEnabled()); apply->click();
+            QVERIFY(dialog && !dialog->isVisible());
+        }));
+        QVERIFY(!pending); QCOMPARE(calls, 1); QCOMPARE(structure.count(), 1); QCOMPARE(history.count(), 1); QCOMPARE(rejected.count(), 0);
+        QVERIFY(document.CanUndoEdit() && !document.CanRedoEdit());
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toFloat(), moved);
+        const auto after = document.ParameterStructureState(); QVERIFY(after != before);
+        panel.Undo();
+        QCOMPARE(document.ParameterStructureState(), before); QVERIFY(!document.CanUndoEdit() && document.CanRedoEdit());
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toFloat(), original);
+        panel.Redo();
+        QCOMPARE(document.ParameterStructureState(), after); QCOMPARE(history.count(), 3);
+        QCOMPARE(view->model()->headerData(0, Qt::Horizontal).toFloat(), moved);
+        QCOMPARE(document.SourceBytes(), source); QCOMPARE(document.SourceDigest(), digest);
+        QFile sourceFile(document.SourcePath()); QVERIFY(sourceFile.open(QIODevice::ReadOnly)); QCOMPARE(sourceFile.readAll(), source);
+    }
+
+    void bindingKeyDialogRetainsInputAfterRejectedPublication_data()
+    {
+        QTest::addColumn<bool>("throws"); QTest::newRow("reject") << false; QTest::newRow("exception") << true;
+    }
+
+    void bindingKeyDialogRetainsInputAfterRejectedPublication()
+    {
+        QFETCH(bool, throws);
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto before = document.ParameterStructureState(); const auto revision = document.Revision();
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection("EyeL4", "artmesh");
+        QSignalSpy structure(&panel, &CInspectorPanel::StructureChanged), history(&panel, &CInspectorPanel::HistoryChanged);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int calls = 0; bool accept = false;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++calls;
+            if (!accept) {
+                if (throws) throw std::runtime_error("controlled binding rejection");
+                *error = QStringLiteral("controlled binding rejection"); return false;
+            }
+            return document.ExecuteEdit(edit);
+        });
+        QVERIFY(withBindingDialog(&panel, [&](auto dialog) {
+            auto* table = dialog->template findChild<QTableView*>("bindingKeysTable");
+            auto* apply = dialog->template findChild<QPushButton*>("bindingKeysApply");
+            auto* error = dialog->template findChild<QLabel*>("bindingKeysError");
+            QVERIFY(table && apply && error);
+            QVERIFY(table->model()->setData(table->model()->index(0, 0), QString("-0.5"), Qt::EditRole));
+            const auto input = table->model()->index(0, 0).data(Qt::EditRole);
+            apply->click();
+            QVERIFY(dialog && dialog->isVisible()); QCOMPARE(calls, 1); QCOMPARE(rejected.count(), 1);
+            QCOMPARE(table->model()->index(0, 0).data(Qt::EditRole), input);
+            QVERIFY(error->isVisible()); QVERIFY(error->text().contains("controlled binding rejection"));
+            QCOMPARE(document.ParameterStructureState(), before); QCOMPARE(document.Revision(), revision);
+            QCOMPARE(structure.count(), 0); QCOMPARE(history.count(), 0); QVERIFY(!document.CanUndoEdit());
+            accept = true; QVERIFY(apply->isEnabled()); apply->click();
+            QVERIFY(dialog && !dialog->isVisible());
+        }));
+        QCOMPARE(calls, 2); QCOMPARE(structure.count(), 1); QCOMPARE(history.count(), 1); QCOMPARE(rejected.count(), 1);
+        QVERIFY(document.CanUndoEdit());
+    }
+
+    void bindingKeyDialogCancellationAndStaleStateDoNotSubmit_data()
+    {
+        QTest::addColumn<QString>("action");
+        for (const auto* action : {"cancel", "no-op", "document", "null-document", "source", "revision", "selection", "active", "lock", "reentry"})
+            QTest::newRow(action) << QString::fromLatin1(action);
+    }
+
+    void bindingKeyDialogCancellationAndStaleStateDoNotSubmit()
+    {
+        QFETCH(QString, action);
+        using namespace live2dstruct;
+        CModelDocument document, other;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3")); QVERIFY(other.Load(document.SourcePath()));
+        const auto source = document.SourceBytes();
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection("EyeL4", "artmesh");
+        QSignalSpy structure(&panel, &CInspectorPanel::StructureChanged), history(&panel, &CInspectorPanel::HistoryChanged);
+        int calls = 0;
+        panel.SetEditHandler([&](const CModelEdit&, QString*) { ++calls; return true; });
+        QPointer<CBindingKeysDialog> pending;
+        QVERIFY(withBindingDialog(&panel, [&](auto dialog) {
+            pending = dialog;
+            auto* table = dialog->template findChild<QTableView*>("bindingKeysTable");
+            auto* apply = dialog->template findChild<QPushButton*>("bindingKeysApply");
+            auto* error = dialog->template findChild<QLabel*>("bindingKeysError");
+            QVERIFY(table && apply && error);
+            if (action == "no-op") {
+                QVERIFY(!apply->isEnabled()); apply->click(); QCOMPARE(calls, 0);
+                dialog->ApplyRequested();
+                QVERIFY(dialog->isVisible()); QVERIFY(!error->text().isEmpty()); return;
+            }
+            QVERIFY(table->model()->setData(table->model()->index(0, 0), QString("-0.5"), Qt::EditRole));
+            if (action == "cancel") { dialog->reject(); return; }
+            if (action == "reentry") {
+                auto* button = panel.findChild<QPushButton*>("editBindingKeys"); QVERIFY(button);
+                button->clicked(false);
+                QCOMPARE(panel.findChildren<CBindingKeysDialog*>().size(), 1);
+                QCOMPARE(panel.findChild<CBindingKeysDialog*>(), dialog.data()); return;
+            }
+            if (action == "document") panel.SetDocument(&other);
+            else if (action == "null-document") panel.SetDocument(nullptr);
+            else if (action == "source") QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Natori/Natori.moc3"));
+            else if (action == "revision") QVERIFY(document.SetParameterValue("ParamEyeBallX", .25f));
+            else if (action == "selection") panel.SetSelection("Hair2", "artmesh");
+            else if (action == "active") QVERIFY(panel.SyncActiveKeyform("EyeL4", "artmesh", 1));
+            else if (action == "lock") panel.SetLockedState({"artmesh|EyeL4"});
+            const auto state = document.ParameterStructureState(); const auto revision = document.Revision();
+            const auto input = table->model()->index(0, 0).data(Qt::EditRole);
+            apply->click();
+            QVERIFY(dialog && dialog->isVisible()); QVERIFY(!error->text().isEmpty());
+            QCOMPARE(table->model()->index(0, 0).data(Qt::EditRole), input);
+            QCOMPARE(document.ParameterStructureState(), state); QCOMPARE(document.Revision(), revision);
+        }));
+        QVERIFY(!pending); QCOMPARE(calls, 0); QCOMPARE(structure.count(), 0); QCOMPARE(history.count(), 0);
+        QVERIFY(!document.CanUndoEdit());
+        if (action != "source") QCOMPARE(document.SourceBytes(), source);
+    }
+
+    void bindingKeyDialogDoesNotOutliveItsPanel_data()
+    {
+        QTest::addColumn<int>("destruction");
+        QTest::newRow("panel") << 0; QTest::newRow("window") << 1;
+        QTest::newRow("submit-callback") << 2; QTest::newRow("throwing-submit-callback") << 3;
+    }
+
+    void bindingKeyDialogDoesNotOutliveItsPanel()
+    {
+        QFETCH(int, destruction);
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto state = document.ParameterStructureState(); const auto revision = document.Revision();
+        QPointer<QMainWindow> window = new QMainWindow;
+        const auto cleanup = qScopeGuard([&] { if (window) delete window.data(); });
+        QPointer<CInspectorPanel> panel = new CInspectorPanel(window);
+        window->addDockWidget(Qt::RightDockWidgetArea, panel);
+        panel->SetDocument(&document); panel->SetSelection("EyeL4", "artmesh");
+        int calls = 0;
+        panel->SetEditHandler([&](const CModelEdit&, QString*) {
+            ++calls; delete panel.data();
+            if (destruction == 3) throw std::runtime_error("panel destroyed");
+            return true;
+        });
+        QPointer<CBindingKeysDialog> pending;
+        QVERIFY(withBindingDialog(panel, [&](auto dialog) {
+            pending = dialog;
+            if (destruction == 0) delete panel.data();
+            else if (destruction == 1) delete window.data();
+            else {
+                auto* table = dialog->template findChild<QTableView*>("bindingKeysTable"); QVERIFY(table);
+                QVERIFY(table->model()->setData(table->model()->index(0, 0), QString("-0.5"), Qt::EditRole));
+                dialog->ApplyRequested();
+            }
+            QVERIFY(!panel); QVERIFY(!pending);
+        }));
+        QVERIFY(!panel); QVERIFY(!pending); QCOMPARE(calls, destruction >= 2 ? 1 : 0);
+        QCOMPARE(document.ParameterStructureState(), state); QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit());
+    }
+
+    void callbackPanelDestructionStopsEverySubmissionPath_data()
+    {
+        QTest::addColumn<QString>("path"); QTest::addColumn<int>("outcome");
+        for (const auto* path : {"edit", "history", "artmesh", "warp", "rotation"}) for (int outcome = 0; outcome < 3; ++outcome)
+            QTest::newRow(qPrintable(QString("%1-%2").arg(path).arg(outcome))) << QString::fromLatin1(path) << outcome;
+    }
+
+    void callbackPanelDestructionStopsEverySubmissionPath()
+    {
+        QFETCH(QString, path); QFETCH(int, outcome);
+        using namespace live2dstruct;
+        CModelDocument document;
+        const QString model = path == "rotation" ? "Natori" : "Mark";
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        const QString type = path == "warp" || path == "rotation" ? path : QString("artmesh");
+        const QString id = type == "warp" ? "Warp6" : type == "rotation" ? "Rotation2" : "EyeL4";
+        if (path == "history") {
+            const auto target = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(), [&](const auto& mesh) { return mesh.id == id; });
+            QVERIFY(target != document.Drawables().cend());
+            QVERIFY(document.ExecuteEdit({id, type, CModelEdit::Opacity, document.DrawableOpacity(*target), .25f}));
+        }
+        const auto state = document.ParameterStructureState(); const auto revision = document.Revision();
+        QPointer<CInspectorPanel> panel = new CInspectorPanel;
+        const auto cleanup = qScopeGuard([&] { if (panel) delete panel.data(); });
+        panel->SetDocument(&document); panel->SetSelection(id, type);
+        QSignalSpy history(panel, &CInspectorPanel::HistoryChanged), rejected(panel, &CInspectorPanel::EditRejected);
+        int calls = 0;
+        const auto destroy = [&]() -> bool {
+            ++calls; delete panel.data();
+            if (outcome == 2) throw std::runtime_error("destroyed in callback");
+            return outcome == 1;
+        };
+        bool stableArguments = true;
+        const auto destroyWithTarget = [&](const QString& name, const QString& requestedType) {
+            const auto check = qScopeGuard([&] { stableArguments = name == id && requestedType == type; });
+            return destroy();
+        };
+        if (path == "edit") {
+            panel->SetEditHandler([&](const CModelEdit&, QString*) { return destroy(); });
+            auto* table = panel->findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table && table->rowCount());
+            {
+                const QSignalBlocker blocked(table);
+                table->item(0, 1)->setText(QString::number(table->item(0, 1)->text().toFloat() + .125f, 'g', 9));
+            }
+            table->cellChanged(0, 1);
+        } else if (path == "history") {
+            panel->SetHistoryHandler([&](bool, CModelEdit&, QString*) { return destroy(); });
+            panel->Undo();
+        } else if (path == "artmesh") {
+            panel->SetKeyformHandler([&](const QString& name, int, QString*) { return destroyWithTarget(name, type); });
+            auto* combo = panel->findChild<QComboBox*>("keyformSelector"); QVERIFY(combo && combo->count() > 1);
+            combo->activated(1);
+        } else {
+            panel->SetDeformerKeyformHandler([&](const QString& name, const QString& requestedType, int, QString*) {
+                return destroyWithTarget(name, requestedType);
+            });
+            if (path == "warp") {
+                auto* combo = panel->findChild<QComboBox*>("warpKeyformSelector"); QVERIFY(combo && combo->count() > 1);
+                combo->activated(1);
+            } else {
+                auto* table = panel->findChild<QTableWidget*>("rotationKeyformTable"); QVERIFY(table && table->rowCount() > 1);
+                table->currentCellChanged(1, 0, 0, 0);
+            }
+        }
+        QCOMPARE(calls, 1); QVERIFY(!panel); QVERIFY(stableArguments); QCOMPARE(history.count(), 0); QCOMPARE(rejected.count(), 0);
+        QCOMPARE(document.ParameterStructureState(), state); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.CanUndoEdit(), path == "history");
+        QCoreApplication::processEvents();
+    }
+
     void matrixNavigationUsesTheExistingPreviewHandler_data()
     {
         QTest::addColumn<QString>("model");

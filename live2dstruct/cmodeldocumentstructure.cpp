@@ -529,6 +529,7 @@ bool CModelDocument::SetAuthoringStructure(const Builder::ColumnState& structure
 bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error)
 {
     try {
+        if (!HasValidBindingKeysRequest(edit)) return fail(error, QStringLiteral("绑定关键值请求与结构命令不匹配"));
         const auto current = ParameterStructureState();
         if (state.keys() != current.keys() || state.value("sourceDigest") != m_sourceDigest || state.value("sourcePath") != m_sourcePath)
             return fail(error, QStringLiteral("参数结构状态来源或字段不匹配"));
@@ -568,6 +569,8 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
             CSectionTable beforeTable(beforeReader), afterTable(afterReader);
             if (!beforeTable.IsValid() || !afterTable.IsValid() ||
                 !auxiliaryIdentity(m_workingBaseBytes, beforeTable, candidate.m_workingBaseBytes, afterTable, false, error)) return false;
+            if (edit.parameterChange == CModelEdit::ParameterChange::BindingKeys &&
+                !ValidateBindingKeysTransition(candidate, edit, forward, error)) return false;
         }
         QVector<Builder::BindingRequest> changed;
         const auto examine = [&](Builder::Owner::Type type, const QString& id) {
@@ -745,6 +748,28 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
     return true;
 }
 
+bool CModelDocument::ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,
+                                                  bool forward, QString* error) const
+{
+    if (!HasValidBindingKeysRequest(edit) || !edit.bindingKeysRequest ||
+        candidate.m_sourceBytes != m_sourceBytes || candidate.m_sourceDigest != m_sourceDigest ||
+        candidate.m_sourcePath != m_sourcePath)
+        return fail(error, QStringLiteral("绑定关键值历史的请求或模型来源无效"));
+    if (!canBind(*this, {{edit.bindingKeysRequest->owner, {}}}, error)) return false;
+    const auto& origin = forward ? *this : candidate;
+    const auto& destination = forward ? candidate : *this;
+    QByteArray base;
+    Builder::Result result;
+    CModelEdit expected;
+    if (!origin.BuildPreviewMoc(base, error) ||
+        !Builder::EditBindingKeys(base, *edit.bindingKeysRequest, result, error)) return false;
+    if (result.bytes == base) return fail(error, QStringLiteral("绑定关键值请求没有改变模型"));
+    if (!origin.MakeParameterStructureEdit(result, edit.name, nullptr, false, expected, error)) return false;
+    if (expected.after.toMap() != destination.AuthoringStructureState())
+        return fail(error, QStringLiteral("绑定关键值历史包含请求之外的结构或属性修改"));
+    return true;
+}
+
 bool CModelDocument::BuildMeshBase(const CMocMeshStructureBuilder::Request& request, QByteArray& bytes, QString* error) const
 {
     CMocRuntimeBuilder::Overrides indices;
@@ -831,6 +856,24 @@ bool CModelDocument::MakeBindParameterEdit(const QString& id, const QVector<Buil
         edit.parameterChange = CModelEdit::ParameterChange::Bind;
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法绑定参数")); }
+}
+
+bool CModelDocument::MakeBindingKeysEdit(const Builder::EditBindingKeysRequest& request,
+                                       CModelEdit& edit, QString* error) const
+{
+    try {
+        if (!canBind(*this, {{request.owner, {}}}, error)) return false;
+        QByteArray base;
+        Builder::Result result;
+        if (!BuildPreviewMoc(base, error) || !Builder::EditBindingKeys(base, request, result, error)) return false;
+        if (result.bytes == base) return fail(error, QStringLiteral("绑定轴关键值没有变化"));
+        CModelEdit command;
+        if (!MakeParameterStructureEdit(result, request.parameterId, nullptr, false, command, error)) return false;
+        command.parameterChange = CModelEdit::ParameterChange::BindingKeys;
+        command.bindingKeysRequest = std::make_shared<const Builder::EditBindingKeysRequest>(request);
+        edit = std::move(command);
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法编辑绑定轴关键值")); }
 }
 
 bool CModelDocument::MakeDeleteParameterEdit(const QString& id, CModelEdit& edit, QString* error) const

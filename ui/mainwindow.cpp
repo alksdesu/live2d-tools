@@ -1188,7 +1188,8 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     }
     if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error,
         changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline, changePhysics ? &physicsDraft : nullptr,
-        geometry ? &*geometry : nullptr))
+        geometry ? &*geometry : nullptr,
+        editing && command.parameterChange == live2dstruct::CModelEdit::ParameterChange::BindingKeys ? &pose : nullptr))
         return false;
     if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
     if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
@@ -2878,6 +2879,7 @@ void MainWindow::RestDock(const QString &name)
     });
     connect(m_inspectorPanel, &CInspectorPanel::EditRejected, this,
             [this](const QString& error) { statusBar()->showMessage(error, 8000); });
+    connect(m_inspectorPanel, &CInspectorPanel::StructureChanged, this, &MainWindow::RefreshParameterStructureUi);
 
     connect(m_inspectorPanel, &CInspectorPanel::HistoryChanged, this, [this](bool canUndo, bool){
         if (m_openglwindows && RuntimeMatchesDocument())
