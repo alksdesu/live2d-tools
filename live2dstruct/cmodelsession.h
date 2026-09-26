@@ -27,6 +27,8 @@ struct CModelSession
     QByteArray sourceDigest;
     CMocParameterStructureBuilder::ColumnState structure;
     bool meshStructure = false;
+    bool deformerStructure = false;
+    QSet<QString> sourceDeformerIds;
     CParameterResourceEdits::State parameterResources;
     std::optional<PhysicsDraft> physicsDraft;
     QMap<QString, float> parameters;

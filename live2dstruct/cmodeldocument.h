@@ -14,6 +14,7 @@
 #include <optional>
 #include "cmocparameterstructurebuilder.h"
 #include "cmocmeshstructurebuilder.h"
+#include "cdeformerpreserverequest.h"
 #include "ckeyformgridsnapshot.h"
 
 namespace live2dstruct {
@@ -174,7 +175,7 @@ struct CModelEditStorageState
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure };
     QString name;
     QString type;
     Field field = Visibility;
@@ -190,6 +191,7 @@ struct CModelEdit
     QVector<CMocMeshStructureBuilder::MeshRemap> meshRemaps;
     std::shared_ptr<const CMocMeshStructureBuilder::Request> meshRequest;
     std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysRequest> bindingKeysRequest;
+    std::shared_ptr<const CDeformerPreserveRequest> deformerRequest;
 };
 
 class CModelDocument
@@ -216,6 +218,13 @@ public:
     const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
     bool SetParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
     bool HasMeshStructure() const { return m_hasMeshStructure; }
+    bool HasDeformerStructure() const { return m_hasDeformerStructure; }
+    const QSet<QString>& SourceDeformerIds() const { return m_sourceDeformerIds; }
+    QVariantMap DeformerStructureState() const;
+    bool SetDeformerStructure(const CMocParameterStructureBuilder::ColumnState& structure,
+                              bool meshStructure, const QSet<QString>& sourceIds, QString* error = nullptr);
+    bool MakeDeformerStructureEdit(const CDeformerPreserveRequest& request, CModelEdit& edit,
+                                   QString* error = nullptr) const;
     bool SetAuthoringStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
     QVariantMap AuthoringStructureState() const;
     QVariantMap ParameterStructureState() const { return AuthoringStructureState(); }
@@ -306,7 +315,7 @@ public:
     QVector<CModelDiagnostic> Validate() const;
 
 private:
-    static bool HasValidBindingKeysRequest(const CModelEdit& edit);
+    static bool HasValidStructureRequests(const CModelEdit& edit);
     QVariantMap EditStorage(const CModelEdit& edit) const;
     bool RestoreEditStorage(const QVariantMap& state);
     bool ValidateEditStorage(const CModelEdit& edit) const;
@@ -314,6 +323,12 @@ private:
                                    CModelDocument& candidate, QString* error) const;
     bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
                            CModelDocument& candidate, QString* error) const;
+    bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
+                           bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory,
+                           CModelDocument& candidate, QString* error) const;
+    bool ValidateDeformerTransition(const CModelDocument& candidate, const CModelEdit& edit,
+                                    bool forward, QString* error) const;
+    bool SameDeformerDirectory(const CModelDocument& candidate, QString* error) const;
     bool MakeParameterStructureEdit(const CMocParameterStructureBuilder::Result& result, const QString& id,
                                     const QString* displayName, bool created, CModelEdit& edit, QString* error) const;
     bool ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error = nullptr);
@@ -332,6 +347,8 @@ private:
     CMocParameterStructureBuilder::ColumnState m_structure;
     bool m_hasMeshStructure = false;
     QHash<QString, int> m_sourceDeformerParents;
+    QSet<QString> m_sourceDeformerIds;
+    bool m_hasDeformerStructure = false;
     std::shared_ptr<const CKeyformBindingGrid> m_keyformBindings;
     std::shared_ptr<const CMocPreviewBuilder> m_previewBuilder;
     QString m_previewError;

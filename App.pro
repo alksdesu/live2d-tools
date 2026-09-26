@@ -57,6 +57,7 @@ SOURCES += \
     ui/cinspectorpanel.cpp \
     ui/ckeyformmatrix.cpp \
     ui/cbindingkeysdialog.cpp \
+    ui/cdeformercreatedialog.cpp \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
     opengl/cmeshbounds.cpp \
@@ -81,6 +82,7 @@ SOURCES += \
     live2dstruct/cmocparameterstructurebuilder.cpp \
     live2dstruct/cmocmeshstructurebuilder.cpp \
     live2dstruct/cmocdeformerstructurebuilder.cpp \
+    live2dstruct/cdeformerstructurereplay.cpp \
     live2dstruct/cartmeshgeometrylayout.cpp \
     live2dstruct/cmoclayoutrewriter.cpp \
     live2dstruct/cmodeluserdata.cpp \
@@ -190,6 +192,7 @@ SOURCES += \
     ui/mainwindow.cpp \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
+    ui/mainwindowdeformers.cpp \
     ui/cmeshtoolbar.cpp \
     ui/cworkspacelayouts.cpp \
     framework/CubismCdiJson.cpp\
@@ -307,6 +310,7 @@ HEADERS += \
     ui/cinspectorpanel.h \
     ui/ckeyformmatrix.h \
     ui/cbindingkeysdialog.h \
+    ui/cdeformercreatedialog.h \
     ui/cmodeldiagnosticspanel.h \
     ui/cuserdatapanel.h \
     ui/ctableeditdelegate.h \
@@ -326,6 +330,8 @@ HEADERS += \
     live2dstruct/cmocparameterstructurebuilder.h \
     live2dstruct/cmocmeshstructurebuilder.h \
     live2dstruct/cmocdeformerstructurebuilder.h \
+    live2dstruct/cdeformerpreserverequest.h \
+    live2dstruct/cdeformerstructurereplay.h \
     live2dstruct/cartmeshgeometrylayout.h \
     live2dstruct/struct/cblend_shape_targets.h \
     live2dstruct/cparameterreferences.h \

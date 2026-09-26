@@ -21,12 +21,23 @@ public:
     using StructurePoseProvider = std::function<bool(const CModelDocument&, const CModelEdit&, bool,
         QMap<QString, float>&, QString*)>;
     using MeshPublisher = std::function<bool(const CModelDocument&, const CModelEdit&, bool, QString*)>;
+    using DeformerPublisher = std::function<bool(const CModelDocument&, const CModelEdit&, bool, QString*)>;
+    struct EditorState
+    {
+        QString target;
+        QString type;
+        int keyform = -1;
+        QMap<QString, float> pose;
+    };
 
     void SetDocument(CModelDocument* document);
     void SetPublisher(Publisher publisher, PreviewEnder ender);
     void SetDefinitionPublisher(DefinitionPublisher publisher);
     void SetStructurePublisher(StructurePublisher publisher, StructurePoseProvider poseProvider = {});
     void SetMeshPublisher(MeshPublisher publisher);
+    void SetDeformerPublisher(DeformerPublisher publisher);
+    static bool ReadDeformerEditorState(const CModelEdit& command, bool forward,
+                                        EditorState& state, QString* error = nullptr);
     bool Activate(const QString& id, int keyform, const QMap<QString, float>& currentValues, QString* error = nullptr);
     bool Activate(const QString& id, const QString& type, int keyform,
                   const QMap<QString, float>& currentValues, QString* error = nullptr);
@@ -56,6 +67,7 @@ private:
     bool PublishStructure(CModelDocument candidate, const CModelEdit& command, bool forward,
                           bool restoreSession, QString* error);
     bool PublishMesh(CModelDocument candidate, const CModelEdit& command, bool forward, QString* error);
+    bool PublishDeformer(CModelDocument candidate, const CModelEdit& command, bool forward, QString* error);
     struct Drag
     {
         CModelDocument start;
@@ -90,6 +102,7 @@ private:
     StructurePublisher m_publishStructure;
     StructurePoseProvider m_structurePose;
     MeshPublisher m_publishMesh;
+    DeformerPublisher m_publishDeformer;
     PreviewEnder m_end;
     QString m_target;
     QString m_type;

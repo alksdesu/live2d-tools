@@ -107,6 +107,12 @@ private:
                               bool forward, CMeshGeometryMigration& migration, QVariant* leaving, QString* error) const;
     bool PublishMeshStructure(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                               bool forward, QString* error);
+    bool PublishDeformerStructure(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
+                                  bool forward, QString* error);
+    void CreateDeformer();
+    void RemoveDeformer();
+    void RefreshDeformerActions();
+    void RefreshDeformerStructureUi(const live2dstruct::CModelEdit& command, bool forward);
     void InitializeMeshTools(QVBoxLayout* layout);
     void RefreshMeshTools();
     bool SetMeshToolsEnabled(bool enabled, QString* error);

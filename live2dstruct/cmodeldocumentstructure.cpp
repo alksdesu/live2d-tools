@@ -4,6 +4,7 @@
 #include "cparentgraph.h"
 #include "cmocpreviewbuilder.h"
 #include "cmocruntimebuilder.h"
+#include "cdeformerstructurereplay.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
 #include <QCryptographicHash>
@@ -353,6 +354,8 @@ QVariantMap CModelDocument::AuthoringStructureState() const
 {
     QVariantMap state{
         {"sourceDigest", m_sourceDigest}, {"sourcePath", m_sourcePath}, {"meshStructure", m_hasMeshStructure},
+        {"deformerStructure", m_hasDeformerStructure},
+        {"sourceDeformerIds", QVariant::fromValue(m_hasDeformerStructure ? m_sourceDeformerIds : QSet<QString>{})},
         {"columns", QVariant::fromValue(m_structure.columns)},
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
@@ -387,12 +390,26 @@ QVariantMap CModelDocument::AuthoringStructureState() const
     return state;
 }
 
+QVariantMap CModelDocument::DeformerStructureState() const
+{
+    return {{"enabled", m_hasDeformerStructure},
+            {"sourceIds", QVariant::fromValue(m_hasDeformerStructure ? m_sourceDeformerIds : QSet<QString>{})}};
+}
+
 bool CModelDocument::PrepareParameterStructure(const Builder::ColumnState& structure, CModelDocument& candidate, QString* error) const
 {
     return PrepareStructure(structure, false, candidate, error);
 }
 
 bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, bool meshStructure,
+                                     CModelDocument& candidate, QString* error) const
+{
+    return PrepareStructure(structure, meshStructure, m_hasDeformerStructure,
+                            m_sourceDeformerIds, false, candidate, error);
+}
+
+bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, bool meshStructure,
+                                     bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory,
                                      CModelDocument& candidate, QString* error) const
 {
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
@@ -407,9 +424,12 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     CModelDocument original, next;
     if (!original.LoadBytes(m_sourceBytes, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
     if (!next.m_previewBuilder || next.m_parts.size() != original.m_parts.size() ||
-        next.m_deformers.size() != original.m_deformers.size() || next.m_drawables.size() != original.m_drawables.size() ||
+        (!deformerStructure && next.m_deformers.size() != original.m_deformers.size()) || next.m_drawables.size() != original.m_drawables.size() ||
         next.m_canvasPixels != original.m_canvasPixels)
         return fail(error, QStringLiteral("参数结构不能改变模型对象目录或画布"));
+    const auto& directory = m_hasDeformerStructure ? *this : original;
+    if (!changeDirectory && next.m_deformers.size() != directory.m_deformers.size())
+        return fail(error, QStringLiteral("参数或网格操作不能增删变形器"));
     QVector<int> partParents;
     for (int index = 0; index < original.m_parts.size(); ++index) {
         const auto& before = original.m_parts[index]; const auto& after = next.m_parts[index];
@@ -419,27 +439,65 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     }
     if (!CParentGraph(partParents).IsValid()) return fail(error, QStringLiteral("参数结构包含无效 Part 父引用"));
     QVector<int> parents;
-    for (int index = 0; index < original.m_deformers.size(); ++index) {
-        const auto& before = original.m_deformers[index]; const auto& after = next.m_deformers[index];
-        if (before.id != after.id || before.type != after.type || before.parentPartIndex != after.parentPartIndex ||
+    QHash<QString, int> sourceIndices, nextIndices;
+    for (int index = 0; index < original.m_deformers.size(); ++index) sourceIndices.insert(original.m_deformers[index].id, index);
+    for (int index = 0; index < next.m_deformers.size(); ++index) {
+        const auto& after = next.m_deformers[index];
+        if (after.id.isEmpty() || nextIndices.contains(after.id) || after.parentPartIndex < -1 || after.parentPartIndex >= next.m_parts.size())
+            return fail(error, QStringLiteral("变形器标识或所属部件无效：%1").arg(after.id));
+        nextIndices.insert(after.id, index);
+        if (!changeDirectory) {
+            const auto& before = directory.m_deformers[index];
+            if (before.id != after.id || before.type != after.type || before.parentPartIndex != after.parentPartIndex ||
             before.rows != after.rows || before.columns != after.columns || before.baseAngle != after.baseAngle ||
             before.quadTransform != after.quadTransform || before.visible != after.visible || before.enabled != after.enabled)
-            return fail(error, QStringLiteral("参数结构改变了变形器定义：%1").arg(before.id));
-        if (after.parentDeformerIndex >= 0 && after.parentDeformerIndex != before.parentDeformerIndex &&
+                return fail(error, QStringLiteral("参数结构改变了变形器定义：%1").arg(before.id));
+            if (after.parentDeformerIndex >= 0 && after.parentDeformerIndex != before.parentDeformerIndex &&
+                after.parentDeformerIndex != SourceDeformerParentIndex(after.id) &&
             (after.parentDeformerIndex >= next.m_deformers.size() ||
              next.m_deformers[after.parentDeformerIndex].parentPartIndex != after.parentPartIndex))
-            return fail(error, QStringLiteral("参数结构新增了跨 Part 的父变形器关系：%1").arg(before.id));
+                return fail(error, QStringLiteral("参数结构新增了跨 Part 的父变形器关系：%1").arg(before.id));
+        }
+        if (deformerStructure) {
+            if (!std::isfinite(after.baseAngle)) return fail(error, QStringLiteral("变形器基础角度无效：%1").arg(after.id));
+            if (after.type == CModelDeformer::Warp) {
+                if (after.rows < 1 || after.columns < 1 || after.rows >= 1000000 || after.columns >= 1000000)
+                    return fail(error, QStringLiteral("Warp 网格行列数无效：%1").arg(after.id));
+                const qint64 points = (qint64(after.rows) + 1) * (qint64(after.columns) + 1) * 2;
+                if (points > 1000000 || after.warpKeyforms.isEmpty())
+                    return fail(error, QStringLiteral("Warp 网格或关键形无效：%1").arg(after.id));
+                for (const auto& form : after.warpKeyforms)
+                    if (form.positions.size() != points || !std::isfinite(form.opacity) || form.opacity < 0 || form.opacity > 1 ||
+                        !std::all_of(form.positions.cbegin(), form.positions.cend(), [](float value) { return std::isfinite(value); }))
+                        return fail(error, QStringLiteral("Warp 关键形数据无效：%1").arg(after.id));
+            } else {
+                if (after.rotationKeyforms.isEmpty() || !std::all_of(after.rotationKeyforms.cbegin(), after.rotationKeyforms.cend(),
+                    [](const auto& form) { return form.IsValid(); }))
+                    return fail(error, QStringLiteral("Rotation 关键形数据无效：%1").arg(after.id));
+            }
+        }
         parents.append(after.parentDeformerIndex);
+    }
+    if (deformerStructure) for (const auto& id : sourceIds) {
+        if (!sourceIndices.contains(id) || !nextIndices.contains(id))
+            return fail(error, QStringLiteral("变形器源身份不存在：%1").arg(id));
+        const auto& before = original.m_deformers[sourceIndices.value(id)];
+        const auto& after = next.m_deformers[nextIndices.value(id)];
+        if (before.type != after.type || before.parentPartIndex != after.parentPartIndex)
+            return fail(error, QStringLiteral("变形器源身份的类型或部件已改变：%1").arg(id));
     }
     if (!CParentGraph(parents).IsValid()) return fail(error, QStringLiteral("参数结构包含无效父变形器关系"));
     CMocMeshStructureBuilder::Request geometryValidation;
     qint64 geometryVertices = 0;
     for (int index = 0; index < original.m_drawables.size(); ++index) {
         const auto& before = original.m_drawables[index]; const auto& after = next.m_drawables[index];
-        if (before.id != after.id || before.parentPartIndex != after.parentPartIndex || before.parentDeformerIndex != after.parentDeformerIndex ||
+        if (before.id != after.id || before.parentPartIndex != after.parentPartIndex ||
+            (!changeDirectory && directory.m_drawables[index].parentDeformerIndex != after.parentDeformerIndex) ||
             before.textureIndex != after.textureIndex || (before.flags & ~8) != (after.flags & ~8) ||
             before.visible != after.visible || before.enabled != after.enabled)
             return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
+        if (after.parentDeformerIndex < -1 || after.parentDeformerIndex >= next.m_deformers.size())
+            return fail(error, QStringLiteral("ArtMesh 父变形器引用无效：%1").arg(after.id));
         if (before.vertexCount != after.vertexCount || before.uvs != after.uvs || before.indices != after.indices) {
             if (!meshStructure) return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
             if (after.vertexCount <= 0 || after.vertexCount > CMocMeshStructureBuilder::MaximumVertices)
@@ -484,7 +542,9 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
         ids.insert(parameter.id);
     }
     const auto validateGrid = [&](CKeyformBindingGrid::ObjectType type, const QString& id) {
-        return !original.m_keyformBindings->Diagnostic(type, id).isEmpty() || next.m_keyformBindings->Diagnostic(type, id).isEmpty();
+        const bool existed = type == CKeyformBindingGrid::ArtMesh ||
+            (deformerStructure ? sourceIds.contains(id) : sourceIndices.contains(id));
+        return (existed && !original.m_keyformBindings->Diagnostic(type, id).isEmpty()) || next.m_keyformBindings->Diagnostic(type, id).isEmpty();
     };
     for (const auto& mesh : next.m_drawables)
         if (!validateGrid(CKeyformBindingGrid::ArtMesh, mesh.id)) return fail(error, QStringLiteral("参数结构破坏了 ArtMesh 绑定：%1").arg(mesh.id));
@@ -493,7 +553,19 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
             return fail(error, QStringLiteral("参数结构破坏了变形器绑定：%1").arg(deformer.id));
     next.m_structure = structure;
     next.m_hasMeshStructure = meshStructure;
-    next.m_sourceDeformerParents = original.m_sourceDeformerParents;
+    next.m_hasDeformerStructure = deformerStructure;
+    next.m_sourceDeformerIds = deformerStructure ? sourceIds : original.m_sourceDeformerIds;
+    next.m_sourceDeformerParents.clear();
+    for (const auto& node : next.m_deformers) {
+        int parent = -1;
+        if (next.m_sourceDeformerIds.contains(node.id) && sourceIndices.contains(node.id)) {
+            const int oldParent = original.m_deformers[sourceIndices.value(node.id)].parentDeformerIndex;
+            if (oldParent >= 0 && oldParent < original.m_deformers.size() &&
+                next.m_sourceDeformerIds.contains(original.m_deformers[oldParent].id))
+                parent = nextIndices.value(original.m_deformers[oldParent].id, -1);
+        }
+        next.m_sourceDeformerParents.insert(node.id, parent);
+    }
     auto preview = std::make_shared<CMocPreviewBuilder>();
     if (!preview->Initialize(working, next.m_sourceDeformerParents, error)) return false;
     next.m_previewBuilder = std::move(preview);
@@ -526,10 +598,41 @@ bool CModelDocument::SetAuthoringStructure(const Builder::ColumnState& structure
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法应用网格编辑结构")); }
 }
 
+bool CModelDocument::SetDeformerStructure(const Builder::ColumnState& structure, bool meshStructure,
+                                         const QSet<QString>& sourceIds, QString* error)
+{
+    try {
+        CModelDocument candidate;
+        if (!PrepareStructure(structure, meshStructure, true, sourceIds, true, candidate, error)) return false;
+        CommitCandidate(std::move(candidate));
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复变形器结构")); }
+}
+
+bool CModelDocument::SameDeformerDirectory(const CModelDocument& candidate, QString* error) const
+{
+    if (DeformerStructureState() != candidate.DeformerStructureState() || m_deformers.size() != candidate.m_deformers.size() ||
+        m_drawables.size() != candidate.m_drawables.size())
+        return fail(error, QStringLiteral("当前操作不能改变变形器目录或源身份"));
+    for (int index = 0; index < m_deformers.size(); ++index) {
+        const auto& before = m_deformers[index]; const auto& after = candidate.m_deformers[index];
+        if (before.id != after.id || before.type != after.type || before.parentPartIndex != after.parentPartIndex ||
+            before.rows != after.rows || before.columns != after.columns || before.baseAngle != after.baseAngle ||
+            before.quadTransform != after.quadTransform || before.visible != after.visible || before.enabled != after.enabled ||
+            DeformerParentIndex(before.id) != candidate.DeformerParentIndex(after.id))
+            return fail(error, QStringLiteral("当前操作不能改变变形器定义或父级：%1").arg(before.id));
+    }
+    for (int index = 0; index < m_drawables.size(); ++index)
+        if (m_drawables[index].id != candidate.m_drawables[index].id ||
+            m_drawables[index].parentDeformerIndex != candidate.m_drawables[index].parentDeformerIndex)
+            return fail(error, QStringLiteral("当前操作不能改变网格父级：%1").arg(m_drawables[index].id));
+    return true;
+}
+
 bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error)
 {
     try {
-        if (!HasValidBindingKeysRequest(edit)) return fail(error, QStringLiteral("绑定关键值请求与结构命令不匹配"));
+        if (!HasValidStructureRequests(edit)) return fail(error, QStringLiteral("绑定关键值请求与结构命令不匹配"));
         const auto current = ParameterStructureState();
         if (state.keys() != current.keys() || state.value("sourceDigest") != m_sourceDigest || state.value("sourcePath") != m_sourcePath)
             return fail(error, QStringLiteral("参数结构状态来源或字段不匹配"));
@@ -537,6 +640,8 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         QHash<QString, float> parameters;
         QSet<QString> locks;
         if (!read(state, "meshStructure", session.meshStructure) ||
+            !read(state, "deformerStructure", session.deformerStructure) ||
+            !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
             !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
             !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
             !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
@@ -550,11 +655,14 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         for (const auto& lock : locks) session.locked.insert(lock, true);
         session.sourceDigest = m_sourceDigest;
         session.sourceMoc = m_sourcePath;
-        session.version = session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+        session.version = session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
-        if (edit.field == CModelEdit::MeshStructure) {
+        if (edit.field == CModelEdit::DeformerStructure) {
+            if (!ValidateDeformerTransition(candidate, edit, forward, error)) return false;
+        } else if (!SameDeformerDirectory(candidate, error)) return false;
+        else if (edit.field == CModelEdit::MeshStructure) {
             if (!ValidateMeshTransition(candidate, edit, forward, error)) return false;
         } else {
             if (candidate.m_hasMeshStructure != m_hasMeshStructure || !edit.meshRemaps.isEmpty())
@@ -579,7 +687,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
                 changed.append(Builder::BindingRequest{{type, id}, {}});
         };
         for (const auto& mesh : m_drawables) examine(Builder::Owner::ArtMesh, mesh.id);
-        for (const auto& deformer : m_deformers)
+        if (edit.field != CModelEdit::DeformerStructure) for (const auto& deformer : m_deformers)
             examine(deformer.type == CModelDeformer::Warp ? Builder::Owner::Warp : Builder::Owner::Rotation, deformer.id);
         if (!canBind(*this, changed, error)) return false;
         candidate.m_editHistory = m_editHistory;
@@ -615,12 +723,16 @@ bool CModelDocument::MakeParameterStructureEdit(const Builder::Result& result, c
 
 bool CModelDocument::PreserveStructureProperties(CModelDocument& candidate, QString* error) const
 {
-    const auto visibility = VisibilityState();
+    auto visibility = VisibilityState();
+    const auto available = candidate.VisibilityState();
+    for (auto it = visibility.begin(); it != visibility.end();)
+        if (!available.contains(it.key())) it = visibility.erase(it); else ++it;
     if (!visibility.isEmpty() && !candidate.SetVisibilityValues(visibility)) return fail(error, QStringLiteral("无法保留对象可见性"));
     candidate.m_drawableOpacityOverrides = m_drawableOpacityOverrides;
     candidate.m_drawableDrawOrderOverrides = m_drawableDrawOrderOverrides;
     candidate.m_drawableIndexOverrides = m_drawableIndexOverrides;
-    candidate.m_lockedKeys = m_lockedKeys;
+    candidate.m_lockedKeys.clear();
+    for (const auto& key : m_lockedKeys) if (available.contains(key)) candidate.m_lockedKeys.insert(key);
     for (const auto& parameter : candidate.m_parameters) {
         if (m_parameterValues.contains(parameter.id)) candidate.m_parameterValues.insert(parameter.id, m_parameterValues.value(parameter.id));
         const auto previous = m_parameterMetadataOverrides.constFind(parameter.id);
@@ -630,6 +742,82 @@ bool CModelDocument::PreserveStructureProperties(CModelDocument& candidate, QStr
             candidate.m_parameterMetadataOverrides.insert(parameter.id, metadata);
         }
     }
+    return true;
+}
+
+bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& request,
+                                               CModelEdit& edit, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        if (!m_loaded || request.sourceDigest != m_sourceDigest || request.operation.valueless_by_exception())
+            return fail(error, QStringLiteral("变形器编辑请求与源模型不匹配"));
+        QByteArray base;
+        if (!BuildPreviewMoc(base, error)) return false;
+        CDeformerStructureReplay::Impact impact;
+        if (!CDeformerStructureReplay::Analyze(base, request, impact, error)) return false;
+        if (!impact.blockingReasons.isEmpty()) return fail(error, impact.blockingReasons.join(QLatin1Char('\n')));
+        QVector<Builder::BindingRequest> affected;
+        QSet<QPair<int, QString>> visited;
+        const auto add = [&](const Builder::Owner& owner) {
+            const QPair<int, QString> key{int(owner.type), owner.id};
+            if (!visited.contains(key)) { visited.insert(key); affected.append({owner, {}}); }
+        };
+        for (const auto& owner : impact.structure.reparented) add(owner);
+        for (const auto& owner : impact.coordinateOwners) add(owner);
+        for (const auto& owner : impact.scalarOwners) add(owner);
+        const auto addDeformer = [&](const QString& id) {
+            if (id.isEmpty()) return true;
+            for (const auto& node : m_deformers) if (node.id == id) {
+                add({node.type == CModelDeformer::Warp ? Builder::Owner::Warp : Builder::Owner::Rotation, id});
+                return true;
+            }
+            return false;
+        };
+        auto sourceIds = m_sourceDeformerIds;
+        if (const auto* insertion = std::get_if<CMocDeformerStructureBuilder::InsertRequest>(&request.operation)) {
+            if (!addDeformer(insertion->parentId)) return fail(error, QStringLiteral("新变形器的父级不存在"));
+            QSet<int> parts;
+            for (int part = insertion->partIndex; part != -1; part = m_parts[part].parentIndex) {
+                if (part < 0 || part >= m_parts.size() || parts.contains(part) || IsLocked(QStringLiteral("part"), m_parts[part].id))
+                    return fail(error, QStringLiteral("新变形器的所属部件已锁定或父引用无效"));
+                parts.insert(part);
+            }
+            sourceIds.remove(insertion->id);
+        } else {
+            const auto& removal = std::get<CMocDeformerStructureBuilder::RemoveRequest>(request.operation);
+            if (!addDeformer(removal.id)) return fail(error, QStringLiteral("要删除的变形器不存在"));
+            sourceIds.remove(removal.id);
+        }
+        if (!canBind(*this, affected, error)) return false;
+        CMocDeformerStructureBuilder::Result result;
+        if (!CDeformerStructureReplay::Build(base, request, result, error)) return false;
+        Builder::ColumnState structure;
+        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
+        CModelDocument candidate;
+        if (!PrepareStructure(structure, m_hasMeshStructure, true, sourceIds, true, candidate, error) ||
+            !PreserveStructureProperties(candidate, error)) return false;
+        CModelEdit command{impact.structure.id, QStringLiteral("deformer"), CModelEdit::DeformerStructure,
+                           AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
+        command.deformerRequest = std::make_shared<const CDeformerPreserveRequest>(request);
+        command.runtime = std::make_shared<CModelEditRuntimeState>();
+        edit = std::move(command);
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备变形器编辑，原模型保持不变")); }
+}
+
+bool CModelDocument::ValidateDeformerTransition(const CModelDocument& candidate, const CModelEdit& edit,
+                                                bool forward, QString* error) const
+{
+    if (!HasValidStructureRequests(edit) || !edit.deformerRequest ||
+        !(forward ? candidate.m_hasDeformerStructure : m_hasDeformerStructure))
+        return fail(error, QStringLiteral("变形器结构命令缺少有效请求"));
+    const auto& origin = forward ? *this : candidate;
+    const auto& destination = forward ? candidate : *this;
+    CModelEdit expected;
+    if (!origin.MakeDeformerStructureEdit(*edit.deformerRequest, expected, error)) return false;
+    if (expected.after.toMap() != destination.AuthoringStructureState())
+        return fail(error, QStringLiteral("变形器编辑结果超出请求范围或已发生改变"));
     return true;
 }
 
@@ -751,7 +939,7 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
 bool CModelDocument::ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,
                                                   bool forward, QString* error) const
 {
-    if (!HasValidBindingKeysRequest(edit) || !edit.bindingKeysRequest ||
+    if (!HasValidStructureRequests(edit) || !edit.bindingKeysRequest ||
         candidate.m_sourceBytes != m_sourceBytes || candidate.m_sourceDigest != m_sourceDigest ||
         candidate.m_sourcePath != m_sourcePath)
         return fail(error, QStringLiteral("绑定关键值历史的请求或模型来源无效"));

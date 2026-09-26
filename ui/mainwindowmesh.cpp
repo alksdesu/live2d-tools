@@ -74,6 +74,7 @@ void MainWindow::InitializeMeshTools(QVBoxLayout* layout)
 
 void MainWindow::RefreshMeshTools()
 {
+    RefreshDeformerActions();
     if (!m_meshTools || !m_openglwindows) return;
     const bool single = m_selectedObjectIds.size() == 1 && m_selectedObjectTypes.value(0) == QLatin1String("artmesh");
     const QString id = single ? m_selectedObjectIds.first() : QString();

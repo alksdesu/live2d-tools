@@ -82,6 +82,28 @@ bool validMeshStructure(const CModelSession& session, int version, QString* erro
     return true;
 }
 
+bool validDeformerStructure(const CModelSession& session, int version, QString* error)
+{
+    if (!session.deformerStructure) {
+        if (session.sourceDeformerIds.isEmpty()) return true;
+        setError(error, QStringLiteral("变形器源身份需要启用 deformerStructure"));
+        return false;
+    }
+    if (version < 6 || session.sourceMoc.isEmpty() || session.sourceMoc.contains(QChar::Null) ||
+        session.sourceDigest.size() != 32 || session.sourceDeformerIds.size() > 1000000) {
+        setError(error, QStringLiteral("deformerStructure 需要版本 6 和有效的源模型快照"));
+        return false;
+    }
+    for (const auto& id : session.sourceDeformerIds) {
+        const auto bytes = id.toUtf8();
+        if (bytes.isEmpty() || bytes.size() >= 64 || bytes.contains('\0') || QString::fromUtf8(bytes) != id) {
+            setError(error, QStringLiteral("变形器源身份 ID 无效"));
+            return false;
+        }
+    }
+    return true;
+}
+
 bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     qint64 bytes = 0;
@@ -155,7 +177,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 5) return {};
+    if (version < 1 || version > 6) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -163,10 +185,17 @@ QByteArray CModelSession::ToJson() const
     int storedVersion = hasStructure && version == 1 ? 2 : version;
     if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
     if (physicsDraft && physicsDraft->sourcePath.isEmpty() && storedVersion < 4) storedVersion = 4;
-    if (meshStructure) storedVersion = 5;
-    if (!validPhysicsDraft(*this, storedVersion, nullptr) || !validMeshStructure(*this, storedVersion, nullptr)) return {};
+    if (meshStructure && storedVersion < 5) storedVersion = 5;
+    if (deformerStructure) storedVersion = 6;
+    if (!validPhysicsDraft(*this, storedVersion, nullptr) || !validMeshStructure(*this, storedVersion, nullptr) || !validDeformerStructure(*this, storedVersion, nullptr)) return {};
     root.insert(QStringLiteral("version"), storedVersion);
-    if (storedVersion == 5) root.insert(QStringLiteral("meshStructure"), meshStructure);
+    if (storedVersion >= 5) root.insert(QStringLiteral("meshStructure"), meshStructure);
+    if (storedVersion == 6) {
+        root.insert(QStringLiteral("deformerStructure"), deformerStructure);
+        QStringList ids(sourceDeformerIds.cbegin(), sourceDeformerIds.cend());
+        std::sort(ids.begin(), ids.end());
+        root.insert(QStringLiteral("sourceDeformerIds"), QJsonArray::fromStringList(ids));
+    }
     if (!resources.isEmpty()) root.insert(QStringLiteral("parameterResources"), resources);
     if (physicsDraft) root.insert(QStringLiteral("physicsDraft"), QJsonObject{
         {QStringLiteral("sourcePath"), physicsDraft->sourcePath}, {QStringLiteral("document"), physicsDraft->document},
@@ -309,7 +338,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 5) {
+    if (parsedVersion < 1 || parsedVersion > 6) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
@@ -317,11 +346,25 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     CModelSession result;
     result.version = parsedVersion;
     if ((parsedVersion < 5 && root.contains(QStringLiteral("meshStructure"))) ||
-        (parsedVersion == 5 && !root.value(QStringLiteral("meshStructure")).isBool())) {
+        (parsedVersion >= 5 && !root.value(QStringLiteral("meshStructure")).isBool())) {
         setError(error, QStringLiteral("会话 meshStructure 字段需要版本 5 且必须为布尔值"));
         return false;
     }
     result.meshStructure = root.value(QStringLiteral("meshStructure")).toBool(false);
+    if ((parsedVersion < 6 && (root.contains(QStringLiteral("deformerStructure")) || root.contains(QStringLiteral("sourceDeformerIds")))) ||
+        (parsedVersion == 6 && (!root.value(QStringLiteral("deformerStructure")).isBool() || !root.value(QStringLiteral("sourceDeformerIds")).isArray()))) {
+        setError(error, QStringLiteral("变形器结构字段需要版本 6 及有效的能力与身份列表"));
+        return false;
+    }
+    result.deformerStructure = root.value(QStringLiteral("deformerStructure")).toBool(false);
+    const auto sourceIds = root.value(QStringLiteral("sourceDeformerIds")).toArray();
+    if (sourceIds.size() > 1000000) { setError(error, QStringLiteral("变形器源身份数量超出范围")); return false; }
+    for (const auto& value : sourceIds) {
+        if (!value.isString() || result.sourceDeformerIds.contains(value.toString())) {
+            setError(error, QStringLiteral("变形器源身份必须是不重复的字符串")); return false;
+        }
+        result.sourceDeformerIds.insert(value.toString());
+    }
     QJsonObject resources;
     if (!readObject(root, QStringLiteral("parameterResources"), &resources, error) ||
         !CParameterResourceEdits::FromJson(resources, result.parameterResources, error)) return false;
@@ -365,7 +408,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDigest = decoded;
     }
-    if (!validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error)) return false;
+    if (!validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
 
     QJsonObject parameterObject;
     QJsonObject parameterMetadataObject;
@@ -688,12 +731,12 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 5) ||
+    if ((version < 1 || version > 6) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)))
         return fail(QStringLiteral("version"));
     if (!validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
-        !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error)) return false;
+        !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validDeformerStructure(*this, version, error)) return false;
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
         setError(error, QStringLiteral("没有可恢复会话的模型快照"));
         return false;
@@ -724,7 +767,9 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
     if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
     QSet<QString> removedParameters;
     for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
-    if (meshStructure) {
+    if (deformerStructure) {
+        if (!candidate.SetDeformerStructure(structure, meshStructure, sourceDeformerIds, error)) return false;
+    } else if (meshStructure) {
         if (!candidate.SetAuthoringStructure(structure, error)) return false;
     } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
     for (const auto& parameter : candidate.Parameters()) removedParameters.remove(parameter.id);

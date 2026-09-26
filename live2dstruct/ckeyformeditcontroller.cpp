@@ -155,6 +155,39 @@ void CKeyformEditController::SetMeshPublisher(MeshPublisher publisher)
     if (!m_publishing) m_publishMesh = std::move(publisher);
 }
 
+void CKeyformEditController::SetDeformerPublisher(DeformerPublisher publisher)
+{
+    if (!m_publishing) m_publishDeformer = std::move(publisher);
+}
+
+bool CKeyformEditController::ReadDeformerEditorState(const CModelEdit& command, bool forward,
+                                                   EditorState& state, QString* error)
+{
+    if (error) error->clear();
+    if (command.field != CModelEdit::DeformerStructure || !command.runtime)
+        return fail(error, QStringLiteral("变形器结构命令缺少编辑状态"));
+    const auto& stored = forward ? command.runtime->afterEditor : command.runtime->beforeEditor;
+    if (stored.metaType() != QMetaType::fromType<QVariantMap>())
+        return fail(error, QStringLiteral("变形器历史的编辑状态格式无效"));
+    const auto values = stored.toMap();
+    if (values.size() != 4 || values.value("target").metaType() != QMetaType::fromType<QString>() ||
+        values.value("type").metaType() != QMetaType::fromType<QString>() ||
+        values.value("keyform").metaType() != QMetaType::fromType<int>() ||
+        values.value("pose").metaType() != QMetaType::fromType<QMap<QString, float>>())
+        return fail(error, QStringLiteral("变形器历史的编辑状态内容无效"));
+    EditorState candidate{values.value("target").toString(), values.value("type").toString(),
+                          values.value("keyform").toInt(), values.value("pose").value<QMap<QString, float>>()};
+    if (candidate.target.isEmpty()) {
+        if (!candidate.type.isEmpty() || candidate.keyform != -1 || !candidate.pose.isEmpty())
+            return fail(error, QStringLiteral("变形器历史的空编辑状态无效"));
+    } else if ((candidate.type != QLatin1String("artmesh") && candidate.type != QLatin1String("warp") &&
+                candidate.type != QLatin1String("rotation")) || candidate.keyform < 0 ||
+               !std::all_of(candidate.pose.cbegin(), candidate.pose.cend(), [](float value) { return std::isfinite(value); }))
+        return fail(error, QStringLiteral("变形器历史的编辑对象或姿态无效"));
+    state = std::move(candidate);
+    return true;
+}
+
 bool CKeyformEditController::Ready(QString* error) const
 {
     if (error) error->clear();
@@ -170,7 +203,7 @@ bool CKeyformEditController::Handles(const CModelEdit& edit)
            edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent ||
            edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted ||
            edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure ||
-           edit.field == CModelEdit::MeshStructure;
+           edit.field == CModelEdit::MeshStructure || edit.field == CModelEdit::DeformerStructure;
 }
 
 bool CKeyformEditController::CanEdit(const QString& id, int keyform, QString* error) const
@@ -323,6 +356,18 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
                                    int previewKeyform, QString* error)
 {
     if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
+    if (edit.field == CModelEdit::DeformerStructure) {
+        if (!Ready(error)) return false;
+        if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
+        try {
+            CModelDocument candidate = *m_document;
+            CModelEdit command = edit;
+            command.runtime = std::make_shared<CModelEditRuntimeState>();
+            command.coalesce = false;
+            if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("变形器结构修改无效或数据已改变"));
+            return PublishDeformer(std::move(candidate), command, true, error);
+        } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备变形器结构，原文档和预览保持不变")); }
+    }
     if (edit.field == CModelEdit::MeshStructure) {
         if (!Ready(error)) return false;
         if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
@@ -467,7 +512,9 @@ bool CKeyformEditController::History(bool undo, CModelEdit& edit, QString* error
         return fail(error, QStringLiteral("当前历史不是模型几何编辑"));
     if (!(undo ? candidate.UndoEdit() : candidate.RedoEdit()))
         return fail(error, QStringLiteral("无法恢复关键形历史"));
-    if (command.field == CModelEdit::MeshStructure) {
+    if (command.field == CModelEdit::DeformerStructure) {
+        if (!PublishDeformer(std::move(candidate), command, !undo, error)) return false;
+    } else if (command.field == CModelEdit::MeshStructure) {
         if (!PublishMesh(std::move(candidate), command, !undo, error)) return false;
     } else if (command.field == CModelEdit::ParameterStructure) {
         if (!PublishStructure(std::move(candidate), command, !undo, false, error)) return false;
@@ -482,7 +529,8 @@ bool CKeyformEditController::Restore(CModelDocument candidate, QString* error, b
 {
     if (!Ready(error)) return false;
     if (forceStructure || candidate.ParameterStructure() != m_document->ParameterStructure() ||
-        candidate.HasMeshStructure() != m_document->HasMeshStructure()) {
+        candidate.HasMeshStructure() != m_document->HasMeshStructure() ||
+        candidate.DeformerStructureState() != m_document->DeformerStructureState()) {
         CModelEdit command;
         command.field = CModelEdit::ParameterStructure;
         command.runtime = std::make_shared<CModelEditRuntimeState>();
@@ -511,6 +559,73 @@ bool CKeyformEditController::PublishMesh(CModelDocument candidate, const CModelE
     m_document->CommitCandidate(std::move(candidate));
     runtime.commit();
     return true;
+}
+
+bool CKeyformEditController::PublishDeformer(CModelDocument candidate, const CModelEdit& command,
+                                            bool forward, QString* error)
+{
+    if (!Ready(error)) return false;
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
+    if (!m_publishDeformer || !command.runtime || candidate.SourceDigest() != m_source)
+        return fail(error, QStringLiteral("变形器结构预览尚未连接或源模型已改变"));
+    try {
+        const auto* document = m_document;
+        const auto revision = m_document->Revision();
+        const QScopedValueRollback<bool> publishing(m_publishing, true);
+        QScopedValueRollback<CModelEditRuntimeState> runtime(*command.runtime);
+        const EditorState previous{m_target, m_type, m_keyform, m_pose};
+        EditorState next = previous;
+        const auto& archived = forward ? command.runtime->afterEditor : command.runtime->beforeEditor;
+        const bool restoring = next.target.isEmpty() && archived.isValid();
+        if (restoring && !ReadDeformerEditorState(command, forward, next, error)) return false;
+        if (!next.target.isEmpty()) {
+            bool exists = false;
+            if (next.type == QLatin1String("artmesh")) {
+                for (const auto& mesh : candidate.Drawables()) exists |= mesh.id == next.target;
+            } else for (const auto& deformer : candidate.Deformers())
+                exists |= deformer.id == next.target &&
+                    (deformer.type == CModelDeformer::Warp ? next.type == QLatin1String("warp")
+                                                         : next.type == QLatin1String("rotation"));
+            if (!exists) {
+                if (restoring) return fail(error, QStringLiteral("变形器历史中的编辑对象已失效"));
+                next = {};
+            } else {
+                if (next.pose.size() != candidate.Parameters().size())
+                    return fail(error, QStringLiteral("变形器编辑姿态参数不完整"));
+                for (const auto& parameter : candidate.Parameters()) {
+                    const auto value = next.pose.constFind(parameter.id);
+                    const auto metadata = candidate.ParameterMetadata(parameter.id);
+                    if (value == next.pose.cend() || !std::isfinite(*value) || *value < metadata.minimum || *value > metadata.maximum)
+                        return fail(error, QStringLiteral("变形器编辑姿态参数无效：%1").arg(parameter.id));
+                }
+                CKeyformGridSnapshot grid;
+                if (!candidate.DescribeKeyformGrid(next.target, next.type, grid, error)) return false;
+                const int keyform = keyformAtPose(grid, next.pose);
+                if (keyform < 0 || (restoring && keyform != next.keyform))
+                    return fail(error, QStringLiteral("变形器历史中的编辑姿态不对应有效关键形"));
+                next.keyform = keyform;
+                if (!CanEditIn(candidate, next.target, next.type, next.keyform, error)) return false;
+            }
+        }
+        const auto encode = [](const EditorState& state) {
+            return QVariantMap{{QStringLiteral("target"), state.target}, {QStringLiteral("type"), state.type},
+                {QStringLiteral("keyform"), state.keyform}, {QStringLiteral("pose"), QVariant::fromValue(state.pose)}};
+        };
+        (forward ? command.runtime->beforeEditor : command.runtime->afterEditor) = encode(previous);
+        (forward ? command.runtime->afterEditor : command.runtime->beforeEditor) = encode(next);
+        if (!m_publishDeformer(candidate, command, forward, error)) return false;
+        if (m_document != document || m_document->Revision() != revision || m_document->SourceDigest() != m_source)
+            return fail(error, QStringLiteral("发布变形器结构期间文档已改变"));
+        m_document->CommitCandidate(std::move(candidate));
+        runtime.commit();
+        m_target.swap(next.target);
+        m_type.swap(next.type);
+        m_keyform = next.keyform;
+        m_pose.swap(next.pose);
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("变形器结构准备失败，原文档和历史保持不变"));
+    }
 }
 
 bool CKeyformEditController::PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error)

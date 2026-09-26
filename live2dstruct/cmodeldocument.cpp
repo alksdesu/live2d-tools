@@ -122,6 +122,8 @@ void CModelDocument::Clear()
     m_structure = {};
     m_hasMeshStructure = false;
     m_sourceDeformerParents.clear();
+    m_sourceDeformerIds.clear();
+    m_hasDeformerStructure = false;
     m_keyformBindings.reset();
     m_previewBuilder.reset();
     m_previewError.clear();
@@ -337,7 +339,10 @@ bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QS
     m_sourceBytes = reader.m_byte;
     m_workingBaseBytes = m_sourceBytes;
     m_sourceDigest = QCryptographicHash::hash(m_sourceBytes, QCryptographicHash::Sha256);
-    for (const auto* deformer : table.deformers) m_sourceDeformerParents.insert(deformer->ids, deformer->parent_deformer_indices);
+    for (const auto* deformer : table.deformers) {
+        m_sourceDeformerParents.insert(deformer->ids, deformer->parent_deformer_indices);
+        m_sourceDeformerIds.insert(deformer->ids);
+    }
     auto bindings = std::make_shared<CKeyformBindingGrid>();
     if (!bindings->Build(table, error)) return false;
     m_keyformBindings = std::move(bindings);
@@ -1069,8 +1074,15 @@ bool CModelDocument::IsLocked(const QString& type, const QString& id) const
     return m_lockedKeys.contains(type + QLatin1Char('|') + id);
 }
 
-bool CModelDocument::HasValidBindingKeysRequest(const CModelEdit& edit)
+bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 {
+    if (edit.field == CModelEdit::DeformerStructure) {
+        if (!edit.deformerRequest || edit.deformerRequest->operation.valueless_by_exception() ||
+            edit.type != QLatin1String("deformer") || edit.parameterChange != CModelEdit::ParameterChange::None ||
+            edit.freezeValue || edit.bindingKeysRequest || edit.meshRequest || !edit.meshRemaps.isEmpty()) return false;
+        return edit.name == std::visit([](const auto& request) { return request.id; }, edit.deformerRequest->operation);
+    }
+    if (edit.deformerRequest) return false;
     if (!edit.bindingKeysRequest) return edit.parameterChange != CModelEdit::ParameterChange::BindingKeys;
     return edit.parameterChange == CModelEdit::ParameterChange::BindingKeys && edit.field == CModelEdit::ParameterStructure &&
         edit.type == QLatin1String("parameter") && edit.name == edit.bindingKeysRequest->parameterId &&
@@ -1079,10 +1091,11 @@ bool CModelDocument::HasValidBindingKeysRequest(const CModelEdit& edit)
 
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
-    if (!HasValidBindingKeysRequest(edit)) return false;
+    if (!HasValidStructureRequests(edit)) return false;
     const QVariant& value = forward ? edit.after : edit.before;
-    if (edit.field == CModelEdit::ParameterStructure || edit.field == CModelEdit::MeshStructure) {
-        const QString type = edit.field == CModelEdit::ParameterStructure ? QStringLiteral("parameter") : QStringLiteral("mesh");
+    if (edit.field == CModelEdit::ParameterStructure || edit.field == CModelEdit::MeshStructure || edit.field == CModelEdit::DeformerStructure) {
+        const QString type = edit.field == CModelEdit::ParameterStructure ? QStringLiteral("parameter") :
+            edit.field == CModelEdit::MeshStructure ? QStringLiteral("mesh") : QStringLiteral("deformer");
         if (edit.type != type || edit.before.metaType() != QMetaType::fromType<QVariantMap>() ||
             edit.after.metaType() != QMetaType::fromType<QVariantMap>() ||
             ParameterStructureState() != (forward ? edit.before : edit.after).toMap()) return false;
@@ -1183,7 +1196,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
 {
     try {
-        if (edit.name.isEmpty() || !HasValidBindingKeysRequest(edit) ||
+        if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
             (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
         if (command.field != CModelEdit::MeshStructure && (!command.meshRemaps.isEmpty() || command.meshRequest)) return false;
@@ -1240,7 +1253,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         }
         CModelDocument candidate = *this;
         std::shared_ptr<CModelEditStorageState> storage;
-        if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure) {
+        if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure && command.field != CModelEdit::DeformerStructure) {
             storage = std::make_shared<CModelEditStorageState>();
             storage->before = EditStorage(command);
         }
@@ -1260,7 +1273,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         command.storage = std::move(storage);
         if (candidate.m_editIndex < candidate.m_editHistory.size()) candidate.m_editHistory.resize(candidate.m_editIndex);
         bool merged = false;
-        if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure &&
+        if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure && command.field != CModelEdit::DeformerStructure &&
             command.coalesce && !candidate.m_editHistory.isEmpty()) {
             auto& last = candidate.m_editHistory.last();
             if (last.coalesce && last.name == command.name && last.type == command.type && last.field == command.field &&

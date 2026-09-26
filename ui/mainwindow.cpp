@@ -83,6 +83,7 @@ struct ParameterStructureHistory
     CMotionPanel::ParameterTrackArchive tracks;
     bool timelinePreviewActive = false;
     quint64 timelineStopRevision = 0;
+    QStringList selectedIds, selectedTypes;
 };
 Q_DECLARE_METATYPE(ParameterStructureHistory)
 
@@ -689,6 +690,8 @@ bool MainWindow::SaveSession()
     session.sourceDigest = m_document.SourceDigest();
     session.structure = m_document.ParameterStructure();
     session.meshStructure = m_document.HasMeshStructure();
+    session.deformerStructure = m_document.HasDeformerStructure();
+    if (session.deformerStructure) session.sourceDeformerIds = m_document.SourceDeformerIds();
     session.parameterResources = m_parameterResources;
     if (m_physicsPanel) {
         CPhysicsPanel::Snapshot physics;
@@ -1045,6 +1048,8 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     if (!model) { if (error) *error = QStringLiteral("模型预览尚未就绪"); return false; }
     ParameterStructureHistory leaving;
     leaving.resources = m_parameterResources;
+    leaving.selectedIds = m_selectedObjectIds;
+    leaving.selectedTypes = m_selectedObjectTypes;
     leaving.timelinePreviewActive = model->HasTimelinePreview();
     leaving.timelineStopRevision = m_timelinePreviewStopRevision;
     LAppModel::EditorPreviewContext currentEditor;
@@ -1189,7 +1194,8 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error,
         changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline, changePhysics ? &physicsDraft : nullptr,
         geometry ? &*geometry : nullptr,
-        editing && command.parameterChange == live2dstruct::CModelEdit::ParameterChange::BindingKeys ? &pose : nullptr))
+        editing && (command.parameterChange == live2dstruct::CModelEdit::ParameterChange::BindingKeys ||
+            command.field == live2dstruct::CModelEdit::DeformerStructure) ? &pose : nullptr))
         return false;
     if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
     if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
@@ -1201,6 +1207,45 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     m_refreshPhysicsReferences = m_refreshPhysicsReferences || changePhysics;
     (forward ? command.runtime->before : command.runtime->after).swap(captured);
     return true;
+}
+
+void MainWindow::RefreshDeformerStructureUi(const live2dstruct::CModelEdit& command, bool forward)
+{
+    auto ids = m_selectedObjectIds, types = m_selectedObjectTypes;
+    if (command.runtime) {
+        const auto& target = forward ? command.runtime->after : command.runtime->before;
+        if (target.canConvert<ParameterStructureHistory>()) {
+            const auto archived = target.value<ParameterStructureHistory>();
+            ids = archived.selectedIds;
+            types = archived.selectedTypes;
+        }
+    }
+    QStringList validIds, validTypes;
+    const auto exists = [this](const QString& id, const QString& type) {
+        if (type == QLatin1String("part"))
+            return std::any_of(m_document.Parts().cbegin(), m_document.Parts().cend(), [&](const auto& part) { return part.id == id; });
+        if (type == QLatin1String("artmesh"))
+            return std::any_of(m_document.Drawables().cbegin(), m_document.Drawables().cend(), [&](const auto& mesh) { return mesh.id == id; });
+        return std::any_of(m_document.Deformers().cbegin(), m_document.Deformers().cend(), [&](const auto& node) {
+            return node.id == id && type == (node.type == live2dstruct::CModelDeformer::Warp ? QLatin1String("warp") : QLatin1String("rotation"));
+        });
+    };
+    for (int i = 0; i < ids.size() && i < types.size(); ++i) if (exists(ids[i], types[i])) {
+        validIds.append(ids[i]); validTypes.append(types[i]);
+    }
+    if (m_keyformEditor.IsActive()) { validIds = {m_keyformEditor.Target()}; validTypes = {m_keyformEditor.Type()}; }
+    m_selectedObjectIds = validIds;
+    m_selectedObjectTypes = validTypes;
+    RefreshParameterStructureUi();
+    SelectModelObjects(validIds, validTypes);
+    if (m_treePanel) m_treePanel->HighlightObjects(validIds, validTypes);
+    if (m_openglwindows && !m_keyformEditor.IsActive()) {
+        QStringList deformers;
+        for (int i = 0; i < validIds.size(); ++i)
+            if (validTypes[i] == QLatin1String("warp") || validTypes[i] == QLatin1String("rotation")) deformers.append(validIds[i]);
+        m_openglwindows->do_ShowDeformers(deformers);
+    }
+    RefreshDeformerActions();
 }
 
 void MainWindow::RefreshParameterStructureUi()
@@ -1346,6 +1391,10 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
                 ? m_inspectorPanel->GetActiveKeyformIndex() : edit.index;
         if (!m_keyformEditor.Submit(edit, values, previewKeyform, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
+        if (edit.field == live2dstruct::CModelEdit::DeformerStructure) {
+            live2dstruct::CModelEdit stored;
+            if (m_document.PeekUndoEdit(&stored)) RefreshDeformerStructureUi(stored, true);
+        }
         if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && edit.field != live2dstruct::CModelEdit::ParameterStructure &&
             m_keyformEditor.IsActive() && m_motionPanel)
             m_motionPanel->PauseTimelinePreview();
@@ -1373,6 +1422,7 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     if (live2dstruct::CKeyformEditController::Handles(pending)) {
         if (!m_keyformEditor.History(undo, edit, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
+        if (edit.field == live2dstruct::CModelEdit::DeformerStructure) RefreshDeformerStructureUi(edit, !undo);
         RefreshKeyformUi(true);
     } else {
         if (!EndKeyformEditing(error)) return false;
@@ -2659,6 +2709,9 @@ void MainWindow::RestDock(const QString &name)
     m_keyformEditor.SetMeshPublisher([this](const auto& document, const auto& command, bool forward, QString* error) {
         return PublishMeshStructure(document, command, forward, error);
     });
+    m_keyformEditor.SetDeformerPublisher([this](const auto& document, const auto& command, bool forward, QString* error) {
+        return PublishDeformerStructure(document, command, forward, error);
+    });
     m_selectedObjectIds.clear();
     m_selectedObjectTypes.clear();
     m_workspaceReady = false;
@@ -3027,6 +3080,8 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::ObjectSelected, this,
             [this](const QString& id, const QString& type) { SelectModelObjects({id}, {type}); });
     connect(m_treePanel, &CModelTreePanel::ObjectsSelected, this, &MainWindow::SelectModelObjects);
+    connect(m_treePanel, &CModelTreePanel::CreateDeformerRequested, this, &MainWindow::CreateDeformer);
+    connect(m_treePanel, &CModelTreePanel::RemoveDeformerRequested, this, &MainWindow::RemoveDeformer);
     connect(m_treePanel, &CModelTreePanel::WarpSelected, m_openglwindows, &OpengGlForm::do_ShowWarp);
     connect(m_treePanel, &CModelTreePanel::ShowDeformers, this, [this](const QStringList& ids) {
         if (!m_keyformEditor.IsActive()) m_openglwindows->do_ShowDeformers(ids);
@@ -3412,6 +3467,7 @@ void MainWindow::RestDock(const QString &name)
         }
     });
     m_workspaceReady = true;
+    RefreshDeformerActions();
     ConfigurePhysicsSaving();
     m_saveSessionAction->setEnabled(true);
     m_loadSessionAction->setEnabled(true);

@@ -9,6 +9,8 @@
 #include <QMenu>
 #include <QPersistentModelIndex>
 #include <QPointer>
+#include <QPushButton>
+#include <QHBoxLayout>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QTabWidget>
@@ -59,6 +61,19 @@ CModelTreePanel::CModelTreePanel(QWidget* parent) : QDockWidget(QStringLiteral("
     m_search->setPlaceholderText(QStringLiteral("搜索名称或 ID"));
     m_search->setClearButtonEnabled(true);
     layout->addWidget(m_search);
+    auto* actions = new QHBoxLayout;
+    m_createDeformer = new QPushButton(QStringLiteral("新建变形器"), wrapper);
+    m_removeDeformer = new QPushButton(QStringLiteral("删除"), wrapper);
+    m_createDeformer->setObjectName(QStringLiteral("createDeformerButton"));
+    m_removeDeformer->setObjectName(QStringLiteral("removeDeformerButton"));
+    m_createDeformer->setToolTip(QStringLiteral("为选中对象创建弯曲或旋转变形器"));
+    m_removeDeformer->setToolTip(QStringLiteral("删除选中的变形器，并保留子对象形状"));
+    actions->addWidget(m_createDeformer, 1);
+    actions->addWidget(m_removeDeformer);
+    layout->addLayout(actions);
+    SetDeformerActionsEnabled(false, false);
+    connect(m_createDeformer, &QPushButton::clicked, this, &CModelTreePanel::CreateDeformerRequested);
+    connect(m_removeDeformer, &QPushButton::clicked, this, &CModelTreePanel::RemoveDeformerRequested);
     layout->addWidget(m_tabWidget, 1);
     setWidget(wrapper);
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
@@ -155,6 +170,28 @@ bool CModelTreePanel::BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QSt
     m_deformerTree->setFilterText(m_search->text());
     if (error) error->clear();
     return true;
+}
+
+void CModelTreePanel::SetDeformerActionsEnabled(bool create, bool remove)
+{
+    m_createDeformer->setEnabled(create);
+    m_removeDeformer->setEnabled(remove);
+}
+
+void CModelTreePanel::HighlightObjects(const QStringList& ids, const QStringList& types)
+{
+    QStringList keys;
+    for (int i = 0; i < ids.size() && i < types.size(); ++i)
+        keys.append(types[i] + QLatin1Char('|') + ids[i]);
+    const QSignalBlocker partBlocker(m_partTree->selectionModel());
+    const QSignalBlocker deformerBlocker(m_deformerTree->selectionModel());
+    restoreSelection(m_partTree, m_partModel, keys);
+    restoreSelection(m_deformerTree, m_deformerModel, keys);
+    for (const auto& entry : {qMakePair(m_partTree, m_partModel), qMakePair(m_deformerTree, m_deformerModel)}) {
+        const auto index = keys.isEmpty() ? QModelIndex() : entry.second->IndexForKey(keys.first());
+        entry.first->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
+        if (index.isValid()) entry.first->scrollTo(index);
+    }
 }
 
 QMap<QString, bool> CModelTreePanel::VisibilityState() const { return m_partModel->VisibilityState(); }
@@ -278,8 +315,15 @@ void CModelTreePanel::ShowContextMenu(CModelHierarchyView* view, const QPoint& p
     auto* lock = menu.addAction(allLocked ? QStringLiteral("解锁选中对象") : QStringLiteral("锁定选中对象"));
     auto* solo = menu.addAction(QStringLiteral("独显选中对象"));
     auto* show = menu.addAction(QStringLiteral("显示全部对象"));
+    menu.addSeparator();
+    auto* create = menu.addAction(QStringLiteral("新建变形器"));
+    auto* remove = menu.addAction(QStringLiteral("删除变形器"));
+    create->setEnabled(m_createDeformer->isEnabled());
+    remove->setEnabled(m_removeDeformer->isEnabled());
     auto* chosen = menu.exec(view->viewport()->mapToGlobal(position));
     if (!guard || !anchor.isValid()) return;
+    if (chosen == create) { emit CreateDeformerRequested(); return; }
+    if (chosen == remove) { emit RemoveDeformerRequested(); return; }
     locks = LockedState();
     if (chosen == lock) {
         QMap<QString, bool> requested;
