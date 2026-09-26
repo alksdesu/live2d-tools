@@ -18,6 +18,7 @@ struct CModelSession
     QJsonObject animation;
     QString sourceMoc;
     QByteArray sourceDigest;
+    CMocParameterStructureBuilder::ColumnState structure;
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
     QMap<QString, bool> visibility;

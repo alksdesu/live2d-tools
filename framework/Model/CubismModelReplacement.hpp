@@ -2,6 +2,7 @@
 #define CUBISMMODELREPLACEMENT_H
 
 #include "framework/CubismFramework.hpp"
+#include "CubismParameterStructure.hpp"
 #include <QString>
 #include <functional>
 
@@ -29,6 +30,10 @@ public:
     bool Prepare(const csmByte* bytes, csmSizeInt size, const CubismMoc& sourceMoc, const CubismModel& source,
                  const Rendering::CubismRenderer& renderer, const RendererPreparation& prepareRenderer,
                  CubismModelUpdatePolicy policy, QString* error = nullptr, const ModelPreparation& prepareModel = {});
+    bool Prepare(const csmByte* bytes, csmSizeInt size, const CubismMoc& sourceMoc, const CubismModel& source,
+                 const Rendering::CubismRenderer& renderer, const RendererPreparation& prepareRenderer,
+                 CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
+                 QString* error = nullptr, const ModelPreparation& prepareModel = {});
     CubismModel* GetModel() const { return _model; }
     bool Commit(CubismMoc*& moc, CubismModel*& model, Rendering::CubismRenderer*& renderer) noexcept;
 

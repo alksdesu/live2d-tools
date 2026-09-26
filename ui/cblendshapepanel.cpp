@@ -123,7 +123,24 @@ QTreeWidgetItem* message(QTreeWidget* tree, const QString& text, const QString& 
 
 QString targetType(Relations::TargetType type)
 {
-    return type == Relations::ArtMesh ? QStringLiteral("artmesh") : QStringLiteral("warp");
+    switch (type) {
+    case Relations::ArtMesh: return QStringLiteral("artmesh");
+    case Relations::Warp: return QStringLiteral("warp");
+    case Relations::Rotation: return QStringLiteral("rotation");
+    case Relations::Part: return QStringLiteral("part");
+    }
+    return {};
+}
+
+QString targetLabel(Relations::TargetType type)
+{
+    switch (type) {
+    case Relations::ArtMesh: return QStringLiteral("ArtMesh");
+    case Relations::Warp: return QStringLiteral("网格变形器");
+    case Relations::Rotation: return QStringLiteral("旋转变形器");
+    case Relations::Part: return QStringLiteral("部件");
+    }
+    return {};
 }
 }
 
@@ -243,7 +260,8 @@ void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
     if (file.open(QIODevice::ReadOnly)) BuildBlendShapesBytes(file.readAll(), cid);
 }
 
-bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* cid, QString* error)
+bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* cid, QString* error,
+                                           const QByteArray& sourceDigest)
 {
     std::unique_ptr<State> candidate;
     try {
@@ -252,18 +270,19 @@ bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* 
         if (!table.IsValid()) { if (error) *error = reader.Error(); return false; }
         candidate = CreateState();
         if (!candidate->relations.Build(table, error)) return false;
-        candidate->digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
-        if (candidate->digest == m_state->digest) candidate->recentValues = m_state->recentValues;
+        candidate->digest = sourceDigest.isEmpty() ? QCryptographicHash::hash(bytes, QCryptographicHash::Sha256) : sourceDigest;
         for (const auto& parameter : candidate->relations.Parameters()) {
+            if (candidate->digest == m_state->digest && m_state->recentValues.contains(parameter.id))
+                candidate->recentValues.insert(parameter.id, m_state->recentValues.value(parameter.id));
             if (cid) {
                 const auto name = cid->getParaName(parameter.id);
                 if (!name.isEmpty()) candidate->parameterNames.insert(parameter.id, name);
             }
             if (parameter.type == 1 && !parameter.id.isEmpty()) candidate->blendIds.insert(parameter.id);
         }
-        if (cid) for (const auto& target : candidate->relations.Targets()) if (target.type == Relations::Warp) {
-            const auto name = cid->getDeformerName(target.id);
-            if (!name.isEmpty()) candidate->targetNames.insert(target.id, name);
+        if (cid) for (const auto& target : candidate->relations.Targets()) if (target.type != Relations::ArtMesh) {
+            const auto name = target.type == Relations::Part ? cid->getPartName(target.id) : cid->getDeformerName(target.id);
+            if (!name.isEmpty()) candidate->targetNames.insert(targetType(target.type) + '|' + target.id, name);
         }
         const auto appendParameter = [&](QTreeWidgetItem* group, int index) {
             const auto& parameter = candidate->relations.Parameters()[index];
@@ -520,8 +539,8 @@ void CBlendShapePanel::ShowParameterDetails(const QString& id)
                 QStringLiteral("[%1, %2] · 默认 %3").arg(parameterText(source.minimum), parameterText(source.maximum), parameterText(source.defaultValue)));
         const auto targets = m_state->relations.TargetsForParameter(parameter);
         for (const auto& target : targets) {
-            const QString name = target.type == Relations::Warp ? m_state->targetNames.value(target.id, target.id) : target.id;
-            auto* item = new QTreeWidgetItem(m_state->details, {name, target.type == Relations::ArtMesh ? QStringLiteral("ArtMesh") : QStringLiteral("网格变形器")});
+            const QString name = m_state->targetNames.value(targetType(target.type) + '|' + target.id, target.id);
+            auto* item = new QTreeWidgetItem(m_state->details, {name, targetLabel(target.type)});
             item->setData(0, Qt::UserRole, target.id);
             item->setData(0, KindRole, QStringLiteral("target"));
             item->setData(0, TypeRole, targetType(target.type));

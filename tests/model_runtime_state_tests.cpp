@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <functional>
 #include <new>
 #include <unordered_map>
 
@@ -69,10 +70,11 @@ class ModelRuntimeStateTests : public QObject
     Q_OBJECT
     using ModelOwner = std::unique_ptr<CubismModel, void (*)(CubismModel*)>;
 
-    static ModelOwner create(bool empty = false, int drawables = 2)
+    static ModelOwner create(bool empty = false, int drawables = 2, const std::function<void(GetterState&)>& configure = {})
     {
         auto data = std::make_unique<GetterState>();
         data->drawableCount = drawables;
+        if (configure) configure(*data);
         if (empty) data->parameterCount = data->partCount = data->drawableCount = 0;
         void* handle = allocate(sizeof(CubismModelFixture::ModelHandle), Core::csmAlignofModel);
         auto* model = CubismModelFixture::AttachModel(handle, data.get());
@@ -107,6 +109,115 @@ private slots:
         idManager.reset();
         QVERIFY(coreStates.empty());
         QVERIFY(allocations.empty());
+    }
+
+    void structureReordersValuesAndPreservesSparseSavedState()
+    {
+        auto source = create();
+        source->_savedParameters = {0.2f};
+        source->SetParameterValue(0, 0.7f);
+        source->SetParameterValue(1, 0.8f);
+        const auto* virtualId = idManager->GetId("Virtual");
+        const int oldVirtual = source->GetParameterIndex(virtualId);
+        source->SetParameterValue(oldVirtual, -0.0f);
+        auto next = create(false, 2, [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamC", "ParamB", "ParamA"}); });
+        QString error;
+        QVERIFY(!next->CopyRuntimeStateFrom(*source, &error));
+        QVERIFY(!next->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits, &error));
+        QVERIFY2(next->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowParameterStructureEdits, &error), qPrintable(error));
+        QCOMPARE(next->GetParameterValue(0), 0.4f);
+        QCOMPARE(next->GetParameterValue(1), 0.8f);
+        QCOMPARE(next->GetParameterValue(2), 0.7f);
+        QCOMPARE(next->_savedPresence, QVector<quint8>({1, 0, 1}));
+        QCOMPARE(next->_savedParameters, QVector<float>({0.4f, 0, 0.2f}));
+        QCOMPARE(next->GetParameterIndex(virtualId), 3);
+        QVERIFY(std::signbit(next->GetParameterValue(3)));
+        QCOMPARE(source->GetParameterIndex(virtualId), 2);
+        next->SetParameterValue(1, 0.9f);
+        next->LoadParameters();
+        QCOMPARE(next->GetParameterValue(0), 0.4f);
+        QCOMPARE(next->GetParameterValue(1), 0.9f);
+        QCOMPARE(next->GetParameterValue(2), 0.2f);
+        CubismModel::RuntimeValueSnapshot captured;
+        QVERIFY(next->CaptureRuntimeValues(captured));
+        next->SaveParameters();
+        QVERIFY(next->_savedPresence.isEmpty());
+        QVERIFY(next->RestoreRuntimeValues(captured));
+        QCOMPARE(next->_savedPresence, QVector<quint8>({1, 0, 1}));
+        QCOMPARE(source->_savedParameters, QVector<float>({0.2f}));
+    }
+
+    void structuralHistorySeedsSurviveVirtualWritesAndSameIdRecreation()
+    {
+        const auto policy = CubismModelUpdatePolicy::AllowParameterStructureEdits;
+        auto original = create();
+        original->_savedParameters = {0.2f};
+        original->SetParameterValue(0, 0.7f);
+        CubismModel::RuntimeValueSnapshot values;
+        QVERIFY(original->CaptureRuntimeValues(values));
+        ParameterStructureSeed saved;
+        saved.mode = ParameterStructureSeed::Mode::Values;
+        saved.runtime = values.Parameter(0);
+        auto deleted = create(false, 2, [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); });
+        QVERIFY(deleted->CopyRuntimeStateFrom(*original, policy));
+        const auto* a = idManager->GetId("ParamA");
+        QCOMPARE(deleted->GetParameterIndex(a), 1);
+        deleted->SetParameterValue(a, 0.99f);
+        auto recreated = create();
+        QVERIFY(recreated->CopyRuntimeStateFrom(*deleted, policy, {{QStringLiteral("ParamA"), ParameterStructureSeed{}}}));
+        QCOMPARE(recreated->GetParameterValue(0), 0.0f);
+        QCOMPARE(recreated->_savedParameters, QVector<float>({0.0f}));
+        auto removedAgain = create(false, 2, [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); });
+        QVERIFY(removedAgain->CopyRuntimeStateFrom(*recreated, policy));
+        auto restored = create();
+        QVERIFY(restored->CopyRuntimeStateFrom(*removedAgain, policy, {{QStringLiteral("ParamA"), saved}}));
+        QCOMPARE(restored->GetParameterValue(0), 0.7f);
+        QCOMPARE(restored->_savedParameters, QVector<float>({0.2f}));
+        QVERIFY(!restored->_notExistParameterId.contains(a));
+        QVERIFY(!restored->_retiredParameters.contains(QStringLiteral("ParamA")));
+        restored->LoadParameters();
+        QCOMPARE(restored->GetParameterValue(0), 0.2f);
+        QCOMPARE(restored->GetParameterValue(1), 0.25f);
+    }
+
+    void structuralKeysCanChangeWithoutWeakeningOtherPolicies()
+    {
+        auto source = create(), candidate = create();
+        State(candidate->GetModel()).keys[0] = {-0.5f, 0.2f, 0.75f};
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source));
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowParameterDefinitionEdits));
+        QVERIFY(candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowParameterStructureEdits));
+        State(candidate->GetModel()).keys[0][1] = std::numeric_limits<float>::quiet_NaN();
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowParameterStructureEdits));
+    }
+
+    void invalidStructuralSeedsAndPresenceDoNotPartiallyWrite()
+    {
+        auto source = create();
+        auto candidate = create(false, 2, [](GetterState& state) { state.parameterCount = 3; });
+        const auto before = State(candidate->GetModel()).values;
+        QString error;
+        for (int kind = 0; kind < 4; ++kind) {
+            ParameterStructureSeed seed;
+            seed.mode = ParameterStructureSeed::Mode::Values;
+            seed.runtime = {0.5f, 0.2f, 0, -1, 1};
+            QString id = QStringLiteral("ParamC");
+            if (kind == 0) id = QStringLiteral("Missing");
+            if (kind == 1) id = QStringLiteral("ParamA");
+            if (kind == 2) seed.runtime.type = 1;
+            if (kind == 3) seed.runtime.saved = std::numeric_limits<float>::quiet_NaN();
+            QVERIFY(!candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowParameterStructureEdits, {{id, seed}}, &error));
+            QVERIFY(!error.isEmpty());
+            QCOMPARE(State(candidate->GetModel()).values, before);
+        }
+        CubismModel::RuntimeValueSnapshot state;
+        QVERIFY(source->CaptureRuntimeValues(state));
+        state.savedParameters = {0.25f};
+        state.savedPresence = {2};
+        QVERIFY(!source->RestoreRuntimeValues(state, &error));
+        state.savedPresence = {1, 0};
+        QVERIFY(!source->RestoreRuntimeValues(state, &error));
+        QVERIFY(source->_savedParameters.isEmpty());
     }
 
     void staticSchemaAllowsRuntimeAndGeometryDifferences()

@@ -31,6 +31,9 @@ inline QMap<QString, QString> tokens(bool dark = false)
         {QStringLiteral("@focusInset@"), QStringLiteral("-2px")},
         {QStringLiteral("@radius@"), QStringLiteral("8px")},
         {QStringLiteral("@radiusSmall@"), QStringLiteral("6px")},
+        {QStringLiteral("@itemCheckSize@"), QStringLiteral("14px")},
+        {QStringLiteral("@itemCheckRadius@"), QStringLiteral("3px")},
+        {QStringLiteral("@borderWidth@"), QStringLiteral("1px")},
         {QStringLiteral("@space@"), QStringLiteral("8px")},
     };
     if (dark) {
@@ -343,21 +346,21 @@ QTreeWidget::item:selected, QTreeView::item:selected, CModelHierarchyView::item:
     color: @accentInk@;
 }
 
-QTreeWidget::indicator, CModelHierarchyView::indicator, QTableWidget::indicator {
-    width: 14px;
-    height: 14px;
+QTreeWidget::indicator, CModelHierarchyView::indicator, QTableWidget::indicator, QListWidget::indicator {
+    width: @itemCheckSize@;
+    height: @itemCheckSize@;
 }
 
-QTreeWidget::indicator:checked, CModelHierarchyView::indicator:checked, QTableWidget::indicator:checked {
+QTreeWidget::indicator:checked, CModelHierarchyView::indicator:checked, QTableWidget::indicator:checked, QListWidget::indicator:checked {
     background: @accent@;
-    border: 1px solid @accentHover@;
-    border-radius: 3px;
+    border: @borderWidth@ solid @accentHover@;
+    border-radius: @itemCheckRadius@;
 }
 
-QTreeWidget::indicator:unchecked, CModelHierarchyView::indicator:unchecked, QTableWidget::indicator:unchecked {
+QTreeWidget::indicator:unchecked, CModelHierarchyView::indicator:unchecked, QTableWidget::indicator:unchecked, QListWidget::indicator:unchecked {
     background: @surface@;
-    border: 1px solid @borderStrong@;
-    border-radius: 3px;
+    border: @borderWidth@ solid @borderStrong@;
+    border-radius: @itemCheckRadius@;
 }
 
 QHeaderView::section {

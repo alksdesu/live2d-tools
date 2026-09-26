@@ -53,7 +53,7 @@ bool LAppModel::ApplyParameterDefinitionPreview(const QByteArray& bytes, const Q
             for (auto it = baseValues.cbegin(); it != baseValues.cend(); ++it) {
                 const auto index = indices.constFind(it.key());
                 if (index == indices.cend() || !std::isfinite(it.value()) || it.value() < values.minimums[*index] ||
-                    it.value() > values.maximums[*index] || *index >= values.savedParameters.size())
+                    it.value() > values.maximums[*index] || !values.HasSavedParameter(*index))
                     return reject(QStringLiteral("参数基线 %1 缺失、未初始化或超出新范围").arg(it.key()));
                 values.savedParameters[*index] = it.value();
                 if (!editing && !_timelinePreviewActive) values.parameterValues[*index] = it.value();
@@ -65,7 +65,7 @@ bool LAppModel::ApplyParameterDefinitionPreview(const QByteArray& bytes, const Q
                 if (!candidate->RebaseRuntimeValues(*m_editorEntryState, *nextEntry, detail)) return false;
                 for (auto it = baseValues.cbegin(); it != baseValues.cend(); ++it) {
                     const int index = indices.value(it.key());
-                    if (index >= nextEntry->savedParameters.size())
+                    if (!nextEntry->HasSavedParameter(index))
                         return reject(QStringLiteral("编辑前参数基线尚未初始化：%1").arg(it.key()));
                     if (!_timelinePreviewActive) nextEntry->parameterValues[index] = it.value();
                     nextEntry->savedParameters[index] = it.value();

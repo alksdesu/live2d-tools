@@ -139,6 +139,10 @@ protected:
                       const CubismModelReplacement::RendererPreparation& prepareRenderer,
                       CubismModelUpdatePolicy policy, QString* error = nullptr,
                       const CubismModelReplacement::ModelPreparation& prepareModel = {});
+    bool ReplaceModel(const csmByte* bytes, csmSizeInt size,
+                      const CubismModelReplacement::RendererPreparation& prepareRenderer,
+                      CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
+                      QString* error = nullptr, const CubismModelReplacement::ModelPreparation& prepareModel = {});
 
     CubismMoc*              _moc;                       ///< Mocデータ
     CubismModel*            _model;                     ///< Modelインスタンス

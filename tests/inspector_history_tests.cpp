@@ -31,6 +31,62 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void synchronizedKeyformTracksTheDocumentWithoutActivation_data()
+    {
+        QTest::addColumn<QString>("type");
+        for (const char* type : {"artmesh", "warp", "rotation"}) QTest::newRow(type) << QString::fromLatin1(type);
+    }
+
+    void synchronizedKeyformTracksTheDocumentWithoutActivation()
+    {
+        using namespace live2dstruct;
+        QFETCH(QString, type);
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Natori/Natori.moc3"));
+        QString id;
+        int count = 0;
+        if (type == "artmesh") {
+            for (const auto& mesh : document.Drawables()) if (mesh.keyforms.size() > 1) { id = mesh.id; count = mesh.keyforms.size(); break; }
+        } else {
+            for (const auto& deformer : document.Deformers()) {
+                if ((type == "warp") != (deformer.type == CModelDeformer::Warp)) continue;
+                const int frames = type == "warp" ? deformer.warpKeyforms.size() : deformer.rotationKeyforms.size();
+                if (frames > 1) { id = deformer.id; count = frames; break; }
+            }
+        }
+        QVERIFY(!id.isEmpty());
+        CInspectorPanel panel;
+        panel.SetDocument(&document);
+        panel.SetSelection(id, type);
+        int requests = 0;
+        panel.SetKeyformHandler([&](const QString&, int, QString*) { ++requests; return false; });
+        panel.SetDeformerKeyformHandler([&](const QString&, const QString&, int, QString*) { ++requests; return false; });
+        QSignalSpy activated(&panel, &CInspectorPanel::DrawableKeyformActivated);
+        QSignalSpy edited(&panel, &CInspectorPanel::HistoryChanged);
+        const auto revision = document.Revision();
+        QVERIFY(panel.SyncActiveKeyform(id, type, count - 1));
+        QCOMPARE(requests, 0);
+        QCOMPARE(activated.size(), 0);
+        QCOMPARE(edited.size(), 0);
+        QCOMPARE(document.Revision(), revision);
+        if (type == "artmesh") {
+            QCOMPARE(panel.GetActiveKeyformIndex(), count - 1);
+            QCOMPARE(panel.findChild<QComboBox*>("keyformSelector")->currentIndex(), count - 1);
+            const auto values = document.DrawableKeyformPositions(id, count - 1);
+            QCOMPARE(panel.findChild<QTableWidget*>("keyformVertexTable")->item(0, 1)->text(), QString::number(values[0], 'g', 9));
+        } else if (type == "warp") {
+            QCOMPARE(panel.findChild<QComboBox*>("warpKeyformSelector")->currentIndex(), count - 1);
+            QCOMPARE(panel.findChild<QTableWidget*>("warpKeyformTable")->item(0, 1)->text(),
+                     QString::number(document.DeformerWarpKeyforms(id)[count - 1].positions[0], 'g', 9));
+        } else QCOMPARE(panel.findChild<QTableWidget*>("rotationKeyformTable")->currentRow(), count - 1);
+        QVERIFY(!panel.SyncActiveKeyform(id, type, count));
+        QVERIFY(!panel.SyncActiveKeyform("missing", type, 0));
+        QCOMPARE(panel.GetSelectionId(), id);
+        QCOMPARE(panel.GetSelectionType(), type);
+        QCOMPARE(requests, 0);
+        QCOMPARE(document.Revision(), revision);
+    }
+
     void hiddenSelectionBecomesVisibleWithOneClick()
     {
         using namespace live2dstruct;
@@ -1350,8 +1406,11 @@ private slots:
         QCOMPARE(document.DrawableIndices(id), after);
         QVERIFY(!document.CanRedoEdit());
         QCOMPARE(document.DrawableKeyformPositions(id, 0), positions);
-        QCOMPARE(mesh->uvs, uvs);
-        QCOMPARE(mesh->vertexCount, vertexCount);
+        const auto current = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+            [&](const auto& drawable) { return drawable.id == id; });
+        QVERIFY(current != document.Drawables().cend());
+        QCOMPARE(current->uvs, uvs);
+        QCOMPARE(current->vertexCount, vertexCount);
 
         panel.ClearHistory();
         const QVector<quint16> collapsed{0, 1, 2};
@@ -1395,15 +1454,16 @@ private slots:
         live2dstruct::CModelDocument document;
         QString error;
         QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
-        const auto mesh = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+        const auto sourceMeshes = document.Drawables();
+        const auto mesh = std::find_if(sourceMeshes.cbegin(), sourceMeshes.cend(),
             [](const auto& drawable) { return drawable.vertexCount > 0 && drawable.keyforms.size() >= 3; });
-        QVERIFY(mesh != document.Drawables().cend());
-        const auto other = std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+        QVERIFY(mesh != sourceMeshes.cend());
+        const auto other = std::find_if(sourceMeshes.cbegin(), sourceMeshes.cend(),
             [&mesh](const auto& drawable) {
                 return drawable.vertexCount > 0 && !drawable.keyforms.isEmpty() &&
                        drawable.keyforms.size() < mesh->keyforms.size();
             });
-        QVERIFY(other != document.Drawables().cend());
+        QVERIFY(other != sourceMeshes.cend());
         CInspectorPanel panel;
         panel.SetDocument(&document);
         QSignalSpy activated(&panel, &CInspectorPanel::DrawableKeyformActivated);
@@ -1494,11 +1554,12 @@ private slots:
         live2dstruct::CModelDocument document;
         QString error;
         QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
-        const auto warp = std::find_if(document.Deformers().cbegin(), document.Deformers().cend(),
+        const auto sourceDeformers = document.Deformers();
+        const auto warp = std::find_if(sourceDeformers.cbegin(), sourceDeformers.cend(),
             [](const auto& deformer) {
                 return deformer.warpKeyforms.size() > 1 && !deformer.warpKeyforms[1].positions.isEmpty();
             });
-        QVERIFY(warp != document.Deformers().cend());
+        QVERIFY(warp != sourceDeformers.cend());
         CInspectorPanel panel;
         panel.SetDocument(&document);
         panel.SetSelection(warp->id, QStringLiteral("warp"));

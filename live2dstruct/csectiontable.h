@@ -92,6 +92,8 @@ public:
     QVector<CBlend_shape_parameter_bindings*> blend_shape_parameter_bindings;
     QVector<CBlend_shapes_art_meshes*> blend_shapes_art_meshes;
     QVector<CBlend_shapes_warp_deformers*> blend_shapes_warp_deformers;
+    QVector<CBlend_shape_targets*> blend_shapes_parts;
+    QVector<CBlend_shape_targets*> blend_shapes_rotation_deformers;
 
     QVector<CKeyform_multiply_colors*> keyform_multiply_colors;
     QVector<CKeyform_screen_colors*> keyform_screen_colors;

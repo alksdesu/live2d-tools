@@ -5,6 +5,7 @@ namespace live2dstruct {
 
 CSectionOffsetTable::CSectionOffsetTable(CReader &bytes)
 {
+    mocVersion = bytes.m_byte.size() > 4 ? quint8(bytes.m_byte[4]) : 0;
     bytes.seek(0x40);//从
     count_info = new CCount_info::Offset(bytes);
     canvas_info =new CCanvas_info::Offset(bytes);
@@ -50,6 +51,16 @@ CSectionOffsetTable::CSectionOffsetTable(CReader &bytes)
     blend_shape_constraint_indices = new CBlend_shape_constraint_indices::Offset(bytes);
     blend_shape_constraints = new  CBlend_shape_constraints::Offset(bytes);
     blend_shape_constraint_values = new  CBlend_shape_constraint_values::Offset(bytes);
+    if (mocVersion >= 5) {
+        warp_deformer_keyforms->ReadColorOffsets(bytes);
+        rotation_deformer_keyforms->ReadColorOffsets(bytes);
+        art_mesh_keyforms->ReadColorOffsets(bytes);
+        blend_shapes_parts = new CBlend_shape_targets::Offset(bytes);
+        blend_shapes_rotation_deformers = new CBlend_shape_targets::Offset(bytes);
+    } else {
+        blend_shapes_parts = new CBlend_shape_targets::Offset();
+        blend_shapes_rotation_deformers = new CBlend_shape_targets::Offset();
+    }
 
 
 }
@@ -88,6 +99,8 @@ CSectionOffsetTable::~CSectionOffsetTable()
     delete blend_shape_parameter_bindings;
     delete blend_shapes_art_meshes;
     delete blend_shapes_warp_deformers;
+    delete blend_shapes_parts;
+    delete blend_shapes_rotation_deformers;
     delete keyform_multiply_colors;
     delete keyform_screen_colors;
 

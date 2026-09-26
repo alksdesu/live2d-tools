@@ -4,10 +4,10 @@
 #include "live2dstruct/util/cfilereader.h"
 #include <array>
 #include <iterator>
+#include <cstring>
 
 namespace live2dstruct {
 namespace {
-constexpr qint64 CountInfoBytes = 32 * 4;
 constexpr qint64 CanvasInfoBytes = 5 * 4;
 constexpr qint64 MaximumCount = 1000000;
 
@@ -18,9 +18,9 @@ struct Count
     const void* offsets;
 };
 
-std::array<Count, 32> arrayCounts(const CSectionOffsetTable& offsets, const CCount_info& info)
+std::array<Count, 34> arrayCounts(const CSectionOffsetTable& offsets, const CCount_info& info)
 {
-    const std::array<Count, 32> counts{{
+    const std::array<Count, 34> counts{{
         {"parts", info.parts, offsets.parts},
         {"deformers", info.deformers, offsets.deformers},
         {"warp_deformers", info.warp_deformers, offsets.warp_deformers},
@@ -53,8 +53,9 @@ std::array<Count, 32> arrayCounts(const CSectionOffsetTable& offsets, const CCou
         {"blend_shape_constraint_indices", info.blend_shape_constraint_indices, offsets.blend_shape_constraint_indices},
         {"blend_shape_constraints", info.blend_shape_constraints, offsets.blend_shape_constraints},
         {"blend_shape_constraint_values", info.blend_shape_constraint_values, offsets.blend_shape_constraint_values},
+        {"blend_shapes_parts", info.blend_shapes_parts, offsets.blend_shapes_parts},
+        {"blend_shapes_rotation_deformers", info.blend_shapes_rotation_deformers, offsets.blend_shapes_rotation_deformers},
     }};
-    static_assert(counts.size() * 4 == CountInfoBytes);
     return counts;
 }
 
@@ -67,18 +68,20 @@ bool overlaps(qint64 first, qint64 firstSize, qint64 second, qint64 secondSize)
 bool CSectionValidation::ValidateMetadata(CReader& reader, const CSectionOffsetTable& offsets)
 {
     if (!reader.IsValid()) return false;
-    if (!reader.RequireSpan(QStringLiteral("offset_table"), OffsetTableStart, OffsetTableCount, 4)) return false;
+    const qint64 countInfoBytes = CountInfoSize(offsets.mocVersion);
+    const int offsetTableEnd = KnownOffsetEnd(offsets.mocVersion);
+    if (!reader.RequireSpan(QStringLiteral("offset_table"), OffsetTableStart, KnownOffsetCount(offsets.mocVersion), 4)) return false;
     if (!offsets.count_info) return reader.Fail(QStringLiteral("moc3 缺少区段偏移：count_info"));
     if (!offsets.canvas_info) return reader.Fail(QStringLiteral("moc3 缺少区段偏移：canvas_info"));
     const qint64 countOffset = offsets.count_info->count_info_offset;
     const qint64 canvasOffset = offsets.canvas_info->CanvasOffset;
-    if (!reader.RequireSpan(QStringLiteral("count_info"), countOffset, 1, CountInfoBytes) ||
+    if (!reader.RequireSpan(QStringLiteral("count_info"), countOffset, 1, countInfoBytes) ||
         !reader.RequireSpan(QStringLiteral("canvas_info"), canvasOffset, 1, CanvasInfoBytes)) return false;
-    if (countOffset < OffsetTableEnd)
+    if (countOffset < offsetTableEnd)
         return reader.Fail(QStringLiteral("moc3 count_info 与文件头或偏移表重叠"));
-    if (canvasOffset < OffsetTableEnd)
+    if (canvasOffset < offsetTableEnd)
         return reader.Fail(QStringLiteral("moc3 canvas_info 与文件头或偏移表重叠"));
-    if (overlaps(countOffset, CountInfoBytes, canvasOffset, CanvasInfoBytes))
+    if (overlaps(countOffset, countInfoBytes, canvasOffset, CanvasInfoBytes))
         return reader.Fail(QStringLiteral("moc3 count_info 与 canvas_info 重叠"));
     return true;
 }
@@ -227,7 +230,31 @@ QVector<CSectionValidation::ColumnSpan> CSectionValidation::ArraySpans(
         {"blend_shape_constraint_values.weights", offsets.blend_shape_constraint_values->weights, info.blend_shape_constraint_values, 4, false, 0x260},
     };
     static_assert(sizeof(columns) / sizeof(columns[0]) == OffsetTableCount - 2);
-    return QVector<ColumnSpan>(std::begin(columns), std::end(columns));
+    QVector<ColumnSpan> result(std::begin(columns), std::end(columns));
+    if (offsets.mocVersion >= 5) {
+        result.append({"warp_deformer_keyforms.multiply_color_sources_indices", offsets.warp_deformer_keyforms->multiply_color_sources_indices, info.warp_deformer_keyforms, 4, true, 0x264});
+        result.append({"warp_deformer_keyforms.screen_color_sources_indices", offsets.warp_deformer_keyforms->screen_color_sources_indices, info.warp_deformer_keyforms, 4, true, 0x268});
+        result.append({"rotation_deformer_keyforms.multiply_color_sources_indices", offsets.rotation_deformer_keyforms->multiply_color_sources_indices, info.rotation_deformer_keyforms, 4, true, 0x26c});
+        result.append({"rotation_deformer_keyforms.screen_color_sources_indices", offsets.rotation_deformer_keyforms->screen_color_sources_indices, info.rotation_deformer_keyforms, 4, true, 0x270});
+        result.append({"art_mesh_keyforms.multiply_color_sources_indices", offsets.art_mesh_keyforms->multiply_color_sources_indices, info.art_mesh_keyforms, 4, true, 0x274});
+        result.append({"art_mesh_keyforms.screen_color_sources_indices", offsets.art_mesh_keyforms->screen_color_sources_indices, info.art_mesh_keyforms, 4, true, 0x278});
+        result.append({"blend_shapes_parts.target_indices", offsets.blend_shapes_parts->target_indices, info.blend_shapes_parts, 4, false, 0x27c});
+        result.append({"blend_shapes_parts.blend_shape_keyform_binding_sources_begin_indices", offsets.blend_shapes_parts->blend_shape_keyform_binding_sources_begin_indices, info.blend_shapes_parts, 4, false, 0x280});
+        result.append({"blend_shapes_parts.blend_shape_keyform_binding_sources_counts", offsets.blend_shapes_parts->blend_shape_keyform_binding_sources_counts, info.blend_shapes_parts, 4, false, 0x284});
+        result.append({"blend_shapes_rotation_deformers.target_indices", offsets.blend_shapes_rotation_deformers->target_indices, info.blend_shapes_rotation_deformers, 4, false, 0x288});
+        result.append({"blend_shapes_rotation_deformers.blend_shape_keyform_binding_sources_begin_indices", offsets.blend_shapes_rotation_deformers->blend_shape_keyform_binding_sources_begin_indices, info.blend_shapes_rotation_deformers, 4, false, 0x28c});
+        result.append({"blend_shapes_rotation_deformers.blend_shape_keyform_binding_sources_counts", offsets.blend_shapes_rotation_deformers->blend_shape_keyform_binding_sources_counts, info.blend_shapes_rotation_deformers, 4, false, 0x290});
+    }
+    const auto counts = arrayCounts(offsets, info);
+    for (auto& column : result) {
+        const auto length = std::strchr(column.name, '.') - column.name;
+        for (size_t index = 0; index < counts.size(); ++index)
+            if (std::strlen(counts[index].name) == size_t(length) && std::strncmp(column.name, counts[index].name, size_t(length)) == 0) {
+                column.countIndex = int(index);
+                break;
+            }
+    }
+    return result;
 }
 
 bool CSectionValidation::ValidateArrays(CReader& reader, const CSectionOffsetTable& offsets, const CCount_info& info)
@@ -245,15 +272,16 @@ bool CSectionValidation::ValidateArrays(CReader& reader, const CSectionOffsetTab
     const auto columns = ArraySpans(offsets, info);
     const qint64 countOffset = offsets.count_info->count_info_offset;
     const qint64 canvasOffset = offsets.canvas_info->CanvasOffset;
+    const qint64 countInfoBytes = CountInfoSize(offsets.mocVersion);
     for (const ColumnSpan& column : columns) {
         if (column.optional && column.offset == 0) continue;
         const QString label = QString::fromLatin1(column.name);
         if (!reader.RequireSpan(label, column.offset, column.count, column.width)) return false;
         if (column.count == 0) continue;
-        if (column.offset < OffsetTableEnd)
+        if (column.offset < KnownOffsetEnd(offsets.mocVersion))
             return reader.Fail(QStringLiteral("moc3 %1 与文件头或偏移表重叠").arg(label));
         const qint64 bytes = column.count * column.width;
-        if (overlaps(column.offset, bytes, countOffset, CountInfoBytes))
+        if (overlaps(column.offset, bytes, countOffset, countInfoBytes))
             return reader.Fail(QStringLiteral("moc3 %1 与 count_info 重叠").arg(label));
         if (overlaps(column.offset, bytes, canvasOffset, CanvasInfoBytes))
             return reader.Fail(QStringLiteral("moc3 %1 与 canvas_info 重叠").arg(label));

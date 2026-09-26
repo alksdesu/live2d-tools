@@ -11,6 +11,8 @@
 #include <QSet>
 #include <QMap>
 #include <functional>
+#include <memory>
+#include "live2dstruct/cmocparameterstructurebuilder.h"
 
 class CCidJson;
 class QToolButton;
@@ -26,15 +28,22 @@ public:
     using PreEditGuard = std::function<bool(QString*)>;
     using MetadataEditHandler = std::function<bool(const live2dstruct::CModelEdit&, QString*)>;
     using HistoryHandler = std::function<bool(bool, live2dstruct::CModelEdit&, QString*)>;
+    using StructureEditHandler = std::function<bool(const live2dstruct::CModelEdit&, QString*)>;
+    using ParameterReferenceProvider = std::function<QStringList(const QString&)>;
+    using ParameterOwner = live2dstruct::CMocParameterStructureBuilder::Owner;
     explicit CParamPanel(QWidget *parent = nullptr);
     void SetPreEditGuard(PreEditGuard guard);
     void SetMetadataEditHandler(MetadataEditHandler handler);
     void SetHistoryHandler(HistoryHandler handler);
+    void SetStructureEditHandler(StructureEditHandler handler);
+    void SetParameterReferenceProvider(ParameterReferenceProvider provider);
+    void SetBindingTargets(const QVector<ParameterOwner>& targets);
     void SetDocument(live2dstruct::CModelDocument* document);
     void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
     void SetPreviewValues(const QMap<QString, float>& values, const QMap<QString, float>& baselineValues);
     void ClearPreviewValues(const QMap<QString, float>& restoredValues = {}, const QString& preservedParameterId = {});
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
+    void ReconcileParameters(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
     void RefreshParameterMetadata();
     bool FocusParameter(const QString& id);
     QMap<QString, float> CurrentValues() const;
@@ -45,6 +54,7 @@ signals:
     void HistoryChanged(bool canUndo, bool canRedo);
     void EditRejected(const QString& error);
     void ParameterMetadataChanged();
+    void StructureChanged();
 
 public slots:
     void ResetAll();
@@ -59,6 +69,9 @@ public slots:
     void SavePreset();
     void LoadPreset();
     void EditParameterMetadata();
+    void CreateParameter();
+    void BindParameter();
+    void DeleteParameter();
 
 private:
     friend class ParamPanelTests;
@@ -91,6 +104,15 @@ private:
     PreEditGuard m_preEditGuard;
     MetadataEditHandler m_metadataEditHandler;
     HistoryHandler m_historyHandler;
+    StructureEditHandler m_structureEditHandler;
+    ParameterReferenceProvider m_parameterReferenceProvider;
+    QVector<ParameterOwner> m_bindingTargets;
+    quint64 m_bindingSelectionRevision = 0;
+    std::shared_ptr<CCidJson> m_cachedCid;
+    QSet<QString> m_cachedBlendIds;
+    QToolButton* m_createParameter = nullptr;
+    QToolButton* m_bindParameter = nullptr;
+    QToolButton* m_deleteParameter = nullptr;
     bool m_metadataDialogOpen = false;
     bool m_submittingEdit = false;
     QSet<int> m_rejectedSpinEdits;
@@ -112,13 +134,18 @@ private:
     void EndParameterDrag(int rowIndex);
     float ValueBeforeEdit(const QString& paramId, float fallback) const;
     void ApplyValuesInternal(const QMap<QString, float>& values, bool record);
-    void PushEdit(const QString& paramId, float before, float after);
+    bool PushEdit(const QString& paramId, float before, float after, bool notify = true);
     void EmitHistoryState();
     void ApplyHistory(bool undo);
     void RefreshAcceptedMetadata(const live2dstruct::CModelEdit& edit, bool forward);
     void RefreshParameterRow(int rowIndex);
     void RefreshXYControls();
     void ApplyXYPad(float xValue, float yValue);
+    void BuildParameterRows(CCidJson* cid, const QSet<QString>* blendShapeParams, bool resetHistory);
+    void FilterParameters();
+    enum class StructureAction { Create, Bind, Delete };
+    void EditParameterStructure(StructureAction action);
+    void UpdateStructureActions();
 };
 
 #endif // CPARAMPANEL_H

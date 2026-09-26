@@ -7,6 +7,8 @@
 
 #include "CubismPose.hpp"
 #include "framework/Id/CubismIdManager.hpp"
+#include <exception>
+#include <utility>
 
 using namespace Live2D::Cubism::Framework;
 
@@ -153,6 +155,51 @@ bool CubismPose::RebindModel(const CubismModel* previous, CubismModel* replaceme
     if (!replacement || !CanRebindModel(previous)) return false;
     if (_lastModel) _lastModel = replacement;
     return true;
+}
+
+bool CubismPose::PrepareRebindModel(const CubismModel* previous, CubismModel* replacement,
+                                   RebindState& result, QString* error)
+{
+    if (error) error->clear();
+    if (!replacement || !CanRebindModel(previous)) {
+        if (error) *error = QStringLiteral("Pose model binding is invalid");
+        return false;
+    }
+    try {
+        RebindState candidate;
+        candidate.owner = this;
+        candidate.replacement = replacement;
+        candidate.warm = _lastModel != nullptr;
+        if (candidate.warm) {
+            QVector<PartData*> pending;
+            for (int i = 0; i < _partGroups.GetSize(); ++i) pending.append(&_partGroups[i]);
+            while (!pending.isEmpty()) {
+                auto* part = pending.takeLast();
+                if (!part->PartId) {
+                    if (error) *error = QStringLiteral("Pose part ID is missing");
+                    return false;
+                }
+                candidate.entries.append({part, replacement->GetParameterIndex(part->PartId), replacement->GetPartIndex(part->PartId)});
+                for (int i = 0; i < part->Link.GetSize(); ++i) pending.append(&part->Link[i]);
+            }
+        }
+        result = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("Unable to prepare Pose parameter indices");
+        return false;
+    }
+}
+
+void CubismPose::CommitRebindModel(RebindState& state) noexcept
+{
+    if (state.owner != this) return;
+    for (const auto& entry : std::as_const(state.entries)) {
+        entry.target->ParameterIndex = entry.parameter;
+        entry.target->PartIndex = entry.part;
+    }
+    if (state.warm) _lastModel = state.replacement;
+    state.owner = nullptr;
 }
 
 void CubismPose::Reset(CubismModel* model)

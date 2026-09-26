@@ -5,6 +5,7 @@
 #include <QSet>
 #include <QString>
 #include <array>
+#include <initializer_list>
 
 namespace CubismModelFixture {
 namespace Core = Live2D::Cubism::Core;
@@ -17,14 +18,14 @@ struct GetterState
     GetterState& operator=(const GetterState&) = delete;
 
     int parameterCount = 2, partCount = 2, drawableCount = 2;
-    std::array<const char*, 2> parameterIds{{"ParamA", "ParamB"}};
+    std::array<const char*, 4> parameterIds{{"ParamA", "ParamB", "ParamC", "ParamD"}};
     std::array<const char*, 2> partIds{{"PartA", "PartB"}};
     std::array<const char*, 3> drawableIds{{"MeshA", "MeshB", "MeshC"}};
-    std::array<float, 2> minimum{{-1, -2}}, maximum{{1, 2}}, defaults{{0, 0.25f}}, values{{0, 0.25f}};
-    std::array<Core::csmParameterType, 2> types{{Core::csmParameterType_Normal, Core::csmParameterType_BlendShape}};
-    std::array<int, 2> keyCounts{{3, 2}};
-    std::array<std::array<float, 3>, 2> keys{{{{-1, 0, 1}}, {{-2, 2, 0}}}};
-    std::array<const float*, 2> keyPointers{{keys[0].data(), keys[1].data()}};
+    std::array<float, 4> minimum{{-1, -2, -1, -1}}, maximum{{1, 2, 1, 1}}, defaults{{0, 0.25f, 0.4f, 0.6f}}, values{{0, 0.25f, 0.4f, 0.6f}};
+    std::array<Core::csmParameterType, 4> types{{Core::csmParameterType_Normal, Core::csmParameterType_BlendShape, Core::csmParameterType_Normal, Core::csmParameterType_Normal}};
+    std::array<int, 4> keyCounts{{3, 2, 0, 0}};
+    std::array<std::array<float, 3>, 4> keys{{{{-1, 0, 1}}, {{-2, 2, 0}}, {}, {}}};
+    std::array<const float*, 4> keyPointers{{keys[0].data(), keys[1].data(), keys[2].data(), keys[3].data()}};
     std::array<int, 2> partParents{{-1, 0}};
     std::array<int, 3> drawableParents{{0, 1, -1}};
     std::array<float, 2> partOpacities{{1, 0.75f}};
@@ -56,6 +57,28 @@ struct GetterState
     QSet<QString> nullGetters;
     int updates = 0;
 };
+
+inline void SetParameterLayout(GetterState& target, std::initializer_list<const char*> ids)
+{
+    GetterState defaults;
+    target.parameterCount = int(ids.size());
+    int index = 0;
+    for (const auto* id : ids) {
+        int source = -1;
+        for (int i = 0; i < 4; ++i) if (QString::fromUtf8(defaults.parameterIds[i]) == QString::fromUtf8(id)) source = i;
+        Q_ASSERT(source >= 0 && index < 4);
+        target.parameterIds[index] = id;
+        target.minimum[index] = defaults.minimum[source];
+        target.maximum[index] = defaults.maximum[source];
+        target.defaults[index] = defaults.defaults[source];
+        target.values[index] = defaults.values[source];
+        target.types[index] = defaults.types[source];
+        target.keyCounts[index] = defaults.keyCounts[source];
+        target.keys[index] = defaults.keys[source];
+        target.keyPointers[index] = target.keys[index].data();
+        ++index;
+    }
+}
 
 struct ModelHandle
 {

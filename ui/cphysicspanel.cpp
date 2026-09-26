@@ -308,6 +308,13 @@ void CPhysicsPanel::updateForceDocument(bool gravity, bool xAxis, double value)
     m_physicsDocument.insert(QStringLiteral("Meta"), meta);
 }
 
+QJsonObject CPhysicsPanel::DocumentSnapshot() const
+{
+    QJsonObject result = m_physicsDocument;
+    if (!result.isEmpty()) result.insert(QStringLiteral("PhysicsSettings"), m_physicsSettings);
+    return result;
+}
+
 bool CPhysicsPanel::SavePhysics(const QString& path)
 {
     QString target = path.isEmpty() ? m_physicsPath : path;

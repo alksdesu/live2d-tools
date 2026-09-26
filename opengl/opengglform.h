@@ -70,6 +70,10 @@ public:
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr);
+    bool ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                        const ParameterStructureSeeds& addedSeeds,
+                                        const QMap<QString, float>& baseValues, bool keepEditorPreview,
+                                        QMap<QString, float>& preparedPose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);

@@ -272,7 +272,7 @@ private slots:
         using Mutation = std::function<void(CModelSession&)>;
         struct Case { const char* field; const char* name; Mutation mutate; };
         const QVector<Case> cases = {
-            {"version", "unsupported", [](auto& s) { s.version = 2; }},
+            {"version", "unsupported", [](auto& s) { s.version = 99; }},
             {"parameters", "out-of-range", [&](auto& s) { s.parameters.insert(parameter.id, parameter.maximum + 1); }},
             {"parameters", "nan", [&](auto& s) { s.parameters.insert(parameter.id, nan); }},
             {"parameterMetadata", "reversed-range", [&](auto& s) {

@@ -2,6 +2,7 @@
 #include "ui/theme.h"
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "blend_shape_v5_fixture.h"
 
 #include <QtTest>
 #include <QFile>
@@ -754,6 +755,50 @@ private slots:
         QCOMPARE(binding->childCount(), 1);
     }
 
+    void versionFivePartAndRotationTargetsNavigateWithIndependentNames()
+    {
+        QTemporaryDir directory;
+        const QJsonObject names{{"Version", 3},
+            {"Parts", QJsonArray{QJsonObject{{"Id", "Shared"}, {"Name", QStringLiteral("部件名称")}}}},
+            {"Deformers", QJsonArray{QJsonObject{{"Id", "Shared"}, {"Name", QStringLiteral("变形器名称")}},
+                                     QJsonObject{{"Id", "RotationTarget"}, {"Name", QStringLiteral("旋转名称")}}}}};
+        const auto path = directory.filePath("names.cdi3.json");
+        QVERIFY(save(path, QJsonDocument(names).toJson()));
+        CCidJson cid;
+        QVERIFY(cid.Parse(path));
+        CBlendShapePanel panel;
+        QString error;
+        QVERIFY2(panel.BuildBlendShapesBytes(BlendShapeV5Fixture::Extend(blendBytes()), &cid, &error), qPrintable(error));
+        panel.resize(640, 720);
+        panel.show();
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        parameters->setCurrentItem(findItem(parameters, "parameter", "Driver"));
+        QSignalSpy selections(&panel, &CBlendShapePanel::ObjectSelected);
+        QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged);
+        auto* warp = findItem(details, "target", "Shared", "warp");
+        QVERIFY(warp);
+        QCOMPARE(warp->text(0), QStringLiteral("变形器名称"));
+        for (const auto& type : {QStringLiteral("rotation"), QStringLiteral("part")}) {
+            const QString id = type == "part" ? QStringLiteral("Shared") : QStringLiteral("RotationTarget");
+            auto* target = findItem(details, "target", id, type);
+            QVERIFY(target);
+            QCOMPARE(target->text(0), type == "part" ? QStringLiteral("部件名称") : QStringLiteral("旋转名称"));
+            QCOMPARE(target->text(1), type == "part" ? QStringLiteral("部件") : QStringLiteral("旋转变形器"));
+            target->setExpanded(true);
+            QCOMPARE(target->childCount(), 1);
+            target->child(0)->setExpanded(true);
+            QCOMPARE(target->child(0)->childCount(), 1);
+            QVERIFY(findItem(details, "limiter", "Limiter"));
+            details->setCurrentItem(target);
+            details->setFocus();
+            QTest::keyClick(details, Qt::Key_Return);
+            QCOMPARE(selections.size(), 1);
+            QCOMPARE(selections.takeFirst(), (QList<QVariant>{id, type}));
+        }
+        QVERIFY(values.isEmpty());
+    }
+
     void activationNavigatesWithTypedSignalsWithoutEditing()
     {
         CBlendShapePanel panel;
@@ -880,6 +925,42 @@ private slots:
         QVERIFY(panel.BuildBlendShapesBytes(bytes, nullptr));
         QCOMPARE(row(panel, "Driver")->findChild<QSlider*>()->value(), 750);
         QCOMPARE(panel.getBlendShapeParamIds(), (QSet<QString>{"Driver", "Unbound"}));
+    }
+
+    void effectiveBytesKeepDocumentIdentityMetadataAndExistingValues()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.create(-100, 100, 0.25f));
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(fixture.path, &error), qPrintable(error));
+        CBlendShapePanel panel;
+        panel.SetDocument(&document);
+        QVERIFY(panel.BuildBlendShapesBytes(document.SourceBytes(), &fixture.cid));
+        panel.SyncParameterValue(fixture.id, 0.75f);
+        auto metadata = document.ParameterMetadata(fixture.id);
+        metadata.maximum = 200;
+        metadata.defaultValue = 2;
+        metadata.displayName = QStringLiteral("有效文档名称");
+        QVERIFY(document.SetParameterMetadata(fixture.id, metadata));
+        QByteArray effective;
+        QVERIFY2(document.BuildPreviewMoc(effective, &error), qPrintable(error));
+        QVERIFY(effective != document.SourceBytes());
+        QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged), selection(&panel, &CBlendShapePanel::ParameterSelected);
+        QVERIFY(panel.BuildBlendShapesBytes(effective, &fixture.cid, &error, document.SourceDigest()));
+        auto* tree = panel.findChild<QTreeWidget*>("blendParameterTree");
+        QVERIFY(tree);
+        QCOMPARE(findItem(tree, "parameter", fixture.id)->text(0), metadata.displayName);
+        auto* controls = row(panel, fixture.id);
+        QVERIFY(controls);
+        QCOMPARE(controls->findChild<QLabel*>()->text(), QString("0.75"));
+        QCOMPARE(values.size(), 0);
+        QCOMPARE(selection.size(), 0);
+        metadata.displayName = QStringLiteral("再次编辑名称");
+        QVERIFY(document.SetParameterMetadata(fixture.id, metadata));
+        panel.RefreshParameterMetadata();
+        QCOMPARE(findItem(tree, "parameter", fixture.id)->text(0), metadata.displayName);
+        QCOMPARE(controls->findChild<QLabel*>()->text(), QString("0.75"));
     }
 
     void documentMetadataRefreshIsSilentAndKeepsSourceRanges()

@@ -8,6 +8,7 @@
 #include "framework/Type/csmVector.hpp"
 #include "framework/Rendering/CubismRenderer.hpp"
 #include "framework/Id/CubismId.hpp"
+#include "CubismParameterStructure.hpp"
 #include "edit/cmeshmap.h"
 #include "live2dstruct/cmeshindexoverrides.h"
 #include <QMap>
@@ -27,7 +28,7 @@ struct CDrawableOrderGroup;
 namespace Live2D { namespace Cubism { namespace Framework {
 
 class CubismMoc;
-enum class CubismModelUpdatePolicy { Strict = 0, AllowClippingEdits = 1, AllowParameterDefinitionEdits = 2 };
+enum class CubismModelUpdatePolicy { Strict = 0, AllowClippingEdits = 1, AllowParameterDefinitionEdits = 2, AllowParameterStructureEdits = 4 };
 constexpr CubismModelUpdatePolicy operator|(CubismModelUpdatePolicy left, CubismModelUpdatePolicy right)
 {
     return static_cast<CubismModelUpdatePolicy>(static_cast<unsigned int>(left) | static_cast<unsigned int>(right));
@@ -111,6 +112,8 @@ public:
     bool IsCompatibleForKeyformUpdate(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error = nullptr) const;
     bool CopyRuntimeStateFrom(const CubismModel& source, QString* error = nullptr);
     bool CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error = nullptr);
+    bool CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpdatePolicy policy,
+                              const ParameterStructureSeeds& seeds, QString* error = nullptr);
     bool HasValidClippingDefinitions(QString* error = nullptr) const;
     bool HasFiniteDrawableState(QString* error = nullptr) const;
 
@@ -119,6 +122,8 @@ public:
         QStringList parameterIds;
         QVector<float> parameterValues, savedParameters, minimums, maximums;
         QVector<int> parameterTypes;
+        QVector<quint8> savedPresence;
+        QMap<QString, ParameterRuntimeValue> retiredParameters;
         QStringList partIds;
         QVector<float> partOpacities;
         QMap<QString, int> virtualParameterIds, virtualPartIds;
@@ -127,11 +132,16 @@ public:
         bool valid = false;
 
         QMap<QString, float> Parameters() const;
+        bool HasSavedParameter(int index) const;
+        bool SetSavedParameter(int index, float value);
+        ParameterRuntimeValue Parameter(int index) const;
     };
     bool CaptureRuntimeValues(RuntimeValueSnapshot& snapshot, QString* error = nullptr) const;
     bool RestoreRuntimeValues(const RuntimeValueSnapshot& snapshot, QString* error = nullptr);
     bool RebaseRuntimeValues(const RuntimeValueSnapshot& snapshot, RuntimeValueSnapshot& result,
                              QString* error = nullptr) const;
+    bool MigrateRuntimeValues(const RuntimeValueSnapshot& snapshot, RuntimeValueSnapshot& result,
+                              const ParameterStructureSeeds& seeds = {}, QString* error = nullptr) const;
     bool ApplyParameterPose(const QMap<QString, float>& pose, QString* error = nullptr);
 
     void    Update() const;
@@ -152,6 +162,7 @@ public:
     csmFloat32  GetPartOpacity(CubismIdHandle partId);
     csmFloat32  GetPartOpacity(csmInt32 partIndex);
     csmInt32    GetParameterIndex(CubismIdHandle parameterId);
+    csmInt32    FindRealParameterIndex(CubismIdHandle parameterId) const;
     CubismIdHandle    GetParameterId(csmUint32 parameterIndex);
     const CubismIdHandle GetParameterId(csmUint32 parameterIndex) const;
     csmInt32    GetParameterCount() const;
@@ -588,6 +599,8 @@ private:
     QMap<CubismIdHandle, csmInt32>   _notExistParameterId;
 
     QVector<csmFloat32>   _savedParameters;                   ///< 保存されたパラメータ
+    QVector<quint8> _savedPresence;
+    QMap<QString, ParameterRuntimeValue> _retiredParameters;
 
     Core::csmModel*     _model;                                 ///< モデル
 

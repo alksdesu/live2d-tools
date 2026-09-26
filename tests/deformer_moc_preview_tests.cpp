@@ -440,12 +440,18 @@ private slots:
         if (rotation) { auto forms = rotationForms(source, 1); forms[0].angle += 0.25f; rotations.insert(first, forms); }
         else { auto forms = warpForms(source, 1); forms[0].opacity = 0.25f; warps.insert(first, forms); }
         QByteArray result("sentinel");
-        QVERIFY2(builder.Build({}, warps, rotations, {}, result, &error), qPrintable(error));
         const int firstGeneric = rotation ? 1 : 0, secondGeneric = rotation ? 3 : 2;
-        if (rotation) {
+        if (sameSpecific) {
+            QVERIFY(!builder.Build({}, warps, rotations, {}, result, &error));
+            QVERIFY(error.contains(QStringLiteral("共享专用")));
+            QCOMPARE(result, QByteArray("sentinel"));
+        } else {
+            QVERIFY2(builder.Build({}, warps, rotations, {}, result, &error), qPrintable(error));
+        }
+        if (!sameSpecific && rotation) {
             QCOMPARE(rotationForms(result, column(result, 0x88, firstGeneric)), rotations.value(first));
             QCOMPARE(rotationForms(result, column(result, 0x88, secondGeneric)), rotationForms(source, 1));
-        } else {
+        } else if (!sameSpecific) {
             QCOMPARE(warpForms(result, column(result, 0x88, firstGeneric)), warps.value(first));
             QCOMPARE(warpForms(result, column(result, 0x88, secondGeneric)), warpForms(source, 1));
         }
@@ -464,6 +470,12 @@ private slots:
             warps[second][0].opacity = 0.75f;
         }
         result = "sentinel";
+        if (sameSpecific) {
+            QVERIFY(!builder.Build({}, warps, rotations, {}, result, &error));
+            QVERIFY(error.contains(QStringLiteral("共享专用")));
+            QCOMPARE(result, QByteArray("sentinel"));
+            return;
+        }
         QVERIFY2(builder.Build({}, warps, rotations, {}, result, &error), qPrintable(error));
         if (rotation) {
             QCOMPARE(rotationForms(result, column(result, 0x88, firstGeneric)), rotations.value(first));

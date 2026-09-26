@@ -14,10 +14,15 @@ public:
     using Publisher = std::function<bool(const CModelDocument&, const QMap<QString, float>&, bool, QString*)>;
     using PreviewEnder = std::function<bool(QString*)>;
     using DefinitionPublisher = std::function<bool(const CModelDocument&, const QMap<QString, float>&, bool, QString*)>;
+    using StructurePublisher = std::function<bool(const CModelDocument&, const CModelEdit&, bool, bool,
+        const QMap<QString, float>&, bool, QMap<QString, float>&, QString*)>;
+    using StructurePoseProvider = std::function<bool(const CModelDocument&, const CModelEdit&, bool,
+        QMap<QString, float>&, QString*)>;
 
     void SetDocument(CModelDocument* document);
     void SetPublisher(Publisher publisher, PreviewEnder ender);
     void SetDefinitionPublisher(DefinitionPublisher publisher);
+    void SetStructurePublisher(StructurePublisher publisher, StructurePoseProvider poseProvider = {});
     bool Activate(const QString& id, int keyform, const QMap<QString, float>& currentValues, QString* error = nullptr);
     bool Activate(const QString& id, const QString& type, int keyform,
                   const QMap<QString, float>& currentValues, QString* error = nullptr);
@@ -41,6 +46,8 @@ public:
 
 private:
     bool PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error);
+    bool PublishStructure(CModelDocument candidate, const CModelEdit& command, bool forward,
+                          bool restoreSession, QString* error);
     struct Drag
     {
         CModelDocument start;
@@ -61,6 +68,8 @@ private:
     CModelDocument* m_document = nullptr;
     Publisher m_publish;
     DefinitionPublisher m_publishDefinitions;
+    StructurePublisher m_publishStructure;
+    StructurePoseProvider m_structurePose;
     PreviewEnder m_end;
     QString m_target;
     QString m_type;

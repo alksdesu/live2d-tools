@@ -174,6 +174,66 @@ private slots:
         }
     }
 
+    void exportsParameterStructureFromEditedSnapshot()
+    {
+        QTemporaryDir directory;
+        live2dstruct::CModelDocument document;
+        QString error;
+        const auto path = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        QVERIFY2(document.Load(path, &error), qPrintable(error));
+        const auto original = document.SourceBytes();
+        const auto mesh = document.Drawables().front();
+        using Builder = live2dstruct::CMocParameterStructureBuilder;
+        Builder::CreateRequest request;
+        request.parameter.id = "ParamNewAxis";
+        request.bindings.append({{Builder::Owner::ArtMesh, mesh.id}, {-1, 0, 1}});
+        live2dstruct::CModelEdit edit;
+        QVERIFY2(document.MakeCreateParameterEdit(request, QStringLiteral("新增轴"), edit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(edit));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = path;
+        options.outPath = directory.filePath("edited.cmo3");
+        options.parameterDefaultMode = cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition;
+        options.parameterMetadata = document.ParameterMetadataOverrides();
+        QVERIFY2(document.BuildPreviewMoc(options.mocBytes, &error), qPrintable(error));
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        const auto parameters = parameterFields(main->content, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(parameters.size(), document.Parameters().size());
+        QCOMPARE(parameters.value("ParamNewAxis").value("name"), QStringLiteral("新增轴"));
+        int forms = 0;
+        for (const auto& drawable : document.Drawables()) forms += drawable.keyforms.size();
+        QXmlStreamReader xml(main->content);
+        int exportedForms = 0;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isStartElement() && xml.name() == QLatin1String("CArtMeshForm")) ++exportedForms;
+        }
+        QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+        QCOMPARE(exportedForms, forms);
+        QCOMPARE(document.SourceBytes(), original);
+        QFile source(path);
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        QCOMPARE(source.readAll(), original);
+    }
+
+    void invalidEditedSnapshotCannotFallBackToOriginal()
+    {
+        QTemporaryDir directory;
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        options.outPath = directory.filePath("invalid.cmo3");
+        options.mocBytes = "broken snapshot";
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!QFileInfo::exists(options.outPath));
+    }
+
     void explicitParameterDefaultModes_data()
     {
         QTest::addColumn<bool>("definition");
@@ -669,7 +729,9 @@ private slots:
         QFile source(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json");
         QVERIFY(source.open(QIODevice::ReadOnly));
         const QJsonObject original = QJsonDocument::fromJson(source.readAll()).object();
-        for (const QString& kind : {QStringLiteral("vertex"), QStringLiteral("duplicate")}) {
+        for (const QString& kind : {QStringLiteral("vertex"), QStringLiteral("duplicate"),
+                                   QStringLiteral("missing-input"), QStringLiteral("missing-output"),
+                                   QStringLiteral("target-input"), QStringLiteral("target-output")}) {
             QTemporaryDir temp;
             QVERIFY(temp.isValid());
             QJsonObject root = original;
@@ -681,6 +743,18 @@ private slots:
                 output.insert(QStringLiteral("VertexIndex"), 99999);
                 outputs[0] = output;
                 first.insert(QStringLiteral("Output"), outputs);
+            } else if (kind.startsWith(QLatin1String("missing-")) || kind.startsWith(QLatin1String("target-"))) {
+                const bool input = kind.endsWith(QLatin1String("input"));
+                const QString field = input ? QStringLiteral("Input") : QStringLiteral("Output");
+                const QString target = input ? QStringLiteral("Source") : QStringLiteral("Destination");
+                QJsonArray entries = first.value(field).toArray();
+                QJsonObject entry = entries.first().toObject();
+                auto reference = entry.value(target).toObject();
+                if (kind.startsWith(QLatin1String("missing-"))) reference.insert("Id", "MissingParameter");
+                else reference.insert("Target", "Part");
+                entry.insert(target, reference);
+                entries[0] = entry;
+                first.insert(field, entries);
             } else {
                 settings.append(first);
             }

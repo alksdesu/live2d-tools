@@ -188,11 +188,13 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
         }
         else objects.insert(id, std::move(grid));
     };
-    QSet<int> blendMeshes, blendWarps;
+    QSet<int> blendMeshes, blendWarps, blendRotations;
     for (const CBlend_shapes_art_meshes* blend : table.blend_shapes_art_meshes)
         if (blend) blendMeshes.insert(blend->target_indices);
     for (const CBlend_shapes_warp_deformers* blend : table.blend_shapes_warp_deformers)
         if (blend) blendWarps.insert(blend->target_indices);
+    for (const CBlend_shape_targets* blend : table.blend_shapes_rotation_deformers)
+        if (blend) blendRotations.insert(blend->target_indices);
     for (qsizetype index = 0; index < table.art_meshes.size(); ++index) {
         const CArt_meshes* source = table.art_meshes[index];
         if (!source) continue;
@@ -220,6 +222,8 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
                 const CRotation_deformers* rotation = table.rotation_deformers[specific];
                 grid = buildGrid(source->keyform_binding_sources_indices, rotation->keyform_sources_begin_indices,
                                  rotation->keyform_sources_counts, table.rotation_deformer_keyforms.size());
+                if (blendRotations.contains(specific) && grid.error.isEmpty())
+                    grid.error = QStringLiteral("对象包含尚不支持姿态反解的 BlendShape");
             } else grid.error = QStringLiteral("Rotation 专用源索引无效");
             insert(Rotation, source->ids, std::move(grid));
         } else {

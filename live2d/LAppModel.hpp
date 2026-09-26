@@ -41,6 +41,12 @@ public:
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
+    bool CaptureParameterStructureSeeds(const QStringList& ids, ParameterStructureSeeds& result,
+                                        QString* error = nullptr) const;
+    bool ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                        const ParameterStructureSeeds& addedSeeds,
+                                        const QMap<QString, float>& baseValues, bool keepEditorPreview,
+                                        QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -129,7 +135,8 @@ private:
     void ApplyPartVisibility(Csm::CubismModel& model) const;
     bool ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
                                  const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
-                                 QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits);
+                                 QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits,
+                                 const ParameterStructureSeeds& seeds = {});
     int FindPartIndex(const QString& id) const;
     CMotionPreviewFrame _timelinePreview;
     QMap<QString, float> _timelineParameters;

@@ -214,6 +214,31 @@ private slots:
         }
     }
 
+    void listChecksUseThemeColors_data() { styleRows(); }
+
+    void listChecksUseThemeColors()
+    {
+        QFETCH(QString, styleName);
+        QFETCH(bool, dark);
+        QVERIFY(applyTheme(styleName, dark));
+        const auto colors = Theme::tokens(dark);
+        QListWidget list;
+        auto* item = new QListWidgetItem(QStringLiteral("Binding target"), &list);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
+        list.resize(320, 160);
+        activateTestWindow(list);
+        list.setCurrentItem(nullptr);
+        QCoreApplication::processEvents();
+        const auto unchecked = list.viewport()->grab().toImage();
+        QVERIFY(pixelsOf(unchecked, QColor(colors.value(QStringLiteral("@borderStrong@")))) > 8);
+        item->setCheckState(Qt::Checked);
+        QCoreApplication::processEvents();
+        const auto checked = list.viewport()->grab().toImage();
+        QVERIFY(pixelsOf(checked, QColor(colors.value(QStringLiteral("@accent@")))) > 32);
+        QVERIFY(changedPixels(unchecked, checked) > 32);
+    }
+
     void tooltipsAndPlaceholdersHaveReadableRenderedText_data() { styleRows(); }
 
     void tooltipsAndPlaceholdersHaveReadableRenderedText()

@@ -30,6 +30,7 @@
 #include "std/cmodeljsonwriter.h"
 #include "std/cexportcontrol.h"
 #include "cmo3/ccmo3builder.h"
+#include "live2dstruct/cparameterreferences.h"
 #include "ui/theme.h"
 #include <QFileDialog>
 #include "live2d/LAppDefine.hpp"
@@ -55,6 +56,7 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QCloseEvent>
+#include <algorithm>
 #include <exception>
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -429,16 +431,10 @@ void MainWindow::on_actionCmo3Export_triggered()
     options.objectVisibility = m_document.VisibilityState();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
     options.drawableDrawOrderOverrides = m_document.DrawableDrawOrderOverrides();
-    options.drawableKeyformPositionOverrides = m_document.DrawableKeyformPositionOverrides();
     options.drawableIndexOverrides = m_document.DrawableIndexOverrides();
-    options.drawableMaskIndexOverrides = m_document.DrawableMaskIndexOverrides();
-    options.deformerParentOverrides = m_document.DeformerParentOverrides();
-    options.deformerRotationKeyformOverrides = m_document.DeformerRotationKeyformOverrides();
-    options.deformerWarpKeyformOverrides = m_document.DeformerWarpKeyformOverrides();
-    options.drawableMaskInverted = m_document.DrawableMaskInvertedOverrides();
 
     QString error;
-    const bool ok = cmo3::CCmo3Builder::Build(options, &error);
+    const bool ok = m_document.BuildPreviewMoc(options.mocBytes, &error) && cmo3::CCmo3Builder::Build(options, &error);
     QApplication::restoreOverrideCursor();
 
     if(ok){
@@ -476,6 +472,7 @@ bool MainWindow::SaveSession()
     }
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     session.sourceDigest = m_document.SourceDigest();
+    session.structure = m_document.ParameterStructure();
     const QMap<QString, float> currentValues = m_keyformEditor.IsActive()
         ? m_keyformBaseValues : m_paramPanel->CurrentValues();
     for (const auto& parameter : m_document.Parameters())
@@ -562,18 +559,15 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    RefreshModelTree();
-    if (m_inspectorPanel) m_inspectorPanel->SetDocument(&m_document);
+    RefreshParameterStructureUi();
     if (m_paramPanel) {
         const QSignalBlocker blocker(m_paramPanel);
         QMap<QString, float> values;
         for (const auto& parameter : m_document.Parameters())
             values.insert(parameter.id, m_document.ParameterValue(parameter.id));
-        m_paramPanel->SetDocument(nullptr);
-        m_paramPanel->SetDocument(&m_document);
-        m_paramPanel->RefreshParameterMetadata();
-        m_paramPanel->ResetAll();
-        m_paramPanel->ApplyValues(values);
+        m_paramPanel->ClearPreviewValues(values);
+        for (auto value = values.cbegin(); value != values.cend(); ++value)
+            m_paramPanel->ApplyExternalValue(value.key(), value.value(), false, false, false);
     }
     if (m_blendShapePanel) {
         m_blendShapePanel->RefreshParameterMetadata();
@@ -644,6 +638,21 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
         QMap<QString, float> values;
         if (!m_runtimePanelsInitialized)
             for (const auto& parameter : document.Parameters()) values.insert(parameter.id, document.ParameterValue(parameter.id));
+        if (!m_runtimePanelsInitialized && (!document.ParameterStructure().columns.isEmpty() || !document.ParameterStructure().counts.isEmpty())) {
+            auto* manager = LAppLive2DManager::GetInstance();
+            auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+            if (!model) { if (error) *error = QStringLiteral("模型预览尚未就绪"); return false; }
+            const auto previous = model->GetParameterValues();
+            for (auto value = previous.cbegin(); value != previous.cend(); ++value) if (!values.contains(value.key())) {
+                const auto references = ParameterReferences(value.key());
+                if (!references.isEmpty()) { if (error) *error = references.join(QLatin1Char('\n')); return false; }
+            }
+            ParameterStructureSeeds entering;
+            for (auto value = values.cbegin(); value != values.cend(); ++value)
+                if (!previous.contains(value.key())) entering.insert(value.key(), ParameterStructureSeed());
+            QMap<QString, float> prepared;
+            return m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, false, prepared, error);
+        }
         return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, false, error);
     }
     return m_openglwindows->ApplyMocPreview(bytes, document.SourceDigest(), editing ? &pose : nullptr, error);
@@ -661,6 +670,135 @@ bool MainWindow::PublishParameterDefinitions(const live2dstruct::CModelDocument&
     if (!document.BuildPreviewMoc(bytes, error)) return false;
     if (!m_openglwindows || !m_openglwindows->IsModelReady()) return true;
     return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, editing, error);
+}
+
+QStringList MainWindow::ParameterReferences(const QString& id, bool includeTimeline) const
+{
+    QStringList references;
+    QString error;
+    if (!m_openglwindows || !live2dstruct::CParameterReferences::ScanModel(
+            m_openglwindows->GetCurrentModelJson(), id, references, &error))
+        return {error.isEmpty() ? QStringLiteral("尚未加载模型引用，无法检查参数依赖") : error};
+    if (includeTimeline && m_motionPanel) for (auto track = m_motionPanel->Timeline().Tracks().cbegin();
+                           track != m_motionPanel->Timeline().Tracks().cend(); ++track)
+        if (track.key().target == CMotionTarget::Parameter && track.key().id == id)
+            references.append(QStringLiteral("当前时间轴包含此参数轨道"));
+    if (m_physicsPanel && m_physicsPanel->HasUnsavedChanges()) {
+        QStringList physics;
+        if (!live2dstruct::CParameterReferences::ScanPhysics(m_physicsPanel->DocumentSnapshot(), id, physics, &error))
+            references.append(QStringLiteral("无法检查物理草稿：%1").arg(error));
+        else for (const auto& reference : physics) references.append(QStringLiteral("物理草稿：%1").arg(reference));
+    }
+    references.removeDuplicates();
+    return references;
+}
+
+bool MainWindow::PrepareParameterStructurePose(const live2dstruct::CModelDocument& document,
+                                               const live2dstruct::CModelEdit& command, bool forward,
+                                               QMap<QString, float>& pose, QString* error) const
+{
+    if (!command.runtime) { if (error) *error = QStringLiteral("缺少参数预览恢复状态"); return false; }
+    const QVariant& archived = forward ? command.runtime->after : command.runtime->before;
+    if (!archived.isValid()) return true;
+    if (!archived.canConvert<ParameterStructureSeeds>()) {
+        if (error) *error = QStringLiteral("参数历史的预览恢复值无效");
+        return false;
+    }
+    QSet<QString> previousIds;
+    for (const auto& parameter : m_document.Parameters()) previousIds.insert(parameter.id);
+    const auto seeds = archived.value<ParameterStructureSeeds>();
+    for (const auto& parameter : document.Parameters()) {
+        const auto seed = seeds.constFind(parameter.id);
+        if (previousIds.contains(parameter.id) || seed == seeds.cend() || seed->mode == ParameterStructureSeed::Mode::Defaults) continue;
+        if (seed->mode != ParameterStructureSeed::Mode::Values) {
+            if (error) *error = QStringLiteral("参数恢复模式无效");
+            return false;
+        }
+        const auto metadata = document.ParameterMetadata(parameter.id);
+        float value = seed->editorPose.value_or(seed->runtime.current);
+        if (seed->runtime.minimum != metadata.minimum || seed->runtime.maximum != metadata.maximum)
+            value = std::clamp(value, metadata.minimum, metadata.maximum);
+        pose[parameter.id] = value;
+    }
+    return true;
+}
+
+bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& document,
+                                           const live2dstruct::CModelEdit& command, bool forward, bool restoring,
+                                           const QMap<QString, float>& values, bool editing,
+                                           QMap<QString, float>& pose, QString* error)
+{
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || !command.runtime) {
+        if (error) *error = QStringLiteral("模型正在关闭或导出，请稍后编辑参数");
+        return false;
+    }
+    if (!RuntimeMatchesDocument(error)) return false;
+    QSet<QString> previousIds, nextIds;
+    for (const auto& parameter : m_document.Parameters()) previousIds.insert(parameter.id);
+    for (const auto& parameter : document.Parameters()) nextIds.insert(parameter.id);
+    QStringList removed;
+    for (const auto& id : previousIds) if (!nextIds.contains(id)) {
+        const auto references = ParameterReferences(id, !restoring);
+        if (!references.isEmpty()) {
+            if (error) *error = QStringLiteral("无法移除参数 %1：\n%2").arg(id, references.join(QLatin1Char('\n')));
+            return false;
+        }
+        removed.append(id);
+    }
+    QByteArray bytes;
+    if (!document.BuildPreviewMoc(bytes, error)) return false;
+    if (!m_openglwindows || !m_openglwindows->IsModelReady()) {
+        QMap<QString, float> candidatePose;
+        for (const auto& parameter : document.Parameters())
+            candidatePose.insert(parameter.id, pose.value(parameter.id, document.ParameterValue(parameter.id)));
+        pose.swap(candidatePose);
+        return true;
+    }
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    if (!model) { if (error) *error = QStringLiteral("模型预览尚未就绪"); return false; }
+    ParameterStructureSeeds leaving;
+    if (!model->CaptureParameterStructureSeeds(removed, leaving, error)) return false;
+    const QVariant& targetState = forward ? command.runtime->after : command.runtime->before;
+    if (targetState.isValid() && !targetState.canConvert<ParameterStructureSeeds>()) {
+        if (error) *error = QStringLiteral("参数历史的预览恢复值无效");
+        return false;
+    }
+    const auto archived = targetState.value<ParameterStructureSeeds>();
+    ParameterStructureSeeds entering;
+    for (const auto& id : nextIds) if (!previousIds.contains(id))
+        entering.insert(id, restoring ? ParameterStructureSeed() : archived.value(id));
+    QVariant captured = QVariant::fromValue(leaving);
+    if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error))
+        return false;
+    (forward ? command.runtime->before : command.runtime->after).swap(captured);
+    return true;
+}
+
+void MainWindow::RefreshParameterStructureUi()
+{
+    QByteArray bytes;
+    QString error;
+    if (!m_document.BuildPreviewMoc(bytes, &error)) { statusBar()->showMessage(error, 8000); return; }
+    if (m_blendShapePanel && !m_blendShapePanel->BuildBlendShapesBytes(bytes, m_cidJson, &error, m_document.SourceDigest()))
+        statusBar()->showMessage(error, 8000);
+    const QSet<QString>* blendShapes = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
+    if (m_paramPanel) m_paramPanel->ReconcileParameters(m_cidJson, blendShapes);
+    if (m_motionPanel) {
+        QStringList ids;
+        for (const auto& parameter : m_document.Parameters()) ids.append(parameter.id);
+        m_motionPanel->SetParameterIds(ids);
+    }
+    RefreshModelTree();
+    if (m_inspectorPanel) {
+        m_inspectorPanel->SetDocument(&m_document);
+        m_inspectorPanel->SetSelections(m_selectedObjectIds, m_selectedObjectTypes);
+        m_inspectorPanel->SetLockedState(m_document.LockedKeys());
+    }
+    SyncParameterDefinitionPreview();
+    RefreshKeyformUi();
+    if (m_diagnosticsPanel) m_diagnosticsPanel->Refresh();
+    RefreshUndoActions();
 }
 
 void MainWindow::SyncParameterDefinitionPreview()
@@ -754,7 +892,7 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
-    if (edit.field != live2dstruct::CModelEdit::ParameterMetadata &&
+    if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && edit.field != live2dstruct::CModelEdit::ParameterStructure &&
         m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(edit)) {
         const bool active = m_keyformEditor.IsActive();
@@ -768,7 +906,8 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
                 ? m_inspectorPanel->GetActiveKeyformIndex() : edit.index;
         if (!m_keyformEditor.Submit(edit, values, previewKeyform, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
-        if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && m_keyformEditor.IsActive() && m_motionPanel)
+        if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && edit.field != live2dstruct::CModelEdit::ParameterStructure &&
+            m_keyformEditor.IsActive() && m_motionPanel)
             m_motionPanel->PauseTimelinePreview();
         if (!active && m_keyformEditor.IsActive()) m_keyformBaseValues = values;
         RefreshKeyformUi(true);
@@ -788,7 +927,7 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     }
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
-    if (pending.field != live2dstruct::CModelEdit::ParameterMetadata &&
+    if (pending.field != live2dstruct::CModelEdit::ParameterMetadata && pending.field != live2dstruct::CModelEdit::ParameterStructure &&
         m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(pending)) {
         if (!m_keyformEditor.History(undo, edit, error)) return false;
@@ -808,6 +947,8 @@ void MainWindow::RefreshKeyformUi(bool changed)
 {
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
     if (m_keyformEditor.IsActive()) {
+        if (m_inspectorPanel)
+            m_inspectorPanel->SyncActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Type(), m_keyformEditor.Keyform());
         if (m_openglwindows) {
             if (m_keyformEditor.Type() == QLatin1String("artmesh"))
                 m_openglwindows->SetActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Keyform());
@@ -856,7 +997,8 @@ void MainWindow::RefreshModelTree()
             deformer.id, deformer.visible);
     m_treePanel->ApplyVisibilityState(visibility);
     m_treePanel->ApplyLockedState(locks);
-    if (m_inspectorPanel) m_treePanel->HighlightObject(m_inspectorPanel->GetSelectionId(), m_inspectorPanel->GetSelectionType());
+    if (m_inspectorPanel && m_selectedObjectIds.size() <= 1)
+        m_treePanel->HighlightObject(m_inspectorPanel->GetSelectionId(), m_inspectorPanel->GetSelectionType());
 }
 
 void MainWindow::SelectModelObjects(const QStringList& ids, const QStringList& types)
@@ -872,6 +1014,21 @@ void MainWindow::SelectModelObjects(const QStringList& ids, const QStringList& t
         return;
     }
     if (!m_inspectorPanel) return;
+    m_selectedObjectIds = ids;
+    m_selectedObjectTypes = types;
+    if (m_paramPanel) {
+        using Owner = live2dstruct::CMocParameterStructureBuilder::Owner;
+        QVector<Owner> targets;
+        bool supported = ids.size() == types.size();
+        for (int i = 0; i < ids.size() && supported; ++i) {
+            if (types[i] == QLatin1String("artmesh")) targets.append({Owner::ArtMesh, ids[i]});
+            else if (types[i] == QLatin1String("warp")) targets.append({Owner::Warp, ids[i]});
+            else if (types[i] == QLatin1String("rotation")) targets.append({Owner::Rotation, ids[i]});
+            else supported = false;
+        }
+        m_paramPanel->SetBindingTargets(supported ? targets : QVector<Owner>());
+        if (!supported) statusBar()->showMessage(QStringLiteral("参数绑定支持网格、弯曲和旋转变形器，请重新选择绑定对象"), 6000);
+    }
     m_inspectorPanel->SetSelections(ids, types);
     if (ids.size() == 1 && types.value(0) == QLatin1String("artmesh")) {
         if (m_openglwindows) m_openglwindows->do_ShowMesh(ids.first());
@@ -974,7 +1131,9 @@ void MainWindow::ApplyVisibilityValues(const QMap<QString, bool>& values)
 void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward)
 {
     const QVariant& value = forward ? edit.after : edit.before;
-    if (edit.field == live2dstruct::CModelEdit::ParameterValue) {
+    if (edit.field == live2dstruct::CModelEdit::ParameterStructure) {
+        RefreshParameterStructureUi();
+    } else if (edit.field == live2dstruct::CModelEdit::ParameterValue) {
         const float parameterValue = value.toFloat();
         if (m_paramPanel) m_paramPanel->ApplyExternalValue(edit.name, parameterValue, false, false, false);
         else if (m_openglwindows) m_openglwindows->do_change_para_value(edit.name, parameterValue, false);
@@ -1900,6 +2059,11 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
         statusBar()->showMessage(sourceError);
         return;
     }
+    if (m_keyformEditor.IsActive() && (!m_document.ParameterStructure().columns.isEmpty() ||
+                                      !m_document.ParameterStructure().counts.isEmpty()) && !EndKeyformEditing(&sourceError)) {
+        statusBar()->showMessage(QStringLiteral("编辑预览同步失败：%1").arg(sourceError), 8000);
+        return;
+    }
     if (!PublishKeyformPreview(m_document, m_keyformEditor.Pose(), m_keyformEditor.IsActive(), &sourceError)) {
         statusBar()->showMessage(QStringLiteral("编辑预览同步失败：%1").arg(sourceError), 8000);
         return;
@@ -1939,6 +2103,14 @@ void MainWindow::RestDock(const QString &name)
     m_keyformEditor.SetDefinitionPublisher([this](const auto& document, const auto& values, bool editing, QString* error) {
         return PublishParameterDefinitions(document, values, editing, error);
     });
+    m_keyformEditor.SetStructurePublisher([this](const auto& document, const auto& command, bool forward, bool restoring,
+                                               const auto& values, bool editing, auto& pose, QString* error) {
+        return PublishParameterStructure(document, command, forward, restoring, values, editing, pose, error);
+    }, [this](const auto& document, const auto& command, bool forward, auto& pose, QString* error) {
+        return PrepareParameterStructurePose(document, command, forward, pose, error);
+    });
+    m_selectedObjectIds.clear();
+    m_selectedObjectTypes.clear();
     m_workspaceReady = false;
     m_runtimePanelsInitialized = false;
     m_saveSessionAction->setEnabled(false);
@@ -2155,7 +2327,8 @@ void MainWindow::RestDock(const QString &name)
         if (!ApplyDocumentHistory(undo, edit, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::ParameterValue ||
             edit.field == live2dstruct::CModelEdit::ParameterValues ||
-            edit.field == live2dstruct::CModelEdit::ParameterMetadata)
+            edit.field == live2dstruct::CModelEdit::ParameterMetadata ||
+            edit.field == live2dstruct::CModelEdit::ParameterStructure)
             ApplyDocumentEditToUi(edit, !undo);
         return true;
     });
@@ -2316,6 +2489,14 @@ void MainWindow::RestDock(const QString &name)
         RefreshUndoActions();
         return true;
     });
+    m_paramPanel->SetStructureEditHandler([this](const auto& edit, QString* error) {
+        if (!SubmitInspectorEdit(edit, error)) return false;
+        m_historySource = HistorySource::Parameters;
+        RefreshUndoActions();
+        return true;
+    });
+    m_paramPanel->SetParameterReferenceProvider([this](const QString& id) { return ParameterReferences(id); });
+    connect(m_paramPanel, &CParamPanel::StructureChanged, this, &MainWindow::RefreshParameterStructureUi);
     m_paramPanel->SetHistoryHandler([this](bool undo, auto& edit, QString* error) {
         return ApplyDocumentHistory(undo, edit, error);
     });

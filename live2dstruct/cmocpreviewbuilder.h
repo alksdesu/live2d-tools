@@ -24,6 +24,8 @@ public:
     };
 
     bool Initialize(const QByteArray& baseline, QString* error = nullptr);
+    bool Initialize(const QByteArray& baseline, const QHash<QString, int>& originalParents,
+                    QString* error = nullptr);
     QByteArray SourceDigest() const;
     bool BuildOverrides(const Overrides& overrides, QByteArray& result, QString* error = nullptr) const;
     bool Build(const QHash<QString, QVector<QVector<float>>>& overrides,

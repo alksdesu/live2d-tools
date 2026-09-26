@@ -45,7 +45,9 @@ private slots:
         } else {
             QVERIFY(document.ExecuteEdit({id, "artmesh", CModelEdit::MaskInverted, false, true, -1, false}));
         }
-        QVERIFY(document.DrawableMaskInvertedOverrides().value(id));
+        QVERIFY(document.DrawableMaskInverted(id));
+        QCOMPARE(document.DrawableMaskInvertedOverrides().contains(id), !sourceInverted);
+        if (!sourceInverted) QVERIFY(document.DrawableMaskInvertedOverrides().value(id));
         document.ClearEditHistory();
         const CModelEdit clearMasks{id, "artmesh", CModelEdit::MaskIndices,
             QVariant::fromValue(masks), QVariant::fromValue(QVector<int>()), -1, false};
@@ -73,8 +75,8 @@ private slots:
         QVERIFY2(CModelSession::FromJson(session.ToJson(), &decoded, &error), qPrintable(error));
         QVERIFY(decoded.drawableMaskIndices.contains(id));
         QVERIFY(decoded.drawableMaskIndices.value(id).isEmpty());
-        QVERIFY(decoded.drawableMaskInverted.contains(id));
-        QVERIFY(decoded.drawableMaskInverted.value(id));
+        QCOMPARE(decoded.drawableMaskInverted, document.DrawableMaskInvertedOverrides());
+        QCOMPARE(decoded.drawableMaskInverted.contains(id), !sourceInverted);
         CModelDocument restored;
         QVERIFY2(restored.Load(decoded.sourceMoc, &error), qPrintable(error));
         for (auto it = decoded.drawableMaskIndices.cbegin(); it != decoded.drawableMaskIndices.cend(); ++it)
@@ -108,8 +110,9 @@ private slots:
             [](const auto& drawable) { return drawable.vertexCount > 0 && drawable.keyforms.size() >= 3; });
         QVERIFY(mesh != document.Drawables().cend());
         const QString id = mesh->id;
-        const int editedIndex = mesh->keyforms.size() / 2;
-        const QVector<float> original = mesh->keyforms[editedIndex].positions;
+        const auto originalKeyforms = mesh->keyforms;
+        const int editedIndex = originalKeyforms.size() / 2;
+        const QVector<float> original = originalKeyforms[editedIndex].positions;
         QVERIFY(!original.isEmpty());
         QVector<float> edited = original;
         edited[0] += 0.25f;
@@ -117,18 +120,18 @@ private slots:
             live2dstruct::CModelEdit::KeyformPositions, QVariant::fromValue(original),
             QVariant::fromValue(edited), editedIndex, false};
         QVERIFY(document.ExecuteEdit(command));
-        for (int index = 0; index < mesh->keyforms.size(); ++index)
+        for (int index = 0; index < originalKeyforms.size(); ++index)
             QCOMPARE(document.DrawableKeyformPositions(id, index),
-                     index == editedIndex ? edited : mesh->keyforms[index].positions);
+                     index == editedIndex ? edited : originalKeyforms[index].positions);
         QVERIFY(document.UndoEdit());
-        for (int index = 0; index < mesh->keyforms.size(); ++index)
-            QCOMPARE(document.DrawableKeyformPositions(id, index), mesh->keyforms[index].positions);
+        for (int index = 0; index < originalKeyforms.size(); ++index)
+            QCOMPARE(document.DrawableKeyformPositions(id, index), originalKeyforms[index].positions);
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(document.RedoEdit());
         QVERIFY(!document.CanRedoEdit());
 
         const auto overrides = document.DrawableKeyformPositionOverrides().value(id);
-        QCOMPARE(overrides.size(), mesh->keyforms.size());
+        QCOMPARE(overrides.size(), originalKeyforms.size());
         for (int index = 0; index < overrides.size(); ++index)
             QCOMPARE(overrides[index], index == editedIndex ? edited : QVector<float>());
         live2dstruct::CModelSession session;
@@ -151,11 +154,11 @@ private slots:
             }
         }
         QVERIFY(restored.Validate().isEmpty());
-        for (int index = 0; index < mesh->keyforms.size(); ++index)
+        for (int index = 0; index < originalKeyforms.size(); ++index)
             QCOMPARE(restored.DrawableKeyformPositions(id, index),
-                     index == editedIndex ? edited : mesh->keyforms[index].positions);
+                     index == editedIndex ? edited : originalKeyforms[index].positions);
         QVERIFY(restored.DrawableKeyformPositions(id, -1).isEmpty());
-        QVERIFY(restored.DrawableKeyformPositions(id, mesh->keyforms.size()).isEmpty());
+        QVERIFY(restored.DrawableKeyformPositions(id, originalKeyforms.size()).isEmpty());
         QVERIFY(restored.DrawableKeyformPositions(QStringLiteral("missing"), editedIndex).isEmpty());
     }
 
@@ -329,7 +332,7 @@ private slots:
         live2dstruct::CModelDocument document;
         QString error;
         QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
-        const auto& drawable = document.Drawables().first();
+        const auto drawable = document.Drawables().first();
         const bool beforeVisible = drawable.visible;
         const QString id = drawable.id;
         QVERIFY(document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::Visibility,
@@ -358,7 +361,7 @@ private slots:
         QCOMPARE(qRound(document.DrawableDrawOrder(document.Drawables().first())), currentDrawOrder + 2);
         QVERIFY(!document.ExecuteEdit({id, QStringLiteral("artmesh"), live2dstruct::CModelEdit::Opacity,
                                        0.2f, 1.5f}));
-        const auto& parameter = document.Parameters().first();
+        const auto parameter = document.Parameters().first();
         const float parameterBefore = parameter.defaultValue;
         const float parameterAfter = qFuzzyCompare(parameterBefore + 1.0f, parameter.maximum + 1.0f)
             ? parameter.minimum : parameter.maximum;

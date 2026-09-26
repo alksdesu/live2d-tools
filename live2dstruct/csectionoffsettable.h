@@ -35,6 +35,7 @@
 #include "live2dstruct/struct/cblend_shape_keyform_bindings.h"
 #include "live2dstruct/struct/cblend_shapes_art_meshes.h"
 #include "live2dstruct/struct/cblend_shapes_warp_deformers.h"
+#include "live2dstruct/struct/cblend_shape_targets.h"
 #include "live2dstruct/struct/cblend_shape_parameter_bindings.h"
 #include "live2dstruct/struct/cblend_shapes_art_meshes.h"
 #include "live2dstruct/struct/ckeyform_screen_colors.h"
@@ -47,6 +48,7 @@ class CSectionOffsetTable
 public:
     CSectionOffsetTable(CReader& bytes);
     ~CSectionOffsetTable();
+    int mocVersion = 0;
 
     CCount_info::Offset* count_info;
     CCanvas_info::Offset* canvas_info;
@@ -83,6 +85,8 @@ public:
     CBlend_shape_parameter_bindings::Offset* blend_shape_parameter_bindings;
     CBlend_shapes_art_meshes::Offset* blend_shapes_art_meshes;
     CBlend_shapes_warp_deformers::Offset* blend_shapes_warp_deformers;
+    CBlend_shape_targets::Offset* blend_shapes_parts;
+    CBlend_shape_targets::Offset* blend_shapes_rotation_deformers;
     CKeyform_multiply_colors::Offset* keyform_multiply_colors;
     CKeyform_screen_colors::Offset* keyform_screen_colors;
 };

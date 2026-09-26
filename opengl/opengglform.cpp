@@ -534,6 +534,42 @@ bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const
     }
 }
 
+bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                                const ParameterStructureSeeds& addedSeeds,
+                                                const QMap<QString, float>& baseValues, bool keepEditorPreview,
+                                                QMap<QString, float>& preparedPose, QString* error)
+{
+    if (error) error->clear();
+    if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数结构"));
+    if (IsMeshDragging() || m_controlDragActive) return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("模型预览的 OpenGL 上下文尚未就绪"));
+    auto* model = CurrentModel();
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
+    try {
+        CTreeManage::Snapshot tree;
+        LAppView::PreparedDeformerOverlays overlays;
+        QMap<QString, float> pose;
+        const auto prepare = [&](const CubismModel& candidate, QString* detail) {
+            CubismModel::RuntimeValueSnapshot values;
+            if (!candidate.CaptureRuntimeValues(values, detail)) return false;
+            pose = values.Parameters();
+            return CTreeManage::PrepareSnapshot(bytes, pose, tree, detail) &&
+                view->PrepareDeformerOverlays(tree, overlays, detail);
+        };
+        if (!model->ApplyParameterStructurePreview(bytes, sourceDigest, addedSeeds, baseValues,
+                                                   keepEditorPreview, error, prepare)) return false;
+        CTreeManage::SwapSnapshot(tree);
+        view->SwapDeformerOverlays(overlays);
+        preparedPose.swap(pose);
+        update();
+        return true;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("无法准备参数结构的变形器预览"));
+    }
+}
+
 bool OpengGlForm::EndEditorPreview(QString* error)
 {
     if (error) error->clear();

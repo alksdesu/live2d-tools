@@ -31,6 +31,7 @@ public:
     void SetSelections(const QStringList& names, const QStringList& types);
     void ClearSelection();
     void RefreshSelection();
+    bool SyncActiveKeyform(const QString& id, const QString& type, int keyform);
     void SetLockedState(const QSet<QString>& lockedKeys);
     void SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler);
     void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);

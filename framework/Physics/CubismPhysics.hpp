@@ -28,10 +28,14 @@ public:
         friend class CubismPhysics;
         const CubismPhysics* owner = nullptr;
         QVector<float> parameters, inputs;
+        QVector<int> inputIndices, outputIndices;
+        bool structure = false;
     };
     bool PrepareParameterDefinitionChange(const CubismModel& previous, const CubismModel& replacement,
                                          ParameterDefinitionState& result, QString* error = nullptr) const;
     void CommitParameterDefinitionChange(ParameterDefinitionState& state) noexcept;
+    bool PrepareParameterStructureChange(const CubismModel& previous, const CubismModel& replacement,
+                                         ParameterDefinitionState& result, QString* error = nullptr) const;
 
     /**
      * @brief オプション
@@ -169,8 +173,9 @@ private:
 
     csmFloat32 _currentRemainTime; ///< 物理演算が処理していない時間
 
-    csmVector<csmFloat32> _parameterCaches;      ///< Evaluateで利用するパラメータのキャッシュ
-    csmVector<csmFloat32> _parameterInputCaches; ///< UpdateParticlesが動くときの入力をキャッシュ
+    QVector<csmFloat32> _parameterCaches;      ///< Evaluateで利用するパラメータのキャッシュ
+    QVector<csmFloat32> _parameterInputCaches; ///< UpdateParticlesが動くときの入力をキャッシュ
+    bool ResolveParameterIndices(CubismModel* model);
 
     csmBool _isJsonValid; ///< 正しくJsonデータが取得出来たか
 };

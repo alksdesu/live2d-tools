@@ -379,8 +379,8 @@ CubismPhysics::CubismPhysics()
 CubismPhysics::~CubismPhysics()
 {
     CSM_DELETE(_physicsRig);
-    _parameterCaches.Clear();
-    _parameterInputCaches.Clear();
+    _parameterCaches.clear();
+    _parameterInputCaches.clear();
 }
 
 bool CubismPhysics::PrepareParameterDefinitionChange(const CubismModel& previous, const CubismModel& replacement,
@@ -390,12 +390,12 @@ bool CubismPhysics::PrepareParameterDefinitionChange(const CubismModel& previous
     const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
     const int count = previous.GetParameterCount();
     if (count < 0 || replacement.GetParameterCount() != count ||
-        _parameterCaches.GetSize() > count || _parameterInputCaches.GetSize() > count)
+        _parameterCaches.size() > count || _parameterInputCaches.size() > count)
         return fail(QStringLiteral("物理参数缓存与模型定义不匹配"));
     try {
         ParameterDefinitionState candidate;
-        candidate.parameters.reserve(_parameterCaches.GetSize());
-        candidate.inputs.reserve(_parameterInputCaches.GetSize());
+        candidate.parameters.reserve(_parameterCaches.size());
+        candidate.inputs.reserve(_parameterInputCaches.size());
         for (int index = 0; index < count; ++index) {
             const float oldMinimum = previous.GetParameterMinimumValue(index), oldMaximum = previous.GetParameterMaximumValue(index);
             const float minimum = replacement.GetParameterMinimumValue(index), maximum = replacement.GetParameterMaximumValue(index);
@@ -405,7 +405,7 @@ bool CubismPhysics::PrepareParameterDefinitionChange(const CubismModel& previous
                 return fail(QStringLiteral("物理参数身份或范围无效"));
             const bool changed = oldMinimum != minimum || oldMaximum != maximum;
             const auto append = [&](const auto& source, QVector<float>& target) {
-                if (index >= source.GetSize()) return true;
+                if (index >= source.size()) return true;
                 float value = source[index];
                 if (!std::isfinite(value)) return false;
                 if (changed) {
@@ -426,13 +426,93 @@ bool CubismPhysics::PrepareParameterDefinitionChange(const CubismModel& previous
     }
 }
 
+bool CubismPhysics::PrepareParameterStructureChange(const CubismModel& previous, const CubismModel& replacement,
+                                                    ParameterDefinitionState& result, QString* error) const
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    const int oldCount = previous.GetParameterCount(), count = replacement.GetParameterCount();
+    if (!_physicsRig || oldCount < 0 || count < 0 || _parameterCaches.size() > oldCount || _parameterInputCaches.size() > oldCount)
+        return fail(QStringLiteral("物理参数缓存与模型结构不匹配"));
+    try {
+        ParameterDefinitionState candidate;
+        QHash<CubismIdHandle, int> newIndices;
+        for (int i = 0; i < count; ++i) newIndices.insert(replacement.GetParameterId(i), i);
+        for (int i = 0; i < _physicsRig->Inputs.GetSize(); ++i) {
+            const int index = newIndices.value(_physicsRig->Inputs[i].Source.Id, -1);
+            if (index < 0) return fail(QStringLiteral("不能删除物理输入参数：%1").arg((_physicsRig->Inputs[i].Source.Id ? QString::fromUtf8(_physicsRig->Inputs[i].Source.Id->GetString().GetRawString()) : QStringLiteral("<missing>"))));
+            candidate.inputIndices.append(index);
+        }
+        for (int i = 0; i < _physicsRig->Outputs.GetSize(); ++i) {
+            const int index = newIndices.value(_physicsRig->Outputs[i].Destination.Id, -1);
+            if (index < 0) return fail(QStringLiteral("不能删除物理输出参数：%1").arg((_physicsRig->Outputs[i].Destination.Id ? QString::fromUtf8(_physicsRig->Outputs[i].Destination.Id->GetString().GetRawString()) : QStringLiteral("<missing>"))));
+            candidate.outputIndices.append(index);
+        }
+        QHash<CubismIdHandle, int> oldIndices;
+        for (int i = 0; i < oldCount; ++i) oldIndices.insert(previous.GetParameterId(i), i);
+        const auto* current = Core::csmGetParameterValues(replacement.GetModel());
+        if (count && !current) return fail(QStringLiteral("候选模型参数值缺失"));
+        const auto migrate = [&](const QVector<float>& source, QVector<float>& target) {
+            for (float value : source) if (!std::isfinite(value)) return false;
+            if (source.isEmpty()) return true;
+            target.reserve(count);
+            for (int i = 0; i < count; ++i) {
+                const auto old = oldIndices.constFind(replacement.GetParameterId(i));
+                float value = current[i];
+                if (old != oldIndices.cend() && *old < source.size()) {
+                    value = source[*old];
+                    const float minimum = replacement.GetParameterMinimumValue(i), maximum = replacement.GetParameterMaximumValue(i);
+                    if (previous.GetParameterMinimumValue(*old) != minimum || previous.GetParameterMaximumValue(*old) != maximum) {
+                        if (value < minimum) value = minimum;
+                        else if (value > maximum) value = maximum;
+                    }
+                }
+                if (!std::isfinite(value)) return false;
+                target.append(value);
+            }
+            return true;
+        };
+        if (!migrate(_parameterCaches, candidate.parameters) || !migrate(_parameterInputCaches, candidate.inputs))
+            return fail(QStringLiteral("物理参数缓存含非有限值"));
+        candidate.structure = true;
+        candidate.owner = this;
+        result = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备物理参数结构"));
+    }
+}
+
 void CubismPhysics::CommitParameterDefinitionChange(ParameterDefinitionState& state) noexcept
 {
-    if (state.owner != this || state.parameters.size() != _parameterCaches.GetSize() ||
-        state.inputs.size() != _parameterInputCaches.GetSize()) return;
-    for (int index = 0; index < state.parameters.size(); ++index) _parameterCaches[index] = state.parameters[index];
-    for (int index = 0; index < state.inputs.size(); ++index) _parameterInputCaches[index] = state.inputs[index];
+    if (state.owner != this) return;
+    if (state.structure) {
+        if (!_physicsRig || state.inputIndices.size() != _physicsRig->Inputs.GetSize() ||
+            state.outputIndices.size() != _physicsRig->Outputs.GetSize()) return;
+        for (int i = 0; i < state.inputIndices.size(); ++i) _physicsRig->Inputs[i].SourceParameterIndex = state.inputIndices.at(i);
+        for (int i = 0; i < state.outputIndices.size(); ++i) _physicsRig->Outputs[i].DestinationParameterIndex = state.outputIndices.at(i);
+    } else if (state.parameters.size() != _parameterCaches.size() || state.inputs.size() != _parameterInputCaches.size()) return;
+    _parameterCaches.swap(state.parameters);
+    _parameterInputCaches.swap(state.inputs);
     state.owner = nullptr;
+}
+
+bool CubismPhysics::ResolveParameterIndices(CubismModel* model)
+{
+    if (!model || !model->GetModel() || !_physicsRig) return false;
+    const int count = model->GetParameterCount();
+    if (count < 0 || (count && (!Core::csmGetParameterValues(model->GetModel()) ||
+        !Core::csmGetParameterMinimumValues(model->GetModel()) || !Core::csmGetParameterMaximumValues(model->GetModel()) ||
+        !Core::csmGetParameterDefaultValues(model->GetModel())))) return false;
+    const auto resolve = [&](CubismIdHandle id, int& index) {
+        if (index < 0 || index >= count || model->GetParameterId(index) != id) index = model->FindRealParameterIndex(id);
+        return index >= 0 && index < count;
+    };
+    for (int i = 0; i < _physicsRig->Inputs.GetSize(); ++i)
+        if (!resolve(_physicsRig->Inputs[i].Source.Id, _physicsRig->Inputs[i].SourceParameterIndex)) return false;
+    for (int i = 0; i < _physicsRig->Outputs.GetSize(); ++i)
+        if (!resolve(_physicsRig->Outputs[i].Destination.Id, _physicsRig->Outputs[i].DestinationParameterIndex)) return false;
+    return true;
 }
 
 /// Initializes physics.
@@ -648,6 +728,7 @@ void CubismPhysics::Parse(const csmByte* physicsJson, csmSizeInt size)
 
 void CubismPhysics::Stabilization(CubismModel* model)
 {
+    if (!ResolveParameterIndices(model)) return;
     csmFloat32 totalAngle;
     csmFloat32 weight;
     csmFloat32 radAngle;
@@ -669,13 +750,13 @@ void CubismPhysics::Stabilization(CubismModel* model)
     parameterMinimumValues = Core::csmGetParameterMinimumValues(model->GetModel());
     parameterDefaultValues = Core::csmGetParameterDefaultValues(model->GetModel());
 
-    if (_parameterCaches.GetSize() < model->GetParameterCount())
+    if (_parameterCaches.size() < model->GetParameterCount())
     {
-        _parameterCaches.Resize(model->GetParameterCount());
+        _parameterCaches.resize(model->GetParameterCount());
     }
-    if (_parameterInputCaches.GetSize() < model->GetParameterCount())
+    if (_parameterInputCaches.size() < model->GetParameterCount())
     {
-        _parameterInputCaches.Resize(model->GetParameterCount());
+        _parameterInputCaches.resize(model->GetParameterCount());
     }
 
     for (int j = 0; j < model->GetParameterCount(); ++j)
@@ -701,7 +782,7 @@ void CubismPhysics::Stabilization(CubismModel* model)
 
             if (currentInputs[i].SourceParameterIndex == -1)
             {
-                currentInputs[i].SourceParameterIndex = model->GetParameterIndex(currentInputs[i].Source.Id);
+                currentInputs[i].SourceParameterIndex = model->FindRealParameterIndex(currentInputs[i].Source.Id);
             }
 
             currentInputs[i].GetNormalizedParameterValue(
@@ -743,7 +824,7 @@ void CubismPhysics::Stabilization(CubismModel* model)
 
             if (currentOutputs[i].DestinationParameterIndex == -1)
             {
-                currentOutputs[i].DestinationParameterIndex = model->GetParameterIndex(
+                currentOutputs[i].DestinationParameterIndex = model->FindRealParameterIndex(
                     currentOutputs[i].Destination.Id);
             }
 
@@ -819,6 +900,7 @@ void CubismPhysics::Stabilization(CubismModel* model)
 /// @param deltaTimeSeconds  rendering delta time.
 void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
 {
+    if (!ResolveParameterIndices(model)) return;
     csmFloat32 totalAngle;
     csmFloat32 weight;
     csmFloat32 radAngle;
@@ -852,13 +934,13 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
     parameterMinimumValues = Core::csmGetParameterMinimumValues(model->GetModel());
     parameterDefaultValues = Core::csmGetParameterDefaultValues(model->GetModel());
 
-    if (_parameterCaches.GetSize() < model->GetParameterCount())
+    if (_parameterCaches.size() < model->GetParameterCount())
     {
-        _parameterCaches.Resize(model->GetParameterCount());
+        _parameterCaches.resize(model->GetParameterCount());
     }
-    if (_parameterInputCaches.GetSize() < model->GetParameterCount())
+    if (_parameterInputCaches.size() < model->GetParameterCount())
     {
-        _parameterInputCaches.Resize(model->GetParameterCount());
+        _parameterInputCaches.resize(model->GetParameterCount());
         for (int j = 0; j < model->GetParameterCount(); ++j) {
             _parameterInputCaches[j] = parameterValues[j];
         }
@@ -914,7 +996,7 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
 
                 if (currentInputs[i].SourceParameterIndex == -1)
                 {
-                    currentInputs[i].SourceParameterIndex = model->GetParameterIndex(currentInputs[i].Source.Id);
+                    currentInputs[i].SourceParameterIndex = model->FindRealParameterIndex(currentInputs[i].Source.Id);
                 }
 
                 currentInputs[i].GetNormalizedParameterValue(
@@ -955,7 +1037,7 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
 
                 if (currentOutputs[i].DestinationParameterIndex == -1)
                 {
-                    currentOutputs[i].DestinationParameterIndex = model->GetParameterIndex(currentOutputs[i].Destination.Id);
+                    currentOutputs[i].DestinationParameterIndex = model->FindRealParameterIndex(currentOutputs[i].Destination.Id);
                 }
 
                 if (particleIndex < 1 || particleIndex >= currentSetting->ParticleCount)
@@ -995,6 +1077,7 @@ void CubismPhysics::Evaluate(CubismModel* model, csmFloat32 deltaTimeSeconds)
 
 void CubismPhysics::Interpolate(CubismModel* model, csmFloat32 weight)
 {
+    if (!ResolveParameterIndices(model)) return;
     csmInt32 i, settingIndex;
     CubismPhysicsOutput* currentOutputs;
     CubismPhysicsSubRig* currentSetting;

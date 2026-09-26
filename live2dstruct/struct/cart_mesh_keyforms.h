@@ -12,15 +12,36 @@ public:
         int draw_orders;
         int keyform_position_sources_begin_indices;
 
+        int multiply_color_sources_indices = 0;
+        int screen_color_sources_indices = 0;
+
+        void ReadColorOffsets(CReader& bytes)
+        {
+            multiply_color_sources_indices = bytes.readInt();
+            screen_color_sources_indices = bytes.readInt();
+        }
+
         Offset(CReader& bytes) {
             opacities = bytes.readInt();
             draw_orders = bytes.readInt();
             keyform_position_sources_begin_indices = bytes.readInt();
         }
     };
+    int multiply_color_sources_index = -1;
+    int screen_color_sources_index = -1;
+
 
 public:
     CArt_mesh_keyforms(CReader& bytes,const Offset& artMeshKeyforms, int i) {
+        if (artMeshKeyforms.multiply_color_sources_indices) {
+            bytes.seek(artMeshKeyforms.multiply_color_sources_indices + i * 4);
+            multiply_color_sources_index = bytes.readInt();
+        }
+        if (artMeshKeyforms.screen_color_sources_indices) {
+            bytes.seek(artMeshKeyforms.screen_color_sources_indices + i * 4);
+            screen_color_sources_index = bytes.readInt();
+        }
+
         bytes.seek(artMeshKeyforms.opacities + i*4);
         opacities = bytes.readFloat();
 

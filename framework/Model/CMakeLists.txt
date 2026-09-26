@@ -11,5 +11,7 @@ target_sources(${LIB_NAME}
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelUserDataJson.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismModelUserDataJson.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismUserModel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CubismUserModelReplacement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CubismUserModel.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CubismParameterStructure.hpp
 )

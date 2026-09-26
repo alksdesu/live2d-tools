@@ -21,6 +21,7 @@ public:
     bool SavePhysics(const QString& path = QString());
     bool HasUnsavedChanges() const { return m_dirty; }
     const QString& FilePath() const { return m_physicsPath; }
+    QJsonObject DocumentSnapshot() const;
 
 signals:
     void GravityChanged(float x, float y);

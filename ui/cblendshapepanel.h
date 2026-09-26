@@ -17,7 +17,8 @@ public:
     explicit CBlendShapePanel(QWidget* parent = nullptr);
     ~CBlendShapePanel() override;
     void BuildBlendShapes(const QString& mocPath, CCidJson* cid);
-    bool BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
+    bool BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr,
+                              const QByteArray& sourceDigest = {});
     void SetDocument(const live2dstruct::CModelDocument* document);
     void SyncParameterValue(const QString& paramId, float value);
     const QSet<QString>& getBlendShapeParamIds() const;

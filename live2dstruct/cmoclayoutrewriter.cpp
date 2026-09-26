@@ -90,7 +90,9 @@ bool CMocLayoutRewriter::Rewrite(const QByteArray& source, const QByteArray& can
         if (!sourceTable.IsValid() || !candidateTable.IsValid())
             return fail(error, QStringLiteral("MOC 重排区段无效：%1")
                         .arg(sourceTable.IsValid() ? candidateReader.Error() : sourceReader.Error()));
-        const qint64 metadataEnd = std::max(headerEnd + 128, word(source, 0x44) + 20);
+        const int countInfoSize = CSectionValidation::CountInfoSize(sourceTable.sectionOffsetTable->mocVersion);
+        const int knownOffsetEnd = CSectionValidation::KnownOffsetEnd(sourceTable.sectionOffsetTable->mocVersion);
+        const qint64 metadataEnd = std::max(headerEnd + countInfoSize, word(source, 0x44) + 20);
         QVector<Column> columns;
         QMap<qint64, QVector<int>> atOffset;
         QMap<qint64, qint64> extents;
@@ -109,13 +111,19 @@ bool CMocLayoutRewriter::Rewrite(const QByteArray& source, const QByteArray& can
             ++next;
             extents.insert(it.key(), (next == atOffset.cend() ? source.size() : next.key()) - it.key());
         }
-        const qint64 countTail = extents.value(headerEnd) - 128;
-        if (countTail > 0 && source.mid(headerEnd + 128, countTail) != candidate.mid(headerEnd + 128, countTail))
+        const qint64 countTail = extents.value(headerEnd) - countInfoSize;
+        if (countTail > 0 && source.mid(headerEnd + countInfoSize, countTail) != candidate.mid(headerEnd + countInfoSize, countTail))
             return fail(error, QStringLiteral("MOC 重排尚不支持修改未识别的区段数量"));
         const auto sourceSpans = spans(sourceTable), candidateSpans = spans(candidateTable);
-        if (sourceSpans.size() != CSectionValidation::OffsetTableCount - 2 ||
+        if (sourceSpans.size() != CSectionValidation::KnownOffsetCount(sourceTable.sectionOffsetTable->mocVersion) - 2 ||
             sourceSpans.size() != candidateSpans.size())
             return fail(error, QStringLiteral("MOC 重排缺少已知区段信息"));
+        QSet<int> knownSlots, emptyOpaqueMarkers;
+        for (const auto& span : sourceSpans) knownSlots.insert(span.slot);
+        for (const auto& column : columns)
+            if (column.slot >= 0x48 && !knownSlots.contains(column.slot) &&
+                column.sourceOffset == source.size() && !relocatedColumnByteSizes.contains(column.slot))
+                emptyOpaqueMarkers.insert(column.slot);
         QMap<int, qint64> required;
         for (qsizetype index = 0; index < sourceSpans.size(); ++index) {
             const auto& before = sourceSpans[index];
@@ -129,7 +137,7 @@ bool CMocLayoutRewriter::Rewrite(const QByteArray& source, const QByteArray& can
             if (before.offset && before.count)
                 extents[before.offset] = std::max(extents.value(before.offset), before.count * before.width);
             if (after.optional && !after.offset) continue;
-            if (before.slot != after.slot || after.slot < 0x48 || after.slot >= CSectionValidation::OffsetTableEnd ||
+            if (before.slot != after.slot || after.slot < 0x48 || after.slot >= knownOffsetEnd ||
                 word(source, before.slot) != before.offset || word(candidate, after.slot) != after.offset)
                 return fail(error, QStringLiteral("MOC 区段定义与文件头不一致"));
             required.insert(after.slot, after.count * after.width);
@@ -226,6 +234,10 @@ bool CMocLayoutRewriter::Rewrite(const QByteArray& source, const QByteArray& can
         for (const auto& column : columns) {
             if (cleared.contains(column.slot)) {
                 qToLittleEndian(quint32(0), output.data() + column.slot);
+                continue;
+            }
+            if (emptyOpaqueMarkers.contains(column.slot)) {
+                qToLittleEndian(quint32(output.size()), output.data() + column.slot);
                 continue;
             }
             if (!column.sourceOffset && !destinations.contains(column.slot)) continue;

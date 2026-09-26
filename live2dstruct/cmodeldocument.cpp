@@ -110,6 +110,9 @@ void CModelDocument::Clear()
     m_sourcePath.clear();
     m_sourceBytes.clear();
     m_sourceDigest.clear();
+    m_workingBaseBytes.clear();
+    m_structure = {};
+    m_sourceDeformerParents.clear();
     m_keyformBindings.reset();
     m_previewBuilder.reset();
     m_previewError.clear();
@@ -231,7 +234,7 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty() &&
         m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty() &&
         m_parameterMetadataOverrides.isEmpty()) {
-        bytes = m_sourceBytes;
+        bytes = m_workingBaseBytes;
         return true;
     }
     if (!m_previewBuilder) {
@@ -261,12 +264,14 @@ bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QS
 
     m_sourcePath = sourcePath;
     m_sourceBytes = reader.m_byte;
+    m_workingBaseBytes = m_sourceBytes;
     m_sourceDigest = QCryptographicHash::hash(m_sourceBytes, QCryptographicHash::Sha256);
+    for (const auto* deformer : table.deformers) m_sourceDeformerParents.insert(deformer->ids, deformer->parent_deformer_indices);
     auto bindings = std::make_shared<CKeyformBindingGrid>();
     if (!bindings->Build(table, error)) return false;
     m_keyformBindings = std::move(bindings);
     auto preview = std::make_shared<CMocPreviewBuilder>();
-    if (preview->Initialize(m_sourceBytes, &m_previewError)) m_previewBuilder = std::move(preview);
+    if (preview->Initialize(m_sourceBytes, m_sourceDeformerParents, &m_previewError)) m_previewBuilder = std::move(preview);
     m_canvasPixels = CCanvasGeometry::PixelSize(table.canvas_info->width, table.canvas_info->height);
 
     m_parameters.reserve(table.parameters.size());
@@ -719,7 +724,7 @@ bool CModelDocument::SetDeformerParentIndices(const QHash<QString, int>& parents
         const int index = indices.value(it.key(), -1);
         const int parent = it.value();
         if (index < 0 || parent < -1 || parent >= m_deformers.size() || parent == index ||
-            (parent >= 0 && parent != m_deformers.at(index).parentDeformerIndex &&
+            (parent >= 0 && parent != m_deformers.at(index).parentDeformerIndex && parent != m_sourceDeformerParents.value(it.key(), -1) &&
              m_deformers.at(parent).parentPartIndex != m_deformers.at(index).parentPartIndex)) return false;
         candidate.insert(it.key(), parent);
     }
@@ -998,6 +1003,12 @@ bool CModelDocument::IsLocked(const QString& type, const QString& id) const
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
     const QVariant& value = forward ? edit.after : edit.before;
+    if (edit.field == CModelEdit::ParameterStructure) {
+        if (edit.type != QLatin1String("parameter") || edit.before.metaType() != QMetaType::fromType<QVariantMap>() ||
+            edit.after.metaType() != QMetaType::fromType<QVariantMap>() ||
+            ParameterStructureState() != (forward ? edit.before : edit.after).toMap()) return false;
+        return ApplyParameterStructureState(value.toMap());
+    }
     if (edit.field == CModelEdit::VisibilityValues) {
         if (edit.type != QLatin1String("objects") || !edit.before.canConvert<QMap<QString, bool>>() ||
             !edit.after.canConvert<QMap<QString, bool>>()) return false;
@@ -1092,48 +1103,73 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 
 bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
 {
-    if (edit.name.isEmpty() || edit.before == edit.after) return false;
-    if (edit.field == CModelEdit::ParameterMetadata) {
-        if (edit.type != QLatin1String("parameter") || !edit.before.canConvert<QVariantMap>() ||
-            !edit.after.canConvert<QVariantMap>()) return false;
-        const auto current = ParameterMetadataState(edit.name);
-        if (current.isEmpty()) return false;
-        CModelParameterMetadata before, after;
-        if (!metadataFromVariant(edit.before, ParameterMetadata(edit.name), &before) ||
-            !(before == ParameterMetadata(edit.name)) ||
-            (hasMetadataState(edit.before.toMap()) && edit.before.toMap() != current) ||
-            !metadataFromVariant(edit.after, before, &after)) return false;
+    try {
+        if (edit.name.isEmpty() || edit.before == edit.after) return false;
         CModelEdit command = edit;
-        if (!hasMetadataState(edit.after.toMap())) {
-            if (!MakeParameterMetadataEdit(edit.name, after, command)) return false;
-            command.coalesce = edit.coalesce;
-        } else command.before = current;
-        if (command.before == command.after) return false;
+        const auto validParameterValue = [this](const QString& id, float value) {
+            if (!std::isfinite(value) || !std::any_of(m_parameters.cbegin(), m_parameters.cend(),
+                [&](const auto& parameter) { return parameter.id == id; })) return false;
+            const auto metadata = ParameterMetadata(id);
+            return value >= metadata.minimum && value <= metadata.maximum;
+        };
+        if (command.field == CModelEdit::ParameterValue) {
+            bool valid = false;
+            const float before = command.before.toFloat(&valid);
+            if (!valid || !validParameterValue(command.name, before)) return false;
+        } else if (command.field == CModelEdit::ParameterValues) {
+            if (!command.before.canConvert<QMap<QString, float>>() || !command.after.canConvert<QMap<QString, float>>()) return false;
+            const auto before = command.before.value<QMap<QString, float>>();
+            const auto after = command.after.value<QMap<QString, float>>();
+            if (before.isEmpty() || before.keys() != after.keys()) return false;
+            for (auto it = before.cbegin(); it != before.cend(); ++it)
+                if (!validParameterValue(it.key(), it.value()) || !validParameterValue(it.key(), after.value(it.key()))) return false;
+        }
+        if (command.field == CModelEdit::ParameterMetadata) {
+            if (command.type != QLatin1String("parameter") || !command.before.canConvert<QVariantMap>() ||
+                !command.after.canConvert<QVariantMap>()) return false;
+            const auto current = ParameterMetadataState(command.name);
+            if (current.isEmpty()) return false;
+            CModelParameterMetadata before, after;
+            if (!metadataFromVariant(command.before, ParameterMetadata(command.name), &before) ||
+                !(before == ParameterMetadata(command.name)) ||
+                (hasMetadataState(command.before.toMap()) && command.before.toMap() != current) ||
+                !metadataFromVariant(command.after, before, &after)) return false;
+            if (!hasMetadataState(command.after.toMap())) {
+                if (!MakeParameterMetadataEdit(command.name, after, command)) return false;
+                command.coalesce = edit.coalesce;
+                command.runtime = edit.runtime;
+            } else command.before = current;
+            if (command.before == command.after) return false;
+        }
         CModelDocument candidate = *this;
+        std::shared_ptr<CModelEditStorageState> storage;
+        if (command.field != CModelEdit::ParameterStructure) {
+            storage = std::make_shared<CModelEditStorageState>();
+            storage->before = EditStorage(command);
+        }
         if (!candidate.ApplyEdit(command, true)) return false;
+        if (storage) storage->after = candidate.EditStorage(command);
+        command.storage = std::move(storage);
         if (candidate.m_editIndex < candidate.m_editHistory.size()) candidate.m_editHistory.resize(candidate.m_editIndex);
-        if (command.coalesce && !candidate.m_editHistory.isEmpty() && candidate.m_editHistory.last().coalesce &&
-            candidate.m_editHistory.last().name == command.name && candidate.m_editHistory.last().type == command.type &&
-            candidate.m_editHistory.last().field == command.field && candidate.m_editHistory.last().after == command.before)
-            candidate.m_editHistory.last().after = command.after;
-        else candidate.m_editHistory.append(command);
+        bool merged = false;
+        if (command.field != CModelEdit::ParameterStructure && command.coalesce && !candidate.m_editHistory.isEmpty()) {
+            auto& last = candidate.m_editHistory.last();
+            if (last.coalesce && last.name == command.name && last.type == command.type && last.field == command.field &&
+                last.index == command.index && last.after == command.before && last.storage && command.storage &&
+                last.storage->after == command.storage->before) {
+                auto combined = std::make_shared<CModelEditStorageState>();
+                combined->before = last.storage->before;
+                combined->after = command.storage->after;
+                last.after = command.after;
+                last.storage = std::move(combined);
+                merged = true;
+            }
+        }
+        if (!merged) candidate.m_editHistory.append(command);
         candidate.m_editIndex = candidate.m_editHistory.size();
         CommitCandidate(std::move(candidate));
         return true;
-    }
-    if (!ApplyEdit(edit, true)) return false;
-    if (m_editIndex < m_editHistory.size()) m_editHistory.resize(m_editIndex);
-    if (edit.coalesce && !m_editHistory.isEmpty() && m_editIndex == m_editHistory.size()) {
-        CModelEdit& last = m_editHistory.last();
-        if (last.name == edit.name && last.type == edit.type && last.field == edit.field &&
-            last.index == edit.index && last.coalesce && last.after == edit.before) {
-            last.after = edit.after;
-            return true;
-        }
-    }
-    m_editHistory.append(edit);
-    m_editIndex = m_editHistory.size();
-    return true;
+    } catch (const std::exception&) { return false; }
 }
 
 bool CModelDocument::PeekUndoEdit(CModelEdit* edit) const
@@ -1152,22 +1188,36 @@ bool CModelDocument::PeekRedoEdit(CModelEdit* edit) const
 
 bool CModelDocument::UndoEdit(CModelEdit* edit)
 {
-    if (m_editIndex <= 0) return false;
-    const CModelEdit command = m_editHistory[m_editIndex - 1];
-    if (!ApplyEdit(command, false)) return false;
-    --m_editIndex;
-    if (edit) *edit = command;
-    return true;
+    try {
+        if (m_editIndex <= 0) return false;
+        const CModelEdit command = m_editHistory[m_editIndex - 1];
+        CModelDocument candidate = *this;
+        if (command.storage && candidate.EditStorage(command) != command.storage->after) return false;
+        if (command.storage && !command.storage->before.isEmpty()) {
+            if (!candidate.RestoreEditStorage(command.storage->before) || !candidate.ValidateEditStorage(command)) return false;
+        } else if (!candidate.ApplyEdit(command, false)) return false;
+        --candidate.m_editIndex;
+        CommitCandidate(std::move(candidate));
+        if (edit) *edit = command;
+        return true;
+    } catch (const std::exception&) { return false; }
 }
 
 bool CModelDocument::RedoEdit(CModelEdit* edit)
 {
-    if (m_editIndex >= m_editHistory.size()) return false;
-    const CModelEdit command = m_editHistory[m_editIndex];
-    if (!ApplyEdit(command, true)) return false;
-    ++m_editIndex;
-    if (edit) *edit = command;
-    return true;
+    try {
+        if (m_editIndex >= m_editHistory.size()) return false;
+        const CModelEdit command = m_editHistory[m_editIndex];
+        CModelDocument candidate = *this;
+        if (command.storage && candidate.EditStorage(command) != command.storage->before) return false;
+        if (command.storage && !command.storage->after.isEmpty()) {
+            if (!candidate.RestoreEditStorage(command.storage->after) || !candidate.ValidateEditStorage(command)) return false;
+        } else if (!candidate.ApplyEdit(command, true)) return false;
+        ++candidate.m_editIndex;
+        CommitCandidate(std::move(candidate));
+        if (edit) *edit = command;
+        return true;
+    } catch (const std::exception&) { return false; }
 }
 
 void CModelDocument::ClearEditHistory()
@@ -1553,6 +1603,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         const int parentIndex = parentIt.value();
         if (deformerIndex < 0 || parentIndex < -1 || parentIndex >= m_deformers.size() || parentIndex == deformerIndex ||
             (parentIndex >= 0 && parentIndex != m_deformers[deformerIndex].parentDeformerIndex &&
+             parentIndex != m_sourceDeformerParents.value(parentIt.key(), -1) &&
              m_deformers[parentIndex].parentPartIndex != m_deformers[deformerIndex].parentPartIndex)) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("deformer_parent_override"),
                                  QStringLiteral("变形器父级覆盖无效：%1").arg(parentIt.key()), -1});

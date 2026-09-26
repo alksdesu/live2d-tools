@@ -29,7 +29,12 @@
 #include <QSpinBox>
 #include <QPointer>
 #include <QScopeGuard>
+#include <QScrollBar>
+#include <QListWidget>
+#include <QTreeWidget>
+#include <QHeaderView>
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <cmath>
 #include <limits>
@@ -45,9 +50,10 @@ class CParameterMetadataDialog final : public QDialog
 public:
     using QDialog::QDialog;
     void SetValidator(std::function<bool()> validator) { m_validator = std::move(validator); }
+    void SetValidationBlocksDismissal(bool block) { m_blockDismissal = block; }
     void done(int result) override
     {
-        if (m_validating && result == Accepted) return;
+        if (m_validating && (result == Accepted || m_blockDismissal)) return;
         if (result == Accepted && m_validator) {
             const QPointer<CParameterMetadataDialog> dialog(this);
             const auto validate = m_validator;
@@ -60,6 +66,7 @@ public:
 private:
     std::function<bool()> m_validator;
     bool m_validating = false;
+    bool m_blockDismissal = false;
 };
 
 class CParameterSpinBox final : public QDoubleSpinBox
@@ -87,9 +94,8 @@ public:
 
     void RestoreInput(const InputState& input)
     {
-        if (lineEdit()->text() == input.text) return;
         const QSignalBlocker blocker(lineEdit());
-        lineEdit()->setText(input.text);
+        if (lineEdit()->text() != input.text) lineEdit()->setText(input.text);
         if (input.selectionStart >= 0) {
             const bool backwards = input.cursor == input.selectionStart;
             lineEdit()->setSelection(backwards ? input.selectionStart + input.selectionLength : input.selectionStart,
@@ -209,6 +215,20 @@ CParamPanel::CParamPanel(QWidget *parent)
     connect(savePresetBtn, &QPushButton::clicked, this, &CParamPanel::SavePreset);
     connect(loadPresetBtn, &QPushButton::clicked, this, &CParamPanel::LoadPreset);
     connect(metadataBtn, &QPushButton::clicked, this, &CParamPanel::EditParameterMetadata);
+    auto* structureRow = new QHBoxLayout();
+    const auto structureButton = [&](const QString& text, const QString& name, auto slot) {
+        auto* button = new QToolButton(wrapper);
+        button->setText(text);
+        button->setObjectName(name);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        connect(button, &QToolButton::clicked, this, slot);
+        structureRow->addWidget(button);
+        return button;
+    };
+    m_createParameter = structureButton(QStringLiteral("新增参数"), QStringLiteral("createParameter"), &CParamPanel::CreateParameter);
+    m_bindParameter = structureButton(QStringLiteral("绑定选区"), QStringLiteral("bindParameter"), &CParamPanel::BindParameter);
+    m_deleteParameter = structureButton(QStringLiteral("删除参数"), QStringLiteral("deleteParameter"), &CParamPanel::DeleteParameter);
+    mainLayout->addLayout(structureRow);
 
     m_search = new QLineEdit(wrapper);
     m_search->setPlaceholderText("搜索参数名称或 ID");
@@ -240,18 +260,10 @@ CParamPanel::CParamPanel(QWidget *parent)
     m_scroll->setWidget(m_container);
     mainLayout->addWidget(m_scroll);
 
-    connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text){
-        const QString query = text.trimmed().toLower();
-        if (!query.isEmpty()) {
-            for (QToolButton* groupButton : m_container->findChildren<QToolButton*>()) groupButton->setChecked(true);
-        }
-        for (const ParamRow& row : m_rows) {
-            const QString searchText = row.widget ? row.widget->property("searchText").toString() : QString();
-            row.widget->setVisible(query.isEmpty() || searchText.contains(query));
-        }
-    });
+    connect(m_search, &QLineEdit::textChanged, this, &CParamPanel::FilterParameters);
 
     setWidget(wrapper);
+    UpdateStructureActions();
 }
 
 void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
@@ -263,8 +275,13 @@ void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
         m_changedDrags.clear();
         m_dragStarts.clear();
         m_rejectedSpinEdits.clear();
+        m_cachedCid.reset();
+        m_cachedBlendIds.clear();
+        m_bindingTargets.clear();
+        ++m_bindingSelectionRevision;
     }
     m_document = document;
+    UpdateStructureActions();
 }
 
 void CParamPanel::SetPreEditGuard(PreEditGuard guard)
@@ -280,6 +297,35 @@ void CParamPanel::SetMetadataEditHandler(MetadataEditHandler handler)
 void CParamPanel::SetHistoryHandler(HistoryHandler handler)
 {
     if (!m_submittingEdit) m_historyHandler = std::move(handler);
+}
+
+void CParamPanel::SetStructureEditHandler(StructureEditHandler handler)
+{
+    if (!m_submittingEdit) m_structureEditHandler = std::move(handler);
+}
+
+void CParamPanel::SetParameterReferenceProvider(ParameterReferenceProvider provider)
+{
+    if (!m_submittingEdit) m_parameterReferenceProvider = std::move(provider);
+}
+
+void CParamPanel::SetBindingTargets(const QVector<ParameterOwner>& targets)
+{
+    QVector<ParameterOwner> distinct;
+    for (const auto& target : targets) if (!distinct.contains(target)) distinct.append(target);
+    if (distinct != m_bindingTargets) {
+        m_bindingTargets = std::move(distinct);
+        ++m_bindingSelectionRevision;
+    }
+    UpdateStructureActions();
+}
+
+void CParamPanel::UpdateStructureActions()
+{
+    const bool loaded = m_document && m_document->IsLoaded();
+    if (m_createParameter) m_createParameter->setEnabled(loaded);
+    if (m_bindParameter) m_bindParameter->setEnabled(loaded && !m_bindingTargets.isEmpty() && !m_document->Parameters().isEmpty());
+    if (m_deleteParameter) m_deleteParameter->setEnabled(loaded && !m_document->Parameters().isEmpty());
 }
 
 void CParamPanel::RestoreControls()
@@ -361,6 +407,7 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     ParamRow& row = m_rows[rowIndex];
     value = boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal);
     const float before = ValueBeforeEdit(paramId, row.defaultVal);
+    if (record && before != value && !PushEdit(paramId, before, value, false)) { RestoreControls(); return; }
     if (userEdit || writeDocument) m_previewBaseline.remove(paramId);
     const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
     QSignalBlocker sliderBlocker(row.slider);
@@ -369,20 +416,116 @@ void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool r
     row.spinBox->setValue(value);
     if (userEdit) m_userLocked.insert(rowIndex);
     m_lastValues.insert(paramId, value);
-    if (m_document && writeDocument) m_document->SetParameterValue(paramId, value);
+    if (m_document && writeDocument && !record) m_document->SetParameterValue(paramId, value);
     emit ParamChanged(paramId, value, !userEdit);
     RefreshXYControls();
-    if (record && before != value) PushEdit(paramId, before, value);
+    if (record && before != value) EmitHistoryState();
 }
 
 void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapeParams)
 {
+    BuildParameterRows(cid, blendShapeParams, true);
+}
+
+void CParamPanel::ReconcileParameters(CCidJson* cid, const QSet<QString>* blendShapeParams)
+{
+    if (!m_document || !m_document->IsLoaded()) return;
+    if (!cid) cid = m_cachedCid.get();
+    if (!blendShapeParams) blendShapeParams = &m_cachedBlendIds;
+    const QSignalBlocker blocker(this);
+    const auto values = m_lastValues;
+    const auto baseline = m_previewBaseline;
+    const bool preview = m_previewActive;
+    QSet<QString> locked;
+    QMap<QString, bool> groups;
+    QString focusedId;
+    int focusedControl = -1;
+    CParameterSpinBox::InputState input;
+    const QPointer<QWidget> previousFocus = QApplication::focusWidget();
+    const auto* focused = previousFocus.data();
+    for (int index = 0; index < m_rows.size(); ++index) {
+        const auto& row = m_rows[index];
+        if (m_userLocked.contains(index)) locked.insert(row.paramId);
+        if (focused == row.slider) { focusedId = row.paramId; focusedControl = 0; }
+        else if (focused == row.resetButton) { focusedId = row.paramId; focusedControl = 2; }
+        else if (focused && (focused == row.spinBox || row.spinBox->isAncestorOf(focused))) {
+            focusedId = row.paramId;
+            focusedControl = 1;
+            if (auto* spin = dynamic_cast<CParameterSpinBox*>(row.spinBox)) input = spin->CaptureInput();
+        }
+    }
+    for (const auto* button : m_groupButtons)
+        groups.insert(button->property("parameterGroupId").toString(), button->isChecked());
+    const QString x = m_xyXSelector->currentText(), y = m_xyYSelector->currentText();
+    const int horizontal = m_scroll->horizontalScrollBar()->value();
+    const int vertical = m_scroll->verticalScrollBar()->value();
+    BuildParameterRows(cid, blendShapeParams, false);
+    m_previewActive = preview;
+    for (int index = 0; index < m_rows.size(); ++index) {
+        auto& row = m_rows[index];
+        if (locked.contains(row.paramId)) m_userLocked.insert(index);
+        const float value = boundedParameterValue(values.value(row.paramId, m_lastValues.value(row.paramId, row.defaultVal)),
+                                                  row.minVal, row.maxVal, row.defaultVal);
+        m_lastValues.insert(row.paramId, value);
+        if (baseline.contains(row.paramId))
+            m_previewBaseline.insert(row.paramId, boundedParameterValue(baseline.value(row.paramId), row.minVal, row.maxVal, row.defaultVal));
+        else if (preview)
+            m_previewBaseline.insert(row.paramId, m_document ? m_document->ParameterValue(row.paramId) : row.defaultVal);
+        const QSignalBlocker sliderBlocker(row.slider), spinBlocker(row.spinBox);
+        row.slider->setValue(parameterToSlider(value, row.minVal, row.maxVal));
+        row.spinBox->setValue(value);
+    }
+    for (auto* button : m_groupButtons) {
+        const QString id = button->property("parameterGroupId").toString();
+        if (groups.contains(id)) button->setChecked(groups.value(id));
+    }
+    {
+        const QSignalBlocker xBlocker(m_xyXSelector), yBlocker(m_xyYSelector);
+        if (m_xyXSelector->findText(x) >= 0) m_xyXSelector->setCurrentText(x);
+        if (m_xyYSelector->findText(y) >= 0) m_xyYSelector->setCurrentText(y);
+    }
+    FilterParameters();
+    RefreshXYControls();
+    for (const auto& row : m_rows) {
+        if (row.paramId != focusedId || row.widget->isHidden()) continue;
+        if (focusedControl == 0) row.slider->setFocus(Qt::OtherFocusReason);
+        else if (focusedControl == 2) row.resetButton->setFocus(Qt::OtherFocusReason);
+        else if (focusedControl == 1) {
+            row.spinBox->setFocus(Qt::OtherFocusReason);
+            if (auto* spin = dynamic_cast<CParameterSpinBox*>(row.spinBox); spin && !input.text.isEmpty()) spin->RestoreInput(input);
+        }
+        break;
+    }
+    if (focusedId.isEmpty() && previousFocus && isAncestorOf(previousFocus) && previousFocus->isEnabled())
+        previousFocus->setFocus(Qt::OtherFocusReason);
+    if (m_container->layout()) m_container->layout()->activate();
+    m_scroll->horizontalScrollBar()->setValue(horizontal);
+    m_scroll->verticalScrollBar()->setValue(vertical);
+}
+
+void CParamPanel::FilterParameters()
+{
+    const QString query = m_search->text().trimmed().toLower();
+    if (!query.isEmpty()) for (auto* button : m_groupButtons) button->setChecked(true);
+    for (const auto& row : m_rows)
+        if (row.widget) row.widget->setVisible(query.isEmpty() || row.widget->property("searchText").toString().contains(query));
+}
+
+void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendShapeParams, bool resetHistory)
+{
+    if (cid != m_cachedCid.get()) m_cachedCid = cid ? std::make_shared<CCidJson>(*cid) : nullptr;
+    m_cachedBlendIds = blendShapeParams ? *blendShapeParams : QSet<QString>();
+    for (const auto& row : m_rows) {
+        if (row.slider) disconnect(row.slider, nullptr, this, nullptr);
+        if (row.spinBox) disconnect(row.spinBox, nullptr, this, nullptr);
+        if (row.resetButton) disconnect(row.resetButton, nullptr, this, nullptr);
+    }
     m_groupButtons.clear();
     m_rows.clear();
     m_lastValues.clear();
     m_previewBaseline.clear();
     m_previewActive = false;
-    ClearHistory();
+    if (resetHistory) ClearHistory();
     m_userDragging.clear();
     m_changedDrags.clear();
     m_dragStarts.clear();
@@ -591,6 +734,7 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
                 groupName = group.strGroup;
 
             auto* groupButton = new QToolButton(m_container);
+            groupButton->setProperty("parameterGroupId", group.strGroup);
             groupButton->setText(groupName);
             groupButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
             groupButton->setArrowType(Qt::DownArrow);
@@ -640,6 +784,8 @@ void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapePara
         m_xyXSelector->parentWidget()->setEnabled(true);
     }
     RefreshXYControls();
+    FilterParameters();
+    UpdateStructureActions();
 }
 
 void CParamPanel::RefreshParameterMetadata()
@@ -814,6 +960,7 @@ void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool r
         if (!std::isfinite(requested)) continue;
         const float value = boundedParameterValue(requested, row.minVal, row.maxVal, row.defaultVal);
         const float before = ValueBeforeEdit(row.paramId, row.defaultVal);
+        if (record && before != value && !PushEdit(row.paramId, before, value, false)) continue;
         m_previewBaseline.remove(row.paramId);
         const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
         QSignalBlocker sliderBlocker(row.slider);
@@ -822,9 +969,8 @@ void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool r
         row.spinBox->setValue(value);
         m_lastValues.insert(row.paramId, value);
         m_userLocked.insert(i);
-        if (m_document) m_document->SetParameterValue(row.paramId, value);
+        if (m_document && !record) m_document->SetParameterValue(row.paramId, value);
         emit ParamChanged(row.paramId, value, false);
-        if (record && before != value) PushEdit(row.paramId, before, value);
     }
     if (record) EmitHistoryState();
     else ClearHistory();
@@ -1040,6 +1186,315 @@ void CParamPanel::EditParameterMetadata()
     if (panel) EmitHistoryState();
 }
 
+void CParamPanel::CreateParameter() { EditParameterStructure(StructureAction::Create); }
+void CParamPanel::BindParameter() { EditParameterStructure(StructureAction::Bind); }
+void CParamPanel::DeleteParameter() { EditParameterStructure(StructureAction::Delete); }
+
+void CParamPanel::EditParameterStructure(StructureAction action)
+{
+    using Builder = live2dstruct::CMocParameterStructureBuilder;
+    if (!m_document || !m_document->IsLoaded() || m_metadataDialogOpen || m_submittingEdit) return;
+    if (!m_userDragging.isEmpty()) {
+        emit EditRejected(QStringLiteral("请先结束参数拖动，再编辑参数结构"));
+        return;
+    }
+    const QPointer<CParamPanel> panel(this);
+    auto* const document = m_document;
+    const auto digest = document->SourceDigest();
+    const auto revision = document->Revision();
+    const auto selectionRevision = m_bindingSelectionRevision;
+    const auto targets = m_bindingTargets;
+    const bool creating = action == StructureAction::Create, deleting = action == StructureAction::Delete;
+    m_metadataDialogOpen = true;
+    const auto finishEditing = qScopeGuard([panel] { if (panel) panel->m_metadataDialogOpen = false; });
+    const auto currentDocument = [panel, document, digest, revision] {
+        return panel && panel->m_document == document && document->SourceDigest() == digest && document->Revision() == revision;
+    };
+    QPointer<CParameterMetadataDialog> dialog = new CParameterMetadataDialog(this);
+    const auto closeDialog = qScopeGuard([dialog] { if (dialog) delete dialog.data(); });
+    dialog->setObjectName(QStringLiteral("parameterStructureDialog"));
+    dialog->SetValidationBlocksDismissal(true);
+    dialog->setWindowTitle(creating ? QStringLiteral("新增参数") : deleting ? QStringLiteral("删除参数") : QStringLiteral("绑定到当前选区"));
+    auto* outer = new QVBoxLayout(dialog);
+    auto* scroll = new QScrollArea(dialog);
+    scroll->setWidgetResizable(true);
+    auto* content = new QWidget(scroll);
+    auto* form = new QFormLayout(content);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setSizeConstraint(QLayout::SetMinimumSize);
+    scroll->setWidget(content);
+    outer->addWidget(scroll);
+    const auto textLabel = [&](const QString& text) {
+        auto* label = new QLabel(text, content);
+        label->setTextFormat(Qt::PlainText);
+        label->setWordWrap(true);
+        return label;
+    };
+    const auto textField = [&](const QString& name, const QString& value) {
+        auto* edit = new QLineEdit(value, content);
+        edit->setObjectName(name);
+        return edit;
+    };
+    auto* parameter = new QComboBox(content);
+    parameter->setObjectName(QStringLiteral("structureParameter"));
+    parameter->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    parameter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    connect(parameter, &QComboBox::currentTextChanged, parameter, &QWidget::setToolTip);
+    for (const auto& item : document->Parameters()) {
+        if (!deleting && item.type != 0) continue;
+        const auto found = std::find_if(m_rows.cbegin(), m_rows.cend(), [&](const auto& row) { return row.paramId == item.id; });
+        const QString name = found == m_rows.cend() ? item.id : found->nameLabel->text();
+        parameter->addItem(name == item.id ? item.id : QStringLiteral("%1 · %2").arg(name, item.id), item.id);
+    }
+    if (!creating && parameter->count() == 0) {
+        emit EditRejected(QStringLiteral("当前没有可操作的普通参数"));
+        return;
+    }
+    parameter->setVisible(!creating);
+    QString proposedId = QStringLiteral("ParamNew");
+    const auto exists = [&](const QString& id) {
+        return std::any_of(document->Parameters().cbegin(), document->Parameters().cend(), [&](const auto& value) { return value.id == id; });
+    };
+    for (int suffix = 2; exists(proposedId); ++suffix) proposedId = QStringLiteral("ParamNew%1").arg(suffix);
+    auto* id = textField(QStringLiteral("structureParameterId"), proposedId);
+    auto* name = textField(QStringLiteral("structureDisplayName"), QString());
+    auto* minimum = textField(QStringLiteral("structureMinimum"), QStringLiteral("-1"));
+    auto* maximum = textField(QStringLiteral("structureMaximum"), QStringLiteral("1"));
+    auto* defaultValue = textField(QStringLiteral("structureDefault"), QStringLiteral("0"));
+    auto* decimals = new QSpinBox(content);
+    decimals->setObjectName(QStringLiteral("structureDecimals"));
+    decimals->setRange(0, 9);
+    decimals->setValue(2);
+    decimals->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    auto* repeat = new QCheckBox(content);
+    repeat->setObjectName(QStringLiteral("structureRepeat"));
+    repeat->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    if (creating) {
+        form->addRow(QStringLiteral("参数 ID"), id);
+        form->addRow(QStringLiteral("显示名"), name);
+        form->addRow(QStringLiteral("类型"), textLabel(QStringLiteral("普通参数")));
+        form->addRow(QStringLiteral("最小值"), minimum);
+        form->addRow(QStringLiteral("默认值"), defaultValue);
+        form->addRow(QStringLiteral("最大值"), maximum);
+        form->addRow(QStringLiteral("小数位"), decimals);
+        form->addRow(QStringLiteral("循环"), repeat);
+        form->addRow(textLabel(QStringLiteral("ID 在模型内唯一，最多 63 个 UTF-8 字节；数值支持科学计数法。")));
+    } else {
+        form->addRow(QStringLiteral("参数"), parameter);
+        for (QWidget* widget : std::initializer_list<QWidget*>{id, name, minimum, maximum, defaultValue, decimals, repeat}) widget->hide();
+    }
+    auto* bind = new QCheckBox(QStringLiteral("创建时绑定到当前选区"), content);
+    bind->setObjectName(QStringLiteral("structureBindSelection"));
+    bind->setChecked(!targets.isEmpty());
+    bind->setEnabled(!targets.isEmpty());
+    if (creating) form->addRow(bind);
+    else bind->hide();
+    auto* keyCount = new QComboBox(content);
+    keyCount->setObjectName(QStringLiteral("structureKeyCount"));
+    keyCount->addItem(QStringLiteral("2 个关键值"), 2);
+    keyCount->addItem(QStringLiteral("3 个关键值"), 3);
+    keyCount->setCurrentIndex(1);
+    std::array<QLineEdit*, 3> keys;
+    for (int index = 0; index < 3; ++index) keys[index] = textField(QStringLiteral("structureKey%1").arg(index), QString());
+    auto* targetList = new QListWidget(content);
+    targetList->setObjectName(QStringLiteral("structureTargets"));
+    const auto ownerType = [](Builder::Owner::Type type) {
+        return type == Builder::Owner::ArtMesh ? QStringLiteral("artmesh") : type == Builder::Owner::Warp ? QStringLiteral("warp") : QStringLiteral("rotation");
+    };
+    for (const auto& target : targets) {
+        auto* item = new QListWidgetItem(QStringLiteral("%1 · %2").arg(ownerType(target.type), target.id), targetList);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Checked);
+    }
+    targetList->setMaximumHeight(targetList->fontMetrics().height() * 4 + targetList->frameWidth() * 2);
+    if (!deleting) {
+        form->addRow(QStringLiteral("关键值数量"), keyCount);
+        for (int index = 0; index < 3; ++index) form->addRow(QStringLiteral("关键值 %1").arg(index + 1), keys[index]);
+        form->addRow(QStringLiteral("绑定目标"), targetList);
+        form->addRow(textLabel(QStringLiteral("绑定会复制现有关键形并保持初始外观；选择关键值后可继续编辑各个关键形。")));
+    } else {
+        keyCount->hide();
+        targetList->hide();
+        for (auto* key : keys) key->hide();
+    }
+    auto* references = new QTreeWidget(content);
+    references->setObjectName(QStringLiteral("structureReferences"));
+    references->setHeaderLabels({QStringLiteral("引用"), QStringLiteral("对象或配置"), QStringLiteral("说明")});
+    references->setRootIsDecorated(false);
+    references->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    auto* refreshReferences = new QPushButton(QStringLiteral("重新检查引用"), content);
+    refreshReferences->setObjectName(QStringLiteral("structureRefreshReferences"));
+    if (deleting) {
+        form->addRow(references);
+        form->addRow(refreshReferences);
+        form->addRow(textLabel(QStringLiteral("当前仅支持删除无绑定、无引用的普通参数。存在引用时需要先移除或重新绑定；不会自动清除外部文件内容。")));
+    } else { references->hide(); refreshReferences->hide(); }
+    auto* errorLabel = textLabel(QString());
+    errorLabel->setObjectName(QStringLiteral("structureError"));
+    errorLabel->hide();
+    outer->addWidget(errorLabel);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, dialog);
+    auto* submit = buttons->button(QDialogButtonBox::Save);
+    submit->setText(creating ? QStringLiteral("创建") : deleting ? QStringLiteral("删除") : QStringLiteral("绑定"));
+    submit->setDefault(true);
+    outer->addWidget(buttons);
+    const auto reject = [&](const QString& error, QLineEdit* field = nullptr) {
+        if (!panel || !dialog) return false;
+        errorLabel->setText(error);
+        errorLabel->show();
+        if (field) { field->setFocus(Qt::OtherFocusReason); field->selectAll(); scroll->ensureWidgetVisible(field); }
+        emit panel->EditRejected(error);
+        return false;
+    };
+    bool customKeys = false;
+    const auto resetKeys = [&] {
+        if (!currentDocument() || deleting) return;
+        float low = -1, high = 1, center = 0;
+        if (creating) {
+            if (!metadataFloat(minimum->text(), -1, low) || !metadataFloat(maximum->text(), 1, high) ||
+                !metadataFloat(defaultValue->text(), 0, center)) return;
+        } else {
+            const auto metadata = document->ParameterMetadata(parameter->currentData().toString());
+            low = metadata.minimum; high = metadata.maximum; center = metadata.defaultValue;
+        }
+        if (!(center > low && center < high)) center = float(double(low) * 0.5 + double(high) * 0.5);
+        const int count = keyCount->currentData().toInt();
+        keys[0]->setText(QString::number(low, 'g', 9));
+        keys[1]->setText(QString::number(count == 2 ? high : center, 'g', 9));
+        keys[2]->setText(QString::number(high, 'g', 9));
+        form->setRowVisible(keys[2], count == 3);
+    };
+    const auto updateBinding = [&] {
+        if (deleting) return;
+        const bool enabled = !creating || bind->isChecked();
+        keyCount->setEnabled(enabled);
+        targetList->setEnabled(enabled);
+        for (auto* key : keys) key->setEnabled(enabled);
+        if (creating) submit->setText(enabled ? QStringLiteral("创建并绑定") : QStringLiteral("创建"));
+    };
+    const auto updateReferences = [&]() -> bool {
+        if (!currentDocument()) return reject(QStringLiteral("模型数据已改变，请重新打开参数操作"));
+        references->clear();
+        QString error;
+        QByteArray bytes;
+        QVector<Builder::Reference> usages;
+        const QString selected = parameter->currentData().toString();
+        bool available = false;
+        try { available = document->BuildPreviewMoc(bytes, &error) && Builder::AnalyzeDelete(bytes, selected, usages, &error); }
+        catch (...) { error = QStringLiteral("模型引用检查失败，请稍后重试"); }
+        if (!available) new QTreeWidgetItem(references, {QStringLiteral("模型检查"), selected, error});
+        for (const auto& usage : usages) new QTreeWidgetItem(references, {usage.kind, usage.ownerType + ':' + usage.ownerId, usage.detail});
+        available = available && usages.isEmpty();
+        const auto found = std::find_if(document->Parameters().cbegin(), document->Parameters().cend(), [&](const auto& item) { return item.id == selected; });
+        if (found == document->Parameters().cend() || found->type != 0) {
+            new QTreeWidgetItem(references, {QStringLiteral("参数类型"), selected, QStringLiteral("暂不支持删除融合参数")});
+            available = false;
+        }
+        QStringList external;
+        try {
+            const auto provider = m_parameterReferenceProvider;
+            external = provider ? provider(selected) : QStringList{QStringLiteral("尚未提供外部引用检查，无法删除参数")};
+        }
+        catch (...) { external = {QStringLiteral("外部引用检查失败，请稍后重试")}; }
+        if (!panel || !dialog) return false;
+        if (!currentDocument()) return reject(QStringLiteral("引用检查期间模型数据已改变，请重新打开参数操作"));
+        for (const auto& reference : external) new QTreeWidgetItem(references, {QStringLiteral("外部引用"), selected, reference});
+        available = available && external.isEmpty();
+        if (available) new QTreeWidgetItem(references, {QStringLiteral("无引用"), selected, QStringLiteral("可以删除；可通过撤销恢复")});
+        submit->setEnabled(available);
+        return available;
+    };
+    connect(refreshReferences, &QPushButton::clicked, dialog, [&] { updateReferences(); });
+    for (auto* key : keys) connect(key, &QLineEdit::textEdited, dialog, [&] { customKeys = true; });
+    for (auto* range : {minimum, maximum, defaultValue}) connect(range, &QLineEdit::editingFinished, dialog, [&] { if (!customKeys) resetKeys(); });
+    connect(keyCount, &QComboBox::currentIndexChanged, dialog, [&] { customKeys = false; resetKeys(); });
+    connect(bind, &QCheckBox::toggled, dialog, updateBinding);
+    connect(parameter, &QComboBox::currentIndexChanged, dialog, [&] {
+        errorLabel->hide();
+        customKeys = false;
+        if (deleting) updateReferences(); else resetKeys();
+    });
+    dialog->SetValidator([&] {
+        if (!currentDocument()) return reject(QStringLiteral("模型数据已改变，请重新打开参数操作"));
+        const bool binding = !deleting && (!creating || bind->isChecked());
+        if (binding && m_bindingSelectionRevision != selectionRevision)
+            return reject(QStringLiteral("对象选区已改变，请重新打开绑定操作"));
+        Builder::CreateRequest request;
+        auto& definition = request.parameter;
+        const QString selected = creating ? id->text() : parameter->currentData().toString();
+        definition.id = selected;
+        if (creating) {
+            const auto encoded = selected.toUtf8();
+            if (selected.isEmpty() || selected.contains(QChar::Null) || encoded.size() > 63 || QString::fromUtf8(encoded) != selected)
+                return reject(QStringLiteral("ID 必须非空、不含空字符且不超过 63 个 UTF-8 字节"), id);
+            if (exists(selected)) return reject(QStringLiteral("参数 ID 已存在"), id);
+            if (!metadataFloat(minimum->text(), -1, definition.minimum)) return reject(QStringLiteral("最小值无效，支持科学计数法"), minimum);
+            if (!metadataFloat(maximum->text(), 1, definition.maximum)) return reject(QStringLiteral("最大值无效，支持科学计数法"), maximum);
+            if (!metadataFloat(defaultValue->text(), 0, definition.defaultValue)) return reject(QStringLiteral("默认值无效，支持科学计数法"), defaultValue);
+            if (definition.minimum > definition.maximum) return reject(QStringLiteral("最小值不能大于最大值"), minimum);
+            if (definition.defaultValue < definition.minimum || definition.defaultValue > definition.maximum)
+                return reject(QStringLiteral("默认值必须位于参数范围内"), defaultValue);
+            definition.decimalPlaces = decimals->value();
+            definition.repeat = repeat->isChecked();
+        } else {
+            const auto metadata = document->ParameterMetadata(selected);
+            definition.minimum = metadata.minimum;
+            definition.maximum = metadata.maximum;
+        }
+        if (binding) {
+            QVector<float> values;
+            for (int index = 0; index < keyCount->currentData().toInt(); ++index) {
+                float value = 0;
+                if (!metadataFloat(keys[index]->text(), 0, value) || value < definition.minimum || value > definition.maximum ||
+                    (!values.isEmpty() && value <= values.last()))
+                    return reject(QStringLiteral("关键值必须是参数范围内严格递增的有限数值"), keys[index]);
+                values.append(value);
+            }
+            for (int index = 0; index < targetList->count(); ++index)
+                if (targetList->item(index)->checkState() == Qt::Checked) request.bindings.append({targets[index], values});
+            if (request.bindings.isEmpty()) return reject(QStringLiteral("请选择至少一个绑定对象"));
+        }
+        if (deleting && !updateReferences()) return false;
+        if (!panel || !dialog || !currentDocument()) return false;
+        live2dstruct::CModelEdit edit;
+        QString error;
+        bool prepared = false;
+        try {
+            prepared = creating ? document->MakeCreateParameterEdit(request, name->text().trimmed(), edit, &error)
+                : deleting ? document->MakeDeleteParameterEdit(selected, edit, &error)
+                           : document->MakeBindParameterEdit(selected, request.bindings, edit, &error);
+        } catch (...) { error = QStringLiteral("无法准备参数修改，请稍后重试"); }
+        if (!prepared) return reject(error.isEmpty() ? QStringLiteral("无法准备参数修改") : error);
+        if (edit.before == edit.after) return true;
+        StructureEditHandler handler;
+        m_submittingEdit = true;
+        const auto finishSubmission = qScopeGuard([panel] { if (panel) panel->m_submittingEdit = false; });
+        bool accepted = false;
+        try {
+            handler = m_structureEditHandler;
+            accepted = handler ? handler(edit, &error) : document->ExecuteEdit(edit);
+        }
+        catch (...) { error = QStringLiteral("参数结构提交失败，请稍后重试"); }
+        if (!panel || !dialog) return false;
+        if (m_document != document || document->SourceDigest() != digest)
+            return reject(QStringLiteral("提交期间模型已切换，请重新打开参数操作"));
+        if (!accepted) return reject(error.isEmpty() ? QStringLiteral("参数修改未通过校验") : error);
+        if (!handler) ReconcileParameters();
+        emit StructureChanged();
+        if (panel) EmitHistoryState();
+        return true;
+    });
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    resetKeys();
+    updateBinding();
+    if (deleting && !updateReferences() && (!panel || !dialog)) return;
+    if (!panel || !dialog) return;
+    dialog->resize(std::max(dialog->minimumSizeHint().width(), fontMetrics().horizontalAdvance(QString(42, QLatin1Char('M')))),
+                   std::min(dialog->sizeHint().height(), fontMetrics().height() * 36));
+    dialog->exec();
+}
+
 void CParamPanel::RefreshParameterRow(int rowIndex)
 {
     if (!m_document || rowIndex < 0 || rowIndex >= m_rows.size()) return;
@@ -1133,6 +1588,7 @@ bool CParamPanel::ApplyValue(int rowIndex, float value, bool record, bool preser
         m_changedDrags.insert(rowIndex);
     }
     const float before = ValueBeforeEdit(row.paramId, value);
+    if (record && before != value && !PushEdit(row.paramId, before, value, false)) { RestoreControls(); return false; }
     {
         const QSignalBlocker sliderBlocker(row.slider);
         const QSignalBlocker spinBlocker(row.spinBox);
@@ -1147,20 +1603,21 @@ bool CParamPanel::ApplyValue(int rowIndex, float value, bool record, bool preser
     emit ParamChanged(row.paramId, value, false);
     RefreshXYControls();
     if (record && before != value) {
-        PushEdit(row.paramId, before, value);
+        EmitHistoryState();
     }
     return true;
 }
 
-void CParamPanel::PushEdit(const QString& paramId, float before, float after)
+bool CParamPanel::PushEdit(const QString& paramId, float before, float after, bool notify)
 {
-    if (before == after) return;
+    if (before == after) return true;
     if (m_document) {
         const live2dstruct::CModelEdit command{paramId, QStringLiteral("parameter"),
                                                live2dstruct::CModelEdit::ParameterValue, before, after};
-        if (!m_document->ExecuteEdit(command)) return;
+        if (!m_document->ExecuteEdit(command)) return false;
     }
-    EmitHistoryState();
+    if (notify) EmitHistoryState();
+    return true;
 }
 
 void CParamPanel::EmitHistoryState()
@@ -1200,7 +1657,8 @@ void CParamPanel::ApplyHistory(bool undo)
     if (!(undo ? m_document->PeekUndoEdit(&pending) : m_document->PeekRedoEdit(&pending)) ||
         (pending.field != live2dstruct::CModelEdit::ParameterValue &&
          pending.field != live2dstruct::CModelEdit::ParameterValues &&
-         pending.field != live2dstruct::CModelEdit::ParameterMetadata)) return;
+         pending.field != live2dstruct::CModelEdit::ParameterMetadata &&
+         pending.field != live2dstruct::CModelEdit::ParameterStructure)) return;
     const QPointer<CParamPanel> panel(this);
     auto* const document = m_document;
     const auto digest = document->SourceDigest();
@@ -1223,7 +1681,10 @@ void CParamPanel::ApplyHistory(bool undo)
         emit EditRejected(error.isEmpty() ? QStringLiteral("参数历史未通过校验") : error);
         return;
     }
-    if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {
+    if (edit.field == live2dstruct::CModelEdit::ParameterStructure) {
+        if (!handler) ReconcileParameters();
+        emit StructureChanged();
+    } else if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {
         RefreshAcceptedMetadata(edit, !undo);
     } else {
         const QVariant& state = undo ? edit.before : edit.after;

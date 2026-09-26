@@ -13,7 +13,7 @@ CSectionTable::CSectionTable(CReader& bytes)
         return;
     }
     if (!bytes.RequireSpan(QStringLiteral("section_offsets"), CSectionValidation::OffsetTableStart,
-                           CSectionValidation::OffsetTableCount, sizeof(qint32))) return;
+                           CSectionValidation::KnownOffsetCount(quint8(bytes.m_byte[4])), sizeof(qint32))) return;
     sectionOffsetTable = new CSectionOffsetTable(bytes);
     if (!bytes.IsValid() || !CSectionValidation::ValidateMetadata(bytes, *sectionOffsetTable)) return;
     count_info = new CCount_info(bytes, *sectionOffsetTable->count_info);
@@ -68,6 +68,8 @@ CSectionTable::CSectionTable(CReader& bytes)
     if (!readItems(blend_shape_parameter_bindings, *sectionOffsetTable->blend_shape_parameter_bindings, count_info->blend_shape_parameter_bindings)) return;
     if (!readItems(blend_shapes_art_meshes, *sectionOffsetTable->blend_shapes_art_meshes, count_info->blend_shapes_art_meshes)) return;
     if (!readItems(blend_shapes_warp_deformers, *sectionOffsetTable->blend_shapes_warp_deformers, count_info->blend_shapes_warp_deformers)) return;
+    if (!readItems(blend_shapes_parts, *sectionOffsetTable->blend_shapes_parts, count_info->blend_shapes_parts)) return;
+    if (!readItems(blend_shapes_rotation_deformers, *sectionOffsetTable->blend_shapes_rotation_deformers, count_info->blend_shapes_rotation_deformers)) return;
     if (!readItems(keyform_multiply_colors, *sectionOffsetTable->keyform_multiply_colors, count_info->keyform_multiply_colors)) return;
     if (!readItems(keyform_screen_colors, *sectionOffsetTable->keyform_screen_colors, count_info->keyform_screen_colors)) return;
     m_valid = true;
@@ -75,6 +77,8 @@ CSectionTable::CSectionTable(CReader& bytes)
 
 CSectionTable::~CSectionTable()
 {
+    for (auto* item : blend_shapes_parts) delete item;
+    for (auto* item : blend_shapes_rotation_deformers) delete item;
 
     delete sectionOffsetTable;
     delete count_info;

@@ -553,6 +553,12 @@ private slots:
         for (int version = 1; version <= 5; ++version) {
             auto bytes = source;
             bytes[4] = char(version);
+            if (version == 5) {
+                const int counts = Word(bytes, 0x40), canvas = Word(bytes, 0x44);
+                bytes.insert(canvas, QByteArray(64, '\0'));
+                for (int slot = 0x40; slot < counts; slot += 4)
+                    if (Word(bytes, slot) >= canvas) Put(bytes, slot, Word(bytes, slot) + 64);
+            }
             CMocPreviewBuilder builder;
             QString error;
             QVERIFY2(builder.Initialize(bytes, &error), qPrintable(error));

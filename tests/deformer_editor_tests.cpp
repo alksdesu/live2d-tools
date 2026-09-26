@@ -204,7 +204,7 @@ void models()
     for (const char* model : {"Mark", "Natori", "Rice", "Wanko"}) QTest::newRow(model) << QString::fromLatin1(model);
 }
 
-QByteArray sharedEditorBytes()
+QByteArray sharedEditorBytes(bool sameSpecific = false)
 {
     DeformerSnapshotData::Fixture fixture;
     if (!fixture.table.IsValid()) return {};
@@ -224,6 +224,24 @@ QByteArray sharedEditorBytes()
     }
     fixture.count(1, 6);
     fixture.count(4, 3);
+    if (!sameSpecific) {
+        for (const auto& span : spans) {
+            const auto name = QByteArray(span.name);
+            const int rows = name.startsWith("warp_deformers.") ? 1 : name.startsWith("rotation_deformers.") ? 2 : 0;
+            if (!rows) continue;
+            const int offset = DeformerSnapshotData::integer(fixture.bytes, span.slot);
+            if (!offset) continue;
+            QVector<int> values;
+            for (int index = 0; index < rows * 2; ++index)
+                values.append(DeformerSnapshotData::integer(fixture.bytes, offset + (index % rows) * 4));
+            fixture.appendColumn(span.slot, values);
+        }
+        fixture.count(2, 2);
+        fixture.count(3, 4);
+        fixture.column(offsets.deformers->specific_sources_indices, 3, 2);
+        fixture.column(offsets.deformers->specific_sources_indices, 4, 1);
+        fixture.column(offsets.deformers->specific_sources_indices, 5, 3);
+    }
     for (int index = 3; index < 6; ++index) {
         const QByteArray id = index == 3 ? QByteArray("RootSibling") : index == 4 ? QByteArray("WarpSibling") : QByteArray("ChildSibling");
         fixture.id(offsets.deformers->ids, index, id);
@@ -524,7 +542,7 @@ private slots:
             QVERIFY2(CModelSession::FromJson(sourceSession.ToJson(), &session, &error), qPrintable(error));
             CModelDocument candidate;
             QVERIFY2(session.RestoreDocument(baseline, candidate, &error), qPrintable(error));
-            const int expected = sourceSession.deformerParentIndices.value(target.id);
+            const int expected = sourceSession.deformerParentIndices.value(target.id, sourceParent);
             QVERIFY2(editor.controller.Restore(std::move(candidate), &error), qPrintable(error));
             editor.refresh();
             QCOMPARE(editor.document.DeformerParentIndex(target.id), expected);
@@ -686,8 +704,43 @@ private slots:
     {
         QTest::addColumn<QString>("type");
         QTest::newRow("shared-artmesh-keyforms") << QStringLiteral("artmesh");
-        QTest::newRow("shared-warp-source") << QStringLiteral("warp");
-        QTest::newRow("shared-rotation-source") << QStringLiteral("rotation");
+        QTest::newRow("shared-warp-keyforms") << QStringLiteral("warp");
+        QTest::newRow("shared-rotation-keyforms") << QStringLiteral("rotation");
+    }
+
+    void sharedSpecificEditRejectsWithoutPublishing_data()
+    {
+        QTest::addColumn<QString>("type");
+        QTest::newRow("warp") << QStringLiteral("warp");
+        QTest::newRow("rotation") << QStringLiteral("rotation");
+    }
+
+    void sharedSpecificEditRejectsWithoutPublishing()
+    {
+        QFETCH(QString, type);
+        Editor editor;
+        QString error;
+        QVERIFY(editor.document.LoadBytes(sharedEditorBytes(true), "shared.moc3", &error));
+        editor.bind();
+        editor.current = DeformerSnapshotData::pose(editor.document);
+        const QString target = type == QLatin1String("warp") ? QStringLiteral("Warp") : QStringLiteral("Child");
+        QVERIFY2(editor.controller.Activate(target, type, 0, editor.current, &error), qPrintable(error));
+        editor.inspector.SetSelection(target, type);
+        auto* table = editor.inspector.findChild<QTableWidget*>(type == QLatin1String("warp") ? QStringLiteral("warpKeyformTable") : QStringLiteral("rotationKeyformTable"));
+        QVERIFY(table && table->item(0, 1));
+        const auto previous = table->item(0, 1)->text();
+        const auto revision = editor.document.Revision();
+        const auto bytes = editor.publishedBytes;
+        const int accepted = editor.accepted;
+        QSignalSpy rejected(&editor.inspector, &CInspectorPanel::EditRejected);
+        table->item(0, 1)->setText(QString::number(previous.toFloat() + .25f, 'g', 9));
+        QCOMPARE(rejected.size(), 1);
+        QVERIFY(rejected.first().first().toString().contains(QStringLiteral("共享专用")));
+        QCOMPARE(table->item(0, 1)->text(), previous);
+        QCOMPARE(editor.document.Revision(), revision);
+        QCOMPARE(editor.accepted, accepted);
+        QCOMPARE(editor.publishedBytes, bytes);
+        QVERIFY(!editor.document.CanUndoEdit() && !editor.document.CanRedoEdit());
     }
 
     void sharedObjectsRemainIndependentThroughEditorHistoryAndSession()

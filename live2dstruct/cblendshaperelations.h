@@ -11,7 +11,7 @@ class CSectionTable;
 class CBlendShapeRelations
 {
 public:
-    enum TargetType { ArtMesh, Warp };
+    enum TargetType : int { ArtMesh, Warp, Rotation, Part };
     struct Slice { int begin = 0; int count = 0; };
     struct Parameter {
         int index = -1;

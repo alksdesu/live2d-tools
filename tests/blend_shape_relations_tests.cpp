@@ -1,5 +1,6 @@
 #include "live2dstruct/cblendshaperelations.h"
 #include "live2dstruct/csectiontable.h"
+#include "blend_shape_v5_fixture.h"
 
 #include <QtTest>
 #include <QFile>
@@ -113,6 +114,64 @@ class BlendShapeRelationsTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void versionFivePartAndRotationRelationsKeepTypedIdentity()
+    {
+        const auto bytes = BlendShapeV5Fixture::Extend(fixture(), 1);
+        Relations relations;
+        QString error;
+        QVERIFY2(build(bytes, relations, &error), qPrintable(error));
+        QVERIFY(relations.Diagnostics().isEmpty());
+        const auto selected = targets(relations.TargetsForParameter("DriverA"));
+        QVERIFY(selected.contains("0:Shared"));
+        QVERIFY(selected.contains("1:Shared"));
+        QVERIFY(selected.contains("2:RotationTarget"));
+        QVERIFY(selected.contains("3:Shared"));
+        QCOMPARE(relations.ParametersForTarget(Relations::Rotation, "RotationTarget"), (QVector<int>{0}));
+        QCOMPARE(relations.ParametersForTarget(Relations::Part, "Shared"), (QVector<int>{0}));
+        QCOMPARE(relations.BindingsForTarget(Relations::Rotation, "RotationTarget"), (QVector<int>{1}));
+        QCOMPARE(relations.BindingsForTarget(Relations::Part, "Shared"), (QVector<int>{1}));
+        QCOMPARE(relations.LimitersForBinding(1).front().parameterIndex, 1);
+        QVERIFY(relations.TargetsForParameter("Limiter").isEmpty());
+        QVERIFY(relations.BindingsForTarget(static_cast<Relations::TargetType>(99), "Shared").isEmpty());
+    }
+
+    void versionFiveMalformedTargetDoesNotHideOtherTypes_data()
+    {
+        QTest::addColumn<int>("slot");
+        QTest::addColumn<int>("type");
+        QTest::newRow("part") << 0x27c << int(Relations::Part);
+        QTest::newRow("rotation") << 0x288 << int(Relations::Rotation);
+    }
+
+    void versionFiveMalformedTargetDoesNotHideOtherTypes()
+    {
+        QFETCH(int, slot);
+        QFETCH(int, type);
+        auto bytes = BlendShapeV5Fixture::Extend(fixture(), 1);
+        setCell(bytes, slot, 0, 999);
+        Relations relations;
+        QString error;
+        QVERIFY2(build(bytes, relations, &error), qPrintable(error));
+        QVERIFY(diagnosed(relations, "bs_shape"));
+        QVERIFY(relations.BindingsForTarget(Relations::TargetType(type), type == Relations::Part ? "Shared" : "RotationTarget").isEmpty());
+        QVERIFY(!relations.BindingsForTarget(Relations::ArtMesh, "Shared").isEmpty());
+        QVERIFY(!relations.BindingsForTarget(type == Relations::Part ? Relations::Rotation : Relations::Part,
+                                             type == Relations::Part ? "RotationTarget" : "Shared").isEmpty());
+    }
+
+    void duplicateGenericDeformerIdIsAmbiguousAcrossTypes()
+    {
+        auto bytes = BlendShapeV5Fixture::Extend(fixture(), 1);
+        id(bytes, 0x6c, 1, "Shared");
+        Relations relations;
+        QVERIFY(build(bytes, relations));
+        QVERIFY(diagnosed(relations, "bs_target_id"));
+        QVERIFY(relations.BindingsForTarget(Relations::Warp, "Shared").isEmpty());
+        QVERIFY(relations.BindingsForTarget(Relations::Rotation, "Shared").isEmpty());
+        QVERIFY(!relations.BindingsForTarget(Relations::Part, "Shared").isEmpty());
+        QVERIFY(!relations.BindingsForTarget(Relations::ArtMesh, "Shared").isEmpty());
+    }
+
     void suppliedModelsHaveNoNativeBlendShapeData_data()
     {
         QTest::addColumn<QString>("model");

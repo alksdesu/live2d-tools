@@ -20,11 +20,16 @@ public:
         qint64 width = 4;
         bool optional = false;
         int slot = -1;
+        int countIndex = -1;
     };
 
     static constexpr int OffsetTableStart = 0x40;
     static constexpr int OffsetTableCount = 137;
     static constexpr int OffsetTableEnd = OffsetTableStart + OffsetTableCount * 4;
+    static int KnownOffsetCount(int version) { return version >= 5 ? OffsetTableCount + 12 : OffsetTableCount; }
+    static int KnownCountCount(int version) { return version >= 5 ? 34 : 32; }
+    static int KnownOffsetEnd(int version) { return OffsetTableStart + KnownOffsetCount(version) * 4; }
+    static int CountInfoSize(int version) { return KnownCountCount(version) * 4; }
 
     static bool ValidateMetadata(CReader& reader, const CSectionOffsetTable& offsets);
     static QVector<ColumnSpan> ArraySpans(const CSectionOffsetTable& offsets, const CCount_info& info);

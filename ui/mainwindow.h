@@ -83,6 +83,13 @@ private:
                               const QMap<QString, float>& pose, bool editing, QString* error);
     bool PublishParameterDefinitions(const live2dstruct::CModelDocument& document,
                                      const QMap<QString, float>& values, bool editing, QString* error);
+    bool PublishParameterStructure(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
+                                   bool forward, bool restoring, const QMap<QString, float>& values,
+                                   bool editing, QMap<QString, float>& pose, QString* error);
+    bool PrepareParameterStructurePose(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
+                                       bool forward, QMap<QString, float>& pose, QString* error) const;
+    QStringList ParameterReferences(const QString& id, bool includeTimeline = true) const;
+    void RefreshParameterStructureUi();
     void SyncParameterDefinitionPreview();
     bool ActivateKeyform(const QString& id, int keyform, QString* error);
     bool ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error);
@@ -93,6 +100,7 @@ private:
     void SelectModelObjects(const QStringList& ids, const QStringList& types);
     void RefreshModelTree();
     QString m_parameterBeingEdited;
+    QStringList m_selectedObjectIds, m_selectedObjectTypes;
     void RefreshUndoActions();
     void UndoDocumentEdit();
     void RedoDocumentEdit();

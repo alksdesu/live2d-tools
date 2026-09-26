@@ -10,6 +10,7 @@
 
 namespace live2dstruct {
 namespace {
+constexpr int TargetTypeCount = CBlendShapeRelations::Part + 1;
 bool contains(int index, qsizetype size) { return index >= 0 && index < size; }
 bool validSlice(CBlendShapeRelations::Slice slice, qsizetype size)
 {
@@ -41,9 +42,9 @@ struct CBlendShapeRelations::State
     QVector<int> constraintIndices;
     QVector<Diagnostic> diagnostics;
     QHash<QString, int> parameterIds, targetIds;
-    std::array<QHash<int, QVector<int>>, 2> parameterRows;
-    std::array<QVector<quint8>, 2> usableRows;
-    int artCount = 0, warpCount = 0;
+    std::array<QHash<int, QVector<int>>, TargetTypeCount> parameterRows;
+    std::array<QVector<quint8>, TargetTypeCount> usableRows;
+    std::array<int, TargetTypeCount> objectCounts{};
 
     void report(const QString& code, const QString& table, int row, const QString& message)
     {
@@ -52,8 +53,8 @@ struct CBlendShapeRelations::State
 
     void read(const CSectionTable& table)
     {
-        artCount = table.art_meshes.size();
-        warpCount = table.warp_deformers.size();
+        objectCounts = {int(table.art_meshes.size()), int(table.warp_deformers.size()),
+                        int(table.rotation_deformers.size()), int(table.parts.size())};
         if (table.keys) keys = QVector<float>(table.keys->values.cbegin(), table.keys->values.cend());
         QVector<int> badKeys(keys.size() + 1);
         for (int index = 0; index < keys.size(); ++index)
@@ -160,9 +161,10 @@ struct CBlendShapeRelations::State
                 report("bs_constraint_reference", "blend_shape_constraint_indices", index, QStringLiteral("权重限制索引越界"));
         }
 
-        const std::array<int, 2> keyformCounts{int(table.art_mesh_keyforms.size()), int(table.warp_deformer_keyforms.size())};
-        std::array<QVector<int>, 2> badRows{
-            QVector<int>(table.blend_shape_keyform_bindings.size() + 1), QVector<int>(table.blend_shape_keyform_bindings.size() + 1)};
+        const std::array<int, TargetTypeCount> keyformCounts{int(table.art_mesh_keyforms.size()),
+            int(table.warp_deformer_keyforms.size()), int(table.rotation_deformer_keyforms.size()), int(table.part_keyforms.size())};
+        std::array<QVector<int>, TargetTypeCount> badRows;
+        for (auto& rows : badRows) rows.resize(table.blend_shape_keyform_bindings.size() + 1);
         for (int index = 0; index < table.blend_shape_keyform_bindings.size(); ++index) {
             const auto* source = table.blend_shape_keyform_bindings[index];
             Binding binding;
@@ -182,7 +184,7 @@ struct CBlendShapeRelations::State
             if (!binding.valid) report("bs_keyform_owner", "blend_shape_keyform_bindings", index, QStringLiteral("融合关键形绑定缺少唯一有效的融合参数"));
             if (!source || !validSlice(binding.constraints, constraintIndices.size()))
                 report("bs_constraint_slice", "blend_shape_keyform_bindings", index, QStringLiteral("权重限制引用区间无效"));
-            for (int type = 0; type < 2; ++type) {
+            for (int type = 0; type < TargetTypeCount; ++type) {
                 const bool span = source && validSlice(binding.keyforms, keyformCounts[type]);
                 badRows[type][index + 1] = badRows[type][index] + !span;
                 usableRows[type].append(binding.valid && span);
@@ -191,22 +193,39 @@ struct CBlendShapeRelations::State
             bindings.append(binding);
         }
 
+        QHash<QString, int> deformerIds;
         const auto addTarget = [&](Target target) {
+            const QString sourceTable = target.type == ArtMesh ? QStringLiteral("art_meshes")
+                : target.type == Part ? QStringLiteral("parts") : QStringLiteral("deformers");
             target.selectable = !target.id.isEmpty();
+            if ((target.type == Warp || target.type == Rotation) && !target.id.isEmpty()) {
+                const auto previous = deformerIds.constFind(target.id);
+                if (previous != deformerIds.cend()) {
+                    if (*previous >= 0) {
+                        auto& other = targets[*previous];
+                        other.selectable = false;
+                        if (other.type != target.type)
+                            report("bs_target_id", sourceTable, target.objectIndex, QStringLiteral("变形器标识重复：%1").arg(target.id));
+                    }
+                    target.selectable = false;
+                    deformerIds[target.id] = -1;
+                } else deformerIds.insert(target.id, targets.size());
+            }
             const auto key = targetKey(target.type, target.id);
             const auto found = targetIds.constFind(key);
             if (found != targetIds.cend()) {
                 if (found.value() >= 0) targets[found.value()].selectable = false;
                 target.selectable = false;
                 targetIds.insert(key, -1);
-                report("bs_target_id", target.type == ArtMesh ? "art_meshes" : "deformers", target.objectIndex,
+                report("bs_target_id", sourceTable, target.objectIndex,
                        QStringLiteral("目标标识重复：%1").arg(target.id));
             } else targetIds.insert(key, targets.size());
-            if (target.id.isEmpty()) report("bs_target_id", target.type == ArtMesh ? "art_meshes" : "deformers",
+            if (target.id.isEmpty()) report("bs_target_id", sourceTable,
                                            target.objectIndex, QStringLiteral("目标标识为空"));
-            if (target.type == Warp && !contains(target.sourceIndex, warpCount)) {
+            if ((target.type == Warp || target.type == Rotation) && !contains(target.sourceIndex, objectCounts[target.type])) {
                 target.selectable = false;
-                report("bs_warp_source", "deformers", target.objectIndex, QStringLiteral("网格变形器专用源索引无效"));
+                report(target.type == Warp ? "bs_warp_source" : "bs_rotation_source", "deformers", target.objectIndex,
+                       QStringLiteral("变形器专用源索引无效"));
             }
             targets.append(target);
         };
@@ -217,9 +236,15 @@ struct CBlendShapeRelations::State
         for (int index = 0; index < table.deformers.size(); ++index) {
             const auto* source = table.deformers[index];
             if (source && source->types == 0) addTarget({Warp, index, source->specific_sources_indices, source->ids, false});
+            else if (source && source->types == 1) addTarget({Rotation, index, source->specific_sources_indices, source->ids, false});
+        }
+        for (int index = 0; index < table.parts.size(); ++index) {
+            const auto* source = table.parts[index];
+            addTarget({Part, index, index, source ? source->ids : QString(), false});
         }
         const auto addShapes = [&](const auto& sources, TargetType type, int size) {
-            const QString tableName = type == ArtMesh ? "blend_shapes_art_meshes" : "blend_shapes_warp_deformers";
+            const QString tableName = type == ArtMesh ? "blend_shapes_art_meshes" : type == Warp ? "blend_shapes_warp_deformers"
+                : type == Rotation ? "blend_shapes_rotation_deformers" : "blend_shapes_parts";
             for (int index = 0; index < sources.size(); ++index) {
                 const auto* source = sources[index];
                 Shape shape;
@@ -238,8 +263,10 @@ struct CBlendShapeRelations::State
                 shapes.append(shape);
             }
         };
-        addShapes(table.blend_shapes_art_meshes, ArtMesh, artCount);
-        addShapes(table.blend_shapes_warp_deformers, Warp, warpCount);
+        addShapes(table.blend_shapes_art_meshes, ArtMesh, objectCounts[ArtMesh]);
+        addShapes(table.blend_shapes_warp_deformers, Warp, objectCounts[Warp]);
+        addShapes(table.blend_shapes_rotation_deformers, Rotation, objectCounts[Rotation]);
+        addShapes(table.blend_shapes_parts, Part, objectCounts[Part]);
     }
 };
 
@@ -287,7 +314,7 @@ QVector<CBlendShapeRelations::Target> CBlendShapeRelations::TargetsForParameter(
 {
     QVector<Target> result;
     if (!m_state || !contains(parameterIndex, m_state->parameters.size()) || !m_state->parameters[parameterIndex].selectable) return result;
-    std::array<QSet<int>, 2> selected;
+    std::array<QSet<int>, TargetTypeCount> selected;
     for (const auto& shape : m_state->shapes) {
         if (!shape.valid || !shape.bindings.count) continue;
         const auto rows = m_state->parameterRows[shape.type].constFind(parameterIndex);
@@ -304,7 +331,7 @@ QVector<CBlendShapeRelations::Target> CBlendShapeRelations::TargetsForParameter(
 QVector<int> CBlendShapeRelations::BindingsForTarget(TargetType type, const QString& id) const
 {
     QVector<int> result;
-    if (!m_state || (type != ArtMesh && type != Warp)) return result;
+    if (!m_state || type < ArtMesh || type > Part) return result;
     const int index = m_state->targetIds.value(targetKey(type, id), -1);
     if (!contains(index, m_state->targets.size()) || !m_state->targets[index].selectable) return result;
     const int sourceIndex = m_state->targets[index].sourceIndex;

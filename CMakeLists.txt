@@ -54,8 +54,11 @@ add_library(model_data STATIC
     live2dstruct/cmotiontimeline.cpp
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
+    live2dstruct/cmodeldocumentstructure.cpp
+    live2dstruct/cparameterreferences.cpp
     live2dstruct/ckeyformbindinggrid.cpp
     live2dstruct/cmocpreviewbuilder.cpp
+    live2dstruct/cmocparameterstructurebuilder.cpp
     live2dstruct/cmoclayoutrewriter.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
@@ -143,6 +146,10 @@ if(BUILD_TESTING)
         target_link_libraries(real_core_preview_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(real_core_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME real_core_preview COMMAND real_core_preview_tests)
+        add_executable(parameter_structure_core_tests tests/parameter_structure_core_tests.cpp)
+        target_link_libraries(parameter_structure_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(parameter_structure_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME parameter_structure_core COMMAND parameter_structure_core_tests)
     endif()
     add_executable(export_control_tests tests/export_control_tests.cpp)
     target_link_libraries(export_control_tests PRIVATE export_control Qt6::Test)
@@ -173,7 +180,7 @@ if(BUILD_TESTING)
     target_link_libraries(caff_archive_tests PRIVATE cmo3_data Qt6::Test)
     add_test(NAME caff_archive COMMAND caff_archive_tests)
 
-    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit)
+    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit parameter_references parameter_structure parameter_structure_document)
         add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
         target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${data_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -213,7 +220,7 @@ if(BUILD_TESTING)
     target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
     add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller parameter_definition_edit tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller parameter_definition_edit parameter_structure_controller tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -318,6 +325,11 @@ if(BUILD_TESTING)
     add_test(NAME model_runtime_state COMMAND model_runtime_state_tests)
     add_executable(model_replacement_tests tests/model_replacement_tests.cpp ${cubism_model_test_sources}
         live2d/LAppModelParameterDefinitions.cpp opengl/coffscreenbuffer.cpp
+        live2d/LAppModelParameterStructure.cpp framework/Model/CubismUserModelReplacement.cpp
+        framework/Physics/CubismPhysics.cpp framework/Physics/CubismPhysicsJson.cpp
+        framework/Effect/CubismPose.cpp
+        framework/Utils/CubismJson.cpp framework/Utils/CubismString.cpp
+        framework/Math/CubismMath.cpp framework/Math/CubismVector2.cpp framework/Math/CubismModelMatrix.cpp
         framework/Model/CubismModelReplacement.cpp framework/Model/CubismMoc.cpp
         framework/Rendering/CubismRenderer.cpp framework/Math/CubismMatrix44.cpp framework/Type/csmRectF.cpp)
     target_link_libraries(model_replacement_tests PRIVATE model_data Qt6::Gui Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test)

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <functional>
 #include <new>
 #include <unordered_map>
 
@@ -73,9 +74,10 @@ class PhysicsParameterDefinitionTests : public QObject
     Q_OBJECT
     using ModelOwner = std::unique_ptr<CubismModel, void (*)(CubismModel*)>;
     using PhysicsOwner = std::unique_ptr<CubismPhysics, void (*)(CubismPhysics*)>;
-    static ModelOwner model()
+    static ModelOwner model(const std::function<void(GetterState&)>& configure = {})
     {
         auto data = std::make_unique<GetterState>();
+        if (configure) configure(*data);
         void* handle = allocate(sizeof(CubismModelFixture::ModelHandle), Core::csmAlignofModel);
         auto* core = CubismModelFixture::AttachModel(handle, data.get());
         coreStates.emplace(handle, std::move(data));
@@ -105,16 +107,68 @@ private slots:
         QVERIFY(coreStates.empty());
         QVERIFY(allocations.empty());
     }
+    void structuralMigrationPreparesIndicesAndWarmCachesById()
+    {
+        auto before = model();
+        auto next = model([](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamC", "ParamB", "ParamA"}); });
+        auto simulation = physics();
+        simulation->_parameterCaches = {0.3f, -0.0f};
+        simulation->_parameterInputCaches = {-0.0f, 0.5f};
+        simulation->_currentRemainTime = 0.0125f;
+        simulation->_physicsRig->Particles[1].Velocity.X = 0.625f;
+        const int oldInput = simulation->_physicsRig->Inputs[0].SourceParameterIndex;
+        CubismPhysics::ParameterDefinitionState prepared;
+        QString error;
+        QVERIFY2(simulation->PrepareParameterStructureChange(*before, *next, prepared, &error), qPrintable(error));
+        QCOMPARE(simulation->_parameterCaches.size(), 2);
+        QCOMPARE(simulation->_physicsRig->Inputs[0].SourceParameterIndex, oldInput);
+        simulation->CommitParameterDefinitionChange(prepared);
+        QCOMPARE(simulation->_parameterCaches, QVector<float>({0.4f, -0.0f, 0.3f}));
+        QCOMPARE(simulation->_parameterInputCaches, QVector<float>({0.4f, 0.5f, -0.0f}));
+        QVERIFY(std::signbit(simulation->_parameterCaches[1]));
+        QVERIFY(std::signbit(simulation->_parameterInputCaches[2]));
+        QCOMPARE(simulation->_physicsRig->Inputs[0].SourceParameterIndex, 2);
+        QCOMPARE(simulation->_physicsRig->Outputs[0].DestinationParameterIndex, 1);
+        QCOMPARE(simulation->_currentRemainTime, 0.0125f);
+        QCOMPARE(simulation->_physicsRig->Particles[1].Velocity.X, 0.625f);
+        simulation->_physicsRig->Inputs[0].SourceParameterIndex = 0;
+        simulation->_physicsRig->Outputs[0].DestinationParameterIndex = 999;
+        simulation->Evaluate(next.get(), 0.01f);
+        QCOMPARE(simulation->_physicsRig->Inputs[0].SourceParameterIndex, 2);
+        QCOMPARE(simulation->_physicsRig->Outputs[0].DestinationParameterIndex, 1);
+    }
+
+    void missingRealPhysicsReferencesRejectAndCannotReadVirtualIndices()
+    {
+        auto before = model();
+        auto missing = model([](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); });
+        auto simulation = physics();
+        simulation->_parameterCaches = {0.3f, 0.5f};
+        simulation->_currentRemainTime = 0.015f;
+        CubismPhysics::ParameterDefinitionState prepared;
+        QString error;
+        QVERIFY(!simulation->PrepareParameterStructureChange(*before, *missing, prepared, &error));
+        QVERIFY(error.contains(QStringLiteral("ParamA")));
+        const auto original = State(missing->GetModel()).values;
+        simulation->Evaluate(missing.get(), 0.1f);
+        simulation->Stabilization(missing.get());
+        simulation->Interpolate(missing.get(), 0.5f);
+        QCOMPARE(State(missing->GetModel()).values, original);
+        QCOMPARE(simulation->_currentRemainTime, 0.015f);
+        QCOMPARE(simulation->_parameterCaches, QVector<float>({0.3f, 0.5f}));
+        QVERIFY(missing->_notExistParameterId.isEmpty());
+    }
+
     void migrationOnlyChangesAffectedAbsoluteCachesAfterCommit()
     {
         auto before = model(), next = model();
         State(before->GetModel()).minimum[0] = -2;
         State(before->GetModel()).maximum[0] = 2;
         auto simulation = physics();
-        simulation->_parameterCaches.PushBack(1.5f);
-        simulation->_parameterCaches.PushBack(-0.0f);
-        simulation->_parameterInputCaches.PushBack(-1.5f);
-        simulation->_parameterInputCaches.PushBack(3.5f);
+        simulation->_parameterCaches.append(1.5f);
+        simulation->_parameterCaches.append(-0.0f);
+        simulation->_parameterInputCaches.append(-1.5f);
+        simulation->_parameterInputCaches.append(3.5f);
         simulation->_currentRemainTime = 0.017f;
         simulation->_currentRigOutputs[0].outputs[0] = 0.37f;
         simulation->_previousRigOutputs[0].outputs[0] = -0.42f;
@@ -152,10 +206,10 @@ private slots:
         CubismPhysics::ParameterDefinitionState pending;
         QVERIFY(simulation->PrepareParameterDefinitionChange(*before, *next, pending));
         simulation->CommitParameterDefinitionChange(pending);
-        QCOMPARE(simulation->_parameterCaches.GetSize(), 0u);
-        QCOMPARE(simulation->_parameterInputCaches.GetSize(), 0u);
-        simulation->_parameterCaches.PushBack(3.0f);
-        simulation->_parameterInputCaches.PushBack(-0.0f);
+        QCOMPARE(simulation->_parameterCaches.size(), 0u);
+        QCOMPARE(simulation->_parameterInputCaches.size(), 0u);
+        simulation->_parameterCaches.append(3.0f);
+        simulation->_parameterInputCaches.append(-0.0f);
         QVERIFY(simulation->PrepareParameterDefinitionChange(*before, *next, pending));
         simulation->CommitParameterDefinitionChange(pending);
         QCOMPARE(simulation->_parameterCaches[0], 3.0f);

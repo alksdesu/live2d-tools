@@ -16,6 +16,15 @@ public:
         int is_reflect_x;
         int is_reflect_y;
 
+        int multiply_color_sources_indices = 0;
+        int screen_color_sources_indices = 0;
+
+        void ReadColorOffsets(CReader& bytes)
+        {
+            multiply_color_sources_indices = bytes.readInt();
+            screen_color_sources_indices = bytes.readInt();
+        }
+
         Offset(CReader& bytes) {
             opacities = bytes.readInt();
             angles= bytes.readInt();
@@ -26,6 +35,9 @@ public:
             is_reflect_y= bytes.readInt();
         }
     };
+    int multiply_color_sources_index = -1;
+    int screen_color_sources_index = -1;
+
     float opacities;
     float angles;
     float origin_x;
@@ -35,6 +47,15 @@ public:
     bool is_reflect_y;
 
     CRotation_deformer_keyforms(CReader& bytes,const Offset& rotationDeformerKeyforms, int i) {
+        if (rotationDeformerKeyforms.multiply_color_sources_indices) {
+            bytes.seek(rotationDeformerKeyforms.multiply_color_sources_indices + i * 4);
+            multiply_color_sources_index = bytes.readInt();
+        }
+        if (rotationDeformerKeyforms.screen_color_sources_indices) {
+            bytes.seek(rotationDeformerKeyforms.screen_color_sources_indices + i * 4);
+            screen_color_sources_index = bytes.readInt();
+        }
+
         bytes.seek(rotationDeformerKeyforms.opacities + i*4);
         opacities = bytes.readFloat();
 

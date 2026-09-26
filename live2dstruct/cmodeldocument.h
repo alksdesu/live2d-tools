@@ -11,6 +11,7 @@
 #include <QByteArray>
 #include <QMap>
 #include <memory>
+#include "cmocparameterstructurebuilder.h"
 
 namespace live2dstruct {
 class CReader;
@@ -152,9 +153,21 @@ struct CModelDrawOrderGroup
     QVector<CModelDrawOrderGroupObject> objects;
 };
 
+struct CModelEditRuntimeState
+{
+    QVariant before;
+    QVariant after;
+};
+
+struct CModelEditStorageState
+{
+    QVariantMap before;
+    QVariantMap after;
+};
+
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure };
     QString name;
     QString type;
     Field field = Visibility;
@@ -162,6 +175,8 @@ struct CModelEdit
     QVariant after;
     int index = -1;
     bool coalesce = true;
+    std::shared_ptr<CModelEditRuntimeState> runtime;
+    std::shared_ptr<const CModelEditStorageState> storage;
 };
 
 class CModelDocument
@@ -181,6 +196,15 @@ public:
     bool KeyformParameterValues(const QString& id, const QString& type, int keyformIndex,
                                 QMap<QString, float>& values, QString* error = nullptr) const;
     bool BuildPreviewMoc(QByteArray& bytes, QString* error = nullptr) const;
+    const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }
+    const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
+    bool SetParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
+    QVariantMap ParameterStructureState() const;
+    bool MakeCreateParameterEdit(const CMocParameterStructureBuilder::CreateRequest& request,
+                                 const QString& displayName, CModelEdit& edit, QString* error = nullptr) const;
+    bool MakeBindParameterEdit(const QString& id, const QVector<CMocParameterStructureBuilder::BindingRequest>& bindings,
+                               CModelEdit& edit, QString* error = nullptr) const;
+    bool MakeDeleteParameterEdit(const QString& id, CModelEdit& edit, QString* error = nullptr) const;
     const QSize& CanvasPixels() const { return m_canvasPixels; }
     const QVector<CModelParameter>& Parameters() const { return m_parameters; }
     bool SetParameterValue(const QString& id, float value);
@@ -200,6 +224,7 @@ public:
     const QVector<CModelPart>& Parts() const { return m_parts; }
     const QVector<CModelDeformer>& Deformers() const { return m_deformers; }
     int DeformerParentIndex(const QString& id) const;
+    int SourceDeformerParentIndex(const QString& id) const { return m_sourceDeformerParents.value(id, -1); }
     QSet<QString> HiddenDeformerDrawables() const;
     bool SetDeformerParentIndex(const QString& id, int parentIndex);
     bool SetDeformerParentIndices(const QHash<QString, int>& parents);
@@ -254,12 +279,23 @@ public:
     QVector<CModelDiagnostic> Validate() const;
 
 private:
+    QVariantMap EditStorage(const CModelEdit& edit) const;
+    bool RestoreEditStorage(const QVariantMap& state);
+    bool ValidateEditStorage(const CModelEdit& edit) const;
+    bool PrepareParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure,
+                                   CModelDocument& candidate, QString* error) const;
+    bool MakeParameterStructureEdit(const CMocParameterStructureBuilder::Result& result, const QString& id,
+                                    const QString* displayName, bool created, CModelEdit& edit, QString* error) const;
+    bool ApplyParameterStructureState(const QVariantMap& state, QString* error = nullptr);
     bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);
     bool m_loaded = false;
     quint64 m_revision = 0;
     QString m_sourcePath;
     QByteArray m_sourceBytes;
     QByteArray m_sourceDigest;
+    QByteArray m_workingBaseBytes;
+    CMocParameterStructureBuilder::ColumnState m_structure;
+    QHash<QString, int> m_sourceDeformerParents;
     std::shared_ptr<const CKeyformBindingGrid> m_keyformBindings;
     std::shared_ptr<const CMocPreviewBuilder> m_previewBuilder;
     QString m_previewError;
@@ -290,6 +326,7 @@ private:
 
 }
 
+Q_DECLARE_METATYPE(live2dstruct::CModelParameterMetadata)
 Q_DECLARE_METATYPE(live2dstruct::CModelRotationKeyform)
 Q_DECLARE_METATYPE(QVector<live2dstruct::CModelRotationKeyform>)
 Q_DECLARE_METATYPE(live2dstruct::CModelWarpKeyform)

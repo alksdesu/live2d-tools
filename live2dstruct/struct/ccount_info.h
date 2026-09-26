@@ -50,6 +50,10 @@ public:
         blend_shape_constraint_indices=bytes.readInt();
         blend_shape_constraints=bytes.readInt();
         blend_shape_constraint_values=bytes.readInt();
+        if (bytes.m_byte.size() > 4 && quint8(bytes.m_byte[4]) >= 5) {
+            blend_shapes_parts = bytes.readInt();
+            blend_shapes_rotation_deformers = bytes.readInt();
+        }
     }
 
     int parts;
@@ -87,6 +91,8 @@ public:
     int blend_shapes_warp_deformers;
     int keyform_multiply_colors;
     int keyform_screen_colors;
+    int blend_shapes_parts = 0;
+    int blend_shapes_rotation_deformers = 0;
 };
 }
 

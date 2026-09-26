@@ -66,7 +66,7 @@ bool validateParameterOptions(const CSectionTable& table, const CCmo3Builder::Op
     return true;
 }
 
-bool validatePhysicsFile(const QString& path, QString* error)
+bool validatePhysicsFile(const QString& path, const QSet<QString>& parameterIds, QJsonObject& snapshot, QString* error)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -119,7 +119,16 @@ bool validatePhysicsFile(const QString& path, QString* error)
         for (const QJsonValue& inputValue : inputsValue.toArray()) {
             if (!inputValue.isObject()) { if (error) *error = QStringLiteral("physics3 输入无效：%1").arg(groupId); return false; }
             const QJsonObject input = inputValue.toObject();
-            const QString inputId = input.value(QStringLiteral("Source")).toObject().value(QStringLiteral("Id")).toString();
+            const auto source = input.value(QStringLiteral("Source")).toObject();
+            if (source.value(QStringLiteral("Target")).toString() != QLatin1String("Parameter")) {
+                if (error) *error = QStringLiteral("physics3 输入目标必须是 Parameter：%1").arg(groupId);
+                return false;
+            }
+            const QString inputId = source.value(QStringLiteral("Id")).toString();
+            if (!parameterIds.contains(inputId)) {
+                if (error) *error = QStringLiteral("physics3 输入引用了不存在的参数：%1").arg(inputId);
+                return false;
+            }
             const QString type = input.value(QStringLiteral("Type")).toString();
             if (inputId.isEmpty() || (type != QStringLiteral("X") && type != QStringLiteral("Y") && type != QStringLiteral("Angle")) ||
                 !validNumber(input, QStringLiteral("Weight"), 0.0, 100.0)) {
@@ -130,7 +139,16 @@ bool validatePhysicsFile(const QString& path, QString* error)
         for (const QJsonValue& outputValue : outputsValue.toArray()) {
             if (!outputValue.isObject()) { if (error) *error = QStringLiteral("physics3 输出无效：%1").arg(groupId); return false; }
             const QJsonObject output = outputValue.toObject();
-            const QString outputId = output.value(QStringLiteral("Destination")).toObject().value(QStringLiteral("Id")).toString();
+            const auto destination = output.value(QStringLiteral("Destination")).toObject();
+            if (destination.value(QStringLiteral("Target")).toString() != QLatin1String("Parameter")) {
+                if (error) *error = QStringLiteral("physics3 输出目标必须是 Parameter：%1").arg(groupId);
+                return false;
+            }
+            const QString outputId = destination.value(QStringLiteral("Id")).toString();
+            if (!parameterIds.contains(outputId)) {
+                if (error) *error = QStringLiteral("physics3 输出引用了不存在的参数：%1").arg(outputId);
+                return false;
+            }
             const QString type = output.value(QStringLiteral("Type")).toString();
             const QJsonValue vertexIndex = output.value(QStringLiteral("VertexIndex"));
             const double index = vertexIndex.toDouble(-1.0);
@@ -157,6 +175,7 @@ bool validatePhysicsFile(const QString& path, QString* error)
             }
         }
     }
+    snapshot = root;
     return true;
 }
 
@@ -250,9 +269,9 @@ class Generator
 {
 public:
     Generator(const CCmo3Builder::Options& options, CSectionTable& table,
-              QVector<ExtractedLayer>& extracted, const QHash<QString, QString>& userData)
+              QVector<ExtractedLayer>& extracted, const QHash<QString, QString>& userData, const QJsonObject& physics)
         : m_opt(options), m_table(table), m_extracted(extracted), m_userData(userData),
-          m_entities(m_xml, m_caff)
+          m_physics(physics), m_entities(m_xml, m_caff)
     {
     }
 
@@ -312,6 +331,7 @@ private:
     CSectionTable& m_table;
     QVector<ExtractedLayer>& m_extracted;
     const QHash<QString, QString>& m_userData;
+    const QJsonObject& m_physics;
 
     CXsXmlWriter m_xml;
     CCaffArchive m_caff;
@@ -435,23 +455,15 @@ void Generator::writePhysicsMain()
 {
     m_xml.BeginObject(QStringLiteral("CPhysicsSettingsSourceSet"),
                       QStringLiteral("physicsSettingsSourceSet"));
-    QJsonArray settings;
+    const QJsonArray settings = m_physics.value(QStringLiteral("PhysicsSettings")).toArray();
     QHash<QString, QString> groupNames;
-    if (!m_opt.physicsPath.isEmpty()) {
-        QFile file(m_opt.physicsPath);
-        if (file.open(QIODevice::ReadOnly)) {
-            const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-            settings = root.value(QStringLiteral("PhysicsSettings")).toArray();
-            const QJsonArray dictionary = root.value(QStringLiteral("Meta")).toObject()
-                .value(QStringLiteral("PhysicsDictionary")).toArray();
-            for (const auto& value : dictionary) {
-                const QJsonObject entry = value.toObject();
-                const QString id = entry.value(QStringLiteral("Id")).toString();
-                const QString name = entry.value(QStringLiteral("Name")).toString();
-                if (!id.isEmpty() && !name.isEmpty()) groupNames.insert(id, name);
-            }
-            file.close();
-        }
+    const QJsonArray dictionary = m_physics.value(QStringLiteral("Meta")).toObject()
+        .value(QStringLiteral("PhysicsDictionary")).toArray();
+    for (const auto& value : dictionary) {
+        const QJsonObject entry = value.toObject();
+        const QString id = entry.value(QStringLiteral("Id")).toString();
+        const QString name = entry.value(QStringLiteral("Name")).toString();
+        if (!id.isEmpty() && !name.isEmpty()) groupNames.insert(id, name);
     }
     m_xml.BeginCArrayList(QStringLiteral("_sourceCubismPhysics"), settings.size());
 
@@ -1783,7 +1795,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         opt.modelName = QFileInfo(opt.mocPath).completeBaseName();
     }
 
-    CReader reader(opt.mocPath);
+    CReader reader = opt.mocBytes.isEmpty() ? CReader(opt.mocPath) : CReader::FromBytes(opt.mocBytes);
     CSectionTable table(reader);
     if (!table.IsValid() || !table.count_info || !table.canvas_info || !table.uvs ||
         !table.position_indices || !table.keyform_positions || !table.keys) {
@@ -1798,7 +1810,10 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
 
     if (!validateDeformerSources(table, outError) || !validateParameterOptions(table, opt, outError)) return false;
 
-    if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, outError)) return false;
+    QJsonObject physics;
+    QSet<QString> parameterIds;
+    for (const auto* parameter : table.parameters) parameterIds.insert(parameter->ids);
+    if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, parameterIds, physics, outError)) return false;
 
     QHash<QString, QString> userData;
     if (!opt.userDataPath.isEmpty()) {
@@ -1845,7 +1860,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     }
     QVector<ExtractedLayer> extracted = extractor.ExtractAll(&table, true, &opt.drawableIndexOverrides);
 
-    Generator generator(opt, table, extracted, userData);
+    Generator generator(opt, table, extracted, userData, physics);
     return generator.Run(outError);
 }
 

@@ -96,6 +96,18 @@ public:
 
     bool                CanRebindModel(const CubismModel* previous) const;
     bool                RebindModel(const CubismModel* previous, CubismModel* replacement);
+    class RebindState
+    {
+        friend class CubismPose;
+        struct Entry { PartData* target; int parameter; int part; };
+        CubismPose* owner = nullptr;
+        CubismModel* replacement = nullptr;
+        QVector<Entry> entries;
+        bool warm = false;
+    };
+    bool PrepareRebindModel(const CubismModel* previous, CubismModel* replacement,
+                           RebindState& result, QString* error = nullptr);
+    void CommitRebindModel(RebindState& state) noexcept;
 
     /**
      * @brief 表示を初期化

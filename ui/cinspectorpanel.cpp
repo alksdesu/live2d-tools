@@ -717,6 +717,27 @@ void CInspectorPanel::RefreshSelection()
     else if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
 
+bool CInspectorPanel::SyncActiveKeyform(const QString& id, const QString& type, int keyform)
+{
+    if (!m_document || keyform < 0) return false;
+    int count = 0;
+    if (type == QLatin1String("artmesh")) {
+        for (const auto& mesh : m_document->Drawables()) if (mesh.id == id) { count = mesh.keyforms.size(); break; }
+    } else if (type == QLatin1String("warp")) count = m_document->DeformerWarpKeyforms(id).size();
+    else if (type == QLatin1String("rotation")) count = m_document->DeformerRotationKeyforms(id).size();
+    if (keyform >= count) return false;
+    const QSignalBlocker blocker(this), visibilityBlocker(m_visibilityCheck);
+    m_selectionName = id;
+    m_selectionType = type;
+    m_selectionNames = {id};
+    m_selectionTypes = {type};
+    m_visibilityCheck->setTristate(false);
+    m_activeKeyformIndex = type == QLatin1String("artmesh") ? keyform : -1;
+    m_activeDeformerKeyform = type == QLatin1String("artmesh") ? -1 : keyform;
+    showModelObject(id, type, true);
+    return true;
+}
+
 void CInspectorPanel::SetLockedState(const QSet<QString>& lockedKeys)
 {
     m_lockedKeys = lockedKeys;
@@ -1718,7 +1739,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
             for (int parentIndex = 0; parentIndex < m_document->Deformers().size(); ++parentIndex) {
                 const auto& candidate = m_document->Deformers()[parentIndex];
                 if (candidate.id == name || (candidate.parentPartIndex != deformer.parentPartIndex &&
-                    parentIndex != deformer.parentDeformerIndex)) continue;
+                    parentIndex != deformer.parentDeformerIndex &&
+                    parentIndex != m_document->SourceDeformerParentIndex(deformer.id))) continue;
                 m_deformerParentCombo->addItem(candidate.id, parentIndex);
             }
             const int parentIndex = m_document->DeformerParentIndex(name);

@@ -26,7 +26,9 @@ enum class ColumnId {
     WarpBinding, WarpSourceBegin, WarpSourceCount, WarpVertices, WarpRows, WarpColumns, WarpQuad, WarpColor,
     RotationBinding, RotationSourceBegin, RotationSourceCount, RotationBaseAngle, RotationColor,
     BlendWarpTarget, BlendWarpBegin, BlendWarpCount,
-    ParameterMax, ParameterMin, ParameterDefault, ParameterRepeat, ParameterDecimal, Count
+    ParameterMax, ParameterMin, ParameterDefault, ParameterRepeat, ParameterDecimal,
+    ArtMultiplyIndex, ArtScreenIndex, WarpMultiplyIndex, WarpScreenIndex, RotationMultiplyIndex, RotationScreenIndex,
+    BlendRotationTarget, BlendRotationBegin, BlendRotationCount, Count
 };
 constexpr size_t ColumnCount = static_cast<size_t>(ColumnId::Count);
 size_t Index(Kind kind) { return static_cast<size_t>(kind); }
@@ -119,6 +121,7 @@ struct Column
     QVector<QPair<qint64, qint64>> aliases;
     int width = 4;
     bool optional = false;
+    bool enabled = true;
 
     bool Safe(qint64 first, qint64 bytes) const
     {
@@ -197,7 +200,7 @@ struct CMocPreviewBuilder::Snapshot
     int maskCountOffset = 0;
     int countInfoOffset = 0;
     int partCount = 0;
-    QHash<int, QVector<int>> blendShapesByWarp;
+    QHash<QString, int> originalParents;
 
     const Column& Get(ColumnId column) const { return columns[Index(column)]; }
     QByteArray Cell(ColumnId column, int row) const
@@ -239,7 +242,7 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
     const auto& offsets = *table.sectionOffsetTable;
     const auto& counts = *table.count_info;
     auto spans = CSectionValidation::ArraySpans(offsets, counts);
-    if (spans.size() != CSectionValidation::OffsetTableCount - 2)
+    if (spans.size() != CSectionValidation::KnownOffsetCount(offsets.mocVersion) - 2)
         return Fail(error, QStringLiteral("预览补丁区段布局不完整"));
     for (int offset : {offsets.parameters->runtime_space_0, offsets.parameters->extension_runtime_space_0}) {
         if (offset && counts.parameters)
@@ -267,47 +270,56 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
         spans.append({"unparsed_header_column", offset, end - offset, 1});
     }
     columns = {{
-        {"deformers.parent_deformer_indices", 0x80, offsets.deformers->parent_deformer_indices, counts.deformers, {}},
-        {"warp_deformer_keyforms.opacities", 0x12c, offsets.warp_deformer_keyforms->opacities, counts.warp_deformer_keyforms, {}},
-        {"warp_deformer_keyforms.keyform_position_sources_begin_indices", 0x130, offsets.warp_deformer_keyforms->keyform_position_sources_begin_indices, counts.warp_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.opacities", 0x134, offsets.rotation_deformer_keyforms->opacities, counts.rotation_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.angles", 0x138, offsets.rotation_deformer_keyforms->angles, counts.rotation_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.origin_x", 0x13c, offsets.rotation_deformer_keyforms->origin_x, counts.rotation_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.origin_y", 0x140, offsets.rotation_deformer_keyforms->origin_y, counts.rotation_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.scales", 0x144, offsets.rotation_deformer_keyforms->scales, counts.rotation_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.is_reflect_x", 0x148, offsets.rotation_deformer_keyforms->is_reflect_x, counts.rotation_deformer_keyforms, {}},
-        {"rotation_deformer_keyforms.is_reflect_y", 0x14c, offsets.rotation_deformer_keyforms->is_reflect_y, counts.rotation_deformer_keyforms, {}},
-        {"art_mesh_keyforms.keyform_position_sources_begin_indices", 0x158, offsets.art_mesh_keyforms->keyform_position_sources_begin_indices, counts.art_mesh_keyforms, {}},
-        {"keyform_positions.xys", 0x15c, offsets.keyform_positions->xys, counts.keyform_positions, {}},
-        {"art_meshes.drawable_flags", 0xe8, offsets.art_meshes->drawable_flags, counts.art_meshes, {}, 1},
-        {"art_meshes.drawable_mask_sources_begin_indices", 0xfc, offsets.art_meshes->drawable_mask_sources_begin_indices, counts.art_meshes, {}},
-        {"art_meshes.drawable_mask_sources_counts", 0x100, offsets.art_meshes->drawable_mask_sources_counts, counts.art_meshes, {}},
-        {"drawable_masks.art_mesh_sources_indices", 0x180, offsets.drawable_masks->art_mesh_sources_indices, counts.drawable_masks, {}},
-        {"art_mesh_keyforms.opacities", 0x150, offsets.art_mesh_keyforms->opacities, counts.art_mesh_keyforms, {}},
-        {"art_mesh_keyforms.draw_orders", 0x154, offsets.art_mesh_keyforms->draw_orders, counts.art_mesh_keyforms, {}},
-        {"art_meshes.keyform_sources_begin_indices", 0xcc, offsets.art_meshes->keyform_sources_begin_indices, counts.art_meshes, {}},
-        {"deformers.specific_sources_indices", 0x88, offsets.deformers->specific_sources_indices, counts.deformers, {}},
-        {"warp_deformers.keyform_binding_sources_indices", 0x8c, offsets.warp_deformers->keyform_binding_sources_indices, counts.warp_deformers, {}},
-        {"warp_deformers.keyform_sources_begin_indices", 0x90, offsets.warp_deformers->keyform_sources_begin_indices, counts.warp_deformers, {}},
-        {"warp_deformers.keyform_sources_counts", 0x94, offsets.warp_deformers->keyform_sources_counts, counts.warp_deformers, {}},
-        {"warp_deformers.vertex_counts", 0x98, offsets.warp_deformers->vertex_counts, counts.warp_deformers, {}},
-        {"warp_deformers.rows", 0x9c, offsets.warp_deformers->rows, counts.warp_deformers, {}},
-        {"warp_deformers.columns", 0xa0, offsets.warp_deformers->columns, counts.warp_deformers, {}},
-        {"warp_deformers.is_quad_source", 0x1d4, offsets.warp_deformers->is_quad_source, counts.warp_deformers, {}, 4, true},
-        {"warp_deformers.keyform_color_sources_begin_indices", 0x1e4, offsets.warp_deformers->keyform_color_sources_begin_indices, counts.warp_deformers, {}, 4, true},
-        {"rotation_deformers.keyform_binding_sources_indices", 0xa4, offsets.rotation_deformers->keyform_binding_sources_indices, counts.rotation_deformers, {}},
-        {"rotation_deformers.keyform_sources_begin_indices", 0xa8, offsets.rotation_deformers->keyform_sources_begin_indices, counts.rotation_deformers, {}},
-        {"rotation_deformers.keyform_sources_counts", 0xac, offsets.rotation_deformers->keyform_sources_counts, counts.rotation_deformers, {}},
-        {"rotation_deformers.base_angles", 0xb0, offsets.rotation_deformers->base_angles, counts.rotation_deformers, {}},
-        {"rotation_deformers.keyform_color_sources_begin_indices", 0x1e8, offsets.rotation_deformers->keyform_color_sources_begin_indices, counts.rotation_deformers, {}, 4, true},
-        {"blend_shapes_warp_deformers.target_indices", 0x234, offsets.blend_shapes_warp_deformers->target_indices, counts.blend_shapes_warp_deformers, {}},
-        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_begin_indices", 0x238, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_begin_indices, counts.blend_shapes_warp_deformers, {}},
-        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_counts", 0x23c, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_counts, counts.blend_shapes_warp_deformers, {}},
-        {"parameters.max_values", 0x10c, offsets.parameters->max_values, counts.parameters, {}},
-        {"parameters.min_values", 0x110, offsets.parameters->min_values, counts.parameters, {}},
-        {"parameters.default_values", 0x114, offsets.parameters->default_values, counts.parameters, {}},
-        {"parameters.is_repeat", 0x118, offsets.parameters->is_repeat, counts.parameters, {}},
-        {"parameters.decimal_places", 0x11c, offsets.parameters->decimal_places, counts.parameters, {}}
+        {"deformers.parent_deformer_indices", -1, offsets.deformers->parent_deformer_indices, counts.deformers, {}},
+        {"warp_deformer_keyforms.opacities", -1, offsets.warp_deformer_keyforms->opacities, counts.warp_deformer_keyforms, {}},
+        {"warp_deformer_keyforms.keyform_position_sources_begin_indices", -1, offsets.warp_deformer_keyforms->keyform_position_sources_begin_indices, counts.warp_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.opacities", -1, offsets.rotation_deformer_keyforms->opacities, counts.rotation_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.angles", -1, offsets.rotation_deformer_keyforms->angles, counts.rotation_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.origin_x", -1, offsets.rotation_deformer_keyforms->origin_x, counts.rotation_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.origin_y", -1, offsets.rotation_deformer_keyforms->origin_y, counts.rotation_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.scales", -1, offsets.rotation_deformer_keyforms->scales, counts.rotation_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.is_reflect_x", -1, offsets.rotation_deformer_keyforms->is_reflect_x, counts.rotation_deformer_keyforms, {}},
+        {"rotation_deformer_keyforms.is_reflect_y", -1, offsets.rotation_deformer_keyforms->is_reflect_y, counts.rotation_deformer_keyforms, {}},
+        {"art_mesh_keyforms.keyform_position_sources_begin_indices", -1, offsets.art_mesh_keyforms->keyform_position_sources_begin_indices, counts.art_mesh_keyforms, {}},
+        {"keyform_positions.xys", -1, offsets.keyform_positions->xys, counts.keyform_positions, {}},
+        {"art_meshes.drawable_flags", -1, offsets.art_meshes->drawable_flags, counts.art_meshes, {}, 1},
+        {"art_meshes.drawable_mask_sources_begin_indices", -1, offsets.art_meshes->drawable_mask_sources_begin_indices, counts.art_meshes, {}},
+        {"art_meshes.drawable_mask_sources_counts", -1, offsets.art_meshes->drawable_mask_sources_counts, counts.art_meshes, {}},
+        {"drawable_masks.art_mesh_sources_indices", -1, offsets.drawable_masks->art_mesh_sources_indices, counts.drawable_masks, {}},
+        {"art_mesh_keyforms.opacities", -1, offsets.art_mesh_keyforms->opacities, counts.art_mesh_keyforms, {}},
+        {"art_mesh_keyforms.draw_orders", -1, offsets.art_mesh_keyforms->draw_orders, counts.art_mesh_keyforms, {}},
+        {"art_meshes.keyform_sources_begin_indices", -1, offsets.art_meshes->keyform_sources_begin_indices, counts.art_meshes, {}},
+        {"deformers.specific_sources_indices", -1, offsets.deformers->specific_sources_indices, counts.deformers, {}},
+        {"warp_deformers.keyform_binding_sources_indices", -1, offsets.warp_deformers->keyform_binding_sources_indices, counts.warp_deformers, {}},
+        {"warp_deformers.keyform_sources_begin_indices", -1, offsets.warp_deformers->keyform_sources_begin_indices, counts.warp_deformers, {}},
+        {"warp_deformers.keyform_sources_counts", -1, offsets.warp_deformers->keyform_sources_counts, counts.warp_deformers, {}},
+        {"warp_deformers.vertex_counts", -1, offsets.warp_deformers->vertex_counts, counts.warp_deformers, {}},
+        {"warp_deformers.rows", -1, offsets.warp_deformers->rows, counts.warp_deformers, {}},
+        {"warp_deformers.columns", -1, offsets.warp_deformers->columns, counts.warp_deformers, {}},
+        {"warp_deformers.is_quad_source", -1, offsets.warp_deformers->is_quad_source, counts.warp_deformers, {}, 4, true},
+        {"warp_deformers.keyform_color_sources_begin_indices", -1, offsets.warp_deformers->keyform_color_sources_begin_indices, counts.warp_deformers, {}, 4, true},
+        {"rotation_deformers.keyform_binding_sources_indices", -1, offsets.rotation_deformers->keyform_binding_sources_indices, counts.rotation_deformers, {}},
+        {"rotation_deformers.keyform_sources_begin_indices", -1, offsets.rotation_deformers->keyform_sources_begin_indices, counts.rotation_deformers, {}},
+        {"rotation_deformers.keyform_sources_counts", -1, offsets.rotation_deformers->keyform_sources_counts, counts.rotation_deformers, {}},
+        {"rotation_deformers.base_angles", -1, offsets.rotation_deformers->base_angles, counts.rotation_deformers, {}},
+        {"rotation_deformers.keyform_color_sources_begin_indices", -1, offsets.rotation_deformers->keyform_color_sources_begin_indices, counts.rotation_deformers, {}, 4, true},
+        {"blend_shapes_warp_deformers.target_indices", -1, offsets.blend_shapes_warp_deformers->target_indices, counts.blend_shapes_warp_deformers, {}},
+        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_begin_indices", -1, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_begin_indices, counts.blend_shapes_warp_deformers, {}},
+        {"blend_shapes_warp_deformers.blend_shape_keyform_binding_sources_counts", -1, offsets.blend_shapes_warp_deformers->blend_shape_keyform_binding_sources_counts, counts.blend_shapes_warp_deformers, {}},
+        {"parameters.max_values", -1, offsets.parameters->max_values, counts.parameters, {}},
+        {"parameters.min_values", -1, offsets.parameters->min_values, counts.parameters, {}},
+        {"parameters.default_values", -1, offsets.parameters->default_values, counts.parameters, {}},
+        {"parameters.is_repeat", -1, offsets.parameters->is_repeat, counts.parameters, {}},
+        {"parameters.decimal_places", -1, offsets.parameters->decimal_places, counts.parameters, {}},
+        {"art_mesh_keyforms.multiply_color_sources_indices", -1, offsets.art_mesh_keyforms->multiply_color_sources_indices, counts.art_mesh_keyforms, {}, 4, true, offsets.mocVersion >= 5},
+        {"art_mesh_keyforms.screen_color_sources_indices", -1, offsets.art_mesh_keyforms->screen_color_sources_indices, counts.art_mesh_keyforms, {}, 4, true, offsets.mocVersion >= 5},
+        {"warp_deformer_keyforms.multiply_color_sources_indices", -1, offsets.warp_deformer_keyforms->multiply_color_sources_indices, counts.warp_deformer_keyforms, {}, 4, true, offsets.mocVersion >= 5},
+        {"warp_deformer_keyforms.screen_color_sources_indices", -1, offsets.warp_deformer_keyforms->screen_color_sources_indices, counts.warp_deformer_keyforms, {}, 4, true, offsets.mocVersion >= 5},
+        {"rotation_deformer_keyforms.multiply_color_sources_indices", -1, offsets.rotation_deformer_keyforms->multiply_color_sources_indices, counts.rotation_deformer_keyforms, {}, 4, true, offsets.mocVersion >= 5},
+        {"rotation_deformer_keyforms.screen_color_sources_indices", -1, offsets.rotation_deformer_keyforms->screen_color_sources_indices, counts.rotation_deformer_keyforms, {}, 4, true, offsets.mocVersion >= 5},
+        {"blend_shapes_rotation_deformers.target_indices", -1, offsets.blend_shapes_rotation_deformers->target_indices, counts.blend_shapes_rotation_deformers, {}, 4, false, offsets.mocVersion >= 5},
+        {"blend_shapes_rotation_deformers.blend_shape_keyform_binding_sources_begin_indices", -1, offsets.blend_shapes_rotation_deformers->blend_shape_keyform_binding_sources_begin_indices, counts.blend_shapes_rotation_deformers, {}, 4, false, offsets.mocVersion >= 5},
+        {"blend_shapes_rotation_deformers.blend_shape_keyform_binding_sources_counts", -1, offsets.blend_shapes_rotation_deformers->blend_shape_keyform_binding_sources_counts, counts.blend_shapes_rotation_deformers, {}, 4, false, offsets.mocVersion >= 5}
     }};
     countInfoOffset = offsets.count_info->count_info_offset;
     positionCountOffset = offsets.count_info->count_info_offset + PositionCountIndex * 4;
@@ -318,6 +330,14 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
     if (Word(bytes, maskCountOffset) != quint32(counts.drawable_masks))
         return Fail(error, QStringLiteral("预览蒙版数量与区段表不一致"));
     for (auto& column : columns) {
+        if (!column.enabled) continue;
+        const auto schema = std::find_if(spans.cbegin(), spans.cend(), [&](const auto& span) {
+            return std::strcmp(span.name, column.name) == 0;
+        });
+        if (schema == spans.cend() || schema->slot < 0 || schema->offset != column.offset ||
+            schema->count != column.count || schema->width != column.width)
+            return Fail(error, QStringLiteral("预览区段与共享定义不一致：%1").arg(QString::fromLatin1(column.name)));
+        column.slot = schema->slot;
         if (Word(bytes, column.slot) != quint32(column.offset))
             return Fail(error, QStringLiteral("预览区段 %1 与偏移表不一致").arg(QString::fromLatin1(column.name)));
         const qint64 end = qint64(column.offset) + qint64(column.count) * column.width;
@@ -433,8 +453,22 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
     if (!addBlendShapes(table.blend_shapes_art_meshes, table.art_meshes, Kind::ArtMesh, counts.art_mesh_keyforms) ||
         !addBlendShapes(table.blend_shapes_warp_deformers, table.warp_deformers, Kind::Warp, counts.warp_deformer_keyforms))
         return Fail(error, QStringLiteral("BlendShape 目标或关键形引用越界"));
-    for (int index = 0; index < table.blend_shapes_warp_deformers.size(); ++index)
-        blendShapesByWarp[table.blend_shapes_warp_deformers[index]->target_indices].append(index);
+    for (int index = 0; index < table.blend_shapes_rotation_deformers.size(); ++index) {
+        const auto* shape = table.blend_shapes_rotation_deformers[index];
+        if (shape->target_indices < 0 || shape->target_indices >= rotations.size() ||
+            !Range(shape->blend_shape_keyform_binding_sources_begin_indices,
+                   shape->blend_shape_keyform_binding_sources_counts, table.blend_shape_keyform_bindings.size()))
+            return Fail(error, QStringLiteral("Rotation BlendShape 目标或绑定越界"));
+        for (int at = 0; at < shape->blend_shape_keyform_binding_sources_counts; ++at) {
+            const auto* binding = table.blend_shape_keyform_bindings[shape->blend_shape_keyform_binding_sources_begin_indices + at];
+            if (!Range(binding->keyform_sources_blend_shape_indices, binding->keyform_sources_blend_shape_counts,
+                       counts.rotation_deformer_keyforms))
+                return Fail(error, QStringLiteral("Rotation BlendShape 关键形范围越界"));
+            const Reference reference{binding->keyform_sources_blend_shape_indices, binding->keyform_sources_blend_shape_counts, 0};
+            blend[Index(Kind::Rotation)].append(reference);
+            all[Index(Kind::Rotation)].append(reference);
+        }
+    }
 
     struct Interval { int begin; int end; Kind kind; int row; };
     QVector<Interval> intervals;
@@ -485,7 +519,6 @@ bool CMocPreviewBuilder::Snapshot::Detach(const QVector<ObjectEdit>& objects,
 {
     changed = false;
     QVector<const ObjectEdit*> selected;
-    std::array<QVector<int>, 2> sourceOwners{QVector<int>(warps.size(), 0), QVector<int>(rotations.size(), 0)};
     for (const auto& object : objects) {
         bool isolate = false;
         for (int rowIndex : object.changedRows) {
@@ -494,25 +527,21 @@ bool CMocPreviewBuilder::Snapshot::Detach(const QVector<ObjectEdit>& objects,
             isolate = isolate || row.blendShape || row.orphanSource || !request.equal || request.owners != row.owners;
         }
         if (!isolate) continue;
+        if (object.kind != Kind::ArtMesh &&
+            (object.kind == Kind::Warp ? warps : rotations)[object.specific].owners > 1)
+            return Fail(error, QStringLiteral("共享专用变形器源无法保证无损拆分：%1").arg(deformers[object.index].id));
         selected.append(&object);
-        if (object.kind != Kind::ArtMesh) ++sourceOwners[Index(object.kind) - 1][object.specific];
     }
     if (selected.isEmpty()) return true;
 
-    const std::array<QVector<ColumnId>, 6> groups{{
-        {ColumnId::ArtOpacity, ColumnId::ArtDrawOrder, ColumnId::ArtBegin},
-        {ColumnId::WarpOpacity, ColumnId::WarpBegin},
+    const std::array<QVector<ColumnId>, 3> groups{{
+        {ColumnId::ArtOpacity, ColumnId::ArtDrawOrder, ColumnId::ArtBegin, ColumnId::ArtMultiplyIndex, ColumnId::ArtScreenIndex},
+        {ColumnId::WarpOpacity, ColumnId::WarpBegin, ColumnId::WarpMultiplyIndex, ColumnId::WarpScreenIndex},
         {ColumnId::RotationOpacity, ColumnId::Angle, ColumnId::OriginX, ColumnId::OriginY,
-         ColumnId::Scale, ColumnId::ReflectX, ColumnId::ReflectY},
-        {ColumnId::WarpBinding, ColumnId::WarpSourceBegin, ColumnId::WarpSourceCount, ColumnId::WarpVertices,
-         ColumnId::WarpRows, ColumnId::WarpColumns, ColumnId::WarpQuad, ColumnId::WarpColor},
-        {ColumnId::RotationBinding, ColumnId::RotationSourceBegin, ColumnId::RotationSourceCount,
-         ColumnId::RotationBaseAngle, ColumnId::RotationColor},
-        {ColumnId::BlendWarpTarget, ColumnId::BlendWarpBegin, ColumnId::BlendWarpCount}
+         ColumnId::Scale, ColumnId::ReflectX, ColumnId::ReflectY, ColumnId::RotationMultiplyIndex, ColumnId::RotationScreenIndex}
     }};
-    constexpr std::array<int, 6> countIndices{9, 7, 8, 2, 3, 27};
-    std::array<QVector<int>, 6> appended;
-    std::array<QSet<int>, 2> retained;
+    constexpr std::array<int, 3> countIndices{9, 7, 8};
+    std::array<QVector<int>, 3> appended;
     Patches patches;
     const auto appendRows = [&](int group, int first, int count, int& destination) {
         const auto& column = Get(groups[group].first());
@@ -532,26 +561,8 @@ bool CMocPreviewBuilder::Snapshot::Detach(const QVector<ObjectEdit>& objects,
             patches[Index(ColumnId::ArtSourceBegin)].insert(object->index, EncodeWord(quint32(keyformBegin)));
             continue;
         }
-        const int kind = int(Index(object->kind)) - 1;
-        int specific = object->specific;
-        if (source.owners > 1) {
-            if (sourceOwners[kind][specific] == source.owners && !retained[kind].contains(specific))
-                retained[kind].insert(specific);
-            else {
-                if (!appendRows(3 + kind, object->specific, 1, specific)) return false;
-                patches[Index(ColumnId::Specific)].insert(object->index, EncodeWord(quint32(specific)));
-            }
-        }
         const ColumnId sourceBegin = object->kind == Kind::Warp ? ColumnId::WarpSourceBegin : ColumnId::RotationSourceBegin;
-        patches[Index(sourceBegin)].insert(specific, EncodeWord(quint32(keyformBegin)));
-        if (object->kind != Kind::Warp || specific == object->specific) continue;
-        const auto shapes = blendShapesByWarp.constFind(object->specific);
-        if (shapes == blendShapesByWarp.cend()) continue;
-        for (int row : shapes.value()) {
-            int appendedRow = 0;
-            if (!appendRows(5, row, 1, appendedRow)) return false;
-            patches[Index(ColumnId::BlendWarpTarget)].insert(appendedRow, EncodeWord(quint32(specific)));
-        }
+        patches[Index(sourceBegin)].insert(object->specific, EncodeWord(quint32(keyformBegin)));
     }
 
     std::array<int, ColumnCount> columnGroups;
@@ -567,7 +578,7 @@ bool CMocPreviewBuilder::Snapshot::Detach(const QVector<ObjectEdit>& objects,
         const int group = columnGroups[index];
         const int extra = group < 0 ? 0 : appended[group].size();
         sizes[index] = column.count + extra;
-        if ((!extra && patches[index].isEmpty()) || (column.optional && !column.offset)) continue;
+        if (!column.enabled || (!extra && patches[index].isEmpty()) || (column.optional && !column.offset)) continue;
         for (auto it = patches[index].cbegin(); it != patches[index].cend(); ++it) {
             if (it.key() < 0 || it.key() >= sizes[index] || it->size() != column.width)
                 return Fail(error, QStringLiteral("独立关键形字段补丁越界"));
@@ -626,7 +637,8 @@ bool CMocPreviewBuilder::Snapshot::ParentPatches(const QHash<QString, int>& over
         const auto& deformer = deformers[index];
         if ((deformer.type != 0 && deformer.type != 1) || parent < -1 || parent >= deformers.size() || parent == index)
             return Fail(error, QStringLiteral("变形器父级覆盖无效：%1").arg(it.key()));
-        if (parent != deformer.parent && parent >= 0 && deformer.part != deformers[parent].part)
+        if (parent != deformer.parent && parent != originalParents.value(deformer.id, deformer.parent) &&
+            parent >= 0 && deformer.part != deformers[parent].part)
             return Fail(error, QStringLiteral("新父变形器必须属于同一 Part：%1").arg(it.key()));
         parents[index] = parent;
         if (parent != deformer.parent) patches[Index(ColumnId::Parent)].insert(index, EncodeWord(quint32(parent)));
@@ -840,6 +852,11 @@ bool CMocPreviewBuilder::Snapshot::Write(const Patches& input, const QVector<Add
 
 bool CMocPreviewBuilder::Initialize(const QByteArray& baseline, QString* error)
 {
+    return Initialize(baseline, {}, error);
+}
+
+bool CMocPreviewBuilder::Initialize(const QByteArray& baseline, const QHash<QString, int>& originalParents, QString* error)
+{
     if (error) error->clear();
     try {
         CReader reader = CReader::FromBytes(baseline);
@@ -851,6 +868,13 @@ bool CMocPreviewBuilder::Initialize(const QByteArray& baseline, QString* error)
         candidate->bytes = QByteArray(baseline.constData(), baseline.size());
         candidate->digest = QCryptographicHash::hash(candidate->bytes, QCryptographicHash::Sha256);
         if (!candidate->Read(table, error)) return false;
+        for (auto it = originalParents.cbegin(); it != originalParents.cend(); ++it) {
+            const auto found = candidate->deformerIndices.constFind(it.key());
+            if (found == candidate->deformerIndices.cend() || it.value() < -1 || it.value() >= candidate->deformers.size() ||
+                it.value() == found.value())
+                return Fail(error, QStringLiteral("原始父级来源无效：%1").arg(it.key()));
+        }
+        candidate->originalParents = originalParents;
         m_snapshot = std::move(candidate);
         return true;
     } catch (const std::bad_alloc&) {
@@ -997,6 +1021,7 @@ bool CMocPreviewBuilder::BuildOverrides(const Overrides& overrides, QByteArray& 
                     detached->bytes = std::move(structure);
                     detached->digest = state.digest;
                     if (!detached->Read(table, error)) return false;
+                    detached->originalParents = state.originalParents;
                     working = detached.get();
                     continue;
                 }

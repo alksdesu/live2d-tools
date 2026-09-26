@@ -21,6 +21,7 @@ struct ModelState
     int lookups = 0;
     int parameterWrites = 0;
     int opacityWrites = 0;
+    std::array<int, 3> parameterIndices{{0, 1, 2}};
 };
 
 std::unordered_map<const CubismModel*, ModelState> models;
@@ -97,7 +98,7 @@ CubismModel::~CubismModel() = default;
 csmInt32 CubismModel::GetParameterIndex(CubismIdHandle id)
 {
     ++models.at(this).lookups;
-    return indexOf(id);
+    return models.at(this).parameterIndices[indexOf(id)];
 }
 csmInt32 CubismModel::GetPartIndex(CubismIdHandle id)
 {
@@ -129,6 +130,50 @@ private slots:
     void initTestCase() { CubismFramework::Initialize(); }
     void cleanup() { QVERIFY(models.empty()); }
     void cleanupTestCase() { CubismFramework::Dispose(); }
+
+    void preparedStructuralRebindRemapsParametersAndKeepsFadeState()
+    {
+        std::unique_ptr<CubismMoc, decltype(&CubismMoc::Delete)> moc(CubismMoc::Create(nullptr, 0), &CubismMoc::Delete);
+        ModelOwner previous(moc->CreateModel(), ModelDeleter{moc.get()});
+        ModelOwner replacement(moc->CreateModel(), ModelDeleter{moc.get()});
+        auto pose = createPose();
+        pose->UpdateParameters(previous.get(), 0);
+        models.at(previous.get()) = {{0, 1, 0.4f}, {0.8f, 0.35f, 0.8f}};
+        models.at(replacement.get()) = {{1, 0.4f, 0}, {0.8f, 0.35f, 0.8f}};
+        models.at(replacement.get()).parameterIndices = {2, 0, 1};
+        const auto before = models.at(replacement.get());
+        CubismPose::RebindState prepared;
+        QString error;
+        QVERIFY2(pose->PrepareRebindModel(previous.get(), replacement.get(), prepared, &error), qPrintable(error));
+        QVERIFY(pose->CanRebindModel(previous.get()));
+        QCOMPARE(models.at(replacement.get()).parameterWrites, 0);
+        QCOMPARE(models.at(replacement.get()).opacityWrites, 0);
+        QCOMPARE(models.at(replacement.get()).lookups, 6);
+        QCOMPARE(models.at(replacement.get()).parameters, before.parameters);
+        pose->CommitRebindModel(prepared);
+        QVERIFY(pose->CanRebindModel(replacement.get()));
+        pose->UpdateParameters(replacement.get(), 0.1f);
+        QCOMPARE(models.at(replacement.get()).lookups, 6);
+        QCOMPARE(models.at(replacement.get()).parameterWrites, 0);
+        QCOMPARE(models.at(replacement.get()).parameters, before.parameters);
+        QVERIFY(std::abs(models.at(replacement.get()).opacities[1] - 0.45f) < 0.00001f);
+        QCOMPARE(models.at(replacement.get()).opacities[2], models.at(replacement.get()).opacities[0]);
+    }
+
+    void preparedColdRebindDoesNotInitializeOrWriteValues()
+    {
+        std::unique_ptr<CubismMoc, decltype(&CubismMoc::Delete)> moc(CubismMoc::Create(nullptr, 0), &CubismMoc::Delete);
+        ModelOwner previous(moc->CreateModel(), ModelDeleter{moc.get()});
+        ModelOwner replacement(moc->CreateModel(), ModelDeleter{moc.get()});
+        auto pose = createPose();
+        CubismPose::RebindState prepared;
+        QVERIFY(pose->PrepareRebindModel(previous.get(), replacement.get(), prepared));
+        pose->CommitRebindModel(prepared);
+        QVERIFY(pose->CanRebindModel(previous.get()));
+        QCOMPARE(models.at(replacement.get()).lookups, 0);
+        QCOMPARE(models.at(replacement.get()).parameterWrites, 0);
+        QCOMPARE(models.at(replacement.get()).opacityWrites, 0);
+    }
 
     void boundPoseContinuesItsFadeWithoutResettingReplacement()
     {

@@ -59,10 +59,13 @@ SOURCES += \
     opengl/cmeshbounds.cpp \
     opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
+    live2dstruct/cmodeldocumentstructure.cpp \
+    live2dstruct/cparameterreferences.cpp \
     live2dstruct/ckeyformbindinggrid.cpp \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
+    live2dstruct/cmocparameterstructurebuilder.cpp \
     live2dstruct/cmoclayoutrewriter.cpp \
     live2dstruct/cmodeluserdata.cpp \
     live2dstruct/cmodelsession.cpp \
@@ -186,6 +189,7 @@ SOURCES += \
     framework/Model/CubismModelUserData.cpp\
     framework/Model/CubismModelUserDataJson.cpp\
     framework/Model/CubismUserModel.cpp\
+    framework/Model/CubismUserModelReplacement.cpp\
     framework/Motion/ACubismMotion.cpp\
     framework/Motion/CubismExpressionMotion.cpp\
     framework/Motion/CubismExpressionMotionManager.cpp\
@@ -279,6 +283,9 @@ HEADERS += \
     live2dstruct/ckeyformmappingcontext.h \
     live2dstruct/ckeyformeditcontroller.h \
     live2dstruct/cmocpreviewbuilder.h \
+    live2dstruct/cmocparameterstructurebuilder.h \
+    live2dstruct/struct/cblend_shape_targets.h \
+    live2dstruct/cparameterreferences.h \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
     CPrecompileHead.h \
@@ -409,6 +416,7 @@ HEADERS += \
     framework/Model/CubismModelUserData.hpp\
     framework/Model/CubismModelUserDataJson.hpp\
     framework/Model/CubismUserModel.hpp\
+    framework/Model/CubismParameterStructure.hpp\
     framework/Motion/ACubismMotion.hpp\
     framework/Motion/CubismExpressionMotion.hpp\
     framework/Motion/CubismExpressionMotionManager.hpp\
@@ -557,6 +565,7 @@ SOURCES += \
     opengl/cpsdrendersession.cpp \
     live2d/LAppModelUpdate.cpp \
     live2d/LAppModelParameterDefinitions.cpp \
+    live2d/LAppModelParameterStructure.cpp \
     ui/cpreviewexporttransaction.cpp \
     ui/psdbatchresult.cpp \
     ui/cexportresultspanel.cpp

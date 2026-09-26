@@ -11,10 +11,13 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <exception>
 
 namespace live2dstruct {
 
 namespace {
+constexpr int StructureCountFields = 34;
+
 void setError(QString* error, const QString& value)
 {
     if (error) *error = value;
@@ -50,12 +53,92 @@ bool readFloat(const QJsonValue& value, float* number)
     *number = static_cast<float>(parsed);
     return std::isfinite(*number);
 }
+
+bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
+{
+    qint64 bytes = 0;
+    if (state.columns.size() > 1000000 || state.counts.size() > StructureCountFields) {
+        setError(error, QStringLiteral("会话参数结构字段数量超出范围"));
+        return false;
+    }
+    for (auto it = state.columns.cbegin(); it != state.columns.cend(); ++it) {
+        if (it.key() < 0x48 || it.key() >= 0x40 + 1000000 * 4 || it.key() % 4 ||
+            it->size() > std::numeric_limits<int>::max() - bytes) {
+            setError(error, QStringLiteral("会话参数结构区段或总长度无效"));
+            return false;
+        }
+        bytes += it->size();
+    }
+    for (auto it = state.counts.cbegin(); it != state.counts.cend(); ++it)
+        if (it.key() < 0 || it.key() >= StructureCountFields || it.value() < 0 || it.value() > 1000000) {
+            setError(error, QStringLiteral("会话参数结构计数无效"));
+            return false;
+        }
+    return true;
+}
+
+bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::ColumnState& state, QString* error)
+{
+    QJsonObject object, columns, counts;
+    if (!readObject(root, QStringLiteral("structure"), &object, error)) return false;
+    if (object.isEmpty()) return true;
+    if (object.size() != 2 || !object.contains(QStringLiteral("columns")) || !object.contains(QStringLiteral("counts")) ||
+        !readObject(object, QStringLiteral("columns"), &columns, error) ||
+        !readObject(object, QStringLiteral("counts"), &counts, error) || columns.size() > 1000000 || counts.size() > StructureCountFields) {
+        setError(error, QStringLiteral("会话参数结构格式无效"));
+        return false;
+    }
+    qint64 bytes = 0;
+    for (auto it = columns.begin(); it != columns.end(); ++it) {
+        bool converted = false;
+        const int slot = it.key().toInt(&converted);
+        if (!converted || QString::number(slot) != it.key() || slot < 0x48 || slot >= 0x40 + 1000000 * 4 || slot % 4 || !it->isString()) {
+            setError(error, QStringLiteral("会话参数结构区段编号或编码无效"));
+            return false;
+        }
+        const QString encoded = it->toString();
+        const auto ascii = encoded.toLatin1();
+        if (QString::fromLatin1(ascii) != encoded || qint64(ascii.size() / 4) * 3 > std::numeric_limits<int>::max() - bytes + 2) {
+            setError(error, QStringLiteral("会话参数结构编码或总长度无效"));
+            return false;
+        }
+        const auto decoded = QByteArray::fromBase64Encoding(ascii, QByteArray::AbortOnBase64DecodingErrors);
+        if (!decoded || decoded.decoded.toBase64() != ascii || decoded.decoded.size() > std::numeric_limits<int>::max() - bytes) {
+            setError(error, QStringLiteral("会话参数结构 Base64 数据无效"));
+            return false;
+        }
+        bytes += decoded.decoded.size();
+        state.columns.insert(slot, decoded.decoded);
+    }
+    for (auto it = counts.begin(); it != counts.end(); ++it) {
+        bool converted = false;
+        const int index = it.key().toInt(&converted);
+        double value = 0;
+        if (!converted || QString::number(index) != it.key() || index < 0 || index >= StructureCountFields ||
+            !readNumber(it.value(), &value) || value < 0 || value > 1000000 || std::floor(value) != value) {
+            setError(error, QStringLiteral("会话参数结构计数无效"));
+            return false;
+        }
+        state.counts.insert(index, int(value));
+    }
+    return validStructure(state, error);
+}
 }
 
 QByteArray CModelSession::ToJson() const
 {
     QJsonObject root;
-    root.insert(QStringLiteral("version"), version);
+    const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
+    if (!validStructure(structure, nullptr)) return {};
+    root.insert(QStringLiteral("version"), hasStructure && version == 1 ? 2 : version);
+    if (hasStructure) {
+        QJsonObject columns, counts;
+        for (auto it = structure.columns.cbegin(); it != structure.columns.cend(); ++it)
+            columns.insert(QString::number(it.key()), QString::fromLatin1(it->toBase64()));
+        for (auto it = structure.counts.cbegin(); it != structure.counts.cend(); ++it)
+            counts.insert(QString::number(it.key()), it.value());
+        root.insert(QStringLiteral("structure"), QJsonObject{{QStringLiteral("columns"), columns}, {QStringLiteral("counts"), counts}});
+    }
     root.insert(QStringLiteral("animation"), animation);
     root.insert(QStringLiteral("sourceMoc"), sourceMoc);
     if (!sourceDigest.isEmpty()) root.insert(QStringLiteral("sourceDigest"), QString::fromLatin1(sourceDigest.toHex()));
@@ -158,10 +241,14 @@ QByteArray CModelSession::ToJson() const
     return QJsonDocument(root).toJson(QJsonDocument::Indented);
 }
 
-bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QString* error)
+bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QString* error) try
 {
     if (!session) {
         setError(error, QStringLiteral("会话目标为空"));
+        return false;
+    }
+    if (data.size() > std::numeric_limits<int>::max()) {
+        setError(error, QStringLiteral("会话文件长度超出范围"));
         return false;
     }
     QJsonParseError parseError;
@@ -182,13 +269,18 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion != 1) {
+    if (parsedVersion != 1 && parsedVersion != 2) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    if (!readStructure(root, result.structure, error)) return false;
+    if (parsedVersion == 1 && (!result.structure.columns.isEmpty() || !result.structure.counts.isEmpty())) {
+        setError(error, QStringLiteral("版本 1 会话不能包含参数结构"));
+        return false;
+    }
     if (!readObject(root, QStringLiteral("animation"), &result.animation, error)) return false;
     CMotionTimeline timeline;
     if (!timeline.RestoreState(result.animation, nullptr, error)) return false;
@@ -515,18 +607,25 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     }
     result.viewScale = static_cast<float>(scale);
     result.viewPosition = QPointF(x, y);
-    *session = result;
+    *session = std::move(result);
     return true;
 }
+catch (const std::exception&)
+{
+    setError(error, QStringLiteral("无法读取会话数据"));
+    return false;
+}
 
-bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error) const
+bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error) const try
 {
     const auto fail = [error](const QString& field, const QString& id = QString()) {
         setError(error, id.isEmpty() ? QStringLiteral("会话字段无效：%1").arg(field)
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if (version != 1) return fail(QStringLiteral("version"));
+    if ((version != 1 && version != 2) || (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())))
+        return fail(QStringLiteral("version"));
+    if (!validStructure(structure, error)) return false;
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
         setError(error, QStringLiteral("没有可恢复会话的模型快照"));
         return false;
@@ -555,6 +654,13 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
 
     CModelDocument candidate;
     if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
+    if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
+    QSet<QString> previousParameters, nextParameters;
+    for (const auto& parameter : loaded.Parameters()) previousParameters.insert(parameter.id);
+    for (const auto& parameter : candidate.Parameters()) nextParameters.insert(parameter.id);
+    for (auto track = timeline.Tracks().cbegin(); track != timeline.Tracks().cend(); ++track)
+        if (track.key().target == CMotionTarget::Parameter && previousParameters.contains(track.key().id) && !nextParameters.contains(track.key().id))
+            return fail(QStringLiteral("animation"), track.key().id);
     QSet<QString> objectKeys;
     QHash<QString, const CModelDrawable*> meshes;
     for (const auto& part : candidate.Parts())
@@ -629,6 +735,11 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
     setError(error, {});
     return true;
 }
+catch (const std::exception&)
+{
+    setError(error, QStringLiteral("无法恢复会话模型"));
+    return false;
+}
 
 bool CModelSession::Save(const QString& path, QString* error) const
 {
@@ -661,6 +772,10 @@ bool CModelSession::Load(const QString& path, CModelSession* session, QString* e
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         setError(error, QStringLiteral("无法读取会话：%1").arg(path));
+        return false;
+    }
+    if (file.size() > std::numeric_limits<int>::max()) {
+        setError(error, QStringLiteral("会话文件长度超出范围"));
         return false;
     }
     const QByteArray data = file.readAll();

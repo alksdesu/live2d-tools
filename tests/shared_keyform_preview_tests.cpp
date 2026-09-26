@@ -304,7 +304,23 @@ private slots:
         QCOMPARE(noOp, source);
         Overrides edits;
         const auto expectedA = change(source, kind, 0, 4, 0.125f, edits);
-        QByteArray result;
+        QByteArray result("sentinel");
+        if (sameSpecific) {
+            QVERIFY(!builder.BuildOverrides(edits, result, &error));
+            QVERIFY(error.contains(QStringLiteral("共享专用")));
+            QCOMPARE(result, QByteArray("sentinel"));
+            change(source, kind, 1, 4, -0.375f, edits);
+            QVERIFY(!builder.BuildOverrides(edits, result, &error));
+            QCOMPARE(result, QByteArray("sentinel"));
+            const auto expectedB = change(source, kind, 1, 4, 0.125f, edits);
+            QVERIFY2(builder.BuildOverrides(edits, result, &error), qPrintable(error));
+            matches(capture(result, kind, 0), expectedA);
+            matches(capture(result, kind, 1), expectedB);
+            matches(capture(result, kind, 2), capture(source, kind, 2));
+            QCOMPARE(specific(result, kind, 0), specific(source, kind, 0));
+            QCOMPARE(specific(result, kind, 1), specific(source, kind, 1));
+            return;
+        }
         QVERIFY2(builder.BuildOverrides(edits, result, &error), qPrintable(error));
         for (Kind current : {Art, Warp, Rotation})
             for (int owner = 0; owner < 3; ++owner)
@@ -353,7 +369,7 @@ private slots:
         QByteArray source = fixture();
         share(source, kind, false);
         if (kind == Art) setCell(source, 0xcc, 2, 0);
-        else setCell(source, 0x88, generic(kind, 2), 0);
+        else setCell(source, kind == Warp ? 0x90 : 0xa8, 2, 0);
         Overrides edits;
         auto expectedA = change(source, kind, 0, 4, 0.5f, edits);
         const auto expectedB = change(source, kind, 1, 0, 0.5f, edits);
@@ -395,7 +411,7 @@ private slots:
         QFETCH(int, type);
         const auto kind = static_cast<Kind>(type);
         QByteArray source = fixture();
-        if (kind == Warp) share(source, kind, true);
+        if (kind == Warp) share(source, kind, false);
         addBlend(source, kind);
         CMocPreviewBuilder builder;
         QString error;
@@ -410,12 +426,9 @@ private slots:
         for (int slot : {0x220, 0x224, 0x228, 0x22c, 0x230})
             QCOMPARE(result.mid(word(result, slot), 8), source.mid(word(source, slot), 8));
         if (kind == Warp) {
-            QCOMPARE(count(result, 27), 2);
+            QCOMPARE(count(result, 27), 1);
             QCOMPARE(column(result, 0x234, 0), 0);
-            QCOMPARE(column(result, 0x234, 1), specific(result, Warp, 0));
             QVERIFY(specific(result, Warp, 0) != specific(result, Warp, 1));
-            QCOMPARE(column(result, 0x238, 1), 0);
-            QCOMPARE(column(result, 0x23c, 1), 2);
         } else {
             QCOMPARE(count(result, 28), 1);
             QCOMPARE(column(result, 0x240, 0), 0);
@@ -445,11 +458,14 @@ private slots:
     {
         QFETCH(int, kind);
         QByteArray source = fixture();
-        share(source, Warp, true);
+        share(source, Warp, false);
         int watchedSlot = 0x1f4;
         if (kind == 0) put(source, 0x12c, word(source, watchedSlot));
         if (kind == 1) { watchedSlot = 0x160; put(source, 0x8c, word(source, watchedSlot)); }
-        if (kind == 2) setCell(source, 0x90, 1, 0);
+        if (kind == 2) {
+            setCell(source, 0x88, generic(Warp, 1), 2);
+            setCell(source, 0x90, 1, 0);
+        }
         if (kind == 3) { watchedSlot = 0x178; put(source, watchedSlot, word(source, 0x15c) + (108 + 4 * 8) * 4); }
         CMocPreviewBuilder builder;
         QString error;
