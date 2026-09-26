@@ -704,6 +704,114 @@ private slots:
         QVERIFY(QFileInfo::exists(options.outPath));
     }
 
+    void physicsByteSnapshotTakesPrecedence_data()
+    {
+        QTest::addColumn<int>("pathKind");
+        QTest::newRow("existing-source") << 0;
+        QTest::newRow("missing-source") << 1;
+        QTest::newRow("no-source") << 2;
+        QTest::newRow("invalid-source") << 3;
+    }
+
+    void physicsByteSnapshotTakesPrecedence()
+    {
+        QFETCH(int, pathKind);
+        QFile source(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json");
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        const auto original = source.readAll();
+        auto root = QJsonDocument::fromJson(original).object();
+        auto group = root.value("PhysicsSettings").toArray().first().toObject();
+        group["Id"] = QStringLiteral("MemoryOnly");
+        group["Input"] = QJsonArray{};
+        group["Output"] = QJsonArray{};
+        root["PhysicsSettings"] = QJsonArray{group};
+        const auto snapshot = QJsonDocument(root).toJson();
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        options.outPath = temporary.filePath("snapshot.cmo3");
+        if (pathKind == 0) options.physicsPath = source.fileName();
+        if (pathKind == 1) options.physicsPath = temporary.filePath("missing.physics3.json");
+        if (pathKind == 3) {
+            options.physicsPath = temporary.filePath("invalid.physics3.json");
+            QFile invalid(options.physicsPath); QVERIFY(invalid.open(QIODevice::WriteOnly));
+            QCOMPARE(invalid.write("{invalid"), qint64(8));
+        }
+        options.physicsBytes = snapshot;
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml"); QVERIFY(main);
+        QXmlStreamReader xml(main->content);
+        QStringList ids;
+        int inputs = 0, outputs = 0;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (!xml.isStartElement()) continue;
+            if (xml.name() == QLatin1String("CPhysicsSettingId")) ids.append(xml.attributes().value("idstr").toString());
+            if (xml.name() == QLatin1String("CPhysicsInput")) ++inputs;
+            if (xml.name() == QLatin1String("CPhysicsOutput")) ++outputs;
+        }
+        QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+        QCOMPARE(ids, QStringList{"MemoryOnly"});
+        QCOMPARE(inputs, 0); QCOMPARE(outputs, 0);
+        QCOMPARE(*options.physicsBytes, snapshot);
+        QVERIFY(source.seek(0)); QCOMPARE(source.readAll(), original);
+    }
+
+    void invalidPhysicsByteSnapshotsPreserveDestination_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("explicit-empty") << 0;
+        QTest::newRow("broken-json") << 1;
+        QTest::newRow("missing-settings") << 2;
+        QTest::newRow("unknown-parameter") << 3;
+        QTest::newRow("invalid-vertex") << 4;
+        QTest::newRow("wrong-target") << 5;
+    }
+
+    void invalidPhysicsByteSnapshotsPreserveDestination()
+    {
+        QFETCH(int, kind);
+        QFile source(QString(TEST_RESOURCES) + "/Wanko/Wanko.physics3.json");
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        auto root = QJsonDocument::fromJson(source.readAll()).object();
+        QByteArray bytes;
+        if (kind == 1) bytes = "{broken";
+        if (kind == 2) bytes = "{}";
+        if (kind >= 3) {
+            auto settings = root.value("PhysicsSettings").toArray();
+            auto group = settings.first().toObject();
+            if (kind == 4) {
+                auto outputs = group.value("Output").toArray();
+                auto output = outputs.first().toObject(); output["VertexIndex"] = 1000000;
+                outputs[0] = output; group["Output"] = outputs;
+            } else {
+                auto inputs = group.value("Input").toArray();
+                auto input = inputs.first().toObject(); auto reference = input.value("Source").toObject();
+                reference[kind == 3 ? "Id" : "Target"] = kind == 3 ? "MissingParameter" : "Part";
+                input["Source"] = reference; inputs[0] = input; group["Input"] = inputs;
+            }
+            settings[0] = group; root["PhysicsSettings"] = settings;
+            bytes = QJsonDocument(root).toJson();
+        }
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3";
+        options.physicsPath = source.fileName();
+        options.physicsBytes = bytes;
+        options.outPath = temporary.filePath("preserved.cmo3");
+        QFile destination(options.outPath); QVERIFY(destination.open(QIODevice::WriteOnly));
+        QCOMPARE(destination.write("preserved-output"), qint64(16)); destination.close();
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY2(error.contains("physics3"), qPrintable(error));
+        QVERIFY(destination.open(QIODevice::ReadOnly));
+        QCOMPARE(destination.readAll(), QByteArray("preserved-output"));
+    }
+
     void rejectsInvalidPhysicsJson()
     {
         QTemporaryDir temp;

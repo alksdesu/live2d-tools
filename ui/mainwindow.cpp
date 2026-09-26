@@ -31,6 +31,8 @@
 #include "std/cexportcontrol.h"
 #include "cmo3/ccmo3builder.h"
 #include "live2dstruct/cparameterreferences.h"
+#include "live2d/cparameterreferenceplan.h"
+#include "live2dstruct/cmotionblendpreview.h"
 #include "ui/theme.h"
 #include <QFileDialog>
 #include "live2d/LAppDefine.hpp"
@@ -62,6 +64,18 @@
 #include <windows.h>
 #include <windowsx.h>
 #endif
+
+struct ParameterStructureHistory
+{
+    ParameterStructureSeeds seeds;
+    std::optional<LAppModel::EditorPreviewContext> editor;
+    live2dstruct::CParameterResourceEdits::State resources;
+    std::optional<CPhysicsPanel::Snapshot> physicsTarget, physicsExpected;
+    CMotionPanel::ParameterTrackArchive tracks;
+    bool timelinePreviewActive = false;
+    quint64 timelineStopRevision = 0;
+};
+Q_DECLARE_METATYPE(ParameterStructureHistory)
 
 struct PreviewExportState
 {
@@ -351,7 +365,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         return;
     }
     if (!ConfirmExportReady(QStringLiteral("cmo3 导出"))) return;
-    if (m_physicsPanel && m_physicsPanel->HasUnsavedChanges()) {
+    if (m_physicsPanel && m_physicsPanel->HasUnsavedChanges() && !UsesSessionPhysics()) {
         const auto savePhysics = QMessageBox::question(
             this, QStringLiteral("物理配置未保存"),
             QStringLiteral("导出 cmo3 前需要保存当前物理配置，是否现在保存？"),
@@ -417,6 +431,27 @@ void MainWindow::on_actionCmo3Export_triggered()
         if (!modelJson.m_UserData.isEmpty())
             options.userDataPath = dir.filePath(modelJson.m_UserData);
     }
+    if (!options.physicsPath.isEmpty() && m_physicsPanel && UsesSessionPhysics() &&
+        QFileInfo(options.physicsPath).absoluteFilePath() == QFileInfo(m_physicsPanel->FilePath()).absoluteFilePath()) {
+        CPhysicsPanel::Snapshot physics;
+        QString error;
+        if (!m_physicsPanel->CaptureSnapshot(physics, &error)) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning(this, QStringLiteral("导出失败"), error);
+            return;
+        }
+        options.physicsBytes = QJsonDocument(physics.document).toJson(QJsonDocument::Compact);
+    } else for (auto resource = m_parameterResources.resources.cbegin(); resource != m_parameterResources.resources.cend(); ++resource) {
+        if (resource->kind != live2dstruct::CParameterReferenceEditor::Kind::Physics) continue;
+        live2dstruct::CParameterReferenceEditor::Prepared physics;
+        QString error;
+        if (!live2dstruct::CParameterReferenceEditor::Prepare(resource->kind, resource->source, resource->suppressedIds, physics, &error)) {
+            QApplication::restoreOverrideCursor();
+            QMessageBox::warning(this, QStringLiteral("导出失败"), error);
+            return;
+        }
+        options.physicsBytes = physics.effectiveBytes;
+    }
     options.parameterValues = m_document.ParameterValues();
     if (options.parameterDefaultMode == cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues) {
         auto values = m_paramPanel ? m_paramPanel->CurrentValues() : QMap<QString, float>();
@@ -473,6 +508,15 @@ bool MainWindow::SaveSession()
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     session.sourceDigest = m_document.SourceDigest();
     session.structure = m_document.ParameterStructure();
+    session.parameterResources = m_parameterResources;
+    if (m_physicsPanel && !m_physicsPanel->FilePath().isEmpty() && (UsesSessionPhysics() || m_physicsPanel->HasUnsavedChanges())) {
+        CPhysicsPanel::Snapshot physics;
+        if (!m_physicsPanel->CaptureSnapshot(physics, &animationError)) {
+            QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
+            return false;
+        }
+        session.physicsDraft = live2dstruct::CModelSession::PhysicsDraft{physics.path, physics.document, physics.dirty};
+    }
     const QMap<QString, float> currentValues = m_keyformEditor.IsActive()
         ? m_keyformBaseValues : m_paramPanel->CurrentValues();
     for (const auto& parameter : m_document.Parameters())
@@ -508,6 +552,12 @@ bool MainWindow::SaveSession()
         QMessageBox::warning(this, QStringLiteral("保存会话失败"), saveError);
         return false;
     }
+    if (session.physicsDraft) {
+        m_physicsInSession = true;
+        m_savedPhysicsDraft = session.physicsDraft->document;
+        m_savedPhysicsPath = session.physicsDraft->sourcePath;
+        ConfigurePhysicsSaving();
+    }
     m_sessionDirty = false;
     if (m_exportState && m_motionPanel && m_motionPanel->IsPreviewTransportSuspended()) m_exportState->timelineSaved = true;
     if (m_motionPanel) m_motionPanel->MarkTimelineSaved();
@@ -542,16 +592,23 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    if (!ConfirmCloseWithUnsavedChanges(true)) return;
+    const bool restoreResources = !session.parameterResources.IsEmpty() || !m_parameterResources.IsEmpty() ||
+        session.physicsDraft.has_value() || m_physicsInSession;
+    const bool restorePhysics = restoreResources || candidate.ParameterStructure() != m_document.ParameterStructure();
+    if (!ConfirmCloseWithUnsavedChanges(true, restorePhysics)) return;
     const QScopedValueRollback<bool> restoring(m_applyingSession, true);
+    const QScopedValueRollback<const live2dstruct::CModelSession*> resourceSession(m_restoringSession, &session);
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    if (!m_keyformEditor.Restore(std::move(candidate), &loadError)) {
+    if (!m_keyformEditor.Restore(std::move(candidate), &loadError, restoreResources)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
+    m_physicsInSession = session.physicsDraft.has_value() || !m_parameterResources.IsEmpty();
+    m_savedPhysicsDraft = m_physicsInSession && m_physicsPanel ? m_physicsPanel->DocumentSnapshot() : QJsonObject{};
+    m_savedPhysicsPath = m_physicsInSession && m_physicsPanel ? m_physicsPanel->FilePath() : QString();
     m_keyformBaseValues.clear();
     ClearTimelinePreview();
     RefreshKeyformUi();
@@ -693,6 +750,37 @@ QStringList MainWindow::ParameterReferences(const QString& id, bool includeTimel
     return references;
 }
 
+bool MainWindow::PrepareParameterDeletion(const QString& id, QStringList& removals, QString* error) const
+{
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || !m_openglwindows ||
+        !m_openglwindows->IsModelReady() || !RuntimeMatchesDocument(error)) {
+        if (error && error->isEmpty()) *error = QStringLiteral("请等待模型预览就绪并结束当前导出");
+        return false;
+    }
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    ParameterReferenceCatalog catalog;
+    CParameterReferencePlan::Prepared references;
+    if (!model || !model->CaptureParameterReferenceCatalog(catalog, error) ||
+        !CParameterReferencePlan::Prepare(m_openglwindows->GetCurrentModelJson(), m_parameterResources, {id}, catalog, references, error))
+        return false;
+    QStringList result = references.resources.removals;
+    if (m_motionPanel) {
+        CMotionPanel::PreparedParameterTracks tracks;
+        if (!m_motionPanel->PrepareParameterTrackRemoval({id}, tracks, error)) return false;
+        if (tracks.HasChanges()) result.append(QStringLiteral("时间轴及其历史记录中的参数轨道"));
+    }
+    if (m_physicsPanel && !m_physicsPanel->FilePath().isEmpty()) {
+        CPhysicsPanel::Snapshot before;
+        CPhysicsPanel::PreparedSnapshot physics;
+        if (!m_physicsPanel->CaptureSnapshot(before, error) ||
+            !m_physicsPanel->PrepareReferenceRemoval(before, {id}, physics, error)) return false;
+        if (physics.Result().document != before.document) result.append(QStringLiteral("当前物理草稿中的输入与输出引用"));
+    }
+    removals.swap(result);
+    return true;
+}
+
 bool MainWindow::PrepareParameterStructurePose(const live2dstruct::CModelDocument& document,
                                                const live2dstruct::CModelEdit& command, bool forward,
                                                QMap<QString, float>& pose, QString* error) const
@@ -700,13 +788,14 @@ bool MainWindow::PrepareParameterStructurePose(const live2dstruct::CModelDocumen
     if (!command.runtime) { if (error) *error = QStringLiteral("缺少参数预览恢复状态"); return false; }
     const QVariant& archived = forward ? command.runtime->after : command.runtime->before;
     if (!archived.isValid()) return true;
-    if (!archived.canConvert<ParameterStructureSeeds>()) {
+    if (!archived.canConvert<ParameterStructureSeeds>() && !archived.canConvert<ParameterStructureHistory>()) {
         if (error) *error = QStringLiteral("参数历史的预览恢复值无效");
         return false;
     }
     QSet<QString> previousIds;
     for (const auto& parameter : m_document.Parameters()) previousIds.insert(parameter.id);
-    const auto seeds = archived.value<ParameterStructureSeeds>();
+    const auto seeds = archived.canConvert<ParameterStructureHistory>() ? archived.value<ParameterStructureHistory>().seeds
+                                                                       : archived.value<ParameterStructureSeeds>();
     for (const auto& parameter : document.Parameters()) {
         const auto seed = seeds.constFind(parameter.id);
         if (previousIds.contains(parameter.id) || seed == seeds.cend() || seed->mode == ParameterStructureSeed::Mode::Defaults) continue;
@@ -733,21 +822,29 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
         return false;
     }
     if (!RuntimeMatchesDocument(error)) return false;
+    const bool deleting = !restoring && command.parameterChange == live2dstruct::CModelEdit::ParameterChange::Delete;
     QSet<QString> previousIds, nextIds;
     for (const auto& parameter : m_document.Parameters()) previousIds.insert(parameter.id);
     for (const auto& parameter : document.Parameters()) nextIds.insert(parameter.id);
     QStringList removed;
     for (const auto& id : previousIds) if (!nextIds.contains(id)) {
-        const auto references = ParameterReferences(id, !restoring);
-        if (!references.isEmpty()) {
-            if (error) *error = QStringLiteral("无法移除参数 %1：\n%2").arg(id, references.join(QLatin1Char('\n')));
-            return false;
+        if (!deleting && !restoring) {
+            const auto references = ParameterReferences(id);
+            if (!references.isEmpty()) {
+                if (error) *error = QStringLiteral("无法移除参数 %1：\n%2").arg(id, references.join(QLatin1Char('\n')));
+                return false;
+            }
         }
         removed.append(id);
     }
     QByteArray bytes;
     if (!document.BuildPreviewMoc(bytes, error)) return false;
     if (!m_openglwindows || !m_openglwindows->IsModelReady()) {
+        if (deleting || (restoring && (!m_parameterResources.IsEmpty() || m_physicsInSession ||
+            (m_restoringSession && (!m_restoringSession->parameterResources.IsEmpty() || m_restoringSession->physicsDraft))))) {
+            if (error) *error = QStringLiteral("请等待模型预览就绪再修改参数引用");
+            return false;
+        }
         QMap<QString, float> candidatePose;
         for (const auto& parameter : document.Parameters())
             candidatePose.insert(parameter.id, pose.value(parameter.id, document.ParameterValue(parameter.id)));
@@ -757,26 +854,155 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
     if (!model) { if (error) *error = QStringLiteral("模型预览尚未就绪"); return false; }
-    ParameterStructureSeeds leaving;
-    if (!model->CaptureParameterStructureSeeds(removed, leaving, error)) return false;
+    ParameterStructureHistory leaving;
+    leaving.resources = m_parameterResources;
+    leaving.timelinePreviewActive = model->HasTimelinePreview();
+    leaving.timelineStopRevision = m_timelinePreviewStopRevision;
+    LAppModel::EditorPreviewContext currentEditor;
+    if (!model->CaptureParameterStructureSeeds(removed, leaving.seeds, error) ||
+        !model->CaptureEditorPreviewContext(currentEditor, error)) return false;
+    leaving.editor = std::move(currentEditor);
     const QVariant& targetState = forward ? command.runtime->after : command.runtime->before;
-    if (targetState.isValid() && !targetState.canConvert<ParameterStructureSeeds>()) {
+    if (targetState.isValid() && !targetState.canConvert<ParameterStructureSeeds>() && !targetState.canConvert<ParameterStructureHistory>()) {
         if (error) *error = QStringLiteral("参数历史的预览恢复值无效");
         return false;
     }
-    const auto archived = targetState.value<ParameterStructureSeeds>();
+    const auto archived = targetState.canConvert<ParameterStructureHistory>() ? targetState.value<ParameterStructureHistory>()
+        : ParameterStructureHistory{targetState.value<ParameterStructureSeeds>(), {}};
+    CParameterReferencePlan::Prepared references;
+    const bool changeReferences = deleting || restoring || !m_parameterResources.IsEmpty();
+    if (changeReferences) {
+        ParameterReferenceCatalog catalog;
+        const auto& state = restoring ? (m_restoringSession ? m_restoringSession->parameterResources : live2dstruct::CParameterResourceEdits::State{})
+            : deleting && !forward ? archived.resources : m_parameterResources;
+        const QSet<QString> deletedIds = deleting && forward ? QSet<QString>(removed.begin(), removed.end()) : QSet<QString>{};
+        if (!model->CaptureParameterReferenceCatalog(catalog, error) ||
+            !CParameterReferencePlan::Prepare(m_openglwindows->GetCurrentModelJson(), state, deletedIds, catalog, references, error)) return false;
+        if (restoring) {
+            live2dstruct::CModelDocument original;
+            if (!original.LoadBytes(document.SourceBytes(), document.SourcePath(), error)) return false;
+            QSet<QString> deletedSourceIds;
+            for (const auto& parameter : original.Parameters())
+                if (!nextIds.contains(parameter.id)) deletedSourceIds.insert(parameter.id);
+            CParameterReferencePlan::Prepared audited;
+            if (!CParameterReferencePlan::Prepare(m_openglwindows->GetCurrentModelJson(), state, deletedSourceIds, catalog, audited, error)) return false;
+            if (!audited.resources.removals.isEmpty() || audited.runtime.breath != references.runtime.breath ||
+                audited.runtime.mouseFollow != references.runtime.mouseFollow) {
+                if (error) *error = QStringLiteral("会话缺少已删除源参数的关联引用处理记录");
+                return false;
+            }
+        }
+    }
+    CMotionPanel::PreparedParameterTracks tracks;
+    bool changeTracks = false;
+    if (deleting && m_motionPanel) {
+        const bool prepared = forward
+            ? m_motionPanel->PrepareParameterTrackRemoval(QSet<QString>(removed.begin(), removed.end()), tracks, error)
+            : m_motionPanel->PrepareParameterTrackRestoration(archived.tracks, tracks, error);
+        if (!prepared) return false;
+        changeTracks = true;
+    }
+    CPhysicsPanel::PreparedSnapshot physics;
+    bool changePhysics = false;
+    if ((deleting || restoring) && m_physicsPanel && !m_physicsPanel->FilePath().isEmpty()) {
+        CPhysicsPanel::Snapshot current;
+        if (!m_physicsPanel->CaptureSnapshot(current, error)) return false;
+        if (restoring) {
+            auto target = current;
+            if (m_restoringSession && m_restoringSession->physicsDraft) {
+                const auto& draft = *m_restoringSession->physicsDraft;
+                if (QFileInfo(draft.sourcePath).absoluteFilePath() != QFileInfo(current.path).absoluteFilePath()) {
+                    if (error) *error = QStringLiteral("会话物理草稿与当前模型的来源不匹配");
+                    return false;
+                }
+                target.document = draft.document;
+                target.dirty = draft.dirty;
+            } else {
+                const auto key = QDir::cleanPath(QFileInfo(m_openglwindows->GetCurrentModelJson()).absoluteDir().relativeFilePath(QFileInfo(current.path).absoluteFilePath()));
+                const auto found = references.resources.resources.constFind(key);
+                if (found == references.resources.resources.cend() || found->kind != live2dstruct::CParameterReferenceEditor::Kind::Physics) {
+                    if (error) *error = QStringLiteral("会话物理资源来源无法匹配");
+                    return false;
+                }
+                target.document = found->effective;
+                target.dirty = target.document != found->source;
+            }
+            target.tables = {};
+            target.selectedGroupId.clear();
+            target.selectedGroupRow = -1;
+            if (!m_physicsPanel->PrepareSnapshot(current, target, physics, error)) return false;
+            changePhysics = !current.SameDocument(physics.Result());
+        } else if (forward) {
+            if (!m_physicsPanel->PrepareReferenceRemoval(current, QSet<QString>(removed.begin(), removed.end()), physics, error)) return false;
+            changePhysics = current.document != physics.Result().document;
+        } else if (archived.physicsTarget && archived.physicsExpected) {
+            if (!m_physicsPanel->PrepareSnapshot(*archived.physicsExpected, *archived.physicsTarget, physics, error)) return false;
+            changePhysics = true;
+        }
+        if (changePhysics) {
+            leaving.physicsTarget = std::move(current);
+            leaving.physicsExpected = physics.Result();
+        }
+    }
     ParameterStructureSeeds entering;
     for (const auto& id : nextIds) if (!previousIds.contains(id))
-        entering.insert(id, restoring ? ParameterStructureSeed() : archived.value(id));
-    QVariant captured = QVariant::fromValue(leaving);
-    if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error))
+        entering.insert(id, restoring ? ParameterStructureSeed() : archived.seeds.value(id));
+    const auto* restoreEditor = !restoring && editing && !model->HasEditorPreview() &&
+        archived.editor && archived.editor->active && archived.editor->pose == pose
+        ? &*archived.editor : nullptr;
+    if (editing && !model->HasEditorPreview() && !restoreEditor) {
+        if (error) *error = QStringLiteral("参数历史缺少可恢复的编辑上下文");
         return false;
+    }
+    LAppModel::TimelinePreviewPreparation prepareTimeline;
+    if (changeTracks || restoring) {
+        const bool wasActive = model->HasTimelinePreview() || (deleting && !forward && archived.timelinePreviewActive &&
+            archived.timelineStopRevision == m_timelinePreviewStopRevision);
+        const bool fades = m_motionPanel && m_motionPanel->UsesMotionFades();
+        QSet<QString> partIds;
+        for (const auto& part : document.Parts()) partIds.insert(part.id);
+        prepareTimeline = [&, wasActive, fades, partIds](const QMap<QString, float>& base, const QSet<QString>& eyes,
+            const QSet<QString>& lips, LAppModel::PreparedTimelinePreview& result, QString* detail) {
+            result = {};
+            if (restoring || !wasActive) return true;
+            const auto* timeline = tracks.Timeline();
+            if (!timeline) { if (detail) *detail = QStringLiteral("候选时间轴尚未准备完成"); return false; }
+            auto frame = timeline->EvaluateFrame(static_cast<float>(tracks.Time()));
+            for (auto value = frame.parameters.cbegin(); value != frame.parameters.cend(); ++value)
+                if (base.contains(value.key())) result.explicitParameterIds.insert(value.key());
+            if (fades) frame = CMotionBlendPreview::Evaluate(*timeline, tracks.Time(), base, eyes, lips, tracks.Loop());
+            for (auto value = frame.parameters.begin(); value != frame.parameters.end();)
+                if (!base.contains(value.key())) value = frame.parameters.erase(value); else ++value;
+            for (auto value = frame.parts.begin(); value != frame.parts.end();)
+                if (!partIds.contains(value.key())) value = frame.parts.erase(value); else ++value;
+            result.active = !frame.IsEmpty();
+            result.frame = std::move(frame);
+            return true;
+        };
+    }
+    if ((changeTracks && !m_motionPanel->ValidatePreparedParameterTracks(tracks, error)) ||
+        (changePhysics && !m_physicsPanel->ValidatePreparedSnapshot(physics, error))) return false;
+    QVariant captured = QVariant::fromValue(leaving);
+    auto* capturedState = static_cast<ParameterStructureHistory*>(captured.data());
+    if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error,
+        changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline))
+        return false;
+    if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
+    if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
+        if (error) *error = QStringLiteral("时间轴准备状态在提交期间已改变");
+        return false;
+    }
+    if (changeReferences) std::swap(m_parameterResources, references.resources.state);
+    m_refreshParameterTracks = m_refreshParameterTracks || changeTracks;
+    m_refreshPhysicsReferences = m_refreshPhysicsReferences || changePhysics;
     (forward ? command.runtime->before : command.runtime->after).swap(captured);
     return true;
 }
 
 void MainWindow::RefreshParameterStructureUi()
 {
+    const QScopedValueRollback<bool> applying(m_applyingParameterReferences, true);
+    ConfigurePhysicsSaving();
     QByteArray bytes;
     QString error;
     if (!m_document.BuildPreviewMoc(bytes, &error)) { statusBar()->showMessage(error, 8000); return; }
@@ -797,6 +1023,14 @@ void MainWindow::RefreshParameterStructureUi()
     }
     SyncParameterDefinitionPreview();
     RefreshKeyformUi();
+    if (m_refreshParameterTracks && m_motionPanel) {
+        m_motionPanel->RefreshParameterTrackUi();
+        m_refreshParameterTracks = false;
+    }
+    if (m_refreshPhysicsReferences && m_physicsPanel) {
+        m_physicsPanel->NotifySnapshotCommitted();
+        m_refreshPhysicsReferences = false;
+    }
     if (m_diagnosticsPanel) m_diagnosticsPanel->Refresh();
     RefreshUndoActions();
 }
@@ -816,7 +1050,7 @@ void MainWindow::SyncParameterDefinitionPreview()
             const auto baseline = timeline ? model->GetTimelineBaseParameters() : model->GetEditorBaseParameters();
             m_paramPanel->ClearPreviewValues(values);
             m_paramPanel->SetPreviewValues(values, baseline);
-        } else if (!m_keyformBaseValues.isEmpty()) m_paramPanel->ClearPreviewValues(values);
+        } else if (!m_keyformBaseValues.isEmpty() || m_paramPanel->HasPreviewValues()) m_paramPanel->ClearPreviewValues(values);
         else m_paramPanel->SyncFromModel();
     }
     m_keyformBaseValues = editor ? model->GetEditorBaseParameters() : QMap<QString, float>();
@@ -1224,7 +1458,7 @@ void MainWindow::SetWorkspaceMode(int mode)
 
 void MainWindow::ClearTimelinePreview()
 {
-    if (m_previewExport.IsBusy()) return;
+    if (m_previewExport.IsBusy() || m_applyingParameterReferences) return;
     if (!EndKeyformEditing()) {
         auto* manager = LAppLive2DManager::GetInstance();
         auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
@@ -1234,8 +1468,9 @@ void MainWindow::ClearTimelinePreview()
     if (!m_openglwindows || !m_openglwindows->isValid()) return;
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() > 0 ? manager->GetModel(0) : nullptr;
-    if (!model || !model->HasTimelinePreview()) return;
-    model->ClearTimelinePreview();
+    if (!model) return;
+    if (model->HasTimelinePreview()) model->ClearTimelinePreview();
+    else if (!m_paramPanel || !m_paramPanel->HasPreviewValues()) return;
     if (!m_paramPanel) return;
     const auto values = model->GetParameterValues();
     m_openglwindows->SyncPreviewView();
@@ -1836,9 +2071,35 @@ void MainWindow::on_actionCloseModel_triggered()
     CloseModel();
 }
 
-bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession)
+bool MainWindow::UsesSessionPhysics() const
 {
-    const bool physicsDirty = !replacingSession && m_physicsPanel && m_physicsPanel->HasUnsavedChanges();
+    return m_physicsInSession || !m_parameterResources.IsEmpty() || !m_document.ParameterStructure().columns.isEmpty() ||
+        !m_document.ParameterStructure().counts.isEmpty();
+}
+
+bool MainWindow::HasUnsavedPhysicsChanges() const
+{
+    if (!m_physicsPanel || !m_physicsPanel->HasUnsavedChanges()) return false;
+    if (!UsesSessionPhysics()) return true;
+    CPhysicsPanel::Snapshot snapshot;
+    return !m_physicsPanel->CaptureSnapshot(snapshot) || snapshot.path != m_savedPhysicsPath || snapshot.document != m_savedPhysicsDraft;
+}
+
+void MainWindow::ConfigurePhysicsSaving()
+{
+    if (!m_physicsPanel) return;
+    if (!UsesSessionPhysics()) { m_physicsPanel->SetSessionSaveHandler({}); return; }
+    m_physicsPanel->SetSessionSaveHandler([this](QString* error) {
+        const bool saved = SaveSession();
+        if (!saved && error && error->isEmpty()) *error = QStringLiteral("物理草稿尚未保存到会话");
+        return saved;
+    });
+}
+
+bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession, bool replacingPhysics)
+{
+    const bool physicsDirty = (!replacingSession || replacingPhysics) && HasUnsavedPhysicsChanges();
+    const bool sessionPhysics = physicsDirty && UsesSessionPhysics();
     const bool poseDirty = !replacingSession && (m_poseDirty || (m_motionPanel && m_motionPanel->HasUnsavedPoseChanges()));
     const bool userDataDirty = !replacingSession && m_userDataPanel && m_userDataPanel->HasUnsavedChanges();
     const bool animationDirty = m_motionPanel && m_motionPanel->HasUnsavedTimelineChanges() &&
@@ -1861,9 +2122,9 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession)
     prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
     prompt.exec();
     if (prompt.clickedButton() == save) {
-        const bool sessionSaved = !(m_sessionDirty || animationDirty) || SaveSession();
-        const bool physicsSaved = !physicsDirty || (m_physicsPanel && m_physicsPanel->SavePhysics());
-        if (physicsDirty && physicsSaved && m_exportState)
+        const bool sessionSaved = !(m_sessionDirty || animationDirty || sessionPhysics) || SaveSession();
+        const bool physicsSaved = !physicsDirty || (sessionPhysics ? sessionSaved : m_physicsPanel && m_physicsPanel->SavePhysics());
+        if (physicsDirty && physicsSaved && !sessionPhysics && m_exportState)
             m_exportState->physicsReload = m_physicsPanel->FilePath();
         QString poseError;
         const bool poseSaved = !poseDirty || (m_motionPanel && m_motionPanel->SavePose(&poseError));
@@ -1974,6 +2235,13 @@ bool MainWindow::CloseModel()
         if (m_blendShapePanel) settings.setValue(QStringLiteral("blendShapePanelLayout"), m_blendShapePanel->SaveLayout());
     }
     m_historySource = HistorySource::None;
+    m_parameterResources = {};
+    m_physicsInSession = false;
+    m_savedPhysicsDraft = {};
+    m_savedPhysicsPath.clear();
+    m_refreshParameterTracks = false;
+    m_refreshPhysicsReferences = false;
+    m_timelinePreviewStopRevision = 0;
 
     // 停止渲染定时器
     m_openglwindows->m_timer.stop();
@@ -2280,14 +2548,16 @@ void MainWindow::RestDock(const QString &name)
         m_historySource = HistorySource::Timeline;
         RefreshUndoActions();
     });
-    connect(m_motionPanel, &CMotionPanel::TimelineDirtyChanged, this, [this](bool dirty){
+    const auto updateModifiedTitle = [this] {
+        const bool dirty = m_sessionDirty || m_poseDirty || HasUnsavedPhysicsChanges() ||
+            (m_motionPanel && (m_motionPanel->HasUnsavedTimelineChanges() || m_motionPanel->HasUnsavedPoseChanges())) ||
+            (m_userDataPanel && m_userDataPanel->HasUnsavedChanges());
+        setWindowTitle(dirty ? QStringLiteral("live2d2psd · 未保存") : QStringLiteral("live2d2psd"));
+    };
+    connect(m_motionPanel, &CMotionPanel::TimelineDirtyChanged, this, [this, updateModifiedTitle](bool dirty){
+        updateModifiedTitle();
         if (dirty) {
-            setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
             statusBar()->showMessage(QStringLiteral("动画草稿有未保存的修改"));
-        } else if (!m_sessionDirty && !m_poseDirty &&
-                   (!m_physicsPanel || !m_physicsPanel->HasUnsavedChanges()) &&
-                   (!m_userDataPanel || !m_userDataPanel->HasUnsavedChanges())) {
-            setWindowTitle(QStringLiteral("live2d2psd"));
         }
     });
     connect(m_motionPanel, &CMotionPanel::ExpressionSaved, this, [this](const QString& expression, const QString& path){
@@ -2496,6 +2766,12 @@ void MainWindow::RestDock(const QString &name)
         return true;
     });
     m_paramPanel->SetParameterReferenceProvider([this](const QString& id) { return ParameterReferences(id); });
+    m_paramPanel->SetDeleteReferenceProvider([this](const QString& id, CParamPanel::DeleteReferenceResult& result, QString* error) {
+        QStringList removals;
+        if (!PrepareParameterDeletion(id, removals, error)) return false;
+        result = {std::move(removals), {}};
+        return true;
+    });
     connect(m_paramPanel, &CParamPanel::StructureChanged, this, &MainWindow::RefreshParameterStructureUi);
     m_paramPanel->SetHistoryHandler([this](bool undo, auto& edit, QString* error) {
         return ApplyDocumentHistory(undo, edit, error);
@@ -2518,7 +2794,7 @@ void MainWindow::RestDock(const QString &name)
                 if (!isInit) m_motionPanel->RecordParameterValue(name, value);
             });
     connect(m_motionPanel, &CMotionPanel::TimelineFrameChanged, this, [this](const CMotionPreviewFrame& frame){
-        if (m_applyingSession || m_previewExport.IsBusy()) return;
+        if (m_applyingSession || m_applyingParameterReferences || m_previewExport.IsBusy()) return;
         if (!EndKeyformEditing()) { m_motionPanel->PauseTimelinePreview(); return; }
         if (frame.IsEmpty()) { ClearTimelinePreview(); return; }
         if (!m_openglwindows || !m_openglwindows->isValid()) return;
@@ -2533,7 +2809,10 @@ void MainWindow::RestDock(const QString &name)
         if (m_blendShapePanel) for (auto it = values.cbegin(); it != values.cend(); ++it)
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
     });
-    connect(m_motionPanel, &CMotionPanel::TimelinePreviewStopped, this, &MainWindow::ClearTimelinePreview);
+    connect(m_motionPanel, &CMotionPanel::TimelinePreviewStopped, this, [this] {
+        if (!m_applyingSession && !m_applyingParameterReferences && !m_previewExport.IsBusy()) ++m_timelinePreviewStopRevision;
+        ClearTimelinePreview();
+    });
     connect(m_blendShapePanel, &CBlendShapePanel::ParamChanged, this, [this](const QString& name, float value, bool){
         if (!m_paramPanel || m_previewExport.IsBusy()) return;
         m_paramPanel->ApplyExternalValue(name, value, true);
@@ -2671,10 +2950,10 @@ void MainWindow::RestDock(const QString &name)
             [markSessionDirty](const QString&, int, const QVector<float>&){ markSessionDirty(); });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableMaskIndicesChanged, this,
             [markSessionDirty](const QString&, const QVector<int>&){ markSessionDirty(); });
-    connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, [this](){
+    connect(m_physicsPanel, &CPhysicsPanel::PhysicsConfigChanged, this, [this, updateModifiedTitle](){
         if (m_applyingSession) return;
-        setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
-        statusBar()->showMessage(QStringLiteral("有未保存的物理配置"));
+        updateModifiedTitle();
+        statusBar()->showMessage(HasUnsavedPhysicsChanges() ? QStringLiteral("有未保存的物理配置") : QStringLiteral("物理配置与保存状态一致"));
     });
     connect(m_physicsPanel, &CPhysicsPanel::PhysicsSaved, this, [this](const QString& path){
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();

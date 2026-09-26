@@ -537,7 +537,10 @@ bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const
 bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                                 const ParameterStructureSeeds& addedSeeds,
                                                 const QMap<QString, float>& baseValues, bool keepEditorPreview,
-                                                QMap<QString, float>& preparedPose, QString* error)
+                                                QMap<QString, float>& preparedPose, QString* error,
+                                                const ParameterReferenceState* references,
+                                                const LAppModel::EditorPreviewContext* restoreEditor,
+                                                const LAppModel::TimelinePreviewPreparation& prepareTimeline)
 {
     if (error) error->clear();
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数结构"));
@@ -559,7 +562,7 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
         if (!model->ApplyParameterStructurePreview(bytes, sourceDigest, addedSeeds, baseValues,
-                                                   keepEditorPreview, error, prepare)) return false;
+                                                   keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         preparedPose.swap(pose);

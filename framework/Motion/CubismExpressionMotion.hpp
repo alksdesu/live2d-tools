@@ -6,6 +6,8 @@
 #include "framework/Utils/CubismJson.hpp"
 #include "framework/Model/CubismModel.hpp"
 #include "CubismExpressionMotionManager.hpp"
+#include "framework/Model/CubismParameterReferences.hpp"
+#include <QVector>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -17,6 +19,14 @@ namespace Live2D { namespace Cubism { namespace Framework {
 class CubismExpressionMotion : public ACubismMotion
 {
 public:
+    bool PrepareParameterReferences(const ParameterResourceReferences& references, QVector<quint8>& result,
+                                    QString* error = nullptr) const;
+    void CommitParameterReferences(QVector<quint8>& state) noexcept { _suppressedParameters.swap(state); }
+    bool IsParameterSuppressed(CubismIdHandle id) const;
+    bool HasActiveParameter(CubismIdHandle id) const;
+    const QByteArray& SourceDigest() const { return _sourceDigest; }
+    const QString& ReferenceSourcePath() const { return _sourcePath; }
+    void SetReferenceSourcePath(QString path) noexcept { _sourcePath.swap(path); }
     /**
      * @brief 表情パラメータ値の計算方式
      *
@@ -129,6 +139,9 @@ protected:
     csmVector<ExpressionParameter> _parameters;     ///< 表情が参照しているパラメータ一覧
 
 private:
+    QByteArray _sourceDigest;
+    QString _sourcePath;
+    QVector<quint8> _suppressedParameters;
 
     /**
      * @brief ブレンド計算

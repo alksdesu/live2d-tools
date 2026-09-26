@@ -45,6 +45,40 @@ public:
         quint64 m_serial = 0;
     };
 
+    class ParameterTrackArchive
+    {
+        friend class CMotionPanel;
+    public:
+        bool IsValid() const;
+    private:
+        struct Data;
+        std::shared_ptr<const Data> m_data;
+    };
+    class PreparedParameterTracks
+    {
+        friend class CMotionPanel;
+    public:
+        PreparedParameterTracks();
+        ~PreparedParameterTracks();
+        PreparedParameterTracks(PreparedParameterTracks&&) noexcept;
+        PreparedParameterTracks& operator=(PreparedParameterTracks&&) noexcept;
+        PreparedParameterTracks(const PreparedParameterTracks&) = delete;
+        PreparedParameterTracks& operator=(const PreparedParameterTracks&) = delete;
+        bool IsValid() const;
+        bool HasChanges() const;
+        const CMotionTimeline* Timeline() const;
+        bool Loop() const;
+        double Time() const;
+    private:
+        struct Data;
+        std::unique_ptr<Data> m_data;
+    };
+    bool PrepareParameterTrackRemoval(const QSet<QString>& ids, PreparedParameterTracks& result, QString* error = nullptr) const;
+    bool PrepareParameterTrackRestoration(const ParameterTrackArchive& archive, PreparedParameterTracks& result, QString* error = nullptr) const;
+    bool ValidatePreparedParameterTracks(const PreparedParameterTracks& prepared, QString* error = nullptr) const;
+    bool CommitPreparedParameterTracks(PreparedParameterTracks& prepared, ParameterTrackArchive& archive) noexcept;
+    void RefreshParameterTrackUi();
+
     explicit CMotionPanel(QWidget *parent = nullptr);
     ~CMotionPanel() override;
     bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
@@ -193,9 +227,31 @@ private:
             return loop == other.loop && timeline.HasSameContent(other.timeline);
         }
     };
+    struct TimelineSnapshotSlot {
+        quint64 serial = 0;
+        quint64 revision = 0;
+        TimelineSnapshot value;
+        QMap<quint64, quint64> origins;
+    };
+    std::shared_ptr<TimelineSnapshotSlot> RegisterTimelineSnapshot(TimelineSnapshot state);
+    bool PrepareParameterTracks(const QSet<QString>& ids, const ParameterTrackArchive* archive,
+                                PreparedParameterTracks& result, QString* error) const;
+    bool PreparedParameterTracksMatch(const PreparedParameterTracks& prepared) const noexcept;
+    QVector<std::weak_ptr<TimelineSnapshotSlot>> m_timelineSnapshots;
+    QMap<quint64, std::weak_ptr<const ParameterTrackArchive::Data>> m_parameterTrackArchives;
+    QMap<quint64, quint64> m_currentTrackOrigins;
+    quint64 m_parameterTrackSerial = 0;
+    std::optional<TimelineSnapshot> m_savedTimelineContent;
+    quint64 m_historyGeneration = 1;
+    quint64 m_snapshotSerial = 0;
+    quint64 m_registryRevision = 0;
+    bool m_parameterTrackUiPending = false;
+    bool m_refreshingParameterTracks = false;
+    bool m_timelineMutation = false;
     TimelineSnapshot CurrentTimelineSnapshot() const;
     void ApplyTimelineSnapshot(const TimelineSnapshot& snapshot);
     void PushTimelineEdit(const TimelineSnapshot& before, const QString& label);
+    void PushTimelineEdit(const std::shared_ptr<TimelineSnapshotSlot>& before, const QString& label);
     void BeginTimelineEditGroup(const QString& label);
     void EndTimelineEditGroup();
     void FlushTimelineEditGroup();
@@ -210,7 +266,7 @@ private:
     QPushButton* m_undoTimelineButton = nullptr;
     QPushButton* m_redoTimelineButton = nullptr;
     bool m_editGroupActive = false;
-    TimelineSnapshot m_editGroupBefore;
+    std::shared_ptr<TimelineSnapshotSlot> m_editGroupBefore;
     QString m_editGroupLabel;
     quint64 m_timelineRevision = 0;
     CTableEditDelegate* m_timelineDelegate = nullptr;
@@ -253,5 +309,7 @@ private:
     QVector<TimelineRow> m_timelineRows;
     bool m_updatingTimeline = false;
 };
+
+Q_DECLARE_METATYPE(CMotionPanel::ParameterTrackArchive)
 
 #endif // CMOTIONPANEL_H

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -136,6 +136,7 @@ bool LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
     auto setting = std::make_unique<CubismModelSettingJson>(buffer, size);
     if (!setting->GetJsonPointer()) return false;
     _modelHomeDir = dir;
+    m_modelSettingsDigest = QCryptographicHash::hash(QByteArray(reinterpret_cast<const char*>(buffer), int(size)), QCryptographicHash::Sha256);
     if (!SetupModel(setting.release())) return false;
     m_mocName = QString::fromUtf8(_modelSetting->GetModelFileName());
     if (!CreateRenderer()) return false;
@@ -221,6 +222,10 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
             }
             ACubismMotion* motion = LoadExpression(buffer, size, name.GetRawString());
 
+            if (motion && !ConfigureExpressionReferences(static_cast<CubismExpressionMotion*>(motion), QString::fromUtf8(path.GetRawString()))) {
+                ACubismMotion::Delete(motion);
+                motion = nullptr;
+            }
             if (motion)
             {
                 if (_expressions[name] != NULL)
@@ -245,6 +250,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
         if (buffer != NULL)
         {
             LoadPhysics(buffer, size);
+            if (_physics) m_physicsReferencePath = ReferenceSourcePath(QString::fromUtf8(path.GetRawString()));
             DeleteBuffer(buffer, path.GetRawString());
         }
     }
@@ -373,6 +379,11 @@ void LAppModel::PreloadMotionGroup(const csmChar* group)
                 tmpMotion->SetFadeOutTime(fadeTime);
             }
             tmpMotion->SetEffectIds(_eyeBlinkIds, _lipSyncIds);
+            if (!ConfigureMotionReferences(tmpMotion, QString::fromUtf8(path.GetRawString()))) {
+                ACubismMotion::Delete(tmpMotion);
+                DeleteBuffer(buffer, path.GetRawString());
+                continue;
+            }
 
             if (_motions[name] != NULL)
             {
@@ -431,7 +442,7 @@ void LAppModel::ReleaseExpressions()
 
 CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt32 no, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
 {
-    if (HasExportPreview()) return InvalidMotionQueueEntryHandleValue;
+    if (HasExportPreview() || _updating) return InvalidMotionQueueEntryHandleValue;
     if (!_modelSetting || !_motionManager || !group || no < 0 || no >= _modelSetting->GetMotionCount(group))
         return InvalidMotionQueueEntryHandleValue;
     if (priority == PriorityForce)
@@ -482,6 +493,11 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
                 motion->SetFadeOutTime(fadeTime);
             }
             motion->SetEffectIds(_eyeBlinkIds, _lipSyncIds);
+            if (!ConfigureMotionReferences(motion, QString::fromUtf8(path.GetRawString()))) {
+                ACubismMotion::Delete(motion);
+                DeleteBuffer(buffer, path.GetRawString());
+                return InvalidMotionQueueEntryHandleValue;
+            }
             autoDelete = true; // 終了時にメモリから削除
         }
 
@@ -518,7 +534,7 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
 
 void LAppModel::SetMotionSpeed(float value)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (!std::isfinite(value)) return;
     if (value < 0.25f) value = 0.25f;
     if (value > 2.0f) value = 2.0f;
@@ -527,7 +543,7 @@ void LAppModel::SetMotionSpeed(float value)
 
 void LAppModel::SetMotionLoop(bool value)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     _motionLoop = value;
     for (csmMap<csmString, ACubismMotion*>::const_iterator iter = _motions.Begin(); iter != _motions.End(); ++iter) {
         if (iter->Second) static_cast<CubismMotion*>(iter->Second)->IsLoop(value);
@@ -536,7 +552,7 @@ void LAppModel::SetMotionLoop(bool value)
 
 CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, csmInt32 priority, ACubismMotion::FinishedMotionCallback onFinishedMotionHandler)
 {
-    if (HasExportPreview()) return InvalidMotionQueueEntryHandleValue;
+    if (HasExportPreview() || _updating) return InvalidMotionQueueEntryHandleValue;
     if (!_modelSetting || !group) return InvalidMotionQueueEntryHandleValue;
     if (_modelSetting->GetMotionCount(group) == 0)
     {
@@ -550,7 +566,7 @@ CubismMotionQueueEntryHandle LAppModel::StartRandomMotion(const csmChar* group, 
 
 void LAppModel::StopAllMotions()
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (_motionManager) _motionManager->StopAllMotions();
     _wavFileHandler.Stop();
 }
@@ -606,7 +622,7 @@ csmBool LAppModel::HitTest(const csmChar* hitAreaName, csmFloat32 x, csmFloat32 
 
 void LAppModel::SetExpression(const csmChar* expressionID)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (!_expressionManager || !expressionID) return;
     ACubismMotion* motion = _expressions[expressionID];
     if (_debugMode)
@@ -626,7 +642,7 @@ void LAppModel::SetExpression(const csmChar* expressionID)
 
 bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QString& path)
 {
-    if (HasExportPreview()) return false;
+    if (HasExportPreview() || (_initialized && _updating)) return false;
     if (expressionId.isEmpty() || path.isEmpty()) return false;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
@@ -639,6 +655,13 @@ bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QStr
         static_cast<csmSizeInt>(data.size()), nameBytes.constData());
     if (!replacement) return false;
     const csmString key(nameBytes.constData());
+    auto* previous = static_cast<CubismExpressionMotion*>(_expressions[key]);
+    if ((previous && m_parameterReferences.expressions.contains(previous->ReferenceSourcePath()) &&
+         previous->ReferenceSourcePath() != ReferenceSourcePath(path)) ||
+        !ConfigureExpressionReferences(static_cast<CubismExpressionMotion*>(replacement), path)) {
+        ACubismMotion::Delete(replacement);
+        return false;
+    }
     if (_expressionManager) _expressionManager->StopAllMotions();
     if (_expressions[key] != NULL) ACubismMotion::Delete(_expressions[key]);
     _expressions[key] = replacement;
@@ -647,7 +670,7 @@ bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QStr
 
 void LAppModel::SetRandomExpression()
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (_expressions.GetSize() == 0)
     {
         return;
@@ -762,7 +785,8 @@ bool LAppModel::EndEditorPreview(QString* error)
 
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
                                        const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
-                                       CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds)
+                                       CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
+                                       const ParameterPhysicsReferences* physicsReferences)
 {
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
@@ -784,7 +808,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
     };
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
-                      prepare, policy, seeds, error, prepareModel))
+                      prepare, policy, seeds, error, prepareModel, physicsReferences))
         return false;
     m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;
@@ -795,7 +819,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
 
 bool LAppModel::ReloadRenderer()
 {
-    if (HasExportPreview()) return false;
+    if (HasExportPreview() || (_initialized && _updating)) return false;
     if (!_model || !_modelSetting || !_modelMatrix || _updating) return false;
     if (!CreateRenderer()) return false;
     _initialized = false;
@@ -913,7 +937,7 @@ QRectF LAppModel::GetCurModelRectF()
 
 void LAppModel::SetPhysicsGravity(float x, float y)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if(_physics && std::isfinite(x) && std::isfinite(y)){
         auto opt = _physics->GetOptions();
         opt.Gravity.X = x;
@@ -924,7 +948,7 @@ void LAppModel::SetPhysicsGravity(float x, float y)
 
 bool LAppModel::ReloadPhysicsFromFile(const QString& path)
 {
-    if (HasExportPreview()) return false;
+    if (HasExportPreview() || (_initialized && _updating)) return false;
     if (path.isEmpty()) return false;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return false;
@@ -934,14 +958,26 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path)
     CubismPhysics* replacement = CubismPhysics::Create(
         reinterpret_cast<const csmByte*>(data.constData()), static_cast<csmSizeInt>(data.size()));
     if (!replacement) return false;
+    const QString referencePath = ReferenceSourcePath(path);
+    const auto& references = m_parameterReferences.physics;
+    const bool hasReferences = !references.sourcePath.isEmpty() || !references.sourceDigest.isEmpty() ||
+        !references.suppressedInputs.isEmpty() || !references.suppressedOutputs.isEmpty();
+    CubismPhysics::ParameterDefinitionState prepared;
+    if (hasReferences && (references.sourcePath != referencePath || !_model ||
+        !replacement->PrepareParameterStructureChange(*_model, *_model, prepared, nullptr, &references))) {
+        CubismPhysics::Delete(replacement);
+        return false;
+    }
+    if (hasReferences) replacement->CommitParameterDefinitionChange(prepared);
     CubismPhysics::Delete(_physics);
     _physics = replacement;
+    m_physicsReferencePath = referencePath;
     return true;
 }
 
 bool LAppModel::ReloadUserDataFromFile(const QString& path)
 {
-    if (HasExportPreview()) return false;
+    if (HasExportPreview() || (_initialized && _updating)) return false;
     if (!_model) return false;
     live2dstruct::CModelUserData document;
     if (!document.Load(path)) return false;
@@ -966,14 +1002,14 @@ bool LAppModel::ReloadUserDataFromFile(const QString& path)
 
 void LAppModel::SetPhysicsDragParams(const QStringList& paramIds, const QStringList& types)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     _physicsDragParamIds = paramIds;
     _physicsDragTypes = types;
 }
 
 void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if(!_model || _physicsDragParamIds.isEmpty() || !std::isfinite(dx) || !std::isfinite(dy)) return;
     for(int i = 0; i < _physicsDragParamIds.size(); i++){
         const CubismId* paramId = CubismFramework::GetIdManager()->GetId(_physicsDragParamIds[i].toUtf8().constData());
@@ -988,7 +1024,7 @@ void LAppModel::ApplyPhysicsDrag(float dx, float dy)
 
 void LAppModel::SetPhysicsWind(float x, float y)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if(_physics && std::isfinite(x) && std::isfinite(y)){
         auto opt = _physics->GetOptions();
         opt.Wind.X = x;
@@ -999,7 +1035,7 @@ void LAppModel::SetPhysicsWind(float x, float y)
 
 bool LAppModel::StartLipSyncWav(const QString& path)
 {
-    if (HasExportPreview()) return false;
+    if (HasExportPreview() || (_initialized && _updating)) return false;
     if (path.isEmpty()) return false;
     const QByteArray utf8Path = path.toUtf8();
     return _wavFileHandler.Start(csmString(utf8Path.constData()));
@@ -1007,13 +1043,13 @@ bool LAppModel::StartLipSyncWav(const QString& path)
 
 void LAppModel::StopLipSyncWav()
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     _wavFileHandler.Stop();
 }
 
 void LAppModel::SetPartVisible(const QString& partId, bool visible)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (!_model) return;
     if(visible){
         _hiddenPartIds.remove(partId);
@@ -1027,20 +1063,20 @@ void LAppModel::SetPartVisible(const QString& partId, bool visible)
 void LAppModel::SetDeformerDragParams(const QStringList& paramIds, const QList<float>& minVals,
                                      const QList<float>& maxVals, const QList<float>& defaultVals)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     m_deformerDrag.SetParameters(paramIds, minVals, maxVals, defaultVals);
 }
 
 void LAppModel::ApplyDeformerDrag(float viewX, float viewY)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (!_model) return;
     m_deformerDrag.Apply(viewX, viewY);
 }
 
 void LAppModel::ProbeParamsForArtMeshes(const QStringList& artMeshNames)
 {
-    if (HasExportPreview()) return;
+    if (HasExportPreview() || (_initialized && _updating)) return;
     if (!_model || _updating || HasEditorPreview() || artMeshNames.isEmpty()) return;
     const QScopedValueRollback<csmBool> updating(_updating, true);
     try {

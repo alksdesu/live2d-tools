@@ -309,6 +309,11 @@ void CParamPanel::SetParameterReferenceProvider(ParameterReferenceProvider provi
     if (!m_submittingEdit) m_parameterReferenceProvider = std::move(provider);
 }
 
+void CParamPanel::SetDeleteReferenceProvider(DeleteReferenceProvider provider)
+{
+    if (!m_submittingEdit) m_deleteReferenceProvider = std::move(provider);
+}
+
 void CParamPanel::SetBindingTargets(const QVector<ParameterOwner>& targets)
 {
     QVector<ParameterOwner> distinct;
@@ -1108,6 +1113,8 @@ void CParamPanel::EditParameterMetadata()
     inlineError->hide();
     form->addRow(inlineError);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, dialog);
+    buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
     buttons->button(QDialogButtonBox::Save)->setDefault(true);
     form->addRow(buttons);
     auto updated = current;
@@ -1204,6 +1211,7 @@ void CParamPanel::EditParameterStructure(StructureAction action)
     const auto revision = document->Revision();
     const auto selectionRevision = m_bindingSelectionRevision;
     const auto targets = m_bindingTargets;
+    const auto openingValues = CurrentValues();
     const bool creating = action == StructureAction::Create, deleting = action == StructureAction::Delete;
     m_metadataDialogOpen = true;
     const auto finishEditing = qScopeGuard([panel] { if (panel) panel->m_metadataDialogOpen = false; });
@@ -1283,6 +1291,30 @@ void CParamPanel::EditParameterStructure(StructureAction action)
         form->addRow(QStringLiteral("参数"), parameter);
         for (QWidget* widget : std::initializer_list<QWidget*>{id, name, minimum, maximum, defaultValue, decimals, repeat}) widget->hide();
     }
+    auto* freeze = textField(QStringLiteral("structureFreezeValue"), QString());
+    auto* freezeCurrent = new QPushButton(QStringLiteral("当前值"), content);
+    auto* freezeDefault = new QPushButton(QStringLiteral("默认值"), content);
+    freezeCurrent->setObjectName(QStringLiteral("structureFreezeCurrent"));
+    freezeDefault->setObjectName(QStringLiteral("structureFreezeDefault"));
+    auto* freezePresets = new QWidget(content);
+    auto* freezeLayout = new QHBoxLayout(freezePresets);
+    freezeLayout->setContentsMargins(0, 0, 0, 0);
+    freezeLayout->addWidget(freezeCurrent);
+    freezeLayout->addWidget(freezeDefault);
+    float originalFreeze = 0;
+    const auto setFreeze = [&](bool useDefault) {
+        const QString selected = parameter->currentData().toString();
+        const auto metadata = document->ParameterMetadata(selected);
+        originalFreeze = useDefault ? metadata.defaultValue : openingValues.value(selected, document->ParameterValue(selected));
+        originalFreeze = boundedParameterValue(originalFreeze, metadata.minimum, metadata.maximum, metadata.defaultValue);
+        freeze->setText(QString::number(originalFreeze, 'g', 9));
+    };
+    if (deleting) {
+        form->addRow(QStringLiteral("冻结值"), freeze);
+        form->addRow(freezePresets);
+        form->addRow(textLabel(QStringLiteral("删除后保留此数值对应的形状；其他参数仍可编辑。当前值取打开对话框时的预览值。")));
+        setFreeze(false);
+    } else { freeze->hide(); freezePresets->hide(); }
     auto* bind = new QCheckBox(QStringLiteral("创建时绑定到当前选区"), content);
     bind->setObjectName(QStringLiteral("structureBindSelection"));
     bind->setChecked(!targets.isEmpty());
@@ -1321,21 +1353,39 @@ void CParamPanel::EditParameterStructure(StructureAction action)
     references->setObjectName(QStringLiteral("structureReferences"));
     references->setHeaderLabels({QStringLiteral("引用"), QStringLiteral("对象或配置"), QStringLiteral("说明")});
     references->setRootIsDecorated(false);
-    references->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    references->setTextElideMode(Qt::ElideMiddle);
+    references->setColumnHidden(2, true);
+    references->header()->setStretchLastSection(false);
+    references->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    references->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    auto* referenceDetails = textLabel(QString());
+    referenceDetails->setObjectName(QStringLiteral("structureReferenceDetails"));
+    referenceDetails->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    auto detailPolicy = referenceDetails->sizePolicy();
+    detailPolicy.setHorizontalPolicy(QSizePolicy::Ignored);
+    referenceDetails->setSizePolicy(detailPolicy);
+    referenceDetails->hide();
+    connect(references, &QTreeWidget::currentItemChanged, dialog, [referenceDetails](QTreeWidgetItem* item) {
+        referenceDetails->setText(item ? item->text(2) : QString());
+        referenceDetails->setToolTip(item ? QStringLiteral("%1\n%2").arg(item->text(1), item->text(2)) : QString());
+        referenceDetails->setVisible(item != nullptr);
+    });
     auto* refreshReferences = new QPushButton(QStringLiteral("重新检查引用"), content);
     refreshReferences->setObjectName(QStringLiteral("structureRefreshReferences"));
     if (deleting) {
         form->addRow(references);
+        form->addRow(referenceDetails);
         form->addRow(refreshReferences);
-        form->addRow(textLabel(QStringLiteral("当前仅支持删除无绑定、无引用的普通参数。存在引用时需要先移除或重新绑定；不会自动清除外部文件内容。")));
+        form->addRow(textLabel(QStringLiteral("按冻结值保留模型形状，并按清单处理关联引用。此操作可撤销。")));
     } else { references->hide(); refreshReferences->hide(); }
     auto* errorLabel = textLabel(QString());
     errorLabel->setObjectName(QStringLiteral("structureError"));
     errorLabel->hide();
     outer->addWidget(errorLabel);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, dialog);
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
     auto* submit = buttons->button(QDialogButtonBox::Save);
-    submit->setText(creating ? QStringLiteral("创建") : deleting ? QStringLiteral("删除") : QStringLiteral("绑定"));
+    submit->setText(creating ? QStringLiteral("创建") : deleting ? QStringLiteral("冻结并删除") : QStringLiteral("绑定"));
     submit->setDefault(true);
     outer->addWidget(buttons);
     const auto reject = [&](const QString& error, QLineEdit* field = nullptr) {
@@ -1377,34 +1427,74 @@ void CParamPanel::EditParameterStructure(StructureAction action)
         references->clear();
         QString error;
         QByteArray bytes;
-        QVector<Builder::Reference> usages;
+        Builder::DeleteImpact impact;
         const QString selected = parameter->currentData().toString();
+        const auto metadata = document->ParameterMetadata(selected);
+        float value = originalFreeze;
+        if (!metadataFloat(freeze->text(), originalFreeze, value) || value < metadata.minimum || value > metadata.maximum) {
+            submit->setEnabled(false);
+            return reject(QStringLiteral("冻结值必须是参数范围内的有限数值，支持科学计数法"), freeze);
+        }
         bool available = false;
-        try { available = document->BuildPreviewMoc(bytes, &error) && Builder::AnalyzeDelete(bytes, selected, usages, &error); }
+        try { available = document->BuildPreviewMoc(bytes, &error) && Builder::AnalyzeDelete(bytes, Builder::DeleteRequest{selected, value}, impact, &error); }
         catch (...) { error = QStringLiteral("模型引用检查失败，请稍后重试"); }
         if (!available) new QTreeWidgetItem(references, {QStringLiteral("模型检查"), selected, error});
-        for (const auto& usage : usages) new QTreeWidgetItem(references, {usage.kind, usage.ownerType + ':' + usage.ownerId, usage.detail});
-        available = available && usages.isEmpty();
+        const QStringList targetTypes{QStringLiteral("ArtMesh"), QStringLiteral("Warp"), QStringLiteral("Rotation"), QStringLiteral("Part"), QStringLiteral("Glue")};
+        for (const auto& target : impact.targets) {
+            const auto type = int(target.type);
+            const QString label = type >= 0 && type < targetTypes.size() ? targetTypes[type] : QStringLiteral("未知对象");
+            new QTreeWidgetItem(references, {QStringLiteral("冻结绑定"), label + ':' + target.id,
+                QStringLiteral("%1 → %2 个关键形%3").arg(target.oldKeyformCount).arg(target.newKeyformCount)
+                    .arg(target.interpolated ? QStringLiteral("，按冻结值插值") : QString())});
+        }
+        for (const auto& usage : impact.references)
+            if (usage.kind != QLatin1String("normalBinding"))
+                new QTreeWidgetItem(references, {QStringLiteral("模型引用"), usage.ownerType + ':' + usage.ownerId, usage.detail});
+        for (const auto& reason : impact.blockingReasons) new QTreeWidgetItem(references, {QStringLiteral("无法冻结"), selected, reason});
+        available = available && impact.blockingReasons.isEmpty();
         const auto found = std::find_if(document->Parameters().cbegin(), document->Parameters().cend(), [&](const auto& item) { return item.id == selected; });
         if (found == document->Parameters().cend() || found->type != 0) {
             new QTreeWidgetItem(references, {QStringLiteral("参数类型"), selected, QStringLiteral("暂不支持删除融合参数")});
             available = false;
         }
-        QStringList external;
+        DeleteReferenceResult external;
+        bool externalValid = false;
         try {
-            const auto provider = m_parameterReferenceProvider;
-            external = provider ? provider(selected) : QStringList{QStringLiteral("尚未提供外部引用检查，无法删除参数")};
+            const auto typedProvider = m_deleteReferenceProvider;
+            if (typedProvider) externalValid = typedProvider(selected, external, &error);
+            else {
+                const auto provider = m_parameterReferenceProvider;
+                external.blockers = provider ? provider(selected) : QStringList{QStringLiteral("尚未提供外部引用检查，无法删除参数")};
+                externalValid = true;
+            }
         }
-        catch (...) { external = {QStringLiteral("外部引用检查失败，请稍后重试")}; }
+        catch (...) { error = QStringLiteral("外部引用检查失败，请稍后重试"); }
         if (!panel || !dialog) return false;
         if (!currentDocument()) return reject(QStringLiteral("引用检查期间模型数据已改变，请重新打开参数操作"));
-        for (const auto& reference : external) new QTreeWidgetItem(references, {QStringLiteral("外部引用"), selected, reference});
-        available = available && external.isEmpty();
-        if (available) new QTreeWidgetItem(references, {QStringLiteral("无引用"), selected, QStringLiteral("可以删除；可通过撤销恢复")});
+        if (!externalValid) external.blockers.append(error.isEmpty() ? QStringLiteral("无法检查外部引用") : error);
+        if (!external.removals.isEmpty() && !m_structureEditHandler)
+            external.blockers.append(QStringLiteral("尚未连接关联引用处理器，无法一并移除引用"));
+        for (const auto& removal : external.removals)
+            new QTreeWidgetItem(references, {QStringLiteral("一并移除"), selected, removal + QStringLiteral("；可撤销")});
+        for (const auto& blocker : external.blockers) new QTreeWidgetItem(references, {QStringLiteral("外部引用"), selected, blocker});
+        available = available && externalValid && external.blockers.isEmpty();
+        if (available && impact.targets.isEmpty() && impact.references.isEmpty() && external.removals.isEmpty())
+            new QTreeWidgetItem(references, {QStringLiteral("无引用"), selected, QStringLiteral("可以删除；可通过撤销恢复")});
+        for (int row = 0; row < references->topLevelItemCount(); ++row) {
+            auto* item = references->topLevelItem(row);
+            const auto detail = QStringLiteral("%1\n%2").arg(item->text(1), item->text(2));
+            item->setToolTip(0, detail);
+            item->setToolTip(1, detail);
+        }
+        if (references->topLevelItemCount()) references->setCurrentItem(references->topLevelItem(0));
         submit->setEnabled(available);
         return available;
     };
     connect(refreshReferences, &QPushButton::clicked, dialog, [&] { updateReferences(); });
+    connect(freezeCurrent, &QPushButton::clicked, dialog, [&] { if (currentDocument()) { setFreeze(false); updateReferences(); } });
+    connect(freezeDefault, &QPushButton::clicked, dialog, [&] { if (currentDocument()) { setFreeze(true); updateReferences(); } });
+    connect(freeze, &QLineEdit::textEdited, dialog, [&] { if (deleting) { errorLabel->hide(); submit->setEnabled(true); } });
+    connect(freeze, &QLineEdit::editingFinished, dialog, [&] { if (deleting && currentDocument()) updateReferences(); });
     for (auto* key : keys) connect(key, &QLineEdit::textEdited, dialog, [&] { customKeys = true; });
     for (auto* range : {minimum, maximum, defaultValue}) connect(range, &QLineEdit::editingFinished, dialog, [&] { if (!customKeys) resetKeys(); });
     connect(keyCount, &QComboBox::currentIndexChanged, dialog, [&] { customKeys = false; resetKeys(); });
@@ -1412,7 +1502,7 @@ void CParamPanel::EditParameterStructure(StructureAction action)
     connect(parameter, &QComboBox::currentIndexChanged, dialog, [&] {
         errorLabel->hide();
         customKeys = false;
-        if (deleting) updateReferences(); else resetKeys();
+        if (deleting) { setFreeze(false); updateReferences(); } else resetKeys();
     });
     dialog->SetValidator([&] {
         if (!currentDocument()) return reject(QStringLiteral("模型数据已改变，请重新打开参数操作"));
@@ -1456,12 +1546,15 @@ void CParamPanel::EditParameterStructure(StructureAction action)
         }
         if (deleting && !updateReferences()) return false;
         if (!panel || !dialog || !currentDocument()) return false;
+        float freezeValue = originalFreeze;
+        if (deleting && !metadataFloat(freeze->text(), originalFreeze, freezeValue))
+            return reject(QStringLiteral("冻结值无效"), freeze);
         live2dstruct::CModelEdit edit;
         QString error;
         bool prepared = false;
         try {
             prepared = creating ? document->MakeCreateParameterEdit(request, name->text().trimmed(), edit, &error)
-                : deleting ? document->MakeDeleteParameterEdit(selected, edit, &error)
+                : deleting ? document->MakeDeleteParameterEdit(Builder::DeleteRequest{selected, freezeValue}, edit, &error)
                            : document->MakeBindParameterEdit(selected, request.bindings, edit, &error);
         } catch (...) { error = QStringLiteral("无法准备参数修改，请稍后重试"); }
         if (!prepared) return reject(error.isEmpty() ? QStringLiteral("无法准备参数修改") : error);

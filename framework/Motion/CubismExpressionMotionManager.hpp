@@ -5,6 +5,7 @@
 #include "framework/Model/CubismModel.hpp"
 #include "ACubismMotion.hpp"
 #include "CubismMotionQueueManager.hpp"
+#include <QSet>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -16,6 +17,7 @@ namespace Live2D { namespace Cubism { namespace Framework {
 class CubismExpressionMotionManager : public CubismMotionQueueManager
 {
 public:
+    void CommitParameterReferenceSuppression(QSet<CubismIdHandle>& ids) noexcept { _suppressedCachedParameters.swap(ids); }
     /**
      * @brief パラメータに適用する表情の値を持たせる構造体
      */
@@ -102,6 +104,7 @@ public:
     csmFloat32 GetFadeWeight(csmInt32 index);
 
 private:
+    QSet<CubismIdHandle> _suppressedCachedParameters;
 
     // モデルに適用する各パラメータの値
     csmVector<ExpressionParameterValue>* _expressionParameterValues;

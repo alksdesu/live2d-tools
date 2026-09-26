@@ -69,6 +69,32 @@ struct CMotionEventBatch
 class CMotionTimeline
 {
 public:
+    class ParameterTracks
+    {
+        friend class CMotionTimeline;
+    public:
+        bool IsEmpty() const;
+        QSet<QString> Ids() const;
+    private:
+        struct Track {
+            bool present = false;
+            bool segmentsPresent = false;
+            bool controlsPresent = false;
+            QVector<QPointF> points;
+            QVector<int> segments;
+            QVector<QVector<QPointF>> controls;
+            QJsonObject source;
+            int sourceIndex = -1;
+        };
+        QMap<QString, Track> m_tracks;
+        QJsonValue m_durationBefore, m_durationAfter;
+        bool m_promotedDuration = false;
+        bool m_metaPresent = false;
+    };
+    bool RemoveParameterTracks(const QSet<QString>& ids, ParameterTracks& removed, QString* error = nullptr);
+    bool RestoreParameterTracks(const ParameterTracks& tracks, QString* error = nullptr);
+    void SwapContent(CMotionTimeline& other) noexcept;
+
     explicit CMotionTimeline(std::function<qint64()> recordingClock = {});
     void StartRecording();
     void StopRecording();
@@ -110,6 +136,7 @@ public:
     QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
     bool Load(const QString& path, QString* error = nullptr);
+    static bool RecountMetadata(QJsonObject& motion, QString* error = nullptr, bool draft = false, double* duration = nullptr);
     bool SaveState(QJsonObject* state, bool loop, double playhead, QString* error = nullptr) const;
     bool RestoreState(const QJsonObject& state, float* playhead = nullptr, QString* error = nullptr);
     bool HasCurves() const;
@@ -122,7 +149,7 @@ public:
 
 private:
     bool BuildJson(QJsonObject* root, double fps, bool loop, bool draft, QString* error) const;
-    bool LoadJson(const QJsonObject& root, bool draft, QString* error);
+    bool LoadJson(const QJsonObject& root, bool draft, QString* error, bool allowEmpty = false);
     double ContentDuration() const;
     const QVector<CMotionEventOccurrence>& SortedEvents() const;
     bool SetSource(QJsonObject source, QString* error);

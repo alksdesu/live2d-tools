@@ -24,7 +24,8 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
 bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
                                  const CubismModelReplacement::RendererPreparation& prepareRenderer,
                                  CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds, QString* error,
-                                 const CubismModelReplacement::ModelPreparation& prepareModel)
+                                 const CubismModelReplacement::ModelPreparation& prepareModel,
+                                 const ParameterPhysicsReferences* physicsReferences)
 {
     if (error) error->clear();
     if (_updating || !_moc || !_model || !_renderer || !_modelMatrix ||
@@ -46,7 +47,7 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
     CubismModel* replacement = candidate.GetModel();
     CubismPhysics::ParameterDefinitionState physicsState;
     const bool migratePhysics = _physics && (structure || AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterDefinitionEdits));
-    if (migratePhysics && !(structure ? _physics->PrepareParameterStructureChange(*previous, *replacement, physicsState, error)
+    if (migratePhysics && !(structure ? _physics->PrepareParameterStructureChange(*previous, *replacement, physicsState, error, physicsReferences)
                                      : _physics->PrepareParameterDefinitionChange(*previous, *replacement, physicsState, error))) return false;
     CubismPose::RebindState poseState;
     if (_pose && !(structure ? _pose->PrepareRebindModel(previous, replacement, poseState, error)

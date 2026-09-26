@@ -1,6 +1,8 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/cmotiontimeline.h"
+#include "live2dstruct/csectionvalidation.h"
+#include "deformer_snapshot_fixture.h"
 #include <QtTest>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -37,6 +39,51 @@ Builder::CreateRequest request(const QString& id)
     return result;
 }
 
+QByteArray fiveOwnerFixture()
+{
+    DeformerSnapshotData::Fixture fixture;
+    const auto& offsets = *fixture.table.sectionOffsetTable;
+    fixture.BindRoot(false);
+    fixture.column(offsets.rotation_deformers->keyform_binding_sources_indices, 0, 0);
+    fixture.column(offsets.art_meshes->keyform_binding_sources_indices, 0, 0);
+    fixture.column(offsets.art_meshes->keyform_sources_counts, 0, 2);
+    fixture.count(0, 2); fixture.count(6, 2);
+    for (int index = 0; index < 2; ++index) {
+        fixture.id(offsets.parts->ids, index, index ? "PartChild" : "PartParent");
+        fixture.column(offsets.parts->keyform_binding_sources_indices, index, index ? 0 : -1);
+        fixture.column(offsets.parts->keyform_sources_begin_indices, index, 0);
+        fixture.column(offsets.parts->keyform_sources_counts, index, index ? 2 : 1);
+        fixture.column(offsets.parts->is_visible, index, 1); fixture.column(offsets.parts->is_enabled, index, 1);
+        fixture.column(offsets.parts->parent_part_indices, index, index - 1);
+    }
+    fixture.appendColumn(0x128, {0, 0});
+    DeformerSnapshotData::real(fixture.bytes, word(fixture.bytes, 0x128), 100);
+    DeformerSnapshotData::real(fixture.bytes, word(fixture.bytes, 0x128) + 4, 200);
+    fixture.count(4, 2);
+    for (const auto& span : CSectionValidation::ArraySpans(offsets, *fixture.table.count_info))
+        if (QByteArray(span.name).startsWith("art_meshes.") && span.offset)
+            fixture.bytes.replace(span.offset + span.width, span.width, fixture.bytes.mid(span.offset, span.width));
+    fixture.id(offsets.art_meshes->ids, 1, "MeshOther");
+    for (int mesh = 0; mesh < 2; ++mesh) fixture.column(offsets.art_meshes->parent_part_indices, mesh, 1);
+    fixture.count(7, 2);
+    fixture.column(offsets.deformers->keyform_binding_sources_indices, 1, 0);
+    fixture.column(offsets.warp_deformers->keyform_binding_sources_indices, 0, 0);
+    fixture.column(offsets.warp_deformers->keyform_sources_counts, 0, 2);
+    fixture.column(offsets.warp_deformer_keyforms->keyform_position_sources_begin_indices, 1, 12);
+    DeformerSnapshotData::real(fixture.bytes, offsets.warp_deformer_keyforms->opacities + 4, 0.5f);
+    fixture.count(20, 1); fixture.count(21, 1); fixture.count(22, 2);
+    fixture.appendColumn(0x1a4, {0}); fixture.appendColumn(0x1a8, QVector<int>(16, 0));
+    fixture.id(word(fixture.bytes, 0x1a8), 0, "GlueOne");
+    fixture.appendColumn(0x1ac, {0}); fixture.appendColumn(0x1b0, {0}); fixture.appendColumn(0x1b4, {2});
+    fixture.appendColumn(0x1b8, {0}); fixture.appendColumn(0x1bc, {1});
+    fixture.appendColumn(0x1c0, {0}); fixture.appendColumn(0x1c4, {1});
+    fixture.appendColumn(0x1c8, {0}); fixture.appendColumn(0x1cc, {0}); fixture.appendColumn(0x1d0, {0, 0});
+    DeformerSnapshotData::real(fixture.bytes, word(fixture.bytes, 0x1c8), 0.75f);
+    DeformerSnapshotData::real(fixture.bytes, word(fixture.bytes, 0x1d0), 0.25f);
+    DeformerSnapshotData::real(fixture.bytes, word(fixture.bytes, 0x1d0) + 4, 0.75f);
+    return fixture.bytes;
+}
+
 CModelSession session(const CModelDocument& document)
 {
     CModelSession result;
@@ -65,6 +112,173 @@ class ParameterStructureDocumentTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void deletionFreezesFiveOwnerKindsAndRestoresExactHistory()
+    {
+        CModelDocument document;
+        QString error;
+        const auto bytes = fiveOwnerFixture();
+        QVERIFY2(document.LoadBytes(bytes, "five-owner.moc3", &error), qPrintable(error));
+        auto positions = document.DrawableKeyformPositions("Mesh", 1);
+        QVERIFY(!positions.isEmpty());
+        positions[0] += 0.2f;
+        QVERIFY(document.SetDrawableKeyformPositions("Mesh", 1, positions));
+        QVERIFY(document.SetParameterValue("P", 0.75f));
+        const auto before = document.ParameterStructureState();
+        const auto first = document.DrawableKeyformPositions("Mesh", 0);
+        CModelEdit removed;
+        QVERIFY2(document.MakeDeleteParameterEdit(Builder::DeleteRequest{"P", 0.5f}, removed, &error), qPrintable(error));
+        QCOMPARE(removed.parameterChange, CModelEdit::ParameterChange::Delete);
+        QVERIFY(removed.freezeValue.has_value()); QCOMPARE(*removed.freezeValue, 0.5f);
+        QCOMPARE(document.ParameterStructureState(), before);
+        QVERIFY(document.ExecuteEdit(removed));
+        QVERIFY(document.Parameters().isEmpty());
+        QCOMPARE(document.DrawableKeyformPositions("Mesh", 0)[0], (first[0] + positions[0]) * 0.5f);
+        QByteArray frozen;
+        QVERIFY(document.BuildPreviewMoc(frozen, &error));
+        auto reader = CReader::FromBytes(frozen); CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        QCOMPARE(table.parts[1]->keyform_sources_counts, 1);
+        QCOMPARE(table.part_keyforms[table.parts[1]->keyform_sources_begin_indices]->draw_orders, 150.0f);
+        QCOMPARE(table.glue[0]->keyform_sources_counts, 1);
+        QCOMPARE(table.glue_keyforms[table.glue[0]->keyform_sources_begin_indices]->intensities, 0.5f);
+        QCOMPARE(table.glue_info[0]->weights, 0.75f);
+        QCOMPARE(table.glue[0]->art_mesh_indices_a, 0); QCOMPARE(table.glue[0]->art_mesh_indices_b, 1);
+        QCOMPARE(document.SourceBytes(), bytes);
+        const auto after = document.ParameterStructureState();
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.ParameterStructureState(), before);
+        QVERIFY(!document.CanUndoEdit());
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.ParameterStructureState(), after);
+        CModelDocument restored;
+        QVERIFY2(session(document).RestoreDocument(document, restored, &error), qPrintable(error));
+        QCOMPARE(restored.ParameterStructureState(), after);
+    }
+
+    void deletionChecksEveryOwnerAndItsAncestors_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<QString>("id"); QTest::addColumn<int>("auxiliaryOnly");
+        QTest::newRow("mesh") << QString("artmesh") << QString("Mesh") << 0;
+        QTest::newRow("warp") << QString("warp") << QString("Warp") << 0;
+        QTest::newRow("rotation") << QString("rotation") << QString("Root") << 0;
+        QTest::newRow("part") << QString("part") << QString("PartChild") << 0;
+        QTest::newRow("part-ancestor") << QString("part") << QString("PartParent") << 0;
+        QTest::newRow("glue") << QString("glue") << QString("GlueOne") << 0;
+        QTest::newRow("glue-other-mesh") << QString("artmesh") << QString("MeshOther") << 0;
+        QTest::newRow("deformer-ancestor") << QString("rotation") << QString("Child") << 0;
+        QTest::newRow("only-part") << QString("part") << QString("PartChild") << 1;
+        QTest::newRow("only-glue-endpoint") << QString("artmesh") << QString("MeshOther") << 2;
+    }
+
+    void deletionChecksEveryOwnerAndItsAncestors()
+    {
+        QFETCH(QString, type); QFETCH(QString, id); QFETCH(int, auxiliaryOnly);
+        CModelDocument document;
+        QString error;
+        auto bytes = fiveOwnerFixture();
+        if (auxiliaryOnly) {
+            auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+            for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
+                const QByteArray name(span.name);
+                const bool preserve = auxiliaryOnly == 1 ? name.startsWith("parts.") : name.startsWith("glue.");
+                if (preserve) continue;
+                if (name.endsWith(".keyform_binding_sources_indices"))
+                    for (int row = 0; row < span.count; ++row) put(bytes, span.offset + row * 4, -1);
+                if (name.endsWith(".keyform_sources_counts"))
+                    for (int row = 0; row < span.count; ++row) put(bytes, span.offset + row * 4, 1);
+            }
+            if (auxiliaryOnly == 1)
+                for (int row = 0; row < table.art_meshes.size(); ++row)
+                    put(bytes, table.sectionOffsetTable->art_meshes->parent_part_indices + row * 4, -1);
+        }
+        QVERIFY2(document.LoadBytes(bytes, "locked.moc3", &error), qPrintable(error));
+        document.SetLocked(type, id, true);
+        const auto state = document.ParameterStructureState(); const auto revision = document.Revision();
+        CModelEdit output; output.name = "sentinel";
+        QVERIFY(!document.MakeDeleteParameterEdit(Builder::DeleteRequest{"P", 0.5f}, output, &error));
+        QVERIFY(error.contains(QStringLiteral("锁定")));
+        QCOMPARE(output.name, QString("sentinel")); QCOMPARE(document.ParameterStructureState(), state); QCOMPARE(document.Revision(), revision);
+    }
+
+    void auxiliaryIdentityCannotBeRewrittenByAState_data()
+    {
+        QTest::addColumn<int>("slot");
+        for (int slot : {0x4c, 0x5c, 0x60, 0x64, 0x1a8, 0x1b8, 0x1bc, 0x1c0, 0x1c4, 0x1c8, 0x1cc})
+            QTest::newRow(qPrintable(QString::number(slot, 16))) << slot;
+    }
+
+    void auxiliaryIdentityCannotBeRewrittenByAState()
+    {
+        QFETCH(int, slot);
+        CModelDocument document;
+        QString error;
+        const auto original = fiveOwnerFixture();
+        QVERIFY(document.LoadBytes(original, "identity.moc3", &error));
+        Builder::ColumnState state;
+        if (slot == 0x4c) state.columns[slot] = original.mid(word(original, slot), 128);
+        else if (slot == 0x1a8) state.columns[slot] = original.mid(word(original, slot), 64);
+        else state.columns[slot] = original.mid(word(original, slot), slot == 0x1cc ? 2 : (slot < 0x100 ? 8 : 4));
+        state.columns[slot][0] = char(quint8(state.columns[slot][0]) ^ 1);
+        const auto before = document.ParameterStructureState(); const auto revision = document.Revision();
+        QVERIFY(!document.SetParameterStructure(state, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(document.ParameterStructureState(), before); QCOMPARE(document.Revision(), revision);
+    }
+
+    void auxiliaryKeyformRangesAndNumbersAreChecked_data()
+    {
+        QTest::addColumn<int>("slot"); QTest::addColumn<int>("bits");
+        QTest::newRow("part-begin") << 0x54 << std::numeric_limits<int>::max();
+        QTest::newRow("part-count") << 0x58 << -1;
+        QTest::newRow("part-nan") << 0x128 << 0x7fc00000;
+        QTest::newRow("glue-begin") << 0x1b0 << std::numeric_limits<int>::max();
+        QTest::newRow("glue-count") << 0x1b4 << -1;
+        QTest::newRow("glue-infinity") << 0x1d0 << 0x7f800000;
+    }
+
+    void auxiliaryKeyformRangesAndNumbersAreChecked()
+    {
+        QFETCH(int, slot); QFETCH(int, bits);
+        const auto bytes = fiveOwnerFixture();
+        CModelDocument document;
+        QString error;
+        QVERIFY(document.LoadBytes(bytes, "ranges.moc3", &error));
+        Builder::ColumnState state;
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info))
+            if (span.slot == slot) state.columns[slot] = bytes.mid(span.offset, span.count * span.width);
+        QVERIFY(state.columns.contains(slot)); put(state.columns[slot], 0, bits);
+        const auto original = document.ParameterStructureState();
+        QVERIFY(!document.SetParameterStructure(state, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(document.ParameterStructureState(), original);
+    }
+
+    void parameterChangeIntentMustMatchTheChangedCatalog()
+    {
+        CModelDocument document;
+        QVERIFY(document.Load(path("Mark")));
+        CModelEdit create;
+        QVERIFY(document.MakeCreateParameterEdit(request("ParamIntent"), {}, create));
+        QCOMPARE(create.parameterChange, CModelEdit::ParameterChange::Create);
+        QVERIFY(!create.freezeValue);
+        const auto before = document.ParameterStructureState();
+        auto forged = create; forged.parameterChange = CModelEdit::ParameterChange::Delete;
+        QVERIFY(!document.ExecuteEdit(forged));
+        forged = create; forged.parameterChange = CModelEdit::ParameterChange::Bind;
+        QVERIFY(!document.ExecuteEdit(forged));
+        forged = create; forged.freezeValue = 0;
+        QVERIFY(!document.ExecuteEdit(forged));
+        QCOMPARE(document.ParameterStructureState(), before);
+        QVERIFY(document.ExecuteEdit(create));
+        CModelEdit removed;
+        QVERIFY(document.MakeDeleteParameterEdit("ParamIntent", removed));
+        QCOMPARE(removed.parameterChange, CModelEdit::ParameterChange::Delete);
+        QVERIFY(!removed.freezeValue);
+        QVERIFY(document.ExecuteEdit(removed));
+        CModelEdit restored;
+        QVERIFY(document.UndoEdit(&restored));
+        QCOMPARE(restored.parameterChange, CModelEdit::ParameterChange::Delete);
+        QVERIFY(document.UndoEdit(&restored));
+        QCOMPARE(restored.parameterChange, CModelEdit::ParameterChange::Create);
+    }
+
     void malformedParameterHistoryIsRejectedAtomically_data()
     {
         QTest::addColumn<int>("kind");
@@ -339,7 +553,7 @@ private slots:
         QJsonObject counts;
         int version = 2;
         if (kind == 0) version = 1;
-        if (kind == 1) version = 3;
+        if (kind == 1) version = 4;
         if (kind == 2) columns["268"] = "AA==garbage";
         if (kind == 3) columns["268"] = "AA";
         if (kind == 4) columns["268"] = "AA==\n";
@@ -478,7 +692,7 @@ private slots:
         QCOMPARE(restored.ParameterStructureState(), before);
     }
 
-    void removedParametersCannotRemainInSessionTimeline()
+    void removedSourceParametersCannotRemainInSessionTimeline()
     {
         CModelDocument document;
         QString error;
@@ -494,13 +708,21 @@ private slots:
         QVERIFY(timeline.AddPoint("ParamTimeline", 0.0f, 1.0f));
         QVERIFY(timeline.SaveState(&saved.animation, false, 0, &error));
         CModelDocument restored = loaded;
-        const auto before = restored.ParameterStructureState();
-        QVERIFY(!saved.RestoreDocument(loaded, restored, &error));
-        QCOMPARE(restored.ParameterStructureState(), before);
+        QVERIFY2(saved.RestoreDocument(loaded, restored, &error), qPrintable(error));
         timeline.Clear();
         QVERIFY(timeline.AddPoint("LegacyVirtualParameter", 0.0f, 1.0f));
         QVERIFY(timeline.SaveState(&saved.animation, false, 0, &error));
         QVERIFY2(saved.RestoreDocument(loaded, restored, &error), qPrintable(error));
+        QVERIFY2(document.MakeDeleteParameterEdit(Builder::DeleteRequest{"ParamAngleX", 0}, edit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(edit));
+        saved = session(document);
+        timeline.Clear();
+        QVERIFY(timeline.AddPoint("ParamAngleX", 0.0f, 1.0f));
+        QVERIFY(timeline.SaveState(&saved.animation, false, 0, &error));
+        restored = loaded;
+        const auto before = restored.ParameterStructureState();
+        QVERIFY(!saved.RestoreDocument(loaded, restored, &error));
+        QCOMPARE(restored.ParameterStructureState(), before);
     }
 };
 

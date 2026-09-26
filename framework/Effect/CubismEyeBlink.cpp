@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -6,6 +6,7 @@
  */
 
 #include "CubismEyeBlink.hpp"
+#include "framework/Model/CubismParameterReferenceMask.hpp"
 #include "framework/Id/CubismId.hpp"
 #include <stdlib.h>
 
@@ -77,6 +78,14 @@ void CubismEyeBlink::SetParameterIds(const csmVector<CubismIdHandle>& parameterI
 const csmVector<CubismIdHandle>& CubismEyeBlink::GetParameterIds() const
 {
     return _parameterIds;
+}
+
+bool CubismEyeBlink::PrepareParameterReferences(const QSet<QString>& ids, QVector<quint8>& result, QString* error) const
+{
+    return PrepareParameterGroupMask(ids, _parameterIds.GetSize(), [&](int index) {
+        const auto id = _parameterIds[index];
+        return id ? QString::fromUtf8(id->GetString().GetRawString()) : QString();
+    }, result, error);
 }
 
 void CubismEyeBlink::UpdateParameters(CubismModel* model, csmFloat32 deltaTimeSeconds)
@@ -152,6 +161,7 @@ void CubismEyeBlink::UpdateParameters(CubismModel* model, csmFloat32 deltaTimeSe
 
     for (csmUint32 i = 0; i < _parameterIds.GetSize(); ++i)
     {
+        if (i < _suppressedParameters.size() && _suppressedParameters[i]) continue;
         model->SetParameterValue(_parameterIds[i], parameterValue);
     }
 }

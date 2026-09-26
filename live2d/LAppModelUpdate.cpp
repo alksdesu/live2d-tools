@@ -106,6 +106,7 @@ void LAppModel::Update()
         const csmFloat32 value = _wavFileHandler.GetRms();
         for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
         {
+            if (i < m_suppressedLipSync.size() && m_suppressedLipSync[i]) continue;
             _model->AddParameterValue(_lipSyncIds[i], value, 0.8f);
         }
     }
@@ -127,12 +128,12 @@ void LAppModel::Update()
     // 鼠标拖拽 → 头部跟随
     if (_enableMouseFollow)
     {
-        _model->AddParameterValue(_idParamAngleX, _dragX * 30);
-        _model->AddParameterValue(_idParamAngleY, _dragY * 30);
-        _model->AddParameterValue(_idParamAngleZ, _dragX * _dragY * -30);
-        _model->AddParameterValue(_idParamBodyAngleX, _dragX * 10);
-        _model->AddParameterValue(_idParamEyeBallX, _dragX);
-        _model->AddParameterValue(_idParamEyeBallY, _dragY);
+        if (0 >= m_suppressedMouseFollow.size() || !m_suppressedMouseFollow[0]) _model->AddParameterValue(_idParamAngleX, _dragX * 30);
+        if (1 >= m_suppressedMouseFollow.size() || !m_suppressedMouseFollow[1]) _model->AddParameterValue(_idParamAngleY, _dragY * 30);
+        if (2 >= m_suppressedMouseFollow.size() || !m_suppressedMouseFollow[2]) _model->AddParameterValue(_idParamAngleZ, _dragX * _dragY * -30);
+        if (3 >= m_suppressedMouseFollow.size() || !m_suppressedMouseFollow[3]) _model->AddParameterValue(_idParamBodyAngleX, _dragX * 10);
+        if (4 >= m_suppressedMouseFollow.size() || !m_suppressedMouseFollow[4]) _model->AddParameterValue(_idParamEyeBallX, _dragX);
+        if (5 >= m_suppressedMouseFollow.size() || !m_suppressedMouseFollow[5]) _model->AddParameterValue(_idParamEyeBallY, _dragY);
     }
 
     // 呼吸
@@ -209,10 +210,15 @@ bool LAppModel::SetTimelinePreview(const CMotionPreviewFrame& frame, const CMoti
         if (index >= 0) _model->SetPartOpacity(index, _timelineBaseParts.value(it.key(), 1.0f));
     }
     QSet<QString> eyeIds, lipIds;
-    for (csmUint32 i = 0; i < _eyeBlinkIds.GetSize(); ++i)
-        eyeIds.insert(QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString()));
-    for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i)
-        lipIds.insert(QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString()));
+    for (csmUint32 i = 0; i < _eyeBlinkIds.GetSize(); ++i) {
+        const auto id = QString::fromUtf8(_eyeBlinkIds[i]->GetString().GetRawString());
+        if (!m_parameterReferences.eyeBlink.contains(id)) eyeIds.insert(id);
+    }
+    for (csmUint32 i = 0; i < _lipSyncIds.GetSize(); ++i) {
+        const auto id = QString::fromUtf8(_lipSyncIds[i]->GetString().GetRawString());
+        if (!m_parameterReferences.lipSync.contains(id)) lipIds.insert(id);
+    }
+    m_timelineExplicitParameterIds = QSet<QString>(frame.parameters.keyBegin(), frame.parameters.keyEnd());
     _timelinePreview = fadeTimeline
         ? CMotionBlendPreview::Evaluate(*fadeTimeline, time, _timelineBaseParameters, eyeIds, lipIds, loop) : frame;
     _timelineParameters = _timelinePreview.ResolveParameters(eyeIds, lipIds);
@@ -264,6 +270,7 @@ void LAppModel::ClearTimelinePreview()
     _model->SetModelOpacity(_timelineBaseOpacity);
     _opacity = _timelineBaseOpacity;
     _timelinePreview = {};
+    m_timelineExplicitParameterIds.clear();
     _timelineParameters.clear();
     _timelineBaseParts.clear();
     _timelineBaseParameters.clear();

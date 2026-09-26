@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <exception>
 
 namespace {
 constexpr qint64 maximumMotionBytes = 16 * 1024 * 1024;
@@ -198,6 +199,131 @@ bool validEvents(const QJsonArray& events, QString* error)
 
 CMotionTimeline::CMotionTimeline(std::function<qint64()> recordingClock)
     : m_recordingClock(std::move(recordingClock)) {}
+
+void CMotionTimeline::SwapContent(CMotionTimeline& other) noexcept
+{
+    m_source.swap(other.m_source);
+    m_cachedEvents.swap(other.m_cachedEvents);
+    m_sortedEvents.swap(other.m_sortedEvents);
+    m_curves.swap(other.m_curves);
+    m_segmentTypes.swap(other.m_segmentTypes);
+    m_bezierControls.swap(other.m_bezierControls);
+}
+
+bool CMotionTimeline::ParameterTracks::IsEmpty() const
+{
+    for (const auto& track : m_tracks) if (track.present || track.sourceIndex >= 0) return false;
+    return true;
+}
+
+QSet<QString> CMotionTimeline::ParameterTracks::Ids() const
+{
+    QSet<QString> ids;
+    for (auto it = m_tracks.cbegin(); it != m_tracks.cend(); ++it) ids.insert(it.key());
+    return ids;
+}
+
+bool CMotionTimeline::RemoveParameterTracks(const QSet<QString>& ids, ParameterTracks& removed, QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    try {
+        if (ids.size() > maximumMotionPoints) return fail(QStringLiteral("待移除参数轨道数量过多"));
+        CMotionTimeline candidate = *this;
+        ParameterTracks archive;
+        const double duration = Timing().duration;
+        for (const auto& id : ids) {
+            if (id.isEmpty() || id.contains(QChar::Null)) return fail(QStringLiteral("参数轨道 ID 无效"));
+            const CMotionTrack key{CMotionTarget::Parameter, id};
+            ParameterTracks::Track record;
+            record.present = m_curves.contains(key);
+            record.segmentsPresent = m_segmentTypes.contains(key);
+            record.controlsPresent = m_bezierControls.contains(key);
+            record.points = m_curves.value(key);
+            record.segments = m_segmentTypes.value(key);
+            record.controls = m_bezierControls.value(key);
+            archive.m_tracks.insert(id, std::move(record));
+            candidate.m_curves.remove(key);
+            candidate.m_segmentTypes.remove(key);
+            candidate.m_bezierControls.remove(key);
+        }
+        const auto sourceCurves = m_source.value(QStringLiteral("Curves")).toArray();
+        QJsonArray retained;
+        bool sourceChanged = false;
+        for (int index = 0; index < sourceCurves.size(); ++index) {
+            const auto curve = sourceCurves[index].toObject();
+            const auto id = curve.value(QStringLiteral("Id")).toString();
+            if (curve.value(QStringLiteral("Target")) == QJsonValue(QStringLiteral("Parameter")) && ids.contains(id)) {
+                auto& record = archive.m_tracks[id];
+                if (record.sourceIndex >= 0) return fail(QStringLiteral("源参数曲线 ID 重复：%1").arg(id));
+                record.source = curve;
+                record.sourceIndex = index;
+                sourceChanged = true;
+            } else retained.append(sourceCurves[index]);
+        }
+        if (sourceChanged) candidate.m_source.insert(QStringLiteral("Curves"), retained);
+        if (!std::isfinite(duration)) return fail(QStringLiteral("动画时长无效"));
+        if (candidate.Timing().duration < duration) {
+            auto meta = candidate.m_source.value(QStringLiteral("Meta")).toObject();
+            archive.m_metaPresent = candidate.m_source.contains(QStringLiteral("Meta"));
+            archive.m_durationBefore = meta.value(QStringLiteral("Duration"));
+            archive.m_durationAfter = duration;
+            archive.m_promotedDuration = true;
+            meta.insert(QStringLiteral("Duration"), duration);
+            candidate.m_source.insert(QStringLiteral("Meta"), meta);
+        }
+        if (!candidate.BuildJson(nullptr, candidate.Fps(), candidate.Loop(), true, error)) return false;
+        *this = std::move(candidate);
+        removed = std::move(archive);
+        return true;
+    } catch (const std::exception&) { return fail(QStringLiteral("无法准备参数轨道移除")); }
+}
+
+bool CMotionTimeline::RestoreParameterTracks(const ParameterTracks& tracks, QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    try {
+        CMotionTimeline candidate = *this;
+        auto curves = m_source.value(QStringLiteral("Curves")).toArray();
+        QSet<QString> sourceIds;
+        for (const auto& value : curves) {
+            const auto curve = value.toObject();
+            if (curve.value(QStringLiteral("Target")) == QJsonValue(QStringLiteral("Parameter")))
+                sourceIds.insert(curve.value(QStringLiteral("Id")).toString());
+        }
+        QVector<QPair<int, QJsonObject>> sources;
+        double requiredDuration = 0;
+        for (auto it = tracks.m_tracks.cbegin(); it != tracks.m_tracks.cend(); ++it) {
+            const CMotionTrack key{CMotionTarget::Parameter, it.key()};
+            if (m_curves.contains(key) || sourceIds.contains(it.key()))
+                return fail(QStringLiteral("同名参数轨道已重新创建，无法覆盖：%1").arg(it.key()));
+            if (it->present) {
+                candidate.m_curves.insert(key, it->points);
+                if (!it->points.isEmpty()) requiredDuration = qMax(requiredDuration, it->points.last().x());
+            }
+            if (it->segmentsPresent) candidate.m_segmentTypes.insert(key, it->segments);
+            if (it->controlsPresent) candidate.m_bezierControls.insert(key, it->controls);
+            if (it->sourceIndex >= 0) sources.append(qMakePair(it->sourceIndex, it->source));
+        }
+        const auto currentMeta = m_source.value(QStringLiteral("Meta")).toObject();
+        if (currentMeta.value(QStringLiteral("Duration")).isDouble() && Timing().duration < requiredDuration)
+            return fail(QStringLiteral("当前动画时长短于待恢复轨道，请先增加时长"));
+        std::sort(sources.begin(), sources.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& source : sources) curves.insert(qMin(source.first, int(curves.size())), source.second);
+        if (!sources.isEmpty()) candidate.m_source.insert(QStringLiteral("Curves"), curves);
+        if (tracks.m_promotedDuration && currentMeta.value(QStringLiteral("Duration")) == tracks.m_durationAfter) {
+            auto meta = candidate.m_source.value(QStringLiteral("Meta")).toObject();
+            if (tracks.m_durationBefore.isUndefined()) meta.remove(QStringLiteral("Duration"));
+            else meta.insert(QStringLiteral("Duration"), tracks.m_durationBefore);
+            if (!tracks.m_metaPresent && meta.isEmpty()) candidate.m_source.remove(QStringLiteral("Meta"));
+            else candidate.m_source.insert(QStringLiteral("Meta"), meta);
+        }
+        if (!candidate.BuildJson(nullptr, candidate.Fps(), candidate.Loop(), true, error)) return false;
+        *this = std::move(candidate);
+        return true;
+    } catch (const std::exception&) { return fail(QStringLiteral("无法准备参数轨道恢复")); }
+}
 
 std::optional<qint64> CMotionTimeline::RecordingElapsedMilliseconds() const
 {
@@ -838,7 +964,34 @@ bool CMotionTimeline::Load(const QString& path, QString* error)
     return LoadJson(document.object(), false, error);
 }
 
-bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* error)
+bool CMotionTimeline::RecountMetadata(QJsonObject& motion, QString* error, bool draft, double* duration)
+{
+    if (error) error->clear();
+    CMotionTimeline validator;
+    if (!validator.LoadJson(motion, draft, error, true)) return false;
+    const auto curves = motion.value(QStringLiteral("Curves")).toArray();
+    QJsonObject meta = motion.value(QStringLiteral("Meta")).toObject();
+    int segments = 0, points = 0;
+    for (const auto& value : curves) {
+        ParsedCurve parsed;
+        if (!parseCurve(value.toObject(), meta.value(QStringLiteral("AreBeziersRestricted")).toBool(), &parsed, draft)) return false;
+        segments += parsed.points.size() - 1;
+        points += parsed.totalPoints;
+    }
+    const auto events = motion.value(QStringLiteral("UserData")).toArray();
+    qint64 eventBytes = 0;
+    for (const auto& event : events) eventBytes += event.toObject().value(QStringLiteral("Value")).toString().toUtf8().size();
+    meta.insert(QStringLiteral("CurveCount"), curves.size());
+    meta.insert(QStringLiteral("TotalSegmentCount"), segments);
+    meta.insert(QStringLiteral("TotalPointCount"), points);
+    meta.insert(QStringLiteral("UserDataCount"), events.size());
+    meta.insert(QStringLiteral("TotalUserDataSize"), eventBytes);
+    motion.insert(QStringLiteral("Meta"), meta);
+    if (duration) *duration = validator.Timing().duration;
+    return true;
+}
+
+bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* error, bool allowEmpty)
 {
     if (root.value(QStringLiteral("Version")).toDouble(-1) != 3.0 || !root.value(QStringLiteral("Curves")).isArray()) {
         if (error) *error = QStringLiteral("不支持的 motion3 版本或曲线字段");
@@ -895,7 +1048,7 @@ bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* err
         segmentTypes.insert(track, parsed.types);
         bezierControls.insert(track, parsed.controls);
     }
-    if (!draft && identities.isEmpty() && root.value(QStringLiteral("UserData")).toArray().isEmpty()) {
+    if (!draft && !allowEmpty && identities.isEmpty() && root.value(QStringLiteral("UserData")).toArray().isEmpty()) {
         if (error) *error = QStringLiteral("motion3 没有曲线或事件");
         return false;
     }

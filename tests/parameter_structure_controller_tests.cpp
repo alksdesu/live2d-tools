@@ -141,6 +141,43 @@ private slots:
         QCOMPARE(preview.ended, 0);
     }
 
+    void undoReentersEditorAfterBindingExits()
+    {
+        QTemporaryDir directory;
+        DeformerSnapshotData::Fixture fixture;
+        const auto path = directory.filePath("source.moc3");
+        QVERIFY(DeformerSnapshotData::write(path, fixture.bytes));
+        CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(path, &error), qPrintable(error));
+        CKeyformEditController controller;
+        controller.SetDocument(&document);
+        Preview preview;
+        preview.Connect(controller);
+        QVERIFY(controller.Activate("Mesh", 1, {{"P", 1}}, &error));
+        const auto originalPose = controller.Pose();
+        CModelEdit edit;
+        QVERIFY(document.MakeCreateParameterEdit(request(true, 2), "New", edit, &error));
+        QVERIFY(controller.Submit(edit, &error));
+        QVERIFY(!controller.IsActive());
+        CModelEdit history;
+        preview.reject = true;
+        QVERIFY(!controller.History(true, history, &error));
+        QVERIFY(!controller.IsActive());
+        QVERIFY(document.Parameters().size() == 2);
+        preview.reject = false;
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QVERIFY(controller.IsActive());
+        QCOMPARE(controller.Target(), QStringLiteral("Mesh"));
+        QCOMPARE(controller.Type(), QStringLiteral("artmesh"));
+        QCOMPARE(controller.Keyform(), 1);
+        QCOMPARE(controller.Pose(), originalPose);
+        QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+        QVERIFY(!controller.IsActive());
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(controller.Pose(), originalPose);
+    }
+
     void boundCornerRemapsOrExitsAtomically_data()
     {
         QTest::addColumn<int>("keyCount");

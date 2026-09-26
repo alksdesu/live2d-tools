@@ -3,7 +3,10 @@
 #include "ckeyformbindinggrid.h"
 #include "cparentgraph.h"
 #include "cmocpreviewbuilder.h"
+#include "csectiontable.h"
+#include "csectionvalidation.h"
 #include <QCryptographicHash>
+#include <QByteArrayView>
 #include <QDataStream>
 #include <QIODevice>
 #include <algorithm>
@@ -123,6 +126,113 @@ bool canBind(const CModelDocument& document, const QVector<Builder::BindingReque
                 return fail(error, QStringLiteral("绑定对象的父级已锁定：%1").arg(owner.id));
             deformer = document.DeformerParentIndex(value.id);
         }
+    }
+    return true;
+}
+
+bool validSlice(qint64 begin, qint64 count, qint64 size)
+{
+    return count >= 0 && (count == 0 ? begin >= -1 && begin <= size : begin >= 0 && begin <= size && count <= size - begin);
+}
+
+bool auxiliaryIdentity(const QByteArray& original, const CSectionTable& before,
+                       const QByteArray& working, const CSectionTable& after, QString* error)
+{
+    const auto originalSpans = CSectionValidation::ArraySpans(*before.sectionOffsetTable, *before.count_info);
+    const auto workingSpans = CSectionValidation::ArraySpans(*after.sectionOffsetTable, *after.count_info);
+    if (originalSpans.size() != workingSpans.size()) return fail(error, QStringLiteral("参数结构改变了区段目录"));
+    const QSet<QByteArray> fixed{
+        "parts.ids", "parts.is_visible", "parts.is_enabled", "parts.parent_part_indices",
+        "glue.ids", "glue.art_mesh_indices_a", "glue.art_mesh_indices_b", "glue.glue_info_sources_begin_indices",
+        "glue.glue_info_sources_counts", "glue_info.weights", "glue_info.position_indices"};
+    for (int index = 0; index < originalSpans.size(); ++index) {
+        const auto& a = originalSpans[index]; const auto& b = workingSpans[index];
+        if (!fixed.contains(a.name)) continue;
+        if (a.slot != b.slot || a.count != b.count || a.width != b.width ||
+            QByteArrayView(original).sliced(a.offset, qint64(a.count) * a.width) !=
+                QByteArrayView(working).sliced(b.offset, qint64(b.count) * b.width))
+            return fail(error, QStringLiteral("参数结构改变了 Part 或 Glue 身份与连接：%1").arg(QString::fromLatin1(a.name)));
+    }
+    for (const auto* part : after.parts)
+        if (!validSlice(part->keyform_sources_begin_indices, part->keyform_sources_counts, after.part_keyforms.size()))
+            return fail(error, QStringLiteral("Part 关键形范围无效：%1").arg(part->ids));
+    for (const auto* form : after.part_keyforms)
+        if (!std::isfinite(form->draw_orders)) return fail(error, QStringLiteral("Part 关键形数值无效"));
+    for (const auto* glue : after.glue) {
+        if (glue->art_mesh_indices_a < 0 || glue->art_mesh_indices_a >= after.art_meshes.size() ||
+            glue->art_mesh_indices_b < 0 || glue->art_mesh_indices_b >= after.art_meshes.size() ||
+            !validSlice(glue->glue_info_sources_begin_indices, glue->glue_info_sources_counts, after.glue_info.size()) ||
+            !validSlice(glue->keyform_sources_begin_indices, glue->keyform_sources_counts, after.glue_keyforms.size()))
+            return fail(error, QStringLiteral("Glue 连接或关键形范围无效：%1").arg(glue->ids));
+    }
+    for (const auto* form : after.glue_keyforms)
+        if (!std::isfinite(form->intensities)) return fail(error, QStringLiteral("Glue 关键形数值无效"));
+    return true;
+}
+
+bool canDelete(const CModelDocument& document, const CSectionTable& table, const Builder::DeleteImpact& impact, QString* error)
+{
+    QVector<int> parts, parents;
+    for (const auto& part : document.Parts()) parts.append(part.parentIndex);
+    for (const auto& deformer : document.Deformers())
+        parents.append(document.DeformerParentOverrides().value(deformer.id, deformer.parentDeformerIndex));
+    const CParentGraph partGraph(parts), deformerGraph(parents);
+    if (!partGraph.IsValid() || !deformerGraph.IsValid()) return fail(error, QStringLiteral("对象父关系无效"));
+    QVector<bool> partLocked(parts.size()), deformerLocked(parents.size());
+    QHash<QString, bool> locked;
+    const auto save = [&](const QString& type, const QString& id, bool value) {
+        const QString key = type + '|' + id;
+        locked.insert(key, value || locked.value(key));
+    };
+    const auto blockedPart = [&](int index) { return index < -1 || index >= partLocked.size() || (index >= 0 && partLocked[index]); };
+    for (int index : partGraph.TopologicalOrder()) {
+        const auto& part = document.Parts()[index];
+        partLocked[index] = document.IsLocked("part", part.id) || (part.parentIndex >= 0 && partLocked[part.parentIndex]);
+        save("part", part.id, partLocked[index]);
+    }
+    for (int index : deformerGraph.TopologicalOrder()) {
+        const auto& deformer = document.Deformers()[index];
+        const QString type = deformer.type == CModelDeformer::Warp ? "warp" : "rotation";
+        deformerLocked[index] = document.IsLocked(type, deformer.id) || blockedPart(deformer.parentPartIndex) ||
+            (parents[index] >= 0 && deformerLocked[parents[index]]);
+        save(type, deformer.id, deformerLocked[index]);
+    }
+    QVector<bool> meshLocked;
+    for (const auto& mesh : document.Drawables()) {
+        const int parent = mesh.parentDeformerIndex;
+        const bool value = document.IsLocked("artmesh", mesh.id) || blockedPart(mesh.parentPartIndex) ||
+            parent < -1 || parent >= deformerLocked.size() || (parent >= 0 && deformerLocked[parent]);
+        meshLocked.append(value);
+        save("artmesh", mesh.id, value);
+    }
+    for (const auto* glue : table.glue) {
+        const int a = glue->art_mesh_indices_a, b = glue->art_mesh_indices_b;
+        const bool value = document.IsLocked("glue", glue->ids) || a < 0 || b < 0 || a >= meshLocked.size() || b >= meshLocked.size() ||
+            meshLocked[a] || meshLocked[b];
+        save("glue", glue->ids, value);
+    }
+    const auto check = [&](const QString& type, const QString& id) {
+        if (id.isEmpty()) return true;
+        const QString key = type + '|' + id;
+        return locked.contains(key) && !locked.value(key);
+    };
+    for (const auto& target : impact.targets) {
+        QString type;
+        switch (target.type) {
+        case Builder::DeleteTarget::ArtMesh: type = "artmesh"; break;
+        case Builder::DeleteTarget::Warp: type = "warp"; break;
+        case Builder::DeleteTarget::Rotation: type = "rotation"; break;
+        case Builder::DeleteTarget::Part: type = "part"; break;
+        case Builder::DeleteTarget::Glue: type = "glue"; break;
+        default: return fail(error, QStringLiteral("删除影响包含未知对象类型"));
+        }
+        if (!check(type, target.id)) return fail(error, QStringLiteral("受影响对象或父级已锁定：%1").arg(target.id));
+    }
+    const QHash<QString, QString> types{{"ArtMesh", "artmesh"}, {"WarpDeformer", "warp"}, {"RotationDeformer", "rotation"}, {"Part", "part"}, {"Glue", "glue"}};
+    for (const auto& reference : impact.references) {
+        const auto type = types.constFind(reference.ownerType);
+        if (type != types.cend() && !check(*type, reference.ownerId))
+            return fail(error, QStringLiteral("引用对象或父级已锁定：%1").arg(reference.ownerId));
     }
     return true;
 }
@@ -265,6 +375,12 @@ bool CModelDocument::PrepareParameterStructure(const Builder::ColumnState& struc
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
     QByteArray working;
     if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
+    {
+        auto sourceReader = CReader::FromBytes(m_sourceBytes), workingReader = CReader::FromBytes(working);
+        CSectionTable sourceTable(sourceReader), workingTable(workingReader);
+        if (!sourceTable.IsValid() || !workingTable.IsValid()) return fail(error, sourceReader.Error() + workingReader.Error());
+        if (!auxiliaryIdentity(m_sourceBytes, sourceTable, working, workingTable, error)) return false;
+    }
     CModelDocument original, next;
     if (!original.LoadBytes(m_sourceBytes, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
     if (!next.m_previewBuilder || next.m_parts.size() != original.m_parts.size() ||
@@ -441,8 +557,10 @@ bool CModelDocument::MakeCreateParameterEdit(const Builder::CreateRequest& reque
         if (!canBind(*this, request.bindings, error)) return false;
         QByteArray bytes;
         Builder::Result result;
-        return BuildPreviewMoc(bytes, error) && Builder::Create(bytes, request, result, error) &&
-            MakeParameterStructureEdit(result, request.parameter.id, &displayName, true, edit, error);
+        if (!BuildPreviewMoc(bytes, error) || !Builder::Create(bytes, request, result, error) ||
+            !MakeParameterStructureEdit(result, request.parameter.id, &displayName, true, edit, error)) return false;
+        edit.parameterChange = CModelEdit::ParameterChange::Create;
+        return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法创建参数")); }
 }
 
@@ -454,8 +572,10 @@ bool CModelDocument::MakeBindParameterEdit(const QString& id, const QVector<Buil
         if (!canBind(*this, bindings, error)) return false;
         QByteArray bytes;
         Builder::Result result;
-        return BuildPreviewMoc(bytes, error) && Builder::BindExistingParameter(bytes, id, bindings, result, error) &&
-            MakeParameterStructureEdit(result, id, nullptr, false, edit, error);
+        if (!BuildPreviewMoc(bytes, error) || !Builder::BindExistingParameter(bytes, id, bindings, result, error) ||
+            !MakeParameterStructureEdit(result, id, nullptr, false, edit, error)) return false;
+        edit.parameterChange = CModelEdit::ParameterChange::Bind;
+        return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法绑定参数")); }
 }
 
@@ -464,8 +584,34 @@ bool CModelDocument::MakeDeleteParameterEdit(const QString& id, CModelEdit& edit
     try {
         QByteArray bytes;
         Builder::Result result;
-        return BuildPreviewMoc(bytes, error) && Builder::DeleteUnreferenced(bytes, id, result, error) &&
-            MakeParameterStructureEdit(result, id, nullptr, false, edit, error);
+        if (!BuildPreviewMoc(bytes, error) || !Builder::DeleteUnreferenced(bytes, id, result, error) ||
+            !MakeParameterStructureEdit(result, id, nullptr, false, edit, error)) return false;
+        edit.parameterChange = CModelEdit::ParameterChange::Delete;
+        return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法删除参数")); }
 }
+
+bool CModelDocument::MakeDeleteParameterEdit(const Builder::DeleteRequest& request, CModelEdit& edit, QString* error) const
+{
+    try {
+        QByteArray bytes;
+        if (!BuildPreviewMoc(bytes, error)) return false;
+        Builder::DeleteImpact impact;
+        if (!Builder::AnalyzeDelete(bytes, request, impact, error)) return false;
+        if (!impact.blockingReasons.isEmpty()) return fail(error, impact.blockingReasons.join(QLatin1Char('\n')));
+        {
+            auto reader = CReader::FromBytes(bytes);
+            CSectionTable table(reader);
+            if (!table.IsValid()) return fail(error, reader.Error());
+            if (!canDelete(*this, table, impact, error)) return false;
+        }
+        Builder::Result result;
+        if (!Builder::Delete(bytes, request, result, error) ||
+            !MakeParameterStructureEdit(result, request.id, nullptr, false, edit, error)) return false;
+        edit.parameterChange = CModelEdit::ParameterChange::Delete;
+        edit.freezeValue = request.freezeValue;
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法冻结并删除参数")); }
+}
+
 }

@@ -11,6 +11,7 @@
 #include <QByteArray>
 #include <QMap>
 #include <memory>
+#include <optional>
 #include "cmocparameterstructurebuilder.h"
 
 namespace live2dstruct {
@@ -157,6 +158,8 @@ struct CModelEditRuntimeState
 {
     QVariant before;
     QVariant after;
+    QVariant beforeEditor;
+    QVariant afterEditor;
 };
 
 struct CModelEditStorageState
@@ -177,6 +180,9 @@ struct CModelEdit
     bool coalesce = true;
     std::shared_ptr<CModelEditRuntimeState> runtime;
     std::shared_ptr<const CModelEditStorageState> storage;
+    enum class ParameterChange { None, Create, Bind, Delete };
+    ParameterChange parameterChange = ParameterChange::None;
+    std::optional<float> freezeValue;
 };
 
 class CModelDocument
@@ -205,6 +211,8 @@ public:
     bool MakeBindParameterEdit(const QString& id, const QVector<CMocParameterStructureBuilder::BindingRequest>& bindings,
                                CModelEdit& edit, QString* error = nullptr) const;
     bool MakeDeleteParameterEdit(const QString& id, CModelEdit& edit, QString* error = nullptr) const;
+    bool MakeDeleteParameterEdit(const CMocParameterStructureBuilder::DeleteRequest& request,
+                                 CModelEdit& edit, QString* error = nullptr) const;
     const QSize& CanvasPixels() const { return m_canvasPixels; }
     const QVector<CModelParameter>& Parameters() const { return m_parameters; }
     bool SetParameterValue(const QString& id, float value);

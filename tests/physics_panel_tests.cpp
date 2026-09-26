@@ -14,6 +14,9 @@
 #include <QTimer>
 #include <QXmlStreamReader>
 #include <QMessageBox>
+#include <QLineEdit>
+#include <type_traits>
+#include <stdexcept>
 
 namespace {
 QJsonObject physicsFixture()
@@ -85,6 +88,222 @@ class PhysicsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void sessionSaveKeepsSourceAndHistoryBaseline_data()
+    {
+        QTest::addColumn<int>("result");
+        QTest::newRow("success") << 0;
+        QTest::newRow("refusal") << 1;
+        QTest::newRow("exception") << 2;
+        QTest::newRow("nonstandard-exception") << 3;
+    }
+
+    void sessionSaveKeepsSourceAndHistoryBaseline()
+    {
+        QFETCH(int, result);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("source.physics3.json"); const auto source = physicsFixture(); QVERIFY(writePhysics(path, source));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path));
+        panel.findChild<QSlider*>("physicsWindY")->setValue(20);
+        CPhysicsPanel::Snapshot before; QVERIFY(panel.CaptureSnapshot(before));
+        QVERIFY(before.dirty);
+        int calls = 0;
+        panel.SetSessionSaveHandler([&](QString* error) {
+            ++calls;
+            if (result == 2) throw std::runtime_error("session failure");
+            if (result == 3) throw 3;
+            if (result == 1) { if (error) *error = "session refusal"; return false; }
+            return true;
+        });
+        QCOMPARE(panel.findChild<QPushButton*>("savePhysicsButton")->text(), QStringLiteral("保存到会话"));
+        QSignalSpy saved(&panel, &CPhysicsPanel::PhysicsSaved);
+        QSignalSpy changed(&panel, &CPhysicsPanel::PhysicsConfigChanged);
+        QString error;
+        QCOMPARE(panel.SavePhysics({}, &error), result == 0); QCOMPARE(calls, 1);
+        QCOMPARE(error.isEmpty(), result == 0);
+        CPhysicsPanel::Snapshot after; QVERIFY(panel.CaptureSnapshot(after)); QVERIFY(after.SameDocument(before));
+        QCOMPARE(readPhysics(path), source); QCOMPARE(saved.size(), 0); QCOMPARE(changed.size(), 0);
+    }
+
+    void explicitExportAndClearedHandlerKeepLegacySaveBehavior()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto sourcePath = directory.filePath("source.physics3.json"); const auto output = directory.filePath("export.physics3.json");
+        const auto source = physicsFixture(); QVERIFY(writePhysics(sourcePath, source));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(sourcePath));
+        panel.findChild<QSlider*>("physicsWindY")->setValue(20);
+        int calls = 0;
+        panel.SetSessionSaveHandler([&](QString*) { ++calls; return true; });
+        QSignalSpy saved(&panel, &CPhysicsPanel::PhysicsSaved);
+        QVERIFY(panel.SavePhysics(output)); QCOMPARE(calls, 0); QCOMPARE(saved.size(), 1);
+        QCOMPARE(readPhysics(sourcePath), source); QVERIFY(readPhysics(output) != source); QVERIFY(!panel.HasUnsavedChanges());
+        panel.SetSessionSaveHandler({});
+        QCOMPARE(panel.findChild<QPushButton*>("savePhysicsButton")->text(), QStringLiteral("保存物理配置"));
+        panel.findChild<QSlider*>("physicsWindY")->setValue(30);
+        QVERIFY(panel.SavePhysics()); QCOMPARE(calls, 0); QCOMPARE(saved.size(), 2);
+        QCOMPARE(readPhysics(output).value("Meta").toObject().value("EffectiveForces").toObject().value("Wind").toObject().value("Y").toDouble(), 0.3);
+        QCOMPARE(readPhysics(sourcePath), source);
+    }
+
+    void preparedReferenceRemovalIsSilentAndReversible()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("draft.physics3.json");
+        const auto source = physicsFixture(); QVERIFY(writePhysics(path, source));
+        CPhysicsPanel panel; QString error; QVERIFY(panel.LoadPhysics(path, &error));
+        auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable");
+        auto* inputs = panel.findChild<QTableWidget*>("physicsInputTable");
+        auto* drag = panel.findChild<QCheckBox*>("physicsDragMode");
+        groups->setCurrentCell(1, 0); drag->setChecked(true); inputs->setCurrentCell(0, 2);
+        CPhysicsPanel::Snapshot before; QVERIFY(panel.CaptureSnapshot(before, &error));
+        QSignalSpy changed(&panel, &CPhysicsPanel::PhysicsConfigChanged);
+        QSignalSpy saved(&panel, &CPhysicsPanel::PhysicsSaved);
+        QSignalSpy driven(&panel, &CPhysicsPanel::PhysicsDragParamsChanged);
+        QSignalSpy gravity(&panel, &CPhysicsPanel::GravityChanged);
+        QSignalSpy wind(&panel, &CPhysicsPanel::WindChanged);
+        CPhysicsPanel::PreparedSnapshot prepared;
+        QVERIFY2(panel.PrepareReferenceRemoval(before, {"ParamTail"}, prepared, &error), qPrintable(error));
+        QCOMPARE(panel.DocumentSnapshot(), before.document); QVERIFY(!panel.HasUnsavedChanges());
+        QCOMPARE(groups->currentRow(), 1); QCOMPARE(inputs->rowCount(), 1);
+        QVERIFY(panel.ValidatePreparedSnapshot(prepared, &error));
+        const auto after = prepared.Result();
+        QVERIFY(panel.CommitPreparedSnapshot(prepared, &error));
+        QVERIFY(panel.HasUnsavedChanges());
+        QCOMPARE(panel.FilePath(), path); QCOMPARE(groups->currentRow(), 1); QVERIFY(drag->isChecked());
+        QCOMPARE(inputs->rowCount(), 1); QCOMPARE(changed.size(), 0); QCOMPARE(saved.size(), 0); QCOMPARE(driven.size(), 0);
+        QCOMPARE(gravity.size(), 0); QCOMPARE(wind.size(), 0); QCOMPARE(readPhysics(path), source);
+        CPhysicsPanel::Snapshot committed; QVERIFY(panel.CaptureSnapshot(committed)); QVERIFY(committed.SameDocument(after));
+        panel.NotifySnapshotCommitted();
+        QCOMPARE(inputs->rowCount(), 0);
+        QCOMPARE(changed.size(), 1); QCOMPARE(driven.size(), 1); QVERIFY(driven.last()[0].toStringList().isEmpty());
+        panel.NotifySnapshotCommitted(); QCOMPARE(changed.size(), 1); QCOMPARE(driven.size(), 1);
+        QVERIFY(!panel.CommitPreparedSnapshot(prepared, &error)); QVERIFY(!panel.ValidatePreparedSnapshot(prepared, &error));
+        CPhysicsPanel::PreparedSnapshot undo;
+        QVERIFY2(panel.PrepareSnapshot(after, before, undo, &error), qPrintable(error));
+        QVERIFY(panel.CommitPreparedSnapshot(undo, &error));
+        QCOMPARE(panel.DocumentSnapshot(), before.document); QCOMPARE(panel.HasUnsavedChanges(), before.dirty);
+        QCOMPARE(inputs->rowCount(), 0);
+        QVERIFY(drag->isChecked()); QCOMPARE(saved.size(), 0); QCOMPARE(changed.size(), 1);
+        panel.NotifySnapshotCommitted();
+        QCOMPARE(groups->currentRow(), before.selectedGroupRow); QCOMPARE(inputs->currentRow(), 0); QCOMPARE(inputs->currentColumn(), 2);
+        QCOMPARE(changed.size(), 2); QCOMPARE(driven.last()[0].toStringList(), QStringList{"ParamTail"});
+        QCOMPARE(readPhysics(path), source);
+    }
+
+    void UIOnlyChangesDoNotConflictAndRemovalUsesLatestSelection()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("draft.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path));
+        CPhysicsPanel::Snapshot expected; QVERIFY(panel.CaptureSnapshot(expected));
+        auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable");
+        auto* drag = panel.findChild<QCheckBox*>("physicsDragMode");
+        groups->setCurrentCell(1, 0); drag->setChecked(true);
+        CPhysicsPanel::PreparedSnapshot prepared; QString error;
+        QVERIFY2(panel.PrepareReferenceRemoval(expected, {"ParamHair"}, prepared, &error), qPrintable(error));
+        QCOMPARE(prepared.Result().selectedGroupId, QString("tail")); QVERIFY(prepared.Result().dragEnabled);
+        groups->setCurrentCell(0, 0); drag->setChecked(false);
+        QVERIFY(panel.ValidatePreparedSnapshot(prepared, &error));
+        QVERIFY(panel.CommitPreparedSnapshot(prepared, &error));
+        QCOMPARE(groups->currentRow(), 0); QVERIFY(!drag->isChecked());
+        panel.NotifySnapshotCommitted();
+        QCOMPARE(groups->currentRow(), 1); QVERIFY(drag->isChecked());
+        QCOMPARE(panel.findChild<QTableWidget*>("physicsInputTable")->item(0, 0)->text(), QString("ParamTail"));
+    }
+
+    void independentDraftChangesAndRevisionABARejectPreparedSnapshot()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("draft.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path));
+        auto* wind = panel.findChild<QSlider*>("physicsWindY");
+        wind->setValue(20);
+        CPhysicsPanel::Snapshot before; QVERIFY(panel.CaptureSnapshot(before));
+        CPhysicsPanel::PreparedSnapshot prepared; QString error;
+        QVERIFY(panel.PrepareReferenceRemoval(before, {"ParamHair"}, prepared, &error));
+        wind->setValue(30); wind->setValue(20);
+        CPhysicsPanel::Snapshot current; QVERIFY(panel.CaptureSnapshot(current));
+        QCOMPARE(current.document, before.document); QCOMPARE(current.dirty, before.dirty); QVERIFY(current.revision > before.revision);
+        QVERIFY(!panel.ValidatePreparedSnapshot(prepared, &error));
+        QVERIFY(!panel.CommitPreparedSnapshot(prepared, &error));
+        QVERIFY(!panel.PrepareSnapshot(before, before, prepared, &error));
+        CPhysicsPanel::Snapshot after; QVERIFY(panel.CaptureSnapshot(after)); QVERIFY(after.SameDocument(current));
+        QVERIFY(error.contains(QStringLiteral("修改")));
+    }
+
+    void pendingCellTextRejectsCapturePrepareLoadAndSave()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("draft.physics3.json"); const auto source = physicsFixture(); QVERIFY(writePhysics(path, source));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path)); panel.show();
+        CPhysicsPanel::Snapshot before; QVERIFY(panel.CaptureSnapshot(before));
+        CPhysicsPanel::PreparedSnapshot prepared; QString error;
+        QVERIFY(panel.PrepareReferenceRemoval(before, {"ParamHair"}, prepared, &error));
+        auto* inputs = panel.findChild<QTableWidget*>("physicsInputTable");
+        inputs->setCurrentCell(0, 0); inputs->editItem(inputs->item(0, 0));
+        QTRY_VERIFY(inputs->findChild<QLineEdit*>());
+        auto* editor = inputs->findChild<QLineEdit*>(); editor->setText("ParamUncommitted");
+        QVERIFY(panel.HasUnsavedChanges());
+        auto unchanged = before;
+        QVERIFY(!panel.CaptureSnapshot(unchanged, &error)); QVERIFY(error.contains(QStringLiteral("单元格")));
+        QVERIFY(unchanged.SameDocument(before));
+        QVERIFY(!panel.PrepareSnapshot(before, before, prepared, &error));
+        QVERIFY(!panel.PrepareReferenceRemoval(before, {"ParamHair"}, prepared, &error));
+        QVERIFY(!panel.ValidatePreparedSnapshot(prepared, &error));
+        QVERIFY(!panel.CommitPreparedSnapshot(prepared, &error));
+        QVERIFY(!panel.LoadPhysics(path, &error));
+        int sessionCalls = 0;
+        panel.SetSessionSaveHandler([&](QString*) { ++sessionCalls; return true; });
+        QVERIFY(!panel.SavePhysics({}, &error)); QCOMPARE(sessionCalls, 0);
+        QVERIFY(!panel.SavePhysics(path, &error));
+        QCOMPARE(editor->text(), QString("ParamUncommitted"));
+        QCOMPARE(panel.DocumentSnapshot(), before.document); QCOMPARE(readPhysics(path), source);
+        QTest::keyClick(editor, Qt::Key_Escape);
+        QTRY_VERIFY(!panel.HasUnsavedChanges());
+        QVERIFY(panel.ValidatePreparedSnapshot(prepared, &error));
+    }
+
+    void invalidTargetsAndForeignCandidatesRemainAtomic()
+    {
+        static_assert(!std::is_copy_constructible_v<CPhysicsPanel::PreparedSnapshot>);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("draft.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel, other; QVERIFY(panel.LoadPhysics(path)); QVERIFY(other.LoadPhysics(path));
+        CPhysicsPanel::Snapshot before; QVERIFY(panel.CaptureSnapshot(before));
+        CPhysicsPanel::PreparedSnapshot valid; QString error;
+        QVERIFY(panel.PrepareReferenceRemoval(before, {"ParamHair"}, valid, &error));
+        const auto planned = valid.Result();
+        auto invalid = before;
+        auto groups = invalid.document.value("PhysicsSettings").toArray(); auto group = groups.first().toObject();
+        auto vertices = group.value("Vertices").toArray(); auto vertex = vertices.first().toObject(); vertex["Radius"] = -1;
+        vertices[0] = vertex; group["Vertices"] = vertices; groups[0] = group; invalid.document["PhysicsSettings"] = groups;
+        QVERIFY(!panel.PrepareSnapshot(before, invalid, valid, &error));
+        QVERIFY(valid.Result().SameDocument(planned));
+        QVERIFY(!other.ValidatePreparedSnapshot(valid, &error)); QVERIFY(!other.CommitPreparedSnapshot(valid, &error));
+        CPhysicsPanel::PreparedSnapshot moved = std::move(valid);
+        QVERIFY(!panel.ValidatePreparedSnapshot(valid, &error));
+        QVERIFY(panel.ValidatePreparedSnapshot(moved, &error));
+        QVERIFY(panel.CommitPreparedSnapshot(moved, &error));
+        QCOMPARE(other.DocumentSnapshot(), before.document);
+    }
+
+    void snapshotRestoreUsesGroupIdentityAfterReordering()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("draft.physics3.json"); QVERIFY(writePhysics(path, physicsFixture()));
+        CPhysicsPanel panel; QVERIFY(panel.LoadPhysics(path));
+        auto* groups = panel.findChild<QTableWidget*>("physicsGroupTable"); groups->setCurrentCell(1, 0);
+        CPhysicsPanel::Snapshot before; QVERIFY(panel.CaptureSnapshot(before));
+        auto target = before; auto values = target.document.value("PhysicsSettings").toArray();
+        target.document["PhysicsSettings"] = QJsonArray{values[1], values[0]}; target.dirty = true;
+        CPhysicsPanel::PreparedSnapshot prepared; QString error;
+        QVERIFY2(panel.PrepareSnapshot(before, target, prepared, &error), qPrintable(error));
+        QCOMPARE(prepared.Result().selectedGroupRow, 0);
+        QVERIFY(panel.CommitPreparedSnapshot(prepared, &error));
+        QCOMPARE(groups->currentRow(), 1);
+        panel.NotifySnapshotCommitted();
+        QCOMPARE(groups->currentRow(), 0); QCOMPARE(groups->item(0, 0)->text(), QString("tail"));
+    }
+
     void editedGroupNameReachesCmo3()
     {
         QTemporaryDir temp;

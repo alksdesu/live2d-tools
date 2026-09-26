@@ -66,15 +66,10 @@ bool validateParameterOptions(const CSectionTable& table, const CCmo3Builder::Op
     return true;
 }
 
-bool validatePhysicsFile(const QString& path, const QSet<QString>& parameterIds, QJsonObject& snapshot, QString* error)
+bool validatePhysicsBytes(const QByteArray& bytes, const QSet<QString>& parameterIds, QJsonObject& snapshot, QString* error)
 {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        if (error) *error = QStringLiteral("无法打开 physics3 文件：%1").arg(file.errorString());
-        return false;
-    }
     QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         if (error) *error = QStringLiteral("physics3 JSON 无效：%1").arg(parseError.errorString());
         return false;
@@ -177,6 +172,21 @@ bool validatePhysicsFile(const QString& path, const QSet<QString>& parameterIds,
     }
     snapshot = root;
     return true;
+}
+
+bool validatePhysicsFile(const QString& path, const QSet<QString>& parameterIds, QJsonObject& snapshot, QString* error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        if (error) *error = QStringLiteral("无法打开 physics3 文件：%1").arg(file.errorString());
+        return false;
+    }
+    const auto bytes = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        if (error) *error = QStringLiteral("无法读取 physics3 文件：%1").arg(file.errorString());
+        return false;
+    }
+    return validatePhysicsBytes(bytes, parameterIds, snapshot, error);
 }
 
 bool validateDeformerSources(const CSectionTable& table, QString* error)
@@ -1813,7 +1823,9 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     QJsonObject physics;
     QSet<QString> parameterIds;
     for (const auto* parameter : table.parameters) parameterIds.insert(parameter->ids);
-    if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, parameterIds, physics, outError)) return false;
+    if (opt.physicsBytes) {
+        if (!validatePhysicsBytes(*opt.physicsBytes, parameterIds, physics, outError)) return false;
+    } else if (!opt.physicsPath.isEmpty() && !validatePhysicsFile(opt.physicsPath, parameterIds, physics, outError)) return false;
 
     QHash<QString, QString> userData;
     if (!opt.userDataPath.isEmpty()) {

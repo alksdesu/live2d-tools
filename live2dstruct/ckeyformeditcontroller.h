@@ -32,7 +32,7 @@ public:
     bool Submit(const CModelEdit& edit, const QMap<QString, float>& currentValues,
                 int previewKeyform, QString* error = nullptr);
     bool History(bool undo, CModelEdit& edit, QString* error = nullptr);
-    bool Restore(CModelDocument candidate, QString* error = nullptr);
+    bool Restore(CModelDocument candidate, QString* error = nullptr, bool forceStructure = false);
     bool BeginDrag(const QVector<int>& selected, const QVector<float>& runtimePositions, QString* error = nullptr);
     bool DragBy(const QPointF& modelDelta, QString* error = nullptr);
     bool CancelDrag(QString* error = nullptr);

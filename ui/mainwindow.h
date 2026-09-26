@@ -70,7 +70,10 @@ private:
     void ReportExportStage(const QString& outputPath, PsdExportStage stage);
     void RecoverExportPreview();
     void RefreshExportActions();
-    bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false);
+    bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false, bool replacingPhysics = false);
+    bool UsesSessionPhysics() const;
+    bool HasUnsavedPhysicsChanges() const;
+    void ConfigurePhysicsSaving();
     bool SaveSession();
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
@@ -89,6 +92,7 @@ private:
     bool PrepareParameterStructurePose(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                                        bool forward, QMap<QString, float>& pose, QString* error) const;
     QStringList ParameterReferences(const QString& id, bool includeTimeline = true) const;
+    bool PrepareParameterDeletion(const QString& id, QStringList& removals, QString* error) const;
     void RefreshParameterStructureUi();
     void SyncParameterDefinitionPreview();
     bool ActivateKeyform(const QString& id, int keyform, QString* error);
@@ -100,6 +104,15 @@ private:
     void SelectModelObjects(const QStringList& ids, const QStringList& types);
     void RefreshModelTree();
     QString m_parameterBeingEdited;
+    live2dstruct::CParameterResourceEdits::State m_parameterResources;
+    const live2dstruct::CModelSession* m_restoringSession = nullptr;
+    bool m_applyingParameterReferences = false;
+    bool m_refreshParameterTracks = false;
+    bool m_refreshPhysicsReferences = false;
+    bool m_physicsInSession = false;
+    QJsonObject m_savedPhysicsDraft;
+    QString m_savedPhysicsPath;
+    quint64 m_timelinePreviewStopRevision = 0;
     QStringList m_selectedObjectIds, m_selectedObjectTypes;
     void RefreshUndoActions();
     void UndoDocumentEdit();

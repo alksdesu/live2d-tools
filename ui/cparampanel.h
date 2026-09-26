@@ -30,6 +30,8 @@ public:
     using HistoryHandler = std::function<bool(bool, live2dstruct::CModelEdit&, QString*)>;
     using StructureEditHandler = std::function<bool(const live2dstruct::CModelEdit&, QString*)>;
     using ParameterReferenceProvider = std::function<QStringList(const QString&)>;
+    struct DeleteReferenceResult { QStringList removals; QStringList blockers; };
+    using DeleteReferenceProvider = std::function<bool(const QString&, DeleteReferenceResult&, QString*)>;
     using ParameterOwner = live2dstruct::CMocParameterStructureBuilder::Owner;
     explicit CParamPanel(QWidget *parent = nullptr);
     void SetPreEditGuard(PreEditGuard guard);
@@ -37,11 +39,13 @@ public:
     void SetHistoryHandler(HistoryHandler handler);
     void SetStructureEditHandler(StructureEditHandler handler);
     void SetParameterReferenceProvider(ParameterReferenceProvider provider);
+    void SetDeleteReferenceProvider(DeleteReferenceProvider provider);
     void SetBindingTargets(const QVector<ParameterOwner>& targets);
     void SetDocument(live2dstruct::CModelDocument* document);
     void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
     void SetPreviewValues(const QMap<QString, float>& values, const QMap<QString, float>& baselineValues);
     void ClearPreviewValues(const QMap<QString, float>& restoredValues = {}, const QString& preservedParameterId = {});
+    bool HasPreviewValues() const { return m_previewActive; }
     void BuildParams(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
     void ReconcileParameters(CCidJson* cid = nullptr, const QSet<QString>* blendShapeParams = nullptr);
     void RefreshParameterMetadata();
@@ -106,6 +110,7 @@ private:
     HistoryHandler m_historyHandler;
     StructureEditHandler m_structureEditHandler;
     ParameterReferenceProvider m_parameterReferenceProvider;
+    DeleteReferenceProvider m_deleteReferenceProvider;
     QVector<ParameterOwner> m_bindingTargets;
     quint64 m_bindingSelectionRevision = 0;
     std::shared_ptr<CCidJson> m_cachedCid;

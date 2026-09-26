@@ -6,6 +6,9 @@
 #include "framework/Physics/CubismPhysicsInternal.hpp"
 #include <QVector>
 #include <QString>
+#include <QByteArray>
+
+struct ParameterPhysicsReferences;
 
 class PhysicsParameterDefinitionTests;
 
@@ -29,13 +32,16 @@ public:
         const CubismPhysics* owner = nullptr;
         QVector<float> parameters, inputs;
         QVector<int> inputIndices, outputIndices;
+        QVector<quint8> activeInputs, activeOutputs;
         bool structure = false;
     };
     bool PrepareParameterDefinitionChange(const CubismModel& previous, const CubismModel& replacement,
                                          ParameterDefinitionState& result, QString* error = nullptr) const;
     void CommitParameterDefinitionChange(ParameterDefinitionState& state) noexcept;
     bool PrepareParameterStructureChange(const CubismModel& previous, const CubismModel& replacement,
-                                         ParameterDefinitionState& result, QString* error = nullptr) const;
+                                         ParameterDefinitionState& result, QString* error = nullptr,
+                                         const ParameterPhysicsReferences* references = nullptr) const;
+    const QByteArray& SourceDigest() const { return _sourceDigest; }
 
     /**
      * @brief オプション
@@ -175,6 +181,8 @@ private:
 
     QVector<csmFloat32> _parameterCaches;      ///< Evaluateで利用するパラメータのキャッシュ
     QVector<csmFloat32> _parameterInputCaches; ///< UpdateParticlesが動くときの入力をキャッシュ
+    QVector<quint8> _activeInputs, _activeOutputs;
+    QByteArray _sourceDigest;
     bool ResolveParameterIndices(CubismModel* model);
 
     csmBool _isJsonValid; ///< 正しくJsonデータが取得出来たか

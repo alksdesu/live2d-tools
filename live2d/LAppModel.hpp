@@ -20,12 +20,33 @@
 #include <QSet>
 #include <QByteArray>
 #include "live2dstruct/cmotiontimeline.h"
+#include "framework/Model/CubismParameterReferences.hpp"
+
+namespace Live2D { namespace Cubism { namespace Framework { class CubismMotion; }}}
 
 class LAppModel : public Csm::CubismUserModel
 {
     friend class LAppExportPreviewTests;
     friend class ModelReplacementTests;
 public:
+
+    struct EditorPreviewContext
+    {
+        bool active = false;
+        QByteArray sourceDigest;
+        Csm::CubismModel::RuntimeValueSnapshot entry;
+        Csm::CubismModel::RuntimeValueSnapshot current;
+        QMap<QString, float> pose;
+        QMap<QString, float> base;
+    };
+    struct PreparedTimelinePreview
+    {
+        CMotionPreviewFrame frame;
+        QSet<QString> explicitParameterIds;
+        bool active = false;
+    };
+    using TimelinePreviewPreparation = std::function<bool(const QMap<QString, float>&, const QSet<QString>&,
+        const QSet<QString>&, PreparedTimelinePreview&, QString*)>;
 
     LAppModel();
     virtual ~LAppModel();
@@ -43,10 +64,17 @@ public:
                                          QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
     bool CaptureParameterStructureSeeds(const QStringList& ids, ParameterStructureSeeds& result,
                                         QString* error = nullptr) const;
+    bool CaptureEditorPreviewContext(EditorPreviewContext& result, QString* error = nullptr) const;
+    const ParameterReferenceState& GetParameterReferenceState() const { return m_parameterReferences; }
+    const QByteArray& GetModelSettingsDigest() const { return m_modelSettingsDigest; }
+    bool CaptureParameterReferenceCatalog(ParameterReferenceCatalog& result, QString* error = nullptr) const;
     bool ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                         const ParameterStructureSeeds& addedSeeds,
                                         const QMap<QString, float>& baseValues, bool keepEditorPreview,
-                                        QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
+                                        QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {},
+                                        const ParameterReferenceState* references = nullptr,
+                                        const EditorPreviewContext* restoreEditor = nullptr,
+                                        const TimelinePreviewPreparation& prepareTimeline = {});
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -63,6 +91,8 @@ public:
                             double time = 0, bool loop = false);
     void ClearTimelinePreview();
     bool HasTimelinePreview() const { return _timelinePreviewActive; }
+    PreparedTimelinePreview GetTimelinePreviewContext() const
+    { return {_timelinePreview, m_timelineExplicitParameterIds, _timelinePreviewActive}; }
     QMap<QString, float> GetTimelineBaseParameters() const { return _timelineBaseParameters; }
     QMap<QString, float> GetParameterValues() const;
     void UpdateParaValue(const QString& parId,float value,bool IsInit);
@@ -136,9 +166,16 @@ private:
     bool ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
                                  const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
                                  QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits,
-                                 const ParameterStructureSeeds& seeds = {});
+                                 const ParameterStructureSeeds& seeds = {},
+                                 const ParameterPhysicsReferences* physicsReferences = nullptr);
+    bool PrepareParameterReferences(const ParameterReferenceState& state, std::function<void()>& commit,
+                                    QString* error);
+    QString ReferenceSourcePath(const QString& path) const;
+    bool ConfigureMotionReferences(Csm::CubismMotion* motion, const QString& path, QString* error = nullptr);
+    bool ConfigureExpressionReferences(Csm::CubismExpressionMotion* expression, const QString& path, QString* error = nullptr);
     int FindPartIndex(const QString& id) const;
     CMotionPreviewFrame _timelinePreview;
+    QSet<QString> m_timelineExplicitParameterIds;
     QMap<QString, float> _timelineParameters;
     QMap<QString, float> _timelineBaseParts;
     QMap<QString, float> _timelineBaseParameters;
@@ -193,6 +230,11 @@ private:
     Csm::csmFloat32 m_exportPreviousOpacity = 1.0f;
     QMap<QString, float> m_editorPose;
     QMap<QString, float> m_editorBaseParameters;
+    ParameterReferenceState m_parameterReferences;
+    QByteArray m_modelSettingsDigest;
+    QString m_physicsReferencePath;
+    QVector<quint8> m_suppressedLipSync;
+    QVector<quint8> m_suppressedMouseFollow;
     QSet<Csm::csmUint32> m_pendingTextureIds;
     bool m_textureCacheCommitted = false;
     QMap<QString,int> m_mapParaToIndex;
@@ -214,3 +256,6 @@ private:
     // Part 可见性控制
     QSet<QString> _hiddenPartIds;
 };
+
+Q_DECLARE_METATYPE(LAppModel::EditorPreviewContext)
+Q_DECLARE_METATYPE(LAppModel::PreparedTimelinePreview)

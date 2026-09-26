@@ -61,6 +61,9 @@ SOURCES += \
     live2dstruct/cmodeldocument.cpp \
     live2dstruct/cmodeldocumentstructure.cpp \
     live2dstruct/cparameterreferences.cpp \
+    live2dstruct/cparameterreferenceeditor.cpp \
+    live2dstruct/cparameterresourceedits.cpp \
+    live2d/cparameterreferenceplan.cpp \
     live2dstruct/ckeyformbindinggrid.cpp \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
@@ -286,6 +289,9 @@ HEADERS += \
     live2dstruct/cmocparameterstructurebuilder.h \
     live2dstruct/struct/cblend_shape_targets.h \
     live2dstruct/cparameterreferences.h \
+    live2dstruct/cparameterreferenceeditor.h \
+    live2dstruct/cparameterresourceedits.h \
+    live2d/cparameterreferenceplan.h \
     live2dstruct/cmodeluserdata.h \
     live2dstruct/cmodelsession.h \
     CPrecompileHead.h \
@@ -417,6 +423,8 @@ HEADERS += \
     framework/Model/CubismModelUserDataJson.hpp\
     framework/Model/CubismUserModel.hpp\
     framework/Model/CubismParameterStructure.hpp\
+    framework/Model/CubismParameterReferences.hpp\
+    framework/Model/CubismParameterReferenceMask.hpp\
     framework/Motion/ACubismMotion.hpp\
     framework/Motion/CubismExpressionMotion.hpp\
     framework/Motion/CubismExpressionMotionManager.hpp\
@@ -566,6 +574,7 @@ SOURCES += \
     live2d/LAppModelUpdate.cpp \
     live2d/LAppModelParameterDefinitions.cpp \
     live2d/LAppModelParameterStructure.cpp \
+    live2d/LAppModelParameterReferences.cpp \
     ui/cpreviewexporttransaction.cpp \
     ui/psdbatchresult.cpp \
     ui/cexportresultspanel.cpp

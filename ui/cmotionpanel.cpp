@@ -43,6 +43,7 @@
 #include <limits>
 #include <utility>
 #include <exception>
+#include <type_traits>
 
 
 namespace {
@@ -75,6 +76,249 @@ void clearLayoutItems(QLayout* layout)
     }
 }
 
+}
+
+struct CMotionPanel::ParameterTrackArchive::Data
+{
+    QPointer<CMotionPanel> owner;
+    quint64 generation = 0, serial = 0;
+    QSet<QString> ids;
+    CMotionTimeline::ParameterTracks current;
+    QMap<quint64, CMotionTimeline::ParameterTracks> snapshots;
+};
+
+struct CMotionPanel::PreparedParameterTracks::Data
+{
+    struct Change {
+        std::weak_ptr<TimelineSnapshotSlot> slot;
+        quint64 serial = 0, revision = 0;
+        TimelineSnapshot candidate;
+        QMap<quint64, quint64> origins;
+    };
+    QPointer<CMotionPanel> owner;
+    quint64 generation = 0, revision = 0, registryRevision = 0;
+    int index = 0, count = 0, interval = 0;
+    bool loop = false, playing = false, recording = false, eventStartPending = false;
+    double time = 0, speed = 1;
+    qint64 playbackLastNs = 0;
+    CMotionTimeline timeline;
+    QVector<Change> changes;
+    QMap<quint64, std::weak_ptr<const ParameterTrackArchive::Data>> archives;
+    QMap<quint64, quint64> origins;
+    quint64 serial = 0;
+    ParameterTrackArchive archive;
+    bool changed = false;
+};
+
+CMotionPanel::PreparedParameterTracks::PreparedParameterTracks() = default;
+CMotionPanel::PreparedParameterTracks::~PreparedParameterTracks() = default;
+CMotionPanel::PreparedParameterTracks::PreparedParameterTracks(PreparedParameterTracks&&) noexcept = default;
+CMotionPanel::PreparedParameterTracks& CMotionPanel::PreparedParameterTracks::operator=(PreparedParameterTracks&&) noexcept = default;
+bool CMotionPanel::PreparedParameterTracks::IsValid() const
+{
+    return m_data && m_data->owner && m_data->owner->PreparedParameterTracksMatch(*this);
+}
+bool CMotionPanel::PreparedParameterTracks::HasChanges() const { return m_data && m_data->changed; }
+const CMotionTimeline* CMotionPanel::PreparedParameterTracks::Timeline() const { return m_data ? &m_data->timeline : nullptr; }
+bool CMotionPanel::PreparedParameterTracks::Loop() const { return m_data && m_data->loop; }
+double CMotionPanel::PreparedParameterTracks::Time() const { return m_data ? m_data->time : 0; }
+bool CMotionPanel::ParameterTrackArchive::IsValid() const
+{
+    return m_data && m_data->owner && m_data->generation == m_data->owner->m_historyGeneration;
+}
+
+bool CMotionPanel::PrepareParameterTrackRemoval(const QSet<QString>& ids, PreparedParameterTracks& result, QString* error) const
+{
+    return PrepareParameterTracks(ids, nullptr, result, error);
+}
+
+bool CMotionPanel::PrepareParameterTrackRestoration(const ParameterTrackArchive& archive,
+                                                   PreparedParameterTracks& result, QString* error) const
+{
+    if (!archive.IsValid() || archive.m_data->owner != this ||
+        m_parameterTrackArchives.value(archive.m_data->serial).lock() != archive.m_data) {
+        if (error) *error = QStringLiteral("参数轨道历史已过期或属于其他时间轴");
+        return false;
+    }
+    return PrepareParameterTracks(archive.m_data->ids, &archive, result, error);
+}
+
+bool CMotionPanel::PrepareParameterTracks(const QSet<QString>& ids, const ParameterTrackArchive* restoring,
+                                        PreparedParameterTracks& result, QString* error) const
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if (m_transport || m_transportTransition || m_timelineMutation || m_restoringTimeline || m_refreshingParameterTracks ||
+        m_timelineDelegate->HasPendingChanges() || (m_editGroupActive && !m_timeline.IsRecording()))
+        return fail(QStringLiteral("请先结束当前时间轴编辑或导出暂停"));
+    if (!m_timelineTimer || !std::isfinite(m_timelineTime) || !std::isfinite(m_timelinePlaybackSpeed) ||
+        m_timelineTime < 0 || m_timelinePlaybackSpeed <= 0 || m_recordTimelineCb->isChecked() != m_timeline.IsRecording())
+        return fail(QStringLiteral("时间轴播放或录制状态无效"));
+    try {
+        auto prepared = std::make_unique<PreparedParameterTracks::Data>();
+        prepared->owner = const_cast<CMotionPanel*>(this);
+        prepared->generation = m_historyGeneration;
+        prepared->revision = m_timelineRevision;
+        prepared->registryRevision = m_registryRevision;
+        prepared->index = m_timelineHistory->index();
+        prepared->count = m_timelineHistory->count();
+        prepared->loop = m_loopCb->isChecked();
+        prepared->time = m_timelineTime;
+        prepared->speed = m_timelinePlaybackSpeed;
+        prepared->playing = m_timelineTimer->isActive();
+        prepared->interval = m_timelineTimer->interval();
+        prepared->recording = m_timeline.IsRecording();
+        prepared->eventStartPending = m_eventStartPending;
+        prepared->playbackLastNs = m_playbackLastNs;
+        prepared->timeline = m_timeline;
+        auto archive = std::make_shared<ParameterTrackArchive::Data>();
+        archive->owner = const_cast<CMotionPanel*>(this);
+        archive->generation = m_historyGeneration;
+        archive->ids = ids;
+        prepared->archives = m_parameterTrackArchives;
+        prepared->origins = m_currentTrackOrigins;
+        prepared->serial = m_parameterTrackSerial;
+        const auto inheritedTracks = [&](quint64 origin) -> const CMotionTimeline::ParameterTracks* {
+            if (!restoring) return nullptr;
+            if (!origin) return &restoring->m_data->current;
+            const auto found = restoring->m_data->snapshots.constFind(origin);
+            return found == restoring->m_data->snapshots.cend() ? nullptr : &*found;
+        };
+        if (restoring) {
+            const auto* tracks = inheritedTracks(m_currentTrackOrigins.value(restoring->m_data->serial));
+            if (!tracks) return fail(QStringLiteral("当前时间轴缺少待恢复的参数轨道版本"));
+            if (!prepared->timeline.RestoreParameterTracks(*tracks, error)) return false;
+            prepared->changed = !tracks->IsEmpty();
+            prepared->archive = *restoring;
+            prepared->archives.remove(restoring->m_data->serial);
+            prepared->origins.remove(restoring->m_data->serial);
+        } else {
+            if (m_parameterTrackSerial == std::numeric_limits<quint64>::max())
+                return fail(QStringLiteral("参数轨道历史标识已用尽"));
+            archive->serial = ++prepared->serial;
+            if (!prepared->timeline.RemoveParameterTracks(ids, archive->current, error)) return false;
+            prepared->changed = !archive->current.IsEmpty();
+            prepared->archive.m_data = archive;
+            prepared->archives.insert(archive->serial, prepared->archive.m_data);
+            prepared->origins.insert(archive->serial, 0);
+        }
+        prepared->changed = prepared->changed || !prepared->timeline.HasSameContent(m_timeline);
+        QSet<quint64> visited;
+        const auto prepareSlot = [&](const std::shared_ptr<TimelineSnapshotSlot>& slot) {
+            if (!slot || visited.contains(slot->serial)) return true;
+            visited.insert(slot->serial);
+            PreparedParameterTracks::Data::Change change{slot, slot->serial, slot->revision, slot->value, slot->origins};
+            if (restoring) {
+                const auto* tracks = inheritedTracks(slot->origins.value(restoring->m_data->serial));
+                if (!tracks) return fail(QStringLiteral("历史快照缺少待恢复的参数轨道版本"));
+                if (!change.candidate.timeline.RestoreParameterTracks(*tracks, error)) return false;
+                prepared->changed = prepared->changed || !tracks->IsEmpty();
+                change.origins.remove(restoring->m_data->serial);
+            } else {
+                CMotionTimeline::ParameterTracks removed;
+                if (!change.candidate.timeline.RemoveParameterTracks(ids, removed, error)) return false;
+                prepared->changed = prepared->changed || !removed.IsEmpty();
+                archive->snapshots.insert(slot->serial, std::move(removed));
+                change.origins.insert(archive->serial, slot->serial);
+            }
+            prepared->changed = prepared->changed || !change.candidate.SameContent(slot->value);
+            prepared->changes.append(std::move(change));
+            return true;
+        };
+        for (const auto& weak : m_timelineSnapshots) if (!prepareSlot(weak.lock())) return false;
+        if (m_editGroupActive && !prepareSlot(m_editGroupBefore)) return false;
+        result.m_data = std::move(prepared);
+        return true;
+    } catch (const std::exception&) { return fail(QStringLiteral("无法准备时间轴参数轨道修改")); }
+}
+
+bool CMotionPanel::PreparedParameterTracksMatch(const PreparedParameterTracks& prepared) const noexcept
+{
+    if (!prepared.m_data) return false;
+    const auto& state = *prepared.m_data;
+    if (state.owner != this || state.generation != m_historyGeneration || state.revision != m_timelineRevision ||
+        state.registryRevision != m_registryRevision || m_transport || m_transportTransition || m_timelineMutation || m_restoringTimeline ||
+        m_refreshingParameterTracks || !m_timelineTimer || state.index != m_timelineHistory->index() ||
+        state.count != m_timelineHistory->count() || state.time != m_timelineTime || state.loop != m_loopCb->isChecked() ||
+        state.speed != m_timelinePlaybackSpeed || state.playing != m_timelineTimer->isActive() ||
+        state.interval != m_timelineTimer->interval() || state.recording != m_timeline.IsRecording() ||
+        state.eventStartPending != m_eventStartPending || state.playbackLastNs != m_playbackLastNs) return false;
+    for (const auto& change : state.changes) {
+        const auto slot = change.slot.lock();
+        if (!slot || slot->serial != change.serial || slot->revision != change.revision) return false;
+    }
+    return true;
+}
+
+bool CMotionPanel::ValidatePreparedParameterTracks(const PreparedParameterTracks& prepared, QString* error) const
+{
+    if (error) error->clear();
+    if (!PreparedParameterTracksMatch(prepared) || m_timelineDelegate->HasPendingChanges() ||
+        (m_editGroupActive && !m_timeline.IsRecording())) {
+        if (error) *error = QStringLiteral("准备后时间轴或历史已改变，请重新操作");
+        return false;
+    }
+    return true;
+}
+
+bool CMotionPanel::CommitPreparedParameterTracks(PreparedParameterTracks& prepared, ParameterTrackArchive& archive) noexcept
+{
+    static_assert(std::is_nothrow_swappable_v<CMotionTimeline>);
+    static_assert(std::is_nothrow_swappable_v<TimelineSnapshot>);
+    if (!PreparedParameterTracksMatch(prepared)) return false;
+    auto& state = *prepared.m_data;
+    using std::swap;
+    m_timeline.SwapContent(state.timeline);
+    for (auto& change : state.changes) {
+        const auto slot = change.slot.lock();
+        swap(slot->value, change.candidate);
+        slot->origins.swap(change.origins);
+        ++slot->revision;
+    }
+    m_parameterTrackArchives.swap(state.archives);
+    m_currentTrackOrigins.swap(state.origins);
+    m_parameterTrackSerial = state.serial;
+    archive = std::move(state.archive);
+    ++m_registryRevision;
+    if (state.changed) {
+        ++m_timelineRevision;
+        m_parameterTrackUiPending = true;
+    }
+    prepared.m_data.reset();
+    return true;
+}
+
+void CMotionPanel::RefreshParameterTrackUi()
+{
+    if (!m_parameterTrackUiPending) return;
+    m_parameterTrackUiPending = false;
+    const QScopedValueRollback<bool> refreshing(m_refreshingParameterTracks, true);
+    RefreshTimelineTable();
+    RefreshTimelineHistory();
+    emit MotionTimelineChanged();
+}
+
+std::shared_ptr<CMotionPanel::TimelineSnapshotSlot> CMotionPanel::RegisterTimelineSnapshot(TimelineSnapshot state)
+{
+    auto slot = std::make_shared<TimelineSnapshotSlot>();
+    slot->serial = ++m_snapshotSerial;
+    slot->value = std::move(state);
+    for (auto archive = m_parameterTrackArchives.begin(); archive != m_parameterTrackArchives.end();) {
+        if (archive->expired()) {
+            m_currentTrackOrigins.remove(archive.key());
+            archive = m_parameterTrackArchives.erase(archive);
+        } else ++archive;
+    }
+    for (auto origin = m_currentTrackOrigins.begin(); origin != m_currentTrackOrigins.end();) {
+        if (!m_parameterTrackArchives.contains(origin.key())) origin = m_currentTrackOrigins.erase(origin);
+        else ++origin;
+    }
+    slot->origins = m_currentTrackOrigins;
+    m_timelineSnapshots.erase(std::remove_if(m_timelineSnapshots.begin(), m_timelineSnapshots.end(),
+        [](const auto& weak) { return weak.expired(); }), m_timelineSnapshots.end());
+    m_timelineSnapshots.append(slot);
+    ++m_registryRevision;
+    return slot;
 }
 
 struct CMotionPanel::PreviewTransportState
@@ -470,6 +714,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     editTools->addWidget(m_previewFades);
     editTools->addStretch(1);
     connect(m_previewFades, &QCheckBox::toggled, this, [this](){
+        const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
         if (m_transport) { RestoreTransportControls(); return; }
         ++m_timelineRevision;
         emit TimelineActivated();
@@ -558,6 +803,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_workspaceSplitter->setStretchFactor(0, 0);
     m_workspaceSplitter->setStretchFactor(1, 1);
     connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
+        const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
         if (m_transport) { RestoreTransportControls(); return; }
         if (!m_restoringTimeline) {
             ++m_timelineRevision;
@@ -620,7 +866,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     connect(m_playTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ToggleTimelinePlayback);
     connect(m_timelineTimer, &QTimer::timeout, this, &CMotionPanel::TickTimelinePlayback);
     connect(this, &CMotionPanel::MotionTimelineChanged, this, [this](){
-        if (IsPreviewTransportSuspended()) return;
+        if (IsPreviewTransportSuspended() || m_refreshingParameterTracks) return;
         ++m_timelineRevision;
         if (!m_restoringTimeline) RefreshTimelineHistory();
         if (m_recordTimelineCb && m_recordTimelineCb->isChecked()) return;
@@ -672,6 +918,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         emit PhysicsChanged(enabled);
     });
     connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
+        const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
         if (m_transport) { RestoreTransportControls(); return; }
         emit MotionPlaybackChanged(m_speedSlider->value() / 100.0f, loop);
         if (!m_restoringTimeline && m_timeline.HasAnimation()) {
@@ -683,6 +930,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(m_speedSlider, &QSlider::valueChanged, this, [this](int value){
+        const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
         if (m_transport) { RestoreTransportControls(); return; }
         TickTimelinePlayback();
         m_timelinePlaybackSpeed = value / 100.0;
@@ -696,6 +944,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_loopCb->setObjectName(QStringLiteral("motionLoop"));
     connect(m_timelineHistory, &QUndoStack::indexChanged, this, &CMotionPanel::RefreshTimelineHistory);
     connect(m_timelineHistory, &QUndoStack::cleanChanged, this, &CMotionPanel::RefreshTimelineHistory);
+    m_savedTimelineContent = CurrentTimelineSnapshot();
     RefreshTimelineHistory();
     setWidget(wrapper);
 }
@@ -755,6 +1004,7 @@ bool CMotionPanel::BuildLists(const QString& modelJsonPath, const QStringList& p
 
 void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!m_timeline.IsRecording() || (m_timelineTimer && m_timelineTimer->isActive())) return;
     const int before = m_timeline.TotalPointCount();
@@ -795,7 +1045,7 @@ void CMotionPanel::RefreshTimelineTable()
         m_curveView->SetTime(m_timelineTime);
     }
     RefreshTimelineEvents();
-    if (m_playTimelineButton) m_playTimelineButton->setEnabled(m_timeline.HasAnimation());
+    if (m_playTimelineButton) m_playTimelineButton->setEnabled(m_timeline.HasAnimation() || (m_timelineTimer && m_timelineTimer->isActive()));
     if (m_timelinePlayhead) m_timelinePlayhead->setEnabled(m_timeline.HasAnimation());
     if (m_timelineTimeLabel) m_timelineTimeLabel->setText(QStringLiteral("%1s").arg(m_timelineTime, 0, 'f', 3));
     m_updatingTimeline = true;
@@ -889,8 +1139,9 @@ void CMotionPanel::ShowTimelineEvents(const CMotionEventBatch& events)
 
 void CMotionPanel::ToggleTimelinePlayback()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
-    if (!m_timelineTimer || !m_timeline.HasAnimation()) return;
+    if (!m_timelineTimer || (!m_timeline.HasAnimation() && !m_timelineTimer->isActive())) return;
     ++m_timelineRevision;
     emit TimelineActivated();
     if (m_timelineTimer->isActive()) {
@@ -924,6 +1175,7 @@ void CMotionPanel::ToggleTimelinePlayback()
 
 void CMotionPanel::TickTimelinePlayback()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!m_timelineTimer || !m_timelineTimer->isActive() || !m_playbackClock.isValid()) return;
     const double duration = m_timeline.Timing().duration;
@@ -958,6 +1210,7 @@ void CMotionPanel::TickTimelinePlayback()
 
 void CMotionPanel::EmitTimelinePreview()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     const auto frame = m_timeline.EvaluateFrame(m_timelineTime);
     m_endPreviewButton->setEnabled(m_timeline.HasAnimation());
@@ -989,6 +1242,7 @@ void CMotionPanel::SetTimelinePreviewAvailable(bool available)
 
 bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float value)
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (!RequireTransportAvailable()) return false;
     if (m_timeline.IsRecording()) return false;
     m_timelineDelegate->CommitEditor();
@@ -1014,6 +1268,7 @@ bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float
 
 void CMotionPanel::EditTimelineSettings()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     m_timelineDelegate->CommitEditor();
     m_recordTimelineCb->setChecked(false);
@@ -1033,6 +1288,7 @@ void CMotionPanel::EditTimelineSettings()
 
 void CMotionPanel::AddTimelineKeyframe()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("添加关键帧"));
@@ -1098,6 +1354,7 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
 
 void CMotionPanel::SeekTimeline(double time)
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!std::isfinite(time) || !m_timeline.HasAnimation()) return;
     m_recordTimelineCb->setChecked(false);
@@ -1121,6 +1378,7 @@ void CMotionPanel::SeekTimeline(double time)
 
 void CMotionPanel::ApplyTimelineCurveEdit(const CMotionTrack& track, int pointIndex, float time, float value)
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (m_updatingTimeline) return;
     const auto before = CurrentTimelineSnapshot();
@@ -1133,6 +1391,7 @@ void CMotionPanel::ApplyTimelineCurveEdit(const CMotionTrack& track, int pointIn
 
 void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (m_updatingTimeline || row < 0 || row >= m_timelineRows.size() ||
         (column != 0 && column != 2 && column != 3)) return;
@@ -1176,6 +1435,7 @@ void CMotionPanel::ApplyTimelineCellEdit(int row, int column)
 
 void CMotionPanel::RemoveTimelineKeyframe()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!m_timelineTable || m_timelineTable->currentRow() < 0 ||
         m_timelineTable->currentRow() >= m_timelineRows.size()) return;
@@ -1195,6 +1455,7 @@ void CMotionPanel::RemoveTimelineKeyframe()
 
 void CMotionPanel::ClearTimeline()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!ConfirmTimelineReplacement()) return;
     if (m_timelineTimer) m_timelineTimer->stop();
@@ -1217,7 +1478,8 @@ void CMotionPanel::ClearTimeline()
 
 bool CMotionPanel::HasUnsavedTimelineChanges() const
 {
-    return m_timelineDirty || PendingTimelineEdit() || m_timelineDelegate->HasPendingChanges();
+    return (m_savedTimelineContent && !m_savedTimelineContent->SameContent(CurrentTimelineSnapshot())) ||
+        PendingTimelineEdit() || m_timelineDelegate->HasPendingChanges();
 }
 
 void CMotionPanel::SetTimelineDirty(bool dirty)
@@ -1233,6 +1495,7 @@ void CMotionPanel::MarkTimelineSaved()
     if (IsPreviewTransportSuspended()) return;
     m_timelineDelegate->CommitEditor();
     FlushTimelineEditGroup();
+    m_savedTimelineContent = CurrentTimelineSnapshot();
     m_timelineHistory->setClean();
     RefreshTimelineHistory();
 }
@@ -1253,6 +1516,13 @@ bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error
     m_restoringTimeline = true;
     m_editGroupActive = false;
     m_curveView->CancelDrag();
+    ++m_historyGeneration;
+    ++m_registryRevision;
+    m_timelineSnapshots.clear();
+    m_parameterTrackArchives.clear();
+    m_currentTrackOrigins.clear();
+    m_editGroupBefore.reset();
+    m_parameterTrackUiPending = false;
     m_timelineHistory->clear();
     m_timelineTimer->stop();
     m_recordTimelineCb->setChecked(false);
@@ -1283,7 +1553,7 @@ CMotionPanel::TimelineSnapshot CMotionPanel::CurrentTimelineSnapshot() const
 
 bool CMotionPanel::PendingTimelineEdit() const
 {
-    return m_editGroupActive && !m_editGroupBefore.SameContent(CurrentTimelineSnapshot());
+    return m_editGroupActive && m_editGroupBefore && !m_editGroupBefore->value.SameContent(CurrentTimelineSnapshot());
 }
 
 bool CMotionPanel::CanUndoTimeline() const
@@ -1328,7 +1598,7 @@ void CMotionPanel::RestoreLayout(const QByteArray& state)
 void CMotionPanel::RefreshTimelineHistory()
 {
     if (IsPreviewTransportSuspended()) return;
-    SetTimelineDirty(!m_timelineHistory->isClean() || PendingTimelineEdit());
+    SetTimelineDirty((m_savedTimelineContent && !m_savedTimelineContent->SameContent(CurrentTimelineSnapshot())) || PendingTimelineEdit());
     m_undoTimelineButton->setEnabled(CanUndoTimeline());
     m_redoTimelineButton->setEnabled(CanRedoTimeline());
     m_undoTimelineButton->setToolTip(PendingTimelineEdit() ? m_editGroupLabel : m_timelineHistory->undoText());
@@ -1342,26 +1612,46 @@ void CMotionPanel::PushTimelineEdit(const TimelineSnapshot& before, const QStrin
     if (m_restoringTimeline || m_editGroupActive) return;
     const auto after = CurrentTimelineSnapshot();
     if (before.SameContent(after)) return;
-    m_timelineHistory->push(new CTimelineEdit(label, [this, before, after](bool forward){
-        ApplyTimelineSnapshot(forward ? after : before);
+    const auto previous = RegisterTimelineSnapshot(before);
+    const auto next = RegisterTimelineSnapshot(after);
+    m_timelineHistory->push(new CTimelineEdit(label, [this, previous, next](bool forward){
+        const auto& selected = forward ? next : previous;
+        m_currentTrackOrigins = selected->origins;
+        ApplyTimelineSnapshot(selected->value);
+    }));
+}
+
+void CMotionPanel::PushTimelineEdit(const std::shared_ptr<TimelineSnapshotSlot>& before, const QString& label)
+{
+    if (!before || IsPreviewTransportSuspended() || m_restoringTimeline || m_editGroupActive) return;
+    const auto after = CurrentTimelineSnapshot();
+    if (before->value.SameContent(after)) return;
+    const auto next = RegisterTimelineSnapshot(after);
+    m_timelineHistory->push(new CTimelineEdit(label, [this, before, next](bool forward) {
+        const auto& selected = forward ? next : before;
+        m_currentTrackOrigins = selected->origins;
+        ApplyTimelineSnapshot(selected->value);
     }));
 }
 
 void CMotionPanel::BeginTimelineEditGroup(const QString& label)
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     EndTimelineEditGroup();
-    m_editGroupBefore = CurrentTimelineSnapshot();
+    m_editGroupBefore = RegisterTimelineSnapshot(CurrentTimelineSnapshot());
     m_editGroupLabel = label;
     m_editGroupActive = true;
 }
 
 void CMotionPanel::EndTimelineEditGroup()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!m_editGroupActive) return;
     m_editGroupActive = false;
     PushTimelineEdit(m_editGroupBefore, m_editGroupLabel);
+    m_editGroupBefore.reset();
     RefreshTimelineHistory();
 }
 
@@ -1400,6 +1690,7 @@ void CMotionPanel::ApplyTimelineSnapshot(const TimelineSnapshot& snapshot)
 
 void CMotionPanel::UndoTimeline()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     emit TimelineActivated();
     m_timelineDelegate->CommitEditor();
@@ -1412,6 +1703,7 @@ void CMotionPanel::UndoTimeline()
 
 void CMotionPanel::RedoTimeline()
 {
+    const QScopedValueRollback<bool> mutation(m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     emit TimelineActivated();
     m_timelineDelegate->CommitEditor();

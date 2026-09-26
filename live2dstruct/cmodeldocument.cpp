@@ -1106,6 +1106,15 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
     try {
         if (edit.name.isEmpty() || edit.before == edit.after) return false;
         CModelEdit command = edit;
+        switch (command.parameterChange) {
+        case CModelEdit::ParameterChange::None: case CModelEdit::ParameterChange::Create:
+        case CModelEdit::ParameterChange::Bind: case CModelEdit::ParameterChange::Delete: break;
+        default: return false;
+        }
+        if ((command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue) &&
+            command.field != CModelEdit::ParameterStructure) return false;
+        if (command.freezeValue && (command.parameterChange != CModelEdit::ParameterChange::Delete ||
+            !std::isfinite(*command.freezeValue))) return false;
         const auto validParameterValue = [this](const QString& id, float value) {
             if (!std::isfinite(value) || !std::any_of(m_parameters.cbegin(), m_parameters.cend(),
                 [&](const auto& parameter) { return parameter.id == id; })) return false;
@@ -1148,6 +1157,17 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             storage->before = EditStorage(command);
         }
         if (!candidate.ApplyEdit(command, true)) return false;
+        if (command.parameterChange != CModelEdit::ParameterChange::None) {
+            QStringList beforeIds, afterIds;
+            for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
+            for (const auto& parameter : candidate.m_parameters) afterIds.append(parameter.id);
+            if (command.parameterChange == CModelEdit::ParameterChange::Create) {
+                if (beforeIds.contains(command.name) || afterIds.removeAll(command.name) != 1 || beforeIds != afterIds) return false;
+            } else if (command.parameterChange == CModelEdit::ParameterChange::Delete) {
+                if (afterIds.contains(command.name) || beforeIds.removeAll(command.name) != 1 || beforeIds != afterIds) return false;
+                if (command.freezeValue && !validParameterValue(command.name, *command.freezeValue)) return false;
+            } else if (!beforeIds.contains(command.name) || beforeIds != afterIds) return false;
+        }
         if (storage) storage->after = candidate.EditStorage(command);
         command.storage = std::move(storage);
         if (candidate.m_editIndex < candidate.m_editHistory.size()) candidate.m_editHistory.resize(candidate.m_editIndex);

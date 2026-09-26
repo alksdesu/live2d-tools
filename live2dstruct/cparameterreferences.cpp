@@ -201,18 +201,19 @@ bool CParameterReferences::ScanModel(const QString& modelJsonPath, const QString
             const QString location = QStringLiteral("Groups[%1]").arg(i);
             if (!groups[i].isObject()) return fail(error, location + QStringLiteral(" 必须是对象"));
             const auto group = groups[i].toObject();
-            QString name, target;
+            const auto nameValue = group.value(QStringLiteral("Name"));
+            if (!nameValue.isString() || nameValue.toString().contains(QChar::Null))
+                return fail(error, location + QStringLiteral(".Name 无效"));
+            const auto name = nameValue.toString();
+            const auto target = group.value(QStringLiteral("Target")).toString();
+            const bool parameter = name == QLatin1String("EyeBlink") || name == QLatin1String("LipSync") || target == QLatin1String("Parameter");
             QJsonArray ids;
-            if (!textField(group, QStringLiteral("Name"), name, location, error) ||
-                !textField(group, QStringLiteral("Target"), target, location, error) ||
-                !arrayField(group, QStringLiteral("Ids"), ids, location, error)) return false;
-            if (target != QStringLiteral("Parameter") && target != QStringLiteral("Part"))
-                return fail(error, location + QStringLiteral(".Target 类型不受支持"));
-            if (target != QStringLiteral("Parameter") && (name == QStringLiteral("EyeBlink") || name == QStringLiteral("LipSync")))
-                return fail(error, QStringLiteral("模型分组 %1 的 Target 必须是 Parameter").arg(name));
+            if (!arrayField(group, QStringLiteral("Ids"), ids, location, error)) return false;
             for (const auto& id : ids) {
-                if (!id.isString() || !validText(id.toString())) return fail(error, location + QStringLiteral(".Ids 含无效 ID"));
-                if (target == QStringLiteral("Parameter") && id.toString() == parameterId &&
+                if (!id.isString() || id.toString().contains(QChar::Null)) return fail(error, location + QStringLiteral(".Ids 含无效 ID"));
+                if (!parameter && target != QLatin1String("Part") && id.toString() == parameterId)
+                    return fail(error, QStringLiteral("无法解释自定义分组 %1 对参数 %2 的引用").arg(name, parameterId));
+                if (parameter && id.toString() == parameterId &&
                     !appendReference(candidate, QStringLiteral("模型分组 %1 · %2").arg(name, modelJsonPath), error)) return false;
             }
         }

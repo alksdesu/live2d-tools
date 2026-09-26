@@ -189,9 +189,9 @@ private slots:
                 {"Groups", QJsonArray{QJsonObject{{"Name", name}, {"Target", "Part"}, {"Ids", QJsonArray{"ParamA"}}}}}}));
             QStringList references{QStringLiteral("previous")};
             QString error;
-            QVERIFY(!CParameterReferences::ScanModel(temporary.filePath("model.json"), "ParamA", references, &error));
-            QCOMPARE(references, QStringList({QStringLiteral("previous")}));
-            QVERIFY(error.contains(name));
+            QVERIFY(CParameterReferences::ScanModel(temporary.filePath("model.json"), "ParamA", references, &error));
+            QCOMPARE(references.size(), 1);
+            QVERIFY(references.first().contains(name));
         }
     }
 

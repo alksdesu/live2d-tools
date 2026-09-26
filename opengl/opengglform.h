@@ -73,7 +73,10 @@ public:
     bool ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                         const ParameterStructureSeeds& addedSeeds,
                                         const QMap<QString, float>& baseValues, bool keepEditorPreview,
-                                        QMap<QString, float>& preparedPose, QString* error = nullptr);
+                                        QMap<QString, float>& preparedPose, QString* error = nullptr,
+                                        const ParameterReferenceState* references = nullptr,
+                                        const LAppModel::EditorPreviewContext* restoreEditor = nullptr,
+                                        const LAppModel::TimelinePreviewPreparation& prepareTimeline = {});
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);

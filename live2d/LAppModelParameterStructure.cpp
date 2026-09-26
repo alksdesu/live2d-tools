@@ -1,5 +1,6 @@
 #include "LAppModel.hpp"
 #include <QSet>
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -79,10 +80,39 @@ bool LAppModel::CaptureParameterStructureSeeds(const QStringList& ids, Parameter
     }
 }
 
+bool LAppModel::CaptureEditorPreviewContext(EditorPreviewContext& result, QString* error) const
+{
+    if (error) error->clear();
+    if (!_initialized || _updating || !_model || HasExportPreview()) {
+        if (error) *error = QStringLiteral("当前模型状态不能保存编辑上下文");
+        return false;
+    }
+    try {
+        EditorPreviewContext candidate;
+        candidate.sourceDigest = m_sourceMocDigest;
+        candidate.active = HasEditorPreview();
+        if (!_model->CaptureRuntimeValues(candidate.current, error)) return false;
+        if (candidate.active) {
+            candidate.entry = *m_editorEntryState;
+            candidate.pose = m_editorPose;
+            candidate.base = m_editorBaseParameters;
+            CubismModel::RuntimeValueSnapshot checked;
+            if (!_model->RebaseRuntimeValues(candidate.entry, checked, error)) return false;
+        }
+        result = std::move(candidate);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法保存编辑上下文");
+        return false;
+    }
+}
+
 bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                                const ParameterStructureSeeds& addedSeeds,
                                                const QMap<QString, float>& baseValues, bool keepEditorPreview,
-                                               QString* error, const ParameterDefinitionPreparation& preparePreview)
+                                               QString* error, const ParameterDefinitionPreparation& preparePreview,
+                                               const ParameterReferenceState* references, const EditorPreviewContext* restoreEditor,
+                                               const TimelinePreviewPreparation& prepareTimeline)
 {
     if (error) error->clear();
     if (HasExportPreview() || !_initialized || _updating || !_model || sourceDigest.isEmpty() ||
@@ -91,6 +121,14 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
         return false;
     }
     try {
+        const auto restoredContext = restoreEditor ? std::make_unique<EditorPreviewContext>(*restoreEditor) : nullptr;
+        if (restoredContext && (restoredContext->sourceDigest != sourceDigest || restoredContext->active != keepEditorPreview)) {
+            if (error) *error = QStringLiteral("恢复的编辑上下文来源或模式不匹配");
+            return false;
+        }
+        const auto referenceCandidate = references ? std::make_unique<ParameterReferenceState>(*references) : nullptr;
+        std::function<void()> commitReferences;
+        if (referenceCandidate && !PrepareParameterReferences(*referenceCandidate, commitReferences, error)) return false;
         for (auto it = addedSeeds.cbegin(); it != addedSeeds.cend(); ++it) {
             if (!validSeed(it.value())) {
                 if (error) *error = QStringLiteral("参数恢复值无效：%1").arg(it.key());
@@ -104,12 +142,30 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
         for (int i = 0; i < sourceState.parameterIds.size(); ++i) sourceIndices.insert(sourceState.parameterIds[i], i);
         QMap<QString, int> nextIndices;
         QMap<QString, float> nextEditorPose, nextEditorBase, nextTimelineBase;
+        PreparedTimelinePreview nextTimeline{_timelinePreview, m_timelineExplicitParameterIds, _timelinePreviewActive};
+        QMap<QString, float> nextTimelineParameters = _timelineParameters;
+        QMap<QString, float> nextTimelineParts = _timelineBaseParts;
+        float nextTimelineOpacity = _timelineBaseOpacity;
         std::unique_ptr<CubismModel::RuntimeValueSnapshot> nextEntry;
-        const bool editing = HasEditorPreview();
+        const bool restoreActive = restoredContext && restoredContext->active;
+        const bool editing = restoreActive || HasEditorPreview();
+        const auto* editorEntry = restoreActive ? &restoredContext->entry : m_editorEntryState.get();
+        const auto& editorPose = restoreActive ? restoredContext->pose : m_editorPose;
+        const auto& editorBase = restoreActive ? restoredContext->base : m_editorBaseParameters;
+        QHash<QString, int> editorIndices;
+        if (restoreActive) for (int index = 0; index < editorEntry->parameterIds.size(); ++index)
+            editorIndices.insert(editorEntry->parameterIds[index], index);
         const auto prepare = [&](CubismModel* candidate, QString* detail) {
             const auto reject = [&](const QString& message) { if (detail) *detail = message; return false; };
             CubismModel::RuntimeValueSnapshot values;
             if (!candidate->CaptureRuntimeValues(values, detail)) return false;
+            if (restoreActive) {
+                auto currentSeeds = addedSeeds;
+                for (const auto& id : restoredContext->current.parameterIds) currentSeeds.remove(id);
+                CubismModel::RuntimeValueSnapshot restoredValues;
+                if (!candidate->MigrateRuntimeValues(restoredContext->current, restoredValues, currentSeeds, detail)) return false;
+                values = std::move(restoredValues);
+            }
             for (int i = 0; i < values.parameterIds.size(); ++i) nextIndices.insert(values.parameterIds[i], i);
             const auto bound = [&](int index, float value) {
                 if (value < values.minimums[index]) return values.minimums[index];
@@ -118,25 +174,29 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
             };
             if (editing) {
                 ParameterStructureSeeds entrySeeds = addedSeeds;
+                for (const auto& id : editorEntry->parameterIds) entrySeeds.remove(id);
                 for (auto it = entrySeeds.begin(); it != entrySeeds.end(); ++it)
                     if (it->mode == ParameterStructureSeed::Mode::Values && it->editorEntry) it->runtime = *it->editorEntry;
                 nextEntry = std::make_unique<CubismModel::RuntimeValueSnapshot>();
-                if (!candidate->MigrateRuntimeValues(*m_editorEntryState, *nextEntry, entrySeeds, detail)) return false;
+                if (!candidate->MigrateRuntimeValues(*editorEntry, *nextEntry, entrySeeds, detail)) return false;
             }
             const auto migrateMap = [&](const QMap<QString, float>& source, QMap<QString, float>& target,
                                         PreviewContext context) {
+                const bool archived = restoreActive && context != PreviewContext::TimelineBase;
+                const auto& originIndices = archived ? editorIndices : sourceIndices;
+                const auto& origin = archived ? *editorEntry : sourceState;
                 for (auto it = source.cbegin(); it != source.cend(); ++it)
-                    if (!sourceIndices.contains(it.key()) || !std::isfinite(it.value())) return false;
+                    if (!originIndices.contains(it.key()) || !std::isfinite(it.value())) return false;
                 for (int i = 0; i < values.parameterIds.size(); ++i) {
                     const QString& id = values.parameterIds[i];
                     float value = context == PreviewContext::EditorBase ? nextEntry->parameterValues[i] :
                         context == PreviewContext::TimelineBase && values.HasSavedParameter(i) ? values.savedParameters[i] : values.parameterValues[i];
                     bool rangeChanged = false;
-                    const auto old = sourceIndices.constFind(id);
-                    if (old != sourceIndices.cend()) {
+                    const auto old = originIndices.constFind(id);
+                    if (old != originIndices.cend()) {
                         if (!source.contains(id)) return false;
                         value = source[id];
-                        rangeChanged = sourceState.minimums[*old] != values.minimums[i] || sourceState.maximums[*old] != values.maximums[i];
+                        rangeChanged = origin.minimums[*old] != values.minimums[i] || origin.maximums[*old] != values.maximums[i];
                     } else {
                         const auto seed = addedSeeds.constFind(id);
                         if (seed != addedSeeds.cend() && seed->mode == ParameterStructureSeed::Mode::Values) {
@@ -151,8 +211,8 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                 }
                 return true;
             };
-            if ((editing && (!migrateMap(m_editorPose, nextEditorPose, PreviewContext::EditorPose) ||
-                             !migrateMap(m_editorBaseParameters, nextEditorBase, PreviewContext::EditorBase))) ||
+            if ((editing && (!migrateMap(editorPose, nextEditorPose, PreviewContext::EditorPose) ||
+                             !migrateMap(editorBase, nextEditorBase, PreviewContext::EditorBase))) ||
                 (_timelinePreviewActive && !migrateMap(_timelineBaseParameters, nextTimelineBase, PreviewContext::TimelineBase)))
                 return reject(QStringLiteral("参数编辑或时间轴基线无法迁移"));
             for (auto it = baseValues.cbegin(); it != baseValues.cend(); ++it) {
@@ -172,15 +232,115 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                 }
             }
             if (editing && !keepEditorPreview) values = *nextEntry;
+            QSet<QString> eyeIds, lipIds, originalGroupIds;
+            const auto& referenceState = referenceCandidate ? *referenceCandidate : m_parameterReferences;
+            const auto collectGroup = [&](const auto& ids, const QSet<QString>& suppressed, QSet<QString>& effective) {
+                for (int index = 0; index < ids.GetSize(); ++index) {
+                    const auto id = QString::fromUtf8(ids[index]->GetString().GetRawString());
+                    originalGroupIds.insert(id);
+                    if (nextIndices.contains(id) && !suppressed.contains(id)) effective.insert(id);
+                }
+            };
+            collectGroup(_eyeBlinkIds, referenceState.eyeBlink, eyeIds);
+            collectGroup(_lipSyncIds, referenceState.lipSync, lipIds);
+            QSet<QString> removedDerived;
+            for (auto it = nextTimeline.frame.parameters.begin(); it != nextTimeline.frame.parameters.end();) {
+                const bool derivedRemoved = !nextTimeline.explicitParameterIds.contains(it.key()) &&
+                    originalGroupIds.contains(it.key()) && !eyeIds.contains(it.key()) && !lipIds.contains(it.key());
+                if (!nextIndices.contains(it.key()) || derivedRemoved) {
+                    if (derivedRemoved) removedDerived.insert(it.key());
+                    it = nextTimeline.frame.parameters.erase(it);
+                } else ++it;
+            }
+            for (auto it = nextTimeline.explicitParameterIds.begin(); it != nextTimeline.explicitParameterIds.end();) {
+                if (!nextTimeline.frame.parameters.contains(*it)) it = nextTimeline.explicitParameterIds.erase(it);
+                else ++it;
+            }
+            if (prepareTimeline && !_timelinePreviewActive) {
+                const auto& baseline = editing ? *nextEntry : values;
+                for (int index = 0; index < values.parameterIds.size(); ++index) {
+                    const auto& id = values.parameterIds[index];
+                    float value = baseline.HasSavedParameter(index)
+                        ? baseline.savedParameters[index] : baseline.parameterValues[index];
+                    const auto seed = addedSeeds.constFind(id);
+                    if (!sourceIndices.contains(id) && !baseValues.contains(id) && seed != addedSeeds.cend() &&
+                        seed->mode == ParameterStructureSeed::Mode::Values && seed->timelineBase) {
+                        value = *seed->timelineBase;
+                        if (seed->runtime.minimum != values.minimums[index] || seed->runtime.maximum != values.maximums[index])
+                            value = bound(index, value);
+                    }
+                    nextTimelineBase.insert(id, value);
+                }
+                for (int index = 0; index < values.partIds.size(); ++index)
+                    nextTimelineParts.insert(values.partIds[index], baseline.partOpacities[index]);
+                nextTimelineOpacity = baseline.modelOpacity;
+            }
+            if (prepareTimeline && !prepareTimeline(nextTimelineBase, eyeIds, lipIds, nextTimeline, detail)) return false;
+            if (!nextTimeline.frame.IsFinite()) return reject(QStringLiteral("恢复的时间轴帧含非有限值或无效 ID"));
+            for (const auto& id : nextTimeline.explicitParameterIds)
+                if (!nextTimeline.frame.parameters.contains(id)) return reject(QStringLiteral("时间轴显式轨道与帧参数不匹配"));
+            for (auto it = nextTimeline.frame.parameters.cbegin(); it != nextTimeline.frame.parameters.cend(); ++it)
+                if (!nextIndices.contains(it.key())) return reject(QStringLiteral("时间轴引用不存在的参数：%1").arg(it.key()));
+            for (auto it = nextTimeline.frame.parts.cbegin(); it != nextTimeline.frame.parts.cend(); ++it)
+                if (!values.partIds.contains(it.key())) return reject(QStringLiteral("时间轴引用不存在的 Part：%1").arg(it.key()));
+            nextTimelineParameters = nextTimeline.active ? nextTimeline.frame.ResolveParameters(eyeIds, lipIds) : QMap<QString, float>{};
+            for (auto it = nextTimelineParameters.begin(); it != nextTimelineParameters.end();) {
+                if (!nextIndices.contains(it.key())) it = nextTimelineParameters.erase(it);
+                else ++it;
+            }
+            for (auto it = _timelineParameters.cbegin(); it != _timelineParameters.cend(); ++it)
+                if (!m_timelineExplicitParameterIds.contains(it.key()) && originalGroupIds.contains(it.key()) &&
+                    !eyeIds.contains(it.key()) && !lipIds.contains(it.key())) removedDerived.insert(it.key());
+            if (!(editing && keepEditorPreview)) {
+                if (prepareTimeline && (_timelinePreviewActive || nextTimeline.active)) {
+                    for (int index = 0; index < values.parameterIds.size(); ++index) {
+                        const auto id = values.parameterIds[index];
+                        if (!nextTimelineBase.contains(id)) return reject(QStringLiteral("时间轴参数基线不完整"));
+                        values.parameterValues[index] = nextTimelineBase[id];
+                    }
+                    for (int index = 0; index < values.partIds.size(); ++index) {
+                        const auto id = values.partIds[index];
+                        if ((!nextTimeline.active || (_timelinePreview.parts.contains(id) && !nextTimeline.frame.parts.contains(id))) && nextTimelineParts.contains(id))
+                            values.partOpacities[index] = nextTimelineParts[id];
+                    }
+                    if (!nextTimeline.active || _timelinePreview.model.contains(QStringLiteral("Opacity"))) values.modelOpacity = nextTimelineOpacity;
+                    if (nextTimeline.active) {
+                        for (auto it = nextTimelineParameters.cbegin(); it != nextTimelineParameters.cend(); ++it)
+                            values.parameterValues[nextIndices[it.key()]] = bound(nextIndices[it.key()], it.value());
+                        for (auto it = nextTimeline.frame.parts.cbegin(); it != nextTimeline.frame.parts.cend(); ++it)
+                            values.partOpacities[values.partIds.indexOf(it.key())] = std::clamp(it.value(), 0.0f, 1.0f);
+                        if (nextTimeline.frame.model.contains(QStringLiteral("Opacity")))
+                            values.modelOpacity = std::clamp(nextTimeline.frame.model[QStringLiteral("Opacity")], 0.0f, 1.0f);
+                    }
+                } else for (const auto& id : removedDerived)
+                    if (nextIndices.contains(id) && nextTimelineBase.contains(id)) values.parameterValues[nextIndices[id]] = nextTimelineBase[id];
+            }
+            if (!nextTimeline.active) {
+                nextTimeline.frame = {};
+                nextTimeline.explicitParameterIds.clear();
+                nextTimelineBase.clear();
+                nextTimelineParts.clear();
+            }
             if (!candidate->RestoreRuntimeValues(values, detail)) return false;
             if (editing && keepEditorPreview && !candidate->ApplyParameterPose(nextEditorPose, detail)) return false;
             return !preparePreview || preparePreview(*candidate, detail);
         };
         const auto policy = CubismModelUpdatePolicy::AllowClippingEdits | CubismModelUpdatePolicy::AllowParameterDefinitionEdits |
             CubismModelUpdatePolicy::AllowParameterStructureEdits;
-        if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepare, error, policy, addedSeeds)) return false;
+        if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepare, error, policy, addedSeeds,
+                                     referenceCandidate ? &referenceCandidate->physics : nullptr)) return false;
+        if (commitReferences) commitReferences();
         m_mapParaToIndex.swap(nextIndices);
-        if (_timelinePreviewActive) _timelineBaseParameters.swap(nextTimelineBase);
+        _timelinePreview.parameters.swap(nextTimeline.frame.parameters);
+        _timelinePreview.parts.swap(nextTimeline.frame.parts);
+        _timelinePreview.model.swap(nextTimeline.frame.model);
+        _timelineParameters.swap(nextTimelineParameters);
+        m_timelineExplicitParameterIds.swap(nextTimeline.explicitParameterIds);
+        _timelinePreviewActive = nextTimeline.active;
+        _timelineBaseParameters.swap(nextTimelineBase);
+        _timelineBaseParts.swap(nextTimelineParts);
+        _timelineBaseOpacity = nextTimelineOpacity;
+        _opacity = _model->GetModelOpacity();
         if (editing && keepEditorPreview) {
             m_editorEntryState.swap(nextEntry);
             m_editorPose.swap(nextEditorPose);

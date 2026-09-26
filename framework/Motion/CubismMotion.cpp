@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -6,6 +6,8 @@
  */
 
 #include "CubismMotion.hpp"
+#include "framework/Model/CubismParameterReferenceMask.hpp"
+#include <QCryptographicHash>
 #include <float.h>
 #include "framework/CubismFramework.hpp"
 #include "CubismMotionInternal.hpp"
@@ -244,10 +246,39 @@ CubismMotion::~CubismMotion()
     CSM_DELETE(_motionData);
 }
 
+bool CubismMotion::PrepareParameterReferences(const ParameterResourceReferences& references, const QSet<QString>& eyeBlink,
+                                               const QSet<QString>& lipSync, ReferenceState& result, QString* error) const
+{
+    if (!_motionData) return false;
+    ReferenceState candidate;
+    if (!PrepareParameterReferenceMask(_sourceDigest, references, _motionData->CurveCount, [&](int index) {
+            const auto& curve = _motionData->Curves[index];
+            return curve.Type == CubismMotionCurveTarget_Parameter && curve.Id
+                ? QString::fromUtf8(curve.Id->GetString().GetRawString()) : QString();
+        }, candidate.curves, error) ||
+        !PrepareParameterGroupMask(eyeBlink, _eyeBlinkParameterIds.GetSize(), [&](int index) {
+            return QString::fromUtf8(_eyeBlinkParameterIds[index]->GetString().GetRawString());
+        }, candidate.eyeBlink, error) ||
+        !PrepareParameterGroupMask(lipSync, _lipSyncParameterIds.GetSize(), [&](int index) {
+            return QString::fromUtf8(_lipSyncParameterIds[index]->GetString().GetRawString());
+        }, candidate.lipSync, error)) return false;
+    result = std::move(candidate);
+    return true;
+}
+
+void CubismMotion::CommitParameterReferences(ReferenceState& state) noexcept
+{
+    _suppressedReferences.curves.swap(state.curves);
+    _suppressedReferences.eyeBlink.swap(state.eyeBlink);
+    _suppressedReferences.lipSync.swap(state.lipSync);
+}
+
 CubismMotion* CubismMotion::Create(const csmByte* buffer, csmSizeInt size, FinishedMotionCallback onFinishedMotionHandler)
 {
+    if (!buffer || size == 0) return nullptr;
+    auto digest = QCryptographicHash::hash(QByteArray(reinterpret_cast<const char*>(buffer), size), QCryptographicHash::Sha256);
     CubismMotion* ret = CSM_NEW CubismMotion();
-
+    ret->_sourceDigest.swap(digest);
     ret->Parse(buffer, size);
     ret->_sourceFrameRate = ret->_motionData->Fps;
     ret->_loopDurationSeconds = ret->_motionData->Duration;
@@ -355,6 +386,7 @@ void CubismMotion::DoUpdateParameters(CubismModel* model, csmFloat32 userTimeSec
     for (; c < _motionData->CurveCount && curves[c].Type == CubismMotionCurveTarget_Parameter; ++c)
     {
         parameterMotionCurveCount++;
+        if (c < _suppressedReferences.curves.size() && _suppressedReferences.curves[c]) continue;
 
         // Find parameter index.
         parameterIndex = model->GetParameterIndex(curves[c].Id);
@@ -374,6 +406,7 @@ void CubismMotion::DoUpdateParameters(CubismModel* model, csmFloat32 userTimeSec
         {
             for (csmUint32 i = 0; i < _eyeBlinkParameterIds.GetSize() && i < MaxTargetSize; ++i)
             {
+                if (i < _suppressedReferences.eyeBlink.size() && _suppressedReferences.eyeBlink[i]) continue;
                 if (_eyeBlinkParameterIds[i] == curves[c].Id)
                 {
                     value *= eyeBlinkValue;
@@ -387,6 +420,7 @@ void CubismMotion::DoUpdateParameters(CubismModel* model, csmFloat32 userTimeSec
         {
             for (csmUint32 i = 0; i < _lipSyncParameterIds.GetSize() && i < MaxTargetSize; ++i)
             {
+                if (i < _suppressedReferences.lipSync.size() && _suppressedReferences.lipSync[i]) continue;
                 if (_lipSyncParameterIds[i] == curves[c].Id)
                 {
                     value += lipSyncValue;
@@ -445,6 +479,7 @@ void CubismMotion::DoUpdateParameters(CubismModel* model, csmFloat32 userTimeSec
         {
             for (csmUint32 i = 0; i < _eyeBlinkParameterIds.GetSize() && i < MaxTargetSize; ++i)
             {
+                if (i < _suppressedReferences.eyeBlink.size() && _suppressedReferences.eyeBlink[i]) continue;
                 const csmFloat32 sourceValue = model->GetParameterValue(_eyeBlinkParameterIds[i]);
                 //モーションでの上書きがあった時にはまばたきは適用しない
                 if ((eyeBlinkFlags >> i) & 0x01)
@@ -462,6 +497,7 @@ void CubismMotion::DoUpdateParameters(CubismModel* model, csmFloat32 userTimeSec
         {
             for (csmUint32 i = 0; i < _lipSyncParameterIds.GetSize() && i < MaxTargetSize; ++i)
             {
+                if (i < _suppressedReferences.lipSync.size() && _suppressedReferences.lipSync[i]) continue;
                 const csmFloat32 sourceValue = model->GetParameterValue(_lipSyncParameterIds[i]);
                 //モーションでの上書きがあった時にはリップシンクは適用しない
                 if ((lipSyncFlags >> i) & 0x01)

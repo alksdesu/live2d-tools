@@ -56,6 +56,7 @@ class SessionRestoreTests : public QObject
     Q_OBJECT
 private:
     CModelDocument loaded;
+    CModelDocument withoutAngle;
     int meshIndex = -1;
     int rotationIndex = -1;
     int warpIndex = -1;
@@ -66,7 +67,8 @@ private:
     const CModelDeformer& rotation() const { return loaded.Deformers()[rotationIndex]; }
     const CModelDeformer& warp() const { return loaded.Deformers()[warpIndex]; }
 
-    void rejectsWithoutMutation(const CModelSession& session, const QString& expectedField)
+    void rejectsWithoutMutation(const CModelSession& session, const QString& expectedField,
+                                const CModelDocument* source = nullptr)
     {
         CModelDocument result = loaded;
         const auto& parameter = loaded.Parameters().first();
@@ -79,11 +81,13 @@ private:
         result.SetLocked("artmesh", mesh().id, true);
         const auto before = state(result).ToJson();
         const auto bytes = result.SourceBytes();
+        const auto revision = result.Revision();
         QString error;
-        QVERIFY2(!session.RestoreDocument(loaded, result, &error), qPrintable(expectedField));
+        QVERIFY2(!session.RestoreDocument(source ? *source : loaded, result, &error), qPrintable(expectedField));
         QVERIFY2(error.contains(expectedField), qPrintable(error));
         QCOMPARE(state(result).ToJson(), before);
         QCOMPARE(result.SourceBytes(), bytes);
+        QCOMPARE(result.Revision(), revision);
         QVERIFY(result.CanUndoEdit());
         QVERIFY(result.CanRedoEdit());
         QVERIFY(result.UndoEdit());
@@ -123,6 +127,12 @@ private slots:
         QVERIFY(warpIndex >= 0);
         QVERIFY(childIndex >= 0);
         QVERIFY(parentIndex >= 0);
+        withoutAngle = loaded;
+        CModelEdit deletion;
+        QVERIFY2(withoutAngle.MakeDeleteParameterEdit({QStringLiteral("ParamAngleX"), 0}, deletion, &error), qPrintable(error));
+        QVERIFY(withoutAngle.ExecuteEdit(deletion));
+        QCOMPARE(withoutAngle.Parameters().size(), loaded.Parameters().size() - 1);
+        QCOMPARE(withoutAngle.SourceBytes(), loaded.SourceBytes());
     }
 
     void legacyDefaultsRestoreSourceAndClearPreviousEdits_data()
@@ -393,6 +403,100 @@ private slots:
         const auto before = state(result).ToJson();
         QVERIFY(!session.RestoreDocument(empty, result, &error));
         QCOMPARE(state(result).ToJson(), before);
+    }
+
+    void deletedSourceParameterCannotRemainInTimeline_data()
+    {
+        QTest::addColumn<bool>("alreadyDeleted");
+        QTest::newRow("source-directory") << false;
+        QTest::newRow("edited-directory") << true;
+    }
+
+    void deletedSourceParameterCannotRemainInTimeline()
+    {
+        QFETCH(bool, alreadyDeleted);
+        CModelSession session;
+        session.version = 2;
+        session.structure = withoutAngle.ParameterStructure();
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint(QStringLiteral("ParamAngleX"), 0, 0));
+        QVERIFY(timeline.SaveState(&session.animation, false, 0));
+        rejectsWithoutMutation(session, QStringLiteral("animation"), alreadyDeleted ? &withoutAngle : &loaded);
+    }
+
+    void deletedSourceParameterCannotRemainInPhysicsDraft_data()
+    {
+        QTest::addColumn<bool>("input");
+        QTest::addColumn<bool>("alreadyDeleted");
+        QTest::newRow("input-source-directory") << true << false;
+        QTest::newRow("output-source-directory") << false << false;
+        QTest::newRow("input-edited-directory") << true << true;
+        QTest::newRow("output-edited-directory") << false << true;
+    }
+
+    void deletedSourceParameterCannotRemainInPhysicsDraft()
+    {
+        QFETCH(bool, input);
+        QFETCH(bool, alreadyDeleted);
+        const QJsonObject endpoint{{"Target", "Parameter"}, {"Id", "ParamAngleX"}};
+        const QJsonObject group{{"Input", input ? QJsonArray{QJsonObject{{"Source", endpoint}}} : QJsonArray{}},
+                                {"Output", input ? QJsonArray{} : QJsonArray{QJsonObject{{"Destination", endpoint}}}}};
+        CModelSession session;
+        session.version = 3;
+        session.structure = withoutAngle.ParameterStructure();
+        session.physicsDraft = CModelSession::PhysicsDraft{QStringLiteral("/unread/rig.physics3.json"),
+            QJsonObject{{"PhysicsSettings", QJsonArray{group}}}, true};
+        rejectsWithoutMutation(session, QStringLiteral("physicsDraft"), alreadyDeleted ? &withoutAngle : &loaded);
+    }
+
+    void virtualReferencesUseImmutableSourceDirectory_data()
+    {
+        QTest::addColumn<bool>("createdInWorkingDocument");
+        QTest::addColumn<bool>("physics");
+        QTest::addColumn<int>("version");
+        QTest::newRow("v1-existing-virtual") << false << false << 1;
+        QTest::newRow("v1-new-working-parameter") << true << false << 1;
+        QTest::newRow("v2-existing-virtual") << false << false << 2;
+        QTest::newRow("v2-new-working-parameter") << true << false << 2;
+        QTest::newRow("v3-physics-existing-virtual") << false << true << 3;
+        QTest::newRow("v3-physics-new-working-parameter") << true << true << 3;
+    }
+
+    void virtualReferencesUseImmutableSourceDirectory()
+    {
+        QFETCH(bool, createdInWorkingDocument);
+        QFETCH(bool, physics);
+        QFETCH(int, version);
+        const QString virtualId = QStringLiteral("SessionOnlyParameter");
+        CModelDocument working = withoutAngle;
+        QString error;
+        if (createdInWorkingDocument) {
+            CMocParameterStructureBuilder::CreateRequest request;
+            request.parameter.id = virtualId;
+            CModelEdit edit;
+            QVERIFY2(working.MakeCreateParameterEdit(request, {}, edit, &error), qPrintable(error));
+            QVERIFY(working.ExecuteEdit(edit));
+        }
+        CModelSession session;
+        session.version = version;
+        if (version > 1) session.structure = withoutAngle.ParameterStructure();
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint(virtualId, 0, 0));
+        QVERIFY(timeline.AddPoint({CMotionTarget::PartOpacity, QStringLiteral("ParamAngleX")}, 0, .5f));
+        QVERIFY(timeline.SaveState(&session.animation, false, 0));
+        if (physics) {
+            const QJsonObject endpoint{{"Target", "Parameter"}, {"Id", virtualId}};
+            session.physicsDraft = CModelSession::PhysicsDraft{QStringLiteral("/unread/rig.physics3.json"),
+                QJsonObject{{"PhysicsSettings", QJsonArray{QJsonObject{
+                    {"Input", QJsonArray{QJsonObject{{"Source", endpoint}}}},
+                    {"Output", QJsonArray{QJsonObject{{"Destination", endpoint}}}}}}}}, true};
+        }
+        CModelDocument restored;
+        QVERIFY2(session.RestoreDocument(working, restored, &error), qPrintable(error));
+        QVERIFY(restored.ParameterStructure() == session.structure);
+        QCOMPARE(restored.SourceBytes(), loaded.SourceBytes());
+        QVERIFY(!restored.CanUndoEdit());
+        QVERIFY(!restored.CanRedoEdit());
     }
 
     void sparseEmptySlotsAndEmptyMasksRemainValid()

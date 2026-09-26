@@ -172,6 +172,39 @@ private slots:
         QVERIFY(allocations.empty());
     }
 
+    void timelineSuppressedGroupsKeepExplicitTracksAndPartChannels()
+    {
+        auto model = createModel();
+        LAppModel preview;
+        attach(preview, *model);
+        preview._eyeBlinkIds.PushBack(idManager->GetId("ParamA"));
+        preview._lipSyncIds.PushBack(idManager->GetId("ParamB"));
+        preview.m_parameterReferences.eyeBlink = {"ParamA"};
+        preview.m_parameterReferences.lipSync = {"ParamB"};
+        CMotionPreviewFrame frame;
+        frame.model = {{"EyeBlink", 0.1f}, {"LipSync", 0.4f}};
+        frame.parameters = {{"ParamA", 0.7f}};
+        frame.parts = {{"PartA", 0.25f}};
+        QVERIFY(preview.SetTimelinePreview(frame));
+        QCOMPARE(model->GetParameterValue(0), 0.7f);
+        QCOMPARE(model->GetParameterValue(1), -0.5f);
+        QCOMPARE(model->GetPartOpacity(0), 0.25f);
+        QCOMPARE(preview.GetTimelinePreviewContext().explicitParameterIds, QSet<QString>{"ParamA"});
+        preview.Update();
+        QCOMPARE(model->GetParameterValue(0), 0.7f);
+        QCOMPARE(model->GetParameterValue(1), -0.5f);
+        preview.ClearTimelinePreview();
+        QVERIFY(preview.GetTimelinePreviewContext().explicitParameterIds.isEmpty());
+        frame.parameters.clear();
+        QVERIFY(preview.SetTimelinePreview(frame));
+        QCOMPARE(model->GetParameterValue(0), 0.2f);
+        QCOMPARE(model->GetParameterValue(1), -0.5f);
+        frame.parameters = {{"ParamA", 0.6f}};
+        QVERIFY(preview.SetTimelinePreview(frame));
+        QCOMPARE(model->GetParameterValue(0), 0.6f);
+        QCOMPARE(preview._userTimeSeconds, 23.0f);
+    }
+
     void currentPoseAndSavedBaselineDoNotAdvance()
     {
         auto model = createModel();

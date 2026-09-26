@@ -54,6 +54,17 @@ bool readFloat(const QJsonValue& value, float* number)
     return std::isfinite(*number);
 }
 
+bool validPhysicsDraft(const CModelSession::PhysicsDraft& draft, QString* error)
+{
+    if (draft.sourcePath.isEmpty() || draft.sourcePath.contains(QChar::Null)) {
+        setError(error, QStringLiteral("会话物理草稿来源无效"));
+        return false;
+    }
+    CParameterReferenceEditor::Prepared prepared;
+    return CParameterReferenceEditor::Prepare(CParameterReferenceEditor::Kind::Physics,
+        QJsonDocument(draft.document).toJson(QJsonDocument::Compact), {}, prepared, error);
+}
+
 bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     qint64 bytes = 0;
@@ -129,8 +140,16 @@ QByteArray CModelSession::ToJson() const
 {
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
-    if (!validStructure(structure, nullptr)) return {};
-    root.insert(QStringLiteral("version"), hasStructure && version == 1 ? 2 : version);
+    QJsonObject resources;
+    if (!validStructure(structure, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources) ||
+        (physicsDraft && !validPhysicsDraft(*physicsDraft, nullptr))) return {};
+    int storedVersion = hasStructure && version == 1 ? 2 : version;
+    if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
+    root.insert(QStringLiteral("version"), storedVersion);
+    if (!resources.isEmpty()) root.insert(QStringLiteral("parameterResources"), resources);
+    if (physicsDraft) root.insert(QStringLiteral("physicsDraft"), QJsonObject{
+        {QStringLiteral("sourcePath"), physicsDraft->sourcePath}, {QStringLiteral("document"), physicsDraft->document},
+        {QStringLiteral("dirty"), physicsDraft->dirty}});
     if (hasStructure) {
         QJsonObject columns, counts;
         for (auto it = structure.columns.cbegin(); it != structure.columns.cend(); ++it)
@@ -269,13 +288,32 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion != 1 && parsedVersion != 2) {
+    if (parsedVersion != 1 && parsedVersion != 2 && parsedVersion != 3) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    QJsonObject resources;
+    if (!readObject(root, QStringLiteral("parameterResources"), &resources, error) ||
+        !CParameterResourceEdits::FromJson(resources, result.parameterResources, error)) return false;
+    if (root.contains(QStringLiteral("physicsDraft"))) {
+        QJsonObject draft;
+        if (!readObject(root, QStringLiteral("physicsDraft"), &draft, error) ||
+            !draft.value(QStringLiteral("sourcePath")).isString() || !draft.value(QStringLiteral("document")).isObject() ||
+            !draft.value(QStringLiteral("dirty")).isBool()) {
+            setError(error, QStringLiteral("会话物理草稿格式无效"));
+            return false;
+        }
+        result.physicsDraft = PhysicsDraft{draft.value(QStringLiteral("sourcePath")).toString(),
+            draft.value(QStringLiteral("document")).toObject(), draft.value(QStringLiteral("dirty")).toBool()};
+        if (!validPhysicsDraft(*result.physicsDraft, error)) return false;
+    }
+    if (parsedVersion < 3 && (!result.parameterResources.IsEmpty() || result.physicsDraft)) {
+        setError(error, QStringLiteral("资源引用或物理草稿需要版本 3 会话"));
+        return false;
+    }
     if (!readStructure(root, result.structure, error)) return false;
     if (parsedVersion == 1 && (!result.structure.columns.isEmpty() || !result.structure.counts.isEmpty())) {
         setError(error, QStringLiteral("版本 1 会话不能包含参数结构"));
@@ -623,9 +661,12 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version != 1 && version != 2) || (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())))
+    if ((version != 1 && version != 2 && version != 3) ||
+        (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
+        (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)))
         return fail(QStringLiteral("version"));
-    if (!validStructure(structure, error)) return false;
+    if (!validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
+        (physicsDraft && !validPhysicsDraft(*physicsDraft, error))) return false;
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
         setError(error, QStringLiteral("没有可恢复会话的模型快照"));
         return false;
@@ -654,13 +695,32 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
 
     CModelDocument candidate;
     if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
+    QSet<QString> removedParameters;
+    for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
     if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
-    QSet<QString> previousParameters, nextParameters;
-    for (const auto& parameter : loaded.Parameters()) previousParameters.insert(parameter.id);
-    for (const auto& parameter : candidate.Parameters()) nextParameters.insert(parameter.id);
+    for (const auto& parameter : candidate.Parameters()) removedParameters.remove(parameter.id);
     for (auto track = timeline.Tracks().cbegin(); track != timeline.Tracks().cend(); ++track)
-        if (track.key().target == CMotionTarget::Parameter && previousParameters.contains(track.key().id) && !nextParameters.contains(track.key().id))
+        if (track.key().target == CMotionTarget::Parameter && removedParameters.contains(track.key().id))
             return fail(QStringLiteral("animation"), track.key().id);
+    if (!removedParameters.isEmpty()) {
+        const auto validateRemainingReferences = [&](CParameterReferenceEditor::Kind kind, const QByteArray& source,
+                                                   const QSet<QString>& suppressed, const QString& field) {
+            CParameterReferenceEditor::Prepared effective, checked;
+            if (!CParameterReferenceEditor::Prepare(kind, source, suppressed, effective, error) ||
+                !CParameterReferenceEditor::Prepare(kind, effective.effectiveBytes, removedParameters, checked, error))
+                return false;
+            return checked.references.isEmpty() || fail(field, checked.references.first().parameterId);
+        };
+        if (physicsDraft && !validateRemainingReferences(CParameterReferenceEditor::Kind::Physics,
+            QJsonDocument(physicsDraft->document).toJson(QJsonDocument::Compact), {}, QStringLiteral("physicsDraft"))) return false;
+        if (!parameterResources.IsEmpty()) {
+            if (!validateRemainingReferences(CParameterReferenceEditor::Kind::ModelSettings, parameterResources.modelSource,
+                parameterResources.modelSuppressedIds, QStringLiteral("parameterResources/modelSource"))) return false;
+            for (auto resource = parameterResources.resources.cbegin(); resource != parameterResources.resources.cend(); ++resource)
+                if (!validateRemainingReferences(resource->kind, resource->source, resource->suppressedIds,
+                    QStringLiteral("parameterResources/%1").arg(resource.key()))) return false;
+        }
+    }
     QSet<QString> objectKeys;
     QHash<QString, const CModelDrawable*> meshes;
     for (const auto& part : candidate.Parts())

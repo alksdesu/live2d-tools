@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -6,6 +6,8 @@
  */
 
 #include "CubismExpressionMotion.hpp"
+#include "framework/Model/CubismParameterReferenceMask.hpp"
+#include <QCryptographicHash>
 #include "CubismMotionQueueEntry.hpp"
 #include "framework/Id/CubismIdManager.hpp"
 #include "framework/Math/CubismMath.hpp"
@@ -38,7 +40,10 @@ CubismExpressionMotion::~CubismExpressionMotion()
 
 CubismExpressionMotion* CubismExpressionMotion::Create(const csmByte* buffer, csmSizeInt size)
 {
+    if (!buffer || size == 0) return nullptr;
+    auto digest = QCryptographicHash::hash(QByteArray(reinterpret_cast<const char*>(buffer), size), QCryptographicHash::Sha256);
     CubismExpressionMotion* expression = CSM_NEW CubismExpressionMotion();
+    expression->_sourceDigest.swap(digest);
     expression->Parse(buffer, size);
     return expression;
 }
@@ -47,6 +52,7 @@ void CubismExpressionMotion::DoUpdateParameters(CubismModel* model, csmFloat32 u
 {
     for (csmUint32 i = 0; i < _parameters.GetSize(); ++i)
     {
+        if (i < _suppressedParameters.size() && _suppressedParameters[i]) continue;
         ExpressionParameter& parameter = _parameters[i];
 
         switch (parameter.BlendType)
@@ -177,7 +183,36 @@ void CubismExpressionMotion::CalculateExpressionParameters(CubismModel* model, c
 
 csmVector<CubismExpressionMotion::ExpressionParameter> CubismExpressionMotion::GetExpressionParameters()
 {
-    return _parameters;
+    csmVector<ExpressionParameter> parameters;
+    for (csmInt32 index = 0; index < _parameters.GetSize(); ++index)
+        if (index >= _suppressedParameters.size() || !_suppressedParameters[index]) parameters.PushBack(_parameters[index]);
+    return parameters;
+}
+
+bool CubismExpressionMotion::PrepareParameterReferences(const ParameterResourceReferences& references, QVector<quint8>& result,
+                                                         QString* error) const
+{
+    return PrepareParameterReferenceMask(_sourceDigest, references, _parameters.GetSize(), [&](int index) {
+        return _parameters[index].ParameterId ? QString::fromUtf8(_parameters[index].ParameterId->GetString().GetRawString()) : QString();
+    }, result, error);
+}
+
+bool CubismExpressionMotion::IsParameterSuppressed(CubismIdHandle id) const
+{
+    bool found = false;
+    for (csmInt32 index = 0; index < _parameters.GetSize(); ++index) {
+        if (_parameters[index].ParameterId != id) continue;
+        if (index >= _suppressedParameters.size() || !_suppressedParameters[index]) return false;
+        found = true;
+    }
+    return found;
+}
+
+bool CubismExpressionMotion::HasActiveParameter(CubismIdHandle id) const
+{
+    for (csmInt32 index = 0; index < _parameters.GetSize(); ++index)
+        if (_parameters[index].ParameterId == id && (index >= _suppressedParameters.size() || !_suppressedParameters[index])) return true;
+    return false;
 }
 
 csmFloat32 CubismExpressionMotion::GetFadeWeight()

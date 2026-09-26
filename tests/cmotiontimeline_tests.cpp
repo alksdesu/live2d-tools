@@ -37,6 +37,112 @@ private:
 
 private slots:
 
+    void recountReportsEffectiveDurationWithoutMaterializingIt()
+    {
+        QJsonObject motion{{"Version", 3}, {"Curves", QJsonArray{
+            curve("Parameter", "A", {0, 0, 0, 10, 1})}},
+            {"Meta", QJsonObject{{"Fps", 30}, {"Extension", "keep"}}}};
+        double duration = -17;
+        QVERIFY(CMotionTimeline::RecountMetadata(motion, nullptr, true, &duration));
+        QCOMPARE(duration, 10.0);
+        QVERIFY(!motion.value("Meta").toObject().contains("Duration"));
+        QCOMPARE(motion.value("Meta").toObject().value("Extension"), QJsonValue("keep"));
+        QCOMPARE(motion.value("Meta").toObject().value("TotalPointCount").toInt(), 2);
+        motion["Curves"] = QJsonArray{curve("Parameter", "A", {0, 0, 9})};
+        const auto invalid = motion;
+        duration = -17;
+        QVERIFY(!CMotionTimeline::RecountMetadata(motion, nullptr, true, &duration));
+        QCOMPARE(duration, -17.0); QCOMPARE(motion, invalid);
+    }
+
+    void parameterTrackRemovalKeepsTypedPeersAndSourceFields()
+    {
+        auto parameter = curve("Parameter", "A", {0, 0, 1, 0.3, 0.2, 0.7, 0.8, 1, 1});
+        parameter["FadeInTime"] = 0.25; parameter["Extension"] = QJsonObject{{"unknown", 7}};
+        const QJsonObject motion{{"Version", 3}, {"RootExtra", "keep"}, {"Curves", QJsonArray{
+            parameter, curve("PartOpacity", "A", {0, 0.4, 0, 1, 0.6}), curve("Parameter", "B", {0, 2, 0, 1, 3})}},
+            {"Meta", QJsonObject{{"Fps", 30}, {"Duration", 1}, {"MetaExtra", true}}}};
+        CMotionTimeline timeline;
+        QVERIFY(timeline.RestoreState({{"version", 1}, {"motion", motion}, {"playhead", 0}}));
+        QJsonObject before; QVERIFY(timeline.SaveState(&before, false, 0));
+        CMotionTimeline::ParameterTracks removed;
+        QVERIFY(timeline.RemoveParameterTracks({"A"}, removed));
+        QVERIFY(!removed.IsEmpty()); QCOMPARE(removed.Ids(), QSet<QString>{"A"});
+        QVERIFY(!timeline.Tracks().contains({CMotionTarget::Parameter, "A"}));
+        QVERIFY(timeline.Tracks().contains({CMotionTarget::PartOpacity, "A"}));
+        QCOMPARE(timeline.PointCount(), 2);
+        QVERIFY(timeline.RestoreParameterTracks(removed));
+        QJsonObject restored; QVERIFY(timeline.SaveState(&restored, false, 0));
+        QCOMPARE(restored, before);
+        QVERIFY(timeline.RemoveParameterTracks({"A"}, removed));
+        QVERIFY(timeline.AddPoint("A", 0, 9));
+        QVERIFY(timeline.AddPoint("A", 1, 10));
+        QVERIFY(!timeline.TrackFadeTimes({CMotionTarget::Parameter, "A"}).fadeIn);
+        QJsonObject newState; QVERIFY(timeline.SaveState(&newState, false, 0));
+        for (const auto& value : newState.value("motion").toObject().value("Curves").toArray()) {
+            const auto row = value.toObject();
+            if (row.value("Target") == "Parameter" && row.value("Id") == "A") QVERIFY(!row.contains("Extension"));
+        }
+        QString error;
+        QVERIFY(!timeline.RestoreParameterTracks(removed, &error));
+        QVERIFY(error.contains(QStringLiteral("同名")));
+        QJsonObject after; QVERIFY(timeline.SaveState(&after, false, 0)); QCOMPARE(after, newState);
+    }
+
+    void parameterTrackChangesKeepRecordingClockAndDuration()
+    {
+        qint64 now = 1000;
+        CMotionTimeline timeline([&] { return now; });
+        timeline.StartRecording();
+        now = 2000; timeline.Record("A", 1);
+        now = 3000; timeline.Record("A", 2);
+        QCOMPARE(timeline.Duration(), 2.0f);
+        CMotionTimeline::ParameterTracks removed;
+        QVERIFY(timeline.RemoveParameterTracks({"A"}, removed));
+        QVERIFY(timeline.IsRecording()); QCOMPARE(timeline.Duration(), 2.0f);
+        now = 4000; timeline.Record("B", 3);
+        QCOMPARE(timeline.Tracks().value({CMotionTarget::Parameter, "B"}).first().x(), 3.0);
+        QVERIFY(timeline.RestoreParameterTracks(removed));
+        QVERIFY(timeline.IsRecording());
+        now = 5000; timeline.Record("A", 4);
+        QCOMPARE(timeline.Tracks().value({CMotionTarget::Parameter, "A"}).last().x(), 4.0);
+        QVERIFY(timeline.PauseRecordingClock());
+        now = 10000;
+        QVERIFY(timeline.RemoveParameterTracks({"A"}, removed));
+        QVERIFY(timeline.IsRecordingClockPaused());
+        QVERIFY(timeline.RestoreParameterTracks(removed));
+        QVERIFY(timeline.IsRecordingClockPaused());
+        QVERIFY(timeline.ResumeRecordingClock());
+        now = 11000; timeline.Record("B", 5);
+        QCOMPARE(timeline.Tracks().value({CMotionTarget::Parameter, "B"}).last().x(), 5.0);
+    }
+
+    void parameterTrackFailuresAreAtomicAndEmptyDeltaIsValid()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("A", 0, 0)); QVERIFY(timeline.AddPoint("A", 5, 1));
+        CMotionTimeline::ParameterTracks removed;
+        QVERIFY(timeline.RemoveParameterTracks({"A"}, removed));
+        QCOMPARE(timeline.Duration(), 5.0f);
+        const auto noTrack = timeline;
+        QString error;
+        QVERIFY(!timeline.RemoveParameterTracks({QString()}, removed, &error));
+        QVERIFY(timeline.HasSameContent(noTrack)); QCOMPARE(removed.Ids(), QSet<QString>{"A"});
+        QVERIFY(timeline.SetTiming(30, 2));
+        const auto shorter = timeline;
+        QVERIFY(!timeline.RestoreParameterTracks(removed, &error));
+        QVERIFY(timeline.HasSameContent(shorter));
+        QVERIFY(timeline.SetTiming(30, 5));
+        QVERIFY(timeline.RestoreParameterTracks(removed));
+        QCOMPARE(timeline.PointCount(), 2);
+        CMotionTimeline::ParameterTracks absent;
+        const auto original = timeline;
+        QVERIFY(timeline.RemoveParameterTracks({"Missing"}, absent));
+        QVERIFY(absent.IsEmpty()); QCOMPARE(absent.Ids(), QSet<QString>{"Missing"});
+        QVERIFY(timeline.RestoreParameterTracks(absent));
+        QVERIFY(timeline.HasSameContent(original));
+    }
+
     void sdkLoopTimeBoundsRuntimeAndPreservesEndFrame()
     {
         using Live2D::Cubism::Framework::CubismMath;

@@ -142,7 +142,8 @@ protected:
     bool ReplaceModel(const csmByte* bytes, csmSizeInt size,
                       const CubismModelReplacement::RendererPreparation& prepareRenderer,
                       CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
-                      QString* error = nullptr, const CubismModelReplacement::ModelPreparation& prepareModel = {});
+                      QString* error = nullptr, const CubismModelReplacement::ModelPreparation& prepareModel = {},
+                      const ParameterPhysicsReferences* physicsReferences = nullptr);
 
     CubismMoc*              _moc;                       ///< Mocデータ
     CubismModel*            _model;                     ///< Modelインスタンス

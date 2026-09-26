@@ -7,6 +7,13 @@
 #include "cubism_model_fixture.h"
 #include "live2d/LAppModel.hpp"
 #include <QCryptographicHash>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QScopeGuard>
+#include "framework/Motion/CubismMotion.hpp"
+#include "framework/Motion/CubismMotionQueueEntry.hpp"
+#include "framework/Effect/CubismBreath.hpp"
+#include "framework/Effect/CubismEyeBlink.hpp"
 
 #include <QtTest>
 #include <array>
@@ -353,7 +360,8 @@ csmBool CubismUserModel::IsHit(CubismIdHandle, csmFloat32, csmFloat32) { qFatal(
 void CubismUserModel::MotionEventFired(const csmString&) { qFatal("Unexpected effect in metadata test"); }
 }}}
 
-LAppModel::LAppModel() : _modelSetting(nullptr), _userTimeSeconds(23.0f) {}
+LAppModel::LAppModel() : _modelSetting(nullptr), _userTimeSeconds(23.0f), _idParamAngleX(nullptr), _idParamAngleY(nullptr),
+    _idParamAngleZ(nullptr), _idParamBodyAngleX(nullptr), _idParamEyeBallX(nullptr), _idParamEyeBallY(nullptr) {}
 LAppModel::~LAppModel() = default;
 void LAppModel::MotionEventFired(const csmString&) { qFatal("Unexpected effect in metadata test"); }
 csmBool LAppModel::HitTest(const csmChar*, csmFloat32, csmFloat32) { qFatal("Unexpected interaction in metadata test"); }
@@ -367,7 +375,8 @@ class ModelReplacementTests : public QObject
     friend class LAppModel;
     static bool publishPreview(LAppModel& preview, const QByteArray& bytes, const QByteArray& sourceDigest,
                                const CubismModelReplacement::ModelPreparation& prepareModel,
-                               QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds)
+                               QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
+                               const ParameterPhysicsReferences* physicsReferences)
     {
         Q_UNUSED(sourceDigest);
         const auto prepareRenderer = [&](CubismRenderer* renderer, CubismModel* model, const CubismRenderer& source, QString* detail) {
@@ -375,7 +384,7 @@ class ModelReplacementTests : public QObject
             return normalPreparation()(renderer, model, source, detail);
         };
         if (!preview.ReplaceModel(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size(),
-            prepareRenderer, policy, seeds, error, prepareModel)) return false;
+            prepareRenderer, policy, seeds, error, prepareModel, physicsReferences)) return false;
         preview.m_previewMocBytes = bytes;
         preview.m_previewMocDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
         return true;
@@ -411,6 +420,455 @@ class ModelReplacementTests : public QObject
         return result;
     }
 private slots:
+    void editorContextRestoresAfterStructuralExit_data()
+    {
+        QTest::addColumn<int>("failure");
+        QTest::newRow("success") << 0;
+        QTest::newRow("invalid-pose") << 1;
+        QTest::newRow("renderer-refusal") << 2;
+        QTest::newRow("wrong-source") << 3;
+    }
+
+    void editorContextRestoresAfterStructuralExit()
+    {
+        QFETCH(int, failure);
+        LAppModel preview;
+        setupPreview(preview);
+        const auto entry = snapshot(preview);
+        preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>(entry);
+        preview.m_editorBaseParameters = entry.Parameters();
+        preview.m_editorPose = {{"ParamA", 0.5f}, {"ParamB", 0.7f}};
+        QVERIFY(preview._model->ApplyParameterPose(preview.m_editorPose));
+        preview._model->SetPartOpacity(0, 0.35f);
+        preview._model->SetModelOpacity(0.45f);
+        LAppModel::EditorPreviewContext context;
+        ParameterStructureSeeds seeds;
+        QString error;
+        QVERIFY(preview.CaptureEditorPreviewContext(context, &error));
+        QVERIFY(preview.CaptureParameterStructureSeeds({"ParamA"}, seeds, &error));
+        runtime.configureModel = [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, false, &error), qPrintable(error));
+        QVERIFY(!preview.HasEditorPreview());
+        const auto previous = snapshot(preview);
+        auto* previousModel = preview._model;
+        runtime.configureModel = [](GetterState& state) {
+            CubismModelFixture::SetParameterLayout(state, {"ParamA", "ParamB"});
+            state.minimum[0] = -2; state.maximum[0] = 2;
+        };
+        if (failure == 1) context.pose["ParamA"] = std::numeric_limits<float>::quiet_NaN();
+        if (failure == 2) runtime.rejectMetadataRenderer = true;
+        if (failure == 3) context.sourceDigest = "foreign";
+        const bool accepted = preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            seeds, {}, true, &error, {}, nullptr, &context);
+        QVERIFY2(accepted == (failure == 0), qPrintable(error));
+        if (failure) {
+            QVERIFY(!preview.HasEditorPreview());
+            QCOMPARE(preview._model, previousModel);
+            QCOMPARE(snapshot(preview).parameterValues, previous.parameterValues);
+            QCOMPARE(snapshot(preview).savedParameters, previous.savedParameters);
+            QVERIFY(!error.isEmpty());
+            return;
+        }
+        QVERIFY(preview.HasEditorPreview());
+        QCOMPARE(preview.m_editorPose, context.pose);
+        QCOMPARE(preview.m_editorBaseParameters, context.base);
+        QCOMPARE(preview.m_editorEntryState->parameterValues, entry.parameterValues);
+        QCOMPARE(preview.m_editorEntryState->savedParameters, entry.savedParameters);
+        QCOMPARE(snapshot(preview).parameterValues, QVector<float>({0.5f, 0.7f}));
+        QCOMPARE(snapshot(preview).savedParameters, entry.savedParameters);
+        QCOMPARE(snapshot(preview).partOpacities, context.current.partOpacities);
+        QCOMPARE(snapshot(preview).modelOpacity, context.current.modelOpacity);
+        QVERIFY(preview._model->RestoreRuntimeValues(*preview.m_editorEntryState));
+        QCOMPARE(snapshot(preview).parameterValues, entry.parameterValues);
+    }
+
+    void referenceMasksCommitWithModelAndSurviveSameIdRecreation_data()
+    {
+        QTest::addColumn<bool>("rejectRenderer");
+        QTest::newRow("commit") << false;
+        QTest::newRow("GPU-failure") << true;
+    }
+
+    void referenceMasksCommitWithModelAndSurviveSameIdRecreation()
+    {
+        QFETCH(bool, rejectRenderer);
+        LAppModel preview;
+        setupPreview(preview);
+        runtime.editParameterDefinition = false;
+        State(preview._model->GetModel()).minimum[0] = 0;
+        State(preview._model->GetModel()).maximum[0] = 1;
+        preview._model->SetParameterValue(0, 0.1f);
+        preview._model->SaveParameters();
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        preview._modelHomeDir = directory.path().toUtf8().constData();
+        preview.m_modelSettingsDigest = QByteArray(32, 'm');
+        const QByteArray motionBytes = R"({"Version":3,"Meta":{"Duration":10,"Fps":30,"Loop":false,"AreBeziersRestricted":true,"CurveCount":2,"TotalSegmentCount":2,"TotalPointCount":4,"UserDataCount":0,"TotalUserDataSize":0},"FadeInTime":0,"FadeOutTime":0,"Curves":[{"Target":"Parameter","Id":"ParamA","Segments":[0,0.9,0,10,0.9]},{"Target":"PartOpacity","Id":"ProxyPart","Segments":[0,0.35,0,10,0.35]}]})";
+        const auto write = [&](const QString& name, const QByteArray& bytes) {
+            QFile file(directory.filePath(name));
+            return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+        };
+        QVERIFY(write("first.motion3.json", motionBytes));
+        QVERIFY(write("second.motion3.json", motionBytes));
+        auto* first = CubismMotion::Create(reinterpret_cast<const csmByte*>(motionBytes.constData()), motionBytes.size());
+        auto* second = CubismMotion::Create(reinterpret_cast<const csmByte*>(motionBytes.constData()), motionBytes.size());
+        QVERIFY(first && second);
+        const auto cleanupMotions = qScopeGuard([&] { ACubismMotion::Delete(first); ACubismMotion::Delete(second); });
+        QVERIFY(preview.ConfigureMotionReferences(first, "first.motion3.json"));
+        QVERIFY(preview.ConfigureMotionReferences(second, "second.motion3.json"));
+        preview._motions["first"] = first;
+        preview._motions["second"] = second;
+        ParameterReferenceCatalog catalog;
+        QString catalogError;
+        QVERIFY2(preview.CaptureParameterReferenceCatalog(catalog, &catalogError), qPrintable(catalogError));
+        QCOMPARE(catalog.motions.size(), 2);
+        QCOMPARE(catalog.motions.value("first.motion3.json"), first->SourceDigest());
+        QCOMPARE(catalog.modelSettingsDigest, preview.m_modelSettingsDigest);
+        const auto catalogBefore = catalog.motions;
+        preview.m_modelSettingsDigest.clear();
+        QVERIFY(!preview.CaptureParameterReferenceCatalog(catalog, &catalogError));
+        QCOMPARE(catalog.motions, catalogBefore);
+        preview.m_modelSettingsDigest = QByteArray(32, 'm');
+        ParameterReferenceState references;
+        references.modelSettingsDigest = preview.m_modelSettingsDigest;
+        references.motions["first.motion3.json"] = {first->SourceDigest(), {{0, "ParamA"}}};
+        runtime.configureModel = [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); };
+        runtime.rejectMetadataRenderer = rejectRenderer;
+        auto* oldModel = preview._model;
+        QString error;
+        const bool accepted = preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {}, {}, false, &error, {}, &references);
+        QCOMPARE(accepted, !rejectRenderer);
+        CubismMotionQueueEntry entry;
+        entry.SetStartTime(0);
+        if (rejectRenderer) {
+            QCOMPARE(preview._model, oldModel);
+            QVERIFY(preview.GetParameterReferenceState().motions.isEmpty());
+            first->DoUpdateParameters(preview._model, 1, 1, &entry);
+            QVERIFY(qAbs(preview._model->GetParameterValue(0) - 0.9f) < 1e-6f);
+            return;
+        }
+        QCOMPARE(preview.GetParameterReferenceState().motions.size(), 1);
+        const auto paramA = idManager->GetId("ParamA");
+        const auto partProxy = idManager->GetId("ProxyPart");
+        preview._model->SetParameterValue(paramA, 0.2f);
+        first->DoUpdateParameters(preview._model, 1, 1, &entry);
+        QCOMPARE(preview._model->GetParameterValue(paramA), 0.2f);
+        QVERIFY(qAbs(preview._model->GetParameterValue(partProxy) - 0.35f) < 1e-6f);
+        second->DoUpdateParameters(preview._model, 1, 1, &entry);
+        QVERIFY(qAbs(preview._model->GetParameterValue(paramA) - 0.9f) < 1e-6f);
+        runtime.configureModel = [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamA", "ParamB"}); };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {{"ParamA", ParameterStructureSeed{}}}, {}, false, &error), qPrintable(error));
+        preview._model->SetParameterValue(0, 0.15f);
+        first->DoUpdateParameters(preview._model, 2, 1, &entry);
+        QCOMPARE(preview._model->GetParameterValue(0), 0.15f);
+        ParameterReferenceState cleared;
+        cleared.modelSettingsDigest = preview.m_modelSettingsDigest;
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {}, {}, false, &error, {}, &cleared), qPrintable(error));
+        first->DoUpdateParameters(preview._model, 3, 1, &entry);
+        QVERIFY(qAbs(preview._model->GetParameterValue(0) - 0.9f) < 1e-6f);
+    }
+
+    void expressionSuppressionSkipsPersistentManagerCache()
+    {
+        auto source = createSource();
+        const QByteArray bytes = R"({"Type":"Live2D Expression","FadeInTime":0,"FadeOutTime":0,"Parameters":[{"Id":"ParamA","Value":0.8,"Blend":"Overwrite"}]})";
+        auto* expression = CubismExpressionMotion::Create(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size());
+        QVERIFY(expression);
+        const auto cleanupExpression = qScopeGuard([&] { ACubismMotion::Delete(expression); });
+        CubismExpressionMotionManager manager;
+        manager.StartMotionPriority(expression, false, 1);
+        QVERIFY(manager.UpdateMotion(source->model, 0.1f));
+        QVERIFY(qAbs(source->model->GetParameterValue(0) - 0.8f) < 1e-6f);
+        QVector<quint8> mask;
+        QString error;
+        QVERIFY(expression->PrepareParameterReferences({expression->SourceDigest(), {{0, "ParamA"}}}, mask, &error));
+        expression->CommitParameterReferences(mask);
+        QSet<CubismIdHandle> affected{idManager->GetId("ParamA")};
+        manager.CommitParameterReferenceSuppression(affected);
+        source->model->SetParameterValue(0, 0.25f);
+        QVERIFY(manager.UpdateMotion(source->model, 0.1f));
+        QCOMPARE(source->model->GetParameterValue(0), 0.25f);
+        manager.StopAllMotions();
+        source->model->SetParameterValue(0, 0.4f);
+        manager.UpdateMotion(source->model, 0.1f);
+        QCOMPARE(source->model->GetParameterValue(0), 0.4f);
+        QVERIFY(expression->PrepareParameterReferences({}, mask, &error));
+        expression->CommitParameterReferences(mask);
+        affected.clear(); manager.CommitParameterReferenceSuppression(affected);
+        manager.StartMotionPriority(expression, false, 1);
+        QVERIFY(manager.UpdateMotion(source->model, 0.1f));
+        QVERIFY(qAbs(source->model->GetParameterValue(0) - 0.8f) < 1e-6f);
+    }
+
+    void runtimeReferencePlansRejectStaleOrIncorrectRows_data()
+    {
+        QTest::addColumn<int>("kind");
+        for (const char* name : {"wrong-hash", "changed-file", "unknown-path", "wrong-id", "wrong-target", "wrong-row", "wrong-model"})
+            QTest::newRow(name) << (QStringList{"wrong-hash", "changed-file", "unknown-path", "wrong-id", "wrong-target", "wrong-row", "wrong-model"}.indexOf(name));
+    }
+
+    void runtimeReferencePlansRejectStaleOrIncorrectRows()
+    {
+        QFETCH(int, kind);
+        LAppModel preview;
+        setupPreview(preview);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        preview._modelHomeDir = directory.path().toUtf8().constData();
+        preview.m_modelSettingsDigest = QByteArray(32, 'm');
+        const QByteArray bytes = R"({"Version":3,"Meta":{"Duration":10,"Fps":30,"Loop":false,"AreBeziersRestricted":true,"CurveCount":1,"TotalSegmentCount":1,"TotalPointCount":2,"UserDataCount":0,"TotalUserDataSize":0},"Curves":[{"Target":"PartOpacity","Id":"ParamA","Segments":[0,0.3,0,10,0.3]}]})";
+        QFile file(directory.filePath("pose.motion3.json"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(bytes), bytes.size()); file.close();
+        auto* motion = CubismMotion::Create(reinterpret_cast<const csmByte*>(bytes.constData()), bytes.size());
+        const auto cleanupMotion = qScopeGuard([&] { ACubismMotion::Delete(motion); });
+        QVERIFY(preview.ConfigureMotionReferences(motion, "pose.motion3.json"));
+        preview._motions["pose"] = motion;
+        ParameterReferenceState state;
+        state.modelSettingsDigest = preview.m_modelSettingsDigest;
+        ParameterResourceReferences rows{motion->SourceDigest(), {}};
+        if (kind == 0) rows.sourceDigest = QByteArray(32, 'x');
+        if (kind == 1) {
+            QVERIFY(file.open(QIODevice::Append)); QVERIFY(file.write(" ") == 1); file.close();
+        }
+        if (kind == 3) rows.suppressedParameters = {{0, "different"}};
+        if (kind == 4) rows.suppressedParameters = {{0, "ParamA"}};
+        if (kind == 5) rows.suppressedParameters = {{1, "ParamA"}};
+        if (kind == 6) state.modelSettingsDigest = QByteArray(32, 'x');
+        state.motions.insert(kind == 2 ? "missing.motion3.json" : "pose.motion3.json", rows);
+        const auto before = snapshot(preview);
+        auto* model = preview._model;
+        const int rendererCalls = runtime.rendererCalls;
+        QString error;
+        QVERIFY(!preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, false, &error, {}, &state));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(preview._model, model);
+        QCOMPARE(snapshot(preview).parameterValues, before.parameterValues);
+        QCOMPARE(snapshot(preview).savedParameters, before.savedParameters);
+        QCOMPARE(runtime.rendererCalls, rendererCalls);
+        QVERIFY(preview.GetParameterReferenceState().motions.isEmpty());
+    }
+
+    void builtInMasksLeaveOtherDriversActive()
+    {
+        auto source = createSource();
+        const auto a = idManager->GetId("ParamA"), b = idManager->GetId("ParamB");
+        auto* breath = CubismBreath::Create();
+        auto* eye = CubismEyeBlink::Create();
+        const auto cleanupEffects = qScopeGuard([&] { CubismBreath::Delete(breath); CubismEyeBlink::Delete(eye); });
+        csmVector<CubismBreath::BreathParameterData> values;
+        values.PushBack({a, 0.2f, 0, 1, 1}); values.PushBack({b, 0.2f, 0, 1, 1});
+        breath->SetParameters(values);
+        csmVector<CubismIdHandle> eyes; eyes.PushBack(a); eyes.PushBack(b); eye->SetParameterIds(eyes);
+        QVector<quint8> breathMask, eyeMask;
+        QString error;
+        QVERIFY(breath->PrepareParameterReferences({"ParamA"}, breathMask, &error));
+        QVERIFY(eye->PrepareParameterReferences({"ParamA"}, eyeMask, &error));
+        breath->CommitParameterReferences(breathMask); eye->CommitParameterReferences(eyeMask);
+        source->model->SetParameterValue(a, 0.1f); source->model->SetParameterValue(b, 0.2f);
+        breath->UpdateParameters(source->model, 0.1f);
+        QCOMPARE(source->model->GetParameterValue(a), 0.1f);
+        QVERIFY(qAbs(source->model->GetParameterValue(b) - 0.4f) < 1e-6f);
+        eye->UpdateParameters(source->model, 0.1f);
+        QCOMPARE(source->model->GetParameterValue(a), 0.1f);
+        QCOMPARE(source->model->GetParameterValue(b), 1.0f);
+        const auto previousMask = eyeMask;
+        QVERIFY(!eye->PrepareParameterReferences({"missing"}, eyeMask, &error));
+        QCOMPARE(eyeMask, previousMask);
+        QVERIFY(breath->PrepareParameterReferences({}, breathMask, &error));
+        breath->CommitParameterReferences(breathMask);
+        breath->UpdateParameters(source->model, 0.1f);
+        QVERIFY(qAbs(source->model->GetParameterValue(a) - 0.3f) < 1e-6f);
+    }
+
+    void timelinePreparationIsAtomicAndEditorPoseHasPriority_data()
+    {
+        QTest::addColumn<bool>("editor"); QTest::addColumn<bool>("reject");
+        QTest::newRow("timeline") << false << false;
+        QTest::newRow("editor-over-timeline") << true << false;
+        QTest::newRow("rejected-timeline") << false << true;
+        QTest::newRow("rejected-editor-timeline") << true << true;
+    }
+
+    void timelinePreparationIsAtomicAndEditorPoseHasPriority()
+    {
+        QFETCH(bool, editor); QFETCH(bool, reject);
+        LAppModel preview; setupPreview(preview);
+        const auto entry = snapshot(preview);
+        preview._timelinePreviewActive = true;
+        preview._timelineBaseParameters = entry.Parameters();
+        preview._timelineBaseParameters["ParamA"] = 0.2f;
+        preview._timelineBaseParts = {{entry.partIds[0], 0.6f}, {entry.partIds[1], 0.7f}};
+        preview._timelineBaseOpacity = 0.75f;
+        preview._timelinePreview.parameters = {{"ParamA", 0.8f}};
+        preview._timelineParameters = preview._timelinePreview.parameters;
+        preview.m_timelineExplicitParameterIds = {"ParamA"};
+        if (editor) {
+            preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>(entry);
+            preview.m_editorBaseParameters = entry.Parameters();
+            preview.m_editorPose = {{"ParamA", 0.5f}, {"ParamB", 0.7f}};
+            QVERIFY(preview._model->ApplyParameterPose(preview.m_editorPose));
+        }
+        const auto before = snapshot(preview);
+        const auto beforeBase = preview._timelineBaseParameters;
+        auto* previousModel = preview._model;
+        int prepared = 0;
+        const auto timeline = [&](const QMap<QString, float>& base, const QSet<QString>& eyes, const QSet<QString>& lips,
+                                  LAppModel::PreparedTimelinePreview& frame, QString* error) {
+            ++prepared;
+            if (base.value("ParamA") != 0.3f || !eyes.isEmpty() || !lips.isEmpty()) return false;
+            frame.active = true; frame.explicitParameterIds = {"ParamA"};
+            frame.frame.parameters = {{"ParamA", 0.9f}};
+            frame.frame.parts = {{entry.partIds[0], 0.4f}};
+            frame.frame.model = {{"Opacity", 0.5f}};
+            if (reject) { if (error) *error = "timeline refusal"; return false; }
+            return true;
+        };
+        QString error;
+        const auto check = [&](const CubismModel& model, QString*) {
+            CubismModel::RuntimeValueSnapshot values;
+            return model.CaptureRuntimeValues(values) && values.parameterValues[0] == (editor ? 0.5f : 0.9f) &&
+                values.partOpacities[0] == (editor ? before.partOpacities[0] : 0.4f) &&
+                values.modelOpacity == (editor ? before.modelOpacity : 0.5f);
+        };
+        const bool accepted = preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {}, {{"ParamA", 0.3f}}, editor, &error, check, nullptr, nullptr, timeline);
+        QVERIFY2(accepted == !reject, qPrintable(error));
+        QCOMPARE(prepared, 1);
+        if (reject) {
+            QCOMPARE(preview._model, previousModel);
+            QCOMPARE(preview._timelineBaseParameters, beforeBase);
+            QCOMPARE(preview._timelineParameters.value("ParamA"), 0.8f);
+            QCOMPARE(snapshot(preview).savedParameters, before.savedParameters);
+        } else {
+            QCOMPARE(preview._timelineBaseParameters.value("ParamA"), 0.3f);
+            QCOMPARE(preview._timelineParameters.value("ParamA"), 0.9f);
+            QCOMPARE(snapshot(preview).savedParameters[0], 0.3f);
+            QCOMPARE(preview.GetTimelinePreviewContext().explicitParameterIds, QSet<QString>{"ParamA"});
+        }
+        QCOMPARE(preview.HasEditorPreview(), editor);
+        QCOMPARE(preview._userTimeSeconds, 23.0f);
+    }
+
+    void timelineDeactivationRestoresBaselineAtomically()
+    {
+        LAppModel preview; setupPreview(preview);
+        preview._timelinePreviewActive = true;
+        preview._timelineBaseParameters = {{"ParamA", 0.3f}, {"ParamB", 0.4f}};
+        const auto before = snapshot(preview);
+        preview._timelineBaseParts = {{before.partIds[0], 0.6f}, {before.partIds[1], 0.7f}};
+        preview._timelineBaseOpacity = 0.75f;
+        preview._timelinePreview.parameters = {{"ParamA", 0.8f}};
+        preview._timelineParameters = preview._timelinePreview.parameters;
+        preview.m_timelineExplicitParameterIds = {"ParamA"};
+        QString error;
+        const auto inactive = [](const auto&, const auto&, const auto&, LAppModel::PreparedTimelinePreview& prepared, QString*) {
+            prepared.active = false; return true;
+        };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {}, {}, false, &error, {}, nullptr, nullptr, inactive), qPrintable(error));
+        const auto after = snapshot(preview);
+        QCOMPARE(after.parameterValues, QVector<float>({0.3f, 0.4f}));
+        QCOMPARE(after.partOpacities, QVector<float>({0.6f, 0.7f}));
+        QCOMPARE(after.modelOpacity, 0.75f);
+        QVERIFY(!preview.HasTimelinePreview());
+        QVERIFY(preview.GetTimelinePreviewContext().frame.IsEmpty());
+        QVERIFY(preview.GetTimelinePreviewContext().explicitParameterIds.isEmpty());
+        QVERIFY(preview._timelineParameters.isEmpty());
+        QVERIFY(preview._timelineBaseParameters.isEmpty());
+    }
+
+    void resumedTimelineUsesArchivedBaselineWithoutSavedValue_data()
+    {
+        QTest::addColumn<float>("minimum");
+        QTest::addColumn<bool>("explicitBase");
+        QTest::newRow("unchanged-range") << -2.0f << false;
+        QTest::newRow("narrowed-range") << 0.4f << false;
+        QTest::newRow("explicit-base") << -2.0f << true;
+    }
+
+    void resumedTimelineUsesArchivedBaselineWithoutSavedValue()
+    {
+        QFETCH(float, minimum); QFETCH(bool, explicitBase);
+        LAppModel preview; setupPreview(preview);
+        runtime.editParameterDefinition = false;
+        auto entry = snapshot(preview);
+        entry.savedPresence = {0, 1};
+        entry.parameterValues[0] = 0.8f;
+        QVERIFY(preview._model->RestoreRuntimeValues(entry));
+        preview._timelinePreviewActive = true;
+        preview._timelineBaseParameters = {{"ParamA", 0.2f}, {"ParamB", 0.3f}};
+        preview._timelinePreview.parameters = {{"ParamA", 0.8f}};
+        preview._timelineParameters = preview._timelinePreview.parameters;
+        preview.m_timelineExplicitParameterIds = {"ParamA"};
+        ParameterStructureSeeds seeds;
+        QString error;
+        QVERIFY(preview.CaptureParameterStructureSeeds({"ParamA"}, seeds, &error));
+        QVERIFY(!seeds["ParamA"].runtime.saved);
+        QCOMPARE(seeds["ParamA"].timelineBase.value(), 0.2f);
+        runtime.configureModel = [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); };
+        const auto inactive = [](const auto&, const auto&, const auto&, LAppModel::PreparedTimelinePreview& prepared, QString*) {
+            prepared.active = false; return true;
+        };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {}, {}, false, &error, {}, nullptr, nullptr, inactive), qPrintable(error));
+        QVERIFY(!preview.HasTimelinePreview());
+        runtime.configureModel = [minimum](GetterState& state) {
+            CubismModelFixture::SetParameterLayout(state, {"ParamA", "ParamB"});
+            state.minimum[0] = minimum; state.maximum[0] = 2;
+            state.defaults[0] = std::max(state.defaults[0], minimum);
+        };
+        const float expected = explicitBase ? 0.35f : std::max(0.2f, minimum);
+        bool prepared = false;
+        const auto resume = [&](const auto& base, const auto&, const auto&, LAppModel::PreparedTimelinePreview& frame, QString*) {
+            prepared = base.value("ParamA") == expected;
+            frame.active = true; frame.explicitParameterIds = {"ParamA"};
+            frame.frame.parameters = {{"ParamA", 0.8f}};
+            return prepared;
+        };
+        const QMap<QString, float> patch = explicitBase ? QMap<QString, float>{{"ParamA", 0.35f}} : QMap<QString, float>{};
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            seeds, patch, false, &error, {}, nullptr, nullptr, resume), qPrintable(error));
+        QVERIFY(prepared);
+        QVERIFY(preview.HasTimelinePreview());
+        QCOMPARE(preview.GetTimelineBaseParameters().value("ParamA"), expected);
+        QCOMPARE(preview._model->GetParameterValue(0), 0.8f);
+        QCOMPARE(snapshot(preview).HasSavedParameter(0), explicitBase);
+    }
+
+    void removedTimelineCachesDoNotReviveOnSameIdRecreation()
+    {
+        LAppModel preview; setupPreview(preview);
+        runtime.editParameterDefinition = false;
+        preview._timelinePreviewActive = true;
+        preview._timelineBaseParameters = {{"ParamA", 0.2f}, {"ParamB", 0.3f}};
+        preview._timelinePreview.parameters = {{"ParamA", 0.8f}};
+        preview._timelineParameters = preview._timelinePreview.parameters;
+        preview._eyeBlinkIds.PushBack(idManager->GetId("ParamA"));
+        preview.m_parameterReferences.eyeBlink = {"ParamA"};
+        runtime.configureModel = [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamB"}); };
+        QString error;
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest, {}, {}, false, &error), qPrintable(error));
+        QVERIFY(!preview._timelineParameters.contains("ParamA"));
+        QVERIFY(!preview._timelinePreview.parameters.contains("ParamA"));
+        runtime.configureModel = [](GetterState& state) { CubismModelFixture::SetParameterLayout(state, {"ParamA", "ParamB"}); };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {{"ParamA", ParameterStructureSeed{}}}, {}, false, &error), qPrintable(error));
+        QVERIFY(!preview._timelineParameters.contains("ParamA"));
+        const auto explicitTrack = [](const auto&, const QSet<QString>& eyes, const auto&, LAppModel::PreparedTimelinePreview& frame, QString*) {
+            if (eyes.contains("ParamA")) return false;
+            frame.active = true; frame.explicitParameterIds = {"ParamA"}; frame.frame.parameters = {{"ParamA", 0.65f}};
+            return true;
+        };
+        QVERIFY2(preview.ApplyParameterStructurePreview(metadataBytes(), preview.m_sourceMocDigest,
+            {}, {}, false, &error, {}, nullptr, nullptr, explicitTrack), qPrintable(error));
+        QCOMPARE(preview._timelineParameters.value("ParamA"), 0.65f);
+        QCOMPARE(preview._model->GetParameterValue(0), 0.65f);
+    }
+
     void structuralPreviewReordersCurrentSavedAndVirtualValues()
     {
         LAppModel preview;
@@ -1220,9 +1678,10 @@ private slots:
 
 bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArray& sourceDigest,
                                        const CubismModelReplacement::ModelPreparation& prepareModel,
-                                       QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds)
+                                       QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
+                                       const ParameterPhysicsReferences* physicsReferences)
 {
-    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds);
+    return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences);
 }
 
 QTEST_GUILESS_MAIN(ModelReplacementTests)

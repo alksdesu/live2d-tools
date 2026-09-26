@@ -8,6 +8,10 @@
 #include "framework/ICubismModelSetting.hpp"
 
 
+#include <QVector>
+#include <QSet>
+#include <QString>
+
 namespace Live2D { namespace Cubism { namespace Framework {
 
 /**
@@ -19,6 +23,8 @@ namespace Live2D { namespace Cubism { namespace Framework {
 class CubismEyeBlink
 {
 public:
+    bool PrepareParameterReferences(const QSet<QString>& ids, QVector<quint8>& result, QString* error = nullptr) const;
+    void CommitParameterReferences(QVector<quint8>& state) noexcept { _suppressedParameters.swap(state); }
     /**
      * @brief まばたきの状態
      *
@@ -102,6 +108,7 @@ public:
     void            UpdateParameters(CubismModel* model, csmFloat32 deltaTimeSeconds);
 
 private:
+    QVector<quint8> _suppressedParameters;
 
     /**
     * @brief コンストラクタ

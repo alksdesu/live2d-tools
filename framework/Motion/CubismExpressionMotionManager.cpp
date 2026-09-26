@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -178,6 +178,14 @@ csmBool CubismExpressionMotionManager::UpdateMotion(CubismModel* model, csmFloat
     // モデルに各値を適用
     for (csmInt32 i = 0; i < _expressionParameterValues->GetSize(); ++i)
     {
+        const auto id = _expressionParameterValues->At(i).ParameterId;
+        bool enabled = !_suppressedCachedParameters.contains(id);
+        if (!enabled) for (auto entry = motions->Begin(); entry != motions->End(); ++entry) {
+            if (!*entry || !(*entry)->IsAvailable()) continue;
+            const auto* expression = static_cast<const CubismExpressionMotion*>((*entry)->GetCubismMotion());
+            if (expression && expression->HasActiveParameter(id)) { enabled = true; break; }
+        }
+        if (!enabled) continue;
         model->SetParameterValue(_expressionParameterValues->At(i).ParameterId,
             (_expressionParameterValues->At(i).OverwriteValue + _expressionParameterValues->At(i).AdditiveValue) * _expressionParameterValues->At(i).MultiplyValue,
             expressionWeight);

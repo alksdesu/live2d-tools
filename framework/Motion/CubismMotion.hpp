@@ -7,6 +7,8 @@
 #include "framework/Type/CubismBasicType.hpp"
 #include "framework/Type/csmVector.hpp"
 #include "framework/Id/CubismId.hpp"
+#include "framework/Model/CubismParameterReferences.hpp"
+#include <QVector>
 
 namespace Live2D { namespace Cubism { namespace Framework {
 
@@ -21,6 +23,13 @@ struct CubismMotionData;
 class CubismMotion : public ACubismMotion
 {
 public:
+    struct ReferenceState { QVector<quint8> curves, eyeBlink, lipSync; };
+    bool PrepareParameterReferences(const ParameterResourceReferences& references, const QSet<QString>& eyeBlink,
+                                    const QSet<QString>& lipSync, ReferenceState& result, QString* error = nullptr) const;
+    void CommitParameterReferences(ReferenceState& state) noexcept;
+    const QByteArray& SourceDigest() const { return _sourceDigest; }
+    const QString& ReferenceSourcePath() const { return _sourcePath; }
+    void SetReferenceSourcePath(QString path) noexcept { _sourcePath.swap(path); }
     /**
      * @brief インスタンスの生成
      *
@@ -200,6 +209,9 @@ protected:
     csmFloat32 GetModelOpacityValue() const;
 
 private:
+    QByteArray _sourceDigest;
+    QString _sourcePath;
+    ReferenceState _suppressedReferences;
     /**
      * @brief コンストラクタ
      *

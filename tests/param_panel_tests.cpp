@@ -496,7 +496,7 @@ private slots:
         QCOMPARE(structureDialog(panel, "deleteParameter", [&](QDialog* dialog) {
             auto* parameter = dialog->findChild<QComboBox*>("structureParameter");
             parameter->setCurrentIndex(parameter->findData("ParamBoundLater"));
-            QVERIFY(!dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->isEnabled());
+            QVERIFY(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->isEnabled());
             auto* references = dialog->findChild<QTreeWidget*>("structureReferences");
             bool found = false;
             for (int row = 0; row < references->topLevelItemCount(); ++row)
@@ -508,6 +508,147 @@ private slots:
         QCOMPARE(document.Parameters().last().id, QString("ParamBoundLater"));
         panel.Redo();
         QCOMPARE(document.Drawables().front().keyforms.size(), target.keyforms.size() * 2);
+    }
+
+    void boundDeleteFreezesCurrentValueAndUsesTypedReferencePlan_data()
+    {
+        QTest::addColumn<bool>("throwFirst");
+        QTest::newRow("reject-retry") << false;
+        QTest::newRow("throw-retry") << true;
+    }
+
+    void boundDeleteFreezesCurrentValueAndUsesTypedReferencePlan()
+    {
+        QFETCH(bool, throwFirst);
+        using Builder = live2dstruct::CMocParameterStructureBuilder;
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CParamPanel panel;
+        panel.SetDocument(&document); panel.BuildParams();
+        const auto target = document.Drawables().first();
+        Builder::CreateRequest request; request.parameter.id = "ParamFreeze";
+        request.bindings.append({{Builder::Owner::ArtMesh, target.id}, {-1, 1}});
+        live2dstruct::CModelEdit created;
+        QVERIFY(document.MakeCreateParameterEdit(request, {}, created)); QVERIFY(document.ExecuteEdit(created));
+        auto maximum = document.DrawableKeyformPositions(target.id, target.keyforms.size()); maximum[0] += 2;
+        QVERIFY(document.SetDrawableKeyformPositions(target.id, target.keyforms.size(), maximum));
+        QVERIFY(document.SetParameterValue(request.parameter.id, 0.25f));
+        panel.ReconcileParameters(); panel.ApplyExternalValue(request.parameter.id, 0.25f, false, false, false);
+        const auto first = document.DrawableKeyformPositions(target.id, 0);
+        const auto original = document.ParameterStructureState();
+        const auto revision = document.Revision();
+        int guardCalls = 0, submissions = 0;
+        bool accepted = false;
+        panel.SetPreEditGuard([&](QString*) { ++guardCalls; return false; });
+        panel.SetParameterReferenceProvider([](const QString&) { return QStringList{"legacy blocker"}; });
+        panel.SetDeleteReferenceProvider([](const QString&, CParamPanel::DeleteReferenceResult& result, QString*) {
+            result.removals = {QStringLiteral("当前时间轴轨道"), QStringLiteral("物理输入项")}; return true;
+        });
+        panel.SetStructureEditHandler([&](const auto& edit, QString* error) {
+            ++submissions;
+            if (!accepted) { if (throwFirst) throw std::runtime_error("controlled"); if (error) *error = "受控拒绝"; return false; }
+            return document.ExecuteEdit(edit);
+        });
+        connect(&panel, &CParamPanel::StructureChanged, &panel, [&] { panel.ReconcileParameters(); });
+        QSignalSpy changed(&panel, &CParamPanel::ParamChanged), structure(&panel, &CParamPanel::StructureChanged);
+        QCOMPARE(structureDialog(panel, "deleteParameter", [&](QDialog* dialog) {
+            auto* parameters = dialog->findChild<QComboBox*>("structureParameter");
+            parameters->setCurrentIndex(parameters->findData(request.parameter.id));
+            auto* freeze = dialog->findChild<QLineEdit*>("structureFreezeValue"); QVERIFY(freeze);
+            QCOMPARE(freeze->text(), QString("0.25"));
+            QTest::mouseClick(dialog->findChild<QPushButton*>("structureFreezeDefault"), Qt::LeftButton);
+            QCOMPARE(freeze->text(), QString("0"));
+            QTest::mouseClick(dialog->findChild<QPushButton*>("structureFreezeCurrent"), Qt::LeftButton);
+            QCOMPARE(freeze->text(), QString("0.25"));
+            auto* references = dialog->findChild<QTreeWidget*>("structureReferences");
+            int removals = 0; bool targetFound = false;
+            for (int row = 0; row < references->topLevelItemCount(); ++row) {
+                const auto* item = references->topLevelItem(row);
+                if (item->text(0) == QStringLiteral("一并移除")) { ++removals; QVERIFY(item->text(2).contains(QStringLiteral("撤销"))); }
+                targetFound = targetFound || item->text(1).contains(target.id);
+            }
+            QCOMPARE(removals, 2); QVERIFY(targetFound);
+            auto* details = dialog->findChild<QLabel*>("structureReferenceDetails");
+            QVERIFY(details);
+            QCOMPARE(details->textFormat(), Qt::PlainText);
+            QVERIFY(details->wordWrap());
+            QVERIFY(references->isColumnHidden(2));
+            auto* selected = references->topLevelItem(references->topLevelItemCount() - 1);
+            references->setCurrentItem(selected);
+            QCOMPARE(details->text(), selected->text(2));
+            QCOMPARE(details->toolTip(), selected->toolTip(1));
+            QVERIFY(details->text().contains(QStringLiteral("物理输入项")));
+            QVERIFY(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->isEnabled());
+        }, [&](QDialog* dialog) {
+            QCOMPARE(submissions, 1); QCOMPARE(document.ParameterStructureState(), original); QCOMPARE(document.Revision(), revision);
+            QCOMPARE(structure.size(), 0); QCOMPARE(changed.size(), 0);
+            auto* freeze = dialog->findChild<QLineEdit*>("structureFreezeValue"); QCOMPARE(freeze->text(), QString("0.25"));
+            QVERIFY(dialog->findChild<QLabel*>("structureError")->isVisible());
+            accepted = true;
+            QTest::keyClick(freeze, Qt::Key_Return);
+        }), 1);
+        QCOMPARE(submissions, 2); QCOMPARE(guardCalls, 0); QCOMPARE(structure.size(), 1); QCOMPARE(changed.size(), 0);
+        live2dstruct::CModelEdit command; QVERIFY(document.PeekUndoEdit(&command));
+        QCOMPARE(command.parameterChange, live2dstruct::CModelEdit::ParameterChange::Delete);
+        QVERIFY(command.freezeValue); QCOMPARE(*command.freezeValue, 0.25f);
+        QCOMPARE(document.DrawableKeyformPositions(target.id, 0)[0], float(double(first[0]) * 0.375 + double(maximum[0]) * 0.625));
+        const auto frozen = document.ParameterStructureState();
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.ParameterStructureState(), original);
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.ParameterStructureState(), frozen);
+    }
+
+    void deleteFreezeValidationRetainsInputUntilCorrected()
+    {
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CParamPanel panel; panel.SetDocument(&document); panel.BuildParams();
+        const QString id = document.Parameters().first().id;
+        const auto original = document.ParameterStructureState();
+        panel.SetDeleteReferenceProvider([](const QString&, CParamPanel::DeleteReferenceResult&, QString*) { return true; });
+        int submissions = 0;
+        panel.SetStructureEditHandler([&](const auto& edit, QString*) { ++submissions; return document.ExecuteEdit(edit); });
+        connect(&panel, &CParamPanel::StructureChanged, &panel, [&] { panel.ReconcileParameters(); });
+        QCOMPARE(structureDialog(panel, "deleteParameter", [&](QDialog* dialog) {
+            auto* parameters = dialog->findChild<QComboBox*>("structureParameter"); parameters->setCurrentIndex(parameters->findData(id));
+            metadataText(dialog, "structureFreezeValue", "not-a-number");
+        }, [&](QDialog* dialog) {
+            QCOMPARE(submissions, 0); QCOMPARE(document.ParameterStructureState(), original);
+            auto* field = dialog->findChild<QLineEdit*>("structureFreezeValue"); QCOMPARE(field->text(), QString("not-a-number"));
+            QVERIFY(dialog->findChild<QLabel*>("structureError")->isVisible());
+            field->setFocus(); field->selectAll(); QTest::keyClicks(field, "0");
+            QTest::mouseClick(dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save), Qt::LeftButton);
+        }), 1);
+        QCOMPARE(submissions, 1);
+        QVERIFY(!document.ParameterMetadataState(id).contains("value"));
+    }
+
+    void typedDeleteReferenceFailuresDoNotPublish_data()
+    {
+        QTest::addColumn<int>("mode");
+        for (int mode = 0; mode < 4; ++mode) QTest::newRow(qPrintable(QString::number(mode))) << mode;
+    }
+
+    void typedDeleteReferenceFailuresDoNotPublish()
+    {
+        QFETCH(int, mode);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CParamPanel panel; panel.SetDocument(&document); panel.BuildParams();
+        int submissions = 0;
+        if (mode != 3) panel.SetStructureEditHandler([&](const auto&, QString*) { ++submissions; return true; });
+        panel.SetDeleteReferenceProvider([mode](const QString&, CParamPanel::DeleteReferenceResult& result, QString* error) {
+            result.removals = {QStringLiteral("当前轨道")};
+            if (mode == 0) result.blockers = {QStringLiteral("无法读取动作文件")};
+            if (mode == 1) { if (error) *error = "reference failed"; return false; }
+            if (mode == 2) throw std::runtime_error("controlled");
+            return true;
+        });
+        const auto original = document.ParameterStructureState();
+        QCOMPARE(structureDialog(panel, "deleteParameter", [&](QDialog* dialog) {
+            QVERIFY(!dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->isEnabled());
+            QVERIFY(dialog->findChild<QTreeWidget*>("structureReferences")->topLevelItemCount() > 0);
+        }, {}, false), 1);
+        QCOMPARE(submissions, 0); QCOMPARE(document.ParameterStructureState(), original);
     }
 
     void structureExternalReferencesAndMissingProviderBlockDeletion()

@@ -8,17 +8,26 @@
 #include <QPointF>
 #include <QString>
 #include <QVector>
+#include <optional>
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cparameterresourceedits.h"
 
 namespace live2dstruct {
 
 struct CModelSession
 {
+    struct PhysicsDraft {
+        QString sourcePath;
+        QJsonObject document;
+        bool dirty = false;
+    };
     int version = 1;
     QJsonObject animation;
     QString sourceMoc;
     QByteArray sourceDigest;
     CMocParameterStructureBuilder::ColumnState structure;
+    CParameterResourceEdits::State parameterResources;
+    std::optional<PhysicsDraft> physicsDraft;
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
     QMap<QString, bool> visibility;

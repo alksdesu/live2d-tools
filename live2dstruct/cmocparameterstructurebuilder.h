@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QMap>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 namespace live2dstruct {
@@ -42,6 +43,23 @@ public:
         QVector<BindingRequest> bindings;
     };
 
+    struct DeleteRequest
+    {
+        QString id;
+        float freezeValue = 0;
+    };
+
+    struct DeleteTarget
+    {
+        enum Type : int { ArtMesh, Warp, Rotation, Part, Glue };
+        Type type = ArtMesh;
+        QString id;
+        int sourceIndex = -1;
+        int oldKeyformCount = 0;
+        int newKeyformCount = 0;
+        bool interpolated = false;
+    };
+
     struct ColumnState
     {
         QMap<int, QByteArray> columns;
@@ -65,6 +83,7 @@ public:
         QByteArray bytes;
         QVector<int> oldParameterToNew;
         QVector<KeyformRemap> keyforms;
+        QVector<DeleteTarget> affectedTargets;
     };
 
     struct Reference
@@ -75,6 +94,13 @@ public:
         QString detail;
     };
 
+    struct DeleteImpact
+    {
+        QVector<DeleteTarget> targets;
+        QVector<Reference> references;
+        QStringList blockingReasons;
+    };
+
     static bool Create(const QByteArray& base, const CreateRequest& request,
                        Result& result, QString* error = nullptr);
     static bool BindExistingParameter(const QByteArray& base, const QString& parameterId,
@@ -82,6 +108,10 @@ public:
                                       Result& result, QString* error = nullptr);
     static bool AnalyzeDelete(const QByteArray& base, const QString& parameterId,
                               QVector<Reference>& references, QString* error = nullptr);
+    static bool AnalyzeDelete(const QByteArray& base, const DeleteRequest& request,
+                              DeleteImpact& impact, QString* error = nullptr);
+    static bool Delete(const QByteArray& base, const DeleteRequest& request,
+                       Result& result, QString* error = nullptr);
     static bool DeleteUnreferenced(const QByteArray& base, const QString& parameterId,
                                   Result& result, QString* error = nullptr);
     static bool CaptureColumnState(const QByteArray& original, const QByteArray& effective,

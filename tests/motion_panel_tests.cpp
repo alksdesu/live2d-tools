@@ -23,6 +23,8 @@
 #include <QLabel>
 #include <QScopeGuard>
 #include <QPointer>
+#include <QUndoStack>
+#include <QUndoCommand>
 #include <type_traits>
 #include <memory>
 #include <functional>
@@ -108,6 +110,361 @@ private:
     }
 
 private slots:
+    void parameterTracksCommitIsSilentAndPreservesTypedPeers()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(settingsState()));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "Opacity"}, 2, 0.7f));
+        panel.MarkTimelineSaved();
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history);
+        const int count = history->count(), index = history->index();
+        const QString label = history->undoText();
+        const auto original = panel.Timeline();
+        const auto revision = panel.TimelineRevision();
+        const double time = panel.TimelineTime();
+        QSignalSpy frame(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged);
+        QSignalSpy historySignal(&panel, &CMotionPanel::TimelineHistoryChanged);
+        QSignalSpy activated(&panel, &CMotionPanel::TimelineActivated);
+        CMotionPanel::PreparedParameterTracks prepared;
+        QString error;
+        QVERIFY2(panel.PrepareParameterTrackRemoval({"Opacity"}, prepared, &error), qPrintable(error));
+        QVERIFY(prepared.IsValid() && prepared.HasChanges() && prepared.Timeline());
+        QVERIFY(panel.Timeline().HasSameContent(original));
+        QVERIFY(!prepared.Timeline()->Tracks().contains({CMotionTarget::Parameter, "Opacity"}));
+        QCOMPARE(prepared.Timeline()->Tracks().value({CMotionTarget::PartOpacity, "Opacity"}),
+                 original.Tracks().value({CMotionTarget::PartOpacity, "Opacity"}));
+        QCOMPARE(prepared.Timeline()->Tracks().value({CMotionTarget::Model, "Opacity"}),
+                 original.Tracks().value({CMotionTarget::Model, "Opacity"}));
+        QCOMPARE(prepared.Time(), time); QCOMPARE(prepared.Loop(), panel.TimelineLoop());
+        QVERIFY(panel.ValidatePreparedParameterTracks(prepared, &error));
+        CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive));
+        QVERIFY(archive.IsValid() && !prepared.IsValid());
+        QCOMPARE(panel.TimelineRevision(), revision + 1);
+        QCOMPARE(history->index(), index); QCOMPARE(history->count(), count); QCOMPARE(history->undoText(), label);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        QCOMPARE(frame.size(), 0); QCOMPARE(stopped.size(), 0); QCOMPARE(changed.size(), 0);
+        QCOMPARE(historySignal.size(), 0); QCOMPARE(activated.size(), 0);
+        panel.RefreshParameterTrackUi();
+        QCOMPARE(changed.size(), 1); QCOMPARE(frame.size(), 0); QCOMPARE(stopped.size(), 0);
+        QCOMPARE(activated.size(), 0); QCOMPARE(historySignal.size(), 1);
+        panel.RefreshParameterTrackUi(); QCOMPARE(changed.size(), 1);
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared, &error));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive));
+        QVERIFY(panel.Timeline().HasSameContent(original));
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RefreshParameterTrackUi();
+        QCOMPARE(frame.size(), 0); QCOMPARE(stopped.size(), 0);
+        QVERIFY(!panel.PrepareParameterTrackRestoration(archive, prepared, &error));
+        panel.UndoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}).size(), 2);
+        panel.RedoTimeline(); QVERIFY(panel.Timeline().HasSameContent(original));
+    }
+
+    void parameterTrackRestorationKeepsIndependentEditsAndOldVersions()
+    {
+        const CMotionTrack a{CMotionTarget::Parameter, "A"}, b{CMotionTarget::Parameter, "B"};
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1));
+        QVERIFY(panel.AddTimelinePoint(a, 1, 2));
+        panel.MarkTimelineSaved();
+        CMotionPanel::PreparedParameterTracks prepared;
+        CMotionPanel::ParameterTrackArchive archive;
+        QString error;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared, &error));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QVERIFY(panel.AddTimelinePoint(b, 0, 8));
+        QVERIFY(panel.AddTimelinePoint(b, 1, 9));
+        QVERIFY2(panel.PrepareParameterTrackRestoration(archive, prepared, &error), qPrintable(error));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}, {1, 2}}));
+        QCOMPARE(panel.Timeline().Tracks().value(b), QVector<QPointF>({{0, 8}, {1, 9}}));
+        panel.UndoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value(a).size(), 2);
+        QCOMPARE(panel.Timeline().Tracks().value(b), QVector<QPointF>({{0, 8}}));
+        panel.UndoTimeline();
+        QVERIFY(!panel.Timeline().Tracks().contains(b)); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline(); QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}}));
+        panel.UndoTimeline(); QVERIFY(!panel.Timeline().Tracks().contains(a));
+        panel.RedoTimeline(); panel.RedoTimeline(); panel.RedoTimeline(); panel.RedoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value(a).size(), 2); QCOMPARE(panel.Timeline().Tracks().value(b).size(), 2);
+        QVERIFY(panel.AddTimelinePoint(a, 2, 3));
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared, &error));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive));
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared, &error));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive));
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}, {1, 2}, {2, 3}}));
+    }
+
+    void hiddenTrackVersionsFollowHistoryBeforeNewEdits()
+    {
+        const CMotionTrack a{CMotionTarget::Parameter, "A"}, b{CMotionTarget::Parameter, "B"};
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1)); QVERIFY(panel.AddTimelinePoint(a, 1, 2));
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        panel.UndoTimeline();
+        QVERIFY(!panel.Timeline().Tracks().contains(a));
+        QVERIFY(panel.AddTimelinePoint(b, 0, 7));
+        QVERIFY(!panel.CanRedoTimeline());
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}}));
+        panel.UndoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}}));
+        QVERIFY(!panel.Timeline().Tracks().contains(b));
+        panel.UndoTimeline(); QVERIFY(!panel.Timeline().Tracks().contains(a));
+        panel.RedoTimeline(); panel.RedoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}}));
+        QCOMPARE(panel.Timeline().Tracks().value(b), QVector<QPointF>({{0, 7}}));
+    }
+
+    void redoOnlyTrackIsRemovedAndRestoredWithoutMovingHistory()
+    {
+        CMotionPanel panel;
+        const CMotionTrack a{CMotionTarget::Parameter, "A"};
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1)); panel.UndoTimeline();
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history);
+        QCOMPARE(history->index(), 0); QCOMPARE(history->count(), 1);
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared)); QVERIFY(prepared.HasChanges());
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QCOMPARE(history->index(), 0); QCOMPARE(history->count(), 1);
+        panel.RedoTimeline(); QVERIFY(!panel.Timeline().Tracks().contains(a));
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}}));
+        panel.UndoTimeline(); QVERIFY(!panel.Timeline().Tracks().contains(a));
+    }
+
+    void recreatedTrackConflictIsAtomic_data()
+    {
+        QTest::addColumn<bool>("redoOnly");
+        QTest::newRow("current") << false;
+        QTest::newRow("redo-only") << true;
+    }
+    void recreatedTrackConflictIsAtomic()
+    {
+        QFETCH(bool, redoOnly);
+        CMotionPanel panel; const CMotionTrack a{CMotionTarget::Parameter, "A"};
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1));
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1));
+        if (redoOnly) panel.UndoTimeline();
+        const auto before = panel.Timeline();
+        const auto revision = panel.TimelineRevision();
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history);
+        const int index = history->index(), count = history->count();
+        const bool dirty = panel.HasUnsavedTimelineChanges();
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged);
+        QVERIFY(panel.PrepareParameterTrackRemoval({"Unknown"}, prepared));
+        QString error;
+        QVERIFY(!panel.PrepareParameterTrackRestoration(archive, prepared, &error));
+        QVERIFY(error.contains(QStringLiteral("同名"))); QVERIFY(prepared.IsValid());
+        QVERIFY(panel.Timeline().HasSameContent(before)); QCOMPARE(panel.TimelineRevision(), revision);
+        QCOMPARE(history->index(), index); QCOMPARE(history->count(), count);
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty);
+        QCOMPARE(frames.size(), 0); QCOMPARE(changed.size(), 0);
+    }
+
+    void emptyTrackArchiveAndStalePreparationsRemainSafe()
+    {
+        CMotionPanel panel, other;
+        CMotionPanel::PreparedParameterTracks first, second;
+        CMotionPanel::ParameterTrackArchive archive, untouched;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"Missing"}, first));
+        QVERIFY(first.IsValid() && !first.HasChanges());
+        QVERIFY(panel.PrepareParameterTrackRemoval({"Missing"}, second));
+        const auto revision = panel.TimelineRevision();
+        QVERIFY(panel.CommitPreparedParameterTracks(first, archive));
+        QVERIFY(archive.IsValid()); QCOMPARE(panel.TimelineRevision(), revision);
+        QVERIFY(!second.IsValid()); QVERIFY(!panel.CommitPreparedParameterTracks(second, untouched));
+        QVERIFY(!untouched.IsValid());
+        QVERIFY(!other.PrepareParameterTrackRestoration(archive, second));
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, first));
+        QVERIFY(!first.HasChanges()); QVERIFY(panel.CommitPreparedParameterTracks(first, archive));
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.PrepareParameterTrackRemoval({"Missing"}, first));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "B"}, 0, 1));
+        QVERIFY(!panel.ValidatePreparedParameterTracks(first));
+        QVERIFY(!panel.CommitPreparedParameterTracks(first, untouched));
+        QVERIFY(panel.PrepareParameterTrackRemoval({"B"}, first));
+        QVERIFY(panel.CommitPreparedParameterTracks(first, archive));
+        QVERIFY(panel.RestoreTimelineState(settingsState()));
+        QVERIFY(!archive.IsValid()); QVERIFY(!panel.PrepareParameterTrackRestoration(archive, first));
+        auto temporary = std::make_unique<CMotionPanel>();
+        QVERIFY(temporary->PrepareParameterTrackRemoval({"A"}, first));
+        QVERIFY(temporary->CommitPreparedParameterTracks(first, archive));
+        QVERIFY(temporary->PrepareParameterTrackRemoval({"B"}, first));
+        temporary.reset();
+        QVERIFY(!first.IsValid() && !archive.IsValid());
+        QVERIFY(!panel.CommitPreparedParameterTracks(first, untouched));
+    }
+
+    void parameterTrackPreparationRejectsSynchronousEditReentry()
+    {
+        CMotionPanel panel;
+        int calls = 0;
+        connect(&panel, &CMotionPanel::TimelineActivated, &panel, [&] {
+            ++calls;
+            CMotionPanel::PreparedParameterTracks prepared;
+            QString error;
+            QVERIFY(!panel.PrepareParameterTrackRemoval({"A"}, prepared, &error));
+            QVERIFY(!error.isEmpty());
+        });
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 1));
+        QVERIFY(calls > 0);
+        panel.UndoTimeline(); panel.RedoTimeline();
+        auto* loop = panel.findChild<QCheckBox*>("motionLoop"); QVERIFY(loop);
+        loop->setChecked(true);
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline"); QVERIFY(record);
+        record->setChecked(true); record->setChecked(false);
+    }
+
+    void parameterTrackCommitKeepsPlaybackAndRecording_data()
+    {
+        QTest::addColumn<bool>("recording");
+        QTest::newRow("playing") << false;
+        QTest::newRow("recording") << true;
+    }
+    void parameterTrackCommitKeepsPlaybackAndRecording()
+    {
+        QFETCH(bool, recording);
+        CMotionPanel panel; const CMotionTrack a{CMotionTarget::Parameter, "A"};
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1)); QVERIFY(panel.AddTimelinePoint(a, 10, 2));
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* head = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* speed = panel.findChild<QSlider*>("motionPlaybackSpeed");
+        auto* loop = panel.findChild<QCheckBox*>("motionLoop");
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline");
+        auto* timer = panel.findChild<QTimer*>();
+        QVERIFY(play && head && speed && loop && record && timer);
+        speed->setValue(150); loop->setChecked(true); head->setValue(400);
+        if (recording) record->setChecked(true); else play->click();
+        timer->setInterval(71);
+        const double time = panel.TimelineTime();
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history);
+        const int count = history->count(), index = history->index();
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy events(&panel, &CMotionPanel::TimelineEventsTriggered);
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QCOMPARE(timer->isActive(), !recording); QCOMPARE(timer->interval(), 71);
+        QCOMPARE(panel.Timeline().IsRecording(), recording); QCOMPARE(record->isChecked(), recording);
+        QCOMPARE(speed->value(), 150); QVERIFY(loop->isChecked()); QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(history->count(), count); QCOMPARE(history->index(), index);
+        QCOMPARE(frames.size(), 0); QCOMPARE(stopped.size(), 0); QCOMPARE(events.size(), 0);
+        if (recording) {
+            panel.RecordParameterValue("B", 7);
+            QVERIFY(panel.Timeline().Tracks().contains({CMotionTarget::Parameter, "B"}));
+            record->setChecked(false);
+            QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared));
+            QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+            QVERIFY(panel.Timeline().Tracks().contains(a));
+            panel.UndoTimeline();
+            QVERIFY(panel.Timeline().Tracks().contains(a));
+            QVERIFY(!panel.Timeline().Tracks().contains({CMotionTarget::Parameter, "B"}));
+            panel.RedoTimeline();
+            QVERIFY(panel.Timeline().Tracks().contains(a));
+            QVERIFY(panel.Timeline().Tracks().contains({CMotionTarget::Parameter, "B"}));
+        } else {
+            QVERIFY(play->isEnabled()); play->click(); QVERIFY(!timer->isActive());
+            QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared));
+            QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+            QVERIFY(!timer->isActive());
+        }
+    }
+
+    void parameterTrackHistoryHonorsSavedBaselineAndUndoLimit()
+    {
+        CMotionPanel panel;
+        const CMotionTrack a{CMotionTarget::Parameter, "A"}, b{CMotionTarget::Parameter, "B"};
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history); history->setUndoLimit(3);
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1));
+        QVERIFY(panel.AddTimelinePoint(a, 1, 2)); panel.MarkTimelineSaved();
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QVERIFY(panel.HasUnsavedTimelineChanges()); panel.MarkTimelineSaved();
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        for (int index = 0; index < 5; ++index) QVERIFY(panel.AddTimelinePoint(b, float(index), float(index + 10)));
+        QCOMPARE(history->count(), 3);
+        QVERIFY(panel.PrepareParameterTrackRestoration(archive, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, archive)); panel.RefreshParameterTrackUi();
+        QVERIFY(panel.HasUnsavedTimelineChanges()); QCOMPARE(history->count(), 3);
+        for (int index = 0; index < 3; ++index) {
+            panel.UndoTimeline();
+            QCOMPARE(panel.Timeline().Tracks().value(a), QVector<QPointF>({{0, 1}, {1, 2}}));
+        }
+        QVERIFY(!panel.CanUndoTimeline());
+        QCOMPARE(panel.Timeline().Tracks().value(b), QVector<QPointF>({{0, 10}, {1, 11}}));
+        for (int index = 0; index < 3; ++index) panel.RedoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value(b).size(), 5);
+    }
+
+    void nestedParameterTrackArchivesRestoreInModelHistoryOrder()
+    {
+        CMotionPanel panel;
+        const CMotionTrack a{CMotionTarget::Parameter, "A"}, b{CMotionTarget::Parameter, "B"};
+        QVERIFY(panel.AddTimelinePoint(a, 0, 1)); QVERIFY(panel.AddTimelinePoint(a, 1, 2));
+        QVERIFY(panel.AddTimelinePoint(b, 0, 3)); QVERIFY(panel.AddTimelinePoint(b, 2, 4));
+        const auto original = panel.Timeline(); panel.MarkTimelineSaved();
+        CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive first, second;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, first));
+        QVERIFY(panel.PrepareParameterTrackRemoval({"B"}, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, second)); panel.RefreshParameterTrackUi();
+        QVERIFY(panel.Timeline().Tracks().isEmpty());
+        QVERIFY(panel.PrepareParameterTrackRestoration(second, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, second));
+        QVERIFY(panel.PrepareParameterTrackRestoration(first, prepared));
+        QVERIFY(panel.CommitPreparedParameterTracks(prepared, first)); panel.RefreshParameterTrackUi();
+        QVERIFY(panel.Timeline().HasSameContent(original)); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline(); QCOMPARE(panel.Timeline().Tracks().value(b).size(), 1);
+        panel.UndoTimeline(); QVERIFY(!panel.Timeline().Tracks().contains(b));
+        QCOMPARE(panel.Timeline().Tracks().value(a).size(), 2);
+    }
+
+    void parameterTrackPreparationRejectsPendingEditorAndChangedPlayhead()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 1));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 1, 2));
+        panel.resize(900, 700); panel.show(); QTest::qWait(10);
+        CMotionPanel::PreparedParameterTracks prepared;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        auto* head = panel.findChild<QSlider*>("motionTimelinePlayhead"); QVERIFY(head);
+        head->setValue(500);
+        QVERIFY(!panel.ValidatePreparedParameterTracks(prepared));
+        CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(!panel.CommitPreparedParameterTracks(prepared, archive));
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable"); QVERIFY(table);
+        QTableWidgetItem* editable = nullptr;
+        for (int column = 0; column < table->columnCount(); ++column) {
+            auto* item = table->item(0, column);
+            if (item && (item->flags() & Qt::ItemIsEditable)) { editable = item; break; }
+        }
+        QVERIFY(editable); table->editItem(editable);
+        auto* editor = table->findChild<QLineEdit*>(); QTRY_VERIFY(editor && editor->isVisible());
+        QTest::keyClick(editor, Qt::Key_A, Qt::ControlModifier); QTest::keyClicks(editor, "0.123");
+        QVERIFY(!panel.ValidatePreparedParameterTracks(prepared));
+        CMotionPanel::PreparedParameterTracks rejected;
+        QVERIFY(!panel.PrepareParameterTrackRemoval({"A"}, rejected));
+        QTest::keyClick(editor, Qt::Key_Escape);
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, rejected));
+        QVERIFY(panel.CommitPreparedParameterTracks(rejected, archive)); panel.RefreshParameterTrackUi();
+        QVERIFY(!panel.Timeline().Tracks().contains({CMotionTarget::Parameter, "A"}));
+    }
+
     void transportLeasePreservesPreviewRecordingAndHistory_data()
     {
         QTest::addColumn<int>("mode");
