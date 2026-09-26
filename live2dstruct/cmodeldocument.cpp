@@ -1,4 +1,5 @@
 #include "cmodeldocument.h"
+#include "cmocruntimebuilder.h"
 #include "cmeshtopology.h"
 #include "cdrawableflags.h"
 #include "csectiontable.h"
@@ -250,6 +251,18 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
     overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
     overrides.parameterMetadata = m_parameterMetadataOverrides;
     return m_previewBuilder->BuildOverrides(overrides, bytes, error);
+}
+
+bool CModelDocument::BuildRuntimeMoc(QByteArray& bytes, QString* error) const
+{
+    QByteArray authoring;
+    if (!BuildPreviewMoc(authoring, error)) return false;
+    CMocRuntimeBuilder::Overrides overrides;
+    overrides.visibility = VisibilityState();
+    overrides.drawableOpacity = m_drawableOpacityOverrides;
+    overrides.drawableDrawOrder = m_drawableDrawOrderOverrides;
+    overrides.drawableIndices = m_drawableIndexOverrides;
+    return CMocRuntimeBuilder::Build(authoring, overrides, bytes, error);
 }
 
 bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QString* error)

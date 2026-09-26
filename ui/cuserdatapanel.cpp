@@ -4,6 +4,8 @@
 #include "std/cmodeljson.h"
 #include "std/cmodeljsonwriter.h"
 #include <QDir>
+#include <QCryptographicHash>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -17,6 +19,7 @@
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <exception>
 
 CUserDataPanel::CUserDataPanel(QWidget* parent)
     : QDockWidget(QStringLiteral("网格标签 · UserData"), parent)
@@ -98,9 +101,12 @@ bool CUserDataPanel::LoadModel(const QString& modelJsonPath, QString* error)
 bool CUserDataPanel::LoadUserData(const QString& path, QString* error)
 {
     live2dstruct::CModelUserData candidate;
-    if (!path.isEmpty() && !candidate.Load(path, error)) return false;
+    QByteArray digest;
+    const auto sourcePath = path.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    if (!sourcePath.isEmpty() && !candidate.Load(sourcePath, error, &digest)) return false;
     m_data = candidate;
-    m_path = path;
+    m_path = sourcePath;
+    m_sourceDigest.swap(digest);
     m_modelJsonPath.clear();
     RebuildTable();
     SetDirty(false);
@@ -145,21 +151,47 @@ bool CUserDataPanel::ReadTable(live2dstruct::CModelUserData* data, QString* erro
     return data->Validate(error);
 }
 
+bool CUserDataPanel::CaptureUserDataBytes(QByteArray& bytes, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        if (m_updating || m_valueDelegate->HasPendingChanges()) {
+            if (error) *error = QStringLiteral("请先确认或取消正在编辑的网格标签");
+            return false;
+        }
+        live2dstruct::CModelUserData data;
+        if (!ReadTable(&data, error)) return false;
+        QByteArray candidate = data.ToJson();
+        live2dstruct::CModelUserData validated;
+        if (!validated.FromJson(candidate, error)) return false;
+        bytes.swap(candidate);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法生成网格标签快照");
+        return false;
+    }
+}
+
 bool CUserDataPanel::SaveUserData(QString* error)
 {
     m_valueDelegate->CommitEditor();
     live2dstruct::CModelUserData data;
     if (!ReadTable(&data, error)) return false;
+    QByteArray digest;
+    QString savedPath = m_path;
     if (m_path.isEmpty()) {
         if (m_modelJsonPath.isEmpty()) {
             if (error) *error = QStringLiteral("请先打开模型");
             return false;
         }
-        if (!CModelJsonWriter::CreateUserData(m_modelJsonPath, data, &m_path, error)) return false;
-    } else if (!data.Save(m_path, error)) {
+        digest = QCryptographicHash::hash(data.ToJson(), QCryptographicHash::Sha256);
+        if (!CModelJsonWriter::CreateUserData(m_modelJsonPath, data, &savedPath, error)) return false;
+    } else if (!data.Save(m_path, error, &digest)) {
         return false;
     }
     m_data = data;
+    m_path = QDir::cleanPath(QFileInfo(savedPath).absoluteFilePath());
+    m_sourceDigest.swap(digest);
     SetDirty(false);
     RefreshState();
     emit UserDataSaved(m_path);

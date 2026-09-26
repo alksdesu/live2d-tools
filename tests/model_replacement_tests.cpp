@@ -1159,6 +1159,103 @@ private slots:
         QVERIFY(preview.HasEditorPreview());
     }
 
+    void topologyReplacementPreservesSelectionAndRuntimeValues_data()
+    {
+        QTest::addColumn<int>("count"); QTest::addColumn<bool>("clipping");
+        for (int count : {0, 3, 6}) for (bool clipping : {false, true})
+            QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(count).arg(clipping))) << count << clipping;
+    }
+
+    void topologyReplacementPreservesSelectionAndRuntimeValues()
+    {
+        QFETCH(int, count); QFETCH(bool, clipping);
+        auto source = createSource();
+        source->model->ClearDrawableIndicesOverrides();
+        auto* oldMesh = source->model->GetMeshMap()->GetDrawMesh("MeshA");
+        const auto oldSelection = oldMesh->GetSelectPoint();
+        const auto oldPositions = oldMesh->Positions();
+        runtime.editClipping = clipping;
+        runtime.configureModel = [count](GetterState& data) {
+            data.indexCounts[0] = count;
+            data.indices[0] = {0, 1, 3, 1, 2, 3};
+            if (!count) data.indexPointers[0] = nullptr;
+        };
+        CubismModelReplacement denied;
+        QString error;
+        QVERIFY(!prepare(denied, *source, normalPreparation(), &error));
+        const auto policy = clipping ? CubismModelUpdatePolicy::AllowDrawableTopologyEdits | CubismModelUpdatePolicy::AllowClippingEdits
+                                     : CubismModelUpdatePolicy::AllowDrawableTopologyEdits;
+        CubismModelReplacement candidate;
+        QVERIFY2(candidate.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+            *source->renderer, normalPreparation(), policy, &error), qPrintable(error));
+        auto* next = candidate.GetModel();
+        QCOMPARE(next->GetDrawableVertexIndexCount(0), count);
+        auto* mesh = next->GetMeshMap()->GetDrawMesh("MeshA"); QVERIFY(mesh);
+        QCOMPARE(mesh->GetMesh()->GetEBOSize(), count);
+        QCOMPARE(mesh->GetMesh()->GetWolrd().size(), size_t(4));
+        QCOMPARE(mesh->GetSelectPoint().size(), oldSelection.size());
+        QVERIFY(mesh->IsShown());
+        for (size_t index = 0; index < oldSelection.size(); ++index) {
+            QCOMPARE(mesh->GetSelectPoint()[index], mesh->GetMesh()->GetWolrd()[index]);
+            QVERIFY(mesh->GetSelectPoint()[index] != oldSelection[index]);
+        }
+        QCOMPARE(next->GetParameterValue(0), 0.7f);
+        QCOMPARE(next->GetPartOpacity(0), 0.45f); QCOMPARE(next->GetModelOpacity(), 0.6f);
+        QCOMPARE(oldMesh->Positions(), oldPositions); QVERIFY(oldMesh->GetSelectPoint() == oldSelection);
+        QCOMPARE(State(next->GetModel()).updates, 1);
+        QVERIFY(candidate.Commit(source->moc, source->model, source->renderer));
+        source->model->LoadParameters(); QCOMPARE(source->model->GetParameterValue(0), 0.2f);
+        source->model->SetParameterValue(0, 0.7f);
+        runtime.configureModel = {}; runtime.editClipping = false;
+        CubismModelReplacement restored;
+        QVERIFY2(restored.Prepare(sourceBytes.data(), sourceBytes.size(), *source->moc, *source->model,
+            *source->renderer, normalPreparation(), policy, &error), qPrintable(error));
+        QCOMPARE(restored.GetModel()->GetDrawableVertexIndexCount(0), 6);
+        QCOMPARE(restored.GetModel()->GetMeshMap()->GetDrawMesh("MeshA")->GetSelectPoint().size(), oldSelection.size());
+        QVERIFY(restored.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(source->model->GetParameterValue(0), 0.7f);
+    }
+
+    void topologyReplacementFailureLeavesSourceOwnedState_data()
+    {
+        QTest::addColumn<int>("failure");
+        QTest::newRow("renderer") << 0;
+        QTest::newRow("runtime-values") << 1;
+        QTest::newRow("invalid-indices") << 2;
+    }
+
+    void topologyReplacementFailureLeavesSourceOwnedState()
+    {
+        QFETCH(int, failure);
+        auto source = createSource(); source->model->ClearDrawableIndicesOverrides();
+        auto* oldMoc = source->moc; auto* oldModel = source->model; auto* oldRenderer = source->renderer;
+        auto* oldMesh = oldModel->GetMeshMap()->GetDrawMesh("MeshA");
+        const auto oldSelection = oldMesh->GetSelectPoint(); const auto oldPositions = oldMesh->Positions();
+        runtime.configureModel = [failure](GetterState& data) {
+            data.indexCounts[0] = 3;
+            if (failure == 2) data.indices[0][2] = 4;
+        };
+        if (failure == 1) State(oldModel->GetModel()).values[0] = std::numeric_limits<float>::quiet_NaN();
+        int rendererCalls = 0;
+        const auto reject = [&](CubismRenderer*, CubismModel*, const CubismRenderer&, QString* error) {
+            ++rendererCalls; if (error) *error = "controlled topology renderer rejection"; return false;
+        };
+        CubismModelReplacement candidate;
+        QString error;
+        QVERIFY(!candidate.Prepare(candidateBytes.data(), candidateBytes.size(), *oldMoc, *oldModel, *oldRenderer,
+            reject, CubismModelUpdatePolicy::AllowDrawableTopologyEdits, &error));
+        QVERIFY(!error.isEmpty()); QVERIFY(!candidate.GetModel());
+        QVERIFY(!candidate.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(source->moc, oldMoc); QCOMPARE(source->model, oldModel); QCOMPARE(source->renderer, oldRenderer);
+        QCOMPARE(rendererCalls, failure == 0 ? 1 : 0);
+        QCOMPARE(oldMesh->Positions(), oldPositions); QVERIFY(oldMesh->GetSelectPoint() == oldSelection); QVERIFY(oldMesh->IsShown());
+        QCOMPARE(oldModel->GetDrawableVertexIndexCount(0), 6);
+        QCOMPARE(State(oldModel->GetModel()).updates, 0);
+        if (failure == 1) QVERIFY(std::isnan(oldModel->GetParameterValue(0)));
+        else QCOMPARE(oldModel->GetParameterValue(0), 0.7f);
+        State(oldModel->GetModel()).values[0] = 0.7f;
+    }
+
     void explicitClippingPolicyReachesStateCopyAndCommit()
     {
         auto source = createSource();

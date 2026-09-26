@@ -5,6 +5,7 @@
 #include <QtTest>
 #include <QtEndian>
 #include <functional>
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -65,6 +66,35 @@ CModelEdit changed(const CModelDocument& document, const QString& id, int keyfor
     return {id, "artmesh", CModelEdit::KeyformPositions, QVariant::fromValue(before), QVariant::fromValue(after), keyform, false};
 }
 
+CModelEdit materialChange(const CModelDocument& document, const QString& id, CModelEdit::Field field)
+{
+    const auto mesh = *std::find_if(document.Drawables().cbegin(), document.Drawables().cend(),
+        [&](const auto& drawable) { return drawable.id == id; });
+    if (field == CModelEdit::Visibility) return {id, "artmesh", field, mesh.visible, !mesh.visible};
+    if (field == CModelEdit::Opacity) {
+        const float before = document.DrawableOpacity(mesh);
+        return {id, "artmesh", field, before, before == 0.25f ? 0.75f : 0.25f};
+    }
+    if (field == CModelEdit::DrawOrder) {
+        const int before = qRound(document.DrawableDrawOrder(mesh));
+        return {id, "artmesh", field, before, (before + 1) % 1001};
+    }
+    if (field == CModelEdit::MeshIndices) {
+        const auto before = document.DrawableIndices(id);
+        auto after = before;
+        if (after.size() >= 3) std::swap(after[0], after[1]);
+        return {id, "artmesh", field, QVariant::fromValue(before), QVariant::fromValue(after)};
+    }
+    QMap<QString, bool> before, after;
+    const auto state = document.VisibilityState();
+    for (const auto& type : {QString("part"), QString("artmesh"), QString("warp"), QString("rotation")}) {
+        for (auto it = state.cbegin(); it != state.cend(); ++it) if (it.key().startsWith(type + '|')) {
+            before.insert(it.key(), it.value()); after.insert(it.key(), !it.value()); break;
+        }
+    }
+    return {"selection", "objects", CModelEdit::VisibilityValues, QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+}
+
 QByteArray content(const CModelDocument& document)
 {
     CModelSession session;
@@ -118,6 +148,7 @@ struct ControlledPreview
 {
     bool reject = false;
     bool throwPublish = false;
+    bool runtimeMaterials = false;
     bool rejectEnd = false;
     bool throwEnd = false;
     int attempts = 0;
@@ -140,7 +171,7 @@ struct ControlledPreview
                 return false;
             }
             QByteArray bytes;
-            if (!candidate.BuildPreviewMoc(bytes, error)) return false;
+            if (!(runtimeMaterials ? candidate.BuildRuntimeMoc(bytes, error) : candidate.BuildPreviewMoc(bytes, error))) return false;
             publishedBytes = std::move(bytes);
             pose = values;
             editing = editMode;
@@ -230,6 +261,159 @@ private slots:
         QVERIFY2(findTarget(baseline, target, &error), qPrintable(error));
         QVERIFY(baseline.Drawables()[target.index].parentPartIndex >= 0);
         QVERIFY(baseline.Drawables()[target.index].parentDeformerIndex >= 0);
+    }
+
+    void materialPublicationIsAtomicAndKeepsEditorMode_data()
+    {
+        QTest::addColumn<int>("field"); QTest::addColumn<bool>("active");
+        for (int field : {int(CModelEdit::Visibility), int(CModelEdit::VisibilityValues), int(CModelEdit::Opacity),
+                          int(CModelEdit::DrawOrder), int(CModelEdit::MeshIndices)})
+            for (bool active : {false, true}) QTest::newRow(qPrintable(QString("%1-%2").arg(field).arg(active))) << field << active;
+    }
+    void materialPublicationIsAtomicAndKeepsEditorMode()
+    {
+        QFETCH(int, field); QFETCH(bool, active);
+        CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+        preview.runtimeMaterials = true; controller.SetDocument(&document); preview.connect(controller);
+        QString error;
+        if (active) QVERIFY2(controller.Activate(target.id, 1, values(document), &error), qPrintable(error));
+        const auto pose = controller.Pose(); const auto selected = controller.Target(); const int keyform = controller.Keyform();
+        const auto before = capture(document);
+        const auto command = materialChange(document, target.id, CModelEdit::Field(field));
+        QVERIFY(CKeyformEditController::Handles(command)); QVERIFY(command.before != command.after);
+        preview.reject = true;
+        QVERIFY(!controller.Submit(command, &error)); QVERIFY(!error.isEmpty()); unchanged(document, before);
+        preview.reject = false; preview.throwPublish = true;
+        QVERIFY(!controller.Submit(command, &error)); QVERIFY(!error.isEmpty()); unchanged(document, before);
+        QCOMPARE(controller.IsActive(), active); QCOMPARE(controller.Target(), selected); QCOMPARE(controller.Keyform(), keyform); QCOMPARE(controller.Pose(), pose);
+        preview.throwPublish = false;
+        bool reentryRejected = false;
+        preview.onPublish = [&] { reentryRejected = !controller.Submit(command); };
+        QVERIFY2(controller.Submit(command, &error), qPrintable(error)); QVERIFY(reentryRejected); preview.onPublish = {};
+        QCOMPARE(preview.editing, active); QCOMPARE(preview.pose, pose); QCOMPARE(preview.ended, 0);
+        QCOMPARE(controller.IsActive(), active); QCOMPARE(controller.Target(), selected); QCOMPARE(controller.Keyform(), keyform); QCOMPARE(controller.Pose(), pose);
+        QVERIFY(content(document) != before.content); QCOMPARE(document.SourceBytes(), before.source);
+        const auto accepted = capture(document); const auto published = preview.publishedBytes;
+        CModelEdit restored; preview.reject = true;
+        QVERIFY(!controller.History(true, restored, &error)); unchanged(document, accepted); QCOMPARE(preview.publishedBytes, published);
+        preview.reject = false;
+        QVERIFY2(controller.History(true, restored, &error), qPrintable(error)); QCOMPARE(content(document), before.content);
+        const auto undone = capture(document); preview.throwPublish = true;
+        QVERIFY(!controller.History(false, restored, &error)); unchanged(document, undone);
+        preview.throwPublish = false;
+        QVERIFY2(controller.History(false, restored, &error), qPrintable(error)); QCOMPARE(content(document), accepted.content);
+        QCOMPARE(controller.IsActive(), active); QCOMPARE(controller.Keyform(), keyform); QCOMPARE(controller.Pose(), pose); QCOMPARE(preview.ended, 0);
+    }
+
+    void materialInputsRejectStaleTypesAndInvalidValuesBeforePublication()
+    {
+        CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+        controller.SetDocument(&document); preview.connect(controller); const auto before = capture(document);
+        QVector<CModelEdit> rejected;
+        for (auto field : {CModelEdit::Visibility, CModelEdit::Opacity, CModelEdit::DrawOrder, CModelEdit::MeshIndices}) {
+            auto command = materialChange(document, target.id, field);
+            command.before = command.after; command.after = materialChange(document, target.id, field).before;
+            rejected.append(command);
+            command = materialChange(document, target.id, field); command.type = "part"; rejected.append(command);
+        }
+        auto visibility = materialChange(document, target.id, CModelEdit::Visibility); visibility.before = "true"; rejected.append(visibility);
+        auto opacity = materialChange(document, target.id, CModelEdit::Opacity); opacity.after = std::numeric_limits<float>::quiet_NaN(); rejected.append(opacity);
+        opacity.after = 1.5f; rejected.append(opacity); opacity.after = 0.5; rejected.append(opacity);
+        auto order = materialChange(document, target.id, CModelEdit::DrawOrder); order.after = 1001; rejected.append(order);
+        order.after = 1.25; rejected.append(order);
+        auto topology = materialChange(document, target.id, CModelEdit::MeshIndices); topology.after = QVariant::fromValue(QVector<quint16>{0, 1}); rejected.append(topology);
+        auto batch = materialChange(document, target.id, CModelEdit::VisibilityValues);
+        auto next = batch.after.value<QMap<QString, bool>>(); next.insert("part|missing", false); batch.after = QVariant::fromValue(next); rejected.append(batch);
+        for (const auto& command : rejected) {
+            QString error; QVERIFY(!controller.Submit(command, &error)); QVERIFY(!error.isEmpty()); unchanged(document, before);
+        }
+        QCOMPARE(preview.attempts, 0); QVERIFY(!controller.IsActive());
+    }
+
+    void materialLocksCoverParentsAndEntireVisibilityBatch()
+    {
+        for (const auto& kind : {QString("artmesh"), QString("part"), QString("deformer")}) {
+            CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+            const auto mesh = document.Drawables()[target.index];
+            QString type = kind, id = target.id;
+            if (kind == "part") id = document.Parts()[mesh.parentPartIndex].id;
+            if (kind == "deformer") {
+                const auto deformer = document.Deformers()[mesh.parentDeformerIndex];
+                type = deformer.type == CModelDeformer::Warp ? "warp" : "rotation"; id = deformer.id;
+            }
+            document.SetLocked(type, id, true); const auto before = capture(document);
+            controller.SetDocument(&document); preview.connect(controller);
+            for (auto field : {CModelEdit::Visibility, CModelEdit::Opacity, CModelEdit::DrawOrder, CModelEdit::MeshIndices}) {
+                QVERIFY(!controller.Submit(materialChange(document, target.id, field))); unchanged(document, before);
+            }
+            auto state = document.VisibilityState();
+            QMap<QString, bool> previous{{"artmesh|" + target.id, state.value("artmesh|" + target.id)},
+                {"part|" + document.Parts().first().id, state.value("part|" + document.Parts().first().id)}};
+            auto next = previous; for (auto it = next.begin(); it != next.end(); ++it) it.value() = !it.value();
+            CModelEdit batch{"selection", "objects", CModelEdit::VisibilityValues, QVariant::fromValue(previous), QVariant::fromValue(next), -1, false};
+            QVERIFY(!controller.Submit(batch)); unchanged(document, before); QCOMPARE(preview.attempts, 0);
+        }
+    }
+
+    void materialPartVisibilityChecksAncestorLocks()
+    {
+        auto bytes = baseline.SourceBytes(); CReader reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        QVERIFY(table.IsValid()); QVERIFY(table.parts.size() >= 2);
+        const int offset = table.sectionOffsetTable->parts->parent_part_indices;
+        for (int index = 0; index < table.parts.size(); ++index) put(bytes, offset + index * 4, -1);
+        put(bytes, offset + 4, 0);
+        CModelDocument document; QString error; QVERIFY(document.LoadBytes(bytes, "part-parent.moc3", &error));
+        const auto part = document.Parts()[1];
+        CKeyformEditController controller; ControlledPreview preview; controller.SetDocument(&document); preview.connect(controller);
+        const CModelEdit command{part.id, "part", CModelEdit::Visibility, part.visible, !part.visible};
+        document.SetLocked("part", document.Parts()[0].id, true); const auto before = capture(document);
+        QVERIFY(!controller.Submit(command)); unchanged(document, before); QCOMPARE(preview.attempts, 0);
+        document.SetLocked("part", document.Parts()[0].id, false);
+        QVERIFY2(controller.Submit(command, &error), qPrintable(error)); QCOMPARE(document.Parts()[1].visible, !part.visible);
+        QVERIFY(!controller.IsActive());
+    }
+
+    void batchVisibilityValidatesSharedAncestorsBeforeChangingAnyTarget()
+    {
+        auto bytes = baseline.SourceBytes(); CReader reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+        QVERIFY(table.IsValid()); QVERIFY(table.parts.size() >= 2);
+        const int offset = table.sectionOffsetTable->parts->parent_part_indices;
+        put(bytes, offset, -1);
+        for (int index = 1; index < table.parts.size(); ++index) put(bytes, offset + index * 4, index - 1);
+        CModelDocument document; QString error; QVERIFY(document.LoadBytes(bytes, "part-chain.moc3", &error));
+        auto before = document.VisibilityState(); before.remove("part|" + document.Parts().first().id);
+        auto after = before; for (auto it = after.begin(); it != after.end(); ++it) it.value() = !it.value();
+        QVERIFY(before.size() > 1);
+        const CModelEdit command{"selection", "objects", CModelEdit::VisibilityValues,
+            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+        CKeyformEditController controller; ControlledPreview preview; controller.SetDocument(&document); preview.connect(controller);
+        document.SetLocked("part", document.Parts().first().id, true); const auto original = capture(document);
+        QVERIFY(!controller.Submit(command, &error)); unchanged(document, original); QCOMPARE(preview.attempts, 0);
+        document.SetLocked("part", document.Parts().first().id, false);
+        QVERIFY2(controller.Submit(command, &error), qPrintable(error));
+        const auto accepted = document.VisibilityState();
+        for (auto it = after.cbegin(); it != after.cend(); ++it) QCOMPARE(accepted.value(it.key()), it.value());
+        CModelEdit undo; QVERIFY(controller.History(true, undo));
+        const auto restored = document.VisibilityState();
+        for (auto it = before.cbegin(); it != before.cend(); ++it) QCOMPARE(restored.value(it.key()), it.value());
+    }
+
+    void materialCoalescingPreservesDocumentHistorySemantics()
+    {
+        for (bool coalesce : {false, true}) {
+            CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+            controller.SetDocument(&document); preview.connect(controller);
+            const float original = document.DrawableOpacity(document.Drawables()[target.index]);
+            CModelEdit first{target.id, "artmesh", CModelEdit::Opacity, original, 0.8f, -1, coalesce};
+            CModelEdit second{target.id, "artmesh", CModelEdit::Opacity, 0.8f, 0.6f, -1, coalesce};
+            QVERIFY(controller.Submit(first)); QVERIFY(controller.Submit(second));
+            QCOMPARE(historyCount(document), coalesce ? 1 : 2); CModelEdit edit;
+            QVERIFY(controller.History(true, edit));
+            QCOMPARE(document.DrawableOpacity(document.Drawables()[target.index]), coalesce ? original : 0.8f);
+            if (!coalesce) QVERIFY(controller.History(true, edit));
+            QCOMPARE(document.DrawableOpacity(document.Drawables()[target.index]), original); QVERIFY(!document.CanUndoEdit());
+            QVERIFY(document.DrawableOpacityOverrides().isEmpty()); QCOMPARE(preview.ended, 0);
+        }
     }
 
     void activationUsesTheSelectedObjectsCornerWithoutEditingTheDocument_data()

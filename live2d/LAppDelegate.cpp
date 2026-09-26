@@ -5,6 +5,7 @@
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
 
+#include "std/cmodelresourcepath.h"
 #include "LAppDelegate.hpp"
 #include <iostream>
 #include <QScopeGuard>
@@ -324,7 +325,7 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
     };
     if (groups) {
         const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
-        const QString mocPath = home + "/" + QString::fromUtf8(model->GetModelSetting()->GetModelFileName());
+        const QString mocPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetModelFileName()));
         live2dstruct::CModelDocument document;
         QString sourceError;
         if (!document.LoadBytes(model->GetSourceMocBytes(), mocPath, &sourceError))
@@ -348,7 +349,7 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
             runtimeIndices.insert(sourceIndex, index);
         }
         CCidJson names;
-        names.Parse(home + "/" + QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName()));
+        names.Parse(CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName())));
         const auto order = live2dstruct::BuildGroupedLayerOrder(document.Parts(), document.Drawables(), sources);
         if (!sorted.isEmpty() && order.isEmpty()) return fail(QStringLiteral("PSD 分组计划为空"));
         for (const auto& entry : order) {
@@ -432,8 +433,8 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
     m_exportInProgress = true;
     const auto release = qScopeGuard([this, surface] { if (surface && s_instance == this) m_exportInProgress = false; });
     const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
-    const QString cidPath = home + "/" + QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName());
-    const QString mocPath = home + "/" + QString::fromUtf8(model->GetModelSetting()->GetModelFileName());
+    const QString cidPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName()));
+    const QString mocPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetModelFileName()));
     const QByteArray source(model->GetSourceMocBytes().constData(), model->GetSourceMocBytes().size());
     const auto topology = m_meshIndexOverrides;
     const auto opacity = m_drawableOpacityOverrides;

@@ -12,6 +12,7 @@
 #include <QCheckBox>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QComboBox>
@@ -313,7 +314,7 @@ private slots:
         QVERIFY(!document.CanUndoEdit());
     }
 
-    void reparseCdiClearsPreviousState()
+    void cdiReparseOnlyReplacesNamesAndSourceAfterSuccess()
     {
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
@@ -325,14 +326,23 @@ private slots:
         first.close();
         QFile second(secondPath);
         QVERIFY(second.open(QIODevice::WriteOnly));
-        QVERIFY(second.write(R"({"Parts":[{"Id":"PartB","Name":"B"}],"Parameters":[{"Id":"ParamB","Name":"PB"}]})") > 0);
+        const QByteArray secondBytes = "{\r\n\"Parts\":[{\"Id\":\"PartB\",\"Name\":\"B\"}],\r\n\"Parameters\":[{\"Id\":\"ParamB\",\"Name\":\"PB\"}],\"CombinedParameters\":[[\"ParamB\"]]}\r\n";
+        QCOMPARE(second.write(secondBytes), secondBytes.size());
         second.close();
 
         CCidJson cid;
         QString error;
+        QVERIFY(cid.SourcePath().isEmpty()); QVERIFY(cid.SourceDigest().isEmpty());
         QVERIFY(cid.Parse(firstPath, &error));
+        QCOMPARE(cid.SourcePath(), firstPath);
+        QVERIFY(first.open(QIODevice::ReadOnly));
+        QCOMPARE(cid.SourceDigest(), QCryptographicHash::hash(first.readAll(), QCryptographicHash::Sha256)); first.close();
+        const auto firstDigest = cid.SourceDigest();
         QCOMPARE(cid.getPartName(QStringLiteral("PartA")), QStringLiteral("A"));
-        QVERIFY(cid.Parse(secondPath, &error));
+        QVERIFY(cid.Parse(QDir::current().relativeFilePath(secondPath), &error));
+        QCOMPARE(cid.SourcePath(), secondPath);
+        const auto secondDigest = QCryptographicHash::hash(secondBytes, QCryptographicHash::Sha256);
+        QCOMPARE(cid.SourceDigest(), secondDigest); QVERIFY(secondDigest != firstDigest);
         QVERIFY(cid.getPartName(QStringLiteral("PartA")).isEmpty());
         QCOMPARE(cid.getPartName(QStringLiteral("PartB")), QStringLiteral("B"));
         QVERIFY(cid.getGroups().size() <= 1);
@@ -343,9 +353,17 @@ private slots:
         partial.close();
         QVERIFY(!cid.Parse(partialPath, &error));
         QVERIFY(cid.getPartName(QStringLiteral("PartC")).isEmpty());
-        QVERIFY(cid.getPartName(QStringLiteral("PartB")).isEmpty());
+        QCOMPARE(cid.getPartName(QStringLiteral("PartB")), QStringLiteral("B"));
+        QCOMPARE(cid.getParaName(QStringLiteral("ParamB")), QStringLiteral("PB"));
+        QVERIFY(cid.isCombinedParameter(QStringLiteral("ParamB")));
+        QCOMPARE(cid.SourcePath(), secondPath); QCOMPARE(cid.SourceDigest(), secondDigest);
         QVERIFY(!cid.Parse(temp.filePath(QStringLiteral("broken.json")), &error));
-        QVERIFY(cid.getPartName(QStringLiteral("PartB")).isEmpty());
+        QCOMPARE(cid.getPartName(QStringLiteral("PartB")), QStringLiteral("B"));
+        QCOMPARE(cid.SourcePath(), secondPath); QCOMPARE(cid.SourceDigest(), secondDigest);
+        QVERIFY(QFile::remove(secondPath));
+        QVERIFY(!cid.Parse(secondPath, &error));
+        QCOMPARE(cid.SourcePath(), secondPath); QCOMPARE(cid.SourceDigest(), secondDigest);
+        QCOMPARE(cid.getPartName(QStringLiteral("PartB")), QStringLiteral("B"));
     }
 
     void programmaticVisibilityChangesOnlyTheSelectedObject_data()

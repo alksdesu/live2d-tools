@@ -28,7 +28,7 @@ struct CDrawableOrderGroup;
 namespace Live2D { namespace Cubism { namespace Framework {
 
 class CubismMoc;
-enum class CubismModelUpdatePolicy { Strict = 0, AllowClippingEdits = 1, AllowParameterDefinitionEdits = 2, AllowParameterStructureEdits = 4 };
+enum class CubismModelUpdatePolicy { Strict = 0, AllowClippingEdits = 1, AllowParameterDefinitionEdits = 2, AllowParameterStructureEdits = 4, AllowDrawableTopologyEdits = 8 };
 constexpr CubismModelUpdatePolicy operator|(CubismModelUpdatePolicy left, CubismModelUpdatePolicy right)
 {
     return static_cast<CubismModelUpdatePolicy>(static_cast<unsigned int>(left) | static_cast<unsigned int>(right));

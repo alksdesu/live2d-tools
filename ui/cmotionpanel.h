@@ -83,6 +83,7 @@ public:
     ~CMotionPanel() override;
     bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
     bool CaptureTimelineState(QJsonObject* state, QString* error = nullptr);
+    bool CaptureTimelineBytes(QByteArray& bytes, QString* error = nullptr) const;
     bool RestoreTimelineState(const QJsonObject& state, QString* error = nullptr);
     bool HasUnsavedTimelineChanges() const;
     void MarkTimelineSaved();
@@ -111,6 +112,9 @@ public:
     bool TimelineLoop() const { return m_loopCb->isChecked(); }
     bool BuildPoseGroups(const QString& poseJsonPath, QString* error = nullptr);
     bool SavePose(QString* error = nullptr);
+    bool CapturePoseBytes(QByteArray& bytes, QString* error = nullptr) const;
+    const QString& PoseSourcePath() const { return m_poseJsonPath; }
+    const QByteArray& PoseSourceDigest() const { return m_poseSourceDigest; }
     void RecordParameterValue(const QString& parameterId, float value);
     bool HasUnsavedPoseChanges() const { return m_poseDirty; }
     void SetLipSyncWavStatus(bool loaded, const QString& path = QString());
@@ -186,12 +190,15 @@ private:
     struct PoseGroup {
         QStringList partIds;
         QVector<QStringList> links;
+        QVector<QJsonObject> fields;
         QComboBox* combo;
         int sourceIndex = -1;
     };
+    bool BuildPoseDocument(QJsonObject& document, QString* error) const;
     QVector<PoseGroup> m_poseGroups;
     QString m_poseJsonPath;
     QJsonObject m_poseDocument;
+    QByteArray m_poseSourceDigest;
     QPushButton* m_savePoseButton = nullptr;
     QPushButton* m_addPosePartButton = nullptr;
     QPushButton* m_removePosePartButton = nullptr;

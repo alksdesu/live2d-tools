@@ -26,6 +26,7 @@ public:
     QString m_moc;
     QVector<QString> m_Textures;
     QVector<QString> m_Motions;
+    QVector<QString> m_Sounds;
     bool m_IsOpen;
     QString m_parentPath;
     QString m_modelName;

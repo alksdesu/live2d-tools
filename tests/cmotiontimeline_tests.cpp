@@ -37,6 +37,52 @@ private:
 
 private slots:
 
+    void exportBytesMatchSaveAndKeepSourceRecordingState()
+    {
+        qint64 clock = 1000; CMotionTimeline timeline([&] { return clock; });
+        const QJsonObject motion{{"Version", 3}, {"Extension", "preserve"}, {"Curves", QJsonArray{
+            QJsonObject{{"Target", "Parameter"}, {"Id", "A"}, {"Segments", QJsonArray{0, 1, 0, 1, 2}},
+                {"FadeInTime", 0.4}, {"EntryExtra", 12}}}},
+            {"Meta", QJsonObject{{"Fps", 59.940000123}, {"Duration", 1}, {"MetaExtra", true}}}};
+        QVERIFY(timeline.RestoreState({{"version", 1}, {"motion", motion}, {"playhead", 0}}));
+        timeline.StartRecording(); clock = 1300; timeline.Record("A", 3);
+        const auto before = timeline; const int count = timeline.PointCount();
+        QByteArray bytes("original"); QString error("old");
+        QVERIFY2(timeline.ToJson(bytes, timeline.Fps(), true, &error), qPrintable(error)); QVERIFY(error.isEmpty());
+        QVERIFY(timeline.HasSameContent(before)); QVERIFY(timeline.IsRecording()); QVERIFY(!timeline.IsRecordingClockPaused());
+        const auto root = QJsonDocument::fromJson(bytes).object();
+        QCOMPARE(root.value("Extension").toString(), QString("preserve"));
+        QCOMPARE(root.value("Meta").toObject().value("Fps").toDouble(), 59.940000123);
+        QVERIFY(root.value("Meta").toObject().value("Loop").toBool());
+        QCOMPARE(root.value("Curves").toArray().first().toObject().value("EntryExtra").toInt(), 12);
+        QTemporaryDir temp; const auto path = temp.filePath("motion.json");
+        QVERIFY(timeline.Save(path, timeline.Fps(), true)); QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), bytes); file.close();
+        CMotionTimeline loaded; QVERIFY(loaded.Load(path)); QVERIFY(QFile::remove(path));
+        QByteArray captured; QVERIFY(loaded.ToJson(captured, loaded.Fps(), true));
+        QCOMPARE(captured, bytes); QVERIFY(!QFileInfo::exists(path));
+        clock = 1250; timeline.Record("A", 4); QCOMPARE(timeline.PointCount(), count);
+        clock = 1400; timeline.Record("A", 5); QCOMPARE(timeline.PointCount(), count + 1);
+        QVERIFY(timeline.PauseRecordingClock()); const auto paused = timeline;
+        QVERIFY(timeline.ToJson(captured, timeline.Fps(), false)); QVERIFY(timeline.IsRecordingClockPaused());
+        QVERIFY(timeline.HasSameContent(paused));
+    }
+
+    void exportBytesExtendSingletonWithoutEditingAndFailAtomically()
+    {
+        CMotionTimeline timeline; QVERIFY(timeline.AddPoint("A", 2, 7));
+        const auto before = timeline; QByteArray bytes;
+        QVERIFY(timeline.ToJson(bytes, 30, false));
+        QVERIFY(timeline.HasSameContent(before)); QCOMPARE(timeline.PointCount(), 1);
+        const auto curve = QJsonDocument::fromJson(bytes).object().value("Curves").toArray().first().toObject();
+        QCOMPARE(curve.value("Segments").toArray().size(), 5);
+        QVERIFY(curve.value("Segments").toArray()[3].toDouble() > 2.0);
+        CMotionTimeline invalid; QVERIFY(invalid.AddPoint("A", std::numeric_limits<float>::max(), 1));
+        const auto invalidBefore = invalid; const auto originalBytes = bytes; QString error;
+        QVERIFY(!invalid.ToJson(bytes, 30, false, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(bytes, originalBytes);
+        QVERIFY(invalid.HasSameContent(invalidBefore));
+    }
+
     void recountReportsEffectiveDurationWithoutMaterializingIt()
     {
         QJsonObject motion{{"Version", 3}, {"Curves", QJsonArray{

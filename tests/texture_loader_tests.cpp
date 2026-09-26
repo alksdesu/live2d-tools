@@ -3,6 +3,7 @@
 
 #include <QtTest>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QGuiApplication>
 #include <QImage>
 #include <QOffscreenSurface>
@@ -221,6 +222,7 @@ private slots:
         QCOMPARE(info->width, 3);
         QCOMPARE(info->height, 2);
         QCOMPARE(QString::fromStdString(info->fileName), path);
+        QCOMPARE(info->sourceDigest, QCryptographicHash::hash(readFile(path), QCryptographicHash::Sha256));
         QVERIFY(info->id != 0 && m_gl.glIsTexture(info->id));
         QVERIFY(uploadState() == before);
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
@@ -244,6 +246,48 @@ private slots:
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
+    void sourceDigestTracksLoadedBytesAcrossCacheReuseAndReload()
+    {
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        const QString path = temporary.filePath(QStringLiteral("原始纹理.png"));
+        QVERIFY(savePng(path));
+        const QByteArray original = readFile(path);
+        const QByteArray originalDigest = QCryptographicHash::hash(original, QCryptographicHash::Sha256);
+        LAppTextureManager manager;
+        manager.setGlOwningContext(m_context.get());
+        const auto* initial = manager.CreateTextureFromPngFile(pathBytes(path));
+        QVERIFY(initial);
+        QCOMPARE(initial->sourceDigest, originalDigest);
+        QVERIFY(initial->sourceDigest != QCryptographicHash::hash(gpuPixels(initial->id), QCryptographicHash::Sha256));
+
+        QImage image(3, 2, QImage::Format_RGBA8888);
+        const auto pixels = sourcePixels();
+        std::memcpy(image.bits(), pixels.constData(), pixels.size());
+        image.setText(QStringLiteral("source-version"), QStringLiteral("same pixels, different original file"));
+        QVERIFY(image.save(path, "PNG"));
+        const QByteArray changed = readFile(path);
+        QVERIFY(changed != original);
+        const QByteArray changedDigest = QCryptographicHash::hash(changed, QCryptographicHash::Sha256);
+        QCOMPARE(manager.CreateTextureFromPngFile(pathBytes(path)), initial);
+        QCOMPARE(initial->sourceDigest, originalDigest);
+        QCOMPARE(gpuPixels(initial->id), expectedPixels());
+
+        manager.ReleaseTexture(pathBytes(path));
+        QVERIFY(!manager.GetTextureInfoByName(pathBytes(path)));
+        const auto* reloaded = manager.CreateTextureFromPngFile(pathBytes(path));
+        QVERIFY(reloaded);
+        QCOMPARE(reloaded->sourceDigest, changedDigest);
+        QCOMPARE(gpuPixels(reloaded->id), expectedPixels());
+        QVERIFY(QFile::remove(path));
+        QCOMPARE(manager.CreateTextureFromPngFile(pathBytes(path)), reloaded);
+        QCOMPARE(reloaded->sourceDigest, changedDigest);
+        manager.ReleaseTexture(pathBytes(path));
+        QVERIFY(!manager.CreateTextureFromPngFile(pathBytes(path)));
+        QVERIFY(!manager.GetTextureInfoByName(pathBytes(path)));
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+    }
+
     void failedInputsNeverEnterCacheAndCanBeRetried()
     {
         QTemporaryDir temporary;
@@ -263,6 +307,7 @@ private slots:
         manager.setGlOwningContext(m_context.get());
         auto* retained = manager.CreateTextureFromPngFile(pathBytes(valid));
         QVERIFY(retained);
+        const auto digest = retained->sourceDigest;
         manager.SetModelTextures({{0, valid}});
         const QMap<int, QString> mapping = manager.GetModelTex();
         const UploadState before = uploadState();
@@ -270,6 +315,7 @@ private slots:
             QVERIFY(!manager.CreateTextureFromPngFile(pathBytes(path)));
             QVERIFY(!manager.GetTextureInfoByName(pathBytes(path)));
             QCOMPARE(manager.GetTextureInfoByName(pathBytes(valid)), retained);
+            QCOMPARE(retained->sourceDigest, digest);
             QCOMPARE(manager.GetModelTex(), mapping);
             QVERIFY(uploadState() == before);
             QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
@@ -277,6 +323,7 @@ private slots:
         QVERIFY(savePng(corrupt));
         auto* retried = manager.CreateTextureFromPngFile(pathBytes(corrupt));
         QVERIFY(retried && retried != retained);
+        QCOMPARE(retried->sourceDigest, QCryptographicHash::hash(readFile(corrupt), QCryptographicHash::Sha256));
         QCOMPARE(gpuPixels(retried->id), expectedPixels());
         QCOMPARE(manager.GetTextureInfoByName(pathBytes(valid)), retained);
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));

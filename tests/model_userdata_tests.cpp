@@ -4,6 +4,7 @@
 #include <QtTest>
 #include <QDir>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
@@ -14,6 +15,30 @@ class ModelUserDataTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void loadAndSaveReportDigestsOfExactBinaryBytes()
+    {
+        QTemporaryDir temp; const auto path = temp.filePath("raw.userdata3.json");
+        const QByteArray raw = "{\r\n\"Version\":3,\"Meta\":{\"UserDataCount\":99},\r\n\"UserData\":[{\"Target\":\"ArtMesh\",\"Id\":\"A\",\"Value\":\"old\"}]}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(raw), raw.size()); file.close();
+        CModelUserData data; QByteArray digest("unchanged");
+        QVERIFY(data.Load(path, nullptr, &digest));
+        QCOMPARE(digest, QCryptographicHash::hash(raw, QCryptographicHash::Sha256));
+        QVERIFY(digest != QCryptographicHash::hash(data.ToJson(), QCryptographicHash::Sha256));
+        const auto loadedDigest = digest; const auto original = data.ToJson(); QString error;
+        QVERIFY(!data.Load(temp.filePath("missing"), &error, &digest)); QCOMPARE(digest, loadedDigest); QCOMPARE(data.ToJson(), original);
+        const auto invalid = temp.filePath("invalid"); QFile broken(invalid); QVERIFY(broken.open(QIODevice::WriteOnly));
+        QCOMPARE(broken.write("{"), 1); broken.close();
+        QVERIFY(!data.Load(invalid, &error, &digest)); QCOMPARE(digest, loadedDigest); QCOMPARE(data.ToJson(), original);
+        auto entries = data.Entries(); entries[0].value = QStringLiteral("新内容🌸"); data.SetEntries(entries);
+        const auto output = temp.filePath("saved.userdata3.json"); QVERIFY(data.Save(output, &error, &digest));
+        QFile saved(output); QVERIFY(saved.open(QIODevice::ReadOnly)); const auto bytes = saved.readAll();
+        QCOMPARE(bytes, data.ToJson()); QCOMPARE(digest, QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+        const auto savedDigest = digest;
+        QVERIFY(!data.Save(temp.path(), &error, &digest)); QCOMPARE(digest, savedDigest);
+        entries[0].id.clear(); data.SetEntries(entries);
+        QVERIFY(!data.Save(output, &error, &digest)); QCOMPARE(digest, savedDigest);
+    }
+
     void loadsAndSavesCubismData()
     {
         CModelUserData data;

@@ -68,6 +68,9 @@ SOURCES += \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
+    live2dstruct/cmocruntimebuilder.cpp \
+    live2dstruct/cruntimepackage.cpp \
+    live2dstruct/cphysicsdocument.cpp \
     live2dstruct/cmocparameterstructurebuilder.cpp \
     live2dstruct/cmoclayoutrewriter.cpp \
     live2dstruct/cmodeluserdata.cpp \
@@ -102,6 +105,7 @@ SOURCES += \
     live2dstruct/struct/ckeyform_screen_colors.cpp \
     ui/cpsdprintdialog.cpp \
     ui/cpsdbatchdialog.cpp \
+    ui/cruntimeexportdialog.cpp \
     ui/psdbatchworker.cpp \
     ui/psdbatchjob.cpp \
     ui/cmodeltreepanel.cpp \
@@ -257,6 +261,8 @@ SOURCES += \
     edit/ctriangl.cpp \
     std/cfileoption.cpp \
     std/cmodeljson.cpp \
+    std/cmodelresourcepath.cpp \
+    std/cdirectoryexport.cpp \
     std/cmodeljsonwriter.cpp \
     cmo3/ccaffarchive.cpp \
     cmo3/cxsxmlwriter.cpp \
@@ -286,6 +292,9 @@ HEADERS += \
     live2dstruct/ckeyformmappingcontext.h \
     live2dstruct/ckeyformeditcontroller.h \
     live2dstruct/cmocpreviewbuilder.h \
+    live2dstruct/cmocruntimebuilder.h \
+    live2dstruct/cruntimepackage.h \
+    live2dstruct/cphysicsdocument.h \
     live2dstruct/cmocparameterstructurebuilder.h \
     live2dstruct/struct/cblend_shape_targets.h \
     live2dstruct/cparameterreferences.h \
@@ -390,6 +399,7 @@ HEADERS += \
     opengl/cshader.h \
     opengl/opengglform.h \
     ui/cpsdbatchdialog.h \
+    ui/cruntimeexportdialog.h \
     ui/psdbatchworker.h \
     ui/psdbatchjob.h \
     psd/cpsdlist.h \
@@ -531,6 +541,8 @@ HEADERS += \
     edit/ctriangl.h \
     std/cfileoption.h \
     std/cmodeljson.h \
+    std/cmodelresourcepath.h \
+    std/cdirectoryexport.h \
     std/cmodeljsonwriter.h \
     cmo3/ccaffarchive.h \
     cmo3/cxsxmlwriter.h \

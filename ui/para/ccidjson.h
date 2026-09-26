@@ -30,6 +30,8 @@ class CCidJson
 public:
     CCidJson();
     bool Parse(const QString& fileName, QString* error = nullptr);//传递解析文件
+    const QString& SourcePath() const { return m_sourcePath; }
+    const QByteArray& SourceDigest() const { return m_sourceDigest; }
 
     const QString& getPartName(const QString& Id){
         if(m_PartsIdToName.contains(Id)){
@@ -75,6 +77,8 @@ private:
     QVector<QVector<QString>> m_CombinedParameters;
     QSet<QString> m_CombinedParamSet;
     QString empty;
+    QString m_sourcePath;
+    QByteArray m_sourceDigest;
 
 };
 

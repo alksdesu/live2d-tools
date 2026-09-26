@@ -1,4 +1,5 @@
 #include "ckeyformeditcontroller.h"
+#include "cparentgraph.h"
 #include <QScopedValueRollback>
 #include <algorithm>
 #include <cmath>
@@ -7,6 +8,53 @@
 
 namespace live2dstruct {
 namespace {
+bool materialField(CModelEdit::Field field)
+{
+    return field == CModelEdit::Visibility || field == CModelEdit::VisibilityValues || field == CModelEdit::Opacity ||
+        field == CModelEdit::DrawOrder || field == CModelEdit::MeshIndices;
+}
+
+QHash<QString, bool> editableObjects(const CModelDocument& document)
+{
+    QVector<int> partParents, deformerParents;
+    for (const auto& part : document.Parts()) partParents.append(part.parentIndex);
+    for (const auto& deformer : document.Deformers())
+        deformerParents.append(document.DeformerParentOverrides().value(deformer.id, deformer.parentDeformerIndex));
+    const CParentGraph parts(partParents), deformers(deformerParents);
+    QVector<quint8> partAllowed(partParents.size(), false), deformerAllowed(deformerParents.size(), false);
+    const auto allowedPart = [&](int index) {
+        return index == -1 || (index >= 0 && index < partAllowed.size() && partAllowed[index]);
+    };
+    const auto allowedDeformer = [&](int index) {
+        return index == -1 || (index >= 0 && index < deformerAllowed.size() && deformerAllowed[index]);
+    };
+    for (int index : parts.TopologicalOrder())
+        partAllowed[index] = allowedPart(partParents[index]) && !document.IsLocked(QStringLiteral("part"), document.Parts()[index].id);
+    for (int index : deformers.TopologicalOrder()) {
+        const auto& deformer = document.Deformers()[index];
+        const auto type = deformer.type == CModelDeformer::Warp ? QStringLiteral("warp") : QStringLiteral("rotation");
+        deformerAllowed[index] = allowedDeformer(deformerParents[index]) && allowedPart(deformer.parentPartIndex) &&
+            !document.IsLocked(type, deformer.id);
+    }
+    QHash<QString, bool> result;
+    const auto add = [&](const QString& type, const QString& id, bool allowed) {
+        const auto key = type + QLatin1Char('|') + id;
+        auto found = result.find(key);
+        if (found != result.end()) found.value() = false;
+        else result.insert(key, !id.isEmpty() && allowed);
+    };
+    for (int index = 0; index < document.Parts().size(); ++index)
+        add(QStringLiteral("part"), document.Parts()[index].id, partAllowed[index]);
+    for (int index = 0; index < document.Deformers().size(); ++index) {
+        const auto& deformer = document.Deformers()[index];
+        add(deformer.type == CModelDeformer::Warp ? QStringLiteral("warp") : QStringLiteral("rotation"), deformer.id, deformerAllowed[index]);
+    }
+    for (const auto& mesh : document.Drawables())
+        add(QStringLiteral("artmesh"), mesh.id, !document.IsLocked(QStringLiteral("artmesh"), mesh.id) &&
+            allowedPart(mesh.parentPartIndex) && allowedDeformer(mesh.parentDeformerIndex));
+    return result;
+}
+
 bool fail(QString* error, const QString& message)
 {
     if (error) *error = message;
@@ -57,7 +105,7 @@ bool CKeyformEditController::Ready(QString* error) const
 
 bool CKeyformEditController::Handles(const CModelEdit& edit)
 {
-    return edit.field == CModelEdit::KeyformPositions || edit.field == CModelEdit::WarpKeyforms ||
+    return materialField(edit.field) || edit.field == CModelEdit::KeyformPositions || edit.field == CModelEdit::WarpKeyforms ||
            edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent ||
            edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted ||
            edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure;
@@ -77,7 +125,14 @@ bool CKeyformEditController::CanEditIn(const CModelDocument& document, const QSt
                                       int keyform, QString* error)
 {
     int parent = -1, part = -1, count = -1;
-    if (type == QLatin1String("artmesh")) {
+    if (type == QLatin1String("part")) {
+        if (keyform != -1) return fail(error, QStringLiteral("部件没有可编辑的几何关键形"));
+        for (int index = 0; index < document.Parts().size(); ++index) if (document.Parts()[index].id == id) {
+            if (count >= 0) return fail(error, QStringLiteral("部件 ID 重复：%1").arg(id));
+            part = index;
+            count = 0;
+        }
+    } else if (type == QLatin1String("artmesh")) {
         for (const auto& mesh : document.Drawables()) if (mesh.id == id) {
             if (count >= 0) return fail(error, QStringLiteral("网格 ID 重复：%1").arg(id));
             parent = mesh.parentDeformerIndex;
@@ -206,6 +261,58 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
                                    int previewKeyform, QString* error)
 {
     if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
+    if (materialField(edit.field)) {
+        if (!Ready(error)) return false;
+        if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+        try {
+            bool current = false;
+            if (edit.field == CModelEdit::VisibilityValues) {
+                if (edit.type != QLatin1String("objects") || edit.before.metaType() != QMetaType::fromType<QMap<QString, bool>>() ||
+                    edit.after.metaType() != QMetaType::fromType<QMap<QString, bool>>())
+                    return fail(error, QStringLiteral("批量可见性数据类型无效"));
+                const auto before = edit.before.value<QMap<QString, bool>>();
+                const auto after = edit.after.value<QMap<QString, bool>>();
+                if (before.isEmpty() || before.keys() != after.keys())
+                    return fail(error, QStringLiteral("批量可见性目标不一致"));
+                const auto visible = m_document->VisibilityState();
+                const auto editable = editableObjects(*m_document);
+                for (auto it = before.cbegin(); it != before.cend(); ++it) {
+                    if (!visible.contains(it.key()) || visible.value(it.key()) != it.value())
+                        return fail(error, QStringLiteral("批量可见性在操作期间已改变"));
+                    if (!editable.value(it.key(), false))
+                        return fail(error, QStringLiteral("对象或祖先已锁定、父链无效：%1").arg(it.key()));
+                }
+                current = true;
+            } else {
+                if (edit.field != CModelEdit::Visibility && edit.type != QLatin1String("artmesh"))
+                    return fail(error, QStringLiteral("网格属性与对象类型不匹配"));
+                if (!CanEditIn(*m_document, edit.name, edit.type, -1, error)) return false;
+                if (edit.field == CModelEdit::Visibility) {
+                    const auto visible = m_document->VisibilityState();
+                    const auto found = visible.constFind(edit.type + QLatin1Char('|') + edit.name);
+                    current = edit.before.metaType() == QMetaType::fromType<bool>() && edit.after.metaType() == QMetaType::fromType<bool>() &&
+                        found != visible.cend() && edit.before.toBool() == found.value();
+                } else if (edit.field == CModelEdit::MeshIndices) {
+                    current = edit.before.metaType() == QMetaType::fromType<QVector<quint16>>() &&
+                        edit.after.metaType() == QMetaType::fromType<QVector<quint16>>() &&
+                        edit.before.value<QVector<quint16>>() == m_document->DrawableIndices(edit.name);
+                } else for (const auto& mesh : m_document->Drawables()) if (mesh.id == edit.name) {
+                    if (edit.field == CModelEdit::Opacity)
+                        current = edit.before.metaType() == QMetaType::fromType<float>() && edit.after.metaType() == QMetaType::fromType<float>() &&
+                            edit.before.toFloat() == m_document->DrawableOpacity(mesh);
+                    else current = edit.before.metaType() == QMetaType::fromType<int>() && edit.after.metaType() == QMetaType::fromType<int>() &&
+                        edit.before.toInt() == m_document->DrawableDrawOrder(mesh);
+                    break;
+                }
+            }
+            if (!current) return fail(error, QStringLiteral("属性数据类型无效或已改变，请重新操作"));
+            CModelDocument candidate = *m_document;
+            if (!candidate.ExecuteEdit(edit)) return fail(error, QStringLiteral("属性修改无效或没有变化"));
+            return Publish(std::move(candidate), m_pose, IsActive(), error);
+        } catch (const std::exception&) {
+            return fail(error, QStringLiteral("无法准备属性修改，原文档和预览保持不变"));
+        }
+    }
     if (edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure) {
         if (!Ready(error)) return false;
         if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));

@@ -135,6 +135,7 @@ public:
     CMotionPreviewFrame EvaluateFrame(float time) const;
     QMap<QString, float> EvaluateAll(float time) const;
     bool Save(const QString& path, float fps, bool loop, QString* error = nullptr) const;
+    bool ToJson(QByteArray& bytes, float fps, bool loop, QString* error = nullptr) const;
     bool Load(const QString& path, QString* error = nullptr);
     static bool RecountMetadata(QJsonObject& motion, QString* error = nullptr, bool draft = false, double* duration = nullptr);
     bool SaveState(QJsonObject* state, bool loop, double playhead, QString* error = nullptr) const;

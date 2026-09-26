@@ -10,6 +10,7 @@
 #include "live2dstruct/ctreemanage.h"
 #include "ui/cpreviewexporttransaction.h"
 #include "ui/psdbatchresult.h"
+#include "live2dstruct/cruntimepackage.h"
 #include <QAction>
 #include <QLabel>
 #include <QPushButton>
@@ -52,6 +53,7 @@ private slots:
     void on_actionBatchPsd_triggered();
     void on_actionCloseModel_triggered();
     void on_actionCmo3Export_triggered();
+    void ExportRuntimePackage();
     void on_actionSaveSession_triggered();
     void on_actionLoadSession_triggered();
     bool doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
@@ -78,6 +80,8 @@ private:
     void OpenModelWithConfirm(const QString& jsonPath);
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
+    bool CaptureRuntimePackage(bool currentDefaults, bool includeTimeline,
+                               live2dstruct::CRuntimePackage::Request& request, QString* error) const;
     bool RuntimeMatchesDocument(QString* error = nullptr) const;
     void SyncDocumentToRuntime();
     void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
@@ -132,6 +136,7 @@ private:
     QAction *myBatchAction; // 批量导出psd
     QAction *myCloseAction; // 关闭模型
     QAction *myCmo3Action = nullptr; // 导出 cmo3 工程
+    QAction* m_runtimeExportAction = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_saveSessionAction = nullptr;

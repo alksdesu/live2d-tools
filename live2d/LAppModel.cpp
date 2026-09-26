@@ -27,6 +27,7 @@
 #include "live2dstruct/ctreemanage.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "std/cmodeljson.h"
+#include "std/cmodelresourcepath.h"
 #include <QFile>
 #include <QTextStream>
 #include <QCoreApplication>
@@ -44,8 +45,16 @@ using namespace Live2D::Cubism::Framework::DefaultParameterId;
 using namespace LAppDefine;
 
 namespace {
+    csmString ResourcePath(const csmString& directory, const csmChar* reference)
+    {
+        const QString path = CModelResourcePath::Resolve(QString::fromUtf8(directory.GetRawString()),
+                                                        QString::fromUtf8(reference ? reference : ""));
+        return csmString(path.toUtf8().constData());
+    }
+
     csmByte* CreateBuffer(const csmChar* path, csmSizeInt* size)
     {
+        if (!path || path[0] == '\0') { if (size) *size = 0; return nullptr; }
         if (DebugLogEnable)
         {
             LAppPal::PrintLogLn("[APP]create buffer: %s ", path);
@@ -97,11 +106,6 @@ LAppModel::~LAppModel()
 
     if (_modelSetting != NULL)
     {
-        for (csmInt32 i = 0; i < _modelSetting->GetMotionGroupCount(); i++)
-        {
-            const csmChar* group = _modelSetting->GetMotionGroupName(i);
-            ReleaseMotionGroup(group);
-        }
         delete(_modelSetting);
     }
 }
@@ -117,7 +121,8 @@ bool LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
     }
 
     csmSizeInt size = 0;
-    const csmString path = csmString(dir) + fileName;
+    const csmString path = ResourcePath(csmString(dir), fileName);
+    if (path.GetLength() == 0) return false;
 
     csmByte* buffer = CreateBuffer(path.GetRawString(), &size);
     if (buffer == NULL)
@@ -135,8 +140,10 @@ bool LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
     }
     auto setting = std::make_unique<CubismModelSettingJson>(buffer, size);
     if (!setting->GetJsonPointer()) return false;
-    _modelHomeDir = dir;
-    m_modelSettingsDigest = QCryptographicHash::hash(QByteArray(reinterpret_cast<const char*>(buffer), int(size)), QCryptographicHash::Sha256);
+    const QString modelDirectory = QFileInfo(QString::fromUtf8(path.GetRawString())).absolutePath() + QLatin1Char('/');
+    _modelHomeDir = csmString(modelDirectory.toUtf8().constData());
+    m_modelSettingsBytes = QByteArray(reinterpret_cast<const char*>(buffer), int(size));
+    m_modelSettingsDigest = QCryptographicHash::hash(m_modelSettingsBytes, QCryptographicHash::Sha256);
     if (!SetupModel(setting.release())) return false;
     m_mocName = QString::fromUtf8(_modelSetting->GetModelFileName());
     if (!CreateRenderer()) return false;
@@ -167,8 +174,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
     if (strcmp(_modelSetting->GetModelFileName(), "") != 0)
     //if (true)
     {
-        csmString path = _modelSetting->GetModelFileName();
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetModelFileName());
 
         if (_debugMode)
         {
@@ -212,8 +218,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
         for (csmInt32 i = 0; i < count; i++)
         {
             csmString name = _modelSetting->GetExpressionName(i);
-            csmString path = _modelSetting->GetExpressionFileName(i);
-            path = _modelHomeDir + path;
+            const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetExpressionFileName(i));
 
             buffer = CreateBuffer(path.GetRawString(), &size);
             if (buffer == NULL)
@@ -243,8 +248,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
     //Physics
     if (strcmp(_modelSetting->GetPhysicsFileName(), "") != 0)
     {
-        csmString path = _modelSetting->GetPhysicsFileName();
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetPhysicsFileName());
 
         buffer = CreateBuffer(path.GetRawString(), &size);
         if (buffer != NULL)
@@ -258,8 +262,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
     //Pose
     if (strcmp(_modelSetting->GetPoseFileName(), "") != 0)
     {
-        csmString path = _modelSetting->GetPoseFileName();
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetPoseFileName());
 
         buffer = CreateBuffer(path.GetRawString(), &size);
         if (buffer != NULL)
@@ -293,8 +296,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
     //UserData
     if (strcmp(_modelSetting->GetUserDataFile(), "") != 0)
     {
-        csmString path = _modelSetting->GetUserDataFile();
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetUserDataFile());
         ReloadUserDataFromFile(QString::fromUtf8(path.GetRawString()));
     }
 
@@ -348,8 +350,7 @@ void LAppModel::PreloadMotionGroup(const csmChar* group)
     {
         //ex) idle_0
         csmString name = Utils::CubismString::GetFormatedString("%s_%d", group, i);
-        csmString path = _modelSetting->GetMotionFileName(group, i);
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, _modelSetting->GetMotionFileName(group, i));
 
         if (_debugMode)
         {
@@ -393,20 +394,6 @@ void LAppModel::PreloadMotionGroup(const csmChar* group)
         }
 
         DeleteBuffer(buffer, path.GetRawString());
-    }
-}
-
-void LAppModel::ReleaseMotionGroup(const csmChar* group) const
-{
-    const csmInt32 count = _modelSetting->GetMotionCount(group);
-    for (csmInt32 i = 0; i < count; i++)
-    {
-        csmString voice = _modelSetting->GetMotionSoundFileName(group, i);
-        if (strcmp(voice.GetRawString(), "") != 0)
-        {
-            csmString path = voice;
-            path = _modelHomeDir + path;
-        }
     }
 }
 
@@ -467,8 +454,7 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
 
     if (motion == NULL)
     {
-        csmString path = fileName;
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, fileName.GetRawString());
 
         csmByte* buffer;
         csmSizeInt size;
@@ -512,8 +498,7 @@ CubismMotionQueueEntryHandle LAppModel::StartMotion(const csmChar* group, csmInt
     csmString voice = _modelSetting->GetMotionSoundFileName(group, no);
     if (strcmp(voice.GetRawString(), "") != 0)
     {
-        csmString path = voice;
-        path = _modelHomeDir + path;
+        const csmString path = ResourcePath(_modelHomeDir, voice.GetRawString());
         _wavFileHandler.Start(path);
     }
     else
@@ -643,9 +628,11 @@ void LAppModel::SetExpression(const csmChar* expressionID)
 bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QString& path)
 {
     if (HasExportPreview() || (_initialized && _updating)) return false;
+    const QString resolved = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
+    if (resolved.isEmpty()) return false;
     if (expressionId.isEmpty() || path.isEmpty()) return false;
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    QFile file(resolved);
+    if (!file.open(QIODevice::ReadOnly)) return false;
     const QByteArray data = file.readAll();
     if (file.error() != QFileDevice::NoError || data.isEmpty() ||
         data.size() > std::numeric_limits<csmSizeInt>::max()) return false;
@@ -657,8 +644,8 @@ bool LAppModel::ReloadExpressionFromFile(const QString& expressionId, const QStr
     const csmString key(nameBytes.constData());
     auto* previous = static_cast<CubismExpressionMotion*>(_expressions[key]);
     if ((previous && m_parameterReferences.expressions.contains(previous->ReferenceSourcePath()) &&
-         previous->ReferenceSourcePath() != ReferenceSourcePath(path)) ||
-        !ConfigureExpressionReferences(static_cast<CubismExpressionMotion*>(replacement), path)) {
+         previous->ReferenceSourcePath() != ReferenceSourcePath(resolved)) ||
+        !ConfigureExpressionReferences(static_cast<CubismExpressionMotion*>(replacement), resolved)) {
         ACubismMotion::Delete(replacement);
         return false;
     }
@@ -807,8 +794,13 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         const auto* previous = dynamic_cast<const Rendering::CubismRenderer_OpenGLES2*>(&source);
         return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
     };
+    const auto prepareCompiledModel = [&](CubismModel* candidate, QString* detail) {
+        candidate->ClearDrawableIndicesOverrides();
+        return !prepareModel || prepareModel(candidate, detail);
+    };
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
-                      prepare, policy, seeds, error, prepareModel, physicsReferences))
+                      prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
+                      prepareCompiledModel, physicsReferences))
         return false;
     m_previewMocBytes = ownedBytes;
     m_previewMocDigest = digest;
@@ -850,8 +842,8 @@ bool LAppModel::SetupTextures()
         if (!textureName) return false;
         if (textureName[0] == '\0') continue;
         if (!textures) return false;
-        const QString path = QDir::cleanPath(QDir(QString::fromUtf8(_modelHomeDir.GetRawString()))
-                                                .absoluteFilePath(QString::fromUtf8(textureName)));
+        const QString path = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), QString::fromUtf8(textureName));
+        if (path.isEmpty()) return false;
         const std::string fileName = path.toUtf8().toStdString();
         auto* texture = textures->GetTextureInfoByName(fileName);
         if (!texture) {
@@ -894,13 +886,12 @@ Csm::Rendering::CubismOffscreenSurface_OpenGLES2& LAppModel::GetRenderBuffer()
 
 csmBool LAppModel::HasMocConsistencyFromFile(const csmChar* mocFileName)
 {
-    CSM_ASSERT(strcmp(mocFileName, ""));
+    if (!mocFileName || mocFileName[0] == '\0') return false;
 
     csmByte* buffer;
     csmSizeInt size;
 
-    csmString path = mocFileName;
-    path = _modelHomeDir + path;
+    const csmString path = ResourcePath(_modelHomeDir, mocFileName);
 
     buffer = CreateBuffer(path.GetRawString(), &size);
     if (buffer == NULL)
@@ -949,8 +940,10 @@ void LAppModel::SetPhysicsGravity(float x, float y)
 bool LAppModel::ReloadPhysicsFromFile(const QString& path)
 {
     if (HasExportPreview() || (_initialized && _updating)) return false;
+    const QString resolved = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
+    if (resolved.isEmpty()) return false;
     if (path.isEmpty()) return false;
-    QFile file(path);
+    QFile file(resolved);
     if (!file.open(QIODevice::ReadOnly)) return false;
     const QByteArray data = file.readAll();
     if (file.error() != QFileDevice::NoError || data.isEmpty() ||
@@ -958,7 +951,7 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path)
     CubismPhysics* replacement = CubismPhysics::Create(
         reinterpret_cast<const csmByte*>(data.constData()), static_cast<csmSizeInt>(data.size()));
     if (!replacement) return false;
-    const QString referencePath = ReferenceSourcePath(path);
+    const QString referencePath = ReferenceSourcePath(resolved);
     const auto& references = m_parameterReferences.physics;
     const bool hasReferences = !references.sourcePath.isEmpty() || !references.sourceDigest.isEmpty() ||
         !references.suppressedInputs.isEmpty() || !references.suppressedOutputs.isEmpty();
@@ -978,9 +971,11 @@ bool LAppModel::ReloadPhysicsFromFile(const QString& path)
 bool LAppModel::ReloadUserDataFromFile(const QString& path)
 {
     if (HasExportPreview() || (_initialized && _updating)) return false;
+    const QString resolved = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
+    if (resolved.isEmpty()) return false;
     if (!_model) return false;
     live2dstruct::CModelUserData document;
-    if (!document.Load(path)) return false;
+    if (!document.Load(resolved)) return false;
     QSet<QString> drawableIds;
     for (int index = 0; index < _model->GetDrawableCount(); ++index)
         drawableIds.insert(QString::fromUtf8(_model->GetDrawableId(index)->GetString().GetRawString()));
@@ -1036,8 +1031,10 @@ void LAppModel::SetPhysicsWind(float x, float y)
 bool LAppModel::StartLipSyncWav(const QString& path)
 {
     if (HasExportPreview() || (_initialized && _updating)) return false;
+    const QString resolved = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
+    if (resolved.isEmpty()) return false;
     if (path.isEmpty()) return false;
-    const QByteArray utf8Path = path.toUtf8();
+    const QByteArray utf8Path = resolved.toUtf8();
     return _wavFileHandler.Start(csmString(utf8Path.constData()));
 }
 

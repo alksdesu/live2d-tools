@@ -926,15 +926,29 @@ bool CMotionTimeline::BuildJson(QJsonObject* output, double fps, bool loop, bool
     return true;
 }
 
+bool CMotionTimeline::ToJson(QByteArray& bytes, float fps, bool loop, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        QJsonObject root;
+        if (!BuildJson(&root, fps == Fps() ? Timing().fps : fps, loop, false, error)) return false;
+        QByteArray candidate = QJsonDocument(root).toJson(QJsonDocument::Indented);
+        bytes.swap(candidate);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法生成动作快照");
+        return false;
+    }
+}
+
 bool CMotionTimeline::Save(const QString& path, float fps, bool loop, QString* error) const
 {
     if (path.isEmpty()) {
         if (error) *error = QStringLiteral("motion3 保存路径为空");
         return false;
     }
-    QJsonObject root;
-    if (!BuildJson(&root, fps == Fps() ? Timing().fps : fps, loop, false, error)) return false;
-    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    QByteArray data;
+    if (!ToJson(data, fps, loop, error)) return false;
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         if (error) *error = file.errorString();

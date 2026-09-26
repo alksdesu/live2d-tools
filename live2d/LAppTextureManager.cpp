@@ -7,6 +7,7 @@
 
 #include "LAppTextureManager.hpp"
 #include "LAppPal.hpp"
+#include <QCryptographicHash>
 #include <QScopeGuard>
 #include <algorithm>
 #include <limits>
@@ -118,6 +119,8 @@ LAppTextureManager::TextureInfo* LAppTextureManager::CreateTextureFromPngFile(st
     info->width = width;
     info->height = height;
     info->id = textureId;
+    info->sourceDigest = QCryptographicHash::hash(
+        QByteArrayView(reinterpret_cast<const char*>(address.get()), static_cast<qsizetype>(size)), QCryptographicHash::Sha256);
     TextureInfo* result = info.get();
     m_textures.push_back(std::move(info));
     textureId = 0;

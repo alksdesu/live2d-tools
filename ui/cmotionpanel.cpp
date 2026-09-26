@@ -17,6 +17,7 @@
 #include <QFormLayout>
 #include <QScrollArea>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1500,6 +1501,22 @@ void CMotionPanel::MarkTimelineSaved()
     RefreshTimelineHistory();
 }
 
+bool CMotionPanel::CaptureTimelineBytes(QByteArray& bytes, QString* error) const
+{
+    if (error) error->clear();
+    try {
+        if (m_timeline.IsRecording() || m_editGroupActive || m_timelineMutation || m_restoringTimeline ||
+            m_updatingTimeline || m_timelineDelegate->HasPendingChanges()) {
+            if (error) *error = QStringLiteral("请先结束录制，并确认或取消正在编辑的时间轴内容");
+            return false;
+        }
+        return m_timeline.ToJson(bytes, m_timeline.Fps(), m_loopCb->isChecked(), error);
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法生成时间轴导出快照");
+        return false;
+    }
+}
+
 bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
 {
     if (m_transport) return m_timeline.SaveState(state, m_transport->loop, m_transport->time, error);
@@ -1785,14 +1802,17 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
 {
     if (!RequireTransportAvailable(error)) return false;
     QJsonObject candidate;
-    if (!poseJsonPath.isEmpty()) {
-        QFile file(poseJsonPath);
+    QByteArray sourceDigest;
+    const auto sourcePath = poseJsonPath.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(poseJsonPath).absoluteFilePath());
+    if (!sourcePath.isEmpty()) {
+        QFile file(sourcePath);
         if (!file.open(QIODevice::ReadOnly)) {
             if (error) *error = QStringLiteral("无法打开 Pose 配置：%1").arg(file.errorString());
             return false;
         }
         QJsonParseError parseError;
-        const auto document = QJsonDocument::fromJson(file.readAll(), &parseError);
+        const QByteArray sourceBytes = file.readAll();
+        const auto document = QJsonDocument::fromJson(sourceBytes, &parseError);
         if (file.error() != QFileDevice::NoError || parseError.error != QJsonParseError::NoError ||
             !document.isObject() || !document.object().value(QStringLiteral("Groups")).isArray()) {
             if (error) *error = QStringLiteral("Pose 配置 JSON 或 Groups 字段无效");
@@ -1826,8 +1846,10 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
                 }
             }
         }
+        sourceDigest = QCryptographicHash::hash(sourceBytes, QCryptographicHash::Sha256);
     }
-    m_poseJsonPath = poseJsonPath;
+    m_poseJsonPath = sourcePath;
+    m_poseSourceDigest.swap(sourceDigest);
     m_poseDocument = {};
     m_poseGroups.clear();
     m_activePoseGroup = -1;
@@ -1876,6 +1898,7 @@ bool CMotionPanel::BuildPoseGroups(const QString& poseJsonPath, QString* error)
             QString partId = part["Id"].toString();
             if(partId.isEmpty()) continue;
             pg.partIds << partId;
+            pg.fields.append(part);
             QStringList links;
             for (const QJsonValue& link : part["Link"].toArray()) {
                 const QString linkId = link.toString();
@@ -1994,61 +2017,82 @@ void CMotionPanel::EditPoseLinks()
     EmitPoseSelection(m_activePoseGroup, optionIndex);
 }
 
-bool CMotionPanel::SavePose(QString* error)
+bool CMotionPanel::BuildPoseDocument(QJsonObject& document, QString* error) const
 {
-    if (m_poseJsonPath.isEmpty() || m_poseDocument.isEmpty()) {
-        if (error) *error = QStringLiteral("没有可保存的 Pose 配置");
+    if (error) error->clear();
+    if (m_poseDocument.isEmpty()) {
+        if (error) *error = QStringLiteral("没有可导出的 Pose 配置");
         return false;
     }
     QJsonArray groups = m_poseDocument.value(QStringLiteral("Groups")).toArray();
-    bool modelAvailable = false;
-    for (const PoseGroup& group : m_poseGroups) {
-        for (int i = 0; i < group.partIds.size(); ++i) {
-            if (!ModelHasPart(group.partIds.at(i), &modelAvailable)) {
-                if (!modelAvailable) break;
-                if (error) *error = QStringLiteral("Pose 包含不存在的 Part：%1").arg(group.partIds.at(i));
-                return false;
-            }
-            if (i >= group.links.size()) continue;
-            for (const QString& link : group.links.at(i)) {
-                if (link == group.partIds.at(i)) {
-                    if (error) *error = QStringLiteral("Pose Link 不能指向自身：%1").arg(link);
-                    return false;
-                }
-                if (!ModelHasPart(link, &modelAvailable)) {
-                    if (!modelAvailable) break;
-                    if (error) *error = QStringLiteral("Pose 包含不存在的 Link：%1").arg(link);
-                    return false;
-                }
-            }
-            if (!modelAvailable) break;
-        }
-        if (!modelAvailable && !m_poseGroups.isEmpty()) break;
-    }
     for (const PoseGroup& group : m_poseGroups) {
         QJsonArray entries;
         for (int i = 0; i < group.partIds.size(); ++i) {
-            QJsonObject entry;
+            QJsonObject entry = group.fields.value(i);
             entry.insert(QStringLiteral("Id"), group.partIds[i]);
             if (i < group.links.size() && !group.links[i].isEmpty()) {
                 QJsonArray links;
                 for (const QString& link : group.links[i]) links.append(link);
                 entry.insert(QStringLiteral("Link"), links);
-            }
+            } else entry.remove(QStringLiteral("Link"));
             entries.append(entry);
         }
-        if (group.sourceIndex >= 0 && group.sourceIndex < groups.size())
-            groups[group.sourceIndex] = entries;
-        else
-            groups.append(entries);
+        if (group.sourceIndex >= 0 && group.sourceIndex < groups.size()) groups[group.sourceIndex] = entries;
+        else groups.append(entries);
     }
-    m_poseDocument.insert(QStringLiteral("Groups"), groups);
-    const QByteArray data = QJsonDocument(m_poseDocument).toJson(QJsonDocument::Indented);
+    for (const auto& group : groups) for (const auto& value : group.toArray()) {
+        const auto entry = value.toObject();
+        const auto id = entry.value(QStringLiteral("Id")).toString();
+        if (id.trimmed().isEmpty() || id.contains(QChar::Null) || (m_modelPartsKnown && !m_modelPartIds.contains(id))) {
+            if (error) *error = QStringLiteral("Pose 包含无效或不存在的 Part：%1").arg(id);
+            return false;
+        }
+        for (const auto& value : entry.value(QStringLiteral("Link")).toArray()) {
+            const auto link = value.toString();
+            if (!value.isString() || link.trimmed().isEmpty() || link.contains(QChar::Null) || link == id ||
+                (m_modelPartsKnown && !m_modelPartIds.contains(link))) {
+                if (error) *error = QStringLiteral("Pose 包含无效、不存在或指向自身的 Link：%1").arg(link);
+                return false;
+            }
+        }
+    }
+    QJsonObject candidate = m_poseDocument;
+    candidate.insert(QStringLiteral("Groups"), groups);
+    document.swap(candidate);
+    return true;
+}
+
+bool CMotionPanel::CapturePoseBytes(QByteArray& bytes, QString* error) const
+{
+    try {
+        QJsonObject candidate;
+        if (!BuildPoseDocument(candidate, error)) return false;
+        QByteArray data = QJsonDocument(candidate).toJson(QJsonDocument::Indented);
+        bytes.swap(data);
+        return true;
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法生成 Pose 快照");
+        return false;
+    }
+}
+
+bool CMotionPanel::SavePose(QString* error)
+{
+    if (m_poseJsonPath.isEmpty()) {
+        if (error) *error = QStringLiteral("没有可保存的 Pose 配置");
+        return false;
+    }
+    QJsonObject candidate;
+    if (!BuildPoseDocument(candidate, error)) return false;
+    const QByteArray data = QJsonDocument(candidate).toJson(QJsonDocument::Indented);
+    QByteArray digest = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
     QSaveFile file(m_poseJsonPath);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         if (error) *error = QStringLiteral("无法写入文件：%1").arg(file.errorString());
         return false;
     }
+    m_poseDocument.swap(candidate);
+    m_poseSourceDigest.swap(digest);
     m_savePoseButton->setText(QStringLiteral("已保存 Pose"));
     m_poseDirty = false;
     emit PoseSaved();
@@ -2077,6 +2121,7 @@ void CMotionPanel::AddPosePart()
     }
     group.partIds.append(partId);
     group.links.append(QStringList());
+    group.fields.append(QJsonObject());
     group.combo->addItem(partId, partId);
     group.combo->setCurrentIndex(group.combo->count() - 1);
     m_removePosePartButton->setEnabled(group.partIds.size() > 1);
@@ -2094,6 +2139,7 @@ void CMotionPanel::RemovePosePart()
     if (index < 0 || index >= group.partIds.size() || group.partIds.size() <= 1) return;
     group.partIds.removeAt(index);
     if (index < group.links.size()) group.links.removeAt(index);
+    if (index < group.fields.size()) group.fields.removeAt(index);
     group.combo->removeItem(index);
     m_removePosePartButton->setEnabled(group.partIds.size() > 1);
     m_savePoseButton->setText(QStringLiteral("保存 Pose"));

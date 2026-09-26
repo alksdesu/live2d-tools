@@ -19,9 +19,12 @@ public:
     bool LoadModel(const QString& modelJsonPath, QString* error = nullptr);
     bool LoadUserData(const QString& path, QString* error = nullptr);
     bool SaveUserData(QString* error = nullptr);
+    bool CaptureUserDataBytes(QByteArray& bytes, QString* error = nullptr) const;
     void SetValidArtMeshIds(const QSet<QString>& ids);
     bool HasUnsavedChanges() const;
     const QString& FilePath() const { return m_path; }
+    const QString& SourcePath() const { return m_path; }
+    const QByteArray& SourceDigest() const { return m_sourceDigest; }
 
 signals:
     void UserDataSaved(const QString& path);
@@ -44,6 +47,7 @@ private:
     QPushButton* m_saveButton = nullptr;
     live2dstruct::CModelUserData m_data;
     QString m_path;
+    QByteArray m_sourceDigest;
     QString m_modelJsonPath;
     QSet<QString> m_validArtMeshIds;
     bool m_hasModelIds = false;

@@ -1,6 +1,7 @@
 #include "cmodeluserdata.h"
 
 #include <QFile>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -19,10 +20,10 @@ void setError(QString* error, const QString& value)
 }
 }
 
-bool CModelUserData::Load(const QString& path, QString* error)
+bool CModelUserData::Load(const QString& path, QString* error, QByteArray* sourceDigest)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
         setError(error, file.errorString());
         return false;
     }
@@ -35,7 +36,11 @@ bool CModelUserData::Load(const QString& path, QString* error)
         setError(error, file.errorString());
         return false;
     }
-    return FromJson(bytes, error);
+    QByteArray digest;
+    if (sourceDigest) digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+    if (!FromJson(bytes, error)) return false;
+    if (sourceDigest) sourceDigest->swap(digest);
+    return true;
 }
 
 bool CModelUserData::FromJson(const QByteArray& bytes, QString* error)
@@ -119,7 +124,7 @@ bool CModelUserData::Validate(QString* error) const
     return true;
 }
 
-bool CModelUserData::Save(const QString& path, QString* error) const
+bool CModelUserData::Save(const QString& path, QString* error, QByteArray* sourceDigest) const
 {
     if (path.isEmpty()) {
         setError(error, QStringLiteral("UserData 保存路径为空"));
@@ -132,11 +137,14 @@ bool CModelUserData::Save(const QString& path, QString* error) const
         setError(error, QStringLiteral("UserData 文件过大"));
         return false;
     }
+    QByteArray digest;
+    if (sourceDigest) digest = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
         setError(error, file.errorString());
         return false;
     }
+    if (sourceDigest) sourceDigest->swap(digest);
     return true;
 }
 

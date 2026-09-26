@@ -128,7 +128,7 @@ bool CDrawMesh::SelectNearestPoint(const QVector2D& position, float radius)
 
 bool CDrawMesh::CanCopyEditorStateFrom(const CDrawMesh& source) const
 {
-    if (!mesh || !source.mesh || mesh->GetEBOSize() != source.mesh->GetEBOSize()) return false;
+    if (!mesh || !source.mesh) return false;
     const auto& points = mesh->GetWolrd();
     const auto& sourcePoints = source.mesh->GetWolrd();
     if (points.size() != sourcePoints.size()) return false;

@@ -202,6 +202,7 @@ public:
     bool KeyformParameterValues(const QString& id, const QString& type, int keyformIndex,
                                 QMap<QString, float>& values, QString* error = nullptr) const;
     bool BuildPreviewMoc(QByteArray& bytes, QString* error = nullptr) const;
+    bool BuildRuntimeMoc(QByteArray& bytes, QString* error = nullptr) const;
     const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }
     const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
     bool SetParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);

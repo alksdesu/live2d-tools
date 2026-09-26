@@ -77,10 +77,42 @@ private slots:
         QCOMPARE(selected(candidateA), (QVector<bool>{true, true, false}));
     }
 
+    void topologyCountChangesKeepPointSelection_data()
+    {
+        QTest::addColumn<int>("sourceCount"); QTest::addColumn<int>("candidateCount");
+        for (int source : {0, 3, 6}) for (int target : {0, 3, 6})
+            QTest::newRow(qPrintable(QStringLiteral("%1-to-%2").arg(source).arg(target))) << source << target;
+    }
+
+    void topologyCountChangesKeepPointSelection()
+    {
+        QFETCH(int, sourceCount); QFETCH(int, candidateCount);
+        const short indices[]{0, 1, 2, 2, 1, 0};
+        CDrawMesh sourceMesh(sourceCount, sourceCount ? indices : nullptr, 6, sourcePositions, sourcePositions);
+        CDrawMesh targetMesh(candidateCount, candidateCount ? indices : nullptr, 6, candidateUvs, candidatePositions);
+        sourceMesh.SetShow(true); sourceMesh.SetIsOver(true);
+        sourceMesh.SetSelect(QRectF(-0.6, -0.6, 1.2, 0.2));
+        CMeshMap source, target; source.insert("mesh", &sourceMesh); target.insert("mesh", &targetMesh);
+        const auto positions = targetMesh.Positions();
+        QVERIFY(target.CopyEditorStateFrom(source));
+        QCOMPARE(targetMesh.GetMesh()->GetEBOSize(), candidateCount);
+        QCOMPARE(targetMesh.Positions(), positions);
+        QCOMPARE(targetMesh.GetMesh()->GetWolrd().size(), size_t(3));
+        QCOMPARE(targetMesh.GetMesh()->GetEdge().size(), size_t(candidateCount));
+        QCOMPARE(selected(targetMesh), (QVector<bool>{true, true, false}));
+        QVERIFY(targetMesh.IsShown()); QVERIFY(targetMesh.IsHovered());
+        for (size_t index = 0; index < targetMesh.GetSelectPoint().size(); ++index) {
+            QCOMPARE(targetMesh.GetSelectPoint()[index], targetMesh.GetMesh()->GetWolrd()[index]);
+            QVERIFY(targetMesh.GetSelectPoint()[index] != sourceMesh.GetSelectPoint()[index]);
+        }
+        targetMesh.MoveSelected({0.1f, 0});
+        QCOMPARE(sourceMesh.Positions(), QVector<float>({-0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f}));
+    }
+
     void invalidMapsDoNotPartiallyReplaceEarlierObjects_data()
     {
         QTest::addColumn<QString>("invalid");
-        for (const char* invalid : {"missing-id", "different-id", "null-source", "null-target", "vertex-count", "index-count"})
+        for (const char* invalid : {"missing-id", "different-id", "null-source", "null-target", "vertex-count"})
             QTest::newRow(invalid) << QString::fromLatin1(invalid);
     }
 
@@ -93,8 +125,6 @@ private slots:
         CDrawMesh candidateZ(3, candidateIndices, 6, candidateUvs, candidatePositions);
         const float quad[]{-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f};
         CDrawMesh differentVertices(3, sourceIndices, 8, quad, quad);
-        const short twoTriangles[]{0, 1, 2, 2, 1, 0};
-        CDrawMesh differentIndices(6, twoTriangles, 6, candidateUvs, candidatePositions);
         sourceA.SetShow(true);
         sourceA.SetIsOver(true);
         sourceA.SetSelect(QRectF(-0.6, -0.6, 1.2, 0.2));
@@ -105,8 +135,7 @@ private slots:
         candidate.insert("A", &candidateA);
         if (invalid != "missing-id") {
             candidate.insert(invalid == "different-id" ? "other" : "Z",
-                invalid == "null-target" ? nullptr : invalid == "vertex-count" ? &differentVertices
-                : invalid == "index-count" ? &differentIndices : &candidateZ);
+                invalid == "null-target" ? nullptr : invalid == "vertex-count" ? &differentVertices : &candidateZ);
         }
         const auto positions = candidateA.Positions();
         const auto flags = selected(candidateA);

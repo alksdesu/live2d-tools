@@ -21,8 +21,8 @@ class CModelUserData
 public:
     bool FromJson(const QByteArray& bytes, QString* error = nullptr);
     QByteArray ToJson() const;
-    bool Load(const QString& path, QString* error = nullptr);
-    bool Save(const QString& path, QString* error = nullptr) const;
+    bool Load(const QString& path, QString* error = nullptr, QByteArray* sourceDigest = nullptr);
+    bool Save(const QString& path, QString* error = nullptr, QByteArray* sourceDigest = nullptr) const;
     bool Validate(QString* error = nullptr) const;
 
     const QVector<CModelUserDataEntry>& Entries() const { return m_entries; }

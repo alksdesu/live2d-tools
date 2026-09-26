@@ -5,6 +5,7 @@
 #include "live2dstruct/cmodelsession.h"
 #include <QtTest>
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -463,6 +464,159 @@ private slots:
         QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, rejected));
         QVERIFY(panel.CommitPreparedParameterTracks(rejected, archive)); panel.RefreshParameterTrackUi();
         QVERIFY(!panel.Timeline().Tracks().contains({CMotionTarget::Parameter, "A"}));
+    }
+
+    void poseSourceFingerprintTracksBinaryLoadAndSuccessfulSave()
+    {
+        QTemporaryDir temp; const auto path = temp.filePath("pose.json");
+        const QByteArray raw = "{\r\n\"Groups\":[[{\"Id\":\"A\",\"Extra\":1},{\"Id\":\"B\"}]],\r\n\"FadeInTime\":0.25}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(raw), raw.size()); file.close();
+        CMotionPanel panel; QVERIFY(panel.PoseSourcePath().isEmpty()); QVERIFY(panel.PoseSourceDigest().isEmpty());
+        QVERIFY(panel.BuildPoseGroups(QDir::current().relativeFilePath(path)));
+        QCOMPARE(panel.PoseSourcePath(), path); const auto loaded = QCryptographicHash::hash(raw, QCryptographicHash::Sha256);
+        QCOMPARE(panel.PoseSourceDigest(), loaded);
+        QByteArray snapshot; QVERIFY(panel.CapturePoseBytes(snapshot));
+        QVERIFY(QCryptographicHash::hash(snapshot, QCryptographicHash::Sha256) != loaded);
+        QVERIFY(!panel.BuildPoseGroups(temp.filePath("missing"))); QCOMPARE(panel.PoseSourcePath(), path); QCOMPARE(panel.PoseSourceDigest(), loaded);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write("{"), 1); file.close();
+        QVERIFY(!panel.BuildPoseGroups(path)); QCOMPARE(panel.PoseSourceDigest(), loaded);
+        QVERIFY(QFile::remove(path)); QVERIFY(QDir().mkdir(path)); QVERIFY(!panel.SavePose());
+        QCOMPARE(panel.PoseSourceDigest(), loaded); QCOMPARE(panel.PoseSourcePath(), path);
+        QVERIFY(QDir().rmdir(path)); QVERIFY(panel.SavePose());
+        QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes = file.readAll(); file.close();
+        QCOMPARE(bytes, snapshot); QCOMPARE(panel.PoseSourceDigest(), QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
+        const auto saved = panel.PoseSourceDigest(); QVERIFY(saved != loaded);
+        QVERIFY(QFile::remove(path)); QVERIFY(panel.CapturePoseBytes(snapshot)); QCOMPARE(panel.PoseSourceDigest(), saved);
+        const auto secondPath = temp.filePath("other.json"); QFile other(secondPath); QVERIFY(other.open(QIODevice::WriteOnly));
+        const QByteArray second = "{\r\n\"Groups\":[],\"Extra\":true}\r\n";
+        QCOMPARE(other.write(second), second.size()); other.close();
+        QVERIFY(panel.BuildPoseGroups(secondPath)); QCOMPARE(panel.PoseSourcePath(), secondPath);
+        QCOMPARE(panel.PoseSourceDigest(), QCryptographicHash::hash(second, QCryptographicHash::Sha256));
+        QVERIFY(panel.BuildPoseGroups({})); QVERIFY(panel.PoseSourcePath().isEmpty()); QVERIFY(panel.PoseSourceDigest().isEmpty());
+    }
+
+    void poseCaptureKeepsDraftMetadataAndRecordingAfterSourceDisappears()
+    {
+        QTemporaryDir temp; const auto modelPath = temp.filePath("model.json"), posePath = temp.filePath("pose.json");
+        QFile model(modelPath); QVERIFY(model.open(QIODevice::WriteOnly));
+        QVERIFY(model.write(R"({"FileReferences":{"Moc":"missing.moc3"}})") > 0); model.close();
+        const QByteArray source = R"({"Version":3,"FadeInTime":0.25,"RootExtra":{"x":7},"Groups":[
+            [{"Id":"D","SingletonExtra":4}],[{"Id":"A","Link":["D"],"Extra":"a"},{"Id":"B","Extra":"b"}]]})";
+        QFile pose(posePath); QVERIFY(pose.open(QIODevice::WriteOnly)); QCOMPARE(pose.write(source), source.size()); pose.close();
+        CMotionPanel panel; QVERIFY(panel.BuildLists(modelPath, {"A", "B", "C", "D"})); QVERIFY(panel.BuildPoseGroups(posePath));
+        QPushButton* add = nullptr; QPushButton* remove = nullptr;
+        for (auto* button : panel.findChildren<QPushButton*>()) {
+            if (button->text() == QStringLiteral("添加 Part")) add = button;
+            if (button->text() == QStringLiteral("删除 Part")) remove = button;
+        }
+        QVERIFY(add && remove);
+        QTimer::singleShot(0, [] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget()); QVERIFY(dialog);
+            dialog->setTextValue("C"); dialog->accept();
+        });
+        add->click(); QVERIFY(panel.HasUnsavedPoseChanges());
+        QComboBox* group = nullptr;
+        for (auto* combo : panel.findChildren<QComboBox*>()) if (combo->findData("A") >= 0 && combo->findData("B") >= 0) group = combo;
+        QVERIFY(group); group->setCurrentIndex(group->findData("A")); remove->click();
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "P"}, 0, 0));
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline"); QVERIFY(record); record->setChecked(true);
+        panel.RecordParameterValue("P", 1);
+        const auto timeline = panel.Timeline(); const auto revision = panel.TimelineRevision();
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history);
+        const int index = history->index(), count = history->count();
+        QSignalSpy saved(&panel, &CMotionPanel::PoseSaved), changed(&panel, &CMotionPanel::PoseConfigChanged);
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged), stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QByteArray captured; QString error;
+        QVERIFY2(panel.CapturePoseBytes(captured, &error), qPrintable(error)); QVERIFY(error.isEmpty());
+        const auto root = QJsonDocument::fromJson(captured).object();
+        QCOMPARE(root.value("RootExtra"), QJsonValue(QJsonObject{{"x", 7}})); QCOMPARE(root.value("FadeInTime").toDouble(), 0.25);
+        const auto groups = root.value("Groups").toArray();
+        QCOMPARE(groups[0].toArray()[0].toObject().value("SingletonExtra").toInt(), 4);
+        QCOMPARE(groups[1].toArray().size(), 2);
+        QCOMPARE(groups[1].toArray()[0].toObject().value("Id").toString(), QString("B"));
+        QCOMPARE(groups[1].toArray()[0].toObject().value("Extra").toString(), QString("b"));
+        QCOMPARE(groups[1].toArray()[1].toObject().value("Id").toString(), QString("C"));
+        QVERIFY(!groups[1].toArray()[1].toObject().contains("Extra"));
+        QVERIFY(pose.open(QIODevice::ReadOnly)); QCOMPARE(pose.readAll(), source); pose.close();
+        QVERIFY(QFile::remove(posePath)); QByteArray second; QVERIFY(panel.CapturePoseBytes(second)); QCOMPARE(second, captured);
+        QVERIFY(!QFileInfo::exists(posePath));
+        QVERIFY(panel.Timeline().IsRecording()); QVERIFY(panel.Timeline().HasSameContent(timeline));
+        QCOMPARE(panel.TimelineRevision(), revision); QCOMPARE(history->index(), index); QCOMPARE(history->count(), count);
+        QVERIFY(panel.HasUnsavedPoseChanges()); QCOMPARE(saved.size(), 0); QCOMPARE(changed.size(), 0);
+        QCOMPARE(frames.size(), 0); QCOMPARE(stopped.size(), 0);
+        CMotionPanel::PreviewTransportLease lease; QVERIFY(panel.SuspendPreviewTransport(lease));
+        QVERIFY(panel.CapturePoseBytes(second)); QCOMPARE(second, captured); QVERIFY(lease.IsValid());
+        QVERIFY(panel.Timeline().IsRecordingClockPaused()); QVERIFY(panel.HasUnsavedPoseChanges());
+        QVERIFY(panel.ResumePreviewTransport(lease));
+        QVERIFY(panel.SavePose()); QVERIFY(pose.open(QIODevice::ReadOnly)); QCOMPARE(pose.readAll(), captured); pose.close();
+        QCOMPARE(saved.size(), 1); QVERIFY(!panel.HasUnsavedPoseChanges());
+    }
+
+    void poseCaptureFailureKeepsOutputAndDoesNotSaveOrEndPreview()
+    {
+        CMotionPanel panel; QByteArray bytes("unchanged"); QString error;
+        QVERIFY(!panel.CapturePoseBytes(bytes, &error)); QCOMPARE(bytes, QByteArray("unchanged")); QVERIFY(!error.isEmpty());
+        QTemporaryDir temp; QFile model(temp.filePath("model.json")); QVERIFY(model.open(QIODevice::WriteOnly));
+        QVERIFY(model.write(R"({"FileReferences":{"Moc":"absent.moc3"}})") > 0); model.close();
+        QFile pose(temp.filePath("pose.json")); QVERIFY(pose.open(QIODevice::WriteOnly));
+        const QByteArray source = R"({"Groups":[[{"Id":"Missing","Extra":"preserve"}],[{"Id":"A"},{"Id":"B"}]]})";
+        QCOMPARE(pose.write(source), source.size()); pose.close();
+        QVERIFY(panel.BuildLists(model.fileName(), {"A", "B"})); QVERIFY(panel.BuildPoseGroups(pose.fileName()));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "P"}, 0, 1));
+        const auto timeline = panel.Timeline(); const auto revision = panel.TimelineRevision();
+        QSignalSpy saved(&panel, &CMotionPanel::PoseSaved), frames(&panel, &CMotionPanel::TimelineFrameChanged);
+        QSignalSpy stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QVERIFY(!panel.CapturePoseBytes(bytes, &error)); QCOMPARE(bytes, QByteArray("unchanged")); QVERIFY(error.contains("Missing"));
+        QVERIFY(!panel.HasUnsavedPoseChanges()); QVERIFY(panel.Timeline().HasSameContent(timeline));
+        QCOMPARE(panel.TimelineRevision(), revision); QCOMPARE(saved.size(), 0); QCOMPARE(frames.size(), 0); QCOMPARE(stopped.size(), 0);
+        QVERIFY(pose.open(QIODevice::ReadOnly)); QCOMPARE(pose.readAll(), source); pose.close();
+        QVERIFY(panel.BuildLists(model.fileName(), {"A", "B", "Missing"}));
+        QVERIFY(panel.CapturePoseBytes(bytes)); const auto expected = bytes;
+        QVERIFY(QFile::remove(pose.fileName())); QVERIFY(QDir().mkdir(pose.fileName()));
+        QVERIFY(!panel.SavePose(&error)); QVERIFY(panel.CapturePoseBytes(bytes)); QCOMPARE(bytes, expected);
+        QCOMPARE(saved.size(), 0);
+    }
+
+    void timelineByteCapturePreservesPlaybackHistoryAndRejectsPendingInput()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 0));
+        QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 5, 1));
+        auto* play = panel.findChild<QPushButton*>("previewTimeline");
+        auto* head = panel.findChild<QSlider*>("motionTimelinePlayhead");
+        auto* loop = panel.findChild<QCheckBox*>("motionLoop");
+        auto* timer = panel.findChild<QTimer*>(); auto* stack = panel.findChild<QUndoStack*>();
+        QVERIFY(play && head && loop && timer && stack); loop->setChecked(true); head->setValue(250); play->click();
+        timer->setInterval(71);
+        const auto before = panel.Timeline(); const auto revision = panel.TimelineRevision();
+        const double time = panel.TimelineTime(); const int index = stack->index(), count = stack->count();
+        const bool dirty = panel.HasUnsavedTimelineChanges();
+        QSignalSpy frames(&panel, &CMotionPanel::TimelineFrameChanged), stopped(&panel, &CMotionPanel::TimelinePreviewStopped);
+        QSignalSpy changed(&panel, &CMotionPanel::MotionTimelineChanged), history(&panel, &CMotionPanel::TimelineHistoryChanged);
+        QByteArray bytes; QString error;
+        QVERIFY2(panel.CaptureTimelineBytes(bytes, &error), qPrintable(error));
+        QByteArray expected; QVERIFY(panel.Timeline().ToJson(expected, panel.Timeline().Fps(), true)); QCOMPARE(bytes, expected);
+        QVERIFY(timer->isActive()); QCOMPARE(timer->interval(), 71); QCOMPARE(panel.TimelineTime(), time);
+        QCOMPARE(panel.TimelineRevision(), revision); QCOMPARE(stack->index(), index); QCOMPARE(stack->count(), count);
+        QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty); QVERIFY(panel.Timeline().HasSameContent(before));
+        QCOMPARE(frames.size(), 0); QCOMPARE(stopped.size(), 0); QCOMPARE(changed.size(), 0); QCOMPARE(history.size(), 0);
+        panel.PauseTimelinePreview(); panel.resize(900, 650); panel.show(); QTest::qWait(10);
+        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable"); QVERIFY(table);
+        table->setCurrentCell(0, 2); table->editItem(table->item(0, 2));
+        auto* editor = table->findChild<QLineEdit*>(); QVERIFY(editor); editor->setText("not-a-number");
+        const auto current = table->currentIndex(); const auto selected = table->selectionModel()->selectedIndexes();
+        const auto pendingRevision = panel.TimelineRevision();
+        const int pendingIndex = stack->index(), pendingCount = stack->count();
+        QVERIFY(!panel.CaptureTimelineBytes(bytes, &error)); QCOMPARE(bytes, expected); QVERIFY(!error.isEmpty());
+        QCOMPARE(editor->text(), QString("not-a-number")); QCOMPARE(table->currentIndex(), current);
+        QCOMPARE(table->selectionModel()->selectedIndexes(), selected); QCOMPARE(panel.TimelineRevision(), pendingRevision);
+        QCOMPARE(stack->index(), pendingIndex); QCOMPARE(stack->count(), pendingCount); QVERIFY(panel.Timeline().HasSameContent(before));
+        QTest::keyClick(editor, Qt::Key_Escape); QVERIFY(panel.CaptureTimelineBytes(bytes));
+        auto* record = panel.findChild<QCheckBox*>("recordTimeline"); QVERIFY(record); record->setChecked(true);
+        const auto recording = panel.Timeline(); const auto recordingRevision = panel.TimelineRevision();
+        QVERIFY(!panel.CaptureTimelineBytes(bytes, &error)); QCOMPARE(bytes, expected);
+        QVERIFY(panel.Timeline().IsRecording()); QVERIFY(panel.Timeline().HasSameContent(recording));
+        QCOMPARE(panel.TimelineRevision(), recordingRevision); QCOMPARE(stack->index(), pendingIndex); QCOMPARE(stack->count(), pendingCount);
     }
 
     void transportLeasePreservesPreviewRecordingAndHistory_data()

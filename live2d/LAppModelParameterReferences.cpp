@@ -1,4 +1,5 @@
 #include "LAppModel.hpp"
+#include "std/cmodelresourcepath.h"
 #include "framework/Model/CubismParameterReferenceMask.hpp"
 #include "framework/Motion/CubismMotion.hpp"
 #include "framework/Motion/CubismMotionQueueEntry.hpp"
@@ -67,9 +68,7 @@ bool verifyResource(const QString& path, const ParameterResourceReferences& refe
 
 QString LAppModel::ReferenceSourcePath(const QString& path) const
 {
-    if (QDir::isAbsolutePath(path))
-        return QDir::cleanPath(QDir(QString::fromUtf8(_modelHomeDir.GetRawString())).relativeFilePath(path));
-    return QDir::cleanPath(path);
+    return CModelResourcePath::Identity(QString::fromUtf8(_modelHomeDir.GetRawString()), path);
 }
 
 bool LAppModel::ConfigureMotionReferences(CubismMotion* motion, const QString& path, QString* error)

@@ -61,11 +61,16 @@ add_library(model_data STATIC
     live2d/cparameterreferenceplan.cpp
     live2dstruct/ckeyformbindinggrid.cpp
     live2dstruct/cmocpreviewbuilder.cpp
+    live2dstruct/cmocruntimebuilder.cpp
+    live2dstruct/cruntimepackage.cpp
+    live2dstruct/cphysicsdocument.cpp
     live2dstruct/cmocparameterstructurebuilder.cpp
     live2dstruct/cmoclayoutrewriter.cpp
     live2dstruct/cmodeluserdata.cpp
     live2dstruct/cmodelsession.cpp
     std/cmodeljson.cpp
+    std/cmodelresourcepath.cpp
+    std/cdirectoryexport.cpp
     std/cmodeljsonwriter.cpp
     live2dstruct/util/cfilereader.cpp
     live2dstruct/csectionoffsettable.cpp
@@ -145,6 +150,10 @@ target_link_libraries(ui_inspector PUBLIC model_data Qt6::Core Qt6::Gui Qt6::Wid
 
 if(BUILD_TESTING)
     if(TARGET live2d_core)
+        add_executable(runtime_moc_core_tests tests/runtime_moc_core_tests.cpp)
+        target_link_libraries(runtime_moc_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(runtime_moc_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME runtime_moc_core COMMAND runtime_moc_core_tests)
         add_executable(real_core_preview_tests tests/real_core_preview_tests.cpp)
         target_link_libraries(real_core_preview_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(real_core_preview_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -158,6 +167,11 @@ if(BUILD_TESTING)
         target_compile_definitions(parameter_delete_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME parameter_delete_core COMMAND parameter_delete_core_tests)
     endif()
+    add_executable(runtime_export_dialog_tests tests/runtime_export_dialog_tests.cpp ui/cruntimeexportdialog.cpp)
+    target_include_directories(runtime_export_dialog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(runtime_export_dialog_tests PRIVATE Qt6::Widgets Qt6::Test)
+    add_test(NAME runtime_export_dialog COMMAND runtime_export_dialog_tests)
+    set_tests_properties(runtime_export_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(export_control_tests tests/export_control_tests.cpp)
     target_link_libraries(export_control_tests PRIVATE export_control Qt6::Test)
     add_test(NAME export_control COMMAND export_control_tests)
@@ -187,7 +201,7 @@ if(BUILD_TESTING)
     target_link_libraries(caff_archive_tests PRIVATE cmo3_data Qt6::Test)
     add_test(NAME caff_archive COMMAND caff_archive_tests)
 
-    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete)
+    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit model_resource_path directory_export runtime_moc runtime_package physics_document parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete)
         add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
         target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${data_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

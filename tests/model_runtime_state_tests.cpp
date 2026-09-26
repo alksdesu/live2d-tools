@@ -246,6 +246,132 @@ private slots:
         QCOMPARE(data.updates, 0);
     }
 
+    void topologyPolicyChangesOnlyRawIndices_data()
+    {
+        QTest::addColumn<int>("count");
+        QTest::newRow("empty") << 0;
+        QTest::newRow("fewer-triangles") << 3;
+        QTest::newRow("different-triangles") << 6;
+    }
+
+    void topologyPolicyChangesOnlyRawIndices()
+    {
+        QFETCH(int, count);
+        auto source = create(); auto candidate = create();
+        source->SetParameterValue(0, 0.3f); source->SaveParameters(); source->SetParameterValue(0, 0.7f);
+        source->SetPartOpacity(0, 0.4f); source->SetModelOpacity(0.6f);
+        auto& next = State(candidate->GetModel());
+        next.indexCounts[0] = count;
+        next.indices[0] = {0, 1, 3, 1, 2, 3};
+        if (!count) next.indexPointers[0] = nullptr;
+        QString error;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source));
+        QVERIFY(!candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowClippingEdits));
+        const auto policy = CubismModelUpdatePolicy::AllowDrawableTopologyEdits;
+        QVERIFY2(candidate->IsCompatibleForKeyformUpdate(*source, policy, &error), qPrintable(error));
+        QVERIFY2(candidate->CopyRuntimeStateFrom(*source, policy, &error), qPrintable(error));
+        QCOMPARE(candidate->GetDrawableVertexIndexCount(0), count);
+        if (count) QCOMPARE(candidate->GetDrawableVertexIndices(0)[2], quint16(3));
+        QCOMPARE(source->GetDrawableVertexIndexCount(0), 6);
+        QCOMPARE(source->GetDrawableVertexIndices(0)[2], quint16(2));
+        QCOMPARE(candidate->GetParameterValue(0), 0.7f);
+        QCOMPARE(candidate->GetPartOpacity(0), 0.4f);
+        QCOMPARE(candidate->GetModelOpacity(), 0.6f);
+        candidate->LoadParameters(); QCOMPARE(candidate->GetParameterValue(0), 0.3f);
+        QCOMPARE(next.updates, 0);
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, static_cast<CubismModelUpdatePolicy>(16)));
+    }
+
+    void topologyValidationChecksBothModels_data()
+    {
+        QTest::addColumn<bool>("sourceInvalid"); QTest::addColumn<int>("mutation");
+        for (bool source : {false, true}) for (int mutation = 0; mutation < 7; ++mutation)
+            QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(source ? "source" : "candidate").arg(mutation))) << source << mutation;
+    }
+
+    void topologyValidationChecksBothModels()
+    {
+        QFETCH(bool, sourceInvalid); QFETCH(int, mutation);
+        auto source = create(); auto candidate = create();
+        auto& data = State((sourceInvalid ? source : candidate)->GetModel());
+        switch (mutation) {
+        case 0: data.indexCounts[0] = -1; break;
+        case 1: data.indexCounts[0] = std::numeric_limits<int>::max(); break;
+        case 2: data.indexCounts[0] = 4; break;
+        case 3: data.indexPointers[0] = nullptr; break;
+        case 4: data.nullGetters.insert(QStringLiteral("csmGetDrawableIndices")); break;
+        case 5: data.nullGetters.insert(QStringLiteral("csmGetDrawableIndexCounts")); break;
+        case 6: data.indices[0][2] = std::numeric_limits<quint16>::max(); break;
+        }
+        const auto values = State(candidate->GetModel()).values;
+        QString error;
+        const auto policy = CubismModelUpdatePolicy::AllowDrawableTopologyEdits;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, policy, &error)); QVERIFY(!error.isEmpty());
+        QVERIFY(!candidate->CopyRuntimeStateFrom(*source, policy, &error));
+        QCOMPARE(State(candidate->GetModel()).values, values);
+        QCOMPARE(State(candidate->GetModel()).updates, 0);
+        QCOMPARE(State(source->GetModel()).updates, 0);
+    }
+
+    void emptyTopologyKeepsEditablePointsWithoutIndexArray()
+    {
+        auto source = create(); auto candidate = create();
+        auto& data = State(candidate->GetModel());
+        data.indexCounts.fill(0);
+        data.nullGetters.insert(QStringLiteral("csmGetDrawableIndices"));
+        QString error;
+        QVERIFY2(candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowDrawableTopologyEdits, &error), qPrintable(error));
+        candidate->InitMesh();
+        for (int index = 0; index < candidate->GetDrawableCount(); ++index) {
+            QCOMPARE(candidate->GetDrawableVertexIndices(index), nullptr);
+            const auto id = QString::fromUtf8(candidate->GetDrawableId(index)->GetString().GetRawString());
+            const auto* mesh = candidate->GetMeshMap()->GetDrawMesh(id);
+            QVERIFY(mesh);
+            QCOMPARE(mesh->GetMesh()->GetEBOSize(), 0);
+            QCOMPARE(mesh->GetMesh()->GetWolrd().size(), size_t(4));
+        }
+    }
+
+    void topologyPolicyKeepsOtherDrawableDefinitionsStrict_data()
+    {
+        QTest::addColumn<int>("mutation");
+        for (int mutation = 0; mutation < 6; ++mutation) QTest::newRow(qPrintable(QString::number(mutation))) << mutation;
+    }
+
+    void topologyPolicyKeepsOtherDrawableDefinitionsStrict()
+    {
+        QFETCH(int, mutation); auto source = create(); auto candidate = create();
+        auto& data = State(candidate->GetModel()); data.indexCounts[0] = 3;
+        switch (mutation) {
+        case 0: data.vertexCounts[0] = 3; break;
+        case 1: data.uvs[0][0].X = 0.25f; break;
+        case 2: data.drawableIds[0] = "Different"; break;
+        case 3: data.flags[0] ^= Core::csmIsDoubleSided; break;
+        case 4: data.textures[0] = 2; break;
+        case 5: data.flags[0] ^= Core::csmIsInvertedMask; break;
+        }
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, CubismModelUpdatePolicy::AllowDrawableTopologyEdits));
+    }
+
+    void topologyPolicyCombinesWithOtherExplicitPermissions()
+    {
+        auto source = create(); auto candidate = create();
+        auto& data = State(candidate->GetModel());
+        data.indexCounts[0] = 3;
+        data.maskCounts[0] = 1; data.masks[0][0] = 1; data.flags[0] ^= Core::csmIsInvertedMask;
+        data.minimum[0] = -2; data.maximum[0] = 2; data.defaults[0] = 0.5f;
+        data.keyCounts[0] = 2;
+        auto policy = CubismModelUpdatePolicy::AllowDrawableTopologyEdits | CubismModelUpdatePolicy::AllowClippingEdits |
+            CubismModelUpdatePolicy::AllowParameterDefinitionEdits;
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, policy));
+        policy = policy | CubismModelUpdatePolicy::AllowParameterStructureEdits;
+        QString error;
+        QVERIFY2(candidate->CopyRuntimeStateFrom(*source, policy, &error), qPrintable(error));
+        QCOMPARE(candidate->GetDrawableVertexIndexCount(0), 3);
+        QCOMPARE(candidate->GetDrawableMaskCounts()[0], 1);
+        QVERIFY(candidate->GetDrawableInvertedMask(0));
+    }
+
     void clippingPolicyAllowsOnlyClippingChangesAndCopiesRuntimeState()
     {
         auto source = create(false, 3);

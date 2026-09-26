@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <QByteArray>
 #include <QMap>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_3_3_Core>
@@ -26,6 +27,7 @@ public:
         int width = 0;
         int height = 0;
         std::string fileName;
+        QByteArray sourceDigest;
     };
 
     LAppTextureManager();

@@ -15,6 +15,8 @@
 #include <QEventLoop>
 #include <QDirIterator>
 #include "ui/cpsdbatchdialog.h"
+#include "ui/cruntimeexportdialog.h"
+#include "ui/cexporttaskrunner.h"
 #include "ui/psdbatchjob.h"
 #include "ui/cexportresultspanel.h"
 #include "ui/cmodeltreepanel.h"
@@ -28,6 +30,7 @@
 #include "ui/cuserdatapanel.h"
 #include "ui/para/ccidjson.h"
 #include "std/cmodeljsonwriter.h"
+#include "std/cmodelresourcepath.h"
 #include "std/cexportcontrol.h"
 #include "cmo3/ccmo3builder.h"
 #include "live2dstruct/cparameterreferences.h"
@@ -57,8 +60,10 @@
 #include <QScopedValueRollback>
 #include <QJsonArray>
 #include <QFile>
+#include <QCryptographicHash>
 #include <QCloseEvent>
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -357,6 +362,153 @@ void MainWindow::on_actionpsdPrint_triggered()
     }
 }
 
+
+bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimeline,
+                                      live2dstruct::CRuntimePackage::Request& request, QString* error) const
+{
+    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if (!m_runtimePanelsInitialized || !m_document.IsLoaded() || !m_openglwindows || !m_openglwindows->IsModelReady())
+        return fail(QStringLiteral("请等待模型加载完成后再导出"));
+    if (!RuntimeMatchesDocument(error) || !m_document.SourceMatchesDisk(error)) return false;
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
+    if (!model || !textures) return fail(QStringLiteral("模型或纹理尚未就绪"));
+    live2dstruct::CRuntimePackage::Request candidate;
+    candidate.modelJsonPath = m_openglwindows->GetCurrentModelJson();
+    candidate.sourceMocDigest = m_document.SourceDigest();
+    candidate.references = m_parameterResources;
+    candidate.parameterMetadata = m_document.ParameterMetadataOverrides();
+    ParameterReferenceCatalog catalog;
+    if (!model->CaptureParameterReferenceCatalog(catalog, error)) return false;
+    candidate.modelSettingsDigest = catalog.modelSettingsDigest;
+    candidate.loadedModelSettingsBytes = model->GetModelSettingsBytes();
+    if (m_userDataPanel) candidate.registeredUserDataPath = m_userDataPanel->SourcePath();
+    const auto add = [&](const QString& path, const QByteArray& digest) {
+        if (path.isEmpty() || digest.size() != 32 || (candidate.expectedSourceDigests.contains(path) && candidate.expectedSourceDigests[path] != digest))
+            return fail(QStringLiteral("当前资源包含不同版本：%1").arg(path));
+        candidate.expectedSourceDigests.insert(path, digest);
+        return true;
+    };
+    for (auto it = catalog.motions.cbegin(); it != catalog.motions.cend(); ++it) if (!add(it.key(), it.value())) return false;
+    for (auto it = catalog.expressions.cbegin(); it != catalog.expressions.cend(); ++it) if (!add(it.key(), it.value())) return false;
+    if (!catalog.physicsPath.isEmpty() && !add(catalog.physicsPath, catalog.physicsDigest)) return false;
+    for (const auto& path : model->GetTexturePaths()) {
+        const auto* texture = textures->GetTextureInfoByName(path.toStdString());
+        if (!texture || !add(path, texture->sourceDigest)) return fail(QStringLiteral("纹理与当前预览的来源不一致：%1").arg(path));
+    }
+    if (m_cidJson && !m_cidJson->SourcePath().isEmpty() && !add(m_cidJson->SourcePath(), m_cidJson->SourceDigest())) return false;
+    if (m_motionPanel && !m_motionPanel->PoseSourcePath().isEmpty() &&
+        !add(m_motionPanel->PoseSourcePath(), m_motionPanel->PoseSourceDigest())) return false;
+    if (m_userDataPanel && !m_userDataPanel->SourcePath().isEmpty() &&
+        !add(m_userDataPanel->SourcePath(), m_userDataPanel->SourceDigest())) return false;
+    auto document = m_document;
+    if (currentDefaults) {
+        const auto values = model->GetParameterValues();
+        for (const auto& parameter : document.Parameters()) {
+            auto metadata = document.ParameterMetadata(parameter.id);
+            if (!values.contains(parameter.id) || !std::isfinite(values[parameter.id]) ||
+                values[parameter.id] < metadata.minimum || values[parameter.id] > metadata.maximum)
+                return fail(QStringLiteral("当前参数值不在定义范围内：%1").arg(parameter.id));
+            if (metadata.defaultValue == values[parameter.id]) continue;
+            metadata.defaultValue = values[parameter.id];
+            if (!document.SetParameterMetadata(parameter.id, metadata)) return fail(QStringLiteral("无法设置导出参数默认值：%1").arg(parameter.id));
+        }
+    }
+    if (!document.BuildRuntimeMoc(candidate.mocBytes, error)) return false;
+    if (m_physicsPanel && !m_physicsPanel->DocumentSnapshot().isEmpty()) {
+        CPhysicsPanel::Snapshot snapshot;
+        if (!m_physicsPanel->CaptureSnapshot(snapshot, error)) return false;
+        candidate.physics = QJsonDocument(snapshot.document).toJson(QJsonDocument::Indented);
+    }
+    CModelJson settings; settings.Parse(candidate.modelJsonPath);
+    if (!settings.IsOpen()) return fail(QStringLiteral("无法读取当前模型设置"));
+    if (m_motionPanel && !settings.m_Pose.isEmpty()) {
+        QByteArray bytes;
+        if (!m_motionPanel->CapturePoseBytes(bytes, error)) return false;
+        candidate.pose = bytes;
+    }
+    if (m_userDataPanel && (!m_userDataPanel->FilePath().isEmpty() || m_userDataPanel->HasUnsavedChanges())) {
+        QByteArray bytes;
+        if (!m_userDataPanel->CaptureUserDataBytes(bytes, error)) return false;
+        candidate.userData = bytes;
+    }
+    if (includeTimeline) {
+        QByteArray bytes;
+        if (!m_motionPanel || !m_motionPanel->CaptureTimelineBytes(bytes, error)) return false;
+        candidate.timeline = bytes;
+    }
+    request = std::move(candidate);
+    return true;
+}
+
+void MainWindow::ExportRuntimePackage()
+{
+    if (!m_openglwindows || !m_runtimePanelsInitialized || !ConfirmExportReady(QStringLiteral("模型包导出"))) return;
+    CRuntimeExportDialog dialog(m_openglwindows->GetCurrentModelJson(), m_motionPanel && (!m_motionPanel->Timeline().Tracks().isEmpty() || !m_motionPanel->Timeline().Events().isEmpty()), this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    QString error;
+    live2dstruct::CRuntimePackage::Request request;
+    if (!CaptureRuntimePackage(dialog.UseCurrentValues(), dialog.IncludeTimeline(), request, &error)) {
+        QMessageBox::warning(this, QStringLiteral("无法导出模型包"), error);
+        return;
+    }
+    const auto destination = dialog.TargetDirectory();
+    auto control = std::make_shared<CExportControl>();
+    live2dstruct::CRuntimePackage::Prepared prepared;
+    CDirectoryExport::Result published;
+    bool success = false;
+    {
+        const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+        m_activeExportControl = control;
+        const auto cleanup = qScopeGuard([this] { m_activeExportControl.reset(); });
+        RefreshExportActions();
+        QProgressDialog progress(QStringLiteral("正在准备模型包"), QStringLiteral("取消"), 0, 0, this);
+        auto* progressLabel = new QLabel(&progress);
+        progressLabel->setTextFormat(Qt::PlainText);
+        progressLabel->setWordWrap(true);
+        progress.setLabel(progressLabel);
+        progress.setLabelText(QStringLiteral("正在准备模型包"));
+        progress.setWindowTitle(QStringLiteral("导出模型包"));
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(0);
+        progress.setAutoClose(false);
+        progress.setAutoReset(false);
+        connect(&progress, &QProgressDialog::canceled, this, [control] { control->Cancel(); });
+        QTimer timer;
+        timer.setInterval(50);
+        connect(&timer, &QTimer::timeout, &progress, [&] {
+            const auto state = control->Snapshot();
+            progress.setLabelText(control->IsCancellationRequested() ? QStringLiteral("正在取消导出") : state.detail);
+        });
+        timer.start();
+        progress.show();
+        success = CExportTaskRunner::Run([&](const CExportTaskRunner::GuiCall&, QString* detail) {
+            if (!live2dstruct::CRuntimePackage::Prepare(request, prepared, control.get(), detail)) return false;
+            CDirectoryExport::Options options;
+            options.protectedPaths = prepared.protectedPaths;
+            options.maximumTotalBytes = request.maximumTotalBytes;
+            options.maximumEntries = request.maximumFiles;
+            return CDirectoryExport::Publish(destination, prepared.entries, options, published, control.get(), detail);
+        }, control.get(), &error);
+        progress.close();
+    }
+    RefreshExportActions();
+    if (m_closeAfterExport) {
+        QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
+        return;
+    }
+    if (success && published.committed) {
+        QString message = QStringLiteral("已导出 %1 个文件：\n%2\n\n使用 model.model3.json 加载模型。").arg(prepared.entries.size()).arg(destination);
+        if (!prepared.notes.isEmpty()) message += QStringLiteral("\n\n") + prepared.notes.join(QLatin1Char('\n'));
+        QMessageBox::information(this, QStringLiteral("模型包已导出"), message);
+    } else if (control->WasCanceled()) {
+        statusBar()->showMessage(QStringLiteral("模型包导出已取消"), 8000);
+    } else {
+        if (!published.residualStaging.isEmpty()) error += QStringLiteral("\n暂存目录未能清理：%1").arg(published.residualStaging);
+        QMessageBox::warning(this, QStringLiteral("模型包导出失败"), error);
+    }
+}
 
 void MainWindow::on_actionCmo3Export_triggered()
 {
@@ -690,7 +842,7 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
     if (!RuntimeMatchesDocument(error)) return false;
     if (!m_openglwindows || !m_openglwindows->IsModelReady()) return true;
     QByteArray bytes;
-    if (!document.BuildPreviewMoc(bytes, error)) return false;
+    if (!document.BuildRuntimeMoc(bytes, error)) return false;
     if (!editing) {
         QMap<QString, float> values;
         if (!m_runtimePanelsInitialized)
@@ -724,7 +876,7 @@ bool MainWindow::PublishParameterDefinitions(const live2dstruct::CModelDocument&
     }
     if (!RuntimeMatchesDocument(error)) return false;
     QByteArray bytes;
-    if (!document.BuildPreviewMoc(bytes, error)) return false;
+    if (!document.BuildRuntimeMoc(bytes, error)) return false;
     if (!m_openglwindows || !m_openglwindows->IsModelReady()) return true;
     return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, editing, error);
 }
@@ -838,7 +990,7 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
         removed.append(id);
     }
     QByteArray bytes;
-    if (!document.BuildPreviewMoc(bytes, error)) return false;
+    if (!document.BuildRuntimeMoc(bytes, error)) return false;
     if (!m_openglwindows || !m_openglwindows->IsModelReady()) {
         if (deleting || (restoring && (!m_parameterResources.IsEmpty() || m_physicsInSession ||
             (m_restoringSession && (!m_restoringSession->parameterResources.IsEmpty() || m_restoringSession->physicsDraft))))) {
@@ -1287,18 +1439,6 @@ void MainWindow::SyncDocumentToRuntime()
         if (!part.visible || model->GetHiddenPartIds().contains(part.id))
             m_openglwindows->do_SetVisibility(part.id, QStringLiteral("part"), part.visible);
     }
-    for (const auto& drawable : m_document.Drawables())
-        m_openglwindows->do_SetVisibility(drawable.id, QStringLiteral("artmesh"), drawable.visible);
-    m_openglwindows->SetHiddenDeformerDrawables(m_document.HiddenDeformerDrawables());
-    const auto& opacity = m_document.DrawableOpacityOverrides();
-    for (auto it = opacity.cbegin(); it != opacity.cend(); ++it)
-        m_openglwindows->do_SetDrawableOpacity(it.key(), it.value());
-    const auto& order = m_document.DrawableDrawOrderOverrides();
-    for (auto it = order.cbegin(); it != order.cend(); ++it)
-        m_openglwindows->do_SetDrawableDrawOrder(it.key(), it.value());
-    const auto& indices = m_document.DrawableIndexOverrides();
-    for (auto it = indices.cbegin(); it != indices.cend(); ++it)
-        m_openglwindows->do_SetDrawableIndices(it.key(), it.value());
     m_openglwindows->SetViewState(m_openglwindows->ViewScale(), m_openglwindows->ViewPosition());
 }
 
@@ -1354,12 +1494,10 @@ void MainWindow::ApplyVisibilityValues(const QMap<QString, bool>& values)
         m_inspectorPanel->RefreshSelection();
     }
     if (!m_openglwindows || !RuntimeMatchesDocument()) return;
-    if (m_motionPanel) m_motionPanel->StopTimelinePreview();
     for (auto it = values.cbegin(); it != values.cend(); ++it) {
-        const int separator = it.key().indexOf(QLatin1Char('|'));
-        if (separator > 0) m_openglwindows->do_SetVisibility(it.key().mid(separator + 1), it.key().left(separator), it.value());
+        if (it.key().startsWith(QLatin1String("part|")))
+            m_openglwindows->do_SetVisibility(it.key().mid(5), QStringLiteral("part"), it.value());
     }
-    m_openglwindows->SetHiddenDeformerDrawables(m_document.HiddenDeformerDrawables());
 }
 
 void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward)
@@ -1396,17 +1534,12 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         ApplyVisibilityValues(edit.field == live2dstruct::CModelEdit::VisibilityValues ? value.value<QMap<QString, bool>>() :
             QMap<QString, bool>{{edit.type + QLatin1Char('|') + edit.name, value.toBool()}});
     } else if (edit.field == live2dstruct::CModelEdit::Opacity) {
-        const float opacity = value.toFloat();
-        if (m_openglwindows) m_openglwindows->do_SetDrawableOpacity(edit.name, opacity);
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
-        const int drawOrder = value.toInt();
-        if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(edit.name, drawOrder);
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
-        if (m_openglwindows) m_openglwindows->do_SetDrawableIndices(edit.name, value.value<QVector<quint16>>());
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MaskIndices) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
@@ -1678,6 +1811,7 @@ void MainWindow::RefreshExportActions()
     const bool exporting = m_psdBatch || m_batchExporting;
     const bool busy = exporting || m_previewExport.IsBusy();
     if (myBatchAction) myBatchAction->setEnabled(!busy && !m_closingModel);
+    if (m_runtimeExportAction) m_runtimeExportAction->setEnabled(!busy && !m_closingModel && m_runtimePanelsInitialized);
     if (!busy && !m_closingModel && !m_runtimePanelsInitialized && m_openglwindows) {
         const QPointer<OpengGlForm> surface = m_openglwindows;
         QTimer::singleShot(0, surface, [this, surface] {
@@ -2275,6 +2409,7 @@ bool MainWindow::CloseModel()
 
     // 释放显示名称映射
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
+    if (m_runtimeExportAction) m_runtimeExportAction->setEnabled(false);
     m_currentMoc.clear();
     m_currentModelDir.clear();
 
@@ -2344,6 +2479,7 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
     }
     applyBgColor();
     m_runtimePanelsInitialized = true;
+    RefreshExportActions();
 }
 
 void MainWindow::RestDock(const QString &name)
@@ -2501,8 +2637,7 @@ void MainWindow::RestDock(const QString &name)
 
     if(m_cidJson) { delete m_cidJson; m_cidJson = nullptr; }
     m_cidJson = new CCidJson();
-    m_cidJson->Parse(modeljson.m_parentPath + "/" + modeljson.m_DisplayInfo);
-    qDebug() << modeljson.m_parentPath + "/" + modeljson.m_DisplayInfo;
+    m_cidJson->Parse(CModelResourcePath::Resolve(modeljson.m_parentPath, modeljson.m_DisplayInfo));
 
     // 创建模型结构树面板（左侧）
     m_treePanel = new CModelTreePanel(this);
@@ -2659,7 +2794,7 @@ void MainWindow::RestDock(const QString &name)
     // 加载物理设置（立即，不需要 GL）
     if(m_physicsPanel && !modeljson.m_Physics.isEmpty()){
         QString physicsError;
-        if (!m_physicsPanel->LoadPhysics(modeljson.m_parentPath + "/" + modeljson.m_Physics, &physicsError))
+        if (!m_physicsPanel->LoadPhysics(CModelResourcePath::Resolve(modeljson.m_parentPath, modeljson.m_Physics), &physicsError))
             statusBar()->showMessage(physicsError, 8000);
     }
 
@@ -2677,7 +2812,7 @@ void MainWindow::RestDock(const QString &name)
         for (auto it = values.cbegin(); it != values.cend(); ++it)
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
     }
-    const QString posePath = modeljson.m_Pose.isEmpty() ? QString() : (modeljson.m_parentPath + "/" + modeljson.m_Pose);
+    const QString posePath = CModelResourcePath::Resolve(modeljson.m_parentPath, modeljson.m_Pose);
     if (!posePath.isEmpty()) {
         QString poseError;
         if (!m_motionPanel->BuildPoseGroups(posePath, &poseError))
@@ -2844,18 +2979,10 @@ void MainWindow::RestDock(const QString &name)
             after.insert(it.key(), it.value());
         }
         bool accepted = error.isEmpty() && after.isEmpty();
-        if (error.isEmpty() && !after.isEmpty() && EndKeyformEditing(&error)) {
-            try {
-                auto candidate = m_document;
-                const live2dstruct::CModelEdit command{QStringLiteral("selection"), QStringLiteral("objects"),
-                    live2dstruct::CModelEdit::VisibilityValues, QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
-                if (candidate.ExecuteEdit(command)) {
-                    m_document.CommitCandidate(std::move(candidate));
-                    accepted = true;
-                }
-            } catch (const std::exception&) {
-                error = QStringLiteral("无法准备批量可见性修改");
-            }
+        if (error.isEmpty() && !after.isEmpty()) {
+            const live2dstruct::CModelEdit command{QStringLiteral("selection"), QStringLiteral("objects"),
+                live2dstruct::CModelEdit::VisibilityValues, QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+            accepted = SubmitInspectorEdit(command, &error);
         }
         if (!accepted) {
             const QScopedValueRollback<bool> restoring(m_syncingVisibility, true);
@@ -2896,18 +3023,10 @@ void MainWindow::RestDock(const QString &name)
             statusBar()->showMessage(QStringLiteral("有未保存的锁定状态"));
         }
     });
-    connect(m_inspectorPanel, &CInspectorPanel::DrawableOpacityChanged,
-            m_openglwindows, &OpengGlForm::do_SetDrawableOpacity);
-    connect(m_inspectorPanel, &CInspectorPanel::DrawableDrawOrderChanged,
-            this, [this](const QString& name, int drawOrder){
-                if (m_openglwindows) m_openglwindows->do_SetDrawableDrawOrder(name, drawOrder);
-            });
     connect(m_inspectorPanel, &CInspectorPanel::DrawableKeyformActivated, this,
             [this](const QString& name, int keyformIndex){
                 if (m_openglwindows) m_openglwindows->SetActiveKeyform(name, keyformIndex);
             });
-    connect(m_inspectorPanel, &CInspectorPanel::DrawableIndicesChanged,
-            m_openglwindows, &OpengGlForm::do_SetDrawableIndices);
     const auto markSessionDirty = [this]() {
         if (m_applyingSession) return;
         m_sessionDirty = true;
@@ -3137,6 +3256,10 @@ void MainWindow::createActions()
     myCmo3Action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     myCmo3Action->setStatusTip(tr("将当前 moc3 恢复为 Cubism Editor 可编辑工程"));
     connect(myCmo3Action, &QAction::triggered, this, &MainWindow::on_actionCmo3Export_triggered);
+    m_runtimeExportAction = new QAction(QStringLiteral("导出模型包"), this);
+    m_runtimeExportAction->setObjectName(QStringLiteral("exportRuntimePackage"));
+    m_runtimeExportAction->setEnabled(false);
+    connect(m_runtimeExportAction, &QAction::triggered, this, &MainWindow::ExportRuntimePackage);
 
     m_exportResultsAction = new QAction(QStringLiteral("导出记录"), this);
     connect(m_exportResultsAction, &QAction::triggered, this, [this] {
@@ -3268,6 +3391,7 @@ void MainWindow::setupUI()
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
     mainToolBar->addAction(myCmo3Action);
+    mainToolBar->addAction(m_runtimeExportAction);
     mainToolBar->addAction(m_exportResultsAction);
     mainToolBar->addAction(m_recoverPreviewAction);
     mainToolBar->addSeparator();

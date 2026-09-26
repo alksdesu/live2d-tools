@@ -7,6 +7,7 @@
 #include "cmo3_userdata.h"
 #include <QtTest>
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QLineEdit>
@@ -31,6 +32,87 @@ private:
     }
 
 private slots:
+    void sourceFingerprintOnlyChangesAfterSuccessfulLoadOrSave()
+    {
+        QTemporaryDir temp; const auto path = temp.filePath("labels.json");
+        const QByteArray raw = "{\r\n\"Version\":3,\"UserData\":[{\"Target\":\"ArtMesh\",\"Id\":\"Body\",\"Value\":\"old\"}]}\r\n";
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(raw), raw.size()); file.close();
+        CUserDataPanel panel; panel.SetValidArtMeshIds({"Body"});
+        QVERIFY(panel.SourcePath().isEmpty()); QVERIFY(panel.SourceDigest().isEmpty());
+        QVERIFY(panel.LoadUserData(QDir::current().relativeFilePath(path)));
+        QCOMPARE(panel.SourcePath(), path); const auto originalDigest = QCryptographicHash::hash(raw, QCryptographicHash::Sha256);
+        QCOMPARE(panel.SourceDigest(), originalDigest);
+        auto* table = panel.findChild<QTableWidget*>("userDataTable"); QVERIFY(table); table->item(0, 1)->setText("draft");
+        QByteArray output; QVERIFY(panel.CaptureUserDataBytes(output));
+        QVERIFY(QCryptographicHash::hash(output, QCryptographicHash::Sha256) != panel.SourceDigest());
+        QVERIFY(!panel.LoadUserData(temp.filePath("missing"))); QCOMPARE(panel.SourcePath(), path); QCOMPARE(panel.SourceDigest(), originalDigest);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(file.write("{"), 1); file.close();
+        QVERIFY(!panel.LoadUserData(path)); QCOMPARE(panel.SourceDigest(), originalDigest); QCOMPARE(table->item(0, 1)->text(), QString("draft"));
+        QVERIFY(QFile::remove(path)); QVERIFY(QDir().mkdir(path)); QVERIFY(!panel.SaveUserData());
+        QCOMPARE(panel.SourcePath(), path); QCOMPARE(panel.SourceDigest(), originalDigest); QVERIFY(panel.HasUnsavedChanges());
+        QVERIFY(QDir().rmdir(path)); QVERIFY(panel.SaveUserData()); QVERIFY(!panel.HasUnsavedChanges());
+        QVERIFY(file.open(QIODevice::ReadOnly)); const auto saved = file.readAll(); file.close();
+        QCOMPARE(panel.SourceDigest(), QCryptographicHash::hash(saved, QCryptographicHash::Sha256));
+        const auto savedDigest = panel.SourceDigest(); QVERIFY(savedDigest != originalDigest);
+        QVERIFY(QFile::remove(path)); QVERIFY(panel.CaptureUserDataBytes(output)); QCOMPARE(panel.SourceDigest(), savedDigest);
+        QVERIFY(panel.LoadUserData({})); QVERIFY(panel.SourcePath().isEmpty()); QVERIFY(panel.SourceDigest().isEmpty());
+    }
+
+    void capturesUnsavedBytesWithoutFilesOrSignals()
+    {
+        QTemporaryDir temp;
+        const auto path = temp.filePath("source.userdata3.json");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray source = R"({"Version":3,"Extension":{"keep":true},"Meta":{"UserDataCount":99,"Note":"keep"},
+            "UserData":[{"Target":"ArtMesh","Id":"Body","Value":"old","EntryExtra":17}]})";
+        QCOMPARE(file.write(source), source.size()); file.close();
+        CUserDataPanel panel; panel.SetValidArtMeshIds({"Body"}); QVERIFY(panel.LoadUserData(path));
+        auto* table = panel.findChild<QTableWidget*>("userDataTable"); QVERIFY(table);
+        table->item(0, 1)->setText(QStringLiteral("草稿🌸")); table->setCurrentCell(0, 1); table->selectRow(0);
+        QVERIFY(panel.HasUnsavedChanges());
+        const auto current = table->currentIndex();
+        const auto selected = table->selectionModel()->selectedIndexes();
+        QSignalSpy dirty(&panel, &CUserDataPanel::DirtyChanged), saved(&panel, &CUserDataPanel::UserDataSaved);
+        QByteArray bytes("sentinel"); QString error;
+        QVERIFY2(panel.CaptureUserDataBytes(bytes, &error), qPrintable(error)); QVERIFY(error.isEmpty());
+        const auto root = QJsonDocument::fromJson(bytes).object();
+        QCOMPARE(root.value("Extension"), QJsonValue(QJsonObject{{"keep", true}}));
+        QCOMPARE(root.value("Meta").toObject().value("Note"), QJsonValue("keep"));
+        QCOMPARE(root.value("Meta").toObject().value("UserDataCount").toInt(), 1);
+        QCOMPARE(root.value("Meta").toObject().value("TotalUserDataSize").toInt(), QStringLiteral("草稿🌸").toUtf8().size());
+        QCOMPARE(root.value("UserData").toArray().first().toObject().value("EntryExtra").toInt(), 17);
+        QCOMPARE(root.value("UserData").toArray().first().toObject().value("Value").toString(), QStringLiteral("草稿🌸"));
+        QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), source); file.close();
+        QVERIFY(QFile::remove(path)); QByteArray afterRemoval;
+        QVERIFY(panel.CaptureUserDataBytes(afterRemoval)); QCOMPARE(afterRemoval, bytes);
+        QVERIFY(!QFileInfo::exists(path)); QVERIFY(panel.HasUnsavedChanges()); QCOMPARE(panel.FilePath(), path);
+        QCOMPARE(table->currentIndex(), current); QCOMPARE(table->selectionModel()->selectedIndexes(), selected);
+        QCOMPARE(dirty.size(), 0); QCOMPARE(saved.size(), 0);
+        panel.SetValidArtMeshIds({}); const auto originalBytes = bytes;
+        QVERIFY(!panel.CaptureUserDataBytes(bytes, &error)); QCOMPARE(bytes, originalBytes); QVERIFY(!error.isEmpty());
+        QCOMPARE(dirty.size(), 0); QCOMPARE(saved.size(), 0);
+    }
+
+    void captureRejectsPendingInputWithoutCommittingOrClosingIt()
+    {
+        QTemporaryDir temp; const auto path = temp.filePath("data.json");
+        live2dstruct::CModelUserData data; data.SetEntries({{"ArtMesh", "Body", "old", {}}}); QVERIFY(data.Save(path));
+        CUserDataPanel panel; panel.SetValidArtMeshIds({"Body"}); QVERIFY(panel.LoadUserData(path));
+        panel.show(); auto* table = panel.findChild<QTableWidget*>("userDataTable"); QVERIFY(table);
+        table->setCurrentCell(0, 1); table->editItem(table->item(0, 1));
+        auto* editor = table->findChild<QLineEdit*>(); QVERIFY(editor); editor->setText("not committed");
+        QSignalSpy dirty(&panel, &CUserDataPanel::DirtyChanged), saved(&panel, &CUserDataPanel::UserDataSaved);
+        QByteArray output("unchanged"); QString error;
+        QVERIFY(!panel.CaptureUserDataBytes(output, &error)); QCOMPARE(output, QByteArray("unchanged")); QVERIFY(!error.isEmpty());
+        QCOMPARE(editor->text(), QString("not committed")); QCOMPARE(table->item(0, 1)->text(), QString("old"));
+        QVERIFY(panel.HasUnsavedChanges()); QCOMPARE(dirty.size(), 0); QCOMPARE(saved.size(), 0);
+        QTest::keyClick(editor, Qt::Key_Escape);
+        QVERIFY(panel.CaptureUserDataBytes(output)); QVERIFY(!panel.HasUnsavedChanges());
+        table->item(0, 1)->setText(QString("invalid") + QChar::Null);
+        const auto before = output; QVERIFY(!panel.CaptureUserDataBytes(output, &error)); QCOMPARE(output, before);
+        QVERIFY(panel.HasUnsavedChanges());
+    }
+
     void editsCreatesAndReloadsModelTags()
     {
         QTemporaryDir temp;
@@ -71,6 +153,11 @@ private slots:
         CModelJson manifest;
         manifest.Parse(model.fileName());
         QVERIFY(!manifest.m_UserData.isEmpty());
+        QCOMPARE(panel.SourcePath(), panel.FilePath());
+        QVERIFY(QFileInfo(panel.SourcePath()).isAbsolute());
+        QFile savedSource(panel.SourcePath()); QVERIFY(savedSource.open(QIODevice::ReadOnly));
+        QCOMPARE(panel.SourceDigest(), QCryptographicHash::hash(savedSource.readAll(), QCryptographicHash::Sha256));
+        savedSource.close();
         live2dstruct::CModelUserData result;
         QVERIFY(result.Load(panel.FilePath()));
         QCOMPARE(result.Entries().first().value, QStringLiteral("皮肤🌸"));
