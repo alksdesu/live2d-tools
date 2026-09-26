@@ -347,6 +347,11 @@ private slots:
         const float maximum = std::numeric_limits<float>::max();
         bool changed = false;
         if (kind == 0) {
+            live2dstruct::CReader reader(mocPath);
+            live2dstruct::CSectionTable table(reader);
+            QVERIFY(table.IsValid());
+            options.mocBytes = reader.m_byte;
+            writeInt(options.mocBytes, table.sectionOffsetTable->art_meshes->parent_deformer_indices, -1);
             const auto& mesh = document.Drawables().first();
             QVERIFY(!mesh.keyforms.isEmpty() && !mesh.keyforms.first().positions.isEmpty());
             auto positions = mesh.keyforms.first().positions;
@@ -485,10 +490,6 @@ private slots:
             QCOMPARE(QPointF(values[0].toDouble(), values[1].toDouble()), center);
             QCOMPARE(QPointF(values[2].toDouble(), values[3].toDouble()), shifted);
         }
-        const auto top = xml.text(xml.field(meshSource, "positions")).split(' ', Qt::SkipEmptyParts);
-        QVERIFY(top.size() >= 4);
-        QCOMPARE(QPointF(top[0].toDouble(), top[1].toDouble()), center);
-        QCOMPARE(QPointF(top[2].toDouble(), top[3].toDouble()), shifted);
         const int forms = xml.field(rotationSource, "keyforms");
         QVERIFY(forms >= 0 && xml.nodes[forms].children.size() >= 2);
         QCOMPARE(QPointF(xml.attribute(xml.nodes[forms].children[0], "originX").toDouble(),

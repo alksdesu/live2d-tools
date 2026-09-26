@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -224,7 +225,7 @@ class Generator
 {
 public:
     Generator(const CCmo3Builder::Options& options, CSectionTable& table,
-              QVector<ExtractedLayer>& extracted, const QHash<QString, QString>& userData, const QJsonObject& physics)
+              QVector<ExtractedMaterial>& extracted, const QHash<QString, QString>& userData, const QJsonObject& physics)
         : m_opt(options), m_table(table), m_extracted(extracted), m_userData(userData),
           m_physics(physics), m_entities(m_xml, m_caff)
     {
@@ -236,6 +237,7 @@ private:
     // ---- 数据准备 ----
     SBindingChain chainFor(int keyformBindingSourceIndex) const;
     void loadDisplayNames();
+    bool prepareMaterials(QString* error);
 
     // ---- shared 池写出 ----
     void writeParameterGuids();
@@ -284,7 +286,7 @@ private:
 
     const CCmo3Builder::Options& m_opt;
     CSectionTable& m_table;
-    QVector<ExtractedLayer>& m_extracted;
+    QVector<ExtractedMaterial>& m_extracted;
     const QHash<QString, QString>& m_userData;
     const QJsonObject& m_physics;
 
@@ -303,6 +305,8 @@ private:
     QVector<QString> m_glueSourceIds;
     QVector<SLayerData> m_layers;               // 与可见提取层对齐
     QVector<int> m_layerOfMesh;                 // art_meshes 下标 → m_layers 下标（-1 无贴图）
+    QVector<QVector<float>> m_materialPositions, m_materialUvs;
+    QSize m_sourceCanvas;
 
     QString m_deformerRootGuidId;
     QString m_coordBasic;
@@ -335,6 +339,69 @@ bool Generator::modelToPixels(const QString& owner, float x, float y, float& pix
     }
     pixelX = static_cast<float>(pixels.x());
     pixelY = static_cast<float>(pixels.y());
+    return true;
+}
+
+bool Generator::prepareMaterials(QString* error)
+{
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    const int meshCount = m_table.art_meshes.size();
+    m_layerOfMesh.fill(-1, meshCount);
+    m_materialPositions.resize(meshCount);
+    m_materialUvs.resize(meshCount);
+    qint64 vertexReferences = 0, encodedPixels = 0;
+    for (const auto& material : m_extracted) {
+        if (material.meshIndex < 0 || material.meshIndex >= meshCount || material.image.isNull() ||
+            material.atlasSize.isEmpty() || material.atlasRect.size() != material.image.size())
+            return fail(QStringLiteral("cmo3 素材图片或图集尺寸无效：%1").arg(material.name));
+        const int count = m_table.art_meshes[material.meshIndex]->vertex_counts;
+        if (count < 0 || count > CTextureExtractor::MaximumMaterialReferences - vertexReferences)
+            return fail(QStringLiteral("cmo3 素材顶点总量超过限制"));
+        vertexReferences += count;
+        const qint64 pixels = qint64(material.image.width()) * material.image.height();
+        if (pixels > CTextureExtractor::MaximumTotalMaterialPixels - encodedPixels)
+            return fail(QStringLiteral("cmo3 素材编码总像素数量超过限制"));
+        encodedPixels += pixels;
+        m_sourceCanvas = m_sourceCanvas.expandedTo(material.atlasSize).expandedTo(material.image.size());
+    }
+    for (const auto& material : m_extracted) {
+        const auto* mesh = m_table.art_meshes[material.meshIndex];
+        if (m_layerOfMesh[material.meshIndex] >= 0 || mesh->ids != material.name ||
+            mesh->texture_nos != material.textureNo || mesh->vertex_counts <= 0 ||
+            mesh->vertex_counts > std::numeric_limits<int>::max() / 2 ||
+            !validSlice(mesh->uv_sources_begin_indices, mesh->vertex_counts * 2, m_table.uvs->uvs.size()))
+            return fail(QStringLiteral("cmo3 素材与网格数据不匹配：%1").arg(material.name));
+        SLayerData layer;
+        layer.name = displayName(material.name);
+        layer.image = material.image;
+        layer.visible = material.visible;
+        const QPoint origin(std::clamp(material.atlasRect.x(), 0, m_sourceCanvas.width() - layer.image.width()),
+                            std::clamp(material.atlasRect.y(), 0, m_sourceCanvas.height() - layer.image.height()));
+        layer.bounds = QRect(origin, layer.image.size());
+        auto& positions = m_materialPositions[material.meshIndex];
+        auto& uvs = m_materialUvs[material.meshIndex];
+        positions.reserve(mesh->vertex_counts * 2);
+        uvs.reserve(mesh->vertex_counts * 2);
+        const qint64 envelopeWidth = ((qint64(layer.image.width()) + MaterialMipmapLevel - 1) / MaterialMipmapLevel) * MaterialMipmapLevel;
+        const qint64 envelopeHeight = ((qint64(layer.image.height()) + MaterialMipmapLevel - 1) / MaterialMipmapLevel) * MaterialMipmapLevel;
+        for (int v = 0; v < mesh->vertex_counts; ++v) {
+            const int uvIndex = mesh->uv_sources_begin_indices + v * 2;
+            const double localX = double(m_table.uvs->uvs[uvIndex]) * material.atlasSize.width() - material.atlasRect.x();
+            const double localY = double(m_table.uvs->uvs[uvIndex + 1]) * material.atlasSize.height() - material.atlasRect.y();
+            const float x = static_cast<float>(localX + origin.x());
+            const float y = static_cast<float>(localY + origin.y());
+            if (!std::isfinite(x) || !std::isfinite(y))
+                return fail(QStringLiteral("cmo3 素材坐标无效：%1").arg(material.name));
+            positions.append(x);
+            positions.append(y);
+            // Editor 的缓存 UV 按 mipmap 边界归一化，重算时读取已保存的基本坐标。
+            uvs.append(static_cast<float>((double(x) - origin.x()) / envelopeWidth));
+            uvs.append(static_cast<float>((double(y) - origin.y()) / envelopeHeight));
+        }
+        m_layerOfMesh[material.meshIndex] = m_layers.size();
+        m_layers.append(layer);
+    }
+    if (m_layers.isEmpty()) return fail(QStringLiteral("没有任何可提取的 ArtMesh 贴图"));
     return true;
 }
 
@@ -817,18 +884,9 @@ void Generator::writeArtMeshEntities()
         m_meshSourceIds[i] = m_xml.AllocId();
         const QString texExtId = m_xml.AllocId();
 
-        // CTextureInputExtension（MODEL_IMAGE 单输入）
-        m_xml.BeginObject(QStringLiteral("CTextureInputExtension"), QString(), texExtId);
-        m_xml.BeginObject(QStringLiteral("ACExtension"), QStringLiteral("super"));
-        m_xml.BeginObject(QStringLiteral("CExtensionGuid"), QStringLiteral("guid"));
-        m_xml.Attribute(QStringLiteral("uuid"), NewGuid());
-        m_xml.Attribute(QStringLiteral("note"), kNoDebug);
-        m_xml.EndObject();
-        m_xml.Ref(QStringLiteral("CArtMeshSource"), QStringLiteral("_owner"), m_meshSourceIds[i]);
-        m_xml.EndObject(); // ACExtension
-        m_xml.BeginCArrayList(QStringLiteral("_textureInputs"), (layerIdx >= 0) ? 1 : 0);
+        const QString textureInputId = layerIdx >= 0 ? m_xml.AllocId() : QString();
         if (layerIdx >= 0) {
-            m_xml.BeginObject(QStringLiteral("CTextureInput_ModelImage"));
+            m_xml.BeginObject(QStringLiteral("CTextureInput_ModelImage"), QString(), textureInputId);
             m_xml.BeginObject(QStringLiteral("ACTextureInput"), QStringLiteral("super"));
             m_xml.BeginObject(QStringLiteral("CAffine"), QStringLiteral("optionalTransformOnCanvas"));
             m_xml.Attribute(QStringLiteral("m00"), QStringLiteral("1.0"));
@@ -844,29 +902,23 @@ void Generator::writeArtMeshEntities()
                       m_layers[layerIdx].modelImageGuidId);
             m_xml.EndObject(); // CTextureInput_ModelImage
         }
+
+        // CTextureInputExtension（MODEL_IMAGE 单输入）
+        m_xml.BeginObject(QStringLiteral("CTextureInputExtension"), QString(), texExtId);
+        m_xml.BeginObject(QStringLiteral("ACExtension"), QStringLiteral("super"));
+        m_xml.BeginObject(QStringLiteral("CExtensionGuid"), QStringLiteral("guid"));
+        m_xml.Attribute(QStringLiteral("uuid"), NewGuid());
+        m_xml.Attribute(QStringLiteral("note"), kNoDebug);
+        m_xml.EndObject();
+        m_xml.Ref(QStringLiteral("CArtMeshSource"), QStringLiteral("_owner"), m_meshSourceIds[i]);
+        m_xml.EndObject(); // ACExtension
+        m_xml.BeginCArrayList(QStringLiteral("_textureInputs"), (layerIdx >= 0) ? 1 : 0);
+        if (layerIdx >= 0) m_xml.Ref(QStringLiteral("CTextureInput_ModelImage"), QString(), textureInputId);
         m_xml.EndList();
-        if (layerIdx >= 0) {
-            // currentTextureInputData 需要指向同一 CTextureInput_ModelImage；
-            // xs 序列化不支持列表元素引用，内联重复一份等价对象
-            m_xml.BeginObject(QStringLiteral("CTextureInput_ModelImage"),
-                              QStringLiteral("currentTextureInputData"));
-            m_xml.BeginObject(QStringLiteral("ACTextureInput"), QStringLiteral("super"));
-            m_xml.BeginObject(QStringLiteral("CAffine"), QStringLiteral("optionalTransformOnCanvas"));
-            m_xml.Attribute(QStringLiteral("m00"), QStringLiteral("1.0"));
-            m_xml.Attribute(QStringLiteral("m01"), QStringLiteral("0.0"));
-            m_xml.Attribute(QStringLiteral("m02"), QStringLiteral("0.0"));
-            m_xml.Attribute(QStringLiteral("m10"), QStringLiteral("0.0"));
-            m_xml.Attribute(QStringLiteral("m11"), QStringLiteral("1.0"));
-            m_xml.Attribute(QStringLiteral("m12"), QStringLiteral("0.0"));
-            m_xml.EndObject();
-            m_xml.Ref(QStringLiteral("CTextureInputExtension"), QStringLiteral("_owner"), texExtId);
-            m_xml.EndObject();
-            m_xml.Ref(QStringLiteral("CModelImageGuid"), QStringLiteral("_modelImageGuid"),
-                      m_layers[layerIdx].modelImageGuidId);
-            m_xml.EndObject();
-        } else {
+        if (layerIdx >= 0)
+            m_xml.Ref(QStringLiteral("CTextureInput_ModelImage"), QStringLiteral("currentTextureInputData"), textureInputId);
+        else
             m_xml.Null(QStringLiteral("currentTextureInputData"));
-        }
         m_xml.EndObject(); // CTextureInputExtension
 
         // CArtMeshSource
@@ -973,30 +1025,8 @@ void Generator::writeArtMeshEntities()
         }
         m_xml.EndList();
 
-        // 顶层 positions（默认 keyform，画布像素坐标）
-        {
-            QVector<float> pixelPositions;
-            pixelPositions.reserve(vertexCount * 2);
-            const QVector<float> sourcePositions = meshKeyformPositions(mesh, 0);
-            for (int v = 0; v < vertexCount; ++v) {
-                const float mx = sourcePositions[v * 2];
-                const float my = sourcePositions[v * 2 + 1];
-                float px, py;
-                if (!modelToPixels(mesh->ids, mx, my, px, py)) return;
-                pixelPositions.append(px);
-                pixelPositions.append(py);
-            }
-            m_xml.FloatArray(QStringLiteral("positions"), pixelPositions);
-        }
-
-        // uvs：原始 moc3 v 值（Editor 用同一约定，不做 1-v 翻转）
-        {
-            QVector<float> uvs;
-            uvs.reserve(vertexCount * 2);
-            const float* uvPtr = &m_table.uvs->uvs[mesh->uv_sources_begin_indices];
-            for (int v = 0; v < vertexCount * 2; ++v) uvs.append(uvPtr[v]);
-            m_xml.FloatArray(QStringLiteral("uvs"), uvs);
-        }
+        m_xml.FloatArray(QStringLiteral("positions"), m_materialPositions[i]);
+        m_xml.FloatArray(QStringLiteral("uvs"), m_materialUvs[i]);
 
         m_xml.Null(QStringLiteral("texture"));
         const int blendMode = CDrawableFlags::BlendMode(mesh->drawable_flags);
@@ -1476,23 +1506,7 @@ bool Generator::Run(QString* outError)
     m_canvasH = canvasSize.height();
     loadDisplayNames();
 
-    // 提取层 → SLayerData；按 mesh 下标建索引
-    m_layerOfMesh.fill(-1, m_table.art_meshes.size());
-    for (const ExtractedLayer& ex : m_extracted) {
-        if (ex.image.isNull()) continue;
-        SLayerData layer;
-        layer.name = displayName(ex.name);
-        layer.image = ex.image;
-        layer.bounds = ex.canvasRect;
-        layer.visible = ex.isVisible;
-        if (ex.meshIndex >= 0 && ex.meshIndex < m_layerOfMesh.size())
-            m_layerOfMesh[ex.meshIndex] = m_layers.size();
-        m_layers.append(layer);
-    }
-    if (m_layers.isEmpty()) {
-        if (outError) *outError = QStringLiteral("没有任何可提取的 ArtMesh 贴图");
-        return false;
-    }
+    if (!prepareMaterials(outError)) return false;
 
     // ---- 文档骨架 ----
     const QStringList versionPIs = {
@@ -1564,6 +1578,8 @@ bool Generator::Run(QString* outError)
         QStringLiteral("com.live2d.cubism.doc.model.texture.CTextureManager"),
         QStringLiteral("com.live2d.cubism.doc.model.texture.LayeredImageWrapper"),
         QStringLiteral("com.live2d.cubism.doc.model.texture.TextureImageGroup"),
+        QStringLiteral("com.live2d.graphics.cachedImage.CCachedImageManager"),
+        QStringLiteral("com.live2d.graphics.cachedImage.CachedImageType"),
     };
     m_xml.BeginDocument(versionPIs, imports, QStringLiteral("402030000"));
     m_xml.BeginShared();
@@ -1575,7 +1591,8 @@ bool Generator::Run(QString* outError)
     m_coordCanvas = m_entities.WriteCoordType(QStringLiteral("Canvas"));
     m_filterGraph = m_entities.WriteFilterGraph();
     m_layeredImage = m_entities.WriteLayeredImage(m_opt.modelName + QStringLiteral(".psd"),
-                                                  m_canvasW, m_canvasH, m_layers);
+                                                  m_sourceCanvas.width(), m_sourceCanvas.height(), m_layers, outError);
+    if (m_layeredImage.layeredImage.isEmpty()) return false;
     m_modelImageGroupId = m_entities.WriteModelImageGroup(m_filterGraph, m_layeredImage, m_layers);
 
     writeParameterGuids();
@@ -1869,7 +1886,8 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         if (outError) *outError = QStringLiteral("纹理图集加载失败");
         return false;
     }
-    QVector<ExtractedLayer> extracted = extractor.ExtractAll(&table, true, &opt.drawableIndexOverrides);
+    QVector<ExtractedMaterial> extracted;
+    if (!extractor.ExtractMaterials(&table, extracted, outError)) return false;
 
     Generator generator(opt, table, extracted, userData, physics.document);
     return generator.Run(outError);

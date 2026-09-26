@@ -281,13 +281,15 @@ SFilterGraphIds CCmo3Entities::WriteFilterGraph()
     return out;
 }
 
-QString CCmo3Entities::WriteImageResource(const QImage& image, QString* outPngPath)
+QString CCmo3Entities::WriteImageResource(const QImage& image, QString* outPngPath, QString* error)
 {
     QByteArray png;
     {
         QBuffer buffer(&png);
-        buffer.open(QIODevice::WriteOnly);
-        image.save(&buffer, "PNG");
+        if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG") || png.isEmpty()) {
+            if (error) *error = QStringLiteral("cmo3 素材 PNG 编码失败");
+            return {};
+        }
     }
     const QString pngPath = nextPngName();
     m_caff.AddEntry(pngPath, png);
@@ -306,7 +308,7 @@ QString CCmo3Entities::WriteImageResource(const QImage& image, QString* outPngPa
 }
 
 SLayeredImageIds CCmo3Entities::WriteLayeredImage(const QString& docName, int canvasW, int canvasH,
-                                                  QVector<SLayerData>& layers)
+                                                  QVector<SLayerData>& layers, QString* error)
 {
     SLayeredImageIds out;
     out.blendNormal = WriteBlendNormal();
@@ -316,7 +318,8 @@ SLayeredImageIds CCmo3Entities::WriteLayeredImage(const QString& docName, int ca
 
     // 先写每层的 CImageResource（PNG 入 CAFF）
     for (SLayerData& layer : layers) {
-        layer.imageResId = WriteImageResource(layer.image, &layer.pngPath);
+        layer.imageResId = WriteImageResource(layer.image, &layer.pngPath, error);
+        if (layer.imageResId.isEmpty()) return {};
         layer.layerId = m_xml.AllocId();
     }
 
@@ -511,7 +514,11 @@ QString CCmo3Entities::WriteModelImageGroup(const SFilterGraphIds& fg, const SLa
         m_xml.EndObject();
         m_xml.Ref(QStringLiteral("CModelImageGroup"), QStringLiteral("_group"), groupId);
         m_xml.BeginObject(QStringLiteral("CCachedImageManager"), QStringLiteral("cachedImageManager"));
+        m_xml.Enum(QStringLiteral("CachedImageType"), QStringLiteral("defaultCacheType"), QStringLiteral("SCALE_1"));
         m_xml.Ref(QStringLiteral("CImageResource"), QStringLiteral("rawImage"), layer.imageResId);
+        m_xml.BeginArrayList(QStringLiteral("cachedImages"), 0);
+        m_xml.EndList();
+        m_xml.I(QStringLiteral("requiredMipmapLevel"), MaterialMipmapLevel);
         m_xml.EndObject();
         m_xml.EndObject(); // CModelImage
     }

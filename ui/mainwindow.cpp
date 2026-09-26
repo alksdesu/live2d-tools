@@ -601,7 +601,7 @@ void MainWindow::on_actionCmo3Export_triggered()
         "将从 moc3 运行时数据恢复 Cubism Editor 工程。\n\n"
         "以下信息在 moc3 中不存在，无法恢复：\n"
         "· 变形器路径整理、画师备注\n"
-        "· 原始 PSD 关联（贴图以每网格图层重建）\n"
+        "· 原始 PSD 图层位置和关联（素材按运行时图集重建）\n"
         "· 参数分组的折叠状态等编辑器偏好\n\n"
         "是否继续？",
         QMessageBox::Yes | QMessageBox::No, this);

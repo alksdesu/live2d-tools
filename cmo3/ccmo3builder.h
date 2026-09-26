@@ -18,7 +18,7 @@ class CSectionTable;
 namespace cmo3 {
 
 // moc3 → cmo3 生成编排器。
-// 数据源：live2dstruct 全段解析 + CTextureExtractor 每 mesh 光栅化贴图。
+// 数据源：live2dstruct 全段解析 + CTextureExtractor 图集素材裁片。
 // 生成 MODEL_IMAGE 模式工程：单 CLayeredImage + N CLayer，drawable 挂 well-known 根。
 class CCmo3Builder
 {

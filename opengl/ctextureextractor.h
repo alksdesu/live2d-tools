@@ -28,14 +28,30 @@ struct ExtractedLayer {
     QVector<int> maskIndices;   // 裁剪蒙版引用的 art mesh 索引
 };
 
+struct ExtractedMaterial {
+    QString name;
+    int meshIndex = -1;
+    int textureNo = -1;
+    QImage image;
+    QRect atlasRect;
+    QSize atlasSize;
+    bool visible = true;
+};
+
 class CTextureExtractor
 {
 public:
+    static constexpr qint64 MaximumMaterialPixels = 128LL * 1024 * 1024;
+    static constexpr qint64 MaximumTotalMaterialPixels = 256LL * 1024 * 1024;
+    static constexpr qint64 MaximumMaterialReferences = 16LL * 1024 * 1024;
     CTextureExtractor();
     ~CTextureExtractor();
 
     /// 从文件路径列表加载纹理图集 PNG
     bool LoadAtlases(const QVector<QString>& atlasPaths, CExportControl* control = nullptr);
+
+    bool ExtractMaterials(live2dstruct::CSectionTable* table, QVector<ExtractedMaterial>& result,
+                          QString* error = nullptr) const;
 
     /// 从 CSectionTable 提取所有 art mesh 的原始纹理
     /// @param table 已解析的 moc3 数据

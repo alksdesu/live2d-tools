@@ -875,3 +875,20 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 普通及 ASAN/UBSAN 各通过 34 项数据测试、35 项真实 Core 测试，零失败/跳过；实际包含四个内置模型和通过 `LIVE2D_REAL_CORE_EXTRA_MOC` 指定的 Mao。覆盖实际拆边、全关键形/BS、共享数据隔离、Glue A/B/删除/重定向/零配对、八种存储重叠情况、极值、聚合预算及 4096 个独立位置切片。测试输入指纹为 `/tmp/live2d-mesh-builder-final-input.json`，四文件最终摘要为 `/tmp/live2d-mesh-builder-final-after.sha256`。
 - 两个新目标在正式 CMake 中通过，登记总数为 111，本批没有重新运行全部目标。最终完整原生应用增量构建成功，1013 项生产输入、69 个原资源均保持；记录 `/tmp/live2d-mesh-foundation-final-inputs.json`，SHA-256 为 `b85606310e2ef3c1f0dbf39107d411815f28c2d9102798044abb72cdda0f1179`。与上述 13 份 PSD 验收的生产输入相比，仅尚未被 UI 调用的结构构建器 cpp 进一步补齐防错与预算，消费端实现完全相同。
 - 本节是实际顶点结构变换的基础，尚未接入 Document、撤销/会话、运行时编辑选区迁移和画布入口。局部重剖分、完整增删交互及前述规范化仍属未完成项，网格编辑总项继续保持未勾选。
+
+
+## cmo3 素材坐标与缓存一致性
+
+- 旧生成器在 Mark 的 30 个网格上均存在 PNG 尺寸与图层 bounds 尺寸不一致、MODEL_IMAGE 的 UV 与素材变换不一致、当前纹理输入被重复内联为不同对象的问题。ArmR 的 268×468 PNG 被写入 418022×1197486 的图层边界。红例保存在 `/tmp/live2d-cmo3-generator-red/red-oracle.json`，由修复前的静态库独立生成；原库和输入摘要保留。
+- `ExtractMaterials` 独立于 PSD 的 `ExtractAll`：按全部顶点 UV 提取矩形素材，保留未被三角形覆盖的像素、透明像素 RGB 和一像素线性采样边带，超出图集按 ClampToEdge 延伸。相同裁片共享位图，分配前检查索引、UV、整数边界、唯一图片像素及遍历总量。PSD 消费入口与已有世界坐标捕获逻辑不变。
+- 素材图层边界使用真实 PNG 尺寸，素材文档画布独立于模型画布。Source.positions 由图集 UV、裁片原点和素材图层位置共同计算；Source.uvs 根据同一份序列化 float 坐标与素材缓存尺寸计算。所有 ArtMesh、Warp、Rotation 关键形仍使用各自父局部或模型画布坐标，不把首关键形当作素材基本坐标。
+- 显式保存 SCALE_1、requiredMipmapLevel=64 和图片缓存容器。两个核对版本的上传链均将原图按原尺寸绘入对齐后的 GPU 纹理，UV 因而按 64 像素边界归一化；单层滤镜输入保持 identity，保存的素材矩阵与清缓存后由图层位置重算的矩阵一致。静态追踪及 Hiyori 原工程的直接纹理特例见 `/tmp/live2d-editor-image-reference/README.md`。
+- 纹理输入只在 shared 池定义一次，列表和 currentTextureInputData 引用同一对象。4 份官方原生工程中 516/516 个扩展遵循同一身份关系；重初始化按列表内的当前对象定位，不能使用字段相同的两个实例替代。原生关联核对见 `/tmp/live2d-native-image-reference/identity.json`。
+- 图像编码失败向上传播，不写入空 PNG 或覆盖目标工程；素材展开的顶点引用与逐网格编码像素另作累计检查，避免共享切片或共享位图绕过输出准备预算。既有导出确认文字明确运行时图集不能恢复原 PSD 图层位置和关联。
+
+### 验证记录
+
+- 新素材提取 29 项、新 cmo3 素材 6 项、原纹理提取 25 项、cmo3 综合 88 项、变形器 64 项，普通与 ASAN/UBSAN 各 212 项通过，零失败、跳过或 sanitizer 诊断；ASAN 使用 detect_leaks=0。五个关联 CTest 目标通过，登记总数 113，本次未重复执行全部目标。摘要 `/tmp/live2d-cmo3-material-final-tests.json`，SHA-256 `b3fb3b3390f9047aae84fda76b0e47ee987290fe93f037a29257a2204a99ca6a`。
+- 完整应用增量构建及真实 MainWindow 的三种物理导出场景通过，包括接受、取消、无效候选和完整运行时包。导出前后参数、运行时物理、草稿、历史与源文件保持；报告 `/tmp/live2d-cmo3-material-acceptance-proof/summary.json`，SHA-256 `3893dcd3940b44159937f0222c706991136e2124b263e2a69b4069ef53722d07`。
+- Mark、Natori、Rice、Wanko、官方 Mao 的独立 CLI 输出及上述 3 个真实 Main 输出全部通过独立原始 MOC、CAFF/XML/PNG 解析，共 768 份素材、7046 个关键形和 92265 组双线性采样。最大 RGBA 通道差为 0.006374（按 0–255 计），保存与滤镜重算 UV 最大差为 7.81e-8。1013 项生产输入、69 个原 Resources 文件及官方 Mao ZIP 指纹保持。报告 `/tmp/live2d-cmo3-material-green/summary.json`，SHA-256 `ea9106d020f8061d9cbf87c0dc125c56e7cd0d9219ab0eb34d5327a68e828273`。
+- 以上包括实际应用导出，但未运行完整 Cubism Editor GUI 重开和保存；静态合同与独立数值验证不替代最终 Editor 兼容性验收。恢复的素材来自运行时图集，不宣称恢复原始 PSD 布局或图集之外的像素。

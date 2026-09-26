@@ -10,6 +10,9 @@
 #include <limits>
 #include <exception>
 #include <utility>
+#include <cstring>
+#include <map>
+#include <tuple>
 #include <QDebug>
 
 using namespace live2dstruct;
@@ -50,6 +53,119 @@ bool CTextureExtractor::LoadAtlases(const QVector<QString>& atlasPaths, CExportC
     } catch (const std::exception& exception) {
         if (control) control->Fail(QStringLiteral("加载纹理图集失败：%1").arg(QString::fromUtf8(exception.what())));
         return false;
+    }
+}
+
+bool CTextureExtractor::ExtractMaterials(CSectionTable* table, QVector<ExtractedMaterial>& result, QString* error) const
+{
+    if (error) error->clear();
+    const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
+    try {
+        if (!table || !table->IsValid() || !table->count_info || !table->uvs || !table->position_indices ||
+            table->count_info->art_meshes < 0 || table->count_info->art_meshes != table->art_meshes.size())
+            return fail(QStringLiteral("无法提取 CMO3 素材：模型区段数据无效"));
+        using Slice = std::tuple<int, int, int>;
+        using ImageKey = std::tuple<int, int, int, int, int>;
+        std::map<Slice, QRect> uvBounds;
+        std::map<Slice, bool> indexSlices;
+        std::map<ImageKey, int> imageIndices;
+        struct ImagePlan { int atlas; QRect rect; QImage image; };
+        QVector<ImagePlan> images;
+        QVector<ExtractedMaterial> candidate;
+        QVector<int> materialImages;
+        qint64 references = 0, pixels = 0;
+        const auto consume = [&](qint64 count) {
+            if (count > MaximumMaterialReferences - references) return false;
+            references += count; return true;
+        };
+        const auto inRange = [](qint64 first, qint64 count, qint64 size) {
+            return first >= 0 && count >= 0 && first <= size && count <= size - first;
+        };
+        for (int index = 0; index < table->art_meshes.size(); ++index) {
+            const auto* mesh = table->art_meshes[index];
+            if (!mesh) return fail(QStringLiteral("CMO3 素材引用了空网格：%1").arg(index));
+            const QString label = QStringLiteral("%1（网格 %2）").arg(mesh->ids).arg(index);
+            const int vertexCount = mesh->vertex_counts, indexCount = mesh->position_index_sources_counts;
+            if (vertexCount < 0 || vertexCount > 1000000 || indexCount < 0 || indexCount % 3 || (!vertexCount && indexCount))
+                return fail(QStringLiteral("CMO3 素材的顶点或三角索引数量无效：%1").arg(label));
+            if (!vertexCount) continue;
+            const int atlasIndex = mesh->texture_nos;
+            if (atlasIndex < 0 || atlasIndex >= m_atlases.size() || m_atlases[atlasIndex].isNull())
+                return fail(QStringLiteral("CMO3 素材缺少纹理图集：%1").arg(label));
+            const auto& atlas = m_atlases[atlasIndex];
+            if (!inRange(mesh->uv_sources_begin_indices, qint64(vertexCount) * 2, table->uvs->uvs.size()) ||
+                (indexCount && !inRange(mesh->position_index_sources_begin_indices, indexCount, table->position_indices->indices.size())))
+                return fail(QStringLiteral("CMO3 素材的 UV 或三角索引区间越界：%1").arg(label));
+            if (indexCount) {
+                const Slice slice{mesh->position_index_sources_begin_indices, indexCount, vertexCount};
+                if (indexSlices.find(slice) == indexSlices.end()) {
+                    if (!consume(indexCount)) return fail(QStringLiteral("CMO3 素材的顶点和索引检查总量超过限制"));
+                    for (int at = 0; at < indexCount; ++at) {
+                        const int vertex = table->position_indices->indices[mesh->position_index_sources_begin_indices + at];
+                        if (vertex < 0 || vertex >= vertexCount) return fail(QStringLiteral("CMO3 素材的三角索引越界：%1").arg(label));
+                    }
+                    indexSlices.emplace(slice, true);
+                }
+            }
+            const Slice uvSlice{atlasIndex, mesh->uv_sources_begin_indices, vertexCount};
+            auto foundBounds = uvBounds.find(uvSlice);
+            if (foundBounds == uvBounds.end()) {
+                if (!consume(vertexCount)) return fail(QStringLiteral("CMO3 素材的顶点和索引检查总量超过限制"));
+                double minX = std::numeric_limits<double>::max(), minY = minX, maxX = -minX, maxY = -minX;
+                for (int vertex = 0; vertex < vertexCount; ++vertex) {
+                    const double u = table->uvs->uvs[mesh->uv_sources_begin_indices + vertex * 2];
+                    const double v = table->uvs->uvs[mesh->uv_sources_begin_indices + vertex * 2 + 1];
+                    if (!std::isfinite(u) || !std::isfinite(v)) return fail(QStringLiteral("CMO3 素材的 UV 包含非有限值：%1").arg(label));
+                    const double x = u * atlas.width(), y = v * atlas.height();
+                    minX = std::min(minX, x); maxX = std::max(maxX, x);
+                    minY = std::min(minY, y); maxY = std::max(maxY, y);
+                }
+                const double left = std::floor(minX) - 1, top = std::floor(minY) - 1;
+                const double right = std::ceil(maxX) + 1, bottom = std::ceil(maxY) + 1;
+                const double minimum = std::numeric_limits<int>::min(), maximum = std::numeric_limits<int>::max();
+                if (left < minimum || top < minimum || right > maximum || bottom > maximum ||
+                    right <= left || bottom <= top || right - left > maximum || bottom - top > maximum)
+                    return fail(QStringLiteral("CMO3 素材的像素边界超出整数范围：%1").arg(label));
+                const QRect rect(int(left), int(top), int(right - left), int(bottom - top));
+                if (qint64(rect.width()) * rect.height() > MaximumMaterialPixels)
+                    return fail(QStringLiteral("CMO3 单张素材像素数量超过限制：%1").arg(label));
+                foundBounds = uvBounds.emplace(uvSlice, rect).first;
+            }
+            const QRect rect = foundBounds->second;
+            const ImageKey key{atlasIndex, rect.x(), rect.y(), rect.width(), rect.height()};
+            auto foundImage = imageIndices.find(key);
+            if (foundImage == imageIndices.end()) {
+                const qint64 added = qint64(rect.width()) * rect.height();
+                if (added > MaximumTotalMaterialPixels - pixels)
+                    return fail(QStringLiteral("CMO3 素材总像素数量超过限制"));
+                pixels += added;
+                foundImage = imageIndices.emplace(key, images.size()).first;
+                images.append({atlasIndex, rect, {}});
+            }
+            candidate.append({mesh->ids, index, atlasIndex, {}, rect, atlas.size(), mesh->is_visible});
+            materialImages.append(foundImage->second);
+        }
+        for (auto& plan : images) {
+            const auto& atlas = m_atlases[plan.atlas]; const auto& rect = plan.rect;
+            QImage image(rect.size(), QImage::Format_ARGB32);
+            if (image.isNull()) return fail(QStringLiteral("无法分配 CMO3 素材图像"));
+            const int first = int(std::clamp(-qint64(rect.x()), qint64(0), qint64(rect.width())));
+            const int last = int(std::clamp(qint64(atlas.width()) - rect.x(), qint64(0), qint64(rect.width())));
+            for (int y = 0; y < rect.height(); ++y) {
+                const int sourceY = int(std::clamp(qint64(rect.y()) + y, qint64(0), qint64(atlas.height() - 1)));
+                const auto* source = reinterpret_cast<const QRgb*>(atlas.constScanLine(sourceY));
+                auto* target = reinterpret_cast<QRgb*>(image.scanLine(y));
+                std::fill(target, target + first, source[0]);
+                if (last > first) std::memcpy(target + first, source + qint64(rect.x()) + first, size_t(last - first) * sizeof(QRgb));
+                std::fill(target + last, target + rect.width(), source[atlas.width() - 1]);
+            }
+            plan.image = std::move(image);
+        }
+        for (int index = 0; index < candidate.size(); ++index) candidate[index].image = images[materialImages[index]].image;
+        result.swap(candidate);
+        return true;
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("无法准备 CMO3 素材，原结果保持不变"));
     }
 }
 

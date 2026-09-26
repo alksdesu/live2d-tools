@@ -8,6 +8,8 @@
 
 namespace cmo3 {
 
+inline constexpr int MaterialMipmapLevel = 64;
+
 class CCaffArchive;
 
 // 共享 filter graph（CLayerSelector + CLayerFilter）的 xs.id 集合，
@@ -18,7 +20,7 @@ struct SFilterGraphIds {
     QString fvidMiCurrentImageGuid; // mi_currentImageGuid
 };
 
-// 单个图层（对应一个 ArtMesh 的光栅化贴图）
+// 单个图层（对应一个 ArtMesh 的素材裁片）
 struct SLayerData {
     QString name;                   // 显示名（ArtMesh 名）
     QImage  image;                  // 裁剪后的贴图
@@ -55,10 +57,10 @@ public:
 
     // ---- 图层与纹理链 ----
     // 写出 CImageResource 并把 PNG 存入 CAFF；返回 xs.id
-    QString WriteImageResource(const QImage& image, QString* outPngPath);
+    QString WriteImageResource(const QImage& image, QString* outPngPath, QString* error = nullptr);
     // 写出 CLayeredImage + root CLayerGroup + 全部 CLayer + LayerSet（就地修改 layers 填充 id）
     SLayeredImageIds WriteLayeredImage(const QString& docName, int canvasW, int canvasH,
-                                       QVector<SLayerData>& layers);
+                                       QVector<SLayerData>& layers, QString* error = nullptr);
     // 写出 CModelImageGroup（内联全部 CModelImage，填充各层 modelImageGuidId）；返回 group 的 xs.id
     QString WriteModelImageGroup(const SFilterGraphIds& fg, const SLayeredImageIds& li,
                                  QVector<SLayerData>& layers);
