@@ -3,6 +3,7 @@
 
 #include "cmodeldocument.h"
 #include "ckeyformmappingcontext.h"
+#include "cdeformereditcontext.h"
 #include <QPointF>
 #include <functional>
 #include <optional>
@@ -11,6 +12,7 @@ namespace live2dstruct {
 class CKeyformEditController
 {
 public:
+    enum class DeformerHandle { WarpPoints, RotationOrigin, RotationAngle };
     using Publisher = std::function<bool(const CModelDocument&, const QMap<QString, float>&, bool, QString*)>;
     using PreviewEnder = std::function<bool(QString*)>;
     using DefinitionPublisher = std::function<bool(const CModelDocument&, const QMap<QString, float>&, bool, QString*)>;
@@ -37,10 +39,13 @@ public:
     bool Restore(CModelDocument candidate, QString* error = nullptr, bool forceStructure = false);
     bool BeginDrag(const QVector<int>& selected, const QVector<float>& runtimePositions, QString* error = nullptr);
     bool DragBy(const QPointF& modelDelta, QString* error = nullptr);
+    bool BeginDeformerDrag(DeformerHandle handle, const QVector<int>& selected, QString* error = nullptr);
+    bool MoveDeformerDrag(const QPointF& modelDelta, double angleDelta, QString* error = nullptr);
     bool CancelDrag(QString* error = nullptr);
     void FinishDrag();
+    bool DragHasChanges() const;
     bool IsActive() const { return !m_target.isEmpty(); }
-    bool IsDragging() const { return m_drag.has_value(); }
+    bool IsDragging() const { return m_drag.has_value() || m_deformerDrag.has_value(); }
     const QString& Target() const { return m_target; }
     const QString& Type() const { return m_type; }
     int Keyform() const { return m_keyform; }
@@ -58,6 +63,17 @@ private:
         QVector<float> local;
         QVector<float> model;
         QVector<int> selected;
+        quint64 revision = 0;
+    };
+    struct DeformerDrag
+    {
+        CModelDocument start;
+        CDeformerEditContext mapping;
+        DeformerHandle handle = DeformerHandle::WarpPoints;
+        QVector<int> selected;
+        QVector<float> model;
+        QVector<CModelWarpKeyform> warp;
+        QVector<CModelRotationKeyform> rotation;
         quint64 revision = 0;
     };
     bool CanEdit(const QString& id, int keyform, QString* error) const;
@@ -82,6 +98,7 @@ private:
     QByteArray m_source;
     bool m_publishing = false;
     std::optional<Drag> m_drag;
+    std::optional<DeformerDrag> m_deformerDrag;
 };
 }
 

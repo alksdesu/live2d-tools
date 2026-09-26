@@ -123,7 +123,7 @@ private:
     bool EndKeyformEditing(QString* error = nullptr);
     bool SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error);
     bool ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error);
-    void RefreshKeyformUi(bool changed = false);
+    void RefreshKeyformUi(bool changed = false, bool markSession = true);
     void SelectModelObjects(const QStringList& ids, const QStringList& types);
     void RefreshModelTree();
     QString m_parameterBeingEdited;
@@ -177,6 +177,7 @@ private:
     bool m_syncingVisibility = false;
     enum class HistorySource { None, Parameters, Inspector, Timeline, Physics };
     HistorySource m_historySource = HistorySource::None;
+    std::optional<HistorySource> m_keyformDragHistorySource;
     CWorkspaceLayouts m_workspaceLayouts;
     QString m_currentMoc;   // 当前模型 moc3 路径（供 cmo3 导出）
     QString m_currentModelDir;

@@ -127,6 +127,7 @@ void CKeyformEditController::SetDocument(CModelDocument* document)
     m_pose.clear();
     m_source = document ? document->SourceDigest() : QByteArray();
     m_drag.reset();
+    m_deformerDrag.reset();
 }
 
 void CKeyformEditController::SetPublisher(Publisher publisher, PreviewEnder ender)
@@ -272,7 +273,7 @@ bool CKeyformEditController::Activate(const QString& id, const QString& type, in
                                     const QMap<QString, float>& currentValues, QString* error)
 {
     if (!CanEdit(id, type, keyform, error) || keyform < 0) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     QMap<QString, float> pose;
     if (!MakePose(id, type, keyform, currentValues, pose, error)) return false;
     if (!m_publish) return fail(error, QStringLiteral("尚未连接模型预览"));
@@ -324,7 +325,7 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
     if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
     if (edit.field == CModelEdit::MeshStructure) {
         if (!Ready(error)) return false;
-        if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+        if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
         try {
             CModelDocument candidate = *m_document;
             CModelEdit command = edit;
@@ -336,7 +337,7 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
     }
     if (materialField(edit.field)) {
         if (!Ready(error)) return false;
-        if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+        if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
         try {
             bool current = false;
             if (edit.field == CModelEdit::VisibilityValues) {
@@ -388,7 +389,7 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
     }
     if (edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure) {
         if (!Ready(error)) return false;
-        if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+        if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
         try {
             CModelDocument candidate = *m_document;
             CModelEdit command = edit;
@@ -415,7 +416,7 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
         return fail(error, QStringLiteral("编辑数据与对象类型不匹配"));
     if (poseEdit && previewKeyform < 0) return fail(error, QStringLiteral("请选择要编辑的关键形"));
     if (!CanEdit(edit.name, edit.type, poseEdit ? previewKeyform : -1, error)) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     bool current = false;
     if (meshEdit) {
         current = edit.before.canConvert<QVector<float>>() &&
@@ -458,7 +459,7 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
 bool CKeyformEditController::History(bool undo, CModelEdit& edit, QString* error)
 {
     if (!Ready(error)) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     CModelDocument candidate = *m_document;
     CModelEdit command;
     if (!(undo ? candidate.PeekUndoEdit(&command) : candidate.PeekRedoEdit(&command)) ||
@@ -488,14 +489,14 @@ bool CKeyformEditController::Restore(CModelDocument candidate, QString* error, b
         return PublishStructure(std::move(candidate), command, true, true, error);
     }
     if (m_publishDefinitions) return PublishDefinitions(std::move(candidate), true, error);
-    if (IsActive() || m_drag) return fail(error, QStringLiteral("请先退出关键形编辑再恢复会话"));
+    if (IsActive() || IsDragging()) return fail(error, QStringLiteral("请先退出关键形编辑再恢复会话"));
     return Publish(std::move(candidate), {}, false, error);
 }
 
 bool CKeyformEditController::PublishMesh(CModelDocument candidate, const CModelEdit& command, bool forward, QString* error)
 {
     if (!Ready(error)) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     if (!m_publishMesh || !command.runtime || candidate.SourceDigest() != m_source)
         return fail(error, QStringLiteral("网格结构预览尚未连接或源模型已改变"));
     const auto* document = m_document;
@@ -515,7 +516,7 @@ bool CKeyformEditController::PublishMesh(CModelDocument candidate, const CModelE
 bool CKeyformEditController::PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error)
 {
     if (!Ready(error)) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     if (!m_publishDefinitions || candidate.SourceDigest() != m_source)
         return fail(error, QStringLiteral("参数定义预览尚未连接或源模型已改变"));
     try {
@@ -566,7 +567,7 @@ bool CKeyformEditController::PublishStructure(CModelDocument candidate, const CM
                                             bool forward, bool restoreSession, QString* error)
 {
     if (!Ready(error)) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     if (!m_publishStructure || candidate.SourceDigest() != m_source || !command.runtime)
         return fail(error, QStringLiteral("参数结构预览尚未连接或源模型已改变"));
     try {
@@ -665,7 +666,7 @@ bool CKeyformEditController::BeginDrag(const QVector<int>& selected, const QVect
                                      QString* error)
 {
     if (!IsActive() || m_type != QLatin1String("artmesh") || !CanEdit(m_target, m_keyform, error)) return false;
-    if (m_drag || selected.isEmpty()) return fail(error, QStringLiteral("没有可拖动的顶点或拖拽尚未结束"));
+    if (IsDragging() || selected.isEmpty()) return fail(error, QStringLiteral("没有可拖动的顶点或拖拽尚未结束"));
     Drag drag;
     drag.start = *m_document;
     drag.local = m_document->DrawableKeyformPositions(m_target, m_keyform);
@@ -717,23 +718,135 @@ bool CKeyformEditController::DragBy(const QPointF& delta, QString* error)
     return true;
 }
 
+bool CKeyformEditController::DragHasChanges() const
+{
+    if (!m_document || !m_document->IsLoaded() || m_document->SourceDigest() != m_source) return false;
+    if (m_deformerDrag) {
+        return m_type == QLatin1String("warp")
+            ? m_document->DeformerWarpKeyforms(m_target) != m_deformerDrag->warp
+            : m_document->DeformerRotationKeyforms(m_target) != m_deformerDrag->rotation;
+    }
+    return m_drag && m_document->DrawableKeyformPositions(m_target, m_keyform) != m_drag->local;
+}
+
 bool CKeyformEditController::CancelDrag(QString* error)
 {
+    if (m_deformerDrag) {
+        if (!Ready(error) || m_document->Revision() != m_deformerDrag->revision)
+            return fail(error, QStringLiteral("文档已改变，不能覆盖后续编辑"));
+        if (DragHasChanges() && !Publish(m_deformerDrag->start, m_pose, true, error)) return false;
+        m_deformerDrag.reset();
+        return true;
+    }
     if (!m_drag) return true;
     if (!Ready(error) || m_document->Revision() != m_drag->revision)
         return fail(error, QStringLiteral("文档已改变，不能覆盖后续编辑"));
-    if (m_document->DrawableKeyformPositions(m_target, m_keyform) != m_drag->local &&
-        !Publish(m_drag->start, m_pose, true, error)) return false;
+    if (DragHasChanges() && !Publish(m_drag->start, m_pose, true, error)) return false;
     m_drag.reset();
     return true;
 }
 
-void CKeyformEditController::FinishDrag() { if (!m_publishing) m_drag.reset(); }
+bool CKeyformEditController::BeginDeformerDrag(DeformerHandle handle, const QVector<int>& selected, QString* error)
+{
+    if (!IsActive() || !CanEdit(m_target, m_type, m_keyform, error)) return false;
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
+    const bool warp = handle == DeformerHandle::WarpPoints;
+    if ((warp && m_type != QLatin1String("warp")) ||
+        (!warp && (m_type != QLatin1String("rotation") ||
+                   (handle != DeformerHandle::RotationOrigin && handle != DeformerHandle::RotationAngle))))
+        return fail(error, QStringLiteral("手柄与当前变形器类型不匹配"));
+    if (!warp && !selected.isEmpty()) return fail(error, QStringLiteral("旋转手柄不接受控制点选区"));
+    DeformerDrag drag;
+    drag.start = *m_document;
+    drag.handle = handle;
+    if (!drag.mapping.Build(*m_document, m_target, m_type, m_keyform, m_pose, error)) return false;
+    drag.model = drag.mapping.ModelPoints();
+    if (warp) {
+        if (selected.isEmpty()) return fail(error, QStringLiteral("请选择要移动的控制点"));
+        QSet<int> unique;
+        for (int index : selected) {
+            if (index < 0 || index >= drag.model.size() / 2 || unique.contains(index))
+                return fail(error, QStringLiteral("控制点选区无效"));
+            unique.insert(index);
+        }
+        drag.selected = selected;
+        drag.warp = m_document->DeformerWarpKeyforms(m_target);
+    } else drag.rotation = m_document->DeformerRotationKeyforms(m_target);
+    drag.revision = m_document->Revision();
+    m_deformerDrag = std::move(drag);
+    return true;
+}
+
+bool CKeyformEditController::MoveDeformerDrag(const QPointF& delta, double angleDelta, QString* error)
+{
+    if (!Ready(error) || !m_deformerDrag || !CanEdit(m_target, m_type, m_keyform, error)) return false;
+    auto& drag = *m_deformerDrag;
+    if (drag.revision != m_document->Revision())
+        return fail(error, QStringLiteral("拖拽期间文档已改变，请结束本次操作"));
+    if (!std::isfinite(delta.x()) || !std::isfinite(delta.y()) || !std::isfinite(angleDelta))
+        return fail(error, QStringLiteral("拖拽坐标或角度无效"));
+    const bool angular = drag.handle == DeformerHandle::RotationAngle;
+    if ((angular && !delta.isNull()) || (!angular && angleDelta != 0))
+        return fail(error, QStringLiteral("拖拽量与手柄类型不匹配"));
+    QVector<float> local;
+    if (!angular && !delta.isNull()) {
+        QVector<float> points;
+        const auto append = [&](int index) {
+            const double x = double(drag.model[index * 2]) + delta.x();
+            const double y = double(drag.model[index * 2 + 1]) + delta.y();
+            if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x) > std::numeric_limits<float>::max() ||
+                std::abs(y) > std::numeric_limits<float>::max()) return false;
+            points.append(float(x)); points.append(float(y));
+            return true;
+        };
+        if (drag.handle == DeformerHandle::WarpPoints) {
+            for (int index : drag.selected) if (!append(index)) return fail(error, QStringLiteral("控制点坐标超出范围"));
+        } else if (!append(0)) return fail(error, QStringLiteral("旋转中心坐标超出范围"));
+        if (!drag.mapping.FromModel(points, local, error)) return false;
+    }
+    CModelEdit command;
+    command.name = m_target; command.type = m_type; command.index = m_keyform; command.coalesce = false;
+    if (drag.handle == DeformerHandle::WarpPoints) {
+        auto forms = drag.warp;
+        if (!delta.isNull()) for (int index = 0; index < drag.selected.size(); ++index) {
+            const int vertex = drag.selected[index];
+            forms[m_keyform].positions[vertex * 2] = local[index * 2];
+            forms[m_keyform].positions[vertex * 2 + 1] = local[index * 2 + 1];
+        }
+        if (forms == m_document->DeformerWarpKeyforms(m_target)) return true;
+        command.field = CModelEdit::WarpKeyforms;
+        command.before = QVariant::fromValue(drag.warp); command.after = QVariant::fromValue(forms);
+    } else {
+        auto forms = drag.rotation;
+        if (angular) {
+            const double angle = double(forms[m_keyform].angle) + angleDelta;
+            if (!std::isfinite(angle) || std::abs(angle) > std::numeric_limits<float>::max())
+                return fail(error, QStringLiteral("旋转角度超出范围"));
+            forms[m_keyform].angle = float(angle);
+        } else if (!delta.isNull()) {
+            forms[m_keyform].originX = local[0]; forms[m_keyform].originY = local[1];
+        }
+        if (forms == m_document->DeformerRotationKeyforms(m_target)) return true;
+        command.field = CModelEdit::RotationKeyforms;
+        command.before = QVariant::fromValue(drag.rotation); command.after = QVariant::fromValue(forms);
+    }
+    CModelDocument candidate = drag.start;
+    if (command.before != command.after && !candidate.ExecuteEdit(command))
+        return fail(error, QStringLiteral("无法提交变形器拖拽"));
+    if (!Publish(std::move(candidate), m_pose, true, error)) return false;
+    drag.revision = m_document->Revision();
+    return true;
+}
+
+void CKeyformEditController::FinishDrag()
+{
+    if (!m_publishing) { m_drag.reset(); m_deformerDrag.reset(); }
+}
 
 bool CKeyformEditController::End(QString* error)
 {
     if (!Ready(error)) return false;
-    if (m_drag) return fail(error, QStringLiteral("请先结束当前顶点拖拽"));
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     if (!IsActive()) return true;
     const auto* document = m_document;
     const auto revision = m_document->Revision();

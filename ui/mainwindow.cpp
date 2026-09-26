@@ -1384,7 +1384,7 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     return true;
 }
 
-void MainWindow::RefreshKeyformUi(bool changed)
+void MainWindow::RefreshKeyformUi(bool changed, bool markSession)
 {
     RefreshTextureGeometry();
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
@@ -1398,22 +1398,38 @@ void MainWindow::RefreshKeyformUi(bool changed)
                 m_openglwindows->do_ShowMesh({});
                 m_openglwindows->do_ShowDeformers({m_keyformEditor.Target()});
             }
+            QString error;
+            if (m_keyformEditor.Type() == QLatin1String("artmesh")) m_openglwindows->ClearDeformerEditTarget(&error);
+            else {
+                live2dstruct::CDeformerEditContext context;
+                if (context.Build(m_document, m_keyformEditor.Target(), m_keyformEditor.Type(),
+                                  m_keyformEditor.Keyform(), m_keyformEditor.Pose(), &error)) {
+                    if (m_openglwindows->SetDeformerEditTarget({m_keyformEditor.Target(), m_keyformEditor.Type(),
+                        m_keyformEditor.Keyform(), m_openglwindows->CurrentPreviewDigest(), m_keyformEditor.Pose(),
+                        context.ModelPoints(), context.RotationDirection()}, &error) &&
+                        m_keyformEditor.Type() == QLatin1String("rotation")) m_openglwindows->do_ShowDeformers({});
+                } else m_openglwindows->ClearDeformerEditTarget();
+            }
+            if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
         }
         if (m_paramPanel) m_paramPanel->SetPreviewValues(m_keyformEditor.Pose(), m_keyformBaseValues);
         if (m_blendShapePanel) for (auto it = m_keyformEditor.Pose().cbegin(); it != m_keyformEditor.Pose().cend(); ++it)
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
-    }
+    } else if (m_openglwindows) m_openglwindows->ClearDeformerEditTarget();
     RefreshMeshTools();
     if (!changed) return;
-    m_sessionDirty = true;
+    if (markSession) m_sessionDirty = true;
     m_historySource = HistorySource::Inspector;
-    setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
+    if (markSession) setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
     if (m_inspectorPanel) {
         const QSignalBlocker blocker(m_inspectorPanel);
         m_inspectorPanel->RefreshSelection();
         m_inspectorPanel->SyncHistoryState();
     }
-    if (m_paramPanel) m_paramPanel->SyncHistoryState();
+    if (m_paramPanel) {
+        const QSignalBlocker blocker(m_paramPanel);
+        m_paramPanel->SyncHistoryState();
+    }
     m_historySource = HistorySource::Inspector;
     if (m_diagnosticsPanel) m_diagnosticsPanel->Refresh();
     RefreshUndoActions();
@@ -3172,6 +3188,21 @@ void MainWindow::RestDock(const QString &name)
         setWindowTitle(QStringLiteral("live2d2psd · 未保存"));
         statusBar()->showMessage(QStringLiteral("有未保存的模型编辑"));
     };
+    const auto finishKeyformDrag = [this, updateModifiedTitle](bool cancel, QString* error) {
+        const auto revision = m_document.Revision();
+        const bool changed = !cancel && m_keyformEditor.DragHasChanges();
+        if (cancel) {
+            if (!m_keyformEditor.CancelDrag(error)) return false;
+        } else m_keyformEditor.FinishDrag();
+        RefreshKeyformUi(m_document.Revision() != revision || changed, changed);
+        if (!changed && m_keyformDragHistorySource) {
+            m_historySource = *m_keyformDragHistorySource;
+            RefreshUndoActions();
+        }
+        m_keyformDragHistorySource.reset();
+        updateModifiedTitle();
+        return true;
+    };
     m_openglwindows->SetMeshEditHandlers(
         [this](const QString& id, int keyform, QString* error) {
             if (!m_inspectorPanel || m_inspectorPanel->GetSelectionId() != id) {
@@ -3181,20 +3212,30 @@ void MainWindow::RestDock(const QString &name)
             return ActivateKeyform(id, keyform, error);
         },
         [this](const QVector<int>& selected, const QVector<float>& positions, QString* error) {
-            return m_keyformEditor.BeginDrag(selected, positions, error);
+            if (!m_keyformEditor.BeginDrag(selected, positions, error)) return false;
+            m_keyformDragHistorySource = m_historySource;
+            return true;
         }, [this](const QPointF& delta, QString* error) {
             const auto revision = m_document.Revision();
             if (!m_keyformEditor.DragBy(delta, error)) return false;
-            RefreshKeyformUi(m_document.Revision() != revision);
+            if (m_document.Revision() != revision) RefreshKeyformUi(true, false);
             return true;
-        }, [this](bool cancel, QString* error) {
+        }, finishKeyformDrag);
+    m_openglwindows->SetDeformerEditHandlers(
+        [this](CDeformerHandleOverlay::Handle handle, const QVector<int>& selected, QString* error) {
+            using Handle = live2dstruct::CKeyformEditController::DeformerHandle;
+            if (handle == CDeformerHandleOverlay::None) return false;
+            const auto target = handle == CDeformerHandleOverlay::WarpPoint ? Handle::WarpPoints :
+                handle == CDeformerHandleOverlay::RotationOrigin ? Handle::RotationOrigin : Handle::RotationAngle;
+            if (!m_keyformEditor.BeginDeformerDrag(target, selected, error)) return false;
+            m_keyformDragHistorySource = m_historySource;
+            return true;
+        }, [this](const QPointF& delta, double angle, QString* error) {
             const auto revision = m_document.Revision();
-            if (cancel) {
-                if (!m_keyformEditor.CancelDrag(error)) return false;
-            } else m_keyformEditor.FinishDrag();
-            RefreshKeyformUi(m_document.Revision() != revision);
+            if (!m_keyformEditor.MoveDeformerDrag(delta, angle, error)) return false;
+            if (m_document.Revision() != revision) RefreshKeyformUi(true, false);
             return true;
-        });
+        }, finishKeyformDrag);
     connect(m_openglwindows, &OpengGlForm::MeshEditRejected, this,
             [this](const QString& error) { statusBar()->showMessage(error, 8000); });
     connect(m_openglwindows, &OpengGlForm::PreviewFailed, this,

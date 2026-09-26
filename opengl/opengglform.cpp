@@ -8,7 +8,6 @@
 #include <QSurfaceFormat>
 #include <QSurface>
 #include <QScopeGuard>
-#include <QScopedValueRollback>
 #include <QFocusEvent>
 #include <QHideEvent>
 #include <QApplication>
@@ -196,13 +195,17 @@ bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, b
 
 void OpengGlForm::do_ShowMesh(const QString &artName)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (m_exportSuspended || (m_meshToolDispatchActive && artName != m_meshToolTarget)) return;
     if (IsMeshDragging() && m_meshDrag->name != artName) {
         QString error;
-        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+        if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+        if (!alive) return;
     }
     if (m_meshToolGesture && m_meshToolTarget != artName) CancelMeshToolGesture();
+    if (!alive) return;
     if (!m_meshToolTarget.isEmpty() && m_meshToolTarget != artName) ResetMeshToolState();
+    if (!alive) return;
     m_meshEditName = artName;
     LAppLive2DManager* Live2DManager = LAppLive2DManager::GetInstance();
     if(Live2DManager && Live2DManager->GetModelNum() > 0){
@@ -219,15 +222,19 @@ void OpengGlForm::do_ShowMesh(const QString &artName)
 
 void OpengGlForm::SetMeshEditEnabled(bool enabled)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (m_exportSuspended) return;
     if (!enabled && IsMeshDragging()) {
         QString error;
-        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+        if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+        if (!alive) return;
     }
     m_meshEditEnabled = enabled;
     if (!enabled) {
         CancelMeshToolGesture();
+        if (!alive) return;
         ResetMeshToolState();
+        if (!alive) return;
         m_meshEditName.clear();
     }
 }
@@ -241,14 +248,18 @@ void OpengGlForm::SetPhysicsDragEnabled(bool enabled)
 
 void OpengGlForm::SetActiveKeyform(const QString& name, int keyformIndex)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (m_exportSuspended || (m_meshToolDispatchActive && (name != m_meshEditName || keyformIndex != m_activeKeyformIndex))) return;
     if (name.isEmpty() || keyformIndex < 0) return;
     if (IsMeshDragging() && (m_meshDrag->name != name || m_meshDrag->keyform != keyformIndex)) {
         QString error;
-        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+        if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+        if (!alive) return;
     }
     if (m_meshToolGesture && (m_meshEditName != name || m_activeKeyformIndex != keyformIndex)) CancelMeshToolGesture();
+    if (!alive) return;
     if (!m_meshToolTarget.isEmpty() && m_meshToolTarget != name) ResetMeshToolState();
+    if (!alive) return;
     m_meshEditName = name;
     m_activeKeyformIndex = keyformIndex;
 }
@@ -354,9 +365,11 @@ void OpengGlForm::do_SetDeformerDragParams(const QStringList& paramIds, const QL
 
 void OpengGlForm::do_ResetView()
 {
+    const QPointer<OpengGlForm> alive(this);
     if (m_exportSuspended) return;
     QString error;
-    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+    if (!alive) return;
     FinishDeformerDrag();
     LAppView* view = LAppDelegate::GetInstance()->GetView();
     if(!view) return;
@@ -381,9 +394,11 @@ QVector2D OpengGlForm::ViewPosition() const
 
 void OpengGlForm::SetViewState(float scale, const QVector2D& position)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (!std::isfinite(scale) || scale <= 0.0f || !std::isfinite(position.x()) || !std::isfinite(position.y())) return;
     QString error;
-    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+    if (!alive) return;
     FinishDeformerDrag();
     const float clampedScale = qBound(0.1f, scale, 20.0f);
     LAppView* view = LAppDelegate::GetInstance()->GetView();
@@ -556,7 +571,7 @@ bool OpengGlForm::CanSetMeshTool(MeshTool tool, const QString& target, QString* 
     if (error) error->clear();
     if (int(tool) < int(MeshTool::Select) || int(tool) > int(MeshTool::Delete) || target.isEmpty())
         return MeshError(error, QStringLiteral("网格工具或目标无效"));
-    if (m_exportSuspended || m_meshToolDispatchActive || IsMeshDragging() || m_controlDragActive || m_physicsDragActive ||
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_controlDragActive || m_physicsDragActive ||
         m_meshToolGesture || m_ceditstate.IsContins(CEditState::ViewMove))
         return MeshError(error, QStringLiteral("请先结束当前画布操作再切换网格工具"));
     if (tool != MeshTool::Select && !m_meshToolHandler)
@@ -596,10 +611,13 @@ bool OpengGlForm::SetMeshTool(MeshTool tool, const QString& target, QString* err
 
 bool OpengGlForm::ClearMeshTool(QString* error)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (error) error->clear();
-    if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
-    if (IsMeshDragging() && !CancelMeshDrag(error)) return false;
+    if (m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
+    if (IsKeyformDragging() && !CancelMeshDrag(error)) return false;
+    if (!alive) return false;
     CancelMeshToolGesture();
+    if (!alive) return false;
     ResetMeshToolState();
     return true;
 }
@@ -802,13 +820,18 @@ void OpengGlForm::DispatchMeshTool(MeshTool tool, MeshToolSnapshot snapshot)
 
 bool OpengGlForm::MoveMeshDrag(const QPointF& pixel, QString* error)
 {
+    if (m_meshEditCallbackActive || m_deformerCallbackActive)
+        return MeshError(error, QStringLiteral("正在提交画布拖拽"));
     if (!m_meshDrag) return MeshError(error, QStringLiteral("当前没有顶点拖拽"));
     QPointF current;
     if (!CCanvasCoordinates::ScreenToModel(m_meshDrag->mvp, m_meshDrag->size, pixel, current))
         return MeshError(error, QStringLiteral("鼠标位置无法转换到模型坐标"));
-    const QScopedValueRollback<bool> submitting(m_meshEditCallbackActive, true);
+    const QPointer<OpengGlForm> alive(this);
+    m_meshEditCallbackActive = true;
+    const auto release = qScopeGuard([alive] { if (alive) alive->m_meshEditCallbackActive = false; });
     try {
-        if (!m_meshMove || !m_meshMove(current - m_meshDrag->start, error))
+        const auto move = m_meshMove;
+        if (!move || !move(current - m_meshDrag->start, error) || !alive)
             return MeshError(error, error && !error->isEmpty() ? *error : QStringLiteral("顶点移动被拒绝，保留最后接受的状态"));
         update();
         NotifyMeshSelection();
@@ -820,9 +843,11 @@ bool OpengGlForm::MoveMeshDrag(const QPointF& pixel, QString* error)
 
 void OpengGlForm::SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish)
 {
-    if (m_exportSuspended) return;
+    if (m_exportSuspended || m_meshEditCallbackActive || m_deformerCallbackActive) return;
+    const QPointer<OpengGlForm> alive(this);
     QString error;
-    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+    if (!alive) return;
     m_meshActivate = std::move(activate);
     m_meshBegin = std::move(begin);
     m_meshMove = std::move(move);
@@ -835,7 +860,8 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
     if (error) error->clear();
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能替换模型预览"));
-    if ((IsMeshDragging() && !m_meshEditCallbackActive) || m_meshToolGesture)
+    if ((IsMeshDragging() && !m_meshEditCallbackActive) ||
+        (m_deformerGesture && !m_deformerCallbackActive) || m_meshToolGesture)
         return MeshError(error, QStringLiteral("请先结束当前顶点拖拽"));
     const RestoreContext restore;
     if (!IsModelReady() || !MakeRuntimeCurrent())
@@ -884,7 +910,7 @@ bool OpengGlForm::ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteA
 {
     if (error) error->clear();
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改网格几何"));
-    if (IsMeshDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture)
+    if (m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture)
         return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
     const RestoreContext restore;
     if (!IsModelReady() || !MakeRuntimeCurrent())
@@ -922,7 +948,7 @@ bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const
     if (error) error->clear();
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数定义"));
-    if (IsMeshDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture) return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
+    if (m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture) return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
     const RestoreContext restore;
     if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("模型预览的 OpenGL 上下文尚未就绪"));
     auto* model = CurrentModel();
@@ -965,7 +991,7 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
     if (error) error->clear();
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能修改参数结构"));
-    if (IsMeshDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture) return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
+    if (m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture) return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
     const RestoreContext restore;
     if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("模型预览的 OpenGL 上下文尚未就绪"));
     auto* model = CurrentModel();
@@ -1001,12 +1027,13 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
 
 bool OpengGlForm::EndEditorPreview(QString* error)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (error) error->clear();
     if (m_exportSuspended) return MeshError(error, QStringLiteral("导出期间不能改变编辑姿态"));
-    if (IsMeshDragging() || m_meshToolGesture || m_meshToolDispatchActive)
+    if (m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_meshToolGesture || m_meshToolDispatchActive)
         return MeshError(error, QStringLiteral("请先结束当前网格操作"));
     auto* model = CurrentModel();
-    if (!model || !model->HasEditorPreview()) { ResetMeshToolState(); return true; }
+    if (!model || !model->HasEditorPreview()) { ResetMeshToolState(); return alive && ClearDeformerEditTarget(error); }
     const RestoreContext restore;
     if (!MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("无法恢复模型预览的 OpenGL 上下文"));
     try {
@@ -1021,23 +1048,27 @@ bool OpengGlForm::EndEditorPreview(QString* error)
         view->SwapDeformerOverlays(overlays);
         update();
         ResetMeshToolState();
-        return true;
+        return alive && ClearDeformerEditTarget(error);
     } catch (const std::exception&) {
         return MeshError(error, QStringLiteral("无法准备编辑前的变形器预览"));
     }
 }
 
-bool OpengGlForm::FinishMeshDrag(bool cancel, QString* error)
+bool OpengGlForm::FinishArtMeshDrag(bool cancel, QString* error)
 {
     if (error) error->clear();
-    if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
-    CancelMeshToolGesture();
-    if (!IsMeshDragging()) return true;
     if (m_meshEditCallbackActive) return MeshError(error, QStringLiteral("正在提交顶点拖拽"));
+    if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
+    const QPointer<OpengGlForm> alive(this);
+    CancelMeshToolGesture();
+    if (!alive) return false;
+    if (!IsMeshDragging()) return true;
     if (!m_meshFinish) return MeshError(error, QStringLiteral("尚未连接顶点拖拽提交器"));
-    const QScopedValueRollback<bool> submitting(m_meshEditCallbackActive, true);
+    m_meshEditCallbackActive = true;
+    const auto release = qScopeGuard([alive] { if (alive) alive->m_meshEditCallbackActive = false; });
     try {
-        if (!m_meshFinish(cancel, error)) {
+        const auto finish = m_meshFinish;
+        if (!finish(cancel, error) || !alive) {
             if (error && error->isEmpty()) *error = QStringLiteral("无法结束顶点拖拽，保留最后接受的状态");
             return false;
         }
@@ -1048,6 +1079,11 @@ bool OpengGlForm::FinishMeshDrag(bool cancel, QString* error)
     m_ceditstate.RemoveState(CEditState::MousePress);
     update();
     return true;
+}
+
+bool OpengGlForm::FinishMeshDrag(bool cancel, QString* error)
+{
+    return FinishKeyformDrag(cancel, error);
 }
 
 bool OpengGlForm::CancelMeshDrag(QString* error)
@@ -1109,13 +1145,18 @@ QString OpengGlForm::SelectCoreMesh(const QPointF& pixel, bool hover)
 bool OpengGlForm::BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error, bool activate)
 {
     if (error) error->clear();
+    if (m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging())
+        return MeshError(error, QStringLiteral("请先结束当前画布拖拽"));
     if (!m_meshActivate || !m_meshBegin || !m_meshMove || !m_meshFinish)
         return MeshError(error, QStringLiteral("尚未连接关键形编辑控制器"));
+    const QPointer<OpengGlForm> alive(this);
     try {
-        if (activate && !m_meshActivate(name, m_activeKeyformIndex, error)) {
+        const auto activateMesh = m_meshActivate;
+        if (activate && !activateMesh(name, m_activeKeyformIndex, error)) {
             if (error && error->isEmpty()) *error = QStringLiteral("关键形编辑姿态被拒绝");
             return false;
         }
+        if (!alive) return false;
         auto* appModel = CurrentModel();
         auto* view = LAppDelegate::GetInstance()->GetView();
         if (!appModel || !appModel->GetModel() || !view) return MeshError(error, QStringLiteral("编辑模型已改变"));
@@ -1140,12 +1181,16 @@ bool OpengGlForm::BeginMeshDrag(const QString& name, const QPointF& pixel, QStri
             for (int index = 0; index < int(points.size()); ++index)
                 if (points[index] && points[index]->GetIsSelect()) drag.selected.append(index);
         } else drag.selected.append(nearest);
-        if (!m_meshBegin(drag.selected, vertices, error)) {
+        m_meshEditCallbackActive = true;
+        const auto release = qScopeGuard([alive] { if (alive) alive->m_meshEditCallbackActive = false; });
+        const auto begin = m_meshBegin;
+        if (!begin(drag.selected, vertices, error) || !alive) {
             if (error && error->isEmpty()) *error = QStringLiteral("无法开始顶点拖拽");
             return false;
         }
         m_meshDrag = std::move(drag);
         if (!MeshDragFrameMatches()) {
+            m_meshEditCallbackActive = false;
             CancelMeshDrag(error);
             return MeshError(error, QStringLiteral("开始拖拽时画布变换已改变"));
         }
@@ -1153,6 +1198,7 @@ bool OpengGlForm::BeginMeshDrag(const QString& name, const QPointF& pixel, QStri
         map = appModel && appModel->GetModel() ? appModel->GetModel()->GetMeshMap() : nullptr;
         mesh = map ? map->GetDrawMesh(name) : nullptr;
         if (!mesh || !mesh->GetMesh() || mesh->GetMesh()->GetCpoint().size() != static_cast<size_t>(vertices.size() / 2)) {
+            m_meshEditCallbackActive = false;
             CancelMeshDrag(error);
             return MeshError(error, QStringLiteral("开始拖拽时网格已改变"));
         }
@@ -1189,6 +1235,7 @@ bool OpengGlForm::LoadExportModel(const QString& fileName, QString* error)
 
 bool OpengGlForm::ChangeModel(const QString& fileName, QString* error)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (error) error->clear();
     if (fileName.isEmpty()) return MeshError(error, QStringLiteral("模型路径为空"));
     const RestoreContext restore;
@@ -1199,6 +1246,7 @@ bool OpengGlForm::ChangeModel(const QString& fileName, QString* error)
         return MeshError(error, QStringLiteral("请先恢复导出姿态再载入下一个模型"));
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
     if (!FinishMeshDrag(true, error)) return false;
+    if (!alive) return false;
     const QString nextPath(fileName.constData(), fileName.size());
     FinishDeformerDrag();
     const bool loaded = LAppDelegate::GetInstance()->ChangeScene(fileName);
@@ -1212,7 +1260,7 @@ bool OpengGlForm::ChangeModel(const QString& fileName, QString* error)
 bool OpengGlForm::BeginTemporaryModel(const QString& fileName, QString* error)
 {
     if (error) error->clear();
-    if (m_meshToolDispatchActive || IsMeshDragging() || m_meshToolGesture)
+    if (m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_meshToolGesture)
         return MeshError(error, QStringLiteral("请先结束当前网格操作"));
     if (m_suspendedModel.has_value()) return MeshError(error, QStringLiteral("上一个临时模型尚未恢复"));
     const RestoreContext restore;
@@ -1254,7 +1302,7 @@ bool OpengGlForm::SetExportSuspended(bool suspended, QString* error)
     if (error) error->clear();
     if (suspended == m_exportSuspended) return true;
     if (suspended) {
-        if (IsMeshDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture || m_meshToolDispatchActive)
+        if (m_meshEditCallbackActive || m_deformerCallbackActive || IsKeyformDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture || m_meshToolDispatchActive)
             return MeshError(error, QStringLiteral("请先结束当前画布拖拽再导出"));
         m_ceditstate.RemoveState(CEditState::MousePress);
         m_ceditstate.RemoveState(CEditState::ViewMove);
@@ -1341,11 +1389,13 @@ void OpengGlForm::initializeGL()
 
 void OpengGlForm::resizeGL(int width, int height)
 {
+    const QPointer<OpengGlForm> alive(this);
     if (m_exportSuspended) { m_deferredResize = QSize(width, height); return; }
     FinishDeformerDrag();
-    if (IsMeshDragging() || m_meshToolGesture) {
+    if (IsKeyformDragging() || m_meshToolGesture) {
         QString error;
-        if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+        if (!CancelMeshDrag(&error) && alive) emit MeshEditRejected(error);
+        if (!alive) return;
     }
     if (m_runtimeReady) LAppDelegate::GetInstance()->resize(width,height);
 }
@@ -1364,6 +1414,7 @@ void OpengGlForm::paintGL()
         painter.setBrush(fill);
         painter.drawRect(QRectF(m_meshToolGesture->snapshot.pixelPosition, m_meshToolGesture->currentPixel).normalized());
     }
+    RefreshDeformerOverlay();
     auto* view = delegate->GetView();
     const QString error = view ? view->DeformerOverlayError() : QString();
     if (error == m_lastPreviewError) return;
@@ -1374,9 +1425,11 @@ void OpengGlForm::paintGL()
 
 void OpengGlForm::mousePressEvent(QMouseEvent *event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { event->accept(); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { event->accept(); return; }
     QString error;
-    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+    if (!alive) return;
     FinishDeformerDrag();
     if (!IsModelReady()) return;
     auto* view = LAppDelegate::GetInstance()->GetView();
@@ -1414,6 +1467,17 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
         }
         return;
     }
+    event->ignore();
+    const bool deformer = BeginDeformerGesture(event, &error);
+    if (!alive) return;
+    if (deformer || event->isAccepted()) {
+        if (!deformer) {
+            m_ceditstate.RemoveState(CEditState::MousePress);
+            if (!error.isEmpty()) emit MeshEditRejected(error);
+        }
+        return;
+    }
+    event->accept();
     if (!m_meshToolTarget.isEmpty()) {
         event->accept();
         if (!BeginMeshToolGesture(event, &error)) {
@@ -1424,14 +1488,22 @@ void OpengGlForm::mousePressEvent(QMouseEvent *event)
     }
     const QString name = SelectCoreMesh(event->position(), false);
     emit SendSelectMesh(name);
-    if (name.isEmpty()) return;
-    if (m_meshEditEnabled && !BeginMeshDrag(name, event->position(), &error) && !error.isEmpty())
+    if (!alive || name.isEmpty()) return;
+    if (m_meshEditEnabled && !BeginMeshDrag(name, event->position(), &error) && alive && !error.isEmpty())
         emit MeshEditRejected(error);
 }
 
 void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { event->accept(); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { event->accept(); return; }
+    if (m_deformerGesture) {
+        event->accept();
+        QString error;
+        const bool cancel = event->button() != Qt::LeftButton || !DeformerFrameMatches();
+        if (!FinishDeformerGesture(cancel, &error) && alive) emit MeshEditRejected(error);
+        return;
+    }
     if (m_meshToolGesture) {
         event->accept();
         FinishMeshToolGesture(event);
@@ -1440,7 +1512,8 @@ void OpengGlForm::mouseReleaseEvent(QMouseEvent *event)
     if (IsMeshDragging()) {
         QString error;
         const bool cancel = event->button() != Qt::LeftButton || !MeshDragFrameMatches();
-        if (!FinishMeshDrag(cancel, &error)) { emit MeshEditRejected(error); return; }
+        if (!FinishMeshDrag(cancel, &error)) { if (alive) emit MeshEditRejected(error); return; }
+        if (!alive) return;
     }
     m_ceditstate.RemoveState(CEditState::MousePress);
     if (event->button() == Qt::RightButton) m_ceditstate.RemoveState(CEditState::ViewMove);
@@ -1466,7 +1539,8 @@ void OpengGlForm::FinishDeformerDrag()
 
 void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { event->accept(); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { event->accept(); return; }
     if (m_physicsDragActive) {
         if (!(event->buttons() & Qt::LeftButton) || !m_physicsDragEnabled || !IsModelReady() || width() <= 0 || height() <= 0) {
             FinishDeformerDrag();
@@ -1478,13 +1552,20 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
         }
         return;
     }
+    if (m_deformerGesture) {
+        event->accept();
+        QString error;
+        if (!MoveDeformerGesture(event, &error) && alive && !error.isEmpty()) emit MeshEditRejected(error);
+        return;
+    }
     if (IsMeshDragging()) {
         QString error;
         if (!(event->buttons() & Qt::LeftButton) || !m_meshEditEnabled || !MeshDragFrameMatches()) {
-            if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+            if (!CancelMeshDrag(&error) && alive) emit MeshEditRejected(error);
+            if (!alive) return;
             return;
         }
-        if (!MoveMeshDrag(event->position(), &error)) emit MeshEditRejected(error);
+        if (!MoveMeshDrag(event->position(), &error) && alive) emit MeshEditRejected(error);
         return;
     }
     if (m_meshToolGesture) {
@@ -1536,9 +1617,11 @@ void OpengGlForm::mouseMoveEvent(QMouseEvent *event)
 
 void OpengGlForm::wheelEvent(QWheelEvent *event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { event->accept(); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { event->accept(); return; }
     QString error;
-    if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+    if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+    if (!alive) return;
     FinishDeformerDrag();
     if (!IsModelReady() || !event->angleDelta().y()) return;
     auto* view = LAppDelegate::GetInstance()->GetView();
@@ -1568,7 +1651,8 @@ void OpengGlForm::wheelEvent(QWheelEvent *event)
 
 void OpengGlForm::keyPressEvent(QKeyEvent *event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { event->accept(); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { event->accept(); return; }
     if (m_meshToolGesture && (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Control ||
         event->key() == Qt::Key_Space || event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
         event->key() == Qt::Key_W || event->key() == Qt::Key_A || event->key() == Qt::Key_S ||
@@ -1576,7 +1660,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
         CancelMeshToolGesture();
         if (event->key() == Qt::Key_Escape) { event->accept(); return; }
     }
-    if (!m_meshToolTarget.isEmpty() && !IsMeshDragging()) {
+    if (!m_meshToolTarget.isEmpty() && !IsKeyformDragging()) {
         if (event->key() == Qt::Key_Escape) {
             QString error;
             MeshToolSnapshot snapshot;
@@ -1627,19 +1711,20 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
         FinishDeformerDrag();
         if (event->key() == Qt::Key_Escape) return;
     }
-    if (event->key() == Qt::Key_Escape && !IsMeshDragging() && m_runtimeReady) {
+    if (event->key() == Qt::Key_Escape && !IsKeyformDragging() && m_runtimeReady) {
         auto* model = CurrentModel();
         if (model && model->HasEditorPreview()) {
             emit KeyformEditingFinishedRequested();
             return;
         }
     }
-    if (IsMeshDragging() && (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Control ||
+    if (IsKeyformDragging() && (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Control ||
         event->key() == Qt::Key_Space || event->key() == Qt::Key_Up || event->key() == Qt::Key_Down ||
         event->key() == Qt::Key_W || event->key() == Qt::Key_A || event->key() == Qt::Key_S ||
         event->key() == Qt::Key_D || event->key() == Qt::Key_Z)) {
         QString error;
-        if (!CancelMeshDrag(&error)) { emit MeshEditRejected(error); return; }
+        if (!CancelMeshDrag(&error)) { if (alive) emit MeshEditRejected(error); return; }
+        if (!alive) return;
         if (event->key() == Qt::Key_Escape) return;
     }
     if (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
@@ -1717,7 +1802,7 @@ void OpengGlForm::keyPressEvent(QKeyEvent *event)
 
 void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { event->accept(); return; }
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { event->accept(); return; }
     if (event->key() == Qt::Key_Control && !event->isAutoRepeat()) FinishDeformerDrag();
     if (!IsModelReady()) return;
     switch (event->key()) {
@@ -1737,9 +1822,11 @@ void OpengGlForm::keyReleaseEvent(QKeyEvent *event)
 
 void OpengGlForm::focusOutEvent(QFocusEvent* event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { QOpenGLWidget::focusOutEvent(event); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { QOpenGLWidget::focusOutEvent(event); return; }
     QString error;
-    if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    if (!CancelMeshDrag(&error) && alive) emit MeshEditRejected(error);
+    if (!alive) return;
     FinishDeformerDrag();
     m_ceditstate.RemoveState(CEditState::MousePress);
     m_ceditstate.RemoveState(CEditState::ViewMove);
@@ -1748,9 +1835,11 @@ void OpengGlForm::focusOutEvent(QFocusEvent* event)
 
 void OpengGlForm::hideEvent(QHideEvent* event)
 {
-    if (m_exportSuspended || m_meshToolDispatchActive) { QOpenGLWidget::hideEvent(event); return; }
+    const QPointer<OpengGlForm> alive(this);
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive) { QOpenGLWidget::hideEvent(event); return; }
     QString error;
-    if (!CancelMeshDrag(&error)) emit MeshEditRejected(error);
+    if (!CancelMeshDrag(&error) && alive) emit MeshEditRejected(error);
+    if (!alive) return;
     FinishDeformerDrag();
     m_ceditstate.RemoveState(CEditState::MousePress);
     m_ceditstate.RemoveState(CEditState::ViewMove);

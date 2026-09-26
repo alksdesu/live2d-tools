@@ -24,6 +24,7 @@
 #include "edit/csettingconfig.h"
 #include "edit/cdrawrect.h"
 #include "live2d/LAppView.hpp"
+#include "cdeformerhandleoverlay.h"
 
 using Live2D::Cubism::Framework::CubismModel;
 
@@ -91,6 +92,21 @@ public:
     using MeshMove = std::function<bool(const QPointF&, QString*)>;
     using MeshFinish = std::function<bool(bool, QString*)>;
     void SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish);
+    struct DeformerEditTarget {
+        QString id, type;
+        int keyform = -1;
+        QByteArray previewDigest;
+        QMap<QString, float> pose;
+        QVector<float> points;
+        QPointF direction;
+    };
+    using DeformerBegin = std::function<bool(CDeformerHandleOverlay::Handle, const QVector<int>&, QString*)>;
+    using DeformerMove = std::function<bool(const QPointF&, double, QString*)>;
+    void SetDeformerEditHandlers(DeformerBegin begin, DeformerMove move, MeshFinish finish);
+    bool SetDeformerEditTarget(const DeformerEditTarget& target, QString* error = nullptr);
+    bool ClearDeformerEditTarget(QString* error = nullptr);
+    bool FinishKeyformDrag(bool cancel, QString* error = nullptr);
+    bool IsKeyformDragging() const { return IsMeshDragging() || m_deformerGesture.has_value(); }
     bool ApplyMocPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                          const QMap<QString, float>* pose, QString* error = nullptr);
     QByteArray CurrentPreviewDigest() const;
@@ -239,6 +255,33 @@ protected:
     bool MoveMeshDrag(const QPointF& pixel, QString* error);
     bool MeshDragFrameMatches() const;
     bool BeginMeshDrag(const QString& name, const QPointF& pixel, QString* error, bool activate = true);
+    bool FinishArtMeshDrag(bool cancel, QString* error);
+    struct DeformerGesture {
+        CDeformerHandleOverlay::Handle handle = CDeformerHandleOverlay::None;
+        QMatrix4x4 mvp;
+        QSize viewport;
+        QByteArray acceptedDigest;
+        QPointF startPixel, currentPixel, startModel, lastRay;
+        QVector<int> previousSelection;
+        Qt::KeyboardModifiers modifiers;
+        double angle = 0;
+        bool rectangle = false;
+    };
+    DeformerEditTarget m_deformerTarget;
+    CDeformerHandleOverlay* m_deformerOverlay = nullptr;
+    QMatrix4x4 m_deformerOverlayMvp;
+    QSize m_deformerOverlaySize;
+    bool m_deformerOverlayDirty = true;
+    bool m_deformerCallbackActive = false;
+    std::optional<DeformerGesture> m_deformerGesture;
+    DeformerBegin m_deformerBegin;
+    DeformerMove m_deformerMove;
+    MeshFinish m_deformerFinish;
+    bool DeformerFrameMatches() const;
+    void RefreshDeformerOverlay();
+    bool BeginDeformerGesture(QMouseEvent* event, QString* error);
+    bool MoveDeformerGesture(QMouseEvent* event, QString* error);
+    bool FinishDeformerGesture(bool cancel, QString* error);
     void FinishDeformerDrag();
     QString SelectCoreMesh(const QPointF& pixel, bool hover);
 

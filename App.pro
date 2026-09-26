@@ -72,6 +72,7 @@ SOURCES += \
     live2dstruct/ckeyformgridsnapshot.cpp \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
+    live2dstruct/cdeformereditcontext.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
     live2dstruct/cmocruntimebuilder.cpp \
     live2dstruct/cmocdeformerorder.cpp \
@@ -170,6 +171,8 @@ SOURCES += \
     opengl/coffscreenlive.cpp \
     opengl/coffscreenbuffer.cpp \
     opengl/ccanvascoordinates.cpp \
+    opengl/cdeformerhandleoverlay.cpp \
+    opengl/opengglformdeformeredit.cpp \
     opengl/cglmeshbuffer.cpp \
     opengl/cglrenderstate.cpp \
     opengl/ccubismshaderprograms.cpp \
@@ -313,6 +316,7 @@ HEADERS += \
     live2dstruct/ckeyformgridsnapshot.h \
     live2dstruct/ckeyformmappingcontext.h \
     live2dstruct/ckeyformeditcontroller.h \
+    live2dstruct/cdeformereditcontext.h \
     live2dstruct/cmocpreviewbuilder.h \
     live2dstruct/cmocruntimebuilder.h \
     live2dstruct/cmocdeformerorder.h \
@@ -415,6 +419,7 @@ HEADERS += \
     opengl/coffscreenlive.h \
     opengl/coffscreenbuffer.h \
     opengl/ccanvascoordinates.h \
+    opengl/cdeformerhandleoverlay.h \
     opengl/cglmeshbuffer.h \
     opengl/cglrenderstate.h \
     opengl/ccubismshaderprograms.h \

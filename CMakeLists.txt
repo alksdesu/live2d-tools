@@ -112,6 +112,8 @@ add_library(deformer_tree_data STATIC
     live2dstruct/ctreemanage.h
     live2dstruct/ckeyformmappingcontext.cpp
     live2dstruct/ckeyformmappingcontext.h
+    live2dstruct/cdeformereditcontext.cpp
+    live2dstruct/cdeformereditcontext.h
     live2dstruct/ckeyformeditcontroller.cpp
     live2dstruct/ckeyformeditcontroller.h
     live2dstruct/tree/c2dtree.cpp
@@ -180,6 +182,10 @@ if(BUILD_TESTING)
         target_link_libraries(keyform_mapping_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
         target_compile_definitions(keyform_mapping_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME keyform_mapping_core COMMAND keyform_mapping_core_tests)
+        add_executable(deformer_edit_context_core_tests tests/deformer_edit_context_core_tests.cpp)
+        target_link_libraries(deformer_edit_context_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
+        target_compile_definitions(deformer_edit_context_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME deformer_edit_context_core COMMAND deformer_edit_context_core_tests)
         add_executable(cmo3_canvas_core_tests tests/cmo3_canvas_core_tests.cpp)
         target_link_libraries(cmo3_canvas_core_tests PRIVATE cmo3_data live2d_core Qt6::Test)
         target_compile_definitions(cmo3_canvas_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -311,6 +317,12 @@ if(BUILD_TESTING)
     target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
     add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
+    add_executable(deformer_handle_overlay_tests tests/deformer_handle_overlay_tests.cpp
+        opengl/cdeformerhandleoverlay.cpp opengl/ccanvascoordinates.cpp)
+    target_include_directories(deformer_handle_overlay_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(deformer_handle_overlay_tests PRIVATE Qt6::Widgets Qt6::Test)
+    add_test(NAME deformer_handle_overlay COMMAND deformer_handle_overlay_tests)
+    set_tests_properties(deformer_handle_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(mesh_toolbar_tests tests/mesh_toolbar_tests.cpp ui/cmeshtoolbar.cpp)
     target_include_directories(mesh_toolbar_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(mesh_toolbar_tests PRIVATE Qt6::Widgets Qt6::Test)
@@ -326,7 +338,7 @@ if(BUILD_TESTING)
     target_link_libraries(workspace_layout_tests PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME workspace_layout COMMAND workspace_layout_tests)
     set_tests_properties(workspace_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
