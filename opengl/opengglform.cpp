@@ -4,6 +4,7 @@
 #include "framework/Id/CubismIdManager.hpp"
 #include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
 #include "live2d/LAppPal.hpp"
+#include "live2dstruct/cmocdeformerorder.h"
 #include <QSurfaceFormat>
 #include <QSurface>
 #include <QScopeGuard>
@@ -842,15 +843,17 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
     auto* model = CurrentModel();
     if (!model) return MeshError(error, QStringLiteral("当前没有模型"));
     try {
+        QByteArray compiled;
+        if (!live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error)) return false;
         auto* view = LAppDelegate::GetInstance()->GetView();
         if (!view) return MeshError(error, QStringLiteral("变形器预览视图尚未就绪"));
         CTreeManage::Snapshot tree;
         LAppView::PreparedDeformerOverlays overlays;
         const auto values = pose ? *pose : model->GetParameterValues();
-        if (!CTreeManage::PrepareSnapshot(bytes, values, tree, error) ||
+        if (!CTreeManage::PrepareSnapshot(compiled, values, tree, error) ||
             !view->PrepareDeformerOverlays(tree, overlays, error)) return false;
-        if (!(pose ? model->ApplyEditorPreview(bytes, sourceDigest, *pose, error)
-                   : model->ApplyPreviewMoc(bytes, sourceDigest, error))) return false;
+        if (!(pose ? model->ApplyEditorPreview(compiled, sourceDigest, *pose, error)
+                   : model->ApplyPreviewMoc(compiled, sourceDigest, error))) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         update();
@@ -890,15 +893,17 @@ bool OpengGlForm::ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteA
     auto* view = LAppDelegate::GetInstance()->GetView();
     if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
     try {
+        QByteArray compiled;
+        if (!live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error)) return false;
         CTreeManage::Snapshot tree;
         LAppView::PreparedDeformerOverlays overlays;
         const auto prepare = [&](const CubismModel& candidate, QString* detail) {
             CubismModel::RuntimeValueSnapshot values;
             return candidate.CaptureRuntimeValues(values, detail) &&
-                CTreeManage::PrepareSnapshot(bytes, values.Parameters(), tree, detail) &&
+                CTreeManage::PrepareSnapshot(compiled, values.Parameters(), tree, detail) &&
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
-        if (!model->ApplyMeshGeometryPreview(bytes, sourceDigest, migration, error, prepare)) return false;
+        if (!model->ApplyMeshGeometryPreview(compiled, sourceDigest, migration, error, prepare)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         update();
@@ -924,15 +929,17 @@ bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const
     auto* view = LAppDelegate::GetInstance()->GetView();
     if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
     try {
+        QByteArray compiled;
+        if (!live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error)) return false;
         CTreeManage::Snapshot tree;
         LAppView::PreparedDeformerOverlays overlays;
         const auto prepare = [&](const CubismModel& candidate, QString* detail) {
             CubismModel::RuntimeValueSnapshot values;
             return candidate.CaptureRuntimeValues(values, detail) &&
-                CTreeManage::PrepareSnapshot(bytes, values.Parameters(), tree, detail) &&
+                CTreeManage::PrepareSnapshot(compiled, values.Parameters(), tree, detail) &&
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
-        if (!model->ApplyParameterDefinitionPreview(bytes, sourceDigest, baseValues, keepEditorPreview, error, prepare)) return false;
+        if (!model->ApplyParameterDefinitionPreview(compiled, sourceDigest, baseValues, keepEditorPreview, error, prepare)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         update();
@@ -964,6 +971,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
     auto* view = LAppDelegate::GetInstance()->GetView();
     if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
     try {
+        QByteArray compiled;
+        if (!live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error)) return false;
         CTreeManage::Snapshot tree;
         LAppView::PreparedDeformerOverlays overlays;
         QMap<QString, float> pose;
@@ -971,10 +980,10 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
             CubismModel::RuntimeValueSnapshot values;
             if (!candidate.CaptureRuntimeValues(values, detail)) return false;
             pose = values.Parameters();
-            return CTreeManage::PrepareSnapshot(bytes, pose, tree, detail) &&
+            return CTreeManage::PrepareSnapshot(compiled, pose, tree, detail) &&
                 view->PrepareDeformerOverlays(tree, overlays, detail);
         };
-        if (!model->ApplyParameterStructurePreview(bytes, sourceDigest, addedSeeds, baseValues,
+        if (!model->ApplyParameterStructurePreview(compiled, sourceDigest, addedSeeds, baseValues,
                                                    keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline, physicsDraft, geometry)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);

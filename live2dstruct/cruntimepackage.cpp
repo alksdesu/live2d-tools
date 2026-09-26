@@ -1,4 +1,5 @@
 #include "cruntimepackage.h"
+#include "cmocdeformerorder.h"
 #include "cmodeluserdata.h"
 #include "cparameterreferenceeditor.h"
 #include "cphysicsdocument.h"
@@ -366,15 +367,17 @@ bool CRuntimePackage::Prepare(const Request& request, Prepared& prepared, CExpor
         if (!reference(files.value(QStringLiteral("Moc")), mocPath, error) || !collector.read(mocPath, sourceMoc, error)) return false;
         if (QCryptographicHash::hash(sourceMoc, QCryptographicHash::Sha256) != request.sourceMocDigest)
             return fail(error, QStringLiteral("源模型文件在打开后发生变化"));
+        QByteArray runtimeMoc;
+        if (!CMocDeformerOrder::Normalize(request.mocBytes, runtimeMoc, error)) return false;
         CModelDocument original, current;
-        if (!original.LoadBytes(sourceMoc, mocPath, error) || !current.LoadBytes(request.mocBytes, mocPath, error)) return false;
+        if (!original.LoadBytes(sourceMoc, mocPath, error) || !current.LoadBytes(runtimeMoc, mocPath, error)) return false;
         QSet<QString> oldIds, currentIds;
         for (const auto& p : original.Parameters()) oldIds.insert(p.id);
         for (const auto& p : current.Parameters()) currentIds.insert(p.id);
         const auto removed = oldIds - currentIds;
         if (!auditParameters(Editor::Kind::ModelSettings, QJsonDocument(root).toJson(QJsonDocument::Compact), removed, error)) return false;
         QString output;
-        if (!collector.add(QStringLiteral("model"), QStringLiteral(".moc3"), request.mocBytes, output, error)) return false;
+        if (!collector.add(QStringLiteral("model"), QStringLiteral(".moc3"), runtimeMoc, output, error)) return false;
         files.insert(QStringLiteral("Moc"), output);
         QJsonArray textures, packagedTextures;
         if (files.contains(QStringLiteral("Textures")) && !array(files, QStringLiteral("Textures"), textures, error)) return false;

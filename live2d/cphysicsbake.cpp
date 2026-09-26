@@ -1,4 +1,5 @@
 #include "cphysicsbake.h"
+#include "live2dstruct/cmocdeformerorder.h"
 
 #include "framework/CubismFramework.hpp"
 #include "framework/Id/CubismId.hpp"
@@ -219,7 +220,9 @@ bool CPhysicsBake::Prepare(const Request& request, QString* error)
         for (const auto& group : normalized.value(QStringLiteral("PhysicsSettings")).toArray())
             for (const auto& output : group.toObject().value(QStringLiteral("Output")).toArray())
                 physicsOutputs.insert(output.toObject().value(QStringLiteral("Destination")).toObject().value(QStringLiteral("Id")).toString());
-        next->moc = CubismMoc::Create(reinterpret_cast<const csmByte*>(request.mocBytes.constData()), csmSizeInt(request.mocBytes.size()), true);
+        QByteArray runtimeMoc;
+        if (!live2dstruct::CMocDeformerOrder::Normalize(request.mocBytes, runtimeMoc, error)) return false;
+        next->moc = CubismMoc::Create(reinterpret_cast<const csmByte*>(runtimeMoc.constData()), csmSizeInt(runtimeMoc.size()), true);
         if (!next->moc || !(next->model = next->moc->CreateModel()))
             return fail(error, QStringLiteral("Core 无法创建独立烘焙模型"));
         if (next->base.size() != next->model->GetParameterCount())

@@ -956,3 +956,32 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 综合记录 `/tmp/live2d-workspace-layout-main-proof/verification.json`，SHA-256 `c92f2fb56391df056c3c3ae206ebe2ff4a1e8feb1ead8c5284bf64229ef50d94`。八进程使用相同最终生产对象；其中两项验收驱动纠正了历史 INI 归档顺序和浮点测试端点后重新运行，未改生产实现。
 - 后续已定位参数行固定宽度挤压滑块的问题：名称、数值和重置共占 270px，330px 侧栏还需容纳间距与滚动边距。下一步需保留控件及输入状态的响应式行布局，当前横向可滚动不等于滑块已好用。
 - 另有独立真实 Core 对照确认 Rice 的 Rotation29 重挂到后置 Rotation43 后，参数变化的首帧与稳定帧存在差异，且持续结果与等价父前子后排列不同；增加 Update 次数不足以修复。报告位于 `/tmp/live2d-deformer-order-probe`，需继续处理编译时变形器顺序和所有父索引引用，本批未修改该链路。
+
+## 变形器父级顺序与运行时编译
+
+- 修复 Rice 的 Rotation29 重挂到后置 Rotation43 后的求值错误。原候选虽然通过 Core consistency，但切换参数时首帧与稳定帧相差约 10.76 源像素，稳定结果与等价的父先子后排列仍相差约 534.20 源像素；重复 Update 不能修复。红例、独立排列及原模型对照保存在 `/tmp/live2d-deformer-order-probe`。
+- 新增 `CMocDeformerOrder::Normalize`，按原索引优先的稳定拓扑顺序搬移全部 generic deformer 列，重映射 deformer 与 ArtMesh 的父变形器索引。specific source、关键形、颜色、参数、Blend Shape 和 Glue 引用不重排；已经父先子后的输入保持字节完全一致，失败不改变输出。
+- 作者数据仍使用原始索引。`BuildPreviewMoc`、网格结构基线、历史和会话不排序，`BuildRuntimeMoc` 最后才规范化。初始模型加载、四个 Surface 预览入口、LApp 统一替换事务、独立物理烘焙与运行时包入口同步使用编译结果；初始 CPU 树及后续线框快照与 Core 使用同一摘要。`sourceDigest` 始终属于原始文件，`previewDigest` 属于实际编译字节。
+- 通用变形器 runtime 预留区按每行 8 字节处理。五个真实样本的 Revive 都会写入原 schema 4 字节跨度以外的后半区；不能只移动前 4 字节。共享普通列可独立搬移，实际重排时拒绝与其他 runtime 写区、活跃 UV 的 V 字或三角索引写区交叠的列。无关的 UV 尾部共享继续允许，已排序输入不因这些新增重排约束被改写。
+- 需要重排且存在未识别的活动扩展引用时明确失败，保留旧模型；不以 Blend Shape／Glue 整类禁用替代字段判断。人工远距离 UV／EBO 别名负例被原始 Core consistency 拒绝，测试如实记录，未把它们描述成原 Core 接受的合法模型。
+
+### 验证记录
+
+- 数据层 27 项、真实 Core 15 项、文档集成 6 项、物理烘焙 52 项、运行时包 33 项，普通和 ASAN/UBSAN 分别通过。Core 覆盖四个内置模型及 Mao，包含逆序多级链、四种父子类型、逐参数极值、多个连续参数帧和全部 drawable 属性。Mao 的 Warp／ArtMesh／Rotation／Part Blend Shape 及 Glue 均实际参与，未跳过。组件记录 `/tmp/live2d-deformer-order-check/README.md`、`/tmp/live2d-deformer-order-final-tests.log` 和 `/tmp/live2d-deformer-order-integration-asan-tests.log`。
+- 七个真实可见 MainWindow/Core/GL 进程核对 480 个连续帧，并检查即时发布。覆盖属性面板实际重挂、原始前向父引用模型的初始加载、四个 Surface 原始字节入口、参数／网格混合结构历史、撤销重做、会话新进程恢复和导出模型包重开。初始 CPU 树在运行时面板发布之前即与 Core 摘要一致；原始文件与作者索引保持。
+- 重挂后实际鼠标拖动 ArtMesh182 的关键形顶点，落点误差约 0.00000205 像素，撤销恢复相同编译字节。包内 MOC 已按父先子后排列；独立 CAFF/XML 回读核对 133 个变形器父关系和 177 个网格父关系，独立 Core 参考核对 PSD 的全部 178 个图层矩形。记录 `/tmp/live2d-deformer-order-main-proof/edit/output/export-oracle.json`；此项不宣称 Editor／Photoshop GUI 回读或新增材质像素等价验证。
+- 完整应用编译链接成功，1024 项生产输入、69 个原资源及验收副本保持。综合记录 `/tmp/live2d-deformer-order-main-proof/verification.json`，SHA-256 `861b7bc9ff5a5204d5d28f69341fc4660c79cd78570e842d38a60f948807b6f5`。不同验收驱动修订链接同一份最终生产对象；驱动退出改为直接结束事件循环，以免正常未保存提示阻断结果写出。cmo3 对话框期间普通预览时钟自然前进，其余捕获状态一致，未要求产品暂停这一对话流程。
+- 独立 `-O2` 测量中，已排序输入单次约 0.13–1.13ms，Rice 实际排序约 2.50ms；普通播放帧不调用规范化链。三层重复校验有约 3.4ms 的 Mao 发布开销，后续优化应保留校验和字节身份合同。记录 `/tmp/live2d-deformer-order-benchmark/result.json`。
+
+## 参数行适应窄侧栏
+
+- 参数行按实际可用宽度、字体和控件尺寸切换：窄栏第一行显示名称、数值和重置，第二行滑块占满宽度；宽栏使用统一名称列和对齐的单行滑轨。控件只创建一次，重排仅更新几何，避免移出／重新加入布局导致未提交输入重置。
+- 名称只在绘制时省略，完整文本仍供参数选择等消费端读取；名称、ID、关键值提示统一生成，修改显示名称后不再丢失关键值。macOS 可能为通用布局间距返回 -1，改用控件间距并以字体空格兜底，避免上下行重叠。
+- 参数面板普通与 ASAN/UBSAN 各 173 项通过，真实 Cocoa 各 11 项通过，零失败／跳过。覆盖 300／330／420／600 两主题、真实滑块双向拖动与单次撤销、重置同屏、长中文和 ID、CDI 缩进、Blend Shape 标记、宽栏对齐，以及未提交文本／光标／选区、预览、锁定和历史保持。摘要 `/tmp/live2d-parameter-responsive-proof/summary.json`。
+- 完整应用另验收三个工作区的浅深主题和 1200×900／1000×700 窗口，共 12 张截图；实际 330px 侧栏可见完整滑轨与重置按钮。记录 `/tmp/live2d-parameter-workspace-proof/defaults/summary.json`。当前 CTest 登记 126 个目标，本批未重复执行全部目标。
+
+### 后续明确待办
+
+- 已有真实 Core 证据支持 Rotation 有符号缩放，但 Inspector、Document、PreviewBuilder 和 Session 仍拒绝负值，需要统一合法值合同，覆盖负缩放源上修改其它字段与历史／会话恢复。
+- Inspector 的旧“自动三角剖分”与新规划器仍是不同实现，需用凹轮廓／孔洞红例确认并统一语义；当前只确认实现分叉，不把未经复现的行为宣称为已证数据破坏。
+- 后续建模交付继续包括二维关键形角点操作、既有轴关键值编辑、Warp／Rotation 画布手柄、变形器创建删除、素材更新及其余已批准扩展。整体四阶段和九类功能目标仍未完成。

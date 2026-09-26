@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "live2dstruct/cmocdeformerorder.h"
 
 
 #include "QPainter"
@@ -2665,7 +2666,9 @@ void MainWindow::RestDock(const QString &name)
     CTreeManage::Snapshot tree;
     QMap<QString, float> initialPose;
     for (const auto& parameter : m_document.Parameters()) initialPose.insert(parameter.id, m_document.ParameterValue(parameter.id));
-    if (CTreeManage::PrepareSnapshot(m_document.SourceBytes(), initialPose, tree, &documentError))
+    QByteArray initialRuntime;
+    if (live2dstruct::CMocDeformerOrder::Normalize(m_document.SourceBytes(), initialRuntime, &documentError) &&
+        CTreeManage::PrepareSnapshot(initialRuntime, initialPose, tree, &documentError))
         CTreeManage::SwapSnapshot(tree);
     else statusBar()->showMessage(documentError, 8000);
 

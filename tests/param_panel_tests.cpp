@@ -24,6 +24,8 @@
 #include <QFormLayout>
 #include <QStyleFactory>
 #include <QStyleOptionButton>
+#include <QStyleOptionSlider>
+#include <QMouseEvent>
 #include <QTimer>
 #include <QMimeData>
 #include <QListWidget>
@@ -170,6 +172,219 @@ private:
     }
 
 private slots:
+    void responsiveRowsKeepSlidersAndResetUsable_data()
+    {
+        QTest::addColumn<int>("width");
+        QTest::addColumn<bool>("dark");
+        for (bool dark : {false, true}) for (int width : {300, 330, 420, 600})
+            QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(dark ? "dark" : "light").arg(width))) << width << dark;
+    }
+
+    void responsiveRowsKeepSlidersAndResetUsable()
+    {
+        QFETCH(int, width);
+        QFETCH(bool, dark);
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        using Builder = live2dstruct::CMocParameterStructureBuilder;
+        Builder::CreateRequest created;
+        created.parameter.id = QStringLiteral("ParamResponsive_") + QString(35, QLatin1Char('K'));
+        created.bindings.append({{Builder::Owner::ArtMesh, document.Drawables().first().id}, {-1, 0, 1}});
+        Builder::Result candidate;
+        QString error;
+        QVERIFY2(Builder::Create(document.SourceBytes(), created, candidate, &error), qPrintable(error));
+        const int count = document.Parameters().size() + 1;
+        const int begins = candidate.bytes.size();
+        candidate.bytes.append(QByteArray(count * 4, '\0'));
+        const int counts = candidate.bytes.size();
+        candidate.bytes.append(QByteArray(count * 4, '\0'));
+        qToLittleEndian(qint32(begins), candidate.bytes.data() + 0x1dc);
+        qToLittleEndian(qint32(counts), candidate.bytes.data() + 0x1e0);
+        qToLittleEndian(qint32(1), candidate.bytes.data() + counts + (count - 1) * 4);
+        QVERIFY2(document.LoadBytes(candidate.bytes, QStringLiteral("responsive.moc3"), &error), qPrintable(error));
+        const QString first = created.parameter.id, second = document.Parameters()[0].id;
+        const QString longName = QStringLiteral("很长的中文参数名称与完整说明 ") + QString(40, QLatin1Char('W'));
+        QTemporaryDir directory;
+        QFile file(directory.filePath("names.cdi3.json"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const QJsonDocument names(QJsonObject{{"ParameterGroups", QJsonArray{QJsonObject{{"Id", "head"}, {"Name", "头部"}}}},
+            {"Parameters", QJsonArray{QJsonObject{{"Id", first}, {"Name", longName}, {"GroupId", "head"}},
+                                      QJsonObject{{"Id", second}, {"Name", QString(70, QLatin1Char('P'))}, {"GroupId", "head"}}}}});
+        QCOMPARE(file.write(names.toJson()), names.toJson().size());
+        file.close();
+        CCidJson cid;
+        QVERIFY(cid.Parse(file.fileName()));
+        CParamPanel panel;
+        panel.setStyleSheet(Theme::globalStyleSheet(dark));
+        panel.SetDocument(&document);
+        const QSet<QString> blend{second};
+        panel.BuildParams(&cid, &blend);
+        panel.resize(width, 600);
+        panel.show();
+        panel.activateWindow();
+        QCoreApplication::processEvents();
+        QTRY_COMPARE(panel.width(), width);
+        QTRY_COMPARE(panel.m_scroll->horizontalScrollBar()->maximum(), 0);
+        auto* outer = panel.findChild<QScrollArea*>("parameterWorkspaceScroll");
+        QVERIFY(outer);
+        QCOMPARE(outer->horizontalScrollBar()->maximum(), 0);
+        QCOMPARE(panel.m_rows[0].nameLabel->text(), longName);
+        QVERIFY(panel.m_rows[0].nameLabel->toolTip().contains(longName));
+        QVERIFY(panel.m_rows[0].nameLabel->toolTip().contains(QStringLiteral("关键值")));
+        QVERIFY(panel.m_rows[1].nameLabel->text().startsWith(QStringLiteral("[融合]")));
+        for (int index : {0, 1}) {
+            const auto& row = panel.m_rows[index];
+            const auto* viewport = panel.m_scroll->viewport();
+            for (auto* control : QList<QWidget*>{row.nameLabel, row.slider, row.spinBox, row.resetButton}) {
+                const QRect area(control->mapTo(viewport, QPoint()), control->size());
+                QVERIFY2(viewport->rect().contains(area), qPrintable(QStringLiteral("Clipped %1 at %2px").arg(control->metaObject()->className()).arg(width)));
+            }
+            QStyleOptionSlider option;
+            option.initFrom(row.slider);
+            option.orientation = Qt::Horizontal;
+            option.minimum = row.slider->minimum(); option.maximum = row.slider->maximum();
+            option.sliderPosition = row.slider->value(); option.sliderValue = row.slider->value();
+            const QRect groove = row.slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, row.slider);
+            const QRect handle = row.slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, row.slider);
+            QVERIFY(groove.width() - handle.width() >= row.slider->fontMetrics().horizontalAdvance(QString(10, QLatin1Char('0'))));
+            const auto image = row.slider->grab().toImage();
+            const auto colors = Theme::tokens(dark);
+            const QColor fill(colors.value(QStringLiteral("@accent@"))), empty(colors.value(QStringLiteral("@border@")));
+            int trackPixels = 0;
+            const int y = qRound(groove.center().y() * image.devicePixelRatio());
+            for (int x = 0; x < image.width(); ++x)
+                if (image.pixelColor(x, y) == fill || image.pixelColor(x, y) == empty) ++trackPixels;
+            QVERIFY(trackPixels >= row.slider->fontMetrics().horizontalAdvance(QString(10, QLatin1Char('0'))) * image.devicePixelRatio());
+            if (width <= 330) QVERIFY2(row.slider->geometry().top() > row.spinBox->geometry().bottom(),
+                qPrintable(QStringLiteral("slider %1,%2 %3x%4; spin %5,%6 %7x%8; hint %9x%10; spacing %11")
+                    .arg(row.slider->x()).arg(row.slider->y()).arg(row.slider->width()).arg(row.slider->height())
+                    .arg(row.spinBox->x()).arg(row.spinBox->y()).arg(row.spinBox->width()).arg(row.spinBox->height())
+                    .arg(row.widget->sizeHint().width()).arg(row.widget->sizeHint().height()).arg(row.widget->layout()->spacing())));
+            if (width == 600) QVERIFY(std::abs(row.slider->geometry().center().y() - row.spinBox->geometry().center().y()) <= 1);
+        }
+        if (width == 600) {
+            QCOMPARE(panel.m_rows[0].slider->x(), panel.m_rows[1].slider->x());
+            QCOMPARE(panel.m_rows[0].slider->x(), panel.m_rows[2].slider->x());
+        }
+        if (!qEnvironmentVariableIsEmpty("PARAMETER_ROW_SCREENSHOT_DIR")) {
+            const QString output = qEnvironmentVariable("PARAMETER_ROW_SCREENSHOT_DIR");
+            QVERIFY(QDir().mkpath(output));
+            QVERIFY(panel.grab().save(output + QStringLiteral("/parameters-%1-%2.png").arg(dark ? "dark" : "light").arg(width)));
+        }
+        auto& row = panel.m_rows[0];
+        const float before = panel.CurrentValues().value(first);
+        document.ClearEditHistory();
+        QStyleOptionSlider option;
+        option.initFrom(row.slider);
+        option.orientation = Qt::Horizontal;
+        option.minimum = row.slider->minimum(); option.maximum = row.slider->maximum();
+        option.sliderPosition = row.slider->value(); option.sliderValue = row.slider->value();
+        const QRect handle = row.slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, row.slider);
+        const QRect groove = row.slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, row.slider);
+        const auto dragTo = [&](double fraction) {
+            const QPoint point(groove.left() + handle.width() / 2 + qRound((groove.width() - handle.width()) * fraction), handle.center().y());
+            QMouseEvent event(QEvent::MouseMove, point, row.slider->mapToGlobal(point), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(row.slider, &event);
+            return point;
+        };
+        QTest::mousePress(row.slider, Qt::LeftButton, Qt::NoModifier, handle.center());
+        dragTo(.15);
+        QVERIFY(panel.CurrentValues().value(first) < row.minVal + (row.maxVal - row.minVal) * .3f);
+        const QPoint released = dragTo(.85);
+        QTest::mouseRelease(row.slider, Qt::LeftButton, Qt::NoModifier, released);
+        const float after = panel.CurrentValues().value(first);
+        QVERIFY(after > row.minVal + (row.maxVal - row.minVal) * .7f);
+        QVERIFY(document.CanUndoEdit());
+        panel.Undo();
+        QCOMPARE(panel.CurrentValues().value(first), before);
+        QVERIFY(!document.CanUndoEdit());
+        panel.Redo();
+        QCOMPARE(panel.CurrentValues().value(first), after);
+        document.ClearEditHistory();
+        QTest::mouseClick(row.resetButton, Qt::LeftButton);
+        QCOMPARE(panel.CurrentValues().value(first), row.defaultVal);
+        panel.Undo();
+        QCOMPARE(panel.CurrentValues().value(first), after);
+
+        auto metadata = document.ParameterMetadata(first);
+        metadata.displayName = QStringLiteral("改名后仍保留关键值和完整名称 ") + QString(45, QLatin1Char('X'));
+        QVERIFY(document.SetParameterMetadata(first, metadata));
+        panel.RefreshParameterMetadata();
+        QCOMPARE(row.nameLabel->text(), metadata.displayName);
+        QVERIFY(row.nameLabel->toolTip().contains(metadata.displayName));
+        QVERIFY(row.nameLabel->toolTip().contains(QStringLiteral("关键值")));
+        QCOMPARE(row.widget->toolTip(), row.nameLabel->toolTip());
+        metadata.displayName = first;
+        QVERIFY(document.SetParameterMetadata(first, metadata));
+        panel.BuildParams();
+        QVERIFY(panel.FocusParameter(first));
+        QCoreApplication::processEvents();
+        const auto& idRow = panel.m_rows.last();
+        QCOMPARE(idRow.paramId, first);
+        QCOMPARE(idRow.nameLabel->text(), first);
+        QCOMPARE(panel.m_scroll->horizontalScrollBar()->maximum(), 0);
+        const QRect resetRect(idRow.resetButton->mapTo(panel.m_scroll->viewport(), QPoint()), idRow.resetButton->size());
+        QVERIFY(panel.m_scroll->viewport()->rect().contains(resetRect));
+    }
+
+    void responsiveResizePreservesPendingInputAndPreview()
+    {
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CParamPanel panel;
+        panel.SetDocument(&document);
+        panel.BuildParams();
+        panel.resize(600, 500);
+        panel.show();
+        panel.activateWindow();
+        QCoreApplication::processEvents();
+        auto baseline = panel.CurrentValues();
+        auto preview = baseline;
+        preview[panel.m_rows[0].paramId] = panel.m_rows[0].maxVal;
+        panel.SetPreviewValues(preview, baseline);
+        panel.m_userLocked.insert(1);
+        auto& row = panel.m_rows[0];
+        auto* widget = row.widget;
+        auto* slider = row.slider;
+        auto* spin = row.spinBox;
+        auto* input = spin->findChild<QLineEdit*>();
+        QVERIFY(input);
+        spin->setFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(spin->hasFocus());
+        input->selectAll();
+        QTest::keyClicks(input, "-");
+        input->setSelection(0, 1);
+        QCoreApplication::processEvents();
+        QCOMPARE(input->text(), QStringLiteral("-"));
+        const auto revision = document.Revision();
+        const auto locked = panel.m_userLocked;
+        const auto values = panel.CurrentValues();
+        const int cursor = input->cursorPosition(), selection = input->selectionStart();
+        const bool undo = document.CanUndoEdit(), redo = document.CanRedoEdit();
+        QSignalSpy changes(&panel, &CParamPanel::ParamChanged), history(&panel, &CParamPanel::HistoryChanged);
+        for (int width : {300, 330, 420, 600, 300, 600}) {
+            panel.resize(width, 500);
+            QCoreApplication::processEvents();
+            QCOMPARE(panel.width(), width);
+            QCOMPARE(panel.m_rows[0].widget, widget);
+            QCOMPARE(panel.m_rows[0].slider, slider);
+            QCOMPARE(panel.m_rows[0].spinBox, spin);
+            QVERIFY(spin->hasFocus());
+            QCOMPARE(input->text(), QStringLiteral("-"));
+            QCOMPARE(input->cursorPosition(), cursor);
+            QCOMPARE(input->selectionStart(), selection);
+            QCOMPARE(input->selectedText(), QStringLiteral("-"));
+            QCOMPARE(panel.CurrentValues(), values);
+            QCOMPARE(panel.m_previewBaseline, baseline);
+            QCOMPARE(panel.m_userLocked, locked);
+            QVERIFY(panel.HasPreviewValues());
+            QCOMPARE(document.Revision(), revision);
+            QCOMPARE(document.CanUndoEdit(), undo);
+            QCOMPARE(document.CanRedoEdit(), redo);
+            QVERIFY(changes.isEmpty() && history.isEmpty());
+        }
+    }
+
     void compactWorkspaceKeepsControlsReachable_data()
     {
         QTest::addColumn<QSize>("size");

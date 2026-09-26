@@ -1,5 +1,6 @@
 #include "cmodeldocument.h"
 #include "cmocruntimebuilder.h"
+#include "cmocdeformerorder.h"
 #include "cmeshtopology.h"
 #include "cdrawableflags.h"
 #include "csectiontable.h"
@@ -263,7 +264,9 @@ bool CModelDocument::BuildRuntimeMoc(QByteArray& bytes, QString* error) const
     overrides.drawableOpacity = m_drawableOpacityOverrides;
     overrides.drawableDrawOrder = m_drawableDrawOrderOverrides;
     overrides.drawableIndices = m_drawableIndexOverrides;
-    return CMocRuntimeBuilder::Build(authoring, overrides, bytes, error);
+    QByteArray runtime;
+    return CMocRuntimeBuilder::Build(authoring, overrides, runtime, error) &&
+           CMocDeformerOrder::Normalize(runtime, bytes, error);
 }
 
 bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QString* error)

@@ -10,6 +10,7 @@
 #include <limits>
 #include "opengl/cmeshbounds.h"
 #include "live2dstruct/cmotionblendpreview.h"
+#include "live2dstruct/cmocdeformerorder.h"
 
 #include <framework/CubismModelSettingJson.hpp>
 #include <framework/Motion/CubismMotion.hpp>
@@ -185,12 +186,20 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
         if (buffer != NULL)
         {
             const auto release = qScopeGuard([&] { DeleteBuffer(buffer, path.GetRawString()); });
-            const bool loaded = LoadModel(buffer, size, _mocConsistency);
+            QByteArray source(reinterpret_cast<const char*>(buffer), size);
+            QByteArray runtime;
+            QString error;
+            if (!live2dstruct::CMocDeformerOrder::Normalize(source, runtime, &error)) {
+                LAppPal::PrintLogLn("[APP]Failed to prepare moc3: %s", error.toUtf8().constData());
+                return false;
+            }
+            const bool loaded = LoadModel(reinterpret_cast<const csmByte*>(runtime.constData()),
+                                          csmSizeInt(runtime.size()), _mocConsistency);
             if (!loaded) return false;
-            m_sourceMocBytes = QByteArray(reinterpret_cast<const char*>(buffer), size);
+            m_sourceMocBytes.swap(source);
             m_sourceMocDigest = QCryptographicHash::hash(m_sourceMocBytes, QCryptographicHash::Sha256);
-            m_previewMocDigest = m_sourceMocDigest;
-            m_previewMocBytes = m_sourceMocBytes;
+            m_previewMocBytes.swap(runtime);
+            m_previewMocDigest = QCryptographicHash::hash(m_previewMocBytes, QCryptographicHash::Sha256);
         }
         else
         {
@@ -779,7 +788,9 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
         return false;
     }
-    const QByteArray digest = QCryptographicHash::hash(ownedBytes, QCryptographicHash::Sha256);
+    QByteArray runtime;
+    if (!live2dstruct::CMocDeformerOrder::Normalize(ownedBytes, runtime, error)) return false;
+    const QByteArray digest = QCryptographicHash::hash(runtime, QCryptographicHash::Sha256);
     auto* previous = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
     auto* delegate = LAppDelegate::GetInstance();
     if (!previous || delegate->IsOffScreen() || delegate->m_isDraggingDeformer ||
@@ -812,13 +823,13 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         };
     }
     const bool hadPhysics = _physics != nullptr;
-    if (!ReplaceModel(reinterpret_cast<const csmByte*>(ownedBytes.constData()), csmSizeInt(ownedBytes.size()),
+    if (!ReplaceModel(reinterpret_cast<const csmByte*>(runtime.constData()), csmSizeInt(runtime.size()),
                       prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
                       prepareCompiledModel, physicsReferences, preparePhysics, geometry))
         return false;
     if (preparePhysics && (hadPhysics || _physics)) ++m_physicsGeneration;
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
-    m_previewMocBytes = ownedBytes;
+    m_previewMocBytes.swap(runtime);
     m_previewMocDigest = digest;
     delegate->m_savedVertices.clear();
     delegate->m_meshOverlayPositions.clear();

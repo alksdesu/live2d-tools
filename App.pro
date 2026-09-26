@@ -71,6 +71,7 @@ SOURCES += \
     live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
     live2dstruct/cmocruntimebuilder.cpp \
+    live2dstruct/cmocdeformerorder.cpp \
     live2dstruct/cruntimepackage.cpp \
     live2dstruct/cphysicsdocument.cpp \
     live2dstruct/cmocparameterstructurebuilder.cpp \
@@ -307,6 +308,7 @@ HEADERS += \
     live2dstruct/ckeyformeditcontroller.h \
     live2dstruct/cmocpreviewbuilder.h \
     live2dstruct/cmocruntimebuilder.h \
+    live2dstruct/cmocdeformerorder.h \
     live2dstruct/cruntimepackage.h \
     live2dstruct/cphysicsdocument.h \
     live2dstruct/cmocparameterstructurebuilder.h \

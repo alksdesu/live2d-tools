@@ -33,6 +33,8 @@
 #include <QListWidget>
 #include <QTreeWidget>
 #include <QHeaderView>
+#include <QPainter>
+#include <QStyleOption>
 #include <algorithm>
 #include <array>
 #include <iterator>
@@ -45,6 +47,145 @@
 using namespace Live2D::Cubism::Framework;
 
 namespace {
+class CParameterNameLabel final : public QLabel
+{
+public:
+    using QLabel::QLabel;
+
+    QSize sizeHint() const override
+    {
+        const auto size = QLabel::sizeHint();
+        return {std::min(size.width(), fontMetrics().horizontalAdvance(QString(12, QLatin1Char('M')))), size.height()};
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return {0, QLabel::minimumSizeHint().height()};
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        QStyleOption option;
+        option.initFrom(this);
+        style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
+        style()->drawItemText(&painter, contentsRect(), alignment(), palette(), isEnabled(),
+                             fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()), foregroundRole());
+    }
+};
+
+class CParameterRowLayout final : public QLayout
+{
+public:
+    CParameterRowLayout(QWidget* parent, QLabel* name, QSlider* slider, QDoubleSpinBox* value, QToolButton* reset)
+        : QLayout(parent)
+    {
+        setContentsMargins(0, 2, 0, 2);
+        name->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        for (auto* widget : std::array<QWidget*, 4>{name, slider, value, reset}) addWidget(widget);
+    }
+
+    ~CParameterRowLayout() override
+    {
+        while (auto* item = takeAt(0)) delete item;
+    }
+
+    void addItem(QLayoutItem* item) override { m_items.append(item); }
+    int count() const override { return m_items.size(); }
+    QLayoutItem* itemAt(int index) const override { return m_items.value(index); }
+    QLayoutItem* takeAt(int index) override
+    {
+        return index >= 0 && index < m_items.size() ? m_items.takeAt(index) : nullptr;
+    }
+    bool hasHeightForWidth() const override { return true; }
+    QSize sizeHint() const override { return {WideWidth(), heightForWidth(WideWidth())}; }
+    QSize minimumSize() const override
+    {
+        const auto margins = contentsMargins();
+        return {m_items[2]->minimumSize().width() + m_items[3]->minimumSize().width() + 2 * Gap() +
+                    parentWidget()->fontMetrics().horizontalAdvance(QString(4, QLatin1Char('M'))) + margins.left() + margins.right(),
+                HeaderHeight() + margins.top() + margins.bottom()};
+    }
+    int heightForWidth(int width) const override
+    {
+        const auto margins = contentsMargins();
+        return HeaderHeight() + margins.top() + margins.bottom() +
+               (width < WideWidth() ? Gap() + m_items[1]->sizeHint().height() : 0);
+    }
+
+    void setGeometry(const QRect& rect) override
+    {
+        QLayout::setGeometry(rect);
+        const QRect content = rect.marginsRemoved(contentsMargins());
+        const int gap = Gap();
+        const int valueWidth = m_items[2]->sizeHint().width(), resetWidth = m_items[3]->sizeHint().width();
+        const int headerHeight = HeaderHeight();
+        const bool compact = rect.width() < WideWidth();
+        const auto place = [&](int index, int x, int y, int width, int height) {
+            const int controlHeight = std::min(height, m_items[index]->sizeHint().height());
+            m_items[index]->setGeometry(QRect(x, y + (height - controlHeight) / 2, std::max(0, width), controlHeight));
+        };
+        if (compact) {
+            const int nameWidth = content.width() - valueWidth - resetWidth - 2 * gap;
+            place(0, content.x(), content.y(), nameWidth, headerHeight);
+            place(2, content.right() + 1 - resetWidth - gap - valueWidth, content.y(), valueWidth, headerHeight);
+            place(3, content.right() + 1 - resetWidth, content.y(), resetWidth, headerHeight);
+            place(1, content.x(), content.y() + headerHeight + gap, content.width(), m_items[1]->sizeHint().height());
+        } else {
+            const int nameWidth = parentWidget()->fontMetrics().horizontalAdvance(QString(12, QLatin1Char('M')));
+            const int sliderWidth = content.width() - nameWidth - valueWidth - resetWidth - 3 * gap;
+            place(0, content.x(), content.y(), nameWidth, headerHeight);
+            place(1, content.x() + nameWidth + gap, content.y(), sliderWidth, headerHeight);
+            place(2, content.right() + 1 - resetWidth - gap - valueWidth, content.y(), valueWidth, headerHeight);
+            place(3, content.right() + 1 - resetWidth, content.y(), resetWidth, headerHeight);
+        }
+    }
+
+private:
+    int Gap() const
+    {
+        if (spacing() >= 0) return spacing();
+        auto* widget = parentWidget();
+        const int metric = widget->style()->pixelMetric(QStyle::PM_LayoutHorizontalSpacing, nullptr, widget);
+        if (metric >= 0) return metric;
+        const int controls = widget->style()->layoutSpacing(QSizePolicy::Label, QSizePolicy::LineEdit, Qt::Horizontal, nullptr, widget);
+        return controls >= 0 ? controls : widget->fontMetrics().horizontalAdvance(QLatin1Char(' '));
+    }
+    int HeaderHeight() const
+    {
+        int height = 0;
+        for (auto* item : m_items) height = std::max(height, item->sizeHint().height());
+        return height;
+    }
+    int WideWidth() const
+    {
+        const auto metrics = parentWidget()->fontMetrics();
+        const int sliderWidth = metrics.horizontalAdvance(QString(12, QLatin1Char('0'))) +
+            m_items[1]->widget()->style()->pixelMetric(QStyle::PM_SliderLength, nullptr, m_items[1]->widget());
+        const auto margins = contentsMargins();
+        return metrics.horizontalAdvance(QString(12, QLatin1Char('M'))) + sliderWidth +
+               m_items[2]->sizeHint().width() + m_items[3]->sizeHint().width() + 3 * Gap() + margins.left() + margins.right();
+    }
+    QList<QLayoutItem*> m_items;
+};
+
+QString parameterTooltip(const live2dstruct::CModelDocument* document, const QString& id, const QString& name)
+{
+    QStringList lines;
+    if (name != id) lines.append(name);
+    lines.append(id);
+    if (document) for (const auto& parameter : document->Parameters()) {
+        if (parameter.id != id) continue;
+        QStringList keys;
+        for (float value : parameter.keyValues) keys.append(QString::number(value, 'f', 3));
+        if (!keys.isEmpty()) lines.append(QStringLiteral("关键值：%1").arg(keys.join(QStringLiteral("、"))));
+        break;
+    }
+    return QStringLiteral("<qt>%1</qt>").arg(lines.join(QLatin1Char('\n')).toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")));
+}
+
 class CParameterMetadataDialog final : public QDialog
 {
 public:
@@ -666,9 +807,7 @@ void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendSh
         const float initialVal = parameter.value;
         const double range = static_cast<double>(maxVal) - minVal;
 
-        QWidget* rowWidget = new QWidget(m_container);
-        QHBoxLayout* row = new QHBoxLayout(rowWidget);
-        row->setContentsMargins(0, 2, 0, 2);
+        auto* rowWidget = new QWidget(m_container);
 
         // 显示名称：优先用 cid 映射的名称，否则回退到内部 ID
         QString originalName = paramId;
@@ -685,31 +824,18 @@ void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendSh
             displayName = QString("[融合] %1").arg(displayName);
         }
         rowWidget->setProperty("searchText", (displayName + " " + paramId).toLower());
-        QStringList keyTexts;
-        if (m_document) {
-            for (const auto& parameter : m_document->Parameters()) {
-                if (parameter.id != paramId) continue;
-                for (float key : parameter.keyValues) keyTexts.append(QString::number(key, 'f', 3));
-                break;
-            }
-        }
-        const QString tooltip = keyTexts.isEmpty()
-            ? paramId : QStringLiteral("%1\n关键值：%2").arg(paramId, keyTexts.join(QStringLiteral("、")));
+        const QString tooltip = parameterTooltip(m_document, paramId, displayName);
         rowWidget->setToolTip(tooltip);
 
-        QLabel* nameLabel = new QLabel(displayName, m_container);
+        QLabel* nameLabel = new CParameterNameLabel(displayName, rowWidget);
         nameLabel->setTextFormat(Qt::PlainText);
-        nameLabel->setFixedWidth(150);
         nameLabel->setToolTip(tooltip);
         if(isBlendShape){
             nameLabel->setObjectName(QStringLiteral("blendParamTag"));
         }
-        row->addWidget(nameLabel);
-
         QSlider* slider = new QSlider(Qt::Horizontal, rowWidget);
         slider->setRange(0, 1000);
         slider->setValue(parameterToSlider(initialVal, minVal, maxVal));
-        row->addWidget(slider);
 
         auto* spinBox = new CParameterSpinBox(rowWidget);
         spinBox->setDecimals(metadata.decimalPlaces);
@@ -717,13 +843,12 @@ void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendSh
         spinBox->setSingleStep(range > 0 ? range / 100.0 : 1.0);
         spinBox->setValue(initialVal);
         spinBox->setFixedWidth(92);
-        row->addWidget(spinBox);
 
         QToolButton* resetButton = new QToolButton(rowWidget);
         resetButton->setText(QStringLiteral("↺"));
         resetButton->setToolTip(QStringLiteral("恢复默认值 %1").arg(QString::number(defVal, 'f', 3)));
         resetButton->setFixedWidth(28);
-        row->addWidget(resetButton);
+        new CParameterRowLayout(rowWidget, nameLabel, slider, spinBox, resetButton);
 
         ParamRow pr;
         pr.widget = rowWidget;
@@ -1649,7 +1774,9 @@ void CParamPanel::RefreshParameterRow(int rowIndex)
     const QString displayName = (row.blendShape ? QStringLiteral("[融合] ") : QString()) + name;
     row.nameLabel->setTextFormat(Qt::PlainText);
     row.nameLabel->setText(displayName);
-    row.nameLabel->setToolTip(row.paramId);
+    const QString tooltip = parameterTooltip(m_document, row.paramId, displayName);
+    row.nameLabel->setToolTip(tooltip);
+    row.widget->setToolTip(tooltip);
     row.widget->setProperty("searchText", (displayName + " " + row.paramId).toLower());
     const float value = boundedParameterValue(m_lastValues.value(row.paramId, metadata.defaultValue),
                                                row.minVal, row.maxVal, row.defaultVal);
