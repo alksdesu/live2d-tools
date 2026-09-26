@@ -543,27 +543,10 @@ void MainWindow::on_actionCmo3Export_triggered()
         this, "导出 cmo3 工程", defaultName, "Cubism 工程 (*.cmo3)");
     if(outPath.isEmpty()) return;
 
-    QMessageBox confirmation(QMessageBox::Question, QStringLiteral("导出 cmo3 工程"),
-        "将从 moc3 运行时数据恢复 Cubism Editor 工程。\n\n"
-        "以下信息在 moc3 中不存在，无法恢复：\n"
-        "· 变形器路径整理、画师备注\n"
-        "· 原始 PSD 关联（贴图以每网格图层重建）\n"
-        "· 参数分组的折叠状态等编辑器偏好\n\n"
-        "是否继续？",
-        QMessageBox::Yes | QMessageBox::No, this);
-    confirmation.setDefaultButton(QMessageBox::Yes);
-    auto* currentDefaults = new QCheckBox(QStringLiteral("将当前参数值作为默认值"), &confirmation);
-    currentDefaults->setToolTip(QStringLiteral("勾选后会替代模型定义的默认值。工作会话始终可以单独保存当前参数值。"));
-    confirmation.setCheckBox(currentDefaults);
-    if (confirmation.exec() != QMessageBox::Yes) return;
-
-    statusBar()->showMessage("正在生成 cmo3 工程…");
+    statusBar()->showMessage(QStringLiteral("正在准备 cmo3 工程…"));
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
     cmo3::CCmo3Builder::Options options;
-    options.parameterDefaultMode = currentDefaults->isChecked()
-        ? cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues
-        : cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition;
     options.mocPath = m_currentMoc;
     options.outPath = outPath;
     {
@@ -604,6 +587,46 @@ void MainWindow::on_actionCmo3Export_triggered()
         }
         options.physicsBytes = physics.effectiveBytes;
     }
+    cmo3::CCmo3Builder::PhysicsExport physicsExport;
+    QString physicsError;
+    if (!cmo3::CCmo3Builder::PreparePhysicsExport(options, physicsExport, &physicsError)) {
+        QApplication::restoreOverrideCursor();
+        QMessageBox::warning(this, QStringLiteral("导出失败"), physicsError);
+        return;
+    }
+    if (physicsExport.present) options.physicsBytes = QJsonDocument(physicsExport.document).toJson(QJsonDocument::Compact);
+    QApplication::restoreOverrideCursor();
+
+    QMessageBox confirmation(QMessageBox::Question, QStringLiteral("导出 cmo3 工程"),
+        "将从 moc3 运行时数据恢复 Cubism Editor 工程。\n\n"
+        "以下信息在 moc3 中不存在，无法恢复：\n"
+        "· 变形器路径整理、画师备注\n"
+        "· 原始 PSD 关联（贴图以每网格图层重建）\n"
+        "· 参数分组的折叠状态等编辑器偏好\n\n"
+        "是否继续？",
+        QMessageBox::Yes | QMessageBox::No, this);
+    confirmation.button(QMessageBox::No)->setText(QStringLiteral("取消"));
+    confirmation.button(QMessageBox::Yes)->setText(physicsExport.conversions.isEmpty()
+        ? QStringLiteral("导出") : QStringLiteral("转换并导出"));
+    confirmation.setDefaultButton(physicsExport.conversions.isEmpty() ? QMessageBox::Yes : QMessageBox::No);
+    auto* currentDefaults = new QCheckBox(QStringLiteral("将当前参数值作为默认值"), &confirmation);
+    currentDefaults->setToolTip(QStringLiteral("勾选后会替代模型定义的默认值。工作会话始终可以单独保存当前参数值。"));
+    confirmation.setCheckBox(currentDefaults);
+    confirmation.setTextFormat(Qt::PlainText);
+    if (!physicsExport.conversions.isEmpty()) {
+        confirmation.setInformativeText(QStringLiteral("导出需要转换以下物理设置：\n%1\n\n原值会保留在当前草稿中，可另行导出物理配置或运行时模型包。")
+            .arg(physicsExport.conversions.join(QLatin1Char('\n'))));
+    }
+    if (confirmation.exec() != QMessageBox::Yes) {
+        statusBar()->showMessage(QStringLiteral("cmo3 导出已取消"), 5000);
+        return;
+    }
+    options.allowPhysicsConversion = !physicsExport.conversions.isEmpty();
+    options.parameterDefaultMode = currentDefaults->isChecked()
+        ? cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues
+        : cmo3::CCmo3Builder::ParameterDefaultMode::ModelDefinition;
+    statusBar()->showMessage(QStringLiteral("正在生成 cmo3 工程…"));
+    QApplication::setOverrideCursor(Qt::WaitCursor);
     options.parameterValues = m_document.ParameterValues();
     if (options.parameterDefaultMode == cmo3::CCmo3Builder::ParameterDefaultMode::CurrentValues) {
         auto values = m_paramPanel ? m_paramPanel->CurrentValues() : QMap<QString, float>();

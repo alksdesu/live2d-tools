@@ -47,6 +47,7 @@ The "Export cmo3 project" toolbar action (Ctrl+E) restores the current model as 
 - **Not recoverable** (absent from moc3): original PSD association, deformer path organization, artist notes and other editor metadata
 - Textures are rebuilt in "single PSD document + one layer per mesh" mode (MODEL_IMAGE); artwork can be replaced directly in the Editor and re-exported to moc3
 - Export preserves model parameter defaults unless "Use current parameter values as defaults" is selected; sessions store the current values separately
+- Physics export preserves normalization and integer calculation FPS, including `0`; an unspecified FPS stays unspecified. Fractional FPS, non-default forces and X/Y outputs require an explicit conversion review. Export a physics3 configuration or runtime model package to retain those settings in full.
 
 ```
 Input:  model.moc3 + textures/*.png [+ physics3.json + cdi3.json]
@@ -183,6 +184,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - **不可恢复**（moc3 中不存在）：原始 PSD 关联、变形器路径整理、画师备注等编辑器元数据
 - 贴图以"单 PSD 文档 + 每网格一图层"模式重建（MODEL_IMAGE），在 Editor 中可直接换皮再导出 moc3
 - 默认保留模型参数的默认值；勾选“将当前参数值作为默认值”可改用当前姿态，工作会话另行保存当前值
+- 物理导出保留归一化和整数计算 FPS（包括 `0`），未指定的 FPS 仍保持未指定。小数 FPS、非默认力场及 X/Y 输出需先确认具体转换；完整配置可通过 physics3 或运行时模型包保存。
 
 ```
 输入: model.moc3 + textures/*.png [+ physics3.json + cdi3.json]

@@ -6,6 +6,8 @@
 #include <QHash>
 #include <QMap>
 #include <QVector>
+#include <QJsonObject>
+#include <QStringList>
 #include <optional>
 #include "live2dstruct/cmodeldocument.h"
 
@@ -30,6 +32,7 @@ public:
         QString cdiPath;                 // 可选 .cdi3.json（显示名映射）
         QString physicsPath;             // 可选 .physics3.json
         std::optional<QByteArray> physicsBytes;
+        bool allowPhysicsConversion = false;
         QString userDataPath;
         QHash<QString, float> parameterValues;
         QHash<QString, live2dstruct::CModelParameterMetadata> parameterMetadata;
@@ -46,6 +49,14 @@ public:
         QHash<QString, QVector<live2dstruct::CModelWarpKeyform>> deformerWarpKeyformOverrides;
         QHash<QString, bool> drawableMaskInverted;
     };
+
+    struct PhysicsExport {
+        bool present = false;
+        QJsonObject document;
+        QStringList conversions;
+    };
+
+    static bool PreparePhysicsExport(const Options& options, PhysicsExport& result, QString* error = nullptr);
 
     // 全流程执行；失败时 outError 带原因
     static bool Build(const Options& options, QString* outError = nullptr);

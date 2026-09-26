@@ -812,3 +812,21 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - Mao 的 `CPhysicsSettingsSourceSet` 直接 `i/settingFPS` 为 30，与运行时一致；Hiyori Pro 未指定时使用 `null/settingFPS`。旧样本没有该字段。整数 FPS 可据此补齐；0、小数及非默认力场不能静默猜测或截断转换。
 - 65 个原生输出全为 Angle，没有 X/Y 实例；四份 XML 均没有 gravity/wind 字段，配套运行时均为默认力场。现有资料不足以证明 X/Y 的 Editor 映射或非默认力场的存储方式，仍需专门原生样本或实现依据。
 - 具体官方来源、样本 SHA、逐字段核对和版本信息：`/tmp/live2d-native-physics-reference/README.md`、`audit.json`；后者 SHA-256 为 `fc5165012fb1d08fc92d199a12d288e4d5c5784a5919e4f94e99965a4ce08286`。此处是后续修复依据，尚未修改 cmo3 写入器。
+
+## cmo3 物理设置与显式转换
+
+- 通过官方 Editor 4.2.03_2、5.3.04 发行包的相关数据类、JSON 导入导出及 FPS 消费方法，解决上一节的未知项。只在临时目录解包并静态读取指定类，未安装或启动 Editor，未执行安装、登录或激活代码。原始包、JAR 摘要和方法位置见 `/tmp/live2d-editor-physics-reference/README.md`、`manifest.json`。
+- 两版自定义 cmo3 序列化均不保存内存中的重力和风力；X/Y 输出在 cmo3 反序列化时无条件改为 Angle，并从 translationScale.x 取倍率，Y 也如此。因此这些项目不能靠猜写 XML 字段实现无损保存。FPS 使用可空 Integer，整数 0 能保持并导出；4.2 求值已验证 FPS≤0 使用实际帧间隔。缺省 null 与显式 0 不合并。JSON 小数 FPS 的导入规则为 float32 后向 0 截断。
+- cmo3 写入器补齐每组六个归一化浮点字段及组外 `settingFPS`。缺省写 null，整数 0 和正整数写 i；缺少归一化分量时沿用 SDK 的 0 缺省，不把推荐的 ±10 范围当作原数据。旧顶层 PhysicsDictionary 经共享规范化保留名称。
+- 物理字节和文件入口共用 CPhysicsDocument 验证及计数规范化，保留 cmo3 额外要求的组 ID 唯一性与实际 MOC 参数存在性。修复 Meta、归一化、Reflect 类型未检查及空根顶点组被接受的问题；缺省可选数组、Target、权重和粒子分量按共享合同处理。两种输入均限制 16 MiB，文件使用原始字节且有界读取，拒绝时不覆盖已有输出。
+- 新增 `PreparePhysicsExport`，返回规范化原数据及转换说明；它不读取 MOC，也不替代 Build 的实际参数引用检查。Build 默认拒绝有损物理转换，调用方须明确设置 `allowPhysicsConversion`。确认后小数 FPS 按官方 float32→int 规则保存，X/Y 显式转为 Angle 并保留原倍率，非默认力场明确不进入该工程格式。实际 float32 已等于整数或默认力场的值不误报，例如 29.999999999→30。
+- 主窗口在原有导出确认前捕获物理快照并展示转换项目。按钮为“取消”和“导出／转换并导出”；有损转换默认取消，确认后才发布。读取过的物理内容冻结为字节传入 Build，不在确认后重读物理文件；源文件、当前草稿、历史及完整 physics3/模型包数据保持不变。
+
+### 验证记录
+
+- 新增 cmo3_physics 目标，普通和 ASAN/UBSAN 各 98 项通过，零失败/跳过或内存诊断。覆盖真实 Build→CAFF/XML 分层回读、双组六值、FPS 0/null/小数/float32 边界、三类转换、默认拒绝与显式允许、原输入及目标保留、双入口大小边界、旧字典和缺省数据；允许转换也不能绕过未知参数检查。
+- 六个关联 CTest 目标全部通过：cmo3、cmo3_physics、cmo3_deformers、physics_panel、clipping_editor、userdata_panel。新增目标使登记总数为 107，本批执行的是这六个实际消费者，不将其称为重新运行全部目标。
+- 完整原生应用编译链接成功；最终构建和实际验收前后 1005 项生产输入、69 个原资源一致。记录 `/tmp/live2d-cmo3-physics-native-final-inputs.json`，SHA-256 为 `759023f243661e11362c478cd48936d7825cf2fef620bc02ba4163e898db3534`。
+- 三个真实 MainWindow/Core/GL 进程验证 FPS0、缺省 FPS、非默认六个归一化值，以及 29.97 FPS＋非默认风力＋Y/3.25 的转换。实际确认框包含三项说明；取消保留旧目标，确认后读回 i29、Angle/3.25 与完整归一化。非法 Meta 通过主窗口捕获/预检拒绝覆盖。每个场景另导出标准包，完整 Physics JSON 与原草稿规范化后相等，草稿、历史和运行时不变。
+- 最新确认框已验证中文按钮、有损时默认取消及浅深主题可读性；原英文按钮版本的证据另存 pre-label，不冒充最终版本。最终摘要 `/tmp/live2d-cmo3-physics-acceptance-proof/summary.json`，SHA-256 为 `f6ca06d5e592837245f7f4efc8fa531ee887b34e3b8b8ba95d6c02d7c6baa715`。
+- 上述证明包括官方原生格式/静态实现与本工具真实导出，尚未启动 Cubism Editor GUI 打开生成的完整工程。完整外部编辑器回读、其他建模和动画扩展仍待完成，整体目标保持进行中。
