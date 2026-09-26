@@ -65,6 +65,11 @@ bool overlaps(qint64 first, qint64 firstSize, qint64 second, qint64 secondSize)
 }
 }
 
+qint64 CSectionValidation::StorageWidth(const ColumnSpan& span)
+{
+    return span.name && std::strstr(span.name, "runtime_space") ? 8 : span.width;
+}
+
 bool CSectionValidation::ValidateMetadata(CReader& reader, const CSectionOffsetTable& offsets)
 {
     if (!reader.IsValid()) return false;

@@ -120,8 +120,7 @@ QByteArray v5(const QByteArray& bytes)
     result.replace(0x380, 20, bytes.mid(qFromLittleEndian<qint32>(bytes.constData() + 0x44), 20));
     for (auto span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
         if (!span.offset || !span.count) continue;
-        const QByteArray name(span.name);
-        if (name == "parameters.runtime_space_0" || name == "parameters.extension_runtime_space_0") span.width = 8;
+        span.width = CSectionValidation::StorageWidth(span);
         put(result, span.slot, result.size()); result.append(bytes.mid(span.offset, span.count * span.width));
         result.append(QByteArray((64 - result.size() % 64) % 64, '\0'));
     }
@@ -339,7 +338,8 @@ private slots:
             if (!span.offset || (!name.startsWith("blend_") && !name.startsWith(keyformGroup(type).toUtf8() + '.') &&
                 !name.startsWith("keyform_positions.") && !name.startsWith("keyform_multiply_colors.") && !name.startsWith("keyform_screen_colors."))) continue;
             const auto next = column(after, span.name);
-            QCOMPARE(result.bytes.mid(next.offset, span.count * span.width), bytes.mid(span.offset, span.count * span.width));
+            const auto width = CSectionValidation::StorageWidth(span);
+            QCOMPARE(result.bytes.mid(next.offset, span.count * width), bytes.mid(span.offset, span.count * width));
         }
         const auto group = keyformGroup(type).toUtf8();
         for (const QByteArray& channel : {QByteArray("multiply"), QByteArray("screen")}) {
@@ -420,7 +420,7 @@ private slots:
         for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
             if (span.countIndex != (glue ? 20 : 0) && span.countIndex != (glue ? 22 : 6)) continue;
             const int count = state.counts.value(span.countIndex);
-            QByteArray values(count * span.width, '\0'); const QByteArray name(span.name);
+            QByteArray values(count * CSectionValidation::StorageWidth(span), '\0'); const QByteArray name(span.name);
             for (int row = 0; row < count; ++row) {
                 if (name.endsWith(".ids")) values.replace(row * 64, 64, QByteArray(glue ? "LiveGlue" : "LivePart").leftJustified(64, '\0'));
                 else if (name.endsWith(".keyform_binding_sources_indices")) put(values, row * 4, table.rotation_deformers[0]->keyform_binding_sources_indices);
@@ -791,7 +791,7 @@ private slots:
         Builder::ColumnState state; state.counts.insert(4, 2);
         for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
             if (span.countIndex != 4 || (span.optional && !span.offset)) continue;
-            const auto original = bytes.mid(span.offset, span.width);
+            const auto original = bytes.mid(span.offset, CSectionValidation::StorageWidth(span));
             auto values = original + original;
             if (QByteArray(span.name) == "art_meshes.ids") values.replace(64, 64, QByteArray("Sibling").leftJustified(64, '\0'));
             state.columns.insert(span.slot, values);

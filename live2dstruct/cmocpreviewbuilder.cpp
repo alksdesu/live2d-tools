@@ -244,10 +244,10 @@ bool CMocPreviewBuilder::Snapshot::Read(CSectionTable& table, QString* error)
     auto spans = CSectionValidation::ArraySpans(offsets, counts);
     if (spans.size() != CSectionValidation::KnownOffsetCount(offsets.mocVersion) - 2)
         return Fail(error, QStringLiteral("预览补丁区段布局不完整"));
-    for (int offset : {offsets.parameters->runtime_space_0, offsets.parameters->extension_runtime_space_0}) {
-        if (offset && counts.parameters)
-            spans.append({"parameter_runtime_pointer_tail", qint64(offset) + qint64(counts.parameters) * 4,
-                          counts.parameters, 4});
+    for (auto& span : spans) {
+        span.width = CSectionValidation::StorageWidth(span);
+        if (span.offset && (span.offset > bytes.size() || span.count * span.width > bytes.size() - span.offset))
+            return Fail(error, QStringLiteral("预览区段 %1 的完整存储空间越界").arg(QString::fromLatin1(span.name)));
     }
     const int headerEnd = offsets.count_info->count_info_offset;
     if (headerEnd % 4 || (headerEnd - CSectionValidation::OffsetTableStart) / 4 > MaximumCount)

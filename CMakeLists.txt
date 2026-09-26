@@ -69,6 +69,7 @@ add_library(model_data STATIC
     live2dstruct/cphysicsdocument.cpp
     live2dstruct/cmocparameterstructurebuilder.cpp
     live2dstruct/cmocmeshstructurebuilder.cpp
+    live2dstruct/cmocdeformerstructurebuilder.cpp
     live2dstruct/cartmeshgeometrylayout.cpp
     live2dstruct/cmoclayoutrewriter.cpp
     live2dstruct/cmodeluserdata.cpp
@@ -174,10 +175,24 @@ if(BUILD_TESTING)
     target_link_libraries(moc_mesh_structure_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_mesh_structure_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME moc_mesh_structure COMMAND moc_mesh_structure_tests)
+    foreach(deformer_test IN ITEMS deformer_column_state deformer_structure_builder)
+        add_executable(${deformer_test}_tests tests/${deformer_test}_tests.cpp)
+        target_link_libraries(${deformer_test}_tests PRIVATE model_data Qt6::Test)
+        target_compile_definitions(${deformer_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME ${deformer_test} COMMAND ${deformer_test}_tests)
+    endforeach()
     add_executable(mesh_edit_planner_tests tests/mesh_edit_planner_tests.cpp)
     target_link_libraries(mesh_edit_planner_tests PRIVATE model_data Qt6::Test)
     add_test(NAME mesh_edit_planner COMMAND mesh_edit_planner_tests)
     if(TARGET live2d_core)
+        add_executable(deformer_column_state_core_tests tests/deformer_column_state_tests.cpp)
+        target_link_libraries(deformer_column_state_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(deformer_column_state_core_tests PRIVATE LIVE2D_TEST_CORE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME deformer_column_state_core COMMAND deformer_column_state_core_tests)
+        add_executable(deformer_structure_core_tests tests/deformer_structure_core_tests.cpp)
+        target_link_libraries(deformer_structure_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(deformer_structure_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME deformer_structure_core COMMAND deformer_structure_core_tests)
         add_executable(keyform_mapping_core_tests tests/keyform_mapping_core_tests.cpp)
         target_link_libraries(keyform_mapping_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
         target_compile_definitions(keyform_mapping_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

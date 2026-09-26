@@ -65,8 +65,7 @@ struct Layout
     {
         if (!table.IsValid()) return;
         for (auto span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
-            if (std::strcmp(span.name, "parameters.runtime_space_0") == 0 ||
-                std::strcmp(span.name, "parameters.extension_runtime_space_0") == 0) span.width = 8;
+            span.width = CSectionValidation::StorageWidth(span);
             columns.insert(span.slot, span);
             names.insert(QString::fromLatin1(span.name), span.slot);
         }
@@ -163,6 +162,72 @@ struct Layout
     }
 };
 
+bool runtimeStorage(const CSectionValidation::ColumnSpan& span)
+{
+    return span.name && std::strstr(span.name, "runtime_space");
+}
+
+bool overlaps(qint64 first, qint64 size, qint64 other, qint64 otherSize)
+{
+    return size > 0 && otherSize > 0 && first < other + otherSize && other < first + size;
+}
+
+bool validStorageChanges(const Layout& layout, const QSet<int>& changed, QString* error)
+{
+    if (changed.isEmpty()) return true;
+    for (const auto& scratch : layout.columns) {
+        if (!runtimeStorage(scratch) || !scratch.offset || !scratch.count) continue;
+        for (const auto& other : layout.columns) {
+            if (scratch.slot == other.slot || !other.offset || !other.count ||
+                (!changed.contains(scratch.slot) && !changed.contains(other.slot))) continue;
+            if (overlaps(scratch.offset, scratch.count * scratch.width, other.offset, other.count * other.width))
+                return fail(error, QStringLiteral("区段 %1 与 Core 可写预留区 %2 共享字节，不能保持结构编辑语义")
+                            .arg(QString::fromLatin1(other.name), QString::fromLatin1(scratch.name)));
+        }
+    }
+    return true;
+}
+
+bool sameStorageAliases(const Layout& before, const Layout& after, QString* error)
+{
+    const int headerEnd = before.table.sectionOffsetTable->count_info->count_info_offset;
+    QVector<int> physical;
+    for (int slot = 0x40; slot < headerEnd; slot += 4) {
+        const int offset = word(before.bytes, slot), next = word(after.bytes, slot);
+        if ((offset && (offset < headerEnd || offset > before.bytes.size())) ||
+            (next && (next < headerEnd || next > after.bytes.size())))
+            return fail(error, QStringLiteral("结构状态区段偏移无效"));
+        if (offset) physical.append(offset);
+    }
+    std::sort(physical.begin(), physical.end());
+    physical.erase(std::unique(physical.begin(), physical.end()), physical.end());
+    for (const auto& scratch : before.columns) {
+        if (!runtimeStorage(scratch)) continue;
+        const auto& nextScratch = after.columns.constFind(scratch.slot).value();
+        for (int slot = 0x48; slot < headerEnd; slot += 4) {
+            if (slot == scratch.slot) continue;
+            qint64 offset = word(before.bytes, slot), nextOffset = word(after.bytes, slot), size = 0, nextSize = 0;
+            if (before.columns.contains(slot)) {
+                const auto& column = before.columns.constFind(slot).value();
+                const auto& nextColumn = after.columns.constFind(slot).value();
+                size = offset ? column.count * column.width : 0;
+                nextSize = nextOffset ? nextColumn.count * nextColumn.width : 0;
+            } else if (offset) {
+                const auto end = std::upper_bound(physical.cbegin(), physical.cend(), offset);
+                size = (end == physical.cend() ? before.bytes.size() : *end) - offset;
+                nextSize = nextOffset ? size : 0;
+            }
+            const bool oldAlias = scratch.offset && overlaps(scratch.offset, scratch.count * scratch.width, offset, size);
+            const bool newAlias = nextScratch.offset && overlaps(nextScratch.offset, nextScratch.count * nextScratch.width, nextOffset, nextSize);
+            if (oldAlias != newAlias || (oldAlias && (offset - scratch.offset != nextOffset - nextScratch.offset ||
+                size != nextSize || scratch.count != nextScratch.count)))
+                return fail(error, QStringLiteral("结构状态改变了 Core 可写预留区 %1 的共享布局，无法无损保存")
+                            .arg(QString::fromLatin1(scratch.name)));
+        }
+    }
+    return true;
+}
+
 std::unique_ptr<Layout> load(const QByteArray& bytes, QString* error)
 {
     auto result = std::make_unique<Layout>(bytes);
@@ -177,12 +242,37 @@ std::unique_ptr<Layout> load(const QByteArray& bytes, QString* error)
             fail(error, QStringLiteral("MOC 区段定义或完整存储空间无效：%1").arg(QString::fromLatin1(span.name)));
             return {};
         }
+        if (runtimeStorage(span) && span.offset && span.count) {
+            const auto* offsets = result->table.sectionOffsetTable;
+            const qint64 headerEnd = offsets->count_info->count_info_offset;
+            const qint64 size = span.count * span.width;
+            if (span.offset < headerEnd ||
+                overlaps(span.offset, size, headerEnd, CSectionValidation::CountInfoSize(offsets->mocVersion)) ||
+                overlaps(span.offset, size, offsets->canvas_info->CanvasOffset, 20)) {
+                fail(error, QStringLiteral("Core 可写预留区 %1 的完整存储空间与元数据重叠")
+                            .arg(QString::fromLatin1(span.name)));
+                return {};
+            }
+        }
     }
     return result;
 }
 
 bool writeLayout(Layout& layout, QByteArray& result, QString* error)
 {
+    for (auto it = layout.changes.begin(); it != layout.changes.end();) {
+        const auto& span = layout.columns.constFind(it.key()).value();
+        const bool clearsOffset = span.optional && span.offset && it->isEmpty();
+        if (!clearsOffset && layout.counts[span.countIndex] == span.count &&
+            it.value() == (span.offset ? layout.bytes.mid(span.offset, span.count * span.width) : QByteArray()))
+            it = layout.changes.erase(it);
+        else ++it;
+    }
+    QSet<int> changed;
+    for (auto it = layout.changes.cbegin(); it != layout.changes.cend(); ++it) changed.insert(it.key());
+    for (const auto& span : layout.columns)
+        if (layout.counts[span.countIndex] != span.count) changed.insert(span.slot);
+    if (!validStorageChanges(layout, changed, error)) return false;
     QByteArray candidate = layout.bytes;
     QMap<int, qint64> relocated;
     for (auto it = layout.changes.cbegin(); it != layout.changes.cend(); ++it) {
@@ -330,6 +420,7 @@ bool CMocParameterStructureBuilder::CaptureColumnState(const QByteArray& origina
         if (!before || !after || !opaqueCompatible(*before, *after, error)) return false;
         if (before->columns.keys() != after->columns.keys() || before->counts.size() != after->counts.size())
             return fail(error, QStringLiteral("结构状态区段定义不一致"));
+        if (!sameStorageAliases(*before, *after, error)) return false;
         ColumnState candidate;
         for (auto it = before->columns.cbegin(); it != before->columns.cend(); ++it) {
             const auto& updated = after->columns.constFind(it.key()).value();
@@ -341,6 +432,9 @@ bool CMocParameterStructureBuilder::CaptureColumnState(const QByteArray& origina
         for (int index = 0; index < before->counts.size(); ++index)
             if (before->counts[index] != after->counts[index]) candidate.counts.insert(index, after->counts[index]);
         if ((!candidate.columns.isEmpty() || !candidate.counts.isEmpty()) && !understoodStructure(*before, error)) return false;
+        QSet<int> changed;
+        for (auto it = candidate.columns.cbegin(); it != candidate.columns.cend(); ++it) changed.insert(it.key());
+        if (!validStorageChanges(*before, changed, error) || !validStorageChanges(*after, changed, error)) return false;
         state = std::move(candidate);
         return true;
     });

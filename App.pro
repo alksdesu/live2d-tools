@@ -80,6 +80,7 @@ SOURCES += \
     live2dstruct/cphysicsdocument.cpp \
     live2dstruct/cmocparameterstructurebuilder.cpp \
     live2dstruct/cmocmeshstructurebuilder.cpp \
+    live2dstruct/cmocdeformerstructurebuilder.cpp \
     live2dstruct/cartmeshgeometrylayout.cpp \
     live2dstruct/cmoclayoutrewriter.cpp \
     live2dstruct/cmodeluserdata.cpp \
@@ -324,6 +325,7 @@ HEADERS += \
     live2dstruct/cphysicsdocument.h \
     live2dstruct/cmocparameterstructurebuilder.h \
     live2dstruct/cmocmeshstructurebuilder.h \
+    live2dstruct/cmocdeformerstructurebuilder.h \
     live2dstruct/cartmeshgeometrylayout.h \
     live2dstruct/struct/cblend_shape_targets.h \
     live2dstruct/cparameterreferences.h \

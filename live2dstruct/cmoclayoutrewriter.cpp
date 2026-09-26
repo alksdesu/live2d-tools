@@ -35,9 +35,7 @@ QVector<CSectionValidation::ColumnSpan> spans(const CSectionTable& table)
 {
     auto result = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
     for (auto& span : result) {
-        if (std::strcmp(span.name, "parameters.runtime_space_0") == 0 ||
-            std::strcmp(span.name, "parameters.extension_runtime_space_0") == 0)
-            span.width = 8;
+        span.width = CSectionValidation::StorageWidth(span);
     }
     return result;
 }

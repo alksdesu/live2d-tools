@@ -162,11 +162,12 @@ private slots:
         CMocParameterStructureBuilder::ColumnState state;
         for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
             if (!QByteArray(span.name).startsWith("glue.")) continue;
-            const auto value = original.mid(span.offset + glueIndex * span.width, span.width);
-            QByteArray column; column.reserve(rows * span.width);
+            const auto width = CSectionValidation::StorageWidth(span);
+            const auto value = original.mid(span.offset + glueIndex * width, width);
+            QByteArray column; column.reserve(rows * width);
             for (int row = 0; row < rows; ++row) {
                 if (QByteArray(span.name) == "glue.ids") {
-                    QByteArray id = QByteArray("RepeatedGlue") + QByteArray::number(row); id.resize(span.width, '\0'); column.append(id);
+                    QByteArray id = QByteArray("RepeatedGlue") + QByteArray::number(row); id.resize(width, '\0'); column.append(id);
                 } else column.append(value);
             }
             state.columns.insert(span.slot, column); state.counts.insert(span.countIndex, rows);

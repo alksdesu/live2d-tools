@@ -31,6 +31,7 @@ public:
     static int KnownOffsetEnd(int version) { return OffsetTableStart + KnownOffsetCount(version) * 4; }
     static int CountInfoSize(int version) { return KnownCountCount(version) * 4; }
 
+    static qint64 StorageWidth(const ColumnSpan& span);
     static bool ValidateMetadata(CReader& reader, const CSectionOffsetTable& offsets);
     static QVector<ColumnSpan> ArraySpans(const CSectionOffsetTable& offsets, const CCount_info& info);
     static bool ValidateArrays(CReader& reader, const CSectionOffsetTable& offsets, const CCount_info& info);
