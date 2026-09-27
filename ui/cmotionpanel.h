@@ -19,6 +19,11 @@
 class QLabel;
 class QPushButton;
 class QTableWidget;
+class QTableView;
+class CMotionKeyModel;
+class QToolBar;
+class QScrollArea;
+class QAction;
 class QTimer;
 class CMotionCurveView;
 class CTableEditDelegate;
@@ -29,6 +34,18 @@ class QSplitter;
 class CMotionPanel : public QDockWidget
 {
     Q_OBJECT
+    class ScopedFlag
+    {
+    public:
+        ScopedFlag(CMotionPanel* owner, bool& flag, bool value)
+            : m_owner(owner), m_flag(&flag), m_before(flag) { flag = value; }
+        ~ScopedFlag() { if (m_owner) *m_flag = m_before; }
+        Q_DISABLE_COPY_MOVE(ScopedFlag)
+    private:
+        QPointer<CMotionPanel> m_owner;
+        bool* m_flag;
+        bool m_before;
+    };
 public:
     class PreviewTransportLease
     {
@@ -234,6 +251,7 @@ private:
         CMotionTimeline timeline;
         bool loop = false;
         double playhead = 0;
+        CMotionPointSelection selection;
         bool SameContent(const TimelineSnapshot& other) const {
             return loop == other.loop && timeline.HasSameContent(other.timeline);
         }
@@ -269,8 +287,11 @@ private:
     void RefreshTimelineHistory();
     bool PendingTimelineEdit() const;
     QUndoStack* m_timelineHistory = nullptr;
+    bool m_dispatchingTimelineHistory = false;
     QWidget* m_timelineBox = nullptr;
     QSplitter* m_workspaceSplitter = nullptr;
+    QScrollArea* m_workspaceScroll = nullptr;
+    void UpdateWorkspaceOrientation();
     QSplitter* m_curveSplitter = nullptr;
     QTabWidget* m_assetTabs = nullptr;
     int m_savedAssetTab = 0;
@@ -284,7 +305,32 @@ private:
     void SetTimelineDirty(bool dirty);
     bool ModelHasPart(const QString& id, bool* available) const;
     QCheckBox* m_recordTimelineCb = nullptr;
-    QTableWidget* m_timelineTable = nullptr;
+    QTableView* m_timelineTable = nullptr;
+    CMotionKeyModel* m_keyModel = nullptr;
+    CMotionPointSelection m_selectedPoints;
+    QAction* m_snapFrames = nullptr;
+    QToolBar* CreateKeyframeTools(QWidget* parent);
+    void ConnectKeyframeEditing();
+    bool HasPendingTimelineCells() const;
+    bool TryCommitTimelineCells(QString* error = nullptr);
+    void SetKeyframeSelection(CMotionPointSelection selection);
+    bool ApplyTimelineCellEdit(const CMotionPointRef& ref, int column, const QString& text, QString* error);
+    bool ApplyKeyframeBatch(const CMotionTimeline::BatchEdit& edit, const QString& label, QString* error = nullptr);
+    bool PublishKeyframeEdit(CMotionTimeline candidate, CMotionPointSelection selection,
+                             const QString& label, QString* error);
+    void CopyKeyframes(bool cut = false);
+    void PasteKeyframes(bool selectedTrack, bool replaceCoincident);
+    void TransformKeyframes();
+    void SetKeyframeInterpolation(int type);
+    void BeginCurveGesture(const CMotionPointSelection& selection, bool bezier);
+    void TranslateCurveSelection(double time, double value);
+    void EditCurveControls(const CMotionTrack& track, int index, const QVector<QPointF>& controls);
+    void FinishCurveGesture();
+    void CancelCurveGesture();
+    void PublishCurveGesture(CMotionTimeline candidate, const CMotionTimeline::BatchResult& result);
+    enum class CurveGesture { None, Points, Bezier };
+    CurveGesture m_curveGesture = CurveGesture::None;
+    CMotionPointSelection m_gesturePoints;
     QLabel* m_timelineStatus = nullptr;
     QPushButton* m_playTimelineButton = nullptr;
     QTimer* m_timelineTimer = nullptr;
@@ -304,12 +350,10 @@ private:
     void ImportTimeline();
     void ClearTimeline();
     void RefreshTimelineTable();
-    void ApplyTimelineCellEdit(int row, int column);
     void RemoveTimelineKeyframe();
     void ToggleTimelinePlayback();
     void TickTimelinePlayback();
     void SetTimelineTimeFromSlider(int value);
-    void ApplyTimelineCurveEdit(const CMotionTrack& track, int pointIndex, float time, float value);
 
     struct TimelineRow {
         CMotionTrack track;

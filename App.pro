@@ -128,6 +128,10 @@ SOURCES += \
     ui/cparampanel.cpp \
     ui/cxyparameterpad.cpp \
     ui/cmotionpanel.cpp \
+    ui/cmotionpanelediting.cpp \
+    ui/cmotionkeymodel.cpp \
+    live2dstruct/cmotionkeyclipboard.cpp \
+    live2dstruct/cmotionbezier.cpp \
     ui/cmotionsettingsdialog.cpp \
     live2dstruct/cmotiontimeline.cpp \
     live2dstruct/cmotionblendpreview.cpp \
@@ -385,6 +389,9 @@ HEADERS += \
     ui/cparampanel.h \
     ui/cxyparameterpad.h \
     ui/cmotionpanel.h \
+    ui/cmotionkeymodel.h \
+    live2dstruct/cmotionkeyclipboard.h \
+    live2dstruct/cmotionbezier.h \
     ui/cmotionsettingsdialog.h \
     live2dstruct/cmotiontimeline.h \
     live2dstruct/cmotionblendpreview.h \

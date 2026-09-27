@@ -146,6 +146,19 @@ QToolBar QToolButton:checked {
     font-weight: 600;
 }
 
+QToolBar QToolButton::menu-button {
+    background: @surfaceMuted@;
+    border: none;
+    border-left: @borderWidth@ solid @border@;
+    border-top-right-radius: @radiusSmall@;
+    border-bottom-right-radius: @radiusSmall@;
+    width: @itemCheckSize@;
+}
+
+QToolBar QToolButton::menu-button:hover {
+    background: @surfaceHover@;
+}
+
 QPushButton {
     background: @surface@;
     color: @text@;

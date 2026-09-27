@@ -57,6 +57,8 @@ add_library(model_data STATIC
     live2dstruct/cmeshtopology.cpp
     live2dstruct/cmesheditplanner.cpp
     live2dstruct/cmotiontimeline.cpp
+    live2dstruct/cmotionkeyclipboard.cpp
+    live2dstruct/cmotionbezier.cpp
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodeldocumentstructure.cpp
@@ -687,6 +689,12 @@ if(BUILD_TESTING)
     target_link_libraries(cmotiontimeline_tests PRIVATE model_data Qt6::Test Qt6::Core)
     target_compile_definitions(cmotiontimeline_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME cmotiontimeline COMMAND cmotiontimeline_tests)
+    add_executable(motion_batch_edit_tests tests/motion_batch_edit_tests.cpp)
+    target_link_libraries(motion_batch_edit_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME motion_batch_edit COMMAND motion_batch_edit_tests)
+    add_executable(motion_key_clipboard_tests tests/motion_key_clipboard_tests.cpp)
+    target_link_libraries(motion_key_clipboard_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME motion_key_clipboard COMMAND motion_key_clipboard_tests)
     add_executable(cmotionblendpreview_tests tests/cmotionblendpreview_tests.cpp)
     target_link_libraries(cmotionblendpreview_tests PRIVATE model_data Qt6::Test)
     add_test(NAME cmotionblendpreview COMMAND cmotionblendpreview_tests)
@@ -695,7 +703,19 @@ if(BUILD_TESTING)
     target_link_libraries(cmotioncurveview_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     add_test(NAME cmotioncurveview COMMAND cmotioncurveview_tests)
     set_tests_properties(cmotioncurveview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    add_executable(motion_panel_tests tests/motion_panel_tests.cpp ui/cmotionpanel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
+    add_executable(motion_lifetime_tests tests/motion_lifetime_tests.cpp ui/cmotionpanel.cpp ui/cmotionpanelediting.cpp ui/cmotionkeymodel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
+    target_link_libraries(motion_lifetime_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    add_test(NAME motion_lifetime COMMAND motion_lifetime_tests)
+    set_tests_properties(motion_lifetime PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(motion_workspace_tests tests/motion_workspace_tests.cpp ui/cmotionpanel.cpp ui/cmotionpanelediting.cpp ui/cmotionkeymodel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
+    target_link_libraries(motion_workspace_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    add_test(NAME motion_workspace COMMAND motion_workspace_tests)
+    set_tests_properties(motion_workspace PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(motion_panel_batch_tests tests/motion_panel_batch_tests.cpp ui/cmotionpanel.cpp ui/cmotionpanelediting.cpp ui/cmotionkeymodel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
+    target_link_libraries(motion_panel_batch_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    add_test(NAME motion_panel_batch COMMAND motion_panel_batch_tests)
+    set_tests_properties(motion_panel_batch PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(motion_panel_tests tests/motion_panel_tests.cpp ui/cmotionpanel.cpp ui/cmotionpanelediting.cpp ui/cmotionkeymodel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
     target_link_libraries(motion_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(motion_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME motion_panel COMMAND motion_panel_tests)

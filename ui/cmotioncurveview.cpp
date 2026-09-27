@@ -1,6 +1,10 @@
 #include "cmotioncurveview.h"
 
 #include <QPainter>
+#include <QPainterPath>
+#include <QPointer>
+#include <QKeyEvent>
+#include <cmath>
 #include <QPolygonF>
 #include <QMouseEvent>
 #include <QHelpEvent>
@@ -23,7 +27,12 @@ CMotionCurveView::CMotionCurveView(QWidget* parent)
 void CMotionCurveView::SetTimeline(const CMotionTimeline* timeline)
 {
     QToolTip::hideText();
-    if (m_timeline != timeline) CancelDrag();
+    const QPointer<CMotionCurveView> alive(this);
+    if (m_timeline != timeline) {
+        CancelDrag();
+        if (!alive) return;
+        m_selectedPoints.clear(); m_selectedSet.clear();
+    }
     m_timeline = timeline;
     const auto events = timeline ? timeline->Events() : QJsonArray{};
     const double duration = timeline ? timeline->Timing().duration : 0.0;
@@ -31,6 +40,7 @@ void CMotionCurveView::SetTimeline(const CMotionTimeline* timeline)
     const bool markersChanged = events != m_events || displayDuration != m_duration;
     m_events = events;
     m_duration = displayDuration;
+    SetSelectedPoints(m_selectedPoints);
     if (markersChanged) rebuildEventMarkers();
     update();
 }
@@ -41,27 +51,73 @@ void CMotionCurveView::SetTime(double time)
     update();
 }
 
+bool CMotionCurveView::validPoint(const CMotionPointRef& point) const
+{
+    if (!m_timeline || !TrackVisible(point.track)) return false;
+    const auto track = m_timeline->Tracks().constFind(point.track);
+    return track != m_timeline->Tracks().cend() && point.index >= 0 && point.index < track->size();
+}
+
 void CMotionCurveView::SetSelectedPoint(const CMotionTrack& track, int pointIndex)
 {
-    m_selectedTrack = track;
-    m_selectedPointIndex = pointIndex;
+    SetSelectedPoints({{track, pointIndex}});
+}
+
+void CMotionCurveView::SetSelectedPoints(const CMotionPointSelection& points)
+{
+    CMotionPointSelection candidate;
+    QSet<CMotionPointRef> unique;
+    for (const auto& point : points) {
+        if (!validPoint(point) || unique.contains(point)) continue;
+        unique.insert(point); candidate.append(point);
+    }
+    std::sort(candidate.begin(), candidate.end());
+    m_selectedPoints.swap(candidate); m_selectedSet.swap(unique);
     update();
+}
+
+void CMotionCurveView::changeSelection(const CMotionPointSelection& points)
+{
+    const auto previous = m_selectedPoints;
+    SetSelectedPoints(points);
+    if (previous != m_selectedPoints) {
+        const auto selected = m_selectedPoints;
+        emit SelectionChanged(selected);
+    }
 }
 
 void CMotionCurveView::SetTargetFilter(int target)
 {
     if (m_targetFilter == target) return;
+    const QPointer<CMotionCurveView> alive(this);
     CancelDrag();
+    if (!alive) return;
     m_targetFilter = target;
-    update();
+    changeSelection(m_selectedPoints);
+    if (alive) update();
 }
 
-void CMotionCurveView::CancelDrag()
+void CMotionCurveView::CancelDrag() { endGesture(true); }
+void CMotionCurveView::FinishDrag() { endGesture(false); }
+
+void CMotionCurveView::endGesture(bool canceled)
 {
-    const bool dragging = m_dragTrack.has_value();
-    m_dragTrack.reset();
-    m_dragPointIndex = -1;
-    if (dragging) emit EditFinished();
+    if (!m_gesture) return;
+    const auto gesture = *m_gesture;
+    m_gesture.reset();
+    const auto serial = ++m_gestureSerial;
+    rebuildEventMarkers(); update();
+    const QPointer<CMotionCurveView> alive(this);
+    if (gesture.kind == Gesture::Marquee) {
+        if (canceled) changeSelection(gesture.previousSelection);
+        return;
+    }
+    if (gesture.kind == Gesture::Points) {
+        if (canceled) emit SelectionDragCanceled(); else emit SelectionDragFinished();
+    } else {
+        if (canceled) emit BezierDragCanceled(); else emit BezierDragFinished();
+    }
+    if (alive && serial == m_gestureSerial) emit EditFinished();
 }
 
 QRectF CMotionCurveView::plotRect() const
@@ -85,7 +141,8 @@ void CMotionCurveView::rebuildEventMarkers()
         const auto entry = m_events.at(index).toObject();
         const double time = entry.value(QStringLiteral("Time")).toDouble(-1.0);
         if (!qIsFinite(time) || time < 0.0) continue;
-        const double ratio = qBound(0.0, time / m_duration, 1.0);
+        const double duration = m_gesture ? m_gesture->projection.duration : m_duration;
+        const double ratio = qBound(0.0, time / duration, 1.0);
         const int bucket = qMin(buckets - 1, static_cast<int>(ratio * buckets));
         auto& marker = markers[bucket];
         marker.x = lane.left() + (bucket + 0.5) * lane.width() / buckets;
@@ -136,16 +193,25 @@ bool CMotionCurveView::event(QEvent* event)
     if (event->type() == QEvent::ToolTip) {
         const auto* help = static_cast<QHelpEvent*>(event);
         const auto* marker = hitEvent(help->pos());
-        if (marker && !m_dragTrack) QToolTip::showText(help->globalPos(), eventToolTip(*marker), this, eventRect().toRect());
+        if (marker && !m_gesture) QToolTip::showText(help->globalPos(), eventToolTip(*marker), this, eventRect().toRect());
         else QToolTip::hideText();
         return true;
     }
-    return QWidget::event(event);
+    const QPointer<CMotionCurveView> alive(this);
+    if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape && m_gesture) {
+        CancelDrag(); event->accept(); return true;
+    }
+    if (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate ||
+        event->type() == QEvent::UngrabMouse || (event->type() == QEvent::EnabledChange && !isEnabled())) CancelDrag();
+    return alive ? QWidget::event(event) : true;
 }
 
 void CMotionCurveView::resizeEvent(QResizeEvent* event)
 {
     QToolTip::hideText();
+    const QPointer<CMotionCurveView> alive(this);
+    CancelDrag();
+    if (!alive) return;
     rebuildEventMarkers();
     QWidget::resizeEvent(event);
 }
@@ -161,19 +227,35 @@ bool CMotionCurveView::valueRange(double* minimum, double* maximum) const
     if (!minimum || !maximum || !m_timeline || m_timeline->Tracks().isEmpty()) return false;
     *minimum = std::numeric_limits<float>::max();
     *maximum = std::numeric_limits<float>::lowest();
-    for (auto it = m_timeline->Tracks().cbegin(); it != m_timeline->Tracks().cend(); ++it) {
-        if (!TrackVisible(it.key())) continue;
-        for (const QPointF& point : it.value()) {
-            *minimum = qMin(*minimum, point.y());
-            *maximum = qMax(*maximum, point.y());
+    bool found = false;
+    const auto include = [&](const QPointF& point) {
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y())) return false;
+        *minimum = std::min(*minimum, point.y()); *maximum = std::max(*maximum, point.y());
+        found = true; return true;
+    };
+    for (auto track = m_timeline->Tracks().cbegin(); track != m_timeline->Tracks().cend(); ++track) {
+        if (!TrackVisible(track.key())) continue;
+        for (int index = 0; index < track->size(); ++index) {
+            if (!include(track->at(index))) return false;
+            for (const auto& control : m_timeline->BezierControls(track.key(), index)) if (!include(control)) return false;
         }
     }
-    if (!qIsFinite(*minimum) || !qIsFinite(*maximum)) return false;
+    if (!found) return false;
     const double span = *maximum - *minimum;
-    const double padding = qMax(0.05, (span > 0.0 ? span : qAbs(*minimum)) * 0.05);
-    *minimum = qMax(static_cast<double>(std::numeric_limits<float>::lowest()), *minimum - padding);
-    *maximum = qMin(static_cast<double>(std::numeric_limits<float>::max()), *maximum + padding);
+    const double padding = std::max(0.05, (span > 0.0 ? span : std::abs(*minimum)) * 0.05);
+    *minimum = std::max(double(std::numeric_limits<float>::lowest()), *minimum - padding);
+    *maximum = std::min(double(std::numeric_limits<float>::max()), *maximum + padding);
     return *maximum > *minimum;
+}
+
+bool CMotionCurveView::projection(Projection& result) const
+{
+    if (m_gesture) { result = m_gesture->projection; return true; }
+    Projection candidate;
+    candidate.plot = plotRect(); candidate.duration = m_duration;
+    if (candidate.plot.width() <= 0 || candidate.plot.height() <= 0 ||
+        !valueRange(&candidate.minimum, &candidate.maximum)) return false;
+    result = candidate; return true;
 }
 
 QPointF CMotionCurveView::mapPoint(const QPointF& point, const QRectF& plot, double duration,
@@ -183,34 +265,48 @@ QPointF CMotionCurveView::mapPoint(const QPointF& point, const QRectF& plot, dou
                    plot.bottom() - plot.height() * (point.y() - minimum) / (maximum - minimum));
 }
 
-QPointF CMotionCurveView::unmapPoint(const QPointF& point, const QRectF& plot, double duration,
-                                     double minimum, double maximum) const
-{
-    return QPointF(qBound(0.0, (point.x() - plot.left()) / plot.width(), 1.0) * duration,
-                   maximum - qBound(0.0, (point.y() - plot.top()) / plot.height(), 1.0) * (maximum - minimum));
-}
-
 bool CMotionCurveView::hitPoint(const QPointF& position, CMotionTrack* track, int* pointIndex) const
 {
-    if (!m_timeline || !track || !pointIndex) return false;
-    const QRectF plot = plotRect();
-    double minimum = 0.0;
-    double maximum = 0.0;
-    if (!valueRange(&minimum, &maximum) || plot.width() <= 0.0 || plot.height() <= 0.0) return false;
-    const double duration = m_duration;
-    const float radiusSquared = 10.0f * 10.0f;
-    float nearest = radiusSquared;
-    bool found = false;
+    Projection frame;
+    if (!m_timeline || !track || !pointIndex || !projection(frame)) return false;
+    double nearest = 100;
+    bool found = false, selected = false;
     for (auto curve = m_timeline->Tracks().cbegin(); curve != m_timeline->Tracks().cend(); ++curve) {
         if (!TrackVisible(curve.key())) continue;
-        for (int index = 0; index < curve.value().size(); ++index) {
-            const QPointF delta = mapPoint(curve.value().at(index), plot, duration, minimum, maximum) - position;
-            const float distanceSquared = static_cast<float>(QPointF::dotProduct(delta, delta));
-            if (distanceSquared <= nearest) {
-                nearest = distanceSquared;
-                *track = curve.key();
-                *pointIndex = index;
-                found = true;
+        for (int index = 0; index < curve->size(); ++index) {
+            const auto delta = mapPoint(curve->at(index), frame.plot, frame.duration, frame.minimum, frame.maximum) - position;
+            const double distance = QPointF::dotProduct(delta, delta);
+            const bool currentSelected = m_selectedSet.contains({curve.key(), index});
+            if (distance < nearest || (!found && distance == nearest) || (distance == nearest && currentSelected && !selected)) {
+                nearest = distance; *track = curve.key(); *pointIndex = index; found = true; selected = currentSelected;
+            }
+        }
+    }
+    return found;
+}
+
+bool CMotionCurveView::showControls(const CMotionTrack& track, int endIndex) const
+{
+    return m_selectedSet.contains({track, endIndex}) || m_selectedSet.contains({track, endIndex - 1});
+}
+
+bool CMotionCurveView::hitControl(const QPointF& position, CMotionPointRef& segment, int& control) const
+{
+    Projection frame;
+    if (!m_timeline || !projection(frame)) return false;
+    double nearest = 64;
+    bool found = false;
+    for (auto track = m_timeline->Tracks().cbegin(); track != m_timeline->Tracks().cend(); ++track) {
+        if (!TrackVisible(track.key())) continue;
+        for (int index = 1; index < track->size(); ++index) {
+            if (!showControls(track.key(), index)) continue;
+            const auto controls = m_timeline->BezierControls(track.key(), index);
+            for (int at = 0; at < controls.size(); ++at) {
+                const auto delta = mapPoint(controls[at], frame.plot, frame.duration, frame.minimum, frame.maximum) - position;
+                const double distance = QPointF::dotProduct(delta, delta);
+                if (distance < nearest || (!found && distance == nearest)) {
+                    nearest = distance; segment = {track.key(), index}; control = at; found = true;
+                }
             }
         }
     }
@@ -221,7 +317,9 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    const QRectF plot = plotRect();
+    Projection frame;
+    const bool available = projection(frame);
+    const QRectF plot = available ? frame.plot : plotRect();
     const QColor border = palette().color(QPalette::Mid);
     const QColor text = palette().color(QPalette::Text);
     const QColor accent = palette().color(QPalette::Highlight);
@@ -260,10 +358,9 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
     }
     painter.setPen(text);
     painter.drawText(10, m_events.isEmpty() ? 14 : 50, QStringLiteral("曲线"));
-    const double duration = m_duration;
-    double minimum = 0.0;
-    double maximum = 0.0;
-    if (!valueRange(&minimum, &maximum)) {
+    const double duration = available ? frame.duration : m_duration;
+    const double minimum = frame.minimum, maximum = frame.maximum;
+    if (!available) {
         painter.drawText(plot, Qt::AlignCenter, !m_timeline || m_timeline->Tracks().isEmpty()
                          ? (m_events.isEmpty() ? QStringLiteral("暂无曲线") : QStringLiteral("此动作仅包含事件"))
                          : QStringLiteral("当前类型暂无曲线"));
@@ -276,22 +373,58 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
             if (!TrackVisible(it.key())) continue;
             const QColor color = colors[colorIndex % colors.size()];
             painter.setPen(QPen(color, 1.5));
-            QPolygonF line;
-            for (int sample = 0; sample <= 80; ++sample) {
-                const float time = static_cast<double>(duration) * sample / 80.0;
-                line.append(mapPoint(QPointF(time, m_timeline->Evaluate(it.key(), time)), plot, duration, minimum, maximum));
+            if (it->isEmpty()) continue;
+            QPainterPath line;
+            const auto mapped = [&](const QPointF& point) { return mapPoint(point, plot, duration, minimum, maximum); };
+            line.moveTo(mapped(QPointF(0, it->first().y())));
+            line.lineTo(mapped(it->first()));
+            for (int index = 1; index < it->size(); ++index) {
+                const auto& previous = it->at(index - 1);
+                const auto& point = it->at(index);
+                const int type = m_timeline->SegmentType(it.key(), index);
+                const auto controls = m_timeline->BezierControls(it.key(), index);
+                if (type == 1 && controls.size() == 2) line.cubicTo(mapped(controls[0]), mapped(controls[1]), mapped(point));
+                else {
+                    if (type == 2) line.lineTo(mapped(QPointF(point.x(), previous.y())));
+                    if (type == 3) line.lineTo(mapped(QPointF(previous.x(), point.y())));
+                    line.lineTo(mapped(point));
+                }
             }
-            painter.drawPolyline(line);
+            line.lineTo(mapped(QPointF(duration, it->last().y())));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(line);
+            for (int index = 1; index < it->size(); ++index) {
+                if (!showControls(it.key(), index)) continue;
+                const auto controls = m_timeline->BezierControls(it.key(), index);
+                if (controls.size() != 2) continue;
+                painter.setPen(QPen(color, 1.0, Qt::DashLine)); painter.setBrush(Qt::NoBrush);
+                painter.drawLine(mapped(it->at(index - 1)), mapped(controls[0]));
+                painter.drawLine(mapped(it->at(index)), mapped(controls[1]));
+                painter.setPen(QPen(text, 1.0)); painter.setBrush(color);
+                for (const auto& control : controls) {
+                    const auto center = mapped(control);
+                    painter.drawRect(QRectF(center.x() - 4, center.y() - 4, 8, 8));
+                }
+            }
             painter.setBrush(color);
             for (int index = 0; index < it.value().size(); ++index) {
                 const QPointF& point = it.value().at(index);
                 const QPointF mapped = mapPoint(point, plot, duration, minimum, maximum);
-                const bool selected = it.key() == m_selectedTrack && index == m_selectedPointIndex;
+                const bool selected = m_selectedSet.contains({it.key(), index});
                 painter.setPen(selected ? QPen(text, 2.0) : QPen(color, 1.0));
                 painter.drawEllipse(mapped, selected ? 5.0 : 3.5, selected ? 5.0 : 3.5);
             }
         }
         painter.restore();
+    }
+    if (m_gesture && m_gesture->kind == Gesture::Marquee) {
+        auto fill = accent; fill.setAlpha(35);
+        painter.setPen(QPen(accent, 1, Qt::DashLine)); painter.setBrush(fill);
+        painter.drawRect(QRectF(m_gesture->press, m_gesture->current).normalized().intersected(plot));
+    }
+    if (hasFocus()) {
+        painter.setPen(QPen(accent, 1, Qt::DotLine)); painter.setBrush(Qt::NoBrush);
+        painter.drawRect(rect().adjusted(1, 1, -2, -2));
     }
     if (!m_timeline) return;
     const qreal playheadX = plot.left() + plot.width() * qBound(0.0, m_time / duration, 1.0);
@@ -301,64 +434,151 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
 
 void CMotionCurveView::mousePressEvent(QMouseEvent* event)
 {
-    if (!event || event->button() != Qt::LeftButton) return;
+    if (!event || event->button() != Qt::LeftButton || m_gesture) return;
+    const QPointer<CMotionCurveView> alive(this);
+    setFocus(Qt::MouseFocusReason);
+    if (!alive || m_gesture) return;
     if (const auto* marker = hitEvent(event->position())) {
-        setFocus(Qt::MouseFocusReason);
         const auto entry = m_events.at(marker->firstEvent).toObject();
-        emit EventSelected(entry.value(QStringLiteral("Time")).toDouble(), entry.value(QStringLiteral("Value")).toString());
         event->accept();
+        emit EventSelected(entry.value(QStringLiteral("Time")).toDouble(), entry.value(QStringLiteral("Value")).toString());
         return;
     }
-    CMotionTrack track;
-    int pointIndex = -1;
-    if (!hitPoint(event->position(), &track, &pointIndex)) return;
-    setFocus(Qt::MouseFocusReason);
+    Projection frame;
+    if (!projection(frame) || !frame.plot.adjusted(-10, -10, 10, 10).contains(event->position())) return;
+    if (!m_timeline) return;
     QToolTip::hideText();
-    m_dragTrack = track;
-    m_dragPointIndex = pointIndex;
+    const auto* timeline = m_timeline;
+    const CMotionTimeline before = *timeline;
+    Gesture gesture;
+    gesture.serial = ++m_gestureSerial; gesture.projection = frame;
+    gesture.press = gesture.current = event->position(); gesture.modifiers = event->modifiers();
+    gesture.previousSelection = m_selectedPoints; gesture.fps = m_timeline->Timing().fps;
+    CMotionPointRef segment; int control = -1;
+    if (hitControl(event->position(), segment, control)) {
+        gesture.kind = Gesture::Bezier; gesture.point = segment; gesture.control = control;
+        gesture.controls = m_timeline->BezierControls(segment.track, segment.index);
+        const auto& points = m_timeline->Tracks()[segment.track];
+        gesture.segmentStart = points[segment.index - 1]; gesture.segmentEnd = points[segment.index];
+        gesture.anchor = gesture.controls[control]; gesture.restricted = m_timeline->AreBeziersRestricted();
+    } else {
+        CMotionTrack track; int index = -1;
+        if (!hitPoint(event->position(), &track, &index)) {
+            if (!frame.plot.contains(event->position())) return;
+            gesture.kind = Gesture::Marquee;
+            m_gesture = gesture;
+            updateMarquee(gesture);
+            event->accept(); return;
+        }
+        const CMotionPointRef point{track, index};
+        auto selected = m_selectedPoints;
+        if (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
+            if (selected.contains(point)) selected.removeAll(point); else selected.append(point);
+        } else if (event->modifiers() & Qt::ShiftModifier) {
+            if (!selected.contains(point)) selected.append(point);
+        } else if (!selected.contains(point)) selected = {point};
+        changeSelection(selected);
+        if (!alive || m_gesture || m_gestureSerial != gesture.serial || m_timeline != timeline ||
+            !m_timeline->HasSameContent(before) || !validPoint(point)) return;
+        if (!m_selectedSet.contains(point)) { event->accept(); return; }
+        gesture.point = point; gesture.anchors = m_selectedPoints;
+        const auto& points = m_timeline->Tracks()[track];
+        gesture.anchor = points[index];
+        if (index > 0) gesture.previousTime = points[index - 1].x();
+        if (index + 1 < points.size()) gesture.nextTime = points[index + 1].x();
+    }
+    m_gesture = gesture;
+    event->accept(); update();
+    if (gesture.kind == Gesture::Points) emit SelectionDragStarted(gesture.anchors);
+    else emit BezierDragStarted(gesture.point.track, gesture.point.index);
+    if (!alive || !m_gesture || m_gesture->serial != gesture.serial) return;
     emit EditStarted();
-    SetSelectedPoint(track, pointIndex);
-    emit PointSelected(track, pointIndex);
-    event->accept();
+    if (!alive || !m_gesture || m_gesture->serial != gesture.serial) return;
+    if (gesture.kind == Gesture::Points && gesture.anchors.size() == 1)
+        emit PointSelected(gesture.point.track, gesture.point.index);
+}
+
+void CMotionCurveView::updateMarquee(const Gesture& gesture)
+{
+    if (!m_timeline) return;
+    const auto& frame = gesture.projection;
+    const auto area = QRectF(gesture.press, gesture.current).normalized().intersected(frame.plot);
+    QSet<CMotionPointRef> result(gesture.previousSelection.cbegin(), gesture.previousSelection.cend());
+    const bool toggle = gesture.modifiers & (Qt::ControlModifier | Qt::MetaModifier);
+    const bool subtract = gesture.modifiers & Qt::AltModifier;
+    if (!toggle && !subtract && !(gesture.modifiers & Qt::ShiftModifier)) result.clear();
+    for (auto track = m_timeline->Tracks().cbegin(); track != m_timeline->Tracks().cend(); ++track) {
+        if (!TrackVisible(track.key())) continue;
+        for (int index = 0; index < track->size(); ++index) {
+            if (!area.contains(mapPoint(track->at(index), frame.plot, frame.duration, frame.minimum, frame.maximum))) continue;
+            const CMotionPointRef point{track.key(), index};
+            if (subtract || (toggle && result.contains(point))) result.remove(point); else result.insert(point);
+        }
+    }
+    changeSelection(CMotionPointSelection(result.cbegin(), result.cend()));
+}
+
+void CMotionCurveView::updateDrag(const QPointF& position, Qt::KeyboardModifiers modifiers)
+{
+    if (!m_gesture || !std::isfinite(position.x()) || !std::isfinite(position.y())) return;
+    m_gesture->current = position;
+    const auto gesture = *m_gesture;
+    if (gesture.kind == Gesture::Marquee) { updateMarquee(gesture); return; }
+    const auto& frame = gesture.projection;
+    const QPointF movement = position - gesture.press;
+    double dt = movement.x() / frame.plot.width() * frame.duration;
+    double dv = -movement.y() / frame.plot.height() * (frame.maximum - frame.minimum);
+    if (modifiers & Qt::ShiftModifier) {
+        if (std::abs(movement.x()) >= std::abs(movement.y())) dv = 0;
+        else dt = 0;
+    }
+    if (m_frameSnapping && !(modifiers & Qt::AltModifier) && dt != 0 && std::isfinite(gesture.fps) && gesture.fps > 0)
+        dt = std::round((gesture.anchor.x() + dt) * gesture.fps) / gesture.fps - gesture.anchor.x();
+    if (!std::isfinite(dt) || !std::isfinite(dv)) return;
+    const QPointer<CMotionCurveView> alive(this);
+    if (gesture.kind == Gesture::Bezier) {
+        auto controls = gesture.controls;
+        controls[gesture.control] = QPointF(gesture.restricted ? gesture.anchor.x() :
+            std::clamp(gesture.anchor.x() + dt, gesture.segmentStart.x(), gesture.segmentEnd.x()), gesture.anchor.y() + dv);
+        if (!std::isfinite(controls[gesture.control].y())) return;
+        emit BezierControlsEdited(gesture.point.track, gesture.point.index, controls);
+        return;
+    }
+    emit SelectionTranslated(dt, dv);
+    if (!alive || !m_gesture || m_gesture->serial != gesture.serial || gesture.anchors.size() != 1) return;
+    double time = std::max(0.0, gesture.anchor.x() + dt);
+    if (gesture.previousTime) time = std::max(time, double(std::nextafter(float(*gesture.previousTime), std::numeric_limits<float>::infinity())));
+    if (gesture.nextTime) time = std::min(time, double(std::nextafter(float(*gesture.nextTime), -std::numeric_limits<float>::infinity())));
+    if (time < 0 || (gesture.previousTime && time <= *gesture.previousTime) || (gesture.nextTime && time >= *gesture.nextTime)) return;
+    const double value = gesture.anchor.y() + dv;
+    if (!std::isfinite(time) || !std::isfinite(value) || time > std::numeric_limits<float>::max() ||
+        std::abs(value) > std::numeric_limits<float>::max()) return;
+    emit PointEdited(gesture.point.track, gesture.point.index, float(time), float(value));
 }
 
 void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
 {
     if (!event) return;
-    if (!m_dragTrack) {
+    if (!m_gesture) {
+        CMotionPointRef segment; int control;
         const auto* marker = hitEvent(event->position());
-        setCursor(marker ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        setCursor(marker || hitControl(event->position(), segment, control) ? Qt::PointingHandCursor : Qt::ArrowCursor);
         if (QToolTip::isVisible()) {
             if (marker) QToolTip::showText(event->globalPosition().toPoint(), eventToolTip(*marker), this, eventRect().toRect());
             else QToolTip::hideText();
         }
         return;
     }
-    if (m_dragPointIndex < 0 || !m_timeline) return;
-    if (!(event->buttons() & Qt::LeftButton)) {
-        CancelDrag();
-        return;
-    }
-    const auto curve = m_timeline->Tracks().constFind(*m_dragTrack);
-    if (curve == m_timeline->Tracks().cend() || m_dragPointIndex >= curve.value().size()) return;
-    const QRectF plot = plotRect();
-    double minimum = 0.0;
-    double maximum = 0.0;
-    if (!valueRange(&minimum, &maximum) || plot.width() <= 0.0 || plot.height() <= 0.0) return;
-    const double duration = m_duration;
-    QPointF point = unmapPoint(event->position(), plot, duration, minimum, maximum);
-    const double epsilon = qMax(0.001, duration / 10000.0);
-    if (m_dragPointIndex > 0) point.setX(qMax(point.x(), static_cast<float>(curve.value().at(m_dragPointIndex - 1).x()) + epsilon));
-    if (m_dragPointIndex + 1 < curve.value().size()) point.setX(qMin(point.x(), static_cast<float>(curve.value().at(m_dragPointIndex + 1).x()) - epsilon));
-    point.setX(qBound(0.0, point.x(), duration));
-    emit PointEdited(*m_dragTrack, m_dragPointIndex, static_cast<float>(point.x()), static_cast<float>(point.y()));
+    if (!(event->buttons() & Qt::LeftButton)) { CancelDrag(); event->accept(); return; }
+    updateDrag(event->position(), event->modifiers());
     event->accept();
 }
 
 void CMotionCurveView::mouseReleaseEvent(QMouseEvent* event)
 {
-    if (event && event->button() == Qt::LeftButton) {
-        CancelDrag();
-        event->accept();
-    }
+    if (!event || event->button() != Qt::LeftButton || !m_gesture) return;
+    const QPointer<CMotionCurveView> alive(this);
+    if (m_gesture->current != event->position()) updateDrag(event->position(), event->modifiers());
+    if (alive) FinishDrag();
+    event->accept();
 }

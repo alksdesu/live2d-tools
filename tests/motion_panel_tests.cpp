@@ -13,6 +13,9 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTableWidget>
+#include <QTableView>
+#include "ui/cmotionkeymodel.h"
+#include "live2dstruct/cmotionkeyclipboard.h"
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QSplitter>
@@ -23,6 +26,9 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QScopeGuard>
+#include <QClipboard>
+#include <QMimeData>
+#include <QToolButton>
 #include <QPointer>
 #include <QUndoStack>
 #include <QUndoCommand>
@@ -187,12 +193,13 @@ private slots:
         const auto unchanged = [&] { return result.HasSameContent(original) && revision == 777; };
         auto* record = panel.findChild<QCheckBox*>("recordTimeline"); record->setChecked(true);
         QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); record->setChecked(false);
-        auto* curve = panel.findChild<CMotionCurveView*>(); QVERIFY(QMetaObject::invokeMethod(curve, "EditStarted"));
-        QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); QVERIFY(QMetaObject::invokeMethod(curve, "EditFinished"));
+        auto* curve = panel.findChild<CMotionCurveView*>(); QVERIFY(curve);
+        emit curve->SelectionDragStarted(CMotionPointSelection{{{CMotionTarget::Parameter, "A"}, 0}});
+        QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); emit curve->SelectionDragFinished();
         CMotionPanel::PreviewTransportLease lease; QVERIFY(panel.SuspendPreviewTransport(lease, &error));
         QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); QVERIFY(panel.ResumePreviewTransport(lease, &error));
-        panel.resize(800, 650); panel.show(); auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        table->setCurrentCell(0, 2); table->editItem(table->item(0, 2)); QTRY_VERIFY(table->findChild<QLineEdit*>());
+        panel.resize(800, 650); panel.show(); auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        table->setCurrentIndex(table->model()->index(0, 2)); table->edit(table->model()->index(0, 2)); QTRY_VERIFY(table->findChild<QLineEdit*>());
         auto* editor = table->findChild<QLineEdit*>(); editor->setText(".75");
         QVERIFY(!panel.CaptureBakeTimeline(result, revision, &error)); QVERIFY(unchanged()); QCOMPARE(editor->text(), QString(".75"));
         QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "A"}).first().y(), 1.0);
@@ -554,13 +561,13 @@ private slots:
         CMotionPanel::ParameterTrackArchive archive;
         QVERIFY(!panel.CommitPreparedParameterTracks(prepared, archive));
         QVERIFY(panel.PrepareParameterTrackRemoval({"A"}, prepared));
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable"); QVERIFY(table);
-        QTableWidgetItem* editable = nullptr;
-        for (int column = 0; column < table->columnCount(); ++column) {
-            auto* item = table->item(0, column);
-            if (item && (item->flags() & Qt::ItemIsEditable)) { editable = item; break; }
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable"); QVERIFY(table);
+        QModelIndex editable;
+        for (int column = 0; column < table->model()->columnCount(); ++column) {
+            const auto index = table->model()->index(0, column);
+            if (index.flags() & Qt::ItemIsEditable) { editable = index; break; }
         }
-        QVERIFY(editable); table->editItem(editable);
+        QVERIFY(editable.isValid()); table->edit(editable);
         auto* editor = table->findChild<QLineEdit*>(); QTRY_VERIFY(editor && editor->isVisible());
         QTest::keyClick(editor, Qt::Key_A, Qt::ControlModifier); QTest::keyClicks(editor, "0.123");
         QVERIFY(!panel.ValidatePreparedParameterTracks(prepared));
@@ -707,8 +714,8 @@ private slots:
         QCOMPARE(panel.HasUnsavedTimelineChanges(), dirty); QVERIFY(panel.Timeline().HasSameContent(before));
         QCOMPARE(frames.size(), 0); QCOMPARE(stopped.size(), 0); QCOMPARE(changed.size(), 0); QCOMPARE(history.size(), 0);
         panel.PauseTimelinePreview(); panel.resize(900, 650); panel.show(); QTest::qWait(10);
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable"); QVERIFY(table);
-        table->setCurrentCell(0, 2); table->editItem(table->item(0, 2));
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable"); QVERIFY(table);
+        table->setCurrentIndex(table->model()->index(0, 2)); table->edit(table->model()->index(0, 2));
         auto* editor = table->findChild<QLineEdit*>(); QVERIFY(editor); editor->setText("not-a-number");
         const auto current = table->currentIndex(); const auto selected = table->selectionModel()->selectedIndexes();
         const auto pendingRevision = panel.TimelineRevision();
@@ -1100,9 +1107,9 @@ private slots:
         QVERIFY(panel.LoadTimeline(path));
         panel.resize(1000, 850);
         panel.show();
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        table->setCurrentCell(1, 2);
-        table->editItem(table->item(1, 2));
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        table->setCurrentIndex(table->model()->index(1, 2));
+        table->edit(table->model()->index(1, 2));
         QPointer<QLineEdit> editor = table->findChild<QLineEdit*>();
         QVERIFY(editor);
         editor->setText("0.75");
@@ -1895,9 +1902,9 @@ private slots:
         settings->click();
         QVERIFY(!panel.HasUnsavedTimelineChanges());
         QVERIFY(!panel.CanUndoTimeline());
-        auto* timelineTable = panel.findChild<QTableWidget*>("motionTimelineTable");
-        timelineTable->setCurrentCell(0, 2);
-        timelineTable->editItem(timelineTable->item(0, 2));
+        auto* timelineTable = panel.findChild<QTableView*>("motionTimelineTable");
+        timelineTable->setCurrentIndex(timelineTable->model()->index(0, 2));
+        timelineTable->edit(timelineTable->model()->index(0, 2));
         auto* editor = timelineTable->findChild<QLineEdit*>();
         QVERIFY(editor);
         editor->setText("0.35");
@@ -2059,7 +2066,7 @@ private slots:
         QVERIFY(panel.AddTimelinePoint({CMotionTarget::Model, "Opacity"}, 2, 1));
         auto* filter = panel.findChild<QComboBox*>("motionTargetFilter");
         filter->setCurrentIndex(filter->findData(static_cast<int>(CMotionTarget::Parameter)));
-        QCOMPARE(panel.findChild<QTableWidget*>("motionTimelineTable")->rowCount(), 0);
+        QCOMPARE(panel.findChild<QTableView*>("motionTimelineTable")->model()->rowCount(), 0);
         auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
         auto* play = panel.findChild<QPushButton*>("previewTimeline");
         auto* record = panel.findChild<QCheckBox*>("recordTimeline");
@@ -2092,35 +2099,35 @@ private slots:
             QVERIFY(panel.AddTimelinePoint(track, 0, 0));
             QVERIFY(panel.AddTimelinePoint(track, 2, 1));
         }
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
         auto* filter = panel.findChild<QComboBox*>("motionTargetFilter");
         auto* slider = panel.findChild<QSlider*>("motionTimelinePlayhead");
-        QCOMPARE(table->rowCount(), 6);
+        QCOMPARE(table->model()->rowCount(), 6);
         slider->setValue(500);
         auto frame = preview.last().first().value<CMotionPreviewFrame>();
         QCOMPARE(frame.parameters.value("Opacity"), 0.5f);
         QCOMPARE(frame.model.value("Opacity"), 0.5f);
         QCOMPARE(frame.parts.value("Opacity"), 0.5f);
         filter->setCurrentIndex(filter->findData(static_cast<int>(CMotionTarget::PartOpacity)));
-        QCOMPARE(table->rowCount(), 2);
-        QVERIFY(table->item(0, 1)->text().startsWith("PartOpacity"));
-        table->item(1, 2)->setText("0.25");
+        QCOMPARE(table->model()->rowCount(), 2);
+        QVERIFY(table->model()->index(0, 1).data().toString().startsWith("PartOpacity"));
+        table->model()->setData(table->model()->index(1, 2), "0.25");
         frame = preview.last().first().value<CMotionPreviewFrame>();
         QCOMPARE(frame.parts.value("Opacity"), 0.125f);
         QCOMPARE(frame.model.value("Opacity"), 0.5f);
         panel.UndoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 1.0f);
         panel.RedoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 0.25f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 0.25f);
         QVERIFY(panel.AddTimelinePoint(model, 1, 0.75f));
         QCOMPARE(filter->currentData().toInt(), static_cast<int>(CMotionTarget::Model));
-        QCOMPARE(table->rowCount(), 3);
-        QCOMPARE(table->currentRow(), 1);
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 0.75f);
+        QCOMPARE(table->model()->rowCount(), 3);
+        QCOMPARE(table->currentIndex().row(), 1);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 0.75f);
         panel.findChild<QPushButton*>("removeTimelineKeyframe")->click();
-        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->model()->rowCount(), 2);
         panel.UndoTimeline();
-        QCOMPARE(table->rowCount(), 3);
+        QCOMPARE(table->model()->rowCount(), 3);
         panel.findChild<QPushButton*>("endTimelinePreview")->click();
         QCOMPARE(stopped.size(), 1);
         QVERIFY(!panel.findChild<QPushButton*>("endTimelinePreview")->isEnabled());
@@ -2134,7 +2141,7 @@ private slots:
         QVERIFY(panel.CaptureTimelineState(&state));
         CMotionPanel restored;
         QVERIFY(restored.RestoreTimelineState(state));
-        QCOMPARE(restored.findChild<QTableWidget*>("motionTimelineTable")->rowCount(), 7);
+        QCOMPARE(restored.findChild<QTableView*>("motionTimelineTable")->model()->rowCount(), 7);
         QTemporaryDir temp;
         QVERIFY(restored.SaveTimeline(temp.filePath("typed.motion3.json")));
         CMotionTimeline exported;
@@ -2167,21 +2174,21 @@ private slots:
             });
             panel.findChild<QPushButton*>("addTimelineKeyframe")->click();
         }
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        QCOMPARE(table->rowCount(), 3);
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        QCOMPARE(table->model()->rowCount(), 3);
         QTimer::singleShot(0, [](){
             auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
             QVERIFY(dialog);
             dialog->reject();
         });
         panel.findChild<QPushButton*>("addTimelineKeyframe")->click();
-        QCOMPARE(table->rowCount(), 3);
+        QCOMPARE(table->model()->rowCount(), 3);
         panel.UndoTimeline();
-        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->model()->rowCount(), 2);
         panel.UndoTimeline();
-        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->model()->rowCount(), 1);
         panel.UndoTimeline();
-        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(table->model()->rowCount(), 0);
         QVERIFY(!panel.HasUnsavedTimelineChanges());
     }
     void undoRedoTracksSavedPositionAndBranches()
@@ -2191,18 +2198,18 @@ private slots:
         QVERIFY(makeClip(path));
         CMotionPanel panel;
         QVERIFY(panel.LoadTimeline(path));
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
         QVERIFY(!panel.CanUndoTimeline());
-        table->item(1, 2)->setText("2");
+        table->model()->setData(table->model()->index(1, 2), "2");
         QVERIFY(panel.CanUndoTimeline());
         QVERIFY(panel.HasUnsavedTimelineChanges());
         panel.UndoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 1.0f);
         QVERIFY(!panel.CanUndoTimeline());
         QVERIFY(panel.CanRedoTimeline());
         QVERIFY(!panel.HasUnsavedTimelineChanges());
         panel.RedoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 2.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 2.0f);
         QVERIFY(panel.HasUnsavedTimelineChanges());
         QVERIFY(!panel.SaveTimeline(temp.path()));
         QVERIFY(panel.HasUnsavedTimelineChanges());
@@ -2213,11 +2220,11 @@ private slots:
         panel.RedoTimeline();
         QVERIFY(!panel.HasUnsavedTimelineChanges());
         panel.UndoTimeline();
-        table->item(1, 2)->setText("3");
+        table->model()->setData(table->model()->index(1, 2), "3");
         QVERIFY(!panel.CanRedoTimeline());
         QVERIFY(panel.HasUnsavedTimelineChanges());
         panel.UndoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 1.0f);
         QVERIFY(panel.HasUnsavedTimelineChanges());
     }
 
@@ -2225,22 +2232,22 @@ private slots:
     {
         CMotionPanel panel;
         auto* recording = panel.findChild<QCheckBox*>("recordTimeline");
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
         recording->setChecked(true);
         panel.RecordParameterValue("A", 0);
         panel.RecordParameterValue("B", 3);
         panel.RecordParameterValue("A", 1);
-        QCOMPARE(table->rowCount(), 3);
+        QCOMPARE(table->model()->rowCount(), 3);
         QVERIFY(panel.CanUndoTimeline());
         QJsonObject recorded;
         QVERIFY(panel.CaptureTimelineState(&recorded));
         panel.UndoTimeline();
         QVERIFY(!recording->isChecked());
-        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(table->model()->rowCount(), 0);
         QVERIFY(!panel.CanUndoTimeline());
         QVERIFY(!panel.HasUnsavedTimelineChanges());
         panel.RedoTimeline();
-        QCOMPARE(table->rowCount(), 3);
+        QCOMPARE(table->model()->rowCount(), 3);
         QJsonObject redone;
         QVERIFY(panel.CaptureTimelineState(&redone));
         QCOMPARE(redone, recorded);
@@ -2252,11 +2259,83 @@ private slots:
         panel.RecordParameterValue("A", 1);
         QVERIFY(panel.HasUnsavedTimelineChanges());
         panel.UndoTimeline();
-        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->model()->rowCount(), 1);
         QVERIFY(!panel.HasUnsavedTimelineChanges());
         panel.RedoTimeline();
-        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->model()->rowCount(), 2);
         QVERIFY(panel.HasUnsavedTimelineChanges());
+    }
+
+    void editedTimeKeepsPointIdentityWhenRowsResort()
+    {
+        CMotionPanel panel; const CMotionTrack a{CMotionTarget::Parameter,"A"}, b{CMotionTarget::Parameter,"B"};
+        QVERIFY(panel.AddTimelinePoint(a,0,0)); QVERIFY(panel.AddTimelinePoint(a,2,2)); QVERIFY(panel.AddTimelinePoint(b,1,10)); QVERIFY(panel.AddTimelinePoint(b,3,30));
+        auto* table=panel.findChild<QTableView*>("motionTimelineTable"); QVERIFY(table); auto* model=qobject_cast<CMotionKeyModel*>(table->model()); QVERIFY(model);
+        table->setCurrentIndex(model->index(model->RowFor({a,1}),0));
+        QVERIFY(model->setData(table->currentIndex(),"0.5"));
+        QVERIFY(model->RowAt(table->currentIndex().row())); QVERIFY(model->RowAt(table->currentIndex().row())->ref==CMotionPointRef({a,1}));
+        QCOMPARE(table->currentIndex().data().toDouble(),.5);
+        panel.findChild<QPushButton*>("removeTimelineKeyframe")->click();
+        QCOMPARE(panel.Timeline().Tracks().value(a),QVector<QPointF>({{0,0}})); QCOMPARE(panel.Timeline().Tracks().value(b),QVector<QPointF>({{1,10},{3,30}}));
+        panel.UndoTimeline(); QCOMPARE(panel.Timeline().Tracks().value(a),QVector<QPointF>({{0,0},{.5,2}})); QCOMPARE(panel.Timeline().Tracks().value(b).size(),2);
+    }
+
+    void valueColumnEditorSurvivesExtendedRowSelection()
+    {
+        CMotionPanel panel; QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter,"A"},0,0)); QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter,"A"},1,1));
+        panel.resize(900,650); panel.show(); QTest::qWait(10); auto* table=panel.findChild<QTableView*>("motionTimelineTable"); QVERIFY(table);
+        QCOMPARE(table->selectionMode(),QAbstractItemView::ExtendedSelection); table->setCurrentIndex(table->model()->index(1,2)); QCOMPARE(table->currentIndex().column(),2);
+        table->edit(table->currentIndex()); auto* editor=table->findChild<QLineEdit*>(); QTRY_VERIFY(editor&&editor->isVisible());
+        editor->selectAll(); QTest::keyClicks(editor,"0.75"); QTest::keyClick(editor,Qt::Key_Return);
+        QTRY_COMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter,"A"})[1].y(),.75); QCOMPARE(table->currentIndex().column(),2);
+        panel.UndoTimeline(); QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter,"A"})[1].y(),1.0);
+    }
+
+    void invalidTimelineDraftBlocksSaveCaptureAndMarkSaved()
+    {
+        QTemporaryDir temporary; CMotionPanel panel; const CMotionTrack a{CMotionTarget::Parameter,"A"};
+        QVERIFY(panel.AddTimelinePoint(a,0,0)); QVERIFY(panel.AddTimelinePoint(a,1,1)); panel.MarkTimelineSaved();
+        auto* table=panel.findChild<QTableView*>("motionTimelineTable"); QVERIFY(table); auto* model=qobject_cast<CMotionKeyModel*>(table->model()); QVERIFY(model);
+        QVERIFY(model->setData(model->index(0,2),"3")); QVERIFY(panel.HasUnsavedTimelineChanges()); const auto before=panel.Timeline();
+        panel.resize(900,650); panel.show(); QTest::qWait(10); table->setCurrentIndex(model->index(1,2)); table->edit(table->currentIndex());
+        auto* editor=table->findChild<QLineEdit*>(); QTRY_VERIFY(editor&&editor->isVisible()); editor->setText("not-a-number");
+        auto* stack=panel.findChild<QUndoStack*>(); const int count=stack->count(), index=stack->index(); const auto revision=panel.TimelineRevision();
+        QString error; const auto path=temporary.filePath("invalid.motion3.json");
+        QVERIFY(!panel.SaveTimeline(path,&error)); QVERIFY(!error.isEmpty()); QVERIFY(!QFile::exists(path));
+        QJsonObject state{{"sentinel",true}}; QVERIFY(!panel.CaptureTimelineState(&state,&error)); QCOMPARE(state,QJsonObject({{"sentinel",true}}));
+        QByteArray bytes("keep"); QVERIFY(!panel.CaptureTimelineBytes(bytes,&error)); QCOMPARE(bytes,QByteArray("keep"));
+        panel.MarkTimelineSaved(); QVERIFY(panel.HasUnsavedTimelineChanges()); QVERIFY(panel.Timeline().HasSameContent(before));
+        QCOMPARE(stack->count(),count); QCOMPARE(stack->index(),index); QCOMPARE(panel.TimelineRevision(),revision);
+        QVERIFY(model->HasRejectedDraft()); QCOMPARE(model->index(model->RowFor({a,1}),2).data(Qt::EditRole).toString(),QString("not-a-number"));
+        QTest::keyClick(table,Qt::Key_Escape); QVERIFY(!model->HasRejectedDraft()); QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.SaveTimeline(path,&error)); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        CMotionTimeline saved; QVERIFY(saved.Load(path,&error)); QCOMPARE(saved.Tracks().value(a),before.Tracks().value(a));
+    }
+
+    void deletedParameterArchiveSurvivesClipboardModeConversion()
+    {
+        const CMotionTrack a{CMotionTarget::Parameter,"A"}, b{CMotionTarget::Parameter,"B"};
+        const auto motion=[](bool restricted,const QString& id,const QJsonArray& segments) {
+            return QJsonObject{{"version",1},{"playhead",0},{"motion",QJsonObject{{"Version",3},
+                {"Meta",QJsonObject{{"Fps",30},{"Duration",2},{"AreBeziersRestricted",restricted}}},
+                {"Curves",QJsonArray{QJsonObject{{"Target","Parameter"},{"Id",id},{"Segments",segments}}}}}}};
+        };
+        CMotionPanel panel; panel.SetParameterIds({"A","B"}); QVERIFY(panel.RestoreTimelineState(motion(true,"A",{0,0,1,.05,.9,.2,.1,2,1})));
+        const auto source=panel.Timeline(); CMotionPanel::PreparedParameterTracks prepared; CMotionPanel::ParameterTrackArchive archive;
+        QVERIFY(panel.PrepareParameterTrackRemoval({"A"},prepared)); QVERIFY(panel.CommitPreparedParameterTracks(prepared,archive)); panel.RefreshParameterTrackUi(); panel.SetParameterIds({"B"});
+        CMotionTimeline copied; QVERIFY(copied.RestoreState(motion(false,"B",{0,0,1,.2,.7,.8,.3,1,1}))); QByteArray bytes; QVERIFY(CMotionKeyClipboard::Capture(copied,{{b,0},{b,1}},bytes));
+        auto previous=std::make_unique<QMimeData>(); if(const auto* original=QApplication::clipboard()->mimeData()) for(const auto& format:original->formats()) previous->setData(format,original->data(format));
+        const auto restoreClipboard=qScopeGuard([&]{QApplication::clipboard()->setMimeData(previous.release());});
+        auto* mime=new QMimeData; mime->setData(CMotionKeyClipboard::MimeType,bytes); QApplication::clipboard()->setMimeData(mime);
+        auto* paste=panel.findChild<QToolButton*>("pasteMotionKeys"); QVERIFY(paste); paste->click();
+        QVERIFY(panel.Timeline().Tracks().contains(b)); QVERIFY(!panel.Timeline().AreBeziersRestricted());
+        panel.SetParameterIds({"A","B"}); QString error;
+        QVERIFY2(panel.PrepareParameterTrackRestoration(archive,prepared,&error),qPrintable(error)); QVERIFY(panel.CommitPreparedParameterTracks(prepared,archive)); panel.RefreshParameterTrackUi();
+        const auto matches=[&] { for(int n=0;n<=40;++n) if(std::abs(panel.Timeline().Evaluate(a,float(n)/20)-source.Evaluate(a,float(n)/20))>.00001f) return false; return true; };
+        QVERIFY(matches()); QVERIFY(panel.Timeline().Tracks().contains(b)); panel.UndoTimeline(); QVERIFY(matches()); QVERIFY(!panel.Timeline().Tracks().contains(b));
+        panel.RedoTimeline(); QVERIFY(matches()); QVERIFY(panel.Timeline().Tracks().contains(b));
+        QJsonObject saved; QVERIFY(panel.CaptureTimelineState(&saved)); CMotionPanel loaded; QVERIFY(loaded.RestoreTimelineState(saved));
+        for(int n=0;n<=40;++n) QVERIFY(std::abs(loaded.Timeline().Evaluate(a,float(n)/20)-source.Evaluate(a,float(n)/20))<.00001f);
     }
 
     void curveDragIsOneUndoStep()
@@ -2303,25 +2382,25 @@ private slots:
         QVERIFY(panel.LoadTimeline(QString(TEST_RESOURCES) + "/Mark/motions/mark_m06.motion3.json", &error));
         QJsonObject before;
         QVERIFY(panel.CaptureTimelineState(&before));
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
         int row = -1;
-        for (int i = 0; i < table->rowCount(); ++i)
-            if (table->item(i, 3)->flags() & Qt::ItemIsEditable) { row = i; break; }
+        for (int i = 0; i < table->model()->rowCount(); ++i)
+            if (table->model()->index(i, 3).flags() & Qt::ItemIsEditable) { row = i; break; }
         QVERIFY(row >= 0);
-        table->item(row, 3)->setText("2");
+        table->model()->setData(table->model()->index(row, 3), "2");
         QVERIFY(panel.CanUndoTimeline());
         panel.UndoTimeline();
         QJsonObject restored;
         QVERIFY(panel.CaptureTimelineState(&restored));
         QCOMPARE(restored, before);
-        table->setCurrentCell(row, 0);
+        table->setCurrentIndex(table->model()->index(row, 0));
         panel.findChild<QPushButton*>("removeTimelineKeyframe")->click();
         QVERIFY(panel.CanUndoTimeline());
         panel.UndoTimeline();
         QVERIFY(panel.CaptureTimelineState(&restored));
         QCOMPARE(restored, before);
         panel.findChild<QPushButton*>("clearMotionTimeline")->click();
-        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(table->model()->rowCount(), 0);
         QVERIFY(panel.CanUndoTimeline());
         panel.MarkTimelineSaved();
         panel.UndoTimeline();
@@ -2329,7 +2408,7 @@ private slots:
         QVERIFY(panel.CaptureTimelineState(&restored));
         QCOMPARE(restored, before);
         panel.RedoTimeline();
-        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(table->model()->rowCount(), 0);
         QVERIFY(!panel.HasUnsavedTimelineChanges());
     }
 
@@ -2350,17 +2429,17 @@ private slots:
         QVERIFY(!panel.HasUnsavedTimelineChanges());
         panel.RedoTimeline();
         QVERIFY(loop->isChecked());
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        table->setCurrentCell(1, 2);
-        table->editItem(table->item(1, 2));
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        table->setCurrentIndex(table->model()->index(1, 2));
+        table->edit(table->model()->index(1, 2));
         auto* editor = table->findChild<QLineEdit*>();
         QVERIFY(editor);
         editor->setText("8");
         QVERIFY(panel.HasUnsavedTimelineChanges());
         panel.UndoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 1.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 1.0f);
         panel.RedoTimeline();
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 8.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 8.0f);
         QJsonObject snapshot;
         QVERIFY(panel.CaptureTimelineState(&snapshot));
         QVERIFY(panel.RestoreTimelineState(snapshot));
@@ -2379,16 +2458,22 @@ private slots:
         file.close();
         CMotionPanel panel;
         QVERIFY(panel.LoadTimeline(path));
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        table->item(1, 2)->setText("1.00");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        table->model()->setData(table->model()->index(1, 2), "1.00");
         QVERIFY(!panel.CanUndoTimeline());
         QVERIFY(!panel.HasUnsavedTimelineChanges());
-        table->item(1, 0)->setText("0");
+        auto* history = panel.findChild<QUndoStack*>(); QVERIFY(history);
+        QVERIFY(!table->model()->setData(table->model()->index(1, 0), "0"));
+        QCOMPARE(history->count(), 0);
+        QTest::keyClick(table, Qt::Key_Escape);
         QVERIFY(!panel.CanUndoTimeline());
-        table->item(1, 2)->setText("5");
+        table->model()->setData(table->model()->index(1, 2), "5");
         panel.UndoTimeline();
         QVERIFY(panel.CanRedoTimeline());
-        table->item(1, 3)->setText("bad");
+        const int count = history->count(), index = history->index();
+        QVERIFY(!table->model()->setData(table->model()->index(1, 3), "bad"));
+        QCOMPARE(history->count(), count); QCOMPARE(history->index(), index);
+        QTest::keyClick(table, Qt::Key_Escape);
         QVERIFY(panel.CanRedoTimeline());
         QVERIFY(!panel.HasUnsavedTimelineChanges());
     }
@@ -2403,15 +2488,15 @@ private slots:
             QVERIFY(panel->LoadTimeline(path));
             panel->resize(1000, 850);
             panel->show();
-            auto* table = panel->findChild<QTableWidget*>("motionTimelineTable");
-            table->item(1, 2)->setText("4");
+            auto* table = panel->findChild<QTableView*>("motionTimelineTable");
+            table->model()->setData(table->model()->index(1, 2), "4");
             QVERIFY(panel->CanUndoTimeline());
             if (recording) {
                 panel->findChild<QCheckBox*>("recordTimeline")->setChecked(true);
                 panel->RecordParameterValue("ParamA", 7);
             } else {
-                table->setCurrentCell(1, 2);
-                table->editItem(table->item(1, 2));
+                table->setCurrentIndex(table->model()->index(1, 2));
+                table->edit(table->model()->index(1, 2));
                 auto* editor = table->findChild<QLineEdit*>();
                 QVERIFY(editor);
                 editor->setText("5");
@@ -2433,7 +2518,7 @@ private slots:
             panel.resize(700, 520);
             panel.show();
             QCoreApplication::processEvents();
-            auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+            auto* table = panel.findChild<QTableView*>("motionTimelineTable");
             auto* undo = panel.findChild<QPushButton*>("undoMotionTimeline");
             auto* redo = panel.findChild<QPushButton*>("redoMotionTimeline");
             QVERIFY(undo && redo);
@@ -2443,12 +2528,12 @@ private slots:
             QVERIFY(undo->isVisible());
             QVERIFY(redo->isVisible());
             QVERIFY(!undo->isEnabled());
-            table->item(1, 2)->setText("2");
+            table->model()->setData(table->model()->index(1, 2), "2");
             QVERIFY(undo->isEnabled());
             undo->click();
             QVERIFY(redo->isEnabled());
             redo->click();
-            QCOMPARE(table->item(1, 2)->text().toFloat(), 2.0f);
+            QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 2.0f);
             if (!qEnvironmentVariableIsEmpty("MOTION_PANEL_SCREENSHOT")) {
                 const QString output = qEnvironmentVariable("MOTION_PANEL_SCREENSHOT") +
                     (dark ? QStringLiteral("-dark.png") : QStringLiteral("-light.png"));
@@ -2510,13 +2595,13 @@ private slots:
         QTemporaryDir temp;
         CMotionPanel panel;
         auto* recording = panel.findChild<QCheckBox*>("recordTimeline");
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
         QVERIFY(recording && table);
         recording->setChecked(true);
         panel.RecordParameterValue("ParamA", 0.5f);
         recording->setChecked(false);
         QVERIFY(panel.HasUnsavedTimelineChanges());
-        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->model()->rowCount(), 1);
         live2dstruct::CModelSession session;
         QString error;
         QVERIFY(panel.CaptureTimelineState(&session.animation, &error));
@@ -2524,10 +2609,10 @@ private slots:
         const quint64 revision = panel.TimelineRevision();
         QVERIFY2(panel.BuildLists(QString(TEST_RESOURCES) + "/Mark/Mark.model3.json", {}, &error), qPrintable(error));
         QCOMPARE(panel.TimelineRevision(), revision);
-        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->model()->rowCount(), 1);
         QVERIFY(panel.HasUnsavedTimelineChanges());
         QVERIFY(!panel.BuildLists(temp.filePath("missing.json"), {}, &error));
-        QCOMPARE(table->rowCount(), 1);
+        QCOMPARE(table->model()->rowCount(), 1);
         const QString path = temp.filePath("session.json");
         QVERIFY(session.Save(path, &error));
         panel.MarkTimelineSaved();
@@ -2536,13 +2621,13 @@ private slots:
         QVERIFY(live2dstruct::CModelSession::Load(path, &restored, &error));
         CMotionPanel other;
         QVERIFY(other.RestoreTimelineState(restored.animation, &error));
-        QCOMPARE(other.findChild<QTableWidget*>("motionTimelineTable")->rowCount(), 1);
+        QCOMPARE(other.findChild<QTableView*>("motionTimelineTable")->model()->rowCount(), 1);
         QJsonObject repeated;
         QVERIFY(other.CaptureTimelineState(&repeated, &error));
         QCOMPARE(repeated, session.animation);
         QVERIFY(!other.HasUnsavedTimelineChanges());
         QVERIFY(other.RestoreTimelineState({}, &error));
-        QCOMPARE(other.findChild<QTableWidget*>("motionTimelineTable")->rowCount(), 0);
+        QCOMPARE(other.findChild<QTableView*>("motionTimelineTable")->model()->rowCount(), 0);
     }
 
     void commitsEditorAndRestoresPlaybackSettings()
@@ -2554,9 +2639,9 @@ private slots:
         QVERIFY(panel.LoadTimeline(path));
         panel.resize(1000, 850);
         panel.show();
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        table->setCurrentCell(1, 2);
-        table->editItem(table->item(1, 2));
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        table->setCurrentIndex(table->model()->index(1, 2));
+        table->edit(table->model()->index(1, 2));
         auto* editor = table->findChild<QLineEdit*>();
         QVERIFY(editor);
         editor->setText("0.75");
@@ -2596,8 +2681,8 @@ private slots:
         QVERIFY(makeClip(second, 2));
         CMotionPanel panel;
         QVERIFY(panel.LoadTimeline(first));
-        auto* table = panel.findChild<QTableWidget*>("motionTimelineTable");
-        table->item(1, 2)->setText("3");
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable");
+        table->model()->setData(table->model()->index(1, 2), "3");
         QVERIFY(panel.HasUnsavedTimelineChanges());
         QJsonObject before;
         QVERIFY(panel.CaptureTimelineState(&before));
@@ -2621,23 +2706,23 @@ private slots:
         answer(QMessageBox::Save);
         QVERIFY(panel.LoadTimeline(second));
         QVERIFY(!panel.HasUnsavedTimelineChanges());
-        QCOMPARE(table->item(1, 2)->text().toFloat(), 2.0f);
+        QCOMPARE(table->model()->index(1, 2).data().toString().toFloat(), 2.0f);
         live2dstruct::CModelSession saved;
         QVERIFY(live2dstruct::CModelSession::Load(temp.filePath("saved-session.json"), &saved));
         CMotionTimeline recovered;
         QVERIFY(recovered.RestoreState(saved.animation));
         QCOMPARE(recovered.Evaluate("ParamA", 1), 3.0f);
-        table->item(1, 2)->setText("4");
+        table->model()->setData(table->model()->index(1, 2), "4");
         auto* playhead = panel.findChild<QSlider*>("motionTimelinePlayhead");
         playhead->setValue(750);
         auto* clear = panel.findChild<QPushButton*>("clearMotionTimeline");
         answer(QMessageBox::Cancel);
         clear->click();
-        QCOMPARE(table->rowCount(), 2);
+        QCOMPARE(table->model()->rowCount(), 2);
         QCOMPARE(playhead->value(), 750);
         answer(QMessageBox::Discard);
         clear->click();
-        QCOMPARE(table->rowCount(), 0);
+        QCOMPARE(table->model()->rowCount(), 0);
         QCOMPARE(playhead->value(), 0);
         QVERIFY(panel.HasUnsavedTimelineChanges());
         QVERIFY(panel.CaptureTimelineState(&after));

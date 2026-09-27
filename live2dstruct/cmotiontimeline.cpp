@@ -1,4 +1,5 @@
 #include "cmotiontimeline.h"
+#include "cmotionbezier.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -12,6 +13,7 @@
 #include <limits>
 #include <utility>
 #include <exception>
+#include <set>
 
 namespace {
 constexpr qint64 maximumMotionBytes = 16 * 1024 * 1024;
@@ -60,6 +62,13 @@ QVector<QPointF> defaultBezierControls(const QPointF& start, const QPointF& end)
                     start.y() + (end.y() - start.y()) * 2.0 / 3.0)};
 }
 
+QVector<QPointF> canonicalRestrictedControls(const QVector<QPointF>& controls, const QPointF& start, const QPointF& end)
+{
+    auto result = defaultBezierControls(start, end);
+    if (controls.size() == 2) for (int index = 0; index < 2; ++index) result[index].setY(controls[index].y());
+    return result;
+}
+
 bool validBezierControls(const QVector<QPointF>& controls, const QPointF& start, const QPointF& end)
 {
     return controls.size() == 2 && std::isfinite(controls.at(0).x()) && std::isfinite(controls.at(0).y()) &&
@@ -68,20 +77,27 @@ bool validBezierControls(const QVector<QPointF>& controls, const QPointF& start,
            controls.at(1).x() >= start.x() && controls.at(1).x() <= end.x();
 }
 
-QVector<QPointF> retargetBezier(const QVector<QPointF>& controls, const QPointF& oldStart,
-                                const QPointF& oldEnd, const QPointF& start, const QPointF& end)
+bool validMotionPoint(const QPointF& point)
 {
-    if (oldStart == start && oldEnd == end) return controls;
-    if (controls.size() != 2 || oldEnd.x() <= oldStart.x()) return defaultBezierControls(start, end);
-    QVector<QPointF> result;
+    return finiteFloat(point.x()) && point.x() >= 0 && finiteFloat(point.y());
+}
+
+bool retargetBatchBezier(const QVector<QPointF>& controls, const QPointF& oldStart,
+                         const QPointF& oldEnd, const QPointF& start, const QPointF& end,
+                         QVector<QPointF>& result)
+{
+    if (oldStart == start && oldEnd == end) { result = controls; return true; }
+    if (controls.size() != 2 || oldEnd.x() <= oldStart.x()) return false;
+    QVector<QPointF> candidate;
     for (int i = 0; i < 2; ++i) {
         const double ratio = qBound(0.0, (controls[i].x() - oldStart.x()) / (oldEnd.x() - oldStart.x()), 1.0);
         const double offset = i == 0 ? start.y() - oldStart.y() : end.y() - oldEnd.y();
         const QPointF point(start.x() + ratio * (end.x() - start.x()), controls[i].y() + offset);
-        if (!finiteFloat(point.x()) || !finiteFloat(point.y())) return defaultBezierControls(start, end);
-        result.append(point);
+        if (!validMotionPoint(point)) return false;
+        candidate.append(point);
     }
-    return result;
+    result.swap(candidate);
+    return true;
 }
 
 struct ParsedCurve
@@ -231,6 +247,7 @@ bool CMotionTimeline::RemoveParameterTracks(const QSet<QString>& ids, ParameterT
         if (ids.size() > maximumMotionPoints) return fail(QStringLiteral("待移除参数轨道数量过多"));
         CMotionTimeline candidate = *this;
         ParameterTracks archive;
+        archive.m_restricted = AreBeziersRestricted();
         const double duration = Timing().duration;
         for (const auto& id : ids) {
             if (id.isEmpty() || id.contains(QChar::Null)) return fail(QStringLiteral("参数轨道 ID 无效"));
@@ -285,6 +302,11 @@ bool CMotionTimeline::RestoreParameterTracks(const ParameterTracks& tracks, QStr
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
     try {
         CMotionTimeline candidate = *this;
+        if (!tracks.m_restricted && AreBeziersRestricted()) {
+            bool bezier = false;
+            for (const auto& track : tracks.m_tracks) bezier = bezier || (track.present && track.segments.contains(1));
+            if (bezier) candidate.UnrestrictBezierControls();
+        }
         auto curves = m_source.value(QStringLiteral("Curves")).toArray();
         QSet<QString> sourceIds;
         for (const auto& value : curves) {
@@ -304,6 +326,13 @@ bool CMotionTimeline::RestoreParameterTracks(const ParameterTracks& tracks, QStr
             }
             if (it->segmentsPresent) candidate.m_segmentTypes.insert(key, it->segments);
             if (it->controlsPresent) candidate.m_bezierControls.insert(key, it->controls);
+            if (tracks.m_restricted && !candidate.AreBeziersRestricted() && it->present) {
+                auto& controls = candidate.m_bezierControls[key];
+                controls.resize(it->points.size());
+                for (int index = 1; index < it->points.size(); ++index)
+                    if (it->segments.value(index) == 1)
+                        controls[index] = canonicalRestrictedControls(it->controls.value(index), it->points[index - 1], it->points[index]);
+            }
             if (it->sourceIndex >= 0) sources.append(qMakePair(it->sourceIndex, it->source));
         }
         const auto currentMeta = m_source.value(QStringLiteral("Meta")).toObject();
@@ -496,62 +525,229 @@ bool CMotionTimeline::ReplaceParameterSamples(const QMap<QString, QVector<QPoint
     }
 }
 
+bool CMotionTimeline::AreBeziersRestricted() const
+{
+    return m_source.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("AreBeziersRestricted")).toBool();
+}
+
+QVector<QPointF> CMotionTimeline::BezierControls(const CMotionTrack& track, int pointIndex) const
+{
+    const auto curve = m_curves.constFind(track);
+    if (curve == m_curves.cend() || pointIndex <= 0 || pointIndex >= curve->size() || SegmentType(track, pointIndex) != 1) return {};
+    const auto controls = m_bezierControls.value(track).value(pointIndex);
+    const auto defaults = defaultBezierControls(curve->at(pointIndex - 1), curve->at(pointIndex));
+    if (AreBeziersRestricted()) return canonicalRestrictedControls(controls, curve->at(pointIndex - 1), curve->at(pointIndex));
+    return validBezierControls(controls, curve->at(pointIndex - 1), curve->at(pointIndex)) ? controls : defaults;
+}
+
+void CMotionTimeline::UnrestrictBezierControls()
+{
+    for (auto curve = m_curves.cbegin(); curve != m_curves.cend(); ++curve) {
+        auto& controls = m_bezierControls[curve.key()];
+        controls.resize(curve->size());
+        for (int index = 1; index < curve->size(); ++index)
+            if (SegmentType(curve.key(), index) == 1)
+                controls[index] = canonicalRestrictedControls(controls[index], curve->at(index - 1), curve->at(index));
+    }
+    auto meta = m_source.value(QStringLiteral("Meta")).toObject();
+    meta.insert(QStringLiteral("AreBeziersRestricted"), false);
+    m_source.insert(QStringLiteral("Meta"), meta);
+}
+
+bool CMotionTimeline::ConvertToUnrestricted(QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (m_recording) return fail(QStringLiteral("请结束录制后再转换曲线"));
+    if (!AreBeziersRestricted()) return true;
+    try {
+        auto candidate = *this;
+        candidate.UnrestrictBezierControls();
+        if (!candidate.BuildJson(nullptr, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+        SwapContent(candidate);
+        return true;
+    } catch (const std::exception&) { return fail(QStringLiteral("无法转换曲线，原动画保持不变")); }
+}
+
+bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (m_recording) return fail(QStringLiteral("请结束录制后再编辑关键帧"));
+    if (request.updates.size() > MaximumPointCount || request.removes.size() > MaximumPointCount ||
+        request.insertions.size() > MaximumPointCount || request.segments.size() > MaximumPointCount ||
+        request.updates.size() + request.removes.size() > MaximumPointCount)
+        return fail(QStringLiteral("待编辑的关键帧数量超过限制"));
+    try {
+        const auto validTrack = [](const CMotionTrack& track) {
+            return !track.TargetName().isEmpty() && !track.id.trimmed().isEmpty() && !track.id.contains(QChar::Null);
+        };
+        const auto validRef = [&](const CMotionPointRef& ref) {
+            const auto curve = m_curves.constFind(ref.track);
+            return validTrack(ref.track) && curve != m_curves.cend() && ref.index >= 0 && ref.index < curve->size();
+        };
+        QMap<CMotionPointRef, QPointF> updates;
+        QMap<CMotionPointRef, SegmentEdit> segments;
+        QSet<CMotionPointRef> removes;
+        std::set<CMotionTrack> affected;
+        for (const auto& update : request.updates) {
+            if (!validRef(update.ref) || !validMotionPoint(update.point) || updates.contains(update.ref))
+                return fail(QStringLiteral("待移动的关键帧已失效、重复或坐标无效"));
+            updates.insert(update.ref, update.point);
+            affected.insert(update.ref.track);
+        }
+        for (const auto& ref : request.removes) {
+            if (!validRef(ref) || removes.contains(ref) || updates.contains(ref))
+                return fail(QStringLiteral("待删除的关键帧已失效、重复或同时被移动"));
+            removes.insert(ref);
+            affected.insert(ref.track);
+        }
+        for (const auto& segment : request.segments) {
+            if (!validRef(segment.ref) || segments.contains(segment.ref) || removes.contains(segment.ref) ||
+                segment.type < 0 || segment.type > 3 || (segment.controls.size() != 0 && segment.controls.size() != 2) ||
+                (!segment.controls.isEmpty() && segment.type != 1))
+                return fail(QStringLiteral("待编辑的曲线段已失效、重复或插值无效"));
+            for (const auto& point : segment.controls)
+                if (!finiteFloat(point.x()) || !finiteFloat(point.y())) return fail(QStringLiteral("Bézier 控制柄坐标无效"));
+            segments.insert(segment.ref, segment);
+            affected.insert(segment.ref.track);
+        }
+        QMap<CMotionTrack, QVector<int>> insertions;
+        const bool restricted = AreBeziersRestricted();
+        for (int index = 0; index < request.insertions.size(); ++index) {
+            const auto& insertion = request.insertions[index];
+            if (!validTrack(insertion.track) || !validMotionPoint(insertion.point) ||
+                insertion.segmentType < 0 || insertion.segmentType > 3 ||
+                (insertion.controls.size() != 0 && insertion.controls.size() != 2) ||
+                (!insertion.controls.isEmpty() && (insertion.segmentType != 1 || !insertion.segmentStart)))
+                return fail(QStringLiteral("待插入的关键帧、插值或控制柄无效"));
+            if (insertion.segmentStart && (!validMotionPoint(*insertion.segmentStart) ||
+                static_cast<float>(insertion.segmentStart->x()) >= static_cast<float>(insertion.point.x())))
+                return fail(QStringLiteral("待插入曲线的起点必须早于终点"));
+            for (const auto& control : insertion.controls)
+                if (!validMotionPoint(control)) return fail(QStringLiteral("待插入的控制柄坐标无效"));
+            if (!insertion.controls.isEmpty() && !restricted &&
+                !validBezierControls(insertion.controls, *insertion.segmentStart, insertion.point))
+                return fail(QStringLiteral("Bézier 控制柄时间必须位于原曲线段内"));
+            insertions[insertion.track].append(index);
+            affected.insert(insertion.track);
+        }
+        if (qint64(TotalPointCount()) - removes.size() + request.insertions.size() > MaximumPointCount)
+            return fail(QStringLiteral("编辑后关键帧总数超过 100000"));
+        BatchResult output;
+        output.inserted.resize(request.insertions.size());
+        for (auto curve = m_curves.cbegin(); curve != m_curves.cend(); ++curve) {
+            auto& mapping = output.oldToNew[curve.key()];
+            mapping.resize(curve->size());
+            for (int index = 0; index < curve->size(); ++index) mapping[index] = index;
+        }
+        auto candidate = *this;
+        for (const auto& track : affected) {
+            struct Entry { QPointF point; int oldIndex = -1; int insertion = -1; };
+            QVector<Entry> entries;
+            const auto before = m_curves.value(track);
+            auto& mapping = output.oldToNew[track];
+            mapping.fill(-1, before.size());
+            entries.reserve(before.size() + insertions.value(track).size());
+            for (int index = 0; index < before.size(); ++index) {
+                const CMotionPointRef ref{track, index};
+                if (!removes.contains(ref)) entries.append({updates.value(ref, before[index]), index, -1});
+            }
+            for (const int index : insertions.value(track)) entries.append({request.insertions[index].point, -1, index});
+            std::sort(entries.begin(), entries.end(), [](const Entry& left, const Entry& right) { return left.point.x() < right.point.x(); });
+            QVector<QPointF> points;
+            QVector<int> types;
+            QVector<QVector<QPointF>> controls;
+            points.reserve(entries.size()); types.reserve(entries.size()); controls.reserve(entries.size());
+            float previous = -1;
+            for (int index = 0; index < entries.size(); ++index) {
+                const auto& entry = entries[index];
+                const float time = static_cast<float>(entry.point.x());
+                if (time <= previous) return fail(QStringLiteral("轨道 %1 的关键帧时间重叠或低于运行时精度").arg(track.id));
+                previous = time;
+                if (entry.oldIndex >= 0) mapping[entry.oldIndex] = index;
+                else output.inserted[entry.insertion] = {track, index};
+                int type = 0;
+                QVector<QPointF> handles;
+                const auto segment = segments.constFind({track, entry.oldIndex});
+                if (entry.oldIndex >= 0 && segment != segments.cend()) {
+                    if (index == 0) return fail(QStringLiteral("首个关键帧没有可编辑的入段"));
+                    type = segment->type;
+                    if (type == 1) {
+                        handles = defaultBezierControls(entries[index - 1].point, entry.point);
+                        if (restricted) {
+                            const auto stored = m_bezierControls.value(track).value(entry.oldIndex);
+                            for (int handle = 0; handle < 2; ++handle) {
+                                if (stored.size() == 2) handles[handle].setX(stored[handle].x());
+                                if (!segment->controls.isEmpty()) handles[handle].setY(segment->controls[handle].y());
+                            }
+                        } else if (!segment->controls.isEmpty()) {
+                            if (!validBezierControls(segment->controls, entries[index - 1].point, entry.point))
+                                return fail(QStringLiteral("Bézier 控制柄时间必须位于最终曲线段内"));
+                            handles = segment->controls;
+                        }
+                    }
+                } else if (index > 0 && entry.oldIndex > 0) {
+                    type = SegmentType(track, entry.oldIndex);
+                    if (type == 1) {
+                        const auto stored = m_bezierControls.value(track).value(entry.oldIndex);
+                        const auto original = restricted && stored.size() == 2 ? stored : BezierControls(track, entry.oldIndex);
+                        if (!retargetBatchBezier(original, before[entry.oldIndex - 1], before[entry.oldIndex],
+                            entries[index - 1].point, entry.point, handles))
+                            return fail(QStringLiteral("移动后 Bézier 控制柄超出数值范围"));
+                    }
+                } else if (index > 0 && entry.insertion >= 0) {
+                    const auto& insertion = request.insertions[entry.insertion];
+                    type = insertion.segmentType;
+                    if (type == 1) {
+                        const auto start = insertion.segmentStart.value_or(entries[index - 1].point);
+                        const auto original = insertion.controls.isEmpty() ? defaultBezierControls(start, insertion.point) : insertion.controls;
+                        if (!retargetBatchBezier(original, start, insertion.point, entries[index - 1].point, entry.point, handles))
+                            return fail(QStringLiteral("插入后 Bézier 控制柄超出数值范围"));
+                    }
+                }
+                points.append(entry.point); types.append(type); controls.append(std::move(handles));
+            }
+            if (points.isEmpty()) {
+                candidate.m_curves.remove(track); candidate.m_segmentTypes.remove(track); candidate.m_bezierControls.remove(track);
+            } else {
+                candidate.m_curves.insert(track, std::move(points)); candidate.m_segmentTypes.insert(track, std::move(types));
+                candidate.m_bezierControls.insert(track, std::move(controls));
+            }
+        }
+        const double previousDuration = Timing().duration;
+        if (candidate.Timing().duration < previousDuration) {
+            auto meta = candidate.m_source.value(QStringLiteral("Meta")).toObject();
+            meta.insert(QStringLiteral("Duration"), previousDuration);
+            candidate.m_source.insert(QStringLiteral("Meta"), meta);
+        }
+        QJsonObject before, after;
+        if (!BuildJson(&before, Timing().fps, Loop(), true, error) ||
+            !candidate.BuildJson(&after, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+        output.changed = before != after;
+        if (output.changed) SwapContent(candidate);
+        result = std::move(output);
+        return true;
+    } catch (const std::exception&) { return fail(QStringLiteral("无法准备关键帧编辑，原动画保持不变")); }
+}
+
 bool CMotionTimeline::UpdatePoint(const CMotionTrack& track, int index, float time, float value)
 {
-    if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
-    auto curve = m_curves.find(track);
-    if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
-    const QPointF current = curve->at(index);
-    const QPointF updated(static_cast<float>(current.x()) == time ? current.x() : time,
-                          static_cast<float>(current.y()) == value ? current.y() : value);
-    if (updated == current) return true;
-    for (int i = 0; i < curve->size(); ++i) {
-        if (i != index && static_cast<float>(curve->at(i).x()) == time) return false;
-    }
-    struct Entry { QPointF point; int originalIndex; };
-    QVector<Entry> entries;
-    const auto before = *curve;
-    const auto types = m_segmentTypes.value(track);
-    const auto controls = m_bezierControls.value(track);
-    for (int i = 0; i < curve->size(); ++i)
-        entries.append({i == index ? updated : curve->at(i), i});
-    std::sort(entries.begin(), entries.end(), [](const auto& left, const auto& right){
-        return left.point.x() < right.point.x();
-    });
-    for (int i = 0; i < entries.size(); ++i) {
-        const int original = entries[i].originalIndex;
-        (*curve)[i] = entries[i].point;
-        m_segmentTypes[track][i] = i == 0 ? 0 : types.value(original, 0);
-        m_bezierControls[track][i] = (i > 0 && original > 0 && types.value(original) == 1)
-            ? retargetBezier(controls.value(original), before[original - 1], before[original],
-                              entries[i - 1].point, entries[i].point) : QVector<QPointF>();
-    }
-    return true;
+    const auto curve = m_curves.constFind(track);
+    if (curve == m_curves.cend() || index < 0 || index >= curve->size()) return false;
+    const auto current = curve->at(index);
+    const QPointF point(static_cast<float>(current.x()) == time ? current.x() : time,
+                        static_cast<float>(current.y()) == value ? current.y() : value);
+    BatchEdit request; request.updates.append({{track, index}, point});
+    BatchResult result;
+    return EditPoints(request, result);
 }
 
 bool CMotionTimeline::RemovePoint(const CMotionTrack& track, int index)
 {
-    auto curve = m_curves.find(track);
-    if (curve == m_curves.end() || index < 0 || index >= curve->size()) return false;
-    if (index > 0 && index + 1 < curve->size() && SegmentType(track, index + 1) == 1) {
-        m_bezierControls[track][index + 1] = retargetBezier(
-            m_bezierControls.value(track).value(index + 1), curve->at(index), curve->at(index + 1),
-            curve->at(index - 1), curve->at(index + 1));
-    }
-    curve->removeAt(index);
-    if (m_segmentTypes.contains(track)) m_segmentTypes[track].removeAt(index);
-    if (m_bezierControls.contains(track)) m_bezierControls[track].removeAt(index);
-    if (!curve->isEmpty()) {
-        m_segmentTypes[track][0] = 0;
-        m_bezierControls[track][0].clear();
-    }
-    const bool empty = curve->isEmpty();
-    if (empty) {
-        m_curves.erase(curve);
-        m_segmentTypes.remove(track);
-        m_bezierControls.remove(track);
-    }
-    return true;
+    BatchEdit request; request.removes.append({track, index});
+    BatchResult result;
+    return EditPoints(request, result);
 }
 
 bool CMotionTimeline::SetSegmentType(const CMotionTrack& track, int pointIndex, int segmentType)
@@ -810,7 +1006,6 @@ float CMotionTimeline::Evaluate(const CMotionTrack& track, float time, bool* ok)
         return 0.0f;
     }
     if (ok) *ok = true;
-    if (time < static_cast<float>(points.first().x())) return static_cast<float>(points.first().y());
     const auto next = std::upper_bound(points.cbegin() + 1, points.cend(), time,
         [](float value, const QPointF& point) { return value < static_cast<float>(point.x()); });
     if (next == points.cend()) return static_cast<float>(points.last().y());
@@ -823,31 +1018,8 @@ float CMotionTimeline::Evaluate(const CMotionTrack& track, float time, bool* ok)
     if (type == 2) return static_cast<float>(start.y());
     if (type == 3) return static_cast<float>(end.y());
     if (type != 1) return static_cast<float>(start.y() + (end.y() - start.y()) * ratio);
-    const auto cubic = [](double a, double b, double c, double d, double t) {
-        const double inverse = 1.0 - t;
-        return inverse * inverse * inverse * a + 3.0f * inverse * inverse * t * b +
-               3.0f * inverse * t * t * c + t * t * t * d;
-    };
-    const bool restricted = m_source.value(QStringLiteral("Meta")).toObject()
-                                .value(QStringLiteral("AreBeziersRestricted")).toBool();
-    const QVector<QPointF> controls = m_bezierControls.value(track).value(i);
-    const QVector<QPointF> fallback = defaultBezierControls(start, end);
-    const QVector<QPointF> selectedControls = (restricted && controls.size() == 2) || validBezierControls(controls, start, end)
-        ? controls : fallback;
-    const QPointF first = selectedControls.at(0);
-    const QPointF second = selectedControls.at(1);
-    const float firstRatio = qBound(0.0f, static_cast<float>((first.x() - start.x()) / span), 1.0f);
-    const float secondRatio = qBound(0.0f, static_cast<float>((second.x() - start.x()) / span), 1.0f);
-    double low = restricted ? ratio : 0.0;
-    double high = restricted ? ratio : 1.0;
-    for (int step = 0; !restricted && step < 24; ++step) {
-        const double middle = (low + high) * 0.5;
-        if (cubic(0.0f, firstRatio, secondRatio, 1.0f, middle) < ratio) low = middle;
-        else high = middle;
-    }
-    const double valueControl = (low + high) * 0.5;
-    return cubic(static_cast<float>(start.y()), static_cast<float>(first.y()),
-                 static_cast<float>(second.y()), static_cast<float>(end.y()), valueControl);
+    const auto controls = BezierControls(track, i);
+    return CMotionBezier::Evaluate(start, controls[0], controls[1], end, time, AreBeziersRestricted());
 }
 
 QMap<QString, float> CMotionTimeline::EvaluateAll(float time) const
@@ -1231,20 +1403,9 @@ QMap<QString, float> CMotionPreviewFrame::ResolveParameters(const QSet<QString>&
 
 bool CMotionTimeline::InsertPoint(const CMotionTrack& track, float time, float value)
 {
-    if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) ||
-        !std::isfinite(time) || time < 0 || !std::isfinite(value) || TotalPointCount() >= maximumMotionPoints) return false;
-    const auto points = m_curves.value(track);
-    for (const auto& point : points) if (static_cast<float>(point.x()) == time) return false;
-    const int index = static_cast<int>(std::lower_bound(points.cbegin(), points.cend(), time,
-        [](const QPointF& point, float at){ return point.x() < at; }) - points.cbegin());
-    m_curves[track].insert(index, QPointF(time, value));
-    m_segmentTypes[track].insert(index, 0);
-    m_bezierControls[track].insert(index, QVector<QPointF>());
-    if (index + 1 < m_curves[track].size() && m_segmentTypes[track].value(index + 1) == 1 && index > 0) {
-        m_bezierControls[track][index + 1] = retargetBezier(m_bezierControls[track][index + 1],
-            points[index - 1], points[index], m_curves[track][index], m_curves[track][index + 1]);
-    }
-    return true;
+    BatchEdit request; request.insertions.append({track, QPointF(time, value)});
+    BatchResult result;
+    return EditPoints(request, result);
 }
 
 bool CMotionPreviewFrame::IsFinite() const

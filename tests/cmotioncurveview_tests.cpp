@@ -5,13 +5,330 @@
 #include <QMouseEvent>
 #include <QHelpEvent>
 #include <QToolTip>
+#include <QTemporaryFile>
+#include <QJsonDocument>
+#include <QPointer>
+#include <QLineEdit>
+#include <QVBoxLayout>
+#include <functional>
 #include <limits>
 #include <cmath>
+
+namespace {
+class FocusAction : public QObject
+{
+public:
+    std::function<void()> action;
+    bool eventFilter(QObject*, QEvent* event) override
+    {
+        if (event->type() == QEvent::FocusIn && action) { const auto run = std::move(action); run(); }
+        return false;
+    }
+};
+
+void movePoint(CMotionCurveView& view, QPointF point, Qt::KeyboardModifiers modifiers = {})
+{
+    QMouseEvent move(QEvent::MouseMove, point, point, point, Qt::NoButton, Qt::LeftButton, modifiers);
+    QCoreApplication::sendEvent(&view, &move);
+}
+bool bezier(CMotionTimeline& timeline, bool restricted = false)
+{
+    QTemporaryFile file;
+    if (!file.open()) return false;
+    const QJsonObject source{{"Version", 3}, {"Meta", QJsonObject{{"Fps", 30}, {"Duration", 1}, {"AreBeziersRestricted", restricted}}},
+        {"Curves", QJsonArray{QJsonObject{{"Target", "Parameter"}, {"Id", "A"},
+            {"Segments", QJsonArray{0, 0, 1, .9, 8, .1, 8, 1, 0}}}}}};
+    file.write(QJsonDocument(source).toJson()); file.flush();
+    return timeline.Load(file.fileName());
+}
+QPointF screenPoint(QPointF point, double minimum = -1.1, double maximum = 1.1)
+{
+    return {34 + 272 * point.x(), 168 - 152 * (point.y() - minimum) / (maximum - minimum)};
+}
+struct GestureEditor
+{
+    CMotionTimeline& timeline;
+    CMotionCurveView& view;
+    CMotionTimeline before;
+    CMotionPointSelection anchors;
+    int commits = 0, cancels = 0, commands = 0, rejects = 0;
+    bool active = false;
+    GestureEditor(CMotionTimeline& value, CMotionCurveView& widget) : timeline(value), view(widget)
+    {
+        QObject::connect(&view, &CMotionCurveView::SelectionDragStarted, &view, [this](const auto& selected) {
+            before = timeline; anchors = selected; active = true;
+        });
+        QObject::connect(&view, &CMotionCurveView::SelectionTranslated, &view, [this](double dt, double dv) {
+            if (!active) return;
+            auto candidate = before;
+            CMotionTimeline::BatchEdit edit;
+            for (const auto& ref : anchors) edit.updates.append({ref, before.Tracks().value(ref.track).at(ref.index) + QPointF(dt, dv)});
+            CMotionTimeline::BatchResult result;
+            if (!candidate.EditPoints(edit, result)) { ++rejects; return; }
+            timeline = std::move(candidate); view.SetTimeline(&timeline);
+            auto selected = anchors;
+            for (auto& ref : selected) if (result.oldToNew.contains(ref.track)) ref.index = result.oldToNew[ref.track].at(ref.index);
+            view.SetSelectedPoints(selected);
+        });
+        QObject::connect(&view, &CMotionCurveView::SelectionDragFinished, &view, [this] {
+            if (!active) return;
+            ++commits; commands += !timeline.HasSameContent(before); active = false;
+        });
+        QObject::connect(&view, &CMotionCurveView::SelectionDragCanceled, &view, [this] {
+            if (!active) return;
+            ++cancels; timeline = before; view.SetTimeline(&timeline); view.SetSelectedPoints(anchors); active = false;
+        });
+    }
+};
+}
 
 class CMotionCurveViewTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void multipleOpenCurvesDoNotFillTheAreaBetweenTheirEndpoints()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("A", 0, -1)); QVERIFY(timeline.AddPoint("A", 1, 1));
+        QVERIFY(timeline.AddPoint("B", 0, -1)); QVERIFY(timeline.AddPoint("B", .5, 1)); QVERIFY(timeline.AddPoint("B", 1, -1));
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline);
+        QImage image(view.size(), QImage::Format_ARGB32); view.render(&image);
+        QCOMPARE(image.pixelColor(screenPoint({.4, .1}).toPoint()), view.palette().color(QPalette::Base));
+    }
+
+    void focusChangeRefreshesTheTimelineBeforeCapturingPressCoordinates_data()
+    {
+        QTest::addColumn<bool>("events");
+        QTest::newRow("point-projection") << false;
+        QTest::newRow("event-marker") << true;
+    }
+    void focusChangeRefreshesTheTimelineBeforeCapturingPressCoordinates()
+    {
+        QFETCH(bool, events);
+        CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("A", .25f, -1)); QVERIFY(timeline.AddPoint("A", .75f, 1));
+        QVERIFY(timeline.SetTiming(30, 1));
+        if (events) QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 1}, {"Value", "old"}}}));
+        QWidget host;
+        auto* layout = new QVBoxLayout(&host); auto* input = new QLineEdit(&host); auto* view = new CMotionCurveView(&host);
+        layout->addWidget(input); layout->addWidget(view); host.resize(360, 270); host.show();
+        view->SetTimeline(&timeline); input->setFocus(); QTRY_VERIFY(input->hasFocus());
+        FocusAction focus;
+        focus.action = [&] {
+            if (events) timeline.Clear();
+            else {
+                QVERIFY(timeline.UpdatePoint("A", 0, .25f, -10));
+                QVERIFY(timeline.UpdatePoint("A", 1, .75f, 10));
+            }
+            view->SetTimeline(&timeline);
+        };
+        view->installEventFilter(&focus);
+        QSignalSpy changed(view, &CMotionCurveView::SelectionTranslated), selected(view, &CMotionCurveView::EventSelected);
+        const double plotWidth = view->width() - 48, plotHeight = view->height() - 38;
+        const QPoint press = events ? QPoint(view->width() - 21, 27) :
+            QPoint(qRound(34 + plotWidth * .25), qRound(view->height() - 22 - plotHeight / 22));
+        QTest::mousePress(view, Qt::LeftButton, Qt::NoModifier, press);
+        if (events) QCOMPARE(selected.size(), 0);
+        else {
+            movePoint(*view, press + QPoint(0, -10)); QCOMPARE(changed.size(), 1);
+            QVERIFY(std::abs(changed.first()[1].toDouble() - 10.0 / plotHeight * 22) < 1e-10);
+        }
+        QTest::mouseRelease(view, Qt::LeftButton, Qt::NoModifier, press);
+    }
+
+    void acceptedReorderingKeepsTheOriginalGesturePointAndReturnsItsSelection()
+    {
+        CMotionTimeline timeline; const CMotionTrack track{CMotionTarget::Parameter, "A"};
+        QVERIFY(timeline.AddPoint(track, .2f, -1)); QVERIFY(timeline.AddPoint(track, .4f, 0)); QVERIFY(timeline.AddPoint(track, .8f, 1));
+        QVERIFY(timeline.SetTiming(30, 1)); const auto original = timeline;
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.show(); GestureEditor editor(timeline, view);
+        const auto press = screenPoint({.2, -1}).toPoint();
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press + QPoint(100, 0)); QCOMPARE(view.SelectedPoints(), (CMotionPointSelection{{track, 1}}));
+        movePoint(view, press + QPoint(110, 0));
+        QCOMPARE(timeline.Tracks().value(track)[0], original.Tracks().value(track)[1]);
+        QVERIFY(std::abs(timeline.Tracks().value(track)[1].x() - (double(.2f) + 110.0 / 272)) < 1e-7);
+        movePoint(view, press); QVERIFY(timeline.HasSameContent(original));
+        QCOMPARE(view.SelectedPoints(), (CMotionPointSelection{{track, 0}}));
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press); QCOMPARE(editor.commands, 0);
+    }
+
+    void marqueeSelectionSpansTypedTracksAndSupportsAddToggleSubtract()
+    {
+        CMotionTimeline timeline;
+        CMotionPointSelection all;
+        int kind = 0;
+        for (auto target : {CMotionTarget::Model, CMotionTarget::Parameter, CMotionTarget::PartOpacity}) {
+            const CMotionTrack track{target, "SameId"};
+            QVERIFY(timeline.AddPoint(track, .25f, kind - 1)); QVERIFY(timeline.AddPoint(track, .75f, kind));
+            all.append({track, 0}); all.append({track, 1}); ++kind;
+        }
+        QVERIFY(timeline.SetTiming(30, 1));
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.show();
+        QSignalSpy started(&view, &CMotionCurveView::SelectionDragStarted);
+        const auto box = [&](QPoint first, QPoint last, Qt::KeyboardModifiers modifiers = {}) {
+            QTest::mousePress(&view, Qt::LeftButton, modifiers, first); movePoint(view, last, modifiers);
+            QTest::mouseRelease(&view, Qt::LeftButton, modifiers, last);
+        };
+        box({70, 20}, {250, 165}); QCOMPARE(view.SelectedPoints(), all); QCOMPARE(started.size(), 0);
+        box({70, 20}, {140, 165}, Qt::AltModifier);
+        QCOMPARE(view.SelectedPoints(), (CMotionPointSelection{all[1], all[3], all[5]}));
+        box({70, 20}, {140, 165}, Qt::ControlModifier); QCOMPARE(view.SelectedPoints(), all);
+        box({70, 20}, {140, 165}, Qt::ControlModifier);
+        box({70, 20}, {140, 165}, Qt::ShiftModifier); QCOMPARE(view.SelectedPoints(), all);
+        view.SetTargetFilter(int(CMotionTarget::Parameter)); QCOMPARE(view.TargetFilter(), int(CMotionTarget::Parameter));
+        QCOMPARE(view.SelectedPoints(), (CMotionPointSelection{all[2], all[3]}));
+        QSignalSpy selection(&view, &CMotionCurveView::SelectionChanged);
+        view.SetSelectedPoints({all[2], all[2], {{CMotionTarget::Parameter, "missing"}, 0}, {all[2].track, 999}});
+        QCOMPARE(view.SelectedPoints(), (CMotionPointSelection{all[2]})); QCOMPARE(selection.size(), 0);
+    }
+
+    void groupDragUsesOneFrozenAbsoluteDeltaAndReturningToOriginMakesNoCommand()
+    {
+        CMotionTimeline timeline;
+        const CMotionTrack a{CMotionTarget::Parameter, "A"}, b{CMotionTarget::PartOpacity, "A"};
+        for (const auto& track : {a, b}) { QVERIFY(timeline.AddPoint(track, .25f, -1)); QVERIFY(timeline.AddPoint(track, .75f, 1)); }
+        QVERIFY(timeline.SetTiming(30, 1)); const auto original = timeline;
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.show();
+        view.SetSelectedPoints({{a, 0}, {b, 0}}); GestureEditor editor(timeline, view);
+        const QPoint press = screenPoint({.25, -1}).toPoint();
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press + QPoint(38, -31)); const auto first = timeline;
+        QVERIFY(!first.HasSameContent(original));
+        for (int i = 0; i < 4; ++i) movePoint(view, press + QPoint(38, -31));
+        QVERIFY(timeline.HasSameContent(first));
+        QCOMPARE(timeline.Tracks().value(a)[0], timeline.Tracks().value(b)[0]);
+        movePoint(view, press); QVERIFY(timeline.HasSameContent(original));
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press);
+        QCOMPARE(editor.commits, 1); QCOMPARE(editor.commands, 0);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press + QPoint(15, -20)); QVERIFY(!timeline.HasSameContent(original));
+        QTest::keyClick(&view, Qt::Key_Escape);
+        QVERIFY(timeline.HasSameContent(original)); QCOMPARE(editor.cancels, 1); QCOMPARE(editor.commands, 0);
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press);
+        QCOMPARE(editor.commits, 1);
+    }
+
+    void rejectedSamplesKeepTheLastAcceptedFrameAndOriginalAnchor()
+    {
+        CMotionTimeline timeline; const CMotionTrack track{CMotionTarget::Parameter, "A"};
+        QVERIFY(timeline.AddPoint(track, .25f, -1)); QVERIFY(timeline.AddPoint(track, .75f, 1)); QVERIFY(timeline.SetTiming(30, 1));
+        const auto original = timeline;
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.show();
+        GestureEditor editor(timeline, view);
+        const QPoint press = screenPoint({.25, -1}).toPoint();
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press + QPoint(30, -10)); const auto accepted = timeline;
+        movePoint(view, press + QPoint(-200, -10)); QVERIFY(editor.rejects > 0); QVERIFY(timeline.HasSameContent(accepted));
+        movePoint(view, press + QPoint(20, -10));
+        QVERIFY(std::abs(timeline.Tracks().value(track)[0].x() - (.25 + 20.0 / 272)) < 1e-7);
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press + QPoint(20, -10));
+        QCOMPARE(editor.commands, 1); QVERIFY(!timeline.HasSameContent(original));
+    }
+
+    void closeNeighborTimesAndGrabOffsetDoNotMoveAnUnmovedPoint()
+    {
+        CMotionTimeline timeline; const CMotionTrack track{CMotionTarget::Parameter, "A"};
+        for (const auto& point : {QPointF(.25, 0), QPointF(.2502, 1), QPointF(.2504, 2)})
+            QVERIFY(timeline.AddPoint(track, float(point.x()), float(point.y())));
+        QVERIFY(timeline.SetTiming(30, 1)); const auto original = timeline;
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.show();
+        connect(&view, &CMotionCurveView::PointEdited, &view, [&](const auto& key, int index, float time, float value) {
+            QVERIFY(timeline.UpdatePoint(key, index, time, value)); view.SetTimeline(&timeline);
+        });
+        const QPoint press = screenPoint({.2502, 1}, -.1, 2.1).toPoint() + QPoint(7, 5);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press); movePoint(view, press);
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press);
+        QVERIFY(timeline.HasSameContent(original));
+    }
+
+    void snappingAndAxisConstraintsUseThePressedKeyAsOneGroupPivot_data()
+    {
+        QTest::addColumn<double>("fps"); QTest::newRow("30") << 30.0; QTest::newRow("29.97") << 29.97;
+    }
+    void snappingAndAxisConstraintsUseThePressedKeyAsOneGroupPivot()
+    {
+        QFETCH(double, fps);
+        CMotionTimeline timeline; QVERIFY(timeline.AddPoint("A", .25f, -1)); QVERIFY(timeline.AddPoint("A", .75f, 1)); QVERIFY(timeline.SetTiming(fps, 1));
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetFrameSnapping(true); QVERIFY(view.FrameSnapping()); view.show();
+        QSignalSpy translated(&view, &CMotionCurveView::SelectionTranslated);
+        const QPoint press = screenPoint({.25, -1}).toPoint(); QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press + QPoint(50, -10));
+        const double snapped = translated.last()[0].toDouble();
+        QVERIFY(std::abs((.25 + snapped) * fps - std::round((.25 + snapped) * fps)) < 1e-10);
+        movePoint(view, press + QPoint(50, -10), Qt::AltModifier); QVERIFY(std::abs(translated.last()[0].toDouble() - 50.0 / 272) < 1e-12);
+        movePoint(view, press + QPoint(50, -10), Qt::ShiftModifier); QCOMPARE(translated.last()[1].toDouble(), 0.0);
+        movePoint(view, press + QPoint(5, -30), Qt::ShiftModifier); QCOMPARE(translated.last()[0].toDouble(), 0.0);
+        view.CancelDrag();
+    }
+
+    void bezierHandlesExposeOvershootAndKeepRestrictedIgnoredTimes_data()
+    {
+        QTest::addColumn<bool>("restricted"); QTest::newRow("free-crossing-handles") << false; QTest::newRow("restricted") << true;
+    }
+    void bezierHandlesExposeOvershootAndKeepRestrictedIgnoredTimes()
+    {
+        QFETCH(bool, restricted); CMotionTimeline timeline; QVERIFY(bezier(timeline, restricted));
+        const CMotionTrack track{CMotionTarget::Parameter, "A"};
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetSelectedPoints({{track, 1}}); view.show();
+        QSignalSpy started(&view, &CMotionCurveView::BezierDragStarted);
+        QSignalSpy edited(&view, &CMotionCurveView::BezierControlsEdited);
+        QSignalSpy completed(&view, &CMotionCurveView::BezierDragFinished);
+        const auto original = timeline; const auto controls = timeline.BezierControls(track, 1);
+        connect(&view, &CMotionCurveView::BezierControlsEdited, &view, [&](const auto& key, int end, const auto& values) {
+            auto candidate = original; CMotionTimeline::BatchEdit request; request.segments.append({{key, end}, 1, values});
+            CMotionTimeline::BatchResult result; QVERIFY(candidate.EditPoints(request, result)); timeline = candidate; view.SetTimeline(&timeline);
+        });
+        const QPoint press = screenPoint(controls[0], -.4, 8.4).toPoint();
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press); QCOMPARE(started.size(), 1);
+        movePoint(view, press + QPoint(90, 20)); QCOMPARE(edited.size(), 1);
+        const auto emitted = edited.last()[2].value<QVector<QPointF>>();
+        QCOMPARE(emitted.size(), 2); QVERIFY(emitted[0].y() < 8);
+        if (restricted) QCOMPARE(emitted[0].x(), controls[0].x());
+        else { QCOMPARE(emitted[0].x(), 1.0); QVERIFY(emitted[0].x() > emitted[1].x()); }
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press + QPoint(90, 20)); QCOMPARE(completed.size(), 1);
+        QByteArray bytes; QVERIFY(timeline.ToJson(bytes, 30, false));
+        if (restricted) {
+            const auto values = QJsonDocument::fromJson(bytes).object()["Curves"].toArray()[0].toObject()["Segments"].toArray();
+            QCOMPARE(values[3].toDouble(), .9); QCOMPARE(values[5].toDouble(), .1);
+        }
+        QImage image(view.size(), QImage::Format_ARGB32); view.render(&image); QVERIFY(!image.isNull());
+    }
+
+    void hidingOrVetoingADragCancelsOnceAndStopsLaterSamples()
+    {
+        CMotionTimeline timeline; QVERIFY(timeline.AddPoint("A", .25f, -1)); QVERIFY(timeline.AddPoint("A", .75f, 1)); QVERIFY(timeline.SetTiming(30, 1));
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.show();
+        QSignalSpy canceled(&view, &CMotionCurveView::SelectionDragCanceled), moved(&view, &CMotionCurveView::SelectionTranslated);
+        const QPoint press = screenPoint({.25, -1}).toPoint();
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press); view.hide(); QCOMPARE(canceled.size(), 1);
+        movePoint(view, press + QPoint(10, 10)); QCOMPARE(moved.size(), 0);
+        view.show(); connect(&view, &CMotionCurveView::SelectionDragStarted, &view, &CMotionCurveView::CancelDrag);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press); QCOMPARE(canceled.size(), 2);
+        movePoint(view, press + QPoint(10, 10)); QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press);
+        QCOMPARE(moved.size(), 0); QCOMPARE(canceled.size(), 2);
+    }
+
+    void synchronousSignalMayDestroyTheViewWithoutUsingStaleState_data()
+    {
+        QTest::addColumn<int>("stage"); for (int stage = 0; stage < 3; ++stage) QTest::newRow(qPrintable(QString::number(stage))) << stage;
+    }
+    void synchronousSignalMayDestroyTheViewWithoutUsingStaleState()
+    {
+        QFETCH(int, stage); CMotionTimeline timeline;
+        QVERIFY(timeline.AddPoint("A", .25f, -1)); QVERIFY(timeline.AddPoint("A", .75f, 1)); QVERIFY(timeline.SetTiming(30, 1));
+        QPointer<CMotionCurveView> view = new CMotionCurveView; view->resize(320, 190); view->SetTimeline(&timeline);
+        if (stage == 0) connect(view, &CMotionCurveView::SelectionChanged, [&] { delete view.data(); });
+        if (stage == 1) connect(view, &CMotionCurveView::SelectionDragStarted, [&] { delete view.data(); });
+        if (stage == 2) connect(view, &CMotionCurveView::SelectionTranslated, [&] { delete view.data(); });
+        const auto press = screenPoint({.25, -1});
+        QMouseEvent down(QEvent::MouseButtonPress, press, press, press, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(view, &down);
+        if (stage == 2) { QVERIFY(view); movePoint(*view, press + QPointF(10, -10)); }
+        QVERIFY(view.isNull());
+    }
+
     void selectsEventsWithoutCurvesAndPaintsPlayhead()
     {
         CMotionTimeline timeline;

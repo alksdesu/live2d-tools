@@ -27,6 +27,22 @@ struct CMotionTrack
     QString TargetName() const;
 };
 
+struct CMotionPointRef
+{
+    CMotionTrack track;
+    int index = -1;
+    bool operator==(const CMotionPointRef& other) const { return track == other.track && index == other.index; }
+    bool operator!=(const CMotionPointRef& other) const { return !(*this == other); }
+    bool operator<(const CMotionPointRef& other) const { return track != other.track ? track < other.track : index < other.index; }
+};
+
+inline size_t qHash(const CMotionPointRef& point, size_t seed = 0) noexcept
+{
+    return qHashMulti(seed, static_cast<int>(point.track.target), point.track.id, point.index);
+}
+
+using CMotionPointSelection = QVector<CMotionPointRef>;
+
 struct CMotionPreviewFrame
 {
     QMap<QString, float> parameters;
@@ -70,6 +86,34 @@ class CMotionTimeline
 {
 public:
     static constexpr int MaximumPointCount = 100000;
+    struct PointUpdate { CMotionPointRef ref; QPointF point; };
+    struct PointInsertion {
+        CMotionTrack track;
+        QPointF point;
+        int segmentType = 0;
+        QVector<QPointF> controls;
+        std::optional<QPointF> segmentStart;
+    };
+    struct SegmentEdit {
+        CMotionPointRef ref;
+        int type = 0;
+        QVector<QPointF> controls;
+    };
+    struct BatchEdit {
+        QVector<PointUpdate> updates;
+        CMotionPointSelection removes;
+        QVector<PointInsertion> insertions;
+        QVector<SegmentEdit> segments;
+    };
+    struct BatchResult {
+        QMap<CMotionTrack, QVector<int>> oldToNew;
+        CMotionPointSelection inserted;
+        bool changed = false;
+    };
+    bool EditPoints(const BatchEdit& request, BatchResult& result, QString* error = nullptr);
+    QVector<QPointF> BezierControls(const CMotionTrack& track, int pointIndex) const;
+    bool AreBeziersRestricted() const;
+    bool ConvertToUnrestricted(QString* error = nullptr);
     bool ReplaceParameterSamples(const QMap<QString, QVector<QPointF>>& samples, QString* error = nullptr,
                                  bool resetFades = false);
     class ParameterTracks
@@ -93,6 +137,7 @@ public:
         QJsonValue m_durationBefore, m_durationAfter;
         bool m_promotedDuration = false;
         bool m_metaPresent = false;
+        bool m_restricted = false;
     };
     bool RemoveParameterTracks(const QSet<QString>& ids, ParameterTracks& removed, QString* error = nullptr);
     bool RestoreParameterTracks(const ParameterTracks& tracks, QString* error = nullptr);
@@ -152,6 +197,7 @@ public:
     const QMap<CMotionTrack, QVector<QPointF>>& Tracks() const { return m_curves; }
 
 private:
+    void UnrestrictBezierControls();
     bool BuildJson(QJsonObject* root, double fps, bool loop, bool draft, QString* error) const;
     bool LoadJson(const QJsonObject& root, bool draft, QString* error, bool allowEmpty = false);
     double ContentDuration() const;
@@ -176,6 +222,8 @@ private:
 };
 
 Q_DECLARE_METATYPE(CMotionTrack)
+Q_DECLARE_METATYPE(CMotionPointRef)
+Q_DECLARE_METATYPE(CMotionPointSelection)
 Q_DECLARE_METATYPE(CMotionPreviewFrame)
 Q_DECLARE_METATYPE(CMotionEventOccurrence)
 Q_DECLARE_METATYPE(CMotionEventBatch)
