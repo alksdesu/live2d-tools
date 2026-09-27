@@ -7,6 +7,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
+#include <QSignalBlocker>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QStandardPaths>
@@ -89,10 +91,14 @@ CRuntimeExportDialog::CRuntimeExportDialog(const QString& currentModelPath, bool
     body->addWidget(m_timeline);
     body->addWidget(textLabel(hasTimeline ? QStringLiteral("在模型包中加入一份独立动作，保留原动作文件。")
                                          : QStringLiteral("当前时间轴没有可导出的轨道。"), content));
-    body->addWidget(textLabel(QStringLiteral("包含当前已确认的物理、Pose 和网格标签草稿，以及原动作、表情和纹理。"), content));
+    body->addWidget(textLabel(QStringLiteral("包含当前已确认的物理、Pose 和网格标签草稿、原动作与表情，以及当前有效图集。"), content));
     body->addWidget(textLabel(QStringLiteral("播放状态、对象锁定和界面布局属于编辑器或宿主应用设置。"), content));
-    m_artworkNotice = textLabel(QStringLiteral("模型包保留当前有效图集与 MOC。PSD 来源版本与关联请另外保存工作会话，以便继续编辑。"), content);
+    m_artwork = new QCheckBox(QStringLiteral("包含可继续编辑的来源素材"), content);
+    m_artwork->setObjectName(QStringLiteral("runtimeExportArtwork")); m_artwork->setFocusPolicy(Qt::StrongFocus); m_artwork->setEnabled(false); m_artwork->hide(); body->addWidget(m_artwork);
+    m_artworkSummary = textLabel({}, content); m_artworkSummary->setObjectName(QStringLiteral("runtimeExportArtworkSummary")); m_artworkSummary->hide(); body->addWidget(m_artworkSummary);
+    m_artworkNotice = textLabel({}, content);
     m_artworkNotice->setObjectName(QStringLiteral("runtimeExportArtworkNotice")); m_artworkNotice->hide(); body->addWidget(m_artworkNotice);
+    connect(m_artwork, &QCheckBox::toggled, this, &CRuntimeExportDialog::RefreshArtworkNotice);
     body->addStretch();
     m_scroll->setWidget(content);
     layout->addWidget(m_scroll, 1);
@@ -121,7 +127,8 @@ CRuntimeExportDialog::CRuntimeExportDialog(const QString& currentModelPath, bool
     setTabOrder(m_target, browse);
     setTabOrder(browse, m_currentValues);
     setTabOrder(m_currentValues, m_timeline);
-    setTabOrder(m_timeline, submit);
+    setTabOrder(m_timeline, m_artwork);
+    setTabOrder(m_artwork, submit);
     setTabOrder(submit, m_buttons->button(QDialogButtonBox::Cancel));
 
     const QFileInfo model(currentModelPath);
@@ -147,6 +154,7 @@ QString CRuntimeExportDialog::TargetDirectory() const
 
 bool CRuntimeExportDialog::UseCurrentValues() const { return m_currentValues->isChecked(); }
 bool CRuntimeExportDialog::IncludeTimeline() const { return m_timeline->isEnabled() && m_timeline->isChecked(); }
+bool CRuntimeExportDialog::IncludeArtwork() const { return m_artworkRevisions > 0 && m_artwork->isChecked(); }
 
 void CRuntimeExportDialog::SetInitialDirectory(const QString& targetDirectory)
 {
@@ -155,7 +163,32 @@ void CRuntimeExportDialog::SetInitialDirectory(const QString& targetDirectory)
     RefreshValidation();
 }
 
-void CRuntimeExportDialog::SetArtworkNotice(bool visible) { m_artworkNotice->setVisible(visible); }
+void CRuntimeExportDialog::SetArtworkNotice(bool visible)
+{
+    m_legacyArtworkNotice = visible; RefreshArtworkNotice();
+}
+
+void CRuntimeExportDialog::SetArtworkSummary(int revisionCount, qint64 materialBytes)
+{
+    const bool available = revisionCount > 0 && materialBytes >= 0;
+    const bool wasAvailable = m_artworkRevisions > 0;
+    m_artworkRevisions = available ? revisionCount : 0; m_artworkBytes = available ? materialBytes : 0; m_legacyArtworkNotice = false;
+    const QSignalBlocker blocker(m_artwork);
+    if (!available || !wasAvailable) m_artwork->setChecked(false);
+    m_artwork->setEnabled(available); m_artwork->setVisible(available); m_artworkSummary->setVisible(available);
+    const QLocale locale;
+    m_artworkSummary->setText(available ? QStringLiteral("%1 个来源版本，素材大小约 %2。包含旧版本与未关联来源。")
+        .arg(locale.toString(m_artworkRevisions), locale.formattedDataSize(m_artworkBytes, 1, QLocale::DataSizeTraditionalFormat)) : QString());
+    RefreshArtworkNotice();
+}
+
+void CRuntimeExportDialog::RefreshArtworkNotice()
+{
+    m_artworkNotice->setText(IncludeArtwork()
+        ? QStringLiteral("模型包将保存来源版本与关联，可继续编辑来源素材。对象锁定与视图等编辑状态仍请保存工作会话。")
+        : QStringLiteral("本次只导出可运行模型；需要继续编辑来源素材时，请另存工作会话。"));
+    m_artworkNotice->setVisible(m_artworkRevisions > 0 || m_legacyArtworkNotice);
+}
 
 QString CRuntimeExportDialog::ValidateTarget() const
 {

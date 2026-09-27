@@ -1,4 +1,6 @@
 #include "ui/ctexturepanel.h"
+#include "ui/theme.h"
+#include <QScopeGuard>
 #include "live2dstruct/csectiontable.h"
 #include "deformer_replay_fixture.h"
 
@@ -120,6 +122,42 @@ class TexturePanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void artworkWarningIsIndependentOfSnapshotAndEditingState()
+    {
+        QImage image(32, 24, QImage::Format_RGBA8888); image.fill(Qt::white); QBuffer buffer; QVERIFY(buffer.open(QIODevice::WriteOnly)); QVERIFY(image.save(&buffer, "PNG"));
+        CTextureAssets::Source source; QVERIFY(CTextureAssets::MakeSource("/frozen/atlas.png", buffer.data(), source)); const CTextureAssets::Catalog sources{{0, source}};
+        CTextureWorkspace::State workspace; QVERIFY(CTextureWorkspace::Initialize(sources, {}, workspace)); QString id;
+        const auto moc = meshBytes(id, {.1f, .1f, .9f, .1f, .1f, .9f}, {0, 1, 2});
+        CTexturePanel panel; QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace, moc)); panel.SetEditingEnabled(true); panel.SetEditHandler([](int, const QByteArray&, QString*) { return true; });
+        auto* warning = panel.findChild<QLabel*>("textureArtworkWarning"); auto* error = panel.findChild<QLabel*>("textureError"); QVERIFY(warning && warning->isHidden());
+        auto* view = panel.findChild<CAtlasView*>(); const auto scene = view->scene(); const auto pixels = atlasItem(scene)->pixmap().cacheKey();
+        const QString reason = QStringLiteral("<b>附件校验失败</b>\n保留正常模型，来源未恢复"); panel.SetArtworkLoadWarning(reason);
+        QCOMPARE(warning->text(), QStringLiteral("来源附件未载入：") + reason); QCOMPARE(warning->textFormat(), Qt::PlainText); QVERIFY(warning->wordWrap()); QVERIFY(!warning->isHidden());
+        QVERIFY(warning->textInteractionFlags().testFlag(Qt::TextSelectableByMouse)); QVERIFY(warning->textInteractionFlags().testFlag(Qt::TextSelectableByKeyboard));
+        for (const char* name : {"textureReplace", "textureEditUv", "textureEditAtlas", "textureExport"}) QVERIFY2(panel.findChild<QToolButton*>(name)->isEnabled(), name);
+        QVERIFY(error->isHidden()); QCOMPARE(view->scene(), scene); QCOMPARE(atlasItem(scene)->pixmap().cacheKey(), pixels);
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace, moc)); panel.HighlightMesh(id); QCOMPARE(warning->text(), QStringLiteral("来源附件未载入：") + reason);
+        panel.SetSnapshotAvailable(false, "broken snapshot"); QVERIFY(!panel.findChild<QToolButton*>("textureExport")->isEnabled()); QVERIFY(!error->isHidden());
+        panel.SetArtworkLoadWarning({}); QVERIFY(warning->isHidden()); QVERIFY(warning->text().isEmpty()); QVERIFY(!error->isHidden()); QVERIFY(!panel.findChild<QToolButton*>("textureExport")->isEnabled());
+        panel.SetArtworkLoadWarning("来源读取已取消"); panel.SetSnapshotAvailable(true); QVERIFY(error->isHidden()); QVERIFY(!warning->isHidden()); QVERIFY(panel.findChild<QToolButton*>("textureExport")->isEnabled());
+        panel.SetPreviewActive(true); panel.SetArtworkLoadWarning({}); QVERIFY(!panel.findChild<QToolButton*>("textureExport")->isEnabled());
+        panel.SetPreviewActive(false); QVERIFY(panel.findChild<QToolButton*>("textureExport")->isEnabled()); QCOMPARE(view->scene(), scene);
+    }
+    void artworkWarningWrapsInThemedNarrowPanels_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::addColumn<int>("width");
+        for (bool dark : {false, true}) for (int width : {360, 640}) QTest::newRow(qPrintable(QString("%1-%2").arg(dark).arg(width))) << dark << width;
+    }
+    void artworkWarningWrapsInThemedNarrowPanels()
+    {
+        QFETCH(bool, dark); QFETCH(int, width); const auto before = qApp->styleSheet(); qApp->setStyleSheet(Theme::globalStyleSheet(dark)); const auto restore = qScopeGuard([before] { qApp->setStyleSheet(before); });
+        CTexturePanel panel; panel.resize(width, 460); panel.SetArtworkLoadWarning(QStringLiteral("附件内容不完整，未恢复原稿版本与图层关联。当前模型图像仍可正常使用；请检查来源文件后重新打开。")); panel.show(); QTest::qWait(100);
+        auto* warning = panel.findChild<QLabel*>("textureArtworkWarning"); QVERIFY(warning->isVisible());
+        QVERIFY(warning->geometry().right() < panel.widget()->width()); QVERIFY(warning->height() >= warning->heightForWidth(warning->width()));
+        QVERIFY(panel.widget()->rect().contains(warning->geometry())); QCOMPARE(panel.width(), width);
+        const auto path = qEnvironmentVariable("ARTWORK_WARNING_QA_DIR"); if (!path.isEmpty()) { QVERIFY(QDir().mkpath(path)); QVERIFY(panel.grab().save(QDir(path).filePath(QString("warning-%1-%2.png").arg(dark ? "dark" : "light").arg(width)))); }
+        panel.SetArtworkLoadWarning({}); QTest::qWait(20); QVERIFY(warning->isHidden());
+    }
     void workspaceFastPathPreservesViewAndFailedResizeKeepsOldPixelsAndUv()
     {
         QTemporaryDir directory; const auto path = directory.filePath("atlas.png");

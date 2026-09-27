@@ -33,7 +33,8 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Repacking copies RGBA pixels and sampling margins. Existing source atlases stay available, and minified previews may differ after mipmaps are rebuilt.
 - PSD sources: import RGB 8-bit PSD layers, align them against existing atlas pixels, explicitly associate ArtMeshes, and selectively update them from another source revision. Unique Photoshop layer IDs support matching across renames and reordering; ambiguous matches require confirmation. Missing layers can keep their previous artwork.
 - Source revisions, original bytes, and mesh associations are preserved in work sessions (v12). Atlas movement and supported vertex edits migrate associations; manual texture replacement detaches affected links. Reimport samples the frozen source rather than repeatedly resampling edited atlases.
-- PSD import supports raw, RLE, ZIP and ZIP prediction. PSB, other color modes/depths, and pixel-equivalent reconstruction of masks, effects or unsupported blends are not supported. Color policy and layer-opacity baking are explicit. Runtime packages and CMO3 preserve the resulting model and textures, but currently do not preserve these PSD source revisions or associations; save a work session for continued source editing.
+- Runtime package export can optionally include source artwork, including old revisions and unassociated sources. Reopening the moved package in this tool restores source links against the exported model and texture slots. Damaged or mismatched artwork attachments produce a persistent message while the runtime model remains usable; save a work session to retain view settings and object locks.
+- PSD import supports raw, RLE, ZIP and ZIP prediction. PSB, other color modes/depths, and pixel-equivalent reconstruction of masks, effects or unsupported blends are not supported. Color policy and layer-opacity baking are explicit. CMO3 preserves the resulting model and textures but currently does not preserve these PSD source revisions or associations.
 
 #### PSD Export
 
@@ -179,7 +180,8 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 重排复制 RGBA 像素及采样边带；原图集保持可用，重建 mipmap 后的缩小显示可能存在差异
 - PSD 来源导入：读取 RGB 8-bit 图层，对照现有图集配准，明确关联 ArtMesh，再从新来源版本选择性更新。唯一 Photoshop 图层 ID 支持改名和调序后的匹配；歧义匹配需要确认，缺失图层可保留旧素材
 - 工作会话 v12 保存原始来源字节、版本和网格关联；图集搬移及支持的顶点编辑迁移关联，手工替换纹理会断开受影响的链接。重新导入从冻结原图采样，避免对已编辑图集反复重采样
-- PSD 导入支持 RAW、RLE、ZIP 和 ZIP prediction；不支持 PSB、其它色彩模式／位深，以及蒙版、效果或不支持混合模式的像素等价重建。颜色策略和图层透明度烘焙需明确选择。模型包与 CMO3 保留最终模型和贴图，当前不保留这些 PSD 来源版本和关联；继续编辑来源请保存工作会话
+- 导出运行时模型包时，可选择包含来源素材，包括旧版本与未关联来源。把包移到新目录后用本工具打开，会按导出的模型和纹理槽恢复来源关联；附件损坏或不匹配时保留明确提示，运行模型仍可使用。对象锁定、视图等编辑状态仍通过工作会话保存
+- PSD 导入支持 RAW、RLE、ZIP 和 ZIP prediction；不支持 PSB、其它色彩模式／位深，以及蒙版、效果或不支持混合模式的像素等价重建。颜色策略和图层透明度烘焙需明确选择。CMO3 保留最终模型和贴图，当前不保留这些 PSD 来源版本和关联
 - 图集支持同尺寸 PNG 替换、恢复原图和撤销／重做；覆盖随工作会话保存，并用于画布、PNG、PSD、cmo3 与运行时模型包。原素材文件保持不变，共用同一路径的多个纹理槽可独立替换
 - 纹理使用首次成功加载的字节快照，外部修改或删除源 PNG 不会造成画布、图集和导出内容分裂；会话重开时核对原始素材摘要，避免把覆盖应用到不同来源
 

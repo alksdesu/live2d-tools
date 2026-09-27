@@ -311,6 +311,10 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     m_infoLabel->setWordWrap(true);
     m_infoLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     mainLayout->addWidget(m_infoLabel);
+    m_artworkWarning = new QLabel(wrapper); m_artworkWarning->setObjectName(QStringLiteral("textureArtworkWarning"));
+    m_artworkWarning->setTextFormat(Qt::PlainText); m_artworkWarning->setWordWrap(true);
+    m_artworkWarning->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_artworkWarning->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard); m_artworkWarning->hide(); mainLayout->addWidget(m_artworkWarning);
     m_errorLabel = new QLabel(wrapper);
     m_errorLabel->setObjectName(QStringLiteral("textureError"));
     m_errorLabel->setTextFormat(Qt::PlainText);
@@ -596,6 +600,12 @@ QString CTexturePanel::RestoreReason() const
         .arg(atlas->size.width()).arg(atlas->size.height()).arg(source->size.width()).arg(source->size.height());
     if (!m_state.contains(m_currentTexKey)) return QStringLiteral("当前已是原始素材");
     return {};
+}
+
+void CTexturePanel::SetArtworkLoadWarning(const QString& reason)
+{
+    m_artworkWarning->setText(reason.isEmpty() ? QString() : QStringLiteral("来源附件未载入：%1").arg(reason));
+    m_artworkWarning->setVisible(!reason.isEmpty());
 }
 
 void CTexturePanel::SetArtworkActions(const QList<QAction*>& actions)

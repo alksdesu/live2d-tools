@@ -472,13 +472,13 @@ bool CModelArtwork::Freeze(const State& state, State& result, QString* error) tr
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法冻结作者素材，原状态保持不变")); }
 
-bool CModelArtwork::ToJson(const State& state, QJsonObject& result, QString* error) try
+bool CModelArtwork::EncodeArchive(const State& input, Archive& result, QString* error) try
 {
+    State state; if (!Freeze(input, state, error)) return false;
     CMaterialValidationCache cache;
     if (!ValidateWithCache(state, cache, nullptr, error)) return false;
     Budget budget(cache); if (!collect(state, budget, error)) return false;
-    QJsonObject blobs, images, families, revisions, materials, placements, bindings;
-    for (auto it = budget.blobs.cbegin(); it != budget.blobs.cend(); ++it) blobs.insert(QString::fromLatin1(it.key().toHex()), QString::fromLatin1(it->toBase64()));
+    QJsonObject images, families, revisions, materials, placements, bindings;
     for (auto it = state.images.cbegin(); it != state.images.cend(); ++it) images.insert(QString::fromLatin1(it.key().toHex()), QJsonArray{it->size.width(), it->size.height()});
     for (auto it = state.families.cbegin(); it != state.families.cend(); ++it)
         families.insert(it.key(), QJsonObject{{"name", it->name}, {"kind", int(it->kind)}, {"currentRevision", it->currentRevision}});
@@ -509,37 +509,33 @@ bool CModelArtwork::ToJson(const State& state, QJsonObject& result, QString* err
         bindings.insert(it.key(), QJsonObject{{"placementId", it->placementId}, {"familyCoordinates", QString::fromLatin1(coordinateBits(it->familyCoordinates).toHex())},
             {"sampledMaterial", sampled}, {"topologyDigest", QString::fromLatin1(it->topologyDigest.toHex())}, {"status", int(it->status)}, {"detachedReason", it->detachedReason}});
     }
-    result = QJsonObject{{"version", 1}, {"blobs", blobs}, {"images", images}, {"families", families}, {"revisions", revisions},
+    Archive candidate; candidate.blobs = std::move(budget.blobs);
+    candidate.metadata = QJsonObject{{"version", 1}, {"images", images}, {"families", families}, {"revisions", revisions},
         {"materials", materials}, {"placements", placements}, {"bindings", bindings}};
-    if (error) error->clear(); return true;
+    result = std::move(candidate); if (error) error->clear(); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法保存作者素材")); }
 
-bool CModelArtwork::FromJson(const QJsonObject& object, State& result, QString* error) try
+bool CModelArtwork::DecodeArchive(const Archive& archive, State& result, QString* error) try
 {
+    const QJsonObject object = archive.metadata;
     const auto invalid = [&] { return fail(error, QStringLiteral("作者素材存储格式或引用无效")); };
     int version;
-    if (!fields(object, {"version", "blobs", "images", "families", "revisions", "materials", "placements", "bindings"}) ||
+    if (!fields(object, {"version", "images", "families", "revisions", "materials", "placements", "bindings"}) ||
         !integer(object["version"], version, 1, 1)) return invalid();
     qint64 records = 0;
-    if (!object["blobs"].isObject() || object["blobs"].toObject().size() > MaximumRecords * 3) return invalid();
+    if (archive.blobs.size() > MaximumRecords * 3) return invalid();
     for (const auto* name : {"images", "families", "revisions", "materials", "placements", "bindings"}) {
         if (!object[QLatin1String(name)].isObject()) return invalid();
         const auto count = object[QLatin1String(name)].toObject().size();
         if (count > MaximumRecords - records) return invalid(); records += count;
     }
     State candidate; QMap<QByteArray, QByteArray> blobs; QSet<QByteArray> used; qint64 bytes = 0, coordinates = 0;
-    const auto encoded = object["blobs"].toObject();
-    for (auto it = encoded.begin(); it != encoded.end(); ++it) {
-        QByteArray key; if (!hashValue(it.key(), key) || !it->isString()) return invalid();
-        const auto value = it->toString(); const qint64 maximum = ((MaximumBytes - bytes + 2) / 3) * 4;
-        if (value.isEmpty() || value.size() % 4 || value.size() > maximum) return invalid();
-        for (const auto ch : value) if (ch.unicode() > 127) return invalid();
-        const auto raw = value.toLatin1();
-        const auto decoded = QByteArray::fromBase64Encoding(raw, QByteArray::AbortOnBase64DecodingErrors);
-        if (!decoded || decoded.decoded.isEmpty() || decoded.decoded.size() > MaximumBytes - bytes ||
-            decoded.decoded.toBase64() != raw || digest(decoded.decoded) != key) return invalid();
-        bytes += decoded.decoded.size(); blobs.insert(key, decoded.decoded);
+    for (auto it = archive.blobs.cbegin(); it != archive.blobs.cend(); ++it) {
+        if (it.key().size() != 32 || it->isEmpty() || it->size() > MaximumBytes - bytes) return invalid();
+        const auto value = owned(*it);
+        if (digest(value) != it.key()) return invalid();
+        bytes += value.size(); blobs.insert(owned(it.key()), value);
     }
     const auto blob = [&](const QByteArray& key, QByteArray& target, bool empty = false) {
         if (empty && key.isEmpty()) { target.clear(); return true; }
@@ -625,7 +621,41 @@ bool CModelArtwork::FromJson(const QJsonObject& object, State& result, QString* 
         value.sampledMaterial = sampled.value(value.meshId); value.status = BindingStatus(status); candidate.bindings.insert(it.key(), std::move(value));
     }
     if (used.size() != blobs.size() || !Validate(candidate, nullptr, error)) return invalid();
-    result = std::move(candidate); if (error) error->clear(); return true;
+    return Freeze(candidate, result, error);
+}
+catch (const std::exception&) { return fail(error, QStringLiteral("无法读取作者素材，原状态保持不变")); }
+
+bool CModelArtwork::ToJson(const State& state, QJsonObject& result, QString* error) try
+{
+    Archive archive; if (!EncodeArchive(state, archive, error)) return false;
+    QJsonObject blobs;
+    for (auto it = archive.blobs.cbegin(); it != archive.blobs.cend(); ++it)
+        blobs.insert(QString::fromLatin1(it.key().toHex()), QString::fromLatin1(it->toBase64()));
+    archive.metadata.insert("blobs", blobs); result = std::move(archive.metadata);
+    if (error) error->clear(); return true;
+}
+catch (const std::exception&) { return fail(error, QStringLiteral("无法保存作者素材")); }
+
+bool CModelArtwork::FromJson(const QJsonObject& object, State& result, QString* error) try
+{
+    const auto invalid = [&] { return fail(error, QStringLiteral("作者素材存储格式或引用无效")); };
+    if (!fields(object, {"version", "blobs", "images", "families", "revisions", "materials", "placements", "bindings"}) ||
+        !object["blobs"].isObject() || object["blobs"].toObject().size() > MaximumRecords * 3) return invalid();
+    QMap<QByteArray, QByteArray> blobs; qint64 bytes = 0;
+    const auto encoded = object["blobs"].toObject();
+    for (auto it = encoded.begin(); it != encoded.end(); ++it) {
+        QByteArray key; if (!hashValue(it.key(), key) || !it->isString()) return invalid();
+        const auto value = it->toString(); const qint64 maximum = ((MaximumBytes - bytes + 2) / 3) * 4;
+        if (value.isEmpty() || value.size() % 4 || value.size() > maximum) return invalid();
+        for (const auto ch : value) if (ch.unicode() > 127) return invalid();
+        const auto raw = value.toLatin1();
+        const auto decoded = QByteArray::fromBase64Encoding(raw, QByteArray::AbortOnBase64DecodingErrors);
+        if (!decoded || decoded.decoded.isEmpty() || decoded.decoded.size() > MaximumBytes - bytes ||
+            decoded.decoded.toBase64() != raw || digest(decoded.decoded) != key) return invalid();
+        bytes += decoded.decoded.size(); blobs.insert(key, decoded.decoded);
+    }
+    Archive archive{object, std::move(blobs)}; archive.metadata.remove("blobs");
+    return DecodeArchive(archive, result, error);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法读取作者素材，原状态保持不变")); }
 

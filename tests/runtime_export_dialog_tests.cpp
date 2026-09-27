@@ -8,6 +8,9 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
+#include <QScopeGuard>
+#include <limits>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -56,6 +59,8 @@ private slots:
         QCOMPARE(dialog.result(), int(QDialog::Rejected));
         QVERIFY(!dialog.UseCurrentValues());
         QVERIFY(!dialog.IncludeTimeline());
+        QVERIFY(!dialog.IncludeArtwork());
+        auto* artwork = control<QCheckBox>(dialog, "runtimeExportArtwork"); QVERIFY(artwork && artwork->isHidden() && !artwork->isEnabled());
         auto* timeline = control<QCheckBox>(dialog, "runtimeExportTimeline");
         auto* current = control<QCheckBox>(dialog, "runtimeExportCurrentValues");
         QVERIFY(timeline && current);
@@ -66,6 +71,94 @@ private slots:
         QVERIFY(dialog.UseCurrentValues());
         QVERIFY(dialog.TargetDirectory().endsWith(QStringLiteral("model-runtime")));
         QVERIFY(QDir(directory.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
+    }
+
+    void artworkSummaryAndChoiceDoNotChangeOtherOptions_data()
+    { QTest::addColumn<bool>("tracks"); QTest::newRow("no-tracks") << false; QTest::newRow("with-tracks") << true; }
+    void artworkSummaryAndChoiceDoNotChangeOtherOptions()
+    {
+        QFETCH(bool, tracks); const auto previous = QLocale(); QLocale::setDefault(QLocale::c()); const auto restore = qScopeGuard([previous] { QLocale::setDefault(previous); });
+        QTemporaryDir directory; CRuntimeExportDialog dialog(directory.filePath("missing-model.model3.json"), tracks);
+        dialog.SetInitialDirectory(directory.filePath("new-model")); dialog.SetArtworkSummary(3, 64LL * 1024 * 1024);
+        auto* artwork = control<QCheckBox>(dialog, "runtimeExportArtwork"); auto* summary = control<QLabel>(dialog, "runtimeExportArtworkSummary"); auto* notice = control<QLabel>(dialog, "runtimeExportArtworkNotice");
+        QVERIFY(artwork->isEnabled() && !artwork->isHidden()); QVERIFY(!artwork->isChecked() && !dialog.IncludeArtwork());
+        QVERIFY(summary->text().contains("3")); QVERIFY(summary->text().contains("64.0 MB")); QVERIFY(summary->text().contains("旧版本") && summary->text().contains("未关联"));
+        QCOMPARE(summary->textFormat(), Qt::PlainText); QCOMPARE(notice->textFormat(), Qt::PlainText); QVERIFY(notice->text().contains("只导出可运行模型"));
+        auto* current = control<QCheckBox>(dialog, "runtimeExportCurrentValues"); auto* timeline = control<QCheckBox>(dialog, "runtimeExportTimeline");
+        current->setChecked(true); timeline->setChecked(true); QSignalSpy currentChanges(current, &QCheckBox::toggled), timelineChanges(timeline, &QCheckBox::toggled);
+        artwork->setChecked(true); QVERIFY(dialog.IncludeArtwork()); QVERIFY(notice->text().contains("模型包将保存来源版本与关联")); QVERIFY(!notice->text().contains("本次只导出"));
+        QVERIFY(dialog.UseCurrentValues()); QCOMPARE(dialog.IncludeTimeline(), tracks); QVERIFY(currentChanges.isEmpty() && timelineChanges.isEmpty());
+        dialog.SetArtworkSummary(4, 96LL * 1024 * 1024); QVERIFY(dialog.IncludeArtwork()); QVERIFY(summary->text().contains("96.0 MB"));
+        artwork->setChecked(false); QVERIFY(!dialog.IncludeArtwork()); QVERIFY(notice->text().contains("另存工作会话"));
+        artwork->setChecked(true); dialog.accept(); QCOMPARE(dialog.result(), int(QDialog::Accepted)); QVERIFY(dialog.IncludeArtwork());
+        QVERIFY(QDir(directory.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
+    }
+
+    void absentOrInvalidArtworkClearsOnlyItsChoice_data()
+    {
+        QTest::addColumn<int>("count"); QTest::addColumn<qint64>("bytes");
+        QTest::newRow("empty") << 0 << qint64(0); QTest::newRow("no-revisions") << 0 << qint64(100);
+        QTest::newRow("invalid-count") << -1 << qint64(100); QTest::newRow("invalid-bytes") << 2 << qint64(-1);
+    }
+    void absentOrInvalidArtworkClearsOnlyItsChoice()
+    {
+        QFETCH(int, count); QFETCH(qint64, bytes); CRuntimeExportDialog dialog("/missing/model.model3.json", true);
+        dialog.SetArtworkSummary(2, 1024); auto* artwork = control<QCheckBox>(dialog, "runtimeExportArtwork"); artwork->setChecked(true);
+        control<QCheckBox>(dialog, "runtimeExportCurrentValues")->setChecked(true); control<QCheckBox>(dialog, "runtimeExportTimeline")->setChecked(true);
+        dialog.SetArtworkSummary(count, bytes); QVERIFY(!dialog.IncludeArtwork()); QVERIFY(artwork->isHidden() && !artwork->isEnabled() && !artwork->isChecked());
+        QVERIFY(control<QLabel>(dialog, "runtimeExportArtworkSummary")->isHidden()); QVERIFY(control<QLabel>(dialog, "runtimeExportArtworkNotice")->isHidden());
+        QVERIFY(dialog.UseCurrentValues()); QVERIFY(dialog.IncludeTimeline()); dialog.SetArtworkSummary(2, 2048); QVERIFY(!dialog.IncludeArtwork());
+    }
+
+    void largeArtworkSummaryNeedsNoSourceFilesOrDecodedImages()
+    {
+        CRuntimeExportDialog dialog("/does-not-exist/model.model3.json", false); dialog.SetArtworkSummary(100000, std::numeric_limits<qint64>::max());
+        auto* summary = control<QLabel>(dialog, "runtimeExportArtworkSummary"); QVERIFY(!summary->isHidden()); QVERIFY(!summary->text().contains(QLatin1Char('-')));
+        QVERIFY(control<QCheckBox>(dialog, "runtimeExportArtwork")->isEnabled()); QVERIFY(!dialog.IncludeArtwork());
+        dialog.SetArtworkSummary(1, 0); QVERIFY(!summary->isHidden()); QVERIFY(!summary->text().isEmpty());
+    }
+
+    void legacyNoticeDoesNotPretendAnAttachmentWasProvided()
+    {
+        CRuntimeExportDialog dialog("/missing/model.model3.json", false); auto* artwork = control<QCheckBox>(dialog, "runtimeExportArtwork");
+        dialog.SetArtworkNotice(true); QVERIFY(!control<QLabel>(dialog, "runtimeExportArtworkNotice")->isHidden()); QVERIFY(artwork->isHidden() && !artwork->isEnabled());
+        artwork->setChecked(true); QVERIFY(!dialog.IncludeArtwork()); dialog.SetArtworkNotice(false); QVERIFY(control<QLabel>(dialog, "runtimeExportArtworkNotice")->isHidden());
+        dialog.SetArtworkSummary(1, 100); QVERIFY(!dialog.IncludeArtwork());
+    }
+
+    void keyboardCanChooseArtworkWithoutAnExtraConfirmation()
+    {
+        QTemporaryDir directory; CRuntimeExportDialog dialog(directory.filePath("model.model3.json"), true); dialog.SetInitialDirectory(directory.filePath("new-model")); dialog.SetArtworkSummary(2, 2048);
+        QVERIFY(show(dialog)); auto* timeline = control<QCheckBox>(dialog, "runtimeExportTimeline"); auto* artwork = control<QCheckBox>(dialog, "runtimeExportArtwork");
+        timeline->setFocus(); QTRY_VERIFY(timeline->hasFocus()); QTest::keyClick(timeline, Qt::Key_Tab); QTRY_VERIFY(artwork->hasFocus());
+        QTest::keyClick(artwork, Qt::Key_Space); QVERIFY(dialog.IncludeArtwork()); QTest::keyClick(artwork, Qt::Key_Tab); QTRY_VERIFY(button(dialog, QDialogButtonBox::Ok)->hasFocus());
+        QSignalSpy accepted(&dialog, &QDialog::accepted); QTest::keyClick(button(dialog, QDialogButtonBox::Ok), Qt::Key_Return); QCOMPARE(accepted.size(), 1); QVERIFY(dialog.IncludeArtwork());
+        QVERIFY(!QFileInfo::exists(dialog.TargetDirectory()));
+    }
+
+    void artworkOptionsWrapAndRemainReachable_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::addColumn<int>("width");
+        for (bool dark : {false, true}) for (int width : {360, 580}) QTest::newRow(qPrintable(QString("%1-%2").arg(dark).arg(width))) << dark << width;
+    }
+    void artworkOptionsWrapAndRemainReachable()
+    {
+        QFETCH(bool, dark); QFETCH(int, width); qApp->setStyleSheet(Theme::globalStyleSheet(dark)); QTemporaryDir directory;
+        CRuntimeExportDialog dialog(directory.filePath("model.model3.json"), true); dialog.SetInitialDirectory(directory.filePath("new-model")); dialog.SetArtworkSummary(12, 1536LL * 1024 * 1024);
+        dialog.resize(width, width == 360 ? 280 : 520); QVERIFY(show(dialog)); auto* scroll = control<QScrollArea>(dialog, "runtimeExportScroll");
+        auto* artwork = control<QCheckBox>(dialog, "runtimeExportArtwork"); auto* notice = control<QLabel>(dialog, "runtimeExportArtworkNotice");
+        const auto directoryName = qEnvironmentVariable("RUNTIME_EXPORT_ARTWORK_QA_DIR"); if (!directoryName.isEmpty()) QVERIFY(QDir().mkpath(directoryName));
+        for (bool checked : {false, true}) {
+            artwork->setChecked(checked); scroll->ensureWidgetVisible(notice); QTest::qWait(100);
+            QCOMPARE(scroll->widget()->width(), scroll->viewport()->width()); QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+            for (auto* label : {notice, control<QLabel>(dialog, "runtimeExportArtworkSummary")}) {
+                QVERIFY(label->wordWrap()); QVERIFY(label->geometry().right() < scroll->widget()->width()); QVERIFY(label->height() >= label->heightForWidth(label->width()));
+            }
+            QVERIFY(dialog.rect().contains(QRect(button(dialog, QDialogButtonBox::Ok)->mapTo(&dialog, QPoint()), button(dialog, QDialogButtonBox::Ok)->size())));
+            if (!directoryName.isEmpty()) QVERIFY(dialog.grab().save(QDir(directoryName).filePath(QString("artwork-%1-%2-%3.png").arg(dark ? "dark" : "light").arg(width).arg(checked ? "included" : "model-only"))));
+        }
+        scroll->ensureWidgetVisible(artwork); artwork->setFocus(); QTRY_VERIFY(artwork->hasFocus()); QTest::keyClick(artwork, Qt::Key_Space); QVERIFY(!dialog.IncludeArtwork());
+        dialog.reject();
     }
 
     void nonexistentTargetIsAcceptedWithoutCreatingAnything()

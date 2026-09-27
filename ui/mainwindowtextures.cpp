@@ -68,6 +68,7 @@ void MainWindow::RefreshTextureEditing(bool changed)
                                                                            model->GetPreviewMocBytes(), &error);
         if (!alive) return;
         const QPointer<CTexturePanel> panel(m_texturePanel);
+        panel->SetArtworkLoadWarning(m_artworkPackageWarning); if (!alive || !panel) return;
         panel->SetSnapshotAvailable(loaded, error); if (!alive || !panel) return;
         panel->SetPreviewActive(m_atlasEditor.IsActive() || m_materialEditor.IsActive()); if (!alive || !panel) return;
         panel->SetEditingEnabled(available && loaded, error); if (!alive || !panel) return;

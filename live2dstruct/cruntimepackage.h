@@ -32,6 +32,7 @@ public:
         qint64 maximumFileBytes = 2LL * 1024 * 1024 * 1024 - 1;
         qint64 maximumTotalBytes = 4LL * 1024 * 1024 * 1024;
         int maximumFiles = 10000;
+        std::optional<CModelArtwork::State> artwork;
     };
     struct Source {
         QString path;

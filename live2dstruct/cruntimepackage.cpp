@@ -1,4 +1,5 @@
 #include "cruntimepackage.h"
+#include "cartworkpackage.h"
 #include "cmocdeformerorder.h"
 #include "cmodeluserdata.h"
 #include "cparameterreferenceeditor.h"
@@ -29,6 +30,161 @@ bool fail(QString* error, const QString& reason)
 }
 
 bool text(const QString& value) { return !value.isEmpty() && !value.contains(QChar::Null); }
+
+QString owned(const QString& value) { return QString(value.constData(), value.size()); }
+QByteArray owned(const QByteArray& value) { return QByteArray(value.constData(), value.size()); }
+QSet<QString> owned(const QSet<QString>& values)
+{
+    QSet<QString> result;
+    for (const auto& value : values) result.insert(owned(value));
+    return result;
+}
+
+void freezeEndpoint(CGeometryObjectPairs::Endpoint& endpoint)
+{
+    endpoint.object.id = owned(endpoint.object.id);
+    endpoint.triangles = QVector<quint16>(endpoint.triangles.cbegin(), endpoint.triangles.cend());
+    for (auto& axis : endpoint.axes) {
+        axis.parameterId = owned(axis.parameterId);
+        axis.keys = QVector<float>(axis.keys.cbegin(), axis.keys.cend());
+    }
+}
+
+bool validateRequestStorage(const Package::Request& request, QString* error)
+{
+    qint64 total = 0, metadata = 0;
+    QMap<QByteArray, const QByteArray*> blobs;
+    const auto reserve = [&](qint64 bytes) {
+        if (bytes > request.maximumTotalBytes - metadata) return fail(error, QStringLiteral("模型包请求元数据超过预算"));
+        metadata += bytes; return true;
+    };
+    const auto bytes = [&](const QByteArray& value) {
+        if (value.size() > request.maximumFileBytes) return fail(error, QStringLiteral("模型包请求文件超过大小预算"));
+        const auto digest = QCryptographicHash::hash(value, QCryptographicHash::Sha256);
+        const auto previous = blobs.constFind(digest);
+        if (previous != blobs.cend()) return **previous == value || fail(error, QStringLiteral("模型包快照摘要对应不同内容"));
+        if (value.size() > request.maximumTotalBytes - total) return fail(error, QStringLiteral("模型包请求文件快照超过总预算"));
+        total += value.size();
+        blobs.insert(digest, &value); return true;
+    };
+    const auto string = [&](const QString& value) { return reserve(qint64(value.size()) * sizeof(QChar)); };
+    const auto ids = [&](const QSet<QString>& values) { for (const auto& value : values) if (!string(value)) return false; return true; };
+    if (!string(request.modelJsonPath) || !string(request.registeredUserDataPath) || !string(request.timelineGroup) ||
+        !string(request.timelineSoundPath) || !bytes(request.mocBytes) || !bytes(request.loadedModelSettingsBytes)) return false;
+    for (const auto* replacement : {&request.physics, &request.pose, &request.userData, &request.timeline})
+        if (*replacement && !bytes(**replacement)) return false;
+    if (request.expectedSourceDigests.size() > request.maximumFiles || request.parameterMetadata.size() > 100000 ||
+        !CParameterResourceEdits::Validate(request.references, error)) return fail(error, QStringLiteral("模型包请求目录无效或超过数量限制"));
+    for (auto it = request.expectedSourceDigests.cbegin(); it != request.expectedSourceDigests.cend(); ++it)
+        if (it->size() != 32 || !string(it.key())) return fail(error, QStringLiteral("模型包来源摘要无效或超过预算"));
+    const auto& references = request.references;
+    if (!string(references.modelPath) || !bytes(references.modelSource) || !ids(references.modelSuppressedIds) ||
+        !ids(references.breath) || !ids(references.mouseFollow)) return false;
+    for (auto it = references.resources.cbegin(); it != references.resources.cend(); ++it)
+        if (!string(it.key()) || !bytes(it->source) || !ids(it->suppressedIds)) return false;
+    for (auto it = request.parameterMetadata.cbegin(); it != request.parameterMetadata.cend(); ++it)
+        if (!string(it.key()) || !string(it->displayName)) return false;
+    CParameterOrganization::State organization;
+    CGeometryObjectPairs::State pairs;
+    if (!CParameterOrganization::Normalize(request.parameterOrganization, organization, error) ||
+        !CGeometryObjectPairs::Normalize(request.geometryObjectPairs, pairs, error)) return false;
+    for (const auto& node : organization.nodes)
+        if (!string(node.id) || !string(node.parentFolder) || !string(node.name) || !string(node.color)) return false;
+    for (const auto& pair : organization.pairs) if (!string(pair.first) || !string(pair.second)) return false;
+    for (const auto& pair : pairs.pairs) {
+        if (!string(pair.id) || !reserve(qint64(pair.firstVertexToSecondVertex.size()) * sizeof(int))) return false;
+        for (const auto* endpoint : {&pair.first, &pair.second}) {
+            if (!string(endpoint->object.id) || !reserve(qint64(endpoint->triangles.size()) * sizeof(quint16))) return false;
+            for (const auto& axis : endpoint->axes)
+                if (!string(axis.parameterId) || !reserve(qint64(axis.keys.size()) * sizeof(float))) return false;
+        }
+        for (const auto& axis : pair.axes) if (!reserve(qint64(axis.firstKeyToSecondKey.size()) * sizeof(int))) return false;
+    }
+    if (request.textureSources) {
+        if (!CTextureAssets::ValidateCatalog(*request.textureSources, error)) return false;
+        for (const auto& source : *request.textureSources) if (!string(source.path) || !bytes(source.png)) return false;
+    }
+    for (const auto& png : request.textureState) if (!bytes(png)) return false;
+    if (request.textureWorkspace) {
+        if (!CTextureWorkspace::Validate(*request.textureSources, *request.textureWorkspace, error)) return false;
+        for (const auto& atlas : request.textureWorkspace->atlases)
+            if (!string(atlas.id) || !string(atlas.name) || !bytes(atlas.png)) return false;
+    }
+    if (request.artwork) {
+        CModelArtwork::Usage usage;
+        if (!CModelArtwork::Validate(*request.artwork, &usage, error) || !reserve(usage.metadataBytes)) return false;
+        for (const auto& image : request.artwork->images) if (!bytes(image.png)) return false;
+        for (const auto& revision : request.artwork->revisions)
+            if (!bytes(revision.sourceBytes) || !bytes(revision.iccProfile)) return false;
+    }
+    return true;
+}
+
+bool freezeRequest(const Package::Request& input, Package::Request& result, QString* error)
+{
+    if (!validateRequestStorage(input, error)) return false;
+    Package::Request candidate = input;
+    candidate.modelJsonPath = owned(input.modelJsonPath);
+    candidate.modelSettingsDigest = owned(input.modelSettingsDigest);
+    candidate.sourceMocDigest = owned(input.sourceMocDigest);
+    candidate.mocBytes = owned(input.mocBytes);
+    candidate.loadedModelSettingsBytes = owned(input.loadedModelSettingsBytes);
+    candidate.registeredUserDataPath = owned(input.registeredUserDataPath);
+    candidate.timelineGroup = owned(input.timelineGroup);
+    candidate.timelineSoundPath = owned(input.timelineSoundPath);
+    if (input.physics) candidate.physics = owned(*input.physics);
+    if (input.pose) candidate.pose = owned(*input.pose);
+    if (input.userData) candidate.userData = owned(*input.userData);
+    if (input.timeline) candidate.timeline = owned(*input.timeline);
+    candidate.expectedSourceDigests.clear();
+    for (auto it = input.expectedSourceDigests.cbegin(); it != input.expectedSourceDigests.cend(); ++it)
+        candidate.expectedSourceDigests.insert(owned(it.key()), owned(it.value()));
+    candidate.references.modelPath = owned(input.references.modelPath);
+    candidate.references.modelSource = owned(input.references.modelSource);
+    candidate.references.modelSuppressedIds = owned(input.references.modelSuppressedIds);
+    candidate.references.breath = owned(input.references.breath);
+    candidate.references.mouseFollow = owned(input.references.mouseFollow);
+    candidate.references.resources.clear();
+    for (auto it = input.references.resources.cbegin(); it != input.references.resources.cend(); ++it)
+        candidate.references.resources.insert(owned(it.key()), {it->kind, owned(it->source), owned(it->suppressedIds)});
+    candidate.parameterMetadata.clear();
+    for (auto it = input.parameterMetadata.cbegin(); it != input.parameterMetadata.cend(); ++it) {
+        auto metadata = it.value(); metadata.displayName = owned(metadata.displayName);
+        candidate.parameterMetadata.insert(owned(it.key()), metadata);
+    }
+    for (auto& node : candidate.parameterOrganization.nodes) {
+        node.id = owned(node.id); node.parentFolder = owned(node.parentFolder);
+        node.name = owned(node.name); node.color = owned(node.color);
+    }
+    for (auto& pair : candidate.parameterOrganization.pairs) {
+        pair.first = owned(pair.first); pair.second = owned(pair.second);
+    }
+    candidate.geometryObjectPairs.sourceDigest = owned(input.geometryObjectPairs.sourceDigest);
+    for (auto& pair : candidate.geometryObjectPairs.pairs) {
+        pair.id = owned(pair.id); freezeEndpoint(pair.first); freezeEndpoint(pair.second);
+        pair.firstVertexToSecondVertex = QVector<int>(pair.firstVertexToSecondVertex.cbegin(), pair.firstVertexToSecondVertex.cend());
+        for (auto& axis : pair.axes)
+            axis.firstKeyToSecondKey = QVector<int>(axis.firstKeyToSecondKey.cbegin(), axis.firstKeyToSecondKey.cend());
+    }
+    if (input.textureSources) {
+        if (!CTextureAssets::ValidateCatalog(*input.textureSources, error)) return false;
+        QMap<QByteArray, QByteArray> blobs;
+        for (auto& source : *candidate.textureSources) {
+            source.path = owned(source.path); source.digest = owned(source.digest);
+            const auto previous = blobs.constFind(source.digest);
+            if (previous != blobs.cend() && *previous != source.png)
+                return fail(error, QStringLiteral("纹理来源摘要对应不同内容"));
+            if (previous == blobs.cend()) blobs.insert(source.digest, owned(source.png));
+            source.png = blobs.value(source.digest);
+        }
+    }
+    for (auto& bytes : candidate.textureState) bytes = owned(bytes);
+    if (input.textureWorkspace && !CTextureWorkspace::Freeze(*candidate.textureSources, *input.textureWorkspace,
+                                                            *candidate.textureWorkspace, error)) return false;
+    if (input.artwork && !CModelArtwork::Freeze(*input.artwork, *candidate.artwork, error)) return false;
+    result = std::move(candidate);
+    return true;
+}
 
 bool object(const QByteArray& bytes, QJsonObject& result, QString* error)
 {
@@ -130,6 +286,37 @@ public:
         return report(QStringLiteral("收集纹理快照 %1").arg(QFileInfo(path).fileName()), error);
     }
 
+    bool artworkSnapshots(QString* error)
+    {
+        if (!m_request.artwork) return true;
+        for (const auto& revision : m_request.artwork->revisions) {
+            if (revision.path.isEmpty()) continue;
+            const auto path = CModelResourcePath::Resolve(m_home, revision.path);
+            if (path.isEmpty()) return fail(error, QStringLiteral("作者来源路径无效"));
+            auto& digests = m_artworkSnapshots[path];
+            if (digests.contains(revision.sourceDigest)) continue;
+            digests.insert(revision.sourceDigest);
+            m_result.sources.append({path, revision.sourceDigest, revision.sourceBytes.size()});
+            m_result.protectedPaths.append(path);
+        }
+        return report(QStringLiteral("收集作者来源快照"), error);
+    }
+
+    bool appendArtwork(const CArtworkPackage::Prepared& artwork, QString* error)
+    {
+        QSet<QString> paths;
+        for (const auto& entry : m_result.entries) paths.insert(entry.relativePath.normalized(QString::NormalizationForm_C).toCaseFolded());
+        for (const auto& entry : artwork.entries) {
+            const auto path = entry.relativePath.normalized(QString::NormalizationForm_C).toCaseFolded();
+            if (paths.contains(path)) return fail(error, QStringLiteral("作者附件与模型包文件名冲突：%1").arg(entry.relativePath));
+            if (entry.bytes.size() > m_request.maximumFileBytes || entry.bytes.size() > m_request.maximumTotalBytes - m_result.totalBytes ||
+                m_result.entries.size() >= m_request.maximumFiles) return fail(error, QStringLiteral("作者附件超过模型包大小或数量预算"));
+            paths.insert(path); m_result.entries.append(entry); m_result.totalBytes += entry.bytes.size();
+        }
+        m_result.protectedPaths.append(artwork.protectedPaths);
+        return true;
+    }
+
     bool expected(const QString& path, const QByteArray& digest, QString* error) const
     {
         const auto snapshot = m_snapshots.constFind(path);
@@ -172,9 +359,10 @@ public:
 
     bool finish(QString* error) const
     {
+        if (!report(QStringLiteral("模型包准备完成"), error)) return false;
         for (auto it = m_request.expectedSourceDigests.cbegin(); it != m_request.expectedSourceDigests.cend(); ++it) {
             const auto path = CModelResourcePath::Resolve(m_home, it.key());
-            if (path.isEmpty() || (!m_observed.contains(path) && !m_snapshots.contains(path)))
+            if (path.isEmpty() || (!m_observed.contains(path) && !m_snapshots.contains(path) && !m_artworkSnapshots.value(path).contains(it.value())))
                 return fail(error, QStringLiteral("已加载的资源未登记在模型包中：%1").arg(it.key()));
         }
         for (auto it = m_sources.cbegin(); it != m_sources.cend(); ++it) {
@@ -186,7 +374,7 @@ public:
         for (auto it = m_observed.cbegin(); it != m_observed.cend(); ++it)
             if (QFileInfo(it.key()).canonicalFilePath() != it.value())
                 return fail(error, QStringLiteral("模型资源链接在准备期间发生变化：%1").arg(it.key()));
-        return report(QStringLiteral("模型包准备完成"), error);
+        return true;
     }
 
 private:
@@ -205,6 +393,7 @@ private:
     QMap<QString, int> m_counts;
     QMap<QString, QString> m_observed;
     QMap<QString, QByteArray> m_snapshots;
+    QMap<QString, QSet<QByteArray>> m_artworkSnapshots;
     qint64 m_readBytes = 0;
 };
 
@@ -435,14 +624,16 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
 {
     if (error) error->clear();
     try {
-        const Request request = input;
-        if (!text(request.modelJsonPath) || request.modelSettingsDigest.size() != 32 || request.sourceMocDigest.size() != 32 ||
-            request.mocBytes.isEmpty() || request.maximumFiles < 1 || request.maximumFileBytes < 1 || request.maximumTotalBytes < 1)
+        if (!text(input.modelJsonPath) || input.modelSettingsDigest.size() != 32 || input.sourceMocDigest.size() != 32 ||
+            input.mocBytes.isEmpty() || input.maximumFiles < 1 || input.maximumFileBytes < 1 || input.maximumTotalBytes < 1)
             return fail(error, QStringLiteral("运行时模型包请求无效"));
-        if ((!request.textureSources && (!request.textureState.isEmpty() || request.textureWorkspace)) ||
-            (request.textureWorkspace && !request.textureState.isEmpty()))
+        if ((!input.textureSources && (!input.textureState.isEmpty() || input.textureWorkspace)) ||
+            (input.textureWorkspace && !input.textureState.isEmpty()) ||
+            (input.artwork && (!input.textureSources || !input.textureWorkspace)))
             return fail(error, QStringLiteral("纹理覆盖需要完整的原始纹理快照"));
-        if (!CParameterResourceEdits::Validate(request.references, error)) return false;
+        if (control && control->IsCancellationRequested()) { control->Checkpoint(); return fail(error, control->Error()); }
+        Request request;
+        if (!freezeRequest(input, request, error)) return false;
         Prepared candidate;
         Collector collector(request, candidate, control);
         QByteArray sourceSettings;
@@ -643,10 +834,23 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             return fail(error, QStringLiteral("模型包总大小或文件数量超出限制"));
         candidate.entries.append({candidate.modelFile, modelBytes});
         candidate.totalBytes += modelBytes.size();
+        if (request.artwork) {
+            CArtworkPackage::Request attachment;
+            attachment.modelFile = candidate.modelFile; attachment.modelSettingsBytes = modelBytes; attachment.mocBytes = runtimeMoc;
+            attachment.sources = *request.textureSources; attachment.state.workspace = *request.textureWorkspace;
+            attachment.state.artwork = *request.artwork;
+            attachment.limits.maximumFileBytes = request.maximumFileBytes;
+            attachment.limits.maximumTotalBytes = request.maximumTotalBytes - candidate.totalBytes;
+            attachment.limits.maximumFiles = request.maximumFiles - candidate.entries.size();
+            CArtworkPackage::Prepared artwork;
+            if (!current.CaptureDrawableMaterials(attachment.state.materials, error) || !collector.artworkSnapshots(error) ||
+                !CArtworkPackage::Prepare(attachment, artwork, control, error) || !collector.appendArtwork(artwork, error)) return false;
+        }
         candidate.protectedPaths.append(QFileInfo(request.modelJsonPath).absolutePath());
         if (!request.references.breath.isEmpty() || !request.references.mouseFollow.isEmpty())
             candidate.notes.append(QStringLiteral("呼吸、鼠标跟随及播放状态由使用模型的应用控制"));
         if (!collector.finish(error)) return false;
+        candidate.protectedPaths.removeDuplicates();
         prepared = std::move(candidate);
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备运行时模型包")); }

@@ -1,5 +1,8 @@
 #include "live2dstruct/cruntimepackage.h"
+#include "live2dstruct/cartworkpackage.h"
+#include "live2dstruct/cmocdeformerorder.h"
 #include "live2dstruct/cparameterresourceedits.h"
+#include "deformer_order_fixture.h"
 #include "std/cmodeljson.h"
 #include "std/cmodelresourcepath.h"
 #include "std/cexportcontrol.h"
@@ -14,6 +17,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <deque>
 
 using namespace live2dstruct;
 namespace {
@@ -62,11 +66,359 @@ struct Fixture {
         write(directory.filePath(name), bytes); auto files = root["FileReferences"].toObject(); files[field] = name; root["FileReferences"] = files; save();
     }
 };
+
+bool artworkRequest(Fixture& fixture, CRuntimePackage::Request& input, QString* error)
+{
+    using Artwork = CModelArtwork;
+    const auto image = png(qRgba(21, 71, 81, 94), {6, 5});
+    const auto original = png(qRgba(17, 39, 2, 91), {4, 4});
+    const auto path = fixture.directory.filePath("original.png");
+    if (!write(path, original)) return false;
+    auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png"};
+    fixture.root["FileReferences"] = files; if (!fixture.save()) return false;
+    input = request(fixture.path); CTextureAssets::Source source;
+    if (!CTextureAssets::MakeSource(path, original, source, error)) return false;
+    input.textureSources = CTextureAssets::Catalog{{0, source}};
+    CTextureWorkspace::State workspace;
+    if (!CTextureWorkspace::Initialize(*input.textureSources, {}, workspace, error)) return false;
+    workspace.atlases.insert(1, {"generated-source", "生成图集", -1, {6, 5}, image});
+    input.textureWorkspace = workspace;
+    CModelDocument document; if (!document.LoadBytes(input.mocBytes, {}, error)) return false;
+    CModelDrawableMaterial material;
+    if (!document.CaptureDrawableMaterial("ArmR", material, error)) return false;
+    material.textureIndex = 1;
+    if (!document.SetDrawableMaterials({material}, error) || !document.BuildRuntimeMoc(input.mocBytes, error)) return false;
+    Artwork::State state; state.images.insert(digest(image), {{6, 5}, image});
+    state.images.insert(digest(original), {{4, 4}, original});
+    state.families.insert("source", {"source", "原稿", Artwork::SourceKind::Png, "latest"});
+    Artwork::Revision revision; revision.id = "old"; revision.familyId = "source";
+    revision.path = fixture.directory.filePath("artwork.png"); revision.fileName = "artwork.png";
+    revision.sourceBytes = image; revision.sourceDigest = digest(image); revision.canvasSize = {6, 5};
+    revision.iccProfile = QByteArray("saved ICC bytes");
+    Artwork::Layer layer; layer.id = "pixels"; layer.name = "原图层"; layer.sourceIndex = 0;
+    layer.bounds = {0, 0, 6, 5}; layer.imageDigest = digest(image); revision.layers = {layer};
+    state.revisions.insert(revision.id, revision);
+    revision.id = "latest"; revision.sourceBytes = original; revision.sourceDigest = digest(original);
+    revision.canvasSize = {4, 4}; revision.layers[0].imageDigest = digest(original); revision.layers[0].bounds = {0, 0, 4, 4};
+    state.revisions.insert(revision.id, revision);
+    state.materials.insert("material", {"material", "材质", "source", "old", "pixels"});
+    state.placements.insert("placement", {"placement", "material", "generated-source", {}, {0, 0, 6, 5}, 1});
+    Artwork::Binding binding; binding.meshId = material.id; binding.placementId = "placement"; binding.sampledMaterial = material;
+    for (int i = 0; i < material.uvs.size(); i += 2) binding.familyCoordinates.append({double(material.uvs[i]) * 6, double(material.uvs[i + 1]) * 5});
+    if (!Artwork::TopologyDigest(material.uvs.size() / 2, document.DrawableIndices(material.id), binding.topologyDigest, error)) return false;
+    state.bindings.insert(material.id, binding);
+    if (!Artwork::Freeze(state, state, error)) return false;
+    input.artwork = state; return true;
+}
+
+bool publish(const CRuntimePackage::Prepared& prepared, const QString& directory, QString* error)
+{
+    CDirectoryExport::Options options; options.protectedPaths = prepared.protectedPaths;
+    CDirectoryExport::Result result;
+    return CDirectoryExport::Publish(directory, prepared.entries, options, result, nullptr, error) && result.committed;
+}
+
+bool loadArtworkPackage(const QString& modelPath, CModelDocument& document, CArtworkPackage::Loaded& loaded, QString* error)
+{
+    const auto settings = read(modelPath); const auto files = QJsonDocument::fromJson(settings).object()["FileReferences"].toObject();
+    const auto directory = QFileInfo(modelPath).absoluteDir();
+    if (!document.Load(directory.filePath(files["Moc"].toString()), error)) return false;
+    CTextureAssets::Catalog sources; const auto textures = files["Textures"].toArray();
+    for (int i = 0; i < textures.size(); ++i) if (!textures[i].toString().isEmpty()) {
+        const auto path = directory.filePath(textures[i].toString()); CTextureAssets::Source source;
+        if (!CTextureAssets::MakeSource(path, read(path), source, error)) return false;
+        sources.insert(i, source);
+    }
+    return document.InitializeTextureWorkspace(sources, {}, error) && CArtworkPackage::Load(modelPath, settings, document, loaded, nullptr, error);
+}
+
+struct Borrowed {
+    std::deque<QByteArray> bytes;
+    std::deque<QString> strings;
+    QByteArray borrow(const QByteArray& value) {
+        bytes.emplace_back(value.constData(), value.size()); auto& last = bytes.back();
+        return QByteArray::fromRawData(last.constData(), last.size());
+    }
+    QString borrow(const QString& value) {
+        strings.emplace_back(value.constData(), value.size()); auto& last = strings.back();
+        return QString::fromRawData(last.constData(), last.size());
+    }
+    QSet<QString> borrow(const QSet<QString>& values) { QSet<QString> result; for (const auto& value : values) result.insert(borrow(value)); return result; }
+    void corrupt() {
+        for (auto& value : bytes) std::fill(value.data(), value.data() + value.size(), 'x');
+        for (auto& value : strings) std::fill(value.data(), value.data() + value.size(), QChar('x'));
+    }
+};
+
+template<class Map, class Transform>
+void borrowMap(Map& values, Borrowed& storage, Transform transform)
+{
+    Map result;
+    for (auto it = values.cbegin(); it != values.cend(); ++it) { auto value = it.value(); transform(value); result.insert(storage.borrow(it.key()), value); }
+    values = std::move(result);
+}
+
+void borrowRequest(CRuntimePackage::Request& input, Borrowed& storage)
+{
+    const auto string = [&](QString& value) { value = storage.borrow(value); };
+    const auto bytes = [&](QByteArray& value) { value = storage.borrow(value); };
+    string(input.modelJsonPath); string(input.registeredUserDataPath); string(input.timelineGroup); string(input.timelineSoundPath);
+    bytes(input.modelSettingsDigest); bytes(input.sourceMocDigest); bytes(input.mocBytes); bytes(input.loadedModelSettingsBytes);
+    for (auto* value : {&input.physics, &input.pose, &input.userData, &input.timeline}) if (*value) bytes(**value);
+    borrowMap(input.expectedSourceDigests, storage, bytes);
+    auto& references = input.references; string(references.modelPath); bytes(references.modelSource);
+    references.modelSuppressedIds = storage.borrow(references.modelSuppressedIds); references.breath = storage.borrow(references.breath); references.mouseFollow = storage.borrow(references.mouseFollow);
+    borrowMap(references.resources, storage, [&](auto& resource) { bytes(resource.source); resource.suppressedIds = storage.borrow(resource.suppressedIds); });
+    borrowMap(input.parameterMetadata, storage, [&](auto& value) { string(value.displayName); });
+    for (auto& node : input.parameterOrganization.nodes) { string(node.id); string(node.name); string(node.parentFolder); string(node.color); }
+    for (auto& pair : input.parameterOrganization.pairs) { string(pair.first); string(pair.second); }
+    bytes(input.geometryObjectPairs.sourceDigest);
+    for (auto& pair : input.geometryObjectPairs.pairs) {
+        string(pair.id);
+        for (auto* endpoint : {&pair.first, &pair.second}) { string(endpoint->object.id); for (auto& axis : endpoint->axes) string(axis.parameterId); }
+    }
+    if (input.textureSources) for (auto& source : *input.textureSources) { string(source.path); bytes(source.png); bytes(source.digest); }
+    for (auto& png : input.textureState) bytes(png);
+    if (input.textureWorkspace) {
+        bytes(input.textureWorkspace->sourceFingerprint);
+        for (auto& atlas : input.textureWorkspace->atlases) { string(atlas.id); string(atlas.name); bytes(atlas.png); }
+    }
+    if (input.artwork) {
+        auto& state = *input.artwork;
+        borrowMap(state.images, storage, [&](auto& image) { bytes(image.png); });
+        borrowMap(state.families, storage, [&](auto& family) { string(family.id); string(family.name); string(family.currentRevision); });
+        borrowMap(state.revisions, storage, [&](auto& revision) {
+            string(revision.id); string(revision.familyId); string(revision.path); string(revision.fileName);
+            bytes(revision.sourceDigest); bytes(revision.sourceBytes); bytes(revision.iccProfile);
+            for (auto& layer : revision.layers) {
+                string(layer.id); string(layer.name); bytes(layer.blendMode); bytes(layer.imageDigest);
+                for (auto& diagnostic : layer.diagnostics) string(diagnostic);
+            }
+        });
+        borrowMap(state.materials, storage, [&](auto& material) { string(material.id); string(material.name); string(material.familyId); string(material.revisionId); string(material.layerId); string(material.missingInRevision); });
+        borrowMap(state.placements, storage, [&](auto& placement) { string(placement.id); string(placement.materialId); string(placement.atlasId); });
+        borrowMap(state.bindings, storage, [&](auto& binding) { string(binding.meshId); string(binding.placementId); string(binding.sampledMaterial.id); string(binding.detachedReason); bytes(binding.topologyDigest); });
+    }
+}
 }
 class RuntimePackageTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void artworkAttachmentsAreExplicitAndPreserveEveryRevision()
+    {
+        Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        const auto artwork = *input.artwork; input.artwork.reset();
+        CRuntimePackage::Prepared ordinary, attached;
+        QVERIFY2(CRuntimePackage::Prepare(input, ordinary, nullptr, &error), qPrintable(error));
+        const auto manifest = CArtworkPackage::ManifestFile(ordinary.modelFile);
+        QVERIFY(entry(ordinary, manifest).isEmpty());
+        input.artwork = artwork;
+        QVERIFY2(CRuntimePackage::Prepare(input, attached, nullptr, &error), qPrintable(error));
+        QCOMPARE(attached.model, ordinary.model); QCOMPARE(entry(attached, attached.modelFile), entry(ordinary, ordinary.modelFile));
+        for (const auto& file : ordinary.entries) QCOMPARE(entry(attached, file.relativePath), file.bytes);
+        QVERIFY(!entry(attached, manifest).isEmpty());
+        const auto index = QJsonDocument::fromJson(entry(attached, manifest)).object();
+        QCOMPARE(index["artwork"].toObject()["revisions"].toObject().size(), 2);
+        QCOMPARE(index["artwork"].toObject()["materials"].toObject()["material"].toObject()["revisionId"].toString(), QString("old"));
+        QVERIFY(!index["artwork"].toObject()["families"].toObject().isEmpty());
+        for (const auto& revision : artwork.revisions) {
+            QVERIFY(attached.protectedPaths.contains(revision.path));
+            QVERIFY(index["objects"].toObject().contains(QString::fromLatin1(revision.sourceDigest.toHex())));
+        }
+        qint64 total = 0; QSet<QString> paths;
+        for (const auto& file : attached.entries) { total += file.bytes.size(); QVERIFY(!paths.contains(file.relativePath)); paths.insert(file.relativePath); }
+        QCOMPARE(attached.totalBytes, total); QVERIFY(attached.totalBytes > ordinary.totalBytes);
+        QTemporaryDir target; QVERIFY2(publish(attached, target.filePath("package"), &error), qPrintable(error));
+        CModelDocument document; CArtworkPackage::Loaded loaded;
+        QVERIFY2(loadArtworkPackage(target.filePath("package/") + attached.modelFile, document, loaded, &error), qPrintable(error));
+        QVERIFY(loaded.present); QCOMPARE(loaded.state.artwork.revisions.size(), 2);
+        QCOMPARE(loaded.state.artwork.revisions["old"].sourceBytes, artwork.revisions["old"].sourceBytes);
+        QCOMPARE(loaded.state.artwork.materials, artwork.materials);
+        QCOMPARE(loaded.state.artwork.bindings, artwork.bindings);
+        QCOMPARE(loaded.state.artwork.placements["placement"].atlasId, QString("source:1"));
+    }
+
+    void artworkPackageReexportsAfterGeneratedAtlasesBecomeSources()
+    {
+        Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        const auto original = *input.artwork; QTemporaryDir target;
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            CRuntimePackage::Prepared output; QVERIFY2(CRuntimePackage::Prepare(input, output, nullptr, &error), qPrintable(error));
+            const auto directory = target.filePath(QString::number(cycle));
+            QVERIFY2(publish(output, directory, &error), qPrintable(error));
+            CModelDocument document; CArtworkPackage::Loaded loaded;
+            const auto modelPath = directory + '/' + output.modelFile;
+            QVERIFY2(loadArtworkPackage(modelPath, document, loaded, &error), qPrintable(error)); QVERIFY(loaded.present);
+            QCOMPARE(document.TextureWorkspace().atlases[1].sourceSlot, 1);
+            QVERIFY(document.TextureWorkspace().atlases[1].png.isEmpty());
+            QCOMPARE(loaded.state.artwork.bindings, original.bindings);
+            QCOMPARE(loaded.state.artwork.revisions["old"].sourceBytes, original.revisions["old"].sourceBytes);
+            QCOMPARE(loaded.state.artwork.revisions["latest"].sourceBytes, original.revisions["latest"].sourceBytes);
+            QVERIFY(document.SetTextureWorkspace(loaded.state.workspace, &error)); QVERIFY(document.SetArtwork(loaded.state.artwork, &error));
+            input = request(modelPath); input.textureSources = document.TextureSources(); input.textureWorkspace = document.TextureWorkspace(); input.artwork = document.Artwork();
+        }
+    }
+
+    void artworkSnapshotsRemainExportableWithoutDiskFiles_data()
+    {
+        QTest::addColumn<int>("kind"); QTest::newRow("missing") << 0; QTest::newRow("changed") << 1;
+        QTest::newRow("old-expected") << 2; QTest::newRow("latest-expected") << 3; QTest::newRow("bad-expected") << 4;
+    }
+    void artworkSnapshotsRemainExportableWithoutDiskFiles()
+    {
+        QFETCH(int, kind); Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        const auto path = input.artwork->revisions["old"].path;
+        if (kind == 1) QVERIFY(write(path, "changed externally"));
+        if (kind >= 2) input.expectedSourceDigests[path] = kind == 4 ? QByteArray(32, 'x') : input.artwork->revisions[kind == 2 ? "old" : "latest"].sourceDigest;
+        CRuntimePackage::Prepared output; output.totalBytes = 71;
+        QCOMPARE(CRuntimePackage::Prepare(input, output, nullptr, &error), kind != 4);
+        if (kind == 4) { QCOMPARE(output.totalBytes, 71); QVERIFY(output.entries.isEmpty()); return; }
+        QVERIFY(output.protectedPaths.contains(path)); int snapshots = 0;
+        for (const auto& source : output.sources) if (source.path == path) ++snapshots;
+        QCOMPARE(snapshots, 2); QVERIFY(!entry(output, CArtworkPackage::ManifestFile(output.modelFile)).isEmpty());
+        if (kind == 1) QCOMPARE(read(path), QByteArray("changed externally")); else QVERIFY(!QFileInfo::exists(path));
+        QVERIFY(!publish(output, fixture.directory.path(), &error));
+    }
+
+    void invalidArtworkAndCombinedBudgetsPreserveOutput_data()
+    {
+        QTest::addColumn<int>("kind");
+        const char* names[]{"no-sources", "no-workspace", "bad-original", "stale-uv", "missing-atlas", "total-budget", "file-budget", "count-budget", "metadata-budget"};
+        for (int i = 0; i < 9; ++i) QTest::newRow(names[i]) << i;
+    }
+    void invalidArtworkAndCombinedBudgetsPreserveOutput()
+    {
+        QFETCH(int, kind); Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        CRuntimePackage::Prepared expected; QVERIFY2(CRuntimePackage::Prepare(input, expected, nullptr, &error), qPrintable(error));
+        if (kind == 0) input.textureSources.reset();
+        if (kind == 1) input.textureWorkspace.reset();
+        if (kind == 2) input.artwork->revisions["old"].sourceBytes = "corrupted";
+        if (kind == 3) input.artwork->bindings["ArmR"].sampledMaterial.uvs[0] += .01f;
+        if (kind == 4) input.artwork->placements["placement"].atlasId = "absent";
+        if (kind == 5) input.maximumTotalBytes = expected.totalBytes - 1;
+        if (kind == 6) input.maximumFileBytes = input.mocBytes.size() - 1;
+        if (kind == 7) input.maximumFiles = expected.entries.size() - 1;
+        if (kind == 8) input.artwork->families["source"].name = QString(50000, 'x');
+        CRuntimePackage::Prepared output; output.modelFile = "kept"; output.totalBytes = 71; output.entries = {{"held", "owned"}};
+        QVERIFY(!CRuntimePackage::Prepare(input, output, nullptr, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(output.modelFile, QString("kept")); QCOMPARE(output.totalBytes, 71); QCOMPARE(output.entries.size(), 1); QCOMPARE(output.entries.first().bytes, QByteArray("owned"));
+    }
+
+    void artworkCancellationAndExactOutputBudget()
+    {
+        Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        CRuntimePackage::Prepared expected, output; QVERIFY2(CRuntimePackage::Prepare(input, expected, nullptr, &error), qPrintable(error));
+        input.maximumTotalBytes = expected.totalBytes; input.maximumFiles = expected.entries.size();
+        QVERIFY2(CRuntimePackage::Prepare(input, output, nullptr, &error), qPrintable(error)); QCOMPARE(output.totalBytes, expected.totalBytes);
+        for (int cancelAt : {1, 4}) {
+            CExportControl control; int reached = 0;
+            control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+                if (progress.detail == QStringLiteral("收集作者来源快照") && ++reached == cancelAt) control.Cancel(); return true;
+            });
+            QVERIFY(!CRuntimePackage::Prepare(input, output, &control, &error)); QCOMPARE(reached, cancelAt); QVERIFY(control.WasCanceled());
+            QCOMPARE(output.totalBytes, expected.totalBytes); QCOMPARE(output.model, expected.model); QCOMPARE(output.entries.size(), expected.entries.size());
+        }
+    }
+
+    void attachmentAnchorsUseNormalizedRuntimeMoc()
+    {
+        Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        auto reader = CReader::FromBytes(input.mocBytes); const CSectionTable table(reader);
+        input.mocBytes = DeformerOrderFixture::permute(input.mocBytes, DeformerOrderFixture::reverseOrder(table));
+        QVERIFY(!input.mocBytes.isEmpty()); QByteArray normalized;
+        QVERIFY2(CMocDeformerOrder::Normalize(input.mocBytes, normalized, &error), qPrintable(error)); QVERIFY(normalized != input.mocBytes);
+        CRuntimePackage::Prepared output; QVERIFY2(CRuntimePackage::Prepare(input, output, nullptr, &error), qPrintable(error));
+        const auto files = output.model["FileReferences"].toObject(); QCOMPARE(entry(output, files["Moc"].toString()), normalized);
+        const auto index = QJsonDocument::fromJson(entry(output, CArtworkPackage::ManifestFile(output.modelFile))).object();
+        QCOMPARE(index["moc"].toObject()["sha256"].toString(), QString::fromLatin1(digest(normalized).toHex()));
+        QCOMPARE(index["model"].toObject()["sha256"].toString(), QString::fromLatin1(digest(entry(output, output.modelFile)).toHex()));
+        QTemporaryDir target; QVERIFY2(publish(output, target.filePath("model"), &error), qPrintable(error));
+        CModelDocument document; CArtworkPackage::Loaded loaded;
+        QVERIFY2(loadArtworkPackage(target.filePath("model/") + output.modelFile, document, loaded, &error), qPrintable(error));
+        CModelMaterialState materials; QVERIFY(document.CaptureDrawableMaterials(materials, &error)); QCOMPARE(loaded.state.materials, materials);
+    }
+
+    void borrowedRequestIsOwnedBeforeAnyProgressCallback_data()
+    {
+        QTest::addColumn<bool>("withArtwork"); QTest::newRow("legacy-texture-overrides") << false; QTest::newRow("authoring-workspace") << true;
+    }
+    void borrowedRequestIsOwnedBeforeAnyProgressCallback()
+    {
+        QFETCH(bool, withArtwork); Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        const auto expression = json({{"Type", "Live2D Expression"}, {"Parameters", QJsonArray{QJsonObject{{"Id", "ParamAngleX"}, {"Value", .3}, {"Blend", "Add"}}}}});
+        QVERIFY(write(fixture.directory.filePath("expression.exp3.json"), expression));
+        auto files = fixture.root["FileReferences"].toObject(); files["Expressions"] = QJsonArray{QJsonObject{{"Name", "expression"}, {"File", "expression.exp3.json"}}}; fixture.root["FileReferences"] = files;
+        fixture.root["Groups"] = QJsonArray{QJsonObject{{"Name", "EyeBlink"}, {"Target", "Parameter"}, {"Ids", QJsonArray{"ParamAngleX"}}}}; QVERIFY(fixture.save());
+        input.loadedModelSettingsBytes = read(fixture.path); input.modelSettingsDigest = digest(input.loadedModelSettingsBytes);
+        CParameterResourceEdits::Prepared references;
+        QVERIFY2(CParameterResourceEdits::Prepare(fixture.path, {}, {"ParamAngleX"}, references, &error), qPrintable(error)); input.references = references.state;
+        input.references.breath = {"ParamAngleX"}; input.references.mouseFollow = {"ParamAngleY"};
+        input.expectedSourceDigests[fixture.directory.filePath("expression.exp3.json")] = digest(expression);
+        input.expectedSourceDigests[input.textureSources->first().path] = input.textureSources->first().digest;
+        input.parameterMetadata["ParamAngleX"].displayName = "Owned display name";
+        input.parameterOrganization.configured = true; input.parameterOrganization.nodes.append({CParameterOrganization::Node::Folder, "folder", {}, "Owned folder", "#123456"});
+        for (const auto& parameter : fixture.document.Parameters()) input.parameterOrganization.nodes.append({CParameterOrganization::Node::Parameter, parameter.id, "folder", {}, {}});
+        input.parameterOrganization.pairs = {{"ParamAngleX", "ParamAngleY", true, true}};
+        CGeometryObjectPairs::Pair pair; pair.id = "review-pair"; pair.requiresReview = true;
+        pair.first.object = {CGeometryObjectPairs::Type::ArtMesh, "ArmR"}; pair.first.vertexCount = 3; pair.first.triangles = {0, 1, 2};
+        pair.first.keyformCount = 1; pair.first.axes = {{0, "ParamAngleX", {0.f}, 0}};
+        pair.second = pair.first; pair.second.object.id = "ArmL"; pair.firstVertexToSecondVertex = {0, 1, 2}; pair.axes = {{0, 0, {0}}};
+        input.geometryObjectPairs = {input.sourceMocDigest, {pair}};
+        input.physics = json({{"Version", 3}, {"Meta", QJsonObject{}}, {"PhysicsSettings", QJsonArray{}}});
+        input.pose = json({{"Version", 3}, {"Groups", QJsonArray{}}});
+        input.userData = json({{"Version", 3}, {"UserData", QJsonArray{}}});
+        input.registeredUserDataPath = fixture.directory.filePath("unused.userdata3.json");
+        input.timeline = read(QString(TEST_RESOURCES) + "/Mark/motions/mark_m01.motion3.json"); input.timelineGroup = "Owned group";
+        input.timelineSoundPath = fixture.directory.filePath("sound.wav"); QVERIFY(write(input.timelineSoundPath, "RIFFowned"));
+        if (!withArtwork) {
+            input.artwork.reset(); input.textureWorkspace.reset(); input.mocBytes = fixture.document.SourceBytes();
+            input.textureState = {{0, png(qRgba(4, 7, 21, 199))}};
+        }
+        CRuntimePackage::Prepared expected, output;
+        QVERIFY2(CRuntimePackage::Prepare(input, expected, nullptr, &error), qPrintable(error));
+        Borrowed storage; borrowRequest(input, storage); CExportControl control; bool called = false;
+        auto& borrowedPair = input.geometryObjectPairs.pairs[0];
+        auto* vertices = borrowedPair.firstVertexToSecondVertex.data(); auto* triangles = borrowedPair.first.triangles.data();
+        auto* keys = borrowedPair.first.axes[0].keys.data(); auto* mapping = borrowedPair.axes[0].firstKeyToSecondKey.data();
+        control.SetHandler([&](const CExportControl::Progress&, QString*) {
+            if (!called) { called = true; storage.corrupt(); vertices[0] = -1; triangles[0] = 99; keys[0] = 123; mapping[0] = -1; input = {}; } return true;
+        });
+        QVERIFY2(CRuntimePackage::Prepare(input, output, &control, &error), qPrintable(error)); QVERIFY(called);
+        QCOMPARE(output.model, expected.model); QCOMPARE(output.totalBytes, expected.totalBytes); QCOMPARE(output.entries.size(), expected.entries.size());
+        QCOMPARE(output.notes, expected.notes); QCOMPARE(output.protectedPaths, expected.protectedPaths);
+        for (const auto& file : expected.entries) QCOMPARE(entry(output, file.relativePath), file.bytes);
+    }
+
+    void artworkHistoryDoesNotWeakenCurrentTextureChecks()
+    {
+        Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        const auto path = input.textureSources->first().path;
+        input.artwork->revisions["old"].path = path;
+        input.expectedSourceDigests[path] = input.artwork->revisions["old"].sourceDigest;
+        CRuntimePackage::Prepared output;
+        QVERIFY(!CRuntimePackage::Prepare(input, output, nullptr, &error)); QVERIFY(!error.isEmpty()); QVERIFY(output.entries.isEmpty());
+        input.expectedSourceDigests[path] = input.textureSources->first().digest;
+        QVERIFY2(CRuntimePackage::Prepare(input, output, nullptr, &error), qPrintable(error));
+    }
+
+    void oversizedBorrowedInputIsRejectedBeforeProgress()
+    {
+        Fixture fixture; auto input = request(fixture.path); Borrowed storage; input.mocBytes = storage.borrow(input.mocBytes);
+        input.maximumFileBytes = input.mocBytes.size() - 1; CExportControl control; int callbacks = 0;
+        control.SetHandler([&](const CExportControl::Progress&, QString*) { ++callbacks; return true; });
+        CRuntimePackage::Prepared output; QString error;
+        QVERIFY(!CRuntimePackage::Prepare(input, output, &control, &error)); QCOMPARE(callbacks, 0); QVERIFY(output.entries.isEmpty());
+    }
+
     void generatedAtlasPackageReopensWithSparseSlots()
     {
         Fixture fixture; const auto originalPng = png(qRgba(21, 31, 41, 51), {3, 2});
@@ -520,6 +872,20 @@ private slots:
         });
         CRuntimePackage::Prepared prepared; QString error;
         QVERIFY(!CRuntimePackage::Prepare(input, prepared, &control, &error)); QVERIFY(changed); QVERIFY(!error.isEmpty()); QVERIFY(prepared.entries.isEmpty());
+    }
+
+    void finalProgressCannotInvalidateSourceVerification()
+    {
+        Fixture fixture; CRuntimePackage::Request input; QString error;
+        QVERIFY2(artworkRequest(fixture, input, &error), qPrintable(error));
+        CExportControl control; bool changed = false;
+        control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.detail == QStringLiteral("模型包准备完成")) { changed = true; write(fixture.path, json(fixture.root) + " "); }
+            return true;
+        });
+        CRuntimePackage::Prepared output; output.totalBytes = 93;
+        QVERIFY(!CRuntimePackage::Prepare(input, output, &control, &error)); QVERIFY(changed); QVERIFY(!error.isEmpty());
+        QCOMPARE(output.totalBytes, 93); QVERIFY(output.entries.isEmpty());
     }
 };
 QTEST_GUILESS_MAIN(RuntimePackageTests)

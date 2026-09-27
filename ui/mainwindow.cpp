@@ -372,7 +372,7 @@ void MainWindow::on_actionpsdPrint_triggered()
 
 
 bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimeline,
-                                      live2dstruct::CRuntimePackage::Request& request, QString* error) const
+                                      live2dstruct::CRuntimePackage::Request& request, QString* error, bool includeArtwork) const
 {
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return fail(QStringLiteral("请先保存或取消素材、图集或 UV 编辑，再捕获模型包"));
@@ -394,6 +394,10 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     candidate.parameterMetadata = m_document.ParameterMetadataOverrides();
     candidate.parameterOrganization = m_document.ParameterOrganization();
     candidate.geometryObjectPairs = m_document.GeometryObjectPairs();
+    if (includeArtwork) {
+        if (m_document.Artwork().IsEmpty()) return fail(QStringLiteral("当前模型没有可打包的来源素材"));
+        candidate.artwork = m_document.Artwork();
+    }
     ParameterReferenceCatalog catalog;
     if (!model->CaptureParameterReferenceCatalog(catalog, error)) return false;
     candidate.modelSettingsDigest = catalog.modelSettingsDigest;
@@ -461,11 +465,16 @@ void MainWindow::ExportRuntimePackage()
 {
     if (!m_openglwindows || !m_runtimePanelsInitialized || !ConfirmExportReady(QStringLiteral("模型包导出"))) return;
     CRuntimeExportDialog dialog(m_openglwindows->GetCurrentModelJson(), m_motionPanel && (!m_motionPanel->Timeline().Tracks().isEmpty() || !m_motionPanel->Timeline().Events().isEmpty()), this);
-    dialog.SetArtworkNotice(!m_document.Artwork().IsEmpty());
+    live2dstruct::CModelArtwork::Usage artworkUsage;
+    QString artworkError;
+    if (!live2dstruct::CModelArtwork::Validate(m_document.Artwork(), &artworkUsage, &artworkError)) {
+        QMessageBox::warning(this, QStringLiteral("无法导出模型包"), artworkError); return;
+    }
+    dialog.SetArtworkSummary(m_document.Artwork().revisions.size(), artworkUsage.encodedBytes);
     if (dialog.exec() != QDialog::Accepted) return;
     QString error;
     live2dstruct::CRuntimePackage::Request request;
-    if (!CaptureRuntimePackage(dialog.UseCurrentValues(), dialog.IncludeTimeline(), request, &error)) {
+    if (!CaptureRuntimePackage(dialog.UseCurrentValues(), dialog.IncludeTimeline(), request, &error, dialog.IncludeArtwork())) {
         QMessageBox::warning(this, QStringLiteral("无法导出模型包"), error);
         return;
     }
@@ -2715,6 +2724,7 @@ bool MainWindow::CloseModel()
     RestorePhysicsBakeActions();
     m_workspaceReady = false;
     m_runtimePanelsInitialized = false;
+    m_artworkPackageWarning.clear();
     m_saveSessionAction->setEnabled(false);
     m_loadSessionAction->setEnabled(false);
     StopPsdBatch();
@@ -2851,7 +2861,10 @@ bool MainWindow::SetAuthoringReady(bool ready)
 void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded)
 {
     const QPointer<MainWindow> alive(this);
-    if (!loaded || m_runtimePanelsInitialized || m_openglwindows != expectedWindow || m_psdBatch || m_batchExporting || m_previewExport.IsBusy()) return;
+    if (!loaded || m_runtimePanelsInitialized || m_initializingRuntimePanels || m_artworkLoading || m_openglwindows != expectedWindow ||
+        m_psdBatch || m_batchExporting || m_previewExport.IsBusy()) return;
+    m_initializingRuntimePanels = true;
+    const auto initializing = qScopeGuard([alive] { if (alive) alive->m_initializingRuntimePanels = false; });
     QString sourceError;
     if (!RuntimeMatchesDocument(&sourceError)) {
         statusBar()->showMessage(sourceError);
@@ -2875,6 +2888,21 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
         statusBar()->showMessage(QStringLiteral("纹理编辑初始化失败：%1").arg(sourceError), 10000);
         return;
     }
+    QString artworkWarning;
+    if (!RestoreArtworkPackage(expectedWindow, &artworkWarning)) {
+        if (alive && m_openglwindows) {
+            const QPointer<OpengGlForm> surface(m_openglwindows);
+            QTimer::singleShot(0, this, [alive, surface] {
+                if (alive && surface && alive->m_openglwindows == surface)
+                    alive->InitializeRuntimePanels(surface, surface->IsModelReady());
+            });
+        }
+        return;
+    }
+    if (!alive) return;
+    m_artworkPackageWarning = std::move(artworkWarning);
+    MarkDocumentSaved();
+    if (!alive) return;
     applyBgColor();
     m_runtimePanelsInitialized = true;
     if (!SetAuthoringReady(true)) return;
@@ -2885,6 +2913,7 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
     RefreshMeshTools();
     if (!alive) return;
     RefreshExportActions();
+    if (alive && !m_artworkPackageWarning.isEmpty()) statusBar()->showMessage(QStringLiteral("来源附件未载入：%1").arg(m_artworkPackageWarning), 15000);
 }
 
 void MainWindow::RestDock(const QString &name)

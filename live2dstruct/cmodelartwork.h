@@ -95,6 +95,10 @@ public:
         std::shared_ptr<const Verification> m_verification;
         friend class CModelArtwork;
     };
+    struct Archive {
+        QJsonObject metadata;
+        QMap<QByteArray, QByteArray> blobs;
+    };
     struct Usage {
         qint64 encodedBytes = 0;
         qint64 decodedBytes = 0;
@@ -114,6 +118,8 @@ public:
     static bool ValidateWithCache(const State& state, CMaterialValidationCache& cache,
                                   Usage* usage = nullptr, QString* error = nullptr);
     static bool Freeze(const State& state, State& result, QString* error = nullptr);
+    static bool EncodeArchive(const State& state, Archive& result, QString* error = nullptr);
+    static bool DecodeArchive(const Archive& archive, State& result, QString* error = nullptr);
     static bool ToJson(const State& state, QJsonObject& result, QString* error = nullptr);
     static bool FromJson(const QJsonObject& object, State& result, QString* error = nullptr);
     static bool Fingerprint(const State& state, QByteArray& result, QString* error = nullptr);

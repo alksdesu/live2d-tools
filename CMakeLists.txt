@@ -65,6 +65,7 @@ add_library(model_data STATIC
     live2dstruct/cmodelartwork.cpp
     live2dstruct/cmodeldocumentartwork.cpp
     live2dstruct/cartworkreconciler.cpp
+    live2dstruct/cartworkpackage.cpp
     live2dstruct/cmaterialresourcebudget.cpp
     live2dstruct/cmocmaterialbuilder.cpp
     live2dstruct/cmodeldocumentmaterial.cpp
@@ -602,6 +603,10 @@ if(BUILD_TESTING)
     target_link_libraries(artwork_document_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(artwork_document_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME artwork_document COMMAND artwork_document_tests)
+    add_executable(artwork_package_tests tests/artwork_package_tests.cpp)
+    target_link_libraries(artwork_package_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(artwork_package_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME artwork_package COMMAND artwork_package_tests)
     add_executable(material_resource_budget_tests tests/material_resource_budget_tests.cpp)
     target_link_libraries(material_resource_budget_tests PRIVATE model_data Qt6::Test)
     add_test(NAME material_resource_budget COMMAND material_resource_budget_tests)

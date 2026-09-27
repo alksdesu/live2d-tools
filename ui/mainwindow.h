@@ -97,7 +97,8 @@ private:
     QString ResolveMocToJson(const QString& mocPath);
     bool ConfirmExportReady(const QString& operation);
     bool CaptureRuntimePackage(bool currentDefaults, bool includeTimeline,
-                               live2dstruct::CRuntimePackage::Request& request, QString* error) const;
+                               live2dstruct::CRuntimePackage::Request& request, QString* error,
+                               bool includeArtwork = false) const;
     bool RuntimeMatchesDocument(QString* error = nullptr) const;
     void SyncDocumentToRuntime();
     void RefreshRelatedParameters();
@@ -121,6 +122,7 @@ private:
     void RefreshSessionActions();
     void RefreshTextureGeometry();
     bool InitializeTextureEditing(QString* error);
+    bool RestoreArtworkPackage(OpengGlForm* expectedWindow, QString* warning);
     bool ReplaceTexture(int slot, const QByteArray& png, QString* error);
     void RefreshTextureEditing(bool changed = false);
     void EditAtlas(const QString& selectedMesh);
@@ -132,6 +134,7 @@ private:
     QPointer<CPsdImportDialog> m_artworkDialog;
     std::shared_ptr<CExportControl> m_artworkLoadControl;
     bool m_artworkLoading = false;
+    QString m_artworkPackageWarning;
     QAction *m_importPsdAction = nullptr, *m_reimportPsdAction = nullptr, *m_manageArtworkAction = nullptr;
     bool PublishAtlasPreview(const live2dstruct::CModelDocument& before,
                              const live2dstruct::CModelDocument& after,
@@ -246,6 +249,7 @@ private:
     bool m_applyingSession = false;
     bool m_workspaceReady = false;
     bool m_runtimePanelsInitialized = false;
+    bool m_initializingRuntimePanels = false;
     bool m_syncingVisibility = false;
     enum class HistorySource { None, Parameters, Inspector, Timeline, Physics };
     HistorySource m_historySource = HistorySource::None;

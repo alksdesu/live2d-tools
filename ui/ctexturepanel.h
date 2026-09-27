@@ -82,6 +82,7 @@ public:
                                const QByteArray& mocBytes = {}, QString* error = nullptr);
     void SetEditHandler(EditHandler handler);
     void SetArtworkActions(const QList<QAction*>& actions);
+    void SetArtworkLoadWarning(const QString& reason);
     void SetEditingEnabled(bool enabled, const QString& reason = {});
     void SetPreviewActive(bool active);
     void SetSnapshotAvailable(bool available, const QString& reason = {});
@@ -144,6 +145,7 @@ private:
     QAction* m_artworkMenuAction = nullptr;
     QLabel* m_infoLabel;
     QLabel* m_errorLabel;
+    QLabel* m_artworkWarning = nullptr;
 
     // 视图
     CAtlasView* m_view;

@@ -732,6 +732,8 @@ SOURCES += \
     live2dstruct/cartworkupdateplanner.cpp \
     ui/cpsdimportdialog.cpp \
     ui/mainwindowartwork.cpp
+
+SOURCES += ui/mainwindowartworkpackage.cpp
 HEADERS += \
     live2dstruct/cmaterialvalidationcache.h \
     live2dstruct/cmaterialresourcebudget.h \
@@ -739,12 +741,14 @@ HEADERS += \
     ui/cpsdimportdialog.h
 SOURCES += \
     live2dstruct/cartworkreconciler.cpp \
+    live2dstruct/cartworkpackage.cpp \
     live2dstruct/cartworksourceimport.cpp \
     live2dstruct/cpsdlayermatcher.cpp \
     live2dstruct/cartworksampler.cpp \
     ui/cartworksourceview.cpp
 HEADERS += \
     live2dstruct/cartworkreconciler.h \
+    live2dstruct/cartworkpackage.h \
     live2dstruct/cartworksourceimport.h \
     live2dstruct/cpsdlayermatcher.h \
     live2dstruct/cartworksampler.h \
