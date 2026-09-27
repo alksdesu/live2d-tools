@@ -10,10 +10,19 @@
 #include <QTabBar>
 #include <QTemporaryDir>
 #include <QToolBar>
+#include <QScopeGuard>
+#include <QVBoxLayout>
 #include <stdexcept>
 #include <memory>
 
 namespace {
+class ObservedDock : public QDockWidget
+{
+public:
+    using QDockWidget::QDockWidget;
+    int TopLevelReceiverCount() const { return receivers(SIGNAL(topLevelChanged(bool))); }
+};
+
 class WorkspaceWindow
 {
 public:
@@ -107,6 +116,144 @@ class WorkspaceLayoutTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void dockSafeAreaTracksFloatingWithoutDuplicateBindings()
+    {
+        QMainWindow window;
+        auto* dock = new ObservedDock("sample", &window);
+        dock->setObjectName("sample"); dock->setWidget(new QWidget);
+        window.addDockWidget(Qt::RightDockWidgetArea, dock);
+        const bool windowPolicy = window.testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea);
+        const int receivers = dock->TopLevelReceiverCount();
+        CWorkspaceLayouts layouts;
+        for (int repeat = 0; repeat < 8; ++repeat) layouts.Attach(window);
+        QCOMPARE(dock->TopLevelReceiverCount(), receivers + 1);
+        QVERIFY(!dock->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        dock->setFloating(true);
+        QVERIFY(dock->isFloating()); QVERIFY(dock->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        const auto floating = window.saveState(CWorkspaceLayouts::LayoutVersion);
+        dock->setFloating(false);
+        QVERIFY(!dock->isFloating()); QVERIFY(!dock->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        QVERIFY(window.restoreState(floating, CWorkspaceLayouts::LayoutVersion));
+        QVERIFY(dock->isFloating()); QVERIFY(dock->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        QCOMPARE(window.testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea), windowPolicy);
+        QCOMPARE(dock->TopLevelReceiverCount(), receivers + 1);
+    }
+
+    void dockPoliciesSurviveFloatingGroupBreakupAndStateRestore()
+    {
+        if (QGuiApplication::platformName().startsWith("wayland"))
+            QSKIP("Wayland group dragging requires compositor input");
+        QMainWindow window; window.setCentralWidget(new QWidget);
+        window.setDockOptions(QMainWindow::AllowTabbedDocks | QMainWindow::GroupedDragging);
+        window.resize(800, 600);
+        const auto makeDock = [&](const QString& name) {
+            auto* dock = new QDockWidget(name, &window); dock->setObjectName(name);
+            auto* scroll = new QScrollArea; scroll->setWidget(new QWidget); dock->setWidget(scroll);
+            window.addDockWidget(Qt::RightDockWidgetArea, dock); return dock;
+        };
+        auto* first = makeDock("first"); auto* second = makeDock("second");
+        window.tabifyDockWidget(first, second); first->raise();
+        CWorkspaceLayouts layouts; layouts.Attach(window); window.show(); QTest::qWait(100);
+        const QPoint press(first->width() / 2, qMax(1, first->fontMetrics().height() / 2));
+        QTest::mousePress(first, Qt::LeftButton, Qt::NoModifier, press);
+        const QPoint target = window.mapToGlobal(QPoint(-150, 100));
+        QMouseEvent move(QEvent::MouseMove, first->mapFromGlobal(target), target, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(first, &move); QTest::qWait(100);
+        QMouseEvent release(QEvent::MouseButtonRelease, first->mapFromGlobal(target), target, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(first, &release); QTest::qWait(100);
+        const auto verifyGroup = [&] {
+            QVERIFY(!first->isFloating()); QVERIFY(!second->isFloating());
+            QCOMPARE(first->window(), second->window());
+            QVERIFY(first->window() != &window && first->window() != first && first->window() != second);
+            QVERIFY(!first->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+            QVERIFY(!second->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+            QVERIFY(first->window()->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+            QVERIFY(window.testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        };
+        verifyGroup();
+        first->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, true);
+        second->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, true);
+        layouts.Attach(window); verifyGroup();
+        const auto state = window.saveState(CWorkspaceLayouts::LayoutVersion);
+        first->setFloating(true);
+        QVERIFY(first->isFloating()); QVERIFY(first->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        QVERIFY(window.restoreState(state, CWorkspaceLayouts::LayoutVersion)); QTest::qWait(100);
+        for (auto* dock : {first, second}) {
+            QCOMPARE(dock->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea), dock->isFloating());
+            QVERIFY(dock->window()->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        }
+    }
+
+    void safeAreaBindingSurvivesModelReplacementAndDisconnectsWithCoordinator()
+    {
+        QMainWindow window;
+        auto makeDock = [&] {
+            auto* dock = new ObservedDock("model", &window); dock->setObjectName("model");
+            dock->setWidget(new QWidget); window.addDockWidget(Qt::RightDockWidgetArea, dock); return dock;
+        };
+        auto* first = makeDock();
+        auto layouts = std::make_unique<CWorkspaceLayouts>(); layouts->Attach(window);
+        QVERIFY(!first->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        layouts->Detach(window); window.removeDockWidget(first); delete first;
+        auto* replacement = makeDock(); const int receivers = replacement->TopLevelReceiverCount();
+        layouts->Attach(window); QCOMPARE(replacement->TopLevelReceiverCount(), receivers + 1);
+        QVERIFY(!replacement->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        layouts.reset(); QCOMPARE(replacement->TopLevelReceiverCount(), receivers);
+        replacement->setFloating(true); replacement->setFloating(false);
+        auto owner = std::make_unique<QMainWindow>();
+        auto* child = new ObservedDock("child", owner.get()); child->setObjectName("child"); child->setWidget(new QWidget);
+        owner->addDockWidget(Qt::RightDockWidgetArea, child); CWorkspaceLayouts living;
+        living.Attach(*owner); owner.reset(); QCoreApplication::processEvents();
+    }
+
+    void framelessAnimationGeometrySurvivesModeAndSavedLayoutRestoration_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::newRow("light") << false; QTest::newRow("dark") << true;
+    }
+
+    void framelessAnimationGeometrySurvivesModeAndSavedLayoutRestoration()
+    {
+        QFETCH(bool, dark);
+        const auto oldStyle = qApp->styleSheet(); const auto restoreStyle = qScopeGuard([&] { qApp->setStyleSheet(oldStyle); });
+        qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        QMainWindow window; window.setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
+        auto* canvas = new QWidget; canvas->setMinimumSize(200, 160); window.setCentralWidget(canvas);
+        window.resize(1000, 760); window.show(); QTest::qWait(30);
+        QMap<QString, QDockWidget*> docks;
+        for (const auto& id : {"tree", "param", "inspector", "motion"}) {
+            auto* dock = new QDockWidget(id, &window); dock->setObjectName(id);
+            auto* scroll = new QScrollArea; scroll->setWidgetResizable(true); scroll->setWidget(new QWidget);
+            dock->setWidget(scroll); docks[id] = dock;
+            window.addDockWidget(QString(id) == "tree" ? Qt::LeftDockWidgetArea : QString(id) == "motion" ? Qt::BottomDockWidgetArea : Qt::RightDockWidgetArea, dock);
+        }
+        window.tabifyDockWidget(docks["param"], docks["inspector"]); docks["param"]->raise();
+        CWorkspaceLayouts layouts; layouts.Attach(window); QObject model;
+        const auto defaults = [&](int mode) { docks["tree"]->show(); docks["param"]->show(); docks["inspector"]->show(); docks["param"]->raise(); docks["motion"]->setVisible(mode == 1); };
+        QVERIFY(layouts.Apply(window, 1, defaults));
+        layouts.DeferDefaultSizing(window, &model, [&](int) {
+            window.resizeDocks({docks["tree"], docks["param"]}, {220, 280}, Qt::Horizontal);
+            window.resizeDocks({docks["motion"]}, {300}, Qt::Vertical);
+        }, [] {});
+        QTRY_VERIFY(docks["motion"]->height() >= 290);
+        QTest::qWait(50); const int height = docks["motion"]->height();
+        QVERIFY(window.minimumSizeHint().height() <= 760); QVERIFY(window.minimumSizeHint().width() <= 1000);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            QVERIFY(layouts.Apply(window, 0, defaults)); QCoreApplication::processEvents();
+            QVERIFY(layouts.Apply(window, 1, defaults)); QTest::qWait(30);
+            QVERIFY(qAbs(docks["motion"]->height() - height) <= 1);
+            QVERIFY(!docks["inspector"]->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea));
+        }
+        window.resizeDocks({docks["motion"]}, {217}, Qt::Vertical); QTest::qWait(30);
+        const int chosenHeight = docks["motion"]->height(); layouts.Capture(window);
+        QTemporaryDir folder; QSettings settings(folder.filePath("workspace.ini"), QSettings::IniFormat);
+        layouts.Save(settings); const auto saved = settings.value("workspaceLayouts/modes/1/state").toByteArray();
+        CWorkspaceLayouts restored; restored.Load(settings, 1); restored.Attach(window);
+        QVERIFY(restored.Apply(window, 1, [&](int) { QFAIL("saved layout was discarded"); })); QTest::qWait(30);
+        QVERIFY(qAbs(docks["motion"]->height() - chosenHeight) <= 1);
+        QCOMPARE(settings.value("workspaceLayouts/modes/1/state").toByteArray(), saved);
+        QCOMPARE(settings.value("workspaceLayouts/version").toInt(), 1);
+    }
+
     void modeLayoutsAndRepeatedActivationPreserveUserChoices_data()
     {
         QTest::addColumn<bool>("dark");

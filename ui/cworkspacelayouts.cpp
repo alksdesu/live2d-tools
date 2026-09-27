@@ -38,6 +38,14 @@ QString modeKey(int mode)
 {
     return QStringLiteral("workspaceLayouts/modes/%1/").arg(mode);
 }
+
+void syncDockSafeArea(QDockWidget* dock)
+{
+    if (!dock || dock->testAttribute(Qt::WA_ContentsMarginsRespectsSafeArea) == dock->isFloating()) return;
+    const QPointer<QDockWidget> target(dock);
+    dock->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, dock->isFloating());
+    if (target) target->updateGeometry();
+}
 }
 
 void CWorkspaceLayouts::Load(const QSettings& settings, int legacyMode)
@@ -81,8 +89,17 @@ void CWorkspaceLayouts::Save(QSettings& settings) const
 void CWorkspaceLayouts::Attach(QMainWindow& window)
 {
     CancelDefaultSizing();
+    for (auto* dock : window.findChildren<QDockWidget*>()) {
+        connect(dock, &QDockWidget::topLevelChanged, this, &CWorkspaceLayouts::SyncDockSafeArea, Qt::UniqueConnection);
+        syncDockSafeArea(dock);
+    }
     m_baseline = window.saveState(LayoutVersion);
     m_activeMode = -1;
+}
+
+void CWorkspaceLayouts::SyncDockSafeArea()
+{
+    syncDockSafeArea(qobject_cast<QDockWidget*>(sender()));
 }
 
 void CWorkspaceLayouts::Capture(QMainWindow& window)

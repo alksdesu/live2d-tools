@@ -43,6 +43,7 @@ private:
         int mode = -1;
         quint64 generation = 0;
     };
+    void SyncDockSafeArea();
     void CancelDefaultSizing();
     std::optional<PendingSizing> m_pendingSizing;
     quint64 m_generation = 0;
