@@ -57,6 +57,7 @@ SOURCES += \
     live2dstruct/cdraworder.cpp \
     live2dstruct/cmeshtopology.cpp \
     live2dstruct/cmesheditplanner.cpp \
+    live2dstruct/cvertexselection.cpp \
     live2dstruct/calphameshplanner.cpp \
     live2dstruct/calphameshsource.cpp \
     ui/cinspectorpanel.cpp \
@@ -200,6 +201,8 @@ SOURCES += \
     opengl/coffscreenlive.cpp \
     opengl/coffscreenbuffer.cpp \
     opengl/ccanvascoordinates.cpp \
+    opengl/cvertexselectionoverlay.cpp \
+    opengl/opengglformvertexselection.cpp \
     opengl/cdeformerhandleoverlay.cpp \
     opengl/opengglformdeformeredit.cpp \
     opengl/cglmeshbuffer.cpp \
@@ -225,6 +228,7 @@ SOURCES += \
     ui/mainwindowdeformers.cpp \
     ui/mainwindowtextures.cpp \
     ui/cmeshtoolbar.cpp \
+    ui/cvertexselectiontools.cpp \
     ui/cworkspacelayouts.cpp \
     framework/CubismCdiJson.cpp\
     framework/CubismDefaultParameterId.cpp\
@@ -341,6 +345,7 @@ HEADERS += \
     live2dstruct/calphameshsource.h \
     ui/calphameshdialog.h \
     ui/cmeshtoolbar.h \
+    ui/cvertexselectiontools.h \
     ui/cdocktoggle.h \
     ui/cworkspacelayouts.h \
     live2dstruct/cmeshindexoverrides.h \
@@ -366,6 +371,7 @@ HEADERS += \
     live2dstruct/cphysicsdocument.h \
     live2dstruct/cmocparameterstructurebuilder.h \
     live2dstruct/cmocmeshstructurebuilder.h \
+    live2dstruct/cvertexselection.h \
     live2dstruct/cmocdeformerstructurebuilder.h \
     live2dstruct/cdeformerpreserverequest.h \
     live2dstruct/cdeformerstructurereplay.h \
@@ -478,6 +484,7 @@ HEADERS += \
     opengl/coffscreenlive.h \
     opengl/coffscreenbuffer.h \
     opengl/ccanvascoordinates.h \
+    opengl/cvertexselectionoverlay.h \
     opengl/cdeformerhandleoverlay.h \
     opengl/cglmeshbuffer.h \
     opengl/cglrenderstate.h \

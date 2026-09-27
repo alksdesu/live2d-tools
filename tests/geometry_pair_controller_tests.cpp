@@ -126,6 +126,48 @@ private slots:
         }
     }
 
+    void weightedDragSynchronizesFinalDisplacementOnce_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("reverse");
+        for (int type : {int(Geometry::ArtMesh), int(Geometry::Warp)}) for (bool reverse : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(reverse))) << type << reverse;
+    }
+    void weightedDragSynchronizesFinalDisplacementOnce()
+    {
+        QFETCH(int, type); QFETCH(bool, reverse);
+        auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0];
+        const auto source = reverse ? pair.second.object : pair.first.object;
+        const auto target = reverse ? pair.first.object : pair.second.object;
+        const int sourceKey = reverse ? 3 : 0, targetKey = reverse ? 0 : 3;
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller); QString error;
+        QVERIFY2(controller.Activate(source.id, Pairs::TypeName(source.type), sourceKey, {}, &error), qPrintable(error));
+        const auto before = document;
+        QVector<float> sourceBefore, targetBefore;
+        QVERIFY(world(before, frame(before, source, sourceKey), sourceBefore));
+        QVERIFY(world(before, frame(before, target, targetKey), targetBefore));
+        QVector<double> weights(sourceBefore.size() / 2, 0); weights[0] = .2; weights[2] = .6;
+        QVERIFY2(type == Geometry::ArtMesh ? controller.BeginWeightedDrag(weights, sourceBefore, &error) :
+                                            controller.BeginWeightedWarpDrag(weights, &error), qPrintable(error));
+        const QPointF delta(.017, -.013);
+        QVERIFY2(type == Geometry::ArtMesh ? controller.DragBy(delta, &error) :
+                                            controller.MoveDeformerDrag(delta, 0, &error), qPrintable(error));
+        QVector<float> sourceAfter, targetAfter;
+        QVERIFY(world(document, frame(document, source, sourceKey), sourceAfter));
+        QVERIFY(world(document, frame(document, target, targetKey), targetAfter));
+        for (int vertex = 0; vertex < weights.size(); ++vertex) {
+            const int paired = type == Geometry::ArtMesh ? (reverse ? pair.firstVertexToSecondVertex.indexOf(vertex) : pair.firstVertexToSecondVertex[vertex]) : vertex;
+            const double dx = delta.x() * weights[vertex], dy = delta.y() * weights[vertex];
+            QVERIFY(std::abs(double(sourceAfter[vertex * 2]) - sourceBefore[vertex * 2] - dx) < .00003);
+            QVERIFY(std::abs(double(sourceAfter[vertex * 2 + 1]) - sourceBefore[vertex * 2 + 1] - dy) < .00003);
+            QVERIFY(std::abs(double(targetAfter[paired * 2]) - targetBefore[paired * 2] + dx) < .00003);
+            QVERIFY(std::abs(double(targetAfter[paired * 2 + 1]) - targetBefore[paired * 2 + 1] - dy) < .00003);
+        }
+        QCOMPARE(GeometryBatchData::historyCount(document), 1);
+        const auto accepted = document.AuthoringStructureState();
+        controller.FinishDrag(); CModelEdit history;
+        QVERIFY(controller.History(true, history)); QCOMPARE(document.AuthoringStructureState(), before.AuthoringStructureState());
+        QVERIFY(controller.History(false, history)); QCOMPARE(document.AuthoringStructureState(), accepted);
+    }
     void legacySubmitWritesBothSidesWithOnePublication_data()
     {
         QTest::addColumn<int>("type"); QTest::addColumn<bool>("reverse");

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <limits>
 
 namespace {
@@ -166,6 +167,37 @@ bool CCanvasCoordinates::ModelToScreen(const QMatrix4x4& mvp, const QSize& viewS
 {
     CanvasProjection projection;
     return prepareProjection(mvp, viewSize, projection) && project(projection, model, logicalPixel);
+}
+
+bool CCanvasCoordinates::ProjectVertices(const QMatrix4x4& mvp, const QSize& viewSize,
+    const QVector<float>& modelVertices, QVector<QPointF>& logicalPixels, QString* error)
+try {
+    const auto fail = [&](const QString& reason) {
+        if (error)
+            *error = reason;
+        return false;
+    };
+    if (modelVertices.size() % 2 || modelVertices.size() > 2000000)
+        return fail(QStringLiteral("待投影的顶点数量无效"));
+    CanvasProjection projection;
+    if (!prepareProjection(mvp, viewSize, projection))
+        return fail(QStringLiteral("画布投影或逻辑尺寸无效"));
+    QVector<QPointF> candidate;
+    candidate.reserve(modelVertices.size() / 2);
+    for (qsizetype index = 0; index < modelVertices.size(); index += 2) {
+        QPointF point;
+        if (!project(projection, { modelVertices[index], modelVertices[index + 1] }, point))
+            return fail(QStringLiteral("顶点 %1 无法投影到当前画布").arg(index / 2));
+        candidate.append(point);
+    }
+    logicalPixels.swap(candidate);
+    if (error)
+        error->clear();
+    return true;
+} catch (const std::exception&) {
+    if (error)
+        *error = QStringLiteral("无法分配画布投影结果");
+    return false;
 }
 
 int CCanvasCoordinates::NearestVertex(const QMatrix4x4& mvp, const QSize& viewSize,

@@ -263,6 +263,47 @@ private slots:
         QCOMPARE(CCanvasCoordinates::NearestVertex(QMatrix4x4(), QSize(200, 100), query,
                                                    {0, 0}, 1e200), -1);
     }
+    void batchProjectionUsesLogicalPixelsAndHomogeneousDivision()
+    {
+        QMatrix4x4 matrix;
+        matrix(3, 0) = .5f;
+        QVector<QPointF> output;
+        QString error;
+        QVERIFY2(
+            CCanvasCoordinates::ProjectVertices(matrix, { 200, 100 }, { 0, 0, .5f, .25f, -1, .5f }, output, &error),
+            qPrintable(error));
+        QCOMPARE(output.size(), 3);
+        comparePoint(output[0], { 100, 50 });
+        comparePoint(output[1], { 140, 40 });
+        comparePoint(output[2], { -100, 0 });
+        QVector<QPointF> doubled;
+        QVERIFY(CCanvasCoordinates::ProjectVertices(matrix, { 400, 200 }, { 0, 0, .5f, .25f, -1, .5f }, doubled));
+        for (int i = 0; i < output.size(); ++i)
+            comparePoint(doubled[i], output[i] * 2);
+    }
+
+    void batchProjectionRejectsLateFailureWithoutPartialOutput()
+    {
+        const QVector<QPointF> original { { 123, 456 } };
+        QVector<QPointF> output = original;
+        QString error;
+        QMatrix4x4 horizon;
+        horizon(3, 0) = .5f;
+        QVERIFY(!CCanvasCoordinates::ProjectVertices(horizon, { 200, 100 }, { 0, 0, -2, 0 }, output, &error));
+        QCOMPARE(output, original);
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!CCanvasCoordinates::ProjectVertices({ }, { 200, 100 }, { 0, 0, 1 }, output, &error));
+        QCOMPARE(output, original);
+        QVERIFY(!CCanvasCoordinates::ProjectVertices(
+            { }, { 200, 100 }, { 0, 0, std::numeric_limits<float>::quiet_NaN(), 0 }, output, &error));
+        QCOMPARE(output, original);
+        QMatrix4x4 singular;
+        singular(2, 2) = 0;
+        QVERIFY(!CCanvasCoordinates::ProjectVertices(singular, { 200, 100 }, { }, output, &error));
+        QCOMPARE(output, original);
+        QVERIFY(CCanvasCoordinates::ProjectVertices({ }, { 200, 100 }, { }, output, &error));
+        QVERIFY(output.isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(CanvasCoordinatesTests)

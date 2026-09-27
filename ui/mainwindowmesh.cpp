@@ -3,16 +3,20 @@
 #include "opengl/opengglform.h"
 #include "edit/cmeshmap.h"
 #include "cmeshtoolbar.h"
+#include "cvertexselectiontools.h"
 #include "calphameshdialog.h"
 #include "cexporttaskrunner.h"
 #include "cinspectorpanel.h"
 #include "live2dstruct/calphameshsource.h"
 #include "live2dstruct/cmesheditplanner.h"
+#include "live2dstruct/cvertexselection.h"
 #include "live2dstruct/ckeyformmappingcontext.h"
 #include "opengl/ccanvascoordinates.h"
 #include "std/cexportcontrol.h"
 #include <QCryptographicHash>
 #include <QProgressDialog>
+#include <QJsonDocument>
+#include <QSettings>
 #include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
@@ -59,6 +63,64 @@ void MainWindow::InitializeMeshTools(QVBoxLayout* layout)
 {
     m_meshTools = new CMeshToolBar(m_canvasHost);
     layout->addWidget(m_meshTools);
+    m_vertexSelectionTools = new CVertexSelectionTools(m_canvasHost);
+    layout->addWidget(m_vertexSelectionTools);
+    QSettings preferences(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+    const auto storedSelection = preferences.value(QStringLiteral("canvas/vertexSelection")).toByteArray();
+    if (!storedSelection.isEmpty()) {
+        live2dstruct::CVertexSelection::Settings settings;
+        const auto json = QJsonDocument::fromJson(storedSelection);
+        QString error;
+        if (json.isObject() && live2dstruct::CVertexSelection::FromJson(json.object(), settings, &error))
+            m_openglwindows->SetVertexSelectionSettings(settings, &error);
+        if (!error.isEmpty()) m_vertexSelectionTools->SetError(error);
+    }
+    connect(m_vertexSelectionTools, &CVertexSelectionTools::EditingRequested, this, [this](bool enabled) {
+        const QPointer<MainWindow> alive(this);
+        QString error;
+        bool accepted = false;
+        if (!enabled) accepted = EndKeyformEditing(&error);
+        else if (m_selectedObjectIds.size() == 1 && m_selectedObjectTypes.size() == 1 &&
+                 AuthoringReady(&error) && RuntimeMatchesDocument(&error)) {
+            const int keyform = std::max(0, m_inspectorPanel ? m_inspectorPanel->GetActiveKeyformIndex() : 0);
+            accepted = ActivateKeyform(m_selectedObjectIds.first(), m_selectedObjectTypes.first(), keyform, &error);
+        }
+        if (!alive) return;
+        if (!accepted && !error.isEmpty()) statusBar()->showMessage(error, 8000);
+        RefreshVertexSelectionTools();
+    });
+    connect(m_vertexSelectionTools, &CVertexSelectionTools::SettingsRequested, this,
+        [this](const live2dstruct::CVertexSelection::Settings& settings) {
+            const QPointer<MainWindow> alive(this);
+            QString error;
+            const bool toolChanged = settings.tool != m_openglwindows->VertexSelectionSettings().tool;
+            bool accepted = !toolChanged || m_openglwindows->ClearMeshTool(&error);
+            if (!alive) return;
+            if (accepted) accepted = m_openglwindows->SetVertexSelectionSettings(settings, &error);
+            if (!alive) return;
+            if (!accepted) {
+                m_vertexSelectionTools->SetError(error);
+                statusBar()->showMessage(error, 8000);
+            } else {
+                QSettings preferences(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
+                preferences.setValue(QStringLiteral("canvas/vertexSelection"),
+                    QJsonDocument(live2dstruct::CVertexSelection::ToJson(settings)).toJson(QJsonDocument::Compact));
+                m_vertexSelectionTools->SetError({});
+            }
+            RefreshVertexSelectionTools();
+        });
+    const auto strokeHistory = [this](bool undo) {
+        const QPointer<MainWindow> alive(this);
+        QString error;
+        const bool accepted = undo ? m_openglwindows->UndoWeightStroke(&error) : m_openglwindows->RedoWeightStroke(&error);
+        if (!alive) return;
+        if (!accepted)
+            statusBar()->showMessage(error, 8000);
+        RefreshVertexSelectionTools();
+    };
+    connect(m_vertexSelectionTools, &CVertexSelectionTools::UndoStrokeRequested, this, [strokeHistory] { strokeHistory(true); });
+    connect(m_vertexSelectionTools, &CVertexSelectionTools::RedoStrokeRequested, this, [strokeHistory] { strokeHistory(false); });
+    connect(m_openglwindows, &OpengGlForm::VertexSelectionChanged, this, &MainWindow::RefreshVertexSelectionTools);
     m_openglwindows->SetMeshToolHandler([this](auto tool, const auto& snapshot, QString* error) {
         return ApplyMeshTool(tool, snapshot, error);
     });
@@ -83,6 +145,7 @@ void MainWindow::InitializeMeshTools(QVBoxLayout* layout)
 void MainWindow::RefreshMeshTools()
 {
     RefreshDeformerActions();
+    RefreshVertexSelectionTools();
     if (!m_meshTools || !m_openglwindows) return;
     const bool single = m_selectedObjectIds.size() == 1 && m_selectedObjectTypes.value(0) == QLatin1String("artmesh");
     const QString id = single ? m_selectedObjectIds.first() : QString();
@@ -115,6 +178,41 @@ void MainWindow::RefreshMeshTools()
         case OpengGlForm::MeshTool::Delete: m_meshTools->SetTool(CMeshToolBar::Tool::Delete); break;
         }
     }
+}
+
+void MainWindow::RefreshVertexSelectionTools()
+{
+    if (!m_vertexSelectionTools || !m_openglwindows) return;
+    using Selection = live2dstruct::CVertexSelection;
+    CVertexSelectionTools::Context context;
+    const auto status = m_openglwindows->SelectionStatus();
+    const auto settings = m_openglwindows->VertexSelectionSettings();
+    const bool single = m_selectedObjectIds.size() == 1 && m_selectedObjectTypes.size() == 1;
+    context.target = single ? m_selectedObjectIds.first() : QString();
+    context.type = single ? m_selectedObjectTypes.first() : QString();
+    context.editing = m_keyformEditor.IsActive() && m_keyformEditor.Target() == context.target &&
+        m_keyformEditor.Type() == context.type;
+    context.busy = status.busy || m_batchExporting || m_psdBatch || m_applyingSession ||
+        m_previewExport.IsBusy() || m_alphaMeshLoadControl || m_alphaMeshDialog;
+    const bool ready = AuthoringReady(&context.reason) && m_openglwindows->IsModelReady();
+    const bool pointObject = context.type == QLatin1String("artmesh") || context.type == QLatin1String("warp");
+    context.available = ready && !context.busy && pointObject && !m_document.IsLocked(context.type, context.target);
+    if (context.available) context.reason.clear();
+    else if (!single) context.reason = QStringLiteral("选择一个网格或曲面变形器以编辑顶点");
+    else if (context.type == QLatin1String("rotation")) context.reason = QStringLiteral("旋转变形器使用中心与角度手柄");
+    else if (!pointObject) context.reason = QStringLiteral("选择网格或曲面变形器以编辑顶点");
+    else if (m_document.IsLocked(context.type, context.target)) context.reason = QStringLiteral("解除对象锁定后可编辑顶点");
+    else if (context.busy) context.reason = QStringLiteral("当前操作完成后可编辑顶点");
+    else if (context.reason.isEmpty()) context.reason = QStringLiteral("等待模型预览就绪");
+    context.influenceReady = !context.editing || status.available;
+    context.hardCount = status.hardCount;
+    context.affectedCount = status.affectedCount;
+    context.canUndoStroke = status.canUndoStroke;
+    context.canRedoStroke = status.canRedoStroke;
+    context.source = status.painted ? Selection::Source::Painted :
+        settings.soft.enabled ? Selection::Source::Distance : Selection::Source::Hard;
+    if (!(m_vertexSelectionTools->Settings() == settings)) m_vertexSelectionTools->SetSettings(settings);
+    m_vertexSelectionTools->SetContext(context);
 }
 
 bool MainWindow::SetMeshToolsEnabled(bool enabled, QString* error)
@@ -456,6 +554,7 @@ bool MainWindow::PrepareMeshMigration(const live2dstruct::CModelDocument& docume
             auto state = *old;
             state.vertexCount = mesh.vertexCount;
             state.selectedVertices.clear();
+            state.paintedWeights.reset();
             target.insert(mesh.id, state);
             next.remaps.insert(mesh.id, {old->vertexCount, mesh.vertexCount, QVector<int>(old->vertexCount, -1)});
         }
@@ -497,12 +596,19 @@ bool MainWindow::PublishMeshStructure(const live2dstruct::CModelDocument& docume
             if (error) *error = QStringLiteral("网格提交的选区映射不完整");
             return false;
         }
-        found->vertexCount = command.meshRemaps.first().newVertexCount;
+        const auto& remap = command.meshRemaps.first();
+        live2dstruct::CVertexSelection::State selection;
+        if (!live2dstruct::CVertexSelection::Remap({found->selectedVertices, found->paintedWeights},
+            remap.oldVertexCount, remap.newVertexCount, remap.oldToNew, selection, error)) return false;
+        found->vertexCount = remap.newVertexCount;
+        found->paintedWeights = std::move(selection.painted);
         found->selectedVertices = m_meshToolCommit->selected;
+        if (!found->selectedVertices.isEmpty()) found->paintedWeights.reset();
         migration.targetState = std::move(target);
         migration.expectation = m_meshToolCommit->expectation;
     }
     if (!m_openglwindows->ApplyMeshGeometryPreview(bytes, document.SourceDigest(), migration, error)) return false;
+    m_openglwindows->ClearWeightStrokeHistory();
     (forward ? command.runtime->beforeEditor : command.runtime->afterEditor).swap(leaving);
     return true;
 }

@@ -1,4 +1,5 @@
 #include "cdrawmesh.h"
+#include "live2dstruct/cvertexselection.h"
 
 #include <QOpenGLVersionFunctionsFactory>
 #include <QScopeGuard>
@@ -123,6 +124,7 @@ bool CDrawMesh::SetIndices(const QVector<quint16>& indices)
 bool CDrawMesh::SelectNearestPoint(const QVector2D& position, float radius)
 {
     const bool selected = mesh && mesh->SelectNearestPoint(position, radius);
+    if (selected) m_paintedWeights.reset();
     RefreshSelectedPoints();
     return selected;
 }
@@ -164,6 +166,8 @@ bool CDrawMesh::CaptureEditorState(EditorState& state, QString* error) const
             }
             if (points[index]->GetIsSelect()) candidate.selectedVertices.append(index);
         }
+        candidate.paintedWeights = m_paintedWeights;
+        if (!live2dstruct::CVertexSelection::Validate({candidate.selectedVertices, candidate.paintedWeights}, candidate.vertexCount, error)) return false;
         state = std::move(candidate);
         return true;
     } catch (const std::exception&) {
@@ -178,6 +182,7 @@ bool CDrawMesh::PrepareEditorState(const EditorState& state, PreparedEditorState
     if (!mesh || state.vertexCount < 0 || size_t(state.vertexCount) != mesh->GetWolrd().size() ||
         state.selectedVertices.size() > state.vertexCount)
         return fail(QStringLiteral("网格选区与候选顶点数量不一致"));
+    if (!live2dstruct::CVertexSelection::Validate({state.selectedVertices, state.paintedWeights}, state.vertexCount, error)) return false;
     const auto& points = mesh->GetWolrd();
     for (const auto* point : points)
         if (!point) return fail(QStringLiteral("网格选区包含空顶点"));
@@ -185,6 +190,7 @@ bool CDrawMesh::PrepareEditorState(const EditorState& state, PreparedEditorState
     PreparedEditorState candidate;
     candidate.shown = state.shown;
     candidate.hovered = state.hovered;
+    if (state.paintedWeights) candidate.paintedWeights = QVector<double>(state.paintedWeights->cbegin(), state.paintedWeights->cend());
     candidate.selected.reserve(size_t(state.selectedVertices.size()));
     for (int index : state.selectedVertices) {
         if (index < 0 || index >= state.vertexCount || seen[index])
@@ -203,6 +209,7 @@ void CDrawMesh::CommitEditorState(PreparedEditorState&& prepared) noexcept
     IsDraw = prepared.shown;
     IsOver = prepared.hovered;
     m_vetSelectPoint.swap(prepared.selected);
+    m_paintedWeights.swap(prepared.paintedWeights);
 }
 
 bool CDrawMesh::RestoreEditorState(const EditorState& state, QString* error)
@@ -232,6 +239,7 @@ QVector<float> CDrawMesh::Positions() const
 //世界坐标系
 void CDrawMesh::SetSelect(const QRectF &rect)
 {
+    m_paintedWeights.reset();
     if (!mesh) return;
     for (auto* point : mesh->GetWolrd())
         if (point) point->SetIsSelect(rect.contains(point->GetPoint().toPointF()));
@@ -240,6 +248,7 @@ void CDrawMesh::SetSelect(const QRectF &rect)
 
 void CDrawMesh::CancelSelect()
 {
+    m_paintedWeights.reset();
     if (mesh) for (auto* point : mesh->GetWolrd())
         if (point) point->SetIsSelect(false);
     m_vetSelectPoint.clear();
@@ -260,7 +269,9 @@ const std::vector<CPoint*> &CDrawMesh::GetSelectPoint() const
 
 void CDrawMesh::AddPoint(const QVector2D &vet)
 {
-    mesh->AddPoint(vet);
+    auto weights = m_paintedWeights;
+    if (weights) weights->append(0);
+    if (mesh && mesh->AddPoint(vet)) m_paintedWeights.swap(weights);
 }
 
 bool CDrawMesh::ClickMesh(const QPointF &point)

@@ -25,9 +25,11 @@
 #include "edit/cdrawrect.h"
 #include "live2d/LAppView.hpp"
 #include "cdeformerhandleoverlay.h"
+#include "live2dstruct/cvertexselection.h"
 
 using Live2D::Cubism::Framework::CubismModel;
 class COnionSkinRenderer;
+class CVertexSelectionOverlay;
 
 
 class OpengGlForm : public QOpenGLWidget
@@ -50,6 +52,7 @@ public:
         QVector<int> operationVertices;
         QPointF pixelPosition;
         QPointF modelPosition;
+        std::optional<QVector<double>> paintedWeights;
     };
     using MeshToolHandler = std::function<bool(MeshTool, const MeshToolSnapshot&, QString*)>;
     bool SetMeshTool(MeshTool tool, const QString& target, QString* error = nullptr);
@@ -90,9 +93,11 @@ public:
     QVector2D ViewPosition() const;
     using MeshActivate = std::function<bool(const QString&, int, QString*)>;
     using MeshBegin = std::function<bool(const QVector<int>&, const QVector<float>&, QString*)>;
+    using WeightedMeshBegin = std::function<bool(const QVector<double>&, const QVector<float>&, QString*)>;
     using MeshMove = std::function<bool(const QPointF&, QString*)>;
     using MeshFinish = std::function<bool(bool, QString*)>;
     void SetMeshEditHandlers(MeshActivate activate, MeshBegin begin, MeshMove move, MeshFinish finish);
+    void SetWeightedMeshEditHandlers(MeshActivate activate, WeightedMeshBegin begin, MeshMove move, MeshFinish finish);
     struct DeformerEditTarget {
         QString id, type;
         int keyform = -1;
@@ -100,14 +105,17 @@ public:
         QMap<QString, float> pose;
         QVector<float> points;
         QPointF direction;
+        int rows = 0, columns = 0;
     };
     using DeformerBegin = std::function<bool(CDeformerHandleOverlay::Handle, const QVector<int>&, QString*)>;
+    using WeightedDeformerBegin = std::function<bool(CDeformerHandleOverlay::Handle, const QVector<double>&, QString*)>;
     using DeformerMove = std::function<bool(const QPointF&, double, QString*)>;
     void SetDeformerEditHandlers(DeformerBegin begin, DeformerMove move, MeshFinish finish);
+    void SetWeightedDeformerEditHandlers(WeightedDeformerBegin begin, DeformerMove move, MeshFinish finish);
     bool SetDeformerEditTarget(const DeformerEditTarget& target, QString* error = nullptr);
     bool ClearDeformerEditTarget(QString* error = nullptr);
     bool FinishKeyformDrag(bool cancel, QString* error = nullptr);
-    bool IsKeyformDragging() const { return IsMeshDragging() || m_deformerGesture.has_value(); }
+    bool IsKeyformDragging() const { return IsMeshDragging() || m_deformerGesture.has_value() || m_vertexGesture.has_value(); }
     bool ApplyMocPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                          const QMap<QString, float>* pose, QString* error = nullptr);
     QByteArray CurrentPreviewDigest() const;
@@ -142,6 +150,31 @@ public:
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);
     bool IsMeshDragging() const { return m_meshDrag.has_value(); }
+
+    using VertexSelection = live2dstruct::CVertexSelection;
+    struct WarpState {
+        int rows = 0, columns = 0;
+        VertexSelection::State selection;
+        bool operator==(const WarpState& other) const { return rows == other.rows && columns == other.columns && selection == other.selection; }
+    };
+    using WarpSelectionSnapshot = QMap<QString, WarpState>;
+    struct VertexSelectionStatus {
+        QString target, type;
+        bool available = false, painted = false, busy = false;
+        bool canUndoStroke = false, canRedoStroke = false;
+        int hardCount = 0, affectedCount = 0;
+    };
+    bool SetVertexSelectionSettings(const VertexSelection::Settings& settings, QString* error = nullptr);
+    const VertexSelection::Settings& VertexSelectionSettings() const { return m_vertexSettings; }
+    VertexSelectionStatus SelectionStatus() const;
+    bool UndoWeightStroke(QString* error = nullptr);
+    bool RedoWeightStroke(QString* error = nullptr);
+    WarpSelectionSnapshot CaptureWarpSelectionState() const { return m_warpSelections; }
+    bool PrepareWarpSelectionState(const QMap<QString, QSize>& layouts, const WarpSelectionSnapshot* requested,
+                                   WarpSelectionSnapshot& prepared, QString* error = nullptr) const;
+    void CommitWarpSelectionState(WarpSelectionSnapshot&& prepared) noexcept;
+    void ResetVertexSelections();
+    void ClearWeightStrokeHistory() noexcept;
 
     //点击对应的art 显示对应的mesh网格
     //点击对应网格  显示对应item
@@ -191,6 +224,7 @@ signals:
     void KeyformEditingFinishedRequested();
     void MeshToolChanged(OpengGlForm::MeshTool tool, const QString& target);
     void MeshSelectionChanged(const QString& target, const QVector<int>& vertices);
+    void VertexSelectionChanged();
     void OnionSkinStatusChanged(const live2dstruct::COnionSkin::Status& status);
 
 protected:
@@ -245,10 +279,14 @@ protected:
         QPointF start;
         QMatrix4x4 mvp;
         QSize size;
+        CDrawMesh::EditorState previousSelection;
+        QPointF startPixel;
+        QVector<double> weights;
     };
     std::optional<MeshDrag> m_meshDrag;
     MeshActivate m_meshActivate;
     MeshBegin m_meshBegin;
+    WeightedMeshBegin m_weightedMeshBegin;
     MeshMove m_meshMove;
     MeshFinish m_meshFinish;
     bool m_meshEditCallbackActive = false;
@@ -292,6 +330,8 @@ protected:
         QByteArray acceptedDigest;
         QPointF startPixel, currentPixel, startModel, lastRay;
         QVector<int> previousSelection;
+        VertexSelection::State previousVertexSelection;
+        QVector<double> weights;
         Qt::KeyboardModifiers modifiers;
         double angle = 0;
         bool rectangle = false;
@@ -304,6 +344,7 @@ protected:
     bool m_deformerCallbackActive = false;
     std::optional<DeformerGesture> m_deformerGesture;
     DeformerBegin m_deformerBegin;
+    WeightedDeformerBegin m_weightedDeformerBegin;
     DeformerMove m_deformerMove;
     MeshFinish m_deformerFinish;
     bool DeformerFrameMatches() const;
@@ -312,6 +353,56 @@ protected:
     bool MoveDeformerGesture(QMouseEvent* event, QString* error);
     bool FinishDeformerGesture(bool cancel, QString* error);
     void FinishDeformerDrag();
+    struct VertexFrame {
+        const LAppModel* modelIdentity = nullptr;
+        QSize warpLayout;
+        QString id, type;
+        QByteArray digest;
+        QMatrix4x4 mvp;
+        QSize viewport;
+        QMap<QString, float> pose;
+        VertexSelection::Geometry geometry;
+        VertexSelection::State state;
+    };
+    struct VertexGesture {
+        VertexFrame frame;
+        VertexSelection::Tool tool = VertexSelection::Tool::Move;
+        VertexSelection::Combine combine = VertexSelection::Combine::Replace;
+        QPointF start, current;
+        QVector<QPointF> path;
+        VertexSelection::Stroke stroke;
+        bool dragged = false;
+        int picked = -1;
+    };
+    struct WeightHistory {
+        QString id, type;
+        int vertexCount = 0;
+        QVector<VertexSelection::Edge> edges;
+        QSize warpLayout;
+        QVector<VertexSelection::State> states;
+        int index = -1;
+    };
+    VertexSelection::Settings m_vertexSettings;
+    WarpSelectionSnapshot m_warpSelections;
+    std::optional<VertexGesture> m_vertexGesture;
+    WeightHistory m_weightHistory;
+    CVertexSelectionOverlay* m_vertexOverlay = nullptr;
+    std::optional<QPointF> m_vertexHover;
+    mutable std::optional<VertexFrame> m_influenceFrame;
+    mutable VertexSelection::Soft m_influenceSoft;
+    mutable VertexSelection::Influence m_influence;
+    bool CaptureInfluence(const VertexFrame& frame, VertexSelection::Influence& influence, QString* error = nullptr) const;
+    bool CaptureVertexFrame(VertexFrame& frame, QString* error = nullptr) const;
+    bool VertexFrameMatches(const VertexFrame& frame) const;
+    bool ApplyVertexSelection(const VertexFrame& frame, const VertexSelection::State& state, QString* error = nullptr);
+    bool BeginVertexGesture(QMouseEvent* event, bool& consumed, QString* error);
+    bool MoveVertexGesture(QMouseEvent* event, QString* error);
+    bool FinishVertexGesture(bool cancel, QString* error);
+    void RefreshVertexOverlay();
+    void NotifyVertexSelection();
+    void RememberWeightStroke(const VertexFrame& frame, const VertexSelection::State& state);
+    bool StepWeightStroke(int direction, QString* error);
+    VertexSelection::Combine SelectionCombine(Qt::KeyboardModifiers modifiers) const;
     QString SelectCoreMesh(const QPointF& pixel, bool hover);
 
 

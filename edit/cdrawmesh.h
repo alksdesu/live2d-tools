@@ -11,6 +11,7 @@
 #include <QPointF>
 #include <QPointer>
 #include <memory>
+#include <optional>
 #include "opengl/cglmeshbuffer.h"
 
 
@@ -24,6 +25,7 @@ public:
         QVector<int> selectedVertices;
         bool shown = false;
         bool hovered = false;
+        std::optional<QVector<double>> paintedWeights;
     };
     CDrawMesh(int ebosize,const short* vetebo,int uvsize,const float* vetuv,const float* vetpos);
     ~CDrawMesh();
@@ -64,6 +66,7 @@ private:
         std::vector<CPoint*> selected;
         bool shown = false;
         bool hovered = false;
+        std::optional<QVector<double>> paintedWeights;
     };
     bool PrepareEditorState(const EditorState& state, PreparedEditorState& prepared, QString* error) const;
     void CommitEditorState(PreparedEditorState&& prepared) noexcept;
@@ -78,6 +81,7 @@ private:
     CGlMeshBuffer m_selectedPoints;
     std::vector<std::unique_ptr<CGlMeshBuffer>> m_lines;
     CTrianglMesh* mesh;//三角形mesh网格
+    std::optional<QVector<double>> m_paintedWeights;
     mutable std::vector<CPoint*> m_vetSelectPoint;//保存所有被选择的点
 };
 

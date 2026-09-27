@@ -1,4 +1,5 @@
 #include "cmeshmap.h"
+#include "live2dstruct/cvertexselection.h"
 #include <exception>
 #include <utility>
 
@@ -125,11 +126,11 @@ bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source, const CMeshGeometryMi
                 if (count != it->vertexCount) return fail(QStringLiteral("缺少顶点身份映射：%1").arg(it.key()));
                 continue;
             }
-            QVector<int> selected;
-            selected.reserve(it->selectedVertices.size());
-            for (int index : it->selectedVertices)
-                if (remap->oldToNew[index] >= 0) selected.append(remap->oldToNew[index]);
-            it->selectedVertices.swap(selected);
+            live2dstruct::CVertexSelection::State selected;
+            if (!live2dstruct::CVertexSelection::Remap({it->selectedVertices, it->paintedWeights},
+                    it->vertexCount, count, remap->oldToNew, selected, error)) return false;
+            it->selectedVertices.swap(selected.hard);
+            it->paintedWeights.swap(selected.painted);
             it->vertexCount = count;
         }
         return RestoreEditorState(migration.targetState ? *migration.targetState : state, error);

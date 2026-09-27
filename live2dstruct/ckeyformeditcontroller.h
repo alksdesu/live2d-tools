@@ -71,8 +71,10 @@ public:
     bool History(bool undo, CModelEdit& edit, QString* error = nullptr);
     bool Restore(CModelDocument candidate, QString* error = nullptr, bool forceStructure = false);
     bool BeginDrag(const QVector<int>& selected, const QVector<float>& runtimePositions, QString* error = nullptr);
+    bool BeginWeightedDrag(const QVector<double>& weights, const QVector<float>& runtimePositions, QString* error = nullptr);
     bool DragBy(const QPointF& modelDelta, QString* error = nullptr);
     bool BeginDeformerDrag(DeformerHandle handle, const QVector<int>& selected, QString* error = nullptr);
+    bool BeginWeightedWarpDrag(const QVector<double>& weights, QString* error = nullptr);
     bool MoveDeformerDrag(const QPointF& modelDelta, double angleDelta, QString* error = nullptr);
     bool CancelDrag(QString* error = nullptr);
     void FinishDrag();
@@ -99,6 +101,7 @@ private:
         QVector<float> local;
         QVector<float> model;
         QVector<int> selected;
+        QVector<double> weights;
         quint64 revision = 0;
         std::optional<CGeometryPairPlanner::SynchronizationContext> paired;
     };
@@ -108,6 +111,7 @@ private:
         CDeformerEditContext mapping;
         DeformerHandle handle = DeformerHandle::WarpPoints;
         QVector<int> selected;
+        QVector<double> weights;
         QVector<float> model;
         QVector<CModelWarpKeyform> warp;
         QVector<CModelRotationKeyform> rotation;
@@ -115,6 +119,8 @@ private:
         std::optional<CGeometryPairPlanner::SynchronizationContext> paired;
     };
     bool CanEdit(const QString& id, int keyform, QString* error) const;
+    bool BeginDeformerDragState(DeformerHandle handle, const QVector<int>& selected,
+                               const QVector<double>* weights, QString* error);
     bool CanEdit(const QString& id, const QString& type, int keyform, QString* error) const;
     static bool CanEditIn(const CModelDocument& document, const QString& id, const QString& type,
                           int keyform, QString* error);

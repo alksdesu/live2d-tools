@@ -22,6 +22,98 @@ class MeshEditorStateTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void paintedStateCopiesWithoutChangingHardSelectionOrGeometry()
+    {
+        CDrawMesh source(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CDrawMesh target(3, candidateIndices, 6, candidateUvs, candidatePositions);
+        CDrawMesh::EditorState state;
+        QVERIFY(source.CaptureEditorState(state));
+        state.paintedWeights = QVector<double>{0, .25, .875};
+        state.shown = true;
+        QVERIFY(source.RestoreEditorState(state));
+        QVERIFY(target.CopyEditorStateFrom(source));
+        CDrawMesh::EditorState copied;
+        QVERIFY(target.CaptureEditorState(copied));
+        QCOMPARE(*copied.paintedWeights, *state.paintedWeights);
+        QVERIFY(copied.selectedVertices.isEmpty());
+        QVERIFY(target.GetSelectPoint().empty());
+        QCOMPARE(target.Positions(), QVector<float>(candidatePositions, candidatePositions + 6));
+        state.paintedWeights->fill(1);
+        QVERIFY(target.CaptureEditorState(copied));
+        QCOMPARE(*copied.paintedWeights, (QVector<double>{0, .25, .875}));
+    }
+
+    void paintedMigrationMapsIdentityAndZerosInsertedPoints()
+    {
+        const float next[]{0, 0, 1, 0, 1, 1, 0, 1};
+        CDrawMesh sourceMesh(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CDrawMesh targetMesh(3, sourceIndices, 8, next, next);
+        CDrawMesh::EditorState state;
+        QVERIFY(sourceMesh.CaptureEditorState(state));
+        state.paintedWeights = QVector<double>{.125, .5, .875};
+        QVERIFY(sourceMesh.RestoreEditorState(state));
+        CMeshMap source, target;
+        source.insert("A", &sourceMesh); target.insert("A", &targetMesh);
+        CMeshGeometryMigration migration;
+        migration.remaps.insert("A", {3, 4, {2, -1, 0}});
+        QVERIFY(target.CopyEditorStateFrom(source, migration));
+        QVERIFY(targetMesh.CaptureEditorState(state));
+        QCOMPARE(*state.paintedWeights, (QVector<double>{.875, 0, .125, 0}));
+        QVERIFY(state.selectedVertices.isEmpty());
+    }
+
+    void invalidPaintedCandidateDoesNotPartiallyCommitOtherMeshes()
+    {
+        CDrawMesh a(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CDrawMesh b(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CMeshMap map; map.insert("A", &a); map.insert("B", &b);
+        CMeshEditorSnapshot baseline; QVERIFY(map.CaptureEditorState(baseline));
+        for (const auto& invalid : QVector<QVector<double>>{{0, 1}, {0, -1, 0}, {0, 1.01, 0},
+                 {0, std::numeric_limits<double>::quiet_NaN(), 0}}) {
+            auto candidate = baseline;
+            candidate["A"].paintedWeights = QVector<double>{.1, .2, .3};
+            candidate["B"].paintedWeights = invalid;
+            QVERIFY(!map.RestoreEditorState(candidate));
+            CMeshEditorSnapshot after; QVERIFY(map.CaptureEditorState(after));
+            QVERIFY(!after["A"].paintedWeights); QVERIFY(!after["B"].paintedWeights);
+        }
+        auto conflict = baseline;
+        conflict["B"].paintedWeights = QVector<double>{0, 0, 0};
+        conflict["B"].selectedVertices = {1};
+        QVERIFY(!map.RestoreEditorState(conflict));
+    }
+
+    void legacyInsertionPreservesPaintAndStartsNewPointAtZero()
+    {
+        CDrawMesh mesh(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CDrawMesh::EditorState state; QVERIFY(mesh.CaptureEditorState(state));
+        state.paintedWeights = QVector<double>{.25, .5, .75};
+        QVERIFY(mesh.RestoreEditorState(state));
+        mesh.AddPoint({0, 0});
+        QVERIFY(mesh.CaptureEditorState(state));
+        QCOMPARE(state.vertexCount, 4);
+        QCOMPARE(*state.paintedWeights, (QVector<double>{.25, .5, .75, 0}));
+        mesh.AddPoint({100, 100});
+        QVERIFY(mesh.CaptureEditorState(state));
+        QCOMPARE(state.vertexCount, 4);
+        QCOMPARE(*state.paintedWeights, (QVector<double>{.25, .5, .75, 0}));
+    }
+
+    void explicitZeroPaintPersistsAndAcceptedHardSelectionClearsIt()
+    {
+        CDrawMesh mesh(3, sourceIndices, 6, sourcePositions, sourcePositions);
+        CDrawMesh::EditorState state; QVERIFY(mesh.CaptureEditorState(state));
+        state.paintedWeights = QVector<double>(3, 0);
+        QVERIFY(mesh.RestoreEditorState(state));
+        QVERIFY(mesh.CaptureEditorState(state)); QVERIFY(state.paintedWeights);
+        QVERIFY(mesh.SelectNearestPoint({0, .5f}, .01f));
+        QVERIFY(mesh.CaptureEditorState(state)); QVERIFY(!state.paintedWeights);
+        QCOMPARE(state.selectedVertices, QVector<int>{2});
+        state.selectedVertices.clear(); state.paintedWeights = QVector<double>(3, .25);
+        QVERIFY(mesh.RestoreEditorState(state)); mesh.CancelSelect();
+        QVERIFY(mesh.CaptureEditorState(state)); QVERIFY(!state.paintedWeights);
+    }
+
     void migrationUsesCandidatePointsAndPreservesBothGeometries()
     {
         CDrawMesh sourceA(3, sourceIndices, 6, sourcePositions, sourcePositions);

@@ -1,4 +1,5 @@
 #include "cdeformerhandleoverlay.h"
+#include "ui/theme.h"
 #include "ccanvascoordinates.h"
 
 #include <QEvent>
@@ -171,11 +172,12 @@ void CDeformerHandleOverlay::paintEvent(QPaintEvent*)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     const auto metrics = Measure();
+    const qreal mainStroke = std::max(metrics.stroke, 2.0 / devicePixelRatioF());
     const auto group = isEnabled() ? QPalette::Active : QPalette::Disabled;
     const QColor base = palette().color(group, QPalette::Window);
     const QColor ink = palette().color(group, QPalette::WindowText);
-    const QColor accent = palette().color(group, QPalette::Highlight);
-    const QColor marked = palette().color(group, QPalette::HighlightedText);
+    const QColor accent(Theme::tokens(base.lightness() < 128).value(QStringLiteral("@accentInk@")));
+    const QColor marked = base.lightness() < 128 ? base : palette().color(group, QPalette::HighlightedText);
     const QRectF visible(QPointF(), m_viewport);
     const auto disk = [&](const QPointF& center, qreal radius, const QColor& fill, const QColor& edge) {
         if (!visible.adjusted(-radius - metrics.stroke * 2, -radius - metrics.stroke * 2,
@@ -194,10 +196,10 @@ void CDeformerHandleOverlay::paintEvent(QPaintEvent*)
         const qreal extent = metrics.origin + metrics.stroke * 2;
         const auto bounds = QRectF(m_origin, angle).normalized().adjusted(-extent, -extent, extent, extent);
         if (bounds.intersects(visible)) {
-            painter.setPen(QPen(base, metrics.stroke * 3, Qt::SolidLine, Qt::RoundCap));
+            painter.setPen(QPen(base, mainStroke * 3, Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(m_origin, angle);
             QColor connection = ink; connection.setAlphaF(.6);
-            painter.setPen(QPen(connection, metrics.stroke, Qt::SolidLine, Qt::RoundCap));
+            painter.setPen(QPen(connection, mainStroke, Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(m_origin, angle);
         }
         disk(m_origin, metrics.origin, base, ink);
@@ -222,7 +224,7 @@ void CDeformerHandleOverlay::paintEvent(QPaintEvent*)
         const auto clipped = m_rectangle->intersected(visible);
         if (clipped.isEmpty()) return;
         QColor fill = accent; fill.setAlphaF(.12);
-        painter.setPen(QPen(accent, metrics.stroke, Qt::DashLine)); painter.setBrush(fill);
+        painter.setPen(QPen(accent, mainStroke, Qt::DashLine)); painter.setBrush(fill);
         painter.drawRect(clipped);
     }
 }

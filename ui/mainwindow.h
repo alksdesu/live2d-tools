@@ -46,6 +46,7 @@ class QProgressDialog;
 class CExportResultsPanel;
 class CExportControl;
 class CMeshToolBar;
+class CVertexSelectionTools;
 class CAlphaMeshDialog;
 class QVBoxLayout;
 struct PreviewExportState;
@@ -174,6 +175,7 @@ private:
     void RefreshDeformerStructureUi(const live2dstruct::CModelEdit& command, bool forward);
     void InitializeMeshTools(QVBoxLayout* layout);
     void RefreshMeshTools();
+    void RefreshVertexSelectionTools();
     bool SetMeshToolsEnabled(bool enabled, QString* error);
     bool ApplyMeshTool(OpengGlForm::MeshTool tool, const OpengGlForm::MeshToolSnapshot& snapshot, QString* error);
     void OptimizeSelectedMesh();
@@ -295,6 +297,7 @@ private:
     QMap<QString, float> m_keyformBaseValues;
     QPointer<QPushButton> m_finishKeyformButton;
     QPointer<CMeshToolBar> m_meshTools;
+    QPointer<CVertexSelectionTools> m_vertexSelectionTools;
     std::shared_ptr<const MeshToolCommitState> m_meshToolCommit;
     QPointer<CAlphaMeshDialog> m_alphaMeshDialog;
     std::shared_ptr<CExportControl> m_alphaMeshLoadControl;

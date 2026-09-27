@@ -1,5 +1,6 @@
 #include "ckeyformeditcontroller.h"
 #include "cparentgraph.h"
+#include "cvertexselection.h"
 #include <QScopedValueRollback>
 #include <algorithm>
 #include <cmath>
@@ -890,17 +891,30 @@ bool CKeyformEditController::BeginDrag(const QVector<int>& selected, const QVect
                                      QString* error)
 {
     if (!IsActive() || m_type != QLatin1String("artmesh") || !CanEdit(m_target, m_keyform, error)) return false;
-    if (IsDragging() || selected.isEmpty()) return fail(error, QStringLiteral("没有可拖动的顶点或拖拽尚未结束"));
+    QVector<double> weights(m_document->DrawableKeyformPositions(m_target, m_keyform).size() / 2, 0);
+    QSet<int> unique;
+    for (int index : selected) {
+        if (index < 0 || index >= weights.size() || unique.contains(index))
+            return fail(error, QStringLiteral("顶点选区无效"));
+        unique.insert(index);
+        weights[index] = 1;
+    }
+    return BeginWeightedDrag(weights, runtimePositions, error);
+}
+
+bool CKeyformEditController::BeginWeightedDrag(const QVector<double>& weights,
+                                             const QVector<float>& runtimePositions, QString* error)
+{
+    if (!IsActive() || m_type != QLatin1String("artmesh") || !CanEdit(m_target, m_keyform, error)) return false;
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     Drag drag;
     drag.start = *m_document;
     drag.local = m_document->DrawableKeyformPositions(m_target, m_keyform);
-    QSet<int> unique;
-    for (int index : selected) {
-        if (index < 0 || index >= drag.local.size() / 2 || unique.contains(index))
-            return fail(error, QStringLiteral("顶点选区无效"));
-        unique.insert(index);
-    }
-    drag.selected = selected;
+    drag.weights = QVector<double>(weights.cbegin(), weights.cend());
+    if (!CVertexSelection::Validate({{}, drag.weights}, drag.local.size() / 2, error)) return false;
+    for (int index = 0; index < drag.weights.size(); ++index)
+        if (drag.weights[index] > 0) drag.selected.append(index);
+    if (drag.selected.isEmpty()) return fail(error, QStringLiteral("没有可拖动的顶点"));
     if (!drag.mapping.Build(*m_document, m_target, m_keyform, m_pose, error) ||
         !drag.mapping.MatchesRuntime(runtimePositions, error) ||
         !drag.mapping.ToModel(drag.local, drag.model, error)) return false;
@@ -917,22 +931,16 @@ bool CKeyformEditController::DragBy(const QPointF& delta, QString* error)
         return fail(error, QStringLiteral("拖拽期间文档已改变，请结束本次操作"));
     if (!std::isfinite(delta.x()) || !std::isfinite(delta.y()))
         return fail(error, QStringLiteral("拖拽坐标无效"));
-    QVector<float> model = m_drag->model;
-    for (int index : m_drag->selected) {
-        const double x = double(model[index * 2]) + delta.x(), y = double(model[index * 2 + 1]) + delta.y();
-        if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x) > std::numeric_limits<float>::max() ||
-            std::abs(y) > std::numeric_limits<float>::max()) return fail(error, QStringLiteral("拖拽坐标超出范围"));
-        model[index * 2] = float(x);
-        model[index * 2 + 1] = float(y);
-    }
-    QVector<float> inverse;
-    if (!m_drag->mapping.FromModel(model, inverse, error)) return false;
     QVector<float> local = m_drag->local;
-    for (int index : m_drag->selected) {
-        local[index * 2] = inverse[index * 2];
-        local[index * 2 + 1] = inverse[index * 2 + 1];
+    if (!delta.isNull()) {
+        QVector<float> model, inverse;
+        if (!CVertexSelection::Translate(m_drag->model, m_drag->weights, delta, model, error) ||
+            !m_drag->mapping.FromModel(model, inverse, error)) return false;
+        for (int index : m_drag->selected) {
+            local[index * 2] = inverse[index * 2];
+            local[index * 2 + 1] = inverse[index * 2 + 1];
+        }
     }
-    if (delta.isNull()) local = m_drag->local;
     if (local == m_document->DrawableKeyformPositions(m_target, m_keyform)) return true;
     CModelDocument candidate = m_drag->start;
     if (local != m_drag->local) {
@@ -976,6 +984,17 @@ bool CKeyformEditController::CancelDrag(QString* error)
 
 bool CKeyformEditController::BeginDeformerDrag(DeformerHandle handle, const QVector<int>& selected, QString* error)
 {
+    return BeginDeformerDragState(handle, selected, nullptr, error);
+}
+
+bool CKeyformEditController::BeginWeightedWarpDrag(const QVector<double>& weights, QString* error)
+{
+    return BeginDeformerDragState(DeformerHandle::WarpPoints, {}, &weights, error);
+}
+
+bool CKeyformEditController::BeginDeformerDragState(DeformerHandle handle, const QVector<int>& selected,
+                                                 const QVector<double>* weights, QString* error)
+{
     if (!IsActive() || !CanEdit(m_target, m_type, m_keyform, error)) return false;
     if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
     const bool warp = handle == DeformerHandle::WarpPoints;
@@ -990,14 +1009,23 @@ bool CKeyformEditController::BeginDeformerDrag(DeformerHandle handle, const QVec
     if (!drag.mapping.Build(*m_document, m_target, m_type, m_keyform, m_pose, error)) return false;
     drag.model = drag.mapping.ModelPoints();
     if (warp) {
-        if (selected.isEmpty()) return fail(error, QStringLiteral("请选择要移动的控制点"));
-        QSet<int> unique;
-        for (int index : selected) {
-            if (index < 0 || index >= drag.model.size() / 2 || unique.contains(index))
-                return fail(error, QStringLiteral("控制点选区无效"));
-            unique.insert(index);
+        if (weights) {
+            drag.weights = QVector<double>(weights->cbegin(), weights->cend());
+            if (!CVertexSelection::Validate({{}, drag.weights}, drag.model.size() / 2, error)) return false;
+            for (int index = 0; index < drag.weights.size(); ++index)
+                if (drag.weights[index] > 0) drag.selected.append(index);
+        } else {
+            drag.weights.fill(0, drag.model.size() / 2);
+            QSet<int> unique;
+            for (int index : selected) {
+                if (index < 0 || index >= drag.weights.size() || unique.contains(index))
+                    return fail(error, QStringLiteral("控制点选区无效"));
+                unique.insert(index);
+                drag.weights[index] = 1;
+            }
+            drag.selected = selected;
         }
-        drag.selected = selected;
+        if (drag.selected.isEmpty()) return fail(error, QStringLiteral("请选择要移动的控制点"));
         drag.warp = m_document->DeformerWarpKeyforms(m_target);
     } else drag.rotation = m_document->DeformerRotationKeyforms(m_target);
     if (!PreparePairSynchronization(drag.start, m_target, m_type, m_keyform, m_pose, drag.paired, error)) return false;
@@ -1020,17 +1048,18 @@ bool CKeyformEditController::MoveDeformerDrag(const QPointF& delta, double angle
     QVector<float> local;
     if (!angular && !delta.isNull()) {
         QVector<float> points;
-        const auto append = [&](int index) {
-            const double x = double(drag.model[index * 2]) + delta.x();
-            const double y = double(drag.model[index * 2 + 1]) + delta.y();
+        const auto append = [&](int index, double weight) {
+            const double x = double(drag.model[index * 2]) + delta.x() * weight;
+            const double y = double(drag.model[index * 2 + 1]) + delta.y() * weight;
             if (!std::isfinite(x) || !std::isfinite(y) || std::abs(x) > std::numeric_limits<float>::max() ||
                 std::abs(y) > std::numeric_limits<float>::max()) return false;
             points.append(float(x)); points.append(float(y));
             return true;
         };
         if (drag.handle == DeformerHandle::WarpPoints) {
-            for (int index : drag.selected) if (!append(index)) return fail(error, QStringLiteral("控制点坐标超出范围"));
-        } else if (!append(0)) return fail(error, QStringLiteral("旋转中心坐标超出范围"));
+            for (int index : drag.selected)
+                if (!append(index, drag.weights[index])) return fail(error, QStringLiteral("控制点坐标超出范围"));
+        } else if (!append(0, 1)) return fail(error, QStringLiteral("旋转中心坐标超出范围"));
         if (!drag.mapping.FromModel(points, local, error)) return false;
     }
     CModelEdit command;

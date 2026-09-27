@@ -84,6 +84,7 @@ struct ParameterStructureHistory
     bool timelinePreviewActive = false;
     quint64 timelineStopRevision = 0;
     QStringList selectedIds, selectedTypes;
+    OpengGlForm::WarpSelectionSnapshot warpSelection;
 };
 Q_DECLARE_METATYPE(ParameterStructureHistory)
 
@@ -105,6 +106,7 @@ struct PreviewExportState
     int timerInterval = 0;
     float scale = 1;
     QVector2D position;
+    OpengGlForm::WarpSelectionSnapshot warpSelection;
     PsdExportStage failureStage = PsdExportStage::Preparing;
     bool outputCommitted = false;
     QVector<QPair<QPointer<QWidget>, bool>> widgets;
@@ -1106,6 +1108,7 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     leaving.resources = m_parameterResources;
     leaving.selectedIds = m_selectedObjectIds;
     leaving.selectedTypes = m_selectedObjectTypes;
+    leaving.warpSelection = m_openglwindows->CaptureWarpSelectionState();
     leaving.timelinePreviewActive = model->HasTimelinePreview();
     leaving.timelineStopRevision = m_timelinePreviewStopRevision;
     LAppModel::EditorPreviewContext currentEditor;
@@ -1119,6 +1122,15 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     }
     const auto archived = targetState.canConvert<ParameterStructureHistory>() ? targetState.value<ParameterStructureHistory>()
         : ParameterStructureHistory{targetState.value<ParameterStructureSeeds>(), {}};
+    QMap<QString, QSize> warpLayouts;
+    for (const auto& deformer : document.Deformers())
+        if (deformer.type == live2dstruct::CModelDeformer::Warp)
+            warpLayouts.insert(deformer.id, QSize(deformer.columns + 1, deformer.rows + 1));
+    OpengGlForm::WarpSelectionSnapshot warpSelection, emptyWarpSelection;
+    const auto* requestedWarpSelection = restoring ? &emptyWarpSelection :
+        command.field == live2dstruct::CModelEdit::DeformerStructure && targetState.canConvert<ParameterStructureHistory>()
+        ? &archived.warpSelection : nullptr;
+    if (!m_openglwindows->PrepareWarpSelectionState(warpLayouts, requestedWarpSelection, warpSelection, error)) return false;
     CParameterReferencePlan::Prepared references;
     const bool changeReferences = deleting || restoring || !m_parameterResources.IsEmpty();
     if (changeReferences) {
@@ -1243,7 +1255,7 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     if (changePhysics && !physics.Result().document.isEmpty())
         physicsDraft.bytes = QJsonDocument(physics.Result().document).toJson(QJsonDocument::Compact);
     std::optional<CMeshGeometryMigration> geometry;
-    if (restoring && (document.HasMeshStructure() || m_document.HasMeshStructure())) {
+    if (restoring) {
         geometry.emplace();
         if (!PrepareMeshMigration(document, nullptr, true, *geometry, nullptr, error)) return false;
     }
@@ -1265,6 +1277,8 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
         return false;
     }
     if (changeReferences) std::swap(m_parameterResources, references.resources.state);
+    m_openglwindows->CommitWarpSelectionState(std::move(warpSelection));
+    if (restoring) m_openglwindows->ClearWeightStrokeHistory();
     m_refreshParameterTracks = m_refreshParameterTracks || changeTracks;
     m_refreshPhysicsReferences = m_refreshPhysicsReferences || changePhysics;
     (forward ? command.runtime->before : command.runtime->after).swap(captured);
@@ -1577,9 +1591,16 @@ void MainWindow::RefreshKeyformUi(bool changed, bool markSession, bool syncParam
                 live2dstruct::CDeformerEditContext context;
                 if (context.Build(m_document, m_keyformEditor.Target(), m_keyformEditor.Type(),
                                   m_keyformEditor.Keyform(), m_keyformEditor.Pose(), &error)) {
+                    int rows = 0, columns = 0;
+                    for (const auto& deformer : m_document.Deformers())
+                        if (deformer.id == m_keyformEditor.Target() && deformer.type == live2dstruct::CModelDeformer::Warp) {
+                            rows = deformer.rows + 1;
+                            columns = deformer.columns + 1;
+                            break;
+                        }
                     if (m_openglwindows->SetDeformerEditTarget({m_keyformEditor.Target(), m_keyformEditor.Type(),
                         m_keyformEditor.Keyform(), m_openglwindows->CurrentPreviewDigest(), m_keyformEditor.Pose(),
-                        context.ModelPoints(), context.RotationDirection()}, &error) &&
+                        context.ModelPoints(), context.RotationDirection(), rows, columns}, &error) &&
                         m_keyformEditor.Type() == QLatin1String("rotation")) m_openglwindows->do_ShowDeformers({});
                 } else m_openglwindows->ClearDeformerEditTarget();
             }
@@ -2285,6 +2306,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             state->timerInterval = state->surface->m_timer.interval();
             state->scale = state->surface->ViewScale();
             state->position = state->surface->ViewPosition();
+            state->warpSelection = state->surface->CaptureWarpSelectionState();
             for (auto* widget : QList<QWidget*>{m_treePanel, m_paramPanel, m_physicsPanel, m_blendShapePanel,
                     m_texturePanel, m_inspectorPanel, m_diagnosticsPanel, m_userDataPanel, m_openglwindows}) {
                 if (!widget) continue;
@@ -2389,6 +2411,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             delegate->m_meshIndexOverrides = state->meshIndexOverrides;
             delegate->m_dragTargetDrawables = state->dragTargets;
             state->surface->SetViewState(state->scale, state->position);
+            auto warpSelection = state->warpSelection;
+            state->surface->CommitWarpSelectionState(std::move(warpSelection));
             return true;
         };
         steps.resume = [state](QString* detail) {
@@ -3550,7 +3574,7 @@ void MainWindow::RestDock(const QString &name)
         updateModifiedTitle();
         return true;
     };
-    m_openglwindows->SetMeshEditHandlers(
+    m_openglwindows->SetWeightedMeshEditHandlers(
         [this](const QString& id, int keyform, QString* error) {
             if (!m_inspectorPanel || m_inspectorPanel->GetSelectionId() != id) {
                 if (error) *error = QStringLiteral("对象选择未成功，请重新选择网格");
@@ -3558,9 +3582,9 @@ void MainWindow::RestDock(const QString &name)
             }
             return ActivateKeyform(id, keyform, error);
         },
-        [this](const QVector<int>& selected, const QVector<float>& positions, QString* error) {
+        [this](const QVector<double>& weights, const QVector<float>& positions, QString* error) {
             if (!AuthoringReady(error)) return false;
-            if (!m_keyformEditor.BeginDrag(selected, positions, error)) return false;
+            if (!m_keyformEditor.BeginWeightedDrag(weights, positions, error)) return false;
             m_keyformDragHistorySource = m_historySource;
             return true;
         }, [this](const QPointF& delta, QString* error) {
@@ -3570,14 +3594,15 @@ void MainWindow::RestDock(const QString &name)
             if (m_document.Revision() != revision) RefreshKeyformUi(true, false);
             return true;
         }, finishKeyformDrag);
-    m_openglwindows->SetDeformerEditHandlers(
-        [this](CDeformerHandleOverlay::Handle handle, const QVector<int>& selected, QString* error) {
+    m_openglwindows->SetWeightedDeformerEditHandlers(
+        [this](CDeformerHandleOverlay::Handle handle, const QVector<double>& weights, QString* error) {
             if (!AuthoringReady(error)) return false;
             using Handle = live2dstruct::CKeyformEditController::DeformerHandle;
             if (handle == CDeformerHandleOverlay::None) return false;
             const auto target = handle == CDeformerHandleOverlay::WarpPoint ? Handle::WarpPoints :
                 handle == CDeformerHandleOverlay::RotationOrigin ? Handle::RotationOrigin : Handle::RotationAngle;
-            if (!m_keyformEditor.BeginDeformerDrag(target, selected, error)) return false;
+            if (!(target == Handle::WarpPoints ? m_keyformEditor.BeginWeightedWarpDrag(weights, error) :
+                  m_keyformEditor.BeginDeformerDrag(target, {}, error))) return false;
             m_keyformDragHistorySource = m_historySource;
             return true;
         }, [this](const QPointF& delta, double angle, QString* error) {

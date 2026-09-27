@@ -1,6 +1,7 @@
 #include "geometry_pair_planner_fixture.h"
 #include "real_core_model_fixture.h"
 #include "live2dstruct/cdeformereditcontext.h"
+#include "live2dstruct/ckeyformeditcontroller.h"
 #include <QtTest>
 
 using namespace GeometryPairData;
@@ -35,6 +36,62 @@ class GeometryPairPlannerCoreTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void weightedControllerMatchesCoreDisplacement_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("reverse");
+        for (int type : {int(Geometry::ArtMesh), int(Geometry::Warp)}) for (bool reverse : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(reverse))) << type << reverse;
+    }
+    void weightedControllerMatchesCoreDisplacement()
+    {
+        QFETCH(int, type); QFETCH(bool, reverse);
+        Fixture fixture; QString error;
+        QVERIFY2(make(Geometry::Type(type), fixture, &error, true, true), qPrintable(error));
+        if (type == Geometry::ArtMesh) QVERIFY2(reindexTarget(fixture, &error), qPrintable(error));
+        CModelDocument document; QVERIFY(document.LoadBytes(fixture.bytes, "weighted-core.moc3", &error));
+        QVERIFY(document.SetGeometryObjectPairs({document.SourceDigest(), {fixture.pair}}, &error));
+        const auto pair = fixture.pair;
+        const auto source = reverse ? pair.second : pair.first;
+        const auto target = reverse ? pair.first : pair.second;
+        const int sourceKey = reverse ? 3 : 0, targetKey = reverse ? 0 : 3;
+        CKeyformEditController controller; controller.SetDocument(&document);
+        QByteArray published;
+        controller.SetPublisher([&](const CModelDocument& next, const auto&, bool, QString* detail) {
+            return next.BuildRuntimeMoc(published, detail);
+        }, [](QString*) { return true; });
+        QVERIFY2(controller.Activate(source.object.id, Pairs::TypeName(source.object.type), sourceKey, {}, &error), qPrintable(error));
+        QMap<QString, float> targetPose = controller.Pose(), corner;
+        QVERIFY(document.KeyformParameterValues(target.object.id, Pairs::TypeName(target.object.type), targetKey, corner, &error));
+        for (auto it = corner.cbegin(); it != corner.cend(); ++it) targetPose[it.key()] = it.value();
+        CoreModel sourceCore, targetCore;
+        QVERIFY(sourceCore.load(published)); setPose(sourceCore, controller.Pose());
+        QVERIFY(targetCore.load(published)); setPose(targetCore, targetPose);
+        const QString sourceId = reverse ? fixture.secondWitness : fixture.firstWitness;
+        const QString targetId = reverse ? fixture.firstWitness : fixture.secondWitness;
+        const auto before = positions(sourceCore, sourceId), targetBefore = positions(targetCore, targetId);
+        QVERIFY(before.size() >= 4);
+        QVector<double> weights(type == Geometry::ArtMesh ? before.size() : 4, 0);
+        weights[0] = .2; weights[2] = .6;
+        QVector<float> runtime;
+        for (auto point : before) { runtime.append(float(point.x())); runtime.append(float(point.y())); }
+        QVERIFY2(type == Geometry::ArtMesh ? controller.BeginWeightedDrag(weights, runtime, &error) :
+                                            controller.BeginWeightedWarpDrag(weights, &error), qPrintable(error));
+        const QPointF delta(.025, -.015);
+        QVERIFY2(type == Geometry::ArtMesh ? controller.DragBy(delta, &error) : controller.MoveDeformerDrag(delta, 0, &error), qPrintable(error));
+        CoreModel changedSource, changedTarget;
+        QVERIFY(changedSource.load(published)); setPose(changedSource, controller.Pose());
+        QVERIFY(changedTarget.load(published)); setPose(changedTarget, targetPose);
+        const auto after = positions(changedSource, sourceId), targetAfter = positions(changedTarget, targetId);
+        for (int i = 0; i < weights.size(); ++i) {
+            const int paired = type == Geometry::ArtMesh ? (reverse ? pair.firstVertexToSecondVertex.indexOf(i) : pair.firstVertexToSecondVertex[i]) : i;
+            QVERIFY2(near(after[i], before[i] + delta * weights[i]), qPrintable(QString("source vertex %1").arg(i)));
+            QVERIFY2(near(targetAfter[paired], targetBefore[paired] + mirror(delta * weights[i])), qPrintable(QString("target vertex %1").arg(i)));
+        }
+        QVERIFY(controller.CancelDrag(&error));
+        CoreModel cancelled; QVERIFY(cancelled.load(published)); setPose(cancelled, controller.Pose());
+        QCOMPARE(positions(cancelled, sourceId), before);
+        QVERIFY(sourceCore.intact()); QVERIFY(targetCore.intact()); QVERIFY(changedSource.intact()); QVERIFY(changedTarget.intact()); QVERIFY(cancelled.intact());
+    }
     void mirrorAndSynchronizationMatchCore_data()
     {
         QTest::addColumn<int>("type"); QTest::addColumn<bool>("forward"); QTest::addColumn<bool>("synchronize");

@@ -41,6 +41,15 @@ QColor at(const QImage& image, const QPointF& pixel)
     return image.pixelColor(qRound(pixel.x() * image.devicePixelRatio()), qRound(pixel.y() * image.devicePixelRatio()));
 }
 
+double luminance(const QColor& color)
+{
+    const auto linear = [](double value) { return value <= .04045 ? value / 12.92 : std::pow((value + .055) / 1.055, 2.4); };
+    return .2126 * linear(color.redF()) + .7152 * linear(color.greenF()) + .0722 * linear(color.blueF());
+}
+double contrast(const QColor& first, const QColor& second)
+{
+    const double a = luminance(first), b = luminance(second); return (std::max(a,b) + .05) / (std::min(a,b) + .05);
+}
 qreal coloredDiameter(const QImage& image, const QPointF& center, const QColor& color)
 {
     const qreal scale = image.devicePixelRatio();
@@ -204,6 +213,21 @@ private slots:
         QCOMPARE(overlay.HitTest({250, 150}).index, 0);
     }
 
+    void rotationArrowContrastsWithFilledHandle_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::newRow("light") << false; QTest::newRow("dark") << true;
+    }
+    void rotationArrowContrastsWithFilledHandle()
+    {
+        QFETCH(bool,dark); qApp->setStyleSheet(Theme::globalStyleSheet(dark)); Canvas canvas; canvas.resize(400,300); CDeformerHandleOverlay overlay(&canvas);
+        QVERIFY(overlay.SetWarp({0,0}, {}, canvas.size())); overlay.SetSelected({0}); canvas.show(); overlay.show(); QVERIFY(QTest::qWaitForWindowExposed(&canvas));
+        auto palette = overlay.palette(); palette.setColor(QPalette::HighlightedText, Qt::white); overlay.setPalette(palette);
+        const QColor accent = at(render(canvas,4),overlay.PointPixels()[0]); QVERIFY(contrast(accent,overlay.palette().color(QPalette::Window)) >= 3);
+        QVERIFY(overlay.SetRotation({0,0},{1,0},{},canvas.size())); const auto image = render(canvas,4); const QPointF center = overlay.AnglePixel(); double maximum = 1;
+        for (int y = qRound((center.y()-2) * 4); y <= qRound((center.y()+1) * 4); ++y)
+            for (int x = qRound((center.x()-1) * 4); x <= qRound((center.x()+1) * 4); ++x) maximum = std::max(maximum,contrast(image.pixelColor(x,y),accent));
+        QVERIFY2(maximum >= 3,qPrintable(QString("rotation arrow contrast %1").arg(maximum)));
+    }
     void themesTransparencyAndHighDpi_data()
     {
         QTest::addColumn<QString>("styleName"); QTest::addColumn<bool>("dark");
@@ -228,11 +252,15 @@ private slots:
         const auto image = render(canvas, 1), highDpi = render(canvas, 2);
         QCOMPARE(at(image, {14, 37}), at(background, {14, 37}));
         const auto selected = overlay.PointPixels()[0];
-        const auto accent = overlay.palette().color(QPalette::Highlight);
-        QCOMPARE(at(image, selected).rgba(), accent.rgba()); QCOMPARE(at(highDpi, selected).rgba(), accent.rgba());
+        const auto accent = at(image, selected);
+        QVERIFY(contrast(accent, overlay.palette().color(QPalette::Window)) >= 3); QCOMPARE(at(highDpi, selected).rgba(), accent.rgba());
         QVERIFY(at(image, selected) != at(background, selected));
         const auto normalSize = coloredDiameter(image, selected, accent), scaledSize = coloredDiameter(highDpi, selected, accent);
         QVERIFY(normalSize > 2); QVERIFY(std::abs(normalSize - scaledSize) < 2);
+        const auto nativeImage = canvas.grab().toImage(); const qreal nativeScale = nativeImage.devicePixelRatio(); double rectangleContrast = 1;
+        for (int y = qRound(43 * nativeScale); y <= qRound(47 * nativeScale); ++y) for (int x = qRound(65 * nativeScale); x <= qRound(115 * nativeScale); ++x)
+            rectangleContrast = std::max(rectangleContrast, contrast(nativeImage.pixelColor(x,y), overlay.palette().color(QPalette::Window)));
+        QVERIFY(rectangleContrast >= 3);
         const auto framed = image;
         overlay.SetSelectionRect(QRectF(std::numeric_limits<double>::quiet_NaN(), 0, 10, 10));
         QCOMPARE(render(canvas, 1), framed);
@@ -246,8 +274,10 @@ private slots:
             QVERIFY(QDir().mkpath(directory));
             const auto stem = directory + '/' + styleName + (dark ? "-dark" : "-light");
             QVERIFY(framed.save(stem + "-warp.png")); QVERIFY(highDpi.save(stem + "-warp@2x.png"));
+            QVERIFY(nativeImage.save(stem + "-warp-native.png"));
             QVERIFY(overlay.SetRotation({0, 0}, {1, 1}, {}, canvas.size()));
             QVERIFY(render(canvas, 1).save(stem + "-rotation.png"));
+            QVERIFY(canvas.grab().save(stem + "-rotation-native.png"));
         }
     }
 };

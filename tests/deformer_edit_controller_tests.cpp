@@ -139,6 +139,84 @@ class DeformerEditControllerTests : public QObject
         return controller.MoveDeformerDrag(kind == 2 ? QPointF() : QPointF(amount, -amount), kind == 2 ? amount : 0, error);
     }
 private slots:
+    void fractionalWeightsMoveOnlyTheActiveGeometry_data()
+    {
+        QTest::addColumn<bool>("warp");
+        QTest::newRow("mesh") << false;
+        QTest::newRow("warp") << true;
+    }
+    void fractionalWeightsMoveOnlyTheActiveGeometry()
+    {
+        QFETCH(bool, warp);
+        Fixture fixture; if (warp) bindWarp(fixture);
+        CModelDocument document; QVERIFY(document.LoadBytes(fixture.bytes, "weighted"));
+        CKeyformEditController controller; Preview preview;
+        activate(document, controller, preview, warp ? "Warp" : "Mesh", warp ? "warp" : "artmesh", 1);
+        const auto initial = document.AuthoringStructureState();
+        const auto original = warp ? document.DeformerWarpKeyforms("Warp")[1].positions : document.DrawableKeyformPositions("Mesh", 1);
+        QVector<float> world; QString error;
+        CKeyformMappingContext meshMapping; CDeformerEditContext warpMapping;
+        if (warp) {
+            QVERIFY(warpMapping.Build(document, "Warp", "warp", 1, controller.Pose(), &error));
+            world = warpMapping.ModelPoints();
+        } else {
+            QVERIFY(meshMapping.Build(document, "Mesh", 1, controller.Pose(), &error));
+            QVERIFY(meshMapping.ToModel(original, world, &error));
+        }
+        QVector<double> weights(world.size() / 2, 0); weights[0] = .2; weights[2] = .65;
+        double* borrowed = weights.data();
+        QVERIFY2(warp ? controller.BeginWeightedWarpDrag(weights, &error) : controller.BeginWeightedDrag(weights, world, &error), qPrintable(error));
+        borrowed[0] = 1;
+        const auto move = [&](QPointF delta) { return warp ? controller.MoveDeformerDrag(delta, 0, &error) : controller.DragBy(delta, &error); };
+        QVERIFY2(move({.01, -.02}), qPrintable(error));
+        QVERIFY2(move({.03, .04}), qPrintable(error));
+        const auto accepted = document.AuthoringStructureState();
+        const auto current = warp ? document.DeformerWarpKeyforms("Warp")[1].positions : document.DrawableKeyformPositions("Mesh", 1);
+        QVector<float> actual;
+        QVERIFY(warp ? warpMapping.ToModel(current, actual, &error) : meshMapping.ToModel(current, actual, &error));
+        for (int i = 0; i < weights.size(); ++i) {
+            const double weight = i == 0 ? .2 : i == 2 ? .65 : 0;
+            QVERIFY(std::abs(double(actual[i * 2]) - world[i * 2] - .03 * weight) < .00002);
+            QVERIFY(std::abs(double(actual[i * 2 + 1]) - world[i * 2 + 1] - .04 * weight) < .00002);
+            if (!weight) QVERIFY(std::memcmp(current.constData() + i * 2, original.constData() + i * 2, sizeof(float) * 2) == 0);
+        }
+        QCOMPARE(historyCount(document), 1);
+        preview.reject = true; QVERIFY(!move({.05, .02})); QCOMPARE(document.AuthoringStructureState(), accepted);
+        preview.reject = false; QVERIFY(move({})); QCOMPARE(document.AuthoringStructureState(), initial); QVERIFY(!controller.DragHasChanges());
+        QVERIFY(move({.03, .04})); QCOMPARE(document.AuthoringStructureState(), accepted);
+        QVERIFY(controller.CancelDrag()); QCOMPARE(document.AuthoringStructureState(), initial);
+        weights[0] = .2;
+        QVERIFY(warp ? controller.BeginWeightedWarpDrag(weights) : controller.BeginWeightedDrag(weights, world));
+        QVERIFY(move({.03, .04})); controller.FinishDrag();
+        CModelEdit history; QVERIFY(controller.History(true, history)); QCOMPARE(document.AuthoringStructureState(), initial);
+        QVERIFY(controller.History(false, history)); QCOMPARE(document.AuthoringStructureState(), accepted);
+    }
+    void invalidWeightsCannotStartOrPublish_data()
+    {
+        QTest::addColumn<bool>("warp"); QTest::addColumn<int>("invalid");
+        for (bool warp : {false, true}) for (int invalid = 0; invalid < 7; ++invalid)
+            QTest::newRow(qPrintable(QString("%1-%2").arg(warp).arg(invalid))) << warp << invalid;
+    }
+    void invalidWeightsCannotStartOrPublish()
+    {
+        QFETCH(bool, warp); QFETCH(int, invalid);
+        Fixture fixture; CModelDocument document; QVERIFY(document.LoadBytes(fixture.bytes, "invalid-weights"));
+        CKeyformEditController controller; Preview preview;
+        activate(document, controller, preview, warp ? "Warp" : "Mesh", warp ? "warp" : "artmesh");
+        CKeyformMappingContext mapping; QVector<float> world;
+        if (!warp) { QVERIFY(mapping.Build(document, "Mesh", 0, controller.Pose())); QVERIFY(mapping.ToModel(document.DrawableKeyformPositions("Mesh", 0), world)); }
+        QVector<double> weights(warp ? 4 : world.size() / 2, .2);
+        if (invalid == 0) weights.clear();
+        if (invalid == 1) weights.removeLast();
+        if (invalid == 2) weights.append(.2);
+        if (invalid == 3) weights[0] = -.1;
+        if (invalid == 4) weights[0] = 1.1;
+        if (invalid == 5) weights[0] = std::numeric_limits<double>::quiet_NaN();
+        if (invalid == 6) weights.fill(0);
+        const auto before = snapshot(document); const int attempts = preview.attempts; QString error;
+        QVERIFY(!(warp ? controller.BeginWeightedWarpDrag(weights, &error) : controller.BeginWeightedDrag(weights, world, &error)));
+        QVERIFY(!error.isEmpty()); QVERIFY(!controller.IsDragging()); QCOMPARE(preview.attempts, attempts); unchanged(document, before);
+    }
     void meshChangeQueryUsesTheSameNetGeometryContract()
     {
         Fixture fixture; CModelDocument document; QVERIFY(document.LoadBytes(fixture.bytes, "mesh-query"));

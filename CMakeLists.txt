@@ -56,6 +56,7 @@ add_library(model_data STATIC
     live2dstruct/cdraworder.cpp
     live2dstruct/cmeshtopology.cpp
     live2dstruct/cmesheditplanner.cpp
+    live2dstruct/cvertexselection.cpp
     live2dstruct/calphameshplanner.cpp
     live2dstruct/calphameshsource.cpp
     live2dstruct/cmotiontimeline.cpp
@@ -404,6 +405,17 @@ if(BUILD_TESTING)
     target_include_directories(canvas_coordinates_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(canvas_coordinates_tests PRIVATE Qt6::Gui Qt6::Test)
     add_test(NAME canvas_coordinates COMMAND canvas_coordinates_tests)
+    add_executable(vertex_selection_tests tests/vertex_selection_tests.cpp)
+    target_link_libraries(vertex_selection_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME vertex_selection COMMAND vertex_selection_tests)
+    add_executable(vertex_selection_tools_tests tests/vertex_selection_tools_tests.cpp ui/cvertexselectiontools.cpp)
+    target_link_libraries(vertex_selection_tools_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    add_test(NAME vertex_selection_tools COMMAND vertex_selection_tools_tests)
+    set_tests_properties(vertex_selection_tools PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(vertex_selection_overlay_tests tests/vertex_selection_overlay_tests.cpp opengl/cvertexselectionoverlay.cpp)
+    target_link_libraries(vertex_selection_overlay_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    add_test(NAME vertex_selection_overlay COMMAND vertex_selection_overlay_tests)
+    set_tests_properties(vertex_selection_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(deformer_handle_overlay_tests tests/deformer_handle_overlay_tests.cpp
         opengl/cdeformerhandleoverlay.cpp opengl/ccanvascoordinates.cpp)
     target_include_directories(deformer_handle_overlay_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
