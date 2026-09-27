@@ -74,6 +74,7 @@ SOURCES += \
     live2dstruct/cmodeldocument.cpp \
     live2dstruct/cdeformerdisplaynames.cpp \
     live2dstruct/cmodeldocumentnames.cpp \
+    live2dstruct/cmodeldocumentmasks.cpp \
     live2dstruct/cwarpgridresampler.cpp \
     live2dstruct/cmodeldocumentstructure.cpp \
     live2dstruct/cmodeldocumentmeshverification.cpp \
@@ -370,6 +371,8 @@ HEADERS += \
     opengl/cmeshbounds.h \
     opengl/cuvgeometry.h \
     live2dstruct/cmodeldocument.h \
+    live2dstruct/cmodeldiagnostic.h \
+    live2dstruct/cmaskeditpolicy.h \
     live2dstruct/cdeformerdisplaynames.h \
     live2dstruct/cwarpgridresampler.h \
     live2dstruct/cmocgeometrypool.h \
@@ -695,6 +698,7 @@ RESOURCES += \
 
 SOURCES += \
     std/cexportcontrol.cpp \
+    std/cexportdiagnostics.cpp \
     ui/cexporttaskrunner.cpp \
     opengl/cpsdfiletask.cpp \
     opengl/cpsdrendersession.cpp \
@@ -710,6 +714,7 @@ SOURCES += \
     ui/cexportresultspanel.cpp
 HEADERS += \
     std/cexportcontrol.h \
+    std/cexportdiagnostics.h \
     ui/cexporttaskrunner.h \
     opengl/cpsdfiletask.h \
     opengl/cpsdrendersession.h \

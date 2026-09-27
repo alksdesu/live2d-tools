@@ -10,6 +10,7 @@
 #include <QGuiApplication>
 #include <QOffscreenSurface>
 #include <QOpenGLVersionFunctionsFactory>
+#include <QOpenGLFramebufferObject>
 #include <QTemporaryDir>
 #include <QFile>
 #include <QThread>
@@ -109,7 +110,8 @@ class PsdCooperativeGlTests : public QObject
     QVector<GLuint> m_textures;
 
     std::pair<CubismModel*, CubismRenderer_OpenGLES2*> scene(bool masked = false, bool high = false,
-                                                          bool available = true, bool inverted = false)
+                                                          bool available = true, bool inverted = false,
+                                                          const QVector<int>& maskList = {})
     {
         auto state = std::make_unique<GetterState>();
         state->maskCounts = {{0, masked ? 1 : 0, 0}};
@@ -117,13 +119,20 @@ class PsdCooperativeGlTests : public QObject
         state->flags[1] = Core::csmIsDoubleSided | (inverted ? Core::csmIsInvertedMask : 0);
         state->dynamicFlags[0] = Core::csmIsVisible | (available ? Core::csmVertexPositionsDidChange : 0);
         state->dynamicFlags[1] = Core::csmIsVisible | Core::csmVertexPositionsDidChange;
+        if (!maskList.isEmpty()) {
+            state->drawableCount = 3;
+            state->maskCounts = {0, int(maskList.size()), 0};
+            state->maskPointers[1] = maskList.constData();
+            state->flags[2] = Core::csmIsDoubleSided;
+            state->dynamicFlags[2] = Core::csmIsVisible | Core::csmVertexPositionsDidChange;
+        }
         if (masked) {
             for (auto& vertex : state->positions[0]) {
                 vertex.X *= 0.5f;
                 vertex.Y *= 0.5f;
             }
         }
-        for (int index = 0; index < 2; ++index) {
+        for (int index = 0; index < state->drawableCount; ++index) {
             state->multiply[index] = {1, 1, 1, 1};
             state->screen[index] = {0, 0, 0, 0};
         }
@@ -136,8 +145,10 @@ class PsdCooperativeGlTests : public QObject
                                [](CubismRenderer_OpenGLES2* item) { CubismRenderer::Delete(item); });
         if (!renderer->setGlOwningContext(m_context.get()) || !renderer->Initialize(model.get())) qFatal("Renderer setup failed");
         renderer->UseHighPrecisionMask(high);
-        const std::array<std::array<quint8, 4>, 2> colors{{{{255, 0, 0, quint8(masked ? 128 : 255)}}, {{0, 0, 255, 128}}}};
-        for (int index = 0; index < 2; ++index) {
+        const std::array<std::array<quint8, 4>, 3> colors{{
+            {{255, 0, 0, quint8(maskList.isEmpty() ? (masked ? 128 : 255) : 64)}},
+            {{0, 0, 255, quint8(maskList.isEmpty() ? 128 : 255)}}, {{255, 255, 255, 128}}}};
+        for (int index = 0; index < model->GetDrawableCount(); ++index) {
             GLuint texture = 0;
             m_gl->glGenTextures(1, &texture);
             m_gl->glBindTexture(GL_TEXTURE_2D, texture);
@@ -168,6 +179,50 @@ class PsdCooperativeGlTests : public QObject
     }
 
 private slots:
+    void repeatedSourcesKeepTheirCoverageInSteppedPsd_data()
+    {
+        QTest::addColumn<bool>("high");
+        QTest::addColumn<bool>("inverted");
+        for (bool high : {false, true}) for (bool inverted : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(high).arg(inverted))) << high << inverted;
+    }
+
+    void repeatedSourcesKeepTheirCoverageInSteppedPsd()
+    {
+        QFETCH(bool, high);
+        QFETCH(bool, inverted);
+        QVector<int> alphas;
+        for (const QVector<int>& masks : {QVector<int>{0, 0, 2}, QVector<int>{0, 2, 2}}) {
+            const auto [model, renderer] = scene(true, high, true, inverted, masks);
+            QOpenGLFramebufferObject framebuffer(64, 64);
+            QVERIFY(framebuffer.isValid() && framebuffer.bind());
+            m_gl->glViewport(0, 0, 64, 64);
+            m_gl->glDisable(GL_DITHER);
+            QString error;
+            QVERIFY2(renderer->BeginPsdExport(true, nullptr, &error), qPrintable(error));
+            CubismMatrix44 matrix;
+            QImage image;
+            QRect bounds;
+            bool ready = false;
+            int steps = 0;
+            while (!ready && steps++ < 100)
+                QVERIFY2(renderer->DrawPsdStep(1, 1, matrix, QSize(64, 64), image, bounds, ready, &error), qPrintable(error));
+            QVERIFY(ready && !image.isNull());
+            renderer->EndPsdExport(true);
+            const auto point = QPoint(32, 32) - bounds.topLeft();
+            QVERIFY(image.rect().contains(point));
+            const int actual = qAlpha(image.pixel(point));
+            double transmission = 1;
+            for (int source : masks) transmission *= 1.0 - (source == 0 ? 64.0 : 128.0) / 255;
+            const int expected = qRound(255 * (inverted ? transmission : 1 - transmission));
+            QVERIFY2(std::abs(actual - expected) <= 1, qPrintable(QString("actual %1 expected %2").arg(actual).arg(expected)));
+            alphas.append(actual);
+            QCOMPARE(model->GetDrawableMaskCounts()[1], 3);
+            for (int index = 0; index < masks.size(); ++index) QCOMPARE(model->GetDrawableMasks()[1][index], masks[index]);
+        }
+        QVERIFY(std::abs(alphas[0] - alphas[1]) >= 20);
+    }
+
     void initTestCase() { ids = std::make_unique<CubismIdManager>(); }
     void init()
     {

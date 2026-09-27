@@ -2,6 +2,7 @@
 #include "cmoclayoutrewriter.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
+#include "cmaskeditpolicy.h"
 
 #include <QCryptographicHash>
 #include <QtEndian>
@@ -687,12 +688,13 @@ bool CMocPreviewBuilder::Snapshot::MaskPatches(const Overrides& overrides, Patch
         const auto original = mesh.maskCount ?
             bytes.mid(Get(ColumnId::Masks).offset + mesh.maskBegin * 4, mesh.maskCount * 4) : QByteArray();
         if (encoded == original) continue;
-        QSet<int> unique;
-        for (int target : *requested) {
-            if (target < 0 || target >= meshes.size() || target == index || unique.contains(target))
-                return Fail(error, QStringLiteral("蒙版索引越界、自引用或重复：%1").arg(mesh.id));
-            unique.insert(target);
-        }
+        QVector<int> baseline;
+        baseline.reserve(mesh.maskCount);
+        for (int item = 0; item < mesh.maskCount; ++item)
+            baseline.append(qFromLittleEndian<qint32>(original.constData() + item * 4));
+        QString detail;
+        if (!CMaskEditPolicy::Validate(baseline, *requested, index, meshes.size(), &detail))
+            return Fail(error, QStringLiteral("%1：%2").arg(detail, mesh.id));
         if (requested->size() != mesh.maskCount)
             patches[Index(ColumnId::MaskCount)].insert(index, EncodeWord(quint32(requested->size())));
         if (!encoded.isEmpty()) masks.insert(index, std::move(encoded));

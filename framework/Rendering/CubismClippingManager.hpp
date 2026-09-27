@@ -3,6 +3,7 @@
 
 
 #include <float.h>
+#include <algorithm>
 #include "framework/CubismFramework.hpp"
 #include "framework/Type/csmVector.hpp"
 #include "framework/Type/csmRectF.hpp"

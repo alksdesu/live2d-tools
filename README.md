@@ -10,7 +10,7 @@
 
 A Live2D Cubism model conversion toolbox: convert runtime models (`.moc3`) to Adobe Photoshop (PSD) files, or restore them to editable Cubism Editor projects (`.cmo3`).
 
-PSD export renders every drawable (art mesh) individually into its own layer, preserving the original Part group hierarchy and names. cmo3 generation restores all geometry, deformers, parameters and physics from the moc3 binary — for cases where the source project is lost and only runtime files remain.
+PSD export writes each drawable (art mesh) to its own layer and can group layers using the available Part hierarchy and display names. CMO3 generation reconstructs the model data retained in moc3 and supported companion files when the source project is lost. A runtime model alone cannot recover artwork or authoring metadata that was discarded during export.
 
 ### Features
 
@@ -21,6 +21,8 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Play motions, switch expressions, toggle auto eye-blink / breathing, Pose switching
 - Model structure tree (Part / ArtMesh / Deformer hierarchy) with click-to-highlight
 - Searchable multi-select structure tree with visibility controls and a Cubism-style Inspector/diagnostics view
+- Model diagnostics show the affected object, support locating unambiguous IDs, and export a versioned JSON report with the source identity and document revision.
+- Clipping edits retain proven source repetitions and their order. Removing another mask does not silently deduplicate the remaining masks; deduplication is an explicit option. New repetitions, self references and invalid targets are rejected. Edited lists with inherited repetitions use session v14; earlier sessions remain readable.
 - Inspector edits for ArtMesh visibility and opacity are applied to preview, PSD and cmo3 export
 - Inspector draw-order edits use drawable order values, with native render order breaking ties; preview, picking and PSD share the same ordering, and overrides are saved to cmo3/sessions. Editing models with Draw Order Groups remains incomplete.
 - Searchable and collapsible parameter groups with undo/redo history
@@ -39,7 +41,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Atlas workspace: create and rename atlases, resize the canvas while preserving pixel density, move or copy material regions across atlases, rotate by 90°, and automatically pack overlapping material groups. PNG replacement, atlas changes, and UV edits share document undo/redo. Sessions preserve generated atlases; unused generated tail slots can be removed.
 - Repacking copies RGBA pixels and sampling margins. Existing source atlases stay available, and minified previews may differ after mipmaps are rebuilt.
 - PSD sources: import RGB 8-bit PSD layers, align them against existing atlas pixels, explicitly associate ArtMeshes, and selectively update them from another source revision. Unique Photoshop layer IDs support matching across renames and reordering; ambiguous matches require confirmation. Missing layers can keep their previous artwork.
-- Source revisions, original bytes, and mesh associations are preserved in work sessions (v13, with earlier sessions still readable). Atlas movement and supported vertex edits migrate associations; manual texture replacement detaches affected links. Reimport samples the frozen source rather than repeatedly resampling edited atlases.
+- Source revisions, original bytes, and mesh associations are preserved in versioned work sessions, with earlier sessions still readable. Atlas movement and supported vertex edits migrate associations; manual texture replacement detaches affected links. Reimport samples the frozen source rather than repeatedly resampling edited atlases.
 - Runtime package export can optionally include source artwork, including old revisions and unassociated sources. Reopening the moved package in this tool restores source links against the exported model and texture slots. Damaged or mismatched artwork attachments produce a persistent message while the runtime model remains usable; save a work session to retain view settings and object locks.
 - PSD import supports raw, RLE, ZIP and ZIP prediction. PSB, other color modes/depths, and pixel-equivalent reconstruction of masks, effects or unsupported blends are not supported. Color policy and layer-opacity baking are explicit. CMO3 preserves the resulting model and textures but currently does not preserve these PSD source revisions or associations.
 
@@ -50,8 +52,10 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
   - **Grouped** — contiguous layers follow the Part hierarchy; interleaved Parts are split into multiple folders to preserve layer stacking
 - **Parameter snapshot export** — export the pose currently set via sliders, with automatic effects disabled
 - **Texture sampling mode** — sample the effective atlases onto the frozen model mesh at canvas resolution. Preserves mesh shape, layer opacity and blend mode; does not bake clipping masks or multiply/screen colors. Supports parameter snapshots and does not reconstruct the original PSD artwork.
-- **Cubism-importable mode** — embeds an sRGB ICC profile, Unicode layer names (luni) and deduplicated layer names for Cubism import. Binary output is tested; import through the Cubism Editor and Photoshop interfaces remains unverified.
+- **Cubism-importable mode** — embeds an sRGB ICC profile, Unicode layer names (luni) and deduplicated layer names for Cubism import. Binary output is tested. Photoshop 2022 read/save/reopen has been verified for a 30-layer texture-sampling export; this does not establish equivalence for every mask, effect or color profile. Cubism Editor GUI import remains unverified.
+- ArtMesh layers retain drawable IDs; Part folders use their own display names. A Part sharing an ArtMesh ID no longer supplies an unrelated name to the texture layer.
 - Batch export: pick a folder, all models are converted automatically; failed files are listed individually
+- Source mask repetitions produce a detailed warning instead of blocking export. Batch results retain per-file diagnostics, including successful exports with warnings, in the v2 JSON report. Rendered PSD preserves mask multiplicities; texture sampling still does not bake clipping masks.
 - Atomic PSD saves preserve existing files on failure; generated layer pixels, Unicode names and ICC data have independent binary regression tests
 
 #### cmo3 Project Recovery (moc3 → cmo3)
@@ -162,7 +166,7 @@ Third-party dependencies remain under their original licenses (Live2D SDK, OpenC
 
 Live2D Cubism 模型转换工具箱：将运行时模型（`.moc3`）转换为 Adobe Photoshop（PSD）文件，或恢复为 Cubism Editor 可编辑工程（`.cmo3`）。
 
-PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立图层，保留原始 Part 分组层级结构和名称。cmo3 生成从 moc3 二进制还原全部几何、变形器、参数与物理数据，适用于丢失源工程只剩运行时文件的场景。
+PSD 导出将每个 drawable（art mesh）写入独立图层，并可按现有 Part 层级与显示名分组。CMO3 生成从 moc3 及支持的配套文件重建仍被保留的模型数据，适用于丢失源工程的场景。运行时模型无法单独找回导出时已经丢弃的原画和编辑器元数据。
 
 ### 功能
 
@@ -173,6 +177,8 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 播放动作、切换表情，支持自动眨眼和呼吸开关，Pose 切换
 - 模型结构树查看（Part / ArtMesh / Deformer 层级），点击高亮对应网格
 - 结构树支持名称/ID 搜索、多选和可见性控制，Inspector 显示几何、Keyform、绘制顺序、混合/剔除、蒙版等信息，模型检查面板报告结构错误
+- 模型检查显示关联对象，支持定位无歧义的 ID，并导出包含来源指纹和文档修订号的版本化 JSON 报告
+- 蒙版编辑保留可证明来源的重复次数与当前顺序，删除其它蒙版不会顺带去重；去重需明确勾选。新增重复、自引用和无效目标仍被拒绝。含来源重复的编辑列表使用会话 v14 保存，旧版会话继续可读
 - Inspector 可直接修改 ArtMesh 可见性和透明度，结果同步到实时预览、PSD 与 cmo3 导出
 - Inspector 绘制顺序编辑按 draw order 数值排序，同值沿用 Core 前后关系；预览、选取、PSD 共用排序，覆盖值保存至 cmo3 和工作会话。含 Draw Order Group 模型的编辑语义尚未完整支持。
 - 参数分组可折叠，支持名称/ID 搜索、撤销/重做；可保存和载入版本化工作会话（参数、可见性、视图）
@@ -193,7 +199,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 图集编辑支持新建、命名、保持像素密度的画布尺寸调整、跨图集素材搬移、90°旋转和自动排布；重叠素材成组处理，保护未选对象仍使用的像素。PNG 替换、图集变化与 UV 编辑共用文档撤销／重做，生成图集可保存到会话与模型包，可删除未引用的生成尾槽
 - 重排复制 RGBA 像素及采样边带；原图集保持可用，重建 mipmap 后的缩小显示可能存在差异
 - PSD 来源导入：读取 RGB 8-bit 图层，对照现有图集配准，明确关联 ArtMesh，再从新来源版本选择性更新。唯一 Photoshop 图层 ID 支持改名和调序后的匹配；歧义匹配需要确认，缺失图层可保留旧素材
-- 工作会话 v13 保存原始来源字节、版本和网格关联，并继续读取旧版会话；图集搬移及支持的顶点编辑迁移关联，手工替换纹理会断开受影响的链接。重新导入从冻结原图采样，避免对已编辑图集反复重采样
+- 版本化工作会话保存原始来源字节、版本和网格关联，并继续读取旧版会话；图集搬移及支持的顶点编辑迁移关联，手工替换纹理会断开受影响的链接。重新导入从冻结原图采样，避免对已编辑图集反复重采样
 - 导出运行时模型包时，可选择包含来源素材，包括旧版本与未关联来源。把包移到新目录后用本工具打开，会按导出的模型和纹理槽恢复来源关联；附件损坏或不匹配时保留明确提示，运行模型仍可使用。对象锁定、视图等编辑状态仍通过工作会话保存
 - PSD 导入支持 RAW、RLE、ZIP 和 ZIP prediction；不支持 PSB、其它色彩模式／位深，以及蒙版、效果或不支持混合模式的像素等价重建。颜色策略和图层透明度烘焙需明确选择。CMO3 保留最终模型和贴图，当前不保留这些 PSD 来源版本和关联
 - 图集支持同尺寸 PNG 替换、恢复原图和撤销／重做；覆盖随工作会话保存，并用于画布、PNG、PSD、cmo3 与运行时模型包。原素材文件保持不变，共用同一路径的多个纹理槽可独立替换
@@ -206,8 +212,10 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
   - **按分组导出** — 连续图层按 Part 层级分组；前后顺序交错的 Part 拆成多个文件夹，保留图层叠放顺序
 - **参数快照导出** — 用当前滑条调整的姿态导出，禁用自动效果
 - **纹理采样模式** — 按冻结的模型网格在画布分辨率采样有效图集，保留网格形状、图层透明度与混合模式；不烘焙裁剪蒙版、乘色或屏幕色。支持参数快照，不表示恢复原始 PSD 素材
-- **Cubism 可导入模式** — 嵌入 sRGB ICC 配置、Unicode 图层名（luni）并去重图层名，供 Cubism 导入使用；已有二进制输出测试，Cubism Editor／Photoshop 界面的实际回读仍待验证
+- **Cubism 可导入模式** — 嵌入 sRGB ICC 配置、Unicode 图层名（luni）并去重图层名，供 Cubism 导入使用；已有二进制输出测试。Photoshop 2022 已验证一个 30 层纹理采样文件的打开、另存与重开，不代表所有蒙版、效果和色彩配置均等价；Cubism Editor GUI 导入仍待验证
+- ArtMesh 图层保留 drawable ID，Part 文件夹使用自己的显示名；修复同 ID 的 Part 名称误用于纹理图层的问题
 - 批量导出：选择文件夹，自动遍历所有模型生成 PSD，失败文件逐个列出
+- 源模型的重复蒙版改为具体提示，不再直接阻止导出；批量结果与 v2 JSON 报告保留每个文件的诊断，包括成功文件的提示。渲染式 PSD 保留蒙版重复次数，纹理采样仍不烘焙裁剪蒙版
 - PSD 原子保存，失败时保留已有文件；图层像素、Unicode 名称与 ICC 数据有独立二进制回归测试
 
 #### cmo3 工程恢复（moc3 → cmo3）

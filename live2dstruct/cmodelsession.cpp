@@ -1,4 +1,5 @@
 #include "cmodelsession.h"
+#include "cmaskeditpolicy.h"
 #include "cmotiontimeline.h"
 #include "cmeshtopology.h"
 #include "csectiontable.h"
@@ -220,9 +221,25 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 }
 }
 
+bool CModelSession::HasMaskMultiplicityOverrides() const
+{
+    for (const auto& values : drawableMaskIndices) {
+        QSet<int> unique;
+        for (int index : values) {
+            if (unique.contains(index)) return true;
+            unique.insert(index);
+        }
+    }
+    return false;
+}
+
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 13) return {};
+    if (version < 1 || version > 14) return {};
+    if (drawableMaskIndices.size() > 100000) return {};
+    for (const auto& values : drawableMaskIndices) {
+        if (values.size() > CMaskEditPolicy::MaximumOverrideReferences || std::any_of(values.cbegin(), values.cend(), [](int index) { return index < 0; })) return {};
+    }
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -239,6 +256,7 @@ QByteArray CModelSession::ToJson() const
     if (textureWorkspace && storedVersion < 11) storedVersion = 11;
     if (!artwork.IsEmpty() && storedVersion < 12) storedVersion = 12;
     if (deformerDisplayNames && storedVersion < 13) storedVersion = 13;
+    if (HasMaskMultiplicityOverrides() && storedVersion < 14) storedVersion = 14;
     if (!validDeformerNames(*this, storedVersion, nullptr)) return {};
     if (storedVersion >= 13) {
         QJsonObject names;
@@ -428,7 +446,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 13) {
+    if (parsedVersion < 1 || parsedVersion > 14) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
@@ -727,7 +745,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         result.drawableIndices.insert(key, indices);
     }
     constexpr int kMaxMaskMeshes = 100000;
-    constexpr int kMaxMasksPerMesh = 10000;
+    constexpr int kMaxMasksPerMesh = CMaskEditPolicy::MaximumOverrideReferences;
     if (maskObject.size() > kMaxMaskMeshes) {
         setError(error, QStringLiteral("蒙版覆盖网格数量超出限制"));
         return false;
@@ -743,7 +761,8 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         for (const QJsonValue& value : meshValue.toArray()) {
             double number = 0.0;
             if (!readNumber(value, &number) || std::floor(number) != number || number < 0.0 ||
-                number > static_cast<double>(std::numeric_limits<int>::max()) || unique.contains(static_cast<int>(number))) {
+                number > static_cast<double>(std::numeric_limits<int>::max()) ||
+                (parsedVersion < 14 && unique.contains(static_cast<int>(number)))) {
                 setError(error, QStringLiteral("蒙版覆盖值无效：%1").arg(key));
                 return false;
             }
@@ -907,7 +926,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 13) ||
+    if ((version < 1 || version > 14) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
@@ -1074,7 +1093,19 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
     for (auto it = drawableIndices.cbegin(); it != drawableIndices.cend(); ++it)
         if (!candidate.SetDrawableIndices(it.key(), it.value())) return fail(QStringLiteral("drawableIndices"), it.key());
     for (auto it = drawableMaskIndices.cbegin(); it != drawableMaskIndices.cend(); ++it) {
-        if (it.value().size() > 10000 || !candidate.SetDrawableMaskIndices(it.key(), it.value()))
+        if (it.value().size() > CMaskEditPolicy::MaximumOverrideReferences)
+            return fail(QStringLiteral("drawableMaskIndices"), it.key());
+        QSet<int> unique;
+        bool repeated = false;
+        for (int index : it.value()) {
+            repeated |= unique.contains(index);
+            unique.insert(index);
+        }
+        const auto base = std::find_if(candidate.Drawables().cbegin(), candidate.Drawables().cend(),
+            [&](const auto& drawable) { return drawable.id == it.key(); });
+        if (version < 14 && repeated && (base == candidate.Drawables().cend() || it.value() != base->maskIndices))
+            return fail(QStringLiteral("drawableMaskIndices"), it.key());
+        if (!candidate.SetDrawableMaskIndices(it.key(), it.value()))
             return fail(QStringLiteral("drawableMaskIndices"), it.key());
     }
     for (auto it = drawableMaskInverted.cbegin(); it != drawableMaskInverted.cend(); ++it) {

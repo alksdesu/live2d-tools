@@ -22,21 +22,14 @@
 #include "cmodelatlasedit.h"
 #include "cgeometryobjectpairs.h"
 #include "cdeformerdisplaynames.h"
+#include "cmodeldiagnostic.h"
 
 namespace live2dstruct {
 class CReader;
+class CSectionTable;
 class CKeyformBindingGrid;
 class CMocPreviewBuilder;
 struct CModelSession;
-
-struct CModelDiagnostic
-{
-    enum Severity { Warning, Error };
-    Severity severity = Error;
-    QString code;
-    QString message;
-    int index = -1;
-};
 
 struct CModelParameter
 {
@@ -406,6 +399,13 @@ private:
     bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);
     bool CanEditDeformerDisplayName(const QString& id, QString* error = nullptr) const;
     bool ApplyDeformerDisplayNameEdit(const CModelEdit& edit, bool forward);
+    struct MaskSourceSnapshot;
+    void CaptureMaskSource(const CSectionTable& table);
+    bool MaskReferencesAllowed(const QString& id, const QVector<int>& indices, bool constrainToWorking) const;
+    bool ValidateStructureMasks(QString* error) const;
+    QVector<CModelDiagnostic> MaskDiagnostics() const;
+    std::shared_ptr<const MaskSourceSnapshot> m_maskSource;
+    QSet<int> m_invalidMaskSlices;
     bool m_loaded = false;
     quint64 m_revision = 0;
     QString m_sourcePath;

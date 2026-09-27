@@ -1011,6 +1011,151 @@ private slots:
         }
     }
 
+    void invalidMaskOptionsDoNotReplaceOutput_data()
+    {
+        QTest::addColumn<QString>("kind");
+        for (const QString& kind : {QStringLiteral("unknown-target"), QStringLiteral("unknown-inverted"),
+                QStringLiteral("range"), QStringLiteral("negative"), QStringLiteral("self"),
+                QStringLiteral("new-duplicate"), QStringLiteral("ambiguous-target")})
+            QTest::newRow(qPrintable(kind)) << kind;
+    }
+
+    void invalidMaskOptionsDoNotReplaceOutput()
+    {
+        QFETCH(QString, kind);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid() && table.art_meshes.size() > 3);
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid() && copyInputs("Mark", QDir(temporary.path())));
+        QByteArray bytes = reader.m_byte;
+        const QString id = table.art_meshes[0]->ids;
+        if (kind == "ambiguous-target")
+            bytes.replace(table.sectionOffsetTable->art_meshes->ids + 64, 64, id.toUtf8().leftJustified(64, '\0'));
+        const QString source = temporary.filePath("Mark.moc3");
+        QVERIFY(saveBytes(source, bytes));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = source;
+        options.outPath = temporary.filePath("existing.cmo3");
+        const QByteArray prior("existing project bytes");
+        QVERIFY(saveBytes(options.outPath, prior));
+        if (kind == "unknown-target") options.drawableMaskIndexOverrides.insert("unknown mesh", {1});
+        else if (kind == "unknown-inverted") options.drawableMaskInverted.insert("unknown mesh", true);
+        else if (kind == "range") options.drawableMaskIndexOverrides.insert(id, {int(table.art_meshes.size())});
+        else if (kind == "negative") options.drawableMaskIndexOverrides.insert(id, {-1});
+        else if (kind == "self") options.drawableMaskIndexOverrides.insert(id, {0});
+        else if (kind == "new-duplicate") options.drawableMaskIndexOverrides.insert(id, {1, 1});
+        else options.drawableMaskIndexOverrides.insert(id, {2});
+        const auto originalMasks = options.drawableMaskIndexOverrides;
+        const auto originalInverted = options.drawableMaskInverted;
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY(!error.isEmpty());
+        QFile existing(options.outPath);
+        QVERIFY(existing.open(QIODevice::ReadOnly));
+        QCOMPARE(existing.readAll(), prior);
+        QCOMPARE(options.drawableMaskIndexOverrides, originalMasks);
+        QCOMPARE(options.drawableMaskInverted, originalInverted);
+    }
+
+    void sourceMaskMultiplicitySurvivesValidOverrides_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QVector<int>>("requested");
+        QTest::addColumn<bool>("accepted");
+        QTest::newRow("raw-source") << QString("raw") << QVector<int>{1, 1, 2} << true;
+        QTest::newRow("borrowed-preserve") << QString("borrowed") << QVector<int>{1, 1, 2} << true;
+        QTest::newRow("reorder") << QString("override") << QVector<int>{2, 1, 1} << true;
+        QTest::newRow("reduce") << QString("override") << QVector<int>{1, 2} << true;
+        QTest::newRow("clear") << QString("override") << QVector<int>{} << true;
+        QTest::newRow("add-unique") << QString("override") << QVector<int>{1, 1, 2, 3} << true;
+        QTest::newRow("increase-existing") << QString("override") << QVector<int>{1, 1, 1, 2} << false;
+        QTest::newRow("repeat-previous-unique") << QString("override") << QVector<int>{1, 1, 2, 2} << false;
+        QTest::newRow("repeat-new-source") << QString("override") << QVector<int>{1, 1, 2, 3, 3} << false;
+        QTest::newRow("bad-raw-source") << QString("bad-source") << QVector<int>{1, 1, -1} << false;
+        QTest::newRow("repair-bad-source") << QString("repair-source") << QVector<int>{1, 2} << true;
+    }
+
+    void sourceMaskMultiplicitySurvivesValidOverrides()
+    {
+        QFETCH(QString, kind);
+        QFETCH(QVector<int>, requested);
+        QFETCH(bool, accepted);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid() && table.art_meshes.size() > 3);
+        QByteArray bytes = reader.m_byte;
+        const auto& offsets = *table.sectionOffsetTable;
+        const int originalCount = table.drawable_masks.size();
+        const int begin = (bytes.size() + 63) & ~63;
+        bytes.append(QByteArray(begin + (originalCount + 3) * 4 - bytes.size(), '\0'));
+        for (int i = 0; i < originalCount; ++i)
+            writeInt(bytes, begin + i * 4, table.drawable_masks[i]->art_mesh_sources_indices);
+        const QVector<int> baseline{1, 1, kind.endsWith("source") && kind != "raw" ? -1 : 2};
+        for (int i = 0; i < baseline.size(); ++i) writeInt(bytes, begin + (originalCount + i) * 4, baseline[i]);
+        writeInt(bytes, 0x180, begin);
+        writeInt(bytes, offsets.count_info->count_info_offset + 17 * 4, originalCount + 3);
+        writeInt(bytes, offsets.art_meshes->drawable_mask_sources_begin_indices, originalCount);
+        writeInt(bytes, offsets.art_meshes->drawable_mask_sources_counts, 3);
+        auto frozenReader = live2dstruct::CReader::FromBytes(bytes);
+        live2dstruct::CSectionTable frozenTable(frozenReader);
+        QVERIFY(frozenTable.IsValid());
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid() && copyInputs("Mark", QDir(temporary.path())));
+        const QString source = temporary.filePath("Mark.moc3");
+        QVERIFY(saveBytes(source, bytes));
+        QString borrowedId = table.art_meshes[0]->ids;
+        const QString originalId = borrowedId;
+        int borrowedMasks[]{1, 1, 2};
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = source;
+        options.mocBytes = QByteArray::fromRawData(bytes.constData(), bytes.size());
+        options.outPath = temporary.filePath("masks.cmo3");
+        const QByteArray sentinel("existing project");
+        QVERIFY(saveBytes(options.outPath, sentinel));
+        if (kind == "borrowed") {
+            const auto key = QString::fromRawData(borrowedId.constData(), borrowedId.size());
+            options.drawableMaskIndexOverrides.insert(key, QVector<int>::fromReadOnlyData(borrowedMasks));
+            options.drawableMaskInverted.insert(key, true);
+        } else if (kind != "raw" && kind != "bad-source") {
+            options.drawableMaskIndexOverrides.insert(borrowedId, requested);
+            options.drawableMaskInverted.insert(borrowedId, true);
+        }
+        QString error;
+        QCOMPARE(cmo3::CCmo3Builder::Build(options, &error), accepted);
+        QCOMPARE(borrowedId, originalId);
+        QCOMPARE(QVector<int>(std::begin(borrowedMasks), std::end(borrowedMasks)), QVector<int>({1, 1, 2}));
+        QCOMPARE(options.mocBytes, bytes);
+        if (!accepted) {
+            QVERIFY(!error.isEmpty());
+            QFile unchanged(options.outPath);
+            QVERIFY(unchanged.open(QIODevice::ReadOnly));
+            QCOMPARE(unchanged.readAll(), sentinel);
+            return;
+        }
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath("main.xml");
+        QVERIFY(main);
+        ExportXml xml;
+        QVERIFY2(xml.parse(main->content, &error), qPrintable(error));
+        int target = -1;
+        for (int i = 0; i < xml.nodes.size(); ++i) {
+            if (xml.nodes[i].tag != QLatin1String("CArtMeshSource") || xml.attribute(i, "xs.id").isEmpty()) continue;
+            if (xml.attribute(xml.field(xml.field(i, "super"), "id"), "idstr") == originalId) target = i;
+        }
+        QVERIFY(target >= 0);
+        const int base = xml.field(target, "super");
+        const int list = xml.field(base, "clipGuidList");
+        QVERIFY(list >= 0);
+        QCOMPARE(xml.attribute(list, "count").toInt(), requested.size());
+        QCOMPARE(xml.nodes[list].children.size(), requested.size());
+        for (int i = 0; i < requested.size(); ++i)
+            QCOMPARE(xml.attribute(xml.resolve(xml.nodes[list].children[i]), "note"), table.art_meshes[requested[i]]->ids);
+        QCOMPARE(xml.text(xml.field(base, "invertClippingMask")),
+                 kind != "raw" && !requested.isEmpty() ? QString("true") : QString("false"));
+    }
+
     void drawableFlagsFollowSourceBytesAndExplicitOverrides_data()
     {
         QTest::addColumn<QString>("model");

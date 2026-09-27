@@ -26,9 +26,10 @@ public slots:
     void cancel();
     void complete(bool ok, const QString& outPath);
     void completeDetailed(bool ok, const QString& outPath, const QString& error,
-                          PsdExportStage stage = PsdExportStage::Exporting, bool outputCommitted = false);
+                          PsdExportStage stage = PsdExportStage::Exporting, bool outputCommitted = false,
+                          const CExportDiagnostics& diagnostics = {});
     void completeCanceled(const QString& outPath, PsdExportStage stage = PsdExportStage::Exporting,
-                          const QString& reason = {});
+                          const QString& reason = {}, const CExportDiagnostics& diagnostics = {});
     void setStage(const QString& outPath, PsdExportStage stage);
     void shutdown();
 

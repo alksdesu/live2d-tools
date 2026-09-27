@@ -123,26 +123,32 @@ void PsdBatchJob::complete(bool ok, const QString& outPath)
 }
 
 void PsdBatchJob::completeDetailed(bool ok, const QString& outPath, const QString& error,
-                                   PsdExportStage stage, bool outputCommitted)
+                                   PsdExportStage stage, bool outputCommitted, const CExportDiagnostics& diagnostics)
 {
     if (m_state != State::Running || !m_exportDispatched || m_pendingIndex < 0 || outPath != m_pendingOutput) return;
     const int index = m_pendingIndex;
     auto& result = m_results[index];
+    result.diagnostics = diagnostics;
+    const bool reportedSuccess = ok;
+    ok = ok && diagnostics.ErrorCount() == 0;
     result.state = ok ? PsdBatchFileState::Succeeded : PsdBatchFileState::Failed;
     result.stage = ok ? PsdExportStage::Done :
         stage >= PsdExportStage::Preflight && stage <= PsdExportStage::Restoring ? stage : result.stage;
-    result.error = ok ? QString() : error.isEmpty() ? QStringLiteral("导出失败，未提供详细原因") : error;
-    result.outputCommitted = ok || outputCommitted;
+    result.error = ok ? QString() : !error.isEmpty() ? error : diagnostics.ErrorCount()
+        ? diagnostics.FirstError() : QStringLiteral("导出失败，未提供详细原因");
+    result.outputCommitted = reportedSuccess || outputCommitted;
     result.elapsedMs = m_elapsed.isValid() ? qMax(qint64(0), m_elapsed.elapsed()) : 0;
     clearPending();
     if (publishResult(index)) acknowledge(ok, outPath);
 }
 
-void PsdBatchJob::completeCanceled(const QString& outPath, PsdExportStage stage, const QString& reason)
+void PsdBatchJob::completeCanceled(const QString& outPath, PsdExportStage stage, const QString& reason,
+                                  const CExportDiagnostics& diagnostics)
 {
     if (m_state != State::Running || !m_exportDispatched || m_pendingIndex < 0 || outPath != m_pendingOutput) return;
     const int index = m_pendingIndex;
     auto& result = m_results[index];
+    result.diagnostics = diagnostics;
     result.state = PsdBatchFileState::Canceled;
     result.stage = stage >= PsdExportStage::Preflight && stage <= PsdExportStage::Restoring ? stage : result.stage;
     result.error = reason.isEmpty() ? QStringLiteral("当前文件导出已取消") : reason;

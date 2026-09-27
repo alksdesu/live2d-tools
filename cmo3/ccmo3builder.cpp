@@ -5,6 +5,7 @@
 #include "cxsxmlwriter.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cdrawableflags.h"
+#include "live2dstruct/cmaskeditpolicy.h"
 #include "live2dstruct/cdeformerdisplaynames.h"
 #include "live2dstruct/ccanvasgeometry.h"
 #include "live2dstruct/cparentgraph.h"
@@ -67,6 +68,67 @@ bool validateParameterOptions(const CSectionTable& table, const CCmo3Builder::Op
         const auto metadata = effectiveParameterMetadata(parameter.value(), options);
         if (!std::isfinite(value.value()) || value.value() < metadata.minimum || value.value() > metadata.maximum)
             return fail(QStringLiteral("cmo3 当前参数值无效或超出范围：%1").arg(value.key()));
+    }
+    return true;
+}
+
+bool freezeMaskOptions(const CCmo3Builder::Options& input, CCmo3Builder::Options& output, QString* error)
+{
+    const auto fail = [error] {
+        if (error) *error = QStringLiteral("cmo3 蒙版覆盖的目标或引用数量超出范围");
+        return false;
+    };
+    if (input.drawableMaskIndexOverrides.size() > CMaskEditPolicy::MaximumReferences ||
+        input.drawableMaskInverted.size() > CMaskEditPolicy::MaximumReferences) return fail();
+    qsizetype references = 0;
+    for (auto item = input.drawableMaskIndexOverrides.cbegin(); item != input.drawableMaskIndexOverrides.cend(); ++item) {
+        if (item.key().isEmpty() || item.key().size() > 64 ||
+            item->size() > CMaskEditPolicy::MaximumReferences - references) return fail();
+        references += item->size();
+    }
+    for (auto item = input.drawableMaskInverted.cbegin(); item != input.drawableMaskInverted.cend(); ++item)
+        if (item.key().isEmpty() || item.key().size() > 64) return fail();
+    QHash<QString, QVector<int>> masks;
+    QHash<QString, bool> inverted;
+    for (auto item = input.drawableMaskIndexOverrides.cbegin(); item != input.drawableMaskIndexOverrides.cend(); ++item)
+        masks.insert(QString(item.key().constData(), item.key().size()), QVector<int>(item->cbegin(), item->cend()));
+    for (auto item = input.drawableMaskInverted.cbegin(); item != input.drawableMaskInverted.cend(); ++item)
+        inverted.insert(QString(item.key().constData(), item.key().size()), item.value());
+    output.drawableMaskIndexOverrides = std::move(masks);
+    output.drawableMaskInverted = std::move(inverted);
+    return true;
+}
+
+bool validateMaskOptions(const CSectionTable& table, const CCmo3Builder::Options& options, QString* error)
+{
+    const auto fail = [error](const QString& detail) {
+        if (error) *error = QStringLiteral("cmo3 蒙版无效：%1").arg(detail);
+        return false;
+    };
+    QHash<QString, int> directory;
+    for (int index = 0; index < table.art_meshes.size(); ++index) {
+        const QString& id = table.art_meshes[index]->ids;
+        directory.insert(id, directory.contains(id) ? -1 : index);
+    }
+    for (auto item = options.drawableMaskIndexOverrides.cbegin(); item != options.drawableMaskIndexOverrides.cend(); ++item)
+        if (directory.value(item.key(), -1) < 0) return fail(QStringLiteral("目标不存在或 ID 不唯一：%1").arg(item.key()));
+    for (auto item = options.drawableMaskInverted.cbegin(); item != options.drawableMaskInverted.cend(); ++item)
+        if (directory.value(item.key(), -1) < 0) return fail(QStringLiteral("反转目标不存在或 ID 不唯一：%1").arg(item.key()));
+    for (int index = 0; index < table.art_meshes.size(); ++index) {
+        const auto* mesh = table.art_meshes[index];
+        const int begin = mesh->drawable_mask_sources_begin_indices, count = mesh->drawable_mask_sources_counts;
+        if (count < 0 || count > CMaskEditPolicy::MaximumReferences ||
+            (count && !validSlice(begin, count, table.drawable_masks.size())))
+            return fail(QStringLiteral("引用切片越界：%1").arg(mesh->ids));
+        QVector<int> baseline;
+        baseline.reserve(count);
+        for (int item = 0; item < count; ++item)
+            baseline.append(table.drawable_masks[begin + item]->art_mesh_sources_indices);
+        const auto requested = options.drawableMaskIndexOverrides.constFind(mesh->ids);
+        QString detail;
+        if (!CMaskEditPolicy::Validate(baseline, requested == options.drawableMaskIndexOverrides.cend() ? baseline : requested.value(),
+                                       index, table.art_meshes.size(), &detail))
+            return fail(QStringLiteral("%1：%2").arg(mesh->ids, detail));
     }
     return true;
 }
@@ -991,11 +1053,8 @@ void Generator::writeArtMeshEntities()
             }
         }
         m_xml.BeginCArrayList(QStringLiteral("clipGuidList"), maskIndices.size());
-        for (int maskIdx : maskIndices) {
-            if (maskIdx >= 0 && maskIdx < m_meshGuidIds.size()) {
-                m_xml.Ref(QStringLiteral("CDrawableGuid"), QString(), m_meshGuidIds[maskIdx]);
-            }
-        }
+        for (int maskIdx : maskIndices)
+            m_xml.Ref(QStringLiteral("CDrawableGuid"), QString(), m_meshGuidIds[maskIdx]);
         m_xml.EndList();
         const bool invertMask = m_opt.drawableMaskInverted.value(mesh->ids,
             CDrawableFlags::MaskInverted(mesh->drawable_flags));
@@ -1859,6 +1918,7 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         return false;
     }
     Options opt = options;
+    if (!freezeMaskOptions(options, opt, outError)) return false;
     const auto owned = [](const QString& value) { return QString(value.constData(), value.size()); };
     opt.mocPath = owned(options.mocPath);
     opt.outPath = owned(options.outPath);
@@ -1890,7 +1950,8 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         return false;
     }
 
-    if (!validateDeformerSources(table, outError) || !validateParameterOptions(table, opt, outError)) return false;
+    if (!validateDeformerSources(table, outError) || !validateParameterOptions(table, opt, outError) ||
+        !validateMaskOptions(table, opt, outError)) return false;
     if (opt.deformerDisplayNames) {
         QSet<QString> ids;
         for (const auto* deformer : table.deformers) ids.insert(deformer->ids);

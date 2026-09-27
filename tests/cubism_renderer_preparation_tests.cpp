@@ -143,6 +143,25 @@ uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mod
 QVector<QPair<int, CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndexList(const QVector<int>&, CubismModel*)
 { UnexpectedRuntime(); }
 
+namespace {
+struct ClipMatchFixture
+{
+    const csmInt32* _clippingIdList;
+    csmInt32 _clippingIdCount;
+};
+
+class ClipMatchManager : public CubismClippingManager<ClipMatchFixture, COffscreenBuffer>
+{
+public:
+    ClipMatchFixture* Add(const QVector<int>& values)
+    {
+        auto* context = CSM_NEW ClipMatchFixture{values.constData(), int(values.size())};
+        _clippingContextListForMask.PushBack(context);
+        return context;
+    }
+};
+}
+
 class CubismRendererPreparationTests : public QObject
 {
     Q_OBJECT
@@ -208,6 +227,109 @@ class CubismRendererPreparationTests : public QObject
     }
 
 private slots:
+    void clippingGroupsMatchReferenceMultiplicity_data()
+    {
+        QTest::addColumn<QVector<int>>("existing");
+        QTest::addColumn<QVector<int>>("requested");
+        QTest::addColumn<bool>("reuse");
+        QTest::newRow("aab-versus-abb") << QVector<int>{0, 0, 1} << QVector<int>{0, 1, 1} << false;
+        QTest::newRow("abb-versus-aab") << QVector<int>{0, 1, 1} << QVector<int>{0, 0, 1} << false;
+        QTest::newRow("same-order") << QVector<int>{0, 0, 1} << QVector<int>{0, 0, 1} << true;
+        QTest::newRow("same-counts-reordered") << QVector<int>{0, 0, 1} << QVector<int>{1, 0, 0} << true;
+        QTest::newRow("unique-reordered") << QVector<int>{0, 1, 2} << QVector<int>{2, 0, 1} << true;
+        QTest::newRow("different-unique") << QVector<int>{0, 1, 2} << QVector<int>{0, 1, 3} << false;
+        QTest::newRow("different-count") << QVector<int>{0, 0, 1} << QVector<int>{0, 1} << false;
+        QTest::newRow("empty") << QVector<int>{} << QVector<int>{} << true;
+        QTest::newRow("singleton") << QVector<int>{2} << QVector<int>{2} << true;
+    }
+
+    void clippingGroupsMatchReferenceMultiplicity()
+    {
+        QFETCH(QVector<int>, existing);
+        QFETCH(QVector<int>, requested);
+        QFETCH(bool, reuse);
+        const QVector<int> originalExisting(existing.cbegin(), existing.cend());
+        const QVector<int> originalRequested(requested.cbegin(), requested.cend());
+        ClipMatchManager manager;
+        auto* context = manager.Add(existing);
+        QCOMPARE(manager.FindSameClip(requested.constData(), requested.size()), reuse ? context : nullptr);
+        QCOMPARE(existing, originalExisting);
+        QCOMPARE(requested, originalRequested);
+        QCOMPARE(context->_clippingIdList, existing.constData());
+        QCOMPARE(context->_clippingIdCount, existing.size());
+    }
+
+    void clippingGroupSearchContinuesPastDifferentMultiplicity()
+    {
+        const QVector<int> aab{0, 0, 1}, abb{0, 1, 1}, reordered{1, 0, 1};
+        ClipMatchManager manager;
+        manager.Add(aab);
+        auto* expected = manager.Add(abb);
+        QCOMPARE(manager.FindSameClip(reordered.constData(), reordered.size()), expected);
+    }
+
+    void maskMultiplicityChangesCoverage_data()
+    {
+        QTest::addColumn<bool>("high");
+        QTest::addColumn<bool>("inverted");
+        for (bool high : {false, true}) for (bool inverted : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(high).arg(inverted))) << high << inverted;
+    }
+
+    void maskMultiplicityChangesCoverage()
+    {
+        QFETCH(bool, high);
+        QFETCH(bool, inverted);
+        const std::array<GLuint, 3> textures{Texture(64), Texture(128), Texture()};
+        const auto cleanup = qScopeGuard([&] { m_gl.glDeleteTextures(textures.size(), textures.data()); });
+        QVector<int> alphas;
+        for (const QVector<int>& masks : {QVector<int>{0, 0, 1}, QVector<int>{0, 1, 1}}) {
+            GetterState state;
+            state.drawableCount = 3;
+            state.flags.fill(Core::csmIsDoubleSided);
+            if (inverted) state.flags[2] |= Core::csmIsInvertedMask;
+            state.maskCounts = {0, 0, 3};
+            state.maskPointers[2] = masks.constData();
+            state.dynamicFlags.fill(Core::csmIsVisible);
+            state.drawableOpacities.fill(1);
+            state.multiply.fill({1, 1, 1, 1});
+            state.screen.fill({0, 0, 0, 0});
+            auto model = Model(state);
+            auto renderer = Renderer();
+            auto& target = Gl(renderer);
+            QVERIFY(target.setGlOwningContext(&m_context));
+            QVERIFY(target.Initialize(model.get()));
+            target.UseHighPrecisionMask(high);
+            target.SetClippingMaskBufferSize(64, 64);
+            for (int slot = 0; slot < 3; ++slot) target.BindTexture(slot, textures[slot]);
+            auto* context = (*target._clippingManager->GetClippingContextListForDraw())[2];
+            QCOMPARE(context->_clippingIdCount, 3);
+            QCOMPARE(context->_clippingIdList, masks.constData());
+            QOpenGLFramebufferObject framebuffer(64, 64);
+            QVERIFY(framebuffer.isValid() && framebuffer.bind());
+            m_gl.glViewport(0, 0, 64, 64);
+            m_gl.glDisable(GL_SCISSOR_TEST);
+            m_gl.glDisable(GL_DITHER);
+            m_gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            m_gl.glClearColor(0, 0, 0, 0);
+            m_gl.glClear(GL_COLOR_BUFFER_BIT);
+            CubismRenderer_OpenGLES2::SnapshotScene scene;
+            scene.hiddenDrawables = {"MeshA", "MeshB"};
+            QString error;
+            QVERIFY2(target.DrawSnapshotModel(scene, &error), qPrintable(error));
+            const int actual = qAlpha(framebuffer.toImage().pixel(32, 32));
+            double transmission = 1;
+            for (int source : masks) transmission *= 1.0 - (source == 0 ? 64.0 : 128.0) / 255;
+            const int expected = qRound(255 * (inverted ? transmission : 1 - transmission));
+            QVERIFY2(std::abs(actual - expected) <= 1, qPrintable(QString("actual %1 expected %2").arg(actual).arg(expected)));
+            alphas.append(actual);
+            QCOMPARE(state.updates, 0);
+            const QVector<int> other = masks[1] == 0 ? QVector<int>{0, 1, 1} : QVector<int>{0, 0, 1};
+            QVERIFY(!target._clippingManager->FindSameClip(other.constData(), other.size()));
+        }
+        QVERIFY(std::abs(alphas[0] - alphas[1]) >= 20);
+    }
+
     void snapshotScenePreservesBlendAndMasksWithoutDelegate_data()
     {
         QTest::addColumn<int>("blend"); QTest::addColumn<bool>("high"); QTest::addColumn<bool>("inverted");

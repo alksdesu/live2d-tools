@@ -76,7 +76,8 @@ private slots:
     bool doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
                      bool isTexExtract = false, bool cubismCompat = false, QString* error = nullptr,
                      PsdExportStage* stage = nullptr, bool* outputCommitted = nullptr,
-                     bool savedParameterSnapshot = false, bool* canceled = nullptr);
+                     bool savedParameterSnapshot = false, bool* canceled = nullptr,
+                     CExportDiagnostics* diagnostics = nullptr);
 
 
 

@@ -13,6 +13,11 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QScopeGuard>
+#include <QScrollBar>
+#include "ui/theme.h"
 #include <QSignalBlocker>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -25,6 +30,20 @@
 using namespace live2dstruct;
 
 namespace {
+QByteArray withFirstMasks(QByteArray bytes, const QVector<int>& masks)
+{
+    const auto word = [&](int offset) { return qFromLittleEndian<qint32>(bytes.constData() + offset); };
+    const int pool = (bytes.size() + 63) & ~63;
+    bytes.append(QByteArray(pool + masks.size() * 4 - bytes.size(), '\0'));
+    for (int index = 0; index < masks.size(); ++index) qToLittleEndian<qint32>(masks[index], bytes.data() + pool + index * 4);
+    qToLittleEndian<qint32>(pool, bytes.data() + 0x180);
+    qToLittleEndian<qint32>(masks.size(), bytes.data() + word(0x40) + 17 * 4);
+    qToLittleEndian<qint32>(0, bytes.data() + word(0xfc));
+    qToLittleEndian<qint32>(masks.size(), bytes.data() + word(0x100));
+    bytes.append(QByteArray(((bytes.size() + 63) & ~qsizetype(63)) - bytes.size(), '\0'));
+    return bytes;
+}
+
 struct RawClipping
 {
     QStringList ids;
@@ -802,6 +821,109 @@ private slots:
         RawClipping raw;
         QVERIFY(raw.read(preview));
         QCOMPARE(raw.masks[target], repaired);
+    }
+
+    void editingRetainsSourceOccurrencesUnlessExplicitlyDeduplicated_data()
+    {
+        QTest::addColumn<int>("operation");
+        const QStringList names{"unchanged", "remove-other", "append-new", "deduplicate", "cancel", "publish-reject", "toggle-back", "deduplicate-remove"};
+        for (int index = 0; index < names.size(); ++index) QTest::newRow(qPrintable(names[index])) << index;
+    }
+
+    void editingRetainsSourceOccurrencesUnlessExplicitlyDeduplicated()
+    {
+        QFETCH(int, operation);
+        CModelDocument baseline;
+        QVERIFY(baseline.Load(QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3"));
+        QVERIFY(baseline.Drawables().size() > 4);
+        const QVector<int> original{1, 2, 1, 3, 2};
+        const auto bytes = withFirstMasks(baseline.SourceBytes(), original);
+        CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(bytes, "memory.moc3", &error), qPrintable(error));
+        const QString id = document.Drawables().front().id;
+        CKeyformEditController controller; controller.SetDocument(&document);
+        int attempts = 0; QByteArray published;
+        controller.SetPublisher([&](const CModelDocument& candidate, const QMap<QString, float>&, bool, QString* issue) {
+            ++attempts;
+            if (operation == 5) { if (issue) *issue = "controlled publication rejection"; return false; }
+            return candidate.BuildPreviewMoc(published, issue);
+        }, [](QString*) { return true; });
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, "artmesh");
+        panel.SetEditHandler([&](const CModelEdit& command, QString* issue) { return controller.Submit(command, issue); });
+        panel.SetHistoryHandler([&](bool undo, CModelEdit& command, QString* issue) { return controller.History(undo, command, issue); });
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged), rejected(&panel, &CInspectorPanel::EditRejected);
+        const auto revision = document.Revision();
+        QVERIFY(editDialog(panel, [&](QDialog& dialog, QListWidget& list) {
+            auto* deduplicate = dialog.findChild<QCheckBox*>("deduplicateMasks");
+            auto* details = dialog.findChild<QPlainTextEdit*>("maskDuplicateDetails");
+            auto* summary = dialog.findChild<QLabel*>("maskSelectionCount");
+            QVERIFY(deduplicate && deduplicate->isEnabled() && !deduplicate->isChecked());
+            QVERIFY(details && details->isReadOnly());
+            QVERIFY(details->toPlainText().contains(document.Drawables()[1].id + QStringLiteral("：2 次")));
+            QVERIFY(details->toPlainText().contains(document.Drawables()[2].id + QStringLiteral("：2 次")));
+            QVERIFY(summary && summary->text().contains(QStringLiteral("5 次引用")));
+            if (operation == 3 || operation == 4 || operation == 5 || operation == 7) deduplicate->setChecked(true);
+            for (int row = 0; row < list.count(); ++row) {
+                auto* item = list.item(row); const int index = item->data(Qt::UserRole).toInt();
+                if (index == 1 || index == 2) QVERIFY(item->text().contains(QStringLiteral("原有 2 次")));
+                if ((operation == 1 && index == 3) || (operation == 7 && index == 2)) item->setCheckState(Qt::Unchecked);
+                if (operation == 2 && index == 4) item->setCheckState(Qt::Checked);
+                if (operation == 6 && index == 1) { item->setCheckState(Qt::Unchecked); item->setCheckState(Qt::Checked); }
+            }
+        }, operation != 4));
+        const QVector<int> expected = operation == 1 ? QVector<int>{1, 2, 1, 2} :
+            operation == 2 ? QVector<int>{1, 2, 1, 3, 2, 4} : operation == 3 ? QVector<int>{1, 2, 3} :
+            operation == 7 ? QVector<int>{1, 3} : original;
+        QVERIFY2(document.DrawableMaskIndices(id) == expected, qPrintable(rejected.isEmpty() ? QStringLiteral("unexpected mask list") : rejected.first().first().toString()));
+        const bool changed = expected != original;
+        QCOMPARE(history.size(), changed ? 1 : 0);
+        QCOMPARE(rejected.size(), operation == 5 ? 1 : 0);
+        QCOMPARE(attempts, changed || operation == 5 ? 1 : 0);
+        if (!changed) { QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit()); return; }
+        RawClipping raw; QVERIFY(raw.read(published)); QCOMPARE(raw.masks.front(), expected);
+        panel.Undo(); QCOMPARE(document.DrawableMaskIndices(id), original); QCOMPARE(published, bytes); QVERIFY(!document.CanUndoEdit());
+        panel.Redo(); QCOMPARE(document.DrawableMaskIndices(id), expected); QCOMPARE(attempts, 3);
+    }
+
+    void repeatedMaskControlsRemainReadable_data()
+    {
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("light") << false; QTest::newRow("dark") << true;
+    }
+    void repeatedMaskControlsRemainReadable()
+    {
+        QFETCH(bool, dark);
+        const auto previous = qApp->styleSheet(); const auto restore = qScopeGuard([&] { qApp->setStyleSheet(previous); });
+        qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        CModelDocument baseline; QVERIFY(baseline.Load(QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3"));
+        CModelDocument document; QVERIFY(document.LoadBytes(withFirstMasks(baseline.SourceBytes(), {1, 2, 1, 3, 2}), "memory.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(document.Drawables().front().id, "artmesh");
+        QVERIFY(editDialog(panel, [&](QDialog& dialog, QListWidget& list) {
+            QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+            for (int width : {560, 400}) {
+                dialog.resize(width, 540); QTest::qWait(30); QCOMPARE(dialog.width(), width);
+                for (const auto* name : {"maskSearch", "selectedMasksOnly", "deduplicateMasks", "maskDuplicateDetails", "clearMasks"}) {
+                    auto* control = dialog.findChild<QWidget*>(QLatin1String(name)); QVERIFY(control && control->isVisible());
+                    QVERIFY(dialog.rect().contains(QRect(control->mapTo(&dialog, QPoint()), control->size())));
+                }
+                QVERIFY(list.height() >= list.sizeHintForRow(0));
+                auto* details = dialog.findChild<QPlainTextEdit*>("maskDuplicateDetails"); QVERIFY(details);
+                QCOMPARE(details->horizontalScrollBar()->maximum(), 0);
+                const auto directory = qEnvironmentVariable("LIVE2D_DIAGNOSTICS_SCREENSHOTS");
+                if (!directory.isEmpty()) { QDir().mkpath(directory); QVERIFY(dialog.grab().save(directory + QString("/mask-%1-%2.png").arg(dark ? "dark" : "light").arg(width))); }
+            }
+        }, false));
+        QVERIFY(!document.CanUndoEdit());
+    }
+
+    void maskDialogParentMayBeDestroyedDuringExec()
+    {
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Wanko/Wanko.moc3"));
+        QPointer<CInspectorPanel> panel = new CInspectorPanel;
+        panel->SetDocument(&document); panel->SetSelection(document.Drawables().front().id, "artmesh");
+        auto* open = panel->findChild<QPushButton*>("editMasks"); QVERIFY(open && open->isEnabled());
+        QTimer::singleShot(0, panel, [panel] { delete panel.data(); });
+        open->click(); QVERIFY(!panel); QVERIFY(!document.CanUndoEdit());
     }
 
     void baselineMaskListsRemainRestorable_data()

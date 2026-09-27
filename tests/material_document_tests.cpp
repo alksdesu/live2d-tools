@@ -327,7 +327,7 @@ private slots:
     {
         QFETCH(int, fault); CModelDocument document; QVERIFY(load(document)); QVERIFY(change(document));
         auto json = QJsonDocument::fromJson(materialSession(document).ToJson()).object();
-        if (fault == 0) json["version"] = 14;
+        if (fault == 0) json["version"] = 15;
         if (fault == 1) json["version"] = 9;
         if (fault == 2) json.remove("materialStructure");
         if (fault == 3) json["drawableMaterials"] = false;

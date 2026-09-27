@@ -18,6 +18,7 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QPushButton>
+#include <QPlainTextEdit>
 #include <QSignalBlocker>
 #include <QScopedValueRollback>
 #include <QTimer>
@@ -2052,34 +2053,48 @@ void CInspectorPanel::EditMasks()
         IsLocked(m_selectionType, m_selectionName)) return;
     const auto* document = m_document;
     const auto source = document->SourceDigest();
+    const auto sourcePath = document->SourcePath();
+    const auto revision = document->Revision();
+    const QPointer<CInspectorPanel> alive(this);
     const QString target = m_selectionName;
     const QVector<int> current = document->DrawableMaskIndices(target);
-    QDialog dialog(this);
-    dialog.setObjectName(QStringLiteral("maskEditorDialog"));
-    dialog.setWindowTitle(QStringLiteral("编辑蒙版 · %1").arg(target));
-    dialog.resize(400, 480);
-    auto* layout = new QVBoxLayout(&dialog);
-    auto* hint = new QLabel(QStringLiteral("选择裁剪此网格的蒙版。多个蒙版会合并可见区域。"), &dialog);
+    auto* dialog = new QDialog(this);
+    const QPointer<QDialog> pending(dialog);
+    const auto cleanup = qScopeGuard([pending] { if (pending) delete pending.data(); });
+    dialog->setObjectName(QStringLiteral("maskEditorDialog"));
+    dialog->setWindowTitle(QStringLiteral("编辑蒙版 · %1").arg(target));
+    dialog->resize(400, 480);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* hint = new QLabel(QStringLiteral("选择裁剪此网格的蒙版。多个蒙版会合并可见区域。"), dialog);
+    hint->setTextFormat(Qt::PlainText);
     hint->setWordWrap(true);
     layout->addWidget(hint);
-    auto* search = new QLineEdit(&dialog);
+    auto* search = new QLineEdit(dialog);
     search->setObjectName(QStringLiteral("maskSearch"));
     search->setPlaceholderText(QStringLiteral("搜索网格 ID"));
     search->setClearButtonEnabled(true);
     layout->addWidget(search);
-    auto* selectedOnly = new QCheckBox(QStringLiteral("仅显示已选"), &dialog);
+    auto* selectedOnly = new QCheckBox(QStringLiteral("仅显示已选"), dialog);
     selectedOnly->setObjectName(QStringLiteral("selectedMasksOnly"));
     layout->addWidget(selectedOnly);
-    auto* list = new QListWidget(&dialog);
+    auto* list = new QListWidget(dialog);
     list->setObjectName(QStringLiteral("maskList"));
     list->setAccessibleName(QStringLiteral("可用蒙版"));
     const QSet<int> selected(current.cbegin(), current.cend());
+    QHash<int, int> occurrences;
+    for (int index : current) ++occurrences[index];
+    QStringList duplicates;
     const auto& drawables = document->Drawables();
     for (int index = 0; index < drawables.size(); ++index) {
         const bool self = drawables[index].id == target;
         if (self && !selected.contains(index)) continue;
-        const QString label = self ? QStringLiteral("%1（自身 · 原始引用）").arg(drawables[index].id) : drawables[index].id;
+        QString label = self ? QStringLiteral("%1（自身 · 原始引用）").arg(drawables[index].id) : drawables[index].id;
+        if (occurrences.value(index) > 1) {
+            duplicates.append(QStringLiteral("%1：%2 次").arg(drawables[index].id).arg(occurrences.value(index)));
+            label += QStringLiteral("（原有 %1 次）").arg(occurrences.value(index));
+        }
         auto* item = new QListWidgetItem(label, list);
+        item->setToolTip(QStringLiteral("<qt>") + label.toHtmlEscaped() + QStringLiteral("</qt>"));
         item->setData(Qt::UserRole, index);
         item->setCheckState(selected.contains(index) ? Qt::Checked : Qt::Unchecked);
     }
@@ -2087,49 +2102,77 @@ void CInspectorPanel::EditMasks()
     for (int index : current) {
         if ((index >= 0 && index < drawables.size()) || added.contains(index)) continue;
         added.insert(index);
-        auto* item = new QListWidgetItem(QStringLiteral("无效索引 %1（原始引用）").arg(index), list);
+        QString label = QStringLiteral("无效索引 %1（原始引用）").arg(index);
+        if (occurrences.value(index) > 1) {
+            duplicates.append(QStringLiteral("无效索引 %1：%2 次").arg(index).arg(occurrences.value(index)));
+            label += QStringLiteral("（原有 %1 次）").arg(occurrences.value(index));
+        }
+        auto* item = new QListWidgetItem(label, list);
         item->setData(Qt::UserRole, index);
         item->setCheckState(Qt::Checked);
     }
     layout->addWidget(list, 1);
+    auto* deduplicate = new QCheckBox(QStringLiteral("去除重复引用"), dialog);
+    deduplicate->setObjectName(QStringLiteral("deduplicateMasks"));
+    deduplicate->setEnabled(!duplicates.isEmpty());
+    deduplicate->setToolTip(QStringLiteral("仅保留每个已选蒙版的第一次引用，可能改变合成结果；应用后可撤销。"));
+    layout->addWidget(deduplicate);
+    if (!duplicates.isEmpty()) {
+        auto* detail = new QPlainTextEdit(dialog);
+        detail->setObjectName(QStringLiteral("maskDuplicateDetails"));
+        detail->setReadOnly(true);
+        detail->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+        detail->setPlainText(QStringLiteral("当前按原序列保留重复引用，可能影响合成结果。取消勾选某个蒙版会移除它的全部引用。\n%1").arg(duplicates.join(QLatin1Char('\n'))));
+        detail->setMaximumHeight(detail->fontMetrics().lineSpacing() * 5);
+        layout->addWidget(detail);
+    }
     auto* footer = new QHBoxLayout();
-    auto* count = new QLabel(&dialog);
+    auto* count = new QLabel(dialog);
     count->setObjectName(QStringLiteral("maskSelectionCount"));
-    auto* clear = new QPushButton(QStringLiteral("清空选择"), &dialog);
+    auto* clear = new QPushButton(QStringLiteral("清空选择"), dialog);
     clear->setObjectName(QStringLiteral("clearMasks"));
     footer->addWidget(count, 1);
     footer->addWidget(clear);
     layout->addLayout(footer);
-    const auto refresh = [list, search, selectedOnly, count, clear] {
+    const auto refresh = [list, search, selectedOnly, count, clear, deduplicate, occurrences] {
         const QString query = search->text().trimmed();
-        int selected = 0, visible = 0;
+        int selected = 0, visible = 0, references = 0;
         for (int row = 0; row < list->count(); ++row) {
             auto* item = list->item(row);
             const bool checked = item->checkState() == Qt::Checked;
-            if (checked) ++selected;
+            if (checked) {
+                ++selected;
+                references += deduplicate->isChecked() ? 1 : std::max(1, occurrences.value(item->data(Qt::UserRole).toInt()));
+            }
             const bool shown = item->text().contains(query, Qt::CaseInsensitive) && (!selectedOnly->isChecked() || checked);
             item->setHidden(!shown);
             if (shown) ++visible;
         }
-        count->setText(QStringLiteral("已选 %1 个 · 显示 %2 / %3").arg(selected).arg(visible).arg(list->count()));
+        count->setText(QStringLiteral("已选 %1 个蒙版，共 %2 次引用 · 显示 %3 / %4").arg(selected).arg(references).arg(visible).arg(list->count()));
+        count->setWordWrap(true);
         clear->setEnabled(selected > 0);
     };
-    connect(search, &QLineEdit::textChanged, &dialog, refresh);
-    connect(selectedOnly, &QCheckBox::toggled, &dialog, refresh);
-    connect(list, &QListWidget::itemChanged, &dialog, refresh);
-    connect(clear, &QPushButton::clicked, &dialog, [list, refresh] {
+    connect(search, &QLineEdit::textChanged, dialog, refresh);
+    connect(selectedOnly, &QCheckBox::toggled, dialog, refresh);
+    connect(deduplicate, &QCheckBox::toggled, dialog, refresh);
+    connect(list, &QListWidget::itemChanged, dialog, refresh);
+    connect(clear, &QPushButton::clicked, dialog, [list, refresh] {
         const QSignalBlocker blocker(list);
         for (int row = 0; row < list->count(); ++row) list->item(row)->setCheckState(Qt::Unchecked);
         refresh();
     });
     refresh();
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("应用"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
     layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     search->setFocus();
-    if (dialog.exec() != QDialog::Accepted) return;
-    if (m_document != document || m_document->SourceDigest() != source ||
+    if (dialog->exec() != QDialog::Accepted || !alive || !pending) return;
+    if (m_document != document || m_document->SourceDigest() != source || m_document->SourcePath() != sourcePath ||
+        m_document->Revision() != revision || m_selectionName != target || m_selectionType != QLatin1String("artmesh") ||
+        IsLocked(m_selectionType, target) ||
         m_document->DrawableMaskIndices(target) != current) {
         RejectEdit(QStringLiteral("模型或蒙版已改变，请重新打开蒙版编辑器"));
         return;
@@ -2137,9 +2180,14 @@ void CInspectorPanel::EditMasks()
     QSet<int> checked;
     for (int row = 0; row < list->count(); ++row)
         if (list->item(row)->checkState() == Qt::Checked) checked.insert(list->item(row)->data(Qt::UserRole).toInt());
-    if (checked == selected) return;
+    if (checked == selected && !deduplicate->isChecked()) return;
     QVector<int> after;
-    for (int index : current) if (checked.remove(index)) after.append(index);
+    QSet<int> retained;
+    for (int index : current) if (checked.contains(index)) {
+        if (!deduplicate->isChecked() || !retained.contains(index)) after.append(index);
+        retained.insert(index);
+    }
+    checked.subtract(retained);
     for (int row = 0; row < list->count(); ++row) {
         const int index = list->item(row)->data(Qt::UserRole).toInt();
         if (checked.remove(index)) after.append(index);
@@ -2150,8 +2198,9 @@ void CInspectorPanel::EditMasks()
                                            QVariant::fromValue(current), QVariant::fromValue(after)};
     if (!SubmitEdit(command)) return;
     emit DrawableMaskIndicesChanged(target, after);
+    if (!alive) return;
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
-    showModelObject(m_selectionName, m_selectionType);
+    if (alive) showModelObject(m_selectionName, m_selectionType);
 }
 
 void CInspectorPanel::TranslateSelectedVertices()

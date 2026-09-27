@@ -9,6 +9,7 @@ bool IsPsdBatchTerminal(PsdBatchFileState state)
 bool IsPsdBatchResultValid(const PsdBatchFileResult& result)
 {
     return result.index >= 0 && result.elapsedMs >= 0 &&
+           (result.state != PsdBatchFileState::Succeeded || result.diagnostics.ErrorCount() == 0) &&
            result.state >= PsdBatchFileState::Pending && result.state <= PsdBatchFileState::Canceled &&
            result.stage >= PsdExportStage::Queued && result.stage <= PsdExportStage::Done;
 }

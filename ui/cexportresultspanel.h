@@ -39,6 +39,7 @@ private:
     PsdBatchResults m_results;
     std::array<int, StateCount> m_counts{};
     int m_retryable = 0;
+    int m_warningFiles = 0;
     bool m_busy = false;
     bool m_retryAvailable = true;
     QTableWidget* m_table = nullptr;

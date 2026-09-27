@@ -120,6 +120,8 @@ void CModelDocument::Clear()
     m_sourceBytes.clear();
     m_sourceDigest.clear();
     m_workingBaseBytes.clear();
+    m_maskSource.reset();
+    m_invalidMaskSlices.clear();
     m_structure = {};
     m_hasMeshStructure = false;
     m_hasMaterialStructure = false;
@@ -529,6 +531,7 @@ bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QS
         m_drawOrderGroups.append(group);
     }
 
+    CaptureMaskSource(table);
     m_loaded = true;
     return true;
 }
@@ -905,19 +908,11 @@ bool CModelDocument::SetDeformerWarpKeyforms(const QString& id,
 
 bool CModelDocument::SetDrawableMaskIndices(const QString& id, const QVector<int>& maskIndices)
 {
-    for (int drawableIndex = 0; drawableIndex < m_drawables.size(); ++drawableIndex) {
-        if (m_drawables[drawableIndex].id != id) continue;
-        if (maskIndices == m_drawables[drawableIndex].maskIndices) {
-            m_drawableMaskIndexOverrides.remove(id);
-        } else {
-            QSet<int> unique;
-            for (int maskIndex : maskIndices) {
-                if (!inRange(maskIndex, m_drawables.size()) || maskIndex == drawableIndex ||
-                    unique.contains(maskIndex)) return false;
-                unique.insert(maskIndex);
-            }
-            m_drawableMaskIndexOverrides.insert(id, maskIndices);
-        }
+    for (const auto& drawable : m_drawables) {
+        if (drawable.id != id) continue;
+        if (!MaskReferencesAllowed(id, maskIndices, true)) return false;
+        if (maskIndices == drawable.maskIndices) m_drawableMaskIndexOverrides.remove(id);
+        else m_drawableMaskIndexOverrides.insert(id, maskIndices);
         ++m_revision;
         return true;
     }
@@ -1596,21 +1591,6 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_triangle_count"),
                                  QStringLiteral("ArtMesh 索引数量不是三角形的倍数"), i});
         }
-        QSet<int> maskIndices;
-        const auto masks = m_drawableMaskIndexOverrides.constFind(drawable.id);
-        for (int mask : masks == m_drawableMaskIndexOverrides.cend() ? drawable.maskIndices : masks.value()) {
-            if (!inRange(mask, m_drawables.size())) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_range"),
-                                     QStringLiteral("Clipping mask 索引越界"), i});
-            } else if (mask == i) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_self"),
-                                     QStringLiteral("ArtMesh 不能引用自身作为 Clipping mask"), i});
-            } else if (maskIndices.contains(mask)) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_duplicate"),
-                                     QStringLiteral("Clipping mask 引用重复"), i});
-            }
-            maskIndices.insert(mask);
-        }
         if (!drawable.uvs.isEmpty() && drawable.uvs.size() != drawable.vertexCount * 2) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("uv_count"),
                                  QStringLiteral("UV 数量与顶点数量不一致"), i});
@@ -1753,32 +1733,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("索引覆盖越界：%1").arg(indexIt.key()), -1});
         }
     }
-    for (auto maskIt = m_drawableMaskIndexOverrides.cbegin(); maskIt != m_drawableMaskIndexOverrides.cend(); ++maskIt) {
-        int drawableIndex = -1;
-        for (int i = 0; i < m_drawables.size(); ++i) {
-            if (m_drawables[i].id == maskIt.key()) { drawableIndex = i; break; }
-        }
-        if (drawableIndex < 0) {
-            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_override_id"),
-                                 QStringLiteral("蒙版覆盖引用了不存在的 ArtMesh：%1").arg(maskIt.key()), -1});
-            continue;
-        }
-        if (maskIt.value() == m_drawables[drawableIndex].maskIndices) continue;
-        QSet<int> unique;
-        for (int maskIndex : maskIt.value()) {
-            if (!inRange(maskIndex, m_drawables.size()) || maskIndex == drawableIndex) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_override_range"),
-                                     QStringLiteral("蒙版覆盖索引无效：%1").arg(maskIt.key()), -1});
-                break;
-            }
-            if (unique.contains(maskIndex)) {
-                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_override_duplicate"),
-                                     QStringLiteral("蒙版覆盖存在重复引用：%1").arg(maskIt.key()), -1});
-                break;
-            }
-            unique.insert(maskIndex);
-        }
-    }
+    diagnostics += MaskDiagnostics();
     QHash<QString, int> deformerIndices;
     QVector<int> effectiveParents;
     if (!m_deformerParentOverrides.isEmpty()) {
@@ -1814,7 +1769,8 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
         }
         if (!found) {
             diagnostics.append({CModelDiagnostic::Error, QStringLiteral("mask_inverted_id"),
-                                 QStringLiteral("反向蒙版覆盖引用了不存在的 ArtMesh：%1").arg(invertIt.key()), -1});
+                                 QStringLiteral("反向蒙版覆盖引用了不存在的 ArtMesh：%1").arg(invertIt.key()), -1,
+                                 QStringLiteral("artmesh"), invertIt.key()});
         }
     }
     for (const QString& key : m_lockedKeys) {

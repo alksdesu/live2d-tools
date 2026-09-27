@@ -113,22 +113,7 @@ T_ClippingContext* CubismClippingManager<T_ClippingContext, T_OffscreenSurface>:
         T_ClippingContext* cc = _clippingContextListForMask[i];
         const csmInt32 count = cc->_clippingIdCount;
         if (count != drawableMaskCounts) continue; //個数が違う場合は別物
-        csmInt32 samecount = 0;
-
-        // 同じIDを持つか確認。配列の数が同じなので、一致した個数が同じなら同じ物を持つとする。
-        for (csmInt32 j = 0; j < count; j++)
-        {
-            const csmInt32 clipId = cc->_clippingIdList[j];
-            for (csmInt32 k = 0; k < count; k++)
-            {
-                if (drawableMasks[k] == clipId)
-                {
-                    samecount++;
-                    break;
-                }
-            }
-        }
-        if (samecount == count)
+        if (count == 0 || std::is_permutation(cc->_clippingIdList, cc->_clippingIdList + count, drawableMasks))
         {
             return cc;
         }

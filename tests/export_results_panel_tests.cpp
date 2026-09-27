@@ -50,6 +50,30 @@ class ExportResultsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void successfulOutputKeepsStructuredWarnings()
+    {
+        CExportResultsPanel panel;
+        auto output = result(0, PsdBatchFileState::Succeeded, "/model.json", "/output.psd", true);
+        output.diagnostics = CExportDiagnostics::Capture({{live2dstruct::CModelDiagnostic::Warning,
+            "mask_source_duplicate", QStringLiteral("<b>保留重复蒙版</b> & 原始次数"), 42, "artmesh", "Eye"}},
+            "/source.moc3", QByteArray(32, 'a'), 9);
+        QVERIFY(panel.SetResults({output}));
+        auto* table = panel.findChild<QTableWidget*>("exportResultsTable");
+        auto* details = panel.findChild<QPlainTextEdit*>("exportResultDetails");
+        auto* summary = panel.findChild<QLabel*>("exportResultsSummary");
+        QCOMPARE(table->item(0, 2)->text(), QStringLiteral("成功（有提示）"));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("<b>保留重复蒙版</b>")));
+        QVERIFY(summary->text().contains(QStringLiteral("1 项包含模型提示")));
+        const auto json = panel.ReportJson();
+        QCOMPARE(json["version"].toInt(), 2);
+        const auto file = json["files"].toArray().first().toObject();
+        QCOMPARE(file["state"].toString(), QStringLiteral("succeeded"));
+        QVERIFY(file["error"].toString().isEmpty());
+        QCOMPARE(file["diagnostics"].toObject()["entries"].toArray().first().toObject()["objectId"].toString(), QStringLiteral("Eye"));
+        QCOMPARE(file["diagnostics"].toObject()["documentRevision"].toString(), QStringLiteral("9"));
+        QVERIFY(!button(panel, "exportRetryFailed")->isEnabled());
+    }
+
     void canceledFileIsVisibleTerminalAndNotRetryable()
     {
         CExportResultsPanel panel;
@@ -447,7 +471,7 @@ private slots:
         const auto json = QJsonDocument::fromJson(panel.ReportText().toUtf8(), &parseError);
         QCOMPARE(parseError.error, QJsonParseError::NoError);
         QCOMPARE(json.object(), panel.ReportJson());
-        QCOMPARE(json[QStringLiteral("version")].toInt(), 1);
+        QCOMPARE(json[QStringLiteral("version")].toInt(), 2);
         QVERIFY(json[QStringLiteral("busy")].toBool());
         const auto files = json[QStringLiteral("files")].toArray();
         QCOMPARE(files.size(), 2);

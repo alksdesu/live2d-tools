@@ -56,6 +56,7 @@ struct CModelSession
     float viewScale = 1.0f;
     QPointF viewPosition;
 
+    bool HasMaskMultiplicityOverrides() const;
     QByteArray ToJson() const;
     static bool FromJson(const QByteArray& data, CModelSession* session, QString* error = nullptr);
     bool RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error = nullptr) const;

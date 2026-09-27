@@ -1783,8 +1783,14 @@ void MainWindow::RefreshTextureGeometry()
 
 bool MainWindow::ConfirmExportReady(const QString& operation)
 {
+    const QPointer<MainWindow> alive(this);
+    const QPointer<OpengGlForm> surface = m_openglwindows;
+    const bool hadSurface = !surface.isNull();
     QString valueError;
-    if (!FinishParameterValueEditing(&valueError)) { statusBar()->showMessage(valueError, 8000); return false; }
+    const bool valuesFinished = FinishParameterValueEditing(&valueError);
+    if (!alive) return false;
+    if (!valuesFinished) { statusBar()->showMessage(valueError, 8000); return false; }
+    if ((hadSurface && !surface) || m_openglwindows != surface) return false;
 
     if (m_closingModel || m_batchExporting || m_psdBatch || m_artworkLoading) return false;
     if (m_previewExport.IsBusy()) {
@@ -1792,37 +1798,51 @@ bool MainWindow::ConfirmExportReady(const QString& operation)
         return false;
     }
     QString dragError;
-    if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &dragError)) {
+    const bool dragFinished = !surface || surface->FinishMeshDrag(false, &dragError);
+    if (!alive) return false;
+    if (!dragFinished) {
         statusBar()->showMessage(dragError, 8000);
         return false;
     }
+    if ((hadSurface && !surface) || m_openglwindows != surface) return false;
     if (!m_document.IsLoaded()) return true;
     QString sourceError;
     if (!RuntimeMatchesDocument(&sourceError) || !m_document.SourceMatchesDisk(&sourceError)) {
         QMessageBox::warning(this, operation + QStringLiteral("已阻止"), sourceError);
         return false;
     }
-    int errors = 0;
-    int warnings = 0;
-    for (const auto& diagnostic : m_document.Validate()) {
-        if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error) ++errors;
-        else ++warnings;
-    }
-    if (errors > 0) {
-        QMessageBox::warning(this, operation + QStringLiteral("已阻止"),
-                             QStringLiteral("模型检查发现 %1 个错误，请先在“模型检查”面板处理。").arg(errors));
-        if (m_diagnosticsPanel) {
-            m_diagnosticsPanel->show();
-            m_diagnosticsPanel->raise();
-        }
+    const auto revision = m_document.Revision();
+    const auto source = m_document.SourceDigest();
+    const auto path = m_document.SourcePath();
+    const auto review = CExportDiagnostics::Capture(m_document.Validate(), path, source, revision);
+    if (!review.ErrorCount() && !review.WarningCount()) return true;
+    const bool blocked = review.ErrorCount() > 0;
+    auto* dialog = new QMessageBox(blocked ? QMessageBox::Warning : QMessageBox::Question,
+        operation + (blocked ? QStringLiteral("已阻止") : QStringLiteral("存在提示")),
+        blocked ? QStringLiteral("模型检查发现 %1 个错误，请先处理。").arg(review.ErrorCount())
+                : QStringLiteral("模型检查有 %1 条提示，是否继续导出？").arg(review.WarningCount()),
+        blocked ? QMessageBox::Ok : QMessageBox::Yes | QMessageBox::No, this);
+    const QPointer<QMessageBox> guarded(dialog);
+    const auto cleanup = qScopeGuard([guarded] { if (guarded) delete guarded; });
+    dialog->setObjectName(QStringLiteral("exportModelReview"));
+    dialog->setTextFormat(Qt::PlainText);
+    const auto detail = review.Text();
+    dialog->setInformativeText(detail.size() > 512 ? detail.left(512) + QStringLiteral("…\n展开详情查看其余提示。") : detail);
+    dialog->setDetailedText(detail);
+    dialog->setDefaultButton(blocked ? QMessageBox::Ok : QMessageBox::Yes);
+    const int answer = dialog->exec();
+    if (!alive) return false;
+    if (blocked) {
+        if (m_diagnosticsPanel) m_diagnosticsPanel->show();
+        if (alive && m_diagnosticsPanel) m_diagnosticsPanel->raise();
         return false;
     }
-    if (warnings > 0) {
-        const auto answer = QMessageBox::question(
-            this, operation + QStringLiteral("存在警告"),
-            QStringLiteral("模型检查发现 %1 个警告，仍要继续吗？").arg(warnings),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
-        return answer == QMessageBox::Yes;
+    if (answer != QMessageBox::Yes) return false;
+    if ((hadSurface && !surface) || m_openglwindows != surface ||
+        m_document.Revision() != revision || m_document.SourceDigest() != source || m_document.SourcePath() != path ||
+        !RuntimeMatchesDocument(&sourceError) || !m_document.SourceMatchesDisk(&sourceError)) {
+        statusBar()->showMessage(QStringLiteral("模型已变化，请重新检查后导出"), 8000);
+        return false;
     }
     return true;
 }
@@ -2136,6 +2156,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
             [this, job](const QString& model, const QString& output, bool all, bool groups, bool textures, bool cubism) {
         if (m_psdBatch != job || m_closingModel) return;
         QString error;
+        CExportDiagnostics diagnostics;
         PsdExportStage stage = PsdExportStage::Preflight;
         bool committed = false;
         bool canceled = false;
@@ -2143,7 +2164,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         const QScopedValueRollback<bool> exporting(m_batchExporting, true);
         bool ok = false;
         try {
-            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed, false, &canceled);
+            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed, false, &canceled, &diagnostics);
         } catch (const std::exception& exception) {
             error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
         } catch (...) {
@@ -2151,8 +2172,8 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         }
         if (m_psdBatch != job) return;
         if (m_previewExport.NeedsRecovery()) job->cancel();
-        if (canceled) job->completeCanceled(output, stage, error);
-        else job->completeDetailed(ok, output, error, stage, committed);
+        if (canceled) job->completeCanceled(output, stage, error, diagnostics);
+        else job->completeDetailed(ok, output, error, stage, committed, diagnostics);
         if (m_closeAfterExport) {
             StopPsdBatch();
             QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
@@ -2276,12 +2297,14 @@ void MainWindow::RecoverExportPreview()
 
 bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
                              bool isTexExtract, bool cubismCompat, QString* error,
-                             PsdExportStage* stage, bool* outputCommitted, bool savedParameterSnapshot, bool* canceled)
+                             PsdExportStage* stage, bool* outputCommitted, bool savedParameterSnapshot, bool* canceled,
+                             CExportDiagnostics* diagnostics)
 {
     if (error) error->clear();
     if (stage) *stage = PsdExportStage::Preflight;
     if (outputCommitted) *outputCommitted = false;
     if (canceled) *canceled = false;
+    if (diagnostics) *diagnostics = {};
     const auto fail = [&](PsdExportStage failedStage, const QString& reason) {
         if (error) *error = reason;
         if (stage) *stage = failedStage;
@@ -2334,9 +2357,10 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         const QString moc = QDir(modelJson.m_parentPath).filePath(modelJson.m_moc);
         if (!preflight.Load(moc, &reason)) return fail(PsdExportStage::Preflight, reason);
     }
-    for (const auto& diagnostic : validation->Validate())
-        if (diagnostic.severity == live2dstruct::CModelDiagnostic::Error)
-            return fail(PsdExportStage::Preflight, diagnostic.message);
+    const auto review = CExportDiagnostics::Capture(validation->Validate(), validation->SourcePath(),
+        validation->SourceDigest(), validation->Revision());
+    if (diagnostics) *diagnostics = review;
+    if (review.ErrorCount()) return fail(PsdExportStage::Preflight, review.FirstError());
     if (!control->Checkpoint()) return fail(PsdExportStage::Preflight, control->Error());
 
     ReportExportStage(outPath, PsdExportStage::Preparing);
@@ -3313,6 +3337,15 @@ void MainWindow::RestDock(const QString &name)
     tabifyDockWidget(m_texturePanel, m_diagnosticsPanel);
     m_diagnosticsPanel->SetDocument(&m_document);
     m_diagnosticsPanel->hide();
+    connect(m_diagnosticsPanel, &CModelDiagnosticsPanel::ObjectRequested, this,
+        [this](const QString& id, const QString& type) {
+            if (!AuthoringReady()) return;
+            const QPointer<MainWindow> alive(this);
+            SelectModelObjects({id}, {type});
+            if (alive && m_treePanel) m_treePanel->HighlightObjects({id}, {type});
+            if (alive && m_inspectorPanel) m_inspectorPanel->show();
+            if (alive && m_inspectorPanel) m_inspectorPanel->raise();
+        });
 
     m_userDataPanel = new CUserDataPanel(this);
     addDockWidget(Qt::BottomDockWidgetArea, m_userDataPanel);

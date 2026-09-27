@@ -601,6 +601,8 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     }
     CModelDocument original, next;
     if (!original.LoadBytes(m_sourceBytes, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
+    next.m_maskSource = m_maskSource;
+    if (!next.ValidateStructureMasks(error)) return false;
     if (!next.m_previewBuilder || next.m_parts.size() != original.m_parts.size() ||
         (!deformerStructure && next.m_deformers.size() != original.m_deformers.size()) || next.m_drawables.size() != original.m_drawables.size() ||
         next.m_canvasPixels != original.m_canvasPixels)
@@ -884,7 +886,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
-    session.version = 13;
+    session.version = session.HasMaskMultiplicityOverrides() ? 14 : 13;
     return true;
 }
 

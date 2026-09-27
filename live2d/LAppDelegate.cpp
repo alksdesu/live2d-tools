@@ -495,10 +495,8 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
                 control->Fail(QStringLiteral("纹理采样图层与画布边界尺寸不一致：%1").arg(id));
                 return false;
             }
-            QString name = names.getPartName(id);
-            if (name.isEmpty()) name = id;
             const float alpha = opacity.value(id, layer->opacity);
-            return writer.AddLayer(name, layer->canvasRect, layer->image,
+            return writer.AddLayer(id, layer->canvasRect, layer->image,
                                    static_cast<quint8>(qBound(0.0f, alpha * 255.0f, 255.0f)),
                                    CTextureExtractor::BlendModeToPsd(layer->drawableFlags), false, false);
         };

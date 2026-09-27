@@ -14,6 +14,47 @@ class PsdBatchWorkerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void resultsRetainDiagnosticsAcrossSuccessFailureAndCancel()
+    {
+        PsdBatchJob job;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        const auto warnings = CExportDiagnostics::Capture({{live2dstruct::CModelDiagnostic::Warning,
+            "mask_source_duplicate", QStringLiteral("保留原有重复次数"), 42, "artmesh", "Eye"}},
+            "/source.moc3", QByteArray(32, 's'), 7);
+        QVERIFY(job.start({"/first.model3.json", "/second.model3.json", "/third.model3.json"}, directory.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        job.completeDetailed(true, requests[0][1].toString(), {}, PsdExportStage::Done, true, warnings);
+        QTRY_COMPARE(requests.size(), 2);
+        job.completeDetailed(false, requests[1][1].toString(), QStringLiteral("写入失败"), PsdExportStage::Writing, false, warnings);
+        QTRY_COMPARE(requests.size(), 3);
+        job.completeCanceled(requests[2][1].toString(), PsdExportStage::Encoding, {}, warnings);
+        QTRY_VERIFY(!job.isRunning());
+        const auto results = job.results();
+        QCOMPARE(results[0].state, PsdBatchFileState::Succeeded);
+        QVERIFY(results[0].error.isEmpty());
+        QCOMPARE(results[1].state, PsdBatchFileState::Failed);
+        QCOMPARE(results[2].state, PsdBatchFileState::Canceled);
+        for (const auto& result : results) QCOMPARE(result.diagnostics, warnings);
+    }
+
+    void contradictorySuccessDoesNotConcealDiagnosticErrors()
+    {
+        PsdBatchJob job;
+        QTemporaryDir directory;
+        QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QVERIFY(job.start({"/model.json"}, directory.path(), true, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const auto errors = CExportDiagnostics::Capture({{live2dstruct::CModelDiagnostic::Error,
+            "mask_range", "Invalid mask", 1, "artmesh", "Eye"}});
+        job.completeDetailed(true, requests[0][1].toString(), {}, PsdExportStage::Exporting, true, errors);
+        QTRY_VERIFY(!job.isRunning());
+        QCOMPARE(job.results()[0].state, PsdBatchFileState::Failed);
+        QVERIFY(job.results()[0].outputCommitted);
+        QCOMPARE(job.results()[0].error, QStringLiteral("Eye：Invalid mask"));
+    }
+
     void canceledCurrentFileHasDistinctOutcomeAndStopsAfterAcknowledgment()
     {
         QTemporaryDir temp;

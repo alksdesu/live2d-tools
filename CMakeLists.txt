@@ -33,7 +33,7 @@ if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
     endif()
 endif()
 
-add_library(export_control STATIC std/cexportcontrol.cpp)
+add_library(export_control STATIC std/cexportcontrol.cpp std/cexportdiagnostics.cpp)
 target_include_directories(export_control PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(export_control PUBLIC Qt6::Core)
 add_library(export_task_runner STATIC ui/cexporttaskrunner.cpp)
@@ -68,6 +68,7 @@ add_library(model_data STATIC
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cdeformerdisplaynames.cpp
     live2dstruct/cmodeldocumentnames.cpp
+    live2dstruct/cmodeldocumentmasks.cpp
     live2dstruct/cwarpgridresampler.cpp
     live2dstruct/cmodelmaterialedit.cpp
     live2dstruct/cmodelartwork.cpp
@@ -393,6 +394,10 @@ if(BUILD_TESTING)
     target_link_libraries(warp_grid_document_tests PRIVATE deformer_tree_data model_coordinates Qt6::Test)
     target_compile_definitions(warp_grid_document_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME warp_grid_document COMMAND warp_grid_document_tests)
+    add_executable(mask_source_policy_tests tests/mask_source_policy_tests.cpp)
+    target_link_libraries(mask_source_policy_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(mask_source_policy_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME mask_source_policy COMMAND mask_source_policy_tests)
     foreach(data_test IN ITEMS warp_grid_resampler parent_graph blend_shape_relations visibility_edit model_resource_path directory_export runtime_moc runtime_moc_snapshot runtime_package physics_document parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete mesh_structure_session)
         add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
         target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)
@@ -502,6 +507,11 @@ if(BUILD_TESTING)
     target_link_libraries(clipping_editor_tests PRIVATE deformer_tree_data cmo3_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(clipping_editor_tests PRIVATE TEST_RESOURCES=\"${CMAKE_CURRENT_SOURCE_DIR}/Resources\")
     add_test(NAME clipping_editor COMMAND clipping_editor_tests)
+    add_executable(model_diagnostics_panel_tests tests/model_diagnostics_panel_tests.cpp ui/cmodeldiagnosticspanel.cpp)
+    target_link_libraries(model_diagnostics_panel_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    target_compile_definitions(model_diagnostics_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME model_diagnostics_panel COMMAND model_diagnostics_panel_tests)
+    set_tests_properties(model_diagnostics_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     set_tests_properties(clipping_editor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(deformer_editor_tests tests/deformer_editor_tests.cpp ui/cinspectorpanel.cpp ui/ckeyformmatrix.cpp ui/cbindingkeysdialog.cpp
         ui/cmodeltreepanel.cpp ui/para/ccidjson.cpp)
@@ -817,12 +827,15 @@ if(BUILD_TESTING)
     add_executable(psd_batch_worker_tests tests/psd_batch_worker_tests.cpp
         ui/psdbatchworker.cpp ui/psdbatchjob.cpp ui/psdbatchresult.cpp)
     target_include_directories(psd_batch_worker_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(psd_batch_worker_tests PRIVATE Qt6::Test Qt6::Core)
+    target_link_libraries(psd_batch_worker_tests PRIVATE export_control Qt6::Test Qt6::Core)
     add_test(NAME psd_batch_worker COMMAND psd_batch_worker_tests)
+    add_executable(export_diagnostics_tests tests/export_diagnostics_tests.cpp)
+    target_link_libraries(export_diagnostics_tests PRIVATE export_control Qt6::Test)
+    add_test(NAME export_diagnostics COMMAND export_diagnostics_tests)
     add_executable(export_results_panel_tests tests/export_results_panel_tests.cpp
         ui/cexportresultspanel.cpp ui/psdbatchresult.cpp)
     target_include_directories(export_results_panel_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(export_results_panel_tests PRIVATE Qt6::Test Qt6::Widgets)
+    target_link_libraries(export_results_panel_tests PRIVATE export_control Qt6::Test Qt6::Widgets)
     add_test(NAME export_results_panel COMMAND export_results_panel_tests)
     set_tests_properties(export_results_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(psd_print_dialog_tests tests/psd_print_dialog_tests.cpp ui/cpsdprintdialog.cpp)

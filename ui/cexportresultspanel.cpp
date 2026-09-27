@@ -45,9 +45,12 @@ QString detailText(const PsdBatchFileResult& result)
         result.state == PsdBatchFileState::Canceled ? QStringLiteral("未提交新的输出文件。") :
         result.state == PsdBatchFileState::Pending || result.state == PsdBatchFileState::NotRun
             ? QStringLiteral("尚未开始写入文件。") : QStringLiteral("文件写入未确认。");
-    return QStringLiteral("%1\n%2\n\n源模型：%3\n输出文件：%4\n状态：%5\n阶段：%6\n耗时：%7")
+    QString details = QStringLiteral("%1\n%2\n\n源模型：%3\n输出文件：%4\n状态：%5\n阶段：%6\n耗时：%7")
         .arg(summary, writeStatus, result.sourcePath, result.outputPath, PsdBatchStateText(result.state),
              PsdExportStageText(result.stage), elapsedText(result));
+    if (result.diagnostics.ErrorCount() || result.diagnostics.WarningCount())
+        details += QStringLiteral("\n\n模型检查：\n%1").arg(result.diagnostics.Text());
+    return details;
 }
 }
 
@@ -88,7 +91,7 @@ CExportResultsPanel::CExportResultsPanel(QWidget* parent) : QDockWidget(QStringL
     m_details = new QPlainTextEdit(splitter);
     m_details->setObjectName(QStringLiteral("exportResultDetails"));
     m_details->setReadOnly(true);
-    m_details->setPlaceholderText(QStringLiteral("选择文件查看完整路径和错误原因"));
+    m_details->setPlaceholderText(QStringLiteral("选择文件查看完整路径、提示和错误原因"));
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
     layout->addWidget(splitter, 1);
@@ -115,15 +118,18 @@ bool CExportResultsPanel::SetResults(const PsdBatchResults& results)
     if (results.size() > std::numeric_limits<int>::max()) return false;
     decltype(m_counts) counts{};
     int retryCount = 0;
+    int warningFiles = 0;
     for (int index = 0; index < results.size(); ++index) {
         if (!IsPsdBatchResultValid(results[index]) || results[index].index != index) return false;
         ++counts[int(results[index].state)];
         retryCount += retryable(results[index]);
+        warningFiles += results[index].diagnostics.WarningCount() > 0;
     }
     const QSignalBlocker blocker(m_table);
     m_results = results;
     m_counts = counts;
     m_retryable = retryCount;
+    m_warningFiles = warningFiles;
     m_table->clearContents();
     m_table->setRowCount(m_results.size());
     for (int index = 0; index < m_results.size(); ++index) WriteRow(index);
@@ -145,9 +151,11 @@ bool CExportResultsPanel::UpdateResult(int index, const PsdBatchFileResult& resu
          (!IsPsdExportStageTransitionValid(before.stage, result.stage) || result.elapsedMs < before.elapsedMs))) return false;
     --m_counts[int(before.state)];
     m_retryable -= retryable(before);
+    m_warningFiles -= before.diagnostics.WarningCount() > 0;
     m_results[index] = result;
     ++m_counts[int(result.state)];
     m_retryable += retryable(result);
+    m_warningFiles += result.diagnostics.WarningCount() > 0;
     WriteRow(index);
     RefreshSummary();
     if (m_table->currentRow() == index) RefreshSelection();
@@ -157,8 +165,12 @@ bool CExportResultsPanel::UpdateResult(int index, const PsdBatchFileResult& resu
 void CExportResultsPanel::WriteRow(int index)
 {
     const auto& result = m_results[index];
-    const QStringList values{result.sourcePath, result.outputPath, PsdBatchStateText(result.state),
-                             PsdExportStageText(result.stage), elapsedText(result), result.error};
+    const QString state = result.state == PsdBatchFileState::Succeeded && result.diagnostics.WarningCount()
+        ? QStringLiteral("成功（有提示）") : PsdBatchStateText(result.state);
+    const QString explanation = result.error.isEmpty() && result.diagnostics.WarningCount()
+        ? QStringLiteral("%1 条模型提示，详情见下方").arg(result.diagnostics.WarningCount()) : result.error;
+    const QStringList values{result.sourcePath, result.outputPath, state,
+                             PsdExportStageText(result.stage), elapsedText(result), explanation};
     for (int column = 0; column < values.size(); ++column) {
         auto* item = m_table->item(index, column);
         if (!item) { item = new QTableWidgetItem; m_table->setItem(index, column, item); }
@@ -188,6 +200,7 @@ void CExportResultsPanel::RefreshSummary()
             .arg(m_results.size()).arg(m_counts[int(PsdBatchFileState::Succeeded)]).arg(m_counts[int(PsdBatchFileState::Failed)])
             .arg(m_counts[int(PsdBatchFileState::Canceled)])
             .arg(m_counts[int(PsdBatchFileState::NotRun)]).arg(m_counts[int(PsdBatchFileState::Running)]).arg(m_counts[int(PsdBatchFileState::Pending)]));
+    if (m_warningFiles) m_summary->setText(m_summary->text() + QStringLiteral("\n%1 项包含模型提示").arg(m_warningFiles));
     m_retry->setEnabled(!m_busy && m_retryAvailable && m_retryable > 0);
     m_copy->setEnabled(!m_results.isEmpty());
 }
@@ -219,8 +232,9 @@ QJsonObject CExportResultsPanel::ReportJson() const
         files.append(QJsonObject{{QStringLiteral("index"), item.index}, {QStringLiteral("source"), item.sourcePath},
             {QStringLiteral("output"), item.outputPath}, {QStringLiteral("state"), PsdBatchStateKey(item.state)},
             {QStringLiteral("stage"), PsdExportStageKey(item.stage)}, {QStringLiteral("error"), item.error},
-            {QStringLiteral("elapsedMs"), item.elapsedMs}, {QStringLiteral("outputCommitted"), item.outputCommitted}});
-    return QJsonObject{{QStringLiteral("version"), 1}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
+            {QStringLiteral("elapsedMs"), item.elapsedMs}, {QStringLiteral("outputCommitted"), item.outputCommitted},
+            {QStringLiteral("diagnostics"), item.diagnostics.ToJson()}});
+    return QJsonObject{{QStringLiteral("version"), 2}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
 }
 
 QString CExportResultsPanel::ReportText() const
