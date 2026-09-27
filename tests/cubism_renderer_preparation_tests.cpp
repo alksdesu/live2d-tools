@@ -234,6 +234,44 @@ private slots:
         while (m_gl.glGetError() != GL_NO_ERROR) {}
     }
 
+    void replacementTextureDirectoryIsExactAndTransactional()
+    {
+        GetterState before, after;
+        auto source = Model(before), target = Model(after);
+        auto previous = Renderer();
+        QVERIFY(Gl(previous).setGlOwningContext(&m_context));
+        QVERIFY(Gl(previous).Initialize(source.get()));
+        const std::array<GLuint, 3> textures{Texture(64), Texture(128), Texture(255)};
+        const auto cleanup = qScopeGuard([&] { m_gl.glDeleteTextures(textures.size(), textures.data()); });
+        Gl(previous).BindTexture(0, textures[0]);
+        Gl(previous).BindTexture(3, textures[1]);
+        const auto beforeState = State();
+        const QMap<int, GLuint> bindings{{0, textures[2]}, {7, textures[2]}};
+        auto candidate = Renderer();
+        QString error;
+        QVERIFY2(Gl(candidate).PrepareModelReplacement(target.get(), Gl(previous), &error, &bindings), qPrintable(error));
+        QCOMPARE(State(), beforeState);
+        QCOMPARE(Gl(candidate).GetBindedTextures().GetSize(), 2);
+        for (auto it = Gl(candidate).GetBindedTextures().Begin(); it != Gl(candidate).GetBindedTextures().End(); ++it) {
+            QVERIFY(bindings.contains(it->First));
+            QCOMPARE(it->Second, bindings[it->First]);
+        }
+        QCOMPARE(Gl(previous).GetBindedTextures().GetSize(), 2);
+        QCOMPARE(Gl(previous).GetBindedTextures()[0], textures[0]);
+        QCOMPARE(Gl(previous).GetBindedTextures()[3], textures[1]);
+        QVERIFY(Gl(candidate)._textureMaskReplay);
+        QVERIFY(Gl(candidate)._maskBuffersNeedRedraw);
+        for (const auto& invalid : {QMap<int, GLuint>{{-1, textures[0]}}, QMap<int, GLuint>{{0, 0}},
+                                    QMap<int, GLuint>{{0, 0x7ffffffe}}}) {
+            auto rejected = Renderer();
+            QVERIFY(!Gl(rejected).PrepareModelReplacement(target.get(), Gl(previous), &error, &invalid));
+            QVERIFY(!error.isEmpty());
+            QCOMPARE(State(), beforeState);
+            for (auto id : textures) QVERIFY(m_gl.glIsTexture(id));
+        }
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+    }
+
     void clippingTransitionsRetainConfigurationAndComposeAlpha_data()
     {
         QTest::addColumn<bool>("highPrecision");

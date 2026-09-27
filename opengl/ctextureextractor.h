@@ -46,6 +46,7 @@ public:
     static constexpr qint64 MaximumMaterialPixels = 128LL * 1024 * 1024;
     static constexpr qint64 MaximumTotalMaterialPixels = 256LL * 1024 * 1024;
     static constexpr qint64 MaximumMaterialReferences = 16LL * 1024 * 1024;
+    static constexpr qint64 MaximumRasterSamples = 512LL * 1024 * 1024;
     CTextureExtractor();
     ~CTextureExtractor();
 
@@ -56,10 +57,7 @@ public:
     bool ExtractMaterials(live2dstruct::CSectionTable* table, QVector<ExtractedMaterial>& result,
                           QString* error = nullptr) const;
 
-    /// 从 CSectionTable 提取所有 art mesh 的原始纹理
-    /// @param table 已解析的 moc3 数据
-    /// @param includeHidden 是否包括隐藏图层
-    /// @return 按 mesh 索引顺序排列的提取结果
+    // 提供模型坐标时采样到画布；否则返回 UV 空间裁片。
     QVector<ExtractedLayer> ExtractAll(live2dstruct::CSectionTable* table, bool includeHidden,
                                        const QHash<QString, QVector<quint16>>* indexOverrides = nullptr,
                                        CExportControl* control = nullptr,
@@ -72,6 +70,9 @@ public:
     static uint32_t BlendModeToPsd(int drawableFlags);
 
 private:
+    QImage RasterizeCanvasMesh(const QImage& atlas, const float* uvs, const float* positions, int vertexCount,
+                               const short* indices, int indexCount, const live2dstruct::CCanvas_info* canvas,
+                               QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control);
     /// 从 atlas 中通过 UV 三角形网格光栅化提取 mesh 图像
     /// @param atlas 纹理图集图像
     /// @param uvData UV 坐标数组 (vertex_count * 2 floats)
@@ -83,7 +84,7 @@ private:
     QImage RasterizeMesh(const QImage& atlas,
                          const float* uvData, int vertexCount,
                          const short* indexData, int indexCount,
-                         QRect& outUvRect, qint64& pixels, CExportControl* control);
+                         QRect& outUvRect, qint64& pixels, qint64& samples, CExportControl* control);
 
     /// 计算模型空间顶点在画布上的像素包围盒
     QRect ComputeCanvasRect(const float* positions, int vertexCount,

@@ -702,3 +702,22 @@ HEADERS += \
     live2dstruct/cuveditdraft.h \
     ui/cuvcanvasview.h \
     ui/cuveditdialog.h
+
+SOURCES += \
+    live2dstruct/ctextureworkspace.cpp \
+    live2dstruct/cmodelatlasedit.cpp \
+    live2dstruct/cmodeldocumentatlas.cpp \
+    live2dstruct/catlaseditcontroller.cpp \
+    ui/catlascanvasview.cpp \
+    ui/catlaseditdialog.cpp
+HEADERS += \
+    live2dstruct/ctextureworkspace.h \
+    live2dstruct/cmodelatlasedit.h \
+    live2dstruct/catlaseditcontroller.h \
+    ui/catlascanvasview.h \
+    ui/catlaseditdialog.h
+
+SOURCES += \
+    live2dstruct/catlasrepackplanner.cpp \
+    ui/mainwindowatlases.cpp
+HEADERS += live2dstruct/catlasrepackplanner.h ui/cdraftdialoglifecycle.h

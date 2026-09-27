@@ -270,6 +270,16 @@ csmBool CubismUserModel::CreateRenderer(csmInt32 maskBufferCount)
     return true;
 }
 
+bool CubismUserModel::CommitRendererReplacement(Rendering::CubismRenderer*& candidate,
+                                                 Rendering::CubismRenderer* expected) noexcept
+{
+    if (!candidate || !_model || !_renderer || _renderer != expected || candidate == _renderer ||
+        candidate->GetModel() != _model || _renderer->GetModel() != _model ||
+        candidate->IsDrawing() || _renderer->IsDrawing()) return false;
+    std::swap(_renderer, candidate);
+    return true;
+}
+
 void CubismUserModel::DeleteRenderer()
 {
     if (_renderer)

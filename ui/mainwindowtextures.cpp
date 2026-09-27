@@ -3,6 +3,7 @@
 #include "psdbatchjob.h"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
+#include "std/cpngimage.h"
 #include <QStatusBar>
 
 bool MainWindow::InitializeTextureEditing(QString* error)
@@ -10,58 +11,66 @@ bool MainWindow::InitializeTextureEditing(QString* error)
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
     if (!model) { if (error) *error = QStringLiteral("纹理预览尚未就绪"); return false; }
-    m_textureEditor.SetPublisher([this](const auto& state, QString* detail) { return PublishTextureState(state, detail); });
-    return m_textureEditor.Initialize(model->GetTextureSources(), model->GetTextureState(), error);
-}
-
-bool MainWindow::PublishTextureState(const live2dstruct::CTextureAssets::State& state, QString* error)
-{
-    const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
-    if (m_materialEditor.IsActive() || m_closingModel || m_applyingSession || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
-        !m_runtimePanelsInitialized || !m_openglwindows || !m_openglwindows->IsModelReady())
-        return fail(QStringLiteral("请等待模型就绪，并先结束当前导出或会话恢复"));
-    if (!RuntimeMatchesDocument(error)) return false;
-    auto* manager = LAppLive2DManager::GetInstance();
-    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
-    if (!model || model->GetTextureSources() != m_textureEditor.Sources() ||
-        model->GetTextureState() != m_textureEditor.Current()) return fail(QStringLiteral("纹理来源或预览已改变，请重新打开模型"));
-    return m_openglwindows->ApplyTextureState(state, error);
+    const bool initializing = !m_document.HasTextureWorkspace();
+    if (initializing && !m_document.InitializeTextureWorkspace(model->GetTextureSources(), model->GetTextureState(), error)) return false;
+    if (m_document.TextureSources() != model->GetTextureSources() || m_document.TextureWorkspace() != model->GetTextureWorkspace()) {
+        if (error) *error = QStringLiteral("图集文档与运行时不一致，初始化保持原状态");
+        return false;
+    }
+    m_atlasEditor.SetDocument(&m_document);
+    m_atlasEditor.SetPublisher([this](const auto& before, const auto& after, const auto& ids, QString* detail) {
+        return PublishAtlasPreview(before, after, ids, detail);
+    });
+    if (initializing) MarkDocumentSaved();
+    return true;
 }
 
 bool MainWindow::ReplaceTexture(int slot, const QByteArray& png, QString* error)
 {
-    const auto revision = m_textureEditor.Revision();
-    if (!m_textureEditor.Replace(slot, png, error)) return false;
-    if (revision != m_textureEditor.Revision()) RefreshTextureEditing(true);
+    if (!FinishParameterValueEditing(error) || !m_openglwindows || !m_openglwindows->FinishMeshDrag(false, error)) return false;
+    live2dstruct::CModelAtlasState state;
+    if (!m_document.CaptureAtlasState(state, error)) return false;
+    const auto atlas = state.workspace.atlases.find(slot);
+    if (atlas == state.workspace.atlases.end()) { if (error) *error = QStringLiteral("纹理槽不存在"); return false; }
+    const auto source = m_document.TextureSources().constFind(atlas->sourceSlot);
+    const auto requested = png.isEmpty() && source != m_document.TextureSources().cend() ? source->png : png;
+    QImage decoded;
+    if (!CPngImage::Decode(requested, decoded, error)) return false;
+    if (decoded.size() != atlas->size) {
+        if (error) *error = QStringLiteral("替换 PNG 必须与当前图集同尺寸；调整尺寸请使用图集编辑");
+        return false;
+    }
+    atlas->png = source != m_document.TextureSources().cend() && source->size == atlas->size && source->png == requested
+        ? QByteArray() : QByteArray(requested.constData(), requested.size());
+    const auto revision = m_document.Revision();
+    if (!m_atlasEditor.Submit(state, error)) return false;
+    if (revision != m_document.Revision()) RefreshTextureEditing(true);
     return true;
 }
 
 void MainWindow::RefreshTextureEditing(bool changed)
 {
+    const QPointer<MainWindow> alive(this);
     if (changed) {
-        m_historySource = HistorySource::Textures;
-        m_textureHistoryUsesDocument = false;
+        m_historySource = HistorySource::Inspector;
+        m_sessionDirty = true;
         RefreshWindowTitle();
+        if (!alive) return;
     }
     if (m_texturePanel) {
         QString error;
         const bool available = m_runtimePanelsInitialized && !m_closingModel && !m_batchExporting && !m_psdBatch &&
             !m_previewExport.IsBusy() && m_openglwindows && m_openglwindows->IsModelReady();
-        const bool loaded = m_texturePanel->LoadTextureSnapshot(m_textureEditor.Sources(), m_textureEditor.Current(), &error);
+        auto* manager = available ? LAppLive2DManager::GetInstance() : nullptr;
+        auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+        const bool loaded = model && m_texturePanel->LoadWorkspaceSnapshot(model->GetTextureSources(), model->GetTextureWorkspace(),
+                                                                           model->GetPreviewMocBytes(), &error);
+        if (!alive) return;
+        m_texturePanel->SetSnapshotAvailable(loaded, error);
+        m_texturePanel->SetPreviewActive(m_atlasEditor.IsActive() || m_materialEditor.IsActive());
         m_texturePanel->SetEditingEnabled(available && loaded, error);
-        if (!loaded) statusBar()->showMessage(QStringLiteral("纹理状态已保留，图集刷新失败：%1").arg(error), 10000);
+        if (available && !loaded) statusBar()->showMessage(QStringLiteral("图集状态已保留，界面刷新失败：%1").arg(error), 10000);
     }
-    RefreshTextureGeometry();
+    if (!alive) return;
     RefreshUndoActions();
-}
-
-void MainWindow::ApplyTextureHistory(bool undo)
-{
-    QString error;
-    if (!(undo ? m_textureEditor.Undo(&error) : m_textureEditor.Redo(&error))) {
-        if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
-        return;
-    }
-    RefreshTextureEditing(true);
-    statusBar()->showMessage(undo ? QStringLiteral("已撤销纹理修改") : QStringLiteral("已重做纹理修改"), 5000);
 }

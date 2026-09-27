@@ -88,9 +88,7 @@ bool sourceTarget(const QString& target, const CTextureAssets::Catalog& sources)
 }
 } // namespace
 
-// ============================================================
 // CUvOverlayItem：UV 线框叠加层
-// ============================================================
 class CUvOverlayItem : public QGraphicsItem
 {
 public:
@@ -150,9 +148,7 @@ private:
     QString m_selected;
 };
 
-// ============================================================
 // CAtlasView：缩放/平移/点击
-// ============================================================
 CAtlasView::CAtlasView(QWidget* parent)
     : QGraphicsView(parent)
 {
@@ -248,9 +244,7 @@ void CAtlasView::mouseReleaseEvent(QMouseEvent* event)
     QGraphicsView::mouseReleaseEvent(event);
 }
 
-// ============================================================
 // CTexturePanel
-// ============================================================
 CTexturePanel::CTexturePanel(QWidget *parent)
     : QDockWidget("纹理", parent)
 {
@@ -262,7 +256,6 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     mainLayout->setContentsMargins(gap, gap, gap, gap);
     mainLayout->setSpacing(gap);
 
-    // ---- 顶栏 ----
     QHBoxLayout* topBar = new QHBoxLayout();
     topBar->setSpacing(gap);
 
@@ -293,6 +286,7 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     };
     m_btnReplace = button(QStringLiteral("替换 PNG…"), QStringLiteral("使用同尺寸 PNG 替换当前图集，原文件保持不变"), "textureReplace");
     m_btnRestore = button(QStringLiteral("恢复原图"), QStringLiteral("恢复模型首次加载时的素材，可撤销"), "textureRestore");
+    m_btnEditAtlas = button(QStringLiteral("编辑图集…"), QStringLiteral("调整图集尺寸、移动素材或自动排列"), "textureEditAtlas");
     m_btnEditUv = button(QStringLiteral("编辑 UV…"), QStringLiteral("调整网格的纹理采样坐标或分配到已有图集"), "textureEditUv");
     tools->addSeparator();
     m_btnFit = button(QStringLiteral("适应窗口"), QStringLiteral("缩放图集以适应窗口"), "textureFit");
@@ -302,13 +296,11 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     for (auto* extension : tools->findChildren<QToolButton*>(QStringLiteral("qt_toolbar_ext_button")))
         extension->setFocusPolicy(Qt::StrongFocus);
 
-    // ---- 视图 ----
     m_scene = new QGraphicsScene(this);
     m_view = new CAtlasView(wrapper);
     m_view->setScene(m_scene);
     mainLayout->addWidget(m_view, 1);
 
-    // ---- 底部状态栏 ----
     m_infoLabel = new QLabel("未加载纹理", wrapper);
     m_infoLabel->setObjectName("texInfoLabel");
     m_infoLabel->setTextFormat(Qt::PlainText);
@@ -334,7 +326,8 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     connect(m_btnExport->defaultAction(), &QAction::triggered, this, &CTexturePanel::onExportPng);
     connect(m_btnReplace->defaultAction(), &QAction::triggered, this, &CTexturePanel::onReplacePng);
     connect(m_btnRestore->defaultAction(), &QAction::triggered, this, &CTexturePanel::onRestoreOriginal);
-    connect(m_btnEditUv->defaultAction(), &QAction::triggered, this, [this] { emit EditUvRequested(m_selectedMesh); });
+    connect(m_btnEditUv->defaultAction(), &QAction::triggered, this, [this] { const auto selected = m_selectedMesh; emit EditUvRequested(selected); });
+    connect(m_btnEditAtlas->defaultAction(), &QAction::triggered, this, [this] { const auto selected = m_selectedMesh; emit EditAtlasRequested(selected); });
     connect(m_selector, &QComboBox::activated, this, [this] { if (!m_loading) emit HistorySelected(); });
     connect(m_checkWireframe, &QCheckBox::toggled, this, [this](bool on){
         if (m_overlay) m_overlay->setVisible(on);
@@ -371,14 +364,23 @@ void CTexturePanel::LoadTextures(const QMap<int, QString>& texMap, const QString
             moc = file.readAll();
             if (file.error() != QFileDevice::NoError || moc.isEmpty()) { RejectEdit(QStringLiteral("UV 模型读取失败")); return; }
         }
-        if (!LoadSnapshot(sources, {}, mocPath.isEmpty() ? nullptr : &moc, &error)) RejectEdit(error);
+        CTextureWorkspace::State workspace;
+        if (!CTextureWorkspace::Initialize(sources, {}, workspace, &error) ||
+            !LoadSnapshot(sources, workspace, mocPath.isEmpty() ? nullptr : &moc, &error)) RejectEdit(error);
     } catch (const std::exception&) { RejectEdit(QStringLiteral("无法加载纹理，原图集保持不变")); }
 }
 
 bool CTexturePanel::LoadTextureSnapshot(const CTextureAssets::Catalog& sources,
                                        const CTextureAssets::State& state, QString* error)
 {
-    return LoadSnapshot(sources, state, nullptr, error);
+    CTextureWorkspace::State workspace;
+    return CTextureWorkspace::Initialize(sources, state, workspace, error) && LoadSnapshot(sources, workspace, nullptr, error);
+}
+
+bool CTexturePanel::LoadWorkspaceSnapshot(const CTextureAssets::Catalog& sources, const CTextureWorkspace::State& workspace,
+                                         const QByteArray& mocBytes, QString* error)
+{
+    return LoadSnapshot(sources, workspace, mocBytes.isEmpty() ? nullptr : &mocBytes, error);
 }
 
 bool CTexturePanel::PrepareScene(int slot, const QMap<int, QImage>& images,
@@ -411,19 +413,38 @@ bool CTexturePanel::PrepareScene(int slot, const QMap<int, QImage>& images,
     return true;
 }
 
-bool CTexturePanel::LoadSnapshot(const CTextureAssets::Catalog& sources, const CTextureAssets::State& state,
+bool CTexturePanel::LoadSnapshot(const CTextureAssets::Catalog& sources, const CTextureWorkspace::State& workspace,
                                  const QByteArray* mocBytes, QString* error)
 {
     if (error) error->clear();
     if (m_loading) return fail(error, QStringLiteral("图集快照正在更新"));
     try {
-        if (!CTextureAssets::ValidateCatalog(sources, error) || !CTextureAssets::ValidateState(sources, state, error)) return false;
+        if (m_workspace.sourceFingerprint.size() == 32 && sources == m_sources && workspace == m_workspace) {
+            if (!mocBytes) return true;
+            const QPointer<CTexturePanel> alive(this);
+            m_loading = true;
+            const auto loading = qScopeGuard([alive] { if (alive) alive->m_loading = false; });
+            return UpdateUvSnapshot(*mocBytes, error);
+        }
+        CTextureWorkspace::State frozen;
+        if (!CTextureWorkspace::Freeze(sources, workspace, frozen, error)) return false;
         const bool preserve = sources == m_sources;
-        if (preserve && state == m_state && !mocBytes) return true;
+        if (preserve && frozen == m_workspace && !mocBytes) return true;
         if (m_snapshotRevision == std::numeric_limits<quint64>::max()) return fail(error, QStringLiteral("图集版本已超出范围，请重新打开模型"));
-        auto catalog = sources;
-        auto overrides = state;
-        auto pngs = CTextureAssets::Effective(sources, state);
+        CTextureAssets::Catalog catalog;
+        QMap<QByteArray, QByteArray> blobs;
+        for (auto it = sources.cbegin(); it != sources.cend(); ++it) {
+            QByteArray png;
+            const auto original = m_sources.constFind(it.key());
+            if (original != m_sources.cend() && original->png == it->png) png = original->png;
+            else if (blobs.contains(it->digest) && blobs.value(it->digest) == it->png) png = blobs.value(it->digest);
+            else { png = QByteArray(it->png.constData(), it->png.size()); blobs.insert(it->digest, png); }
+            catalog.insert(it.key(), {QString(it->path.constData(), it->path.size()), png,
+                QByteArray(it->digest.constData(), it->digest.size()), it->size});
+        }
+        CTextureAssets::State overrides, pngs;
+        if (!CTextureWorkspace::Effective(catalog, frozen, pngs, error)) return false;
+        QByteArray moc = mocBytes ? QByteArray(mocBytes->constData(), mocBytes->size()) : preserve ? m_mocBytes : QByteArray{};
         QMap<int, QString> paths;
         QMap<int, QSize> sizes;
         QMap<int, QImage> images;
@@ -433,27 +454,38 @@ bool CTexturePanel::LoadSnapshot(const CTextureAssets::Catalog& sources, const C
             previous.insert(QCryptographicHash::hash(*image, QCryptographicHash::Sha256), image.key());
         qint64 decodedBytes = 0;
         for (auto png = pngs.cbegin(); png != pngs.cend(); ++png) {
-            const auto& source = sources[png.key()];
+            const auto& atlas = frozen.atlases[png.key()];
             const auto digest = QCryptographicHash::hash(*png, QCryptographicHash::Sha256);
             if (!decoded.contains(digest)) {
-                const qint64 bytes = qint64(source.size.width()) * source.size.height() * 4;
-                if (bytes > CTextureAssets::MaximumBytes - decodedBytes)
+                const qint64 bytes = qint64(atlas.size.width()) * atlas.size.height() * 4;
+                if (bytes > CTextureWorkspace::MaximumDecodedBytes - decodedBytes)
                     return fail(error, QStringLiteral("图集解码后的总像素大小超出支持范围"));
                 decodedBytes += bytes;
                 QImage image;
                 const auto cached = previous.constFind(digest);
                 if (cached != previous.cend() && m_pngs.value(*cached) == *png) image = m_images.value(*cached);
                 if (image.isNull() && !CPngImage::Decode(*png, image, error)) return false;
+                if (image.size() != atlas.size) return fail(error, QStringLiteral("图集显示尺寸与快照不一致"));
                 decoded.insert(digest, std::move(image));
             }
             images.insert(png.key(), decoded.value(digest));
-            paths.insert(png.key(), source.path);
-            sizes.insert(png.key(), source.size);
+            if (catalog.contains(atlas.sourceSlot)) paths.insert(png.key(), catalog.value(atlas.sourceSlot).path);
+            sizes.insert(png.key(), atlas.size);
+            if (!atlas.png.isEmpty()) overrides.insert(png.key(), atlas.png);
         }
-        QVector<CAtlasMeshUv> meshes = preserve ? m_meshes : QVector<CAtlasMeshUv>{};
-        if (mocBytes && !sources.isEmpty() && !PrepareUvMeshes(*mocBytes, sizes, meshes, error)) return false;
-        const auto selected = preserve ? m_selectedMesh : QString();
-        const int slot = preserve && images.contains(m_currentTexKey) ? m_currentTexKey : images.isEmpty() ? -1 : images.firstKey();
+        QVector<CAtlasMeshUv> meshes;
+        if (!moc.isEmpty() && !PrepareUvMeshes(moc, sizes, meshes, error)) return false;
+        QString selected = preserve ? m_selectedMesh : QString();
+        const auto picked = std::find_if(meshes.cbegin(), meshes.cend(), [&](const auto& mesh) { return mesh.name == selected; });
+        if (picked == meshes.cend()) selected.clear();
+        int slot = preserve && images.contains(m_currentTexKey) ? m_currentTexKey : images.isEmpty() ? -1 : images.firstKey();
+        if (!selected.isEmpty()) {
+            const auto previousMesh = std::find_if(m_meshes.cbegin(), m_meshes.cend(), [&](const auto& mesh) { return mesh.name == selected; });
+            if (previousMesh != m_meshes.cend() && previousMesh->textureNo == m_currentTexKey && picked->textureNo != previousMesh->textureNo)
+                slot = picked->textureNo;
+        }
+        const bool preserveView = preserve && slot == m_currentTexKey && slot >= 0 &&
+            m_atlasSizes.value(slot) == sizes.value(slot) && m_workspace.atlases.value(slot).id == frozen.atlases.value(slot).id;
         std::unique_ptr<QGraphicsScene> scene;
         CUvOverlayItem* overlay = nullptr;
         if (!PrepareScene(slot, images, meshes, selected, scene, overlay, error)) return false;
@@ -462,7 +494,8 @@ bool CTexturePanel::LoadSnapshot(const CTextureAssets::Catalog& sources, const C
         const QPointer<CTexturePanel> alive(this);
         m_loading = true;
         const auto loading = qScopeGuard([alive] { if (alive) alive->m_loading = false; });
-        m_sources.swap(catalog); m_state.swap(overrides); m_pngs.swap(pngs); m_images.swap(images);
+        m_sources.swap(catalog); m_workspace = std::move(frozen); m_mocBytes.swap(moc);
+        m_state.swap(overrides); m_pngs.swap(pngs); m_images.swap(images);
         m_textures.swap(paths); m_atlasSizes.swap(sizes); m_meshes.swap(meshes);
         if (!preserve) m_runtimeRenderOrder.clear();
         m_selectedMesh = selected;
@@ -471,17 +504,19 @@ bool CTexturePanel::LoadSnapshot(const CTextureAssets::Catalog& sources, const C
         {
             const QSignalBlocker selectorSignals(m_selector);
             m_selector->clear();
-            for (auto texture = m_textures.cbegin(); texture != m_textures.cend(); ++texture) {
-                m_selector->addItem(QStringLiteral("texture_%1 (%2)%3").arg(texture.key())
-                    .arg(QFileInfo(texture.value()).fileName(), m_state.contains(texture.key()) ? QStringLiteral(" · 已替换") : QString()), texture.key());
-                m_selector->setItemData(m_selector->count() - 1, QStringLiteral("<qt>%1</qt>").arg(texture.value().toHtmlEscaped()), Qt::ToolTipRole);
+            for (auto atlas = m_workspace.atlases.cbegin(); atlas != m_workspace.atlases.cend(); ++atlas) {
+                const QString status = atlas->sourceSlot < 0 ? QStringLiteral(" · 新图集") :
+                    m_state.contains(atlas.key()) ? QStringLiteral(" · 已替换") : QString();
+                m_selector->addItem(QStringLiteral("texture_%1 (%2)%3").arg(atlas.key()).arg(atlas->name, status), atlas.key());
+                const QString description = atlas->sourceSlot < 0 ? QStringLiteral("新建图集，保存在工作会话中") : m_textures.value(atlas.key());
+                m_selector->setItemData(m_selector->count() - 1, QStringLiteral("<qt>%1</qt>").arg(description.toHtmlEscaped()), Qt::ToolTipRole);
             }
             m_selector->setCurrentIndex(m_selector->findData(slot));
         }
         auto* oldScene = m_scene;
         m_scene = scene.release(); m_scene->setParent(this); m_overlay = overlay;
         m_view->setScene(m_scene); delete oldScene;
-        if (preserve && slot >= 0) {
+        if (preserveView) {
             m_view->setTransform(transform);
             m_view->horizontalScrollBar()->setValue(horizontal); m_view->verticalScrollBar()->setValue(vertical);
         } else {
@@ -514,26 +549,73 @@ void CTexturePanel::SetEditingEnabled(bool enabled, const QString& reason)
     RefreshActions();
 }
 
+void CTexturePanel::SetPreviewActive(bool active)
+{
+    if (m_previewActive == active) return;
+    m_previewActive = active;
+    if (m_snapshotRevision < std::numeric_limits<quint64>::max()) ++m_snapshotRevision;
+    RefreshActions();
+}
+
+void CTexturePanel::SetSnapshotAvailable(bool available, const QString& reason)
+{
+    const QString message = available ? QString() : reason.isEmpty()
+        ? QStringLiteral("图集界面尚未与当前模型同步，请稍后重试") : reason;
+    if (m_snapshotAvailable == available && m_snapshotReason == message) return;
+    const bool wasAvailable = m_snapshotAvailable;
+    m_snapshotAvailable = available; m_snapshotReason = message;
+    if (m_snapshotRevision < std::numeric_limits<quint64>::max()) ++m_snapshotRevision;
+    if (!available) {
+        m_errorLabel->setText(QStringLiteral("当前显示上一次成功载入的图集，仅供参考。%1").arg(message));
+        m_errorLabel->show();
+    } else if (!wasAvailable) { m_errorLabel->clear(); m_errorLabel->hide(); }
+    RefreshActions();
+}
+
 bool CTexturePanel::CanEdit() const
 {
-    return m_editingEnabled && m_edit && !m_busy && m_sources.contains(m_currentTexKey);
+    return m_editingEnabled && m_edit && !m_busy && !m_publishing && !m_previewActive && m_snapshotAvailable && m_workspace.atlases.contains(m_currentTexKey);
+}
+
+QString CTexturePanel::AtlasName(int slot) const
+{
+    return m_workspace.atlases.value(slot).name;
+}
+
+QString CTexturePanel::RestoreReason() const
+{
+    const auto atlas = m_workspace.atlases.constFind(m_currentTexKey);
+    if (atlas == m_workspace.atlases.cend()) return QStringLiteral("请先选择图集");
+    const auto source = m_sources.constFind(atlas->sourceSlot);
+    if (source == m_sources.cend()) return QStringLiteral("新建图集没有原始素材，可通过撤销恢复之前的图集布局");
+    if (source->size != atlas->size) return QStringLiteral("当前图集为 %1 × %2，原始素材为 %3 × %4；请先在“编辑图集”中恢复尺寸")
+        .arg(atlas->size.width()).arg(atlas->size.height()).arg(source->size.width()).arg(source->size.height());
+    if (!m_state.contains(m_currentTexKey)) return QStringLiteral("当前已是原始素材");
+    return {};
 }
 
 void CTexturePanel::RefreshActions()
 {
     const bool loaded = m_images.contains(m_currentTexKey);
     m_btnReplace->defaultAction()->setEnabled(CanEdit());
-    m_btnRestore->defaultAction()->setEnabled(CanEdit() && m_state.contains(m_currentTexKey));
-    m_btnEditUv->defaultAction()->setEnabled(m_editingEnabled && loaded && !m_busy && !m_meshes.isEmpty());
-    m_btnExport->defaultAction()->setEnabled(loaded && !m_busy);
+    m_btnRestore->defaultAction()->setEnabled(CanEdit() && RestoreReason().isEmpty());
+    m_btnEditUv->defaultAction()->setEnabled(m_editingEnabled && loaded && !m_busy && !m_previewActive && m_snapshotAvailable && !m_meshes.isEmpty());
+    m_btnEditAtlas->defaultAction()->setEnabled(m_editingEnabled && !m_busy && !m_publishing && !m_previewActive && m_snapshotAvailable && !m_workspace.sourceFingerprint.isEmpty());
+    m_btnExport->defaultAction()->setEnabled(loaded && !m_busy && !m_previewActive && m_snapshotAvailable);
     m_btnFit->defaultAction()->setEnabled(loaded);
     m_btnOriginal->defaultAction()->setEnabled(loaded);
     m_selector->setEnabled(!m_busy && !m_images.isEmpty());
     m_checkWireframe->setEnabled(m_overlay != nullptr);
-    const QString reason = !m_editingEnabled && !m_editingReason.isEmpty()
+    const QString reason = !m_snapshotAvailable ? QStringLiteral("<qt>%1</qt>").arg(m_snapshotReason.toHtmlEscaped()) :
+        m_previewActive ? QStringLiteral("请先保存或取消当前编辑") : !m_editingEnabled && !m_editingReason.isEmpty()
         ? QStringLiteral("<qt>%1</qt>").arg(m_editingReason.toHtmlEscaped()) : QString();
     m_btnReplace->defaultAction()->setToolTip(reason.isEmpty() ? QStringLiteral("使用同尺寸 PNG 替换当前图集，原文件保持不变") : reason);
-    m_btnRestore->defaultAction()->setToolTip(reason.isEmpty() ? QStringLiteral("恢复模型首次加载时的素材，可撤销") : reason);
+    const QString restore = RestoreReason();
+    m_btnRestore->defaultAction()->setToolTip(!reason.isEmpty() ? reason : restore.isEmpty() ? QStringLiteral("恢复模型首次加载时的素材，可撤销") : restore);
+    m_btnEditAtlas->defaultAction()->setToolTip(reason.isEmpty() ? QStringLiteral("调整图集尺寸、移动素材或自动排列") : reason);
+    m_btnEditUv->defaultAction()->setToolTip(reason.isEmpty() ? QStringLiteral("调整网格的纹理采样坐标或分配到已有图集") : reason);
+    m_btnExport->defaultAction()->setToolTip(!m_snapshotAvailable ? reason : m_previewActive ? QStringLiteral("请先保存或取消当前编辑，再导出 PNG") :
+        QStringLiteral("导出当前已接受的图集 PNG，保留原始像素和文件信息"));
 }
 
 void CTexturePanel::RefreshInformation()
@@ -543,8 +625,9 @@ void CTexturePanel::RefreshInformation()
     int meshes = 0;
     for (const auto& mesh : m_meshes) meshes += mesh.textureNo == m_currentTexKey;
     m_infoLabel->setText(QStringLiteral("%1 | %2×%3 | 网格 %4 个 | %5 | 缩放 %6%")
-        .arg(QFileInfo(m_textures.value(m_currentTexKey)).fileName()).arg(size.width()).arg(size.height()).arg(meshes)
-        .arg(m_state.contains(m_currentTexKey) ? QStringLiteral("已替换") : QStringLiteral("原素材"))
+        .arg(AtlasName(m_currentTexKey)).arg(size.width()).arg(size.height()).arg(meshes)
+        .arg(m_workspace.atlases.value(m_currentTexKey).sourceSlot < 0 ? QStringLiteral("新图集") :
+             m_state.contains(m_currentTexKey) ? QStringLiteral("已替换") : QStringLiteral("原素材"))
         .arg(qRound(m_view->ZoomFactor() * 100)));
 }
 
@@ -713,17 +796,27 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
 
 bool CTexturePanel::UpdateUvMeshes(const QByteArray& mocBytes, QString* error)
 {
+    if (!m_snapshotAvailable) return fail(error, m_snapshotReason);
+    return UpdateUvSnapshot(mocBytes, error);
+}
+
+bool CTexturePanel::UpdateUvSnapshot(const QByteArray& mocBytes, QString* error)
+{
     if (error) error->clear();
     QVector<CAtlasMeshUv> candidate;
     std::unique_ptr<CUvOverlayItem> overlay;
     QString information;
+    QByteArray frozen;
     try {
-        if (!PrepareUvMeshes(mocBytes, m_atlasSizes, candidate, error)) return false;
+        frozen = QByteArray(mocBytes.constData(), mocBytes.size());
+        if (!PrepareUvMeshes(frozen, m_atlasSizes, candidate, error)) return false;
         const auto same = [](const CAtlasMeshUv& left, const CAtlasMeshUv& right) {
             return left.name == right.name && left.textureNo == right.textureNo && left.drawOrder == right.drawOrder &&
                 left.points == right.points && left.triangles == right.triangles;
         };
-        if (candidate.size() == m_meshes.size() && std::equal(candidate.cbegin(), candidate.cend(), m_meshes.cbegin(), same)) return true;
+        if (candidate.size() == m_meshes.size() && std::equal(candidate.cbegin(), candidate.cend(), m_meshes.cbegin(), same)) {
+            m_mocBytes.swap(frozen); return true;
+        }
         QVector<const CAtlasMeshUv*> visible;
         for (const auto& mesh : candidate) if (mesh.textureNo == m_currentTexKey) visible.append(&mesh);
         if (m_currentTexKey >= 0 && !m_scene->sceneRect().isEmpty()) {
@@ -736,13 +829,14 @@ bool CTexturePanel::UpdateUvMeshes(const QByteArray& mocBytes, QString* error)
             }
             const auto size = m_atlasSizes.value(m_currentTexKey);
             information = QStringLiteral("%1 | %2x%3 | 网格 %4 个")
-                .arg(QFileInfo(m_textures.value(m_currentTexKey)).fileName()).arg(size.width()).arg(size.height()).arg(visible.size());
+                .arg(AtlasName(m_currentTexKey)).arg(size.width()).arg(size.height()).arg(visible.size());
         }
     } catch (const std::exception&) {
         if (error) *error = QStringLiteral("无法准备 UV 网格，原图集保持不变");
         return false;
     }
     m_meshes.swap(candidate);
+    m_mocBytes.swap(frozen);
     delete m_overlay;
     m_overlay = overlay.release();
     m_checkWireframe->setEnabled(m_currentTexKey < 0 ? !m_meshes.isEmpty() : m_overlay != nullptr);
@@ -771,7 +865,7 @@ void CTexturePanel::showTexture(int selectorIndex)
 {
     if (selectorIndex < 0 || selectorIndex >= m_selector->count()) return;
     const int texKey = m_selector->itemData(selectorIndex).toInt();
-    if (!m_textures.contains(texKey)) return;
+    if (!m_images.contains(texKey)) return;
     rebuildScene(texKey);
 }
 
@@ -808,6 +902,7 @@ QString CTexturePanel::hitTest(const QPointF& scenePos) const
 
 void CTexturePanel::onSceneClicked(const QPointF& scenePos)
 {
+    if (!m_snapshotAvailable) return;
     const QString hit = hitTest(scenePos);
     if (hit.isEmpty()) return;
 
@@ -818,18 +913,29 @@ void CTexturePanel::onSceneClicked(const QPointF& scenePos)
 
 bool CTexturePanel::SubmitTexture(int slot, const QByteArray& png, QString* error)
 {
-    if (!m_editingEnabled || !m_edit || !m_sources.contains(slot))
+    if (!m_snapshotAvailable) return fail(error, m_snapshotReason);
+    if (!m_editingEnabled || !m_edit || m_loading || m_publishing || m_previewActive || !m_workspace.atlases.contains(slot))
         return fail(error, m_editingReason.isEmpty() ? QStringLiteral("当前不能修改纹理") : m_editingReason);
-    CTextureAssets::State candidate;
-    if (!CTextureAssets::Replace(m_sources, m_state, slot, png, candidate, error)) return false;
-    if (candidate == m_state) return true;
+    const QByteArray frozen(png.constData(), png.size());
+    QSize actual;
+    if (frozen.size() > CTextureAssets::MaximumBytes || !CPngImage::Size(frozen, actual, error)) return false;
+    const auto atlas = m_workspace.atlases.value(slot);
+    if (actual != atlas.size) return fail(error, QStringLiteral("纹理尺寸不匹配：需要 %1 × %2，实际为 %3 × %4")
+        .arg(atlas.size.width()).arg(atlas.size.height()).arg(actual.width()).arg(actual.height()));
+    auto candidate = m_workspace;
+    const auto source = m_sources.constFind(atlas.sourceSlot);
+    candidate.atlases[slot].png = source != m_sources.cend() && source->png == frozen ? QByteArray{} : frozen;
+    if (!CTextureWorkspace::Validate(m_sources, candidate, error)) return false;
+    if (candidate == m_workspace) return true;
+    const auto sources = m_sources;
+    const auto identity = m_workspace.sourceFingerprint;
     const auto handler = m_edit;
     const QPointer<CTexturePanel> alive(this);
     bool accepted = false;
     {
         m_publishing = true;
         const auto publishing = qScopeGuard([alive] { if (alive) alive->m_publishing = false; });
-        try { accepted = handler(slot, png, error); }
+        try { accepted = handler(slot, frozen, error); }
         catch (...) { if (error) *error = QStringLiteral("纹理提交失败，原素材保持不变"); }
     }
     if (!alive) return accepted;
@@ -837,6 +943,10 @@ bool CTexturePanel::SubmitTexture(int slot, const QByteArray& png, QString* erro
         if (error && error->isEmpty()) *error = QStringLiteral("纹理修改未能提交，原素材保持不变");
         return false;
     }
+    const auto current = m_workspace.atlases.constFind(slot);
+    if (sources != m_sources || identity != m_workspace.sourceFingerprint || current == m_workspace.atlases.cend() ||
+        current->id != atlas.id || current->size != atlas.size)
+        return fail(error, QStringLiteral("提交期间图集来源或尺寸已改变，请重新选择素材"));
     m_errorLabel->clear(); m_errorLabel->hide();
     emit HistorySelected();
     return true;
@@ -850,8 +960,9 @@ void CTexturePanel::onReplacePng()
     const QPointer<CTexturePanel> alive(this);
     m_busy = true; RefreshActions();
     const auto restore = qScopeGuard([alive] { if (alive) { alive->m_busy = false; alive->RefreshActions(); } });
-    const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("替换图集 PNG"),
-        QFileInfo(m_textures.value(slot)).absolutePath(), QStringLiteral("PNG 图像 (*.png)"));
+    const auto folder = m_textures.contains(slot) ? QFileInfo(m_textures.value(slot)).absolutePath() :
+        m_sources.isEmpty() ? QString() : QFileInfo(m_sources.first().path).absolutePath();
+    const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("替换图集 PNG"), folder, QStringLiteral("PNG 图像 (*.png)"));
     if (!alive || path.isEmpty()) return;
     if (revision != m_snapshotRevision || slot != m_currentTexKey) {
         RejectEdit(QStringLiteral("图集已改变，请重新选择要替换的素材")); return;
@@ -865,9 +976,9 @@ void CTexturePanel::onReplacePng()
 
 void CTexturePanel::onRestoreOriginal()
 {
-    if (!CanEdit() || !m_state.contains(m_currentTexKey)) return;
+    if (!CanEdit() || !RestoreReason().isEmpty()) return;
     const int slot = m_currentTexKey;
-    const QByteArray original = m_sources.value(slot).png;
+    const QByteArray original = m_sources.value(m_workspace.atlases.value(slot).sourceSlot).png;
     const QPointer<CTexturePanel> alive(this);
     m_busy = true; RefreshActions();
     const auto restore = qScopeGuard([alive] { if (alive) { alive->m_busy = false; alive->RefreshActions(); } });
@@ -877,17 +988,23 @@ void CTexturePanel::onRestoreOriginal()
 
 void CTexturePanel::onExportPng()
 {
-    if (m_busy || !m_pngs.contains(m_currentTexKey)) return;
+    if (m_busy || m_previewActive || !m_snapshotAvailable || !m_pngs.contains(m_currentTexKey)) return;
     const QByteArray png = m_pngs.value(m_currentTexKey);
     const auto revision = m_snapshotRevision;
     const auto sources = m_sources;
-    const QString suggested = QFileInfo(m_textures.value(m_currentTexKey)).fileName();
+    QString suggested = m_textures.contains(m_currentTexKey) ? QFileInfo(m_textures.value(m_currentTexKey)).fileName() : AtlasName(m_currentTexKey);
+    for (auto& character : suggested)
+        if (character.unicode() < 32 || QStringLiteral("/\\:*?\"<>|").contains(character)) character = QLatin1Char('_');
+    if (suggested.trimmed().isEmpty()) suggested = QStringLiteral("texture_%1").arg(m_currentTexKey);
+    if (!suggested.endsWith(QLatin1String(".png"), Qt::CaseInsensitive)) suggested += QStringLiteral(".png");
     const QPointer<CTexturePanel> alive(this);
     m_busy = true; RefreshActions();
     const auto restore = qScopeGuard([alive] { if (alive) { alive->m_busy = false; alive->RefreshActions(); } });
     const QString target = QFileDialog::getSaveFileName(this, QStringLiteral("导出图集 PNG"), suggested,
                                                        QStringLiteral("PNG 图像 (*.png)"));
     if (!alive || target.isEmpty()) return;
+    if (!m_snapshotAvailable) { RejectEdit(m_snapshotReason); return; }
+    if (m_previewActive) { RejectEdit(QStringLiteral("请先保存或取消当前编辑，再导出 PNG")); return; }
     if (revision != m_snapshotRevision) { RejectEdit(QStringLiteral("图集已改变，请重新导出")); return; }
     try {
         if (target.contains(QChar::Null) || sourceTarget(target, sources)) {

@@ -269,6 +269,11 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     QVariantMap state;
     QSet<QString> ids{edit.name};
     switch (edit.field) {
+    case CModelEdit::AtlasLayout:
+        state.insert("atlasWorkspace", QVariant::fromValue(m_textureWorkspace));
+        state.insert("atlasMaterials", QVariant::fromValue(m_drawableMaterialOverrides));
+        state.insert("materialFingerprint", CModelMaterialEdit::Fingerprint(m_drawableMaterialOverrides));
+        break;
     case CModelEdit::DrawableMaterials: {
         CModelMaterialOverrides selected;
         ids.clear();
@@ -326,6 +331,14 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
 
 bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
 {
+    if (state.contains("atlasWorkspace") || state.contains("atlasMaterials")) {
+        const auto workspace = state.value("atlasWorkspace"), materials = state.value("atlasMaterials");
+        if (!HasTextureWorkspace() || workspace.metaType() != QMetaType::fromType<CTextureWorkspace::State>() ||
+            materials.metaType() != QMetaType::fromType<CModelMaterialOverrides>()) return false;
+        const auto restored = workspace.value<CTextureWorkspace::State>();
+        if (!CTextureWorkspace::Validate(m_textureSources, restored)) return false;
+        m_textureWorkspace = restored; m_drawableMaterialOverrides = materials.value<CModelMaterialOverrides>();
+    }
     if (!(restoreEntries(state, "parameters", m_parameterValues) && restoreEntries(state, "metadata", m_parameterMetadataOverrides) &&
         restoreEntries(state, "opacity", m_drawableOpacityOverrides) && restoreEntries(state, "drawOrder", m_drawableDrawOrderOverrides) &&
         restoreEntries(state, "positions", m_drawableKeyformPositionOverrides) && restoreEntries(state, "indices", m_drawableIndexOverrides) &&
@@ -346,6 +359,8 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     CModelDocument check = *this;
     const QString& id = edit.name;
     switch (edit.field) {
+    case CModelEdit::AtlasLayout:
+        return ValidateAtlasEditStorage(edit);
     case CModelEdit::DrawableMaterials:
         return ValidateMaterialEditStorage(edit);
     case CModelEdit::GeometryKeyforms:
@@ -402,6 +417,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
         {"parameterOrganization", QVariant::fromValue(m_parameterOrganization)},
         {"geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs)},
+        {"textureWorkspace", QVariant::fromValue(m_textureWorkspace)},
         {"locked", QVariant::fromValue(m_lockedKeys)}, {"opacity", QVariant::fromValue(m_drawableOpacityOverrides)},
         {"drawOrder", QVariant::fromValue(m_drawableDrawOrderOverrides)}, {"positions", QVariant::fromValue(m_drawableKeyformPositionOverrides)},
         {"indices", QVariant::fromValue(m_drawableIndexOverrides)}, {"masks", QVariant::fromValue(m_drawableMaskIndexOverrides)},
@@ -620,6 +636,8 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     next.m_sourcePath = m_sourcePath;
     next.m_sourceDigest = m_sourceDigest;
     next.m_workingBaseBytes = std::move(working);
+    next.m_textureSources = m_textureSources;
+    next.m_textureWorkspace = m_textureWorkspace;
     QStringList beforeIds, afterIds;
     for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
     for (const auto& parameter : next.m_parameters) afterIds.append(parameter.id);
@@ -721,7 +739,16 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         for (const auto& lock : locks) session.locked.insert(lock, true);
         session.sourceDigest = m_sourceDigest;
         session.sourceMoc = m_sourcePath;
+        CTextureWorkspace::State workspace;
+        if (!read(state, "textureWorkspace", workspace)) return fail(error, QStringLiteral("图集结构状态类型无效"));
+        if (workspace != m_textureWorkspace) return fail(error, QStringLiteral("模型结构操作不能改变图集工作区"));
+        if (HasTextureWorkspace()) {
+            CTextureWorkspace::Draft draft;
+            if (!CTextureWorkspace::CaptureDraft(m_textureSources, workspace, draft, error)) return false;
+            session.textureWorkspace = std::move(draft);
+        }
         session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+        if (session.textureWorkspace) session.version = 11;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));

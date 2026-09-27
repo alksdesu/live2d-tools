@@ -52,6 +52,9 @@ bool CModelSaveFingerprint::Capture(const CModelDocument& document, QByteArray& 
     stream << document.VisibilityState() << locks << document.HasMeshStructure() << document.HasDeformerStructure() << document.HasMaterialStructure()
            << sourceDeformers << QJsonDocument(organization).toJson(QJsonDocument::Compact)
            << QJsonDocument(pairs).toJson(QJsonDocument::Compact);
+    QByteArray textures;
+    if (document.HasTextureWorkspace() && !CTextureWorkspace::Fingerprint(document.TextureSources(), document.TextureWorkspace(), textures, error)) return false;
+    stream << textures;
     if (stream.status() != QDataStream::Ok) {
         if (error) *error = QStringLiteral("无法计算模型保存状态");
         return false;

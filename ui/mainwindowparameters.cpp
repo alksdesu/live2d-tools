@@ -19,7 +19,6 @@ void MainWindow::RefreshRelatedParameters()
 
 bool MainWindow::HasSessionChanges() const
 {
-    if (m_textureEditor.IsDirty()) return true;
     if (!m_document.IsLoaded()) return m_sessionDirty;
     if (m_savedAuthoringFingerprint.isEmpty()) return true;
     if (!m_dirtyComparisonReady || m_dirtyComparedRevision != m_document.Revision() ||

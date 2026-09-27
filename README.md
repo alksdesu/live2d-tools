@@ -29,6 +29,8 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Texture atlas viewer: zoom/pan, UV wireframe overlay, click the atlas to locate an ArtMesh (three-way linkage with the tree and main view), PNG export
 - UV editor: point, box and connected-island selection, pixel coordinates, transforms, axis constraints and snapping. Assign meshes to existing atlases while preserving normalized UVs or pixel coordinates; preview a draft, cancel it, or save it as one undo step. This changes texture sampling, without repacking PNG pixels.
 - UVs and texture assignments persist in sessions and exports. CMO3 materials and extracted PSD textures repeat samples outside atlas bounds, with explicit size limits; original texture files remain unchanged.
+- Atlas workspace: create and rename atlases, resize the canvas while preserving pixel density, move or copy material regions across atlases, rotate by 90°, and automatically pack overlapping material groups. PNG replacement, atlas changes, and UV edits share document undo/redo. Sessions preserve generated atlases; unused generated tail slots can be removed.
+- Repacking copies RGBA pixels and sampling margins. Existing source atlases stay available, and minified previews may differ after mipmaps are rebuilt; arbitrary resampling and PSD source updates are still being developed.
 
 #### PSD Export
 
@@ -36,8 +38,8 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
   - **All layers** — every drawable flattened in render order
   - **Grouped** — contiguous layers follow the Part hierarchy; interleaved Parts are split into multiple folders to preserve layer stacking
 - **Parameter snapshot export** — export the pose currently set via sliders, with automatic effects disabled
-- **Texture extraction mode** — extract original textures without deformation, for high-quality asset ripping
-- **Cubism-importable mode** — embeds an sRGB ICC profile, Unicode layer names (luni) and deduplicated layer names, so the exported PSD can be imported back into Cubism Editor
+- **Texture sampling mode** — sample the effective atlases onto the frozen model mesh at canvas resolution. Preserves mesh shape, layer opacity and blend mode; does not bake clipping masks or multiply/screen colors. Supports parameter snapshots and does not reconstruct the original PSD artwork.
+- **Cubism-importable mode** — embeds an sRGB ICC profile, Unicode layer names (luni) and deduplicated layer names for Cubism import. Binary output is tested; import through the Cubism Editor and Photoshop interfaces remains unverified.
 - Batch export: pick a folder, all models are converted automatically; failed files are listed individually
 - Atomic PSD saves preserve existing files on failure; generated layer pixels, Unicode names and ICC data have independent binary regression tests
 
@@ -169,7 +171,9 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
 - 纹理图集查看：缩放/平移、UV 线框叠加、点击图集反查 ArtMesh（与结构树/主视图三方联动）、导出 PNG
 - UV 编辑支持点选、框选、连通岛、像素坐标、平移／旋转／缩放、轴约束和吸附；可保持归一化 UV 或像素坐标切换到已有图集。草稿实时预览，可取消，保存只增加一条撤销记录。此操作改变纹理采样区域，不重新排布 PNG 像素
-- UV 与纹理槽修改随会话保存并用于导出；CMO3 素材和纹理提取式 PSD 支持越界重复采样，超过素材尺寸预算时明确报错
+- UV 与纹理槽修改随会话保存并用于导出；CMO3 素材和纹理采样式 PSD 支持越界重复采样，超过素材尺寸预算时明确报错
+- 图集编辑支持新建、命名、保持像素密度的画布尺寸调整、跨图集素材搬移、90°旋转和自动排布；重叠素材成组处理，保护未选对象仍使用的像素。PNG 替换、图集变化与 UV 编辑共用文档撤销／重做，生成图集可保存到会话与模型包，可删除未引用的生成尾槽
+- 重排复制 RGBA 像素及采样边带；原图集保持可用，重建 mipmap 后的缩小显示可能存在差异。任意角度／比例重采样与 PSD 素材更新仍在开发
 - 图集支持同尺寸 PNG 替换、恢复原图和撤销／重做；覆盖随工作会话保存，并用于画布、PNG、PSD、cmo3 与运行时模型包。原素材文件保持不变，共用同一路径的多个纹理槽可独立替换
 - 纹理使用首次成功加载的字节快照，外部修改或删除源 PNG 不会造成画布、图集和导出内容分裂；会话重开时核对原始素材摘要，避免把覆盖应用到不同来源
 
@@ -179,8 +183,8 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
   - **全部图层** — 按渲染顺序平铺所有 drawable
   - **按分组导出** — 连续图层按 Part 层级分组；前后顺序交错的 Part 拆成多个文件夹，保留图层叠放顺序
 - **参数快照导出** — 用当前滑条调整的姿态导出，禁用自动效果
-- **纹理提取模式** — 直接提取原始纹理，无变形，适合高质量素材提取
-- **Cubism 可导入模式** — 嵌入 sRGB ICC 配置、Unicode 图层名（luni）、图层名去重，保证导出的 PSD 能再导回 Cubism Editor
+- **纹理采样模式** — 按冻结的模型网格在画布分辨率采样有效图集，保留网格形状、图层透明度与混合模式；不烘焙裁剪蒙版、乘色或屏幕色。支持参数快照，不表示恢复原始 PSD 素材
+- **Cubism 可导入模式** — 嵌入 sRGB ICC 配置、Unicode 图层名（luni）并去重图层名，供 Cubism 导入使用；已有二进制输出测试，Cubism Editor／Photoshop 界面的实际回读仍待验证
 - 批量导出：选择文件夹，自动遍历所有模型生成 PSD，失败文件逐个列出
 - PSD 原子保存，失败时保留已有文件；图层像素、Unicode 名称与 ICC 数据有独立二进制回归测试
 

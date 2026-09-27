@@ -5,7 +5,7 @@
 #include "std/cmodeljson.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
-#include "live2dstruct/ctextureeditcontroller.h"
+#include "live2dstruct/catlaseditcontroller.h"
 #include "live2dstruct/cmaterialeditcontroller.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/cparametervalueeditcontroller.h"
@@ -32,6 +32,7 @@ class CPhysicsPanel;
 class CBlendShapePanel;
 class CTexturePanel;
 class CUvEditDialog;
+class CAtlasEditDialog;
 class CInspectorPanel;
 class CModelDiagnosticsPanel;
 class CUserDataPanel;
@@ -114,22 +115,26 @@ private:
     std::shared_ptr<ParameterValueEditState> m_parameterValueEdit;
     bool m_publishingParameterValues = false;
     void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
+    bool AuthoringReady(QString* error = nullptr) const;
+    bool SetAuthoringReady(bool ready);
     void RefreshTextureGeometry();
     bool InitializeTextureEditing(QString* error);
-    bool PublishTextureState(const live2dstruct::CTextureAssets::State& state, QString* error);
     bool ReplaceTexture(int slot, const QByteArray& png, QString* error);
     void RefreshTextureEditing(bool changed = false);
-    void ApplyTextureHistory(bool undo);
+    void EditAtlas(const QString& selectedMesh);
+    bool PublishAtlasPreview(const live2dstruct::CModelDocument& before,
+                             const live2dstruct::CModelDocument& after,
+                             const QSet<QString>& ids, QString* error);
+    live2dstruct::CAtlasEditController m_atlasEditor;
+    QPointer<CAtlasEditDialog> m_atlasDialog;
     void EditUv(const QString& selectedMesh);
+    QString DrawableMaterialLockReason(const live2dstruct::CModelDrawable& mesh) const;
     void RefreshMaterialEditing(bool changed);
     bool PublishDrawableMaterials(const live2dstruct::CModelDocument& before,
                                   const live2dstruct::CModelDocument& after,
                                   const QSet<QString>& ids, QString* error);
     live2dstruct::CMaterialEditController m_materialEditor;
     QPointer<CUvEditDialog> m_uvDialog;
-    bool m_textureHistoryUsesDocument = false;
-    live2dstruct::CTextureEditController m_textureEditor;
-    const live2dstruct::CTextureAssets::State* m_restoringTextures = nullptr;
     void ClearTimelinePreview();
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
@@ -231,7 +236,7 @@ private:
     bool m_workspaceReady = false;
     bool m_runtimePanelsInitialized = false;
     bool m_syncingVisibility = false;
-    enum class HistorySource { None, Parameters, Inspector, Timeline, Physics, Textures };
+    enum class HistorySource { None, Parameters, Inspector, Timeline, Physics };
     HistorySource m_historySource = HistorySource::None;
     std::optional<HistorySource> m_keyformDragHistorySource;
     CWorkspaceLayouts m_workspaceLayouts;

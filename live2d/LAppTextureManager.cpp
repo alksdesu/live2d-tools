@@ -59,7 +59,7 @@ LAppTextureManager::TextureInfo* LAppTextureManager::CreateTextureFromPngBytes(c
 {
     if (error) error->clear();
     if (!expectedSize.isValid() || expectedSize.isEmpty()) {
-        if (error) *error = QStringLiteral("替换纹理缺少有效原始尺寸");
+        if (error) *error = QStringLiteral("纹理缺少有效尺寸");
         return nullptr;
     }
     return UploadPng(png, {}, expectedSize, error);
@@ -73,7 +73,7 @@ LAppTextureManager::TextureInfo* LAppTextureManager::UploadPng(const QByteArray&
     try {
         QSize size;
         if (!CPngImage::Size(png, size, error)) return nullptr;
-        if (expectedSize.isValid() && size != expectedSize) return fail(QStringLiteral("替换纹理尺寸必须保持 %1×%2").arg(expectedSize.width()).arg(expectedSize.height()));
+        if (expectedSize.isValid() && size != expectedSize) return fail(QStringLiteral("纹理尺寸必须为 %1×%2").arg(expectedSize.width()).arg(expectedSize.height()));
         const int width = size.width(), height = size.height();
         GLint maximumSize = 0;
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximumSize);

@@ -3,9 +3,30 @@
 #include "live2dstruct/cmodelsavefingerprint.h"
 #include <QtTest>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QBuffer>
+#include <QImage>
 #include <limits>
 using namespace GeometryPairsData;
 namespace {
+QByteArray atlasPng(QSize size, QRgb color = qRgba(17, 29, 43, 127))
+{
+    QImage image(size, QImage::Format_RGBA8888); image.fill(QColor::fromRgba(color));
+    QBuffer output; if (!output.open(QIODevice::WriteOnly) || !image.save(&output, "PNG")) return {};
+    return output.data();
+}
+CTextureAssets::Catalog atlasSources()
+{
+    CTextureAssets::Source source; if (!CTextureAssets::MakeSource("/tmp/atlas-material-source.png", atlasPng({3, 2}), source)) return {};
+    return {{0, source}};
+}
+CModelSession atlasSession(const CModelDocument& document)
+{
+    auto session = capture(document); session.version = 11; session.materialStructure = document.HasMaterialStructure();
+    session.drawableMaterials = document.DrawableMaterialOverrides(); CTextureWorkspace::Draft draft;
+    if (CTextureWorkspace::CaptureDraft(document.TextureSources(), document.TextureWorkspace(), draft)) session.textureWorkspace = draft;
+    return session;
+}
 CModelSession materialSession(const CModelDocument& document)
 {
     auto session = capture(document); session.materialStructure = document.HasMaterialStructure();
@@ -25,6 +46,125 @@ class MaterialDocumentTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void sessionsRestoreGeneratedIdentityAcrossCompleteWorkspaces()
+    {
+        CModelDocument document; QVERIFY(load(document)); const auto sources = atlasSources(); QVERIFY(document.InitializeTextureWorkspace(sources));
+        CModelAtlasState base; QVERIFY(document.CaptureAtlasState(base)); auto a = base;
+        a.workspace.atlases.insert(1, {"atlas-A", "图集 A", -1, {5, 7}, atlasPng({5, 7}, qRgb(5, 11, 17))});
+        CModelEdit edit; QString error; QVERIFY(document.MakeAtlasEdit(base, a, edit, &error)); QVERIFY(document.ExecuteEdit(edit));
+        const auto savedA = atlasSession(document).ToJson(); auto b = a; b.workspace.atlases[1].id = "atlas-B";
+        b.workspace.atlases[1].name = "图集 B"; b.workspace.atlases[1].png = atlasPng({5, 7}, qRgb(23, 29, 31));
+        QVERIFY2(document.MakeAtlasEdit(a, b, edit, &error), qPrintable(error)); QVERIFY(document.ExecuteEdit(edit));
+        const auto savedB = atlasSession(document).ToJson(); CModelSession sessionA, sessionB;
+        QVERIFY(CModelSession::FromJson(savedA, &sessionA, &error)); QVERIFY(CModelSession::FromJson(savedB, &sessionB, &error));
+        CModelDocument restoredA; QVERIFY2(sessionA.RestoreDocument(document, restoredA, &error), qPrintable(error));
+        CModelAtlasState actual; QVERIFY(restoredA.CaptureAtlasState(actual)); QCOMPARE(actual, a); QCOMPARE(restoredA.TextureSources(), sources);
+        QVERIFY(!restoredA.CanUndoEdit()); CModelDocument restoredB;
+        QVERIFY2(sessionB.RestoreDocument(restoredA, restoredB, &error), qPrintable(error));
+        QVERIFY(restoredB.CaptureAtlasState(actual)); QCOMPARE(actual, b); QCOMPARE(restoredB.TextureSources(), sources);
+        QVERIFY(document.SetTextureWorkspace(a.workspace, &error)); QCOMPARE(document.TextureWorkspace(), a.workspace);
+        QCOMPARE(document.TextureSources(), sources);
+    }
+    void identicalAtlasPixelsShareOwnedHistoryStorage()
+    {
+        CModelDocument document; QVERIFY(load(document)); auto sources = atlasSources(); sources[3] = sources[0];
+        QVERIFY(document.InitializeTextureWorkspace(sources));
+        QVERIFY(document.TextureSources()[0].png.constData() == document.TextureSources()[3].png.constData());
+        CModelAtlasState before; QVERIFY(document.CaptureAtlasState(before)); auto first = before;
+        first.workspace.atlases.insert(4, {"generated-first", "首张图集", -1, {5, 7}, atlasPng({5, 7})});
+        CModelEdit edit; QVERIFY(document.MakeAtlasEdit(before, first, edit)); QVERIFY(document.ExecuteEdit(edit));
+        CModelAtlasState current; QVERIFY(document.CaptureAtlasState(current)); const auto* stored = current.workspace.atlases[4].png.constData();
+        auto second = current; second.workspace.atlases[5] = second.workspace.atlases[4]; second.workspace.atlases[5].id = "generated-second";
+        QVERIFY(document.MakeAtlasEdit(current, second, edit)); QVERIFY(document.ExecuteEdit(edit));
+        QVERIFY(document.TextureWorkspace().atlases[4].png.constData() == stored);
+        QVERIFY(document.TextureWorkspace().atlases[5].png.constData() == stored);
+        QVERIFY(document.UndoEdit()); QVERIFY(document.RedoEdit()); QVERIFY(document.TextureWorkspace().atlases[5].png.constData() == stored);
+    }
+    void atlasAndMaterialsShareOneExactHistory()
+    {
+        CModelDocument document; QVERIFY(load(document)); const auto sources = atlasSources();
+        QVERIFY(document.InitializeTextureWorkspace(sources)); QVERIFY(document.SetGeometryObjectPairs(paired(document)));
+        const auto initial = document.AuthoringStructureState(); const auto pairState = document.GeometryObjectPairs();
+        const auto positions = document.DrawableKeyformPositionOverrides(); const auto indices = document.DrawableIndices("Mesh");
+        QByteArray initialSave; QVERIFY(CModelSaveFingerprint::Capture(document, initialSave));
+        CModelAtlasState before; QVERIFY(document.CaptureAtlasState(before)); auto after = before;
+        after.workspace.atlases.insert(1, {"new-atlas", "新图集", -1, {6, 5}, atlasPng({6, 5})});
+        after.workspace.atlases[0].png = atlasPng({3, 2}, qRgba(60, 4, 9, 0));
+        for (auto& value : after.materials) if (value.id == "Mesh") { value.textureIndex = 1; value.uvs[0] = -.0f; }
+        CModelEdit edit; QString error; QVERIFY2(document.MakeAtlasEdit(before, after, edit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(edit)); QVERIFY(!document.ExecuteEdit(edit));
+        QCOMPARE(document.TextureSources(), sources); QCOMPARE(document.TextureWorkspace(), after.workspace);
+        QCOMPARE(document.GeometryObjectPairs(), pairState); QCOMPARE(document.DrawableKeyformPositionOverrides(), positions);
+        QCOMPARE(document.DrawableIndices("Mesh"), indices);
+        QByteArray runtime; QVERIFY(document.BuildRuntimeMoc(runtime, &error)); CModelDocument compiled;
+        QVERIFY(compiled.LoadBytes(runtime, "atlas-preview", &error)); QCOMPARE(material(compiled, "Mesh").textureIndex, 1);
+        const auto changed = document.AuthoringStructureState(); QByteArray changedSave; QVERIFY(CModelSaveFingerprint::Capture(document, changedSave)); QVERIFY(changedSave != initialSave);
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.AuthoringStructureState(), initial);
+        QByteArray restoredSave; QVERIFY(CModelSaveFingerprint::Capture(document, restoredSave)); QCOMPARE(restoredSave, initialSave);
+        QVERIFY(document.DrawableMaterialOverrides().isEmpty()); QVERIFY(document.RedoEdit()); QCOMPARE(document.AuthoringStructureState(), changed);
+    }
+    void atlasRejectsLocksMissingSlotsAndStaleStorage()
+    {
+        CModelDocument document; QVERIFY(load(document)); QVERIFY(document.InitializeTextureWorkspace(atlasSources()));
+        CModelAtlasState before; QVERIFY(document.CaptureAtlasState(before)); auto after = before;
+        after.workspace.atlases.insert(1, {"new-atlas", "新图集", -1, {6, 5}, atlasPng({6, 5})});
+        for (auto& value : after.materials) if (value.id == "Mesh") value.textureIndex = 1;
+        CModelEdit edit; QString error; document.SetLocked("rotation", "Root", true);
+        QVERIFY(!document.MakeAtlasEdit(before, after, edit, &error)); document.SetLocked("rotation", "Root", false);
+        QVERIFY(document.MakeAtlasEdit(before, after, edit, &error)); QVERIFY(document.ExecuteEdit(edit));
+        CModelAtlasState current; QVERIFY(document.CaptureAtlasState(current)); auto removal = current; removal.workspace.atlases.remove(1);
+        QVERIFY(!document.MakeAtlasEdit(current, removal, edit, &error));
+        auto unknown = material(document, "Mesh"); unknown.textureIndex = 8; QVERIFY(!document.SetDrawableMaterials({unknown}, &error));
+        auto invalid = after; invalid.workspace.atlases[0].id = "replacement"; QVERIFY(!document.MakeAtlasEdit(current, invalid, edit, &error));
+        auto external = document.TextureWorkspace(); external.atlases[1].name = "changed"; QVERIFY(document.SetTextureWorkspace(external));
+        QVERIFY(!document.UndoEdit()); QCOMPARE(document.TextureWorkspace(), external);
+    }
+    void workspaceSurvivesTopologyAndSessionRestoration()
+    {
+        CModelDocument document; QVERIFY(load(document)); QVERIFY(document.InitializeTextureWorkspace(atlasSources()));
+        CModelAtlasState before; QVERIFY(document.CaptureAtlasState(before)); auto after = before;
+        after.workspace.atlases.insert(1, {"new-atlas", "新图集", -1, {7, 5}, atlasPng({7, 5})});
+        for (auto& value : after.materials) if (value.id == "Mesh") value.textureIndex = 1;
+        CModelEdit edit; QString error; QVERIFY(document.MakeAtlasEdit(before, after, edit, &error)); QVERIFY(document.ExecuteEdit(edit));
+        const auto atlasState = document.AuthoringStructureState();
+        QVERIFY2(document.MakeMeshStructureEdit(reorder(document), edit, &error), qPrintable(error)); QVERIFY(document.ExecuteEdit(edit));
+        QCOMPARE(document.TextureWorkspace(), after.workspace); const auto reordered = document.AuthoringStructureState();
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.AuthoringStructureState(), atlasState); QVERIFY(document.RedoEdit()); QCOMPARE(document.AuthoringStructureState(), reordered);
+        auto session = atlasSession(document); CModelSession parsed; const auto json = session.ToJson(); QVERIFY(!json.isEmpty());
+        QVERIFY2(CModelSession::FromJson(json, &parsed, &error), qPrintable(error)); QCOMPARE(parsed.version, 11);
+        CModelDocument restored; QVERIFY2(parsed.RestoreDocument(document, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), document.AuthoringStructureState()); QCOMPARE(restored.TextureSources(), document.TextureSources());
+        CModelDocument unbound; QVERIFY(load(unbound)); QVERIFY(!parsed.RestoreDocument(unbound, restored, &error));
+        QCOMPARE(restored.AuthoringStructureState(), document.AuthoringStructureState());
+    }
+    void oldSessionsMigratePngOverridesIntoDocument()
+    {
+        for (int version = 1; version <= 10; ++version) {
+            CModelDocument document; QVERIFY(load(document)); const auto sources = atlasSources(); QVERIFY(document.InitializeTextureWorkspace(sources));
+            auto session = capture(document); session.version = version;
+            if (version >= 7) QVERIFY(CTextureAssets::CaptureDraft(sources, {{0, atlasPng({3, 2}, qRgb(12, 19, 61))}}, session.textures));
+            CModelSession parsed; QString error; QVERIFY2(CModelSession::FromJson(session.ToJson(), &parsed, &error), qPrintable(error));
+            CModelDocument restored; QVERIFY2(parsed.RestoreDocument(document, restored, &error), qPrintable(error));
+            QVERIFY(restored.HasTextureWorkspace()); CTextureAssets::State pngs; QVERIFY(CTextureWorkspace::Effective(restored.TextureSources(), restored.TextureWorkspace(), pngs));
+            QCOMPARE(pngs[0], version >= 7 ? session.textures[0].png : sources[0].png); QVERIFY(!restored.PeekUndoEdit());
+            QCOMPARE(restored.TextureSources(), sources);
+        }
+    }
+    void workspaceSessionRejectsMixedAndMissingFields()
+    {
+        CModelDocument document; QVERIFY(load(document)); QVERIFY(document.InitializeTextureWorkspace(atlasSources()));
+        const auto session = atlasSession(document); const auto valid = QJsonDocument::fromJson(session.ToJson()).object();
+        for (int fault = 0; fault < 5; ++fault) {
+            auto json = valid;
+            if (fault == 0) json.remove("textureWorkspace");
+            if (fault == 1) json["version"] = 10;
+            if (fault == 2) json["textureWorkspace"] = QJsonArray{};
+            if (fault == 3) { auto workspace = json["textureWorkspace"].toObject(); workspace["sourceFingerprint"] = QString(64, 'a'); json["textureWorkspace"] = workspace; }
+            if (fault == 4) { auto mixed = session; QVERIFY(CTextureAssets::CaptureDraft(document.TextureSources(), {{0, atlasPng({3, 2}, qRgb(1, 2, 3))}}, mixed.textures)); QVERIFY(mixed.ToJson().isEmpty()); continue; }
+            CModelSession parsed; parsed.sourceMoc = "sentinel"; QString error;
+            QVERIFY(!CModelSession::FromJson(QJsonDocument(json).toJson(), &parsed, &error)); QCOMPARE(parsed.sourceMoc, QString("sentinel"));
+        }
+    }
     void highUnsignedIndicesSurviveDocumentLoading()
     {
         DeformerSnapshotData::Fixture source; const auto& offsets = *source.table.sectionOffsetTable;
@@ -187,7 +327,7 @@ private slots:
     {
         QFETCH(int, fault); CModelDocument document; QVERIFY(load(document)); QVERIFY(change(document));
         auto json = QJsonDocument::fromJson(materialSession(document).ToJson()).object();
-        if (fault == 0) json["version"] = 11;
+        if (fault == 0) json["version"] = 12;
         if (fault == 1) json["version"] = 9;
         if (fault == 2) json.remove("materialStructure");
         if (fault == 3) json["drawableMaterials"] = false;

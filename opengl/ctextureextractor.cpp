@@ -34,6 +34,34 @@ bool validIndices(const QVector<quint16>& indices, int vertices)
     if (indices.isEmpty() || indices.size() % 3 || indices.size() > 3000000) return false;
     return std::all_of(indices.cbegin(), indices.cend(), [vertices](quint16 index) { return index < vertices; });
 }
+
+double cross(QPointF a, QPointF b)
+{
+    const double product = a.y() * b.x();
+    return std::fma(a.x(), b.y(), -product) - std::fma(a.y(), b.x(), -product);
+}
+
+QRgb sampleBilinear(const QImage& atlas, double u, double v)
+{
+    const auto coordinate = [](double value, int size) {
+        double wrapped = std::fmod(value * size, double(size));
+        if (wrapped < 0.0) wrapped += size;
+        return wrapped - 0.5;
+    };
+    const double x = coordinate(u, atlas.width()), y = coordinate(v, atlas.height());
+    const int left = int(std::floor(x)), top = int(std::floor(y));
+    const double fx = x - left, fy = y - top;
+    const QRgb* first = reinterpret_cast<const QRgb*>(atlas.constScanLine(repeatCoordinate(top, atlas.height())));
+    const QRgb* second = reinterpret_cast<const QRgb*>(atlas.constScanLine(repeatCoordinate(top + 1, atlas.height())));
+    const QRgb a = first[repeatCoordinate(left, atlas.width())], b = first[repeatCoordinate(left + 1, atlas.width())];
+    const QRgb c = second[repeatCoordinate(left, atlas.width())], d = second[repeatCoordinate(left + 1, atlas.width())];
+    const auto channel = [&](int shift) {
+        const double above = double((a >> shift) & 255) * (1.0 - fx) + double((b >> shift) & 255) * fx;
+        const double below = double((c >> shift) & 255) * (1.0 - fx) + double((d >> shift) & 255) * fx;
+        return std::clamp(int(std::round(above * (1.0 - fy) + below * fy)), 0, 255);
+    };
+    return qRgba(channel(16), channel(8), channel(0), channel(24));
+}
 }
 
 CTextureExtractor::CTextureExtractor() {}
@@ -300,6 +328,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         QString materialError;
         if (!CMocMaterialBuilder::Capture(*table, materials, &materialError)) { control->Fail(materialError); return {}; }
         qint64 pixels = 0;
+        qint64 samples = 0;
 
         for (int i = 0; i < meshCount; ++i) {
             CArt_meshes* mesh = table->art_meshes[i];
@@ -310,21 +339,27 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                 continue;
             }
 
+            if (mesh->vertex_counts >= 0 && mesh->position_index_sources_counts == 0 &&
+                (!indexOverrides || !indexOverrides->contains(mesh->ids))) continue;
+
             // 跳过无顶点的 mesh
             if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000 ||
                 mesh->vertex_counts > std::numeric_limits<int>::max() / 2) {
+                if (modelPositions) { control->Fail(QStringLiteral("纹理采样的网格顶点数量无效")); return {}; }
                 continue;
             }
 
             // 检查纹理索引
             int texNo = mesh->texture_nos;
             if (texNo < 0 || texNo >= m_atlases.size()) {
+                if (modelPositions) { control->Fail(QStringLiteral("纹理采样的图集索引无效")); return {}; }
                 qWarning("CTextureExtractor: mesh %d (%s) 纹理索引 %d 越界",
                          i, mesh->ids.toUtf8().constData(), texNo);
                 continue;
             }
 
             const QImage& atlas = m_atlases[texNo];
+            if (modelPositions && atlas.isNull()) { control->Fail(QStringLiteral("纹理采样缺少图集")); return {}; }
 
             // 提取 UV 数据（归一化 [0,1]）
             int uvBegin = mesh->uv_sources_begin_indices;
@@ -337,6 +372,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             const int indexSize = static_cast<int>(table->position_indices->indices.size());
             if (uvBegin < 0 || uvCount < 0 || uvBegin > uvSize || uvCount > uvSize - uvBegin ||
                 idxBegin < 0 || idxCount < 3 || idxCount % 3 != 0 || idxBegin > indexSize || idxCount > indexSize - idxBegin) {
+                if (modelPositions) { control->Fail(QStringLiteral("纹理采样的网格数据范围无效")); return {}; }
                 continue;
             }
 
@@ -349,6 +385,9 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             if (indexOverrides) {
                 const auto overrideIt = indexOverrides->constFind(mesh->ids);
                 if (control && !control->Checkpoint()) return {};
+                if (modelPositions && overrideIt != indexOverrides->cend() && !validIndices(overrideIt.value(), mesh->vertex_counts)) {
+                    control->Fail(QStringLiteral("纹理采样的替换三角索引无效")); return {};
+                }
                 if (overrideIt != indexOverrides->cend() &&
                     validIndices(overrideIt.value(), mesh->vertex_counts)) {
                     if (control && !control->Checkpoint()) return {};
@@ -369,17 +408,13 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                     break;
                 }
             }
-            if (!indicesValid) continue;
-
-            // 通过 UV 三角形光栅化从 atlas 提取原始纹理
-            QRect uvPixelRect;
-            QImage meshImage = RasterizeMesh(atlas, uvPtr, mesh->vertex_counts,
-                                             idxPtr, idxCount, uvPixelRect, pixels, control);
-            if (control && !control->Checkpoint()) return {};
-
-            if (meshImage.isNull() || meshImage.width() == 0 || meshImage.height() == 0) {
+            if (!indicesValid) {
+                if (modelPositions) { control->Fail(QStringLiteral("纹理采样的三角索引越界")); return {}; }
                 continue;
             }
+
+            QRect uvPixelRect;
+            QImage meshImage;
             QRect canvasRect;
             int keyformBegin = mesh->keyform_sources_begin_indices;
             if (modelPositions) {
@@ -388,12 +423,16 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                     if (control) control->Fail(QStringLiteral("纹理导出缺少完整的模型坐标：%1").arg(mesh->ids));
                     return {};
                 }
-                canvasRect = ComputeCanvasRect(found->constData(), mesh->vertex_counts, table->canvas_info, control);
-                if (canvasRect.isEmpty()) {
-                    if (control && control->Checkpoint()) control->Fail(QStringLiteral("当前姿态的网格没有有效画布边界：%1").arg(mesh->ids));
-                    return {};
-                }
-            } else if (keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
+                meshImage = RasterizeCanvasMesh(atlas, uvPtr, found->constData(), mesh->vertex_counts,
+                                                idxPtr, idxCount, table->canvas_info, canvasRect, pixels, samples, control);
+                if (meshImage.isNull()) return {};
+            } else {
+                meshImage = RasterizeMesh(atlas, uvPtr, mesh->vertex_counts,
+                                           idxPtr, idxCount, uvPixelRect, pixels, samples, control);
+                if (!control->Checkpoint()) return {};
+                if (meshImage.isNull()) continue;
+            }
+            if (!modelPositions && keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
                 int posBegin = table->art_mesh_keyforms[keyformBegin]->keyform_position_sources_begin_indices;
                 const int positionSize = static_cast<int>(table->keyform_positions->xys.size());
                 if (posBegin >= 0 && posBegin <= positionSize && uvCount <= positionSize - posBegin) {
@@ -401,9 +440,6 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                     canvasRect = ComputeCanvasRect(posPtr, mesh->vertex_counts, table->canvas_info, control);
                     if (control && !control->Checkpoint()) return {};
                 }
-            } else {
-                // 回退：使用 UV 像素区域
-                canvasRect = uvPixelRect;
             }
             if (canvasRect.isEmpty()) canvasRect = uvPixelRect;
 
@@ -451,10 +487,89 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
     }
 }
 
+QImage CTextureExtractor::RasterizeCanvasMesh(const QImage& atlas, const float* uvs, const float* positions, int vertexCount,
+                                               const short* indices, int indexCount, const CCanvas_info* canvas,
+                                               QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control)
+{
+    const auto fail = [&](const QString& reason) { control->Fail(reason); return QImage(); };
+    bounds = ComputeCanvasRect(positions, vertexCount, canvas, control);
+    if (!control->Checkpoint()) return {};
+    if (bounds.isEmpty()) return fail(QStringLiteral("当前姿态的网格没有有效画布边界"));
+    if (indexCount < 3 || indexCount > 3000000 || indexCount % 3)
+        return fail(QStringLiteral("纹理采样的三角索引数量无效"));
+    const qint64 count = qint64(bounds.width()) * bounds.height();
+    if (count > MaximumMaterialPixels || count > MaximumTotalMaterialPixels - pixels)
+        return fail(QStringLiteral("纹理采样的画布像素总量超出限制"));
+
+    QVector<QPointF> vertices;
+    vertices.reserve(vertexCount);
+    for (int index = 0; index < vertexCount; ++index) {
+        if (index % 1024 == 0 && !control->Checkpoint()) return {};
+        QPointF point;
+        if (!std::isfinite(uvs[index * 2]) || !std::isfinite(uvs[index * 2 + 1]) ||
+            !CCanvasGeometry::ModelToPixels(canvas, QPointF(positions[index * 2], positions[index * 2 + 1]), point))
+            return fail(QStringLiteral("纹理采样的顶点或 UV 坐标无效"));
+        vertices.append(point - QPointF(bounds.topLeft()));
+    }
+    struct Triangle { int a, b, c; QRect scan; double determinant; };
+    QVector<Triangle> triangles;
+    triangles.reserve(indexCount / 3);
+    for (int index = 0; index < indexCount; index += 3) {
+        if (index % 1023 == 0 && !control->Checkpoint()) return {};
+        const int a = static_cast<quint16>(indices[index]), b = static_cast<quint16>(indices[index + 1]),
+                  c = static_cast<quint16>(indices[index + 2]);
+        if (a >= vertexCount || b >= vertexCount || c >= vertexCount)
+            return fail(QStringLiteral("纹理采样的三角索引越界"));
+        const QPointF pa = vertices[a], pb = vertices[b], pc = vertices[c];
+        if (CUvGeometry::Orientation(pa, pb, pc) == 0) continue;
+        const double determinant = cross(pb - pa, pc - pa);
+        if (determinant == 0.0 || !std::isfinite(determinant))
+            return fail(QStringLiteral("纹理采样的三角形无法稳定求值"));
+        const int left = std::max(0, int(std::floor(std::min({pa.x(), pb.x(), pc.x()}))));
+        const int top = std::max(0, int(std::floor(std::min({pa.y(), pb.y(), pc.y()}))));
+        const int right = std::min(bounds.width(), int(std::ceil(std::max({pa.x(), pb.x(), pc.x()}))));
+        const int bottom = std::min(bounds.height(), int(std::ceil(std::max({pa.y(), pb.y(), pc.y()}))));
+        if (right <= left || bottom <= top) continue;
+        const qint64 scans = qint64(right - left) * (bottom - top);
+        if (scans > MaximumRasterSamples - samples)
+            return fail(QStringLiteral("纹理采样的三角形扫描总量超出限制"));
+        samples += scans;
+        triangles.append({a, b, c, QRect(left, top, right - left, bottom - top), determinant});
+    }
+    pixels += count;
+    QImage output(bounds.size(), QImage::Format_ARGB32);
+    if (output.isNull()) return fail(QStringLiteral("无法分配纹理采样图像"));
+    output.fill(Qt::transparent);
+    for (const auto& triangle : triangles) {
+        const QPointF a = vertices[triangle.a], b = vertices[triangle.b], c = vertices[triangle.c];
+        const QPointF uvA(uvs[triangle.a * 2], uvs[triangle.a * 2 + 1]);
+        const QPointF uvB(uvs[triangle.b * 2], uvs[triangle.b * 2 + 1]);
+        const QPointF uvC(uvs[triangle.c * 2], uvs[triangle.c * 2 + 1]);
+        for (int y = triangle.scan.top(); y <= triangle.scan.bottom(); ++y) {
+            if (!control->Report(CExportControl::Phase::Extracting, y - triangle.scan.top(), triangle.scan.height(),
+                                 QStringLiteral("采样画布三角形"))) return {};
+            QRgb* row = reinterpret_cast<QRgb*>(output.scanLine(y));
+            for (int x = triangle.scan.left(); x <= triangle.scan.right(); ++x) {
+                if ((x - triangle.scan.left()) % 4096 == 0 && !control->Checkpoint()) return {};
+                const QPointF point(x + 0.5, y + 0.5);
+                if (!CUvGeometry::ContainsTriangle(point, a, b, c)) continue;
+                const double wb = cross(point - a, c - a) / triangle.determinant;
+                const double wc = cross(b - a, point - a) / triangle.determinant;
+                const QPointF uv = uvA + wb * (uvB - uvA) + wc * (uvC - uvA);
+                if (!std::isfinite(uv.x()) || !std::isfinite(uv.y()))
+                    return fail(QStringLiteral("纹理采样的插值坐标无效"));
+                // 重叠区域按三角索引顺序覆盖，透明像素仍保留直通 RGBA。
+                row[x] = sampleBilinear(atlas, uv.x(), uv.y());
+            }
+        }
+    }
+    return control->Checkpoint() ? output : QImage();
+}
+
 QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
                                          const float* uvData, int vertexCount,
                                          const short* indexData, int indexCount,
-                                         QRect& outUvRect, qint64& pixels, CExportControl* control)
+                                         QRect& outUvRect, qint64& pixels, qint64& samples, CExportControl* control)
 {
     outUvRect = QRect();
     const int atlasW = atlas.width(), atlasH = atlas.height();
@@ -485,6 +600,27 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
         return {};
     }
     const int left = int(leftValue), top = int(topValue), right = int(rightValue), bottom = int(bottomValue);
+    for (int triangle = 0; triangle < indexCount; triangle += 3) {
+        if (control && triangle % 1023 == 0 && !control->Checkpoint()) return {};
+        const int a = static_cast<quint16>(indexData[triangle]), b = static_cast<quint16>(indexData[triangle + 1]),
+                  c = static_cast<quint16>(indexData[triangle + 2]);
+        if (a >= vertexCount || b >= vertexCount || c >= vertexCount) continue;
+        const QPointF pa(double(uvData[a * 2]) * atlasW, double(uvData[a * 2 + 1]) * atlasH);
+        const QPointF pb(double(uvData[b * 2]) * atlasW, double(uvData[b * 2 + 1]) * atlasH);
+        const QPointF pc(double(uvData[c * 2]) * atlasW, double(uvData[c * 2 + 1]) * atlasH);
+        if (CUvGeometry::Orientation(pa, pb, pc) == 0) continue;
+        const double firstX = std::max(0.0, std::floor(std::min({pa.x(), pb.x(), pc.x()}) - left));
+        const double firstY = std::max(0.0, std::floor(std::min({pa.y(), pb.y(), pc.y()}) - top));
+        const double lastX = std::min(width - 1, std::ceil(std::max({pa.x(), pb.x(), pc.x()}) - left));
+        const double lastY = std::min(height - 1, std::ceil(std::max({pa.y(), pb.y(), pc.y()}) - top));
+        if (lastX < firstX || lastY < firstY) continue;
+        const qint64 scans = qint64(lastX - firstX + 1) * qint64(lastY - firstY + 1);
+        if (scans > MaximumRasterSamples - samples) {
+            if (control) control->Fail(QStringLiteral("纹理裁片的三角形扫描总量超出限制"));
+            return {};
+        }
+        samples += scans;
+    }
     pixels += qint64(width) * qint64(height);
     QImage output(right - left, bottom - top, QImage::Format_ARGB32);
     if (output.isNull()) {

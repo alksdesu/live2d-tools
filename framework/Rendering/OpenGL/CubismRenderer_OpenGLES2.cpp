@@ -582,7 +582,8 @@ bool CubismRenderer_OpenGLES2::InitializeResources(CubismModel* model, csmInt32 
 }
 
 bool CubismRenderer_OpenGLES2::PrepareModelReplacement(CubismModel* model,
-                                                     const CubismRenderer_OpenGLES2& previous, QString* error)
+                                                     const CubismRenderer_OpenGLES2& previous, QString* error,
+                                                     const QMap<int, GLuint>* textureBindings)
 {
     if (error) error->clear();
     if (_psdExport || previous.HasPsdExport() || this == &previous || previous.IsDrawing() || !previous.GetModel() || GetModel() || _textures.GetSize() ||
@@ -606,11 +607,19 @@ bool CubismRenderer_OpenGLES2::PrepareModelReplacement(CubismModel* model,
         for (auto texture = previous._textures.Begin(); texture != previous._textures.End(); ++texture) {
             if (texture->First < 0 || (texture->Second && !glIsTexture(texture->Second)))
                 return PreparationFailed(error, QStringLiteral("原渲染器纹理绑定无效"));
-            _textures[texture->First] = texture->Second;
+            if (!textureBindings) _textures[texture->First] = texture->Second;
+        }
+        if (textureBindings) {
+            for (auto texture = textureBindings->cbegin(); texture != textureBindings->cend(); ++texture) {
+                if (texture.key() < 0 || !texture.value() || !glIsTexture(texture.value()))
+                    return PreparationFailed(error, QStringLiteral("候选渲染器纹理绑定无效"));
+                _textures[texture.key()] = texture.value();
+            }
         }
         if (!InitializeResources(model, previous._requestedMaskBufferCount,
                                  previous._requestedMaskBufferSize, true, error)) return false;
         _textureMaskReplay = previous._textureMaskReplay;
+        if (textureBindings) InvalidateTextureMapping();
         return true;
     } catch (const std::bad_alloc&) {
         return PreparationFailed(error, QStringLiteral("复制渲染设置时内存不足"));

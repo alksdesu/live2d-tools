@@ -10,12 +10,15 @@
 #include <QScopeGuard>
 #include <QCryptographicHash>
 #include <exception>
+#include <algorithm>
 
 using namespace Live2D::Cubism::Framework;
 
 LAppModel::TextureState LAppModel::GetEffectiveTexturePngs() const
 {
-    return live2dstruct::CTextureAssets::Effective(m_textureSources, m_textureState);
+    TextureState result;
+    live2dstruct::CTextureWorkspace::Effective(m_textureSources, m_textureWorkspace, result);
+    return result;
 }
 
 LAppModel::PreparedTextures::~PreparedTextures()
@@ -26,7 +29,15 @@ LAppModel::PreparedTextures::~PreparedTextures()
 bool LAppModel::PrepareTextures(const TextureCatalog& sources, const TextureState& state,
                                 PreparedTextures& result, QString* error)
 {
-    if (!live2dstruct::CTextureAssets::ValidateState(sources, state, error)) return false;
+    AtlasState workspace;
+    return live2dstruct::CTextureWorkspace::Initialize(sources, state, workspace, error) &&
+        PrepareTextures(sources, workspace, result, error);
+}
+
+bool LAppModel::PrepareTextures(const TextureCatalog& sources, const AtlasState& state,
+                                PreparedTextures& result, QString* error)
+{
+    if (!live2dstruct::CTextureWorkspace::Freeze(sources, state, result.workspace, error)) return false;
     auto* delegate = LAppDelegate::GetInstance();
     auto* manager = delegate->GetTextureManager();
     if (!manager || !delegate->getGlOwningContext() || QOpenGLContext::currentContext() != delegate->getGlOwningContext()) {
@@ -34,32 +45,80 @@ bool LAppModel::PrepareTextures(const TextureCatalog& sources, const TextureStat
         return false;
     }
     result.manager = manager;
-    for (auto it = state.cbegin(); it != state.cend(); ++it)
-        result.state.insert(it.key(), QByteArray(it->constData(), it->size()));
-    const auto effective = live2dstruct::CTextureAssets::Effective(sources, result.state);
+    TextureState effective;
+    if (!live2dstruct::CTextureWorkspace::Effective(sources, result.workspace, effective, error)) return false;
+    for (auto it = sources.cbegin(); it != sources.cend(); ++it) {
+        const auto atlas = result.workspace.atlases.constFind(it.key());
+        if (atlas != result.workspace.atlases.cend() && atlas->size == it->size && effective.value(it.key()) != it->png)
+            result.state.insert(it.key(), effective.value(it.key()));
+    }
     QMap<QByteArray, csmUint32> available;
     for (csmUint32 id : m_textureBindings) {
         const auto* info = manager->GetTextureInfoById(id);
         if (info) available.insert(info->sourceDigest, id);
     }
-    for (auto it = sources.cbegin(); it != sources.cend(); ++it) {
+    qint64 gpuBytes = 0;
+    const auto reserveGpu = [&](const QSize& size) {
+        if (!size.isValid() || size.isEmpty() ||
+            size.width() > live2dstruct::CTextureWorkspace::MaximumDecodedBytes / 4 / size.height()) return false;
+        for (int width = size.width(), height = size.height();;) {
+            const qint64 bytes = qint64(width) * height * 4;
+            if (bytes > live2dstruct::CTextureWorkspace::MaximumDecodedBytes - gpuBytes) return false;
+            gpuBytes += bytes;
+            if (width == 1 && height == 1) return true;
+            width = std::max(1, width / 2);
+            height = std::max(1, height / 2);
+        }
+    };
+    QSet<csmUint32> retained;
+    for (csmUint32 id : m_textureBindings) retained.insert(id);
+    for (const auto& source : sources) {
+        const auto* info = manager->GetTextureInfoByName(source.path.toUtf8().toStdString());
+        if (info) retained.insert(info->id);
+    }
+    QSet<csmUint32> counted;
+    for (csmUint32 id : retained) {
+        const auto* info = manager->GetTextureInfoById(id);
+        if (info && !counted.contains(id)) {
+            if (!reserveGpu(QSize(info->width, info->height))) {
+                if (error) *error = QStringLiteral("当前图集 GPU 资源超过预算");
+                return false;
+            }
+            counted.insert(id);
+        }
+    }
+    for (auto it = result.workspace.atlases.cbegin(); it != result.workspace.atlases.cend(); ++it) {
         const auto& png = effective[it.key()];
         const auto digest = QCryptographicHash::hash(png, QCryptographicHash::Sha256);
         const LAppTextureManager::TextureInfo* info = nullptr;
         const auto found = available.constFind(digest);
         if (found != available.cend()) info = manager->GetTextureInfoById(*found);
-        if (!info && png == it->png) info = manager->GetTextureInfoByName(it->path.toUtf8().toStdString());
+        const auto source = sources.constFind(it->sourceSlot);
+        if (!info && source != sources.cend() && png == source->png)
+            info = manager->GetTextureInfoByName(source->path.toUtf8().toStdString());
         if (info && (info->pngBytes != png || QSize(info->width, info->height) != it->size)) info = nullptr;
         if (!info) {
+            if (!reserveGpu(it->size)) {
+                if (error) *error = QStringLiteral("图集候选与当前 GPU 资源合计超过预算");
+                return false;
+            }
             info = manager->CreateTextureFromPngBytes(png, it->size, error);
             if (!info) return false;
             auto cleanup = qScopeGuard([&] { manager->ReleaseTexture(info->id); });
             result.release.insert(info->id);
             result.owned.insert(info->id);
+            counted.insert(info->id);
             available.insert(digest, info->id);
             cleanup.dismiss();
         } else if (m_ownedTextureIds.contains(info->id) || result.release.contains(info->id)) {
             result.owned.insert(info->id);
+        }
+        if (!counted.contains(info->id)) {
+            if (!reserveGpu(it->size)) {
+                if (error) *error = QStringLiteral("图集 GPU 资源合计超过预算");
+                return false;
+            }
+            counted.insert(info->id);
         }
         result.bindings.insert(it.key(), info->id);
     }
@@ -70,6 +129,7 @@ bool LAppModel::PrepareTextures(const TextureCatalog& sources, const TextureStat
 void LAppModel::CommitTextures(PreparedTextures& prepared) noexcept
 {
     m_textureState.swap(prepared.state);
+    std::swap(m_textureWorkspace, prepared.workspace);
     m_textureBindings.swap(prepared.bindings);
     m_ownedTextureIds.swap(prepared.owned);
     prepared.release.swap(prepared.retired);
@@ -82,10 +142,26 @@ bool LAppModel::ApplyTextureState(const TextureState& state, QString* error)
         if (error) *error = QStringLiteral("当前模型状态不允许替换纹理");
         return false;
     }
-    if (!live2dstruct::CTextureAssets::ValidateState(m_textureSources, state, error)) return false;
-    if (state == m_textureState) return true;
-    return ApplyParameterStructurePreview(m_previewMocBytes, m_sourceMocDigest, {}, {}, HasEditorPreview(),
-                                         error, {}, nullptr, nullptr, {}, nullptr, nullptr, nullptr, &state);
+    if (m_textureWorkspace.atlases.size() != m_textureSources.size()) {
+        if (error) *error = QStringLiteral("图集目录已改变，请通过图集工作区替换纹理");
+        return false;
+    }
+    for (auto it = m_textureSources.cbegin(); it != m_textureSources.cend(); ++it) {
+        const auto atlas = m_textureWorkspace.atlases.constFind(it.key());
+        if (atlas == m_textureWorkspace.atlases.cend() || atlas->sourceSlot != it.key() || atlas->size != it->size) {
+            if (error) *error = QStringLiteral("图集尺寸已改变，请通过图集工作区替换纹理");
+            return false;
+        }
+    }
+    AtlasState candidate;
+    QByteArray fingerprint;
+    if (!live2dstruct::CTextureWorkspace::Initialize(m_textureSources, state, candidate, error) ||
+        !live2dstruct::CTextureWorkspace::Fingerprint(m_textureSources, m_textureWorkspace, fingerprint, error)) return false;
+    for (auto it = candidate.atlases.begin(); it != candidate.atlases.end(); ++it) {
+        it->id = m_textureWorkspace.atlases[it.key()].id;
+        it->name = m_textureWorkspace.atlases[it.key()].name;
+    }
+    return ApplyAtlasPreview(m_previewMocBytes, m_sourceMocDigest, m_previewMocDigest, fingerprint, candidate, {}, error);
 }
 
 bool LAppModel::SetupTextures()

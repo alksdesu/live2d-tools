@@ -124,6 +124,8 @@ void CModelDocument::Clear()
     m_hasMeshStructure = false;
     m_hasMaterialStructure = false;
     m_drawableMaterialOverrides.clear();
+    m_textureSources.clear();
+    m_textureWorkspace = {};
     m_sourceDeformerParents.clear();
     m_sourceDeformerIds.clear();
     m_hasDeformerStructure = false;
@@ -1106,6 +1108,7 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
+    if (edit.field == CModelEdit::AtlasLayout) return ApplyAtlasEdit(edit, forward);
     if (edit.field == CModelEdit::DrawableMaterials) return ApplyMaterialEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryKeyforms) return ApplyGeometryEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryObjectPairs) {
@@ -1237,6 +1240,16 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
             (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
+        if (command.field == CModelEdit::AtlasLayout) {
+            if (command.type != QLatin1String("textures") || command.name != QLatin1String("atlases") || command.index != -1 ||
+                command.coalesce || command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue ||
+                command.meshRequest || !command.meshRemaps.isEmpty() || command.bindingKeysRequest || command.deformerRequest) return false;
+            CModelEdit frozen;
+            if (command.before.metaType() != QMetaType::fromType<CModelAtlasState>() ||
+                command.after.metaType() != QMetaType::fromType<CModelAtlasState>() ||
+                !MakeAtlasEdit(command.before.value<CModelAtlasState>(), command.after.value<CModelAtlasState>(), frozen)) return false;
+            frozen.runtime = command.runtime; command = std::move(frozen);
+        }
         if (command.field != CModelEdit::MeshStructure && (!command.meshRemaps.isEmpty() || command.meshRequest)) return false;
         if (command.field == CModelEdit::MeshStructure && command.before == command.after) {
             bool remapped = false;

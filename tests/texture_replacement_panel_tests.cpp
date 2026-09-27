@@ -20,6 +20,7 @@
 #include <stdexcept>
 
 using Assets = live2dstruct::CTextureAssets;
+using Workspace = live2dstruct::CTextureWorkspace;
 
 namespace {
 std::filesystem::path nativePath(const QString& path)
@@ -129,6 +130,140 @@ class TextureReplacementPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void unavailableSnapshotBlocksFileOperationsUntilAnAcceptedRefresh()
+    {
+        QTemporaryDir directory; const auto sources = catalog(directory.path()); CTexturePanel panel;
+        QVERIFY(panel.LoadTextureSnapshot(sources, {})); panel.SetEditingEnabled(true);
+        int calls = 0; panel.SetEditHandler([&](int, const QByteArray&, QString*) { ++calls; return true; });
+        panel.SetSnapshotAvailable(false, QStringLiteral("图集尺寸与运行时不一致"));
+        for (const auto* name : {"textureExport", "textureReplace", "textureRestore", "textureEditAtlas", "textureEditUv"})
+            QVERIFY(!panel.findChild<QToolButton*>(name)->isEnabled());
+        QVERIFY(panel.findChild<QLabel*>("textureError")->text().contains(QStringLiteral("图集尺寸与运行时不一致")));
+        bool modal = false; QTimer probe; probe.setSingleShot(true);
+        connect(&probe, &QTimer::timeout, [&] { if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) { modal = true; dialog->reject(); } });
+        probe.start(0); QVERIFY(QMetaObject::invokeMethod(&panel, "onExportPng")); QVERIFY(QMetaObject::invokeMethod(&panel, "onReplacePng"));
+        QVERIFY(QMetaObject::invokeMethod(&panel, "onRestoreOriginal")); QCoreApplication::processEvents(); QVERIFY(!modal); QCOMPARE(calls, 0);
+        panel.SetSnapshotAvailable(true); QVERIFY(panel.findChild<QToolButton*>("textureExport")->isEnabled());
+        const auto path = directory.filePath("stale.png"); QSignalSpy rejected(&panel, &CTexturePanel::EditRejected);
+        QVERIFY(chooseFile(&panel, "onExportPng", path, false, [&] { panel.SetSnapshotAvailable(false, QStringLiteral("图集已变更")); }));
+        QCOMPARE(rejected.size(), 1); QVERIFY(!QFileInfo::exists(path));
+        QVERIFY(panel.LoadTextureSnapshot(sources, {})); panel.SetSnapshotAvailable(true);
+        QVERIFY(chooseFile(&panel, "onExportPng", path)); QCOMPARE(read(path), sources[2].png);
+    }
+    void activePreviewBlocksExportWithoutDisablingReadOnlyExports()
+    {
+        QTemporaryDir directory; const auto sources = catalog(directory.path()); CTexturePanel panel;
+        QVERIFY(panel.LoadTextureSnapshot(sources, {})); panel.SetEditingEnabled(false, QStringLiteral("只读预览"));
+        auto* exportButton = panel.findChild<QToolButton*>("textureExport"); QVERIFY(exportButton->isEnabled());
+        const auto path = directory.filePath("accepted.png"); QVERIFY(chooseFile(&panel, "onExportPng", path)); QCOMPARE(read(path), sources[2].png);
+        panel.SetEditingEnabled(true); panel.SetPreviewActive(true);
+        QVERIFY(!exportButton->isEnabled()); QVERIFY(exportButton->defaultAction()->toolTip().contains(QStringLiteral("保存或取消")));
+        QVERIFY(!panel.findChild<QToolButton*>("textureEditAtlas")->isEnabled()); QVERIFY(!panel.findChild<QToolButton*>("textureEditUv")->isEnabled());
+        bool modal = false;
+        QTimer probe; probe.setSingleShot(true); connect(&probe, &QTimer::timeout, [&] { if (auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) { modal = true; dialog->reject(); } });
+        probe.start(0); QVERIFY(QMetaObject::invokeMethod(&panel, "onExportPng")); QCoreApplication::processEvents(); QVERIFY(!modal);
+        panel.SetPreviewActive(false); QVERIFY(exportButton->isEnabled()); QVERIFY(panel.findChild<QToolButton*>("textureEditAtlas")->isEnabled());
+        QSignalSpy rejected(&panel, &CTexturePanel::EditRejected); const auto changed = directory.filePath("draft.png");
+        QVERIFY(chooseFile(&panel, "onExportPng", changed, false, [&] { panel.SetPreviewActive(true); }));
+        QCOMPARE(rejected.size(), 1); QVERIFY(!QFileInfo::exists(changed));
+    }
+    void generatedAtlasCanBeReplacedAndExportedWithoutInventingASource()
+    {
+        QTemporaryDir directory; const auto sources = catalog(directory.path()); Workspace::State workspace;
+        QVERIFY(Workspace::Initialize(sources, {}, workspace));
+        workspace.atlases.insert(13, {"generated-atlas", "新增<tag>图集", -1, {48, 30}, png(Qt::cyan, {48, 30})});
+        CTexturePanel panel; QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace));
+        auto* selector = panel.findChild<QComboBox*>(); selector->setCurrentIndex(selector->findData(13));
+        QCOMPARE(panel.CurrentSlot(), 13); QCOMPARE(displayed(panel).size(), QSize(48, 30));
+        QVERIFY(selector->currentText().contains(QStringLiteral("新增<tag>图集")));
+        QVERIFY(panel.findChild<QLabel*>("texInfoLabel")->text().contains(QStringLiteral("新图集")));
+        int accepted = 0;
+        panel.SetEditHandler([&](int slot, const QByteArray& bytes, QString* error) {
+            auto next = workspace; next.atlases[slot].png = bytes;
+            if (!panel.LoadWorkspaceSnapshot(sources, next, {}, error)) return false;
+            workspace = std::move(next); ++accepted; return true;
+        });
+        panel.SetEditingEnabled(true);
+        auto* restore = panel.findChild<QToolButton*>("textureRestore"); QVERIFY(!restore->isEnabled());
+        QVERIFY(restore->defaultAction()->toolTip().contains(QStringLiteral("没有原始素材")));
+        QVERIFY(QMetaObject::invokeMethod(&panel, "onRestoreOriginal")); QCOMPARE(accepted, 0);
+        const auto replacement = png(QColor(31, 63, 95, 127), {48, 30}); const auto path = directory.filePath("replacement.png");
+        QVERIFY(write(path, replacement)); QVERIFY(chooseFile(&panel, "onReplacePng", path)); QCOMPARE(accepted, 1);
+        const auto color = displayed(panel).pixelColor(0, 0);
+        QCOMPARE(color.alpha(), 127); QVERIFY(std::abs(color.red() - 31) <= 1); QVERIFY(std::abs(color.green() - 63) <= 1); QVERIFY(std::abs(color.blue() - 95) <= 1);
+        const auto exported = directory.filePath("generated.png"); QVERIFY(chooseFile(&panel, "onExportPng", exported)); QCOMPARE(read(exported), replacement);
+        for (const auto& source : sources) QVERIFY(write(source.path, source.png));
+        QSignalSpy rejected(&panel, &CTexturePanel::EditRejected);
+        QVERIFY(chooseFile(&panel, "onExportPng", sources[12].path)); QCOMPARE(rejected.size(), 1); QCOMPARE(read(sources[12].path), sources[12].png);
+    }
+    void resizedOriginalRequiresCurrentDimensionsAndExplainsRestore()
+    {
+        QTemporaryDir directory; const auto sources = catalog(directory.path()); Workspace::State workspace;
+        QVERIFY(Workspace::Initialize(sources, {}, workspace)); workspace.atlases[2].size = {64, 40}; workspace.atlases[2].png = png(Qt::cyan, {64, 40});
+        CTexturePanel panel; QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); int accepted = 0;
+        panel.SetEditHandler([&](int slot, const QByteArray& bytes, QString* error) {
+            auto next = workspace; next.atlases[slot].png = bytes;
+            if (!panel.LoadWorkspaceSnapshot(sources, next, {}, error)) return false;
+            workspace = std::move(next); ++accepted; return true;
+        }); panel.SetEditingEnabled(true);
+        auto* restore = panel.findChild<QToolButton*>("textureRestore"); QVERIFY(!restore->isEnabled());
+        QVERIFY(restore->defaultAction()->toolTip().contains("64 × 40")); QVERIFY(restore->defaultAction()->toolTip().contains("32 × 24"));
+        QVERIFY(QMetaObject::invokeMethod(&panel, "onRestoreOriginal")); QCOMPARE(accepted, 0);
+        const auto path = directory.filePath("replacement.png"); QVERIFY(write(path, png(Qt::blue)));
+        QSignalSpy rejected(&panel, &CTexturePanel::EditRejected); QVERIFY(chooseFile(&panel, "onReplacePng", path)); QCOMPARE(accepted, 0); QCOMPARE(rejected.size(), 1);
+        QVERIFY(write(path, png(Qt::blue, {64, 40}))); QVERIFY(chooseFile(&panel, "onReplacePng", path)); QCOMPARE(accepted, 1);
+        QCOMPARE(displayed(panel).size(), QSize(64, 40)); QVERIFY(!restore->isEnabled());
+        workspace.atlases[2].size = {32, 24}; workspace.atlases[2].png = png(Qt::blue);
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); QVERIFY(restore->isEnabled());
+    }
+    void generatedRemovalAndResizeFitWhileSameSizeUpdatesKeepView()
+    {
+        QTemporaryDir directory; const auto sources = catalog(directory.path()); Workspace::State workspace;
+        QVERIFY(Workspace::Initialize(sources, {}, workspace));
+        workspace.atlases.insert(13, {"generated-atlas", "新增图集", -1, {768, 512}, png(Qt::cyan, {768, 512})});
+        CTexturePanel panel; QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); panel.resize(600, 420); panel.show();
+        auto* selector = panel.findChild<QComboBox*>(); selector->setCurrentIndex(selector->findData(13));
+        auto* view = panel.findChild<CAtlasView*>(); view->ZoomReset(); view->setTransform(QTransform::fromScale(3, 3));
+        const auto transform = view->transform(); workspace.atlases[13].png = png(Qt::yellow, {768, 512});
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); QCOMPARE(view->transform(), transform);
+        workspace.atlases[13].size = {384, 256}; workspace.atlases[13].png = png(Qt::yellow, {384, 256});
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); QTRY_VERIFY(view->transform() != transform);
+        QCOMPARE(view->scene()->sceneRect().size(), QSizeF(384, 256));
+        workspace.atlases.remove(13); QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); QCOMPARE(panel.CurrentSlot(), 2);
+        QCOMPARE(selector->findData(13), -1); QCOMPARE(displayed(panel).size(), QSize(32, 24));
+    }
+    void workspaceDeletionDuringFileChoiceAndSourceChangeInsidePublisherAreRejected()
+    {
+        QTemporaryDir directory; const auto sources = catalog(directory.path()); Workspace::State workspace;
+        QVERIFY(Workspace::Initialize(sources, {}, workspace));
+        workspace.atlases.insert(13, {"generated-atlas", "新增图集", -1, {32, 24}, png(Qt::cyan)});
+        CTexturePanel panel; QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace));
+        panel.findChild<QComboBox*>()->setCurrentIndex(3); QCOMPARE(panel.CurrentSlot(), 13);
+        int calls = 0; panel.SetEditHandler([&](int, const QByteArray&, QString*) { ++calls; return true; }); panel.SetEditingEnabled(true);
+        const auto path = directory.filePath("replacement.png"); QVERIFY(write(path, png(Qt::blue))); QSignalSpy rejected(&panel, &CTexturePanel::EditRejected);
+        QVERIFY(chooseFile(&panel, "onReplacePng", path, false, [&] { workspace.atlases.remove(13); QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); }));
+        QCOMPARE(calls, 0); QCOMPARE(rejected.size(), 1); QCOMPARE(panel.CurrentSlot(), 2);
+        QSignalSpy history(&panel, &CTexturePanel::HistorySelected);
+        panel.SetEditHandler([&](int, const QByteArray&, QString* error) {
+            ++calls; auto next = sources; next[2].path = next[9].path = directory.filePath("new-source.png");
+            Workspace::State replacement; return Workspace::Initialize(next, {}, replacement, error) && panel.LoadWorkspaceSnapshot(next, replacement, {}, error);
+        });
+        QVERIFY(chooseFile(&panel, "onReplacePng", path)); QCOMPARE(calls, 1); QCOMPARE(rejected.size(), 2); QCOMPARE(history.size(), 0);
+        QVERIFY(rejected.last()[0].toString().contains(QStringLiteral("来源或尺寸已改变")));
+    }
+    void workspacePngSnapshotsOwnTheirExternalBuffers()
+    {
+        QTemporaryDir directory; auto sources = catalog(directory.path());
+        QByteArray original = sources[2].png; const QByteArray expectedSource(original.constData(), original.size());
+        sources[2].png = sources[9].png = QByteArray::fromRawData(original.constData(), original.size());
+        Workspace::State workspace; QVERIFY(Workspace::Initialize(sources, {}, workspace));
+        QByteArray generated = png(Qt::cyan, {48, 30}); const QByteArray expectedGenerated(generated.constData(), generated.size());
+        workspace.atlases.insert(13, {"generated-atlas", "新增图集", -1, {48, 30}, QByteArray::fromRawData(generated.constData(), generated.size())});
+        CTexturePanel panel; QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace)); original[0] = 'x'; generated[0] = 'x';
+        const auto path = directory.filePath("frozen.png"); QVERIFY(chooseFile(&panel, "onExportPng", path)); QCOMPARE(read(path), expectedSource);
+        auto* selector = panel.findChild<QComboBox*>(); selector->setCurrentIndex(selector->findData(13));
+        QVERIFY(chooseFile(&panel, "onExportPng", path)); QCOMPARE(read(path), expectedGenerated);
+    }
     void firstOpeningABottomDockReservesAUsableAtlasArea()
     {
         QTemporaryDir directory; Assets::Source source;

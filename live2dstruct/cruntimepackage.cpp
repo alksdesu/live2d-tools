@@ -439,7 +439,8 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
         if (!text(request.modelJsonPath) || request.modelSettingsDigest.size() != 32 || request.sourceMocDigest.size() != 32 ||
             request.mocBytes.isEmpty() || request.maximumFiles < 1 || request.maximumFileBytes < 1 || request.maximumTotalBytes < 1)
             return fail(error, QStringLiteral("运行时模型包请求无效"));
-        if (!request.textureSources && !request.textureState.isEmpty())
+        if ((!request.textureSources && (!request.textureState.isEmpty() || request.textureWorkspace)) ||
+            (request.textureWorkspace && !request.textureState.isEmpty()))
             return fail(error, QStringLiteral("纹理覆盖需要完整的原始纹理快照"));
         if (!CParameterResourceEdits::Validate(request.references, error)) return false;
         Prepared candidate;
@@ -510,15 +511,24 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             if (present != request.textureSources->size())
                 return fail(error, QStringLiteral("纹理来源快照包含未声明的槽"));
             if (control && !control->Checkpoint()) return fail(error, control->Error());
-            if (!CTextureAssets::ValidateCatalog(*request.textureSources, error) ||
-                !CTextureAssets::ValidateState(*request.textureSources, request.textureState, error)) return false;
+            if (request.textureWorkspace) {
+                if (!CTextureWorkspace::Validate(*request.textureSources, *request.textureWorkspace, error)) return false;
+            } else if (!CTextureAssets::ValidateCatalog(*request.textureSources, error) ||
+                       !CTextureAssets::ValidateState(*request.textureSources, request.textureState, error)) return false;
         }
-        for (int slot = 0; slot < textures.size(); ++slot) {
+        CTextureAssets::State atlasPngs;
+        if (request.textureWorkspace) {
+            if (!CTextureWorkspace::Effective(*request.textureSources, *request.textureWorkspace, atlasPngs, error)) return false;
+            for (const auto& source : *request.textureSources) if (!collector.textureSnapshot(source, error)) return false;
+        }
+        const int textureCount = request.textureWorkspace ? (atlasPngs.isEmpty() ? 0 : atlasPngs.lastKey() + 1) : textures.size();
+        for (int slot = 0; slot < textureCount; ++slot) {
             QString path;
-            if (!reference(textures[slot], path, error, true)) return false;
-            if (path.isEmpty()) { packagedTextures.append(QString()); continue; }
+            if (!request.textureWorkspace && !reference(textures[slot], path, error, true)) return false;
+            if (request.textureWorkspace ? !atlasPngs.contains(slot) : path.isEmpty()) { packagedTextures.append(QString()); continue; }
             QByteArray data;
-            if (request.textureSources) {
+            if (request.textureWorkspace) data = atlasPngs.value(slot);
+            else if (request.textureSources) {
                 const auto& source = request.textureSources->value(slot);
                 if (!collector.textureSnapshot(source, error)) return false;
                 data = request.textureState.value(slot, source.png);
@@ -532,7 +542,7 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
                 packagedTextures[drawable.textureIndex].toString().isEmpty())
                 return fail(error, QStringLiteral("网格 %1 引用了没有图集的纹理槽 %2").arg(drawable.id).arg(drawable.textureIndex));
         }
-        if (files.contains(QStringLiteral("Textures"))) files.insert(QStringLiteral("Textures"), packagedTextures);
+        if (request.textureWorkspace || files.contains(QStringLiteral("Textures"))) files.insert(QStringLiteral("Textures"), packagedTextures);
         const auto scalar = [&](const QString& field, const QString& suffix, const std::optional<QByteArray>& replacement,
                                 const std::optional<Editor::Kind>& kind) {
             QString path;

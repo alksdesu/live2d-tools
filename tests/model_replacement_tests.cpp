@@ -2350,10 +2350,10 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArra
                                        QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
                                        const CMeshGeometryMigration* geometry, const TextureState* textureState,
-                                        const QSet<QString>* materialDrawableIds)
+                                       const QSet<QString>* materialDrawableIds, const AtlasState* atlasState)
 {
     if (materialDrawableIds) { if (error) *error = QStringLiteral("测试边界不提供材质映射发布"); return false; }
-    if (textureState) { if (error) *error = QStringLiteral("测试边界不提供 GL 纹理上传"); return false; }
+    if (textureState || atlasState) { if (error) *error = QStringLiteral("测试边界不提供 GL 纹理上传"); return false; }
     return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences, physicsDraft, geometry);
 }
 

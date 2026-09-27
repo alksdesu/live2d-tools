@@ -19,6 +19,7 @@
 #include "cparameterorganization.h"
 #include "cmodelgeometryedit.h"
 #include "cmodelmaterialedit.h"
+#include "cmodelatlasedit.h"
 #include "cgeometryobjectpairs.h"
 
 namespace live2dstruct {
@@ -179,7 +180,7 @@ struct CModelEditStorageState
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout };
     QString name;
     QString type;
     Field field = Visibility;
@@ -230,6 +231,15 @@ public:
     bool MakeMaterialEdit(const CModelMaterialState& before, const CModelMaterialState& after,
                           CModelEdit& edit, QString* error = nullptr) const;
     bool SetDrawableMaterials(const CModelMaterialState& state, QString* error = nullptr);
+    bool InitializeTextureWorkspace(const CTextureAssets::Catalog& sources, const CTextureAssets::State& legacy = {},
+                                    QString* error = nullptr);
+    const CTextureAssets::Catalog& TextureSources() const { return m_textureSources; }
+    const CTextureWorkspace::State& TextureWorkspace() const { return m_textureWorkspace; }
+    bool HasTextureWorkspace() const { return !m_textureWorkspace.sourceFingerprint.isEmpty(); }
+    bool SetTextureWorkspace(const CTextureWorkspace::State& state, QString* error = nullptr);
+    bool CaptureAtlasState(CModelAtlasState& result, QString* error = nullptr) const;
+    bool MakeAtlasEdit(const CModelAtlasState& before, const CModelAtlasState& after,
+                       CModelEdit& edit, QString* error = nullptr) const;
     const CModelMaterialOverrides& DrawableMaterialOverrides() const { return m_drawableMaterialOverrides; }
     bool HasMaterialStructure() const { return m_hasMaterialStructure; }
     bool SetMaterialStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
@@ -374,6 +384,8 @@ private:
     bool m_hasMeshStructure = false;
     bool m_hasMaterialStructure = false;
     CModelMaterialOverrides m_drawableMaterialOverrides;
+    CTextureAssets::Catalog m_textureSources;
+    CTextureWorkspace::State m_textureWorkspace;
     QHash<QString, int> m_sourceDeformerParents;
     QSet<QString> m_sourceDeformerIds;
     bool m_hasDeformerStructure = false;
@@ -410,6 +422,9 @@ private:
     bool ApplyEdit(const CModelEdit& edit, bool forward);
     bool ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateMaterialEditStorage(const CModelEdit& edit) const;
+    bool ApplyAtlasEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
+    bool ValidateAtlasEditStorage(const CModelEdit& edit) const;
+    bool ValidateAtlasHistory(const CModelEdit& edit, QString* error) const;
     bool ApplyGeometryEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateGeometryEditStorage(const CModelEdit& edit) const;
     QByteArray GeometryEditStorageFingerprint(const CModelEdit& edit) const;

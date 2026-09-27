@@ -374,6 +374,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
                                       live2dstruct::CRuntimePackage::Request& request, QString* error) const
 {
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return fail(QStringLiteral("请先保存或取消图集或 UV 编辑，再捕获模型包"));
     if (m_paramPanel && m_paramPanel->HasUserValueGesture()) return fail(QStringLiteral("请先结束参数拖动，再捕获模型包"));
     if (!m_runtimePanelsInitialized || !m_document.IsLoaded() || !m_openglwindows || !m_openglwindows->IsModelReady())
         return fail(QStringLiteral("请等待模型加载完成后再导出"));
@@ -382,6 +383,9 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
     auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
     if (!model || !textures) return fail(QStringLiteral("模型或纹理尚未就绪"));
+    if (!m_document.HasTextureWorkspace() || model->GetTextureSources() != m_document.TextureSources() ||
+        model->GetTextureWorkspace() != m_document.TextureWorkspace())
+        return fail(QStringLiteral("图集文档与预览不一致，无法捕获模型包"));
     live2dstruct::CRuntimePackage::Request candidate;
     candidate.modelJsonPath = m_openglwindows->GetCurrentModelJson();
     candidate.sourceMocDigest = m_document.SourceDigest();
@@ -404,7 +408,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     for (auto it = catalog.expressions.cbegin(); it != catalog.expressions.cend(); ++it) if (!add(it.key(), it.value())) return false;
     if (!catalog.physicsPath.isEmpty() && !add(catalog.physicsPath, catalog.physicsDigest)) return false;
     candidate.textureSources = model->GetTextureSources();
-    candidate.textureState = model->GetTextureState();
+    candidate.textureWorkspace = model->GetTextureWorkspace();
     for (const auto& texture : *candidate.textureSources)
         if (!add(texture.path, texture.digest)) return fail(QStringLiteral("纹理与当前预览的来源不一致：%1").arg(texture.path));
     if (m_cidJson && !m_cidJson->SourcePath().isEmpty() && !add(m_cidJson->SourcePath(), m_cidJson->SourceDigest())) return false;
@@ -680,6 +684,8 @@ void MainWindow::on_actionSaveSession_triggered()
 
 bool MainWindow::SaveSession()
 {
+    QString readyError;
+    if (!AuthoringReady(&readyError)) { statusBar()->showMessage(readyError, 8000); return false; }
     QString valueError;
     if (!FinishParameterValueEditing(&valueError)) { statusBar()->showMessage(valueError, 8000); return false; }
 
@@ -708,10 +714,12 @@ bool MainWindow::SaveSession()
     session.deformerStructure = m_document.HasDeformerStructure();
     if (session.deformerStructure) session.sourceDeformerIds = m_document.SourceDeformerIds();
     session.parameterResources = m_parameterResources;
-    if (!live2dstruct::CTextureAssets::CaptureDraft(m_textureEditor.Sources(), m_textureEditor.Current(), session.textures, &animationError)) {
+    live2dstruct::CTextureWorkspace::Draft atlasDraft;
+    if (!live2dstruct::CTextureWorkspace::CaptureDraft(m_document.TextureSources(), m_document.TextureWorkspace(), atlasDraft, &animationError)) {
         QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
         return false;
     }
+    session.textureWorkspace = std::move(atlasDraft);
     if (m_physicsPanel) {
         CPhysicsPanel::Snapshot physics;
         if (!m_physicsPanel->CaptureSnapshot(physics, &animationError)) {
@@ -763,7 +771,6 @@ bool MainWindow::SaveSession()
     m_savedPhysicsPath = session.physicsDraft ? session.physicsDraft->sourcePath : QString();
     ConfigurePhysicsSaving();
     if (m_physicsPanel) m_physicsPanel->MarkSessionSaved();
-    m_textureEditor.MarkSaved();
     MarkDocumentSaved();
     if (m_exportState && m_motionPanel && m_motionPanel->IsPreviewTransportSuspended()) m_exportState->timelineSaved = true;
     if (m_motionPanel) m_motionPanel->MarkTimelineSaved();
@@ -774,6 +781,8 @@ bool MainWindow::SaveSession()
 
 void MainWindow::on_actionLoadSession_triggered()
 {
+    QString readyError;
+    if (!AuthoringReady(&readyError)) { statusBar()->showMessage(readyError, 8000); return; }
     QString valueError;
     if (!FinishParameterValueEditing(&valueError)) { statusBar()->showMessage(valueError, 8000); return; }
 
@@ -801,17 +810,11 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    live2dstruct::CTextureEditController textureCandidate;
-    if (!m_textureEditor.PrepareRestore(session.textures, textureCandidate, &loadError)) {
-        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
-        return;
-    }
     const bool restoreResources = true;
     const bool restorePhysics = restoreResources || candidate.ParameterStructure() != m_document.ParameterStructure();
     if (!ConfirmCloseWithUnsavedChanges(true, restorePhysics)) return;
     const QScopedValueRollback<bool> restoring(m_applyingSession, true);
     const QScopedValueRollback<const live2dstruct::CModelSession*> resourceSession(m_restoringSession, &session);
-    const QScopedValueRollback<const live2dstruct::CTextureAssets::State*> textureSession(m_restoringTextures, &textureCandidate.Current());
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
@@ -820,7 +823,6 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    m_textureEditor.Swap(textureCandidate);
     RefreshTextureEditing();
     m_physicsInSession = session.physicsDraft.has_value() || !m_parameterResources.IsEmpty();
     m_savedPhysicsDraft = m_physicsInSession && m_physicsPanel ? m_physicsPanel->DocumentSnapshot() : QJsonObject{};
@@ -912,7 +914,7 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
         QMap<QString, float> values;
         if (!m_runtimePanelsInitialized)
             for (const auto& parameter : document.Parameters()) values.insert(parameter.id, document.ParameterValue(parameter.id));
-        if (!m_runtimePanelsInitialized && (document.HasMeshStructure() || document.HasMaterialStructure() ||
+        if (!m_runtimePanelsInitialized && (document.HasTextureWorkspace() || document.HasMeshStructure() || document.HasMaterialStructure() ||
             !document.DrawableMaterialOverrides().isEmpty() || !document.ParameterStructure().columns.isEmpty() ||
             !document.ParameterStructure().counts.isEmpty())) {
             auto* manager = LAppLive2DManager::GetInstance();
@@ -937,7 +939,7 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
                 for (const auto& drawable : document.Drawables()) materials.insert(drawable.id);
             return m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, false, prepared,
                 error, nullptr, nullptr, {}, nullptr, geometry ? &*geometry : nullptr, nullptr, nullptr,
-                materials.isEmpty() ? nullptr : &materials);
+                materials.isEmpty() ? nullptr : &materials, document.HasTextureWorkspace() ? &document.TextureWorkspace() : nullptr);
         }
         return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, false, error);
     }
@@ -1237,7 +1239,8 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
         geometry ? &*geometry : nullptr,
         editing && (command.parameterChange == live2dstruct::CModelEdit::ParameterChange::BindingKeys ||
             command.field == live2dstruct::CModelEdit::DeformerStructure) ? &pose : nullptr,
-        restoring ? m_restoringTextures : nullptr, materials.isEmpty() ? nullptr : &materials))
+        nullptr, materials.isEmpty() ? nullptr : &materials,
+        restoring && document.HasTextureWorkspace() ? &document.TextureWorkspace() : nullptr))
         return false;
     if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
     if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
@@ -1360,6 +1363,7 @@ bool MainWindow::ActivateKeyform(const QString& id, int keyform, QString* error)
 
 bool MainWindow::ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error, bool allowLockedPreview)
 {
+    if (!AuthoringReady(error)) return false;
     if (!FinishParameterValueEditing(error)) return false;
     if (!m_openglwindows || !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (m_keyformEditor.IsActive() && m_keyformEditor.Target() == id && m_keyformEditor.Type() == type && m_keyformEditor.Keyform() == keyform)
@@ -1422,6 +1426,7 @@ bool MainWindow::EndKeyformEditing(QString* error, bool finishParameters)
 
 bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error)
 {
+    if (!AuthoringReady(error)) return false;
     if (!FinishParameterValueEditing(error)) return false;
     if (m_previewExport.IsBusy()) {
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
@@ -1473,55 +1478,71 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
 
 bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error)
 {
-    if (!FinishParameterValueEditing(error)) return false;
+    const QPointer<MainWindow> alive(this);
+    if (!AuthoringReady(error)) return false;
+    if (!FinishParameterValueEditing(error) || !alive) return false;
     if (m_previewExport.IsBusy()) {
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
+    if (pending.field == live2dstruct::CModelEdit::AtlasLayout) {
+        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
+        if (!m_atlasEditor.History(undo, edit, error)) return false;
+        RefreshTextureEditing(true);
+        if (!alive) return false;
+        RefreshMaterialEditing(true);
+        return !alive.isNull();
+    }
     if (pending.field == live2dstruct::CModelEdit::DrawableMaterials) {
         if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!m_materialEditor.History(undo, edit, error)) return false;
         RefreshMaterialEditing(true);
-        return true;
+        return !alive.isNull();
     }
     if (pending.field == live2dstruct::CModelEdit::ParameterValue || pending.field == live2dstruct::CModelEdit::ParameterValues)
         return ApplyParameterValueHistory(undo, edit, error);
     if (pending.field == live2dstruct::CModelEdit::ParameterOrganization ||
         pending.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
-        const QPointer<MainWindow> alive(this);
         if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
         if (m_paramPanel && edit.field == live2dstruct::CModelEdit::ParameterOrganization) m_paramPanel->RefreshOrganization();
         if (!alive) return false;
         m_sessionDirty = true;
         RefreshWindowTitle();
+        if (!alive) return false;
         RefreshUndoActions();
+        if (!alive) return false;
         RefreshGeometryPairActions();
-        return true;
+        return !alive.isNull();
     }
     if (pending.field != live2dstruct::CModelEdit::ParameterMetadata && pending.field != live2dstruct::CModelEdit::ParameterStructure &&
         pending.field != live2dstruct::CModelEdit::MeshStructure &&
         m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(pending)) {
-        if (!m_keyformEditor.History(undo, edit, error)) return false;
+        if (!m_keyformEditor.History(undo, edit, error) || !alive) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
         if (edit.field == live2dstruct::CModelEdit::DeformerStructure) RefreshDeformerStructureUi(edit, !undo);
+        if (!alive) return false;
         RefreshKeyformUi(true);
     } else {
         if (!EndKeyformEditing(error)) return false;
         if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
     }
+    if (!alive) return false;
     m_sessionDirty = true;
     RefreshWindowTitle();
+    if (!alive) return false;
     RefreshUndoActions();
-    return true;
+    return !alive.isNull();
 }
 
 void MainWindow::RefreshKeyformUi(bool changed, bool markSession, bool syncParameterValues)
 {
+    const QPointer<MainWindow> alive(this);
     RefreshTextureGeometry();
+    if (!alive) return;
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
     if (m_keyformEditor.IsActive()) {
         if (m_inspectorPanel)
@@ -1658,13 +1679,18 @@ void MainWindow::SyncDocumentToRuntime()
 
 void MainWindow::RefreshTextureGeometry()
 {
+    const QPointer<MainWindow> alive(this);
     if (!m_texturePanel || !m_runtimePanelsInitialized || !m_openglwindows ||
         !m_openglwindows->IsModelReady() || !RuntimeMatchesDocument()) return;
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
     if (!model) return;
     QString error;
-    if (!m_texturePanel->UpdateUvMeshes(model->GetPreviewMocBytes(), &error))
+    const bool loaded = m_texturePanel->LoadWorkspaceSnapshot(model->GetTextureSources(), model->GetTextureWorkspace(),
+                                                              model->GetPreviewMocBytes(), &error);
+    if (!alive) return;
+    m_texturePanel->SetSnapshotAvailable(loaded, error);
+    if (!loaded)
         statusBar()->showMessage(QStringLiteral("图集网格刷新失败：%1").arg(error), 10000);
 }
 
@@ -1888,60 +1914,61 @@ void MainWindow::RefreshWindowTitle()
 
 void MainWindow::RefreshUndoActions()
 {
-    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive();
+    const QPointer<MainWindow> alive(this);
+    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive() && !m_atlasEditor.IsActive();
     const bool timeline = m_historySource == HistorySource::Timeline && m_motionPanel;
     const bool physics = m_historySource == HistorySource::Physics && m_physicsPanel;
-    const bool textures = m_historySource == HistorySource::Textures;
-    if (m_undoAction) m_undoAction->setEnabled(loaded && (textures ? m_textureEditor.CanUndo() : timeline ? m_motionPanel->CanUndoTimeline() : physics ? m_physicsPanel->CanUndo() : m_document.CanUndoEdit()));
-    if (m_redoAction) m_redoAction->setEnabled(loaded && (textures ? m_textureEditor.CanRedo() : timeline ? m_motionPanel->CanRedoTimeline() : physics ? m_physicsPanel->CanRedo() : m_document.CanRedoEdit()));
+    if (m_undoAction) m_undoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanUndoTimeline() : physics ? m_physicsPanel->CanUndo() : m_document.CanUndoEdit()));
+    if (!alive) return;
+    if (m_redoAction) m_redoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanRedoTimeline() : physics ? m_physicsPanel->CanRedo() : m_document.CanRedoEdit()));
 }
 
 void MainWindow::UndoDocumentEdit()
 {
-    if (m_materialEditor.IsActive()) return;
-    if (m_historySource == HistorySource::Textures) { ApplyTextureHistory(true); return; }
+    const QPointer<MainWindow> alive(this);
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return;
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
-        if (!m_physicsPanel->Undo(&error) && !error.isEmpty()) statusBar()->showMessage(error, 8000);
-        RefreshUndoActions();
+        if (!m_physicsPanel->Undo(&error) && alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
+        if (alive) RefreshUndoActions();
         return;
     }
     if (m_historySource == HistorySource::Timeline && m_motionPanel) {
         m_motionPanel->UndoTimeline();
-        RefreshUndoActions();
+        if (alive) RefreshUndoActions();
         return;
     }
     live2dstruct::CModelEdit edit;
     QString error;
     if (!ApplyDocumentHistory(true, edit, &error)) {
-        if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
+        if (alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
         return;
     }
-    ApplyDocumentEditToUi(edit, false);
+    if (alive) ApplyDocumentEditToUi(edit, false);
 }
 
 void MainWindow::RedoDocumentEdit()
 {
-    if (m_materialEditor.IsActive()) return;
-    if (m_historySource == HistorySource::Textures) { ApplyTextureHistory(false); return; }
+    const QPointer<MainWindow> alive(this);
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return;
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
-        if (!m_physicsPanel->Redo(&error) && !error.isEmpty()) statusBar()->showMessage(error, 8000);
-        RefreshUndoActions();
+        if (!m_physicsPanel->Redo(&error) && alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
+        if (alive) RefreshUndoActions();
         return;
     }
     if (m_historySource == HistorySource::Timeline && m_motionPanel) {
         m_motionPanel->RedoTimeline();
-        RefreshUndoActions();
+        if (alive) RefreshUndoActions();
         return;
     }
     live2dstruct::CModelEdit edit;
     QString error;
     if (!ApplyDocumentHistory(false, edit, &error)) {
-        if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
+        if (alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
         return;
     }
-    ApplyDocumentEditToUi(edit, true);
+    if (alive) ApplyDocumentEditToUi(edit, true);
 }
 
 void MainWindow::on_actionBatchPsd_triggered()
@@ -2160,6 +2187,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         if (stage) *stage = failedStage;
         return false;
     };
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive())
+        return fail(PsdExportStage::Preflight, QStringLiteral("请先保存或取消图集或 UV 编辑，再导出 PSD"));
     if (m_previewExport.IsBusy() || m_activeExportControl)
         return fail(PsdExportStage::Restoring, QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
     if (outPath.isEmpty()) return fail(PsdExportStage::Preflight, QStringLiteral("未指定输出路径"));
@@ -2629,8 +2658,8 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
-    if (m_materialEditor.IsActive()) {
-        statusBar()->showMessage(QStringLiteral("请先保存或取消 UV 编辑"), 8000);
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
+        statusBar()->showMessage(QStringLiteral("请先保存或取消图集或 UV 编辑"), 8000);
         return false;
     }
     if (m_batchExporting || m_closingModel) return false;
@@ -2676,7 +2705,6 @@ bool MainWindow::CloseModel()
         if (m_blendShapePanel) settings.setValue(QStringLiteral("blendShapePanelLayout"), m_blendShapePanel->SaveLayout());
     }
     m_historySource = HistorySource::None;
-    m_textureEditor.Initialize({});
     m_parameterResources = {};
     m_physicsInSession = false;
     m_savedPhysicsDraft = {};
@@ -2741,7 +2769,7 @@ bool MainWindow::CloseModel()
 
     m_keyformEditor.SetDocument(nullptr);
     m_materialEditor.SetDocument(nullptr);
-    m_textureHistoryUsesDocument = false;
+    m_atlasEditor.SetDocument(nullptr);
     m_keyformBaseValues.clear();
     m_document.Clear();
     m_placeholder = createEmptyState();
@@ -2764,8 +2792,37 @@ void MainWindow::closeEvent(QCloseEvent* event)
     else event->ignore();
 }
 
+bool MainWindow::AuthoringReady(QString* error) const
+{
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
+        if (error) *error = QStringLiteral("请先保存或取消图集或 UV 编辑");
+        return false;
+    }
+    if (m_workspaceReady && m_runtimePanelsInitialized && m_document.HasTextureWorkspace() && !m_closingModel) return true;
+    if (error) *error = QStringLiteral("模型与素材正在准备，请等待工作区就绪");
+    return false;
+}
+
+bool MainWindow::SetAuthoringReady(bool ready)
+{
+    const QPointer<MainWindow> alive(this);
+    m_workspaceReady = ready;
+    const QVector<QPointer<QWidget>> editors{m_treePanel, m_inspectorPanel, m_paramPanel, m_motionPanel, m_physicsPanel,
+                                             m_blendShapePanel, m_texturePanel, m_userDataPanel, m_openglwindows};
+    for (const auto& editor : editors) {
+        if (!alive) return false;
+        if (editor) editor->setEnabled(ready);
+    }
+    if (!alive) return false;
+    if (m_saveSessionAction) m_saveSessionAction->setEnabled(ready);
+    if (!alive) return false;
+    if (m_loadSessionAction) m_loadSessionAction->setEnabled(ready);
+    return !alive.isNull();
+}
+
 void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded)
 {
+    const QPointer<MainWindow> alive(this);
     if (!loaded || m_runtimePanelsInitialized || m_openglwindows != expectedWindow || m_psdBatch || m_batchExporting || m_previewExport.IsBusy()) return;
     QString sourceError;
     if (!RuntimeMatchesDocument(&sourceError)) {
@@ -2781,17 +2838,24 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
         statusBar()->showMessage(QStringLiteral("编辑预览同步失败：%1").arg(sourceError), 8000);
         return;
     }
+    if (!alive) return;
     SyncDocumentToRuntime();
+    if (!alive) return;
     RefreshKeyformUi();
+    if (!alive) return;
     if (!InitializeTextureEditing(&sourceError)) {
         statusBar()->showMessage(QStringLiteral("纹理编辑初始化失败：%1").arg(sourceError), 10000);
         return;
     }
     applyBgColor();
     m_runtimePanelsInitialized = true;
+    if (!SetAuthoringReady(true)) return;
     RefreshTextureEditing();
+    if (!alive) return;
     RefreshTextureGeometry();
+    if (!alive) return;
     RefreshMeshTools();
+    if (!alive) return;
     RefreshExportActions();
 }
 
@@ -3327,8 +3391,9 @@ void MainWindow::RestDock(const QString &name)
         return ReplaceTexture(slot, png, error);
     });
     connect(m_texturePanel, &CTexturePanel::EditUvRequested, this, &MainWindow::EditUv);
+    connect(m_texturePanel, &CTexturePanel::EditAtlasRequested, this, &MainWindow::EditAtlas);
     connect(m_texturePanel, &CTexturePanel::HistorySelected, this, [this] {
-        m_historySource = m_textureHistoryUsesDocument ? HistorySource::Inspector : HistorySource::Textures;
+        m_historySource = HistorySource::Inspector;
         RefreshUndoActions();
     });
     connect(m_texturePanel, &CTexturePanel::EditRejected, this, [this](const QString& error) { statusBar()->showMessage(error, 8000); });
@@ -3380,7 +3445,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::LocksBatchChanged, this, [this](const QMap<QString, bool>& values) {
         QString error;
         const auto revision = m_document.Revision();
-        if (!FinishParameterValueEditing(&error) ||
+        if (!AuthoringReady(&error) || !FinishParameterValueEditing(&error) ||
             (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &error)) || !m_document.SetLockedValues(values)) {
             if (m_treePanel) {
                 auto locks = m_document.VisibilityState();
@@ -3431,10 +3496,12 @@ void MainWindow::RestDock(const QString &name)
             return ActivateKeyform(id, keyform, error);
         },
         [this](const QVector<int>& selected, const QVector<float>& positions, QString* error) {
+            if (!AuthoringReady(error)) return false;
             if (!m_keyformEditor.BeginDrag(selected, positions, error)) return false;
             m_keyformDragHistorySource = m_historySource;
             return true;
         }, [this](const QPointF& delta, QString* error) {
+            if (!AuthoringReady(error)) return false;
             const auto revision = m_document.Revision();
             if (!m_keyformEditor.DragBy(delta, error)) return false;
             if (m_document.Revision() != revision) RefreshKeyformUi(true, false);
@@ -3442,6 +3509,7 @@ void MainWindow::RestDock(const QString &name)
         }, finishKeyformDrag);
     m_openglwindows->SetDeformerEditHandlers(
         [this](CDeformerHandleOverlay::Handle handle, const QVector<int>& selected, QString* error) {
+            if (!AuthoringReady(error)) return false;
             using Handle = live2dstruct::CKeyformEditController::DeformerHandle;
             if (handle == CDeformerHandleOverlay::None) return false;
             const auto target = handle == CDeformerHandleOverlay::WarpPoint ? Handle::WarpPoints :
@@ -3450,6 +3518,7 @@ void MainWindow::RestDock(const QString &name)
             m_keyformDragHistorySource = m_historySource;
             return true;
         }, [this](const QPointF& delta, double angle, QString* error) {
+            if (!AuthoringReady(error)) return false;
             const auto revision = m_document.Revision();
             if (!m_keyformEditor.MoveDeformerDrag(delta, angle, error)) return false;
             if (m_document.Revision() != revision) RefreshKeyformUi(true, false);
@@ -3630,11 +3699,9 @@ void MainWindow::RestDock(const QString &name)
             if (!hideId.isEmpty()) model->SetPartVisible(hideId, false);
         }
     });
-    m_workspaceReady = true;
+    if (!SetAuthoringReady(m_runtimePanelsInitialized)) return;
     RefreshDeformerActions();
     ConfigurePhysicsSaving();
-    m_saveSessionAction->setEnabled(true);
-    m_loadSessionAction->setEnabled(true);
 
     ConfigureParameterValueEditing();
     RefreshRelatedParameters();
@@ -3711,7 +3778,7 @@ void MainWindow::createActions()
         } else if (m_physicsPanel && (m_physicsPanel == current || m_physicsPanel->isAncestorOf(current))) {
             m_historySource = HistorySource::Physics;
         } else if (m_texturePanel && (m_texturePanel == current || m_texturePanel->isAncestorOf(current))) {
-            m_historySource = m_textureHistoryUsesDocument ? HistorySource::Inspector : HistorySource::Textures;
+            m_historySource = HistorySource::Inspector;
         } else {
             const auto contains = [current](QWidget* editor){
                 return editor && (editor == current || editor->isAncestorOf(current));

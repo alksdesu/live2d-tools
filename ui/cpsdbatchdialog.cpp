@@ -15,7 +15,8 @@ CPsdBatchDialog::CPsdBatchDialog(QWidget *parent)
     // Options
     m_checkAll = new QCheckBox("导出所有图层", this);
     m_checkFenzu = new QCheckBox("按分组导出", this);
-    m_checkTexExtract = new QCheckBox("原始纹理提取", this);
+    m_checkTexExtract = new QCheckBox("纹理采样导出（保留当前网格形状）", this);
+    m_checkTexExtract->setToolTip(QStringLiteral("按网格形状采样图集，保留图层透明度与混合模式，不烘焙裁剪蒙版、乘色或屏幕色。此模式不恢复原始 PSD。"));
     m_checkCubism = new QCheckBox("Cubism 可导入模式", this);
     auto* optRow = new QHBoxLayout();
     optRow->addWidget(m_checkAll);
@@ -121,4 +122,3 @@ void CPsdBatchDialog::onReject()
 {
     reject();
 }
-

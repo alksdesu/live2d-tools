@@ -69,7 +69,8 @@ struct MainWindow::ParameterValueEditState
 
 bool MainWindow::ParameterValueEditingReady(QString* error) const
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_activeExportControl ||
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_closingModel || m_batchExporting || m_psdBatch ||
+        m_previewExport.IsBusy() || m_activeExportControl ||
         m_applyingSession || m_applyingParameterReferences || !m_runtimePanelsInitialized || !m_workspaceReady ||
         !m_paramPanel || !m_motionPanel || !m_openglwindows || !m_openglwindows->IsModelReady() ||
         m_openglwindows->IsExportSuspended() || m_motionPanel->IsPreviewTransportSuspended())
@@ -243,7 +244,7 @@ void MainWindow::SyncParameterValueUi(const QMap<QString, float>& values)
 
 bool MainWindow::FinishParameterValueEditing(QString* error)
 {
-    if (m_materialEditor.IsActive()) return fail(error, QStringLiteral("请先保存或取消 UV 编辑"));
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return fail(error, QStringLiteral("请先保存或取消图集或 UV 编辑"));
     if (m_publishingParameterValues || (m_parameterValueEdit && m_parameterValueEdit->pendingUi))
         return fail(error, QStringLiteral("参数事务正在更新界面，请稍后重试"));
     const QPointer<MainWindow> alive(this);

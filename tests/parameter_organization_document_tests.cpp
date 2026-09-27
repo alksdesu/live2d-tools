@@ -164,7 +164,7 @@ private slots:
         QFETCH(int, kind); auto current = m_original; QVERIFY(current.SetParameterOrganization(organization(current)));
         const auto goodBytes = capture(current).ToJson(); auto root = QJsonDocument::fromJson(goodBytes).object();
         if (kind == 0) root.remove("parameterOrganization"); if (kind == 1) root["parameterOrganization"] = QJsonArray{};
-        if (kind == 2) root["version"] = 7; if (kind == 3) root["version"] = 11;
+        if (kind == 2) root["version"] = 7; if (kind == 3) root["version"] = 12;
         if (kind == 4) root.remove("sourceDigest"); if (kind == 5) root["sourceMoc"] = QString("bad") + QChar::Null;
         if (kind == 6) { auto org = root["parameterOrganization"].toObject(); auto nodes = org["nodes"].toArray(); nodes.removeLast(); org["nodes"] = nodes; root["parameterOrganization"] = org; }
         if (kind == 7) root["sourceDigest"] = QString(64, '1');

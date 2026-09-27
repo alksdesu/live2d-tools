@@ -82,6 +82,11 @@ bool CModelDocument::SetDrawableMaterials(const CModelMaterialState& state, QStr
         if (found == baseline.cend() || found->uvs.size() != material.uvs.size()) return fail(error, QStringLiteral("材质对象或 UV 顶点数不匹配：%1").arg(material.id));
         if (material == *found) overrides.remove(material.id); else overrides.insert(material.id, material);
     }
+    if (HasTextureWorkspace()) for (auto it = baseline.cbegin(); it != baseline.cend(); ++it) {
+        const auto material = overrides.value(it.key(), *it);
+        if (!material.uvs.isEmpty() && !m_textureWorkspace.atlases.contains(material.textureIndex))
+            return fail(error, QStringLiteral("网格 %1 引用了不存在的图集槽 %2").arg(material.id).arg(material.textureIndex));
+    }
     if (overrides == m_drawableMaterialOverrides) { if (error) error->clear(); return true; }
     QByteArray check;
     if (!CMocMaterialBuilder::Build(m_workingBaseBytes, overrides, check, error)) return false;
@@ -126,6 +131,12 @@ bool CModelDocument::ValidateMaterialEditStorage(const CModelEdit& edit) const
         current.append(std::move(value));
     }
     if (current != before && current != after) return false;
+    if (HasTextureWorkspace()) {
+        CModelMaterialState materials;
+        if (!CaptureDrawableMaterials(materials)) return false;
+        for (const auto& material : materials)
+            if (!material.uvs.isEmpty() && !m_textureWorkspace.atlases.contains(material.textureIndex)) return false;
+    }
     QByteArray check;
     return CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, check);
 }

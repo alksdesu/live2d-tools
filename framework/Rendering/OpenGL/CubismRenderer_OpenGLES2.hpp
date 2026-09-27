@@ -111,7 +111,7 @@ public:
     csmBool Initialize(Framework::CubismModel* model, csmInt32 maskBufferCount) override;
 
     bool PrepareModelReplacement(CubismModel* model, const CubismRenderer_OpenGLES2& previous,
-                                 QString* error = nullptr);
+                                 QString* error = nullptr, const QMap<int, GLuint>* textureBindings = nullptr);
     bool BeginPsdExport(bool includeHidden, CExportControl* control = nullptr, QString* error = nullptr);
     bool DrawPsdStep(int drawableIndex, float opacityOverride, const CubismMatrix44& matrix,
                      const QSize& canvas, QImage& image, QRect& rect, bool& ready, QString* error = nullptr);

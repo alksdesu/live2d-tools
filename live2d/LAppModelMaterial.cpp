@@ -11,7 +11,8 @@
 using namespace Live2D::Cubism::Framework;
 
 bool LAppModel::ValidateMaterialCandidate(const CubismModel& candidate, const QSet<QString>& allowedDrawableIds,
-                                          bool geometryChanges, QString* error)
+                                          bool geometryChanges, QString* error,
+                                          const QMap<int, csmUint32>* candidateBindings)
 {
     const auto fail = [&](const QString& reason) { if (error) *error = reason; return false; };
     const auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
@@ -26,8 +27,18 @@ bool LAppModel::ValidateMaterialCandidate(const CubismModel& candidate, const QS
     for (auto it = bindings.Begin(); it != bindings.End(); ++it) {
         if (it->First < 0 || (it->Second && !delegate->glIsTexture(it->Second)))
             return fail(QStringLiteral("原渲染器纹理绑定无效"));
-        if (it->Second && m_textureBindings.value(it->First) == it->Second && m_textureSources.contains(it->First))
+        if (it->Second && m_textureBindings.value(it->First) == it->Second && m_textureWorkspace.atlases.contains(it->First))
             available.insert(it->First);
+    }
+    if (available.size() != m_textureBindings.size() || available.size() != m_textureWorkspace.atlases.size())
+        return fail(QStringLiteral("当前图集目录与渲染器绑定不一致"));
+    if (candidateBindings) {
+        available.clear();
+        for (auto it = candidateBindings->cbegin(); it != candidateBindings->cend(); ++it) {
+            if (it.key() < 0 || !it.value() || !delegate->glIsTexture(it.value()))
+                return fail(QStringLiteral("候选图集纹理绑定无效"));
+            available.insert(it.key());
+        }
     }
     for (int index = 0; index < candidate.GetDrawableCount(); ++index) {
         const QString id = QString::fromUtf8(candidate.GetDrawableId(index)->GetString().GetRawString());
@@ -96,6 +107,57 @@ bool LAppModel::ApplyDrawableMaterialPreview(const QByteArray& bytes, const QByt
             CubismModelUpdatePolicy::AllowDrawableMaterialEdits, {}, nullptr, nullptr, nullptr, nullptr, &allowedDrawableIds);
     } catch (const std::exception&) {
         if (error) *error = QStringLiteral("无法准备材质预览，原模型保持不变");
+        return false;
+    }
+}
+
+bool LAppModel::ApplyAtlasPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                 const QByteArray& expectedPreviewDigest, const QByteArray& expectedWorkspaceDigest,
+                                 const AtlasState& workspace, const QSet<QString>& allowedDrawableIds,
+                                 QString* error, const ParameterDefinitionPreparation& preparePreview)
+{
+    if (error) error->clear();
+    if (!_initialized || _updating || !_model || HasExportPreview() || m_physicsDragActive ||
+        m_userParameterSnapshotActive || m_deformerDrag.IsActive() || sourceDigest.isEmpty() ||
+        sourceDigest != m_sourceMocDigest || expectedPreviewDigest.size() != 32 ||
+        expectedPreviewDigest != m_previewMocDigest || expectedWorkspaceDigest.size() != 32 ||
+        bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max()) {
+        if (error) *error = QStringLiteral("图集预览与当前模型版本不一致，或画布仍在交互中");
+        return false;
+    }
+    auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    auto* delegate = LAppDelegate::GetInstance();
+    if (!renderer || renderer->IsDrawing() || renderer->HasPsdExport() || delegate->IsOffScreen() ||
+        delegate->m_isDraggingDeformer || !renderer->setGlOwningContext(delegate->getGlOwningContext())) {
+        if (error) *error = QStringLiteral("请先结束当前绘制或导出，再更新图集预览");
+        return false;
+    }
+    try {
+        QByteArray fingerprint, compiled;
+        if (!live2dstruct::CTextureWorkspace::Fingerprint(m_textureSources, m_textureWorkspace, fingerprint, error)) return false;
+        if (fingerprint != expectedWorkspaceDigest) {
+            if (error) *error = QStringLiteral("图集内容已改变，请重新打开图集编辑");
+            return false;
+        }
+        if (!live2dstruct::CTextureWorkspace::ValidateTransition(m_textureSources, m_textureWorkspace, workspace,
+                live2dstruct::CTextureWorkspace::Transition::ReplaceGenerated, error) ||
+            !live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error) ||
+            !live2dstruct::CMocMaterialBuilder::ValidateTransition(m_previewMocBytes, compiled, allowedDrawableIds, error)) return false;
+        CubismModel::RuntimeValueSnapshot values;
+        if (!_model->CaptureRuntimeValues(values, error) || !_model->HasFiniteDrawableState(error)) return false;
+        if (compiled == m_previewMocBytes && workspace == m_textureWorkspace) {
+            if (!ValidateMaterialCandidate(*_model, allowedDrawableIds, false, error)) return false;
+            const QScopedValueRollback<csmBool> updating(_updating, true);
+            return !preparePreview || preparePreview(*_model, error);
+        }
+        const auto prepare = [&](CubismModel* candidate, QString* detail) {
+            return !preparePreview || preparePreview(*candidate, detail);
+        };
+        return ApplyPreviewTransaction(compiled, sourceDigest, prepare, error,
+            CubismModelUpdatePolicy::AllowDrawableMaterialEdits, {}, nullptr, nullptr, nullptr, nullptr,
+            &allowedDrawableIds, &workspace);
+    } catch (const std::exception&) {
+        if (error) *error = QStringLiteral("无法准备图集预览，原模型保持不变");
         return false;
     }
 }

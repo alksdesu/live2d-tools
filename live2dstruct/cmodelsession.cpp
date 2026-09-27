@@ -114,6 +114,16 @@ bool validMaterials(const CModelSession& session, int version, QString* error)
     return CModelMaterialEdit::ToJson(session.drawableMaterials, checked, error);
 }
 
+bool validWorkspace(const CModelSession& session, int version, QString* error)
+{
+    if (!session.textureWorkspace) return true;
+    if (version < 11 || !session.textures.isEmpty() || session.sourceMoc.isEmpty() ||
+        session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32) {
+        setError(error, QStringLiteral("图集工作区需要版本 11、独立来源指纹且不能混用旧纹理覆盖")); return false;
+    }
+    return CTextureWorkspace::ValidateDraft(*session.textureWorkspace, error);
+}
+
 bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     qint64 bytes = 0;
@@ -187,7 +197,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 10) return {};
+    if (version < 1 || version > 11) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -201,6 +211,13 @@ QByteArray CModelSession::ToJson() const
     if (parameterOrganization.configured && storedVersion < 8) storedVersion = 8;
     if (geometryObjectPairs != CGeometryObjectPairs::State{} && storedVersion < 9) storedVersion = 9;
     if ((materialStructure || !drawableMaterials.isEmpty()) && storedVersion < 10) storedVersion = 10;
+    if (textureWorkspace && storedVersion < 11) storedVersion = 11;
+    if (!validWorkspace(*this, storedVersion, nullptr)) return {};
+    if (storedVersion >= 11) {
+        QJsonObject workspace;
+        if (textureWorkspace && !CTextureWorkspace::ToJson(*textureWorkspace, workspace)) return {};
+        root.insert(QStringLiteral("textureWorkspace"), textureWorkspace ? QJsonValue(workspace) : QJsonValue(QJsonValue::Null));
+    }
     QJsonObject materials;
     if (!validMaterials(*this, storedVersion, nullptr) || !CModelMaterialEdit::ToJson(drawableMaterials, materials)) return {};
     if (storedVersion >= 10) {
@@ -371,13 +388,23 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 10) {
+    if (parsedVersion < 1 || parsedVersion > 11) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    const auto workspace = root.value(QStringLiteral("textureWorkspace"));
+    if ((parsedVersion < 11 && !workspace.isUndefined()) ||
+        (parsedVersion >= 11 && !workspace.isObject() && !workspace.isNull())) {
+        setError(error, QStringLiteral("图集工作区需要版本 11 及有效字段")); return false;
+    }
+    if (workspace.isObject()) {
+        CTextureWorkspace::Draft draft;
+        if (!CTextureWorkspace::FromJson(workspace.toObject(), draft, error)) return false;
+        result.textureWorkspace = std::move(draft);
+    }
     if ((parsedVersion < 10 && (root.contains(QStringLiteral("materialStructure")) || root.contains(QStringLiteral("drawableMaterials")))) ||
         (parsedVersion >= 10 && (!root.value(QStringLiteral("materialStructure")).isBool() || !root.value(QStringLiteral("drawableMaterials")).isObject()))) {
         setError(error, QStringLiteral("材质编辑需要版本 10 及有效字段")); return false;
@@ -480,7 +507,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         setError(error, QStringLiteral("会话几何对象配对与模型来源不匹配"));
         return false;
     }
-    if (!validMaterials(result, parsedVersion, error) || !validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
+    if (!validWorkspace(result, parsedVersion, error) || !validMaterials(result, parsedVersion, error) || !validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
 
     QJsonObject parameterObject;
     QJsonObject parameterMetadataObject;
@@ -803,12 +830,12 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 10) ||
+    if ((version < 1 || version > 11) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
         (version < 9 && geometryObjectPairs != CGeometryObjectPairs::State{}) ||
-        (version < 10 && (materialStructure || !drawableMaterials.isEmpty())))
+        (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace))
         return fail(QStringLiteral("version"));
     CGeometryObjectPairs::State normalizedPairs;
     if (!CGeometryObjectPairs::Normalize(geometryObjectPairs, normalizedPairs, error) ||
@@ -817,7 +844,7 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
     CParameterOrganization::State normalizedOrganization;
     if (!CParameterOrganization::Normalize(parameterOrganization, normalizedOrganization, error) ||
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
-    if (!validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
+    if (!validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
         !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validDeformerStructure(*this, version, error)) return false;
     if (!CTextureAssets::ValidateDraft(textures, error)) return false;
     if (!textures.isEmpty() && (sourceMoc.isEmpty() || sourceMoc.contains(QChar::Null) || sourceDigest.size() != 32)) return fail(QStringLiteral("textures"));
@@ -849,6 +876,17 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
 
     CModelDocument candidate;
     if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
+    if (textureWorkspace && !loaded.HasTextureWorkspace()) return fail(QStringLiteral("textureWorkspace"));
+    if (loaded.HasTextureWorkspace()) {
+        CTextureAssets::State legacy;
+        if (!CTextureAssets::RestoreDraft(loaded.TextureSources(), textures, legacy, error) ||
+            !candidate.InitializeTextureWorkspace(loaded.TextureSources(), legacy, error)) return false;
+        if (textureWorkspace) {
+            CTextureWorkspace::State restored;
+            if (!CTextureWorkspace::RestoreDraft(loaded.TextureSources(), *textureWorkspace, restored, error) ||
+                !candidate.SetTextureWorkspace(restored, error)) return false;
+        }
+    }
     QSet<QString> removedParameters;
     for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
     if (materialStructure) {

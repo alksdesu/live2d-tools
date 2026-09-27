@@ -4,6 +4,7 @@
 
 #include <QtTest>
 #include <QAction>
+#include <QBuffer>
 #include <QDir>
 #include <QFile>
 #include <QGraphicsPixmapItem>
@@ -119,6 +120,75 @@ class TexturePanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void workspaceFastPathPreservesViewAndFailedResizeKeepsOldPixelsAndUv()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("atlas.png");
+        QImage image(32, 24, QImage::Format_RGBA8888); image.fill(Qt::white); QVERIFY(image.save(path));
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); CTextureAssets::Source source;
+        QVERIFY(CTextureAssets::MakeSource(path, file.readAll(), source)); const CTextureAssets::Catalog sources{{0, source}};
+        CTextureWorkspace::State workspace; QVERIFY(CTextureWorkspace::Initialize(sources, {}, workspace));
+        QString id; const auto original = meshBytes(id, {.1f, .1f, .9f, .1f, .1f, .9f}, {0, 1, 2});
+        const auto moved = meshBytes(id, {.2f, .2f, .5f, .2f, .2f, .5f}, {0, 1, 2});
+        CTexturePanel panel; QString error; QVERIFY(!panel.LoadWorkspaceSnapshot({}, {}, {}, &error));
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace, original, &error)); panel.resize(500, 360); panel.show();
+        auto* view = panel.findChild<CAtlasView*>(); view->ZoomReset(); view->scale(3, 3);
+        const auto transform = view->transform(); auto* scene = view->scene(); auto* pixmap = atlasItem(scene); const auto key = pixmap->pixmap().cacheKey();
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace, moved, &error));
+        QCOMPARE(view->scene(), scene); QCOMPARE(atlasItem(scene), pixmap); QCOMPARE(pixmap->pixmap().cacheKey(), key); QCOMPARE(view->transform(), transform);
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace, original, &error)); const auto before = renderScene(scene);
+        auto failed = workspace; failed.atlases[0].size = {64, 48}; failed.atlases[0].png = QByteArray("invalid png");
+        QVERIFY(!panel.LoadWorkspaceSnapshot(sources, failed, moved, &error)); panel.SetSnapshotAvailable(false, error);
+        QVERIFY(!panel.findChild<QToolButton*>("textureExport")->isEnabled());
+        QVERIFY(panel.findChild<QLabel*>("textureError")->text().contains(QStringLiteral("仅供参考")));
+        QCOMPARE(view->scene(), scene); QCOMPARE(renderScene(scene), before); QCOMPARE(view->transform(), transform);
+        QVERIFY(!panel.LoadWorkspaceSnapshot(sources, failed, moved, &error)); QVERIFY(!panel.UpdateUvMeshes(moved, &error));
+        QCOMPARE(renderScene(scene), before); QCOMPARE(atlasItem(scene), pixmap); QCOMPARE(view->sceneRect().size(), QSizeF(32, 24));
+        QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked); view->ScenePosClicked({8, 6}); QCOMPARE(picked.size(), 0);
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, workspace, original, &error)); panel.SetSnapshotAvailable(true);
+        QVERIFY(panel.findChild<QToolButton*>("textureExport")->isEnabled()); QVERIFY(panel.findChild<QLabel*>("textureError")->isHidden());
+        view->ScenePosClicked({8, 6}); QCOMPARE(picked.size(), 1); QCOMPARE(picked.first()[0].toString(), id);
+    }
+    void workspaceMocAndNonSquareAtlasPublishTogether()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("atlas.png");
+        QImage originalImage(64, 32, QImage::Format_RGBA8888); originalImage.fill(Qt::white); QVERIFY(originalImage.save(path));
+        QFile originalFile(path); QVERIFY(originalFile.open(QIODevice::ReadOnly)); CTextureAssets::Source source;
+        QVERIFY(CTextureAssets::MakeSource(path, originalFile.readAll(), source)); const CTextureAssets::Catalog sources{{0, source}};
+        CTextureWorkspace::State workspace; QVERIFY(CTextureWorkspace::Initialize(sources, {}, workspace));
+        QString id; const auto original = meshBytes(id, {.1f, .1f, .9f, .1f, .1f, .9f}, {0, 1, 2});
+        CTexturePanel panel; QString error; QVERIFY2(panel.LoadWorkspaceSnapshot(sources, workspace, original, &error), qPrintable(error));
+        panel.HighlightMesh(id); auto* view = panel.findChild<CAtlasView*>(); QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked);
+        view->ScenePosClicked({12, 6}); QCOMPARE(picked.size(), 1); picked.clear();
+        QImage newImage(120, 60, QImage::Format_RGBA8888); newImage.fill(Qt::blue); QBuffer png;
+        QVERIFY(png.open(QIODevice::WriteOnly)); QVERIFY(newImage.save(&png, "PNG"));
+        workspace.atlases.insert(1, {"generated-atlas", "新图集", -1, newImage.size(), png.data()});
+        auto moved = meshBytes(id, {.2f, .2f, .6f, .2f, .2f, .6f}, {0, 1, 2});
+        auto reader = CReader::FromBytes(moved); CSectionTable table(reader); QVERIFY(table.IsValid());
+        writeInt(moved, table.sectionOffsetTable->art_meshes->texture_nos, 1);
+        QVERIFY2(panel.LoadWorkspaceSnapshot(sources, workspace, moved, &error), qPrintable(error)); QCOMPARE(panel.CurrentSlot(), 1);
+        QCOMPARE(view->scene()->sceneRect().size(), QSizeF(120, 60));
+        QCOMPARE(atlasItem(view->scene())->pixmap().toImage().pixelColor(0, 0), QColor(Qt::blue));
+        view->ScenePosClicked({12, 6}); QCOMPARE(picked.size(), 0);
+        view->ScenePosClicked({48, 15}); QCOMPARE(picked.size(), 1); QCOMPARE(picked.first()[0].toString(), id); picked.clear();
+        panel.SetEditingEnabled(true); auto* edit = panel.findChild<QToolButton*>("textureEditAtlas"); QVERIFY(edit && edit->isEnabled());
+        QSignalSpy requested(&panel, &CTexturePanel::EditAtlasRequested); edit->defaultAction()->trigger(); QCOMPARE(requested.size(), 1); QCOMPARE(requested.first()[0].toString(), id);
+        const auto scene = view->scene(); const auto image = renderScene(scene); const auto transform = view->transform();
+        auto invalid = moved; writeInt(invalid, table.sectionOffsetTable->art_meshes->texture_nos, 2);
+        QVERIFY(!panel.LoadWorkspaceSnapshot(sources, workspace, invalid, &error)); QCOMPARE(view->scene(), scene);
+        QCOMPARE(view->transform(), transform); QCOMPARE(renderScene(view->scene()), image); QCOMPARE(panel.CurrentSlot(), 1);
+        auto deleted = workspace; deleted.atlases.remove(1);
+        QVERIFY(!panel.LoadWorkspaceSnapshot(sources, deleted, {}, &error)); QCOMPARE(view->scene(), scene); QCOMPARE(panel.CurrentSlot(), 1);
+        QVERIFY2(panel.LoadWorkspaceSnapshot(sources, deleted, original, &error), qPrintable(error)); QCOMPARE(panel.CurrentSlot(), 0);
+        QCOMPARE(view->scene()->sceneRect().size(), QSizeF(64, 32));
+        QByteArray external(original.constData(), original.size());
+        QVERIFY(panel.LoadWorkspaceSnapshot(sources, deleted, QByteArray::fromRawData(external.constData(), external.size()), &error));
+        external[0] = 'x';
+        QImage resized(128, 96, QImage::Format_RGBA8888); resized.fill(Qt::green); QBuffer resizedPng;
+        QVERIFY(resizedPng.open(QIODevice::WriteOnly)); QVERIFY(resized.save(&resizedPng, "PNG"));
+        deleted.atlases[0].size = resized.size(); deleted.atlases[0].png = resizedPng.data();
+        QVERIFY2(panel.LoadWorkspaceSnapshot(sources, deleted, {}, &error), qPrintable(error)); QCOMPARE(view->scene()->sceneRect().size(), QSizeF(128, 96));
+        view->ScenePosClicked({32, 48}); QCOMPARE(picked.size(), 1); QCOMPARE(picked.first()[0].toString(), id);
+    }
     void unsignedTriangleIndicesKeepHighVerticesSelectable()
     {
         const auto source = DeformerReplayFixture::read("Mark");

@@ -486,6 +486,10 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
             if (hidden.contains(id)) return true;
             const auto* layer = byId.value(id, nullptr);
             if (!layer) return true;
+            if (layer->image.size() != layer->canvasRect.size()) {
+                control->Fail(QStringLiteral("纹理采样图层与画布边界尺寸不一致：%1").arg(id));
+                return false;
+            }
             QString name = names.getPartName(id);
             if (name.isEmpty()) name = id;
             const float alpha = opacity.value(id, layer->opacity);

@@ -194,7 +194,9 @@ private slots:
         QVERIFY(control.Checkpoint()); QCOMPARE(frozen.size(), 1);
         QCOMPARE(frozen[0].canvasRect, QRect(0, 0, 100, 100));
         QVERIFY(original[0].canvasRect != frozen[0].canvasRect);
-        QCOMPARE(frozen[0].image, original[0].image);
+        QCOMPARE(frozen[0].image.size(), frozen[0].canvasRect.size());
+        QVERIFY(HasVisiblePixel(frozen[0].image));
+        QCOMPARE(frozen[0].image.pixel(99, 0), QRgb(0));
         QCOMPARE(positions, saved);
         QCOMPARE(mesh.Extract()[0].canvasRect, original[0].canvasRect);
     }
@@ -223,6 +225,153 @@ private slots:
         CExportControl control;
         QVERIFY(mesh.Extract(&control, nullptr, &partial).isEmpty());
         QVERIFY(!control.Checkpoint());
+    }
+
+    void frozenSamplingIsInvariantUnderAtlasRotationResizeAndSlotMove()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        QImage atlas(6, 4, QImage::Format_ARGB32);
+        for (int y = 0; y < atlas.height(); ++y)
+            for (int x = 0; x < atlas.width(); ++x)
+                atlas.setPixel(x, y, qRgba(20 + x * 30, 40 + y * 40, x * 17 + y * 11, (x + y) % 3 ? 180 : 0));
+        QVERIFY(mesh.LoadAtlas(atlas));
+        const std::vector<float> uvs{0.125f, 0.125f, 0.875f, 0.125f, 0.875f, 0.875f, 0.125f, 0.875f};
+        mesh.Geometry(uvs, {0, 1, 2, 0, 2, 3});
+        mesh.CanvasPositions({}, 1);
+        const QHash<QString, QVector<float>> positions{{mesh.Id(), {-3, 1, 8, 0, 10, -9, -1, -11}}};
+        CExportControl beforeControl;
+        const auto before = mesh.Extract(&beforeControl, nullptr, &positions);
+        QVERIFY2(beforeControl.Checkpoint(), qPrintable(beforeControl.Error())); QCOMPARE(before.size(), 1);
+        QCOMPARE(before[0].canvasRect, QRect(-3, -1, 13, 12));
+        QCOMPARE(before[0].image.size(), before[0].canvasRect.size());
+        for (bool rotated : {false, true}) {
+            QImage packed(16, 16, QImage::Format_ARGB32);
+            const auto repeat = [](int value, int size) { return (value % size + size) % size; };
+            for (int y = 0; y < packed.height(); ++y)
+                for (int x = 0; x < packed.width(); ++x) {
+                    const int sourceX = rotated ? y - 4 : x - 4;
+                    const int sourceY = rotated ? 3 - (x - 4) : y - 4;
+                    packed.setPixel(x, y, atlas.pixel(repeat(sourceX, 6), repeat(sourceY, 4)));
+                }
+            std::vector<float> transformed;
+            for (size_t index = 0; index < uvs.size(); index += 2) {
+                transformed.push_back((4 + (rotated ? 4 - uvs[index + 1] * 4 : uvs[index] * 6)) / 16);
+                transformed.push_back((4 + (rotated ? uvs[index] * 6 : uvs[index + 1] * 4)) / 16);
+            }
+            mesh.Geometry(transformed, {0, 1, 2, 0, 2, 3}); mesh.TextureSlot(2);
+            QVERIFY(mesh.LoadBytes({Png(atlas), {}, Png(packed)}));
+            CExportControl control; const auto after = mesh.Extract(&control, nullptr, &positions);
+            QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(after.size(), 1);
+            QCOMPARE(after[0].canvasRect, before[0].canvasRect);
+            QCOMPARE(after[0].image, before[0].image);
+            QCOMPARE(after[0].textureNo, 2);
+        }
+    }
+
+    void frozenSamplingUsesStraightBilinearRgbaAndRepeat()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        QImage atlas(2, 2, QImage::Format_ARGB32);
+        atlas.setPixel(0, 0, qRgba(200, 0, 0, 0)); atlas.setPixel(1, 0, qRgba(0, 100, 0, 64));
+        atlas.setPixel(0, 1, qRgba(0, 0, 80, 128)); atlas.setPixel(1, 1, qRgba(0, 0, 0, 240));
+        QVERIFY(mesh.LoadAtlas(atlas)); mesh.CanvasPositions({}, 1);
+        const QHash<QString, QVector<float>> positions{{mesh.Id(), {0, 0, 1, 0, 1, -1, 0, -1}}};
+        for (float coordinate : {0.5f, -0.5f, 10.5f}) {
+            mesh.Geometry({coordinate, coordinate, coordinate, coordinate, coordinate, coordinate, coordinate, coordinate}, {0, 1, 2, 0, 2, 3});
+            CExportControl control; const auto layers = mesh.Extract(&control, nullptr, &positions);
+            QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(layers.size(), 1);
+            QCOMPARE(layers[0].image.format(), QImage::Format_ARGB32);
+            QCOMPARE(layers[0].image.pixel(0, 0), qRgba(50, 25, 20, 108));
+        }
+        const float large = std::numeric_limits<float>::max();
+        mesh.Geometry({large, -large, large, -large, large, -large, large, -large}, {0, 1, 2, 0, 2, 3});
+        CExportControl control; const auto layers = mesh.Extract(&control, nullptr, &positions);
+        QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(layers.size(), 1);
+        QCOMPARE(layers[0].image.pixel(0, 0), qRgba(50, 25, 20, 108));
+        mesh.Geometry({0.25f, 0.25f, 0.25f, 0.25f, 0.25f, 0.25f, 0.25f, 0.25f}, {0, 1, 2, 0, 2, 3});
+        QCOMPARE(mesh.Extract(nullptr, nullptr, &positions)[0].image.pixel(0, 0), qRgba(200, 0, 0, 0));
+    }
+
+    void frozenSamplingRejectsInvalidTopologyAndBudgetsBeforeRasterization()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.Geometry({0, 0, 1, 0, 0, 1}); mesh.CanvasPositions({}, 1);
+        const QHash<QString, QVector<float>> positions{{mesh.Id(), {0, 0, 1024, 0, 0, -1024}}};
+        for (const QVector<quint16>& indices : QVector<QVector<quint16>>{{}, {0, 1}, {0, 1, 3}}) {
+            const QHash<QString, QVector<quint16>> overrides{{mesh.Id(), indices}};
+            CExportControl control; QVERIFY(mesh.Extract(&control, &overrides, &positions).isEmpty());
+            QVERIFY(!control.Error().isEmpty());
+        }
+        std::vector<short> repeated;
+        for (int triangle = 0; triangle < 513; ++triangle) repeated.insert(repeated.end(), {0, 1, 2});
+        mesh.Geometry({0, 0, 1, 0, 0, 1}, repeated);
+        CExportControl work; bool scanned = false;
+        QVERIFY(work.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.detail == QStringLiteral("采样画布三角形")) scanned = true;
+            return true;
+        }));
+        QVERIFY(mesh.Extract(&work, nullptr, &positions).isEmpty());
+        QVERIFY(work.Error().contains(QStringLiteral("扫描总量"))); QVERIFY(!scanned);
+        QImage largeAtlas(1024, 1024, QImage::Format_ARGB32); largeAtlas.fill(Qt::white);
+        QVERIFY(mesh.LoadAtlas(largeAtlas));
+        CExportControl rawWork; QVERIFY(mesh.Extract(&rawWork).isEmpty());
+        QVERIFY(rawWork.Error().contains(QStringLiteral("扫描总量")));
+        mesh.Geometry({0, 0, 1, 0, 0, 1});
+        const QHash<QString, QVector<float>> large{{mesh.Id(), {0, 0, 16384, 0, 0, -16384}}};
+        CExportControl pixels; QVERIFY(mesh.Extract(&pixels, nullptr, &large).isEmpty());
+        QVERIFY(pixels.Error().contains(QStringLiteral("像素总量")));
+    }
+
+    void frozenSamplingSkipsValidEmptyDrawables()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.CanvasPositions({}, 1);
+        const QHash<QString, QVector<float>> positions;
+        for (const auto& uvs : std::vector<std::vector<float>>{{}, {0, 0, 1, 0, 0, 1}}) {
+            mesh.Geometry(uvs, {});
+            CExportControl control; QVERIFY(mesh.Extract(&control, nullptr, &positions).isEmpty());
+            QVERIFY2(control.Checkpoint(), qPrintable(control.Error()));
+        }
+        mesh.Geometry({}, {0, 0, 0});
+        CExportControl invalid; QVERIFY(mesh.Extract(&invalid, nullptr, &positions).isEmpty());
+        QVERIFY(!invalid.Error().isEmpty());
+    }
+
+    void frozenSamplingCancellationDiscardsLayersAndAllowsRetry()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.Geometry({0, 0, 1, 0, 0, 1}); mesh.CanvasPositions({}, 1);
+        const QHash<QString, QVector<float>> positions{{mesh.Id(), {0, 0, 16, 0, 0, -16}}};
+        CExportControl control; bool reached = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.detail == QStringLiteral("采样画布三角形") && progress.current == 8) {
+                reached = true; control.Cancel();
+            }
+            return true;
+        }));
+        QVERIFY(mesh.Extract(&control, nullptr, &positions).isEmpty()); QVERIFY(reached); QVERIFY(control.WasCanceled());
+        CExportControl retry; const auto layers = mesh.Extract(&retry, nullptr, &positions);
+        QVERIFY(retry.Checkpoint()); QCOMPARE(layers.size(), 1); QCOMPARE(layers[0].image.size(), QSize(16, 16));
+        QVERIFY(HasVisiblePixel(layers[0].image));
+    }
+
+    void frozenSamplingSupportsUnsignedIndicesAndDegenerateTriangles()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas())); mesh.CanvasPositions({}, 1);
+        mesh.Geometry({0, 0, 1, 0, 0, 1});
+        QHash<QString, QVector<float>> positions{{mesh.Id(), {0, 0, 4, 0, 0, -4}}};
+        const auto expected = mesh.Extract(nullptr, nullptr, &positions); QCOMPARE(expected.size(), 1);
+        std::vector<float> uvs(65536 * 2, 0.0f);
+        uvs[65534 * 2] = 1; uvs[65535 * 2 + 1] = 1;
+        mesh.Geometry(uvs, {static_cast<short>(65533), static_cast<short>(65534), static_cast<short>(65535)});
+        QVector<float> points(65536 * 2, 0.0f); points[65534 * 2] = 4; points[65535 * 2 + 1] = -4;
+        positions[mesh.Id()] = points;
+        CExportControl control; const auto actual = mesh.Extract(&control, nullptr, &positions);
+        QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(actual.size(), 1);
+        QCOMPARE(actual[0].image, expected[0].image); QCOMPARE(actual[0].canvasRect, expected[0].canvasRect);
+        mesh.Geometry({0, 0, 1, 0, 0, 1}); positions[mesh.Id()] = {0, 0, 2, -2, 4, -4};
+        const auto degenerate = mesh.Extract(nullptr, nullptr, &positions); QCOMPARE(degenerate.size(), 1);
+        QCOMPARE(degenerate[0].image.size(), QSize(4, 4)); QVERIFY(!HasVisiblePixel(degenerate[0].image));
     }
 
     void cancellationInsideSingleTriangleDiscardsEverythingAndAllowsRetry()

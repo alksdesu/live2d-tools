@@ -1,8 +1,10 @@
 #include "mainwindow.h"
 #include "cuveditdialog.h"
+#include "cdraftdialoglifecycle.h"
 #include "cinspectorpanel.h"
 #include "ctexturepanel.h"
 #include "psdbatchjob.h"
+#include "std/cpngimage.h"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
 #include <QCryptographicHash>
@@ -47,6 +49,11 @@ QString lockedReason(const live2dstruct::CModelDocument& document, const live2ds
 }
 }
 
+QString MainWindow::DrawableMaterialLockReason(const live2dstruct::CModelDrawable& mesh) const
+{
+    return lockedReason(m_document, mesh);
+}
+
 bool MainWindow::PublishDrawableMaterials(const live2dstruct::CModelDocument& before,
                                           const live2dstruct::CModelDocument& after,
                                           const QSet<QString>& ids, QString* error)
@@ -57,7 +64,9 @@ bool MainWindow::PublishDrawableMaterials(const live2dstruct::CModelDocument& be
     if (!RuntimeMatchesDocument(error)) return false;
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
-    if (!model || model->GetTextureSources() != m_textureEditor.Sources() || model->GetTextureState() != m_textureEditor.Current())
+    if (!model || m_atlasEditor.IsActive() || model->GetTextureSources() != before.TextureSources() ||
+        model->GetTextureWorkspace() != before.TextureWorkspace() || before.TextureSources() != after.TextureSources() ||
+        before.TextureWorkspace() != after.TextureWorkspace())
         return fail(error, QStringLiteral("纹理来源或预览已改变，请重新打开 UV 编辑"));
     QByteArray previous, candidate;
     if (!before.BuildRuntimeMoc(previous, error) || !after.BuildRuntimeMoc(candidate, error)) return false;
@@ -68,6 +77,8 @@ bool MainWindow::PublishDrawableMaterials(const live2dstruct::CModelDocument& be
 void MainWindow::RefreshMaterialEditing(bool changed)
 {
     const QPointer<MainWindow> alive(this);
+    if (m_texturePanel) m_texturePanel->SetPreviewActive(m_atlasEditor.IsActive() || m_materialEditor.IsActive());
+    if (!alive) return;
     RefreshKeyformUi(false, false, false);
     if (!alive) return;
     if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
@@ -75,7 +86,6 @@ void MainWindow::RefreshMaterialEditing(bool changed)
     if (changed) {
         m_sessionDirty = true;
         m_historySource = HistorySource::Inspector;
-        m_textureHistoryUsesDocument = true;
     }
     RefreshWindowTitle();
     if (!alive) return;
@@ -85,7 +95,7 @@ void MainWindow::RefreshMaterialEditing(bool changed)
 void MainWindow::EditUv(const QString& selectedMesh)
 {
     if (m_uvDialog) { m_uvDialog->raise(); m_uvDialog->activateWindow(); return; }
-    if (!m_workspaceReady || m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
+    if (m_atlasEditor.IsActive() || !m_workspaceReady || m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
         !m_openglwindows || !m_openglwindows->IsModelReady()) return;
     QString error;
     if (m_materialEditor.IsActive() && !m_materialEditor.Cancel(&error)) { statusBar()->showMessage(error, 10000); return; }
@@ -102,10 +112,14 @@ void MainWindow::EditUv(const QString& selectedMesh)
     }
     snapshot.topologyDigest = QCryptographicHash::hash(moc, QCryptographicHash::Sha256);
     QMap<int, QImage> images;
-    for (auto slot = m_textureEditor.Sources().cbegin(); slot != m_textureEditor.Sources().cend(); ++slot) {
-        const auto png = m_textureEditor.Current().value(slot.key(), slot->png);
-        const auto image = QImage::fromData(png, "PNG");
-        if (image.isNull() || image.size() != slot->size) {
+    live2dstruct::CTextureAssets::State pngs;
+    if (!live2dstruct::CTextureWorkspace::Effective(m_document.TextureSources(), m_document.TextureWorkspace(), pngs, &error)) {
+        statusBar()->showMessage(error, 10000); return;
+    }
+    for (auto slot = pngs.cbegin(); slot != pngs.cend(); ++slot) {
+        QImage image;
+        const auto size = m_document.TextureWorkspace().atlases.value(slot.key()).size;
+        if (!CPngImage::Decode(*slot, image, &error) || image.size() != size) {
             statusBar()->showMessage(QStringLiteral("纹理 %1 无法读取，UV 编辑未打开").arg(slot.key()), 10000); return;
         }
         images.insert(slot.key(), image);
@@ -116,29 +130,29 @@ void MainWindow::EditUv(const QString& selectedMesh)
     for (const auto& drawable : m_document.Drawables()) {
         const auto material = byId.constFind(drawable.id);
         if (material == byId.cend() || material->uvs.isEmpty()) continue;
-        const auto reason = lockedReason(m_document, drawable);
+        const auto reason = DrawableMaterialLockReason(drawable);
         snapshot.meshes.append({*material, m_document.DrawableIndices(drawable.id), reason.isEmpty(), reason});
     }
     const QPointer<MainWindow> window(this);
     auto* dialog = new CUvEditDialog(snapshot, images, selectedMesh, this);
     m_uvDialog = dialog;
-    const auto cleanup = qScopeGuard([window] {
-        if (!window) return;
-        if (window->m_materialEditor.IsActive()) {
-            QString detail;
-            if (!window->m_materialEditor.Cancel(&detail)) window->statusBar()->showMessage(detail, 15000);
-        }
-        delete window->m_uvDialog.data();
-        window->m_uvDialog.clear();
-        window->RefreshMaterialEditing(false);
-    });
+    const QPointer<CUvEditDialog> retained = dialog;
+    const auto settle = CDraftDialogLifecycle::Attach(dialog, this,
+        [window, retained](QString* detail) {
+            if (!window || window->m_closingModel || (window->m_uvDialog && window->m_uvDialog != retained)) return true;
+            return !window->m_materialEditor.IsActive() || window->m_materialEditor.Cancel(detail);
+        }, [window, retained] {
+            if (!window || window->m_closingModel || (window->m_uvDialog && window->m_uvDialog != retained)) return;
+            window->m_uvDialog.clear(); window->RefreshMaterialEditing(false);
+        }, [window](const QString& detail) { if (window) window->statusBar()->showMessage(detail, 15000); });
+    const auto cleanup = qScopeGuard(settle);
     if (!dialog->IsValid() || !m_materialEditor.Begin(&error)) {
         statusBar()->showMessage(dialog->IsValid() ? error : dialog->Error(), 10000); return;
     }
-    const auto sources = m_textureEditor.Sources();
-    const auto textures = m_textureEditor.Current();
+    const auto sources = m_document.TextureSources();
+    const auto textures = m_document.TextureWorkspace();
     const auto valid = [window, sources, textures](QString* detail) {
-        return window && window->m_textureEditor.Sources() == sources && window->m_textureEditor.Current() == textures
+        return window && window->m_document.TextureSources() == sources && window->m_document.TextureWorkspace() == textures
             ? true : fail(detail, QStringLiteral("纹理来源已改变，请取消当前 UV 编辑"));
     };
     dialog->SetPreviewHandler([window, valid](const auto& state, QString* detail) {
@@ -158,6 +172,6 @@ void MainWindow::EditUv(const QString& selectedMesh)
         window->RefreshMaterialEditing(false);
         return !window.isNull();
     });
-    RefreshUndoActions();
-    dialog->exec();
+    RefreshMaterialEditing(false);
+    if (window && retained) retained->exec();
 }

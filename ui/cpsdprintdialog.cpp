@@ -28,7 +28,8 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
 
     m_checkAll = new QCheckBox("导出所有图层（包括隐藏）", this);
     m_checkFenzu = new QCheckBox("按分组导出", this);
-    m_checkTexExtract = new QCheckBox("原始纹理提取（无变形，高质量）", this);
+    m_checkTexExtract = new QCheckBox("纹理采样导出（保留当前网格形状）", this);
+    m_checkTexExtract->setToolTip(QStringLiteral("按网格形状采样图集，保留图层透明度与混合模式，不烘焙裁剪蒙版、乘色或屏幕色。此模式不恢复原始 PSD。"));
     m_checkSnapshot = new QCheckBox("使用当前参数（禁用自动效果）", this);
     m_checkCubism = new QCheckBox("Cubism 可导入模式（sRGB / 图层名去重）", this);
     layout->addWidget(m_checkAll);
@@ -36,11 +37,6 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
     layout->addWidget(m_checkTexExtract);
     layout->addWidget(m_checkSnapshot);
     layout->addWidget(m_checkCubism);
-    // 原始纹理提取模式下快照无意义
-    connect(m_checkTexExtract, &QCheckBox::toggled, this, [this](bool checked){
-        m_checkSnapshot->setDisabled(checked);
-        if(checked) m_checkSnapshot->setChecked(false);
-    });
 
     auto* btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(btns, &QDialogButtonBox::accepted, this, &CPsdPrintDialog::on_pushButton_clicked);

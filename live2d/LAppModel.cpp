@@ -785,7 +785,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                                        CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
                                        const CMeshGeometryMigration* geometry, const TextureState* textureState,
-                                       const QSet<QString>* materialDrawableIds)
+                                       const QSet<QString>* materialDrawableIds, const AtlasState* atlasState)
 {
     if (m_userParameterModelGeneration == std::numeric_limits<quint64>::max()) {
         if (error) *error = QStringLiteral("模型实例版本计数已耗尽");
@@ -807,32 +807,42 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         return false;
     }
     const bool materialOnly = policy == CubismModelUpdatePolicy::AllowDrawableMaterialEdits && !geometry &&
-        seeds.isEmpty() && !physicsReferences && !physicsDraft && !textureState;
+        seeds.isEmpty() && !physicsReferences && !physicsDraft;
+    if (textureState && atlasState) {
+        if (error) *error = QStringLiteral("纹理覆盖与图集工作区不能同时发布");
+        return false;
+    }
     if (AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableMaterialEdits) != (materialDrawableIds != nullptr)) {
         if (error) *error = QStringLiteral("材质预览需要明确的对象授权集合");
         return false;
     }
     PreparedTextures textures;
     if (textureState && !PrepareTextures(m_textureSources, *textureState, textures, error)) return false;
+    if (atlasState && (!live2dstruct::CTextureWorkspace::ValidateTransition(m_textureSources, m_textureWorkspace, *atlasState,
+                          live2dstruct::CTextureWorkspace::Transition::ReplaceGenerated, error) ||
+                      !PrepareTextures(m_textureSources, *atlasState, textures, error))) return false;
+    const bool changingTextures = textureState || atlasState;
     const auto prepare = [&](Rendering::CubismRenderer* renderer, CubismModel* model,
                             const Rendering::CubismRenderer& source, QString* preparationError) {
         auto* candidate = dynamic_cast<Rendering::CubismRenderer_OpenGLES2*>(renderer);
         const auto* previous = dynamic_cast<const Rendering::CubismRenderer_OpenGLES2*>(&source);
-        if (!candidate || !previous || !candidate->PrepareModelReplacement(model, *previous, preparationError)) return false;
-        if (textureState) for (auto it = textures.bindings.cbegin(); it != textures.bindings.cend(); ++it)
-            candidate->BindTexture(it.key(), it.value());
+        if (!candidate || !previous || !candidate->PrepareModelReplacement(model, *previous, preparationError,
+                changingTextures ? &textures.bindings : nullptr)) return false;
         if (materialDrawableIds) candidate->InvalidateTextureMapping();
         return true;
     };
+    const QSet<QString> noMaterialChanges;
     const auto prepareCompiledModel = [&](CubismModel* candidate, QString* detail) {
-        if (materialDrawableIds && !ValidateMaterialCandidate(*candidate, *materialDrawableIds, geometry != nullptr, detail)) return false;
+        if ((materialDrawableIds || changingTextures) && !ValidateMaterialCandidate(*candidate,
+                materialDrawableIds ? *materialDrawableIds : noMaterialChanges, geometry != nullptr, detail,
+                changingTextures ? &textures.bindings : nullptr)) return false;
         if (!materialOnly) candidate->ClearDrawableIndicesOverrides();
         return !prepareModel || prepareModel(candidate, detail);
     };
     QByteArray draftBytes = physicsDraft ? physicsDraft->bytes : m_physicsDraftBytes;
     const bool draftActive = physicsDraft || m_hasPhysicsDraft;
     PhysicsPreparation preparePhysics;
-    const bool texturesOnly = textureState && runtime == m_previewMocBytes && seeds.isEmpty() &&
+    const bool texturesOnly = changingTextures && runtime == m_previewMocBytes && seeds.isEmpty() &&
         !physicsReferences && !physicsDraft && !geometry;
     if (!texturesOnly && !materialOnly && (draftActive || !m_physicsSourceBytes.isEmpty() || _physics)) {
         if (m_physicsGeneration == std::numeric_limits<quint64>::max()) {
@@ -851,7 +861,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                       prepareCompiledModel, physicsReferences, preparePhysics, geometry))
         return false;
     ++m_userParameterModelGeneration;
-    if (textureState) CommitTextures(textures);
+    if (changingTextures) CommitTextures(textures);
     if (preparePhysics && (hadPhysics || _physics)) ++m_physicsGeneration;
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
     m_previewMocBytes.swap(runtime);
@@ -869,17 +879,31 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
 
 bool LAppModel::ReloadRenderer()
 {
-    if (HasExportPreview() || (_initialized && _updating)) return false;
-    if (!_model || !_modelSetting || !_modelMatrix || _updating) return false;
-    if (!CreateRenderer()) return false;
-    _initialized = false;
-    if (!SetupTextures()) {
-        DeleteRenderer();
+    if (HasExportPreview() || !_initialized || _updating || !_model || !_modelSetting || !_modelMatrix ||
+        m_physicsDragActive || m_userParameterSnapshotActive || m_deformerDrag.IsActive()) return false;
+    auto* previous = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
+    auto* delegate = LAppDelegate::GetInstance();
+    if (!previous || previous->IsDrawing() || previous->HasPsdExport() || delegate->IsOffScreen() ||
+        delegate->m_isDraggingDeformer || !previous->setGlOwningContext(delegate->getGlOwningContext())) return false;
+    try {
+        CubismModel::RuntimeValueSnapshot values;
+        if (!_model->CaptureRuntimeValues(values) || !_model->HasFiniteDrawableState()) return false;
+        PreparedTextures textures;
+        if (!PrepareTextures(m_textureSources, m_textureWorkspace, textures, nullptr)) return false;
+        using Renderer = Rendering::CubismRenderer;
+        std::unique_ptr<Renderer, decltype(&Renderer::Delete)> renderer(Renderer::Create(), &Renderer::Delete);
+        auto* candidate = dynamic_cast<Rendering::CubismRenderer_OpenGLES2*>(renderer.get());
+        if (!candidate || !candidate->PrepareModelReplacement(_model, *previous, nullptr, &textures.bindings)) return false;
+        auto* prepared = renderer.get();
+        if (!CommitRendererReplacement(prepared, previous)) return false;
+        renderer.release();
+        renderer.reset(prepared);
+        CommitTextures(textures);
+        if (m_textureCacheCommitted) CommitTextureCache();
+        return true;
+    } catch (const std::exception&) {
         return false;
     }
-    _initialized = true;
-    if (m_textureCacheCommitted) CommitTextureCache();
-    return true;
 }
 
 void LAppModel::ReleasePendingTextures()

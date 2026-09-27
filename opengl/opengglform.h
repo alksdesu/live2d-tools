@@ -116,6 +116,10 @@ public:
     bool ApplyDrawableMaterialPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                       const QByteArray& expectedPreviewDigest, const QSet<QString>& allowedDrawableIds,
                                       QString* error = nullptr);
+    bool ApplyAtlasPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                           const QByteArray& expectedPreviewDigest, const QByteArray& expectedWorkspaceDigest,
+                           const LAppModel::AtlasState& workspace, const QSet<QString>& allowedDrawableIds,
+                           QString* error = nullptr);
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr);
@@ -130,7 +134,8 @@ public:
                                         const CMeshGeometryMigration* geometry = nullptr,
                                         const QMap<QString, float>* requestedEditorPose = nullptr,
                                         const LAppModel::TextureState* textureState = nullptr,
-                                        const QSet<QString>* materialDrawableIds = nullptr);
+                                        const QSet<QString>* materialDrawableIds = nullptr,
+                                        const LAppModel::AtlasState* atlasState = nullptr);
     bool ApplyTextureState(const LAppModel::TextureState& state, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);

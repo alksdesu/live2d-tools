@@ -67,6 +67,45 @@ class RuntimePackageTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void generatedAtlasPackageReopensWithSparseSlots()
+    {
+        Fixture fixture; const auto originalPng = png(qRgba(21, 31, 41, 51), {3, 2});
+        const auto path = fixture.directory.filePath("original.png"); QVERIFY(write(path, originalPng));
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png", "", "", "original.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, originalPng, source, &error));
+        auto input = request(fixture.path); input.textureSources = CTextureAssets::Catalog{{0, source}, {3, source}};
+        CTextureWorkspace::State workspace; QVERIFY(CTextureWorkspace::Initialize(*input.textureSources, {}, workspace, &error));
+        workspace.atlases[0].size = {6, 5}; workspace.atlases[0].png = png(qRgba(9, 41, 12, 63), {6, 5});
+        workspace.atlases.insert(4, {"generated-atlas", "新增图集", -1, {7, 9}, png(qRgba(29, 11, 4, 0), {7, 9})});
+        input.textureWorkspace = workspace;
+        CModelDocument changed; QVERIFY(changed.LoadBytes(input.mocBytes, "package-source", &error));
+        CModelMaterialState materials; QVERIFY(changed.CaptureDrawableMaterials(materials, &error)); QVERIFY(!materials.isEmpty());
+        const auto id = materials.first().id; auto material = materials.first(); material.textureIndex = 4;
+        QVERIFY(changed.SetDrawableMaterials({material}, &error)); QVERIFY(changed.BuildRuntimeMoc(input.mocBytes, &error));
+        CRuntimePackage::Prepared prepared; QVERIFY2(CRuntimePackage::Prepare(input, prepared, nullptr, &error), qPrintable(error));
+        const auto references = prepared.model["FileReferences"].toObject(); const auto textures = references["Textures"].toArray();
+        QCOMPARE(textures.size(), 5); QCOMPARE(textures[1].toString(), QString()); QCOMPARE(textures[2].toString(), QString());
+        QCOMPARE(entry(prepared, textures[0].toString()), workspace.atlases[0].png);
+        QCOMPARE(entry(prepared, textures[3].toString()), originalPng); QCOMPARE(entry(prepared, textures[4].toString()), workspace.atlases[4].png);
+        QVERIFY(prepared.protectedPaths.contains(path)); QCOMPARE(read(path), originalPng);
+        QTemporaryDir output; QVERIFY(output.isValid());
+        for (const auto& value : prepared.entries) {
+            const auto destination = output.filePath(value.relativePath); QVERIFY(QDir().mkpath(QFileInfo(destination).absolutePath()));
+            QVERIFY(write(destination, value.bytes));
+        }
+        CModelDocument reopened; QVERIFY(reopened.Load(output.filePath(references["Moc"].toString()), &error));
+        CModelDrawableMaterial actual; QVERIFY(reopened.CaptureDrawableMaterial(id, actual, &error)); QCOMPARE(actual, material);
+        CTextureAssets::Catalog newSources;
+        for (int slot = 0; slot < textures.size(); ++slot) if (!textures[slot].toString().isEmpty()) {
+            const auto filename = output.filePath(textures[slot].toString()); CTextureAssets::Source exported;
+            QVERIFY(CTextureAssets::MakeSource(filename, read(filename), exported, &error)); newSources.insert(slot, exported);
+        }
+        QVERIFY(reopened.InitializeTextureWorkspace(newSources, {}, &error)); QCOMPARE(reopened.TextureSources()[4].size, QSize(7, 9));
+        QVERIFY(reopened.TextureWorkspace().atlases[4].png.isEmpty()); QCOMPARE(reopened.TextureWorkspace().atlases[4].sourceSlot, 4);
+        input.textureState = {{0, png(qRgb(2, 4, 8), {3, 2})}}; const auto held = prepared.model;
+        QVERIFY(!CRuntimePackage::Prepare(input, prepared, nullptr, &error)); QCOMPARE(prepared.model, held);
+    }
     void drawableTextureSlotsMustResolve_data()
     {
         QTest::addColumn<int>("kind");

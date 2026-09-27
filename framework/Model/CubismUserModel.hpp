@@ -135,6 +135,7 @@ public:
 
     static void   CubismDefaultMotionEventCallback(const CubismMotionQueueManager* caller, const csmString& eventValue, void* customData);
 protected:
+    bool CommitRendererReplacement(Rendering::CubismRenderer*& candidate, Rendering::CubismRenderer* expected) noexcept;
     bool ReplaceModel(const csmByte* bytes, csmSizeInt size,
                       const CubismModelReplacement::RendererPreparation& prepareRenderer,
                       QString* error = nullptr,

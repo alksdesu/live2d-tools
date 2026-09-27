@@ -20,6 +20,7 @@ public:
         QString registeredUserDataPath;
         std::optional<CTextureAssets::Catalog> textureSources;
         CTextureAssets::State textureState;
+        std::optional<CTextureWorkspace::State> textureWorkspace;
         CParameterResourceEdits::State references;
         QMap<QString, QByteArray> expectedSourceDigests;
         QHash<QString, CModelParameterMetadata> parameterMetadata;

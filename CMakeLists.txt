@@ -42,7 +42,7 @@ if(MSVC)
     target_compile_options(export_control PUBLIC /utf-8)
 endif()
 
-add_library(texture_data STATIC std/cpngimage.cpp live2dstruct/ctextureassets.cpp live2dstruct/ctextureeditcontroller.cpp)
+add_library(texture_data STATIC std/cpngimage.cpp live2dstruct/ctextureworkspace.cpp live2dstruct/ctextureassets.cpp live2dstruct/ctextureeditcontroller.cpp)
 target_include_directories(texture_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(texture_data PUBLIC Qt6::Core Qt6::Gui)
 
@@ -64,6 +64,10 @@ add_library(model_data STATIC
     live2dstruct/cmodelmaterialedit.cpp
     live2dstruct/cmocmaterialbuilder.cpp
     live2dstruct/cmodeldocumentmaterial.cpp
+    live2dstruct/cmodelatlasedit.cpp
+    live2dstruct/cmodeldocumentatlas.cpp
+    live2dstruct/catlaseditcontroller.cpp
+    live2dstruct/catlasrepackplanner.cpp
     live2dstruct/cmaterialeditcontroller.cpp
     live2dstruct/cuveditdraft.cpp
     live2dstruct/cmodeldocumentstructure.cpp
@@ -701,7 +705,7 @@ if(BUILD_TESTING)
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(parameter_test IN ITEMS material_document material_edit_controller uv_edit_draft parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint canvas_geometry_inverse geometry_object_pairs geometry_object_pairs_document geometry_object_pairs_session)
+    foreach(parameter_test IN ITEMS atlas_edit_controller atlas_repack_planner material_document material_edit_controller uv_edit_draft parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint canvas_geometry_inverse geometry_object_pairs geometry_object_pairs_document geometry_object_pairs_session)
         add_executable(${parameter_test}_tests tests/${parameter_test}_tests.cpp)
         target_link_libraries(${parameter_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${parameter_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -717,6 +721,11 @@ if(BUILD_TESTING)
     target_link_libraries(geometry_pairs_export_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(geometry_pairs_export_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME geometry_pairs_export COMMAND geometry_pairs_export_tests)
+    add_executable(atlas_edit_dialog_tests tests/atlas_edit_dialog_tests.cpp ui/catlascanvasview.cpp ui/catlaseditdialog.cpp ui/cdraftdialoglifecycle.h)
+    target_link_libraries(atlas_edit_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(atlas_edit_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME atlas_edit_dialog COMMAND atlas_edit_dialog_tests)
+    set_tests_properties(atlas_edit_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(uv_edit_dialog_tests tests/uv_edit_dialog_tests.cpp ui/cuvcanvasview.cpp ui/cuveditdialog.cpp)
     target_link_libraries(uv_edit_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(uv_edit_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

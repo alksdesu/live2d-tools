@@ -35,6 +35,7 @@ struct CModelSession
     CParameterResourceEdits::State parameterResources;
     std::optional<PhysicsDraft> physicsDraft;
     CTextureAssets::Draft textures;
+    std::optional<CTextureWorkspace::Draft> textureWorkspace;
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
     CParameterOrganization::State parameterOrganization;

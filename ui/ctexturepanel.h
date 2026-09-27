@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include "live2dstruct/ctextureassets.h"
+#include "live2dstruct/ctextureworkspace.h"
 
 // 单个 ArtMesh 在图集 UV 像素空间的网格数据
 struct CAtlasMeshUv {
@@ -74,8 +75,13 @@ public:
     void LoadTextures(const QMap<int, QString>& texMap, const QString& mocPath = QString());
     bool LoadTextureSnapshot(const live2dstruct::CTextureAssets::Catalog& sources,
                              const live2dstruct::CTextureAssets::State& state, QString* error = nullptr);
+    bool LoadWorkspaceSnapshot(const live2dstruct::CTextureAssets::Catalog& sources,
+                               const live2dstruct::CTextureWorkspace::State& workspace,
+                               const QByteArray& mocBytes = {}, QString* error = nullptr);
     void SetEditHandler(EditHandler handler);
     void SetEditingEnabled(bool enabled, const QString& reason = {});
+    void SetPreviewActive(bool active);
+    void SetSnapshotAvailable(bool available, const QString& reason = {});
     int CurrentSlot() const { return m_currentTexKey; }
     bool UpdateUvMeshes(const QByteArray& mocBytes, QString* error = nullptr);
 
@@ -86,6 +92,7 @@ public:
 signals:
     void HistorySelected();
     void EditUvRequested(const QString& meshName);
+    void EditAtlasRequested(const QString& selectedMesh);
     void EditRejected(const QString& error);
     // 点击图集命中 ArtMesh（用于联动树面板与主视图高亮）
     void AtlasMeshPicked(const QString& meshName);
@@ -103,12 +110,15 @@ protected:
 private:
     bool PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, QSize>& atlasSizes,
                          QVector<CAtlasMeshUv>& result, QString* error) const;
+    bool UpdateUvSnapshot(const QByteArray& mocBytes, QString* error);
     bool LoadSnapshot(const live2dstruct::CTextureAssets::Catalog& sources,
-                      const live2dstruct::CTextureAssets::State& state, const QByteArray* mocBytes, QString* error);
+                      const live2dstruct::CTextureWorkspace::State& workspace, const QByteArray* mocBytes, QString* error);
     bool PrepareScene(int slot, const QMap<int, QImage>& images, const QVector<CAtlasMeshUv>& meshes,
                       const QString& selected, std::unique_ptr<QGraphicsScene>& scene,
                       CUvOverlayItem*& overlay, QString* error) const;
     bool CanEdit() const;
+    QString RestoreReason() const;
+    QString AtlasName(int slot) const;
     void RefreshActions();
     void RefreshInformation();
     void RejectEdit(const QString& error);
@@ -125,6 +135,7 @@ private:
     QToolButton* m_btnReplace;
     QToolButton* m_btnRestore;
     QToolButton* m_btnEditUv;
+    QToolButton* m_btnEditAtlas;
     QLabel* m_infoLabel;
     QLabel* m_errorLabel;
 
@@ -135,11 +146,16 @@ private:
 
     QMap<int, QString> m_textures;
     live2dstruct::CTextureAssets::Catalog m_sources;
+    live2dstruct::CTextureWorkspace::State m_workspace;
+    QByteArray m_mocBytes;
     live2dstruct::CTextureAssets::State m_state, m_pngs;
     QMap<int, QImage> m_images;
     EditHandler m_edit;
     QString m_editingReason;
+    QString m_snapshotReason;
     bool m_editingEnabled = false;
+    bool m_previewActive = false;
+    bool m_snapshotAvailable = true;
     bool m_busy = false;
     bool m_publishing = false;
     bool m_loading = false;

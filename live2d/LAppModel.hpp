@@ -21,6 +21,7 @@
 #include <QByteArray>
 #include "live2dstruct/cmotiontimeline.h"
 #include "live2dstruct/ctextureassets.h"
+#include "live2dstruct/ctextureworkspace.h"
 #include "framework/Model/CubismParameterReferences.hpp"
 #include "framework/Physics/CubismPhysicsObservation.hpp"
 
@@ -72,9 +73,11 @@ public:
     bool ReloadRenderer();
     using TextureCatalog = live2dstruct::CTextureAssets::Catalog;
     using TextureState = live2dstruct::CTextureAssets::State;
+    using AtlasState = live2dstruct::CTextureWorkspace::State;
     const QMap<int, QString>& GetTexturePaths() const { return m_texturePaths; }
     const TextureCatalog& GetTextureSources() const { return m_textureSources; }
     const TextureState& GetTextureState() const { return m_textureState; }
+    const AtlasState& GetTextureWorkspace() const { return m_textureWorkspace; }
     TextureState GetEffectiveTexturePngs() const;
     const QMap<int, Csm::csmUint32>& GetTextureBindings() const { return m_textureBindings; }
     bool ApplyTextureState(const TextureState& state, QString* error = nullptr);
@@ -91,6 +94,10 @@ public:
     bool ApplyDrawableMaterialPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                       const QByteArray& expectedPreviewDigest, const QSet<QString>& allowedDrawableIds,
                                       QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
+    bool ApplyAtlasPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                           const QByteArray& expectedPreviewDigest, const QByteArray& expectedWorkspaceDigest,
+                           const AtlasState& workspace, const QSet<QString>& allowedDrawableIds,
+                           QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
@@ -120,7 +127,8 @@ public:
                                         const CMeshGeometryMigration* geometry = nullptr,
                                         const QMap<QString, float>* requestedEditorPose = nullptr,
                                         const TextureState* textureState = nullptr,
-                                        const QSet<QString>* materialDrawableIds = nullptr);
+                                        const QSet<QString>* materialDrawableIds = nullptr,
+                                 const AtlasState* atlasState = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -229,9 +237,11 @@ private:
                                  const PhysicsDraft* physicsDraft = nullptr,
                                  const CMeshGeometryMigration* geometry = nullptr,
                                  const TextureState* textureState = nullptr,
-                                 const QSet<QString>* materialDrawableIds = nullptr);
+                                 const QSet<QString>* materialDrawableIds = nullptr,
+                                 const AtlasState* atlasState = nullptr);
     bool ValidateMaterialCandidate(const Csm::CubismModel& candidate, const QSet<QString>& allowedDrawableIds,
-                                   bool geometryChanges, QString* error);
+                                   bool geometryChanges, QString* error,
+                                   const QMap<int, Csm::csmUint32>* candidateBindings = nullptr);
     bool PreparePhysicsCandidate(const Csm::CubismModel& previous, const Csm::CubismModel& replacement,
                                  const ParameterPhysicsReferences& references, bool draftActive,
                                  const QByteArray& bytes, bool stabilize, bool keepOptions,
@@ -252,6 +262,7 @@ private:
 
     struct PreparedTextures {
         TextureState state;
+        AtlasState workspace;
         QMap<int, Csm::csmUint32> bindings;
         QSet<Csm::csmUint32> owned, release, retired;
         LAppTextureManager* manager = nullptr;
@@ -259,6 +270,7 @@ private:
     };
     bool SetupTextures();
     bool PrepareTextures(const TextureCatalog& sources, const TextureState& state, PreparedTextures& result, QString* error);
+    bool PrepareTextures(const TextureCatalog& sources, const AtlasState& state, PreparedTextures& result, QString* error);
     void CommitTextures(PreparedTextures& prepared) noexcept;
     void ReleasePendingTextures();
     void ReleaseOwnedTextures();
@@ -297,6 +309,7 @@ private:
     QMap<int, QString> m_texturePaths;
     TextureCatalog m_textureSources;
     TextureState m_textureState;
+    AtlasState m_textureWorkspace;
     QMap<int, Csm::csmUint32> m_textureBindings;
     QSet<Csm::csmUint32> m_ownedTextureIds;
     QByteArray m_sourceMocBytes;

@@ -33,6 +33,28 @@ private slots:
         QVERIFY(!dialog.m_IsSnapshot);
         QVERIFY(dialog.m_IsCubismCompat);
     }
+
+    void textureSamplingPreservesParameterSnapshotChoice()
+    {
+        CPsdPrintDialog dialog;
+        const auto checks = dialog.findChildren<QCheckBox*>();
+        QCOMPARE(checks.size(), 5);
+        auto* texture = checks.at(2);
+        auto* snapshot = checks.at(3);
+        snapshot->setChecked(true);
+        texture->setChecked(true);
+        QVERIFY(snapshot->isEnabled());
+        QVERIFY(snapshot->isChecked());
+        texture->setChecked(false);
+        QVERIFY(snapshot->isChecked());
+        texture->setChecked(true);
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+        QVERIFY(buttons);
+        buttons->button(QDialogButtonBox::Ok)->click();
+        QVERIFY(dialog.m_IsPrint);
+        QVERIFY(dialog.m_IsTexExtract);
+        QVERIFY(dialog.m_IsSnapshot);
+    }
 };
 
 QTEST_MAIN(PsdPrintDialogTests)
