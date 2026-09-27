@@ -138,6 +138,20 @@ void SetLayerOpacity(ExportDocument* document, unsigned int layerIndex, uint8_t 
 /// Sets the clipping flag of a layer. 0=base, 1=non-base (clipped to layer below).
 void SetLayerClipping(ExportDocument* document, unsigned int layerIndex, uint8_t clipping);
 
+struct ExportLayerAttributes
+{
+    uint8_t opacity = 255u;
+    uint8_t clipping = 0u;
+    bool visible = true;
+    bool hasLayerId = false;
+    uint32_t layerId = 0u;
+    uint32_t blendModeKey = 0x6E6F726Du;
+};
+
+bool SetLayerAttributes(ExportDocument* document, unsigned int layerIndex, const ExportLayerAttributes& attributes);
+bool SetEmptyLayerBounds(ExportDocument* document, unsigned int layerIndex, int left, int top, int right, int bottom);
+void SetSourceDocumentOptions(ExportDocument* document);
+
 
 /// \ingroup Exporter
 /// Exports a document to the given file.

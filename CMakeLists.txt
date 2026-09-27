@@ -189,6 +189,7 @@ target_link_libraries(artwork_import_data PUBLIC model_data psd_reader_data)
 
 add_library(cmo3_data STATIC
     cmo3/ccaffarchive.cpp
+    cmo3/ccmo3artworkreader.cpp
     cmo3/ccmo3entities.cpp
     cmo3/ccmo3builder.cpp
     cmo3/cxsxmlwriter.cpp
@@ -385,6 +386,9 @@ if(BUILD_TESTING)
     add_executable(caff_archive_tests tests/caff_archive_tests.cpp)
     target_link_libraries(caff_archive_tests PRIVATE cmo3_data Qt6::Test)
     add_test(NAME caff_archive COMMAND caff_archive_tests)
+    add_executable(cmo3_artwork_reader_tests tests/cmo3_artwork_reader_tests.cpp)
+    target_link_libraries(cmo3_artwork_reader_tests PRIVATE cmo3_data Qt6::Test)
+    add_test(NAME cmo3_artwork_reader COMMAND cmo3_artwork_reader_tests)
 
     add_executable(warp_grid_structure_tests tests/warp_grid_structure_tests.cpp)
     target_link_libraries(warp_grid_structure_tests PRIVATE model_data model_coordinates Qt6::Test)
@@ -843,6 +847,11 @@ if(BUILD_TESTING)
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(psd_recovery_dialog_tests tests/psd_recovery_dialog_tests.cpp ui/cpsdrecoverydialog.cpp)
+    target_include_directories(psd_recovery_dialog_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(psd_recovery_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
+    add_test(NAME psd_recovery_dialog COMMAND psd_recovery_dialog_tests)
+    set_tests_properties(psd_recovery_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     foreach(parameter_test IN ITEMS atlas_edit_controller atlas_repack_planner material_document material_edit_controller uv_edit_draft parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint canvas_geometry_inverse geometry_object_pairs geometry_object_pairs_document geometry_object_pairs_session)
         add_executable(${parameter_test}_tests tests/${parameter_test}_tests.cpp)
         target_link_libraries(${parameter_test}_tests PRIVATE model_data Qt6::Test)
@@ -969,6 +978,7 @@ if(BUILD_TESTING)
     add_test(NAME cmo3_material COMMAND cmo3_material_tests)
     add_library(psd_data STATIC
         psd/cpsdlist.cpp
+        psd/cpsdsourcewriter.cpp
         psd/psdSamples/Exporter/PsdExport.cpp
         psd/psdSamples/ImageUtil/PsdDecompressRle.cpp
         psd/psdSamples/Interfaces/PsdAllocator.cpp
@@ -979,7 +989,7 @@ if(BUILD_TESTING)
         psd/psdSamples/Util/PsdFixedSizeString.cpp
     )
     target_include_directories(psd_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui export_control PRIVATE psd_zip)
+    target_link_libraries(psd_data PUBLIC Qt6::Core Qt6::Gui export_control PRIVATE psd_zip texture_data)
     if(MSVC)
         target_compile_options(psd_data PUBLIC /utf-8)
     endif()
@@ -987,6 +997,9 @@ if(BUILD_TESTING)
     set_target_properties(psd_tests PROPERTIES AUTORCC ON)
     target_link_libraries(psd_tests PRIVATE psd_data Qt6::Test)
     add_test(NAME psd COMMAND psd_tests)
+    add_executable(psd_source_writer_tests tests/psd_source_writer_tests.cpp)
+    target_link_libraries(psd_source_writer_tests PRIVATE psd_data psd_reader_data Qt6::Test)
+    add_test(NAME psd_source_writer COMMAND psd_source_writer_tests)
     add_executable(psd_cooperative_gl_tests tests/psd_cooperative_gl_tests.cpp
         ${cubism_model_test_sources}
         framework/Rendering/CubismRenderer.cpp

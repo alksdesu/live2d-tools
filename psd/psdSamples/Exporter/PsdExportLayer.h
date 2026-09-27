@@ -31,6 +31,10 @@ struct ExportLayer
 	uint8_t opacity;        // 0-255, default 255
 	uint8_t clipping;       // 0=base, 1=non-base (clipped to layer below)
 	uint32_t blendModeKey;  // 4-char key: 'norm'=0x6E6F726D, 'lddg'=0x6C646467, 'mul '=0x6D756C20
+	uint8_t flags;
+	bool hasLayerId;
+	uint32_t layerId;
+	bool hasSectionBlendMode;
 };
 
 PSD_NAMESPACE_END

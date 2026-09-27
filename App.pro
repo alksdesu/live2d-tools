@@ -761,6 +761,10 @@ HEADERS += live2dstruct/catlasrepackplanner.h ui/cdraftdialoglifecycle.h
 
 SOURCES += psd/cpsdreader.cpp
 HEADERS += psd/cpsdreader.h psd/cpsdsnapshot.h
+SOURCES += psd/cpsdsourcewriter.cpp ui/cpsdrecoverydialog.cpp ui/mainwindowpsdrecovery.cpp
+HEADERS += psd/cpsdsourcedocument.h psd/cpsdsourcewriter.h ui/cpsdrecoverydialog.h
+SOURCES += cmo3/ccmo3artworkreader.cpp
+HEADERS += cmo3/ccmo3artworkreader.h
 SOURCES += live2dstruct/cmodelartwork.cpp live2dstruct/cmodeldocumentartwork.cpp
 HEADERS += live2dstruct/cmodelartwork.h
 SOURCES += \

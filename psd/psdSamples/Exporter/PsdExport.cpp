@@ -52,6 +52,7 @@ namespace
 		const size_t length = strlen(str);
 		const size_t paddedLength = bitUtil::RoundUpToMultiple(length + 1u, static_cast<size_t>(4u));
 		char* newString = memoryUtil::AllocateArray<char>(allocator, paddedLength);
+		if (!newString) throw std::bad_alloc();
 
 		// clear and copy null terminator as well
 		memset(newString, 0, paddedLength);
@@ -85,6 +86,7 @@ namespace
 
 		// UTF-16 code unit count never exceeds UTF-8 byte count
 		uint16_t* buffer = memoryUtil::AllocateArray<uint16_t>(allocator, byteCount);
+		if (!buffer) throw std::bad_alloc();
 		uint32_t length = 0u;
 
 		size_t i = 0u;
@@ -260,6 +262,8 @@ namespace
 			length += GetLuniBlockLength(layer);
 		}
 
+		if (layer->hasLayerId) length += 16u;
+		if (layer->hasSectionBlendMode) length += 8u;
 		return length;
 	}
 
@@ -415,6 +419,7 @@ namespace
 ExportDocument* CreateExportDocument(Allocator* allocator, unsigned int canvasWidth, unsigned int canvasHeight, unsigned int bitsPerChannel, exportColorMode::Enum colorMode)
 {
 	ExportDocument* document = memoryUtil::Allocate<ExportDocument>(allocator);
+	if (!document) return nullptr;
 	memset(document, 0, sizeof(ExportDocument));
 
 	document->width = canvasWidth;
@@ -534,6 +539,7 @@ void SetICCProfile(ExportDocument* document, Allocator* allocator, void* rawProf
 {
 	memoryUtil::FreeArray(allocator, document->iccProfile);
 	document->iccProfile = memoryUtil::AllocateArray<uint8_t>(allocator, size);
+	if (!document->iccProfile && size) throw std::bad_alloc();
 	document->sizeOfICCProfile = size;
 
 	memcpy(document->iccProfile, rawProfileData, size);
@@ -732,6 +738,11 @@ bool UpdateLayerImpl(ExportDocument* document, Allocator* allocator, unsigned in
             if (!CreateDataRLE(allocator, candidate, channelIndex, planarData, width, height, checkpoint)) return false;
         }
         AllocatedBuffer<void> replacement(candidate.channelData[channelIndex], AllocatedDeleter{allocator});
+        if (document->compactChannelStorage && compression == compressionType::RLE && candidate.channelSize[channelIndex]) {
+            auto compact = MakeBuffer<uint8_t>(allocator, candidate.channelSize[channelIndex]);
+            memcpy(compact.get(), replacement.get(), candidate.channelSize[channelIndex]);
+            replacement.reset(compact.release());
+        }
         void* old = layer.channelData[channelIndex];
         if (old) {
             const uint16_t previous = layer.channelCompression[channelIndex];
@@ -1012,7 +1023,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 		const bool hasExifData = (document->exifData != nullptr);
 		const bool hasThumbnail = (document->thumbnail != nullptr);
 		const bool hasAlphaChannels = (document->alphaChannelCount != 0u);
-		const bool hasImageResources = (hasMetaData || hasIccProfile || hasExifData || hasThumbnail || hasAlphaChannels);
+		const bool hasImageResources = (hasMetaData || hasIccProfile || hasExifData || hasThumbnail || hasAlphaChannels || document->omitMergedPreview);
 
 		// write image resources section with optional XMP meta data, ICC profile, EXIF data, thumbnail, alpha channels
 		if (hasImageResources)
@@ -1025,7 +1036,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 			const uint32_t channelNamesSize = hasAlphaChannels ? GetChannelNamesResourceSize(document) : 0u;
 			const uint32_t unicodeChannelNamesSize = hasAlphaChannels ? GetUnicodeChannelNamesResourceSize(document) : 0u;
 
-			uint32_t sectionLength = 0u;
+			uint32_t sectionLength = document->omitMergedPreview ? GetImageResourceSize() + 18u : 0u;
 			sectionLength += hasMetaData ? bitUtil::RoundUpToMultiple(GetImageResourceSize() + metaDataSize, 2u) : 0u;
 			sectionLength += hasIccProfile ? bitUtil::RoundUpToMultiple(GetImageResourceSize() + iccProfileSize, 2u) : 0u;
 			sectionLength += hasExifData ? bitUtil::RoundUpToMultiple(GetImageResourceSize() + exifDataSize, 2u) : 0u;
@@ -1036,6 +1047,15 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 
 			// image resource section starts with length of the whole section
 			fileUtil::WriteToFileBE(writer, sectionLength);
+            if (document->omitMergedPreview) {
+                WriteImageResource(writer, 1057u, 17u);
+                fileUtil::WriteToFileBE(writer, uint32_t(1u));
+                fileUtil::WriteToFileBE(writer, uint8_t(0u));
+                fileUtil::WriteToFileBE(writer, uint32_t(0u));
+                fileUtil::WriteToFileBE(writer, uint32_t(0u));
+                fileUtil::WriteToFileBE(writer, uint32_t(1u));
+                fileUtil::WriteToFileBE(writer, uint8_t(0u));
+            }
 
 			if (hasMetaData)
 			{
@@ -1297,7 +1317,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 		fileUtil::WriteToFileBE(writer, util::Key<'8', 'B', 'I', 'M'>::VALUE);
 
 		// blend mode data (per-layer values)
-		const uint8_t flags = 0u;
+		const uint8_t flags = layer->flags;
 		const uint8_t filler = 0u;
 		fileUtil::WriteToFileBE(writer, layer->blendModeKey);
 		fileUtil::WriteToFileBE(writer, layer->opacity);
@@ -1323,9 +1343,19 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 
 		fileUtil::WriteToFileBE(writer, util::Key<'8', 'B', 'I', 'M'>::VALUE);
 		fileUtil::WriteToFileBE(writer, util::Key<'l', 's', 'c', 't'>::VALUE);
-		const uint32_t lengthExt = 4;
+		const uint32_t lengthExt = layer->hasSectionBlendMode ? 12u : 4u;
 		fileUtil::WriteToFileBE(writer, lengthExt);
 		fileUtil::WriteToFileBE(writer, layer->type);
+        if (layer->hasSectionBlendMode) {
+            fileUtil::WriteToFileBE(writer, util::Key<'8', 'B', 'I', 'M'>::VALUE);
+            fileUtil::WriteToFileBE(writer, layer->blendModeKey);
+        }
+        if (layer->hasLayerId) {
+            fileUtil::WriteToFileBE(writer, util::Key<'8', 'B', 'I', 'M'>::VALUE);
+            fileUtil::WriteToFileBE(writer, util::Key<'l', 'y', 'i', 'd'>::VALUE);
+            fileUtil::WriteToFileBE(writer, uint32_t(4u));
+            fileUtil::WriteToFileBE(writer, layer->layerId);
+        }
 
 		// 'luni' Unicode layer name: readers prefer it over the pascal name, fixing non-ASCII names
 		if (layer->utf16Name)
@@ -1444,6 +1474,41 @@ void SetLayerOpacity(ExportDocument* document, unsigned int layerIndex, uint8_t 
 void SetLayerClipping(ExportDocument* document, unsigned int layerIndex, uint8_t clipping)
 {
 	document->layers[layerIndex].clipping = clipping;
+}
+
+bool SetLayerAttributes(ExportDocument* document, unsigned int layerIndex, const ExportLayerAttributes& attributes)
+{
+    if (!document || layerIndex >= document->layerCount || attributes.clipping > 1u) return false;
+    ExportLayer& layer = document->layers[layerIndex];
+    layer.opacity = attributes.opacity;
+    layer.clipping = attributes.clipping;
+    layer.flags = attributes.visible ? 0u : 2u;
+    layer.hasLayerId = attributes.hasLayerId;
+    layer.layerId = attributes.layerId;
+    layer.blendModeKey = attributes.blendModeKey;
+    layer.hasSectionBlendMode = layer.type == layerType::OPEN_FOLDER || layer.type == layerType::CLOSED_FOLDER;
+    return true;
+}
+
+bool SetEmptyLayerBounds(ExportDocument* document, unsigned int layerIndex, int left, int top, int right, int bottom)
+{
+    if (!document || layerIndex >= document->layerCount || right < left || bottom < top) return false;
+    ExportLayer& layer = document->layers[layerIndex];
+    if (GetChannelCount(&layer) != 0u) return false;
+    if (layer.type == layerType::ANY && (right != left || bottom != top)) return false;
+    layer.left = left;
+    layer.top = top;
+    layer.right = right;
+    layer.bottom = bottom;
+    layer.IsEmptyChannel = true;
+    return true;
+}
+
+void SetSourceDocumentOptions(ExportDocument* document)
+{
+    if (!document) return;
+    document->compactChannelStorage = true;
+    document->omitMergedPreview = true;
 }
 
 PSD_NAMESPACE_END

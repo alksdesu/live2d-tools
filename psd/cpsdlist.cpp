@@ -1,4 +1,6 @@
 #include "cpsdlist.h"
+#include "cpsdsourcedocument.h"
+#include <QtEndian>
 #include "psd/psdSamples/Exporter/PsdExportDocument.h"
 #include <QFile>
 #include <QSaveFile>
@@ -244,4 +246,68 @@ bool CPsdList::CreatePsd()
         output.cancelWriting();
         return fail(QStringLiteral("PSD 文件写入发生未知异常"));
     }
+}
+
+bool CPsdList::SetSourcePsd(const QString& path, const QSize& size, const QByteArray& iccProfile)
+{
+    if (!SetPsd(path, size.width(), size.height(), false)) return false;
+    psd::SetSourceDocumentOptions(document);
+    if (!iccProfile.isEmpty())
+        psd::SetICCProfile(document, &allocator, const_cast<char*>(iccProfile.constData()), static_cast<uint32_t>(iccProfile.size()));
+    return true;
+}
+
+bool CPsdList::AddSourceDivider()
+{
+    return AddGroupStart();
+}
+
+bool CPsdList::AddSourceLayer(const CPsdSourceLayer& layer, const QImage& pixels)
+{
+    if (!CanAppendLayer()) return false;
+    const bool group = layer.kind == CPsdSourceLayer::Kind::Group;
+    const QByteArray name = layer.name.toUtf8();
+    const unsigned int index = group
+        ? psd::AddLayerGroupEnd(document, &allocator, name.constData())
+        : psd::AddLayer(document, &allocator, name.constData());
+    psd::ExportLayerAttributes attributes;
+    attributes.opacity = layer.opacity;
+    attributes.clipping = layer.clipping ? 1u : 0u;
+    attributes.visible = layer.visible;
+    attributes.hasLayerId = layer.externalId.has_value();
+    attributes.layerId = layer.externalId.value_or(0);
+    attributes.blendModeKey = qFromBigEndian<quint32>(layer.blendMode.constData());
+    if (!psd::SetLayerAttributes(document, index, attributes)) return Fail(QStringLiteral("PSD 来源图层属性无效"));
+    const int left = layer.bounds.x(), top = layer.bounds.y();
+    const int right = int(qint64(left) + layer.bounds.width());
+    const int bottom = int(qint64(top) + layer.bounds.height());
+    if (group || layer.bounds.isEmpty()) {
+        if (!psd::SetEmptyLayerBounds(document, index, left, top, right, bottom))
+            return Fail(QStringLiteral("PSD 来源空图层边界无效"));
+        return true;
+    }
+    if (pixels.size() != layer.bounds.size() || pixels.format() != QImage::Format_RGBA8888)
+        return Fail(QStringLiteral("PSD 来源像素与图层边界不一致"));
+    const int width = pixels.width(), height = pixels.height();
+    std::vector<uint8_t> plane(size_t(width) * height);
+    const exportChannel::Enum channels[]{exportChannel::RED, exportChannel::GREEN, exportChannel::BLUE, exportChannel::ALPHA};
+    for (int channel = 0; channel < 4; ++channel) {
+        for (int y = 0; y < height; ++y) {
+            if (m_control && !m_control->Report(CExportControl::Phase::Encoding,
+                    qint64(channel) * height * 2 + y, qint64(height) * 8, layer.name)) {
+                m_failed = true;
+                return false;
+            }
+            const uchar* row = pixels.constScanLine(y);
+            for (int x = 0; x < width; ++x) plane[size_t(y) * width + x] = row[x * 4 + channel];
+        }
+        const ExportCheckpoint checkpoint = [&](uint32_t current, uint32_t) {
+            return !m_control || m_control->Report(CExportControl::Phase::Encoding,
+                (qint64(channel) * 2 + 1) * height + current, qint64(height) * 8, layer.name);
+        };
+        if (!psd::UpdateLayer(document, &allocator, index, channels[channel], left, top, right, bottom,
+                              plane.data(), compressionType::RLE, checkpoint))
+            return Fail(QStringLiteral("PSD 来源图层通道压缩失败：%1").arg(layer.name));
+    }
+    return true;
 }

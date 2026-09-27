@@ -8,6 +8,8 @@
 #include "psd/psdSamples/Exporter/PsdExport.h"
 using namespace   psd;
 class CExportControl;
+class CPsdSourceWriter;
+struct CPsdSourceLayer;
 
 class CPsdList
 {
@@ -26,6 +28,10 @@ public:
     bool CreatePsd();
 
 private:
+    friend class CPsdSourceWriter;
+    bool SetSourcePsd(const QString& path, const QSize& size, const QByteArray& iccProfile);
+    bool AddSourceLayer(const CPsdSourceLayer& layer, const QImage& pixels);
+    bool AddSourceDivider();
     bool CanAppendLayer();
     bool AddGroupChannels(unsigned int index);
     bool Fail(const QString& error);

@@ -35,6 +35,7 @@ class CTexturePanel;
 class CUvEditDialog;
 class CAtlasEditDialog;
 class CPsdImportDialog;
+class CPsdRecoveryDialog;
 class CInspectorPanel;
 class CModelDiagnosticsPanel;
 class CUserDataPanel;
@@ -54,6 +55,7 @@ class QVBoxLayout;
 struct PreviewExportState;
 struct CMeshGeometryMigration;
 struct MeshToolCommitState;
+struct CPsdSourceCatalog;
 
 class MainWindow : public QMainWindow
 {
@@ -68,6 +70,7 @@ private slots:
     void on_actionOpen_triggered();
     void on_actionpsdPrint_triggered();
     void on_actionBatchPsd_triggered();
+    void RecoverPsdFromProject(const QString& path = {});
     void on_actionCloseModel_triggered();
     void on_actionCmo3Export_triggered();
     void ExportRuntimePackage();
@@ -90,6 +93,10 @@ private:
     void ReportExportStage(const QString& outputPath, PsdExportStage stage);
     void RecoverExportPreview();
     void RefreshExportActions();
+    void ConfigurePsdRecoveryAction();
+    void FinishPsdRecovery();
+    bool ExportRecoveredPsd(const std::shared_ptr<const CPsdSourceCatalog>& catalog, int documentIndex,
+                            const QString& path, QString* error);
     bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false, bool replacingPhysics = false);
     bool UsesSessionPhysics() const;
     bool HasUnsavedPhysicsChanges() const;
@@ -293,6 +300,10 @@ private:
     CExportResultsPanel* m_exportResultsPanel = nullptr;
     QAction* m_recoverPreviewAction = nullptr;
     QAction* m_exportResultsAction = nullptr;
+    QAction* m_psdRecoveryAction = nullptr;
+    QPointer<CPsdRecoveryDialog> m_psdRecoveryDialog;
+    bool m_psdRecoveryActive = false;
+    bool m_exportResultsAreRecovery = false;
     struct BatchOptions {
         QString outputDirectory;
         bool all = false;

@@ -1,4 +1,6 @@
 #include "cmo3/ccaffarchive.h"
+#include "std/cexportcontrol.h"
+#include <QtEndian>
 #include <QtTest>
 #include <QCoreApplication>
 #include <QDir>
@@ -64,6 +66,132 @@ class CaffArchiveTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void limitsAndMalformedInputPreserveArchive()
+    {
+        QTemporaryDir directory;
+        cmo3::CCaffArchive source;
+        source.AddEntry("a", QByteArray("payload"));
+        const QString path = directory.filePath("source.cmo3");
+        QVERIFY(source.Save(path));
+        const QByteArray bytes = readFile(path);
+        cmo3::CCaffArchive retained;
+        retained.AddEntry("keep", QByteArray("previous"));
+        QString error;
+        cmo3::CCaffReadLimits limits;
+        limits.maximumEntryBytes = 6;
+        QVERIFY(!retained.LoadBytes(bytes, &error, nullptr, limits));
+        limits = {};
+        limits.maximumMetadataBytes = 65;
+        QVERIFY(!retained.LoadBytes(bytes, &error, nullptr, limits));
+        limits.maximumMetadataBytes = 66;
+        QVERIFY2(source.LoadBytes(bytes, &error, nullptr, limits), qPrintable(error));
+        for (const auto& invalid : {bytes.left(20), bytes.left(bytes.size() - 1), QByteArray(bytes).replace(0, 4, "FAIL")}) {
+            QVERIFY(!retained.LoadBytes(invalid, &error));
+            QCOMPARE(retained.Entries().first().path, QString("keep"));
+            QCOMPARE(retained.Entries().first().content, QByteArray("previous"));
+        }
+        QByteArray output("old");
+        limits.maximumFileBytes = 1;
+        QVERIFY(!cmo3::CCaffArchive::ReadFileBytes(path, output, &error, nullptr, limits));
+        QCOMPARE(output, QByteArray("old"));
+    }
+    void duplicatePathsAndCorruptZipAreRejected()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("source.cmo3");
+        cmo3::CCaffArchive source;
+        source.AddEntry("a", QByteArray("first"));
+        source.AddEntry("a", QByteArray("second"));
+        QVERIFY(source.Save(path));
+        cmo3::CCaffArchive target;
+        target.AddEntry("keep", QByteArray("previous"));
+        QString error;
+        QVERIFY(!target.Load(path, &error));
+        source.Clear();
+        source.AddEntry("a", QByteArray(400, 'x'), {}, cmo3::CCaffArchive::CompressSmall);
+        QVERIFY(source.Save(path));
+        QByteArray bytes = readFile(path);
+        const int zip = bytes.indexOf(QByteArray::fromHex("504b0304"));
+        QVERIFY(zip > 0);
+        bytes[zip + 14] ^= 1;
+        QVERIFY(!target.LoadBytes(bytes, &error));
+        QVERIFY(error.contains("校验和"));
+        QCOMPARE(target.Entries().first().content, QByteArray("previous"));
+    }
+    void streamedZipDescriptorAndCrc()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("source.cmo3");
+        cmo3::CCaffArchive source;
+        source.AddEntry("a", QByteArray(400, 'x'), {}, cmo3::CCaffArchive::CompressSmall);
+        QVERIFY(source.Save(path));
+        const QByteArray bytes = readFile(path);
+        const int zip = bytes.indexOf(QByteArray::fromHex("504b0304"));
+        QVERIFY(zip > 0);
+        const auto* p = reinterpret_cast<const uchar*>(bytes.constData() + zip);
+        const int start = 30 + qFromLittleEndian<quint16>(p + 26) + qFromLittleEndian<quint16>(p + 28);
+        const quint32 count = qFromLittleEndian<quint32>(p + 18);
+        QByteArray blob = bytes.mid(zip, start + count);
+        blob[6] = char(uchar(blob[6]) | 8);
+        const QByteArray descriptor = QByteArray::fromHex("504b0708") + blob.mid(14, 12);
+        for (int i = 14; i < 26; ++i) blob[i] = 0;
+        blob += descriptor;
+        QByteArray stream = bytes.left(zip) + blob + QByteArray("bc");
+        qToBigEndian<quint32>(quint32(blob.size()), reinterpret_cast<uchar*>(stream.data() + 69));
+        cmo3::CCaffArchive target;
+        QString error;
+        QVERIFY2(target.LoadBytes(stream, &error), qPrintable(error));
+        QCOMPARE(target.Entries().first().content, QByteArray(400, 'x'));
+        stream[stream.size() - 14] ^= 1;
+        QVERIFY(!target.LoadBytes(stream, &error));
+        QCOMPARE(target.Entries().first().content, QByteArray(400, 'x'));
+    }
+    void readCallbacksSeeOwnedInputsAndCancelAtomically()
+    {
+        QTemporaryDir directory;
+        cmo3::CCaffArchive source;
+        source.AddEntry("a", QByteArray(400, 'x'), {}, cmo3::CCaffArchive::CompressSmall);
+        const QString path = directory.filePath("source.cmo3");
+        QVERIFY(source.Save(path));
+        QByteArray storage = readFile(path);
+        const auto borrowed = QByteArray::fromRawData(storage.data(), storage.size());
+        CExportControl control;
+        bool changed = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) {
+            if (!changed) { storage.fill('z'); changed = true; }
+            return true;
+        }));
+        cmo3::CCaffArchive target;
+        QString error;
+        QVERIFY2(target.LoadBytes(borrowed, &error, &control), qPrintable(error));
+        QCOMPARE(target.Entries().first().content, QByteArray(400, 'x'));
+        CExportControl cancel;
+        QVERIFY(cancel.SetHandler([](const CExportControl::Progress&, QString*) { return false; }));
+        QVERIFY(!target.LoadBytes(readFile(path), &error, &cancel));
+        QCOMPARE(target.Entries().first().content, QByteArray(400, 'x'));
+    }
+
+    void emptyCompressedEntriesAndLimitsAreFrozen()
+    {
+        QTemporaryDir directory;
+        cmo3::CCaffArchive source;
+        source.AddEntry("a", QByteArray(), {}, cmo3::CCaffArchive::CompressSmall);
+        const QString path = directory.filePath("source.cmo3"); QVERIFY(source.Save(path));
+        const auto bytes = readFile(path);
+        cmo3::CCaffReadLimits limits;
+        limits.maximumEntryBytes = 0; limits.maximumTotalBytes = 0;
+        CExportControl control;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) {
+            limits.maximumFileBytes = 0; limits.maximumMetadataBytes = 0; return true;
+        }));
+        cmo3::CCaffArchive result; QString error;
+        QVERIFY2(result.LoadBytes(bytes, &error, &control, limits), qPrintable(error));
+        QCOMPARE(result.Entries().size(), 1); QVERIFY(result.Entries().first().content.isEmpty());
+        CExportControl cancel; cancel.Cancel(); QByteArray preserved("old");
+        QVERIFY(!cmo3::CCaffArchive::ReadFileBytes(path, preserved, &error, &cancel));
+        QCOMPARE(preserved, QByteArray("old"));
+    }
+
     void createsAndReplacesArchives_data()
     {
         QTest::addColumn<int>("compression");

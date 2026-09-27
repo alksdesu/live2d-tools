@@ -58,6 +58,13 @@ PSD export writes each drawable (art mesh) to its own layer and can group layers
 - Source mask repetitions produce a detailed warning instead of blocking export. Batch results retain per-file diagnostics, including successful exports with warnings, in the v2 JSON report. Rendered PSD preserves mask multiplicities; texture sampling still does not bake clipping masks.
 - Atomic PSD saves preserve existing files on failure; generated layer pixels, Unicode names and ICC data have independent binary regression tests
 
+#### Source artwork recovery (cmo3 → PSD)
+
+- **Recover PSD from project** opens a CMO3 without loading a runtime model. Choose one of its retained source documents, inspect its layer tree, then export it; separate source canvases remain separate PSDs.
+- Uses embedded source PNGs and their original document positions, preserving names, folders, order, hidden and empty layers, opacity, supported blend keys, clipping flags and layer IDs. Model deformation and current editor changes are not applied to this source artwork. Transparent RGB values are retained without resizing.
+- The exported PSD contains editable layers and declares that it has no precomputed merged preview. Open and save it in Photoshop to rebuild that preview. Missing color profiles are reported without assigning an invented profile; conflicting profiles and unsupported source features prevent that document from being exported.
+- Four original Cubism sample projects were independently checked: seven source documents, 406 raster layers and 86 folders retain their structure, metadata and every RGBA pixel. Photoshop GUI readback of this recovery mode is still pending. This does not reconstruct original PSD features absent from CMO3, import the full Editor model, or invert deformation from an MOC alone.
+
 #### cmo3 Project Recovery (moc3 → cmo3)
 
 The "Export cmo3 project" toolbar action (Ctrl+E) restores the current model as a Cubism Editor 5.0 project:
@@ -217,6 +224,13 @@ PSD 导出将每个 drawable（art mesh）写入独立图层，并可按现有 P
 - 批量导出：选择文件夹，自动遍历所有模型生成 PSD，失败文件逐个列出
 - 源模型的重复蒙版改为具体提示，不再直接阻止导出；批量结果与 v2 JSON 报告保留每个文件的诊断，包括成功文件的提示。渲染式 PSD 保留蒙版重复次数，纹理采样仍不烘焙裁剪蒙版
 - PSD 原子保存，失败时保留已有文件；图层像素、Unicode 名称与 ICC 数据有独立二进制回归测试
+
+#### 来源素材恢复（cmo3 → PSD）
+
+- **从工程恢复 PSD…** 可在未加载运行时模型时打开 CMO3，查看工程保留的来源文档与图层树，选择一份导出；不同源画布分别保存
+- 使用工程内嵌的源 PNG 和原始文档位置，保留名称、文件夹、顺序、隐藏与空层、透明度、已支持的混合键、剪切标志及图层 ID。模型变形和当前编辑不会应用到这些源素材；透明像素的 RGB 也会保留，不自动缩放图片
+- PSD 保留可编辑图层，并明确标记没有预先合成的预览；在 Photoshop 打开并保存后可重建预览。来源缺少色彩配置时会提示，不猜测配置；配置冲突或无法解释的来源功能会阻止该文档导出
+- 四份官方原生工程的独立回读已验证七份源文档、406 个栅格层及 86 个文件夹，结构、元数据和每个 RGBA 像素保持。此恢复模式的 Photoshop GUI 回读仍待验收；尚未找回 CMO3 本身未保留的原 PSD 功能，也不等于完整 Editor 模型导入或仅凭 MOC 反解形变
 
 #### cmo3 工程恢复（moc3 → cmo3）
 

@@ -32,6 +32,8 @@ struct ExportDocument
 
 	ExportLayer layers[MAX_LAYER_COUNT];
 	uint16_t layerCount;
+	bool compactChannelStorage;
+	bool omitMergedPreview;
 
 	void* mergedImageData[3u];
 

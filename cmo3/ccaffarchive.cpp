@@ -1,5 +1,13 @@
 #include "ccaffarchive.h"
 #include "psd/psdSamples/Zip/Psdminiz.h"
+#include "std/cexportcontrol.h"
+#include <QDateTime>
+#include <QFileInfo>
+#include <QSet>
+#include <QStringConverter>
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
 #include <QFile>
 #include <QSaveFile>
 #include <QtEndian>
@@ -12,15 +20,22 @@ namespace {
 class Cursor
 {
 public:
-    Cursor(const QByteArray& data) : m_data(data) {}
+    Cursor(const QByteArray& data, const CCaffReadLimits& limits)
+        : m_data(data), m_stringLimit(limits.maximumStringBytes), m_metadataLeft(limits.maximumMetadataBytes) {}
 
     bool Ok() const { return m_ok; }
     qint64 Pos() const { return m_pos; }
     void SetKey(quint32 key) { m_key = key; }
+    bool ChargeMetadata(qint64 size)
+    {
+        if (size < 0 || size > m_metadataLeft) return false;
+        m_metadataLeft -= size;
+        return true;
+    }
 
     QByteArray Raw(int n)
     {
-        if (m_pos + n > m_data.size()) { m_ok = false; return QByteArray(); }
+        if (n < 0 || m_pos > m_data.size() || n > m_data.size() - m_pos) { m_ok = false; return QByteArray(); }
         QByteArray r = m_data.mid(static_cast<int>(m_pos), n);
         m_pos += n;
         return r;
@@ -64,11 +79,15 @@ public:
     QString EString()
     {
         const quint32 n = EVarint();
-        if (!m_ok || m_pos + n > static_cast<quint32>(m_data.size())) { m_ok = false; return QString(); }
-        QByteArray bytes;
-        bytes.reserve(n);
-        for (quint32 i = 0; i < n; ++i) bytes.append(static_cast<char>(EU8()));
-        return QString::fromUtf8(bytes);
+        if (!m_ok || n > quint32(m_stringLimit) || m_pos > m_data.size() || n > m_data.size() - m_pos ||
+            qint64(n) * 2 > m_metadataLeft) { m_ok = false; return {}; }
+        m_metadataLeft -= qint64(n) * 2;
+        QByteArray bytes(int(n), Qt::Uninitialized);
+        for (quint32 i = 0; i < n; ++i) bytes[int(i)] = static_cast<char>(EU8());
+        QStringDecoder decoder(QStringDecoder::Utf8);
+        const QString decoded = decoder(bytes);
+        if (decoder.hasError() || decoded.contains(QChar::Null)) { m_ok = false; return {}; }
+        return decoded;
     }
 
 private:
@@ -76,6 +95,8 @@ private:
     qint64 m_pos = 0;
     quint32 m_key = 0;
     bool m_ok = true;
+    int m_stringLimit;
+    qint64 m_metadataLeft;
 };
 
 // ---- 写出游标：大端 + 条目级 XOR ----
@@ -155,100 +176,180 @@ void setErr(QString* out, const QString& msg)
     if (out) *out = msg;
 }
 
+bool validLimits(const CCaffReadLimits& limits)
+{
+    const CCaffReadLimits maximum;
+    return limits.maximumFileBytes >= 0 && limits.maximumFileBytes <= maximum.maximumFileBytes &&
+           limits.maximumEntryBytes >= 0 && limits.maximumEntryBytes <= maximum.maximumEntryBytes &&
+           limits.maximumTotalBytes >= 0 && limits.maximumTotalBytes <= maximum.maximumTotalBytes &&
+           limits.maximumMetadataBytes >= 0 && limits.maximumMetadataBytes <= maximum.maximumMetadataBytes &&
+           limits.maximumEntries >= 0 && limits.maximumEntries <= maximum.maximumEntries &&
+           limits.maximumStringBytes >= 0 && limits.maximumStringBytes <= maximum.maximumStringBytes;
+}
+
 } // namespace
 
 bool CCaffArchive::Load(const QString& filePath, QString* outError)
 {
-    m_entries.clear();
+    return Load(filePath, outError, nullptr);
+}
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        setErr(outError, QString("无法打开文件: %1").arg(filePath));
-        return false;
-    }
-    const QByteArray data = file.readAll();
-    file.close();
+bool CCaffArchive::Load(const QString& filePath, QString* outError, CExportControl* control,
+                        const CCaffReadLimits& limits)
+{
+    const CCaffReadLimits frozenLimits = limits;
+    QByteArray bytes;
+    return ReadFileBytes(filePath, bytes, outError, control, frozenLimits) &&
+           LoadBytes(bytes, outError, control, frozenLimits);
+}
 
-    if (data.size() < kHeaderSize + 2 || memcmp(data.constData(), kMagic, 4) != 0) {
-        setErr(outError, "不是 CAFF 容器（magic 不匹配）");
-        return false;
-    }
-
-    Cursor cur(data);
-    cur.Raw(4);                       // magic
-    cur.Raw(3);                       // archive version
-    cur.Raw(4);                       // format id
-    cur.Raw(3);                       // format version
-    m_key = static_cast<qint32>(cur.U32());
-    cur.SetKey(static_cast<quint32>(m_key));
-    cur.Raw(8);                       // reserved
-    cur.Raw(2);                       // preview format + color
-    cur.Raw(2);                       // padding
-    cur.Raw(4);                       // preview w/h
-    cur.Raw(8);                       // preview start position
-    cur.Raw(4);                       // preview file size
-    cur.Raw(8);                       // padding
-
-    const quint32 count = cur.EU32();
-    if (!cur.Ok() || count > 1000000) {
-        setErr(outError, "文件表损坏（条目数不合法）");
-        return false;
-    }
-
-    struct RawEntry {
-        QString path, tag;
-        quint32 offset = 0, size = 0;
-        bool obfuscated = false;
-        int compress = CompressRaw;
-    };
-    QVector<RawEntry> rawEntries;
-    rawEntries.reserve(static_cast<int>(count));
-
-    for (quint32 i = 0; i < count; ++i) {
-        RawEntry e;
-        e.path = cur.EString();
-        e.tag = cur.EString();
-        cur.EU32();                   // int64 offset 高 32 位为占位残留，官方只回填低 32 位
-        e.offset = cur.EU32();
-        e.size = cur.EU32();
-        e.obfuscated = cur.EU8() != 0;
-        e.compress = cur.EU8();
-        cur.Raw(8);                   // padding
-        if (!cur.Ok()) {
-            setErr(outError, QString("文件表第 %1 项解析失败").arg(i));
-            return false;
-        }
-        rawEntries.append(e);
-    }
-
-    const quint8 key8 = static_cast<quint8>(static_cast<quint32>(m_key) & 0xFF);
-    for (const RawEntry& raw : rawEntries) {
-        if (raw.offset + raw.size > static_cast<quint32>(data.size())) {
-            setErr(outError, QString("条目 %1 数据越界").arg(raw.path));
-            return false;
-        }
-        QByteArray blob = data.mid(static_cast<int>(raw.offset), static_cast<int>(raw.size));
-        if (raw.obfuscated) {
-            char* p = blob.data();
-            for (int i = 0; i < blob.size(); ++i) p[i] ^= key8;
-        }
-        if (raw.compress == CompressFast || raw.compress == CompressSmall) {
-            QString zipErr;
-            blob = zipUnwrap(blob, &zipErr);
-            if (blob.isNull()) {
-                setErr(outError, QString("条目 %1 解压失败: %2").arg(raw.path, zipErr));
-                return false;
+bool CCaffArchive::ReadFileBytes(const QString& filePath, QByteArray& result, QString* outError,
+                                 CExportControl* control, const CCaffReadLimits& inputLimits)
+{
+    const CCaffReadLimits limits = inputLimits;
+    if (outError) outError->clear();
+    const auto fail = [outError](const QString& message) { setErr(outError, message); return false; };
+    if (filePath.isEmpty() || filePath.size() > 32768 || filePath.contains(QChar::Null) ||
+        !validLimits(limits))
+        return fail(QStringLiteral("CAFF 文件路径或读取预算无效"));
+    try {
+        const QString path(filePath.constData(), filePath.size());
+        const QFileInfo before(path);
+        if (!before.isFile()) return fail(QStringLiteral("CAFF 来源不是普通文件"));
+        const auto canonicalPath = before.canonicalFilePath();
+        const auto pathSize = before.size();
+        const auto pathModified = before.lastModified();
+        const auto pathMetadata = before.metadataChangeTime();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) return fail(QStringLiteral("无法打开文件：%1").arg(path));
+        const qint64 size = file.size();
+        const auto modified = file.fileTime(QFileDevice::FileModificationTime);
+        const auto metadata = file.fileTime(QFileDevice::FileMetadataChangeTime);
+        if (size < 0 || size > limits.maximumFileBytes)
+            return fail(QStringLiteral("CAFF 文件超出读取预算"));
+        QByteArray bytes;
+        while (bytes.size() < size) {
+            if (control && control->IsCancellationRequested()) {
+                control->Checkpoint();
+                return fail(control->Error());
             }
+            const auto chunk = file.read(std::min(qint64(1024 * 1024), size - bytes.size()));
+            if (chunk.isEmpty()) return fail(QStringLiteral("CAFF 文件读取不完整：%1").arg(file.errorString()));
+            bytes.append(chunk);
         }
-        Entry entry;
-        entry.path = raw.path;
-        entry.tag = raw.tag;
-        entry.content = blob;
-        entry.obfuscated = raw.obfuscated;
-        entry.compress = raw.compress;
-        m_entries.append(entry);
+        const QFileInfo after(path);
+        if (file.error() != QFileDevice::NoError || !file.atEnd() || file.size() != size ||
+            file.fileTime(QFileDevice::FileModificationTime) != modified ||
+            file.fileTime(QFileDevice::FileMetadataChangeTime) != metadata ||
+            canonicalPath != after.canonicalFilePath() || pathSize != after.size() ||
+            pathModified != after.lastModified() || pathMetadata != after.metadataChangeTime())
+            return fail(QStringLiteral("CAFF 文件在读取期间发生变化"));
+        if (control && !control->Checkpoint()) return fail(control->Error());
+        result.swap(bytes);
+        return true;
+    } catch (const std::bad_alloc&) {
+        return fail(QStringLiteral("CAFF 文件读取内存不足"));
+    } catch (const std::length_error&) {
+        return fail(QStringLiteral("CAFF 文件长度超出可表示范围"));
     }
-    return true;
+}
+
+bool CCaffArchive::LoadBytes(const QByteArray& input, QString* outError, CExportControl* control,
+                             const CCaffReadLimits& inputLimits)
+{
+    const CCaffReadLimits limits = inputLimits;
+    if (outError) outError->clear();
+    const auto fail = [outError](const QString& message) { setErr(outError, message); return false; };
+    if (!validLimits(limits))
+        return fail(QStringLiteral("CAFF 读取预算无效"));
+    if (input.size() > limits.maximumFileBytes || input.size() < kHeaderSize + 6)
+        return fail(QStringLiteral("CAFF 文件为空、截断或超出读取预算"));
+    try {
+        const QByteArray data(input.constData(), input.size());
+        if (control && !control->Report(CExportControl::Phase::Preparing, 0, 0, QStringLiteral("读取 CAFF 资源")))
+            return fail(control->Error());
+        if (data.left(4) != QByteArray(kMagic, 4) || data.right(2) != QByteArrayLiteral("bc"))
+            return fail(QStringLiteral("CAFF 容器标识或结束标记无效"));
+        if (data.mid(4, 3) != QByteArray(3, '\0') || data.mid(7, 4) != QByteArray(kFormatId, 4) ||
+            data.mid(11, 3) != QByteArray(3, '\0'))
+            return fail(QStringLiteral("不支持此 CAFF 容器版本"));
+        Cursor cursor(data, limits);
+        cursor.Raw(14);
+        const qint32 key = qint32(cursor.U32());
+        cursor.SetKey(quint32(key));
+        cursor.Raw(36);
+        const quint32 count = cursor.EU32();
+        if (!cursor.Ok() || count > quint32(limits.maximumEntries) ||
+            count > quint64(data.size() - kHeaderSize - 6) / 24 ||
+            !cursor.ChargeMetadata(qint64(count) * 64))
+            return fail(QStringLiteral("CAFF 条目数量超出文件边界或预算"));
+        struct RawEntry {
+            QString path, tag;
+            quint32 offset = 0, size = 0;
+            quint8 obfuscated = 0, compression = 0;
+        };
+        QVector<RawEntry> rawEntries;
+        rawEntries.reserve(int(count));
+        QSet<QString> paths;
+        for (quint32 index = 0; index < count; ++index) {
+            if (control && !control->Checkpoint()) return fail(control->Error());
+            RawEntry entry;
+            entry.path = cursor.EString();
+            entry.tag = cursor.EString();
+            cursor.EU32();
+            entry.offset = cursor.EU32();
+            entry.size = cursor.EU32();
+            entry.obfuscated = cursor.EU8();
+            entry.compression = cursor.EU8();
+            cursor.Raw(8);
+            if (!cursor.Ok() || entry.path.isEmpty() || paths.contains(entry.path) || entry.obfuscated > 1 ||
+                (entry.compression != CompressRaw && entry.compression != CompressFast && entry.compression != CompressSmall))
+                return fail(QStringLiteral("CAFF 条目名称、编码或文件表无效：%1").arg(entry.path));
+            paths.insert(entry.path);
+            rawEntries.append(std::move(entry));
+        }
+        QVector<Entry> candidate;
+        candidate.reserve(int(count));
+        qint64 decodedBytes = 0;
+        for (int index = 0; index < rawEntries.size(); ++index) {
+            const auto& raw = rawEntries[index];
+            if (raw.offset < cursor.Pos() || raw.offset > data.size() - 2 ||
+                raw.size > data.size() - 2 - raw.offset)
+                return fail(QStringLiteral("CAFF 条目数据越界：%1").arg(raw.path));
+            if (control && !control->Report(CExportControl::Phase::Extracting, index, rawEntries.size(), raw.path))
+                return fail(control->Error());
+            const qint64 remaining = std::min(limits.maximumEntryBytes, limits.maximumTotalBytes - decodedBytes);
+            if (raw.compression == CompressRaw && raw.size > remaining)
+                return fail(QStringLiteral("CAFF 条目解码总量超出预算"));
+            QByteArray blob(data.constData() + raw.offset, raw.size);
+            if (raw.obfuscated) {
+                const quint8 keyByte = quint8(quint32(key));
+                for (qsizetype at = 0; at < blob.size(); at += 65536) {
+                    if (control && !control->Checkpoint()) return fail(control->Error());
+                    const qsizetype end = std::min(at + 65536, blob.size());
+                    for (qsizetype byte = at; byte < end; ++byte) blob[byte] ^= keyByte;
+                }
+            }
+            if (raw.compression != CompressRaw) {
+                QByteArray decoded;
+                QString error;
+                if (!zipUnwrap(blob, decoded, remaining, &error, control))
+                    return fail(QStringLiteral("CAFF 条目 %1 解压失败：%2").arg(raw.path, error));
+                blob = std::move(decoded);
+            }
+            decodedBytes += blob.size();
+            candidate.append({raw.path, raw.tag, std::move(blob), bool(raw.obfuscated), raw.compression});
+        }
+        if (control && !control->Report(CExportControl::Phase::Extracting, count, count, QStringLiteral("CAFF 资源读取完成")))
+            return fail(control->Error());
+        m_entries.swap(candidate);
+        m_key = key;
+        return true;
+    } catch (const std::bad_alloc&) {
+        return fail(QStringLiteral("CAFF 读取内存不足"));
+    } catch (const std::length_error&) {
+        return fail(QStringLiteral("CAFF 资源长度超出可表示范围"));
+    }
 }
 
 bool CCaffArchive::Save(const QString& filePath, QString* outError) const
@@ -384,71 +485,94 @@ QByteArray CCaffArchive::zipWrap(const QByteArray& content)
     return result;
 }
 
-QByteArray CCaffArchive::zipUnwrap(const QByteArray& blob, QString* outError)
+bool CCaffArchive::zipUnwrap(const QByteArray& blob, QByteArray& result, qint64 maximumBytes,
+                              QString* outError, CExportControl* control)
 {
-    // 官方为流式 ZIP（flags bit3，local header 中 size=0 且无 central directory），
-    // miniz 归档 API 依赖 central directory 会失败，直接走 local header + raw inflate
-    if (blob.size() < 30 ||
-        static_cast<quint8>(blob[0]) != 0x50 || static_cast<quint8>(blob[1]) != 0x4B ||
-        static_cast<quint8>(blob[2]) != 0x03 || static_cast<quint8>(blob[3]) != 0x04) {
-        setErr(outError, "非 ZIP local header");
-        return QByteArray();
-    }
-
-    const uchar* p = reinterpret_cast<const uchar*>(blob.constData());
-    const quint16 method = qFromLittleEndian<quint16>(p + 8);
-    const quint16 nameLen = qFromLittleEndian<quint16>(p + 26);
-    const quint16 extraLen = qFromLittleEndian<quint16>(p + 28);
-    const int dataStart = 30 + nameLen + extraLen;
-    if (dataStart >= blob.size()) {
-        setErr(outError, "ZIP local header 越界");
-        return QByteArray();
-    }
-
+    const auto fail = [outError](const QString& message) { setErr(outError, message); return false; };
+    if (blob.size() < 30 || maximumBytes < 0) return fail(QStringLiteral("ZIP 文件头截断"));
+    const auto* bytes = reinterpret_cast<const uchar*>(blob.constData());
+    const auto u16 = [bytes](qsizetype at) { return qFromLittleEndian<quint16>(bytes + at); };
+    const auto u32 = [bytes](qsizetype at) { return qFromLittleEndian<quint32>(bytes + at); };
+    if (u32(0) != 0x04034b50) return fail(QStringLiteral("非 ZIP local header"));
+    const quint16 flags = u16(6), method = u16(8);
+    const bool descriptor = flags & 8;
+    if ((flags & ~quint16(0x080e)) || (method != 0 && method != 8) || u16(4) > 20)
+        return fail(QStringLiteral("不支持此 ZIP 编码"));
+    const qsizetype start = 30 + u16(26) + u16(28);
+    if (start > blob.size()) return fail(QStringLiteral("ZIP 文件头越界"));
+    quint32 crcExpected = u32(14), compressedExpected = u32(18), decodedExpected = u32(22);
+    if (!descriptor && (decodedExpected > maximumBytes || compressedExpected > blob.size() - start))
+        return fail(QStringLiteral("ZIP 声明长度越界或超出预算"));
+    QByteArray output;
+    qsizetype consumed = 0;
+    quint32 crc = MZ_CRC32_INIT;
     if (method == 0) {
-        return blob.mid(dataStart);
-    }
-    if (method != 8) {
-        setErr(outError, QString("不支持的压缩方式 %1").arg(method));
-        return QByteArray();
-    }
-
-    // raw deflate 流式解压：块级增长输出缓冲
-    tinfl_decompressor decomp;
-    tinfl_init(&decomp);
-
-    const mz_uint8* src = p + dataStart;
-    size_t srcRemaining = static_cast<size_t>(blob.size() - dataStart);
-    QByteArray out;
-    size_t dictSize = TINFL_LZ_DICT_SIZE;
-    QByteArray dict(static_cast<int>(dictSize), '\0');
-    size_t dictOfs = 0;
-
-    for (;;) {
-        size_t inBytes = srcRemaining;
-        size_t outBytes = dictSize - dictOfs;
-        const tinfl_status status = tinfl_decompress(
-            &decomp, src, &inBytes,
-            reinterpret_cast<mz_uint8*>(dict.data()),
-            reinterpret_cast<mz_uint8*>(dict.data()) + dictOfs, &outBytes,
-            (srcRemaining ? TINFL_FLAG_HAS_MORE_INPUT : 0));
-
-        src += inBytes;
-        srcRemaining -= inBytes;
-        out.append(dict.constData() + dictOfs, static_cast<int>(outBytes));
-        dictOfs = (dictOfs + outBytes) & (dictSize - 1);
-
-        if (status == TINFL_STATUS_DONE) break;
-        if (status < TINFL_STATUS_DONE) {
-            setErr(outError, QString("deflate 解压失败 (status=%1)").arg(static_cast<int>(status)));
-            return QByteArray();
-        }
-        if (status == TINFL_STATUS_NEEDS_MORE_INPUT && srcRemaining == 0) {
-            setErr(outError, "deflate 数据不完整");
-            return QByteArray();
+        if (descriptor) return fail(QStringLiteral("不支持缺少长度的未压缩 ZIP 流"));
+        if (compressedExpected != decodedExpected) return fail(QStringLiteral("ZIP 未压缩长度不一致"));
+        output = QByteArray(blob.constData() + start, decodedExpected);
+        consumed = compressedExpected;
+        crc = quint32(mz_crc32(crc, reinterpret_cast<const unsigned char*>(output.constData()), output.size()));
+    } else {
+        tinfl_decompressor decompressor;
+        tinfl_init(&decompressor);
+        QByteArray dictionary(TINFL_LZ_DICT_SIZE, '\0');
+        size_t dictionaryOffset = 0;
+        const size_t available = descriptor ? size_t(blob.size() - start) : compressedExpected;
+        for (;;) {
+            if (control && !control->Checkpoint()) return fail(control->Error());
+            size_t inputCount = available - size_t(consumed);
+            size_t outputCount = TINFL_LZ_DICT_SIZE - dictionaryOffset;
+            const auto status = tinfl_decompress(&decompressor, bytes + start + consumed, &inputCount,
+                reinterpret_cast<mz_uint8*>(dictionary.data()),
+                reinterpret_cast<mz_uint8*>(dictionary.data()) + dictionaryOffset, &outputCount,
+                inputCount ? TINFL_FLAG_HAS_MORE_INPUT : 0);
+            consumed += qsizetype(inputCount);
+            if (qint64(outputCount) > maximumBytes - output.size())
+                return fail(QStringLiteral("ZIP 解码长度超出预算"));
+            crc = quint32(mz_crc32(crc, reinterpret_cast<const unsigned char*>(dictionary.constData()) + dictionaryOffset,
+                                  outputCount));
+            output.append(dictionary.constData() + dictionaryOffset, qsizetype(outputCount));
+            dictionaryOffset = (dictionaryOffset + outputCount) & (TINFL_LZ_DICT_SIZE - 1);
+            if (status == TINFL_STATUS_DONE) {
+                // 旧版 miniz 会预读紧接 deflate 的完整字节。
+                consumed -= decompressor.m_num_bits / 8;
+                break;
+            }
+            if (status < TINFL_STATUS_DONE || (!inputCount && !outputCount) ||
+                (status == TINFL_STATUS_NEEDS_MORE_INPUT && size_t(consumed) == available))
+                return fail(QStringLiteral("ZIP deflate 数据不完整或无效"));
         }
     }
-    return out;
+    qsizetype end = start + consumed;
+    if (descriptor) {
+        if (blob.size() - end >= 4 && u32(end) == 0x08074b50) end += 4;
+        if (blob.size() - end < 12) return fail(QStringLiteral("ZIP 数据描述符截断"));
+        crcExpected = u32(end);
+        compressedExpected = u32(end + 4);
+        decodedExpected = u32(end + 8);
+        end += 12;
+    }
+    if (crc != crcExpected || consumed != compressedExpected || output.size() != decodedExpected)
+        return fail(QStringLiteral("ZIP 校验和或长度不匹配"));
+    if (end != blob.size()) {
+        const qsizetype central = end;
+        if (blob.size() - end < 46 || u32(end) != 0x02014b50 || u16(end + 8) != flags ||
+            u16(end + 10) != method || u32(end + 16) != crc || u32(end + 20) != compressedExpected ||
+            u32(end + 24) != decodedExpected || u16(end + 34) != 0 || u32(end + 42) != 0)
+            return fail(QStringLiteral("ZIP 中央目录无效"));
+        const qsizetype nameLength = u16(end + 28);
+        const qsizetype centralLength = 46 + nameLength + u16(end + 30) + u16(end + 32);
+        if (centralLength > blob.size() - end || nameLength != u16(26) ||
+            blob.mid(end + 46, nameLength) != blob.mid(30, nameLength))
+            return fail(QStringLiteral("ZIP 中央目录名称或范围不一致"));
+        end += centralLength;
+        if (blob.size() - end < 22 || u32(end) != 0x06054b50 || u16(end + 4) || u16(end + 6) ||
+            u16(end + 8) != 1 || u16(end + 10) != 1 || u32(end + 12) != centralLength ||
+            u32(end + 16) != central || u16(end + 20) != blob.size() - end - 22)
+            return fail(QStringLiteral("ZIP 结束目录无效"));
+    }
+    result.swap(output);
+    return true;
 }
 
 } // namespace cmo3

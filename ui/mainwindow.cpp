@@ -17,6 +17,7 @@
 #include <QEventLoop>
 #include <QDirIterator>
 #include "ui/cpsdbatchdialog.h"
+#include "ui/cpsdrecoverydialog.h"
 #include "ui/cruntimeexportdialog.h"
 #include "ui/cexporttaskrunner.h"
 #include "ui/psdbatchjob.h"
@@ -180,6 +181,8 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    if (m_psdRecoveryActive && m_activeExportControl) m_activeExportControl->Cancel();
+    if (m_psdRecoveryDialog) disconnect(m_psdRecoveryDialog, nullptr, this, nullptr);
     CancelAutomaticMesh();
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     m_workspaceLayouts.Capture(*this);
@@ -2121,6 +2124,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
 {
     if (models.isEmpty() || outputDirectory.isEmpty() || m_psdBatch || m_batchExporting ||
         m_closingModel || m_previewExport.IsBusy() || !EndKeyformEditing()) return;
+    m_exportResultsAreRecovery = false;
     m_lastBatchOptions = {outputDirectory, all, groups, textures, cubismCompat};
     auto* job = new PsdBatchJob(this);
     m_psdBatch = job;
@@ -2245,6 +2249,9 @@ void MainWindow::RefreshExportActions()
     if (!alive) return;
     const bool exporting = m_psdBatch || m_batchExporting;
     const bool busy = exporting || m_previewExport.IsBusy() || m_artworkLoading;
+    if (m_psdRecoveryAction) m_psdRecoveryAction->setEnabled(!busy && !m_closingModel &&
+        !m_materialEditor.IsActive() && !m_atlasEditor.IsActive() && !m_applyingSession);
+    if (!alive) return;
     if (myBatchAction) myBatchAction->setEnabled(!busy && !m_closingModel);
     if (!alive) return;
     if (m_runtimeExportAction) m_runtimeExportAction->setEnabled(!busy && !m_closingModel && m_runtimePanelsInitialized);
@@ -2258,8 +2265,9 @@ void MainWindow::RefreshExportActions()
     if (m_exportResultsPanel) {
         m_exportResultsPanel->SetBusy(exporting);
         if (!alive) return;
-        m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy(),
-            QStringLiteral("请先恢复或关闭当前预览，再重试失败项。"));
+        m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy() && !m_exportResultsAreRecovery,
+            m_exportResultsAreRecovery ? QStringLiteral("请在“从工程恢复 PSD”窗口重新选择保存路径并重试。") :
+                QStringLiteral("请先恢复或关闭当前预览，再重试失败项。"));
         if (!alive) return;
     }
     if (m_recoverPreviewAction) {
@@ -2918,6 +2926,14 @@ bool MainWindow::CloseModel()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_psdRecoveryActive) {
+        m_closeAfterExport = true;
+        if (m_activeExportControl) m_activeExportControl->Cancel();
+        if (m_psdRecoveryDialog) m_psdRecoveryDialog->reject();
+        else if (!m_activeExportControl) FinishPsdRecovery();
+        event->ignore();
+        return;
+    }
     if (m_batchExporting || m_psdBatch) {
         m_closeAfterExport = true;
         if (m_activeExportControl) m_activeExportControl->Cancel();
@@ -3925,6 +3941,7 @@ void MainWindow::createActions()
 
     connect(myAction, &QAction::triggered, this, &MainWindow::on_actionpsdPrint_triggered);
     connect(myBatchAction, &QAction::triggered, this, &MainWindow::on_actionBatchPsd_triggered);
+    ConfigurePsdRecoveryAction();
 
     myCloseAction = new QAction(tr("关闭模型"), this);
     myCloseAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
@@ -4078,6 +4095,7 @@ void MainWindow::setupUI()
     mainToolBar->addSeparator();
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
+    mainToolBar->addAction(m_psdRecoveryAction);
     mainToolBar->addAction(myCmo3Action);
     mainToolBar->addAction(m_runtimeExportAction);
     mainToolBar->addAction(m_exportResultsAction);
