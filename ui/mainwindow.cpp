@@ -388,6 +388,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     candidate.references = m_parameterResources;
     candidate.parameterMetadata = m_document.ParameterMetadataOverrides();
     candidate.parameterOrganization = m_document.ParameterOrganization();
+    candidate.geometryObjectPairs = m_document.GeometryObjectPairs();
     ParameterReferenceCatalog catalog;
     if (!model->CaptureParameterReferenceCatalog(catalog, error)) return false;
     candidate.modelSettingsDigest = catalog.modelSettingsDigest;
@@ -627,8 +628,8 @@ void MainWindow::on_actionCmo3Export_triggered()
         confirmation.setInformativeText(QStringLiteral("导出需要转换以下物理设置：\n%1\n\n原值会保留在当前草稿中，可另行导出物理配置或运行时模型包。")
             .arg(physicsExport.conversions.join(QLatin1Char('\n'))));
     }
-    if (m_document.ParameterOrganization().configured) {
-        const auto note = QStringLiteral("参数文件夹、排序、标签颜色和配对规则目前保存在工作会话与模型包中，本次 cmo3 不包含这些组织设置。");
+    if (m_document.ParameterOrganization().configured || !m_document.GeometryObjectPairs().pairs.isEmpty()) {
+        const auto note = QStringLiteral("参数组织和几何配对设置目前保存在工作会话与模型包中，本次 cmo3 不包含这些组织设置。");
         confirmation.setInformativeText(confirmation.informativeText().isEmpty() ? note
             : confirmation.informativeText() + QStringLiteral("\n\n") + note);
     }
@@ -733,6 +734,7 @@ bool MainWindow::SaveSession()
     }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
     session.parameterOrganization = m_document.ParameterOrganization();
+    session.geometryObjectPairs = m_document.GeometryObjectPairs();
     session.visibility = m_document.VisibilityState();
     if (m_treePanel) {
         session.locked = m_treePanel->LockedState();
@@ -1345,7 +1347,7 @@ bool MainWindow::ActivateKeyform(const QString& id, int keyform, QString* error)
     return ActivateKeyform(id, QStringLiteral("artmesh"), keyform, error);
 }
 
-bool MainWindow::ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error)
+bool MainWindow::ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error, bool allowLockedPreview)
 {
     if (!FinishParameterValueEditing(error)) return false;
     if (!m_openglwindows || !m_openglwindows->FinishMeshDrag(false, error)) return false;
@@ -1358,12 +1360,14 @@ bool MainWindow::ActivateKeyform(const QString& id, const QString& type, int key
         auto* model = LAppLive2DManager::GetInstance()->GetModel(0);
         if (model) values = model->GetParameterValues();
     }
-    if (!m_keyformEditor.Activate(id, type, keyform, values, error)) return false;
+    if (!(allowLockedPreview ? m_keyformEditor.Preview(id, type, keyform, values, error)
+                            : m_keyformEditor.Activate(id, type, keyform, values, error))) return false;
     if (m_motionPanel) m_motionPanel->PauseTimelinePreview();
     if (!wasActive) m_keyformBaseValues = values;
     RefreshKeyformUi();
-    statusBar()->showMessage(QStringLiteral("正在编辑 %1 的关键形 %2；Esc 取消拖拽，再按 Esc 结束编辑")
-                            .arg(id).arg(keyform));
+    statusBar()->showMessage(allowLockedPreview
+        ? QStringLiteral("正在查看 %1 的第 %2 个关键形；Esc 结束预览").arg(id).arg(keyform + 1)
+        : QStringLiteral("正在编辑 %1 的关键形 %2；Esc 取消拖拽，再按 Esc 结束编辑").arg(id).arg(keyform));
     return true;
 }
 
@@ -1412,13 +1416,16 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
-    if (edit.field == live2dstruct::CModelEdit::ParameterOrganization) {
+    if (edit.field == live2dstruct::CModelEdit::ParameterOrganization ||
+        edit.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
+        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!m_document.ExecuteEdit(edit)) {
-            if (error) *error = QStringLiteral("参数组织已改变，请重新打开设置");
+            if (error) *error = QStringLiteral("组织或配对状态已改变，请重新打开设置");
             return false;
         }
         m_sessionDirty = true;
         RefreshWindowTitle();
+        RefreshGeometryPairActions();
         return true;
     }
     if (edit.field != live2dstruct::CModelEdit::ParameterMetadata && edit.field != live2dstruct::CModelEdit::ParameterStructure &&
@@ -1464,14 +1471,17 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
     if (pending.field == live2dstruct::CModelEdit::ParameterValue || pending.field == live2dstruct::CModelEdit::ParameterValues)
         return ApplyParameterValueHistory(undo, edit, error);
-    if (pending.field == live2dstruct::CModelEdit::ParameterOrganization) {
+    if (pending.field == live2dstruct::CModelEdit::ParameterOrganization ||
+        pending.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
         const QPointer<MainWindow> alive(this);
+        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
-        if (m_paramPanel) m_paramPanel->RefreshOrganization();
+        if (m_paramPanel && edit.field == live2dstruct::CModelEdit::ParameterOrganization) m_paramPanel->RefreshOrganization();
         if (!alive) return false;
         m_sessionDirty = true;
         RefreshWindowTitle();
         RefreshUndoActions();
+        RefreshGeometryPairActions();
         return true;
     }
     if (pending.field != live2dstruct::CModelEdit::ParameterMetadata && pending.field != live2dstruct::CModelEdit::ParameterStructure &&
@@ -1736,7 +1746,7 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
-    } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions) {
+    } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions || edit.field == live2dstruct::CModelEdit::GeometryKeyforms) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
@@ -2926,9 +2936,13 @@ void MainWindow::RestDock(const QString &name)
     m_cidJson = new CCidJson();
     QString displayError;
     if (!modeljson.m_DisplayInfo.isEmpty() &&
-        m_cidJson->Parse(CModelResourcePath::Resolve(modeljson.m_parentPath, modeljson.m_DisplayInfo), &displayError) &&
-        m_cidJson->ParameterOrganization())
-        m_document.SetParameterOrganization(*m_cidJson->ParameterOrganization(), &displayError);
+        m_cidJson->Parse(CModelResourcePath::Resolve(modeljson.m_parentPath, modeljson.m_DisplayInfo), &displayError)) {
+        QStringList errors;
+        QString detail;
+        if (m_cidJson->ParameterOrganization() && !m_document.SetParameterOrganization(*m_cidJson->ParameterOrganization(), &detail)) errors.append(detail);
+        if (m_cidJson->GeometryObjectPairs() && !m_document.SetGeometryObjectPairs(*m_cidJson->GeometryObjectPairs(), &detail)) errors.append(detail);
+        displayError = errors.join(QStringLiteral("；"));
+    }
     if (!displayError.isEmpty()) statusBar()->showMessage(QStringLiteral("显示信息未完整载入：%1").arg(displayError), 10000);
 
     // 创建模型结构树面板（左侧）
@@ -3175,6 +3189,9 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::ObjectsSelected, this, &MainWindow::SelectModelObjects);
     connect(m_treePanel, &CModelTreePanel::CreateDeformerRequested, this, &MainWindow::CreateDeformer);
     connect(m_treePanel, &CModelTreePanel::RemoveDeformerRequested, this, &MainWindow::RemoveDeformer);
+    connect(m_treePanel, &CModelTreePanel::EditGeometryPairsRequested, this, &MainWindow::EditGeometryPairs);
+    connect(m_treePanel, &CModelTreePanel::MirrorGeometryPairRequested, this, &MainWindow::MirrorGeometryPair);
+    connect(m_treePanel, &CModelTreePanel::ViewGeometryPairRequested, this, &MainWindow::ViewGeometryPair);
     connect(m_treePanel, &CModelTreePanel::WarpSelected, m_openglwindows, &OpengGlForm::do_ShowWarp);
     connect(m_treePanel, &CModelTreePanel::ShowDeformers, this, [this](const QStringList& ids) {
         if (!m_keyformEditor.IsActive()) m_openglwindows->do_ShowDeformers(ids);

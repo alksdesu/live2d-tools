@@ -45,6 +45,7 @@ public:
     QString GetSelectionId() const { return m_selectionName; }
     QString GetSelectionType() const { return m_selectionType; }
     int GetActiveKeyformIndex() const { return m_activeKeyformIndex; }
+    int GetActiveGeometryKeyformIndex() const { return m_selectionType == QLatin1String("artmesh") ? m_activeKeyformIndex : m_activeDeformerKeyform; }
 
 public slots:
     void Undo();

@@ -6,9 +6,11 @@
 #include "tree/c2dtree.h"
 
 #include <QSet>
+#include <QtMath>
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <limits>
 
 namespace live2dstruct {
 namespace {
@@ -111,6 +113,10 @@ struct CDeformerEditContext::State
     const C2DTreeNode* target = nullptr;
     QVector<float> points;
     QPointF direction;
+    std::shared_ptr<const CCoordinateFrame> parentFrame;
+    CModelRotationKeyform rotation;
+    float baseAngle = 0;
+    bool isRotation = false;
 };
 
 bool CDeformerEditContext::Build(const CModelDocument& document, const QString& id, const QString& type,
@@ -212,6 +218,10 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
                     return fail(error, QStringLiteral("旋转变形器的父方向退化或无法求值：%1").arg(id));
                 const QPointF y = rotation->GetCanvasBasis()->yAxis;
                 candidate->direction = QPointF(-y.x(), y.y());
+                candidate->parentFrame = node->ParentFrame();
+                candidate->rotation = document.DeformerRotationKeyforms(id).at(keyform);
+                candidate->baseAngle = document.Deformers()[targetIndex].baseAngle;
+                candidate->isRotation = true;
             } else if (!dynamic_cast<const CWarpNode*>(node))
                 return fail(error, QStringLiteral("求值树目标类型不一致：%1").arg(id));
         }
@@ -269,5 +279,94 @@ const QVector<float>& CDeformerEditContext::ModelPoints() const
 QPointF CDeformerEditContext::RotationDirection() const
 {
     return m_state ? m_state->direction : QPointF();
+}
+
+bool CDeformerEditContext::CurrentRotationFrame(CRotationFrameGeometry::Frame& result, QString* error) const
+{
+    if (!m_state || !m_state->isRotation)
+        return fail(error, QStringLiteral("当前上下文不是旋转变形器"));
+    return ResolveRotation(m_state->rotation, result, error);
+}
+
+bool CDeformerEditContext::ResolveRotation(const CModelRotationKeyform& keyform,
+                                          CRotationFrameGeometry::Frame& result, QString* error) const
+{
+    if (error) error->clear();
+    if (!m_state || !m_state->isRotation)
+        return fail(error, QStringLiteral("当前上下文不是旋转变形器"));
+    if (!keyform.IsValid()) return fail(error, QStringLiteral("旋转关键形数值无效"));
+    try {
+        CRotationNodeKeyform key(keyform.opacity, keyform.angle, keyform.originX, keyform.originY,
+                                keyform.scale, keyform.reflectX, keyform.reflectY);
+        CCoordinateFrame::ResolvedRotation resolved;
+        if (!CCoordinateFrame::ResolveRotation(m_state->baseAngle, key, m_state->parentFrame, resolved))
+            return fail(error, QStringLiteral("旋转关键形的父方向退化或坐标超出范围"));
+        const auto model = [](QPointF point) { return QPointF(point.x(), -point.y()); };
+        CRotationFrameGeometry::Frame candidate{model(resolved.basis.origin), model(resolved.basis.xAxis),
+                                               model(resolved.basis.yAxis), std::abs(double(resolved.signedScale))};
+        if (!CRotationFrameGeometry::Validate(candidate, error)) return false;
+        result = candidate;
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("旋转坐标系求值失败，原输出保持不变"));
+    }
+}
+
+bool CDeformerEditContext::SolveRotation(const CRotationFrameGeometry::Frame& desired,
+                                        const CModelRotationKeyform& reference, CModelRotationKeyform& result,
+                                        QString* error, ReflectionPolicy reflection) const
+{
+    if (error) error->clear();
+    if (!m_state || !m_state->isRotation)
+        return fail(error, QStringLiteral("当前上下文不是旋转变形器"));
+    if (!reference.IsValid() || (reflection != ReflectionPolicy::Preserve && reflection != ReflectionPolicy::AllowChange))
+        return fail(error, QStringLiteral("旋转求解参考关键形或反射策略无效"));
+    if (!CRotationFrameGeometry::Validate(desired, error)) return false;
+    try {
+        QVector<float> local;
+        if (!FromModel({float(desired.origin.x()), float(desired.origin.y())}, local, error)) return false;
+        CRotationFrameGeometry::Frame referenceFrame;
+        const auto exact = [](QPointF first, QPointF second) { return first.x() == second.x() && first.y() == second.y(); };
+        if (ResolveRotation(reference, referenceFrame) && exact(referenceFrame.origin, desired.origin) &&
+            exact(referenceFrame.xAxis, desired.xAxis) && exact(referenceFrame.yAxis, desired.yAxis) && referenceFrame.scale == desired.scale) {
+            result = reference;
+            return true;
+        }
+        CModelRotationKeyform candidate = reference;
+        candidate.originX = local[0]; candidate.originY = local[1];
+        CRotationNodeKeyform neutral(reference.opacity, 0, candidate.originX, candidate.originY, 1, false, false);
+        CCoordinateFrame::ResolvedRotation parent;
+        if (!CCoordinateFrame::ResolveRotation(m_state->baseAngle, neutral, m_state->parentFrame, parent) ||
+            parent.parentSignedScale == 0)
+            return fail(error, QStringLiteral("目标父坐标系的方向或尺度无法反解"));
+        const double magnitude = desired.scale / std::abs(double(parent.parentSignedScale));
+        if (!std::isfinite(magnitude) || magnitude > std::numeric_limits<float>::max() ||
+            (magnitude != 0 && float(magnitude) == 0))
+            return fail(error, QStringLiteral("目标旋转尺度超出可表示范围"));
+        candidate.scale = float(magnitude) * (std::signbit(reference.scale) ? -1.0f : 1.0f);
+        const QPointF x(desired.xAxis.x(), -desired.xAxis.y());
+        const QPointF y(desired.yAxis.x(), -desired.yAxis.y());
+        const bool negativeParity = x.x() * y.y() - x.y() * y.x() < 0;
+        candidate.reflectY = negativeParity ? !candidate.reflectX : candidate.reflectX;
+        if (reflection == ReflectionPolicy::Preserve && candidate.reflectY != reference.reflectY)
+            return fail(error, QStringLiteral("目标方向需要改变反射标记，请先确认全部关联关键形的反射一致性"));
+        const double totalScale = double(candidate.scale) * parent.parentSignedScale;
+        if (desired.scale != 0 && float(totalScale) == 0)
+            return fail(error, QStringLiteral("目标旋转总尺度低于可表示精度"));
+        const double sign = (totalScale < 0 ? -1.0 : 1.0) * (candidate.reflectX ? -1.0 : 1.0);
+        const double principal = qRadiansToDegrees(std::atan2(x.y() * sign, x.x() * sign)) -
+                                 parent.parentAngle - m_state->baseAngle;
+        const double angle = double(reference.angle) +
+            std::remainder(principal - std::remainder(double(reference.angle), 360.0), 360.0);
+        if (!std::isfinite(angle) || std::abs(angle) > std::numeric_limits<float>::max())
+            return fail(error, QStringLiteral("目标旋转角度超出可表示范围"));
+        candidate.angle = float(angle);
+        CRotationFrameGeometry::Frame actual;
+        if (!ResolveRotation(candidate, actual, error) || !CRotationFrameGeometry::Matches(actual, desired, error)) return false;
+        result = candidate;
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("旋转坐标系反解失败，原输出保持不变"));
+    }
 }
 }

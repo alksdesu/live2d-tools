@@ -77,6 +77,9 @@ SOURCES += \
     live2dstruct/ckeyformmappingcontext.cpp \
     live2dstruct/ckeyformeditcontroller.cpp \
     live2dstruct/cdeformereditcontext.cpp \
+    live2dstruct/crotationframegeometry.cpp \
+    live2dstruct/cgeometrypairplanner.cpp \
+    live2dstruct/ckeyformpairing.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
     live2dstruct/cmocruntimebuilder.cpp \
     live2dstruct/cmocdeformerorder.cpp \
@@ -127,8 +130,13 @@ SOURCES += \
     ui/cmodeltreepanel.cpp \
     ui/cparampanel.cpp \
     ui/cparameterorganizationdialog.cpp \
+    ui/cgeometrypairsdialog.cpp \
     ui/cparampanelorganization.cpp \
     live2dstruct/cmodeldocumentorganization.cpp \
+    live2dstruct/cmodelgeometryedit.cpp \
+    live2dstruct/cmodeldocumentgeometry.cpp \
+    live2dstruct/cgeometryobjectpairs.cpp \
+    live2dstruct/cmodeldocumentpairs.cpp \
     live2dstruct/cmodelsavefingerprint.cpp \
     live2dstruct/cparameterorganization.cpp \
     live2dstruct/cparametervalueeditcontroller.cpp \
@@ -205,6 +213,7 @@ SOURCES += \
     main.cpp \
     ui/mainwindow.cpp \
     ui/mainwindowparameters.cpp \
+    ui/mainwindowgeometrypairs.cpp \
     ui/mainwindowparametervalues.cpp \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
@@ -399,6 +408,11 @@ HEADERS += \
     ui/cparameterorganizationdialog.h \
     live2dstruct/cparameterorganization.h \
     live2dstruct/cmodelsavefingerprint.h \
+    live2dstruct/cmodelgeometryedit.h \
+    live2dstruct/cgeometryobjectpairs.h \
+    live2dstruct/crotationframegeometry.h \
+    live2dstruct/cgeometrypairplanner.h \
+    ui/cgeometrypairsdialog.h \
     live2dstruct/cparametervalueeditcontroller.h \
     live2dstruct/cparameterselectionquery.h \
     ui/cxyparameterpad.h \

@@ -12,13 +12,14 @@ bool CModelSaveFingerprint::Capture(const CModelDocument& document, QByteArray& 
 {
     if (error) error->clear();
     QByteArray runtime;
-    QJsonObject organization;
+    QJsonObject organization, pairs;
     if (!document.IsLoaded()) {
         if (error) *error = QStringLiteral("尚未载入模型，无法计算保存状态");
         return false;
     }
     if (!document.BuildRuntimeMoc(runtime, error) ||
-        !CParameterOrganization::ToJson(document.ParameterOrganization(), organization, error)) return false;
+        !CParameterOrganization::ToJson(document.ParameterOrganization(), organization, error) ||
+        !CGeometryObjectPairs::ToJson(document.GeometryObjectPairs(), pairs, error)) return false;
     QByteArray encoded;
     QDataStream stream(&encoded, QIODevice::WriteOnly);
     stream.setVersion(QDataStream::Qt_6_0);
@@ -49,7 +50,8 @@ bool CModelSaveFingerprint::Capture(const CModelDocument& document, QByteArray& 
     auto sourceDeformers = document.HasDeformerStructure() ? document.SourceDeformerIds().values() : QStringList{};
     std::sort(sourceDeformers.begin(), sourceDeformers.end());
     stream << document.VisibilityState() << locks << document.HasMeshStructure() << document.HasDeformerStructure()
-           << sourceDeformers << QJsonDocument(organization).toJson(QJsonDocument::Compact);
+           << sourceDeformers << QJsonDocument(organization).toJson(QJsonDocument::Compact)
+           << QJsonDocument(pairs).toJson(QJsonDocument::Compact);
     if (stream.status() != QDataStream::Ok) {
         if (error) *error = QStringLiteral("无法计算模型保存状态");
         return false;

@@ -10,6 +10,7 @@ class CCidJson;
 class QTabWidget;
 class QLineEdit;
 class QPushButton;
+class QLabel;
 class CModelHierarchyModel;
 class CModelHierarchyView;
 
@@ -21,6 +22,7 @@ public:
     void BuildTree(const QString& mocPath, CCidJson* cid);
     bool BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
     void SetDeformerActionsEnabled(bool create, bool remove);
+    void SetGeometryPairActionsEnabled(bool edit, bool mirror, const QString& detail = {});
     void HighlightObjects(const QStringList& ids, const QStringList& types);
     QMap<QString, bool> VisibilityState() const;
     QMap<QString, bool> LockedState() const;
@@ -35,6 +37,9 @@ public slots:
 signals:
     void CreateDeformerRequested();
     void RemoveDeformerRequested();
+    void EditGeometryPairsRequested();
+    void MirrorGeometryPairRequested();
+    void ViewGeometryPairRequested();
     void ObjectSelected(const QString& name, const QString& type);
     void ObjectsSelected(const QStringList& names, const QStringList& types);
     void MeshSelected(const QString& artName);
@@ -61,6 +66,9 @@ private:
     QLineEdit* m_search = nullptr;
     QPushButton* m_createDeformer = nullptr;
     QPushButton* m_removeDeformer = nullptr;
+    QPushButton* m_geometryPairs = nullptr;
+    QPushButton* m_mirrorGeometryPair = nullptr;
+    QLabel* m_geometryPairHint = nullptr;
     CModelHierarchyView* m_partTree = nullptr;
     CModelHierarchyView* m_deformerTree = nullptr;
     CModelHierarchyModel* m_partModel = nullptr;

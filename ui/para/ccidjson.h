@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <optional>
 #include "live2dstruct/cparameterorganization.h"
+#include "live2dstruct/cgeometryobjectpairs.h"
 
 
 class CVetGroup{
@@ -35,6 +36,7 @@ public:
     const QString& SourcePath() const { return m_sourcePath; }
     const QByteArray& SourceDigest() const { return m_sourceDigest; }
     const std::optional<live2dstruct::CParameterOrganization::State>& ParameterOrganization() const { return m_parameterOrganization; }
+    const std::optional<live2dstruct::CGeometryObjectPairs::State>& GeometryObjectPairs() const { return m_geometryObjectPairs; }
 
     const QString& getPartName(const QString& Id){
         if(m_PartsIdToName.contains(Id)){
@@ -83,6 +85,7 @@ private:
     QString m_sourcePath;
     QByteArray m_sourceDigest;
     std::optional<live2dstruct::CParameterOrganization::State> m_parameterOrganization;
+    std::optional<live2dstruct::CGeometryObjectPairs::State> m_geometryObjectPairs;
 
 };
 

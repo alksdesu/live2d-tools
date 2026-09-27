@@ -363,7 +363,7 @@ QTabBar::tab:selected {
     font-weight: 600;
 }
 
-QTreeWidget, QTreeView, CModelHierarchyView, QListWidget, QTableWidget {
+QTreeWidget, QTreeView, CModelHierarchyView, QListWidget, QTableWidget, QTableView {
     background: @surface@;
     alternate-background-color: @surfaceMuted@;
     border: 1px solid @border@;
@@ -388,18 +388,18 @@ QTreeWidget::item:selected, QTreeView::item:selected, CModelHierarchyView::item:
     color: @accentInk@;
 }
 
-QTreeWidget::indicator, CModelHierarchyView::indicator, QTableWidget::indicator, QListWidget::indicator {
+QTreeWidget::indicator, CModelHierarchyView::indicator, QTableWidget::indicator, QTableView::indicator, QListWidget::indicator {
     width: @itemCheckSize@;
     height: @itemCheckSize@;
 }
 
-QTreeWidget::indicator:checked, CModelHierarchyView::indicator:checked, QTableWidget::indicator:checked, QListWidget::indicator:checked {
+QTreeWidget::indicator:checked, CModelHierarchyView::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked, QListWidget::indicator:checked {
     background: @accent@;
     border: @borderWidth@ solid @accentHover@;
     border-radius: @itemCheckRadius@;
 }
 
-QTreeWidget::indicator:unchecked, CModelHierarchyView::indicator:unchecked, QTableWidget::indicator:unchecked, QListWidget::indicator:unchecked {
+QTreeWidget::indicator:unchecked, CModelHierarchyView::indicator:unchecked, QTableWidget::indicator:unchecked, QTableView::indicator:unchecked, QListWidget::indicator:unchecked {
     background: @surface@;
     border: @borderWidth@ solid @borderStrong@;
     border-radius: @itemCheckRadius@;
@@ -554,13 +554,13 @@ QToolTip {
     padding: 6px 8px;
 }
 QPushButton:focus, QToolButton:focus,
-QTreeWidget:focus, QTreeView:focus, CModelHierarchyView:focus, QListWidget:focus, QTableWidget:focus {
+QTreeWidget:focus, QTreeView:focus, CModelHierarchyView:focus, QListWidget:focus, QTableWidget:focus, QTableView:focus {
     outline: @focusWidth@ solid @focus@;
     outline-offset: @focusInset@;
     outline-radius: @radiusSmall@;
 }
 QPushButton#primaryBtn:focus { outline-color: @accentText@; }
-QTableWidget:focus { border-color: @focus@; }
+QTableWidget:focus, QTableView:focus { border-color: @focus@; }
 QTabBar::tab:focus, QCheckBox:focus, QRadioButton:focus, QSlider:focus { border-color: @focus@; }
 )" );
     for (auto it = token.cbegin(); it != token.cend(); ++it) style.replace(it.key(), it.value());

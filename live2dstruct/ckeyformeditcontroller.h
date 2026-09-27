@@ -4,6 +4,7 @@
 #include "cmodeldocument.h"
 #include "ckeyformmappingcontext.h"
 #include "cdeformereditcontext.h"
+#include "cgeometrypairplanner.h"
 #include <QPointF>
 #include <functional>
 #include <optional>
@@ -60,6 +61,8 @@ public:
     bool Activate(const QString& id, int keyform, const QMap<QString, float>& currentValues, QString* error = nullptr);
     bool Activate(const QString& id, const QString& type, int keyform,
                   const QMap<QString, float>& currentValues, QString* error = nullptr);
+    bool Preview(const QString& id, const QString& type, int keyform,
+                 const QMap<QString, float>& currentValues, QString* error = nullptr);
     static bool Handles(const CModelEdit& edit);
     bool End(QString* error = nullptr);
     bool Submit(const CModelEdit& edit, QString* error = nullptr);
@@ -82,6 +85,8 @@ public:
     const QMap<QString, float>& Pose() const { return m_pose; }
 
 private:
+    bool ActivateState(const QString& id, const QString& type, int keyform,
+                       const QMap<QString, float>& currentValues, bool requireEditable, QString* error);
     bool PublishDefinitions(CModelDocument candidate, bool restoreSession, QString* error);
     bool PublishStructure(CModelDocument candidate, const CModelEdit& command, bool forward,
                           bool restoreSession, QString* error);
@@ -95,6 +100,7 @@ private:
         QVector<float> model;
         QVector<int> selected;
         quint64 revision = 0;
+        std::optional<CGeometryPairPlanner::SynchronizationContext> paired;
     };
     struct DeformerDrag
     {
@@ -106,6 +112,7 @@ private:
         QVector<CModelWarpKeyform> warp;
         QVector<CModelRotationKeyform> rotation;
         quint64 revision = 0;
+        std::optional<CGeometryPairPlanner::SynchronizationContext> paired;
     };
     bool CanEdit(const QString& id, int keyform, QString* error) const;
     bool CanEdit(const QString& id, const QString& type, int keyform, QString* error) const;
@@ -113,6 +120,15 @@ private:
                           int keyform, QString* error);
     bool MakePose(const QString& id, const QString& type, int keyform, const QMap<QString, float>& base,
                   QMap<QString, float>& pose, QString* error) const;
+    static bool PreparePairedEdit(const CModelDocument& document, const CModelEdit& edit,
+                                  const QMap<QString, float>& pose, int driverKeyform,
+                                  CModelEdit& result, QString* error);
+    static bool PreparePairSynchronization(const CModelDocument& document, const QString& id, const QString& type,
+                                           int keyform, const QMap<QString, float>& pose,
+                                           std::optional<CGeometryPairPlanner::SynchronizationContext>& result, QString* error);
+    static bool PreparePairedDrag(const CModelDocument& document, const CModelEdit& edit, int keyform,
+                                  const CGeometryPairPlanner::SynchronizationContext& context,
+                                  CModelEdit& result, QString* error);
     bool Publish(CModelDocument candidate, const QMap<QString, float>& pose, bool editing, QString* error);
     bool Ready(QString* error) const;
     CModelDocument* m_document = nullptr;

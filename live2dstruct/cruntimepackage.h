@@ -24,6 +24,7 @@ public:
         QMap<QString, QByteArray> expectedSourceDigests;
         QHash<QString, CModelParameterMetadata> parameterMetadata;
         CParameterOrganization::State parameterOrganization;
+        CGeometryObjectPairs::State geometryObjectPairs;
         std::optional<QByteArray> physics, pose, userData, timeline;
         QString timelineGroup = QStringLiteral("Edited");
         QString timelineSoundPath;

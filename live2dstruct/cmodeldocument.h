@@ -17,6 +17,8 @@
 #include "cdeformerpreserverequest.h"
 #include "ckeyformgridsnapshot.h"
 #include "cparameterorganization.h"
+#include "cmodelgeometryedit.h"
+#include "cgeometryobjectpairs.h"
 
 namespace live2dstruct {
 class CReader;
@@ -176,7 +178,7 @@ struct CModelEditStorageState
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs };
     QString name;
     QString type;
     Field field = Visibility;
@@ -203,6 +205,10 @@ public:
     void Clear();
     quint64 Revision() const { return m_revision; }
     void CommitCandidate(CModelDocument&& candidate) noexcept;
+    bool CaptureGeometryKeyform(CModelGeometryKeyform::Type type, const QString& id, int keyform,
+                                CModelGeometryKeyform& result, QString* error = nullptr) const;
+    bool MakeGeometryEdit(const CModelGeometryState& before, const CModelGeometryState& after,
+                          const CModelGeometryKeyform& driver, CModelEdit& edit, QString* error = nullptr) const;
 
     bool IsLoaded() const { return m_loaded; }
     const QString& SourcePath() const { return m_sourcePath; }
@@ -252,6 +258,10 @@ public:
                                    CModelEdit& edit, QString* error = nullptr) const;
     bool SetParameterMetadata(const QString& id, const CModelParameterMetadata& metadata);
     const QHash<QString, CModelParameterMetadata>& ParameterMetadataOverrides() const { return m_parameterMetadataOverrides; }
+    const CGeometryObjectPairs::State& GeometryObjectPairs() const { return m_geometryObjectPairs; }
+    bool SetGeometryObjectPairs(const CGeometryObjectPairs::State& state, QString* error = nullptr);
+    bool MakeGeometryObjectPairsEdit(const CGeometryObjectPairs::State& state, CModelEdit& edit,
+                                     QString* error = nullptr) const;
     const CParameterOrganization::State& ParameterOrganization() const { return m_parameterOrganization; }
     bool SetParameterOrganization(const CParameterOrganization::State& state, QString* error = nullptr);
     bool MakeParameterOrganizationEdit(const CParameterOrganization::State& state, CModelEdit& edit,
@@ -335,7 +345,8 @@ private:
                                     bool forward, QString* error) const;
     bool SameDeformerDirectory(const CModelDocument& candidate, QString* error) const;
     bool MakeParameterStructureEdit(const CMocParameterStructureBuilder::Result& result, const QString& id,
-                                    const QString* displayName, bool created, CModelEdit& edit, QString* error) const;
+                                    const QString* displayName, bool created, CModelEdit& edit, QString* error,
+                                    const CMocParameterStructureBuilder::EditBindingKeysRequest* keys = nullptr) const;
     bool ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit, bool forward, QString* error) const;
     bool ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,
@@ -368,6 +379,7 @@ private:
     QHash<QString, float> m_parameterValues;
     QHash<QString, CModelParameterMetadata> m_parameterMetadataOverrides;
     CParameterOrganization::State m_parameterOrganization;
+    CGeometryObjectPairs::State m_geometryObjectPairs;
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;
     QHash<QString, QVector<quint16>> m_drawableIndexOverrides;
     QHash<QString, QVector<int>> m_drawableMaskIndexOverrides;
@@ -379,7 +391,14 @@ private:
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;
 
+    bool ReconcileGeometryObjectPairs(CModelDocument& candidate, const QVector<CGeometryObjectPairs::VertexRemap>& vertices,
+                                       const CMocParameterStructureBuilder::Result* parameters,
+                                       const CMocParameterStructureBuilder::EditBindingKeysRequest* keys,
+                                       QString* error) const;
     bool ApplyEdit(const CModelEdit& edit, bool forward);
+    bool ApplyGeometryEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
+    bool ValidateGeometryEditStorage(const CModelEdit& edit) const;
+    QByteArray GeometryEditStorageFingerprint(const CModelEdit& edit) const;
     bool LoadInternal(CReader& reader, const QString& sourcePath, QString* error);
 };
 

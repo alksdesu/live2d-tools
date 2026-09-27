@@ -269,6 +269,22 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     QVariantMap state;
     QSet<QString> ids{edit.name};
     switch (edit.field) {
+    case CModelEdit::GeometryKeyforms: {
+        QSet<QString> meshes, warps, rotations;
+        for (const auto& value : {edit.before, edit.after}) {
+            const auto forms = value.value<CModelGeometryState>();
+            for (const auto& form : forms) {
+                if (form.type == CModelGeometryKeyform::ArtMesh) meshes.insert(form.id);
+                else if (form.type == CModelGeometryKeyform::Warp) warps.insert(form.id);
+                else if (form.type == CModelGeometryKeyform::Rotation) rotations.insert(form.id);
+            }
+        }
+        captureEntries(state, "positions", m_drawableKeyformPositionOverrides, meshes);
+        captureEntries(state, "warp", m_deformerWarpKeyformOverrides, warps);
+        captureEntries(state, "rotation", m_deformerRotationKeyformOverrides, rotations);
+        state.insert("geometryFingerprint", GeometryEditStorageFingerprint(edit));
+        break;
+    }
     case CModelEdit::ParameterValues:
         ids.clear();
         for (const auto& value : {edit.before, edit.after}) {
@@ -284,7 +300,10 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     case CModelEdit::Opacity: captureEntries(state, "opacity", m_drawableOpacityOverrides, ids); break;
     case CModelEdit::DrawOrder: captureEntries(state, "drawOrder", m_drawableDrawOrderOverrides, ids); break;
     case CModelEdit::KeyformPositions: captureEntries(state, "positions", m_drawableKeyformPositionOverrides, ids); break;
-    case CModelEdit::MeshIndices: captureEntries(state, "indices", m_drawableIndexOverrides, ids); break;
+    case CModelEdit::MeshIndices:
+        captureEntries(state, "indices", m_drawableIndexOverrides, ids);
+        state.insert("geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs));
+        break;
     case CModelEdit::MaskIndices: captureEntries(state, "masks", m_drawableMaskIndexOverrides, ids); break;
     case CModelEdit::MaskInverted: captureEntries(state, "inverted", m_drawableMaskInvertedOverrides, ids); break;
     case CModelEdit::DeformerParent: captureEntries(state, "parents", m_deformerParentOverrides, ids); break;
@@ -297,12 +316,18 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
 
 bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
 {
-    return restoreEntries(state, "parameters", m_parameterValues) && restoreEntries(state, "metadata", m_parameterMetadataOverrides) &&
+    if (!(restoreEntries(state, "parameters", m_parameterValues) && restoreEntries(state, "metadata", m_parameterMetadataOverrides) &&
         restoreEntries(state, "opacity", m_drawableOpacityOverrides) && restoreEntries(state, "drawOrder", m_drawableDrawOrderOverrides) &&
         restoreEntries(state, "positions", m_drawableKeyformPositionOverrides) && restoreEntries(state, "indices", m_drawableIndexOverrides) &&
         restoreEntries(state, "masks", m_drawableMaskIndexOverrides) && restoreEntries(state, "inverted", m_drawableMaskInvertedOverrides) &&
         restoreEntries(state, "parents", m_deformerParentOverrides) && restoreEntries(state, "warp", m_deformerWarpKeyformOverrides) &&
-        restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides);
+        restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides))) return false;
+    if (state.contains("geometryObjectPairs")) {
+        const auto value = state.value("geometryObjectPairs");
+        if (value.metaType() != QMetaType::fromType<CGeometryObjectPairs::State>() ||
+            !SetGeometryObjectPairs(value.value<CGeometryObjectPairs::State>())) return false;
+    }
+    return true;
 }
 
 bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
@@ -310,6 +335,8 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     CModelDocument check = *this;
     const QString& id = edit.name;
     switch (edit.field) {
+    case CModelEdit::GeometryKeyforms:
+        return ValidateGeometryEditStorage(edit);
     case CModelEdit::ParameterMetadata:
         if (m_parameterMetadataOverrides.contains(id) && !check.SetParameterMetadata(id, m_parameterMetadataOverrides.value(id))) return false;
         [[fallthrough]];
@@ -360,6 +387,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
         {"parameterOrganization", QVariant::fromValue(m_parameterOrganization)},
+        {"geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs)},
         {"locked", QVariant::fromValue(m_lockedKeys)}, {"opacity", QVariant::fromValue(m_drawableOpacityOverrides)},
         {"drawOrder", QVariant::fromValue(m_drawableDrawOrderOverrides)}, {"positions", QVariant::fromValue(m_drawableKeyformPositionOverrides)},
         {"indices", QVariant::fromValue(m_drawableIndexOverrides)}, {"masks", QVariant::fromValue(m_drawableMaskIndexOverrides)},
@@ -579,6 +607,7 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
     for (const auto& parameter : next.m_parameters) afterIds.append(parameter.id);
     if (!CParameterOrganization::Reconcile(m_parameterOrganization, beforeIds, afterIds, next.m_parameterOrganization, error)) return false;
+    if (!ReconcileGeometryObjectPairs(next, {}, nullptr, nullptr, error)) return false;
     candidate = std::move(next);
     return true;
 }
@@ -650,6 +679,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
             !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
             !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
             !read(state, "parameterOrganization", session.parameterOrganization) ||
+            !read(state, "geometryObjectPairs", session.geometryObjectPairs) ||
             !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
             !read(state, "opacity", session.drawableOpacity) || !read(state, "drawOrder", session.drawableDrawOrder) ||
             !read(state, "positions", session.drawableKeyformPositions) || !read(state, "indices", session.drawableIndices) ||
@@ -661,7 +691,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         for (const auto& lock : locks) session.locked.insert(lock, true);
         session.sourceDigest = m_sourceDigest;
         session.sourceMoc = m_sourcePath;
-        session.version = session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+        session.version = !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
@@ -696,6 +726,15 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         if (edit.field != CModelEdit::DeformerStructure) for (const auto& deformer : m_deformers)
             examine(deformer.type == CModelDeformer::Warp ? Builder::Owner::Warp : Builder::Owner::Rotation, deformer.id);
         if (!canBind(*this, changed, error)) return false;
+        if (edit.field == CModelEdit::ParameterStructure && !edit.bindingKeysRequest) {
+            const auto& origin = forward ? *this : candidate;
+            const auto& destination = forward ? candidate : *this;
+            auto paired = destination;
+            const Builder::Result identities;
+            if (!origin.ReconcileGeometryObjectPairs(paired, {}, &identities, nullptr, error) ||
+                paired.m_geometryObjectPairs != destination.m_geometryObjectPairs)
+                return fail(error, QStringLiteral("参数历史的几何配对身份与绑定变化不一致"));
+        }
         candidate.m_editHistory = m_editHistory;
         candidate.m_editIndex = m_editIndex;
         CommitCandidate(std::move(candidate));
@@ -704,12 +743,14 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
 }
 
 bool CModelDocument::MakeParameterStructureEdit(const Builder::Result& result, const QString& id,
-                                               const QString* displayName, bool created, CModelEdit& edit, QString* error) const
+                                               const QString* displayName, bool created, CModelEdit& edit, QString* error,
+                                               const Builder::EditBindingKeysRequest* keys) const
 {
     Builder::ColumnState structure;
     if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
     CModelDocument candidate;
     if (!PrepareStructure(structure, m_hasMeshStructure, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
+    if (!ReconcileGeometryObjectPairs(candidate, {}, &result, keys, error)) return false;
     if (created) {
         if (candidate.ParameterMetadataState(id).isEmpty()) return fail(error, QStringLiteral("创建结果缺少唯一参数：%1").arg(id));
         if (displayName && displayName->contains(QChar::Null)) return fail(error, QStringLiteral("显示名包含空字符"));
@@ -803,6 +844,7 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
         CModelDocument candidate;
         if (!PrepareStructure(structure, m_hasMeshStructure, true, sourceIds, true, candidate, error) ||
             !PreserveStructureProperties(candidate, error)) return false;
+        if (!ReconcileGeometryObjectPairs(candidate, {}, nullptr, nullptr, error)) return false;
         CModelEdit command{impact.structure.id, QStringLiteral("deformer"), CModelEdit::DeformerStructure,
                            AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
         command.deformerRequest = std::make_shared<const CDeformerPreserveRequest>(request);
@@ -939,6 +981,12 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
             actual.newVertexCount != recorded.newVertexCount || actual.oldToNew != recorded.oldToNew || actual.newToOld != recorded.newToOld)
             return fail(error, QStringLiteral("网格历史的顶点映射与请求不匹配"));
     }
+    QVector<CGeometryObjectPairs::VertexRemap> pairRemaps;
+    for (const auto& remap : replay.meshes) pairRemaps.append({{CModelGeometryKeyform::ArtMesh, remap.artMeshId}, remap.oldToNew});
+    CModelDocument paired = destination;
+    if (!origin.ReconcileGeometryObjectPairs(paired, pairRemaps, nullptr, nullptr, error) ||
+        paired.m_geometryObjectPairs != destination.m_geometryObjectPairs)
+        return fail(error, QStringLiteral("网格历史的几何配对身份与顶点映射不一致"));
     return true;
 }
 
@@ -958,7 +1006,7 @@ bool CModelDocument::ValidateBindingKeysTransition(const CModelDocument& candida
     if (!origin.BuildPreviewMoc(base, error) ||
         !Builder::EditBindingKeys(base, *edit.bindingKeysRequest, result, error)) return false;
     if (result.bytes == base) return fail(error, QStringLiteral("绑定关键值请求没有改变模型"));
-    if (!origin.MakeParameterStructureEdit(result, edit.name, nullptr, false, expected, error)) return false;
+    if (!origin.MakeParameterStructureEdit(result, edit.name, nullptr, false, expected, error, edit.bindingKeysRequest.get())) return false;
     if (expected.after.toMap() != destination.AuthoringStructureState())
         return fail(error, QStringLiteral("绑定关键值历史包含请求之外的结构或属性修改"));
     return true;
@@ -998,6 +1046,10 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error) ||
             !PrepareStructure(structure, true, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
         for (const auto& mesh : result.meshes) candidate.m_drawableIndexOverrides.remove(mesh.artMeshId);
+        QVector<CGeometryObjectPairs::VertexRemap> pairRemaps;
+        for (const auto& mesh : result.meshes)
+            pairRemaps.append({{CModelGeometryKeyform::ArtMesh, mesh.artMeshId}, mesh.oldToNew});
+        if (!ReconcileGeometryObjectPairs(candidate, pairRemaps, nullptr, nullptr, error)) return false;
         CModelEdit command{request.meshes.first().artMeshId, QStringLiteral("mesh"), CModelEdit::MeshStructure,
                            AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
         command.meshRemaps = result.meshes;
@@ -1062,7 +1114,7 @@ bool CModelDocument::MakeBindingKeysEdit(const Builder::EditBindingKeysRequest& 
         if (!BuildPreviewMoc(base, error) || !Builder::EditBindingKeys(base, request, result, error)) return false;
         if (result.bytes == base) return fail(error, QStringLiteral("绑定轴关键值没有变化"));
         CModelEdit command;
-        if (!MakeParameterStructureEdit(result, request.parameterId, nullptr, false, command, error)) return false;
+        if (!MakeParameterStructureEdit(result, request.parameterId, nullptr, false, command, error, &request)) return false;
         command.parameterChange = CModelEdit::ParameterChange::BindingKeys;
         command.bindingKeysRequest = std::make_shared<const Builder::EditBindingKeysRequest>(request);
         edit = std::move(command);

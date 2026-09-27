@@ -36,6 +36,7 @@ struct CModelSession
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
     CParameterOrganization::State parameterOrganization;
+    CGeometryObjectPairs::State geometryObjectPairs;
     QMap<QString, bool> visibility;
     QMap<QString, bool> locked;
     QHash<QString, float> drawableOpacity;

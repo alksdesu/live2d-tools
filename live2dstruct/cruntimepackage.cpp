@@ -210,7 +210,8 @@ private:
 
 bool displayInfo(const QByteArray& source, const CModelDocument& original, const CModelDocument& current,
                  const QHash<QString, CModelParameterMetadata>& metadata,
-                 const CParameterOrganization::State& organization, QByteArray& result, QString* error)
+                 const CParameterOrganization::State& organization, const CGeometryObjectPairs::State& geometryPairs,
+                 QByteArray& result, QString* error)
 {
     QJsonObject root;
     if (!source.isEmpty() && !object(source, root, error)) return false;
@@ -309,6 +310,12 @@ bool displayInfo(const QByteArray& source, const CModelDocument& original, const
         root.insert(QStringLiteral("Live2DToolsParameterOrganization"),
             QJsonObject{{QStringLiteral("Version"), 1}, {QStringLiteral("State"), state}});
     } else root.remove(QStringLiteral("Live2DToolsParameterOrganization"));
+    if (!geometryPairs.sourceDigest.isEmpty() || !geometryPairs.pairs.isEmpty()) {
+        QJsonObject state;
+        if (!CGeometryObjectPairs::ToJson(geometryPairs, state, error)) return false;
+        root.insert(QStringLiteral("Live2DToolsGeometryObjectPairs"),
+            QJsonObject{{QStringLiteral("Version"), 1}, {QStringLiteral("State"), state}});
+    } else root.remove(QStringLiteral("Live2DToolsGeometryObjectPairs"));
     if (root.contains(QStringLiteral("CombinedParameters"))) {
         QJsonArray pairs, retained;
         if (!array(root, QStringLiteral("CombinedParameters"), pairs, error)) return false;
@@ -467,6 +474,14 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
         for (const auto& p : original.Parameters()) oldIds.insert(p.id);
         for (const auto& p : current.Parameters()) currentIds.insert(p.id);
         if (!CParameterOrganization::Validate(request.parameterOrganization, currentIds, error)) return false;
+        CGeometryObjectPairs::State geometryPairs;
+        if (!CGeometryObjectPairs::Normalize(request.geometryObjectPairs, geometryPairs, error)) return false;
+        if (!geometryPairs.sourceDigest.isEmpty()) {
+            if (geometryPairs.sourceDigest != original.SourceDigest())
+                return fail(error, QStringLiteral("几何配对与模型包的源模型不匹配"));
+            geometryPairs.sourceDigest = current.SourceDigest();
+        }
+        if (!CGeometryObjectPairs::Validate(geometryPairs, current, error)) return false;
         const auto removed = oldIds - currentIds;
         if (!auditParameters(Editor::Kind::ModelSettings, QJsonDocument(root).toJson(QJsonDocument::Compact), removed, error)) return false;
         QString output;
@@ -525,7 +540,7 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             if (field == QLatin1String("Pose") && !pose(data, current, error)) return false;
             if (field == QLatin1String("MotionSync") && !motionSync(data, removed | request.references.modelSuppressedIds, error)) return false;
             if (field == QLatin1String("DisplayInfo") && !displayInfo(data, original, current, request.parameterMetadata,
-                                                                    request.parameterOrganization, data, error)) return false;
+                                                                    request.parameterOrganization, geometryPairs, data, error)) return false;
             if (field == QLatin1String("UserData")) {
                 CModelUserData validated;
                 if (!validated.FromJson(data, error)) return false;
@@ -541,7 +556,8 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             files.insert(field, output);
             return true;
         };
-        const bool needsDisplay = request.parameterOrganization.configured || !request.parameterMetadata.isEmpty() || oldIds != currentIds;
+        const bool needsDisplay = request.parameterOrganization.configured || !geometryPairs.sourceDigest.isEmpty() ||
+            !request.parameterMetadata.isEmpty() || oldIds != currentIds;
         std::optional<QByteArray> display;
         if (files.value(QStringLiteral("DisplayInfo")).toString().isEmpty() && needsDisplay) display = QByteArray();
         if (!scalar(QStringLiteral("Physics"), QStringLiteral(".physics3.json"), request.physics, Editor::Kind::Physics) ||

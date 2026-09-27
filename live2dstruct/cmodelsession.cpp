@@ -177,7 +177,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 8) return {};
+    if (version < 1 || version > 9) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -189,6 +189,12 @@ QByteArray CModelSession::ToJson() const
     if (deformerStructure && storedVersion < 6) storedVersion = 6;
     if (!textures.isEmpty() && storedVersion < 7) storedVersion = 7;
     if (parameterOrganization.configured && storedVersion < 8) storedVersion = 8;
+    if (geometryObjectPairs != CGeometryObjectPairs::State{} && storedVersion < 9) storedVersion = 9;
+    QJsonObject pairs;
+    if (!CGeometryObjectPairs::ToJson(geometryObjectPairs, pairs) ||
+        (!geometryObjectPairs.sourceDigest.isEmpty() && (sourceDigest.size() != 32 ||
+         geometryObjectPairs.sourceDigest != sourceDigest || sourceMoc.contains(QChar::Null)))) return {};
+    if (storedVersion >= 9) root.insert(QStringLiteral("geometryObjectPairs"), pairs);
     QJsonObject organization;
     if (!CParameterOrganization::ToJson(parameterOrganization, organization) ||
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return {};
@@ -348,13 +354,20 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 8) {
+    if (parsedVersion < 1 || parsedVersion > 9) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    if ((parsedVersion < 9 && root.contains(QStringLiteral("geometryObjectPairs"))) ||
+        (parsedVersion >= 9 && !root.value(QStringLiteral("geometryObjectPairs")).isObject())) {
+        setError(error, QStringLiteral("几何对象配对需要版本 9 及有效对象"));
+        return false;
+    }
+    if (parsedVersion >= 9 && !CGeometryObjectPairs::FromJson(root.value(QStringLiteral("geometryObjectPairs")).toObject(),
+                                                            result.geometryObjectPairs, error)) return false;
     if ((parsedVersion < 8 && root.contains(QStringLiteral("parameterOrganization"))) ||
         (parsedVersion >= 8 && !root.value(QStringLiteral("parameterOrganization")).isObject())) {
         setError(error, QStringLiteral("参数组织需要版本 8 及有效对象"));
@@ -437,6 +450,11 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     }
     if (result.parameterOrganization.configured && (result.sourceDigest.size() != 32 || result.sourceMoc.contains(QChar::Null))) {
         setError(error, QStringLiteral("会话参数组织缺少有效模型来源"));
+        return false;
+    }
+    if (!result.geometryObjectPairs.sourceDigest.isEmpty() &&
+        (result.geometryObjectPairs.sourceDigest != result.sourceDigest || result.sourceDigest.size() != 32 || result.sourceMoc.contains(QChar::Null))) {
+        setError(error, QStringLiteral("会话几何对象配对与模型来源不匹配"));
         return false;
     }
     if (!validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
@@ -762,11 +780,16 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 8) ||
+    if ((version < 1 || version > 9) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
-        (version < 8 && parameterOrganization.configured))
+        (version < 8 && parameterOrganization.configured) ||
+        (version < 9 && geometryObjectPairs != CGeometryObjectPairs::State{}))
         return fail(QStringLiteral("version"));
+    CGeometryObjectPairs::State normalizedPairs;
+    if (!CGeometryObjectPairs::Normalize(geometryObjectPairs, normalizedPairs, error) ||
+        (!geometryObjectPairs.sourceDigest.isEmpty() && (sourceDigest.size() != 32 ||
+         geometryObjectPairs.sourceDigest != sourceDigest || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("geometryObjectPairs"));
     CParameterOrganization::State normalizedOrganization;
     if (!CParameterOrganization::Normalize(parameterOrganization, normalizedOrganization, error) ||
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
@@ -897,6 +920,7 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
         if (!candidate.SetDeformerWarpKeyforms(it.key(), it.value()))
             return fail(QStringLiteral("deformerWarpKeyforms"), it.key());
     }
+    if (!candidate.SetGeometryObjectPairs(normalizedPairs, error)) return false;
     for (auto it = locked.cbegin(); it != locked.cend(); ++it) {
         if (!objectKeys.contains(it.key())) return fail(QStringLiteral("locked"), it.key());
         const int separator = it.key().indexOf(QLatin1Char('|'));

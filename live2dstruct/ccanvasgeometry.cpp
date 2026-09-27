@@ -57,6 +57,16 @@ bool CCanvasGeometry::ModelToPixels(const CCanvas_info* canvas, QPointF model, Q
     return true;
 }
 
+bool CCanvasGeometry::PixelsToModel(const CCanvas_info* canvas, QPointF pixels, QPointF& model)
+{
+    if (!std::isfinite(pixels.x()) || !std::isfinite(pixels.y()) || !Validate(canvas)) return false;
+    const double x = (pixels.x() - canvas->origin_x) / canvas->pixels_per_unit;
+    const double y = (canvas->origin_y - pixels.y()) / canvas->pixels_per_unit;
+    if (!std::isfinite(x) || !std::isfinite(y)) return false;
+    model = QPointF(x, y);
+    return true;
+}
+
 bool CCanvasGeometry::ModelToNdc(double width, double height, double originX, double originY,
                                 double pixelsPerUnit, const QSize& pixelSize, std::array<float, 16>& matrix)
 {

@@ -44,6 +44,7 @@ public:
         return father;
     }
     void SetParentFrame(std::shared_ptr<const CCoordinateFrame> frame, bool valid = true);
+    std::shared_ptr<const CCoordinateFrame> ParentFrame() const { return m_parentFrame; }
     bool MapToCanvas(const std::vector<float>& positions, std::vector<float>& output) const;
     bool MapFromCanvas(const std::vector<float>& positions, std::vector<float>& output) const;
     bool UpdateCanvasPositions(const std::vector<float>& positions);

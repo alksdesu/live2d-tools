@@ -21,6 +21,7 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     QVector<QVector<QString>> combinedParameters;
     QSet<QString> combinedParameterSet;
     std::optional<live2dstruct::CParameterOrganization::State> organization;
+    std::optional<live2dstruct::CGeometryObjectPairs::State> geometryPairs;
     QFile file(sourcePath);
     if (!file.open(QIODevice::ReadOnly)) {
         qDebug() << "Failed to open file";
@@ -52,6 +53,17 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
         }
         organization.emplace();
         if (!live2dstruct::CParameterOrganization::FromJson(object.value(QStringLiteral("State")).toObject(), *organization, error)) return false;
+    }
+    const auto geometryExtension = qt.value(QStringLiteral("Live2DToolsGeometryObjectPairs"));
+    if (!geometryExtension.isUndefined()) {
+        const auto object = geometryExtension.toObject();
+        if (!geometryExtension.isObject() || object.value(QStringLiteral("Version")) != QJsonValue(1) ||
+            !object.value(QStringLiteral("State")).isObject()) {
+            if (error) *error = QStringLiteral("CDI 几何配对扩展格式或版本无效");
+            return false;
+        }
+        geometryPairs.emplace();
+        if (!live2dstruct::CGeometryObjectPairs::FromJson(object.value(QStringLiteral("State")).toObject(), *geometryPairs, error)) return false;
     }
     const auto readArray = [&qt, error](const QString& key, QJsonArray* array) {
         const QJsonValue value = qt.value(key);
@@ -136,5 +148,6 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     m_sourcePath = sourcePath;
     m_sourceDigest.swap(digest);
     m_parameterOrganization.swap(organization);
+    m_geometryObjectPairs.swap(geometryPairs);
     return true;
 }

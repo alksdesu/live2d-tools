@@ -1,4 +1,5 @@
 #include "cmodeltreepanel.h"
+#include <QLabel>
 #include "cmodelhierarchymodel.h"
 #include "cmodelhierarchyview.h"
 #include "ctreenodedelegate.h"
@@ -74,6 +75,24 @@ CModelTreePanel::CModelTreePanel(QWidget* parent) : QDockWidget(QStringLiteral("
     SetDeformerActionsEnabled(false, false);
     connect(m_createDeformer, &QPushButton::clicked, this, &CModelTreePanel::CreateDeformerRequested);
     connect(m_removeDeformer, &QPushButton::clicked, this, &CModelTreePanel::RemoveDeformerRequested);
+    auto* pairActions = new QHBoxLayout;
+    m_geometryPairs = new QPushButton(QStringLiteral("对象配对…"), wrapper);
+    m_mirrorGeometryPair = new QPushButton(QStringLiteral("镜像当前形"), wrapper);
+    m_geometryPairs->setObjectName(QStringLiteral("editGeometryPairs"));
+    m_mirrorGeometryPair->setObjectName(QStringLiteral("mirrorGeometryPair"));
+    m_geometryPairs->setToolTip(QStringLiteral("设置两个对象的顶点、参数关键值对应和同步编辑"));
+    m_mirrorGeometryPair->setToolTip(QStringLiteral("将所选对象的当前关键形镜像复制到已确认的配对对象"));
+    pairActions->addWidget(m_geometryPairs);
+    pairActions->addWidget(m_mirrorGeometryPair);
+    layout->addLayout(pairActions);
+    m_geometryPairHint = new QLabel(wrapper);
+    m_geometryPairHint->setObjectName(QStringLiteral("geometryPairHint"));
+    m_geometryPairHint->setTextFormat(Qt::PlainText);
+    m_geometryPairHint->setWordWrap(true);
+    layout->addWidget(m_geometryPairHint);
+    SetGeometryPairActionsEnabled(false, false);
+    connect(m_geometryPairs, &QPushButton::clicked, this, &CModelTreePanel::EditGeometryPairsRequested);
+    connect(m_mirrorGeometryPair, &QPushButton::clicked, this, &CModelTreePanel::MirrorGeometryPairRequested);
     layout->addWidget(m_tabWidget, 1);
     setWidget(wrapper);
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
@@ -176,6 +195,14 @@ void CModelTreePanel::SetDeformerActionsEnabled(bool create, bool remove)
 {
     m_createDeformer->setEnabled(create);
     m_removeDeformer->setEnabled(remove);
+}
+
+void CModelTreePanel::SetGeometryPairActionsEnabled(bool edit, bool mirror, const QString& detail)
+{
+    m_geometryPairs->setEnabled(edit);
+    m_mirrorGeometryPair->setEnabled(mirror);
+    m_geometryPairHint->setText(detail);
+    m_geometryPairHint->setVisible(!detail.isEmpty());
 }
 
 void CModelTreePanel::HighlightObjects(const QStringList& ids, const QStringList& types)
@@ -320,8 +347,22 @@ void CModelTreePanel::ShowContextMenu(CModelHierarchyView* view, const QPoint& p
     auto* remove = menu.addAction(QStringLiteral("删除变形器"));
     create->setEnabled(m_createDeformer->isEnabled());
     remove->setEnabled(m_removeDeformer->isEnabled());
+    menu.addSeparator();
+    auto* pairSettings = menu.addAction(QStringLiteral("对象配对…"));
+    auto* mirror = menu.addAction(QStringLiteral("镜像当前形到对侧"));
+    auto* counterpart = menu.addAction(QStringLiteral("查看对侧关键形"));
+    pairSettings->setEnabled(m_geometryPairs->isEnabled());
+    mirror->setEnabled(m_mirrorGeometryPair->isEnabled());
+    counterpart->setEnabled(m_mirrorGeometryPair->isEnabled());
     auto* chosen = menu.exec(view->viewport()->mapToGlobal(position));
     if (!guard || !anchor.isValid()) return;
+    if (chosen == pairSettings || chosen == mirror || chosen == counterpart) {
+        if (selectionKeys(view) != selected) return;
+        if (chosen == pairSettings) emit EditGeometryPairsRequested();
+        else if (chosen == mirror) emit MirrorGeometryPairRequested();
+        else emit ViewGeometryPairRequested();
+        return;
+    }
     if (chosen == create) { emit CreateDeformerRequested(); return; }
     if (chosen == remove) { emit RemoveDeformerRequested(); return; }
     locks = LockedState();

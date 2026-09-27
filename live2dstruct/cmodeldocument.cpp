@@ -138,6 +138,7 @@ void CModelDocument::Clear()
     m_parameterValues.clear();
     m_parameterMetadataOverrides.clear();
     m_parameterOrganization = {};
+    m_geometryObjectPairs = {};
     m_drawableKeyformPositionOverrides.clear();
     m_drawableIndexOverrides.clear();
     m_drawableMaskIndexOverrides.clear();
@@ -726,14 +727,23 @@ QVector<quint16> CModelDocument::DrawableIndices(const QString& id) const
 
 bool CModelDocument::SetDrawableIndices(const QString& id, const QVector<quint16>& indices)
 {
-    for (const CModelDrawable& drawable : m_drawables) {
-        if (drawable.id != id) continue;
-        if (!CMeshTopology::IsValid(indices, drawable.vertexCount)) return false;
-        m_drawableIndexOverrides.insert(id, indices);
-        ++m_revision;
+    try {
+        const CModelDrawable* target = nullptr;
+        for (const auto& drawable : m_drawables) if (drawable.id == id) {
+            if (target) return false;
+            target = &drawable;
+        }
+        if (!target || !CMeshTopology::IsValid(indices, target->vertexCount)) return false;
+        CModelDocument candidate = *this;
+        candidate.m_drawableIndexOverrides.insert(id, indices);
+        QVector<int> identity;
+        identity.reserve(target->vertexCount);
+        for (int index = 0; index < target->vertexCount; ++index) identity.append(index);
+        const QVector<CGeometryObjectPairs::VertexRemap> remaps{{{CModelGeometryKeyform::ArtMesh, id}, std::move(identity)}};
+        if (!ReconcileGeometryObjectPairs(candidate, remaps, nullptr, nullptr, nullptr)) return false;
+        CommitCandidate(std::move(candidate));
         return true;
-    }
-    return false;
+    } catch (const std::exception&) { return false; }
 }
 
 QVector<int> CModelDocument::DrawableMaskIndices(const QString& id) const
@@ -1092,6 +1102,18 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
+    if (edit.field == CModelEdit::GeometryKeyforms) return ApplyGeometryEdit(edit, forward);
+    if (edit.field == CModelEdit::GeometryObjectPairs) {
+        const auto type = QMetaType::fromType<CGeometryObjectPairs::State>();
+        if (edit.type != QLatin1String("objects") || edit.name != QLatin1String("geometryPairs") || edit.index != -1 ||
+            edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None || edit.freezeValue ||
+            edit.before.metaType() != type || edit.after.metaType() != type ||
+            m_geometryObjectPairs != (forward ? edit.before : edit.after).value<CGeometryObjectPairs::State>()) return false;
+        const auto state = (forward ? edit.after : edit.before).value<CGeometryObjectPairs::State>();
+        CGeometryObjectPairs::State normalized;
+        if (!CGeometryObjectPairs::Normalize(state, normalized) || state != normalized) return false;
+        return SetGeometryObjectPairs(state);
+    }
     if (!HasValidStructureRequests(edit)) return false;
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == CModelEdit::ParameterOrganization) {
@@ -1814,6 +1836,13 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
             }
         }
     }
+    QString pairError;
+    if (!CGeometryObjectPairs::Validate(m_geometryObjectPairs, *this, &pairError))
+        diagnostics.append({CModelDiagnostic::Error, QStringLiteral("geometry_object_pairs"), pairError, -1});
+    for (int index = 0; index < m_geometryObjectPairs.pairs.size(); ++index)
+        if (m_geometryObjectPairs.pairs[index].requiresReview)
+            diagnostics.append({CModelDiagnostic::Warning, QStringLiteral("geometry_pair_review"),
+                QStringLiteral("几何对象配对需要重新确认：%1").arg(m_geometryObjectPairs.pairs[index].id), index});
     return diagnostics;
 }
 

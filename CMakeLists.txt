@@ -63,6 +63,10 @@ add_library(model_data STATIC
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodeldocumentstructure.cpp
     live2dstruct/cmodeldocumentorganization.cpp
+    live2dstruct/cmodelgeometryedit.cpp
+    live2dstruct/cmodeldocumentgeometry.cpp
+    live2dstruct/cgeometryobjectpairs.cpp
+    live2dstruct/cmodeldocumentpairs.cpp
     live2dstruct/cmodelsavefingerprint.cpp
     live2dstruct/cparameterorganization.cpp
     live2dstruct/cparametervalueeditcontroller.cpp
@@ -126,6 +130,9 @@ add_library(deformer_tree_data STATIC
     live2dstruct/ckeyformmappingcontext.cpp
     live2dstruct/ckeyformmappingcontext.h
     live2dstruct/cdeformereditcontext.cpp
+    live2dstruct/crotationframegeometry.cpp
+    live2dstruct/cgeometrypairplanner.cpp
+    live2dstruct/ckeyformpairing.cpp
     live2dstruct/cdeformereditcontext.h
     live2dstruct/ckeyformeditcontroller.cpp
     live2dstruct/ckeyformeditcontroller.h
@@ -213,6 +220,14 @@ if(BUILD_TESTING)
         target_link_libraries(keyform_mapping_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
         target_compile_definitions(keyform_mapping_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME keyform_mapping_core COMMAND keyform_mapping_core_tests)
+        add_executable(rotation_frame_core_tests tests/rotation_frame_core_tests.cpp)
+        target_link_libraries(rotation_frame_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
+        target_compile_definitions(rotation_frame_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME rotation_frame_core COMMAND rotation_frame_core_tests)
+        add_executable(geometry_pair_planner_core_tests tests/geometry_pair_planner_core_tests.cpp)
+        target_link_libraries(geometry_pair_planner_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
+        target_compile_definitions(geometry_pair_planner_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME geometry_pair_planner_core COMMAND geometry_pair_planner_core_tests)
         add_executable(deformer_edit_context_core_tests tests/deformer_edit_context_core_tests.cpp)
         target_link_libraries(deformer_edit_context_core_tests PRIVATE deformer_tree_data live2d_core Qt6::Test)
         target_compile_definitions(deformer_edit_context_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -369,7 +384,7 @@ if(BUILD_TESTING)
     target_link_libraries(workspace_layout_tests PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME workspace_layout COMMAND workspace_layout_tests)
     set_tests_properties(workspace_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller keyform_logical_state deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller deformer_structure_controller tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller keyform_logical_state geometry_batch_document geometry_batch_controller geometry_pair_controller rotation_frame geometry_pair_planner deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller deformer_structure_controller tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -677,7 +692,7 @@ if(BUILD_TESTING)
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(parameter_test IN ITEMS parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint)
+    foreach(parameter_test IN ITEMS parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint canvas_geometry_inverse geometry_object_pairs geometry_object_pairs_document geometry_object_pairs_session)
         add_executable(${parameter_test}_tests tests/${parameter_test}_tests.cpp)
         target_link_libraries(${parameter_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${parameter_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -689,6 +704,15 @@ if(BUILD_TESTING)
     target_compile_definitions(parameter_organization_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME parameter_organization_dialog COMMAND parameter_organization_dialog_tests)
     set_tests_properties(parameter_organization_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(geometry_pairs_export_tests tests/geometry_pairs_export_tests.cpp ui/para/ccidjson.cpp)
+    target_link_libraries(geometry_pairs_export_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(geometry_pairs_export_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME geometry_pairs_export COMMAND geometry_pairs_export_tests)
+    add_executable(geometry_pairs_dialog_tests tests/geometry_pairs_dialog_tests.cpp ui/cgeometrypairsdialog.cpp ui/para/ccidjson.cpp)
+    target_link_libraries(geometry_pairs_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(geometry_pairs_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME geometry_pairs_dialog COMMAND geometry_pairs_dialog_tests)
+    set_tests_properties(geometry_pairs_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(parameter_organization_panel_tests tests/parameter_organization_panel_tests.cpp tests/param_panel_runtime_stubs.cpp
         ui/cparampanel.cpp ui/cparampanelorganization.cpp ui/cparameterorganizationdialog.cpp ui/cxyparameterpad.cpp ui/para/ccidjson.cpp)
     target_link_libraries(parameter_organization_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets Qt6::OpenGL)

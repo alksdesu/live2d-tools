@@ -182,6 +182,7 @@ void MainWindow::RefreshDeformerActions()
                                      m_selectedObjectTypes.first() == QLatin1String("rotation"));
     m_treePanel->SetDeformerActionsEnabled(ready, ready && deformer &&
         !m_document.IsLocked(m_selectedObjectTypes.first(), m_selectedObjectIds.first()));
+    RefreshGeometryPairActions();
 }
 
 void MainWindow::CreateDeformer()

@@ -18,6 +18,16 @@ public:
         QPointF xAxis;
         QPointF yAxis;
     };
+    struct ResolvedRotation {
+        RotationBasis basis;
+        double angle = 0;
+        float signedScale = 1;
+        double parentAngle = 0;
+        float parentSignedScale = 1;
+    };
+    static bool ResolveRotation(float baseAngle, CRotationNodeKeyform& keyform,
+                                const std::shared_ptr<const CCoordinateFrame>& parent,
+                                ResolvedRotation& result);
     static bool CreateRotation(float baseAngle, CRotationNodeKeyform& keyform,
                                const std::shared_ptr<const CCoordinateFrame>& parent,
                                std::shared_ptr<const CCoordinateFrame>& result, RotationBasis& basis);

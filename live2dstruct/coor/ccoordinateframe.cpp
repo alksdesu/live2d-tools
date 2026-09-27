@@ -54,9 +54,9 @@ CCoordinateFrame::CCoordinateFrame(std::unique_ptr<CCoorTypeObject> transform,
         ? float(scale) : std::numeric_limits<float>::quiet_NaN();
 }
 
-bool CCoordinateFrame::CreateRotation(float baseAngle, CRotationNodeKeyform& key,
-                                      const std::shared_ptr<const CCoordinateFrame>& parent,
-                                      std::shared_ptr<const CCoordinateFrame>& result, RotationBasis& basis)
+bool CCoordinateFrame::ResolveRotation(float baseAngle, CRotationNodeKeyform& key,
+                                       const std::shared_ptr<const CCoordinateFrame>& parent,
+                                       ResolvedRotation& result)
 {
     if (key.GetPosition().size() != 2 || !std::isfinite(baseAngle) || !std::isfinite(key.Getangles()) ||
         !std::isfinite(key.Getscales()) || !validCoordinates(key.GetPosition())) return false;
@@ -87,16 +87,31 @@ bool CCoordinateFrame::CreateRotation(float baseAngle, CRotationNodeKeyform& key
     if (!std::isfinite(totalScale) || std::abs(totalScale) > std::numeric_limits<float>::max()) return false;
     const double angle = double(key.Getangles()) + parentAngle + baseAngle;
     const double radians = qDegreesToRadians(std::remainder(angle, 360.0));
-    RotationBasis prepared;
-    prepared.origin = QPointF(origin[0], origin[1]);
+    ResolvedRotation prepared;
+    prepared.basis.origin = QPointF(origin[0], origin[1]);
     const double scaleSign = totalScale < 0 ? -1.0 : 1.0;
-    prepared.xAxis = QPointF(std::cos(radians), std::sin(radians)) * (key.Getis_reflect_x() ? -scaleSign : scaleSign);
-    prepared.yAxis = QPointF(-std::sin(radians), std::cos(radians)) * (key.Getis_reflect_y() ? -scaleSign : scaleSign);
-    auto transform = std::make_unique<CRotationCoorType>(origin[0], origin[1], angle, float(totalScale),
+    prepared.basis.xAxis = QPointF(std::cos(radians), std::sin(radians)) * (key.Getis_reflect_x() ? -scaleSign : scaleSign);
+    prepared.basis.yAxis = QPointF(-std::sin(radians), std::cos(radians)) * (key.Getis_reflect_y() ? -scaleSign : scaleSign);
+    prepared.angle = angle;
+    prepared.signedScale = float(totalScale);
+    prepared.parentAngle = parentAngle;
+    prepared.parentSignedScale = parent ? parent->m_totalScale : 1.0f;
+    result = prepared;
+    return true;
+}
+
+bool CCoordinateFrame::CreateRotation(float baseAngle, CRotationNodeKeyform& key,
+                                      const std::shared_ptr<const CCoordinateFrame>& parent,
+                                      std::shared_ptr<const CCoordinateFrame>& result, RotationBasis& basis)
+{
+    ResolvedRotation prepared;
+    if (!ResolveRotation(baseAngle, key, parent, prepared)) return false;
+    auto transform = std::make_unique<CRotationCoorType>(float(prepared.basis.origin.x()), float(prepared.basis.origin.y()),
+                                                        prepared.angle, prepared.signedScale,
                                                         key.Getis_reflect_x(), key.Getis_reflect_y());
     auto frame = std::make_shared<CCoordinateFrame>(std::move(transform));
     result = std::move(frame);
-    basis = prepared;
+    basis = prepared.basis;
     return true;
 }
 
