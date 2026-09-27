@@ -12,6 +12,8 @@
 #include <QJsonObject>
 #include <QPainter>
 #include <QKeyEvent>
+#include <QMouseEvent>
+#include <QPointer>
 #include <QLineEdit>
 #include <QScopedValueRollback>
 #include <QScrollBar>
@@ -154,6 +156,10 @@ struct CBlendShapePanel::State
     QHash<QString, QVector<Control>> controls;
     QHash<QString, Range> ranges;
     QHash<QString, float> recentValues;
+    QPointer<QSlider> gestureSlider;
+    QString gestureId;
+    float gestureValue = 0;
+    int gesturePosition = 0, gestureKey = 0;
     QHash<QString, QString> parameterNames, targetNames;
     QStringList extraDiagnostics;
     QString selectedParameter;
@@ -238,14 +244,27 @@ void CBlendShapePanel::ConnectState()
     for (auto controls = m_state->controls.cbegin(); controls != m_state->controls.cend(); ++controls) {
         const QString id = controls.key();
         for (const auto& control : controls.value()) {
-            connect(control.slider, &QSlider::sliderPressed, this, [this, item = control.item] {
-                if (!m_rebuilding) m_state->parameters->setCurrentItem(item);
+            control.slider->setProperty("blendParameterId", id);
+            control.slider->installEventFilter(this);
+            connect(control.slider, &QSlider::sliderPressed, this, [this, id, slider = control.slider, item = control.item] {
+                if (m_rebuilding) return;
+                const QPointer<CBlendShapePanel> alive(this);
+                m_state->parameters->setCurrentItem(item);
+                if (alive) BeginParameterGesture(slider, id);
             });
-            connect(control.slider, &QSlider::valueChanged, this, [this, id](int position) {
+            connect(control.slider, &QSlider::sliderReleased, this, [this, slider = control.slider] {
+                if (m_state->gestureSlider == slider) EndParameterGesture(false);
+            });
+            connect(control.slider, &QSlider::valueChanged, this, [this, id, slider = control.slider](int position) {
                 if (m_rebuilding || !m_state->ranges.contains(id)) return;
+                if (slider->property("blendGestureCanceled").toBool()) {
+                    SyncParameterValue(id, slider->property("blendGestureOriginal").toFloat());
+                    return;
+                }
                 const auto range = m_state->ranges.value(id);
                 const double ratio = qBound(0, position, 1000) / 1000.0;
-                const float value = float(double(range.minimum) + (double(range.maximum) - range.minimum) * ratio);
+                float value = float(double(range.minimum) + (double(range.maximum) - range.minimum) * ratio);
+                if (m_state->gestureSlider == slider && position == m_state->gesturePosition) value = m_state->gestureValue;
                 if (!std::isfinite(value)) return;
                 SyncParameterValue(id, value);
                 emit ParamChanged(id, value, false);
@@ -253,6 +272,39 @@ void CBlendShapePanel::ConnectState()
         }
     }
 }
+
+bool CBlendShapePanel::HasParameterGesture() const { return m_state && !m_state->gestureSlider.isNull(); }
+
+void CBlendShapePanel::BeginParameterGesture(QObject* object, const QString& id)
+{
+    auto* slider = qobject_cast<QSlider*>(object);
+    if (m_rebuilding || !slider || !slider->isEnabled() || HasParameterGesture() || !m_state->ranges.contains(id)) return;
+    const auto range = m_state->ranges.value(id);
+    m_state->gestureSlider = slider; m_state->gestureId = id;
+    m_state->gestureValue = std::clamp(m_state->recentValues.value(id, range.defaultValue), range.minimum, range.maximum);
+    m_state->gesturePosition = slider->value(); m_state->gestureKey = 0;
+    slider->setProperty("blendGestureCanceled", false);
+    slider->setProperty("blendGestureOriginal", m_state->gestureValue);
+    const QString parameter = id;
+    const float original = m_state->gestureValue;
+    emit ParameterGestureStarted(parameter, original);
+}
+
+void CBlendShapePanel::EndParameterGesture(bool cancel)
+{
+    if (!HasParameterGesture()) return;
+    const auto id = m_state->gestureId;
+    const auto value = m_state->gestureValue;
+    const auto slider = m_state->gestureSlider;
+    m_state->gestureSlider.clear(); m_state->gestureId.clear(); m_state->gestureKey = 0;
+    if (cancel) {
+        if (slider) slider->setProperty("blendGestureCanceled", true);
+        SyncParameterValue(id, value);
+        emit ParameterGestureCanceled();
+    } else emit ParameterGestureFinished();
+}
+
+void CBlendShapePanel::CancelParameterGesture() { EndParameterGesture(true); }
 
 void CBlendShapePanel::BuildBlendShapes(const QString& mocPath, CCidJson* cid)
 {
@@ -340,6 +392,9 @@ bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* 
         if (error) *error = QStringLiteral("无法准备融合参数面板");
         return false;
     }
+    const QPointer<CBlendShapePanel> alive(this);
+    EndParameterGesture(true);
+    if (!alive) { if (error) *error = QStringLiteral("融合参数面板已关闭"); return false; }
     const QString selected = m_state->selectedParameter;
     const QString search = m_state->search->text();
     const QScopedValueRollback<bool> rebuilding(m_rebuilding, true);
@@ -426,6 +481,50 @@ void CBlendShapePanel::UpdateSplitterLayout()
 
 bool CBlendShapePanel::eventFilter(QObject* watched, QEvent* event)
 {
+    if (!m_rebuilding && m_state) if (auto* slider = qobject_cast<QSlider*>(watched)) {
+        const auto id = slider->property("blendParameterId").toString();
+        const QPointer<CBlendShapePanel> alive(this);
+        if (event->type() == QEvent::MouseButtonPress && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            slider->setProperty("blendGestureCanceled", false);
+            BeginParameterGesture(slider, id);
+            return !alive || m_state->gestureSlider != slider;
+        }
+        if (event->type() == QEvent::MouseMove && slider->property("blendGestureCanceled").toBool()) return true;
+        if (event->type() == QEvent::MouseButtonRelease && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+            slider->setProperty("blendGestureCanceled", false);
+            if (m_state->gestureSlider == slider) EndParameterGesture(false);
+            return !alive;
+        }
+        if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Escape && event->type() == QEvent::KeyPress && m_state->gestureSlider == slider) {
+                EndParameterGesture(true);
+                return true;
+            }
+            const bool navigation = key->key() == Qt::Key_Left || key->key() == Qt::Key_Right || key->key() == Qt::Key_Up ||
+                key->key() == Qt::Key_Down || key->key() == Qt::Key_PageUp || key->key() == Qt::Key_PageDown ||
+                key->key() == Qt::Key_Home || key->key() == Qt::Key_End;
+            if (navigation && event->type() == QEvent::KeyPress) {
+                if (key->isAutoRepeat() && slider->property("blendGestureCanceled").toBool()) return true;
+                if (!HasParameterGesture()) {
+                    slider->setProperty("blendGestureCanceled", false);
+                    BeginParameterGesture(slider, id);
+                    if (!alive || m_state->gestureSlider != slider) return true;
+                    m_state->gestureKey = key->key();
+                }
+            }
+            if (navigation && event->type() == QEvent::KeyRelease && !key->isAutoRepeat()) {
+                slider->setProperty("blendGestureCanceled", false);
+                if (m_state->gestureSlider == slider && m_state->gestureKey == key->key()) EndParameterGesture(false);
+                return !alive;
+            }
+        }
+        if (m_state->gestureSlider == slider && (event->type() == QEvent::FocusOut || event->type() == QEvent::Hide ||
+                                                event->type() == QEvent::WindowDeactivate)) {
+            EndParameterGesture(true);
+            return !alive;
+        }
+    }
     if (m_state && !m_applyingLayout &&
         ((watched == m_state->splitter && (event->type() == QEvent::Resize || event->type() == QEvent::Show ||
                                          event->type() == QEvent::LayoutRequest)) ||
@@ -436,6 +535,9 @@ bool CBlendShapePanel::eventFilter(QObject* watched, QEvent* event)
 
 void CBlendShapePanel::SetDocument(const CModelDocument* document)
 {
+    const QPointer<CBlendShapePanel> alive(this);
+    if (m_document != document) EndParameterGesture(true);
+    if (!alive) return;
     m_document = document;
     RefreshParameterMetadata();
 }

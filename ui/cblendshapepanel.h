@@ -21,15 +21,20 @@ public:
                               const QByteArray& sourceDigest = {});
     void SetDocument(const live2dstruct::CModelDocument* document);
     void SyncParameterValue(const QString& paramId, float value);
+    bool HasParameterGesture() const;
     const QSet<QString>& getBlendShapeParamIds() const;
     QByteArray SaveLayout() const;
     bool RestoreLayout(const QByteArray& state);
 
 public slots:
     void RefreshParameterMetadata();
+    void CancelParameterGesture();
 
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
+    void ParameterGestureStarted(const QString& id, float originalDisplayedValue);
+    void ParameterGestureFinished();
+    void ParameterGestureCanceled();
     void ParameterSelected(const QString& id);
     void ObjectSelected(const QString& id, const QString& type);
 
@@ -47,6 +52,8 @@ private:
     void ScheduleLayout();
     void UpdateSplitterLayout();
     QString ParameterName(const QString& id) const;
+    void BeginParameterGesture(QObject* slider, const QString& id);
+    void EndParameterGesture(bool cancel);
     std::unique_ptr<State> m_state;
     const live2dstruct::CModelDocument* m_document = nullptr;
     bool m_rebuilding = false;

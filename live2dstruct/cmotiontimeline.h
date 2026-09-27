@@ -152,6 +152,7 @@ public:
     bool IsRecordingClockPaused() const { return m_recordClockPaused; }
     void Clear();
     void Record(const QString& parameterId, float value);
+    bool RecordValues(const QMap<QString, float>& values, QString* error = nullptr);
     bool AddPoint(const QString& id, float time, float value) { return AddPoint({CMotionTarget::Parameter, id}, time, value); }
     bool UpdatePoint(const QString& id, int index, float time, float value) { return UpdatePoint({CMotionTarget::Parameter, id}, index, time, value); }
     bool RemovePoint(const QString& id, int index) { return RemovePoint({CMotionTarget::Parameter, id}, index); }

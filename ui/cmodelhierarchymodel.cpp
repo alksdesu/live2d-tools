@@ -2,6 +2,7 @@
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cparentgraph.h"
+#include "live2dstruct/cparameterselectionquery.h"
 #include <QApplication>
 #include <QFont>
 #include <QIcon>
@@ -23,15 +24,11 @@ struct CModelHierarchyModel::Data
     };
     struct Node { int parent = -1, row = 0, begin = 0, count = 0; };
     struct Tree { QVector<Node> nodes; QVector<int> children, roots; };
-    struct Parameter { QString id; float minimum, maximum, defaultValue; };
     QVector<Object> objects;
     QHash<QString, int> byKey;
     std::array<Tree, 2> trees;
     CParentGraph deformers;
-    QVector<QVector<int>> directMeshes;
-    QVector<Parameter> parameters;
-    QVector<int> bindingOwners, bindingReferences;
-    QVector<QPair<int, int>> keyBindings;
+    CParameterSelectionQuery parameterQuery;
     std::array<QIcon, 4> icons;
     int parts = 0, deformerCount = 0;
 };
@@ -44,24 +41,6 @@ bool fail(QString* error, const QString& message)
 }
 
 bool validIndex(int index, qsizetype size) { return index >= -1 && index < size; }
-
-bool validSlice(qint64 begin, qint64 count, qint64 size)
-{
-    return count == 0 ? begin >= -1 && begin <= size
-                      : begin >= 0 && count > 0 && begin <= size && count <= size - begin;
-}
-
-int nextUnvisited(QVector<int>& next, int position)
-{
-    int result = position;
-    while (next[result] != result) result = next[result];
-    while (next[position] != position) {
-        const int previous = position;
-        position = next[position];
-        next[previous] = result;
-    }
-    return result;
-}
 
 int treeNumber(CModelHierarchyModel::Projection value)
 {
@@ -160,58 +139,19 @@ bool CModelHierarchyModel::Prepare(const CSectionTable& section, CCidJson* cid,
                 ? data.parts + deformer->parent_deformer_indices : deformer->parent_part_indices);
             deformerProjection.append(deformer->parent_part_indices);
         }
-        data.directMeshes.resize(data.deformerCount);
         for (const auto* mesh : section.art_meshes) {
             if (!mesh || !validIndex(mesh->parent_part_indices, section.parts.size()) ||
                 !validIndex(mesh->parent_deformer_indices, section.deformers.size()))
                 return fail(error, QStringLiteral("网格所属部件或父变形器索引无效"));
             if (!validIndex(mesh->keyform_binding_sources_indices, section.keyform_bindings.size()))
                 return fail(error, QStringLiteral("网格关键形绑定引用无效"));
-            const int object = data.objects.size();
             if (!add(mesh->ids, QStringLiteral("artmesh"), {}, mesh->is_visible, mesh->keyform_binding_sources_indices))
                 return fail(error, QStringLiteral("网格 ID 为空或重复"));
             partProjection.append(mesh->parent_deformer_indices >= 0
                 ? data.parts + mesh->parent_deformer_indices : mesh->parent_part_indices);
-            if (mesh->parent_deformer_indices >= 0) data.directMeshes[mesh->parent_deformer_indices].append(object);
         }
 
-        data.bindingOwners.fill(-1, section.parameter_bindings.size());
-        for (int parameter = 0; parameter < section.parameters.size(); ++parameter) {
-            const auto* source = section.parameters[parameter];
-            if (!source || !validSlice(source->parameter_binding_sources_begin_indices,
-                                     source->parameter_binding_sources_counts, section.parameter_bindings.size()))
-                return fail(error, QStringLiteral("参数绑定所属区间无效"));
-            data.parameters.append(Data::Parameter{source->ids, source->min_values, source->max_values, source->default_values});
-        }
-        QVector<int> unowned(data.bindingOwners.size() + 1);
-        std::iota(unowned.begin(), unowned.end(), 0);
-        for (int parameter = section.parameters.size() - 1; parameter >= 0; --parameter) {
-            const auto* source = section.parameters[parameter];
-            if (!source->parameter_binding_sources_counts) continue;
-            const int end = source->parameter_binding_sources_begin_indices + source->parameter_binding_sources_counts;
-            for (int binding = nextUnvisited(unowned, source->parameter_binding_sources_begin_indices); binding < end;
-                 binding = nextUnvisited(unowned, binding)) {
-                data.bindingOwners[binding] = parameter;
-                unowned[binding] = nextUnvisited(unowned, binding + 1);
-            }
-        }
-        const qint64 keyCount = section.keys ? section.keys->values.size() : 0;
-        for (const auto* binding : section.parameter_bindings)
-            if (!binding || !validSlice(binding->keys_sources_begin_indices, binding->keys_sources_counts, keyCount))
-                return fail(error, QStringLiteral("参数绑定关键值区间无效"));
-        for (const auto* reference : section.parameter_binding_indices) {
-            if (!reference || reference->binding_sources_indices < 0 ||
-                reference->binding_sources_indices >= section.parameter_bindings.size())
-                return fail(error, QStringLiteral("参数绑定索引引用无效"));
-            data.bindingReferences.append(reference->binding_sources_indices);
-        }
-        for (const auto* binding : section.keyform_bindings) {
-            if (!binding || !validSlice(binding->parameter_binding_index_sources_begin_indices,
-                                        binding->parameter_binding_index_sources_counts, data.bindingReferences.size()))
-                return fail(error, QStringLiteral("关键形绑定索引区间无效"));
-            data.keyBindings.append({binding->parameter_binding_index_sources_begin_indices,
-                                     binding->parameter_binding_index_sources_counts});
-        }
+        if (!data.parameterQuery.Build(section, error)) return false;
         buildProjection(data.trees[0], partProjection);
         buildProjection(data.trees[1], deformerProjection);
         if (qApp) {
@@ -362,32 +302,13 @@ CModelHierarchyModel::ParameterInfo CModelHierarchyModel::ParametersForSelection
     if (!m_data) return result;
     const int object = ObjectIndex(root);
     if (object < m_data->parts || object >= m_data->parts + m_data->deformerCount) return result;
-    QSet<int> added;
-    QVector<int> unvisited(m_data->bindingReferences.size() + 1);
-    std::iota(unvisited.begin(), unvisited.end(), 0);
-    const auto addBinding = [&](int binding) {
-        if (binding < 0) return;
-        const auto [begin, count] = m_data->keyBindings[binding];
-        if (!count) return;
-        for (int index = nextUnvisited(unvisited, begin); index < begin + count; index = nextUnvisited(unvisited, index)) {
-            const int parameter = m_data->bindingOwners[m_data->bindingReferences[index]];
-            unvisited[index] = nextUnvisited(unvisited, index + 1);
-            if (parameter < 0 || added.contains(parameter)) continue;
-            added.insert(parameter);
-            const auto& source = m_data->parameters[parameter];
-            result.ids.append(source.id); result.minimums.append(source.minimum);
-            result.maximums.append(source.maximum); result.defaults.append(source.defaultValue);
-        }
-    };
-    for (int current = object - m_data->parts; current >= 0; current = m_data->deformers.Parents()[current])
-        addBinding(m_data->objects[m_data->parts + current].binding);
-    QVector<int> pending{object - m_data->parts};
-    while (!pending.isEmpty()) {
-        const int current = pending.takeLast();
-        for (int mesh : m_data->directMeshes[current]) addBinding(m_data->objects[mesh].binding);
-        QVector<int> children;
-        for (int child = m_data->deformers.FirstChild()[current]; child >= 0; child = m_data->deformers.NextSibling()[child]) children.append(child);
-        for (auto child = children.crbegin(); child != children.crend(); ++child) pending.append(*child);
+    CParameterSelectionQuery::Result related;
+    const auto& selected = m_data->objects[object];
+    if (!m_data->parameterQuery.Query({{selected.type, selected.id}}, related)) return result;
+    const QSet<QString> ordinary(related.ordinary.cbegin(), related.ordinary.cend());
+    for (const auto& parameter : m_data->parameterQuery.Parameters()) if (ordinary.contains(parameter.id)) {
+        result.ids.append(parameter.id); result.minimums.append(parameter.minimum);
+        result.maximums.append(parameter.maximum); result.defaults.append(parameter.defaultValue);
     }
     return result;
 }

@@ -359,6 +359,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"columns", QVariant::fromValue(m_structure.columns)},
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
+        {"parameterOrganization", QVariant::fromValue(m_parameterOrganization)},
         {"locked", QVariant::fromValue(m_lockedKeys)}, {"opacity", QVariant::fromValue(m_drawableOpacityOverrides)},
         {"drawOrder", QVariant::fromValue(m_drawableDrawOrderOverrides)}, {"positions", QVariant::fromValue(m_drawableKeyformPositionOverrides)},
         {"indices", QVariant::fromValue(m_drawableIndexOverrides)}, {"masks", QVariant::fromValue(m_drawableMaskIndexOverrides)},
@@ -574,6 +575,10 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     next.m_sourcePath = m_sourcePath;
     next.m_sourceDigest = m_sourceDigest;
     next.m_workingBaseBytes = std::move(working);
+    QStringList beforeIds, afterIds;
+    for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
+    for (const auto& parameter : next.m_parameters) afterIds.append(parameter.id);
+    if (!CParameterOrganization::Reconcile(m_parameterOrganization, beforeIds, afterIds, next.m_parameterOrganization, error)) return false;
     candidate = std::move(next);
     return true;
 }
@@ -644,6 +649,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
             !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
             !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
             !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
+            !read(state, "parameterOrganization", session.parameterOrganization) ||
             !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
             !read(state, "opacity", session.drawableOpacity) || !read(state, "drawOrder", session.drawableDrawOrder) ||
             !read(state, "positions", session.drawableKeyformPositions) || !read(state, "indices", session.drawableIndices) ||
@@ -655,7 +661,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         for (const auto& lock : locks) session.locked.insert(lock, true);
         session.sourceDigest = m_sourceDigest;
         session.sourceMoc = m_sourcePath;
-        session.version = session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+        session.version = session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));

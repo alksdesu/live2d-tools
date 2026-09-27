@@ -7,12 +7,14 @@
 #include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/ctextureeditcontroller.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
+#include "live2dstruct/cparametervalueeditcontroller.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
 #include "ui/cpreviewexporttransaction.h"
 #include "ui/cworkspacelayouts.h"
 #include "ui/psdbatchresult.h"
 #include "live2dstruct/cruntimepackage.h"
+#include "live2dstruct/cparameterselectionquery.h"
 #include <QAction>
 #include <QLabel>
 #include <QPushButton>
@@ -94,6 +96,21 @@ private:
                                live2dstruct::CRuntimePackage::Request& request, QString* error) const;
     bool RuntimeMatchesDocument(QString* error = nullptr) const;
     void SyncDocumentToRuntime();
+    void RefreshRelatedParameters();
+    live2dstruct::CParameterSelectionQuery m_parameterSelectionQuery;
+    void ConfigureParameterValueEditing();
+    bool FinishParameterValueEditing(QString* error = nullptr);
+    bool CancelParameterValueEditing(QString* error = nullptr);
+    void ResetParameterValueEditing();
+    bool ApplyParameterValueHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error = nullptr);
+    bool ParameterValueEditingReady(QString* error) const;
+    bool CaptureParameterValueBase(QMap<QString, float>& values, QString* error) const;
+    QByteArray ParameterValueContextDigest() const;
+    bool PublishParameterValues(const live2dstruct::CParameterValueEditController::Publication& publication, QString* error);
+    void SyncParameterValueUi(const QMap<QString, float>& values);
+    struct ParameterValueEditState;
+    std::shared_ptr<ParameterValueEditState> m_parameterValueEdit;
+    bool m_publishingParameterValues = false;
     void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
     void RefreshTextureGeometry();
     bool InitializeTextureEditing(QString* error);
@@ -134,10 +151,10 @@ private:
     void SyncParameterDefinitionPreview();
     bool ActivateKeyform(const QString& id, int keyform, QString* error);
     bool ActivateKeyform(const QString& id, const QString& type, int keyform, QString* error);
-    bool EndKeyformEditing(QString* error = nullptr);
+    bool EndKeyformEditing(QString* error = nullptr, bool finishParameters = true);
     bool SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error);
     bool ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error);
-    void RefreshKeyformUi(bool changed = false, bool markSession = true);
+    void RefreshKeyformUi(bool changed = false, bool markSession = true, bool syncParameterValues = true);
     void SelectModelObjects(const QStringList& ids, const QStringList& types);
     void RefreshModelTree();
     QString m_parameterBeingEdited;
@@ -151,7 +168,15 @@ private:
     QString m_savedPhysicsPath;
     quint64 m_timelinePreviewStopRevision = 0;
     QStringList m_selectedObjectIds, m_selectedObjectTypes;
-    bool HasSessionChanges() const { return m_sessionDirty || m_textureEditor.IsDirty(); }
+    bool HasSessionChanges() const;
+    void MarkDocumentSaved();
+    QByteArray m_savedAuthoringFingerprint;
+    QJsonObject m_savedParameterResources;
+    mutable QByteArray m_dirtyComparedSource;
+    mutable QString m_dirtyComparedPath;
+    mutable quint64 m_dirtyComparedRevision = 0;
+    mutable bool m_dirtyComparisonReady = false;
+    mutable bool m_documentDirty = false;
     void RefreshWindowTitle();
     void RefreshUndoActions();
     void UndoDocumentEdit();

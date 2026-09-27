@@ -130,6 +130,66 @@ void CKeyformEditController::SetDocument(CModelDocument* document)
     m_deformerDrag.reset();
 }
 
+bool CKeyformEditController::CaptureLogicalState(LogicalState& result, QString* error) const
+{
+    if (!Ready(error)) return false;
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前关键形拖拽"));
+    try {
+        if (IsActive()) {
+            QMap<QString, float> pose;
+            if (!MakePose(m_target, m_type, m_keyform, m_pose, pose, error)) return false;
+            if (pose != m_pose) return fail(error, QStringLiteral("当前关键形逻辑姿态已失效"));
+        }
+        LogicalState candidate{{m_target, m_type, m_keyform, m_pose}, m_source};
+        result = std::move(candidate);
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法保存关键形逻辑上下文")); }
+}
+
+bool CKeyformEditController::PrepareLogicalState(const LogicalState& state, PreparedLogicalState& result, QString* error) const
+{
+    if (!Ready(error)) return false;
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前关键形拖拽"));
+    if (state.sourceDigest != m_source) return fail(error, QStringLiteral("关键形逻辑上下文属于不同的模型"));
+    try {
+        const auto& editor = state.editor;
+        if (editor.target.isEmpty()) {
+            if (!editor.type.isEmpty() || editor.keyform != -1 || !editor.pose.isEmpty())
+                return fail(error, QStringLiteral("空关键形逻辑上下文含残留姿态"));
+        } else {
+            QMap<QString, float> pose;
+            if (!MakePose(editor.target, editor.type, editor.keyform, editor.pose, pose, error)) return false;
+            if (pose != editor.pose) return fail(error, QStringLiteral("关键形逻辑姿态缺少参数或不在指定角点"));
+        }
+        PreparedLogicalState candidate;
+        candidate.m_owner = this; candidate.m_document = m_document; candidate.m_revision = m_document->Revision();
+        candidate.m_requested = state;
+        if (!CaptureLogicalState(candidate.m_expected, error)) return false;
+        result = std::move(candidate); return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备关键形逻辑上下文，原结果保持不变")); }
+}
+
+bool CKeyformEditController::ValidatePreparedLogicalState(const PreparedLogicalState& state, QString* error) const
+{
+    if (!Ready(error)) return false;
+    if (IsDragging()) return fail(error, QStringLiteral("请先结束当前关键形拖拽"));
+    const auto& expected = state.m_expected.editor;
+    if (state.m_owner != this || state.m_document != m_document || state.m_revision != m_document->Revision() ||
+        state.m_expected.sourceDigest != m_source || expected.target != m_target || expected.type != m_type ||
+        expected.keyform != m_keyform || expected.pose != m_pose)
+        return fail(error, QStringLiteral("关键形逻辑上下文在准备后已改变"));
+    return true;
+}
+
+void CKeyformEditController::AdoptLogicalState(PreparedLogicalState& state) noexcept
+{
+    Q_ASSERT(state.m_owner == this && state.m_document == m_document);
+    auto& editor = state.m_requested.editor;
+    m_target.swap(editor.target); m_type.swap(editor.type); std::swap(m_keyform, editor.keyform);
+    m_pose.swap(editor.pose); m_source.swap(state.m_requested.sourceDigest);
+    state.m_owner = nullptr; state.m_document = nullptr;
+}
+
 void CKeyformEditController::SetPublisher(Publisher publisher, PreviewEnder ender)
 {
     if (m_publishing) return;

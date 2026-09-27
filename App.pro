@@ -126,6 +126,13 @@ SOURCES += \
     ui/psdbatchjob.cpp \
     ui/cmodeltreepanel.cpp \
     ui/cparampanel.cpp \
+    ui/cparameterorganizationdialog.cpp \
+    ui/cparampanelorganization.cpp \
+    live2dstruct/cmodeldocumentorganization.cpp \
+    live2dstruct/cmodelsavefingerprint.cpp \
+    live2dstruct/cparameterorganization.cpp \
+    live2dstruct/cparametervalueeditcontroller.cpp \
+    live2dstruct/cparameterselectionquery.cpp \
     ui/cxyparameterpad.cpp \
     ui/cmotionpanel.cpp \
     ui/cmotionpanelediting.cpp \
@@ -197,6 +204,8 @@ SOURCES += \
     ui/para/ccidjson.cpp \
     main.cpp \
     ui/mainwindow.cpp \
+    ui/mainwindowparameters.cpp \
+    ui/mainwindowparametervalues.cpp \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
     ui/mainwindowdeformers.cpp \
@@ -387,6 +396,11 @@ HEADERS += \
     ui/ctreenodedelegate.h \
     ui/theme.h \
     ui/cparampanel.h \
+    ui/cparameterorganizationdialog.h \
+    live2dstruct/cparameterorganization.h \
+    live2dstruct/cmodelsavefingerprint.h \
+    live2dstruct/cparametervalueeditcontroller.h \
+    live2dstruct/cparameterselectionquery.h \
     ui/cxyparameterpad.h \
     ui/cmotionpanel.h \
     ui/cmotionkeymodel.h \
@@ -639,6 +653,7 @@ SOURCES += \
     opengl/cpsdfiletask.cpp \
     opengl/cpsdrendersession.cpp \
     live2d/LAppModelUpdate.cpp \
+    live2d/LAppModelParameterValues.cpp \
     live2d/LAppModelParameterDefinitions.cpp \
     live2d/LAppModelParameterStructure.cpp \
     live2d/LAppModelTextures.cpp \

@@ -62,6 +62,11 @@ add_library(model_data STATIC
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodeldocumentstructure.cpp
+    live2dstruct/cmodeldocumentorganization.cpp
+    live2dstruct/cmodelsavefingerprint.cpp
+    live2dstruct/cparameterorganization.cpp
+    live2dstruct/cparametervalueeditcontroller.cpp
+    live2dstruct/cparameterselectionquery.cpp
     live2dstruct/cparameterreferences.cpp
     live2dstruct/cparameterreferenceeditor.cpp
     live2dstruct/cparameterresourceedits.cpp
@@ -364,7 +369,7 @@ if(BUILD_TESTING)
     target_link_libraries(workspace_layout_tests PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME workspace_layout COMMAND workspace_layout_tests)
     set_tests_properties(workspace_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller deformer_structure_controller tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller keyform_logical_state deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller deformer_structure_controller tree_snapshot)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -460,7 +465,7 @@ if(BUILD_TESTING)
         framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp framework/Type/csmString.cpp
         edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp opengl/cglmeshbuffer.cpp)
     add_executable(lapp_export_preview_tests tests/lapp_export_preview_tests.cpp
-        live2d/LAppModelUpdate.cpp ${cubism_model_test_sources} opengl/coffscreenbuffer.cpp)
+        live2d/LAppModelUpdate.cpp live2d/LAppModelParameterValues.cpp ${cubism_model_test_sources} opengl/coffscreenbuffer.cpp)
     target_link_libraries(lapp_export_preview_tests PRIVATE model_data Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::Test)
     add_test(NAME lapp_export_preview COMMAND lapp_export_preview_tests)
     set_tests_properties(lapp_export_preview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -672,8 +677,26 @@ if(BUILD_TESTING)
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    foreach(parameter_test IN ITEMS parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint)
+        add_executable(${parameter_test}_tests tests/${parameter_test}_tests.cpp)
+        target_link_libraries(${parameter_test}_tests PRIVATE model_data Qt6::Test)
+        target_compile_definitions(${parameter_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME ${parameter_test} COMMAND ${parameter_test}_tests)
+    endforeach()
+    add_executable(parameter_organization_dialog_tests tests/parameter_organization_dialog_tests.cpp
+        ui/cparameterorganizationdialog.cpp ui/para/ccidjson.cpp)
+    target_link_libraries(parameter_organization_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(parameter_organization_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME parameter_organization_dialog COMMAND parameter_organization_dialog_tests)
+    set_tests_properties(parameter_organization_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(parameter_organization_panel_tests tests/parameter_organization_panel_tests.cpp tests/param_panel_runtime_stubs.cpp
+        ui/cparampanel.cpp ui/cparampanelorganization.cpp ui/cparameterorganizationdialog.cpp ui/cxyparameterpad.cpp ui/para/ccidjson.cpp)
+    target_link_libraries(parameter_organization_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets Qt6::OpenGL)
+    target_compile_definitions(parameter_organization_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME parameter_organization_panel COMMAND parameter_organization_panel_tests)
+    set_tests_properties(parameter_organization_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(param_panel_tests tests/param_panel_tests.cpp tests/param_panel_runtime_stubs.cpp
-        ui/cparampanel.cpp ui/cxyparameterpad.cpp ui/para/ccidjson.cpp)
+        ui/cparampanel.cpp ui/cparampanelorganization.cpp ui/cparameterorganizationdialog.cpp ui/cxyparameterpad.cpp ui/para/ccidjson.cpp)
     target_link_libraries(param_panel_tests PRIVATE model_data Qt6::Test Qt6::Widgets Qt6::OpenGL)
     target_compile_definitions(param_panel_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME param_panel COMMAND param_panel_tests)
@@ -703,6 +726,13 @@ if(BUILD_TESTING)
     target_link_libraries(cmotioncurveview_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     add_test(NAME cmotioncurveview COMMAND cmotioncurveview_tests)
     set_tests_properties(cmotioncurveview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(motion_record_values_tests tests/motion_record_values_tests.cpp)
+    target_link_libraries(motion_record_values_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME motion_record_values COMMAND motion_record_values_tests)
+    add_executable(parameter_edit_transport_tests tests/parameter_edit_transport_tests.cpp ui/cmotionpanel.cpp ui/cmotionpanelediting.cpp ui/cmotionkeymodel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
+    target_link_libraries(parameter_edit_transport_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    add_test(NAME parameter_edit_transport COMMAND parameter_edit_transport_tests)
+    set_tests_properties(parameter_edit_transport PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(motion_lifetime_tests tests/motion_lifetime_tests.cpp ui/cmotionpanel.cpp ui/cmotionpanelediting.cpp ui/cmotionkeymodel.cpp ui/cmotioncurveview.cpp ui/cmotionsettingsdialog.cpp)
     target_link_libraries(motion_lifetime_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     add_test(NAME motion_lifetime COMMAND motion_lifetime_tests)

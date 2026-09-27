@@ -4,6 +4,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "ui/para/ccidjson.h"
 #include "ui/cxyparameterpad.h"
+#include "ui/cparameterorganizationdialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -33,6 +34,8 @@
 #include <QListWidget>
 #include <QTreeWidget>
 #include <QHeaderView>
+#include <QMouseEvent>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QStyleOption>
 #include <algorithm>
@@ -70,8 +73,31 @@ protected:
         QStyleOption option;
         option.initFrom(this);
         style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
-        style()->drawItemText(&painter, contentsRect(), alignment(), palette(), isEnabled(),
-                             fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()), foregroundRole());
+        auto textRect = contentsRect();
+        const QColor labelColor(property("parameterLabelColor").toString());
+        if (labelColor.isValid()) {
+            const int width = qMax(1, fontMetrics().height() / 4);
+            painter.fillRect(QRect(textRect.left(), textRect.top(), width, textRect.height()), labelColor);
+            textRect.adjust(width + fontMetrics().horizontalAdvance(QLatin1Char(' ')), 0, 0, 0);
+        }
+        style()->drawItemText(&painter, textRect, alignment(), palette(), isEnabled(),
+                             fontMetrics().elidedText(text(), Qt::ElideRight, textRect.width()), foregroundRole());
+    }
+};
+
+class CParameterGroupButton final : public QToolButton
+{
+public:
+    using QToolButton::QToolButton;
+protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+        QToolButton::paintEvent(event);
+        const QColor color(property("parameterLabelColor").toString());
+        if (!color.isValid()) return;
+        QPainter painter(this);
+        const int marker = qMax(1, fontMetrics().height() / 4);
+        painter.fillRect(QRect(contentsRect().left(), contentsRect().top(), marker, contentsRect().height()), color);
     }
 };
 
@@ -330,6 +356,12 @@ CParamPanel::CParamPanel(QWidget *parent)
     : QDockWidget("参数控制", parent)
 {
     setObjectName(QStringLiteral("paramPanel"));
+    m_valueController.SetBaselineProvider([this](QMap<QString, float>& values, QString*) {
+        for (const auto& row : m_rows) values.insert(row.paramId, m_previewBaseline.value(row.paramId,
+            m_document ? m_document->ParameterValues().value(row.paramId, row.defaultVal) : m_lastValues.value(row.paramId, row.defaultVal)));
+        return true;
+    });
+    SetValuePublisher({});
     auto* workspaceScroll = new QScrollArea(this);
     workspaceScroll->setObjectName(QStringLiteral("parameterWorkspaceScroll"));
     workspaceScroll->setFrameShape(QFrame::NoFrame);
@@ -379,6 +411,10 @@ CParamPanel::CParamPanel(QWidget *parent)
     buttonRow->addWidget(savePresetBtn, 1, 1);
     buttonRow->addWidget(loadPresetBtn, 2, 0, 1, 2);
     buttonRow->addWidget(metadataBtn, 3, 0, 1, 2);
+    auto* organization = new QPushButton(QStringLiteral("文件夹、顺序与配对"), wrapper);
+    organization->setObjectName(QStringLiteral("editParameterOrganization"));
+    connect(organization, &QPushButton::clicked, this, &CParamPanel::EditOrganization);
+    buttonRow->addWidget(organization, 4, 0, 1, 2);
     actionsLayout->addLayout(buttonRow);
     connect(copyBtn, &QPushButton::clicked, this, &CParamPanel::CopyValues);
     connect(pasteBtn, &QPushButton::clicked, this, &CParamPanel::PasteValues);
@@ -404,6 +440,16 @@ CParamPanel::CParamPanel(QWidget *parent)
     m_search->setPlaceholderText("搜索参数名称或 ID");
     m_search->setClearButtonEnabled(true);
     mainLayout->addWidget(m_search);
+    m_onlyRelated = new QCheckBox(QStringLiteral("仅显示选区关联参数"), wrapper);
+    m_onlyRelated->setObjectName(QStringLiteral("onlyRelatedParameters"));
+    m_onlyRelated->setToolTip(QStringLiteral("显示选中对象、容器后代和祖先绑定的普通参数、融合参数及限制参数"));
+    mainLayout->addWidget(m_onlyRelated);
+    connect(m_onlyRelated, &QCheckBox::toggled, this, &CParamPanel::FilterParameters);
+    m_relatedStatus = new QLabel(wrapper);
+    m_relatedStatus->setObjectName(QStringLiteral("relatedParameterStatus"));
+    m_relatedStatus->setTextFormat(Qt::PlainText);
+    m_relatedStatus->setWordWrap(true);
+    mainLayout->addWidget(m_relatedStatus);
 
     m_xyBox = new QGroupBox(wrapper);
     m_xyBox->setObjectName(QStringLiteral("parameterXYSection"));
@@ -429,6 +475,7 @@ CParamPanel::CParamPanel(QWidget *parent)
     connect(m_xyXSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
     connect(m_xyYSelector, &QComboBox::currentTextChanged, this, [this](){ RefreshXYControls(); });
     connect(m_xyPad, &CXYParameterPad::ValuesChanged, this, &CParamPanel::ApplyXYPad);
+    m_xyPad->installEventFilter(this);
 
     m_scroll = new QScrollArea(wrapper);
     m_scroll->setObjectName(QStringLiteral("parameterListScroll"));
@@ -448,11 +495,19 @@ CParamPanel::~CParamPanel()
 {
     // 浮动窗口销毁时会提交编辑，须在派生成员释放前断开。
     for (QObject* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
+    // SpinBox 在 valueChanged 返回后仍访问内部编辑器。
+    if (m_applyingValueRequest && widget()) {
+        auto* controls = widget();
+        controls->setParent(nullptr);
+        controls->deleteLater();
+    }
 }
 
 void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
+    if (m_applyingValueRequest) return;
     if (m_document != document) {
+        m_valueUiSnapshot.reset();
         m_previewBaseline.clear();
         m_previewActive = false;
         m_userDragging.clear();
@@ -465,6 +520,7 @@ void CParamPanel::SetDocument(live2dstruct::CModelDocument* document)
         ++m_bindingSelectionRevision;
     }
     m_document = document;
+    m_valueController.SetDocument(document);
     UpdateStructureActions();
 }
 
@@ -529,7 +585,222 @@ void CParamPanel::RestoreControls()
     RefreshXYControls();
 }
 
-bool CParamPanel::AllowUserEdit()
+void CParamPanel::SetValuePublisher(ValueController::Publisher publisher)
+{
+    if (m_applyingValueRequest || HasUserValueGesture()) return;
+    m_hasValuePublisher = bool(publisher);
+    if (publisher) m_valueController.SetPublisher(std::move(publisher));
+    else m_valueController.SetPublisher([this](const ValueController::Publication& publication, QString* error) {
+        return (publication.phase != ValueController::Phase::Single && publication.phase != ValueController::Phase::Preview) || AllowUserEdit(error);
+    });
+}
+
+void CParamPanel::SetValueExpander(ValueController::Expander expander)
+{
+    m_valueController.SetExpander(std::move(expander));
+}
+
+void CParamPanel::SetValueBaselineProvider(ValueController::BaselineProvider provider)
+{
+    m_valueController.SetBaselineProvider(std::move(provider));
+}
+
+void CParamPanel::SetValueContextDigestProvider(ValueController::ContextDigestProvider provider)
+{
+    m_valueController.SetContextDigestProvider(std::move(provider));
+}
+
+bool CParamPanel::HasUserValueGesture() const { return m_valueController.IsActive(); }
+
+void CParamPanel::SyncAcceptedValues(const QMap<QString, float>& values, bool notify)
+{
+    for (int index = 0; index < m_rows.size(); ++index) {
+        const auto& row = m_rows[index];
+        const auto value = values.constFind(row.paramId);
+        if (value == values.cend()) continue;
+        const QSignalBlocker slider(row.slider), spin(row.spinBox);
+        row.slider->setValue(parameterToSlider(*value, row.minVal, row.maxVal));
+        row.spinBox->setValue(*value);
+        m_lastValues[row.paramId] = *value;
+        m_previewBaseline.remove(row.paramId);
+        m_userLocked.insert(index);
+    }
+    RefreshXYControls();
+    if (!notify) return;
+    const QPointer<CParamPanel> alive(this);
+    emit UserValuesApplied(values);
+    if (!alive) return;
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        emit ParamChanged(it.key(), it.value(), false);
+        if (!alive) return;
+    }
+    SyncAcceptedValues(values, false);
+}
+
+bool CParamPanel::ApplyValueRequest(const ValueController::Request& request, QString* error)
+{
+    if (error) error->clear();
+    if (m_applyingValueRequest || m_submittingEdit || m_checkingEditGuard) {
+        if (error) *error = QStringLiteral("参数值事务正在提交");
+        return false;
+    }
+    const QPointer<CParamPanel> alive(this);
+    m_applyingValueRequest = true;
+    const auto finish = qScopeGuard([alive] { if (alive) alive->m_applyingValueRequest = false; });
+    QString message;
+    std::optional<ValueUiSnapshot> initial;
+    if (request.phase == ValueController::Phase::Begin)
+        initial = ValueUiSnapshot{CurrentValues(), m_previewBaseline, m_userLocked, m_previewActive};
+    ValueController::Result result;
+    const bool accepted = m_valueController.Apply(request, result, &message);
+    if (!alive) return accepted;
+    if (!accepted) {
+        RestoreControls();
+        if (error) *error = message;
+        emit EditRejected(message);
+        return false;
+    }
+    if (initial) m_valueUiSnapshot.swap(initial);
+    if (result.restoreContext && m_valueUiSnapshot) {
+        auto snapshot = *m_valueUiSnapshot;
+        SyncAcceptedValues(snapshot.values, false);
+        m_previewBaseline.swap(snapshot.previewBaseline);
+        m_userLocked.swap(snapshot.userLocked);
+        m_previewActive = snapshot.previewActive;
+        emit UserValuesApplied(snapshot.values);
+        if (!alive) return true;
+        if (request.phase == ValueController::Phase::Preview) {
+            QMap<QString, float> edited;
+            for (auto value = result.acceptedValues.cbegin(); value != result.acceptedValues.cend(); ++value)
+                edited.insert(value.key(), snapshot.values.value(value.key()));
+            emit UserValuesEdited(edited);
+            if (!alive) return true;
+        }
+    } else if (request.phase != ValueController::Phase::Begin) {
+        const bool notify = request.phase == ValueController::Phase::Single || request.phase == ValueController::Phase::Preview ||
+                            request.phase == ValueController::Phase::Cancel;
+        SyncAcceptedValues(result.acceptedValues, notify);
+        if (!alive) return true;
+        if (request.phase == ValueController::Phase::Finish) {
+            emit UserValuesApplied(result.acceptedValues);
+            if (!alive) return true;
+        }
+        if (request.phase == ValueController::Phase::Single || request.phase == ValueController::Phase::Preview) {
+            emit UserValuesEdited(result.acceptedValues);
+            if (!alive) return true;
+        }
+    }
+    if (request.phase == ValueController::Phase::Finish || request.phase == ValueController::Phase::Cancel) m_valueUiSnapshot.reset();
+    if (result.historyChanged) EmitHistoryState();
+    return true;
+}
+
+bool CParamPanel::ApplyUserValues(const QMap<QString, float>& values, QString* error)
+{
+    return ApplyValueRequest({ValueController::Phase::Single, 0, values}, error);
+}
+
+bool CParamPanel::BeginUserValueGesture(const QMap<QString, float>& drivers, QString* error)
+{
+    if (m_valueGestureSerial == std::numeric_limits<quint64>::max()) {
+        if (error) *error = QStringLiteral("参数手势编号已耗尽，请重新打开模型");
+        return false;
+    }
+    return ApplyValueRequest({ValueController::Phase::Begin, ++m_valueGestureSerial, drivers}, error);
+}
+
+bool CParamPanel::PreviewUserValueGesture(const QMap<QString, float>& drivers, QString* error)
+{
+    return ApplyValueRequest({ValueController::Phase::Preview, m_valueController.GestureId(), drivers}, error);
+}
+
+bool CParamPanel::FinishUserValueGesture(QString* error)
+{
+    if (!HasUserValueGesture()) return true;
+    const QPointer<CParamPanel> alive(this);
+    if (!ApplyValueRequest({ValueController::Phase::Finish, m_valueController.GestureId(), {}}, error)) return false;
+    if (alive) { m_userDragging.clear(); m_changedDrags.clear(); m_dragStarts.clear(); }
+    return true;
+}
+
+bool CParamPanel::CancelUserValueGesture(QString* error)
+{
+    if (!HasUserValueGesture()) return true;
+    const QPointer<CParamPanel> alive(this);
+    if (!ApplyValueRequest({ValueController::Phase::Cancel, m_valueController.GestureId(), {}}, error)) return false;
+    if (!alive) return true;
+    for (int index : m_userDragging) if (index >= 0 && index < m_rows.size())
+        m_rows[index].slider->setProperty("parameterGestureCanceled", true);
+    if (m_xyPad) m_xyPad->setProperty("parameterGestureCanceled", true);
+    m_userDragging.clear(); m_changedDrags.clear(); m_dragStarts.clear();
+    return true;
+}
+
+void CParamPanel::InstallValueEventFilters()
+{
+    for (const auto& row : m_rows) {
+        row.slider->installEventFilter(this);
+        row.spinBox->installEventFilter(this);
+        for (auto* input : row.spinBox->findChildren<QLineEdit*>()) input->installEventFilter(this);
+    }
+}
+
+bool CParamPanel::eventFilter(QObject* watched, QEvent* event)
+{
+    if (m_applyingValueRequest) return QDockWidget::eventFilter(watched, event);
+    switch (event->type()) {
+    case QEvent::MouseButtonPress: case QEvent::MouseButtonRelease: case QEvent::MouseMove:
+    case QEvent::KeyPress: case QEvent::Hide: case QEvent::WindowDeactivate: case QEvent::FocusOut: break;
+    default: return QDockWidget::eventFilter(watched, event);
+    }
+    const QPointer<CParamPanel> alive(this);
+    if (event->type() == QEvent::MouseButtonPress) watched->setProperty("parameterGestureCanceled", false);
+    if (watched->property("parameterGestureCanceled").toBool()) {
+        if (event->type() == QEvent::MouseMove) return true;
+        if (event->type() == QEvent::MouseButtonRelease) watched->setProperty("parameterGestureCanceled", false);
+    }
+    const auto slider = std::find_if(m_rows.cbegin(), m_rows.cend(), [watched](const auto& row) { return row.slider == watched; });
+    if (slider != m_rows.cend() && event->type() == QEvent::MouseButtonPress &&
+        static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+        const int index = int(slider - m_rows.cbegin());
+        BeginParameterDrag(index);
+        if (!alive || !m_userDragging.contains(index)) return true;
+    }
+    if (slider != m_rows.cend() && event->type() == QEvent::MouseButtonRelease &&
+        static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+        EndParameterDrag(int(slider - m_rows.cbegin()));
+        if (!alive) return true;
+    }
+    if (watched == m_xyPad && event->type() == QEvent::MouseButtonPress) {
+        const auto* mouse = static_cast<QMouseEvent*>(event);
+        if (mouse->button() == Qt::LeftButton) {
+            const QMap<QString, float> values{{m_xyXSelector->currentText(), m_xyPad->XValue()},
+                                             {m_xyYSelector->currentText(), m_xyPad->YValue()}};
+            if (!BeginUserValueGesture(values)) return true;
+        }
+    }
+    if (HasUserValueGesture() && event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        CancelUserValueGesture();
+        return true;
+    }
+    if (HasUserValueGesture() && (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate)) {
+        CancelUserValueGesture();
+        return !alive;
+    }
+    if (watched == m_xyPad && HasUserValueGesture() && event->type() == QEvent::MouseButtonRelease) {
+        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) FinishUserValueGesture();
+        return !alive;
+    }
+    if (HasUserValueGesture() && event->type() == QEvent::FocusOut) {
+        if (watched == m_xyPad) CancelUserValueGesture();
+        else if (!m_userDragging.isEmpty()) CancelUserValueGesture();
+        else FinishUserValueGesture();
+        return !alive;
+    }
+    return QDockWidget::eventFilter(watched, event);
+}
+
+bool CParamPanel::AllowUserEdit(QString* result)
 {
     if (m_checkingEditGuard || m_submittingEdit) {
         RestoreControls();
@@ -550,7 +821,9 @@ bool CParamPanel::AllowUserEdit()
     if (!panel) return false;
     if (accepted) return true;
     RestoreControls();
-    emit EditRejected(error.isEmpty() ? QStringLiteral("参数编辑已取消") : error);
+    const auto message = error.isEmpty() ? QStringLiteral("参数编辑已取消") : error;
+    if (result) *result = message;
+    else emit EditRejected(message);
     return false;
 }
 
@@ -589,26 +862,22 @@ void CParamPanel::ClearPreviewValues(const QMap<QString, float>& restoredValues,
 void CParamPanel::ApplyExternalValue(const QString& paramId, float value, bool record, bool userEdit, bool writeDocument)
 {
     if (!std::isfinite(value)) return;
-    if (userEdit && !AllowUserEdit()) return;
-    auto rowIt = std::find_if(m_rows.cbegin(), m_rows.cend(), [&paramId](const ParamRow& row){ return row.paramId == paramId; });
-    if (rowIt == m_rows.cend()) return;
-    const int rowIndex = static_cast<int>(rowIt - m_rows.cbegin());
-    ParamRow& row = m_rows[rowIndex];
-    value = boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal);
-    const float before = ValueBeforeEdit(paramId, row.defaultVal);
-    if (record && before != value && !PushEdit(paramId, before, value, false)) { RestoreControls(); return; }
-    if (userEdit || writeDocument) m_previewBaseline.remove(paramId);
-    const int sliderValue = parameterToSlider(value, row.minVal, row.maxVal);
-    QSignalBlocker sliderBlocker(row.slider);
-    QSignalBlocker spinBlocker(row.spinBox);
-    row.slider->setValue(sliderValue);
-    row.spinBox->setValue(value);
-    if (userEdit) m_userLocked.insert(rowIndex);
-    m_lastValues.insert(paramId, value);
-    if (m_document && writeDocument && !record) m_document->SetParameterValue(paramId, value);
-    emit ParamChanged(paramId, value, !userEdit);
-    RefreshXYControls();
-    if (record && before != value) EmitHistoryState();
+    if (userEdit) { ApplyUserValues({{paramId, value}}); return; }
+    Q_UNUSED(record);
+    const auto found = std::find_if(m_rows.cbegin(), m_rows.cend(), [&](const auto& row) { return row.paramId == paramId; });
+    if (found == m_rows.cend()) return;
+    value = boundedParameterValue(value, found->minVal, found->maxVal, found->defaultVal);
+    if (m_document && writeDocument && !m_document->SetParameterValue(paramId, value)) return;
+    const QPointer<CParamPanel> alive(this);
+    {
+        const QSignalBlocker slider(found->slider), spin(found->spinBox);
+        found->slider->setValue(parameterToSlider(value, found->minVal, found->maxVal));
+        found->spinBox->setValue(value);
+    }
+    m_lastValues[paramId] = value;
+    if (writeDocument) m_previewBaseline.remove(paramId);
+    emit ParamChanged(paramId, value, true);
+    if (alive) RefreshXYControls();
 }
 
 void CParamPanel::BuildParams(CCidJson* cid, const QSet<QString>* blendShapeParams)
@@ -695,9 +964,27 @@ void CParamPanel::ReconcileParameters(CCidJson* cid, const QSet<QString>* blendS
 void CParamPanel::FilterParameters()
 {
     const QString query = m_search->text().trimmed().toLower();
-    if (!query.isEmpty()) for (auto* button : m_groupButtons) button->setChecked(true);
-    for (const auto& row : m_rows)
-        if (row.widget) row.widget->setVisible(query.isEmpty() || row.widget->property("searchText").toString().contains(query));
+    const bool related = m_onlyRelated && m_onlyRelated->isChecked();
+    QHash<QWidget*, int> matches;
+    int visible = 0;
+    for (const auto& row : m_rows) {
+        const bool show = (query.isEmpty() || row.widget->property("searchText").toString().contains(query)) &&
+                          (!related || m_relatedParameterIds.contains(row.paramId));
+        row.widget->setVisible(show);
+        if (show) { ++visible; ++matches[row.widget->parentWidget()]; }
+    }
+    for (auto it = m_groupButtons.cbegin(); it != m_groupButtons.cend(); ++it) {
+        const bool show = (query.isEmpty() && !related) || matches.value(it.key()) > 0;
+        if (!query.isEmpty() && show && !it.value()->isChecked()) {
+            const QSignalBlocker blocked(it.value()); it.value()->setChecked(true); it.value()->setArrowType(Qt::DownArrow);
+        }
+        it.value()->setVisible(show); it.key()->setVisible(show && it.value()->isChecked());
+    }
+    if (m_relatedStatus) {
+        const auto hint = related && visible == 0 ? QStringLiteral("当前选区没有匹配的参数") : QStringLiteral("%1 个参数").arg(visible);
+        m_relatedStatus->setText(m_relatedDetail.isEmpty() ? hint : hint + QStringLiteral(" · ") + m_relatedDetail);
+        m_relatedStatus->setVisible(related || !m_relatedDetail.isEmpty());
+    }
 }
 
 void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendShapeParams, bool resetHistory)
@@ -808,6 +1095,7 @@ void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendSh
         const double range = static_cast<double>(maxVal) - minVal;
 
         auto* rowWidget = new QWidget(m_container);
+        rowWidget->setProperty("parameterId", paramId);
 
         // 显示名称：优先用 cid 映射的名称，否则回退到内部 ID
         QString originalName = paramId;
@@ -870,79 +1158,94 @@ void CParamPanel::BuildParameterRows(CCidJson* cid, const QSet<QString>* blendSh
         int idx = m_rows.size() - 1;
         connect(resetButton, &QToolButton::clicked, this, [this, idx](){
             if (idx < 0 || idx >= m_rows.size()) return;
-            if (ApplyValue(idx, m_rows[idx].defaultVal, true)) m_userLocked.insert(idx);
+            const QPointer<CParamPanel> alive(this);
+            if (ApplyValue(idx, m_rows[idx].defaultVal, true) && alive) m_userLocked.insert(idx);
         });
         connect(slider, &QSlider::sliderPressed, this, [this, idx](){ BeginParameterDrag(idx); });
         connect(slider, &QSlider::sliderReleased, this, [this, idx](){ EndParameterDrag(idx); });
         connect(slider, &QSlider::valueChanged, this, [this, idx](int val){
             ParamRow& r = m_rows[idx];
-            const float realVal = sliderToParameter(val, r.minVal, r.maxVal);
+            float realVal = sliderToParameter(val, r.minVal, r.maxVal);
+            if (m_userDragging.contains(idx) && m_valueUiSnapshot) {
+                const auto original = m_valueUiSnapshot->values.constFind(r.paramId);
+                if (original != m_valueUiSnapshot->values.cend() && val == parameterToSlider(*original, r.minVal, r.maxVal))
+                    realVal = *original;
+            }
             ApplyValue(idx, realVal, !m_userDragging.contains(idx));
         });
 
         connect(spinBox, &QDoubleSpinBox::valueChanged, this, [this, idx, spinBox](double value){
             ParamRow& r = m_rows[idx];
             if (spinBox->DisplaysValue(m_lastValues.value(r.paramId, r.defaultVal))) return;
-            if (ApplyValue(idx, boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), true, true))
+            const QPointer<CParamPanel> alive(this);
+            const bool accepted = ApplyValue(idx, boundedParameterValue(value, r.minVal, r.maxVal, r.defaultVal), true, true);
+            if (!alive) return;
+            if (accepted)
                 m_rejectedSpinEdits.remove(idx);
             else m_rejectedSpinEdits.insert(idx);
         });
         connect(spinBox, &QDoubleSpinBox::editingFinished, this, [this, idx](){
-            if (!m_rejectedSpinEdits.contains(idx)) m_userLocked.insert(idx);
+            const QPointer<CParamPanel> alive(this);
+            if (!m_userDragging.isEmpty()) return;
+            if (HasUserValueGesture() && !FinishUserValueGesture()) return;
+            if (alive && !m_rejectedSpinEdits.contains(idx)) m_userLocked.insert(idx);
         });
 
         targetLayout->addWidget(rowWidget);
+        slider->installEventFilter(this);
+        spinBox->installEventFilter(this);
+        for (auto* input : spinBox->findChildren<QLineEdit*>()) input->installEventFilter(this);
     };
 
-    // 有分组信息时按组显示
-    if(cid && !cid->getGroups().isEmpty()){
-        QSet<QString> addedParams;
-        for(const CVetGroup& group : cid->getGroups()){
-            // 组标题
-            QString groupName;
-            const QMap<QString,QString>& groupMap = cid->getGroupIdToName();
-            if(groupMap.contains(group.strGroup))
-                groupName = groupMap[group.strGroup];
-            else
-                groupName = group.strGroup;
-
-            auto* groupButton = new QToolButton(m_container);
-            groupButton->setProperty("parameterGroupId", group.strGroup);
-            groupButton->setText(groupName);
-            groupButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-            groupButton->setArrowType(Qt::DownArrow);
-            groupButton->setCheckable(true);
-            groupButton->setChecked(true);
-            groupButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-            auto* groupBody = new QWidget(m_container);
-            m_groupButtons.insert(groupBody, groupButton);
-            auto* groupLayout = new QVBoxLayout(groupBody);
-            groupLayout->setContentsMargins(8, 0, 0, 0);
-            groupLayout->setSpacing(0);
-            layout->addWidget(groupButton);
-            layout->addWidget(groupBody);
-            connect(groupButton, &QToolButton::toggled, groupBody, [groupButton, groupBody](bool checked){
-                groupBody->setVisible(checked);
-                groupButton->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
-            });
-
-            for(const QString& paramId : group.vetParam){
-                if (!parameterRows.contains(paramId) || addedParams.contains(paramId)) continue;
-                addParamRow(groupLayout, paramId, parameterRows[paramId]);
-                addedParams.insert(paramId);
-            }
+    const auto organization = m_document ? CParameterOrganizationDialog::InitialState(*m_document, cid)
+                                         : live2dstruct::CParameterOrganization::State{};
+    using Node = live2dstruct::CParameterOrganization::Node;
+    QHash<QString, QWidget*> bodies;
+    QHash<QString, QToolButton*> buttons;
+    QHash<QString, QString> colors, names;
+    for (const auto& node : organization.nodes) if (node.kind == Node::Folder) {
+        auto* button = new CParameterGroupButton(m_container);
+        button->setProperty("parameterGroupId", node.id);
+        button->setProperty("parameterLabelColor", node.color);
+        button->setText(QString(node.name).replace(QLatin1Char('&'), QStringLiteral("&&")));
+        button->setAccessibleName(node.name);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setArrowType(Qt::DownArrow);
+        button->setCheckable(true); button->setChecked(true);
+        button->setFocusPolicy(Qt::StrongFocus);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        const QColor color(node.color);
+        if (color.isValid()) {
+            QPixmap swatch(button->fontMetrics().height(), button->fontMetrics().height());
+            swatch.fill(color); button->setIcon(QIcon(swatch));
         }
-
-        // 未分组的参数放到最后
-        for (int index = 0; index < parameters.size(); ++index) {
-            const QString& paramId = parameters[index].id;
-            if (!addedParams.contains(paramId)) addParamRow(layout, paramId, index);
-        }
-    } else {
-        // 无分组信息，全部平铺
-        for (int index = 0; index < parameters.size(); ++index)
-            addParamRow(layout, parameters[index].id, index);
+        auto* body = new QWidget(m_container);
+        auto* children = new QVBoxLayout(body);
+        children->setContentsMargins(button->fontMetrics().horizontalAdvance(QLatin1Char(' ')), 0, 0, 0);
+        children->setSpacing(0);
+        m_groupButtons.insert(body, button);
+        bodies.insert(node.id, body); buttons.insert(node.id, button);
+        colors.insert(node.id, node.color); names.insert(node.id, node.name);
+        connect(button, &QToolButton::toggled, body, [this, button] {
+            button->setArrowType(button->isChecked() ? Qt::DownArrow : Qt::RightArrow);
+            FilterParameters();
+        });
     }
+    QSet<QString> placed;
+    for (const auto& node : organization.nodes) {
+        if (node.kind == Node::Folder) {
+            layout->addWidget(buttons.value(node.id)); layout->addWidget(bodies.value(node.id)); continue;
+        }
+        if (!parameterRows.contains(node.id) || placed.contains(node.id)) continue;
+        auto* destination = bodies.value(node.parentFolder, nullptr);
+        addParamRow(destination ? qobject_cast<QVBoxLayout*>(destination->layout()) : layout, node.id, parameterRows[node.id]);
+        placed.insert(node.id);
+        auto& row = m_rows.last();
+        row.nameLabel->setProperty("parameterLabelColor", node.color.isEmpty() ? colors.value(node.parentFolder) : node.color);
+        row.widget->setProperty("searchText", row.widget->property("searchText").toString() + QLatin1Char(' ') + names.value(node.parentFolder).toLower());
+    }
+    for (int index = 0; index < parameters.size(); ++index) if (!placed.contains(parameters[index].id))
+        addParamRow(layout, parameters[index].id, index);
 
     layout->addStretch();
     for (const ParamRow& row : m_rows) {
@@ -976,6 +1279,8 @@ bool CParamPanel::FocusParameter(const QString& id)
     const QPointer<QWidget> widget = found->widget;
     const QPointer<QDoubleSpinBox> spin = found->spinBox;
     m_search->clear();
+    if (!panel || !widget || !spin) return false;
+    if (m_onlyRelated && !m_relatedParameterIds.contains(id)) m_onlyRelated->setChecked(false);
     if (!panel || !widget || !spin) return false;
     for (auto* parent = widget->parentWidget(); parent && parent != m_container; parent = parent->parentWidget()) {
         if (auto* button = m_groupButtons.value(parent, nullptr)) button->setChecked(true);
@@ -1015,8 +1320,11 @@ void CParamPanel::RefreshXYControls()
     float xMinimum = 0.0f, xMaximum = 1.0f, yMinimum = 0.0f, yMaximum = 1.0f;
     const float xValue = parameterValue(m_xyXSelector, &xMinimum, &xMaximum);
     const float yValue = parameterValue(m_xyYSelector, &yMinimum, &yMaximum);
-    m_xyPad->SetRange(xMinimum, xMaximum, yMinimum, yMaximum);
-    m_xyPad->SetValues(xValue, yValue);
+    {
+        const QSignalBlocker blocker(m_xyPad);
+        m_xyPad->SetRange(xMinimum, xMaximum, yMinimum, yMaximum);
+        m_xyPad->SetValues(xValue, yValue);
+    }
     m_xyBox->setEnabled(true);
     m_updatingXY = false;
 }
@@ -1024,54 +1332,20 @@ void CParamPanel::RefreshXYControls()
 void CParamPanel::ApplyXYPad(float xValue, float yValue)
 {
     if (m_updatingXY || !m_xyXSelector || !m_xyYSelector || !std::isfinite(xValue) || !std::isfinite(yValue)) return;
-    if (!AllowUserEdit()) return;
-    const QScopedValueRollback<bool> approved(m_editGuardApproved, true);
-    const auto findRow = [this](QComboBox* selector) {
-        return std::find_if(m_rows.cbegin(), m_rows.cend(), [selector](const ParamRow& row){
-            return row.paramId == selector->currentText();
-        });
-    };
-    const auto xRow = findRow(m_xyXSelector);
-    const auto yRow = findRow(m_xyYSelector);
-    if (xRow == m_rows.cend() || yRow == m_rows.cend()) return;
-    xValue = boundedParameterValue(xValue, xRow->minVal, xRow->maxVal, xRow->defaultVal);
-    yValue = boundedParameterValue(yValue, yRow->minVal, yRow->maxVal, yRow->defaultVal);
-    const QMap<QString, float> before{{xRow->paramId, ValueBeforeEdit(xRow->paramId, xRow->defaultVal)},
-                                      {yRow->paramId, ValueBeforeEdit(yRow->paramId, yRow->defaultVal)}};
-    const QMap<QString, float> after{{xRow->paramId, xValue}, {yRow->paramId, yValue}};
-    if (!m_document || (before == after && !m_previewActive)) return;
-    const live2dstruct::CModelEdit command{
-        QStringLiteral("xy"), QStringLiteral("parameters"), live2dstruct::CModelEdit::ParameterValues,
-        QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
-    if (before != after && !m_document->ExecuteEdit(command)) return;
-    m_updatingXY = true;
-    ApplyExternalValue(xRow->paramId, xValue, false);
-    ApplyExternalValue(yRow->paramId, yValue, false);
-    m_updatingXY = false;
-    if (before != after) emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    const QMap<QString, float> values{{m_xyXSelector->currentText(), xValue}, {m_xyYSelector->currentText(), yValue}};
+    if (HasUserValueGesture()) PreviewUserValueGesture(values);
+    else ApplyUserValues(values);
 }
 
 void CParamPanel::ResetAll()
 {
-    if (!AllowUserEdit()) return;
-    const QScopedValueRollback<bool> approved(m_editGuardApproved, true);
-    m_userLocked.clear();
-    m_userDragging.clear();
-    m_changedDrags.clear();
-    m_dragStarts.clear();
-    for(auto& r : m_rows){
-        const float before = ValueBeforeEdit(r.paramId, r.defaultVal);
-        const float defaultValue = boundedParameterValue(r.defaultVal, r.minVal, r.maxVal, r.minVal);
-        const int sliderDefault = parameterToSlider(defaultValue, r.minVal, r.maxVal);
-        r.slider->blockSignals(true);
-        r.slider->setValue(sliderDefault);
-        r.slider->blockSignals(false);
-        r.spinBox->blockSignals(true);
-        r.spinBox->setValue(defaultValue);
-        r.spinBox->blockSignals(false);
-        ApplyValue(&r - m_rows.data(), defaultValue, false);
-        PushEdit(r.paramId, before, defaultValue);
-    }
+    const QPointer<CParamPanel> alive(this);
+    if (HasUserValueGesture() && !CancelUserValueGesture()) return;
+    if (!alive) return;
+    QMap<QString, float> values;
+    for (const auto& row : m_rows) values.insert(row.paramId, row.defaultVal);
+    if (!ApplyUserValues(values) || !alive) return;
+    m_userLocked.clear(); m_userDragging.clear(); m_changedDrags.clear(); m_dragStarts.clear();
 }
 
 void CParamPanel::SyncFromModel()
@@ -1125,6 +1399,7 @@ void CParamPanel::ApplyValues(const QMap<QString, float>& values)
 
 void CParamPanel::ApplyValuesInternal(const QMap<QString, float>& values, bool record)
 {
+    if (record) { ApplyUserValues(values); return; }
     if (!AllowUserEdit()) return;
     const QScopedValueRollback<bool> approved(m_editGuardApproved, true);
     for (int i = 0; i < m_rows.size(); ++i) {
@@ -1161,9 +1436,13 @@ void CParamPanel::CopyValues()
 
 void CParamPanel::PasteValues()
 {
-    const QString text = QApplication::clipboard()->text();
     QMap<QString, float> values;
-    if (parseParameterPreset(text.toUtf8(), &values, nullptr)) ApplyValues(values);
+    QString error;
+    if (!parseParameterPreset(QApplication::clipboard()->text().toUtf8(), &values, &error)) {
+        emit EditRejected(error);
+        return;
+    }
+    ApplyUserValues(values);
 }
 
 void CParamPanel::SavePreset()
@@ -1210,6 +1489,7 @@ void CParamPanel::EditParameterMetadata()
 {
     if (!m_document || m_rows.isEmpty() || m_metadataDialogOpen || m_submittingEdit) return;
     const QPointer<CParamPanel> panel(this);
+    if (!FinishUserValueGesture() || !panel) return;
     m_metadataDialogOpen = true;
     const auto closeEditing = qScopeGuard([panel] { if (panel) panel->m_metadataDialogOpen = false; });
     auto* const document = m_document;
@@ -1370,11 +1650,8 @@ void CParamPanel::EditParameterStructure(StructureAction action)
 {
     using Builder = live2dstruct::CMocParameterStructureBuilder;
     if (!m_document || !m_document->IsLoaded() || m_metadataDialogOpen || m_submittingEdit) return;
-    if (!m_userDragging.isEmpty()) {
-        emit EditRejected(QStringLiteral("请先结束参数拖动，再编辑参数结构"));
-        return;
-    }
     const QPointer<CParamPanel> panel(this);
+    if (!FinishUserValueGesture() || !panel) return;
     auto* const document = m_document;
     const auto digest = document->SourceDigest();
     const auto revision = document->Revision();
@@ -1817,71 +2094,48 @@ void CParamPanel::RefreshAcceptedMetadata(const live2dstruct::CModelEdit& edit, 
 
 void CParamPanel::BeginParameterDrag(int rowIndex)
 {
-    if (rowIndex < 0 || rowIndex >= m_rows.size()) return;
-    const ParamRow& row = m_rows[rowIndex];
-    m_userDragging.insert(rowIndex);
-    m_changedDrags.remove(rowIndex);
-    m_dragStarts.insert(rowIndex, ValueBeforeEdit(row.paramId, row.defaultVal));
+    if (rowIndex < 0 || rowIndex >= m_rows.size() || m_userDragging.contains(rowIndex)) return;
+    const auto id = m_rows[rowIndex].paramId;
+    const auto before = ValueBeforeEdit(id, m_rows[rowIndex].defaultVal);
+    const QPointer<CParamPanel> alive(this);
+    if (!BeginUserValueGesture({{id, m_lastValues.value(id, m_rows[rowIndex].defaultVal)}}) || !alive) return;
+    m_userDragging.insert(rowIndex); m_changedDrags.remove(rowIndex); m_dragStarts.insert(rowIndex, before);
 }
 
 void CParamPanel::EndParameterDrag(int rowIndex)
 {
-    m_userDragging.remove(rowIndex);
-    const bool changed = m_changedDrags.remove(rowIndex);
-    if (!m_dragStarts.contains(rowIndex)) return;
-    const float before = m_dragStarts.take(rowIndex);
-    if (!changed || rowIndex < 0 || rowIndex >= m_rows.size()) return;
-    m_userLocked.insert(rowIndex);
-    const ParamRow& row = m_rows[rowIndex];
-    PushEdit(row.paramId, before, m_lastValues.value(row.paramId, row.defaultVal));
+    if (!m_userDragging.contains(rowIndex)) return;
+    const QPointer<CParamPanel> alive(this);
+    if (!FinishUserValueGesture() || !alive) return;
+    m_userDragging.remove(rowIndex); m_changedDrags.remove(rowIndex); m_dragStarts.remove(rowIndex);
 }
 
 bool CParamPanel::ApplyValue(int rowIndex, float value, bool record, bool preserveSpinText)
 {
     if (rowIndex < 0 || rowIndex >= m_rows.size() || !std::isfinite(value)) return false;
-    if (m_userDragging.contains(rowIndex) && value == m_lastValues.value(m_rows[rowIndex].paramId, m_rows[rowIndex].defaultVal)) return true;
+    const auto id = m_rows[rowIndex].paramId;
+    value = boundedParameterValue(value, m_rows[rowIndex].minVal, m_rows[rowIndex].maxVal, m_rows[rowIndex].defaultVal);
+    if (m_userDragging.contains(rowIndex) && value == m_lastValues.value(id, m_rows[rowIndex].defaultVal)) return true;
     const QPointer<CParameterSpinBox> inputBox = preserveSpinText
         ? dynamic_cast<CParameterSpinBox*>(m_rows[rowIndex].spinBox) : nullptr;
     const auto input = inputBox ? inputBox->CaptureInput() : CParameterSpinBox::InputState{};
-    if (!AllowUserEdit() || rowIndex >= m_rows.size()) return false;
-    ParamRow& row = m_rows[rowIndex];
-    value = boundedParameterValue(value, row.minVal, row.maxVal, row.defaultVal);
-    if (m_userDragging.contains(rowIndex)) {
-        if (!m_changedDrags.contains(rowIndex))
-            m_dragStarts.insert(rowIndex, ValueBeforeEdit(row.paramId, row.defaultVal));
-        m_changedDrags.insert(rowIndex);
+    const QPointer<CParamPanel> alive(this);
+    if (preserveSpinText && inputBox && inputBox->hasFocus() && !HasUserValueGesture()) {
+        if (!BeginUserValueGesture({{id, m_lastValues.value(id, m_rows[rowIndex].defaultVal)}}) || !alive) return false;
     }
-    const float before = ValueBeforeEdit(row.paramId, value);
-    if (record && before != value && !PushEdit(row.paramId, before, value, false)) { RestoreControls(); return false; }
-    {
-        const QSignalBlocker sliderBlocker(row.slider);
-        const QSignalBlocker spinBlocker(row.spinBox);
-        row.slider->setValue(parameterToSlider(value, row.minVal, row.maxVal));
-        const auto* spinBox = dynamic_cast<const CParameterSpinBox*>(row.spinBox);
-        if (!preserveSpinText || !spinBox || !spinBox->DisplaysValue(value))
-            row.spinBox->setValue(value);
-        if (inputBox && inputBox == row.spinBox) inputBox->RestoreInput(input);
-    }
-    m_previewBaseline.remove(row.paramId);
-    m_lastValues.insert(row.paramId, value);
-    emit ParamChanged(row.paramId, value, false);
-    RefreshXYControls();
-    if (record && before != value) {
-        EmitHistoryState();
-    }
-    return true;
+    const bool accepted = HasUserValueGesture() && (!record || preserveSpinText)
+        ? PreviewUserValueGesture({{id, value}}) : ApplyUserValues({{id, value}});
+    if (!alive) return accepted;
+    if (accepted && m_userDragging.contains(rowIndex)) m_changedDrags.insert(rowIndex);
+    if (inputBox) inputBox->RestoreInput(input);
+    return accepted;
 }
 
 bool CParamPanel::PushEdit(const QString& paramId, float before, float after, bool notify)
 {
-    if (before == after) return true;
-    if (m_document) {
-        const live2dstruct::CModelEdit command{paramId, QStringLiteral("parameter"),
-                                               live2dstruct::CModelEdit::ParameterValue, before, after};
-        if (!m_document->ExecuteEdit(command)) return false;
-    }
-    if (notify) EmitHistoryState();
-    return true;
+    Q_UNUSED(before);
+    Q_UNUSED(notify);
+    return ApplyUserValues({{paramId, after}});
 }
 
 void CParamPanel::EmitHistoryState()
@@ -1917,13 +2171,15 @@ void CParamPanel::Redo()
 void CParamPanel::ApplyHistory(bool undo)
 {
     if (!m_document || m_metadataDialogOpen || m_submittingEdit) return;
+    const QPointer<CParamPanel> panel(this);
+    if (!FinishUserValueGesture() || !panel) return;
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document->PeekUndoEdit(&pending) : m_document->PeekRedoEdit(&pending)) ||
         (pending.field != live2dstruct::CModelEdit::ParameterValue &&
          pending.field != live2dstruct::CModelEdit::ParameterValues &&
          pending.field != live2dstruct::CModelEdit::ParameterMetadata &&
-         pending.field != live2dstruct::CModelEdit::ParameterStructure)) return;
-    const QPointer<CParamPanel> panel(this);
+         pending.field != live2dstruct::CModelEdit::ParameterStructure &&
+         pending.field != live2dstruct::CModelEdit::ParameterOrganization)) return;
     auto* const document = m_document;
     const auto digest = document->SourceDigest();
     const auto handler = m_historyHandler;
@@ -1945,7 +2201,9 @@ void CParamPanel::ApplyHistory(bool undo)
         emit EditRejected(error.isEmpty() ? QStringLiteral("参数历史未通过校验") : error);
         return;
     }
-    if (edit.field == live2dstruct::CModelEdit::ParameterStructure) {
+    if (edit.field == live2dstruct::CModelEdit::ParameterOrganization) {
+        if (!handler) RefreshOrganization();
+    } else if (edit.field == live2dstruct::CModelEdit::ParameterStructure) {
         if (!handler) ReconcileParameters();
         emit StructureChanged();
     } else if (edit.field == live2dstruct::CModelEdit::ParameterMetadata) {

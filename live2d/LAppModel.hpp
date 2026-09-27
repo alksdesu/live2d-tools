@@ -53,6 +53,16 @@ public:
         QSet<QString> explicitParameterIds;
         bool active = false;
     };
+    class UserParameterContext
+    {
+    public:
+        UserParameterContext() = default;
+        bool IsValid() const;
+    private:
+        struct Data;
+        std::shared_ptr<const Data> m_data;
+        friend class LAppModel;
+    };
     using TimelinePreviewPreparation = std::function<bool(const QMap<QString, float>&, const QSet<QString>&,
         const QSet<QString>&, PreparedTimelinePreview&, QString*)>;
 
@@ -84,6 +94,13 @@ public:
     bool CaptureParameterStructureSeeds(const QStringList& ids, ParameterStructureSeeds& result,
                                         QString* error = nullptr) const;
     bool CaptureEditorPreviewContext(EditorPreviewContext& result, QString* error = nullptr) const;
+    bool CaptureUserParameterContext(UserParameterContext& result, QString* error = nullptr) const;
+    // Parameters without a saved value are omitted.
+    bool CaptureUserParameterBaseValues(QMap<QString, float>& result, QString* error = nullptr) const;
+    bool ApplyUserParameterValues(const QMap<QString, float>& values, QString* error = nullptr);
+    bool RestoreUserParameterContext(const UserParameterContext& context, QString* error = nullptr);
+    bool BeginUserParameterPreview(QString* error = nullptr);
+    void EndUserParameterPreview(bool previousSnapshotMode) noexcept;
     const ParameterReferenceState& GetParameterReferenceState() const { return m_parameterReferences; }
     const QByteArray& GetModelSettingsDigest() const { return m_modelSettingsDigest; }
     const QByteArray& GetModelSettingsBytes() const { return m_modelSettingsBytes; }
@@ -280,6 +297,10 @@ private:
     QByteArray m_previewMocDigest;
     QByteArray m_previewMocBytes;
     std::unique_ptr<Csm::CubismModel::RuntimeValueSnapshot> m_editorEntryState;
+    std::shared_ptr<const char> m_userParameterLifetime = std::make_shared<const char>(0);
+    quint64 m_userParameterModelGeneration = 0;
+    bool m_userParameterSnapshotActive = false;
+    bool UserParameterReady(QString* error) const;
     std::unique_ptr<Csm::CubismModel::RuntimeValueSnapshot> m_exportEntryState;
     Csm::CubismModel* m_exportModel = nullptr;
     bool m_exportSavedParameters = false;
@@ -325,3 +346,4 @@ private:
 
 Q_DECLARE_METATYPE(LAppModel::EditorPreviewContext)
 Q_DECLARE_METATYPE(LAppModel::PreparedTimelinePreview)
+Q_DECLARE_METATYPE(LAppModel::UserParameterContext)

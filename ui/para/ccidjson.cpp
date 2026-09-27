@@ -20,6 +20,7 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     QVector<CVetGroup> groupsToParameters;
     QVector<QVector<QString>> combinedParameters;
     QSet<QString> combinedParameterSet;
+    std::optional<live2dstruct::CParameterOrganization::State> organization;
     QFile file(sourcePath);
     if (!file.open(QIODevice::ReadOnly)) {
         qDebug() << "Failed to open file";
@@ -41,6 +42,17 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     }
 
     QJsonObject qt = jsonDoc.object();
+    const auto extension = qt.value(QStringLiteral("Live2DToolsParameterOrganization"));
+    if (!extension.isUndefined()) {
+        const auto object = extension.toObject();
+        if (!extension.isObject() || object.value(QStringLiteral("Version")) != QJsonValue(1) ||
+            !object.value(QStringLiteral("State")).isObject()) {
+            if (error) *error = QStringLiteral("CDI 参数组织扩展格式或版本无效");
+            return false;
+        }
+        organization.emplace();
+        if (!live2dstruct::CParameterOrganization::FromJson(object.value(QStringLiteral("State")).toObject(), *organization, error)) return false;
+    }
     const auto readArray = [&qt, error](const QString& key, QJsonArray* array) {
         const QJsonValue value = qt.value(key);
         if (value.isUndefined()) { *array = {}; return true; }
@@ -68,32 +80,20 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     }
 
     if (!readArray(QStringLiteral("Parameters"), &Parts)) { return false; }
-    CVetGroup vetgrop;
-    QString curGroupName;
-    QString lastGroupName;
-    for(int i = 0 ;i < Parts.size() ;i++){
-        QJsonObject pO = Parts[i].toObject();
-        const QString id = pO["Id"].toString();
+    QMap<QString, int> groupRows;
+    for (const auto& value : Parts) {
+        const auto parameter = value.toObject();
+        const auto id = parameter.value(QStringLiteral("Id")).toString();
         if (id.isEmpty()) continue;
-        parametersIdToName.insert(id,pO["Name"].toString());
-        curGroupName = pO["GroupId"].toString();
-
-        if(i == 0){
-            lastGroupName = curGroupName;
+        parametersIdToName.insert(id, parameter.value(QStringLiteral("Name")).toString());
+        const auto groupId = parameter.value(QStringLiteral("GroupId")).toString();
+        if (!groupRows.contains(groupId)) {
+            groupRows.insert(groupId, groupsToParameters.size());
+            CVetGroup group;
+            group.strGroup = groupId;
+            groupsToParameters.append(group);
         }
-
-        if(curGroupName != lastGroupName){
-            groupsToParameters.push_back(vetgrop);
-            vetgrop.clear();
-            lastGroupName = curGroupName;
-        }
-
-        vetgrop.vetParam.push_back(id);
-        vetgrop.strGroup = curGroupName;
-
-        if(i == (Parts.size() - 1)){
-           groupsToParameters.push_back(vetgrop);
-        }
+        groupsToParameters[groupRows.value(groupId)].vetParam.append(id);
     }
 
     // 解析 Deformers（部分模型可能包含）
@@ -135,5 +135,6 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     m_CombinedParamSet.swap(combinedParameterSet);
     m_sourcePath = sourcePath;
     m_sourceDigest.swap(digest);
+    m_parameterOrganization.swap(organization);
     return true;
 }

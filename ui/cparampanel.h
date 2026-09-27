@@ -13,12 +13,14 @@
 #include <functional>
 #include <memory>
 #include "live2dstruct/cmocparameterstructurebuilder.h"
+#include "live2dstruct/cparametervalueeditcontroller.h"
 
 class CCidJson;
 class QToolButton;
 class QComboBox;
 class QGroupBox;
 class CXYParameterPad;
+class QCheckBox;
 namespace live2dstruct { class CModelDocument; struct CModelEdit; }
 
 class CParamPanel : public QDockWidget
@@ -35,6 +37,17 @@ public:
     using ParameterOwner = live2dstruct::CMocParameterStructureBuilder::Owner;
     explicit CParamPanel(QWidget *parent = nullptr);
     ~CParamPanel() override;
+    using ValueController = live2dstruct::CParameterValueEditController;
+    void SetValuePublisher(ValueController::Publisher publisher);
+    void SetValueExpander(ValueController::Expander expander);
+    void SetValueBaselineProvider(ValueController::BaselineProvider provider);
+    void SetValueContextDigestProvider(ValueController::ContextDigestProvider provider);
+    bool ApplyUserValues(const QMap<QString, float>& values, QString* error = nullptr);
+    bool BeginUserValueGesture(const QMap<QString, float>& drivers, QString* error = nullptr);
+    bool PreviewUserValueGesture(const QMap<QString, float>& drivers, QString* error = nullptr);
+    bool FinishUserValueGesture(QString* error = nullptr);
+    bool CancelUserValueGesture(QString* error = nullptr);
+    bool HasUserValueGesture() const;
     void SetPreEditGuard(PreEditGuard guard);
     void SetMetadataEditHandler(MetadataEditHandler handler);
     void SetHistoryHandler(HistoryHandler handler);
@@ -43,6 +56,10 @@ public:
     void SetDeleteReferenceProvider(DeleteReferenceProvider provider);
     void SetBindingTargets(const QVector<ParameterOwner>& targets);
     void SetDocument(live2dstruct::CModelDocument* document);
+    void SetOrganizationEditHandler(MetadataEditHandler handler);
+    void SetRelatedParameterIds(const QSet<QString>& ids, const QString& detail = {});
+    void RefreshOrganization();
+    void EditOrganization();
     void ApplyExternalValue(const QString& paramId, float value, bool record = false, bool userEdit = true, bool writeDocument = true);
     void SetPreviewValues(const QMap<QString, float>& values, const QMap<QString, float>& baselineValues);
     void ClearPreviewValues(const QMap<QString, float>& restoredValues = {}, const QString& preservedParameterId = {});
@@ -56,10 +73,13 @@ public:
 
 signals:
     void ParamChanged(const QString& name, float value, bool isInit);
+    void UserValuesApplied(const QMap<QString, float>& values);
+    void UserValuesEdited(const QMap<QString, float>& values);
     void HistoryChanged(bool canUndo, bool canRedo);
     void EditRejected(const QString& error);
     void ParameterMetadataChanged();
     void StructureChanged();
+    void OrganizationChanged();
 
 public slots:
     void ResetAll();
@@ -77,6 +97,9 @@ public slots:
     void CreateParameter();
     void BindParameter();
     void DeleteParameter();
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     friend class ParamPanelTests;
@@ -99,6 +122,11 @@ private:
     QScrollArea* m_scroll;
     QWidget* m_container;
     QLineEdit* m_search;
+    QCheckBox* m_onlyRelated = nullptr;
+    QLabel* m_relatedStatus = nullptr;
+    QSet<QString> m_relatedParameterIds;
+    QString m_relatedDetail;
+    MetadataEditHandler m_organizationEditHandler;
     QComboBox* m_xyXSelector = nullptr;
     QComboBox* m_xyYSelector = nullptr;
     CXYParameterPad* m_xyPad = nullptr;
@@ -133,8 +161,22 @@ private:
     QHash<int, float> m_dragStarts;
     live2dstruct::CModelDocument* m_document = nullptr;
 
+    ValueController m_valueController;
+    struct ValueUiSnapshot {
+        QMap<QString, float> values;
+        QMap<QString, float> previewBaseline;
+        QSet<int> userLocked;
+        bool previewActive = false;
+    };
+    std::optional<ValueUiSnapshot> m_valueUiSnapshot;
+    quint64 m_valueGestureSerial = 0;
+    bool m_hasValuePublisher = false;
+    bool m_applyingValueRequest = false;
+    bool ApplyValueRequest(const ValueController::Request& request, QString* error);
+    void SyncAcceptedValues(const QMap<QString, float>& values, bool notify);
+    void InstallValueEventFilters();
     bool ApplyValue(int rowIndex, float value, bool record, bool preserveSpinText = false);
-    bool AllowUserEdit();
+    bool AllowUserEdit(QString* error = nullptr);
     void RestoreControls();
     void BeginParameterDrag(int rowIndex);
     void EndParameterDrag(int rowIndex);

@@ -66,6 +66,8 @@ bool CMotionPanel::TryCommitTimelineCells(QString* error)
     if (error) error->clear();
     if (!RequireTransportAvailable(error)) return false;
     if (!HasPendingTimelineCells()) return true;
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const auto before = m_timeline;
@@ -162,6 +164,8 @@ void CMotionPanel::ConnectKeyframeEditing()
 
 bool CMotionPanel::ApplyTimelineCellEdit(const CMotionPointRef& ref, int column, const QString& input, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
     if (!RequireTransportAvailable(error)) return false;
     const auto found = m_timeline.Tracks().constFind(ref.track);
@@ -193,6 +197,8 @@ bool CMotionPanel::ApplyTimelineCellEdit(const CMotionPointRef& ref, int column,
 
 bool CMotionPanel::ApplyKeyframeBatch(const CMotionTimeline::BatchEdit& edit, const QString& label, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (!RequireTransportAvailable(error)) return false;
     if (m_timeline.IsRecording() || m_editGroupActive || m_restoringTimeline || m_updatingTimeline) {
         if (error) *error = QStringLiteral("请先结束录制或曲线拖动");
@@ -208,6 +214,9 @@ bool CMotionPanel::ApplyKeyframeBatch(const CMotionTimeline::BatchEdit& edit, co
 
 void CMotionPanel::BeginCurveGesture(const CMotionPointSelection& selection, bool bezier)
 {
+    const QPointer<CMotionCurveView> view(m_curveView);
+    if (!CheckParameterEditGuard()) { if (view) view->CancelDrag(); return; }
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const bool pending = HasPendingTimelineCells();
@@ -344,7 +353,6 @@ QToolBar* CMotionPanel::CreateKeyframeTools(QWidget* parent)
         }
         m_curveView->SetFrameSnapping(enabled);
     });
-    connect(m_recordTimelineCb, &QCheckBox::toggled, tools, &QToolBar::setDisabled);
     for (auto* button : tools->findChildren<QToolButton*>()) button->setFocusPolicy(Qt::StrongFocus);
     return tools;
 }
@@ -370,6 +378,8 @@ void CMotionPanel::CopyKeyframes(bool cut)
 
 void CMotionPanel::PasteKeyframes(bool selectedTrack, bool replaceCoincident)
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!TryCommitTimelineCells() || !alive || m_editGroupActive || m_timeline.IsRecording()) return;
     const auto* mime = QApplication::clipboard()->mimeData();
@@ -407,6 +417,8 @@ void CMotionPanel::PasteKeyframes(bool selectedTrack, bool replaceCoincident)
 
 void CMotionPanel::SetKeyframeInterpolation(int type)
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!TryCommitTimelineCells() || !alive || m_selectedPoints.isEmpty()) return;
     CMotionTimeline::BatchEdit edit;
@@ -419,6 +431,8 @@ void CMotionPanel::SetKeyframeInterpolation(int type)
 
 void CMotionPanel::TransformKeyframes()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!TryCommitTimelineCells() || !alive || m_selectedPoints.isEmpty() || m_editGroupActive || m_timeline.IsRecording()) return;
     PauseTimelinePreview();

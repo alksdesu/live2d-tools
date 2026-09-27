@@ -53,6 +53,23 @@
 
 
 namespace {
+class CParameterGuardedTimelineDelegate final : public CTableEditDelegate
+{
+public:
+    CParameterGuardedTimelineDelegate(QObject* parent, std::function<bool()> guard)
+        : CTableEditDelegate(parent), m_guard(std::move(guard)) {}
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        const QPointer<const CParameterGuardedTimelineDelegate> alive(this);
+        const QPersistentModelIndex target(index);
+        const auto guard = m_guard;
+        if ((guard && !guard()) || !alive || !target.isValid()) return nullptr;
+        return CTableEditDelegate::createEditor(parent, option, target);
+    }
+private:
+    std::function<bool()> m_guard;
+};
+
 class CTimelineEdit : public QUndoCommand
 {
 public:
@@ -511,6 +528,138 @@ bool CMotionPanel::ResumePreviewTransport(PreviewTransportLease& lease, QString*
     return true;
 }
 
+struct CMotionPanel::ParameterEditTransportSnapshot::Data
+{
+    QPointer<const CMotionPanel> owner;
+    CMotionTimeline timeline;
+    quint64 generation = 0, revision = 0, recordingRevision = 0, registryRevision = 0;
+    double time = 0, speed = 1;
+    bool playing = false, recording = false, recordingClockPaused = false;
+    bool loop = false, fades = false, eventStartPending = false, endEnabled = false;
+    int speedSlider = 100, interval = 33;
+    Qt::TimerType timerType = Qt::CoarseTimer;
+    bool singleShot = false;
+    QString playText, timeText, eventText, eventTooltip;
+};
+
+bool CMotionPanel::ParameterEditTransportSnapshot::IsValid() const
+{
+    return m_data && m_data->owner;
+}
+
+bool CMotionPanel::CaptureParameterEditTransport(ParameterEditTransportSnapshot& snapshot, QString* error) const
+{
+    if (error) error->clear();
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (m_transport || m_transportTransition || m_timelineMutation || m_restoringTimeline ||
+        HasPendingTimelineCells() || (m_editGroupActive && !m_timeline.IsRecording()))
+        return fail(QStringLiteral("请先结束当前动画编辑，再修改参数"));
+    if (!m_timelineTimer || !std::isfinite(m_timelineTime) || m_timelineTime < 0 ||
+        !std::isfinite(m_timelinePlaybackSpeed) || m_timelinePlaybackSpeed <= 0 ||
+        m_recordTimelineCb->isChecked() != m_timeline.IsRecording() ||
+        (m_timelineTimer->isActive() && (m_timeline.IsRecording() || !m_playbackClock.isValid())))
+        return fail(QStringLiteral("动画播放状态无效"));
+    try {
+        auto data = std::make_shared<ParameterEditTransportSnapshot::Data>();
+        data->owner = this; data->timeline = m_timeline;
+        data->generation = m_historyGeneration; data->revision = m_timelineRevision;
+        data->recordingRevision = m_recordValuesRevision; data->registryRevision = m_registryRevision;
+        data->time = m_timelineTime; data->speed = m_timelinePlaybackSpeed;
+        data->playing = m_timelineTimer->isActive(); data->recording = m_timeline.IsRecording();
+        data->recordingClockPaused = m_timeline.IsRecordingClockPaused();
+        data->loop = m_loopCb->isChecked(); data->fades = m_previewFades->isChecked();
+        data->eventStartPending = m_eventStartPending; data->endEnabled = m_endPreviewButton->isEnabled();
+        data->speedSlider = m_speedSlider->value(); data->interval = m_timelineTimer->interval();
+        data->timerType = m_timelineTimer->timerType(); data->singleShot = m_timelineTimer->isSingleShot();
+        data->playText = m_playTimelineButton->text(); data->timeText = m_timelineTimeLabel->text();
+        data->eventText = m_eventStatus->text(); data->eventTooltip = m_eventStatus->toolTip();
+        snapshot.m_data = std::move(data);
+        return true;
+    } catch (...) { return fail(QStringLiteral("无法保存动画播放状态")); }
+}
+
+bool CMotionPanel::ValidateParameterEditTransport(const ParameterEditTransportSnapshot& snapshot, QString* error) const
+{
+    if (error) error->clear();
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (!snapshot.m_data || snapshot.m_data->owner != this) return fail(QStringLiteral("动画状态快照不属于当前面板"));
+    const auto& state = *snapshot.m_data;
+    if (m_transport || m_transportTransition || m_timelineMutation || m_restoringTimeline || HasPendingTimelineCells() ||
+        m_historyGeneration != state.generation || m_registryRevision != state.registryRevision ||
+        m_timeline.IsRecording() != state.recording || m_recordTimelineCb->isChecked() != state.recording ||
+        m_timeline.IsRecordingClockPaused() != state.recordingClockPaused ||
+        m_loopCb->isChecked() != state.loop || m_previewFades->isChecked() != state.fades ||
+        m_speedSlider->value() != state.speedSlider || m_timelinePlaybackSpeed != state.speed ||
+        m_timelineTimer->interval() != state.interval || m_timelineTimer->timerType() != state.timerType ||
+        m_timelineTimer->isSingleShot() != state.singleShot)
+        return fail(QStringLiteral("动画内容、录制或播放设置已改变，不能恢复旧播放状态"));
+    if (!state.recording) {
+        if (m_timelineRevision != state.revision || !m_timeline.HasSameContent(state.timeline))
+            return fail(QStringLiteral("动画已被编辑，不能恢复旧播放状态"));
+    } else {
+        if (m_timelineRevision < state.revision || m_recordValuesRevision < state.recordingRevision ||
+            m_timelineRevision - state.revision != m_recordValuesRevision - state.recordingRevision)
+            return fail(QStringLiteral("录制期间发生了其它动画操作，不能恢复旧播放状态"));
+    }
+    return true;
+}
+
+bool CMotionPanel::PauseParameterEditTransport(const ParameterEditTransportSnapshot& snapshot, QString* error)
+{
+    if (!ValidateParameterEditTransport(snapshot, error)) return false;
+    m_timelineTimer->stop();
+    m_playTimelineButton->setText(QStringLiteral("预览"));
+    return true;
+}
+
+bool CMotionPanel::RestoreParameterEditTransport(const ParameterEditTransportSnapshot& snapshot, QString* error)
+{
+    if (!ValidateParameterEditTransport(snapshot, error)) return false;
+    const auto& state = *snapshot.m_data;
+    m_timelineTimer->stop();
+    m_timelineTime = state.time; m_timelinePlaybackSpeed = state.speed;
+    m_eventStartPending = state.eventStartPending;
+    {
+        const QSignalBlocker playhead(m_timelinePlayhead);
+        const double duration = m_timeline.Timing().duration;
+        m_timelinePlayhead->setValue(duration > 0 ? qBound(0, qRound(state.time * 1000.0 / duration), 1000) : 0);
+    }
+    m_playTimelineButton->setText(state.playText); m_timelineTimeLabel->setText(state.timeText);
+    m_endPreviewButton->setEnabled(state.endEnabled);
+    m_eventStatus->setText(state.eventText); m_eventStatus->setToolTip(state.eventTooltip);
+    m_curveView->SetTime(state.time);
+    if (state.playing) { m_playbackClock.start(); m_playbackLastNs = 0; m_timelineTimer->start(); }
+    return true;
+}
+
+void CMotionPanel::SetParameterEditGuard(ParameterEditGuard guard)
+{
+    if (!m_checkingParameterEditGuard) m_parameterEditGuard = std::move(guard);
+}
+
+bool CMotionPanel::CheckParameterEditGuard(QString* error)
+{
+    if (error) error->clear();
+    if (m_parameterEditApproved || m_restoringTimeline || !m_parameterEditGuard) return true;
+    if (m_checkingParameterEditGuard) {
+        if (error) *error = QStringLiteral("参数编辑检查正在进行");
+        return false;
+    }
+    const QPointer<CMotionPanel> alive(this);
+    const auto guard = m_parameterEditGuard;
+    const ScopedFlag checking(this, m_checkingParameterEditGuard, true);
+    QString message;
+    bool accepted = false;
+    try { accepted = guard(&message); }
+    catch (...) { message = QStringLiteral("无法完成当前参数手势"); }
+    if (!alive) return false;
+    if (accepted) return true;
+    if (message.isEmpty()) message = QStringLiteral("请先完成或取消当前参数手势");
+    if (error) *error = message;
+    if (m_timelineStatus) m_timelineStatus->setText(message);
+    return false;
+}
+
 bool CMotionPanel::ModelHasPart(const QString& id, bool* available) const
 {
     if (available) *available = m_modelPartsKnown;
@@ -730,7 +879,11 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_previewFades->setToolTip(QStringLiteral("将参数曲线按动作与曲线淡入淡出混合到基础姿态；Part 仍直接预览透明度"));
     editTools->addWidget(m_previewFades);
     editTools->addStretch(1);
-    connect(m_previewFades, &QCheckBox::toggled, this, [this](){
+    connect(m_previewFades, &QCheckBox::toggled, this, [this](bool enabled){
+        { const QSignalBlocker block(m_previewFades); m_previewFades->setChecked(!enabled); }
+        if (!CheckParameterEditGuard()) return;
+        const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
+        { const QSignalBlocker block(m_previewFades); m_previewFades->setChecked(enabled); }
         const ScopedFlag mutation(this, m_timelineMutation, true);
         const QPointer<CMotionPanel> alive(this);
         if (m_transport) { RestoreTransportControls(); return; }
@@ -771,7 +924,7 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineTable->installEventFilter(this);
     m_curveView->installEventFilter(this);
     m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
-    m_timelineDelegate = new CTableEditDelegate(m_timelineTable);
+    m_timelineDelegate = new CParameterGuardedTimelineDelegate(m_timelineTable, [this] { return CheckParameterEditGuard(); });
     m_timelineTable->setItemDelegate(m_timelineDelegate);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -834,7 +987,11 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_workspaceSplitter->addWidget(timelineBox);
     m_workspaceSplitter->setStretchFactor(0, 0);
     m_workspaceSplitter->setStretchFactor(1, 1);
-    connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this](bool recording){
+    connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this, addTimelineButton](bool recording){
+        { const QSignalBlocker block(m_recordTimelineCb); m_recordTimelineCb->setChecked(!recording); }
+        if (!CheckParameterEditGuard()) return;
+        const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
+        { const QSignalBlocker block(m_recordTimelineCb); m_recordTimelineCb->setChecked(recording); }
         const ScopedFlag mutation(this, m_timelineMutation, true);
         const QPointer<CMotionPanel> alive(this);
         if (m_transport) { RestoreTransportControls(); return; }
@@ -870,8 +1027,9 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
         m_timelineTable->setEnabled(!recording);
         m_curveView->setEnabled(!recording);
+        addTimelineButton->setDisabled(recording);
+        if (auto* tools = findChild<QToolBar*>("motionKeyframeTools")) tools->setDisabled(recording);
     });
-    connect(m_recordTimelineCb, &QCheckBox::toggled, addTimelineButton, &QPushButton::setDisabled);
     connect(clearTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ClearTimeline);
     connect(removeTimelineButton, &QPushButton::clicked, this, &CMotionPanel::RemoveTimelineKeyframe);
     connect(exportTimelineButton, &QPushButton::clicked, this, &CMotionPanel::ExportTimeline);
@@ -946,6 +1104,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         emit PhysicsChanged(enabled);
     });
     connect(m_loopCb, &QCheckBox::toggled, this, [this](bool loop){
+        { const QSignalBlocker block(m_loopCb); m_loopCb->setChecked(!loop); }
+        if (!CheckParameterEditGuard()) return;
+        const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
+        { const QSignalBlocker block(m_loopCb); m_loopCb->setChecked(loop); }
         const ScopedFlag mutation(this, m_timelineMutation, true);
         const QPointer<CMotionPanel> alive(this);
         if (m_transport) { RestoreTransportControls(); return; }
@@ -962,6 +1124,10 @@ CMotionPanel::CMotionPanel(QWidget *parent)
         }
     });
     connect(m_speedSlider, &QSlider::valueChanged, this, [this](int value){
+        { const QSignalBlocker block(m_speedSlider); m_speedSlider->setValue(qRound(m_timelinePlaybackSpeed * 100)); }
+        if (!CheckParameterEditGuard()) return;
+        const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
+        { const QSignalBlocker block(m_speedSlider); m_speedSlider->setValue(value); }
         const ScopedFlag mutation(this, m_timelineMutation, true);
         const QPointer<CMotionPanel> alive(this);
         if (m_transport) { RestoreTransportControls(); return; }
@@ -1043,13 +1209,26 @@ bool CMotionPanel::BuildLists(const QString& modelJsonPath, const QStringList& p
 
 void CMotionPanel::RecordParameterValue(const QString& parameterId, float value)
 {
+    RecordParameterValues({{parameterId, value}});
+}
+
+void CMotionPanel::RecordParameterValues(const QMap<QString, float>& values)
+{
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const QPointer<CMotionPanel> alive(this);
     if (IsPreviewTransportSuspended()) return;
     if (!m_timeline.IsRecording() || (m_timelineTimer && m_timelineTimer->isActive())) return;
+    if (m_recordValuesRevision == std::numeric_limits<quint64>::max()) return;
+    if (!m_parameterIds.isEmpty()) for (auto value = values.cbegin(); value != values.cend(); ++value)
+        if (!m_parameterIds.contains(value.key())) {
+            m_timelineStatus->setText(QStringLiteral("录制参数已不存在：%1").arg(value.key()));
+            return;
+        }
     const int before = m_timeline.TotalPointCount();
-    m_timeline.Record(parameterId, value);
+    QString error;
+    if (!m_timeline.RecordValues(values, &error)) { m_timelineStatus->setText(error); return; }
     if (m_timeline.TotalPointCount() != before) {
+        ++m_recordValuesRevision;
         RefreshTimelineTable();
         if (!alive) return;
         m_timelineStatus->setText(QStringLiteral("正在录制 · %1 个关键帧").arg(m_timeline.TotalPointCount()));
@@ -1197,6 +1376,8 @@ void CMotionPanel::ShowTimelineEvents(const CMotionEventBatch& events)
 
 void CMotionPanel::ToggleTimelinePlayback()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const QPointer<CMotionPanel> alive(this);
     if (IsPreviewTransportSuspended()) return;
@@ -1286,6 +1467,8 @@ void CMotionPanel::EmitTimelinePreview()
 
 void CMotionPanel::PauseTimelinePreview()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (IsPreviewTransportSuspended()) return;
     ++m_timelineRevision;
     m_timelineTimer->stop();
@@ -1294,6 +1477,8 @@ void CMotionPanel::PauseTimelinePreview()
 
 void CMotionPanel::StopTimelinePreview()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (IsPreviewTransportSuspended()) return;
     PauseTimelinePreview();
     m_endPreviewButton->setEnabled(false);
@@ -1308,6 +1493,8 @@ void CMotionPanel::SetTimelinePreviewAvailable(bool available)
 
 bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float value)
 {
+    if (!CheckParameterEditGuard()) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!TryCommitTimelineCells() || !alive) return false;
     CMotionTimeline::BatchEdit edit;
@@ -1334,6 +1521,8 @@ bool CMotionPanel::AddTimelinePoint(const CMotionTrack& track, float time, float
 
 void CMotionPanel::EditTimelineSettings()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
@@ -1368,6 +1557,8 @@ void CMotionPanel::EditTimelineSettings()
 
 void CMotionPanel::AddTimelineKeyframe()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     QDialog dialog(this);
@@ -1427,6 +1618,10 @@ void CMotionPanel::AddTimelineKeyframe()
 
 void CMotionPanel::SetTimelineTimeFromSlider(int value)
 {
+    const double previousDuration = m_timeline.Timing().duration;
+    { const QSignalBlocker block(m_timelinePlayhead); m_timelinePlayhead->setValue(previousDuration > 0 ? qRound(m_timelineTime * 1000 / previousDuration) : 0); }
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (m_transport) { RestoreTransportControls(); return; }
     if (!m_timelinePlayhead || !m_timeline.HasAnimation()) return;
     SeekTimeline(m_timeline.Timing().duration * qBound(0, value, 1000) / 1000.0);
@@ -1434,6 +1629,8 @@ void CMotionPanel::SetTimelineTimeFromSlider(int value)
 
 void CMotionPanel::SeekTimeline(double time)
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const QPointer<CMotionPanel> alive(this);
     if (IsPreviewTransportSuspended()) return;
@@ -1461,6 +1658,8 @@ void CMotionPanel::SeekTimeline(double time)
 
 void CMotionPanel::RemoveTimelineKeyframe()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!TryCommitTimelineCells() || !alive || m_selectedPoints.isEmpty()) return;
     CMotionTimeline::BatchEdit edit;
@@ -1471,6 +1670,8 @@ void CMotionPanel::RemoveTimelineKeyframe()
 
 void CMotionPanel::ClearTimeline()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     if (IsPreviewTransportSuspended()) return;
     if (!ConfirmTimelineReplacement()) return;
@@ -1509,6 +1710,8 @@ void CMotionPanel::SetTimelineDirty(bool dirty)
 
 void CMotionPanel::MarkTimelineSaved()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (IsPreviewTransportSuspended()) return;
     if (!TryCommitTimelineCells() || !alive) return;
@@ -1564,6 +1767,8 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
                                              const QMap<QString, QVector<QPointF>>& samples, bool newAnimation,
                                              double fps, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (error) error->clear();
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
     CMotionTimeline current; quint64 revision = 0;
@@ -1630,6 +1835,8 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
 
 bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (m_transport) return m_timeline.SaveState(state, m_transport->loop, m_transport->time, error);
     if (!TryCommitTimelineCells(error) || !alive) return false;
@@ -1640,6 +1847,8 @@ bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
 
 bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!RequireTransportAvailable(error)) return false;
     CMotionTimeline candidate;
@@ -1775,6 +1984,8 @@ void CMotionPanel::PushTimelineEdit(const TimelineSnapshot& before, const QStrin
 bool CMotionPanel::PublishKeyframeEdit(CMotionTimeline candidate, CMotionPointSelection selection,
                                       const QString& label, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     try {
@@ -1889,6 +2100,8 @@ void CMotionPanel::ApplyTimelineSnapshot(const TimelineSnapshot& snapshot)
 
 void CMotionPanel::UndoTimeline()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const QPointer<CMotionPanel> alive(this);
     if (IsPreviewTransportSuspended()) return;
@@ -1909,6 +2122,8 @@ void CMotionPanel::UndoTimeline()
 
 void CMotionPanel::RedoTimeline()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const ScopedFlag mutation(this, m_timelineMutation, true);
     const QPointer<CMotionPanel> alive(this);
     if (IsPreviewTransportSuspended()) return;
@@ -1929,6 +2144,8 @@ void CMotionPanel::RedoTimeline()
 
 bool CMotionPanel::ConfirmTimelineReplacement()
 {
+    if (!CheckParameterEditGuard()) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!RequireTransportAvailable()) return false;
     TryCommitTimelineCells();
@@ -1953,6 +2170,8 @@ bool CMotionPanel::ConfirmTimelineReplacement()
 
 bool CMotionPanel::SaveTimeline(const QString& path, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     const QPointer<CMotionPanel> alive(this);
     if (!RequireTransportAvailable(error)) return false;
     if (!TryCommitTimelineCells(error) || !alive) return false;
@@ -1966,6 +2185,8 @@ bool CMotionPanel::SaveTimeline(const QString& path, QString* error)
 
 void CMotionPanel::ExportTimeline()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (IsPreviewTransportSuspended()) return;
     const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 motion3"),
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));
@@ -1976,6 +2197,8 @@ void CMotionPanel::ExportTimeline()
 
 bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
 {
+    if (!CheckParameterEditGuard(error)) return false;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (!RequireTransportAvailable(error)) return false;
     CMotionTimeline candidate;
     if (!candidate.Load(path, error)) return false;
@@ -1992,6 +2215,8 @@ bool CMotionPanel::LoadTimeline(const QString& path, QString* error)
 
 void CMotionPanel::ImportTimeline()
 {
+    if (!CheckParameterEditGuard()) return;
+    const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
     if (IsPreviewTransportSuspended()) return;
     const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("导入 motion3"),
                                                        QString(), QStringLiteral("Motion (*.motion3.json)"));

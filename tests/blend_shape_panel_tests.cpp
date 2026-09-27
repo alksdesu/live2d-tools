@@ -11,6 +11,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMouseEvent>
+#include <QKeyEvent>
+#include <QFocusEvent>
 #include <QPointer>
 #include <QSettings>
 #include <QSplitter>
@@ -1011,6 +1013,64 @@ private slots:
         labelMatches(label, 0.75f);
         QVERIFY(changed.isEmpty());
     }
+    void sliderGestureReturnsOriginalFullPrecisionWithoutQuantization()
+    {
+        Fixture fixture; QVERIFY(fixture.create(0, 1, 0)); CBlendShapePanel panel;
+        panel.BuildBlendShapes(fixture.path, &fixture.cid); const float original = .1234567f;
+        panel.SyncParameterValue(fixture.id, original); auto* slider = row(panel, fixture.id)->findChild<QSlider*>(); QVERIFY(slider);
+        const int position = slider->value(); QCOMPARE(position, 123);
+        QSignalSpy started(&panel, &CBlendShapePanel::ParameterGestureStarted), finished(&panel, &CBlendShapePanel::ParameterGestureFinished);
+        QSignalSpy canceled(&panel, &CBlendShapePanel::ParameterGestureCanceled), values(&panel, &CBlendShapePanel::ParamChanged);
+        slider->setSliderDown(true); QVERIFY(panel.HasParameterGesture()); slider->setValue(750); slider->setValue(position); slider->setSliderDown(false);
+        QCOMPARE(started.size(), 1); QCOMPARE(finished.size(), 1); QCOMPARE(canceled.size(), 0); QCOMPARE(values.size(), 2); QVERIFY(!panel.HasParameterGesture());
+        const float captured = started.first()[1].toFloat(), returned = values.last()[1].toFloat();
+        QCOMPARE(std::memcmp(&captured, &original, sizeof(float)), 0); QCOMPARE(std::memcmp(&returned, &original, sizeof(float)), 0);
+        values.clear(); started.clear(); finished.clear();
+        panel.SyncParameterValue(fixture.id, .7f); panel.RefreshParameterMetadata();
+        QCOMPARE(values.size(), 0); QCOMPARE(started.size(), 0); QCOMPARE(finished.size(), 0);
+    }
+
+    void keyboardGestureFinishesOnceAfterAutoRepeat()
+    {
+        Fixture fixture; QVERIFY(fixture.create(0, 1, .5f)); CBlendShapePanel panel; panel.BuildBlendShapes(fixture.path, &fixture.cid);
+        auto* slider = row(panel, fixture.id)->findChild<QSlider*>(); QVERIFY(slider);
+        QSignalSpy started(&panel, &CBlendShapePanel::ParameterGestureStarted), finished(&panel, &CBlendShapePanel::ParameterGestureFinished);
+        QSignalSpy canceled(&panel, &CBlendShapePanel::ParameterGestureCanceled), values(&panel, &CBlendShapePanel::ParamChanged);
+        QTest::keyPress(slider, Qt::Key_Right);
+        QKeyEvent releaseRepeat(QEvent::KeyRelease, Qt::Key_Right, Qt::NoModifier, {}, true); QApplication::sendEvent(slider, &releaseRepeat);
+        QKeyEvent pressRepeat(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier, {}, true); QApplication::sendEvent(slider, &pressRepeat);
+        QCOMPARE(started.size(), 1); QCOMPARE(finished.size(), 0); QVERIFY(panel.HasParameterGesture());
+        QTest::keyRelease(slider, Qt::Key_Right); QCOMPARE(finished.size(), 1); QCOMPARE(canceled.size(), 0); QCOMPARE(values.size(), 2); QVERIFY(!panel.HasParameterGesture());
+    }
+
+    void escapeAndFocusLossCancelWithoutPublishingRestoration_data()
+    {
+        QTest::addColumn<bool>("escape"); QTest::newRow("escape") << true; QTest::newRow("focus") << false;
+    }
+    void escapeAndFocusLossCancelWithoutPublishingRestoration()
+    {
+        QFETCH(bool, escape); Fixture fixture; QVERIFY(fixture.create(0, 1, 0)); CBlendShapePanel panel; panel.BuildBlendShapes(fixture.path, &fixture.cid);
+        const float original = .1234567f; panel.SyncParameterValue(fixture.id, original);
+        auto* slider = row(panel, fixture.id)->findChild<QSlider*>(); QVERIFY(slider);
+        QSignalSpy finished(&panel, &CBlendShapePanel::ParameterGestureFinished), canceled(&panel, &CBlendShapePanel::ParameterGestureCanceled);
+        QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged);
+        slider->setSliderDown(true); slider->setValue(750); QCOMPARE(values.size(), 1);
+        if (escape) QTest::keyClick(slider, Qt::Key_Escape);
+        else { QFocusEvent event(QEvent::FocusOut); QApplication::sendEvent(slider, &event); }
+        QCOMPARE(canceled.size(), 1); QCOMPARE(finished.size(), 0); QCOMPARE(values.size(), 1); QCOMPARE(slider->value(), 123); QVERIFY(!panel.HasParameterGesture());
+        slider->setSliderDown(false); QCOMPARE(finished.size(), 0);
+    }
+
+    void rejectedGestureCanBeCanceledFromStartedCallback()
+    {
+        Fixture fixture; QVERIFY(fixture.create(0, 1, .5f)); CBlendShapePanel panel; panel.BuildBlendShapes(fixture.path, &fixture.cid);
+        auto* slider = row(panel, fixture.id)->findChild<QSlider*>(); QVERIFY(slider);
+        QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged), canceled(&panel, &CBlendShapePanel::ParameterGestureCanceled);
+        connect(&panel, &CBlendShapePanel::ParameterGestureStarted, &panel, &CBlendShapePanel::CancelParameterGesture);
+        QTest::keyClick(slider, Qt::Key_Right); QVERIFY(!panel.HasParameterGesture()); QCOMPARE(slider->value(), 500);
+        QCOMPARE(canceled.size(), 1); QCOMPARE(values.size(), 0);
+    }
+
 };
 
 QTEST_MAIN(BlendShapePanelTests)

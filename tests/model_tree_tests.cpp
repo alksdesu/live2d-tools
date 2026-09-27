@@ -547,14 +547,30 @@ private slots:
             QVERIFY(index.isValid());
             QSet<QString> meshes;
             QSet<int> bindings;
-            for (int parent = deformer; parent >= 0; parent = source.deformers[parent]->parent_deformer_indices)
+            const auto addParts = [&](int part) {
+                for (; part >= 0; part = source.parts[part]->parent_part_indices)
+                    bindings.insert(source.parts[part]->keyform_binding_sources_indices);
+            };
+            for (int parent = deformer; parent >= 0; parent = source.deformers[parent]->parent_deformer_indices) {
                 bindings.insert(source.deformers[parent]->keyform_binding_sources_indices);
+                addParts(source.deformers[parent]->parent_part_indices);
+            }
+            for (int child = 0; child < source.deformers.size(); ++child) {
+                for (int parent = child; parent >= 0; parent = source.deformers[parent]->parent_deformer_indices) {
+                    if (parent == deformer) {
+                        bindings.insert(source.deformers[child]->keyform_binding_sources_indices);
+                        addParts(source.deformers[child]->parent_part_indices);
+                        break;
+                    }
+                }
+            }
             for (const auto* mesh : source.art_meshes) {
                 for (int parent = mesh->parent_deformer_indices; parent >= 0;
                      parent = source.deformers[parent]->parent_deformer_indices) {
                     if (parent == deformer) {
                         meshes.insert(mesh->ids);
                         bindings.insert(mesh->keyform_binding_sources_indices);
+                        addParts(mesh->parent_part_indices);
                         break;
                     }
                 }
@@ -579,7 +595,7 @@ private slots:
                         if (parameterBinding >= parameter->parameter_binding_sources_begin_indices &&
                             parameterBinding < parameter->parameter_binding_sources_begin_indices + parameter->parameter_binding_sources_counts)
                             owner = parameter;
-                    if (owner) expectedParameters.insert(owner->ids);
+                    if (owner && owner->parameter_types == 0) expectedParameters.insert(owner->ids);
                 }
             }
             QCOMPARE(QSet<QString>(info.ids.cbegin(), info.ids.cend()), expectedParameters);

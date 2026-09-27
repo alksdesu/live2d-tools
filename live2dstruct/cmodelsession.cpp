@@ -177,7 +177,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 7) return {};
+    if (version < 1 || version > 8) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -188,6 +188,11 @@ QByteArray CModelSession::ToJson() const
     if (meshStructure && storedVersion < 5) storedVersion = 5;
     if (deformerStructure && storedVersion < 6) storedVersion = 6;
     if (!textures.isEmpty() && storedVersion < 7) storedVersion = 7;
+    if (parameterOrganization.configured && storedVersion < 8) storedVersion = 8;
+    QJsonObject organization;
+    if (!CParameterOrganization::ToJson(parameterOrganization, organization) ||
+        (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return {};
+    if (storedVersion >= 8) root.insert(QStringLiteral("parameterOrganization"), organization);
     if (!validPhysicsDraft(*this, storedVersion, nullptr) || !validMeshStructure(*this, storedVersion, nullptr) || !validDeformerStructure(*this, storedVersion, nullptr)) return {};
     QJsonArray textureRows;
     if (!CTextureAssets::ToJson(textures, textureRows)) return {};
@@ -343,13 +348,20 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 7) {
+    if (parsedVersion < 1 || parsedVersion > 8) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    if ((parsedVersion < 8 && root.contains(QStringLiteral("parameterOrganization"))) ||
+        (parsedVersion >= 8 && !root.value(QStringLiteral("parameterOrganization")).isObject())) {
+        setError(error, QStringLiteral("参数组织需要版本 8 及有效对象"));
+        return false;
+    }
+    if (parsedVersion >= 8 && !CParameterOrganization::FromJson(root.value(QStringLiteral("parameterOrganization")).toObject(),
+                                                              result.parameterOrganization, error)) return false;
     if ((parsedVersion < 5 && root.contains(QStringLiteral("meshStructure"))) ||
         (parsedVersion >= 5 && !root.value(QStringLiteral("meshStructure")).isBool())) {
         setError(error, QStringLiteral("会话 meshStructure 字段需要版本 5 且必须为布尔值"));
@@ -421,6 +433,10 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     }
     if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
         setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
+        return false;
+    }
+    if (result.parameterOrganization.configured && (result.sourceDigest.size() != 32 || result.sourceMoc.contains(QChar::Null))) {
+        setError(error, QStringLiteral("会话参数组织缺少有效模型来源"));
         return false;
     }
     if (!validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
@@ -746,10 +762,14 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 7) ||
+    if ((version < 1 || version > 8) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
-        (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()))
+        (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
+        (version < 8 && parameterOrganization.configured))
         return fail(QStringLiteral("version"));
+    CParameterOrganization::State normalizedOrganization;
+    if (!CParameterOrganization::Normalize(parameterOrganization, normalizedOrganization, error) ||
+        (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
     if (!validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
         !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validDeformerStructure(*this, version, error)) return false;
     if (!CTextureAssets::ValidateDraft(textures, error)) return false;
@@ -789,6 +809,7 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
     } else if (meshStructure) {
         if (!candidate.SetAuthoringStructure(structure, error)) return false;
     } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
+    if (!candidate.SetParameterOrganization(normalizedOrganization, error)) return false;
     for (const auto& parameter : candidate.Parameters()) removedParameters.remove(parameter.id);
     for (auto track = timeline.Tracks().cbegin(); track != timeline.Tracks().cend(); ++track)
         if (track.key().target == CMotionTarget::Parameter && removedParameters.contains(track.key().id))

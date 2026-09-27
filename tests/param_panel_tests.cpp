@@ -549,7 +549,7 @@ private slots:
         panel.ApplyExternalValue(id, edited.value(id), true);
         live2dstruct::CModelEdit command;
         QVERIFY(document.PeekUndoEdit(&command));
-        QCOMPARE(command.before.toFloat(), runtimeBaseline.value(id));
+        QCOMPARE((command.before.value<QMap<QString, float>>().value(id)), runtimeBaseline.value(id));
         QCOMPARE(document.ParameterValue(id), edited.value(id));
         panel.Undo();
         QCOMPARE(document.ParameterStructureState(), original);
@@ -1417,8 +1417,8 @@ private slots:
         QCOMPARE(calls, 1);
         live2dstruct::CModelEdit edit;
         QVERIFY(document.PeekUndoEdit(&edit));
-        QCOMPARE(edit.before.toFloat(), baseline.value(panel.m_rows[0].paramId));
-        QCOMPARE(edit.after.toFloat(), edited.value(panel.m_rows[0].paramId));
+        QCOMPARE((edit.before.value<QMap<QString, float>>().value(panel.m_rows[0].paramId)), baseline.value(panel.m_rows[0].paramId));
+        QCOMPARE((edit.after.value<QMap<QString, float>>().value(panel.m_rows[0].paramId)), edited.value(panel.m_rows[0].paramId));
         QVERIFY(!panel.m_previewActive);
     }
 
@@ -2587,8 +2587,8 @@ private slots:
         QCOMPARE(document.ParameterValue(id), tiny);
         live2dstruct::CModelEdit command;
         QVERIFY(document.PeekUndoEdit(&command));
-        QCOMPARE(command.before.toFloat(), 0.0f);
-        QCOMPARE(command.after.toFloat(), tiny);
+        QCOMPARE((command.before.value<QMap<QString, float>>().value(id)), 0.0f);
+        QCOMPARE((command.after.value<QMap<QString, float>>().value(id)), tiny);
         panel.Undo();
         QCOMPARE(panel.CurrentValues().value(id), 0.0f);
         QCOMPARE(panel.m_rows.front().slider->value(), 0);
@@ -2718,8 +2718,8 @@ private slots:
         panel.ApplyExternalValue(id, edited.value(id), true);
         live2dstruct::CModelEdit command;
         QVERIFY(document.PeekUndoEdit(&command));
-        QCOMPARE(command.before.toFloat(), baseline.value(id));
-        QCOMPARE(command.after.toFloat(), edited.value(id));
+        QCOMPARE((command.before.value<QMap<QString, float>>().value(id)), baseline.value(id));
+        QCOMPARE((command.after.value<QMap<QString, float>>().value(id)), edited.value(id));
         QCOMPARE(panel.CurrentValues().value(id), edited.value(id));
         QCOMPARE(panel.CurrentValues().value(otherId), baseline.value(otherId));
         QVERIFY(!panel.m_previewActive);
@@ -2795,10 +2795,17 @@ private slots:
         panel.ApplyValue(0, finalValue, false);
         QVERIFY(!document.CanUndoEdit());
         panel.EndParameterDrag(0);
+        if (returnToPreview) {
+            QVERIFY(!document.CanUndoEdit());
+            QCOMPARE(panel.CurrentValues(), preview);
+            QVERIFY(panel.m_previewActive);
+            QVERIFY(panel.m_userDragging.isEmpty());
+            return;
+        }
         live2dstruct::CModelEdit command;
         QVERIFY(document.UndoEdit(&command));
-        QCOMPARE(command.before.toFloat(), baseline.value(id));
-        QCOMPARE(command.after.toFloat(), finalValue);
+        QCOMPARE((command.before.value<QMap<QString, float>>().value(id)), baseline.value(id));
+        QCOMPARE((command.after.value<QMap<QString, float>>().value(id)), finalValue);
         QCOMPARE(document.ParameterValue(id), baseline.value(id));
         QVERIFY(!document.CanUndoEdit());
         QVERIFY(panel.m_userLocked.contains(0));
@@ -2841,11 +2848,14 @@ private slots:
         int count = 0;
         live2dstruct::CModelEdit command;
         while (document.UndoEdit(&command)) {
-            QCOMPARE(command.before.toFloat(), baseline.value(command.name));
-            QCOMPARE(document.ParameterValue(command.name), baseline.value(command.name));
+            const auto values = command.before.value<QMap<QString, float>>();
+            for (auto value = values.cbegin(); value != values.cend(); ++value) {
+                QCOMPARE(value.value(), baseline.value(value.key()));
+                QCOMPARE(document.ParameterValue(value.key()), baseline.value(value.key()));
+            }
             ++count;
         }
-        QCOMPARE(count, path == 0 ? 1 : 2);
+        QCOMPARE(count, 1);
         QVERIFY(!panel.m_previewActive);
     }
 
@@ -2881,6 +2891,190 @@ private slots:
         QCOMPARE(panel.CurrentValues(), baseline);
         QVERIFY(!panel.m_previewActive);
         QVERIFY(!document.CanUndoEdit());
+    }
+
+    void pastedValuesPreserveEarlierHistoryAndUndoAsOneBatch()
+    {
+        live2dstruct::CModelDocument document; CParamPanel panel; initialize(panel, document);
+        const auto original = panel.CurrentValues(); const auto first = valuesAt(panel, .6f); const auto pasted = valuesAt(panel, .8f);
+        QVERIFY(panel.ApplyUserValues(first));
+        auto* clipboard = QApplication::clipboard();
+        auto previous = std::make_unique<QMimeData>();
+        if (const auto* data = clipboard->mimeData()) for (const auto& format : data->formats()) previous->setData(format, data->data(format));
+        const auto restore = qScopeGuard([&] { clipboard->setMimeData(previous.release()); });
+        QJsonObject json{{"format", "live2d2psd-parameters-v1"}};
+        for (auto it = pasted.cbegin(); it != pasted.cend(); ++it) json.insert(it.key(), it.value());
+        clipboard->setText(QString::fromUtf8(QJsonDocument(json).toJson())); panel.PasteValues();
+        QCOMPARE(panel.CurrentValues(), pasted); panel.Undo(); QCOMPARE(panel.CurrentValues(), first); QVERIFY(document.CanUndoEdit());
+        panel.Undo(); QCOMPARE(panel.CurrentValues(), original); QVERIFY(!document.CanUndoEdit());
+        panel.Redo(); panel.Redo(); QCOMPARE(panel.CurrentValues(), pasted);
+    }
+
+    void injectedValuePublisherRejectsWholeBatchAndCanRetry()
+    {
+        live2dstruct::CModelDocument document; CParamPanel panel; initialize(panel, document);
+        const auto before = panel.CurrentValues(), desired = valuesAt(panel, .7f);
+        const auto revision = document.Revision(); bool reject = true;
+        QMap<QString, float> runtime = before;
+        panel.SetValuePublisher([&](const auto& publication, QString* error) {
+            if (reject) { if (error) *error = "runtime refused"; return false; }
+            runtime = publication.after; return true;
+        });
+        QSignalSpy edited(&panel, &CParamPanel::UserValuesEdited);
+        QVERIFY(!panel.ApplyUserValues(desired)); QCOMPARE(panel.CurrentValues(), before); QCOMPARE(runtime, before);
+        QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit()); QCOMPARE(edited.size(), 0);
+        reject = false; QVERIFY(panel.ApplyUserValues(desired)); QCOMPARE(panel.CurrentValues(), desired); QCOMPARE(runtime, desired);
+        QCOMPARE(edited.size(), 1); QCOMPARE((edited.first().first().value<QMap<QString, float>>()), desired);
+        panel.Undo(); QVERIFY(!document.CanUndoEdit()); QCOMPARE(panel.CurrentValues(), before);
+    }
+
+    void successfulFinishNotifiesAfterCommitWithoutRecordingAgain()
+    {
+        live2dstruct::CModelDocument document; CParamPanel panel; initialize(panel, document);
+        const auto id = panel.m_rows.first().paramId;
+        const float original = panel.CurrentValues().value(id), value = valuesAt(panel, .7f).value(id);
+        bool rejectFinish = true;
+        panel.SetValuePublisher([&](const auto& publication, QString*) {
+            return publication.phase != CParamPanel::ValueController::Phase::Finish || !rejectFinish;
+        });
+        QVERIFY(panel.BeginUserValueGesture({{id, original}}));
+        QVERIFY(panel.PreviewUserValueGesture({{id, value}}));
+        QCOMPARE(document.ParameterValue(id), original);
+        QSignalSpy applied(&panel, &CParamPanel::UserValuesApplied), edited(&panel, &CParamPanel::UserValuesEdited);
+        QSignalSpy individual(&panel, &CParamPanel::ParamChanged);
+        bool committedAtNotification = false;
+        connect(&panel, &CParamPanel::UserValuesApplied, &panel, [&] {
+            committedAtNotification = document.ParameterValue(id) == value && document.CanUndoEdit();
+        });
+        QVERIFY(!panel.FinishUserValueGesture()); QCOMPARE(applied.size(), 0); QCOMPARE(edited.size(), 0); QCOMPARE(individual.size(), 0);
+        rejectFinish = false; QVERIFY(panel.FinishUserValueGesture());
+        QCOMPARE(applied.size(), 1); QCOMPARE(edited.size(), 0); QCOMPARE(individual.size(), 0);
+        QCOMPARE((applied.first().first().value<QMap<QString, float>>()), (QMap<QString, float>{{id, value}}));
+        QVERIFY(committedAtNotification); QVERIFY(!panel.HasUserValueGesture());
+        QVERIFY(panel.FinishUserValueGesture()); QCOMPARE(applied.size(), 1);
+        panel.Undo(); QCOMPARE(panel.CurrentValues().value(id), original); QVERIFY(!document.CanUndoEdit());
+    }
+
+    void returningDisplayToBeginRestoresPreviewAndRecordsOnlyAffectedValues()
+    {
+        live2dstruct::CModelDocument document; CParamPanel panel; initialize(panel, document);
+        const auto baseline = valuesAt(panel, .1f), display = valuesAt(panel, .8f), changed = valuesAt(panel, .9f);
+        const auto id = panel.m_rows.first().paramId;
+        panel.SetPreviewValues(display, baseline);
+        panel.SetValueBaselineProvider([&](auto& values, QString*) { values = baseline; return true; });
+        QVector<bool> restored;
+        panel.SetValuePublisher([&](const auto& publication, QString*) { restored.append(publication.restoreContext); return true; });
+        QSignalSpy edited(&panel, &CParamPanel::UserValuesEdited);
+        QVERIFY(panel.BeginUserValueGesture({{id, display.value(id)}}));
+        QVERIFY(panel.PreviewUserValueGesture({{id, changed.value(id)}}));
+        QVERIFY(panel.PreviewUserValueGesture({{id, display.value(id)}}));
+        QCOMPARE(panel.CurrentValues(), display); QVERIFY(panel.HasPreviewValues());
+        QCOMPARE(edited.size(), 2);
+        QCOMPARE((edited.last().first().value<QMap<QString, float>>()), (QMap<QString, float>{{id, display.value(id)}}));
+        QVERIFY(panel.FinishUserValueGesture()); QVERIFY(restored.last()); QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(edited.size(), 2); QCOMPARE(panel.CurrentValues(), display); QCOMPARE(panel.m_previewBaseline, baseline);
+    }
+
+    void separateSliderGesturesAndXyMovesHaveOneUndoPerGesture()
+    {
+        live2dstruct::CModelDocument document; CParamPanel panel; initialize(panel, document);
+        const auto original = panel.CurrentValues(); const auto middle = valuesAt(panel, .6f); const auto final = valuesAt(panel, .9f);
+        const auto id = panel.m_rows.first().paramId;
+        panel.BeginParameterDrag(0); panel.ApplyValue(0, middle.value(id), false); panel.EndParameterDrag(0);
+        panel.BeginParameterDrag(0); panel.ApplyValue(0, final.value(id), false); panel.EndParameterDrag(0);
+        panel.Undo(); QCOMPARE(panel.CurrentValues().value(id), middle.value(id));
+        panel.Undo(); QCOMPARE(panel.CurrentValues(), original); QVERIFY(!document.CanUndoEdit());
+        QVERIFY(panel.BeginUserValueGesture(original));
+        panel.ApplyXYPad(middle.value(panel.m_rows.first().paramId), middle.value(panel.m_rows.last().paramId));
+        panel.ApplyXYPad(final.value(panel.m_rows.first().paramId), final.value(panel.m_rows.last().paramId));
+        QVERIFY(panel.FinishUserValueGesture()); QCOMPARE(panel.CurrentValues(), final);
+        panel.Undo(); QCOMPARE(panel.CurrentValues(), original); QVERIFY(!document.CanUndoEdit());
+    }
+
+    void cancelGestureRestoresUiPreviewLocksAndRejectsNoPartialState()
+    {
+        live2dstruct::CModelDocument document; CParamPanel panel; initialize(panel, document);
+        const auto baseline = valuesAt(panel, .2f), display = valuesAt(panel, .8f); const auto id = panel.m_rows.first().paramId;
+        panel.SetPreviewValues(display, baseline); panel.m_userLocked.insert(1); const auto locks = panel.m_userLocked;
+        bool reject = false; panel.SetValuePublisher([&](const auto&, QString*) { return !reject; });
+        QVERIFY(panel.BeginUserValueGesture({{id, display.value(id)}}));
+        QVERIFY(panel.PreviewUserValueGesture({{id, 0}})); const auto accepted = panel.CurrentValues();
+        reject = true; QVERIFY(!panel.CancelUserValueGesture()); QVERIFY(panel.HasUserValueGesture()); QCOMPARE(panel.CurrentValues(), accepted);
+        reject = false; QVERIFY(panel.CancelUserValueGesture()); QCOMPARE(panel.CurrentValues(), display);
+        QCOMPARE(panel.m_previewBaseline, baseline); QCOMPARE(panel.m_userLocked, locks); QVERIFY(!document.CanUndoEdit());
+    }
+
+    void sliderReturnToOriginalIntegerPositionPreservesExactFloat()
+    {
+        live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto id = document.Parameters().first().id; const float original = .1234567f;
+        auto metadata = document.ParameterMetadata(id); metadata.minimum = 0; metadata.maximum = 1; metadata.defaultValue = 0;
+        QVERIFY(document.SetParameterMetadata(id, metadata)); QVERIFY(document.SetParameterValue(id, original));
+        CParamPanel panel; panel.SetDocument(&document); panel.BuildParams();
+        auto* slider = panel.m_rows.first().slider; const int position = slider->value(); QCOMPARE(position, 123);
+        QVERIFY(!sameFloat(original, float(position) / 1000));
+        QSignalSpy edited(&panel, &CParamPanel::UserValuesEdited);
+        slider->setSliderDown(true); slider->setValue(750); slider->setValue(position); slider->setSliderDown(false);
+        QVERIFY(sameFloat(panel.CurrentValues().value(id), original)); QVERIFY(sameFloat(document.ParameterValue(id), original));
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(!panel.HasUserValueGesture()); QCOMPARE(edited.size(), 2);
+        QVERIFY(sameFloat(edited.last().first().value<QMap<QString, float>>().value(id), original));
+    }
+
+    void pointerGestureStartsAfterPreviousSpinLosesFocus_data()
+    {
+        QTest::addColumn<bool>("xy"); QTest::newRow("slider") << false; QTest::newRow("xy") << true;
+    }
+    void pointerGestureStartsAfterPreviousSpinLosesFocus()
+    {
+        QFETCH(bool, xy); live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CParamPanel panel; panel.SetDocument(&document); panel.BuildParams();
+        panel.resize(900, 900); panel.show(); panel.activateWindow();
+        panel.findChild<QToolButton*>("parameterXYToggle")->setChecked(true);
+        auto* spin = panel.m_rows.first().spinBox; spin->setFocus(); QTRY_VERIFY(spin->hasFocus());
+        const auto original = panel.CurrentValues(); document.ClearEditHistory();
+        QWidget* target = xy ? static_cast<QWidget*>(panel.m_xyPad) : panel.m_rows.first().slider;
+        QPoint start, middle, end;
+        if (xy) {
+            const auto plot = target->rect().adjusted(14, 10, -14, -14);
+            start = plot.center(); middle = {plot.left() + plot.width() / 3, plot.center().y()};
+            end = {plot.left() + plot.width() * 4 / 5, plot.top() + plot.height() / 4};
+        } else {
+            auto* slider = panel.m_rows.first().slider; QStyleOptionSlider option;
+            option.initFrom(slider); option.orientation = Qt::Horizontal; option.minimum = 0; option.maximum = 1000;
+            option.sliderPosition = slider->value(); option.sliderValue = slider->value();
+            const auto handle = slider->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, slider);
+            start = handle.center(); middle = {slider->width() / 3, start.y()}; end = {slider->width() * 4 / 5, start.y()};
+        }
+        QTest::mousePress(target, Qt::LeftButton, Qt::NoModifier, start);
+        for (const auto& position : {middle, end}) {
+            QMouseEvent move(QEvent::MouseMove, position, target->mapToGlobal(position), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(target, &move);
+        }
+        QTest::mouseRelease(target, Qt::LeftButton, Qt::NoModifier, end);
+        QVERIFY(panel.CurrentValues() != original); QVERIFY(!panel.HasUserValueGesture()); QVERIFY(document.CanUndoEdit());
+        panel.Undo(); QCOMPARE(panel.CurrentValues(), original); QVERIFY(!document.CanUndoEdit());
+    }
+
+    void valuePublisherCanClosePanel_data()
+    {
+        QTest::addColumn<int>("entry");
+        QTest::newRow("external") << 0; QTest::newRow("spin") << 1;
+        QTest::newRow("reset") << 2; QTest::newRow("gesture-begin") << 3;
+    }
+    void valuePublisherCanClosePanel()
+    {
+        QFETCH(int, entry); live2dstruct::CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        auto* panel = new CParamPanel; panel->SetDocument(&document); panel->BuildParams();
+        QPointer<CParamPanel> alive(panel); const auto revision = document.Revision();
+        panel->SetValuePublisher([alive](const auto&, QString*) { delete alive.data(); return true; });
+        if (entry == 0) panel->ApplyExternalValue(panel->m_rows.first().paramId, 1, true);
+        if (entry == 1) panel->m_rows.first().spinBox->stepUp();
+        if (entry == 2) panel->m_rows.first().resetButton->click();
+        if (entry == 3) panel->BeginParameterDrag(0);
+        QVERIFY(alive.isNull()); QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit());
     }
 
     void previewRejectsNonFiniteValuesAndClearsOnDocumentChange()

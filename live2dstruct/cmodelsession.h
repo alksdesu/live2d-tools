@@ -35,6 +35,7 @@ struct CModelSession
     CTextureAssets::Draft textures;
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
+    CParameterOrganization::State parameterOrganization;
     QMap<QString, bool> visibility;
     QMap<QString, bool> locked;
     QHash<QString, float> drawableOpacity;

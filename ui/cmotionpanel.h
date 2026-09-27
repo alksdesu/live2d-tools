@@ -124,6 +124,21 @@ public:
     bool SuspendPreviewTransport(PreviewTransportLease& lease, QString* error = nullptr);
     bool ResumePreviewTransport(PreviewTransportLease& lease, QString* error = nullptr);
     bool IsPreviewTransportSuspended() const;
+    using ParameterEditGuard = std::function<bool(QString*)>;
+    void SetParameterEditGuard(ParameterEditGuard guard);
+    class ParameterEditTransportSnapshot
+    {
+    public:
+        bool IsValid() const;
+    private:
+        friend class CMotionPanel;
+        struct Data;
+        std::shared_ptr<Data> m_data;
+    };
+    bool CaptureParameterEditTransport(ParameterEditTransportSnapshot& snapshot, QString* error = nullptr) const;
+    bool ValidateParameterEditTransport(const ParameterEditTransportSnapshot& snapshot, QString* error = nullptr) const;
+    bool PauseParameterEditTransport(const ParameterEditTransportSnapshot& snapshot, QString* error = nullptr);
+    bool RestoreParameterEditTransport(const ParameterEditTransportSnapshot& snapshot, QString* error = nullptr);
     void StopTimelinePreview();
     void PauseTimelinePreview();
     void SetTimelinePreviewAvailable(bool available);
@@ -137,6 +152,7 @@ public:
     const QString& PoseSourcePath() const { return m_poseJsonPath; }
     const QByteArray& PoseSourceDigest() const { return m_poseSourceDigest; }
     void RecordParameterValue(const QString& parameterId, float value);
+    void RecordParameterValues(const QMap<QString, float>& values);
     bool HasUnsavedPoseChanges() const { return m_poseDirty; }
     void SetLipSyncWavStatus(bool loaded, const QString& path = QString());
 
@@ -175,6 +191,11 @@ private:
     std::unique_ptr<PreviewTransportState> m_transport;
     quint64 m_transportSerial = 0;
     bool m_transportTransition = false;
+    quint64 m_recordValuesRevision = 0;
+    ParameterEditGuard m_parameterEditGuard;
+    bool m_checkingParameterEditGuard = false;
+    bool m_parameterEditApproved = false;
+    bool CheckParameterEditGuard(QString* error = nullptr);
     bool RequireTransportAvailable(QString* error = nullptr) const;
     void RestoreTransportControls();
     QListWidget* m_motionList;

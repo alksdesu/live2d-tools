@@ -113,6 +113,7 @@ LAppModel::~LAppModel()
 
 bool LAppModel::LoadAssets(const csmChar* dir, const csmChar* fileName)
 {
+    if (m_userParameterModelGeneration == std::numeric_limits<quint64>::max()) return false;
     if (!dir || !fileName || fileName[0] == '\0' || _modelSetting || _moc || _model ||
         _modelMatrix || _initialized || _updating) return false;
 
@@ -197,6 +198,7 @@ bool LAppModel::SetupModel(ICubismModelSetting* setting)
             const bool loaded = LoadModel(reinterpret_cast<const csmByte*>(runtime.constData()),
                                           csmSizeInt(runtime.size()), _mocConsistency);
             if (!loaded) return false;
+            ++m_userParameterModelGeneration;
             m_sourceMocBytes.swap(source);
             m_sourceMocDigest = QCryptographicHash::hash(m_sourceMocBytes, QCryptographicHash::Sha256);
             m_previewMocBytes.swap(runtime);
@@ -784,6 +786,10 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
                                        const CMeshGeometryMigration* geometry, const TextureState* textureState)
 {
+    if (m_userParameterModelGeneration == std::numeric_limits<quint64>::max()) {
+        if (error) *error = QStringLiteral("模型实例版本计数已耗尽");
+        return false;
+    }
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
         if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
@@ -835,6 +841,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                       prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
                       prepareCompiledModel, physicsReferences, preparePhysics, geometry))
         return false;
+    ++m_userParameterModelGeneration;
     if (textureState) CommitTextures(textures);
     if (preparePhysics && (hadPhysics || _physics)) ++m_physicsGeneration;
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }

@@ -16,6 +16,7 @@
 #include "cmocmeshstructurebuilder.h"
 #include "cdeformerpreserverequest.h"
 #include "ckeyformgridsnapshot.h"
+#include "cparameterorganization.h"
 
 namespace live2dstruct {
 class CReader;
@@ -175,7 +176,7 @@ struct CModelEditStorageState
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization };
     QString name;
     QString type;
     Field field = Visibility;
@@ -251,6 +252,10 @@ public:
                                    CModelEdit& edit, QString* error = nullptr) const;
     bool SetParameterMetadata(const QString& id, const CModelParameterMetadata& metadata);
     const QHash<QString, CModelParameterMetadata>& ParameterMetadataOverrides() const { return m_parameterMetadataOverrides; }
+    const CParameterOrganization::State& ParameterOrganization() const { return m_parameterOrganization; }
+    bool SetParameterOrganization(const CParameterOrganization::State& state, QString* error = nullptr);
+    bool MakeParameterOrganizationEdit(const CParameterOrganization::State& state, CModelEdit& edit,
+                                       QString* error = nullptr) const;
     const QHash<QString, float>& ParameterValues() const { return m_parameterValues; }
     QVector<float> DrawableKeyformPositions(const QString& id, int keyformIndex) const;
     bool SetDrawableKeyformPositions(const QString& id, int keyformIndex, const QVector<float>& positions);
@@ -362,6 +367,7 @@ private:
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, float> m_parameterValues;
     QHash<QString, CModelParameterMetadata> m_parameterMetadataOverrides;
+    CParameterOrganization::State m_parameterOrganization;
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;
     QHash<QString, QVector<quint16>> m_drawableIndexOverrides;
     QHash<QString, QVector<int>> m_drawableMaskIndexOverrides;

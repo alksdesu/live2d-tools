@@ -209,7 +209,8 @@ private:
 };
 
 bool displayInfo(const QByteArray& source, const CModelDocument& original, const CModelDocument& current,
-                 const QHash<QString, CModelParameterMetadata>& metadata, QByteArray& result, QString* error)
+                 const QHash<QString, CModelParameterMetadata>& metadata,
+                 const CParameterOrganization::State& organization, QByteArray& result, QString* error)
 {
     QJsonObject root;
     if (!source.isEmpty() && !object(source, root, error)) return false;
@@ -242,6 +243,72 @@ bool displayInfo(const QByteArray& source, const CModelDocument& original, const
             {QStringLiteral("Name"), found == metadata.cend() || found->displayName.isEmpty() ? parameter.id : found->displayName}});
     }
     if (root.contains(QStringLiteral("Parameters")) || !kept.isEmpty()) root.insert(QStringLiteral("Parameters"), kept);
+    if (organization.configured) {
+        QMap<QString, QJsonObject> parameterRows, groupRows;
+        QJsonArray orphanParameters, sourceGroups;
+        QSet<QString> orphanGroups;
+        for (const auto& value : kept) {
+            const auto row = value.toObject();
+            const auto id = row.value(QStringLiteral("Id")).toString();
+            if (parameterRows.contains(id)) return fail(error, QStringLiteral("显示信息参数 ID 重复：%1").arg(id));
+            parameterRows.insert(id, row);
+            if (!currentIds.contains(id)) {
+                const auto group = row.value(QStringLiteral("GroupId"));
+                if (!group.isUndefined() && !group.isString()) return fail(error, QStringLiteral("孤立显示参数的文件夹 ID 无效：%1").arg(id));
+                if (!group.toString().isEmpty()) orphanGroups.insert(group.toString());
+                orphanParameters.append(row);
+            }
+        }
+        if (root.contains(QStringLiteral("ParameterGroups")) &&
+            !array(root, QStringLiteral("ParameterGroups"), sourceGroups, error)) return false;
+        for (const auto& value : sourceGroups) {
+            if (!value.isObject()) return fail(error, QStringLiteral("显示信息文件夹不是对象"));
+            const auto row = value.toObject();
+            const auto id = row.value(QStringLiteral("Id"));
+            if (!id.isString() || !text(id.toString()) || groupRows.contains(id.toString()))
+                return fail(error, QStringLiteral("显示信息文件夹 ID 无效或重复"));
+            groupRows.insert(id.toString(), row);
+        }
+        QMap<QString, QVector<const CParameterOrganization::Node*>> children;
+        for (const auto& node : organization.nodes)
+            if (node.kind == CParameterOrganization::Node::Parameter && !node.parentFolder.isEmpty())
+                children[node.parentFolder].append(&node);
+        QJsonArray orderedParameters, orderedGroups;
+        QSet<QString> configuredGroups;
+        const auto addParameter = [&](const CParameterOrganization::Node& node) {
+            auto row = parameterRows.value(node.id);
+            row.insert(QStringLiteral("Id"), node.id);
+            row.insert(QStringLiteral("GroupId"), node.parentFolder);
+            if (!row.contains(QStringLiteral("Name"))) {
+                const auto name = metadata.value(node.id).displayName;
+                row.insert(QStringLiteral("Name"), name.isEmpty() ? node.id : name);
+            }
+            orderedParameters.append(row);
+        };
+        for (const auto& node : organization.nodes) {
+            if (!node.parentFolder.isEmpty()) continue;
+            if (node.kind == CParameterOrganization::Node::Parameter) addParameter(node);
+            else {
+                auto group = groupRows.value(node.id);
+                group.insert(QStringLiteral("Id"), node.id);
+                group.insert(QStringLiteral("Name"), node.name);
+                orderedGroups.append(group);
+                configuredGroups.insert(node.id);
+                for (const auto* parameter : children.value(node.id)) addParameter(*parameter);
+            }
+        }
+        for (const auto& value : orphanParameters) orderedParameters.append(value);
+        for (const auto& value : sourceGroups) {
+            const auto id = value.toObject().value(QStringLiteral("Id")).toString();
+            if (orphanGroups.contains(id) && !configuredGroups.contains(id)) orderedGroups.append(value);
+        }
+        QJsonObject state;
+        if (!CParameterOrganization::ToJson(organization, state, error)) return false;
+        root.insert(QStringLiteral("Parameters"), orderedParameters);
+        root.insert(QStringLiteral("ParameterGroups"), orderedGroups);
+        root.insert(QStringLiteral("Live2DToolsParameterOrganization"),
+            QJsonObject{{QStringLiteral("Version"), 1}, {QStringLiteral("State"), state}});
+    } else root.remove(QStringLiteral("Live2DToolsParameterOrganization"));
     if (root.contains(QStringLiteral("CombinedParameters"))) {
         QJsonArray pairs, retained;
         if (!array(root, QStringLiteral("CombinedParameters"), pairs, error)) return false;
@@ -399,6 +466,7 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
         QSet<QString> oldIds, currentIds;
         for (const auto& p : original.Parameters()) oldIds.insert(p.id);
         for (const auto& p : current.Parameters()) currentIds.insert(p.id);
+        if (!CParameterOrganization::Validate(request.parameterOrganization, currentIds, error)) return false;
         const auto removed = oldIds - currentIds;
         if (!auditParameters(Editor::Kind::ModelSettings, QJsonDocument(root).toJson(QJsonDocument::Compact), removed, error)) return false;
         QString output;
@@ -456,7 +524,8 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             if (field == QLatin1String("Physics") && !physics(data, currentIds, error)) return false;
             if (field == QLatin1String("Pose") && !pose(data, current, error)) return false;
             if (field == QLatin1String("MotionSync") && !motionSync(data, removed | request.references.modelSuppressedIds, error)) return false;
-            if (field == QLatin1String("DisplayInfo") && !displayInfo(data, original, current, request.parameterMetadata, data, error)) return false;
+            if (field == QLatin1String("DisplayInfo") && !displayInfo(data, original, current, request.parameterMetadata,
+                                                                    request.parameterOrganization, data, error)) return false;
             if (field == QLatin1String("UserData")) {
                 CModelUserData validated;
                 if (!validated.FromJson(data, error)) return false;
@@ -472,7 +541,7 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             files.insert(field, output);
             return true;
         };
-        const bool needsDisplay = !request.parameterMetadata.isEmpty() || oldIds != currentIds;
+        const bool needsDisplay = request.parameterOrganization.configured || !request.parameterMetadata.isEmpty() || oldIds != currentIds;
         std::optional<QByteArray> display;
         if (files.value(QStringLiteral("DisplayInfo")).toString().isEmpty() && needsDisplay) display = QByteArray();
         if (!scalar(QStringLiteral("Physics"), QStringLiteral(".physics3.json"), request.physics, Editor::Kind::Physics) ||

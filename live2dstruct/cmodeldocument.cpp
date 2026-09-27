@@ -137,6 +137,7 @@ void CModelDocument::Clear()
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
     m_parameterMetadataOverrides.clear();
+    m_parameterOrganization = {};
     m_drawableKeyformPositionOverrides.clear();
     m_drawableIndexOverrides.clear();
     m_drawableMaskIndexOverrides.clear();
@@ -1093,6 +1094,16 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
     if (!HasValidStructureRequests(edit)) return false;
     const QVariant& value = forward ? edit.after : edit.before;
+    if (edit.field == CModelEdit::ParameterOrganization) {
+        const auto type = QMetaType::fromType<CParameterOrganization::State>();
+        if (edit.type != QLatin1String("parameters") || edit.name != QLatin1String("organization") ||
+            edit.before.metaType() != type || edit.after.metaType() != type ||
+            m_parameterOrganization != (forward ? edit.before : edit.after).value<CParameterOrganization::State>()) return false;
+        const auto state = value.value<CParameterOrganization::State>();
+        CParameterOrganization::State normalized;
+        if (!CParameterOrganization::Normalize(state, normalized) || state != normalized) return false;
+        return SetParameterOrganization(state);
+    }
     if (edit.field == CModelEdit::ParameterStructure || edit.field == CModelEdit::MeshStructure || edit.field == CModelEdit::DeformerStructure) {
         const QString type = edit.field == CModelEdit::ParameterStructure ? QStringLiteral("parameter") :
             edit.field == CModelEdit::MeshStructure ? QStringLiteral("mesh") : QStringLiteral("deformer");

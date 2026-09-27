@@ -429,13 +429,51 @@ void CMotionTimeline::Clear()
 
 void CMotionTimeline::Record(const QString& parameterId, float value)
 {
-    if (!m_recording || m_recordClockPaused) return;
-    const auto elapsed = RecordingElapsedMilliseconds();
-    if (!elapsed || *elapsed < m_recordSkippedMs) return;
-    const double time = double(m_recordStartTime) + double(*elapsed - m_recordSkippedMs) / 1000.0;
-    if (!finiteFloat(time)) return;
-    m_recordLastMs = *elapsed;
-    AddPoint(parameterId, float(time), value);
+    RecordValues({{parameterId, value}});
+}
+
+bool CMotionTimeline::RecordValues(const QMap<QString, float>& values, QString* error)
+{
+    if (error) error->clear();
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (!m_recording || m_recordClockPaused) return fail(QStringLiteral("参数录制未开始或录制时钟已暂停"));
+    if (values.isEmpty()) return fail(QStringLiteral("没有待录制的参数"));
+    try {
+        for (auto value = values.cbegin(); value != values.cend(); ++value)
+            if (value.key().trimmed().isEmpty() || value.key().contains(QChar::Null) || !std::isfinite(value.value()))
+                return fail(QStringLiteral("录制参数的 ID 或数值无效"));
+        const auto elapsed = RecordingElapsedMilliseconds();
+        if (!elapsed || *elapsed < m_recordSkippedMs) return fail(QStringLiteral("参数录制时钟无效"));
+        const double sampleTime = double(m_recordStartTime) + double(*elapsed - m_recordSkippedMs) / 1000.0;
+        if (!finiteFloat(sampleTime) || sampleTime < 0) return fail(QStringLiteral("参数录制时间超出范围"));
+        float time = static_cast<float>(sampleTime);
+        float maximumLast = -1;
+        bool unchanged = true;
+        for (auto value = values.cbegin(); value != values.cend(); ++value) {
+            const auto curve = m_curves.constFind({CMotionTarget::Parameter, value.key()});
+            if (curve == m_curves.cend() || curve->isEmpty()) { unchanged = false; continue; }
+            const auto last = curve->last();
+            maximumLast = std::max(maximumLast, static_cast<float>(last.x()));
+            if (time > static_cast<float>(last.x()) || value.value() != static_cast<float>(last.y())) unchanged = false;
+        }
+        if (unchanged) { m_recordLastMs = *elapsed; return true; }
+        if (qint64(TotalPointCount()) + values.size() > MaximumPointCount)
+            return fail(QStringLiteral("录制后关键帧总数超过 100000"));
+        if (time <= maximumLast) time = std::nextafterf(maximumLast, std::numeric_limits<float>::infinity());
+        if (!std::isfinite(time)) return fail(QStringLiteral("无法为整组参数分配共同的下一采样时间"));
+        auto curves = m_curves;
+        auto segmentTypes = m_segmentTypes;
+        auto controls = m_bezierControls;
+        for (auto value = values.cbegin(); value != values.cend(); ++value) {
+            const CMotionTrack track{CMotionTarget::Parameter, value.key()};
+            curves[track].append({time, value.value()});
+            segmentTypes[track].append(0);
+            controls[track].append(QVector<QPointF>{});
+        }
+        m_curves.swap(curves); m_segmentTypes.swap(segmentTypes); m_bezierControls.swap(controls);
+        m_recordLastMs = *elapsed;
+        return true;
+    } catch (...) { return fail(QStringLiteral("无法录制整组参数，原关键点保持不变")); }
 }
 
 bool CMotionTimeline::AddPoint(const CMotionTrack& track, float time, float value)

@@ -9,6 +9,8 @@
 #include <QSet>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <optional>
+#include "live2dstruct/cparameterorganization.h"
 
 
 class CVetGroup{
@@ -32,6 +34,7 @@ public:
     bool Parse(const QString& fileName, QString* error = nullptr);//传递解析文件
     const QString& SourcePath() const { return m_sourcePath; }
     const QByteArray& SourceDigest() const { return m_sourceDigest; }
+    const std::optional<live2dstruct::CParameterOrganization::State>& ParameterOrganization() const { return m_parameterOrganization; }
 
     const QString& getPartName(const QString& Id){
         if(m_PartsIdToName.contains(Id)){
@@ -79,6 +82,7 @@ private:
     QString empty;
     QString m_sourcePath;
     QByteArray m_sourceDigest;
+    std::optional<live2dstruct::CParameterOrganization::State> m_parameterOrganization;
 
 };
 

@@ -83,6 +83,10 @@ void LAppModel::Update()
         _model->Update();
         return;
     }
+    if (m_userParameterSnapshotActive) {
+        _model->Update();
+        return;
+    }
     if (HasEditorPreview()) {
         if (!_model->ApplyParameterPose(m_editorPose)) return;
         ApplyPartVisibility();

@@ -152,6 +152,8 @@ class LAppExportPreviewTests : public QObject
         QCOMPARE(actual.parameterIds, expected.parameterIds);
         QCOMPARE(actual.parameterValues, expected.parameterValues);
         QCOMPARE(actual.savedParameters, expected.savedParameters);
+        QCOMPARE(actual.savedPresence, expected.savedPresence);
+        QCOMPARE(actual.parameterTypes, expected.parameterTypes);
         QCOMPARE(actual.minimums, expected.minimums);
         QCOMPARE(actual.maximums, expected.maximums);
         QCOMPARE(actual.partIds, expected.partIds);
@@ -170,6 +172,161 @@ private slots:
     {
         idManager.reset();
         QVERIFY(allocations.empty());
+    }
+
+    void userParameterContextPreservesCurrentSavedAndPreviewState_data()
+    {
+        QTest::addColumn<bool>("timeline"); QTest::addColumn<bool>("editor");
+        for (bool timeline : {false, true}) for (bool editor : {false, true})
+            QTest::newRow(qPrintable(QString("timeline%1-editor%2").arg(timeline).arg(editor))) << timeline << editor;
+    }
+    void userParameterContextPreservesCurrentSavedAndPreviewState()
+    {
+        QFETCH(bool, timeline); QFETCH(bool, editor);
+        auto model = createModel(); LAppModel preview; attach(preview, *model);
+        preview.m_sourceMocDigest = QByteArray(32, 's'); preview.m_previewMocDigest = QByteArray(32, 'p');
+        if (timeline) {
+            CMotionPreviewFrame frame; frame.parameters = {{"ParamA", .8f}, {"ParamB", 1.4f}};
+            frame.parts = {{"PartA", .1f}}; frame.model = {{"Opacity", .2f}};
+            QVERIFY(preview.SetTimelinePreview(frame));
+            preview._timelineBaseParameters = frame.parameters;
+        }
+        if (editor) {
+            preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>();
+            QVERIFY(model->CaptureRuntimeValues(*preview.m_editorEntryState));
+            preview.m_editorBaseParameters = preview.m_editorEntryState->Parameters();
+            preview.m_editorPose = {{"ParamA", -.9f}, {"ParamB", -1.2f}};
+            QVERIFY(model->ApplyParameterPose(preview.m_editorPose));
+        }
+        model->SetParameterValue(0, .35f);
+        preview.SetSnapshotMode(false);
+        CubismModel::RuntimeValueSnapshot before; QVERIFY(model->CaptureRuntimeValues(before));
+        const auto editorBase = preview.m_editorBaseParameters, editorPose = preview.m_editorPose;
+        const auto baseParts = preview._timelineBaseParts, baseParameters = preview._timelineBaseParameters;
+        const auto timelineParameters = preview._timelineParameters;
+        const auto frame = preview._timelinePreview;
+        const auto explicitIds = preview.m_timelineExplicitParameterIds;
+        const float opacity = preview._opacity, baseOpacity = preview._timelineBaseOpacity;
+        const int updates = CubismModelFixture::State(model->GetModel()).updates + 1;
+        LAppModel::UserParameterContext context; QString error;
+        QVERIFY2(preview.CaptureUserParameterContext(context, &error), qPrintable(error)); QVERIFY(context.IsValid());
+        QMap<QString, float> base; QVERIFY(preview.CaptureUserParameterBaseValues(base));
+        QCOMPARE(base, (QMap<QString, float>{{"ParamA", .2f}, {"ParamB", -.5f}}));
+        QVERIFY(preview.BeginUserParameterPreview());
+        preview.Update(); CubismModel::RuntimeValueSnapshot frozen; QVERIFY(model->CaptureRuntimeValues(frozen));
+        compare(frozen, before); QCOMPARE(preview._userTimeSeconds, 23.f);
+        QCOMPARE(preview._opacity, opacity);
+        QVERIFY2(preview.ApplyUserParameterValues({{"ParamA", .6f}}, &error), qPrintable(error));
+        CubismModel::RuntimeValueSnapshot changed; QVERIFY(model->CaptureRuntimeValues(changed));
+        QCOMPARE(changed.parameterValues[0], .6f); QCOMPARE(changed.savedParameters[0], .6f);
+        QCOMPARE(changed.parameterValues[1], timeline ? -.5f : 1.1f); QCOMPARE(changed.savedParameters[1], -.5f);
+        QCOMPARE(changed.partOpacities, (QVector<float>{.8f, .6f})); QCOMPARE(changed.modelOpacity, .34f);
+        QCOMPARE(changed.virtualParameterValues, before.virtualParameterValues); QCOMPARE(changed.virtualPartOpacities, before.virtualPartOpacities);
+        QVERIFY(!preview.HasEditorPreview()); QVERIFY(!preview.HasTimelinePreview()); QVERIFY(context.IsValid()); QVERIFY(preview.GetSnapshotMode());
+        QCOMPARE(preview._opacity, timeline || editor ? .34f : opacity);
+        QCOMPARE(CubismModelFixture::State(model->GetModel()).updates, updates); QCOMPARE(preview._userTimeSeconds, 23.f);
+        QVERIFY2(preview.RestoreUserParameterContext(context, &error), qPrintable(error));
+        CubismModel::RuntimeValueSnapshot restored; QVERIFY(model->CaptureRuntimeValues(restored)); compare(restored, before);
+        QVERIFY(!preview.GetSnapshotMode()); QVERIFY(!preview.m_userParameterSnapshotActive);
+        QCOMPARE(preview.HasEditorPreview(), editor); QCOMPARE(preview.HasTimelinePreview(), timeline);
+        QCOMPARE(preview.m_editorBaseParameters, editorBase); QCOMPARE(preview.m_editorPose, editorPose);
+        QCOMPARE(preview._timelineBaseParts, baseParts); QCOMPARE(preview._timelineBaseParameters, baseParameters);
+        QCOMPARE(preview._timelineParameters, timelineParameters); QCOMPARE(preview.m_timelineExplicitParameterIds, explicitIds);
+        QCOMPARE(preview._timelinePreview.parameters, frame.parameters); QCOMPARE(preview._timelinePreview.model, frame.model); QCOMPARE(preview._timelinePreview.parts, frame.parts);
+        QCOMPARE(preview._opacity, opacity); QCOMPARE(preview._timelineBaseOpacity, baseOpacity);
+        QCOMPARE(CubismModelFixture::State(model->GetModel()).updates, updates);
+    }
+
+    void invalidBatchCannotPublishAnEarlierValidValue_data()
+    {
+        QTest::addColumn<QString>("id"); QTest::addColumn<float>("value");
+        QTest::newRow("missing") << QString("Missing") << 0.f;
+        QTest::newRow("virtual") << QString("VirtualParameter") << .4f;
+        QTest::newRow("high") << QString("ParamB") << 2.1f;
+        QTest::newRow("low") << QString("ParamB") << -2.1f;
+        QTest::newRow("nan") << QString("ParamB") << std::numeric_limits<float>::quiet_NaN();
+        QTest::newRow("inf") << QString("ParamB") << std::numeric_limits<float>::infinity();
+    }
+    void invalidBatchCannotPublishAnEarlierValidValue()
+    {
+        QFETCH(QString, id); QFETCH(float, value);
+        auto model = createModel(); LAppModel preview; attach(preview, *model);
+        preview.m_sourceMocDigest = QByteArray(32, 's'); preview.m_previewMocDigest = QByteArray(32, 'p');
+        preview.m_editorEntryState = std::make_unique<CubismModel::RuntimeValueSnapshot>();
+        QVERIFY(model->CaptureRuntimeValues(*preview.m_editorEntryState));
+        preview.m_editorPose = {{"ParamA", .7f}, {"ParamB", 1.1f}};
+        auto* entry = preview.m_editorEntryState.get();
+        CubismModel::RuntimeValueSnapshot before; QVERIFY(model->CaptureRuntimeValues(before)); QString error;
+        QVERIFY(!preview.ApplyUserParameterValues({{"ParamA", -.3f}, {id, value}}, &error)); QVERIFY(!error.isEmpty());
+        CubismModel::RuntimeValueSnapshot after; QVERIFY(model->CaptureRuntimeValues(after)); compare(after, before);
+        QCOMPARE(preview.m_editorEntryState.get(), entry); QCOMPARE(preview.m_editorPose.value("ParamA"), .7f);
+        QCOMPARE(CubismModelFixture::State(model->GetModel()).updates, 0);
+    }
+
+    void sparseSavedPresenceAndNegativeZeroSurviveCancel()
+    {
+        auto model = createModel(); LAppModel preview; attach(preview, *model);
+        preview.m_sourceMocDigest = QByteArray(32, 's'); preview.m_previewMocDigest = QByteArray(32, 'p');
+        CubismModel::RuntimeValueSnapshot before; QVERIFY(model->CaptureRuntimeValues(before)); before.savedPresence = {0, 1};
+        QVERIFY(model->RestoreRuntimeValues(before));
+        QMap<QString, float> base{{"sentinel", 5}}; QVERIFY(preview.CaptureUserParameterBaseValues(base));
+        QCOMPARE(base, (QMap<QString, float>{{"ParamB", -.5f}}));
+        LAppModel::UserParameterContext context; QVERIFY(preview.CaptureUserParameterContext(context));
+        QVERIFY(preview.ApplyUserParameterValues({{"ParamA", -0.f}, {"ParamB", 2.f}}));
+        CubismModel::RuntimeValueSnapshot changed; QVERIFY(model->CaptureRuntimeValues(changed));
+        QVERIFY(changed.HasSavedParameter(0)); QVERIFY(std::signbit(changed.savedParameters[0])); QVERIFY(std::signbit(changed.parameterValues[0]));
+        QCOMPARE(changed.parameterValues[1], 2.f); QCOMPARE(changed.savedParameters[1], 2.f);
+        QVERIFY(preview.RestoreUserParameterContext(context)); CubismModel::RuntimeValueSnapshot restored;
+        QVERIFY(model->CaptureRuntimeValues(restored)); compare(restored, before); QVERIFY(!restored.HasSavedParameter(0));
+    }
+
+    void contextRejectsDifferentOwnerGenerationAndDigestWithoutMutating()
+    {
+        auto model = createModel(), otherModel = createModel(); LAppModel preview, other; attach(preview, *model); attach(other, *otherModel);
+        preview.m_sourceMocDigest = other.m_sourceMocDigest = QByteArray(32, 's'); preview.m_previewMocDigest = other.m_previewMocDigest = QByteArray(32, 'p');
+        LAppModel::UserParameterContext context; QVERIFY(preview.CaptureUserParameterContext(context));
+        QVERIFY(!other.RestoreUserParameterContext(context));
+        QVERIFY(preview.ApplyUserParameterValues({{"ParamA", .9f}}));
+        ++preview.m_userParameterModelGeneration; QVERIFY(!context.IsValid()); QVERIFY(!preview.RestoreUserParameterContext(context));
+        QCOMPARE(model->GetParameterValue(0), .9f); --preview.m_userParameterModelGeneration;
+        preview.m_previewMocDigest[0] = 'q'; QVERIFY(!context.IsValid()); QVERIFY(!preview.RestoreUserParameterContext(context));
+        QCOMPARE(model->GetParameterValue(0), .9f); preview.m_previewMocDigest[0] = 'p';
+        auto& state = CubismModelFixture::State(model->GetModel()); state.maximum[0] = 2;
+        QVERIFY(!preview.RestoreUserParameterContext(context)); QCOMPARE(model->GetParameterValue(0), .9f);
+        state.maximum[0] = 1; QVERIFY(preview.RestoreUserParameterContext(context)); QCOMPARE(model->GetParameterValue(0), .7f);
+        LAppModel::UserParameterContext expired;
+        { LAppModel temporary; attach(temporary, *otherModel); temporary.m_sourceMocDigest = QByteArray(32, 's'); temporary.m_previewMocDigest = QByteArray(32, 'p'); QVERIFY(temporary.CaptureUserParameterContext(expired)); }
+        QVERIFY(!expired.IsValid()); QVERIFY(!preview.RestoreUserParameterContext(expired));
+    }
+
+    void userCaptureFailureKeepsTheExistingContextAndBaseMap()
+    {
+        auto model = createModel(); LAppModel preview; attach(preview, *model);
+        preview.m_sourceMocDigest = QByteArray(32, 's'); preview.m_previewMocDigest = QByteArray(32, 'p');
+        LAppModel::UserParameterContext context; QVERIFY(preview.CaptureUserParameterContext(context));
+        QMap<QString, float> base{{"sentinel", 5}};
+        preview._updating = true; QVERIFY(!preview.CaptureUserParameterContext(context)); QVERIFY(context.IsValid());
+        QVERIFY(!preview.CaptureUserParameterBaseValues(base)); QCOMPARE(base, (QMap<QString, float>{{"sentinel", 5}}));
+        QVERIFY(!preview.ApplyUserParameterValues({{"ParamA", .1f}})); preview._updating = false;
+        QVERIFY(preview.ApplyUserParameterValues({{"ParamA", .1f}})); QVERIFY(preview.RestoreUserParameterContext(context)); QCOMPARE(model->GetParameterValue(0), .7f);
+        QVERIFY(preview.BeginExportPreview(false)); QVERIFY(!preview.ApplyUserParameterValues({{"ParamA", .1f}})); QVERIFY(!preview.RestoreUserParameterContext(context)); QVERIFY(preview.EndExportPreview());
+    }
+
+    void activeInputDragsRejectUserValuesButAutomaticPhysicsDoesNot()
+    {
+        auto model = createModel(); LAppModel preview; attach(preview, *model);
+        preview.m_sourceMocDigest = QByteArray(32, 's'); preview.m_previewMocDigest = QByteArray(32, 'p');
+        LAppModel::UserParameterContext context; QVERIFY(preview.CaptureUserParameterContext(context));
+        QVERIFY(preview.m_deformerDrag.SetParameters({"ParamA"}, {-1}, {1}, {0}));
+        QVERIFY(preview.m_deformerDrag.Apply(.1f, .2f));
+        QVERIFY(!preview.ApplyUserParameterValues({{"ParamA", .4f}}));
+        QVERIFY(!preview.RestoreUserParameterContext(context)); QCOMPARE(model->GetParameterValue(0), .7f);
+        preview.m_deformerDrag.Stop(); preview.m_physicsDragActive = true;
+        QVERIFY(!preview.ApplyUserParameterValues({{"ParamA", .4f}})); QCOMPARE(model->GetParameterValue(0), .7f);
+        preview.m_physicsDragActive = false; preview._autoPhysics = true;
+        QVERIFY(preview.ApplyUserParameterValues({{"ParamA", .4f}})); QCOMPARE(model->GetParameterValue(0), .4f);
+        QVERIFY(preview.RestoreUserParameterContext(context)); QCOMPARE(model->GetParameterValue(0), .7f);
+        QCOMPARE(CubismModelFixture::State(model->GetModel()).updates, 0);
     }
 
     void timelineSuppressedGroupsKeepExplicitTracksAndPartChannels()

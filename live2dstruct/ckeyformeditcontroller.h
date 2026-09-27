@@ -29,6 +29,25 @@ public:
         int keyform = -1;
         QMap<QString, float> pose;
     };
+    struct LogicalState {
+        EditorState editor;
+        QByteArray sourceDigest;
+    };
+    class PreparedLogicalState {
+    public:
+        bool IsValid() const { return m_owner != nullptr; }
+    private:
+        friend class CKeyformEditController;
+        const CKeyformEditController* m_owner = nullptr;
+        const CModelDocument* m_document = nullptr;
+        quint64 m_revision = 0;
+        LogicalState m_requested, m_expected;
+    };
+
+    bool CaptureLogicalState(LogicalState& result, QString* error = nullptr) const;
+    bool PrepareLogicalState(const LogicalState& state, PreparedLogicalState& result, QString* error = nullptr) const;
+    bool ValidatePreparedLogicalState(const PreparedLogicalState& state, QString* error = nullptr) const;
+    void AdoptLogicalState(PreparedLogicalState& state) noexcept;
 
     void SetDocument(CModelDocument* document);
     void SetPublisher(Publisher publisher, PreviewEnder ender);
