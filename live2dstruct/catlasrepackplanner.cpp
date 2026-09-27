@@ -1,4 +1,5 @@
 #include "catlasrepackplanner.h"
+#include "cartworkreconciler.h"
 #include "std/cpngimage.h"
 #include "std/cexportcontrol.h"
 #include <QBuffer>
@@ -37,6 +38,12 @@ int repeat(qint64 value, int size) { const auto n = value % size; return int(n <
 bool same(float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; }
 bool same(double a, double b) { return std::memcmp(&a, &b, sizeof(double)) == 0; }
 bool validateFields(const Snapshot& snapshot, const Plan& plan, QString* error);
+CArtworkReconciler::Triangles triangles(const Snapshot& snapshot)
+{
+    CArtworkReconciler::Triangles result;
+    for (const auto& mesh : snapshot.meshes) result.insert(mesh.material.id, mesh.triangles);
+    return result;
+}
 bool imageEquals(const QImage& first, const QImage& second)
 {
     if (first.size() != second.size() || first.format() != QImage::Format_RGBA8888 || second.format() != QImage::Format_RGBA8888) return false;
@@ -90,14 +97,15 @@ bool allocation(const Snapshot& snapshot, const Plan& plan, int replacedSlot, QS
 }
 bool token(const Snapshot& snapshot, QByteArray& result, QString* error)
 {
-    QByteArray workspace;
+    QByteArray workspace, artwork;
     if (snapshot.sourceDigest.size() != 32 || snapshot.topologyDigest.size() != 32 ||
         snapshot.limits.maximumDimension <= 0 || snapshot.limits.maximumPixels <= 0 || snapshot.limits.maximumOperations <= 0)
         return fail(error, QStringLiteral("图集规划来源或预算无效"));
-    if (!CTextureWorkspace::Fingerprint(snapshot.sources, snapshot.workspace, workspace, error)) return false;
+    if (!CTextureWorkspace::Fingerprint(snapshot.sources, snapshot.workspace, workspace, error) ||
+        !CModelArtwork::Fingerprint(snapshot.artwork, artwork, error)) return false;
     QByteArray encoded; QDataStream stream(&encoded, QIODevice::WriteOnly);
     stream.setVersion(QDataStream::Qt_6_0);
-    stream << snapshot.sourceDigest << snapshot.documentRevision << snapshot.topologyDigest << workspace
+    stream << snapshot.sourceDigest << snapshot.documentRevision << snapshot.topologyDigest << workspace << artwork
            << snapshot.limits.maximumDimension << snapshot.limits.maximumPixels << snapshot.limits.maximumOperations;
     QSet<QString> ids;
     qint64 values = 0;
@@ -278,6 +286,7 @@ QVector<QRect> wrapped(const QRect& rect, QSize size)
 bool render(const Snapshot& snapshot, const Plan& plan, const QVector<Placement>& placements,
             const QSet<int>& clearedSlots, int gutter, Plan& candidate, qint64& operations, QString* error, CExportControl* control)
 {
+    QMap<QString, CArtworkReconciler::Rebase> rebases;
     QSet<QString> moved;
     for (const auto& place : placements) for (const auto& id : place.patch.ids) moved.insert(id);
     QMap<int, QVector<QPair<QRect, QString>>> protection;
@@ -337,9 +346,14 @@ bool render(const Snapshot& snapshot, const Plan& plan, const QVector<Placement>
             if (!budget(snapshot, points.size(), operations, error)) return false;
             for (auto& point : points) point = transform(point, place.patch.source, place.topLeft, place.turns);
             if (!setPixels(snapshot, candidate, id, place.slot, std::move(points), error)) return false;
+            const auto origin = transform({}, place.patch.source, place.topLeft, place.turns);
+            const auto x = transform({1, 0}, place.patch.source, place.topLeft, place.turns) - origin;
+            const auto y = transform({0, 1}, place.patch.source, place.topLeft, place.turns) - origin;
+            rebases.insert(id, {QTransform(x.x(), x.y(), y.x(), y.y(), origin.x(), origin.y()), place.slot, gutter, place.patch.source});
         }
     }
-    return checkpoint(control, error);
+    return CArtworkReconciler::RebasePlacements(snapshot.artwork, plan.state, candidate.state.workspace, candidate.state.materials,
+        triangles(snapshot), rebases, candidate.state.artwork, error) && checkpoint(control, error);
 }
 }
 
@@ -349,7 +363,7 @@ bool CAtlasPlanVerification::Check(const Planner::Snapshot& source, const Planne
     const auto& trusted = plan.m_verification->plan;
     const auto& baseline = *plan.m_verification->source;
     if (source.sourceDigest != baseline.sourceDigest || source.documentRevision != baseline.documentRevision ||
-        source.topologyDigest != baseline.topologyDigest || source.sources != baseline.sources || source.workspace != baseline.workspace ||
+        source.topologyDigest != baseline.topologyDigest || source.sources != baseline.sources || source.workspace != baseline.workspace || source.artwork != baseline.artwork ||
         source.limits.maximumDimension != baseline.limits.maximumDimension || source.limits.maximumPixels != baseline.limits.maximumPixels ||
         source.limits.maximumOperations != baseline.limits.maximumOperations || source.meshes.size() != baseline.meshes.size()) return false;
     for (int index = 0; index < source.meshes.size(); ++index) {
@@ -372,6 +386,7 @@ bool CAtlasPlanVerification::Check(const Planner::Snapshot& source, const Planne
 void CAtlasPlanVerification::Seal(const Planner::Snapshot& source, Planner::Plan& plan)
 {
     auto baseline = std::make_shared<Planner::Snapshot>(source);
+    baseline->artwork = plan.state.artwork;
     baseline->sourceDigest = QByteArray(source.sourceDigest.constData(), source.sourceDigest.size());
     baseline->topologyDigest = QByteArray(source.topologyDigest.constData(), source.topologyDigest.size());
     QHash<QByteArray, QByteArray> blobs;
@@ -408,7 +423,8 @@ bool CAtlasRepackPlanner::Initialize(const Snapshot& snapshot, Plan& result, QSt
 {
     Plan candidate;
     if (!checkpoint(control, error) || !token(snapshot, candidate.token, error) ||
-        !CTextureWorkspace::Freeze(snapshot.sources, snapshot.workspace, candidate.state.workspace, error)) return false;
+        !CTextureWorkspace::Freeze(snapshot.sources, snapshot.workspace, candidate.state.workspace, error) ||
+        !CModelArtwork::Freeze(snapshot.artwork, candidate.state.artwork, error)) return false;
     CTextureAssets::State pngs;
     if (!CTextureWorkspace::Effective(snapshot.sources, snapshot.workspace, pngs, error)) return false;
     QHash<QByteArray, QImage> decoded;
@@ -456,7 +472,8 @@ bool validateFields(const Snapshot& snapshot, const Plan& plan, QString* error)
         plan.images.keys() != plan.state.workspace.atlases.keys() || plan.pixelCoordinates.size() != snapshot.meshes.size())
         return fail(error, QStringLiteral("图集草稿来源或目录已改变"));
     if (!CTextureWorkspace::Validate(snapshot.sources, plan.state.workspace, error) ||
-        !CModelMaterialEdit::Validate(plan.state.materials, error)) return false;
+        !CModelMaterialEdit::Validate(plan.state.materials, error) ||
+        !CArtworkReconciler::ValidateLinks(plan.state.artwork, plan.state.workspace, plan.state.materials, triangles(snapshot), error)) return false;
     CTextureAssets::State pngs;
     if (!CTextureWorkspace::Effective(snapshot.sources, plan.state.workspace, pngs, error)) return false;
     QMap<QByteArray, QImage> verifiedImages; qint64 pixels = 0;
@@ -585,8 +602,16 @@ bool CAtlasRepackPlanner::ResizeAtlas(const Snapshot& snapshot, const Plan& plan
     }
     candidate.state.workspace.atlases[slot].size = size;
     candidate.images[slot] = std::move(image);
-    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && !value.uvs.isEmpty())
+    QMap<QString, CArtworkReconciler::Rebase> rebases;
+    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && !value.uvs.isEmpty()) {
         if (!setPixels(snapshot, candidate, value.id, slot, plan.pixelCoordinates.value(value.id), error)) return false;
+        QRect patch; if (!support(plan.pixelCoordinates.value(value.id), 1, patch, error)) return false;
+        const auto binding = plan.state.artwork.bindings.constFind(value.id);
+        const int gutter = binding == plan.state.artwork.bindings.cend() ? 1 : plan.state.artwork.placements.value(binding->placementId).gutter;
+        rebases.insert(value.id, {QTransform(), slot, gutter, patch});
+    }
+    if (!CArtworkReconciler::RebasePlacements(snapshot.artwork, plan.state, candidate.state.workspace, candidate.state.materials,
+        triangles(snapshot), rebases, candidate.state.artwork, error)) return false;
     return finish(snapshot, plan, std::move(candidate), result, error, control);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法调整图集尺寸")); }

@@ -33,6 +33,7 @@ class CBlendShapePanel;
 class CTexturePanel;
 class CUvEditDialog;
 class CAtlasEditDialog;
+class CPsdImportDialog;
 class CInspectorPanel;
 class CModelDiagnosticsPanel;
 class CUserDataPanel;
@@ -117,11 +118,21 @@ private:
     void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
     bool AuthoringReady(QString* error = nullptr) const;
     bool SetAuthoringReady(bool ready);
+    void RefreshSessionActions();
     void RefreshTextureGeometry();
     bool InitializeTextureEditing(QString* error);
     bool ReplaceTexture(int slot, const QByteArray& png, QString* error);
     void RefreshTextureEditing(bool changed = false);
     void EditAtlas(const QString& selectedMesh);
+    void ConfigureArtworkActions();
+    void RefreshArtworkActions();
+    void ImportPsd(bool reimport = false);
+    void ManageArtwork();
+    void EditArtwork(const QString& familyId, const QString& path = {}, const QString& revisionId = {});
+    QPointer<CPsdImportDialog> m_artworkDialog;
+    std::shared_ptr<CExportControl> m_artworkLoadControl;
+    bool m_artworkLoading = false;
+    QAction *m_importPsdAction = nullptr, *m_reimportPsdAction = nullptr, *m_manageArtworkAction = nullptr;
     bool PublishAtlasPreview(const live2dstruct::CModelDocument& before,
                              const live2dstruct::CModelDocument& after,
                              const QSet<QString>& ids, QString* error);

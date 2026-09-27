@@ -8,6 +8,7 @@
 #include <QString>
 
 namespace live2dstruct {
+class CMaterialValidationCache;
 class CTextureAssets
 {
 public:
@@ -34,6 +35,7 @@ public:
 
     static bool MakeSource(const QString& path, const QByteArray& png, Source& result, QString* error = nullptr);
     static bool ValidateCatalog(const Catalog& sources, QString* error = nullptr);
+    static bool ValidateCatalogWithCache(const Catalog& sources, CMaterialValidationCache& cache, QString* error = nullptr);
     static bool ValidateState(const Catalog& sources, const State& state, QString* error = nullptr);
     static bool Replace(const Catalog& sources, const State& state, int slot, const QByteArray& png,
                         State& result, QString* error = nullptr);

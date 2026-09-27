@@ -42,7 +42,7 @@ if(MSVC)
     target_compile_options(export_control PUBLIC /utf-8)
 endif()
 
-add_library(texture_data STATIC std/cpngimage.cpp live2dstruct/ctextureworkspace.cpp live2dstruct/ctextureassets.cpp live2dstruct/ctextureeditcontroller.cpp)
+add_library(texture_data STATIC std/cpngimage.cpp live2dstruct/cmaterialvalidationcache.cpp live2dstruct/ctextureworkspace.cpp live2dstruct/ctextureassets.cpp live2dstruct/ctextureeditcontroller.cpp)
 target_include_directories(texture_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(texture_data PUBLIC Qt6::Core Qt6::Gui)
 
@@ -62,6 +62,10 @@ add_library(model_data STATIC
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
     live2dstruct/cmodelmaterialedit.cpp
+    live2dstruct/cmodelartwork.cpp
+    live2dstruct/cmodeldocumentartwork.cpp
+    live2dstruct/cartworkreconciler.cpp
+    live2dstruct/cmaterialresourcebudget.cpp
     live2dstruct/cmocmaterialbuilder.cpp
     live2dstruct/cmodeldocumentmaterial.cpp
     live2dstruct/cmodelatlasedit.cpp
@@ -162,6 +166,14 @@ target_link_libraries(deformer_tree_data PUBLIC model_coordinates model_data)
 add_library(psd_zip STATIC psd/psdSamples/Zip/PsdMiniz.cpp)
 target_include_directories(psd_zip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(psd_zip PROPERTIES AUTOMOC OFF)
+
+add_library(psd_reader_data STATIC psd/cpsdreader.cpp psd/cpsdreader.h psd/cpsdsnapshot.h)
+target_include_directories(psd_reader_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(psd_reader_data PUBLIC Qt6::Core Qt6::Gui export_control PRIVATE psd_zip)
+
+add_library(artwork_import_data STATIC live2dstruct/cartworksourceimport.cpp live2dstruct/cpsdlayermatcher.cpp live2dstruct/cartworksampler.cpp live2dstruct/cartworkupdateplanner.cpp)
+target_include_directories(artwork_import_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(artwork_import_data PUBLIC model_data psd_reader_data)
 
 add_library(cmo3_data STATIC
     cmo3/ccaffarchive.cpp
@@ -580,6 +592,46 @@ if(BUILD_TESTING)
     target_link_libraries(texture_extraction_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(texture_extraction_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME texture_extraction COMMAND texture_extraction_tests)
+    add_executable(psd_reader_tests tests/psd_reader_tests.cpp)
+    target_link_libraries(psd_reader_tests PRIVATE psd_reader_data Qt6::Test)
+    add_test(NAME psd_reader COMMAND psd_reader_tests)
+    add_executable(model_artwork_tests tests/model_artwork_tests.cpp)
+    target_link_libraries(model_artwork_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME model_artwork COMMAND model_artwork_tests)
+    add_executable(artwork_document_tests tests/artwork_document_tests.cpp)
+    target_link_libraries(artwork_document_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(artwork_document_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME artwork_document COMMAND artwork_document_tests)
+    add_executable(material_resource_budget_tests tests/material_resource_budget_tests.cpp)
+    target_link_libraries(material_resource_budget_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME material_resource_budget COMMAND material_resource_budget_tests)
+    add_executable(artwork_reconciler_tests tests/artwork_reconciler_tests.cpp)
+    target_link_libraries(artwork_reconciler_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME artwork_reconciler COMMAND artwork_reconciler_tests)
+    add_executable(artwork_source_import_tests tests/artwork_source_import_tests.cpp)
+    target_link_libraries(artwork_source_import_tests PRIVATE artwork_import_data Qt6::Test)
+    add_test(NAME artwork_source_import COMMAND artwork_source_import_tests)
+    add_executable(psd_layer_matcher_tests tests/psd_layer_matcher_tests.cpp)
+    target_link_libraries(psd_layer_matcher_tests PRIVATE artwork_import_data Qt6::Test)
+    add_test(NAME psd_layer_matcher COMMAND psd_layer_matcher_tests)
+    add_executable(artwork_sampler_tests tests/artwork_sampler_tests.cpp)
+    target_link_libraries(artwork_sampler_tests PRIVATE artwork_import_data Qt6::Test)
+    add_test(NAME artwork_sampler COMMAND artwork_sampler_tests)
+    add_executable(artwork_update_planner_tests tests/artwork_update_planner_tests.cpp)
+    target_link_libraries(artwork_update_planner_tests PRIVATE artwork_import_data Qt6::Test)
+    add_test(NAME artwork_update_planner COMMAND artwork_update_planner_tests)
+    add_executable(psd_import_dialog_tests tests/psd_import_dialog_tests.cpp ui/cpsdimportdialog.cpp ui/cartworksourceview.cpp)
+    target_link_libraries(psd_import_dialog_tests PRIVATE artwork_import_data Qt6::Test Qt6::Widgets)
+    add_test(NAME psd_import_dialog COMMAND psd_import_dialog_tests)
+    set_tests_properties(psd_import_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(artwork_source_view_tests tests/artwork_source_view_tests.cpp ui/cartworksourceview.cpp opengl/cuvgeometry.cpp)
+    target_include_directories(artwork_source_view_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(artwork_source_view_tests PRIVATE Qt6::Test Qt6::Widgets)
+    if(MSVC)
+        target_compile_options(artwork_source_view_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME artwork_source_view COMMAND artwork_source_view_tests)
+    set_tests_properties(artwork_source_view PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(texture_material_tests tests/texture_material_tests.cpp)
     target_link_libraries(texture_material_tests PRIVATE cmo3_data Qt6::Test)
     target_compile_definitions(texture_material_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

@@ -18,6 +18,7 @@ public:
     bool UseCurrentValues() const;
     bool IncludeTimeline() const;
     void SetInitialDirectory(const QString& targetDirectory);
+    void SetArtworkNotice(bool visible);
 
 public slots:
     void accept() override;
@@ -32,6 +33,7 @@ private:
     QCheckBox* m_currentValues = nullptr;
     QCheckBox* m_timeline = nullptr;
     QLabel* m_error = nullptr;
+    QLabel* m_artworkNotice = nullptr;
     QScrollArea* m_scroll = nullptr;
     QDialogButtonBox* m_buttons = nullptr;
     QString m_defaultName;

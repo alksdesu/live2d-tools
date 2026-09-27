@@ -7,6 +7,7 @@
 #include "cdeformerstructurereplay.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
+#include "cartworkreconciler.h"
 #include <QCryptographicHash>
 #include <QByteArrayView>
 #include <QDataStream>
@@ -272,9 +273,13 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     case CModelEdit::AtlasLayout:
         state.insert("atlasWorkspace", QVariant::fromValue(m_textureWorkspace));
         state.insert("atlasMaterials", QVariant::fromValue(m_drawableMaterialOverrides));
+        state.insert("artwork", QVariant::fromValue(m_artwork));
+        state.insert("artworkFingerprint", m_artworkFingerprint);
         state.insert("materialFingerprint", CModelMaterialEdit::Fingerprint(m_drawableMaterialOverrides));
         break;
     case CModelEdit::DrawableMaterials: {
+        state.insert("artwork", QVariant::fromValue(m_artwork));
+        state.insert("artworkFingerprint", m_artworkFingerprint);
         CModelMaterialOverrides selected;
         ids.clear();
         for (const auto& value : {edit.before, edit.after})
@@ -318,6 +323,8 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     case CModelEdit::MeshIndices:
         captureEntries(state, "indices", m_drawableIndexOverrides, ids);
         state.insert("geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs));
+        state.insert("artwork", QVariant::fromValue(m_artwork));
+        state.insert("artworkFingerprint", m_artworkFingerprint);
         break;
     case CModelEdit::MaskIndices: captureEntries(state, "masks", m_drawableMaskIndexOverrides, ids); break;
     case CModelEdit::MaskInverted: captureEntries(state, "inverted", m_drawableMaskInvertedOverrides, ids); break;
@@ -336,8 +343,10 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         if (!HasTextureWorkspace() || workspace.metaType() != QMetaType::fromType<CTextureWorkspace::State>() ||
             materials.metaType() != QMetaType::fromType<CModelMaterialOverrides>()) return false;
         const auto restored = workspace.value<CTextureWorkspace::State>();
-        if (!CTextureWorkspace::Validate(m_textureSources, restored)) return false;
+        QByteArray fingerprint;
+        if (!CTextureWorkspace::Fingerprint(m_textureSources, restored, fingerprint)) return false;
         m_textureWorkspace = restored; m_drawableMaterialOverrides = materials.value<CModelMaterialOverrides>();
+        m_textureWorkspaceFingerprint = std::move(fingerprint);
     }
     if (!(restoreEntries(state, "parameters", m_parameterValues) && restoreEntries(state, "metadata", m_parameterMetadataOverrides) &&
         restoreEntries(state, "opacity", m_drawableOpacityOverrides) && restoreEntries(state, "drawOrder", m_drawableDrawOrderOverrides) &&
@@ -351,6 +360,11 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         if (value.metaType() != QMetaType::fromType<CGeometryObjectPairs::State>() ||
             !SetGeometryObjectPairs(value.value<CGeometryObjectPairs::State>())) return false;
     }
+    if (state.contains("artwork")) {
+        const auto artwork = state.value("artwork");
+        if (artwork.metaType() != QMetaType::fromType<CModelArtwork::State>() ||
+            !SetArtwork(artwork.value<CModelArtwork::State>()) || state.value("artworkFingerprint").toByteArray() != m_artworkFingerprint) return false;
+    }
     return true;
 }
 
@@ -362,7 +376,7 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     case CModelEdit::AtlasLayout:
         return ValidateAtlasEditStorage(edit);
     case CModelEdit::DrawableMaterials:
-        return ValidateMaterialEditStorage(edit);
+        return ValidateMaterialEditStorage(edit) && ValidateArtworkReferences(m_artwork);
     case CModelEdit::GeometryKeyforms:
         return ValidateGeometryEditStorage(edit);
     case CModelEdit::ParameterMetadata:
@@ -418,6 +432,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"parameterOrganization", QVariant::fromValue(m_parameterOrganization)},
         {"geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs)},
         {"textureWorkspace", QVariant::fromValue(m_textureWorkspace)},
+        {"artwork", QVariant::fromValue(m_artwork)}, {"artworkFingerprint", m_artworkFingerprint},
         {"locked", QVariant::fromValue(m_lockedKeys)}, {"opacity", QVariant::fromValue(m_drawableOpacityOverrides)},
         {"drawOrder", QVariant::fromValue(m_drawableDrawOrderOverrides)}, {"positions", QVariant::fromValue(m_drawableKeyformPositionOverrides)},
         {"indices", QVariant::fromValue(m_drawableIndexOverrides)}, {"masks", QVariant::fromValue(m_drawableMaskIndexOverrides)},
@@ -638,6 +653,9 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     next.m_workingBaseBytes = std::move(working);
     next.m_textureSources = m_textureSources;
     next.m_textureWorkspace = m_textureWorkspace;
+    next.m_textureWorkspaceFingerprint = m_textureWorkspaceFingerprint;
+    next.m_artwork = m_artwork;
+    next.m_artworkFingerprint = m_artworkFingerprint;
     QStringList beforeIds, afterIds;
     for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
     for (const auto& parameter : next.m_parameters) afterIds.append(parameter.id);
@@ -654,6 +672,7 @@ bool CModelDocument::SetMaterialStructure(const Builder::ColumnState& structure,
         if (!deformerStructure && !sourceIds.isEmpty()) return fail(error, QStringLiteral("变形器源身份需要变形器作者结构"));
         CModelDocument candidate;
         if (!PrepareStructure(structure, meshStructure, deformerStructure, sourceIds, deformerStructure, true, candidate, error)) return false;
+        if (!candidate.ValidateArtworkReferences(candidate.m_artwork, error)) return false;
         CommitCandidate(std::move(candidate));
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复材质作者结构")); }
@@ -664,6 +683,7 @@ bool CModelDocument::SetParameterStructure(const Builder::ColumnState& structure
     try {
         CModelDocument candidate;
         if (!PrepareParameterStructure(structure, candidate, error)) return false;
+        if (!candidate.ValidateArtworkReferences(candidate.m_artwork, error)) return false;
         CommitCandidate(std::move(candidate));
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复参数结构")); }
@@ -674,6 +694,7 @@ bool CModelDocument::SetAuthoringStructure(const Builder::ColumnState& structure
     try {
         CModelDocument candidate;
         if (!PrepareStructure(structure, true, candidate, error)) return false;
+        if (!candidate.ValidateArtworkReferences(candidate.m_artwork, error)) return false;
         CommitCandidate(std::move(candidate));
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法应用网格编辑结构")); }
@@ -685,6 +706,7 @@ bool CModelDocument::SetDeformerStructure(const Builder::ColumnState& structure,
     try {
         CModelDocument candidate;
         if (!PrepareStructure(structure, meshStructure, true, sourceIds, true, m_hasMaterialStructure || !m_drawableMaterialOverrides.isEmpty(), candidate, error)) return false;
+        if (!candidate.ValidateArtworkReferences(candidate.m_artwork, error)) return false;
         CommitCandidate(std::move(candidate));
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复变形器结构")); }
@@ -742,6 +764,9 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         CTextureWorkspace::State workspace;
         if (!read(state, "textureWorkspace", workspace)) return fail(error, QStringLiteral("图集结构状态类型无效"));
         if (workspace != m_textureWorkspace) return fail(error, QStringLiteral("模型结构操作不能改变图集工作区"));
+        if (!read(state, "artwork", session.artwork)) return fail(error, QStringLiteral("模型素材关联状态类型无效"));
+        if (edit.field != CModelEdit::MeshStructure && session.artwork != m_artwork)
+            return fail(error, QStringLiteral("当前结构操作不能改变素材关联"));
         if (HasTextureWorkspace()) {
             CTextureWorkspace::Draft draft;
             if (!CTextureWorkspace::CaptureDraft(m_textureSources, workspace, draft, error)) return false;
@@ -749,6 +774,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         }
         session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
         if (session.textureWorkspace) session.version = 11;
+        if (!session.artwork.IsEmpty()) session.version = 12;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
@@ -1113,6 +1139,15 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error) ||
             !PrepareStructure(structure, true, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
         for (const auto& mesh : result.meshes) candidate.m_drawableIndexOverrides.remove(mesh.artMeshId);
+        auto artwork = m_artwork;
+        for (const auto& mesh : request.meshes) {
+            CModelDrawableMaterial material;
+            CModelArtwork::State remappedArtwork;
+            if (!candidate.CaptureDrawableMaterial(mesh.artMeshId, material, error) ||
+                !CArtworkReconciler::RemapMesh(artwork, mesh, material, candidate.DrawableIndices(mesh.artMeshId), remappedArtwork, error)) return false;
+            artwork = std::move(remappedArtwork);
+        }
+        if (!candidate.SetArtwork(artwork, error)) return false;
         QVector<CGeometryObjectPairs::VertexRemap> pairRemaps;
         for (const auto& mesh : result.meshes)
             pairRemaps.append({{CModelGeometryKeyform::ArtMesh, mesh.artMeshId}, mesh.oldToNew});

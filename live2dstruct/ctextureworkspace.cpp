@@ -1,4 +1,5 @@
 #include "ctextureworkspace.h"
+#include "cmaterialvalidationcache.h"
 #include "std/cpngimage.h"
 #include <QCryptographicHash>
 #include <QDataStream>
@@ -47,10 +48,10 @@ bool pixelBudget(const QByteArray& digest, const QSize& size, QMap<QByteArray, Q
     if (bytes > Workspace::MaximumDecodedBytes - total) return fail(error, QStringLiteral("图集解码像素总量超出支持范围"));
     total += bytes; sizes.insert(digest, size); return true;
 }
-bool bytesBudget(const QByteArray& bytes, QSet<QByteArray>& seen, qint64& total, QString* error)
+bool bytesBudget(const QByteArray& bytes, QSet<QByteArray>& seen, qint64& total, CMaterialValidationCache& cache, QString* error)
 {
     if (bytes.isEmpty() || bytes.size() > CTextureAssets::MaximumBytes) return fail(error, QStringLiteral("图集 PNG 数据为空或过大"));
-    const auto digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+    QByteArray digest; if (!cache.ValidateBlob(bytes, digest, error)) return false;
     if (seen.contains(digest)) return true;
     if (bytes.size() > CTextureAssets::MaximumBytes - total) return fail(error, QStringLiteral("图集 PNG 总量超出支持范围"));
     total += bytes.size(); seen.insert(digest); return true;
@@ -83,7 +84,13 @@ bool CTextureWorkspace::Origin::operator==(const Origin& other) const
 bool CTextureWorkspace::Draft::operator==(const Draft& other) const
 { return origins == other.origins && state == other.state; }
 
-bool CTextureWorkspace::ValidateDraft(const Draft& draft, QString* error) try
+bool CTextureWorkspace::ValidateDraft(const Draft& draft, QString* error)
+{
+    CMaterialValidationCache cache;
+    return ValidateDraftWithCache(draft, cache, error);
+}
+
+bool CTextureWorkspace::ValidateDraftWithCache(const Draft& draft, CMaterialValidationCache& cache, QString* error) try
 {
     if (draft.origins.size() > CTextureAssets::MaximumSlots || draft.state.atlases.size() > CTextureAssets::MaximumSlots ||
         draft.state.sourceFingerprint.size() != 32 || draft.state.sourceFingerprint != sourceFingerprint(draft.origins))
@@ -111,33 +118,42 @@ bool CTextureWorkspace::ValidateDraft(const Draft& draft, QString* error) try
         } else if (it->sourceSlot != -1 || it.key() != generated++ || it->id.startsWith(QLatin1String("source:")) || it->png.isEmpty())
             return fail(error, QStringLiteral("生成图集必须使用新的连续槽和独立标识"));
         if (it->png.isEmpty()) continue;
-        QSize size; const auto digest = QCryptographicHash::hash(it->png, QCryptographicHash::Sha256);
+        QSize size; QByteArray digest;
+        if (!cache.ValidateBlob(it->png, digest, error)) return false;
         if (!CPngImage::Size(it->png, size, error) || size != it->size)
             return fail(error, QStringLiteral("图集声明尺寸与 PNG 不一致"));
         if (original != draft.origins.cend() && digest == original->digest)
             return fail(error, QStringLiteral("原始图集不应另存为覆盖 PNG"));
-        if (!bytesBudget(it->png, pngs, compressed, error) || !pixelBudget(digest, size, sizes, decoded, error)) return false;
+        if (!bytesBudget(it->png, pngs, compressed, cache, error) || !pixelBudget(digest, size, sizes, decoded, error)) return false;
     }
     for (auto it = draft.origins.cbegin(); it != draft.origins.cend(); ++it)
         if (!draft.state.atlases.contains(it.key())) return fail(error, QStringLiteral("图集工作区缺少原始槽"));
     pngs.clear();
     for (const auto& atlas : draft.state.atlases) if (!atlas.png.isEmpty()) {
-        const auto digest = QCryptographicHash::hash(atlas.png, QCryptographicHash::Sha256);
+        QByteArray digest;
+        if (!cache.ValidateBlob(atlas.png, digest, error)) return false;
         if (pngs.contains(digest)) continue;
-        QImage image; if (!CPngImage::Decode(atlas.png, image, error)) return false;
+        if (!cache.ValidatePng(atlas.png, atlas.size, digest, error)) return false;
         pngs.insert(digest);
     }
     if (error) error->clear(); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法验证图集工作区")); }
 
-bool CTextureWorkspace::Validate(const CTextureAssets::Catalog& sources, const State& state, QString* error) try
+bool CTextureWorkspace::Validate(const CTextureAssets::Catalog& sources, const State& state, QString* error)
+{
+    CMaterialValidationCache cache;
+    return ValidateWithCache(sources, state, cache, error);
+}
+
+bool CTextureWorkspace::ValidateWithCache(const CTextureAssets::Catalog& sources, const State& state,
+                                          CMaterialValidationCache& cache, QString* error) try
 {
     Draft draft{origins(sources), state};
     QSet<QByteArray> seen; qint64 bytes = 0;
-    for (const auto& source : sources) if (!bytesBudget(source.png, seen, bytes, error)) return false;
-    for (const auto& atlas : state.atlases) if (!atlas.png.isEmpty() && !bytesBudget(atlas.png, seen, bytes, error)) return false;
-    return ValidateDraft(draft, error) && CTextureAssets::ValidateCatalog(sources, error);
+    for (const auto& source : sources) if (!bytesBudget(source.png, seen, bytes, cache, error)) return false;
+    for (const auto& atlas : state.atlases) if (!atlas.png.isEmpty() && !bytesBudget(atlas.png, seen, bytes, cache, error)) return false;
+    return ValidateDraftWithCache(draft, cache, error) && CTextureAssets::ValidateCatalogWithCache(sources, cache, error);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法验证图集素材")); }
 

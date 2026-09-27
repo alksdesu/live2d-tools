@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "catlaseditdialog.h"
+#include "cpsdimportdialog.h"
 #include "cdraftdialoglifecycle.h"
 #include "psdbatchjob.h"
 #include "live2d/LAppLive2DManager.hpp"
@@ -35,6 +36,8 @@ bool MainWindow::PublishAtlasPreview(const live2dstruct::CModelDocument& before,
 
 void MainWindow::EditAtlas(const QString& selectedMesh)
 {
+    if (m_artworkDialog) { const auto dialog = m_artworkDialog; dialog->raise(); if (dialog) dialog->activateWindow(); return; }
+    if (m_artworkLoading) return;
     if (m_atlasDialog) { m_atlasDialog->raise(); m_atlasDialog->activateWindow(); return; }
     if (m_materialEditor.IsActive() || !m_workspaceReady || m_closingModel || m_batchExporting || m_psdBatch ||
         m_previewExport.IsBusy() || !m_openglwindows || !m_openglwindows->IsModelReady()) return;
@@ -46,6 +49,7 @@ void MainWindow::EditAtlas(const QString& selectedMesh)
     live2dstruct::CAtlasRepackPlanner::Snapshot snapshot;
     snapshot.sourceDigest = m_document.SourceDigest(); snapshot.documentRevision = m_document.Revision();
     snapshot.sources = m_document.TextureSources(); snapshot.workspace = m_document.TextureWorkspace();
+    snapshot.artwork = m_document.Artwork();
     QByteArray bytes; live2dstruct::CModelAtlasState state;
     if (!m_document.BuildRuntimeMoc(bytes, &error) || !m_document.CaptureAtlasState(state, &error)) {
         statusBar()->showMessage(error, 10000); return;
@@ -81,10 +85,10 @@ void MainWindow::EditAtlas(const QString& selectedMesh)
     const QPointer<CAtlasEditDialog> dialog = m_atlasDialog;
     const auto settle = CDraftDialogLifecycle::Attach(dialog, this,
         [window, dialog](QString* detail) {
-            if (!window || window->m_closingModel || (window->m_atlasDialog && window->m_atlasDialog != dialog)) return true;
+            if (!window || window->m_closingModel || window->m_artworkDialog || (window->m_atlasDialog && window->m_atlasDialog != dialog)) return true;
             return !window->m_atlasEditor.IsActive() || window->m_atlasEditor.Cancel(detail);
         }, [window, dialog] {
-            if (!window || window->m_closingModel || (window->m_atlasDialog && window->m_atlasDialog != dialog)) return;
+            if (!window || window->m_closingModel || window->m_artworkDialog || (window->m_atlasDialog && window->m_atlasDialog != dialog)) return;
             window->m_atlasDialog.clear(); window->RefreshTextureEditing(false);
             if (window) window->RefreshMaterialEditing(false);
         }, [window](const QString& detail) { if (window) window->statusBar()->showMessage(detail, 15000); });

@@ -126,6 +126,9 @@ void CModelDocument::Clear()
     m_drawableMaterialOverrides.clear();
     m_textureSources.clear();
     m_textureWorkspace = {};
+    m_textureWorkspaceFingerprint.clear();
+    m_artwork = {};
+    m_artworkFingerprint.clear();
     m_sourceDeformerParents.clear();
     m_sourceDeformerIds.clear();
     m_hasDeformerStructure = false;
@@ -740,6 +743,8 @@ bool CModelDocument::SetDrawableIndices(const QString& id, const QVector<quint16
             target = &drawable;
         }
         if (!target || !CMeshTopology::IsValid(indices, target->vertexCount)) return false;
+        CModelAtlasState before;
+        if (!m_artwork.bindings.isEmpty() && !CaptureAtlasState(before)) return false;
         CModelDocument candidate = *this;
         candidate.m_drawableIndexOverrides.insert(id, indices);
         QVector<int> identity;
@@ -747,6 +752,7 @@ bool CModelDocument::SetDrawableIndices(const QString& id, const QVector<quint16
         for (int index = 0; index < target->vertexCount; ++index) identity.append(index);
         const QVector<CGeometryObjectPairs::VertexRemap> remaps{{{CModelGeometryKeyform::ArtMesh, id}, std::move(identity)}};
         if (!ReconcileGeometryObjectPairs(candidate, remaps, nullptr, nullptr, nullptr)) return false;
+        if (!candidate.ReconcileArtworkAppearance(before, nullptr)) return false;
         CommitCandidate(std::move(candidate));
         return true;
     } catch (const std::exception&) { return false; }

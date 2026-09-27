@@ -30,7 +30,10 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - UV editor: point, box and connected-island selection, pixel coordinates, transforms, axis constraints and snapping. Assign meshes to existing atlases while preserving normalized UVs or pixel coordinates; preview a draft, cancel it, or save it as one undo step. This changes texture sampling, without repacking PNG pixels.
 - UVs and texture assignments persist in sessions and exports. CMO3 materials and extracted PSD textures repeat samples outside atlas bounds, with explicit size limits; original texture files remain unchanged.
 - Atlas workspace: create and rename atlases, resize the canvas while preserving pixel density, move or copy material regions across atlases, rotate by 90°, and automatically pack overlapping material groups. PNG replacement, atlas changes, and UV edits share document undo/redo. Sessions preserve generated atlases; unused generated tail slots can be removed.
-- Repacking copies RGBA pixels and sampling margins. Existing source atlases stay available, and minified previews may differ after mipmaps are rebuilt; arbitrary resampling and PSD source updates are still being developed.
+- Repacking copies RGBA pixels and sampling margins. Existing source atlases stay available, and minified previews may differ after mipmaps are rebuilt.
+- PSD sources: import RGB 8-bit PSD layers, align them against existing atlas pixels, explicitly associate ArtMeshes, and selectively update them from another source revision. Unique Photoshop layer IDs support matching across renames and reordering; ambiguous matches require confirmation. Missing layers can keep their previous artwork.
+- Source revisions, original bytes, and mesh associations are preserved in work sessions (v12). Atlas movement and supported vertex edits migrate associations; manual texture replacement detaches affected links. Reimport samples the frozen source rather than repeatedly resampling edited atlases.
+- PSD import supports raw, RLE, ZIP and ZIP prediction. PSB, other color modes/depths, and pixel-equivalent reconstruction of masks, effects or unsupported blends are not supported. Color policy and layer-opacity baking are explicit. Runtime packages and CMO3 preserve the resulting model and textures, but currently do not preserve these PSD source revisions or associations; save a work session for continued source editing.
 
 #### PSD Export
 
@@ -124,7 +127,7 @@ opengl/       OpenGL offscreen rendering + PSD export pipeline + texture extract
 live2d/       Live2D SDK application layer
 framework/    Live2D Cubism Native Framework (modified)
 live2dstruct/ MOC3 binary parser + hierarchy tree builder
-psd/          PSD file writer
+psd/          PSD file reader and writer
 cmo3/         moc3 → cmo3 project generator (CAFF container + xs XML serialization)
 edit/         Editing/drawing tools
 std/          Common utilities
@@ -173,7 +176,10 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - UV 编辑支持点选、框选、连通岛、像素坐标、平移／旋转／缩放、轴约束和吸附；可保持归一化 UV 或像素坐标切换到已有图集。草稿实时预览，可取消，保存只增加一条撤销记录。此操作改变纹理采样区域，不重新排布 PNG 像素
 - UV 与纹理槽修改随会话保存并用于导出；CMO3 素材和纹理采样式 PSD 支持越界重复采样，超过素材尺寸预算时明确报错
 - 图集编辑支持新建、命名、保持像素密度的画布尺寸调整、跨图集素材搬移、90°旋转和自动排布；重叠素材成组处理，保护未选对象仍使用的像素。PNG 替换、图集变化与 UV 编辑共用文档撤销／重做，生成图集可保存到会话与模型包，可删除未引用的生成尾槽
-- 重排复制 RGBA 像素及采样边带；原图集保持可用，重建 mipmap 后的缩小显示可能存在差异。任意角度／比例重采样与 PSD 素材更新仍在开发
+- 重排复制 RGBA 像素及采样边带；原图集保持可用，重建 mipmap 后的缩小显示可能存在差异
+- PSD 来源导入：读取 RGB 8-bit 图层，对照现有图集配准，明确关联 ArtMesh，再从新来源版本选择性更新。唯一 Photoshop 图层 ID 支持改名和调序后的匹配；歧义匹配需要确认，缺失图层可保留旧素材
+- 工作会话 v12 保存原始来源字节、版本和网格关联；图集搬移及支持的顶点编辑迁移关联，手工替换纹理会断开受影响的链接。重新导入从冻结原图采样，避免对已编辑图集反复重采样
+- PSD 导入支持 RAW、RLE、ZIP 和 ZIP prediction；不支持 PSB、其它色彩模式／位深，以及蒙版、效果或不支持混合模式的像素等价重建。颜色策略和图层透明度烘焙需明确选择。模型包与 CMO3 保留最终模型和贴图，当前不保留这些 PSD 来源版本和关联；继续编辑来源请保存工作会话
 - 图集支持同尺寸 PNG 替换、恢复原图和撤销／重做；覆盖随工作会话保存，并用于画布、PNG、PSD、cmo3 与运行时模型包。原素材文件保持不变，共用同一路径的多个纹理槽可独立替换
 - 纹理使用首次成功加载的字节快照，外部修改或删除源 PNG 不会造成画布、图集和导出内容分裂；会话重开时核对原始素材摘要，避免把覆盖应用到不同来源
 
@@ -269,7 +275,7 @@ opengl/       OpenGL 离屏渲染 + PSD 导出管线 + 纹理提取
 live2d/       Live2D SDK 应用层封装
 framework/    Live2D Cubism Native Framework（已修改）
 live2dstruct/ MOC3 二进制解析器 + 层级树构建
-psd/          PSD 文件写入
+psd/          PSD 文件读取与写入
 cmo3/         moc3 → cmo3 工程生成器（CAFF 容器 + xs XML 序列化）
 edit/         编辑/绘制工具
 std/          通用工具

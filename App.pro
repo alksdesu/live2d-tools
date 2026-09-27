@@ -721,3 +721,31 @@ SOURCES += \
     live2dstruct/catlasrepackplanner.cpp \
     ui/mainwindowatlases.cpp
 HEADERS += live2dstruct/catlasrepackplanner.h ui/cdraftdialoglifecycle.h
+
+SOURCES += psd/cpsdreader.cpp
+HEADERS += psd/cpsdreader.h psd/cpsdsnapshot.h
+SOURCES += live2dstruct/cmodelartwork.cpp live2dstruct/cmodeldocumentartwork.cpp
+HEADERS += live2dstruct/cmodelartwork.h
+SOURCES += \
+    live2dstruct/cmaterialvalidationcache.cpp \
+    live2dstruct/cmaterialresourcebudget.cpp \
+    live2dstruct/cartworkupdateplanner.cpp \
+    ui/cpsdimportdialog.cpp \
+    ui/mainwindowartwork.cpp
+HEADERS += \
+    live2dstruct/cmaterialvalidationcache.h \
+    live2dstruct/cmaterialresourcebudget.h \
+    live2dstruct/cartworkupdateplanner.h \
+    ui/cpsdimportdialog.h
+SOURCES += \
+    live2dstruct/cartworkreconciler.cpp \
+    live2dstruct/cartworksourceimport.cpp \
+    live2dstruct/cpsdlayermatcher.cpp \
+    live2dstruct/cartworksampler.cpp \
+    ui/cartworksourceview.cpp
+HEADERS += \
+    live2dstruct/cartworkreconciler.h \
+    live2dstruct/cartworksourceimport.h \
+    live2dstruct/cpsdlayermatcher.h \
+    live2dstruct/cartworksampler.h \
+    ui/cartworksourceview.h

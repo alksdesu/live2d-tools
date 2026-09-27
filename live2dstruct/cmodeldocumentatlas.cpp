@@ -1,5 +1,7 @@
 #include "cmodeldocument.h"
 #include "cmocmaterialbuilder.h"
+#include "cartworkreconciler.h"
+#include "cmaterialresourcebudget.h"
 #include <QCryptographicHash>
 #include <algorithm>
 #include <exception>
@@ -52,6 +54,7 @@ bool freeze(const CTextureAssets::Catalog& sources, const QMap<QByteArray, QByte
     if (!CTextureWorkspace::Validate(sources, candidate.workspace, error) || !CModelMaterialEdit::Validate(state.materials, error)) return false;
     for (const auto& material : state.materials) candidate.materials.append({QString(material.id.constData(), material.id.size()),
         material.textureIndex, QVector<float>(material.uvs.cbegin(), material.uvs.cend())});
+    if (!CModelArtwork::Freeze(state.artwork, candidate.artwork, error)) return false;
     std::sort(candidate.materials.begin(), candidate.materials.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     result = std::move(candidate); return true;
 }
@@ -71,10 +74,12 @@ bool CModelDocument::InitializeTextureWorkspace(const CTextureAssets::Catalog& s
         frozen.insert(it.key(), {QString(it->path.constData(), it->path.size()), png,
             QByteArray(it->digest.constData(), it->digest.size()), it->size});
     }
-    if (!CTextureWorkspace::Validate(frozen, state, error) || !references(*this, state, error)) return false;
+    QByteArray fingerprint;
+    if (!CTextureWorkspace::Fingerprint(frozen, state, fingerprint, error) || !references(*this, state, error)) return false;
     if (HasTextureWorkspace())
         return (frozen == m_textureSources && state == m_textureWorkspace) || fail(error, QStringLiteral("已加载的图集来源不能重新定义"));
-    m_textureSources.swap(frozen); m_textureWorkspace = std::move(state); ++m_revision; return true;
+    m_textureSources.swap(frozen); m_textureWorkspace = std::move(state);
+    m_textureWorkspaceFingerprint = std::move(fingerprint); ++m_revision; return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法初始化模型图集")); }
 
@@ -83,7 +88,15 @@ bool CModelDocument::SetTextureWorkspace(const CTextureWorkspace::State& state, 
     if (!m_loaded || !HasTextureWorkspace()) return fail(error, QStringLiteral("尚未初始化模型图集来源"));
     CTextureWorkspace::State frozen;
     if (!CTextureWorkspace::Freeze(m_textureSources, state, frozen, error) || !references(*this, frozen, error)) return false;
-    if (frozen != m_textureWorkspace) { m_textureWorkspace = std::move(frozen); ++m_revision; }
+    if (frozen != m_textureWorkspace) {
+        CModelAtlasState before;
+        if (!m_artwork.bindings.isEmpty() && !CaptureAtlasState(before, error)) return false;
+        auto candidate = *this;
+        candidate.m_textureWorkspace = std::move(frozen);
+        if (!CTextureWorkspace::Fingerprint(m_textureSources, candidate.m_textureWorkspace, candidate.m_textureWorkspaceFingerprint, error)) return false;
+        if (!candidate.ReconcileArtworkAppearance(before, error)) return false;
+        CommitCandidate(std::move(candidate));
+    }
     return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复模型图集")); }
@@ -91,7 +104,7 @@ catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复�
 bool CModelDocument::CaptureAtlasState(CModelAtlasState& result, QString* error) const
 {
     if (!m_loaded || !HasTextureWorkspace()) return fail(error, QStringLiteral("尚未初始化模型图集来源"));
-    CModelAtlasState candidate; candidate.workspace = m_textureWorkspace;
+    CModelAtlasState candidate; candidate.workspace = m_textureWorkspace; candidate.artwork = m_artwork;
     if (!CaptureDrawableMaterials(candidate.materials, error)) return false;
     result = std::move(candidate); return true;
 }
@@ -100,9 +113,16 @@ bool CModelDocument::MakeAtlasEdit(const CModelAtlasState& before, const CModelA
                                   CModelEdit& edit, QString* error) const try
 {
     if (!HasTextureWorkspace()) return fail(error, QStringLiteral("尚未初始化模型图集来源"));
-    if (before.workspace != m_textureWorkspace) return fail(error, QStringLiteral("图集在操作期间已改变"));
+    if (before.workspace != m_textureWorkspace || before.artwork != m_artwork) return fail(error, QStringLiteral("图集或素材关联在操作期间已改变"));
+    auto requested = after;
+    if (!before.artwork.bindings.isEmpty() && before.artwork == after.artwork) {
+        CArtworkReconciler::Triangles triangles;
+        for (const auto& mesh : m_drawables) triangles.insert(mesh.id, m_drawableIndexOverrides.value(mesh.id, mesh.indices));
+        if (!CArtworkReconciler::ManualAppearance(m_textureSources, before, after.workspace, after.materials,
+                                                 triangles, requested.artwork, error)) return false;
+    }
     const CModelEdit request{QStringLiteral("atlases"), QStringLiteral("textures"), CModelEdit::AtlasLayout,
-                            QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+                            QVariant::fromValue(before), QVariant::fromValue(requested), -1, false};
     if (!ValidateAtlasHistory(request, error)) return false;
     QMap<QByteArray, QByteArray> blobs;
     const auto remember = [&](const CTextureWorkspace::State& workspace) {
@@ -117,7 +137,7 @@ bool CModelDocument::MakeAtlasEdit(const CModelAtlasState& before, const CModelA
             remember(value.toMap().value("textureWorkspace").value<CTextureWorkspace::State>());
     }
     CModelAtlasState previous, next;
-    if (!freeze(m_textureSources, blobs, before, previous, error) || !freeze(m_textureSources, blobs, after, next, error)) return false;
+    if (!freeze(m_textureSources, blobs, before, previous, error) || !freeze(m_textureSources, blobs, requested, next, error)) return false;
     CModelEdit command{QStringLiteral("atlases"), QStringLiteral("textures"), CModelEdit::AtlasLayout,
                       QVariant::fromValue(previous), QVariant::fromValue(next), -1, false};
     if (!ValidateAtlasHistory(command, error)) return false;
@@ -132,17 +152,18 @@ bool CModelDocument::ApplyAtlasEdit(const CModelEdit& edit, bool forward, QStrin
     CModelAtlasState before, after;
     if (!states(edit, before, after, error) || !HasTextureWorkspace()) return false;
     const auto& expected = forward ? before : after; const auto& next = forward ? after : before;
-    if (m_textureWorkspace != expected.workspace) return fail(error, QStringLiteral("图集在操作期间已改变"));
+    if (m_textureWorkspace != expected.workspace || m_artwork != expected.artwork) return fail(error, QStringLiteral("图集或素材关联在操作期间已改变"));
     if (!CTextureWorkspace::ValidateTransition(m_textureSources, expected.workspace, next.workspace,
                                               CTextureWorkspace::Transition::ReplaceGenerated, error)) return false;
     auto candidate = *this;
     candidate.m_textureWorkspace = next.workspace;
+    if (!CTextureWorkspace::Fingerprint(m_textureSources, next.workspace, candidate.m_textureWorkspaceFingerprint, error)) return false;
     if (!expected.materials.isEmpty()) {
         const CModelEdit material{QStringLiteral("drawables"), QStringLiteral("materials"), CModelEdit::DrawableMaterials,
             QVariant::fromValue(before.materials), QVariant::fromValue(after.materials), -1, false};
-        if (!candidate.ApplyMaterialEdit(material, forward, error)) return false;
+        if (!candidate.ApplyMaterialEdit(material, forward, error, false)) return false;
     }
-    if (!references(candidate, candidate.m_textureWorkspace, error)) return false;
+    if (!references(candidate, candidate.m_textureWorkspace, error) || !candidate.SetArtwork(next.artwork, error)) return false;
     CommitCandidate(std::move(candidate)); return true;
 }
 
@@ -150,47 +171,37 @@ bool CModelDocument::ValidateAtlasEditStorage(const CModelEdit& edit) const
 {
     CModelAtlasState before, after;
     if (!states(edit, before, after, nullptr) || !HasTextureWorkspace() ||
-        !CTextureWorkspace::Validate(m_textureSources, m_textureWorkspace) || !references(*this, m_textureWorkspace, nullptr)) return false;
+        !CTextureWorkspace::Validate(m_textureSources, m_textureWorkspace) || !references(*this, m_textureWorkspace, nullptr) ||
+        !ValidateArtworkReferences(m_artwork)) return false;
     CModelMaterialState current;
     for (const auto& material : before.materials) {
         CModelDrawableMaterial value; if (!CaptureDrawableMaterial(material.id, value)) return false;
         current.append(std::move(value));
     }
-    if (!((m_textureWorkspace == before.workspace && current == before.materials) ||
-          (m_textureWorkspace == after.workspace && current == after.materials))) return false;
+    if (!((m_textureWorkspace == before.workspace && current == before.materials && m_artwork == before.artwork) ||
+          (m_textureWorkspace == after.workspace && current == after.materials && m_artwork == after.artwork))) return false;
     QByteArray bytes; return CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, bytes);
 }
 
 bool CModelDocument::ValidateAtlasHistory(const CModelEdit& edit, QString* error) const
 {
-    QSet<QByteArray> digests; qint64 encoded = 0, decoded = 0;
-    const auto count = [&](const QByteArray& png, const QSize& size) {
-        if (png.isEmpty()) return true;
-        const auto digest = QCryptographicHash::hash(png, QCryptographicHash::Sha256);
-        if (digests.contains(digest)) return true;
-        const qint64 pixels = qint64(size.width()) * size.height();
-        if (size.width() <= 0 || size.height() <= 0 || pixels > CTextureWorkspace::MaximumDecodedBytes / 4 ||
-            png.size() > CTextureAssets::MaximumBytes - encoded || pixels * 4 > CTextureWorkspace::MaximumDecodedBytes - decoded)
-            return fail(error, QStringLiteral("图集和撤销历史的素材总量超出支持范围，原历史保持不变"));
-        digests.insert(digest); encoded += png.size(); decoded += pixels * 4; return true;
-    };
-    const auto workspace = [&](const CTextureWorkspace::State& state) {
-        for (const auto& atlas : state.atlases) if (!count(atlas.png, atlas.size)) return false;
-        return true;
-    };
-    const auto command = [&](const CModelEdit& entry) {
+    QVector<CModelAtlasState> snapshots{{m_textureWorkspace, {}, m_artwork}};
+    const auto append = [&](const CModelEdit& entry) {
         for (const auto& value : {entry.before, entry.after}) {
-            if (entry.field == CModelEdit::AtlasLayout) {
-                if (!workspace(value.value<CModelAtlasState>().workspace)) return false;
-            } else if (entry.field == CModelEdit::ParameterStructure || entry.field == CModelEdit::MeshStructure || entry.field == CModelEdit::DeformerStructure) {
-                if (!workspace(value.toMap().value("textureWorkspace").value<CTextureWorkspace::State>())) return false;
+            if (entry.field == CModelEdit::AtlasLayout) snapshots.append(value.value<CModelAtlasState>());
+            else if (entry.field == CModelEdit::ParameterStructure || entry.field == CModelEdit::MeshStructure || entry.field == CModelEdit::DeformerStructure) {
+                const auto state = value.toMap();
+                snapshots.append({state.value("textureWorkspace").value<CTextureWorkspace::State>(), {},
+                                  state.value("artwork").value<CModelArtwork::State>()});
             }
         }
-        return true;
+        if (entry.storage) for (const auto& storage : {entry.storage->before, entry.storage->after})
+            if (storage.contains("artwork") || storage.contains("atlasWorkspace"))
+                snapshots.append({storage.value("atlasWorkspace").value<CTextureWorkspace::State>(), {},
+                                  storage.value("artwork").value<CModelArtwork::State>()});
     };
-    for (const auto& source : m_textureSources) if (!count(source.png, source.size)) return false;
-    if (!workspace(m_textureWorkspace)) return false;
-    for (const auto& entry : m_editHistory) if (!command(entry)) return false;
-    return command(edit);
+    for (const auto& entry : m_editHistory) append(entry);
+    append(edit);
+    return CMaterialResourceBudget::Validate(m_textureSources, snapshots, nullptr, error);
 }
 }

@@ -1,10 +1,40 @@
 #include "live2dstruct/cmodelsavefingerprint.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmodelsession.h"
 #include <QtTest>
+#include <QBuffer>
+#include <QElapsedTimer>
+#include <QTemporaryDir>
 #include <algorithm>
 #include <cmath>
 
 using namespace live2dstruct;
+
+namespace {
+QByteArray imageBytes(QColor color, QSize size = {32, 32})
+{
+    QImage image(size, QImage::Format_RGBA8888); image.fill(color); QBuffer output;
+    if (!output.open(QIODevice::WriteOnly) || !image.save(&output, "PNG")) return {};
+    return output.data();
+}
+bool initializeTextures(CModelDocument& document, const QString& directory, QSize size, QString* error)
+{
+    const auto bytes = imageBytes(Qt::red, size); CModelMaterialState materials; CTextureAssets::Catalog sources;
+    if (bytes.isEmpty() || !document.CaptureDrawableMaterials(materials, error)) return false;
+    for (const auto& material : materials) if (!material.uvs.isEmpty() && !sources.contains(material.textureIndex)) {
+        CTextureAssets::Source source;
+        if (!CTextureAssets::MakeSource(directory + QString("/atlas-%1.png").arg(material.textureIndex), bytes, source, error)) return false;
+        sources.insert(material.textureIndex, source);
+    }
+    return document.InitializeTextureWorkspace(sources, {}, error);
+}
+bool matchesWorkspace(const CModelDocument& document)
+{
+    QByteArray computed;
+    return CTextureWorkspace::Fingerprint(document.TextureSources(), document.TextureWorkspace(), computed) &&
+        computed == document.TextureWorkspaceFingerprint();
+}
+}
 
 class ModelSaveFingerprintTests : public QObject
 {
@@ -118,6 +148,53 @@ private slots:
     {
         CModelDocument document; QByteArray output = "sentinel"; QString error;
         QVERIFY(!CModelSaveFingerprint::Capture(document, output, &error)); QCOMPARE(output, QByteArray("sentinel"));
+    }
+
+    void textureFingerprintFollowsEditUndoRestoreFailureAndReload()
+    {
+        auto document = m_original; QTemporaryDir directory; QString error; QVERIFY(directory.isValid());
+        QVERIFY2(initializeTextures(document, directory.path(), {32, 32}, &error), qPrintable(error));
+        QVERIFY(matchesWorkspace(document)); const auto original = document.TextureWorkspaceFingerprint();
+        QByteArray clean; QVERIFY(CModelSaveFingerprint::Capture(document, clean));
+        CModelAtlasState before; QVERIFY(document.CaptureAtlasState(before)); auto after = before;
+        after.workspace.atlases.first().png = imageBytes(Qt::blue); CModelEdit edit;
+        QVERIFY2(document.MakeAtlasEdit(before, after, edit, &error), qPrintable(error)); QVERIFY(document.ExecuteEdit(edit));
+        QVERIFY(matchesWorkspace(document)); QVERIFY(document.TextureWorkspaceFingerprint() != original);
+        const auto changed = document.TextureWorkspaceFingerprint(); QByteArray dirty;
+        QVERIFY(CModelSaveFingerprint::Capture(document, dirty)); QVERIFY(dirty != clean);
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.TextureWorkspaceFingerprint(), original); QVERIFY(matchesWorkspace(document));
+        QByteArray restored; QVERIFY(CModelSaveFingerprint::Capture(document, restored)); QCOMPARE(restored, clean);
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.TextureWorkspaceFingerprint(), changed); QVERIFY(matchesWorkspace(document));
+        auto invalid = document.TextureWorkspace(); invalid.atlases.first().png = "invalid PNG";
+        QVERIFY(!document.SetTextureWorkspace(invalid, &error)); QCOMPARE(document.TextureWorkspaceFingerprint(), changed);
+        QVERIFY(document.SetTextureWorkspace(before.workspace)); QCOMPARE(document.TextureWorkspaceFingerprint(), original);
+        CModelSession session; session.version = 11; session.sourceMoc = document.SourcePath(); session.sourceDigest = document.SourceDigest();
+        CTextureWorkspace::Draft draft; QVERIFY(CTextureWorkspace::CaptureDraft(document.TextureSources(), after.workspace, draft));
+        session.textureWorkspace = draft; CModelSession decoded;
+        QVERIFY2(CModelSession::FromJson(session.ToJson(), &decoded, &error), qPrintable(error)); CModelDocument recovered;
+        QVERIFY2(decoded.RestoreDocument(document, recovered, &error), qPrintable(error));
+        QCOMPARE(recovered.TextureWorkspaceFingerprint(), changed); QVERIFY(matchesWorkspace(recovered));
+        QVERIFY(recovered.LoadBytes(m_original.SourceBytes(), m_original.SourcePath())); QVERIFY(recovered.TextureWorkspaceFingerprint().isEmpty());
+        QVERIFY(CModelSaveFingerprint::Capture(recovered, restored)); QCOMPARE(restored, m_baseline);
+    }
+
+    void unchangedLargeTextureDoesNotChangeDuringParameterSaveChecks()
+    {
+        auto document = m_original; QTemporaryDir directory; QString error; QVERIFY(directory.isValid());
+        QVERIFY2(initializeTextures(document, directory.path(), {2048, 2048}, &error), qPrintable(error));
+        const auto original = document.TextureWorkspaceFingerprint(); QByteArray clean;
+        QVERIFY(CModelSaveFingerprint::Capture(document, clean)); const auto parameter = document.Parameters().first();
+        const float initial = document.ParameterValue(parameter.id);
+        const float changed = initial == parameter.maximum ? parameter.minimum : parameter.maximum;
+        QElapsedTimer timer; timer.start();
+        for (int index = 0; index < 12; ++index) {
+            const float value = index % 2 == 0 ? changed : initial;
+            QVERIFY(document.SetParameterValue(parameter.id, value)); QByteArray saved;
+            QVERIFY(CModelSaveFingerprint::Capture(document, saved)); QCOMPARE(saved == clean, value == initial);
+            QCOMPARE(document.TextureWorkspaceFingerprint(), original);
+        }
+        qInfo() << "12 parameter edits and save checks with 2048x2048 atlas:" << timer.elapsed() << "ms";
+        QVERIFY(matchesWorkspace(document));
     }
 };
 QTEST_APPLESS_MAIN(ModelSaveFingerprintTests)

@@ -124,6 +124,15 @@ bool validWorkspace(const CModelSession& session, int version, QString* error)
     return CTextureWorkspace::ValidateDraft(*session.textureWorkspace, error);
 }
 
+bool validArtwork(const CModelSession& session, int version, QString* error)
+{
+    if (session.artwork.IsEmpty()) return true;
+    if (version < 12 || session.sourceMoc.isEmpty() || session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32) {
+        setError(error, QStringLiteral("素材关联需要版本 12 及有效源模型指纹")); return false;
+    }
+    return CModelArtwork::Validate(session.artwork, nullptr, error);
+}
+
 bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     qint64 bytes = 0;
@@ -197,7 +206,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 11) return {};
+    if (version < 1 || version > 12) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -212,6 +221,13 @@ QByteArray CModelSession::ToJson() const
     if (geometryObjectPairs != CGeometryObjectPairs::State{} && storedVersion < 9) storedVersion = 9;
     if ((materialStructure || !drawableMaterials.isEmpty()) && storedVersion < 10) storedVersion = 10;
     if (textureWorkspace && storedVersion < 11) storedVersion = 11;
+    if (!artwork.IsEmpty() && storedVersion < 12) storedVersion = 12;
+    if (!validArtwork(*this, storedVersion, nullptr)) return {};
+    if (storedVersion >= 12) {
+        QJsonObject sources;
+        if (!CModelArtwork::ToJson(artwork, sources)) return {};
+        root.insert(QStringLiteral("artwork"), sources);
+    }
     if (!validWorkspace(*this, storedVersion, nullptr)) return {};
     if (storedVersion >= 11) {
         QJsonObject workspace;
@@ -388,13 +404,18 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 11) {
+    if (parsedVersion < 1 || parsedVersion > 12) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    const auto artwork = root.value(QStringLiteral("artwork"));
+    if ((parsedVersion < 12 && !artwork.isUndefined()) || (parsedVersion >= 12 && !artwork.isObject())) {
+        setError(error, QStringLiteral("素材关联需要版本 12 及有效对象")); return false;
+    }
+    if (parsedVersion >= 12 && !CModelArtwork::FromJson(artwork.toObject(), result.artwork, error)) return false;
     const auto workspace = root.value(QStringLiteral("textureWorkspace"));
     if ((parsedVersion < 11 && !workspace.isUndefined()) ||
         (parsedVersion >= 11 && !workspace.isObject() && !workspace.isNull())) {
@@ -507,7 +528,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         setError(error, QStringLiteral("会话几何对象配对与模型来源不匹配"));
         return false;
     }
-    if (!validWorkspace(result, parsedVersion, error) || !validMaterials(result, parsedVersion, error) || !validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
+    if (!validArtwork(result, parsedVersion, error) || !validWorkspace(result, parsedVersion, error) || !validMaterials(result, parsedVersion, error) || !validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
 
     QJsonObject parameterObject;
     QJsonObject parameterMetadataObject;
@@ -830,12 +851,13 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 11) ||
+    if ((version < 1 || version > 12) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
         (version < 9 && geometryObjectPairs != CGeometryObjectPairs::State{}) ||
-        (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace))
+        (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace) ||
+        (version < 12 && !artwork.IsEmpty()))
         return fail(QStringLiteral("version"));
     CGeometryObjectPairs::State normalizedPairs;
     if (!CGeometryObjectPairs::Normalize(geometryObjectPairs, normalizedPairs, error) ||
@@ -844,7 +866,7 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
     CParameterOrganization::State normalizedOrganization;
     if (!CParameterOrganization::Normalize(parameterOrganization, normalizedOrganization, error) ||
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
-    if (!validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
+    if (!validArtwork(*this, version, error) || !validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
         !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validDeformerStructure(*this, version, error)) return false;
     if (!CTextureAssets::ValidateDraft(textures, error)) return false;
     if (!textures.isEmpty() && (sourceMoc.isEmpty() || sourceMoc.contains(QChar::Null) || sourceDigest.size() != 32)) return fail(QStringLiteral("textures"));
@@ -993,6 +1015,7 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
         const int separator = it.key().indexOf(QLatin1Char('|'));
         candidate.SetLocked(it.key().left(separator), it.key().mid(separator + 1), it.value());
     }
+    if (!validArtwork(*this, version, error) || !candidate.SetArtwork(artwork, error)) return false;
     candidate.ClearEditHistory();
     result.CommitCandidate(std::move(candidate));
     setError(error, {});

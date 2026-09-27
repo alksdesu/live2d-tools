@@ -34,6 +34,7 @@ public:
         CTextureWorkspace::State workspace;
         QVector<Mesh> meshes;
         Limits limits;
+        CModelArtwork::State artwork;
     };
     struct Plan {
         CModelAtlasState state;

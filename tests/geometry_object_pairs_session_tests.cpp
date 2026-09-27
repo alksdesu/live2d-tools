@@ -91,7 +91,7 @@ private slots:
         if (failure == 2) json["geometryObjectPairs"] = QJsonArray{};
         if (failure == 3) json["sourceDigest"] = QString(64, '1');
         if (failure == 4) json.remove("sourceDigest");
-        if (failure == 5) json["version"] = 12;
+        if (failure == 5) json["version"] = 13;
         if (failure == 6) json["sourceMoc"] = QString("bad") + QChar::Null;
         if (failure == 7) {
             auto state = json["geometryObjectPairs"].toObject(); auto rows = state["pairs"].toArray();

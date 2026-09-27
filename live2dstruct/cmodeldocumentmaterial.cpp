@@ -69,7 +69,11 @@ bool CModelDocument::CaptureDrawableMaterial(const QString& id, CModelDrawableMa
     return CMocMaterialBuilder::Capture(m_workingBaseBytes, id, result, error);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法读取网格材质")); }
-bool CModelDocument::SetDrawableMaterials(const CModelMaterialState& state, QString* error) try
+bool CModelDocument::SetDrawableMaterials(const CModelMaterialState& state, QString* error)
+{
+    return ApplyDrawableMaterials(state, true, error);
+}
+bool CModelDocument::ApplyDrawableMaterials(const CModelMaterialState& state, bool updateArtwork, QString* error) try
 {
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
     if (!CModelMaterialEdit::Validate(state, error)) return false;
@@ -90,7 +94,12 @@ bool CModelDocument::SetDrawableMaterials(const CModelMaterialState& state, QStr
     if (overrides == m_drawableMaterialOverrides) { if (error) error->clear(); return true; }
     QByteArray check;
     if (!CMocMaterialBuilder::Build(m_workingBaseBytes, overrides, check, error)) return false;
-    m_drawableMaterialOverrides.swap(overrides); ++m_revision; return true;
+    CModelAtlasState before;
+    if (updateArtwork && !m_artwork.bindings.isEmpty() && !CaptureAtlasState(before, error)) return false;
+    auto candidate = *this;
+    candidate.m_drawableMaterialOverrides.swap(overrides);
+    if (updateArtwork && !candidate.ReconcileArtworkAppearance(before, error)) return false;
+    CommitCandidate(std::move(candidate)); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法应用材质修改，原状态保持不变")); }
 bool CModelDocument::MakeMaterialEdit(const CModelMaterialState& before, const CModelMaterialState& after,
@@ -106,7 +115,7 @@ bool CModelDocument::MakeMaterialEdit(const CModelMaterialState& before, const C
     edit = std::move(command); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法准备材质修改，原结果保持不变")); }
-bool CModelDocument::ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error)
+bool CModelDocument::ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error, bool updateArtwork)
 {
     CModelMaterialState before, after;
     if (!states(edit, before, after, error)) return false;
@@ -119,7 +128,7 @@ bool CModelDocument::ApplyMaterialEdit(const CModelEdit& edit, bool forward, QSt
             return fail(error, QStringLiteral("材质对象在操作期间已改变：%1").arg(expected[index].id));
         if (forward && expected[index] != next[index] && !editable(*this, expected[index].id, error)) return false;
     }
-    return SetDrawableMaterials(next, error);
+    return ApplyDrawableMaterials(next, updateArtwork, error);
 }
 bool CModelDocument::ValidateMaterialEditStorage(const CModelEdit& edit) const
 {

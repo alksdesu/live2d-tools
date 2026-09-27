@@ -1,4 +1,5 @@
 #include "live2dstruct/catlasrepackplanner.h"
+#include "live2dstruct/cartworkreconciler.h"
 #include "std/cexportcontrol.h"
 #include "std/cpngimage.h"
 #include <QtTest>
@@ -72,6 +73,26 @@ Planner::Snapshot snapshot(QSize sourceSize = {8, 4}, QSize destinationSize = {1
     result.meshes[0].triangles = {0, 1, 2, 0, 2, 3};
     return result;
 }
+void bindArtwork(Planner::Snapshot& source)
+{
+    auto& artwork = source.artwork; const auto image = source.sources[0];
+    artwork.images.insert(image.digest, {image.size, image.png});
+    artwork.families.insert("family", {"family", "原图集", CModelArtwork::SourceKind::AtlasSnapshot, "revision"});
+    CModelArtwork::Revision revision; revision.id = "revision"; revision.familyId = "family";
+    revision.sourceDigest = image.digest; revision.sourceBytes = image.png; revision.canvasSize = image.size;
+    CModelArtwork::Layer layer; layer.id = "layer"; layer.bounds = QRect(QPoint(), image.size); layer.imageDigest = image.digest;
+    revision.layers = {layer}; artwork.revisions.insert(revision.id, revision);
+    artwork.materials.insert("material", {"material", "", "family", "revision", "layer", CModelArtwork::Boundary::Repeat, false, {}});
+    artwork.placements.insert("placement", {"placement", "material", source.workspace.atlases[0].id, QTransform(), QRectF(QPointF(), image.size), 1, CModelArtwork::Filter::ExactTexels});
+    artwork.placements.insert("unused-original", {"unused-original", "material", source.workspace.atlases[1].id, QTransform(), QRectF(QPointF(), image.size), 1, CModelArtwork::Filter::ExactTexels});
+    for (const auto& mesh : source.meshes) if (mesh.material.textureIndex == 0) {
+        CModelArtwork::Binding binding; binding.meshId = mesh.material.id; binding.placementId = "placement"; binding.sampledMaterial = mesh.material;
+        for (int i = 0; i < mesh.material.uvs.size(); i += 2)
+            binding.familyCoordinates.append({double(mesh.material.uvs[i]) * image.size.width(), double(mesh.material.uvs[i + 1]) * image.size.height()});
+        CModelArtwork::TopologyDigest(mesh.material.uvs.size() / 2, mesh.triangles, binding.topologyDigest);
+        artwork.bindings.insert(binding.meshId, binding);
+    }
+}
 bool equal(const Planner::Plan& first, const Planner::Plan& second)
 {
     return first.state == second.state && first.pixelCoordinates == second.pixelCoordinates && first.images == second.images &&
@@ -116,6 +137,61 @@ class AtlasRepackPlannerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void artworkSharedPlacementSurvivesPartialRotationAndReturningToSource()
+    {
+        auto source = snapshot(); auto other = source.meshes[0]; other.material.id = "Shared"; other.editable = false; source.meshes.append(other); bindArtwork(source);
+        Planner::Plan original, moved, returned; QString error; QVERIFY2(Planner::Initialize(source, original, &error), qPrintable(error));
+        QVERIFY2(Planner::Move(source, original, {"A"}, 1, {2, 1}, 1, 1, moved, &error), qPrintable(error));
+        const auto& art = moved.state.artwork; QCOMPARE(art.bindings["A"].status, CModelArtwork::BindingStatus::Linked);
+        QCOMPARE(art.bindings["A"].familyCoordinates, source.artwork.bindings["A"].familyCoordinates);
+        QVERIFY(art.bindings["A"].placementId != art.bindings["Shared"].placementId);
+        QVERIFY(art.bindings["Shared"] == source.artwork.bindings["Shared"]);
+        QVERIFY2(Planner::Move(source, moved, {"A"}, 0, {0, 0}, 3, 1, returned, &error), qPrintable(error));
+        QVERIFY(returned.state.artwork == source.artwork); QCOMPARE(returned.state.materials, original.state.materials);
+    }
+    void artworkResizingAndGeneratedSlotRoundTripRestoreIdentity()
+    {
+        auto source = snapshot(); bindArtwork(source); Planner::Plan original, resized, restored, added, moved, returned, removed; QString error;
+        QVERIFY(Planner::Initialize(source, original));
+        QVERIFY2(Planner::ResizeAtlas(source, original, 0, {13, 9}, resized, &error), qPrintable(error));
+        QCOMPARE(resized.state.artwork.bindings["A"].familyCoordinates, original.state.artwork.bindings["A"].familyCoordinates);
+        QVERIFY(resized.state.artwork.placements == source.artwork.placements);
+        QVERIFY2(Planner::ResizeAtlas(source, resized, 0, {8, 4}, restored, &error), qPrintable(error)); QVERIFY(restored.state.artwork == source.artwork);
+        QVERIFY(Planner::AddAtlas(source, restored, "暂存", {8, 8}, added));
+        QVERIFY2(Planner::Move(source, added, {"A"}, 2, {0, 0}, 1, 1, moved, &error), qPrintable(error));
+        QVERIFY2(Planner::Move(source, moved, {"A"}, 0, {0, 0}, 3, 1, returned, &error), qPrintable(error));
+        QVERIFY(Planner::RemoveAtlas(source, returned, 2, removed)); QVERIFY(removed.state == original.state);
+    }
+    void artworkPackKeepsSharedSourceAndIndependentUnusedPlacement()
+    {
+        auto source = snapshot(); auto other = source.meshes[0]; other.material.id = "Shared"; source.meshes.append(other); bindArtwork(source);
+        Planner::Plan initial, added, packed; QString error; QVERIFY(Planner::Initialize(source, initial)); QVERIFY(Planner::AddAtlas(source, initial, "打包", {8, 8}, added));
+        QVERIFY2(Planner::Pack(source, added, {"A", "Shared"}, {2}, 1, true, packed, &error), qPrintable(error));
+        const auto& artwork = packed.state.artwork;
+        QCOMPARE(artwork.bindings["A"].placementId, artwork.bindings["Shared"].placementId);
+        QVERIFY(artwork.placements["unused-original"] == source.artwork.placements["unused-original"]);
+        QVERIFY(artwork.revisions == source.artwork.revisions); QVERIFY(artwork.images == source.artwork.images);
+        QCOMPARE(artwork.bindings["A"].status, CModelArtwork::BindingStatus::Linked);
+    }
+    void artworkSealOwnsBorrowedSourceAndDetectsMetadataTampering()
+    {
+        auto source = snapshot(); bindArtwork(source); QString name = "borrowed name"; auto* raw = name.data();
+        source.artwork.families["family"].name = QString::fromRawData(raw, name.size());
+        auto trusted = source; QVERIFY(CModelArtwork::Freeze(source.artwork, trusted.artwork));
+        Planner::Plan initial; QVERIFY(Planner::Initialize(source, initial)); raw[0] = 'X';
+        QVERIFY(!Planner::Validate(source, initial)); QVERIFY(Planner::Validate(trusted, initial)); QVERIFY(initial.state.artwork == trusted.artwork);
+        auto corrupt = initial; corrupt.state.artwork.bindings["A"].familyCoordinates[0].rx() += .01;
+        QVERIFY(!Planner::Validate(trusted, corrupt)); corrupt = initial; corrupt.state.artwork.families["family"].name = "changed";
+        QVERIFY(!Planner::Validate(trusted, corrupt));
+        Planner::Plan other; QVERIFY(Planner::Initialize(source, other)); QVERIFY(other.token != initial.token);
+    }
+    void removingUnusedAtlasKeepsOriginalHistoricalPlacement()
+    {
+        auto source = snapshot(); source.workspace.atlases.insert(2, {"generated-original", "空图集", -1, {8, 8}, png(pattern({8, 8}, 31))});
+        bindArtwork(source); source.artwork.placements["unused-original"].atlasId = "generated-original";
+        Planner::Plan initial, removed; QVERIFY(Planner::Initialize(source, initial)); QVERIFY(Planner::RemoveAtlas(source, initial, 2, removed));
+        QVERIFY(removed.state.artwork == source.artwork); QVERIFY(Planner::Validate(source, removed));
+    }
     void rectangularRgbaRotationsUseTexelCentersAndPreserveUnusedVertex_data()
     {
         QTest::addColumn<int>("turns"); for (int turns = 0; turns < 4; ++turns) QTest::newRow(qPrintable(QString::number(turns))) << turns;

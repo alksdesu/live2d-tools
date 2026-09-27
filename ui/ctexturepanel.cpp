@@ -11,6 +11,7 @@
 #include <QFocusEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QMenu>
 #include <QGraphicsPixmapItem>
 #include <QFileDialog>
 #include <QFile>
@@ -284,6 +285,9 @@ CTexturePanel::CTexturePanel(QWidget *parent)
         result->setFocusPolicy(Qt::StrongFocus);
         return result;
     };
+    m_btnArtwork = new QToolButton(tools); m_btnArtwork->setObjectName(QStringLiteral("textureArtworkMenu")); m_btnArtwork->setText(QStringLiteral("来源素材"));
+    m_btnArtwork->setPopupMode(QToolButton::InstantPopup); m_btnArtwork->setFocusPolicy(Qt::StrongFocus);
+    m_artworkMenu = new QMenu(m_btnArtwork); m_btnArtwork->setMenu(m_artworkMenu); m_artworkMenuAction = tools->addWidget(m_btnArtwork); m_artworkMenuAction->setVisible(false);
     m_btnReplace = button(QStringLiteral("替换 PNG…"), QStringLiteral("使用同尺寸 PNG 替换当前图集，原文件保持不变"), "textureReplace");
     m_btnRestore = button(QStringLiteral("恢复原图"), QStringLiteral("恢复模型首次加载时的素材，可撤销"), "textureRestore");
     m_btnEditAtlas = button(QStringLiteral("编辑图集…"), QStringLiteral("调整图集尺寸、移动素材或自动排列"), "textureEditAtlas");
@@ -592,6 +596,13 @@ QString CTexturePanel::RestoreReason() const
         .arg(atlas->size.width()).arg(atlas->size.height()).arg(source->size.width()).arg(source->size.height());
     if (!m_state.contains(m_currentTexKey)) return QStringLiteral("当前已是原始素材");
     return {};
+}
+
+void CTexturePanel::SetArtworkActions(const QList<QAction*>& actions)
+{
+    m_artworkMenu->clear();
+    for (auto* action : actions) if (action) m_artworkMenu->addAction(action);
+    m_artworkMenuAction->setVisible(!m_artworkMenu->isEmpty());
 }
 
 void CTexturePanel::RefreshActions()

@@ -31,6 +31,8 @@ struct CAtlasMeshUv {
 
 // UV 线框叠加层：按 mesh 绘制三角网格，支持高亮选中项
 class CUvOverlayItem;
+class QMenu;
+class QAction;
 
 // 图集交互视图：滚轮缩放（锚定鼠标）、拖拽平移、点击命中
 class CAtlasView : public QGraphicsView
@@ -79,6 +81,7 @@ public:
                                const live2dstruct::CTextureWorkspace::State& workspace,
                                const QByteArray& mocBytes = {}, QString* error = nullptr);
     void SetEditHandler(EditHandler handler);
+    void SetArtworkActions(const QList<QAction*>& actions);
     void SetEditingEnabled(bool enabled, const QString& reason = {});
     void SetPreviewActive(bool active);
     void SetSnapshotAvailable(bool available, const QString& reason = {});
@@ -136,6 +139,9 @@ private:
     QToolButton* m_btnRestore;
     QToolButton* m_btnEditUv;
     QToolButton* m_btnEditAtlas;
+    QToolButton* m_btnArtwork = nullptr;
+    QMenu* m_artworkMenu = nullptr;
+    QAction* m_artworkMenuAction = nullptr;
     QLabel* m_infoLabel;
     QLabel* m_errorLabel;
 

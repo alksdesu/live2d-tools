@@ -91,6 +91,8 @@ CRuntimeExportDialog::CRuntimeExportDialog(const QString& currentModelPath, bool
                                          : QStringLiteral("当前时间轴没有可导出的轨道。"), content));
     body->addWidget(textLabel(QStringLiteral("包含当前已确认的物理、Pose 和网格标签草稿，以及原动作、表情和纹理。"), content));
     body->addWidget(textLabel(QStringLiteral("播放状态、对象锁定和界面布局属于编辑器或宿主应用设置。"), content));
+    m_artworkNotice = textLabel(QStringLiteral("模型包保留当前有效图集与 MOC。PSD 来源版本与关联请另外保存工作会话，以便继续编辑。"), content);
+    m_artworkNotice->setObjectName(QStringLiteral("runtimeExportArtworkNotice")); m_artworkNotice->hide(); body->addWidget(m_artworkNotice);
     body->addStretch();
     m_scroll->setWidget(content);
     layout->addWidget(m_scroll, 1);
@@ -152,6 +154,8 @@ void CRuntimeExportDialog::SetInitialDirectory(const QString& targetDirectory)
     m_target->setCursorPosition(m_target->text().size());
     RefreshValidation();
 }
+
+void CRuntimeExportDialog::SetArtworkNotice(bool visible) { m_artworkNotice->setVisible(visible); }
 
 QString CRuntimeExportDialog::ValidateTarget() const
 {

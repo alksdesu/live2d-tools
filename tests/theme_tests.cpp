@@ -11,8 +11,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListView>
+#include <QStandardItemModel>
 #include <QMainWindow>
+#include <QMouseEvent>
+#include <QHoverEvent>
 #include <QPushButton>
+#include <QPlainTextEdit>
 #include <QRadioButton>
 #include <QSlider>
 #include <QStyleFactory>
@@ -133,6 +138,9 @@ std::unique_ptr<QWidget> control(const QString& kind)
         return combo;
     }
     if (kind == QLatin1String("line")) return std::make_unique<QLineEdit>(QStringLiteral("Editor HHHHHH"));
+    if (kind == QLatin1String("plain")) {
+        auto text = std::make_unique<QPlainTextEdit>(QStringLiteral("Read only HHHHHH")); text->setReadOnly(true); return text;
+    }
     if (kind == QLatin1String("tree")) {
         auto tree = std::make_unique<QTreeWidget>();
         tree->setHeaderHidden(true);
@@ -145,6 +153,10 @@ std::unique_ptr<QWidget> control(const QString& kind)
         list->addItem(QStringLiteral("Selected HHHHHH"));
         list->setCurrentRow(0);
         return list;
+    }
+    if (kind == QLatin1String("listview")) {
+        auto list = std::make_unique<QListView>(); auto* model = new QStandardItemModel(list.get());
+        model->appendRow(new QStandardItem(QStringLiteral("Selected HHHHHH"))); list->setModel(model); list->setCurrentIndex(model->index(0, 0)); return list;
     }
     if (kind == QLatin1String("table")) {
         auto table = std::make_unique<QTableWidget>(1, 1);
@@ -193,7 +205,7 @@ private slots:
         host.setFocusPolicy(Qt::StrongFocus);
         auto* layout = new QVBoxLayout(&host);
         QVector<QWidget*> widgets;
-        for (const QString& kind : {QStringLiteral("tree"), QStringLiteral("list"), QStringLiteral("table"),
+        for (const QString& kind : {QStringLiteral("tree"), QStringLiteral("list"), QStringLiteral("listview"), QStringLiteral("table"),
                                    QStringLiteral("tab"), QStringLiteral("primary"), QStringLiteral("danger")}) {
             auto widget = control(kind);
             widget->setProperty("auditKind", kind);
@@ -327,6 +339,40 @@ private slots:
         QVERIFY(changedPixels(unchecked, checked) > 32);
     }
 
+    void virtualListsRenderChecksHoverAndThemeChanges_data() { styleRows(); }
+    void virtualListsRenderChecksHoverAndThemeChanges()
+    {
+        QFETCH(QString, styleName); QFETCH(bool, dark); QVERIFY(applyTheme(styleName, dark));
+        QListView view; QStandardItemModel model; auto* item = new QStandardItem(QStringLiteral("Binding HHHHHH")); item->setCheckable(true); model.appendRow(item);
+        model.appendRow(new QStandardItem(QStringLiteral("Hover HHHHHH"))); view.setModel(&model); view.setMouseTracking(true); view.resize(360, 180); activateTestWindow(view);
+        view.clearSelection(); view.setCurrentIndex({}); QCoreApplication::processEvents(); const auto colors = Theme::tokens(dark);
+        const auto unchecked = view.viewport()->grab().toImage(); QVERIFY(pixelsOf(unchecked, QColor(colors.value(QStringLiteral("@borderStrong@")))) > 8);
+        item->setCheckState(Qt::Checked); QCoreApplication::processEvents(); const auto checked = view.viewport()->grab().toImage();
+        QVERIFY(pixelsOf(checked, QColor(colors.value(QStringLiteral("@accent@")))) > 32); QVERIFY(changedPixels(unchecked, checked) > 32);
+        const QPointF position = view.visualRect(model.index(1, 0)).center();
+        QEnterEvent enter(position, view.viewport()->mapTo(&view, position.toPoint()), view.viewport()->mapToGlobal(position.toPoint()));
+        QCoreApplication::sendEvent(view.viewport(), &enter);
+        QMouseEvent move(QEvent::MouseMove, position, view.viewport()->mapToGlobal(position.toPoint()), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(view.viewport(), &move);
+        QHoverEvent hover(QEvent::HoverMove, position, view.viewport()->mapToGlobal(position.toPoint()), QPointF(), Qt::NoModifier);
+        QCoreApplication::sendEvent(view.viewport(), &hover);
+        const auto hovered = view.viewport()->grab().toImage(); QVERIFY(pixelsOf(hovered, QColor(colors.value(QStringLiteral("@surfaceHover@")))) > 32);
+        view.setCurrentIndex(model.index(0, 0)); qApp->setStyleSheet(Theme::globalStyleSheet(!dark)); QCoreApplication::processEvents();
+        QCOMPARE(item->checkState(), Qt::Checked); QCOMPARE(view.currentIndex(), model.index(0, 0)); const auto next = Theme::tokens(!dark);
+        verifyPair(view.viewport()->grab().toImage(), QColor(next.value(QStringLiteral("@accentInk@"))), QColor(next.value(QStringLiteral("@accentSoft@"))));
+    }
+
+    void readonlyTextHasReadableSelectionWithoutChangingContent_data() { styleRows(); }
+    void readonlyTextHasReadableSelectionWithoutChangingContent()
+    {
+        QFETCH(QString, styleName); QFETCH(bool, dark); QVERIFY(applyTheme(styleName, dark)); const auto colors = Theme::tokens(dark);
+        QPlainTextEdit text(QStringLiteral("Read only HHHHHH")); text.setReadOnly(true); text.resize(360, 150); activateTestWindow(text); text.setFocus(Qt::TabFocusReason); text.selectAll();
+        QCoreApplication::processEvents(); verifyPair(text.viewport()->grab().toImage(), QColor(colors.value(QStringLiteral("@accentInk@"))), QColor(colors.value(QStringLiteral("@accentSoft@"))));
+        QTest::keyClicks(&text, "replacement"); QCOMPARE(text.toPlainText(), QStringLiteral("Read only HHHHHH"));
+        qApp->setStyleSheet(Theme::globalStyleSheet(!dark)); QCoreApplication::processEvents(); const auto next = Theme::tokens(!dark);
+        verifyPair(text.viewport()->grab().toImage(), QColor(next.value(QStringLiteral("@accentInk@"))), QColor(next.value(QStringLiteral("@accentSoft@"))));
+    }
+
     void tooltipsAndPlaceholdersHaveReadableRenderedText_data() { styleRows(); }
 
     void tooltipsAndPlaceholdersHaveReadableRenderedText()
@@ -362,8 +408,8 @@ private slots:
         QTest::addColumn<QString>("kind");
         for (const auto& style : styles()) for (bool dark : {false, true})
             for (const QString& kind : {QStringLiteral("primary"), QStringLiteral("normal"), QStringLiteral("danger"),
-                                       QStringLiteral("tab"), QStringLiteral("tree"), QStringLiteral("list"), QStringLiteral("table"),
-                                       QStringLiteral("line"), QStringLiteral("combo"), QStringLiteral("checkbox"),
+                                       QStringLiteral("tab"), QStringLiteral("tree"), QStringLiteral("list"), QStringLiteral("listview"), QStringLiteral("table"),
+                                       QStringLiteral("line"), QStringLiteral("plain"), QStringLiteral("combo"), QStringLiteral("checkbox"),
                                        QStringLiteral("radio"), QStringLiteral("slider")})
                 QTest::newRow(qPrintable(style + (dark ? "-dark-" : "-light-") + kind)) << style << dark << kind;
     }

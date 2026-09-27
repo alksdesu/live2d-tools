@@ -178,7 +178,7 @@ private slots:
         QFETCH(int, kind); const auto saved = capture(m_original, m_draft).ToJson(); auto root = QJsonDocument::fromJson(saved).object();
         if (kind == 0) root.remove("textures"); if (kind == 1) root["textures"] = QJsonObject{};
         if (kind == 2) root.remove("sourceMoc"); if (kind == 3) root.remove("sourceDigest");
-        if (kind == 4) root["version"] = 12; if (kind == 5) root["version"] = 6;
+        if (kind == 4) root["version"] = 13; if (kind == 5) root["version"] = 6;
         if (kind == 6) root.remove("meshStructure"); if (kind == 7) root.remove("deformerStructure");
         if (kind == 8) root["sourceDeformerIds"] = "invalid"; if (kind == 9) root["textures"] = QJsonArray{QJsonValue::Null};
         CModelSession parsed; QVERIFY(CModelSession::FromJson(saved, &parsed)); QString error;
@@ -199,7 +199,7 @@ private slots:
         if (kind == 2) session.textures[2].sourceDigest = "invalid";
         if (kind == 3) session.textures[2].png = "invalid";
         if (kind == 4) session.textures[2].size = {5, 3};
-        if (kind == 5) session.sourceMoc.clear(); if (kind == 6) session.sourceDigest.clear(); if (kind == 7) session.version = 12;
+        if (kind == 5) session.sourceMoc.clear(); if (kind == 6) session.sourceDigest.clear(); if (kind == 7) session.version = 13;
         QVERIFY(session.ToJson().isEmpty());
         CModelDocument result; QString error; QVERIFY(mixedDocument(4, result, &error));
         const auto before = result; const auto revision = result.Revision();

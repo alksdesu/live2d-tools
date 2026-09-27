@@ -235,8 +235,13 @@ public:
                                     QString* error = nullptr);
     const CTextureAssets::Catalog& TextureSources() const { return m_textureSources; }
     const CTextureWorkspace::State& TextureWorkspace() const { return m_textureWorkspace; }
+    const QByteArray& TextureWorkspaceFingerprint() const { return m_textureWorkspaceFingerprint; }
     bool HasTextureWorkspace() const { return !m_textureWorkspace.sourceFingerprint.isEmpty(); }
     bool SetTextureWorkspace(const CTextureWorkspace::State& state, QString* error = nullptr);
+    const CModelArtwork::State& Artwork() const { return m_artwork; }
+    const QByteArray& ArtworkFingerprint() const { return m_artworkFingerprint; }
+    bool SetArtwork(const CModelArtwork::State& state, QString* error = nullptr);
+    bool ValidateArtworkReferences(const CModelArtwork::State& state, QString* error = nullptr) const;
     bool CaptureAtlasState(CModelAtlasState& result, QString* error = nullptr) const;
     bool MakeAtlasEdit(const CModelAtlasState& before, const CModelAtlasState& after,
                        CModelEdit& edit, QString* error = nullptr) const;
@@ -386,6 +391,9 @@ private:
     CModelMaterialOverrides m_drawableMaterialOverrides;
     CTextureAssets::Catalog m_textureSources;
     CTextureWorkspace::State m_textureWorkspace;
+    QByteArray m_textureWorkspaceFingerprint;
+    CModelArtwork::State m_artwork;
+    QByteArray m_artworkFingerprint;
     QHash<QString, int> m_sourceDeformerParents;
     QSet<QString> m_sourceDeformerIds;
     bool m_hasDeformerStructure = false;
@@ -420,7 +428,9 @@ private:
                                        const CMocParameterStructureBuilder::EditBindingKeysRequest* keys,
                                        QString* error) const;
     bool ApplyEdit(const CModelEdit& edit, bool forward);
-    bool ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
+    bool ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error = nullptr, bool updateArtwork = true);
+    bool ApplyDrawableMaterials(const CModelMaterialState& state, bool updateArtwork, QString* error);
+    bool ReconcileArtworkAppearance(const CModelAtlasState& before, QString* error);
     bool ValidateMaterialEditStorage(const CModelEdit& edit) const;
     bool ApplyAtlasEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateAtlasEditStorage(const CModelEdit& edit) const;

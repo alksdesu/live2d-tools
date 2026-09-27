@@ -177,6 +177,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     m_workspaceLayouts.Capture(*this);
     m_closingModel = true;
     StopPsdBatch();
@@ -374,7 +375,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
                                       live2dstruct::CRuntimePackage::Request& request, QString* error) const
 {
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return fail(QStringLiteral("请先保存或取消图集或 UV 编辑，再捕获模型包"));
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return fail(QStringLiteral("请先保存或取消素材、图集或 UV 编辑，再捕获模型包"));
     if (m_paramPanel && m_paramPanel->HasUserValueGesture()) return fail(QStringLiteral("请先结束参数拖动，再捕获模型包"));
     if (!m_runtimePanelsInitialized || !m_document.IsLoaded() || !m_openglwindows || !m_openglwindows->IsModelReady())
         return fail(QStringLiteral("请等待模型加载完成后再导出"));
@@ -460,6 +461,7 @@ void MainWindow::ExportRuntimePackage()
 {
     if (!m_openglwindows || !m_runtimePanelsInitialized || !ConfirmExportReady(QStringLiteral("模型包导出"))) return;
     CRuntimeExportDialog dialog(m_openglwindows->GetCurrentModelJson(), m_motionPanel && (!m_motionPanel->Timeline().Tracks().isEmpty() || !m_motionPanel->Timeline().Events().isEmpty()), this);
+    dialog.SetArtworkNotice(!m_document.Artwork().IsEmpty());
     if (dialog.exec() != QDialog::Accepted) return;
     QString error;
     live2dstruct::CRuntimePackage::Request request;
@@ -637,6 +639,10 @@ void MainWindow::on_actionCmo3Export_triggered()
         confirmation.setInformativeText(confirmation.informativeText().isEmpty() ? note
             : confirmation.informativeText() + QStringLiteral("\n\n") + note);
     }
+    if (!m_document.Artwork().IsEmpty()) {
+        const auto note = QStringLiteral("以当前图集重建素材；PSD 来源版本与关联请保存工作会话。");
+        confirmation.setInformativeText(confirmation.informativeText().isEmpty() ? note : confirmation.informativeText() + QStringLiteral("\n\n") + note);
+    }
     if (confirmation.exec() != QMessageBox::Yes) {
         statusBar()->showMessage(QStringLiteral("cmo3 导出已取消"), 5000);
         return;
@@ -720,6 +726,7 @@ bool MainWindow::SaveSession()
         return false;
     }
     session.textureWorkspace = std::move(atlasDraft);
+    session.artwork = m_document.Artwork();
     if (m_physicsPanel) {
         CPhysicsPanel::Snapshot physics;
         if (!m_physicsPanel->CaptureSnapshot(physics, &animationError)) {
@@ -1699,7 +1706,7 @@ bool MainWindow::ConfirmExportReady(const QString& operation)
     QString valueError;
     if (!FinishParameterValueEditing(&valueError)) { statusBar()->showMessage(valueError, 8000); return false; }
 
-    if (m_closingModel || m_batchExporting || m_psdBatch) return false;
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_artworkLoading) return false;
     if (m_previewExport.IsBusy()) {
         statusBar()->showMessage(QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
         return false;
@@ -1915,18 +1922,19 @@ void MainWindow::RefreshWindowTitle()
 void MainWindow::RefreshUndoActions()
 {
     const QPointer<MainWindow> alive(this);
-    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive() && !m_atlasEditor.IsActive();
+    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive() && !m_atlasEditor.IsActive() && !m_artworkLoading;
     const bool timeline = m_historySource == HistorySource::Timeline && m_motionPanel;
     const bool physics = m_historySource == HistorySource::Physics && m_physicsPanel;
     if (m_undoAction) m_undoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanUndoTimeline() : physics ? m_physicsPanel->CanUndo() : m_document.CanUndoEdit()));
     if (!alive) return;
     if (m_redoAction) m_redoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanRedoTimeline() : physics ? m_physicsPanel->CanRedo() : m_document.CanRedoEdit()));
+    if (alive) RefreshSessionActions();
 }
 
 void MainWindow::UndoDocumentEdit()
 {
     const QPointer<MainWindow> alive(this);
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return;
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return;
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
         if (!m_physicsPanel->Undo(&error) && alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
@@ -1950,7 +1958,7 @@ void MainWindow::UndoDocumentEdit()
 void MainWindow::RedoDocumentEdit()
 {
     const QPointer<MainWindow> alive(this);
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return;
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return;
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
         if (!m_physicsPanel->Redo(&error) && alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
@@ -2127,12 +2135,17 @@ void MainWindow::ReportExportStage(const QString& outputPath, PsdExportStage sta
 
 void MainWindow::RefreshExportActions()
 {
+    const QPointer<MainWindow> alive(this);
+    RefreshArtworkActions(); if (!alive) return;
     if (m_texturePanel) m_texturePanel->SetEditingEnabled(m_runtimePanelsInitialized && !m_closingModel &&
-        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy());
+        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_artworkLoading);
+    if (!alive) return;
     const bool exporting = m_psdBatch || m_batchExporting;
-    const bool busy = exporting || m_previewExport.IsBusy();
+    const bool busy = exporting || m_previewExport.IsBusy() || m_artworkLoading;
     if (myBatchAction) myBatchAction->setEnabled(!busy && !m_closingModel);
+    if (!alive) return;
     if (m_runtimeExportAction) m_runtimeExportAction->setEnabled(!busy && !m_closingModel && m_runtimePanelsInitialized);
+    if (!alive) return;
     if (!busy && !m_closingModel && !m_runtimePanelsInitialized && m_openglwindows) {
         const QPointer<OpengGlForm> surface = m_openglwindows;
         QTimer::singleShot(0, surface, [this, surface] {
@@ -2141,17 +2154,22 @@ void MainWindow::RefreshExportActions()
     }
     if (m_exportResultsPanel) {
         m_exportResultsPanel->SetBusy(exporting);
+        if (!alive) return;
         m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy(),
             QStringLiteral("请先恢复或关闭当前预览，再重试失败项。"));
+        if (!alive) return;
     }
     if (m_recoverPreviewAction) {
         m_recoverPreviewAction->setVisible(m_previewExport.NeedsRecovery());
+        if (!alive) return;
         m_recoverPreviewAction->setEnabled(m_previewExport.NeedsRecovery() && !m_batchExporting);
+        if (!alive) return;
     }
     if (m_previewExport.NeedsRecovery()) {
         if (myCloseAction) myCloseAction->setEnabled(true);
-        if (m_saveSessionAction) m_saveSessionAction->setEnabled(m_workspaceReady);
+        if (!alive) return;
     }
+    RefreshSessionActions();
 }
 
 void MainWindow::RecoverExportPreview()
@@ -2187,8 +2205,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         if (stage) *stage = failedStage;
         return false;
     };
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive())
-        return fail(PsdExportStage::Preflight, QStringLiteral("请先保存或取消图集或 UV 编辑，再导出 PSD"));
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading)
+        return fail(PsdExportStage::Preflight, QStringLiteral("请先保存或取消素材、图集或 UV 编辑，再导出 PSD"));
     if (m_previewExport.IsBusy() || m_activeExportControl)
         return fail(PsdExportStage::Restoring, QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
     if (outPath.isEmpty()) return fail(PsdExportStage::Preflight, QStringLiteral("未指定输出路径"));
@@ -2658,8 +2676,9 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
+    if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
-        statusBar()->showMessage(QStringLiteral("请先保存或取消图集或 UV 编辑"), 8000);
+        statusBar()->showMessage(QStringLiteral("请先保存或取消素材、图集或 UV 编辑"), 8000);
         return false;
     }
     if (m_batchExporting || m_closingModel) return false;
@@ -2794,13 +2813,23 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 bool MainWindow::AuthoringReady(QString* error) const
 {
+    if (m_artworkLoading) { if (error) *error = QStringLiteral("来源素材正在读取，请等待完成或取消"); return false; }
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
-        if (error) *error = QStringLiteral("请先保存或取消图集或 UV 编辑");
+        if (error) *error = QStringLiteral("请先保存或取消素材、图集或 UV 编辑");
         return false;
     }
     if (m_workspaceReady && m_runtimePanelsInitialized && m_document.HasTextureWorkspace() && !m_closingModel) return true;
     if (error) *error = QStringLiteral("模型与素材正在准备，请等待工作区就绪");
     return false;
+}
+
+void MainWindow::RefreshSessionActions()
+{
+    const QPointer<MainWindow> alive(this);
+    const auto ready = [this] { return AuthoringReady() && !m_batchExporting && !m_psdBatch; };
+    if (m_saveSessionAction) m_saveSessionAction->setEnabled(ready() && (!m_previewExport.IsBusy() || m_previewExport.NeedsRecovery()));
+    if (!alive) return;
+    if (m_loadSessionAction) m_loadSessionAction->setEnabled(ready() && !m_previewExport.IsBusy());
 }
 
 bool MainWindow::SetAuthoringReady(bool ready)
@@ -2814,9 +2843,8 @@ bool MainWindow::SetAuthoringReady(bool ready)
         if (editor) editor->setEnabled(ready);
     }
     if (!alive) return false;
-    if (m_saveSessionAction) m_saveSessionAction->setEnabled(ready);
-    if (!alive) return false;
-    if (m_loadSessionAction) m_loadSessionAction->setEnabled(ready);
+    RefreshSessionActions();
+    if (alive) RefreshArtworkActions();
     return !alive.isNull();
 }
 
@@ -3116,6 +3144,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_blendShapePanel, &CBlendShapePanel::ObjectSelected, m_treePanel, &CModelTreePanel::HighlightObject);
 
     m_texturePanel = new CTexturePanel(this);
+    m_texturePanel->SetArtworkActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction});
     addDockWidget(Qt::BottomDockWidgetArea, m_texturePanel);
     tabifyDockWidget(m_blendShapePanel, m_texturePanel);
 
@@ -3797,6 +3826,7 @@ void MainWindow::createActions()
     m_loadSessionAction->setEnabled(false);
     m_loadSessionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
     connect(m_loadSessionAction, &QAction::triggered, this, &MainWindow::on_actionLoadSession_triggered);
+    ConfigureArtworkActions();
     m_darkTheme = QSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"))
                       .value(QStringLiteral("darkTheme"), false).toBool();
     m_workspaceMode = QSettings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"))
@@ -3881,6 +3911,9 @@ void MainWindow::setupUI()
     mainToolBar->setMovable(false);
     mainToolBar->setFloatable(false);
     mainToolBar->addAction(myOpenAction);
+    auto* artworkButton = new QToolButton(mainToolBar); artworkButton->setObjectName(QStringLiteral("artworkMenu")); artworkButton->setText(QStringLiteral("素材"));
+    artworkButton->setPopupMode(QToolButton::InstantPopup); artworkButton->setFocusPolicy(Qt::StrongFocus);
+    auto* artworkMenu = new QMenu(artworkButton); artworkMenu->addActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction}); artworkButton->setMenu(artworkMenu); mainToolBar->addWidget(artworkButton);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);

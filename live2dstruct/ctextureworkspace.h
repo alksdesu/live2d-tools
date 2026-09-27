@@ -39,6 +39,8 @@ public:
     static bool Initialize(const CTextureAssets::Catalog& sources, const CTextureAssets::State& legacy,
                            State& result, QString* error = nullptr);
     static bool Validate(const CTextureAssets::Catalog& sources, const State& state, QString* error = nullptr);
+    static bool ValidateWithCache(const CTextureAssets::Catalog& sources, const State& state,
+                                  CMaterialValidationCache& cache, QString* error = nullptr);
     static bool Freeze(const CTextureAssets::Catalog& sources, const State& state,
                        State& result, QString* error = nullptr);
     static bool ValidateTransition(const CTextureAssets::Catalog& sources, const State& before,
@@ -54,6 +56,7 @@ public:
     static bool RestoreDraft(const CTextureAssets::Catalog& sources, const Draft& draft,
                              State& result, QString* error = nullptr);
     static bool ValidateDraft(const Draft& draft, QString* error = nullptr);
+    static bool ValidateDraftWithCache(const Draft& draft, CMaterialValidationCache& cache, QString* error = nullptr);
     static bool ToJson(const Draft& draft, QJsonObject& result, QString* error = nullptr);
     static bool FromJson(const QJsonObject& object, Draft& result, QString* error = nullptr);
 };

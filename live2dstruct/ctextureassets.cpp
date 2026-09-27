@@ -1,4 +1,5 @@
 #include "ctextureassets.h"
+#include "cmaterialvalidationcache.h"
 #include "std/cpngimage.h"
 #include <QCryptographicHash>
 #include <QDir>
@@ -54,19 +55,23 @@ bool CTextureAssets::MakeSource(const QString& path, const QByteArray& png, Sour
 
 bool CTextureAssets::ValidateCatalog(const Catalog& sources, QString* error)
 {
+    CMaterialValidationCache cache;
+    return ValidateCatalogWithCache(sources, cache, error);
+}
+
+bool CTextureAssets::ValidateCatalogWithCache(const Catalog& sources, CMaterialValidationCache& cache, QString* error)
+{
     if (sources.size() > MaximumSlots) return fail(error, QStringLiteral("纹理槽数量超出支持范围"));
     qint64 total = 0;
     QMap<QString, QByteArray> identities;
     for (auto it = sources.cbegin(); it != sources.cend(); ++it) {
         if (!validSlot(it.key()) || !validPath(it->path) || it->digest.size() != 32 || !it->size.isValid() ||
             it->size.isEmpty() || !takeBytes(it->png.size(), total, error)) return fail(error, QStringLiteral("纹理槽 %1 的来源信息无效").arg(it.key()));
-        const auto digest = QCryptographicHash::hash(it->png, QCryptographicHash::Sha256);
+        QByteArray digest;
+        if (!cache.ValidatePng(it->png, it->size, digest, error, it->digest)) return false;
         const auto path = QDir::cleanPath(it->path);
         if (digest != it->digest || (identities.contains(path) && identities.value(path) != digest))
             return fail(error, QStringLiteral("纹理来源摘要不一致：%1").arg(it->path));
-        if (!identities.contains(path) && !decode(it->png, it->size, error)) return false;
-        QSize size;
-        if (!CPngImage::Size(it->png, size, error) || size != it->size) return fail(error, QStringLiteral("纹理来源尺寸不一致"));
         identities.insert(path, digest);
     }
     if (error) error->clear();
