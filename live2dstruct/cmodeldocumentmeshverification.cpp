@@ -209,6 +209,7 @@ public:
         OWNED_VALUE(Integers)
         OWNED_VALUE(Flags)
         OWNED_VALUE(Metadata)
+        OWNED_VALUE(CDeformerDisplayNames::State)
         OWNED_VALUE(Positions)
         OWNED_VALUE(Indices)
         OWNED_VALUE(Masks)
@@ -457,6 +458,7 @@ try {
     candidate.m_drawableMaterialOverrides = session.drawableMaterials;
     candidate.m_parameterValues = state.value("parameters").value<QHash<QString, float>>();
     candidate.m_parameterMetadataOverrides = session.parameterMetadata;
+    candidate.m_deformerDisplayNames = session.deformerDisplayNames.value_or(CDeformerDisplayNames::State{});
     candidate.m_parameterOrganization = session.parameterOrganization;
     candidate.m_geometryObjectPairs = session.geometryObjectPairs;
     candidate.m_lockedKeys = state.value("locked").value<QSet<QString>>();

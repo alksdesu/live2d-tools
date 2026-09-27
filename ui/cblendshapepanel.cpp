@@ -14,6 +14,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointer>
+#include <QPersistentModelIndex>
 #include <QLineEdit>
 #include <QScopedValueRollback>
 #include <QScrollBar>
@@ -404,6 +405,7 @@ bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* 
     previous.reset();
     ConnectState();
     RefreshParameterMetadata();
+    RefreshDeformerDisplayNames();
     m_state->search->setText(search);
     FilterParameters();
     QTreeWidgetItem* selection = nullptr;
@@ -540,6 +542,7 @@ void CBlendShapePanel::SetDocument(const CModelDocument* document)
     if (!alive) return;
     m_document = document;
     RefreshParameterMetadata();
+    RefreshDeformerDisplayNames();
 }
 
 const QSet<QString>& CBlendShapePanel::getBlendShapeParamIds() const { return m_state->blendIds; }
@@ -718,4 +721,29 @@ void CBlendShapePanel::ActivateItem(QTreeWidgetItem* item)
     const auto kind = item->data(0, KindRole).toString();
     if (kind == QLatin1String("target")) emit ObjectSelected(id, item->data(0, TypeRole).toString());
     else if (m_state->relations.ParameterIndex(id) >= 0) emit ParameterSelected(id);
+}
+
+void CBlendShapePanel::RefreshDeformerDisplayNames()
+{
+    if (!m_state || !m_document || m_document->SourceDigest() != m_state->digest) return;
+    for (const auto& target : m_state->relations.Targets()) {
+        if (target.type == Relations::Part || target.type == Relations::ArtMesh) continue;
+        m_state->targetNames.insert(targetType(target.type) + '|' + target.id, m_document->DeformerDisplayName(target.id));
+    }
+    const QPointer<CBlendShapePanel> panel(this);
+    const QPointer<QTreeWidget> details(m_state->details);
+    QVector<QPersistentModelIndex> targets;
+    for (QTreeWidgetItemIterator item(details); *item; ++item) {
+        const auto type = (*item)->data(0, TypeRole).toString();
+        if ((*item)->data(0, KindRole) == QLatin1String("target") &&
+            (type == QLatin1String("warp") || type == QLatin1String("rotation")))
+            targets.append(details->indexFromItem(*item));
+    }
+    QSignalBlocker blocker(details);
+    for (const auto& index : targets) {
+        if (index.isValid()) details->model()->setData(index,
+            m_document->DeformerDisplayName(index.data(Qt::UserRole).toString()), Qt::DisplayRole);
+        if (!details) blocker.dismiss();
+        if (!panel || !details || m_state->details != details) return;
+    }
 }

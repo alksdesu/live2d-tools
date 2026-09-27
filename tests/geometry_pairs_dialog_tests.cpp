@@ -1,5 +1,10 @@
 #include "ui/cgeometrypairsdialog.h"
 #include "ui/theme.h"
+#include "ui/para/ccidjson.h"
+#include <QFile>
+#include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonArray>
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ccanvasgeometry.h"
 #include "deformer_replay_fixture.h"
@@ -99,6 +104,28 @@ private slots:
                             {{CMocParameterStructureBuilder::Owner::Warp, "DialogWarpB"}, {-1, 0, 1}}};
         CModelEdit edit; QVERIFY2(m_document.MakeCreateParameterEdit(request, {}, edit, &error), qPrintable(error)); QVERIFY(m_document.ExecuteEdit(edit));
         QVERIFY(Pairs::Validate(pairs(m_document), m_document)); QVERIFY(Pairs::Validate(pairs(m_document, true), m_document));
+    }
+    void labelsUseDocumentNamesAndKeepTypedIdentifiers()
+    {
+        auto document = m_document; QString error;
+        QTemporaryDir directory; const auto path = directory.filePath("source.cdi3.json");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly));
+        const QJsonObject source{{"Deformers", QJsonArray{
+            QJsonObject{{"Id", "DialogWarpA"}, {"Name", QStringLiteral("<b>眉毛</b>")}},
+            QJsonObject{{"Id", "DialogRotationA"}, {"Name", QStringLiteral("<b>眉毛</b>")}}}}};
+        const auto bytes = QJsonDocument(source).toJson(); QCOMPARE(file.write(bytes), bytes.size()); file.close();
+        CCidJson names; QVERIFY(names.Parse(path, &error));
+        QVERIFY(document.SetDeformerDisplayNames(names.DeformerDisplayNames(), &error));
+        CGeometryPairsDialog dialog(document, &names, {});
+        for (const auto* name : {"geometryPairFirst", "geometryPairSecond"}) {
+            auto* combo = dialog.findChild<QComboBox*>(name); QVERIFY(combo);
+            for (const auto& id : {QString("DialogWarpA"), QString("DialogRotationA")}) {
+                const int row = combo->findData(id); QVERIFY(row >= 0);
+                QVERIFY(combo->itemText(row).startsWith(QStringLiteral("<b>眉毛</b> · ") + id));
+                QCOMPARE(combo->itemData(row).toString(), id);
+                combo->setCurrentIndex(row); QVERIFY(combo->toolTip().contains("&lt;b&gt;"));
+            }
+        }
     }
     void createNeedsExplicitMappingsAndAppliesWholeDraft()
     {

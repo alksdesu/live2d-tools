@@ -35,6 +35,8 @@ public:
     bool Parse(const QString& fileName, QString* error = nullptr);//传递解析文件
     const QString& SourcePath() const { return m_sourcePath; }
     const QByteArray& SourceDigest() const { return m_sourceDigest; }
+    const QMap<QString, QString>& DeformerDisplayNames() const { return m_DeformersIdToName; }
+    bool HasDeformerDisplayNamesExtension() const { return m_hasDeformerNamesExtension; }
     const std::optional<live2dstruct::CParameterOrganization::State>& ParameterOrganization() const { return m_parameterOrganization; }
     const std::optional<live2dstruct::CGeometryObjectPairs::State>& GeometryObjectPairs() const { return m_geometryObjectPairs; }
 
@@ -78,6 +80,7 @@ private:
     QMap<QString,QString> m_GroupIdToName;
     QMap<QString,QString> m_ParametersIdToName;
     QMap<QString,QString> m_DeformersIdToName;
+    bool m_hasDeformerNamesExtension = false;
     QVector<CVetGroup> m_VetGroupToParam;
     QVector<QVector<QString>> m_CombinedParameters;
     QSet<QString> m_CombinedParamSet;

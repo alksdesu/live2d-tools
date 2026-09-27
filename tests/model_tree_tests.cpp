@@ -133,6 +133,51 @@ class ModelTreeTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void deformerNamesUpdateBothProjectionsWithoutChangingIdentity()
+    {
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        QVERIFY(!document.Deformers().isEmpty());
+        const auto& node = document.Deformers().first();
+        const QString type = node.type == live2dstruct::CModelDeformer::Warp ? "warp" : "rotation";
+        CModelTreePanel panel; QVERIFY(panel.BuildTreeBytes(document.SourceBytes(), nullptr, &error));
+        auto* first = hierarchy(panel); auto* second = hierarchy(panel, "deformerHierarchy");
+        const QPersistentModelIndex a(first->IndexForObject(node.id, type)), b(second->IndexForObject(node.id, type));
+        QVERIFY(a.isValid() && b.isValid());
+        QSignalSpy resetA(first, &QAbstractItemModel::modelReset), resetB(second, &QAbstractItemModel::modelReset);
+        QSignalSpy changedA(first, &QAbstractItemModel::dataChanged), changedB(second, &QAbstractItemModel::dataChanged);
+        panel.HighlightObject(node.id, type);
+        const auto visibility = panel.VisibilityState(), locks = panel.LockedState();
+        const QString name = QStringLiteral("左侧 🌙 <名称>");
+        panel.ApplyDeformerDisplayNames({{node.id, name}});
+        QCOMPARE(a.data().toString(), name); QCOMPARE(b.data().toString(), name);
+        QCOMPARE(a.data(Qt::UserRole).toString(), node.id); QCOMPARE(b.data(Qt::UserRole).toString(), node.id);
+        QCOMPARE(resetA.count(), 0); QCOMPARE(resetB.count(), 0);
+        QCOMPARE(changedA.count(), 1); QCOMPARE(changedB.count(), 1);
+        QCOMPARE(panel.VisibilityState(), visibility); QCOMPARE(panel.LockedState(), locks);
+        panel.ApplyDeformerDisplayNames({});
+        QCOMPARE(a.data().toString(), node.id); QCOMPARE(b.data().toString(), node.id);
+        QVERIFY(a.isValid() && b.isValid());
+    }
+
+    void renameContextMenuUsesTypedStableSelectionAndHonorsLock()
+    {
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto& node = document.Deformers().first();
+        const QString type = node.type == live2dstruct::CModelDeformer::Warp ? "warp" : "rotation";
+        CModelTreePanel panel; QVERIFY(panel.BuildTreeBytes(document.SourceBytes(), nullptr));
+        panel.resize(560, 660); panel.show(); panel.SetRenameDeformerEnabled(true);
+        auto* view = panel.findChild<CModelHierarchyView*>("partHierarchy");
+        const auto index = hierarchy(panel)->IndexForObject(node.id, type);
+        panel.HighlightObject(node.id, type); QCoreApplication::processEvents();
+        QSignalSpy rename(&panel, &CModelTreePanel::RenameDeformerRequested);
+        QVERIFY(chooseMenuAction(view, index, QStringLiteral("重命名…")));
+        QCOMPARE(rename.count(), 1); QCOMPARE(rename.first().at(0).toString(), node.id); QCOMPARE(rename.first().at(1).toString(), type);
+        panel.ApplyLockedState({{type + '|' + node.id, true}});
+        QVERIFY(chooseMenuAction(view, index, QStringLiteral("重命名…")));
+        QCOMPARE(rename.count(), 1);
+    }
     void realMouseMultiSelectionKeepsInspectorAndLegacyConsumersConsistent()
     {
         live2dstruct::CModelDocument document;

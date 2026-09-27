@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "live2dstruct/cmocdeformerorder.h"
+#include "live2dstruct/cwarpgridresampler.h"
 
 
 #include "QPainter"
@@ -395,6 +396,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     candidate.sourceMocDigest = m_document.SourceDigest();
     candidate.references = m_parameterResources;
     candidate.parameterMetadata = m_document.ParameterMetadataOverrides();
+    candidate.deformerDisplayNames = m_document.DeformerDisplayNames();
     candidate.parameterOrganization = m_document.ParameterOrganization();
     candidate.geometryObjectPairs = m_document.GeometryObjectPairs();
     if (includeArtwork) {
@@ -675,6 +677,7 @@ void MainWindow::on_actionCmo3Export_triggered()
             options.parameterValues.insert(parameter.id, values.value(parameter.id, m_document.ParameterValue(parameter.id)));
     }
     options.parameterMetadata = m_document.ParameterMetadataOverrides();
+    options.deformerDisplayNames = m_document.DeformerDisplayNames();
     options.hiddenIds = m_document.HiddenIds();
     options.objectVisibility = m_document.VisibilityState();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
@@ -762,6 +765,7 @@ bool MainWindow::SaveSession()
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
     }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
+    session.deformerDisplayNames = m_document.DeformerDisplayNames();
     session.parameterOrganization = m_document.ParameterOrganization();
     session.geometryObjectPairs = m_document.GeometryObjectPairs();
     session.visibility = m_document.VisibilityState();
@@ -828,6 +832,9 @@ void MainWindow::on_actionLoadSession_triggered()
     if (!RuntimeMatchesDocument(&loadError) || !session.RestoreDocument(m_document, candidate, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
+    }
+    if (!session.deformerDisplayNames && !InitializeDeformerDisplayNames(candidate, &loadError)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError); return;
     }
     const bool restoreResources = true;
     const bool restorePhysics = restoreResources || candidate.ParameterStructure() != m_document.ParameterStructure();
@@ -1126,10 +1133,30 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
     for (const auto& deformer : document.Deformers())
         if (deformer.type == live2dstruct::CModelDeformer::Warp)
             warpLayouts.insert(deformer.id, QSize(deformer.columns + 1, deformer.rows + 1));
-    OpengGlForm::WarpSelectionSnapshot warpSelection, emptyWarpSelection;
+    OpengGlForm::WarpSelectionSnapshot warpSelection, emptyWarpSelection, resizedWarpSelection;
     const auto* requestedWarpSelection = restoring ? &emptyWarpSelection :
         command.field == live2dstruct::CModelEdit::DeformerStructure && targetState.canConvert<ParameterStructureHistory>()
         ? &archived.warpSelection : nullptr;
+    if (!requestedWarpSelection && command.deformerRequest) {
+        const auto* resize = std::get_if<live2dstruct::CMocDeformerStructureBuilder::ResizeWarpRequest>(&command.deformerRequest->operation);
+        if (resize) {
+            const auto old = std::find_if(m_document.Deformers().cbegin(), m_document.Deformers().cend(),
+                [&](const auto& node) { return node.id == resize->id && node.type == live2dstruct::CModelDeformer::Warp; });
+            if (old == m_document.Deformers().cend()) { if (error) *error = QStringLiteral("变形器选区来源已失效"); return false; }
+            live2dstruct::CWarpGridResampler::Plan remap;
+            if (!live2dstruct::CWarpGridResampler::Prepare(old->rows, old->columns, old->quadTransform,
+                resize->rows, resize->columns, remap, error)) return false;
+            resizedWarpSelection = leaving.warpSelection;
+            auto selected = resizedWarpSelection.find(resize->id);
+            if (selected != resizedWarpSelection.end()) {
+                if (selected->rows != old->rows + 1 || selected->columns != old->columns + 1 ||
+                    !live2dstruct::CVertexSelection::Remap(selected->selection, (old->rows + 1) * (old->columns + 1),
+                        (resize->rows + 1) * (resize->columns + 1), remap.OldToNew(), selected->selection, error)) return false;
+                selected->rows = resize->rows + 1; selected->columns = resize->columns + 1;
+            }
+            requestedWarpSelection = &resizedWarpSelection;
+        }
+    }
     if (!m_openglwindows->PrepareWarpSelectionState(warpLayouts, requestedWarpSelection, warpSelection, error)) return false;
     CParameterReferencePlan::Prepared references;
     const bool changeReferences = deleting || restoring || !m_parameterResources.IsEmpty();
@@ -1457,11 +1484,22 @@ bool MainWindow::EndKeyformEditing(QString* error, bool finishParameters)
 
 bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error)
 {
+    const QPointer<MainWindow> alive(this);
     if (!AuthoringReady(error)) return false;
-    if (!FinishParameterValueEditing(error)) return false;
+    if (!FinishParameterValueEditing(error) || !alive) return false;
     if (m_previewExport.IsBusy()) {
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
+    }
+    if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName) {
+        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
+        if (!alive) return false;
+        if (!m_document.ExecuteEdit(edit)) {
+            if (error) *error = QStringLiteral("名称或对象状态已改变，请重新打开重命名窗口"); return false;
+        }
+        m_historySource = HistorySource::Inspector;
+        RefreshDeformerDisplayNames();
+        return !alive.isNull();
     }
     if (edit.field == live2dstruct::CModelEdit::ParameterOrganization ||
         edit.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
@@ -1518,6 +1556,12 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     }
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
+    if (pending.field == live2dstruct::CModelEdit::DeformerDisplayName) {
+        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
+        if (!alive || !(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
+        RefreshDeformerDisplayNames();
+        return !alive.isNull();
+    }
     if (pending.field == live2dstruct::CModelEdit::AtlasLayout) {
         if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!m_atlasEditor.History(undo, edit, error)) return false;
@@ -1641,6 +1685,7 @@ void MainWindow::RefreshModelTree()
     if (!m_document.BuildPreviewMoc(bytes, &error)) { statusBar()->showMessage(error, 8000); return; }
     const QSignalBlocker blocker(m_treePanel);
     if (!m_treePanel->BuildTreeBytes(bytes, m_cidJson, &error)) { statusBar()->showMessage(error, 8000); return; }
+    m_treePanel->ApplyDeformerDisplayNames(m_document.DeformerDisplayNames());
     QMap<QString, bool> visibility, locks;
     const auto add = [&](const QString& type, const QString& id, bool visible) {
         const auto key = type + QLatin1Char('|') + id;
@@ -1799,6 +1844,7 @@ void MainWindow::ApplyVisibilityValues(const QMap<QString, bool>& values)
 
 void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward)
 {
+    if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName) { RefreshDeformerDisplayNames(); return; }
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == live2dstruct::CModelEdit::ParameterStructure || edit.field == live2dstruct::CModelEdit::MeshStructure) {
         RefreshParameterStructureUi();
@@ -2715,6 +2761,11 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
+    if (m_keyformEditor.IsPublishing()) {
+        statusBar()->showMessage(QStringLiteral("模型编辑正在提交，请稍后关闭"), 8000);
+        return false;
+    }
+    if (!CancelDeformerDialogs()) return false;
     if (!CancelAutomaticMesh()) return false;
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
@@ -2856,6 +2907,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
 bool MainWindow::AuthoringReady(QString* error) const
 {
+    if (m_keyformEditor.IsPublishing()) {
+        if (error) *error = QStringLiteral("模型编辑正在提交，请稍后重试");
+        return false;
+    }
     if (m_artworkLoading) { if (error) *error = QStringLiteral("来源素材正在读取，请等待完成或取消"); return false; }
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
         if (error) *error = QStringLiteral("请先保存或取消素材、图集或 UV 编辑");
@@ -3124,6 +3179,7 @@ void MainWindow::RestDock(const QString &name)
         QString detail;
         if (m_cidJson->ParameterOrganization() && !m_document.SetParameterOrganization(*m_cidJson->ParameterOrganization(), &detail)) errors.append(detail);
         if (m_cidJson->GeometryObjectPairs() && !m_document.SetGeometryObjectPairs(*m_cidJson->GeometryObjectPairs(), &detail)) errors.append(detail);
+        if (!InitializeDeformerDisplayNames(m_document, &detail)) errors.append(detail);
         displayError = errors.join(QStringLiteral("；"));
     }
     if (!displayError.isEmpty()) statusBar()->showMessage(QStringLiteral("显示信息未完整载入：%1").arg(displayError), 10000);
@@ -3132,6 +3188,7 @@ void MainWindow::RestDock(const QString &name)
     m_treePanel = new CModelTreePanel(this);
     addDockWidget(Qt::LeftDockWidgetArea, m_treePanel);
     m_treePanel->BuildTreeBytes(m_document.SourceBytes(), m_cidJson);
+    m_treePanel->ApplyDeformerDisplayNames(m_document.DeformerDisplayNames());
 
     // 右侧面板：参数控制 + 物理设置（tabify）
     m_paramPanel = new CParamPanel(this);
@@ -3373,6 +3430,9 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::ObjectsSelected, this, &MainWindow::SelectModelObjects);
     connect(m_treePanel, &CModelTreePanel::CreateDeformerRequested, this, &MainWindow::CreateDeformer);
     connect(m_treePanel, &CModelTreePanel::RemoveDeformerRequested, this, &MainWindow::RemoveDeformer);
+    connect(m_treePanel, &CModelTreePanel::RenameDeformerRequested, this, &MainWindow::RenameDeformer);
+    connect(m_inspectorPanel, &CInspectorPanel::RenameDeformerRequested, this, &MainWindow::RenameDeformer);
+    connect(m_inspectorPanel, &CInspectorPanel::ResizeWarpGridRequested, this, &MainWindow::ResizeWarpGrid);
     connect(m_treePanel, &CModelTreePanel::EditGeometryPairsRequested, this, &MainWindow::EditGeometryPairs);
     connect(m_treePanel, &CModelTreePanel::MirrorGeometryPairRequested, this, &MainWindow::MirrorGeometryPair);
     connect(m_treePanel, &CModelTreePanel::ViewGeometryPairRequested, this, &MainWindow::ViewGeometryPair);
@@ -3386,6 +3446,10 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::DeformerDragParamsChanged, m_openglwindows, &OpengGlForm::do_SetDeformerDragParams);
 
     m_paramPanel->SetPreEditGuard([this](QString* error) {
+        if (m_keyformEditor.IsPublishing()) {
+            if (error) *error = QStringLiteral("模型编辑正在提交，请稍后调整参数");
+            return false;
+        }
         if (m_previewExport.IsBusy()) {
             if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
             return false;

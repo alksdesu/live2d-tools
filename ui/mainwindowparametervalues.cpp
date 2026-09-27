@@ -69,6 +69,7 @@ struct MainWindow::ParameterValueEditState
 
 bool MainWindow::ParameterValueEditingReady(QString* error) const
 {
+    if (m_keyformEditor.IsPublishing()) return fail(error, QStringLiteral("模型编辑正在提交，请稍后调整参数"));
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_closingModel || m_batchExporting || m_psdBatch ||
         m_previewExport.IsBusy() || m_activeExportControl ||
         m_applyingSession || m_applyingParameterReferences || !m_runtimePanelsInitialized || !m_workspaceReady ||
@@ -244,6 +245,7 @@ void MainWindow::SyncParameterValueUi(const QMap<QString, float>& values)
 
 bool MainWindow::FinishParameterValueEditing(QString* error)
 {
+    if (m_keyformEditor.IsPublishing()) return fail(error, QStringLiteral("模型编辑正在提交，请稍后重试"));
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return fail(error, QStringLiteral("请先保存或取消图集或 UV 编辑"));
     if (m_publishingParameterValues || (m_parameterValueEdit && m_parameterValueEdit->pendingUi))
         return fail(error, QStringLiteral("参数事务正在更新界面，请稍后重试"));

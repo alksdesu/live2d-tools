@@ -16,10 +16,10 @@ public:
         QStringList blockingReasons;
         QStringList numericalLimitations;
     };
-    static bool Analyze(const QByteArray& base, const CDeformerPreserveRequest& request,
-                        Impact& result, QString* error = nullptr);
+    static bool Analyze(const QByteArray& base, const CDeformerPreserveRequest& request, Impact& result,
+        QString* error = nullptr, CExportControl* control = nullptr);
     static bool Build(const QByteArray& base, const CDeformerPreserveRequest& request,
-                      CMocDeformerStructureBuilder::Result& result, QString* error = nullptr);
+        CMocDeformerStructureBuilder::Result& result, QString* error = nullptr, CExportControl* control = nullptr);
 };
 }
 

@@ -21,6 +21,7 @@
 #include "cmodelmaterialedit.h"
 #include "cmodelatlasedit.h"
 #include "cgeometryobjectpairs.h"
+#include "cdeformerdisplaynames.h"
 
 namespace live2dstruct {
 class CReader;
@@ -191,7 +192,7 @@ private:
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName };
     QString name;
     QString type;
     Field field = Visibility;
@@ -264,6 +265,11 @@ public:
     bool HasMeshStructure() const { return m_hasMeshStructure; }
     bool HasDeformerStructure() const { return m_hasDeformerStructure; }
     const QSet<QString>& SourceDeformerIds() const { return m_sourceDeformerIds; }
+    QString DeformerDisplayName(const QString& id) const;
+    const CDeformerDisplayNames::State& DeformerDisplayNames() const { return m_deformerDisplayNames; }
+    bool SetDeformerDisplayNames(const CDeformerDisplayNames::State& names, QString* error = nullptr);
+    bool MakeDeformerDisplayNameEdit(const QString& id, const QString& name, CModelEdit& edit,
+                                     QString* error = nullptr) const;
     QVariantMap DeformerStructureState() const;
     bool SetDeformerStructure(const CMocParameterStructureBuilder::ColumnState& structure,
                               bool meshStructure, const QSet<QString>& sourceIds, QString* error = nullptr);
@@ -398,6 +404,8 @@ private:
     bool PreserveStructureProperties(CModelDocument& candidate, QString* error) const;
     bool BuildMeshBase(const CMocMeshStructureBuilder::Request& request, QByteArray& bytes, QString* error) const;
     bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);
+    bool CanEditDeformerDisplayName(const QString& id, QString* error = nullptr) const;
+    bool ApplyDeformerDisplayNameEdit(const CModelEdit& edit, bool forward);
     bool m_loaded = false;
     quint64 m_revision = 0;
     QString m_sourcePath;
@@ -429,6 +437,7 @@ private:
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, float> m_parameterValues;
     QHash<QString, CModelParameterMetadata> m_parameterMetadataOverrides;
+    CDeformerDisplayNames::State m_deformerDisplayNames;
     CParameterOrganization::State m_parameterOrganization;
     CGeometryObjectPairs::State m_geometryObjectPairs;
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;

@@ -5,6 +5,7 @@
 #include "cxsxmlwriter.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cdrawableflags.h"
+#include "live2dstruct/cdeformerdisplaynames.h"
 #include "live2dstruct/ccanvasgeometry.h"
 #include "live2dstruct/cparentgraph.h"
 #include "live2dstruct/cmodeluserdata.h"
@@ -238,7 +239,7 @@ public:
 private:
     // ---- 数据准备 ----
     SBindingChain chainFor(int keyformBindingSourceIndex) const;
-    void loadDisplayNames();
+    bool loadDisplayNames(QString* error);
     bool prepareMaterials(QString* error);
     bool prepareDeformerUnits(QString* error);
 
@@ -269,9 +270,14 @@ private:
     void writeMain();
     void writePhysicsMain();
 
-    QString displayName(const QString& id) const
+    QString partDisplayName(const QString& id) const
     {
-        return m_displayNames.value(id, id);
+        return m_partDisplayNames.value(id, id);
+    }
+
+    QString deformerDisplayName(const QString& id) const
+    {
+        return m_deformerDisplayNames.value(id, id);
     }
 
     QString parameterDisplayName(const QString& id) const
@@ -323,7 +329,8 @@ private:
     QString m_rootPartGuidId;
     QString m_rootPartFormGuidId;
 
-    QHash<QString, QString> m_displayNames;     // 内部 ID → cdi3 显示名
+    QHash<QString, QString> m_partDisplayNames;
+    QMap<QString, QString> m_deformerDisplayNames;
     QHash<QString, QString> m_parameterDisplayNames;
     QHash<QString, int> m_paramIndexById;       // 参数 idstr → parameters 表下标
     int m_canvasW = 0;
@@ -395,7 +402,7 @@ bool Generator::prepareMaterials(QString* error)
             material.authorUvs.size() != mesh->vertex_counts * 2)
             return fail(QStringLiteral("cmo3 素材与网格数据不匹配：%1").arg(material.name));
         SLayerData layer;
-        layer.name = displayName(material.name);
+        layer.name = material.name;
         layer.image = material.image;
         layer.visible = material.visible;
         const QPoint origin(std::clamp(material.atlasRect.x(), 0, m_sourceCanvas.width() - layer.image.width()),
@@ -427,26 +434,39 @@ bool Generator::prepareMaterials(QString* error)
     return true;
 }
 
-void Generator::loadDisplayNames()
+bool Generator::loadDisplayNames(QString* error)
 {
-    if (m_opt.cdiPath.isEmpty()) return;
-    QFile file(m_opt.cdiPath);
-    if (!file.open(QIODevice::ReadOnly)) return;
-    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-    file.close();
-
-    for (const QString& section : { QStringLiteral("Parameters"), QStringLiteral("Parts"),
-                                    QStringLiteral("ParameterGroups") }) {
-        for (const QJsonValue& v : root.value(section).toArray()) {
-            const QJsonObject o = v.toObject();
-            const QString id = o.value(QStringLiteral("Id")).toString();
-            const QString name = o.value(QStringLiteral("Name")).toString();
-            if (!id.isEmpty() && !name.isEmpty()) {
-                if (section == QLatin1String("Parameters")) m_parameterDisplayNames.insert(id, name);
-                else m_displayNames.insert(id, name);
-            }
-        }
+    QJsonObject root;
+    if (!m_opt.cdiPath.isEmpty()) {
+        QFile file(m_opt.cdiPath);
+        if (file.open(QIODevice::ReadOnly)) root = QJsonDocument::fromJson(file.readAll()).object();
     }
+    const auto readNames = [&](const QString& section, auto& names) {
+        for (const auto& value : root.value(section).toArray()) {
+            const auto object = value.toObject();
+            const auto id = object.value(QStringLiteral("Id")).toString();
+            const auto name = object.value(QStringLiteral("Name")).toString();
+            if (!id.isEmpty() && !name.isEmpty()) names.insert(id, name);
+        }
+    };
+    readNames(QStringLiteral("Parameters"), m_parameterDisplayNames);
+    readNames(QStringLiteral("Parts"), m_partDisplayNames);
+    if (m_opt.deformerDisplayNames) {
+        m_deformerDisplayNames = *m_opt.deformerDisplayNames;
+        return true;
+    }
+    const auto extension = root.constFind(QStringLiteral("Live2DToolsDeformerNames"));
+    if (extension != root.constEnd()) {
+        const auto object = extension->toObject();
+        if (!extension->isObject() || object.value(QStringLiteral("Version")).toDouble(-1) != 1 ||
+            !object.value(QStringLiteral("Names")).isObject()) {
+            if (error) *error = QStringLiteral("cmo3 变形器显示名称扩展无效");
+            return false;
+        }
+        return CDeformerDisplayNames::FromJson(object.value(QStringLiteral("Names")).toObject(), m_deformerDisplayNames, error);
+    }
+    readNames(QStringLiteral("Deformers"), m_deformerDisplayNames);
+    return true;
 }
 
 SBindingChain Generator::chainFor(int keyformBindingSourceIndex) const
@@ -945,7 +965,7 @@ void Generator::writeArtMeshEntities()
         // CArtMeshSource
         m_xml.BeginObject(QStringLiteral("CArtMeshSource"), QString(), m_meshSourceIds[i]);
         m_xml.BeginObject(QStringLiteral("ACDrawableSource"), QStringLiteral("super"));
-        writeControllableHeader(displayName(mesh->ids), objectVisible(QStringLiteral("artmesh"), mesh->ids, mesh->is_visible),
+        writeControllableHeader(mesh->ids, objectVisible(QStringLiteral("artmesh"), mesh->ids, mesh->is_visible),
                                 objectPartIndex(mesh->parent_part_indices) >= 0
                                     ? m_partIds[objectPartIndex(mesh->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 1);
@@ -1133,7 +1153,7 @@ void Generator::writeWarpDeformerEntities()
         m_deformerSourceIds[d] = m_xml.AllocId();
         m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_deformerSourceIds[d]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
-        writeControllableHeader(displayName(deformer->ids), objectVisible(QStringLiteral("warp"), deformer->ids, deformer->is_visible),
+        writeControllableHeader(deformerDisplayName(deformer->ids), objectVisible(QStringLiteral("warp"), deformer->ids, deformer->is_visible),
                                 objectPartIndex(deformer->parent_part_indices) >= 0
                                     ? m_partIds[objectPartIndex(deformer->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 0);
@@ -1242,7 +1262,7 @@ void Generator::writeRotationDeformerEntities()
         m_deformerSourceIds[d] = m_xml.AllocId();
         m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_deformerSourceIds[d]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
-        writeControllableHeader(displayName(deformer->ids), objectVisible(QStringLiteral("rotation"), deformer->ids, deformer->is_visible),
+        writeControllableHeader(deformerDisplayName(deformer->ids), objectVisible(QStringLiteral("rotation"), deformer->ids, deformer->is_visible),
                                 objectPartIndex(deformer->parent_part_indices) >= 0
                                     ? m_partIds[objectPartIndex(deformer->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 0);
@@ -1529,7 +1549,7 @@ bool Generator::Run(QString* outError)
     }
     m_canvasW = canvasSize.width();
     m_canvasH = canvasSize.height();
-    loadDisplayNames();
+    if (!loadDisplayNames(outError)) return false;
 
     if (!prepareDeformerUnits(outError) || !prepareMaterials(outError)) return false;
 
@@ -1727,7 +1747,7 @@ bool Generator::Run(QString* outError)
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
 
         m_xml.BeginObject(QStringLiteral("CPartSource"), QString(), m_partIds[i].source);
-        writeControllableHeader(displayName(part->ids), objectVisible(QStringLiteral("part"), part->ids, part->is_visible),
+        writeControllableHeader(partDisplayName(part->ids), objectVisible(QStringLiteral("part"), part->ids, part->is_visible),
                                 partParentIndex(i) >= 0
                                     ? m_partIds[partParentIndex(i)].guid : m_rootPartGuidId,
                                 gridId, 0);
@@ -1839,6 +1859,20 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         return false;
     }
     Options opt = options;
+    const auto owned = [](const QString& value) { return QString(value.constData(), value.size()); };
+    opt.mocPath = owned(options.mocPath);
+    opt.outPath = owned(options.outPath);
+    opt.modelName = owned(options.modelName);
+    opt.cdiPath = owned(options.cdiPath);
+    opt.physicsPath = owned(options.physicsPath);
+    opt.userDataPath = owned(options.userDataPath);
+    if (options.deformerDisplayNames) {
+        if (!CDeformerDisplayNames::Validate(*options.deformerDisplayNames, outError)) return false;
+        QMap<QString, QString> names;
+        for (auto item = options.deformerDisplayNames->cbegin(); item != options.deformerDisplayNames->cend(); ++item)
+            names.insert(owned(item.key()), owned(item.value()));
+        opt.deformerDisplayNames = std::move(names);
+    }
     if (opt.modelName.isEmpty()) {
         opt.modelName = QFileInfo(opt.mocPath).completeBaseName();
     }
@@ -1857,6 +1891,19 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     }
 
     if (!validateDeformerSources(table, outError) || !validateParameterOptions(table, opt, outError)) return false;
+    if (opt.deformerDisplayNames) {
+        QSet<QString> ids;
+        for (const auto* deformer : table.deformers) ids.insert(deformer->ids);
+        for (auto name = opt.deformerDisplayNames->cbegin(); name != opt.deformerDisplayNames->cend(); ++name) {
+            if (!ids.contains(name.key())) {
+                if (outError) *outError = QStringLiteral("cmo3 显示名称引用了未知变形器：%1").arg(name.key());
+                return false;
+            }
+        }
+        CDeformerDisplayNames::State names;
+        if (!CDeformerDisplayNames::Normalize(*opt.deformerDisplayNames, names, outError)) return false;
+        opt.deformerDisplayNames = std::move(names);
+    }
 
     PhysicsExport physics;
     if (!PreparePhysicsExport(opt, physics, outError)) return false;

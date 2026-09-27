@@ -58,6 +58,7 @@ bool MainWindow::PublishDrawableMaterials(const live2dstruct::CModelDocument& be
                                           const live2dstruct::CModelDocument& after,
                                           const QSet<QString>& ids, QString* error)
 {
+    if (m_keyformEditor.IsPublishing()) return fail(error, QStringLiteral("模型编辑正在提交，请稍后修改素材"));
     if (m_closingModel || m_applyingSession || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
         !m_runtimePanelsInitialized || !m_openglwindows || !m_openglwindows->IsModelReady())
         return fail(error, QStringLiteral("请等待模型就绪，并先结束当前导出或会话恢复"));

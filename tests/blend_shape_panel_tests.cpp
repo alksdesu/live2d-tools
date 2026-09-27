@@ -757,6 +757,23 @@ private slots:
         QCOMPARE(binding->childCount(), 1);
     }
 
+    void documentDeformerNamesRefreshDetailsInPlace()
+    {
+        live2dstruct::CModelDocument document; QString error; const auto bytes = blendBytes();
+        QVERIFY2(document.LoadBytes(bytes, "blend", &error), qPrintable(error));
+        CBlendShapePanel panel; QVERIFY(panel.BuildBlendShapesBytes(bytes, nullptr, &error)); panel.SetDocument(&document);
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        parameters->setCurrentItem(findItem(parameters, "parameter", "Driver"));
+        auto* warp = findItem(details, "target", "Shared", "warp"); auto* mesh = findItem(details, "target", "Shared", "artmesh");
+        QVERIFY(warp && mesh); warp->setExpanded(true); QVERIFY(warp->childCount()); auto* child = warp->child(0);
+        QSignalSpy changed(&panel, &CBlendShapePanel::ParamChanged);
+        QVERIFY(document.SetDeformerDisplayNames({{"Shared", QStringLiteral("眼睛控制")}}, &error));
+        panel.RefreshDeformerDisplayNames(); QCOMPARE(warp->text(0), QStringLiteral("眼睛控制")); QCOMPARE(mesh->text(0), QString("Shared"));
+        QCOMPARE(warp->child(0), child); QVERIFY(warp->isExpanded()); QCOMPARE(changed.count(), 0);
+        QVERIFY(document.SetDeformerDisplayNames({}, &error)); panel.RefreshDeformerDisplayNames(); QCOMPARE(warp->text(0), QString("Shared"));
+    }
+
     void versionFivePartAndRotationTargetsNavigateWithIndependentNames()
     {
         QTemporaryDir directory;

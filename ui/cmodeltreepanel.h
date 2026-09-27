@@ -22,6 +22,8 @@ public:
     void BuildTree(const QString& mocPath, CCidJson* cid);
     bool BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
     void SetDeformerActionsEnabled(bool create, bool remove);
+    void SetRenameDeformerEnabled(bool enabled);
+    void ApplyDeformerDisplayNames(const QMap<QString, QString>& names);
     void SetGeometryPairActionsEnabled(bool edit, bool mirror, const QString& detail = {});
     void HighlightObjects(const QStringList& ids, const QStringList& types);
     QMap<QString, bool> VisibilityState() const;
@@ -35,6 +37,7 @@ public slots:
     void SetVisibility(const QString& name, const QString& type, bool visible);
 
 signals:
+    void RenameDeformerRequested(const QString& id, const QString& type);
     void CreateDeformerRequested();
     void RemoveDeformerRequested();
     void EditGeometryPairsRequested();
@@ -61,6 +64,9 @@ private:
     void SelectObjects(const QModelIndex& part, const QModelIndex& deformer,
                        const QString& id, const QString& type);
     void ShowContextMenu(CModelHierarchyView* view, const QPoint& position);
+    bool CanRename(CModelHierarchyView* view) const;
+    void RequestRename(CModelHierarchyView* view);
+    bool m_renameEnabled = false;
 
     QTabWidget* m_tabWidget = nullptr;
     QLineEdit* m_search = nullptr;

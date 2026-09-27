@@ -8,6 +8,7 @@
 #include <QIcon>
 #include <QHash>
 #include <QSet>
+#include <QPointer>
 #include <QStyle>
 #include <array>
 #include <exception>
@@ -386,5 +387,29 @@ void CModelHierarchyModel::NotifyObjects(const QStringList& keys)
         const auto index = IndexForKey(key);
         if (index.isValid()) emit dataChanged(index, index,
             {Qt::CheckStateRole, Qt::UserRole + 2, Qt::FontRole, Qt::ToolTipRole});
+    }
+}
+
+QStringList CModelHierarchyModel::UpdateDeformerDisplayNames(const QMap<QString, QString>& names)
+{
+    QStringList changed;
+    if (!m_data) return changed;
+    for (auto& object : m_data->objects) {
+        if (object.type != QLatin1String("warp") && object.type != QLatin1String("rotation")) continue;
+        const auto name = names.value(object.id, object.id);
+        if (object.label == name) continue;
+        object.label = name;
+        changed.append(object.key);
+    }
+    return changed;
+}
+
+void CModelHierarchyModel::NotifyDisplayNames(const QStringList& keys)
+{
+    const QPointer<CModelHierarchyModel> model(this);
+    for (const auto& key : keys) {
+        const auto index = IndexForKey(key);
+        if (index.isValid()) emit dataChanged(index, index, {Qt::DisplayRole});
+        if (!model) return;
     }
 }

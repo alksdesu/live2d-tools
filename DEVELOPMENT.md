@@ -1378,3 +1378,19 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 最终两个 Main 进程以 DPR2／DPR4 完成实际拖动、稳定单元格／零行重建、隐藏后补显示、删插与撤销重做、容量拒绝、真实 Session 文件重载、PSD 导出及关闭。实际选中第 65535 号顶点的 X 单元格，并将其滚入外层属性视口后检查位置和截图；不以 `isVisible` 代替可见区域验证。浅深主题各覆盖 1380×980 与 900×720，十张原始截图含两个选中单元格画面；窄窗保留滚动和工具栏溢出入口。
 - 最终 Main 的四次连续 move 首次约 293–297 毫秒，随后约 200–207 毫秒，隐藏属性时约 189–197 毫秒；计时只包围程序事件，不包含后续独立覆盖层绘制。删点约 1.58–1.61 秒、插回约 2.34 秒。覆盖层重复绘制仍约 1.69 秒（DPR2）与 5.28 秒（DPR4），说明表格优化没有消除绘制瓶颈。Main 驱动较旧记录增加了真实单元格滚动与绘制测量，因此不将两次 Main 数值直接表述为严格同驱动提速比例。
 - 汇总：`/tmp/live2d-point-layer-workspace-checks.json`；最终 Main：`/tmp/live2d-point-layer-main-formal-2/summary.json`；组件及同条件性能：`/tmp/live2d-inspector-sizing-proof/proof.json`；变更目标补验：`/tmp/live2d-point-layer-reconciled-ctest.json`；绘制候选拒绝证据：`/tmp/live2d-overlay-alpha-palette-review/summary.json` 与 `/tmp/live2d-overlay-glyph-prototype/summary.json`。文件名前缀保留实验过程，不代表最终源码包含点层缓存。原生测试使用 Qt 程序事件与隔离设置，不声称覆盖系统前台输入、Windows GUI 或 Cubism Editor GUI；闭源 Core 未作 sanitizer 插桩。
+
+### 变形器名称与转换网格调整
+
+- Warp／Rotation 可从结构树或属性面板重命名，ID、参数绑定和几何保持不变。文档持有有效名称，更新树、属性、父级选择、新建窗口、对象配对和融合目标的显示；名称编辑不结束当前关键形或重建 Core。撤销回到保存内容后可恢复干净状态。
+- 会话 v13 保存名称，包括具有明确含义的空名称表。旧会话继承来源 CDI 中仍属原来源对象的名称，删除后用相同 ID 新建的对象不继承旧名。模型包使用 `Live2DToolsDeformerNames` 扩展；它是本工具的 CDI 扩展，不是官方 CDI 标准字段。CMO3 直接写作者对象名称，并修复参数、部件和变形器使用相同 ID 时串用名称的问题。
+- 已有 Warp 可修改水平／垂直转换分段。固定的采样算子同步作用于全部普通关键形和 Blend Shape 位移，保持绑定、关键形数量与对象身份。共用几何池按存活引用复用空间，不覆盖其它对象或共享位置区间；请求和候选在回调前拥有自己的数据。
+- 网格内的对齐四边形细分、两轴等倍率三角细分具有明确的域内保形条件；网格外外推仍可能变化，减少或非对齐调整也可能改变形状。使用整数权重分子及误差补偿处理极端抵消，保留独立浮点输入预言机和优化编译回归。没有将转换分段等同于 Bézier 创作控制器，也不承诺任意调整对全部动画无损。
+- 对话框分别显示父级坐标中的控制网格、打开窗口时实际姿态的全部网格边界及原始画布像素位移。边界包含隐藏网格，尚不是按透明纹理提取的可见轮廓；复杂模型的辅助矩形也会显示。Core 在两个独立模型上求值，检查静态目录、UV、蒙版和非几何绘制属性；没有开放边界的网格明确说明使用连接线。未改变分段时也能只读预览，但禁止重复应用。预览目前同步准备，资源预算限制工作量，尚不是可中断单次 Core 求值的异步任务。
+- 应用前复核文档、来源和选区身份，失败或取消不发布候选。精确保留的格点迁移硬选区／笔刷权重，新点权重为零；撤销重做使用各自归档的选区。受到拓扑变化影响的配对标记为需复核。会话恢复仍清理临时选区，不把笔刷字段误写入模型文件。
+- 新回归发现会话中 Warp 顶点数量与行列不一致时仍可恢复。共享结构入口现在校验原始数量、普通及融合关键形引用、位置区间和有限值，覆盖结构 setter、材料结构、会话和历史，合法空普通形／空融合引用继续兼容。
+- 两个真实主窗口回调暴露了跨事务写入：结构发布的选区通知中改名，使文档保留旧网格而 Core 已使用新网格；结束关键形的通知中替换 PNG，使逻辑编辑状态与实际预览分歧。统一拒绝提交期间的作者操作、参数前置检查、图集／素材发布和关闭；原始失败记录保留，修复后检查外层成功、内层拒绝、保护解除及正常撤销重做。
+- 全仓 217 个 CTest 目标通过；新增主窗口保护后的构建产生相同的 216 个独立测试二进制，全部沿用已通过摘要。Raw／Core 结构组合普通与 ASAN 各 159 项，文档与共享消费者各 291 项，名称／网格 UI 各 494 项，独立 Core 预览各 32 项；这些组合有重叠，不相加为独立总数。CMO 名称范围普通／ASAN 各 197 项通过。闭源 Core 本体未作 sanitizer 插桩。
+- 原生应用以最终头文件全量重编 378 个单元，1184 项生产输入与 69 项原资源保持；最后补充的跨编辑器保护只重编四个 cpp，并核对所有其它对象和头文件。Mark 在实际 DPR2／DPR4 下通过名称、只读候选、两种合法选区迁移、撤销重做、会话 v13／旧版 v12、显式空名称、模型包和实际主窗口 CMO3 导出。截图等待布局及像素稳定，分别检查两页预览、浅深主题、滚动视口和实际窗口大小，未用手动适应视图修补结果。
+- 官方 Mao 的两个原生流程以 33 个非默认融合参数的时间轴姿态，验证 Warp170 的 9 个普通／10 个融合关键形调整、名称、历史、会话与模型包捕获／写出。其 `ArtMesh202` 原本含重复的 `ArtMesh131` 蒙版引用，原始与调整后诊断一致，当前通用导出检查会阻止 CMO3。重复蒙版可能改变透明度合成，因此未自动去重或绕过门禁；不把 Mark 的 CMO3 结果扩大到 Mao，也不把模型包捕获接口的成功等同于菜单门禁已经放开。含 Blend Shape 对象的画布姿态反解也仍有既有限制，转换网格调整不依赖进入该编辑模式。
+- 记录：`/tmp/live2d-deformer-full-ctest.json`、`/tmp/live2d-deformer-reconciled-ctest.json`、`/tmp/live2d-deformer-native-guards-inputs.json`、`/tmp/live2d-warp-grid-document-proof/summary.json`、`/tmp/live2d-deformer-name-ui-proof/proof.json`、`/tmp/live2d-warp-grid-preview-proof/summary.json`。Mark 主窗口：`/tmp/live2d-deformer-main-development-3/summary.json`；名称回调：`/tmp/live2d-deformer-reentrant-fixed-1/summary.json`；PNG 回调红绿对照：`/tmp/live2d-texture-end-reentrant-proof.json`。目录保留开发时名称，不表示最终流程仍失败。测试采用 Qt 程序事件与隔离设置，不声称覆盖系统前台输入、Windows GUI 或 Cubism Editor 实际回读。
+- 最终汇总：`/tmp/live2d-deformer-workspace-checks.json`；Mao 主窗口：`/tmp/live2d-deformer-blend-main-formal-3/summary.json`；Mark CMO3 的独立 XML 检查：`/tmp/live2d-deformer-cmo-main-readback.json`，核对 10×10 分段、9 形各 242 个坐标和 2788 个引用。源蒙版诊断对照：`/tmp/live2d-mao-document-diagnostics.json`。

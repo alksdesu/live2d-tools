@@ -74,6 +74,73 @@ class GeometryPairsExportTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void deformerNamesCreateDisplayInfoAndRoundTripAuthoritativeEmpty()
+    {
+        Fixture fixture; QVERIFY(fixture.ready); QString error;
+        auto request = fixture.request(); request.deformerDisplayNames = QMap<QString, QString>{{"Root", QStringLiteral("头部 🌙")}};
+        CRuntimePackage::Prepared package; QVERIFY2(CRuntimePackage::Prepare(request, package, nullptr, &error), qPrintable(error));
+        const auto names = display(package)["Live2DToolsDeformerNames"].toObject();
+        QCOMPARE(names["Version"].toInt(), 1); QCOMPARE(names["Names"].toObject()["Root"].toString(), QStringLiteral("头部 🌙"));
+        const auto exportedMoc = entry(package, package.model["FileReferences"].toObject()["Moc"].toString());
+        QCOMPARE(exportedMoc, request.mocBytes);
+        const auto path = fixture.directory.filePath("readback.cdi3.json"); QVERIFY(write(path, QJsonDocument(display(package)).toJson()));
+        CCidJson parser; QVERIFY(parser.Parse(path, &error)); QVERIFY(parser.HasDeformerDisplayNamesExtension());
+        QCOMPARE(parser.DeformerDisplayNames(), *request.deformerDisplayNames);
+        CModelDocument reopened; QVERIFY(reopened.LoadBytes(exportedMoc, "reopened", &error));
+        QVERIFY(reopened.SetDeformerDisplayNames(parser.DeformerDisplayNames(), &error));
+        QCOMPARE(reopened.DeformerDisplayName("Root"), QStringLiteral("头部 🌙"));
+        QVERIFY(fixture.cdi({{"Version", 3}, {"Foreign", 17},
+            {"Deformers", QJsonArray{QJsonObject{{"Id", "Root"}, {"Name", "old"}, {"Extra", 42}}, QJsonObject{{"Id", "Deleted"}, {"Name", "orphan"}}}},
+            {"Live2DToolsDeformerNames", names}}));
+        request = fixture.request(); request.deformerDisplayNames = QMap<QString, QString>{};
+        QVERIFY2(CRuntimePackage::Prepare(request, package, nullptr, &error), qPrintable(error));
+        const auto root = display(package); QCOMPARE(root["Foreign"].toInt(), 17);
+        QVERIFY(root["Live2DToolsDeformerNames"].toObject()["Names"].toObject().isEmpty());
+        const auto legacy = root["Deformers"].toArray(); QCOMPARE(legacy.size(), 1);
+        QCOMPARE(legacy[0].toObject()["Name"].toString(), QString("Root")); QCOMPARE(legacy[0].toObject()["Extra"].toInt(), 42);
+        QVERIFY(write(path, QJsonDocument(root).toJson())); QVERIFY(parser.Parse(path, &error));
+        QVERIFY(parser.HasDeformerDisplayNamesExtension()); QVERIFY(parser.DeformerDisplayNames().isEmpty()); QVERIFY(parser.getDeformerName("Root").isEmpty());
+    }
+    void deformerNameExtensionOverridesLegacyAndMalformedInputIsAtomic_data()
+    {
+        QTest::addColumn<int>("fault"); for (int i = 0; i < 7; ++i) QTest::newRow(qPrintable(QString::number(i))) << i;
+    }
+    void deformerNameExtensionOverridesLegacyAndMalformedInputIsAtomic()
+    {
+        QFETCH(int, fault); QTemporaryDir directory; const auto path = directory.filePath("names.cdi3.json");
+        QJsonObject names{{"Root", QStringLiteral("明确名称")}};
+        QJsonObject root{{"Version", 3}, {"Deformers", QJsonArray{QJsonObject{{"Id", "Root"}, {"Name", "legacy"}}}},
+            {"Live2DToolsDeformerNames", QJsonObject{{"Version", 1}, {"Names", names}}}};
+        QVERIFY(write(path, QJsonDocument(root).toJson())); CCidJson parser; QString error; QVERIFY(parser.Parse(path, &error));
+        const auto digest = parser.SourceDigest(); QCOMPARE(parser.getDeformerName("Root"), QStringLiteral("明确名称"));
+        auto extension = root["Live2DToolsDeformerNames"].toObject();
+        if (fault == 0) extension["Version"] = 2;
+        if (fault == 1) extension["Names"] = QJsonArray{};
+        if (fault == 2) extension["Names"] = QJsonObject{{"Root", 3}};
+        if (fault == 3) extension["Names"] = QJsonObject{{"Root", " "}};
+        if (fault == 4) extension["Names"] = QJsonObject{{"Root", QString("bad\nname")}};
+        if (fault == 5) extension["Names"] = QJsonObject{{"Root", QString(1025, 'x')}};
+        root["Live2DToolsDeformerNames"] = fault == 6 ? QJsonValue(false) : QJsonValue(extension);
+        QVERIFY(write(path, QJsonDocument(root).toJson())); QVERIFY(!parser.Parse(path, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(parser.SourceDigest(), digest); QCOMPARE(parser.getDeformerName("Root"), QStringLiteral("明确名称"));
+        root["Live2DToolsDeformerNames"] = QJsonObject{{"Version", 1}, {"Names", QJsonObject{}}};
+        root["Deformers"] = "ignored legacy"; QVERIFY(write(path, QJsonDocument(root).toJson())); QVERIFY(parser.Parse(path, &error));
+        QVERIFY(parser.HasDeformerDisplayNamesExtension()); QVERIFY(parser.DeformerDisplayNames().isEmpty());
+        root.remove("Live2DToolsDeformerNames"); root["Deformers"] = QJsonArray{QJsonObject{{"Id", "Root"}, {"Name", "legacy"}}};
+        QVERIFY(write(path, QJsonDocument(root).toJson())); QVERIFY(parser.Parse(path, &error));
+        QVERIFY(!parser.HasDeformerDisplayNamesExtension()); QCOMPARE(parser.getDeformerName("Root"), QString("legacy"));
+    }
+    void runtimeRejectsUnknownDeformerNamesWithoutReplacingPreparedOutput_data()
+    {
+        QTest::addColumn<QString>("name"); QTest::newRow("named") << QString("name"); QTest::newRow("identity") << QString("missing");
+    }
+    void runtimeRejectsUnknownDeformerNamesWithoutReplacingPreparedOutput()
+    {
+        QFETCH(QString, name); Fixture fixture; QVERIFY(fixture.ready); auto request = fixture.request();
+        request.deformerDisplayNames = QMap<QString, QString>{{"missing", name}};
+        CRuntimePackage::Prepared output; output.modelFile = "keep"; QString error;
+        QVERIFY(!CRuntimePackage::Prepare(request, output, nullptr, &error)); QVERIFY(!error.isEmpty()); QCOMPARE(output.modelFile, QString("keep"));
+    }
     void changedRuntimeMocIsNormalizedAndPairDigestReanchored()
     {
         Fixture fixture; QVERIFY(fixture.ready); QString error; QVERIFY(fixture.document.IsLoaded());

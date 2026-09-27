@@ -19,6 +19,7 @@ bool MainWindow::PublishAtlasPreview(const live2dstruct::CModelDocument& before,
                                      const live2dstruct::CModelDocument& after,
                                      const QSet<QString>& ids, QString* error)
 {
+    if (m_keyformEditor.IsPublishing()) return fail(error, QStringLiteral("模型编辑正在提交，请稍后修改图集"));
     if (m_materialEditor.IsActive() || m_closingModel || m_applyingSession || m_batchExporting || m_psdBatch ||
         m_previewExport.IsBusy() || !m_runtimePanelsInitialized || !m_openglwindows || !m_openglwindows->IsModelReady())
         return fail(error, QStringLiteral("请先结束当前 UV 编辑、导出或会话恢复"));

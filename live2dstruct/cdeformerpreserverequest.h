@@ -4,13 +4,15 @@
 #include "cmocdeformerstructurebuilder.h"
 
 namespace live2dstruct {
-struct CDeformerPreserveRequest
+struct CDeformerStructureRequest
 {
-    std::variant<CMocDeformerStructureBuilder::InsertRequest,
-                 CMocDeformerStructureBuilder::RemoveRequest> operation;
+    std::variant<CMocDeformerStructureBuilder::InsertRequest, CMocDeformerStructureBuilder::RemoveRequest,
+        CMocDeformerStructureBuilder::ResizeWarpRequest>
+        operation;
     QByteArray sourceDigest;
     QByteArray expectedAuthoringDigest;
 };
+using CDeformerPreserveRequest = CDeformerStructureRequest;
 }
 
 #endif

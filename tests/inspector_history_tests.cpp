@@ -179,6 +179,61 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void warpGridEntryUsesWarpIdentityAndAvailabilityFlag()
+    {
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QString warp, rotation;
+        for (const auto& node : document.Deformers()) {
+            if (node.type == live2dstruct::CModelDeformer::Warp && warp.isEmpty()) warp = node.id;
+            if (node.type == live2dstruct::CModelDeformer::Rotation && rotation.isEmpty()) rotation = node.id;
+        }
+        QVERIFY(!warp.isEmpty() && !rotation.isEmpty());
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetWarpGridResizeEnabled(true);
+        auto* button = panel.findChild<QPushButton*>("inspectorResizeWarpGrid"); QVERIFY(button); QVERIFY(!button->isEnabled());
+        panel.SetSelection(warp, "warp"); QVERIFY(button->isEnabled()); QVERIFY(!button->isHidden());
+        QSignalSpy resize(&panel, &CInspectorPanel::ResizeWarpGridRequested); button->click(); QCOMPARE(resize.count(), 1); QCOMPARE(resize.first().first().toString(), warp);
+        panel.SetWarpGridResizeEnabled(false); button->click(); QCOMPARE(resize.count(), 1); QVERIFY(!button->isEnabled());
+        panel.SetWarpGridResizeEnabled(true); panel.SetSelection(rotation, "rotation"); QVERIFY(!button->isEnabled()); QVERIFY(button->isHidden());
+        panel.SetSelection(warp, "warp"); QVERIFY(button->isEnabled());
+        panel.SetSelections({warp, rotation}, {"warp", "rotation"}); QVERIFY(!button->isEnabled()); QVERIFY(button->isHidden());
+        panel.ClearSelection(); QVERIFY(!button->isEnabled());
+    }
+    void deformerNamePresentationPreservesGeometryItemsAndUndoIdentity_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::newRow("warp") << QString("warp"); QTest::newRow("rotation") << QString("rotation");
+    }
+    void deformerNamePresentationPreservesGeometryItemsAndUndoIdentity()
+    {
+        QFETCH(QString, type);
+        live2dstruct::CModelDocument document; QString error;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error));
+        QString id;
+        for (const auto& node : document.Deformers())
+            if ((type == "warp" && node.type == live2dstruct::CModelDeformer::Warp && !node.warpKeyforms.isEmpty()) ||
+                (type == "rotation" && node.type == live2dstruct::CModelDeformer::Rotation && !node.rotationKeyforms.isEmpty())) { id = node.id; break; }
+        QVERIFY(!id.isEmpty());
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type); panel.SetRenameDeformerEnabled(true);
+        auto* table = panel.findChild<QTableWidget*>(type == "warp" ? "warpKeyformTable" : "rotationKeyformTable");
+        QVERIFY(table && table->rowCount()); auto* item = table->item(0, 1); QVERIFY(item);
+        const auto form = panel.GetActiveGeometryKeyformIndex();
+        auto* name = panel.findChild<QLabel*>("inspectorDeformerName"); auto* button = panel.findChild<QPushButton*>("inspectorRenameDeformer");
+        QVERIFY(name && button); QCOMPARE(name->text(), id); QVERIFY(button->isEnabled());
+        QSignalSpy rename(&panel, &CInspectorPanel::RenameDeformerRequested); button->click();
+        QCOMPARE(rename.count(), 1); QCOMPARE(rename.first().at(0).toString(), id); QCOMPARE(rename.first().at(1).toString(), type);
+        table->editItem(item);
+        auto* editor = table->findChild<QLineEdit*>(); QVERIFY(editor);
+        editor->setText("0.123456"); const QPointer<QLineEdit> pending(editor);
+        live2dstruct::CModelEdit edit;
+        QVERIFY(document.MakeDeformerDisplayNameEdit(id, QStringLiteral("新名称 🌙"), edit, &error)); QVERIFY(document.ExecuteEdit(edit));
+        panel.RefreshSelection(); QCOMPARE(name->text(), QStringLiteral("新名称 🌙")); QCOMPARE(table->item(0, 1), item);
+        QCOMPARE(panel.GetSelectionId(), id); QCOMPARE(panel.GetActiveGeometryKeyformIndex(), form);
+        QVERIFY(pending); QCOMPARE(pending->text(), QString("0.123456"));
+        QVERIFY(document.UndoEdit()); panel.RefreshSelection(); QCOMPARE(name->text(), id); QCOMPARE(table->item(0, 1), item);
+        QVERIFY(pending); QCOMPARE(pending->text(), QString("0.123456"));
+        QTest::keyClick(pending, Qt::Key_Escape);
+        panel.SetLockedState({type + '|' + id}); QVERIFY(!button->isEnabled());
+        panel.ClearSelection(); QVERIFY(!button->isEnabled());
+    }
     void metricMemoReadsCurrentRolesAndCompleteOptions()
     {
         live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));

@@ -265,7 +265,7 @@ struct CGeometryPairsDialog::State
     QDialogButtonBox* buttons = nullptr;
 };
 
-CGeometryPairsDialog::CGeometryPairsDialog(const live2dstruct::CModelDocument& document, const CCidJson* displayInfo,
+CGeometryPairsDialog::CGeometryPairsDialog(const live2dstruct::CModelDocument& document, const CCidJson*,
                                            const QVector<Pairs::Object>& selection, QWidget* parent)
     : QDialog(parent), m_state(std::make_shared<State>(document))
 {
@@ -283,7 +283,7 @@ CGeometryPairsDialog::CGeometryPairsDialog(const live2dstruct::CModelDocument& d
         result->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon); result->setMinimumWidth(0);
         result->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         auto* view = new QListView(result); view->setTextElideMode(Qt::ElideNone); view->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); result->setView(view);
-        connect(result, &QComboBox::currentTextChanged, result, [result](const QString& text) { result->setToolTip(text); }); return result;
+        connect(result, &QComboBox::currentTextChanged, result, [result](const QString& text) { result->setToolTip(QStringLiteral("<qt>%1</qt>").arg(text.toHtmlEscaped())); }); return result;
     };
     const auto button = [&](const QString& label, const QString& name, QLayout* row, auto action) {
         auto* result = new QPushButton(label, s.content); result->setObjectName(name); result->setAutoDefault(false);
@@ -295,7 +295,7 @@ CGeometryPairsDialog::CGeometryPairsDialog(const live2dstruct::CModelDocument& d
     auto* form = new QFormLayout; form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow); form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     s.first = combo("geometryPairFirst"); s.second = combo("geometryPairSecond");
     const auto addObject = [&](Pairs::Type type, const QString& id) {
-        QString name = displayInfo && type != Pairs::Type::ArtMesh ? displayInfo->getDeformerName(id) : QString();
+        QString name = type != Pairs::Type::ArtMesh ? document.DeformerDisplayName(id) : QString();
         const auto typeName = type == Pairs::Type::ArtMesh ? QStringLiteral("ArtMesh") : type == Pairs::Type::Warp ? QStringLiteral("Warp") : QStringLiteral("Rotation");
         const auto label = (name.isEmpty() || name == id ? id : name + QStringLiteral(" · ") + id) + QStringLiteral(" (%1)").arg(typeName);
         for (auto* target : {s.first, s.second}) { target->addItem(label, id); target->setItemData(target->count() - 1, int(type), Qt::UserRole + 1); }

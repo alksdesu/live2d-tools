@@ -80,6 +80,7 @@ public:
     void FinishDrag();
     bool DragHasChanges() const;
     bool IsActive() const { return !m_target.isEmpty(); }
+    bool IsPublishing() const { return m_publishing; }
     bool IsDragging() const { return m_drag.has_value() || m_deformerDrag.has_value(); }
     const QString& Target() const { return m_target; }
     const QString& Type() const { return m_type; }

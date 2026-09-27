@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <stdexcept>
 
 namespace live2dstruct {
 namespace {
@@ -24,6 +25,100 @@ bool fail(QString* error, const QString& message)
 {
     if (error) *error = message;
     return false;
+}
+
+bool validWarpStructure(const CSectionTable& table, QString* error)
+{
+    constexpr qint64 maximumReferences = 1000000;
+    qint64 references = 0;
+    QVector<QPair<int, int>> positions;
+    const auto consume = [&](qint64 count) {
+        if (count < 0 || count > maximumReferences - references)
+            return fail(error, QStringLiteral("Warp 结构引用总量超过限制"));
+        references += count;
+        return true;
+    };
+    const auto range = [](qint64 first, qint64 count, qint64 size) {
+        return count == 0 ? first >= -1 && first <= size
+                          : first >= 0 && count > 0 && first <= size && count <= size - first;
+    };
+    const auto forms = [&](int first, int count, int vertices) {
+        if (!consume(count))
+            return false;
+        if (!range(first, count, table.warp_deformer_keyforms.size()))
+            return fail(error, QStringLiteral("Warp 关键形引用越界"));
+        for (int row = first; row < first + count; ++row) {
+            const auto* form = table.warp_deformer_keyforms[row];
+            const int begin = form->keyform_position_sources_begin_indices;
+            const qint64 coordinates = qint64(vertices) * 2;
+            if (!range(begin, coordinates, table.keyform_positions->xys.size()) || !std::isfinite(form->opacities))
+                return fail(error, QStringLiteral("Warp 关键形位置引用或透明度无效"));
+            positions.append({ begin, int(begin + coordinates) });
+        }
+        return true;
+    };
+    for (const auto* warp : table.warp_deformers) {
+        if (!consume(1))
+            return false;
+        const qint64 vertices
+            = warp->rows >= 0 && warp->columns >= 0 ? (qint64(warp->rows) + 1) * (qint64(warp->columns) + 1) : 0;
+        if (vertices < 1 || vertices != warp->vertex_counts)
+            return fail(error, QStringLiteral("Warp 行列数与控制点数量不一致"));
+        if (!forms(warp->keyform_sources_begin_indices, warp->keyform_sources_counts, warp->vertex_counts))
+            return false;
+    }
+    for (const auto* shape : table.blend_shapes_warp_deformers) {
+        if (!consume(1))
+            return false;
+        const int target = shape->target_indices;
+        const int first = shape->blend_shape_keyform_binding_sources_begin_indices;
+        const int count = shape->blend_shape_keyform_binding_sources_counts;
+        if (target < 0 || target >= table.warp_deformers.size()
+            || !range(first, count, table.blend_shape_keyform_bindings.size()))
+            return fail(error, QStringLiteral("Warp BlendShape 目标或绑定引用越界"));
+        if (!consume(count))
+            return false;
+        for (int row = first; row < first + count; ++row) {
+            const auto* binding = table.blend_shape_keyform_bindings[row];
+            if (!forms(binding->keyform_sources_blend_shape_indices, binding->keyform_sources_blend_shape_counts,
+                    table.warp_deformers[target]->vertex_counts))
+                return false;
+        }
+    }
+    std::sort(positions.begin(), positions.end());
+    int checked = 0;
+    for (const auto& interval : positions) {
+        for (int index = std::max(checked, interval.first); index < interval.second; ++index)
+            if (!std::isfinite(table.keyform_positions->xys[index]))
+                return fail(error, QStringLiteral("Warp 关键形位置包含非有限值"));
+        checked = std::max(checked, interval.second);
+    }
+    return true;
+}
+
+CDeformerStructureRequest ownedDeformerRequest(const CDeformerStructureRequest& source)
+{
+    const auto text = [](const QString& value) {
+        if (value.size() > 64) throw std::length_error("Deformer identifier exceeds MOC capacity");
+        return QString(value.constData(), value.size());
+    };
+    CDeformerStructureRequest result = source;
+    result.sourceDigest = QByteArray(source.sourceDigest.constData(), source.sourceDigest.size());
+    result.expectedAuthoringDigest = QByteArray(source.expectedAuthoringDigest.constData(), source.expectedAuthoringDigest.size());
+    std::visit([&](auto& operation) { operation.id = text(operation.id); }, result.operation);
+    if (auto* insertion = std::get_if<CMocDeformerStructureBuilder::InsertRequest>(&result.operation)) {
+        insertion->parentId = text(insertion->parentId);
+        if (insertion->children.size() > 1000000) throw std::length_error("Too many deformer children");
+        QVector<CMocDeformerStructureBuilder::Owner> children;
+        children.reserve(insertion->children.size());
+        for (const auto& child : insertion->children) children.append({child.type, text(child.id)});
+        insertion->children.swap(children);
+        if (auto* warp = std::get_if<CMocDeformerStructureBuilder::Warp>(&insertion->shape)) {
+            if (warp->positions.size() > 1000000) throw std::length_error("Too many warp coordinates");
+            warp->positions = QVector<float>(warp->positions.cbegin(), warp->positions.cend());
+        }
+    }
+    return result;
 }
 
 template<class T> QMap<QString, T> ordered(const QHash<QString, T>& values)
@@ -317,6 +412,8 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     case CModelEdit::ParameterMetadata:
         captureEntries(state, "parameters", m_parameterValues, ids);
         captureEntries(state, "metadata", m_parameterMetadataOverrides, ids); break;
+    case CModelEdit::DeformerDisplayName:
+        captureEntries(state, "deformerNames", m_deformerDisplayNames, ids); break;
     case CModelEdit::Opacity: captureEntries(state, "opacity", m_drawableOpacityOverrides, ids); break;
     case CModelEdit::DrawOrder: captureEntries(state, "drawOrder", m_drawableDrawOrderOverrides, ids); break;
     case CModelEdit::KeyformPositions: captureEntries(state, "positions", m_drawableKeyformPositionOverrides, ids); break;
@@ -354,6 +451,7 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         restoreEntries(state, "masks", m_drawableMaskIndexOverrides) && restoreEntries(state, "inverted", m_drawableMaskInvertedOverrides) &&
         restoreEntries(state, "parents", m_deformerParentOverrides) && restoreEntries(state, "warp", m_deformerWarpKeyformOverrides) &&
         restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides) &&
+        restoreEntries(state, "deformerNames", m_deformerDisplayNames) &&
         restoreEntries(state, "materials", m_drawableMaterialOverrides))) return false;
     if (state.contains("geometryObjectPairs")) {
         const auto value = state.value("geometryObjectPairs");
@@ -374,6 +472,8 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     CModelDocument check = *this;
     const QString& id = edit.name;
     switch (edit.field) {
+    case CModelEdit::DeformerDisplayName:
+        return check.SetDeformerDisplayNames(m_deformerDisplayNames) && check.DeformerDisplayName(id) == DeformerDisplayName(id);
     case CModelEdit::AtlasLayout:
         return ValidateAtlasEditStorage(edit);
     case CModelEdit::DrawableMaterials:
@@ -430,6 +530,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"columns", QVariant::fromValue(m_structure.columns)},
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
+        {"deformerDisplayNames", QVariant::fromValue(m_deformerDisplayNames)},
         {"parameterOrganization", QVariant::fromValue(m_parameterOrganization)},
         {"geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs)},
         {"textureWorkspace", QVariant::fromValue(m_textureWorkspace)},
@@ -495,6 +596,7 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
         auto sourceReader = CReader::FromBytes(m_sourceBytes), workingReader = CReader::FromBytes(working);
         CSectionTable sourceTable(sourceReader), workingTable(workingReader);
         if (!sourceTable.IsValid() || !workingTable.IsValid()) return fail(error, sourceReader.Error() + workingReader.Error());
+        if (!validWarpStructure(workingTable, error)) return false;
         if (!auxiliaryIdentity(m_sourceBytes, sourceTable, working, workingTable, meshStructure, error)) return false;
     }
     CModelDocument original, next;
@@ -657,6 +759,10 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     next.m_textureWorkspaceFingerprint = m_textureWorkspaceFingerprint;
     next.m_artwork = m_artwork;
     next.m_artworkFingerprint = m_artworkFingerprint;
+    CDeformerDisplayNames::State names;
+    for (const auto& node : next.m_deformers)
+        if (m_deformerDisplayNames.contains(node.id)) names.insert(node.id, m_deformerDisplayNames.value(node.id));
+    if (!next.SetDeformerDisplayNames(names, error)) return false;
     QStringList beforeIds, afterIds;
     for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
     for (const auto& parameter : next.m_parameters) afterIds.append(parameter.id);
@@ -742,12 +848,14 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
         return fail(error, QStringLiteral("参数结构状态来源或字段不匹配"));
     QHash<QString, float> parameters;
     QSet<QString> locks;
+    CDeformerDisplayNames::State names;
     if (!read(state, "meshStructure", session.meshStructure) ||
         !read(state, "deformerStructure", session.deformerStructure) ||
         !read(state, "materialStructure", session.materialStructure) || !read(state, "materials", session.drawableMaterials) ||
         !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
         !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
         !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
+        !read(state, "deformerDisplayNames", names) ||
         !read(state, "parameterOrganization", session.parameterOrganization) ||
         !read(state, "geometryObjectPairs", session.geometryObjectPairs) ||
         !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
@@ -758,6 +866,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
         !read(state, "inverted", session.drawableMaskInverted))
         return fail(error, QStringLiteral("参数结构状态类型无效"));
     session.parameters = ordered(parameters);
+    session.deformerDisplayNames = std::move(names);
     for (const auto& lock : locks) session.locked.insert(lock, true);
     session.sourceDigest = m_sourceDigest;
     session.sourceMoc = m_sourcePath;
@@ -775,6 +884,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
+    session.version = 13;
     return true;
 }
 
@@ -891,12 +1001,13 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
 {
     if (error) error->clear();
     try {
-        if (!m_loaded || request.sourceDigest != m_sourceDigest || request.operation.valueless_by_exception())
+        if (!m_loaded || request.sourceDigest != m_sourceDigest || request.expectedAuthoringDigest.size() != 32 || request.operation.valueless_by_exception())
             return fail(error, QStringLiteral("变形器编辑请求与源模型不匹配"));
+        const auto frozen = ownedDeformerRequest(request);
         QByteArray base;
         if (!BuildPreviewMoc(base, error)) return false;
         CDeformerStructureReplay::Impact impact;
-        if (!CDeformerStructureReplay::Analyze(base, request, impact, error)) return false;
+        if (!CDeformerStructureReplay::Analyze(base, frozen, impact, error)) return false;
         if (!impact.blockingReasons.isEmpty()) return fail(error, impact.blockingReasons.join(QLatin1Char('\n')));
         QVector<Builder::BindingRequest> affected;
         QSet<QPair<int, QString>> visited;
@@ -916,7 +1027,7 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
             return false;
         };
         auto sourceIds = m_sourceDeformerIds;
-        if (const auto* insertion = std::get_if<CMocDeformerStructureBuilder::InsertRequest>(&request.operation)) {
+        if (const auto* insertion = std::get_if<CMocDeformerStructureBuilder::InsertRequest>(&frozen.operation)) {
             if (!addDeformer(insertion->parentId)) return fail(error, QStringLiteral("新变形器的父级不存在"));
             QSet<int> parts;
             for (int part = insertion->partIndex; part != -1; part = m_parts[part].parentIndex) {
@@ -925,14 +1036,24 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
                 parts.insert(part);
             }
             sourceIds.remove(insertion->id);
+        } else if (const auto* removal = std::get_if<CMocDeformerStructureBuilder::RemoveRequest>(&frozen.operation)) {
+            if (!addDeformer(removal->id)) return fail(error, QStringLiteral("要删除的变形器不存在"));
+            sourceIds.remove(removal->id);
         } else {
-            const auto& removal = std::get<CMocDeformerStructureBuilder::RemoveRequest>(request.operation);
-            if (!addDeformer(removal.id)) return fail(error, QStringLiteral("要删除的变形器不存在"));
-            sourceIds.remove(removal.id);
+            const auto& resize = std::get<CMocDeformerStructureBuilder::ResizeWarpRequest>(frozen.operation);
+            if (!addDeformer(resize.id)) return fail(error, QStringLiteral("要调整网格的变形器不存在"));
         }
         if (!canBind(*this, affected, error)) return false;
         CMocDeformerStructureBuilder::Result result;
-        if (!CDeformerStructureReplay::Build(base, request, result, error)) return false;
+        if (!CDeformerStructureReplay::Build(base, frozen, result, error)) return false;
+        if (impact.structure.warpGrid && impact.structure.warpGrid->oldRows == impact.structure.warpGrid->newRows &&
+            impact.structure.warpGrid->oldColumns == impact.structure.warpGrid->newColumns) {
+            CModelEdit command{impact.structure.id, QStringLiteral("deformer"), CModelEdit::DeformerStructure,
+                               AuthoringStructureState(), AuthoringStructureState(), -1, false};
+            command.deformerRequest = std::make_shared<const CDeformerStructureRequest>(frozen);
+            edit = std::move(command);
+            return true;
+        }
         Builder::ColumnState structure;
         if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
         CModelDocument candidate;
@@ -941,7 +1062,7 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
         if (!ReconcileGeometryObjectPairs(candidate, {}, nullptr, nullptr, error)) return false;
         CModelEdit command{impact.structure.id, QStringLiteral("deformer"), CModelEdit::DeformerStructure,
                            AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
-        command.deformerRequest = std::make_shared<const CDeformerPreserveRequest>(request);
+        command.deformerRequest = std::make_shared<const CDeformerStructureRequest>(frozen);
         command.runtime = std::make_shared<CModelEditRuntimeState>();
         edit = std::move(command);
         return true;

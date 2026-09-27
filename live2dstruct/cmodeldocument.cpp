@@ -145,6 +145,7 @@ void CModelDocument::Clear()
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
     m_parameterMetadataOverrides.clear();
+    m_deformerDisplayNames.clear();
     m_parameterOrganization = {};
     m_geometryObjectPairs = {};
     m_drawableKeyformPositionOverrides.clear();
@@ -1130,6 +1131,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         return SetGeometryObjectPairs(state);
     }
     if (!HasValidStructureRequests(edit)) return false;
+    if (edit.field == CModelEdit::DeformerDisplayName) return ApplyDeformerDisplayNameEdit(edit, forward);
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == CModelEdit::ParameterOrganization) {
         const auto type = QMetaType::fromType<CParameterOrganization::State>();
@@ -1250,6 +1252,13 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
             (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
+        if (command.field == CModelEdit::DeformerDisplayName) {
+            if (!CanEditDeformerDisplayName(command.name) || command.before.metaType() != QMetaType::fromType<QString>() ||
+                command.after.metaType() != QMetaType::fromType<QString>()) return false;
+            const auto copy = [](const QString& text) { return QString(text.constData(), text.size()); };
+            command.name = copy(command.name); command.type = copy(command.type);
+            command.before = copy(command.before.toString()); command.after = copy(command.after.toString());
+        }
         if (command.field == CModelEdit::AtlasLayout) {
             if (command.type != QLatin1String("textures") || command.name != QLatin1String("atlases") || command.index != -1 ||
                 command.coalesce || command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue ||

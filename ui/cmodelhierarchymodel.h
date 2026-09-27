@@ -45,6 +45,8 @@ public:
     QMap<QString, bool> UpdateVisibility(const QMap<QString, bool>& values);
     QStringList UpdateLocked(const QMap<QString, bool>& values);
     void NotifyObjects(const QStringList& keys);
+    QStringList UpdateDeformerDisplayNames(const QMap<QString, QString>& names);
+    void NotifyDisplayNames(const QStringList& keys);
     static QString Key(const QModelIndex& index);
 
 signals:

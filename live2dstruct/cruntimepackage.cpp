@@ -1,4 +1,5 @@
 #include "cruntimepackage.h"
+#include "cdeformerdisplaynames.h"
 #include "cartworkpackage.h"
 #include "cmocdeformerorder.h"
 #include "cmodeluserdata.h"
@@ -84,6 +85,11 @@ bool validateRequestStorage(const Package::Request& request, QString* error)
         if (!string(it.key()) || !bytes(it->source) || !ids(it->suppressedIds)) return false;
     for (auto it = request.parameterMetadata.cbegin(); it != request.parameterMetadata.cend(); ++it)
         if (!string(it.key()) || !string(it->displayName)) return false;
+    if (request.deformerDisplayNames) {
+        if (!CDeformerDisplayNames::Validate(*request.deformerDisplayNames, error)) return false;
+        for (auto it = request.deformerDisplayNames->cbegin(); it != request.deformerDisplayNames->cend(); ++it)
+            if (!string(it.key()) || !string(it.value())) return false;
+    }
     CParameterOrganization::State organization;
     CGeometryObjectPairs::State pairs;
     if (!CParameterOrganization::Normalize(request.parameterOrganization, organization, error) ||
@@ -151,6 +157,11 @@ bool freezeRequest(const Package::Request& input, Package::Request& result, QStr
     for (auto it = input.parameterMetadata.cbegin(); it != input.parameterMetadata.cend(); ++it) {
         auto metadata = it.value(); metadata.displayName = owned(metadata.displayName);
         candidate.parameterMetadata.insert(owned(it.key()), metadata);
+    }
+    if (input.deformerDisplayNames) {
+        candidate.deformerDisplayNames.emplace();
+        for (auto name = input.deformerDisplayNames->cbegin(); name != input.deformerDisplayNames->cend(); ++name)
+            candidate.deformerDisplayNames->insert(owned(name.key()), owned(name.value()));
     }
     for (auto& node : candidate.parameterOrganization.nodes) {
         node.id = owned(node.id); node.parentFolder = owned(node.parentFolder);
@@ -400,7 +411,7 @@ private:
 bool displayInfo(const QByteArray& source, const CModelDocument& original, const CModelDocument& current,
                  const QHash<QString, CModelParameterMetadata>& metadata,
                  const CParameterOrganization::State& organization, const CGeometryObjectPairs::State& geometryPairs,
-                 QByteArray& result, QString* error)
+                 const std::optional<QMap<QString, QString>>& deformerNames, QByteArray& result, QString* error)
 {
     QJsonObject root;
     if (!source.isEmpty() && !object(source, root, error)) return false;
@@ -518,6 +529,29 @@ bool displayInfo(const QByteArray& source, const CModelDocument& original, const
             if (!deleted) retained.append(value);
         }
         root.insert(QStringLiteral("CombinedParameters"), retained);
+    }
+    if (deformerNames) {
+        QJsonObject names;
+        if (!CDeformerDisplayNames::ToJson(*deformerNames, names, error)) return false;
+        root.insert(QStringLiteral("Live2DToolsDeformerNames"), QJsonObject{{QStringLiteral("Version"), 1}, {QStringLiteral("Names"), names}});
+        if (root.contains(QStringLiteral("Deformers"))) {
+            QJsonArray rows, retained;
+            if (!array(root, QStringLiteral("Deformers"), rows, error)) return false;
+            QSet<QString> currentDeformers, named;
+            for (const auto& node : current.Deformers()) currentDeformers.insert(node.id);
+            for (const auto& value : rows) {
+                if (!value.isObject()) return fail(error, QStringLiteral("显示信息变形器不是对象"));
+                auto row = value.toObject();
+                const auto id = row.value(QStringLiteral("Id"));
+                if (!id.isString() || !text(id.toString())) return fail(error, QStringLiteral("显示信息变形器 ID 无效"));
+                if (!currentDeformers.contains(id.toString()) || named.contains(id.toString())) continue;
+                row.insert(QStringLiteral("Name"), deformerNames->value(id.toString(), id.toString()));
+                named.insert(id.toString()); retained.append(row);
+            }
+            for (auto name = deformerNames->cbegin(); name != deformerNames->cend(); ++name)
+                if (!named.contains(name.key())) retained.append(QJsonObject{{QStringLiteral("Id"), name.key()}, {QStringLiteral("Name"), name.value()}});
+            root.insert(QStringLiteral("Deformers"), retained);
+        }
     }
     result = !originalBytes.isEmpty() && root == originalRoot ? originalBytes : QJsonDocument(root).toJson(QJsonDocument::Indented);
     return true;
@@ -662,6 +696,13 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
         if (!CMocDeformerOrder::Normalize(request.mocBytes, runtimeMoc, error)) return false;
         CModelDocument original, current;
         if (!original.LoadBytes(sourceMoc, mocPath, error) || !current.LoadBytes(runtimeMoc, mocPath, error)) return false;
+        if (request.deformerDisplayNames) {
+            QSet<QString> deformers;
+            for (const auto& node : current.Deformers()) deformers.insert(node.id);
+            for (auto name = request.deformerDisplayNames->cbegin(); name != request.deformerDisplayNames->cend(); ++name)
+                if (!deformers.contains(name.key())) return fail(error, QStringLiteral("名称引用了不存在的变形器：%1").arg(name.key()));
+            if (!current.SetDeformerDisplayNames(*request.deformerDisplayNames, error)) return false;
+        }
         QSet<QString> oldIds, currentIds;
         for (const auto& p : original.Parameters()) oldIds.insert(p.id);
         for (const auto& p : current.Parameters()) currentIds.insert(p.id);
@@ -747,7 +788,7 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             if (field == QLatin1String("Pose") && !pose(data, current, error)) return false;
             if (field == QLatin1String("MotionSync") && !motionSync(data, removed | request.references.modelSuppressedIds, error)) return false;
             if (field == QLatin1String("DisplayInfo") && !displayInfo(data, original, current, request.parameterMetadata,
-                                                                    request.parameterOrganization, geometryPairs, data, error)) return false;
+                                                                    request.parameterOrganization, geometryPairs, request.deformerDisplayNames, data, error)) return false;
             if (field == QLatin1String("UserData")) {
                 CModelUserData validated;
                 if (!validated.FromJson(data, error)) return false;
@@ -764,7 +805,7 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             return true;
         };
         const bool needsDisplay = request.parameterOrganization.configured || !geometryPairs.sourceDigest.isEmpty() ||
-            !request.parameterMetadata.isEmpty() || oldIds != currentIds;
+            !request.parameterMetadata.isEmpty() || request.deformerDisplayNames.has_value() || oldIds != currentIds;
         std::optional<QByteArray> display;
         if (files.value(QStringLiteral("DisplayInfo")).toString().isEmpty() && needsDisplay) display = QByteArray();
         if (!scalar(QStringLiteral("Physics"), QStringLiteral(".physics3.json"), request.physics, Editor::Kind::Physics) ||

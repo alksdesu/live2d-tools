@@ -49,6 +49,7 @@ public:
         QHash<QString, QVector<live2dstruct::CModelRotationKeyform>> deformerRotationKeyformOverrides;
         QHash<QString, QVector<live2dstruct::CModelWarpKeyform>> deformerWarpKeyformOverrides;
         QHash<QString, bool> drawableMaskInverted;
+        std::optional<QMap<QString, QString>> deformerDisplayNames;
     };
 
     struct PhysicsExport {

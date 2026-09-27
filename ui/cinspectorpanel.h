@@ -38,6 +38,8 @@ public:
     void RefreshSelection();
     bool SyncActiveKeyform(const QString& id, const QString& type, int keyform, bool refresh = true);
     void SetLockedState(const QSet<QString>& lockedKeys);
+    void SetRenameDeformerEnabled(bool enabled);
+    void SetWarpGridResizeEnabled(bool enabled);
     void SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler);
     void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);
     void SetKeyformHandler(std::function<bool(const QString&, int, QString*)> handler);
@@ -54,6 +56,8 @@ public slots:
     void SyncHistoryState();
 
 signals:
+    void RenameDeformerRequested(const QString& id, const QString& type);
+    void ResizeWarpGridRequested(const QString& id);
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
     void VisibilityBatchChanged(const QMap<QString, bool>& values);
     void DrawableOpacityChanged(const QString& name, float opacity);
@@ -126,6 +130,11 @@ private:
     QLabel* m_emptyLabel = nullptr;
     QLabel* m_typeLabel = nullptr;
     QLabel* m_idLabel = nullptr;
+    QLabel* m_nameLabel = nullptr;
+    QPushButton* m_renameDeformer = nullptr;
+    bool m_renameEnabled = false;
+    QPushButton* m_resizeWarpGrid = nullptr;
+    bool m_warpGridResizeEnabled = false;
     QLabel* m_parentLabel = nullptr;
     QLabel* m_deformerLabel = nullptr;
     QLabel* m_visibilityLabel = nullptr;

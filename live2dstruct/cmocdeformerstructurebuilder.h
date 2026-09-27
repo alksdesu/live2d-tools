@@ -2,7 +2,10 @@
 #define CMOCDEFORMERSTRUCTUREBUILDER_H
 
 #include "cmocparameterstructurebuilder.h"
+#include <optional>
 #include <variant>
+
+class CExportControl;
 
 namespace live2dstruct {
 class CMocDeformerStructureBuilder
@@ -34,13 +37,33 @@ public:
     struct RemoveRequest {
         QString id;
     };
-    struct Impact {
+    struct ResizeWarpRequest
+    {
+        QString id;
+        int rows = 2;
+        int columns = 2;
+    };
+    struct WarpGridImpact
+    {
+        int oldRows = 0;
+        int oldColumns = 0;
+        int newRows = 0;
+        int newColumns = 0;
+        int ordinaryKeyforms = 0;
+        int blendKeyforms = 0;
+        QVector<int> oldToNew;
+        bool exactInteriorSubdivision = false;
+        QStringList limitations;
+    };
+    struct Impact
+    {
         QString id;
         QString parentId;
         int partIndex = -1;
         int insertedIndex = -1;
         QVector<Owner> reparented;
         QVector<int> oldDeformerToNew;
+        std::optional<WarpGridImpact> warpGrid;
     };
     struct Result {
         QByteArray bytes;
@@ -52,6 +75,10 @@ public:
     static bool Insert(const QByteArray&, const InsertRequest&, Result&, QString* error = nullptr);
     static bool AnalyzeRemove(const QByteArray&, const RemoveRequest&, Impact&, QString* error = nullptr);
     static bool Remove(const QByteArray&, const RemoveRequest&, Result&, QString* error = nullptr);
+    static bool AnalyzeResizeWarp(const QByteArray&, const ResizeWarpRequest&, Impact&, QString* error = nullptr,
+        CExportControl* control = nullptr);
+    static bool ResizeWarp(const QByteArray&, const ResizeWarpRequest&, Result&, QString* error = nullptr,
+        CExportControl* control = nullptr);
 };
 }
 

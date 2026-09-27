@@ -1,4 +1,5 @@
 #include "cmocmeshstructurebuilder.h"
+#include "cmocgeometrypool.h"
 #include "cmeshtopology.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
@@ -35,74 +36,8 @@ void appendIndex(QByteArray& bytes, int value)
     char encoded[2]; qToLittleEndian(quint16(value), encoded); bytes.append(encoded, 2);
 }
 
-struct AllocationFailure
-{
-    QString message;
-};
-
-class PoolSpace
-{
-public:
-    PoolSpace() = default;
-    PoolSpace(int count, QString label)
-        : highWater(count)
-        , label(std::move(label))
-    {
-        if (count < 0 || count > MaximumCount)
-            throw AllocationFailure { QStringLiteral("网格结构的 %1 数量超过 1000000").arg(this->label) };
-    }
-    void protect(int first, qint64 count)
-    {
-        if (!count) {
-            if (first < -1 || first > highWater)
-                throw AllocationFailure { QStringLiteral("网格结构的 %1 空引用范围无效").arg(label) };
-            return;
-        }
-        if (!range(first, count, highWater))
-            throw AllocationFailure { QStringLiteral("网格结构的 %1 存活引用越界").arg(label) };
-        occupied.append({ first, first + int(count) });
-    }
-    void prepare()
-    {
-        std::sort(occupied.begin(), occupied.end());
-        int end = 0;
-        for (const auto& interval : occupied) {
-            if (interval.first > end)
-                free.insert(end, interval.first);
-            end = std::max(end, interval.second);
-        }
-        if (end < MaximumCount)
-            free.insert(end, MaximumCount);
-        occupied.clear();
-    }
-    int allocate(int count, qint64& work)
-    {
-        if (count < 0 || count > MaximumCount)
-            throw AllocationFailure { QStringLiteral("网格结构的 %1 数量超过 1000000").arg(label) };
-        if (!count)
-            return 0;
-        for (auto it = free.begin(); it != free.end(); ++it) {
-            if (++work > 16000000)
-                throw AllocationFailure { QStringLiteral("网格结构空闲区间分配超过工作量限制") };
-            if (count > it.value() - it.key())
-                continue;
-            const int first = it.key(), end = it.value();
-            free.erase(it);
-            if (first + count < end)
-                free.insert(first + count, end);
-            highWater = std::max(highWater, first + count);
-            return first;
-        }
-        throw AllocationFailure { QStringLiteral("网格结构的 %1 没有足够连续空间，池数量限制为 1000000").arg(label) };
-    }
-    int size() const { return highWater; }
-
-private:
-    int highWater = 0;
-    QString label;
-    QVector<QPair<int, int>> occupied;
-    QMap<int, int> free;
-};
+using AllocationFailure = detail::CMocGeometryAllocationFailure;
+using PoolSpace = detail::CMocGeometryPool;
 
 struct Storage
 {

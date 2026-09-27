@@ -17,7 +17,7 @@ QMap<QString, float> values(const CModelDocument& document)
     return result;
 }
 CDeformerPreserveRequest requestFor(const CModelDocument& document,
-                                  std::variant<Builder::InsertRequest, Builder::RemoveRequest> operation)
+                                  decltype(CDeformerStructureRequest::operation) operation)
 {
     QByteArray bytes;
     if (!document.BuildPreviewMoc(bytes)) return {};

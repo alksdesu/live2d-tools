@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QHBoxLayout>
 #include <QSet>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -148,6 +149,9 @@ void CModelTreePanel::InstallInteractions(CModelHierarchyView* view, CModelHiera
         const auto type = index.data(Qt::UserRole + 1).toString();
         if (!visible && (type == QLatin1String("warp") || type == QLatin1String("rotation"))) emit ShowDeformers({});
     });
+    auto* rename = new QShortcut(QKeySequence(Qt::Key_F2), view);
+    rename->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(rename, &QShortcut::activated, this, [this, view] { RequestRename(view); });
     view->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(view, &QWidget::customContextMenuRequested, this,
             [this, view](const QPoint& position) { ShowContextMenu(view, position); });
@@ -343,6 +347,8 @@ void CModelTreePanel::ShowContextMenu(CModelHierarchyView* view, const QPoint& p
     auto* solo = menu.addAction(QStringLiteral("独显选中对象"));
     auto* show = menu.addAction(QStringLiteral("显示全部对象"));
     menu.addSeparator();
+    auto* rename = menu.addAction(QStringLiteral("重命名…"));
+    rename->setEnabled(CanRename(view));
     auto* create = menu.addAction(QStringLiteral("新建变形器"));
     auto* remove = menu.addAction(QStringLiteral("删除变形器"));
     create->setEnabled(m_createDeformer->isEnabled());
@@ -363,6 +369,10 @@ void CModelTreePanel::ShowContextMenu(CModelHierarchyView* view, const QPoint& p
         else emit ViewGeometryPairRequested();
         return;
     }
+    if (chosen == rename) {
+        if (selectionKeys(view) == selected) RequestRename(view);
+        return;
+    }
     if (chosen == create) { emit CreateDeformerRequested(); return; }
     if (chosen == remove) { emit RemoveDeformerRequested(); return; }
     locks = LockedState();
@@ -377,4 +387,32 @@ void CModelTreePanel::ShowContextMenu(CModelHierarchyView* view, const QPoint& p
                 if (!locks.value(state.key(), false)) state.value() = true;
         PublishVisibility(states);
     }
+}
+
+void CModelTreePanel::SetRenameDeformerEnabled(bool enabled) { m_renameEnabled = enabled; }
+
+bool CModelTreePanel::CanRename(CModelHierarchyView* view) const
+{
+    if (!m_renameEnabled) return false;
+    const auto selected = view->selectionModel()->selectedRows();
+    if (selected.size() != 1) return false;
+    const auto type = selected.first().data(Qt::UserRole + 1).toString();
+    return (type == QLatin1String("warp") || type == QLatin1String("rotation")) &&
+        !selected.first().data(Qt::UserRole + 2).toBool();
+}
+
+void CModelTreePanel::RequestRename(CModelHierarchyView* view)
+{
+    if (!CanRename(view)) return;
+    const auto index = view->selectionModel()->selectedRows().first();
+    const QString id = index.data(Qt::UserRole).toString(), type = index.data(Qt::UserRole + 1).toString();
+    emit RenameDeformerRequested(id, type);
+}
+
+void CModelTreePanel::ApplyDeformerDisplayNames(const QMap<QString, QString>& names)
+{
+    const auto changed = m_partModel->UpdateDeformerDisplayNames(names);
+    const QPointer<CModelTreePanel> panel(this);
+    m_partModel->NotifyDisplayNames(changed);
+    if (panel) m_deformerModel->NotifyDisplayNames(changed);
 }

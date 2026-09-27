@@ -1,15 +1,22 @@
 #include "mainwindow.h"
 #include "psdbatchjob.h"
 #include "cdeformercreatedialog.h"
+#include "cdeformerrenamedialog.h"
+#include "cdeformergriddialog.h"
+#include "cinspectorpanel.h"
+#include "cblendshapepanel.h"
 #include "cmodeltreepanel.h"
+#include "para/ccidjson.h"
 #include "live2d/LAppLive2DManager.hpp"
 #include "live2d/LAppModel.hpp"
+#include "live2d/cwarpgridpreview.h"
 #include "live2dstruct/cdeformerstructurereplay.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/tree/cartmeshnode.h"
 #include "live2dstruct/tree/crotationnode.h"
 #include <QCryptographicHash>
 #include <QMessageBox>
+#include <QScopeGuard>
 #include <QStatusBar>
 #include <algorithm>
 #include <cmath>
@@ -130,7 +137,9 @@ bool createContext(const Document& document, const QStringList& ids, const QStri
         if (parent >= document.Deformers().size()) return fail(QStringLiteral("选中对象的父级无效"));
         const auto& node = document.Deformers()[parent];
         context.parentId = node.id;
-        context.parentLabel = node.id;
+        const auto displayName = document.DeformerDisplayName(node.id);
+        context.parentLabel = displayName == node.id ? node.id
+            : QStringLiteral("%1（%2）").arg(displayName, node.id);
         if (node.type == Deformer::Warp) {
             context.warp.rows = node.rows;
             context.warp.columns = node.columns;
@@ -182,7 +191,217 @@ void MainWindow::RefreshDeformerActions()
                                      m_selectedObjectTypes.first() == QLatin1String("rotation"));
     m_treePanel->SetDeformerActionsEnabled(ready, ready && deformer &&
         !m_document.IsLocked(m_selectedObjectTypes.first(), m_selectedObjectIds.first()));
+    m_treePanel->SetRenameDeformerEnabled(ready);
+    if (m_inspectorPanel) {
+        m_inspectorPanel->SetRenameDeformerEnabled(ready);
+        m_inspectorPanel->SetWarpGridResizeEnabled(ready);
+    }
     RefreshGeometryPairActions();
+}
+
+bool MainWindow::InitializeDeformerDisplayNames(Document& document, QString* error) const
+{
+    if (error) error->clear();
+    live2dstruct::CDeformerDisplayNames::State imported;
+    if (m_cidJson) imported = m_cidJson->DeformerDisplayNames();
+    Document source;
+    if (!source.LoadBytes(document.SourceBytes(), document.SourcePath(), error)) return false;
+    if (!m_cidJson || !m_cidJson->HasDeformerDisplayNamesExtension()) {
+        QSet<QString> ids;
+        for (const auto& object : source.Deformers()) ids.insert(object.id);
+        for (auto item = imported.begin(); item != imported.end();)
+            if (!ids.contains(item.key()) || item.value().isEmpty()) item = imported.erase(item); else ++item;
+    }
+    if (!source.SetDeformerDisplayNames(imported, error)) return false;
+    live2dstruct::CDeformerDisplayNames::State names;
+    for (const auto& object : document.Deformers())
+        if ((!document.HasDeformerStructure() || document.SourceDeformerIds().contains(object.id)) &&
+            source.DeformerDisplayNames().contains(object.id))
+            names.insert(object.id, source.DeformerDisplayName(object.id));
+    return document.SetDeformerDisplayNames(names, error);
+}
+
+void MainWindow::RefreshDeformerDisplayNames()
+{
+    const QPointer<MainWindow> alive(this);
+    if (m_treePanel) m_treePanel->ApplyDeformerDisplayNames(m_document.DeformerDisplayNames());
+    if (!alive) return;
+    if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    if (!alive) return;
+    if (m_blendShapePanel) m_blendShapePanel->RefreshDeformerDisplayNames();
+    if (!alive) return;
+    RefreshWindowTitle();
+    if (alive) RefreshUndoActions();
+}
+
+bool MainWindow::CancelDeformerDialogs()
+{
+    if ((m_deformerRenameDialog && m_deformerRenameDialog->IsSubmitting()) ||
+        (m_deformerGridDialog && (m_deformerGridDialog->IsPreparing() || m_deformerGridDialog->IsSubmitting()))) return false;
+    const QPointer<MainWindow> alive(this);
+    if (m_deformerRenameDialog) m_deformerRenameDialog->reject();
+    if (!alive) return false;
+    if (m_deformerGridDialog) m_deformerGridDialog->reject();
+    return !alive.isNull();
+}
+
+void MainWindow::RenameDeformer(const QString& id, const QString& type)
+{
+    if (m_deformerGridDialog) { m_deformerGridDialog->raise(); return; }
+    if (m_deformerRenameDialog) { m_deformerRenameDialog->raise(); return; }
+    const QPointer<MainWindow> alive(this);
+    QString error;
+    if (!AuthoringReady(&error) || !FinishParameterValueEditing(&error) || !alive ||
+        m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
+    if (!m_openglwindows || !m_openglwindows->FinishMeshDrag(false, &error) || !alive) return;
+    if (m_selectedObjectIds != QStringList{id} || m_selectedObjectTypes != QStringList{type} ||
+        (type != QLatin1String("warp") && type != QLatin1String("rotation"))) return;
+    const auto currentName = m_document.DeformerDisplayName(id);
+    if (currentName.isEmpty()) return;
+    const auto source = m_document.SourceDigest(); const auto path = m_document.SourcePath();
+    const auto revision = m_document.Revision();
+    auto* dialog = new CDeformerRenameDialog(id, type, currentName, this);
+    m_deformerRenameDialog = dialog;
+    const QPointer<CDeformerRenameDialog> child(dialog);
+    const auto cleanup = qScopeGuard([child] { if (child) delete child; });
+    dialog->SetSubmissionHandler([alive, id, type, source, path, revision](const QString& name, QString* detail) {
+        if (!alive || !alive->AuthoringReady(detail) || alive->m_document.Revision() != revision ||
+            alive->m_document.SourceDigest() != source || alive->m_document.SourcePath() != path ||
+            alive->m_selectedObjectIds != QStringList{id} || alive->m_selectedObjectTypes != QStringList{type}) {
+            if (detail) *detail = QStringLiteral("模型或选区已改变，请重新打开重命名窗口");
+            return false;
+        }
+        live2dstruct::CModelEdit command;
+        if (!alive->m_document.MakeDeformerDisplayNameEdit(id, name, command, detail)) return false;
+        if (command.type != type) { if (detail) *detail = QStringLiteral("变形器类型已改变"); return false; }
+        if (command.before == command.after) return true;
+        return alive->SubmitInspectorEdit(command, detail);
+    });
+    dialog->exec();
+}
+
+void MainWindow::ResizeWarpGrid(const QString& id)
+{
+    if (m_deformerGridDialog) { m_deformerGridDialog->raise(); return; }
+    if (m_deformerRenameDialog) { m_deformerRenameDialog->raise(); return; }
+    const QPointer<MainWindow> alive(this);
+    QString error;
+    if (!AuthoringReady(&error) || !FinishParameterValueEditing(&error) || !alive ||
+        m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
+    if (!m_openglwindows || !m_openglwindows->FinishMeshDrag(false, &error) || !alive || !RuntimeMatchesDocument(&error)) return;
+    if (m_selectedObjectIds != QStringList{id} || m_selectedObjectTypes != QStringList{QStringLiteral("warp")}) return;
+    const auto found = std::find_if(m_document.Deformers().cbegin(), m_document.Deformers().cend(),
+        [&](const auto& value) { return value.id == id && value.type == Deformer::Warp; });
+    if (found == m_document.Deformers().cend()) return;
+    QByteArray authoring, runtime;
+    if (!m_document.BuildPreviewMoc(authoring, &error) || !m_document.BuildRuntimeMoc(runtime, &error)) {
+        statusBar()->showMessage(error, 8000); return;
+    }
+    Builder::Impact impact;
+    if (!Builder::AnalyzeResizeWarp(authoring, {id, found->rows, found->columns}, impact, &error) || !impact.warpGrid) {
+        statusBar()->showMessage(error, 8000); return;
+    }
+    auto* manager = LAppLive2DManager::GetInstance();
+    auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+    if (!model || !model->GetModel()) return;
+    Live2D::Cubism::Framework::CubismModel::RuntimeValueSnapshot values;
+    if (!model->GetModel()->CaptureRuntimeValues(values, &error)) { statusBar()->showMessage(error, 8000); return; }
+    CWarpGridPreview::Request previewRequest;
+    previewRequest.beforeMoc = std::move(runtime);
+    for (int index = 0; index < values.parameterIds.size(); ++index)
+        previewRequest.parameters.insert(values.parameterIds[index], values.parameterValues[index]);
+    for (int index = 0; index < values.partIds.size(); ++index)
+        previewRequest.partOpacities.insert(values.partIds[index], values.partOpacities[index]);
+    const auto source = m_document.SourceDigest(); const auto path = m_document.SourcePath();
+    const auto digest = QCryptographicHash::hash(authoring, QCryptographicHash::Sha256);
+    const auto revision = m_document.Revision();
+    const auto baseline = std::make_shared<const Document>(m_document);
+    CDeformerGridDialog::Context context;
+    context.id = id; context.name = m_document.DeformerDisplayName(id);
+    context.rows = found->rows; context.columns = found->columns; context.quad = found->quadTransform;
+    context.ordinaryKeyforms = impact.warpGrid->ordinaryKeyforms;
+    context.blendKeyforms = impact.warpGrid->blendKeyforms;
+    context.initialKeyform = m_keyformEditor.IsActive() && m_keyformEditor.Type() == QLatin1String("warp") &&
+        m_keyformEditor.Target() == id ? m_keyformEditor.Keyform() : 0;
+    struct Prepared {
+        int rows = 0, columns = 0;
+        std::shared_ptr<Document> document;
+        live2dstruct::CModelEdit command;
+        CWarpGridPreview::Result preview;
+        QString limitations;
+    };
+    const auto prepared = std::make_shared<Prepared>();
+    const auto current = [alive, id, source, path, revision](QString* detail) {
+        if (!alive || !alive->AuthoringReady(detail) || alive->m_document.Revision() != revision ||
+            alive->m_document.SourceDigest() != source || alive->m_document.SourcePath() != path ||
+            alive->m_selectedObjectIds != QStringList{id} ||
+            alive->m_selectedObjectTypes != QStringList{QStringLiteral("warp")} ||
+            alive->m_batchExporting || alive->m_psdBatch || alive->m_previewExport.IsBusy()) {
+            if (detail) *detail = QStringLiteral("模型或选区已改变，请重新打开网格调整窗口");
+            return false;
+        }
+        return true;
+    };
+    const auto prepare = [baseline, prepared, current, source, digest, id, authoring, previewRequest, context]
+        (int rows, int columns, int keyform, CDeformerGridDialog::Preview& result, QString* detail) {
+        if (!current(detail)) return false;
+        if (!prepared->document || prepared->rows != rows || prepared->columns != columns) {
+            const Builder::ResizeWarpRequest operation{id, rows, columns};
+            live2dstruct::CModelEdit command;
+            if (!baseline->MakeDeformerStructureEdit({operation, source, digest}, command, detail)) return false;
+            auto candidate = std::make_shared<Document>(*baseline);
+            if (command.before != command.after && !candidate->ExecuteEdit(command)) {
+                if (detail) *detail = QStringLiteral("无法准备网格调整候选"); return false;
+            }
+            auto request = previewRequest;
+            if (!candidate->BuildRuntimeMoc(request.afterMoc, detail)) return false;
+            CWarpGridPreview::Result evaluated;
+            if (!CWarpGridPreview::Build(request, evaluated, detail) || !current(detail)) return false;
+            Builder::Impact change;
+            if (!Builder::AnalyzeResizeWarp(authoring, operation, change, detail) || !change.warpGrid) return false;
+            Prepared next;
+            next.rows = rows; next.columns = columns; next.document = std::move(candidate);
+            next.command = std::move(command); next.preview = std::move(evaluated);
+            next.limitations = change.warpGrid->limitations.join(QLatin1Char('\n'));
+            if (next.preview.closedMeshEdges)
+                next.limitations += QStringLiteral("\n部分网格没有开放边界，预览显示其连接线。");
+            if (next.document->GeometryObjectPairs() != baseline->GeometryObjectPairs())
+                next.limitations += QStringLiteral("\n受网格变化影响的对象配对需要重新检查。");
+            *prepared = std::move(next);
+        }
+        const auto before = baseline->DeformerWarpKeyforms(id);
+        const auto after = prepared->document->DeformerWarpKeyforms(id);
+        if (before.size() != after.size() || keyform < -1 || keyform >= before.size() || (keyform < 0 && !before.isEmpty())) {
+            if (detail) *detail = QStringLiteral("预览关键形已失效"); return false;
+        }
+        CDeformerGridDialog::Preview next;
+        if (keyform >= 0) {
+            for (int index = 0; index + 1 < before[keyform].positions.size(); index += 2)
+                next.beforeGrid.append(QPointF(before[keyform].positions[index], before[keyform].positions[index + 1]));
+            for (int index = 0; index + 1 < after[keyform].positions.size(); index += 2)
+                next.afterGrid.append(QPointF(after[keyform].positions[index], after[keyform].positions[index + 1]));
+        }
+        next.beforeContours = prepared->preview.beforeContours;
+        next.afterContours = prepared->preview.afterContours;
+        next.maximumDisplacementPixels = prepared->preview.maximumDisplacementPixels;
+        next.summary = QStringLiteral("将重采样全部 %1 个普通关键形和 %2 个融合关键形。\n模型边界使用打开窗口时的姿态，位移按原始画布像素计算。")
+            .arg(context.ordinaryKeyforms).arg(context.blendKeyforms);
+        next.limitations = prepared->limitations;
+        result = std::move(next);
+        return true;
+    };
+    const auto apply = [alive, current, prepared](int rows, int columns, QString* detail) {
+        if (!current(detail)) return false;
+        if (!prepared->document || prepared->rows != rows || prepared->columns != columns) {
+            if (detail) *detail = QStringLiteral("请先更新网格预览"); return false;
+        }
+        return alive->SubmitInspectorEdit(prepared->command, detail);
+    };
+    auto* dialog = new CDeformerGridDialog(std::move(context), prepare, apply, this);
+    m_deformerGridDialog = dialog;
+    const QPointer<CDeformerGridDialog> child(dialog);
+    const auto cleanup = qScopeGuard([child] { if (child) delete child; });
+    dialog->exec();
 }
 
 void MainWindow::CreateDeformer()

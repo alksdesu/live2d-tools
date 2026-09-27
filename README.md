@@ -26,6 +26,8 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Searchable and collapsible parameter groups with undo/redo history
 - Edit parameter names, ranges, defaults, decimal precision and repeat settings; range changes and the current base value share one undo step and session restore path
 - Versioned editor sessions (parameters, visibility and camera) with recent-model shortcuts and persistent workspace layout/theme
+- Rename Warp and Rotation deformers from the Inspector or structure tree while retaining their IDs, bindings and active keyform. Names support undo/redo, v13 sessions, this tool's CDI extension, runtime packages and CMO3 authoring objects.
+- Resize an existing Warp conversion grid across all ordinary and Blend Shape keyforms. Preview the selected control grid and all mesh boundaries, including hidden meshes, at the captured pose before applying one undo step. Resampling can change deformation, especially outside the grid or when reducing divisions; the preview reports displacement in original canvas pixels. This edits conversion divisions, not Bézier authoring controllers.
 - ArtMesh and Warp point editing offers move, rectangle, lasso, distance falloff and an influence brush. Hard selections alone control topology operations; soft and painted weights scale movement. Brush strokes have separate undo/redo, while geometric edits use document history.
 - Mesh editing, pairing, sessions, previews and exports preserve unsigned 16-bit indices through 65535. Topology structure edits support up to 65536 vertices; larger source vertex arrays remain readable when their indices are valid. Dense mesh checks use spatial filtering, and repeated edits reuse free storage instead of exhausting it through accumulated copies.
 - Distance influence can follow mesh edges, stay within connected islands, or cross islands within the object. Brush radius, hardness and per-stroke strength are adjustable; retracing one stroke does not repeatedly accumulate weight. Painted fields survive keyform changes but are temporary and are cleared when loading a session.
@@ -37,7 +39,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Atlas workspace: create and rename atlases, resize the canvas while preserving pixel density, move or copy material regions across atlases, rotate by 90°, and automatically pack overlapping material groups. PNG replacement, atlas changes, and UV edits share document undo/redo. Sessions preserve generated atlases; unused generated tail slots can be removed.
 - Repacking copies RGBA pixels and sampling margins. Existing source atlases stay available, and minified previews may differ after mipmaps are rebuilt.
 - PSD sources: import RGB 8-bit PSD layers, align them against existing atlas pixels, explicitly associate ArtMeshes, and selectively update them from another source revision. Unique Photoshop layer IDs support matching across renames and reordering; ambiguous matches require confirmation. Missing layers can keep their previous artwork.
-- Source revisions, original bytes, and mesh associations are preserved in work sessions (v12). Atlas movement and supported vertex edits migrate associations; manual texture replacement detaches affected links. Reimport samples the frozen source rather than repeatedly resampling edited atlases.
+- Source revisions, original bytes, and mesh associations are preserved in work sessions (v13, with earlier sessions still readable). Atlas movement and supported vertex edits migrate associations; manual texture replacement detaches affected links. Reimport samples the frozen source rather than repeatedly resampling edited atlases.
 - Runtime package export can optionally include source artwork, including old revisions and unassociated sources. Reopening the moved package in this tool restores source links against the exported model and texture slots. Damaged or mismatched artwork attachments produce a persistent message while the runtime model remains usable; save a work session to retain view settings and object locks.
 - PSD import supports raw, RLE, ZIP and ZIP prediction. PSB, other color modes/depths, and pixel-equivalent reconstruction of masks, effects or unsupported blends are not supported. Color policy and layer-opacity baking are explicit. CMO3 preserves the resulting model and textures but currently does not preserve these PSD source revisions or associations.
 
@@ -176,7 +178,9 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 参数分组可折叠，支持名称/ID 搜索、撤销/重做；可保存和载入版本化工作会话（参数、可见性、视图）
 - 可编辑参数名称、范围、默认值、小数位和循环设置；范围变化与当前基线值一起撤销，并通过会话恢复
 - 模型结构面板支持为同部件、同直接父级的选区创建 Warp／Rotation；可设置 ID、Warp 行列和插值方式，也可在部件或根级创建空变形器。删除前检查子对象全部关键形的保形转换，成功后支持撤销、会话保存和运行时模型包导出
-- 变形器结构编辑只接受可证明保形的变换；不支持的动画父级、非线性转换或绑定会给出原因。部分旋转／反射转换可能产生微小的浮点舍入差异，不保证逐位一致
+- 变形器创建／删除的保形转换只接受已验证的变换；不支持的动画父级、非线性转换或绑定会给出原因。部分旋转／反射转换可能产生微小的浮点舍入差异，不保证逐位一致
+- 可从属性面板或结构树修改 Warp／Rotation 显示名，保留 ID、绑定与活动关键形。名称支持撤销／重做、会话 v13、本工具的 CDI 扩展、运行时模型包及 CMO3 工程对象
+- 已有 Warp 可调整转换分段，全部普通／融合关键形一并重采样。应用前可查看所选控制网格与打开窗口时姿态的全部网格边界（含隐藏网格），位移按原始画布像素显示；减少分段或网格外外推可能改变形状。这里编辑的是转换分段，不是 Bézier 创作控制器
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
 - ArtMesh 与 Warp 共用选择／移动、框选、套索、距离柔化和影响笔刷。只有硬选点参与删除、连边等拓扑操作，其余权重只决定移动幅度；笔触有独立撤回／重做，模型形变仍使用文档历史
 - 网格编辑、配对、会话、预览和导出完整保留 0–65535 的无符号索引，拓扑结构编辑最多支持 65536 个顶点；更大来源顶点数组在索引合法时仍可读取。稠密网格校验使用空间筛选，连续编辑会复用空闲存储，避免旧数据累积导致过早失败
@@ -189,7 +193,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 图集编辑支持新建、命名、保持像素密度的画布尺寸调整、跨图集素材搬移、90°旋转和自动排布；重叠素材成组处理，保护未选对象仍使用的像素。PNG 替换、图集变化与 UV 编辑共用文档撤销／重做，生成图集可保存到会话与模型包，可删除未引用的生成尾槽
 - 重排复制 RGBA 像素及采样边带；原图集保持可用，重建 mipmap 后的缩小显示可能存在差异
 - PSD 来源导入：读取 RGB 8-bit 图层，对照现有图集配准，明确关联 ArtMesh，再从新来源版本选择性更新。唯一 Photoshop 图层 ID 支持改名和调序后的匹配；歧义匹配需要确认，缺失图层可保留旧素材
-- 工作会话 v12 保存原始来源字节、版本和网格关联；图集搬移及支持的顶点编辑迁移关联，手工替换纹理会断开受影响的链接。重新导入从冻结原图采样，避免对已编辑图集反复重采样
+- 工作会话 v13 保存原始来源字节、版本和网格关联，并继续读取旧版会话；图集搬移及支持的顶点编辑迁移关联，手工替换纹理会断开受影响的链接。重新导入从冻结原图采样，避免对已编辑图集反复重采样
 - 导出运行时模型包时，可选择包含来源素材，包括旧版本与未关联来源。把包移到新目录后用本工具打开，会按导出的模型和纹理槽恢复来源关联；附件损坏或不匹配时保留明确提示，运行模型仍可使用。对象锁定、视图等编辑状态仍通过工作会话保存
 - PSD 导入支持 RAW、RLE、ZIP 和 ZIP prediction；不支持 PSB、其它色彩模式／位深，以及蒙版、效果或不支持混合模式的像素等价重建。颜色策略和图层透明度烘焙需明确选择。CMO3 保留最终模型和贴图，当前不保留这些 PSD 来源版本和关联
 - 图集支持同尺寸 PNG 替换、恢复原图和撤销／重做；覆盖随工作会话保存，并用于画布、PNG、PSD、cmo3 与运行时模型包。原素材文件保持不变，共用同一路径的多个纹理槽可独立替换

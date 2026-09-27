@@ -53,6 +53,7 @@ SOURCES += \
     ui/cmodelhierarchymodel.cpp \
     ui/cmodelhierarchyview.cpp \
     live2d/cdeformerdrag.cpp \
+    live2d/cwarpgridpreview.cpp \
     live2dstruct/ccanvasgeometry.cpp \
     live2dstruct/cdraworder.cpp \
     live2dstruct/cmeshtopology.cpp \
@@ -64,11 +65,16 @@ SOURCES += \
     ui/ckeyformmatrix.cpp \
     ui/cbindingkeysdialog.cpp \
     ui/cdeformercreatedialog.cpp \
+    ui/cdeformerrenamedialog.cpp \
+    ui/cdeformergriddialog.cpp \
     ui/cmodeldiagnosticspanel.cpp \
     ui/cuserdatapanel.cpp \
     opengl/cmeshbounds.cpp \
     opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
+    live2dstruct/cdeformerdisplaynames.cpp \
+    live2dstruct/cmodeldocumentnames.cpp \
+    live2dstruct/cwarpgridresampler.cpp \
     live2dstruct/cmodeldocumentstructure.cpp \
     live2dstruct/cmodeldocumentmeshverification.cpp \
     live2dstruct/cparameterreferences.cpp \
@@ -338,6 +344,7 @@ HEADERS += \
     ui/cmodelhierarchymodel.h \
     ui/cmodelhierarchyview.h \
     live2d/cdeformerdrag.h \
+    live2d/cwarpgridpreview.h \
     live2dstruct/ccanvasgeometry.h \
     live2dstruct/cdraworder.h \
     live2dstruct/cdrawableflags.h \
@@ -355,12 +362,17 @@ HEADERS += \
     ui/ckeyformmatrix.h \
     ui/cbindingkeysdialog.h \
     ui/cdeformercreatedialog.h \
+    ui/cdeformerrenamedialog.h \
+    ui/cdeformergriddialog.h \
     ui/cmodeldiagnosticspanel.h \
     ui/cuserdatapanel.h \
     ui/ctableeditdelegate.h \
     opengl/cmeshbounds.h \
     opengl/cuvgeometry.h \
     live2dstruct/cmodeldocument.h \
+    live2dstruct/cdeformerdisplaynames.h \
+    live2dstruct/cwarpgridresampler.h \
+    live2dstruct/cmocgeometrypool.h \
     live2dstruct/ckeyformbindinggrid.h \
     live2dstruct/ckeyformgridsnapshot.h \
     live2dstruct/ckeyformmappingcontext.h \

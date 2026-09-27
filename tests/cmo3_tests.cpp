@@ -170,7 +170,7 @@ private slots:
             ? QStringLiteral("CWarpDeformerSource") : QStringLiteral("CRotationDeformerSource");
         for (const QString& type : {QStringLiteral("CArtMeshSource"), deformerType, QStringLiteral("CPartSource")}) {
             QVERIFY2(objects.contains(type + '/' + id), qPrintable(type));
-            QCOMPARE(objects.value(type + '/' + id), withCdi ? QStringLiteral("CDI 非参数对象") : id);
+            QCOMPARE(objects.value(type + '/' + id), withCdi && type == QLatin1String("CPartSource") ? QStringLiteral("CDI 非参数对象") : id);
         }
     }
 

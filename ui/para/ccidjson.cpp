@@ -1,4 +1,5 @@
 #include "ccidjson.h"
+#include "live2dstruct/cdeformerdisplaynames.h"
 #include <QJsonParseError>
 #include <QCryptographicHash>
 #include <QFileInfo>
@@ -108,8 +109,18 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
         groupsToParameters[groupRows.value(groupId)].vetParam.append(id);
     }
 
-    // 解析 Deformers（部分模型可能包含）
-    if(qt.contains("Deformers")){
+    const auto namesExtension = qt.value(QStringLiteral("Live2DToolsDeformerNames"));
+    const bool hasNamesExtension = !namesExtension.isUndefined();
+    if (hasNamesExtension) {
+        const auto names = namesExtension.toObject();
+        if (!namesExtension.isObject() || names.value(QStringLiteral("Version")) != QJsonValue(1) ||
+            !names.value(QStringLiteral("Names")).isObject()) {
+            if (error) *error = QStringLiteral("CDI 变形器名称扩展格式或版本无效");
+            return false;
+        }
+        if (!live2dstruct::CDeformerDisplayNames::FromJson(names.value(QStringLiteral("Names")).toObject(), deformersIdToName, error)) return false;
+    }
+    if(!hasNamesExtension && qt.contains("Deformers")){
         QJsonArray deformers;
         if (!readArray(QStringLiteral("Deformers"), &deformers)) { return false; }
         for(int i = 0; i < deformers.size(); i++){
@@ -142,6 +153,7 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     m_GroupIdToName.swap(groupIdToName);
     m_ParametersIdToName.swap(parametersIdToName);
     m_DeformersIdToName.swap(deformersIdToName);
+    m_hasDeformerNamesExtension = hasNamesExtension;
     m_VetGroupToParam.swap(groupsToParameters);
     m_CombinedParameters.swap(combinedParameters);
     m_CombinedParamSet.swap(combinedParameterSet);

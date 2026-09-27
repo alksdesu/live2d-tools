@@ -568,8 +568,30 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
 
     m_typeLabel = new QLabel(content);
     m_idLabel = new QLabel(content);
+    m_idLabel->setObjectName(QStringLiteral("inspectorObjectId"));
+    m_nameLabel = new QLabel(content);
+    m_nameLabel->setObjectName(QStringLiteral("inspectorDeformerName"));
+    m_renameDeformer = new QPushButton(QStringLiteral("重命名…"), content);
+    m_renameDeformer->setObjectName(QStringLiteral("inspectorRenameDeformer"));
+    m_renameDeformer->setEnabled(false);
+    connect(m_renameDeformer, &QPushButton::clicked, this, [this] {
+        if (!m_renameEnabled || m_submitting || m_selectionNames.size() != 1 ||
+            (m_selectionType != QLatin1String("warp") && m_selectionType != QLatin1String("rotation")) ||
+            IsLocked(m_selectionType, m_selectionName)) return;
+        const QString id = m_selectionName, type = m_selectionType;
+        emit RenameDeformerRequested(id, type);
+    });
     m_parentLabel = new QLabel(content);
     m_deformerLabel = new QLabel(content);
+    m_resizeWarpGrid = new QPushButton(QStringLiteral("调整转换网格…"), content);
+    m_resizeWarpGrid->setObjectName(QStringLiteral("inspectorResizeWarpGrid"));
+    m_resizeWarpGrid->setToolTip(QStringLiteral("调整水平与垂直转换分段，统一更新全部普通和融合关键形"));
+    m_resizeWarpGrid->setEnabled(false);
+    connect(m_resizeWarpGrid, &QPushButton::clicked, this, [this] {
+        if (!m_warpGridResizeEnabled || m_submitting || m_selectionNames.size() != 1 || m_selectionType != QLatin1String("warp")) return;
+        const QString id = m_selectionName;
+        emit ResizeWarpGridRequested(id);
+    });
     m_deformerParentCombo = new InspectorComboBox(content);
     m_deformerParentCombo->setObjectName(QStringLiteral("deformerParentSelector"));
     m_deformerParentCombo->setEnabled(false);
@@ -666,7 +688,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     for (int i = 0; i < keyformButtons.size(); ++i)
         keyformToolsLayout->addWidget(keyformButtons[i], i / 2, i % 2);
 
-    for (QLabel* value : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
+    for (QLabel* value : {m_typeLabel, m_idLabel, m_nameLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         value->setTextFormat(Qt::PlainText);
@@ -676,10 +698,18 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         value->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     }
     form->addRow(QStringLiteral("类型"), m_typeLabel);
+    auto* nameRow = new QWidget(content);
+    nameRow->setProperty("inspectorTypes", QStringList{QStringLiteral("warp"), QStringLiteral("rotation")});
+    auto* nameLayout = new QHBoxLayout(nameRow);
+    nameLayout->setContentsMargins(0, 0, 0, 0);
+    nameLayout->addWidget(m_nameLabel, 1);
+    nameLayout->addWidget(m_renameDeformer);
+    form->addRow(QStringLiteral("名称"), nameRow);
     form->addRow(QStringLiteral("ID"), m_idLabel);
     form->addRow(QStringLiteral("所属 Part"), m_parentLabel);
     form->addRow(QStringLiteral("父变形器"), m_deformerLabel);
     form->addRow(QStringLiteral("编辑父变形器"), m_deformerParentCombo);
+    form->addRow(m_resizeWarpGrid);
     form->addRow(QStringLiteral("可见 / 启用"), m_visibilityLabel);
     form->addRow(QStringLiteral("编辑可见性"), m_visibilityCheck);
     form->addRow(QStringLiteral("编辑透明度"), m_opacitySpin);
@@ -777,6 +807,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_visibilityCheck->setProperty("inspectorTypes", QStringList{QStringLiteral("part"), QStringLiteral("artmesh"),
         QStringLiteral("warp"), QStringLiteral("rotation"), QStringLiteral("multiple")});
     m_deformerParentCombo->setProperty("inspectorTypes", QStringList{QStringLiteral("warp"), QStringLiteral("rotation")});
+    m_resizeWarpGrid->setProperty("inspectorTypes", QStringList{QStringLiteral("warp")});
     m_geometryLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
     m_keyformLabel->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh")});
     m_keyformMatrix->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
@@ -1206,6 +1237,8 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
         return;
     }
     InvalidateProjection();
+    m_renameDeformer->setEnabled(false);
+    m_resizeWarpGrid->setEnabled(false);
     m_selectionName.clear();
     m_matrixSnapshot.reset();
     m_keyformMatrix->Clear();
@@ -1299,7 +1332,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
     m_updatingVisibility = false;
     m_emptyLabel->setText((allUnlocked ? QStringLiteral("已选择 %1 个对象，可在结构树中继续调整范围") :
         QStringLiteral("已选择 %1 个对象，锁定对象不受批量修改影响")).arg(names.size()));
-    for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
+    for (QLabel* label : {m_typeLabel, m_idLabel, m_nameLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         label->clear();
@@ -1909,6 +1942,8 @@ void CInspectorPanel::PasteCurrentKeyform()
 
 void CInspectorPanel::ClearSelection()
 {
+    m_renameDeformer->setEnabled(false);
+    m_resizeWarpGrid->setEnabled(false);
     InvalidateProjection();
     m_matrixSnapshot.reset();
     m_keyformMatrix->Clear();
@@ -1959,7 +1994,7 @@ void CInspectorPanel::ClearSelection()
     m_mergeVertices->setEnabled(false);
     m_transformVertices->setEnabled(false);
     m_updatingKeyform = false;
-    for (QLabel* label : {m_typeLabel, m_idLabel, m_parentLabel, m_deformerLabel,
+    for (QLabel* label : {m_typeLabel, m_idLabel, m_nameLabel, m_parentLabel, m_deformerLabel,
                           m_visibilityLabel, m_geometryLabel, m_textureLabel,
                           m_drawOrderLabel, m_blendLabel, m_maskLabel, m_keyformLabel}) {
         label->clear();
@@ -2275,6 +2310,10 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
         state.revision = revision; state.locks = owner->m_lockedKeys;
     });
     const bool unlocked = !IsLocked(type, name);
+    const bool deformerSelected = type == QLatin1String("warp") || type == QLatin1String("rotation");
+    m_nameLabel->setText(deformerSelected ? m_document->DeformerDisplayName(name) : QString());
+    m_renameDeformer->setEnabled(m_renameEnabled && deformerSelected && unlocked && !m_submitting);
+    m_resizeWarpGrid->setEnabled(m_warpGridResizeEnabled && type == QLatin1String("warp") && !m_submitting);
     if (!sameContext) {
         m_activeKeyformIndex = -1;
         m_activeDeformerKeyform = -1;
@@ -2413,7 +2452,9 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
                 if (candidate.id == name || (candidate.parentPartIndex != deformer.parentPartIndex &&
                     parentIndex != deformer.parentDeformerIndex &&
                     parentIndex != m_document->SourceDeformerParentIndex(deformer.id))) continue;
-                m_deformerParentCombo->addItem(candidate.id, parentIndex);
+                const auto displayName = m_document->DeformerDisplayName(candidate.id);
+                m_deformerParentCombo->addItem(displayName == candidate.id ? candidate.id :
+                    displayName + QStringLiteral(" · ") + candidate.id, parentIndex);
             }
             const int parentIndex = m_document->DeformerParentIndex(name);
             for (int comboIndex = 0; comboIndex < m_deformerParentCombo->count(); ++comboIndex) {
@@ -2460,4 +2501,18 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
         }
     }
     ClearSelection();
+}
+
+void CInspectorPanel::SetRenameDeformerEnabled(bool enabled)
+{
+    m_renameEnabled = enabled;
+    m_renameDeformer->setEnabled(enabled && !m_submitting && m_selectionNames.size() == 1 &&
+        (m_selectionType == QLatin1String("warp") || m_selectionType == QLatin1String("rotation")) &&
+        !IsLocked(m_selectionType, m_selectionName));
+}
+
+void CInspectorPanel::SetWarpGridResizeEnabled(bool enabled)
+{
+    m_warpGridResizeEnabled = enabled;
+    m_resizeWarpGrid->setEnabled(enabled && !m_submitting && m_selectionNames.size() == 1 && m_selectionType == QLatin1String("warp"));
 }

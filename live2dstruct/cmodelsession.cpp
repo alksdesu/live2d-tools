@@ -135,6 +135,20 @@ bool validArtwork(const CModelSession& session, int version, QString* error)
     return CModelArtwork::Validate(session.artwork, nullptr, error);
 }
 
+bool validDeformerNames(const CModelSession& session, int version, QString* error)
+{
+    if (!session.deformerDisplayNames) {
+        if (version < 13) return true;
+        setError(error, QStringLiteral("版本 13 会话缺少变形器名称对象"));
+        return false;
+    }
+    if (version < 13 || session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32) {
+        setError(error, QStringLiteral("变形器名称需要版本 13 及有效源模型指纹"));
+        return false;
+    }
+    return CDeformerDisplayNames::Validate(*session.deformerDisplayNames, error);
+}
+
 bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     qint64 bytes = 0;
@@ -208,7 +222,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 12) return {};
+    if (version < 1 || version > 13) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -224,6 +238,14 @@ QByteArray CModelSession::ToJson() const
     if ((materialStructure || !drawableMaterials.isEmpty()) && storedVersion < 10) storedVersion = 10;
     if (textureWorkspace && storedVersion < 11) storedVersion = 11;
     if (!artwork.IsEmpty() && storedVersion < 12) storedVersion = 12;
+    if (deformerDisplayNames && storedVersion < 13) storedVersion = 13;
+    if (!validDeformerNames(*this, storedVersion, nullptr)) return {};
+    if (storedVersion >= 13) {
+        QJsonObject names;
+        for (auto item = deformerDisplayNames->cbegin(); item != deformerDisplayNames->cend(); ++item)
+            names.insert(item.key(), item.value());
+        root.insert(QStringLiteral("deformerDisplayNames"), names);
+    }
     if (!validArtwork(*this, storedVersion, nullptr)) return {};
     if (storedVersion >= 12) {
         QJsonObject sources;
@@ -406,13 +428,21 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 12) {
+    if (parsedVersion < 1 || parsedVersion > 13) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    const auto names = root.value(QStringLiteral("deformerDisplayNames"));
+    if ((parsedVersion < 13 && !names.isUndefined()) || (parsedVersion >= 13 && !names.isObject())) {
+        setError(error, QStringLiteral("变形器名称需要版本 13 及有效对象")); return false;
+    }
+    if (parsedVersion >= 13) {
+        result.deformerDisplayNames.emplace();
+        if (!CDeformerDisplayNames::FromJson(names.toObject(), *result.deformerDisplayNames, error)) return false;
+    }
     const auto artwork = root.value(QStringLiteral("artwork"));
     if ((parsedVersion < 12 && !artwork.isUndefined()) || (parsedVersion >= 12 && !artwork.isObject())) {
         setError(error, QStringLiteral("素材关联需要版本 12 及有效对象")); return false;
@@ -517,6 +547,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDigest = decoded;
     }
+    if (!validDeformerNames(result, parsedVersion, error)) return false;
     if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
         setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
         return false;
@@ -876,7 +907,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 12) ||
+    if ((version < 1 || version > 13) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
@@ -884,6 +915,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace) ||
         (version < 12 && !artwork.IsEmpty()))
         return fail(QStringLiteral("version"));
+    if (!validDeformerNames(*this, version, error)) return false;
     CGeometryObjectPairs::State normalizedPairs;
     if (!CGeometryObjectPairs::Normalize(geometryObjectPairs, normalizedPairs, error) ||
         (!geometryObjectPairs.sourceDigest.isEmpty() && (sourceDigest.size() != 32 ||
@@ -958,6 +990,16 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
     }
     CModelMaterialState materialValues;
+    auto names = deformerDisplayNames.value_or(loaded.DeformerDisplayNames());
+    if (!deformerDisplayNames) {
+        QSet<QString> currentIds;
+        for (const auto& object : candidate.Deformers()) currentIds.insert(object.id);
+        for (auto item = names.begin(); item != names.end();)
+            if (!currentIds.contains(item.key()) || (candidate.HasDeformerStructure() && !candidate.SourceDeformerIds().contains(item.key())))
+                item = names.erase(item);
+            else ++item;
+    }
+    if (!candidate.SetDeformerDisplayNames(names, error)) return false;
     for (const auto& material : drawableMaterials) materialValues.append(material);
     if (!candidate.SetDrawableMaterials(materialValues, error)) return false;
     if (!candidate.SetParameterOrganization(normalizedOrganization, error)) return false;

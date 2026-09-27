@@ -33,6 +33,7 @@ public:
         qint64 maximumTotalBytes = 4LL * 1024 * 1024 * 1024;
         int maximumFiles = 10000;
         std::optional<CModelArtwork::State> artwork;
+        std::optional<QMap<QString, QString>> deformerDisplayNames;
     };
     struct Source {
         QString path;

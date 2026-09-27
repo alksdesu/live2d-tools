@@ -28,6 +28,7 @@ public:
 
 public slots:
     void RefreshParameterMetadata();
+    void RefreshDeformerDisplayNames();
     void CancelParameterGesture();
 
 signals:

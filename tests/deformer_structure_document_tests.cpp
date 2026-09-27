@@ -20,7 +20,7 @@ QByteArray preview(const CModelDocument& document)
     return bytes;
 }
 CDeformerPreserveRequest anchored(const CModelDocument& document,
-                                  std::variant<Raw::InsertRequest, Raw::RemoveRequest> operation)
+                                  decltype(CDeformerStructureRequest::operation) operation)
 {
     return {std::move(operation), document.SourceDigest(), QCryptographicHash::hash(preview(document), QCryptographicHash::Sha256)};
 }

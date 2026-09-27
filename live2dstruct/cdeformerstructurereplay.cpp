@@ -2,6 +2,7 @@
 #include "ckeyformbindinggrid.h"
 #include "csectiontable.h"
 #include "csectionvalidation.h"
+#include "std/cexportcontrol.h"
 #include <QCryptographicHash>
 #include <QSet>
 #include <QtEndian>
@@ -21,8 +22,31 @@ using Impact = CDeformerStructureReplay::Impact;
 constexpr int MaximumCount = 1000000;
 constexpr double Pi = 3.14159265358979323846;
 
-bool fail(QString* error, const QString& message) { if (error) *error = message; return false; }
-bool range(qint64 begin, qint64 count, qint64 size) { return begin >= 0 && count >= 0 && begin <= size && count <= size - begin; }
+bool fail(QString* error, const QString& message)
+{
+    if (error)
+        *error = message;
+    return false;
+}
+bool canceled(CExportControl* control, QString* error)
+{
+    if (!control || !control->IsCancellationRequested())
+        return false;
+    control->Checkpoint();
+    fail(error, control->Error().isEmpty() ? QStringLiteral("变形器结构操作已取消") : control->Error());
+    return true;
+}
+bool resizeSnapshot(const QByteArray& base, const CDeformerStructureRequest& request, QString* error)
+{
+    if (request.sourceDigest.size() != 32 || request.expectedAuthoringDigest.size() != 32
+        || QCryptographicHash::hash(base, QCryptographicHash::Sha256) != request.expectedAuthoringDigest)
+        return fail(error, QStringLiteral("Warp 网格请求与当前作者模型快照不一致"));
+    return true;
+}
+bool range(qint64 begin, qint64 count, qint64 size)
+{
+    return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
+}
 QByteArray integer(int value) { QByteArray bytes(4, Qt::Uninitialized); qToLittleEndian(qint32(value), bytes.data()); return bytes; }
 QByteArray floating(float value) { quint32 bits; std::memcpy(&bits, &value, 4); QByteArray bytes(4, Qt::Uninitialized); qToLittleEndian(bits, bytes.data()); return bytes; }
 float checkedFloat(double value)
@@ -647,25 +671,65 @@ template<class Action> bool execute(const QByteArray& base, const CDeformerPrese
 }
 }
 
-bool CDeformerStructureReplay::Analyze(const QByteArray& base, const CDeformerPreserveRequest& request, Impact& result, QString* error)
+bool CDeformerStructureReplay::Analyze(const QByteArray& base, const CDeformerPreserveRequest& request, Impact& result,
+    QString* error, CExportControl* control)
 {
+    if (error)
+        error->clear();
+    if (canceled(control, error))
+        return false;
+    if (const auto* resize = std::get_if<Raw::ResizeWarpRequest>(&request.operation)) {
+        if (!resizeSnapshot(base, request, error))
+            return false;
+        Impact candidate;
+        if (!Raw::AnalyzeResizeWarp(base, *resize, candidate.structure, error, control))
+            return false;
+        candidate.coordinateOwners.append({ Owner::Warp, candidate.structure.id });
+        candidate.numericalLimitations = candidate.structure.warpGrid->limitations;
+        result = std::move(candidate);
+        return true;
+    }
     return execute(base, request, error, [&](const auto&, const auto&, const auto&, Plan& plan) {
-        result = std::move(plan.impact); return true;
+        if (canceled(control, error))
+            return false;
+        result = std::move(plan.impact);
+        return true;
     });
 }
 
-bool CDeformerStructureReplay::Build(const QByteArray& base, const CDeformerPreserveRequest& request, Raw::Result& result, QString* error)
+bool CDeformerStructureReplay::Build(const QByteArray& base, const CDeformerPreserveRequest& request,
+    Raw::Result& result, QString* error, CExportControl* control)
 {
-    return execute(base, request, error, [&](const CSectionTable& table, const Catalog& ids, Columns& columns, Plan& plan) {
-        if (!plan.impact.blockingReasons.isEmpty()) return fail(error, plan.impact.blockingReasons.join(QLatin1Char('\n')));
-        for (const auto& item : plan.migrations) migrate(table, ids, columns, item);
-        QByteArray prepared = base;
-        if ((!columns.state.columns.isEmpty() || !columns.state.counts.isEmpty()) && !Codec::BuildColumnState(base, columns.state, prepared, error)) return false;
-        Raw::Result candidate;
-        const auto* insertion = std::get_if<Raw::InsertRequest>(&request.operation);
-        if (!(insertion ? Raw::Insert(prepared, *insertion, candidate, error) : Raw::Remove(prepared, std::get<Raw::RemoveRequest>(request.operation), candidate, error))) return false;
-        if (!Codec::CaptureColumnState(base, candidate.bytes, candidate.state, error)) return false;
-        result = std::move(candidate); return true;
-    });
+    if (error)
+        error->clear();
+    if (canceled(control, error))
+        return false;
+    if (const auto* resize = std::get_if<Raw::ResizeWarpRequest>(&request.operation)) {
+        if (!resizeSnapshot(base, request, error))
+            return false;
+        return Raw::ResizeWarp(base, *resize, result, error, control);
+    }
+    return execute(
+        base, request, error, [&](const CSectionTable& table, const Catalog& ids, Columns& columns, Plan& plan) {
+            if (!plan.impact.blockingReasons.isEmpty())
+                return fail(error, plan.impact.blockingReasons.join(QLatin1Char('\n')));
+            for (const auto& item : plan.migrations)
+                migrate(table, ids, columns, item);
+            QByteArray prepared = base;
+            if ((!columns.state.columns.isEmpty() || !columns.state.counts.isEmpty())
+                && !Codec::BuildColumnState(base, columns.state, prepared, error))
+                return false;
+            Raw::Result candidate;
+            const auto* insertion = std::get_if<Raw::InsertRequest>(&request.operation);
+            if (!(insertion ? Raw::Insert(prepared, *insertion, candidate, error)
+                            : Raw::Remove(prepared, std::get<Raw::RemoveRequest>(request.operation), candidate, error)))
+                return false;
+            if (!Codec::CaptureColumnState(base, candidate.bytes, candidate.state, error))
+                return false;
+            if (canceled(control, error))
+                return false;
+            result = std::move(candidate);
+            return true;
+        });
 }
 }
