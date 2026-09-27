@@ -20,6 +20,11 @@ CMeshToolBar::CMeshToolBar(QWidget* parent) : QToolBar(QStringLiteral("网格工
     setMovable(false);
     setFloatable(false);
     setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_autoGenerate = addAction(QStringLiteral("自动网格…"));
+    m_autoGenerate->setObjectName(QStringLiteral("meshAutoGenerate"));
+    m_autoGenerate->setToolTip(QStringLiteral("按素材透明轮廓预览并生成网格，同步保留全部关键形和 UV"));
+    connect(m_autoGenerate, &QAction::triggered, this, &CMeshToolBar::AutoGenerateRequested);
+    addSeparator();
     m_edit = addAction(QStringLiteral("网格工具"));
     m_edit->setObjectName(QStringLiteral("meshToolsEnabled"));
     m_edit->setCheckable(true);
@@ -99,6 +104,9 @@ CMeshToolBar::Tool CMeshToolBar::CurrentTool() const
 
 void CMeshToolBar::RefreshActions()
 {
+    m_autoGenerate->setEnabled(m_available);
+    const QString automaticHelp = m_available ? QStringLiteral("按素材透明轮廓预览并生成网格，同步保留全部关键形和 UV") : m_reason;
+    m_autoGenerate->setToolTip(QStringLiteral("<qt>%1</qt>").arg(automaticHelp.toHtmlEscaped()));
     m_edit->setEnabled(m_available);
     const QString help = m_available ? QStringLiteral("在当前关键形姿态下编辑网格，修改可撤销") : m_reason;
     m_edit->setToolTip(QStringLiteral("<qt>%1</qt>").arg(help.toHtmlEscaped()));

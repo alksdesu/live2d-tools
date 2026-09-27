@@ -1,5 +1,6 @@
 #include "cmesheditplanner.h"
 #include "opengl/cuvgeometry.h"
+#include "std/cexportcontrol.h"
 #include <QMap>
 #include <QSet>
 #include <algorithm>
@@ -62,11 +63,37 @@ public:
     {
         for (double first : a.values) for (double second : b.values) product(first * sign, second);
     }
+    void negate()
+    {
+        for (double& value : values)
+            value = -value;
+    }
+    void append(const Expansion& other)
+    {
+        for (double value : other.values)
+            add(value);
+    }
     double estimate() const { double result = 0; for (double value : values) result += value; return result; }
     int sign() const { return values.empty() ? 0 : (values.back() > 0 ? 1 : -1); }
 private:
     std::vector<double> values;
 };
+struct Fraction
+{
+    Expansion numerator, denominator;
+    explicit Fraction(double value = 0)
+    {
+        numerator.add(value);
+        denominator.add(1);
+    }
+};
+int compare(const Fraction& first, const Fraction& second)
+{
+    Expansion difference;
+    difference.multiply(first.numerator, second.denominator, 1);
+    difference.multiply(second.numerator, first.denominator, -1);
+    return difference.sign();
+}
 Expansion determinant(QPointF a, QPointF b, QPointF c)
 {
     Expansion result;
@@ -113,15 +140,26 @@ Box bounds(QPointF a, QPointF b)
 class Planner
 {
 public:
-    Planner(const API::Input& input, API::Diagnostic* diagnostic, qint64 initialWork = 0)
-        : input(input), diagnostic(diagnostic), work(initialWork)
+    Planner(const API::Input& input, API::Diagnostic* diagnostic, qint64 initialWork = 0,
+        const QVector<QPointF>* precise = nullptr, CExportControl* control = nullptr,
+        qint64 maximumWork = API::MaximumWork, int maximumVertices = CMocMeshStructureBuilder::MaximumVertices,
+        qint64 maximumWorkingBytes = 512LL * 1024 * 1024)
+        : input(input)
+        , diagnostic(diagnostic)
+        , work(initialWork)
+        , precise(precise)
+        , control(control)
+        , maximumWork(maximumWork)
+        , maximumVertices(maximumVertices)
+        , maximumWorkingBytes(maximumWorkingBytes)
     {
         if (input.artMeshId.isEmpty() || input.artMeshId.contains(QChar::Null) || input.positions.isEmpty() ||
             input.positions.size() % 2 || input.positions.size() / 2 > CMocMeshStructureBuilder::MaximumVertices ||
             input.indices.isEmpty() || input.indices.size() % 3 || input.indices.size() > 3000000 ||
             input.protectedEdges.size() > input.indices.size()) reject(Code::InvalidInput, "网格名称、顶点数或索引数组无效");
         for (qsizetype i = 0; i < input.positions.size(); i += 2) {
-            const float x = input.positions[i], y = input.positions[i + 1];
+            const double x = precise ? precise->at(i / 2).x() : input.positions[i];
+            const double y = precise ? precise->at(i / 2).y() : input.positions[i + 1];
             if (!std::isfinite(x) || !std::isfinite(y)) reject(Code::NonFinite, "参考顶点包含非有限值", {int(i / 2)});
             points.append(QPointF(x, y)); sources.append(Source{{int(i / 2)}, {1}}); alive.append(true);
         }
@@ -145,8 +183,14 @@ public:
     }
     void tick(qint64 amount = 1)
     {
-        if (amount < 0 || amount > API::MaximumWork - work) reject(Code::LimitExceeded, "局部拓扑计算超过工作量限制");
+        if (amount < 0 || amount > maximumWork - work)
+            reject(Code::LimitExceeded, "局部拓扑计算超过工作量限制");
         work += amount;
+        if (precise
+            && qint64(points.size()) * 1024 + qint64(faces.size()) * 512 + sourceReferences * 32 > maximumWorkingBytes)
+            reject(Code::LimitExceeded, "约束剖分超过内存预算");
+        if (control && !control->Checkpoint())
+            reject(Code::LimitExceeded, "网格规划已取消");
     }
     Adjacency adjacency()
     {
@@ -265,7 +309,8 @@ public:
     }
     int appendVertex(const QVector<int>& vertices, QVector<double> weights)
     {
-        if (points.size() >= CMocMeshStructureBuilder::MaximumVertices) reject(Code::LimitExceeded, "新顶点超过 MOC 索引范围");
+        if (points.size() >= maximumVertices)
+            reject(Code::LimitExceeded, "新顶点超过 MOC 索引范围");
         double sum = 0;
         for (double weight : weights) {
             if (!std::isfinite(weight) || weight < 0) reject(Code::PrecisionLoss, "无法计算有限凸插值权重");
@@ -289,10 +334,12 @@ public:
         for (int axis = 0; axis < 2; ++axis) {
             double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
             for (int j = 0; j < source.indices.size(); ++j) {
-                const double value = input.positions[source.indices[j] * 2 + axis];
+                const double value = originalCoordinate(source.indices[j], axis);
                 xy[axis] += value * source.weights[j]; minimum = std::min(minimum, value); maximum = std::max(maximum, value);
             }
-            xy[axis] = float(std::clamp(xy[axis], minimum, maximum));
+            xy[axis] = std::clamp(xy[axis], minimum, maximum);
+            if (!precise)
+                xy[axis] = float(xy[axis]);
         }
         const QPointF point(xy[0], xy[1]);
         for (int vertex : vertices) if (samePoint(point, points[vertex])) reject(Code::PrecisionLoss, "新点在浮点精度下与原顶点重合", {vertex});
@@ -444,39 +491,156 @@ public:
         for (const auto& face : faces) if (face.active && std::find(face.vertices.begin(), face.vertices.end(), vertex) != face.vertices.end()) return;
         insert(points[vertex], -1, vertex);
     }
-    bool interval(int index, QPointF first, QPointF second, double& low, double& high)
+    bool interval(int index, QPointF first, QPointF second, Fraction& low, Fraction& high)
     {
-        low = 0; high = 1;
+        low = Fraction(0);
+        high = Fraction(1);
         const auto& v = faces[index].vertices; const int winding = orientation(v);
         for (int i = 0; i < 3; ++i) {
             const QPointF a = points[v[i]], b = points[v[(i + 1) % 3]];
-            const double start = determinant(a, b, first).estimate() * winding;
-            const double end = determinant(a, b, second).estimate() * winding;
-            if (start < 0 && end < 0) return false;
-            if (start < 0) low = std::max(low, start / (start - end));
-            if (end < 0) high = std::min(high, start / (start - end));
-            if (high <= low) return false;
+            auto start = determinant(a, b, first), end = determinant(a, b, second);
+            if (winding < 0) {
+                start.negate();
+                end.negate();
+            }
+            if ((start.sign() < 0 && end.sign() < 0) || (!start.sign() && !end.sign()))
+                return false;
+            if (start.sign() < 0) {
+                Fraction boundary;
+                boundary.numerator = start;
+                boundary.numerator.negate();
+                boundary.denominator = end;
+                boundary.denominator.append(boundary.numerator);
+                if (compare(boundary, low) > 0)
+                    low = std::move(boundary);
+            }
+            if (end.sign() < 0) {
+                Fraction boundary;
+                boundary.numerator = start;
+                end.negate();
+                boundary.denominator = start;
+                boundary.denominator.append(end);
+                if (compare(boundary, high) < 0)
+                    high = std::move(boundary);
+            }
+            if (compare(high, low) <= 0)
+                return false;
         }
-        return high > low;
+        return compare(high, low) > 0;
+    }
+    void connectPairByFlips(int first, int second)
+    {
+        auto adj = adjacency();
+        const Key target = key(first, second);
+        if (adj.count(target)) {
+            protectedEdges.insert(target);
+            return;
+        }
+        const auto crosses = [&](Key value) {
+            const auto e = edge(value);
+            return properCross(points[first], points[second], points[e.a], points[e.b]);
+        };
+        std::deque<Key> pending;
+        for (const auto& item : adj)
+            if (crosses(item.first))
+                pending.push_back(item.first);
+        size_t deferred = 0;
+        const auto erase = [&](int index) {
+            const auto& vertices = faces[index].vertices;
+            for (int side = 0; side < 3; ++side) {
+                const auto value = key(vertices[side], vertices[(side + 1) % 3]);
+                auto found = adj.find(value);
+                auto& neighbors = found->second;
+                neighbors.erase(std::remove_if(neighbors.begin(), neighbors.end(),
+                                    [index](const auto& neighbor) { return neighbor.face == index; }),
+                    neighbors.end());
+                if (neighbors.isEmpty())
+                    adj.erase(found);
+            }
+        };
+        const auto add = [&](int index) {
+            const auto& vertices = faces[index].vertices;
+            for (int side = 0; side < 3; ++side) {
+                const int a = vertices[side], b = vertices[(side + 1) % 3];
+                adj[key(a, b)].append({ index, vertices[(side + 2) % 3], a < b ? 1 : -1 });
+            }
+        };
+        while (!pending.empty()) {
+            tick();
+            const Key value = pending.front();
+            pending.pop_front();
+            const auto found = adj.find(value);
+            if (found == adj.end() || !crosses(value)) {
+                deferred = 0;
+                continue;
+            }
+            if (protectedEdges.count(value))
+                reject(Code::ProtectedEdge, "平面化约束仍与保护边相交", { }, { }, { edge(value) });
+            if (found->second.size() != 2)
+                reject(Code::OutsideMesh, "约束穿过剖分外边界", { first, second });
+            const auto sides = found->second;
+            const auto e = edge(value);
+            const int a = e.a, b = e.b, c = sides[0].opposite, d = sides[1].opposite;
+            if (orient(points[c], points[d], points[a]) * orient(points[c], points[d], points[b]) >= 0
+                || adj.count(key(c, d))) {
+                pending.push_back(value);
+                if (++deferred >= pending.size())
+                    reject(Code::InvalidCavity, "约束边无法通过有效的凸四边形翻边插入", { first, second });
+                continue;
+            }
+            deferred = 0;
+            const int one = sides[0].face, two = sides[1].face, winding = orientation(faces[one].vertices);
+            if (faces[one].source >= 0)
+                affected.insert(faces[one].source);
+            if (faces[two].source >= 0)
+                affected.insert(faces[two].source);
+            erase(one);
+            erase(two);
+            faces[one].vertices = { c, d, a };
+            faces[two].vertices = { d, c, b };
+            for (int index : { one, two })
+                if (orientation(faces[index].vertices) != winding)
+                    std::swap(faces[index].vertices[1], faces[index].vertices[2]);
+            add(one);
+            add(two);
+            const auto diagonal = key(c, d);
+            if (crosses(diagonal))
+                pending.push_back(diagonal);
+        }
+        if (!adj.count(target))
+            reject(Code::InvalidConstraint, "约束边未完整插入剖分", { first, second });
+        protectedEdges.insert(target);
     }
     void connectPair(int first, int second)
     {
+        if (precise) {
+            connectPairByFlips(first, second);
+            return;
+        }
         auto adj = adjacency();
         if (adj.count(key(first, second))) { protectedEdges.insert(key(first, second)); return; }
         QSet<int> removed;
-        QVector<QPair<double, double>> coverage;
+        QVector<QPair<Fraction, Fraction>> coverage;
         for (int i = 0; i < faces.size(); ++i) if (faces[i].active) {
-            tick(); double low, high;
-            if (interval(i, points[first], points[second], low, high)) { removed.insert(i); coverage.append({low, high}); }
+                tick();
+                Fraction low, high;
+                if (interval(i, points[first], points[second], low, high)) {
+                    removed.insert(i);
+                    coverage.append({ low, high });
+                }
         }
         if (removed.isEmpty()) reject(Code::OutsideMesh, "连线没有经过现有三角网格", {first, second});
-        std::sort(coverage.begin(), coverage.end());
-        double covered = 0;
+        std::sort(coverage.begin(), coverage.end(),
+            [](const auto& a, const auto& b) { return compare(a.first, b.first) < 0; });
+        Fraction covered(0);
         for (const auto& span : coverage) {
-            if (span.first > covered) reject(Code::OutsideMesh, "连线经过网格外部或洞", {first, second});
-            covered = std::max(covered, span.second);
+            if (compare(span.first, covered) > 0)
+                reject(Code::OutsideMesh, "连线经过网格外部或洞", { first, second });
+            if (compare(span.second, covered) > 0)
+                covered = span.second;
         }
-        if (covered < 1) reject(Code::OutsideMesh, "连线没有完整位于网格内", {first, second});
+        if (compare(covered, Fraction(1)) < 0)
+            reject(Code::OutsideMesh, "连线没有完整位于网格内", { first, second });
         std::map<int, int> boundary;
         int winding = 0;
         for (const auto& item : adj) {
@@ -485,7 +649,10 @@ public:
             if (inside == 2 && protectedEdges.count(item.first)) reject(Code::ProtectedEdge, "连线穿过保护边", {}, {}, {edge(item.first)});
             if (inside != 1) continue;
             Edge e = edge(item.first); if (selectedSide->direction < 0) std::swap(e.a, e.b);
-            if (boundary.count(e.a)) reject(Code::InvalidCavity, "连线经过分叉空腔", {first, second});
+            if (boundary.count(e.a)) {
+                connectPairByFlips(first, second);
+                return;
+            }
             boundary[e.a] = e.b; winding = orientation(faces[selectedSide->face].vertices);
         }
         if (!boundary.count(first) || !boundary.count(second)) reject(Code::OutsideMesh, "连线端点不在同一可三角化空腔上", {first, second});
@@ -506,7 +673,10 @@ public:
     {
         checkVertex(first); checkVertex(second);
         if (first == second) reject(Code::InvalidSelection, "连边需要两个不同顶点", {first});
-        embed(first); embed(second); validate();
+        embed(first);
+        embed(second);
+        if (!precise)
+            validate();
         QVector<QPair<double, Key>> crossings;
         const QPointF a = points[first], b = points[second];
         for (Key value : protectedEdges) {
@@ -528,10 +698,15 @@ public:
         const double dx = b.x() - a.x(), dy = b.y() - a.y();
         QSet<int> used;
         for (const auto& face : faces) if (face.active) for (int v : face.vertices) used.insert(v);
-        for (int v : used) if (v != first && v != second && !inserted.contains(v) && onSegment(points[v], a, b)) {
-            tick(); const double t = std::abs(dx) >= std::abs(dy) ? (points[v].x() - a.x()) / dx : (points[v].y() - a.y()) / dy;
-            chain.append({t, v});
-        }
+        for (int v : used)
+            if (v != first && v != second && (precise || !inserted.contains(v)) && onSegment(points[v], a, b)) {
+                if (std::any_of(chain.cbegin(), chain.cend(), [v](const auto& item) { return item.second == v; }))
+                    continue;
+                tick();
+                const double t
+                    = std::abs(dx) >= std::abs(dy) ? (points[v].x() - a.x()) / dx : (points[v].y() - a.y()) / dy;
+                chain.append({ t, v });
+            }
         std::sort(chain.begin(), chain.end(), [](const auto& a, const auto& b) { return a.first < b.first || (a.first == b.first && a.second < b.second); });
         for (int i = 1; i < chain.size(); ++i) connectPair(chain[i - 1].second, chain[i].second);
         selected.clear(); for (const auto& item : chain) selected.append(item.second);
@@ -588,21 +763,24 @@ public:
     }
     API::Result finish()
     {
-        for (int vertex : inserted) {
-            double sum = 0;
-            for (double weight : sources[vertex].weights) sum += weight;
-            double xy[2]{};
-            for (int axis = 0; axis < 2; ++axis) {
-                double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
-                for (int i = 0; i < sources[vertex].indices.size(); ++i) {
-                    const double value = input.positions[sources[vertex].indices[i] * 2 + axis];
-                    xy[axis] += value * (sources[vertex].weights[i] / sum);
-                    minimum = std::min(minimum, value); maximum = std::max(maximum, value);
+        for (int vertex : inserted)
+            if (!precise) {
+                double sum = 0;
+                for (double weight : sources[vertex].weights)
+                    sum += weight;
+                double xy[2] { };
+                for (int axis = 0; axis < 2; ++axis) {
+                    double minimum = std::numeric_limits<double>::infinity(), maximum = -minimum;
+                    for (int i = 0; i < sources[vertex].indices.size(); ++i) {
+                        const double value = input.positions[sources[vertex].indices[i] * 2 + axis];
+                        xy[axis] += value * (sources[vertex].weights[i] / sum);
+                        minimum = std::min(minimum, value);
+                        maximum = std::max(maximum, value);
+                    }
+                    xy[axis] = float(std::clamp(xy[axis], minimum, maximum));
                 }
-                xy[axis] = float(std::clamp(xy[axis], minimum, maximum));
+                points[vertex] = QPointF(xy[0], xy[1]);
             }
-            points[vertex] = QPointF(xy[0], xy[1]);
-        }
         validate(); API::Result result; result.edit.artMeshId = input.artMeshId; result.boundaryChanged = boundaryChanged;
         QVector<int> remap(points.size(), -1); qint64 references = 0;
         for (int i = 0; i < points.size(); ++i) if (alive[i]) {
@@ -619,6 +797,11 @@ public:
         result.affectedTriangles = affected.values(); std::sort(result.affectedTriangles.begin(), result.affectedTriangles.end());
         return result;
     }
+    double originalCoordinate(int vertex, int axis) const
+    {
+        return precise ? (axis ? precise->at(vertex).y() : precise->at(vertex).x())
+                       : input.positions[vertex * 2 + axis];
+    }
     const API::Input& input;
     API::Diagnostic* diagnostic;
     QVector<QPointF> points;
@@ -630,6 +813,11 @@ public:
     QVector<int> selected, inserted;
     bool boundaryChanged = false;
     qint64 work = 0, sourceReferences = 0;
+    const QVector<QPointF>* precise = nullptr;
+    CExportControl* control = nullptr;
+    qint64 maximumWork = API::MaximumWork;
+    int maximumVertices = CMocMeshStructureBuilder::MaximumVertices;
+    qint64 maximumWorkingBytes = 512LL * 1024 * 1024;
 };
 
 template<class Operation> bool execute(const API::Input& input, API::Result& result, API::Diagnostic* diagnostic, Operation operation)
@@ -793,6 +981,239 @@ bool CMeshEditPlanner::TriangulateVertices(const Input& input, Result& result, D
     } catch (const Rejected&) { return false; }
     catch (const std::exception&) {
         if (diagnostic) *diagnostic = {Code::LimitExceeded, QStringLiteral("无法分配散点重建数据")};
+        return false;
+    }
+}
+
+bool CMeshEditPlanner::TriangulateConstraints(
+    const ConstrainedInput& source, ConstrainedResult& result, Diagnostic* diagnostic, CExportControl* control)
+{
+    const auto reject = [&](Code code, const char* message) {
+        if (diagnostic)
+            *diagnostic = { code, QString::fromUtf8(message) };
+        throw Rejected { };
+    };
+    try {
+        if (source.maximumVertices < 3 || source.maximumVertices > CMocMeshStructureBuilder::MaximumVertices
+            || source.maximumWork <= 0 || source.maximumWork > 512LL * 1024 * 1024 || source.maximumWorkingBytes <= 0
+            || source.maximumWorkingBytes > 512LL * 1024 * 1024 || source.points.size() < 3
+            || source.points.size() > source.maximumVertices || source.constraints.size() > 100000)
+            reject(Code::LimitExceeded, "约束剖分的点、边或工作量限制无效");
+        const qint64 fixedBytes = source.points.size() * 128LL + source.constraints.size() * 128LL;
+        if (fixedBytes >= source.maximumWorkingBytes)
+            reject(Code::LimitExceeded, "约束剖分输入超过内存预算");
+        ConstrainedInput frozen;
+        frozen.maximumWork = source.maximumWork;
+        frozen.maximumVertices = source.maximumVertices;
+        frozen.maximumWorkingBytes = source.maximumWorkingBytes;
+        for (const auto& point : source.points)
+            frozen.points.append(point);
+        for (const auto& edge : source.constraints)
+            frozen.constraints.append(edge);
+        qint64 work = 0;
+        const qint64 initialConstraintCount = frozen.constraints.size();
+        qint64 chainReferences = frozen.constraints.size() * 2LL;
+        const auto tick = [&] {
+            if (++work > frozen.maximumWork)
+                reject(Code::LimitExceeded, "约束剖分超过工作量限制");
+            if (frozen.points.size() * 128LL + initialConstraintCount * 256LL + chainReferences * 64
+                >= frozen.maximumWorkingBytes)
+                reject(Code::LimitExceeded, "约束平面化超过内存预算");
+            if (control && !control->Checkpoint())
+                reject(Code::LimitExceeded, "网格规划已取消");
+        };
+        const auto originalConstraints = frozen.constraints;
+        QVector<QVector<QPair<double, int>>> chains(originalConstraints.size());
+        std::map<std::pair<double, double>, int> coordinates;
+        for (int index = 0; index < frozen.points.size(); ++index) {
+            const auto p = frozen.points[index];
+            if (!std::isfinite(p.x()) || !std::isfinite(p.y()) || std::abs(p.x()) > 1e12 || std::abs(p.y()) > 1e12)
+                reject(Code::NonFinite, "约束坐标超出有限计算范围");
+            if (!coordinates.emplace(std::make_pair(p.x(), p.y()), index).second)
+                reject(Code::AmbiguousLocation, "约束剖分的点必须具有唯一坐标");
+        }
+        const auto parameter = [&](const Edge& edge, QPointF p) {
+            const auto a = frozen.points[edge.a], b = frozen.points[edge.b];
+            return std::abs(b.x() - a.x()) >= std::abs(b.y() - a.y()) ? (p.x() - a.x()) / (b.x() - a.x())
+                                                                      : (p.y() - a.y()) / (b.y() - a.y());
+        };
+        struct ConstraintBox
+        {
+            int index;
+            Box box;
+        };
+        QVector<ConstraintBox> boxes;
+        for (int index = 0; index < originalConstraints.size(); ++index) {
+            tick();
+            const auto edge = originalConstraints[index];
+            if (edge.a < 0 || edge.b < 0 || edge.a >= frozen.points.size() || edge.b >= frozen.points.size()
+                || edge.a == edge.b)
+                reject(Code::InvalidConstraint, "约束边端点无效");
+            chains[index] = { { 0, edge.a }, { 1, edge.b } };
+            boxes.append({ index, bounds(frozen.points[edge.a], frozen.points[edge.b]) });
+            for (int vertex = 0; vertex < frozen.points.size(); ++vertex) {
+                tick();
+                if (vertex != edge.a && vertex != edge.b
+                    && onSegment(frozen.points[vertex], frozen.points[edge.a], frozen.points[edge.b])) {
+                    ++chainReferences;
+                    chains[index].append({ parameter(edge, frozen.points[vertex]), vertex });
+                }
+            }
+        }
+        std::sort(boxes.begin(), boxes.end(), [&](const auto& a, const auto& b) {
+            tick();
+            return a.box.left < b.box.left;
+        });
+        for (int i = 0; i < boxes.size(); ++i)
+            for (int j = i + 1; j < boxes.size() && boxes[j].box.left <= boxes[i].box.right; ++j) {
+                tick();
+                if (!boxes[i].box.overlaps(boxes[j].box))
+                    continue;
+                const int first = boxes[i].index, second = boxes[j].index;
+                const auto one = originalConstraints[first], two = originalConstraints[second];
+                const auto a = frozen.points[one.a], b = frozen.points[one.b], c = frozen.points[two.a],
+                           d = frozen.points[two.b];
+                if (!properCross(a, b, c, d))
+                    continue;
+                const long double dx = static_cast<long double>(b.x()) - a.x(),
+                                  dy = static_cast<long double>(b.y()) - a.y();
+                const long double ex = static_cast<long double>(d.x()) - c.x(),
+                                  ey = static_cast<long double>(d.y()) - c.y();
+                const long double denominator = dx * ey - dy * ex;
+                const long double t
+                    = ((static_cast<long double>(c.x()) - a.x()) * ey - (static_cast<long double>(c.y()) - a.y()) * ex)
+                    / denominator;
+                const long double u
+                    = ((static_cast<long double>(c.x()) - a.x()) * dy - (static_cast<long double>(c.y()) - a.y()) * dx)
+                    / denominator;
+                const QPointF p(double(a.x() + t * dx), double(a.y() + t * dy));
+                if (!std::isfinite(p.x()) || !std::isfinite(p.y()) || !(t > 0 && t < 1 && u > 0 && u < 1))
+                    reject(Code::PrecisionLoss, "约束交点无法表示为内部有限坐标");
+                auto found = coordinates.find({ p.x(), p.y() });
+                int vertex;
+                if (found == coordinates.end()) {
+                    if (frozen.points.size() >= frozen.maximumVertices)
+                        reject(Code::LimitExceeded, "约束交点超过顶点限制");
+                    vertex = frozen.points.size();
+                    frozen.points.append(p);
+                    coordinates.emplace(std::make_pair(p.x(), p.y()), vertex);
+                } else
+                    vertex = found->second;
+                chainReferences += 2;
+                chains[first].append({ double(t), vertex });
+                chains[second].append({ double(u), vertex });
+            }
+        frozen.constraints.clear();
+        QSet<quint64> splitEdges;
+        for (auto& chain : chains) {
+            std::sort(chain.begin(), chain.end(), [&](const auto& a, const auto& b) {
+                tick();
+                return a.first < b.first || (a.first == b.first && a.second < b.second);
+            });
+            chain.erase(std::unique(chain.begin(), chain.end(),
+                            [](const auto& a, const auto& b) { return a.second == b.second; }),
+                chain.end());
+            for (int index = 1; index < chain.size(); ++index) {
+                if (!(chain[index].first > chain[index - 1].first))
+                    reject(Code::PrecisionLoss, "不同约束交点参数重合，不能安全合并");
+                const auto segmentKey = key(chain[index - 1].second, chain[index].second);
+                if (!splitEdges.contains(segmentKey)) {
+                    splitEdges.insert(segmentKey);
+                    frozen.constraints.append({ chain[index - 1].second, chain[index].second });
+                }
+            }
+        }
+        if (frozen.constraints.size() > 100000
+            || frozen.points.size() * 128LL + frozen.constraints.size() * 128LL >= frozen.maximumWorkingBytes)
+            reject(Code::LimitExceeded, "平面化约束超过内存或边数预算");
+        QVector<int> order;
+        for (int index = 0; index < frozen.points.size(); ++index) {
+            tick();
+            const auto point = frozen.points[index];
+            if (!std::isfinite(point.x()) || !std::isfinite(point.y())
+                || std::abs(point.x()) > std::numeric_limits<float>::max()
+                || std::abs(point.y()) > std::numeric_limits<float>::max())
+                reject(Code::NonFinite, "约束剖分包含非有限坐标");
+            order.append(index);
+        }
+        std::sort(order.begin(), order.end(), [&](int a, int b) {
+            tick();
+            const auto x = frozen.points[a], y = frozen.points[b];
+            return x.x() != y.x() ? x.x() < y.x() : x.y() < y.y();
+        });
+        for (int i = 1; i < order.size(); ++i)
+            if (samePoint(frozen.points[order[i - 1]], frozen.points[order[i]]))
+                reject(Code::AmbiguousLocation, "约束剖分的点必须具有唯一坐标");
+        QVector<int> hull;
+        const auto append = [&](int vertex, int first) {
+            while (hull.size() >= first + 2) {
+                tick();
+                if (orient(frozen.points[hull[hull.size() - 2]], frozen.points[hull.last()], frozen.points[vertex]) > 0)
+                    break;
+                hull.removeLast();
+            }
+            hull.append(vertex);
+        };
+        for (int vertex : order)
+            append(vertex, 0);
+        const int lower = hull.size() - 1;
+        for (int index = order.size() - 2; index >= 0; --index)
+            append(order[index], lower);
+        hull.removeLast();
+        if (hull.size() < 3)
+            reject(Code::Degenerate, "约束剖分的点共线");
+        Input seed;
+        seed.artMeshId = QStringLiteral("constraint-domain");
+        seed.positions.fill(0, frozen.points.size() * 2);
+        QVector<bool> embedded(frozen.points.size(), false);
+        for (int vertex : hull)
+            embedded[vertex] = true;
+        for (int index = 1; index + 1 < hull.size(); ++index)
+            seed.indices += QVector<quint16> { quint16(hull[0]), quint16(hull[index]), quint16(hull[index + 1]) };
+        const qint64 retained = frozen.points.size() * 128LL + originalConstraints.size() * 256LL + chainReferences * 64
+            + frozen.constraints.size() * 128LL;
+        if (retained >= frozen.maximumWorkingBytes)
+            reject(Code::LimitExceeded, "约束剖分剩余内存预算不足");
+        Planner planner(seed, diagnostic, work, &frozen.points, control, frozen.maximumWork, frozen.maximumVertices,
+            frozen.maximumWorkingBytes - retained);
+        for (int vertex : order)
+            if (!embedded[vertex])
+                planner.insert(frozen.points[vertex], -1, vertex);
+        QVector<QVector<int>> insertedChains;
+        for (const auto& edge : frozen.constraints) {
+            planner.tick();
+            planner.connect(edge.a, edge.b, CrossingPolicy::RejectProtected);
+            insertedChains.append(planner.selected);
+        }
+        QVector<int> faces;
+        for (int index = 0; index < planner.faces.size(); ++index)
+            if (planner.faces[index].active)
+                faces.append(index);
+        planner.retriangulate(faces);
+        const auto finalAdjacency = planner.adjacency();
+        for (int index = 0; index < insertedChains.size(); ++index) {
+            const auto& chain = insertedChains[index];
+            const auto constraint = frozen.constraints[index];
+            if (chain.size() < 2 || chain.first() != constraint.a || chain.last() != constraint.b)
+                planner.reject(Code::InvalidConstraint, "约束边链端点与请求不符");
+            for (int point = 1; point < chain.size(); ++point) {
+                planner.tick();
+                const auto segment = key(chain[point - 1], chain[point]);
+                if (!finalAdjacency.count(segment) || !planner.protectedEdges.count(segment))
+                    planner.reject(Code::InvalidConstraint, "约束边拆分后未形成完整连续保护边链");
+            }
+        }
+        const auto mesh = planner.finish();
+        ConstrainedResult candidate { planner.points, mesh.edit.indices, planner.work };
+        result = std::move(candidate);
+        if (diagnostic)
+            *diagnostic = { };
+        return true;
+    } catch (const Rejected&) {
+        return false;
+    } catch (const std::exception&) {
+        if (diagnostic)
+            *diagnostic = { Code::LimitExceeded, QStringLiteral("无法分配约束剖分数据") };
         return false;
     }
 }

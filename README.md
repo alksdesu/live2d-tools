@@ -26,6 +26,8 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Searchable and collapsible parameter groups with undo/redo history
 - Edit parameter names, ranges, defaults, decimal precision and repeat settings; range changes and the current base value share one undo step and session restore path
 - Versioned editor sessions (parameters, visibility and camera) with recent-model shortcuts and persistent workspace layout/theme
+- Generate a mesh from artwork transparency for one selected ArtMesh, with three density presets, point spacing, alpha threshold and boundary margin. Inspect the candidate over the artwork before applying it as one undo step; UVs, ordinary and Blend Shape keyforms, and linked artwork coordinates migrate together.
+- Automatic generation stays within the existing UV domain and retains its triangle constraints. Coarse presets need not reduce the original vertex count, and nonlinear deformation can change after resampling. Existing Glue endpoints stay pinned; new vertices do not acquire Glue pairs. Linked artwork uses its pinned source revision; an atlas fallback cannot separate other artwork already inside the UV domain.
 - Texture atlas viewer: zoom/pan, UV wireframe overlay, click the atlas to locate an ArtMesh (three-way linkage with the tree and main view), PNG export
 - UV editor: point, box and connected-island selection, pixel coordinates, transforms, axis constraints and snapping. Assign meshes to existing atlases while preserving normalized UVs or pixel coordinates; preview a draft, cancel it, or save it as one undo step. This changes texture sampling, without repacking PNG pixels.
 - UVs and texture assignments persist in sessions and exports. CMO3 materials and extracted PSD textures repeat samples outside atlas bounds, with explicit size limits; original texture files remain unchanged.
@@ -173,6 +175,8 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 模型结构面板支持为同部件、同直接父级的选区创建 Warp／Rotation；可设置 ID、Warp 行列和插值方式，也可在部件或根级创建空变形器。删除前检查子对象全部关键形的保形转换，成功后支持撤销、会话保存和运行时模型包导出
 - 变形器结构编辑只接受可证明保形的变换；不支持的动画父级、非线性转换或绑定会给出原因。部分旋转／反射转换可能产生微小的浮点舍入差异，不保证逐位一致
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
+- 选中单个 ArtMesh 后可按素材透明轮廓生成网格，提供低／标准／高密度、点间距、透明度阈值和边缘余量。先在素材上查看候选，应用只增加一条撤销记录；UV、普通与 Blend Shape 关键形、关联素材坐标一起迁移
+- 自动生成限定在原 UV 覆盖域内并保留原三角约束，因此低密度不保证减少原有顶点，重采样后的非线性变形外观可能改变。保留已有 Glue 端点，新增顶点不会自动获得接缝配对；关联素材使用固定来源版本，回退到图集时无法分离已混入 UV 覆盖域的其它图案
 - 纹理图集查看：缩放/平移、UV 线框叠加、点击图集反查 ArtMesh（与结构树/主视图三方联动）、导出 PNG
 - UV 编辑支持点选、框选、连通岛、像素坐标、平移／旋转／缩放、轴约束和吸附；可保持归一化 UV 或像素坐标切换到已有图集。草稿实时预览，可取消，保存只增加一条撤销记录。此操作改变纹理采样区域，不重新排布 PNG 像素
 - UV 与纹理槽修改随会话保存并用于导出；CMO3 素材和纹理采样式 PSD 支持越界重复采样，超过素材尺寸预算时明确报错

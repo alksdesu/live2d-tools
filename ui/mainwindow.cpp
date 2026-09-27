@@ -177,6 +177,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    CancelAutomaticMesh();
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     m_workspaceLayouts.Capture(*this);
     m_closingModel = true;
@@ -2686,6 +2687,7 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
+    if (!CancelAutomaticMesh()) return false;
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
         statusBar()->showMessage(QStringLiteral("请先保存或取消素材、图集或 UV 编辑"), 8000);

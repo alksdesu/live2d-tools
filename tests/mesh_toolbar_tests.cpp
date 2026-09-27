@@ -18,7 +18,7 @@
 namespace {
 QAction* action(CMeshToolBar& bar, const char* name) { return bar.findChild<QAction*>(QString::fromLatin1(name)); }
 QToolButton* button(CMeshToolBar& bar, const char* name) { return qobject_cast<QToolButton*>(bar.widgetForAction(action(bar, name))); }
-QStringList names() { return {"meshToolsEnabled", "meshSelect", "meshInsert", "meshConnect", "meshDelete", "meshRetriangulate"}; }
+QStringList names() { return {"meshAutoGenerate", "meshToolsEnabled", "meshSelect", "meshInsert", "meshConnect", "meshDelete", "meshRetriangulate"}; }
 double luminance(const QColor& color)
 {
     const auto linear = [](double c) { return c <= .04045 ? c / 12.92 : std::pow((c + .055) / 1.055, 2.4); };
@@ -110,6 +110,17 @@ private slots:
         QTest::mouseClick(button(bar, "meshRetriangulate"), Qt::LeftButton); QCOMPARE(optimize.count(), 1);
         QTest::mouseClick(button(bar, "meshToolsEnabled"), Qt::LeftButton); QCOMPARE(editing.count(), 2); QVERIFY(!bar.IsEditing());
         QTest::mouseClick(button(bar, "meshDelete"), Qt::LeftButton); QCOMPARE(tools.count(), 1);
+    }
+    void automaticMeshDoesNotRequireManualToolsAndTracksAvailability()
+    {
+        Host host; auto& bar = *host.bar;
+        QSignalSpy automatic(&bar, &CMeshToolBar::AutoGenerateRequested);
+        QVERIFY(!action(bar, "meshAutoGenerate")->isEnabled());
+        bar.SetContext("Mesh", 4, 0, true); QVERIFY(!bar.IsEditing()); QVERIFY(action(bar, "meshAutoGenerate")->isEnabled());
+        connect(&bar, &CMeshToolBar::AutoGenerateRequested, &bar, [&bar] { bar.SetContext("Mesh", 4, 0, false, QStringLiteral("正在生成网格")); });
+        QTest::mouseClick(button(bar, "meshAutoGenerate"), Qt::LeftButton); QCOMPARE(automatic.count(), 1); QVERIFY(!bar.IsEditing());
+        QVERIFY(!action(bar, "meshAutoGenerate")->isEnabled());
+        bar.SetContext("Mesh", 4, 0, true); QVERIFY(action(bar, "meshAutoGenerate")->isEnabled());
     }
     void rejectedRequestsRestoreThePreviousToolWithoutAnotherRequest()
     {

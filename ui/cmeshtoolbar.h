@@ -23,12 +23,14 @@ signals:
     void EditingRequested(bool editing);
     void ToolRequested(CMeshToolBar::Tool tool);
     void RetriangulateRequested();
+    void AutoGenerateRequested();
 
 private:
     void RefreshActions();
     QAction* m_edit = nullptr;
     QActionGroup* m_tools = nullptr;
     QAction* m_optimize = nullptr;
+    QAction* m_autoGenerate = nullptr;
     QLabel* m_context = nullptr;
     bool m_available = false;
     QString m_reason;

@@ -3,14 +3,21 @@
 #include "opengl/opengglform.h"
 #include "edit/cmeshmap.h"
 #include "cmeshtoolbar.h"
+#include "calphameshdialog.h"
+#include "cexporttaskrunner.h"
 #include "cinspectorpanel.h"
+#include "live2dstruct/calphameshsource.h"
 #include "live2dstruct/cmesheditplanner.h"
 #include "live2dstruct/ckeyformmappingcontext.h"
 #include "opengl/ccanvascoordinates.h"
+#include "std/cexportcontrol.h"
 #include <QCryptographicHash>
+#include <QProgressDialog>
+#include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -67,6 +74,7 @@ void MainWindow::InitializeMeshTools(QVBoxLayout* layout)
         RefreshMeshTools();
     });
     connect(m_meshTools, &CMeshToolBar::RetriangulateRequested, this, &MainWindow::OptimizeSelectedMesh);
+    connect(m_meshTools, &CMeshToolBar::AutoGenerateRequested, this, &MainWindow::GenerateSelectedMesh);
     connect(m_openglwindows, &OpengGlForm::MeshToolChanged, this, [this] { RefreshMeshTools(); });
     connect(m_openglwindows, &OpengGlForm::MeshSelectionChanged, this, [this] { RefreshMeshTools(); });
     RefreshMeshTools();
@@ -80,12 +88,19 @@ void MainWindow::RefreshMeshTools()
     const QString id = single ? m_selectedObjectIds.first() : QString();
     const auto found = std::find_if(m_document.Drawables().cbegin(), m_document.Drawables().cend(),
         [&](const auto& mesh) { return mesh.id == id; });
-    const bool available = !m_closingModel && !m_previewExport.IsBusy() && m_openglwindows->IsModelReady() && single &&
+    QString readyReason;
+    const bool authoringReady = AuthoringReady(&readyReason);
+    const bool available = authoringReady && !m_batchExporting && !m_psdBatch && !m_applyingSession &&
+        !m_previewExport.IsBusy() && !m_alphaMeshLoadControl && !m_alphaMeshDialog &&
+        m_openglwindows->IsModelReady() && single &&
         found != m_document.Drawables().cend() && !m_document.IsLocked(QStringLiteral("artmesh"), id);
     QString reason = QStringLiteral("选择一个网格以开始编辑");
     if (single && m_document.IsLocked(QStringLiteral("artmesh"), id)) reason = QStringLiteral("先解除网格锁定");
     else if (!m_openglwindows->IsModelReady()) reason = QStringLiteral("等待模型预览就绪");
-    else if (m_previewExport.IsBusy()) reason = QStringLiteral("导出完成后可编辑网格");
+    else if (!authoringReady) reason = readyReason;
+    else if (m_previewExport.IsBusy() || m_batchExporting || m_psdBatch) reason = QStringLiteral("导出完成后可编辑网格");
+    else if (m_applyingSession) reason = QStringLiteral("会话恢复完成后可编辑网格");
+    else if (m_alphaMeshLoadControl || m_alphaMeshDialog) reason = QStringLiteral("请先应用或关闭自动网格预览");
     int selected = 0;
     CMeshEditorSnapshot snapshot;
     if (available && m_openglwindows->CaptureMeshEditorState(snapshot)) selected = snapshot.value(id).selectedVertices.size();
@@ -139,6 +154,146 @@ void MainWindow::OptimizeSelectedMesh()
     if (!m_openglwindows || !m_openglwindows->CaptureMeshToolSnapshot(m_openglwindows->rect().center(), snapshot, &error) ||
         !ApplyMeshTool(OpengGlForm::MeshTool::Select, snapshot, &error))
         statusBar()->showMessage(error.isEmpty() ? QStringLiteral("先启用网格工具") : error, 8000);
+}
+
+bool MainWindow::CancelAutomaticMesh()
+{
+    if (m_alphaMeshDialog && m_alphaMeshDialog->IsSubmitting()) {
+        statusBar()->showMessage(QStringLiteral("网格正在应用，请等待提交完成后关闭模型"), 8000);
+        return false;
+    }
+    if (m_alphaMeshLoadControl) m_alphaMeshLoadControl->Cancel();
+    const auto dialog = m_alphaMeshDialog;
+    if (dialog) dialog->reject();
+    return true;
+}
+
+void MainWindow::GenerateSelectedMesh()
+{
+    using Source = live2dstruct::CAlphaMeshSource;
+    using Planner = live2dstruct::CAlphaMeshPlanner;
+    using Builder = live2dstruct::CMocMeshStructureBuilder;
+    if (m_alphaMeshDialog) {
+        const auto dialog = m_alphaMeshDialog;
+        dialog->raise();
+        if (dialog) dialog->activateWindow();
+        return;
+    }
+    if (m_alphaMeshLoadControl) return;
+    QString error;
+    if (!AuthoringReady(&error) || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
+        m_applyingSession || !m_openglwindows || !m_openglwindows->IsModelReady()) {
+        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("当前不能生成网格，请先完成正在进行的操作") : error, 8000);
+        return;
+    }
+    if (m_selectedObjectIds.size() != 1 || m_selectedObjectTypes.value(0) != QLatin1String("artmesh")) {
+        statusBar()->showMessage(QStringLiteral("先选择一个 ArtMesh，再生成网格"), 8000);
+        return;
+    }
+    const QString id = m_selectedObjectIds.first();
+    if (m_document.IsLocked(QStringLiteral("artmesh"), id)) {
+        statusBar()->showMessage(QStringLiteral("先解除网格锁定"), 8000);
+        return;
+    }
+    const QPointer<MainWindow> window(this);
+    const QPointer<OpengGlForm> surface(m_openglwindows);
+    if (!FinishParameterValueEditing(&error) || !window || !surface ||
+        !surface->FinishMeshDrag(false, &error) || !window ||
+        !surface->CanSetMeshTool(OpengGlForm::MeshTool::Select, id, &error) || !RuntimeMatchesDocument(&error)) {
+        if (window) statusBar()->showMessage(error, 8000);
+        return;
+    }
+    const auto baseline = m_document;
+    const auto sourcePath = baseline.SourcePath();
+    const auto sourceDigest = baseline.SourceDigest();
+    const auto revision = baseline.Revision();
+    const auto current = [window, surface, sourcePath, sourceDigest, revision] {
+        return window && surface && window->m_openglwindows == surface && !window->m_closingModel &&
+            window->m_document.SourcePath() == sourcePath && window->m_document.SourceDigest() == sourceDigest &&
+            window->m_document.Revision() == revision;
+    };
+    auto source = std::make_shared<Source::Source>();
+    auto control = std::make_shared<CExportControl>();
+    m_alphaMeshLoadControl = control;
+    const auto destroyed = connect(this, &QObject::destroyed, [control] { control->Cancel(); });
+    const auto release = [window, control] {
+        if (!window || window->m_alphaMeshLoadControl != control) return;
+        window->m_alphaMeshLoadControl.reset();
+        window->RefreshMeshTools();
+    };
+    const auto loading = qScopeGuard([release, destroyed] { QObject::disconnect(destroyed); release(); });
+    QPointer<QProgressDialog> progress = new QProgressDialog(QStringLiteral("正在读取网格素材…"), QStringLiteral("取消"), 0, 0, this);
+    progress->setObjectName(QStringLiteral("alphaMeshReadProgress"));
+    progress->setWindowTitle(QStringLiteral("准备自动网格"));
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    connect(progress, &QProgressDialog::canceled, this, [control] { control->Cancel(); });
+    const auto closeProgress = qScopeGuard([progress] { if (progress) progress->deleteLater(); });
+    QTimer timer;
+    timer.setInterval(50);
+    connect(&timer, &QTimer::timeout, &timer, [progress, control] {
+        if (!progress) return;
+        const auto state = control->Snapshot();
+        progress->setLabelText(control->IsCancellationRequested() ? QStringLiteral("正在取消素材读取…") :
+            state.detail.isEmpty() ? QStringLiteral("正在读取网格素材…") : state.detail);
+    });
+    RefreshMeshTools();
+    if (!window || !progress) return;
+    progress->show();
+    timer.start();
+    const bool captured = CExportTaskRunner::Run([baseline, id, source, control](const auto&, QString* detail) {
+        return Source::Capture(baseline, id, *source, detail, control.get());
+    }, control.get(), &error);
+    timer.stop();
+    if (progress) progress->hide();
+    release();
+    if (!window) return;
+    if (!captured) {
+        statusBar()->showMessage(control->IsCancellationRequested() ? QStringLiteral("自动网格已取消，模型保持不变") : error, 10000);
+        return;
+    }
+    if (!current() || !AuthoringReady(&error) || !RuntimeMatchesDocument(&error)) {
+        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("读取期间模型已改变，请重新生成网格") : error, 10000);
+        return;
+    }
+    m_alphaMeshDialog = new CAlphaMeshDialog(*source, this);
+    const QPointer<CAlphaMeshDialog> dialog = m_alphaMeshDialog;
+    connect(dialog, &QDialog::finished, this, [window, dialog] {
+        if (!window || window->m_alphaMeshDialog != dialog) return;
+        window->m_alphaMeshDialog.clear();
+        if (dialog) dialog->deleteLater();
+        window->RefreshMeshTools();
+    });
+    connect(dialog, &QObject::destroyed, this, [window] {
+        if (window) QTimer::singleShot(0, window, [window] { if (window) window->RefreshMeshTools(); });
+    });
+    dialog->SetSubmissionHandler([window, surface, current, source](const Planner::Plan& plan, QString* detail) {
+        const auto fail = [detail](const QString& message) { if (detail) *detail = message; return false; };
+        if (!current()) return fail(QStringLiteral("模型或文档已改变，请关闭预览并重新生成网格"));
+        if (!window->AuthoringReady(detail) || window->m_batchExporting || window->m_psdBatch ||
+            window->m_previewExport.IsBusy() || window->m_applyingSession)
+            return fail(QStringLiteral("当前不能应用网格，请先完成正在进行的操作"));
+        if (!window->FinishParameterValueEditing(detail) || !current() ||
+            !surface->FinishMeshDrag(false, detail) || !current() ||
+            !surface->CanSetMeshTool(OpengGlForm::MeshTool::Select, source->input.artMeshId, detail) ||
+            !window->RuntimeMatchesDocument(detail)) return false;
+        if (!Planner::Validate(source->input, plan, detail)) return false;
+        Builder::Request request;
+        request.meshes.append(plan.edit);
+        Builder::Impact impact;
+        if (!window->m_document.AnalyzeMeshStructureEdit(request, impact, detail)) return false;
+        if (!impact.blockingReasons.isEmpty()) return fail(impact.blockingReasons.join(QLatin1Char('\n')));
+        live2dstruct::CModelEdit command;
+        if (!window->m_document.MakeMeshStructureEdit(request, command, detail) || !current()) return false;
+        if (!window->SubmitInspectorEdit(command, detail)) return false;
+        if (!window) return true;
+        window->ApplyDocumentEditToUi(command, true);
+        if (window) window->statusBar()->showMessage(QStringLiteral("自动网格已应用，全部关键形与 UV 已同步，可撤销"), 8000);
+        return true;
+    });
+    RefreshMeshTools();
+    // Qt 6.8 的 macOS sheet 会把越界父窗口计入安全区。
+    if (window && dialog) dialog->show();
 }
 
 bool MainWindow::ApplyMeshTool(OpengGlForm::MeshTool tool, const OpengGlForm::MeshToolSnapshot& snapshot, QString* error)

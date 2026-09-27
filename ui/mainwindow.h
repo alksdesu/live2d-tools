@@ -46,6 +46,7 @@ class QProgressDialog;
 class CExportResultsPanel;
 class CExportControl;
 class CMeshToolBar;
+class CAlphaMeshDialog;
 class QVBoxLayout;
 struct PreviewExportState;
 struct CMeshGeometryMigration;
@@ -176,6 +177,8 @@ private:
     bool SetMeshToolsEnabled(bool enabled, QString* error);
     bool ApplyMeshTool(OpengGlForm::MeshTool tool, const OpengGlForm::MeshToolSnapshot& snapshot, QString* error);
     void OptimizeSelectedMesh();
+    void GenerateSelectedMesh();
+    bool CancelAutomaticMesh();
     bool PrepareParameterStructurePose(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                                        bool forward, QMap<QString, float>& pose, QString* error) const;
     QStringList ParameterReferences(const QString& id, bool includeTimeline = true) const;
@@ -293,6 +296,8 @@ private:
     QPointer<QPushButton> m_finishKeyformButton;
     QPointer<CMeshToolBar> m_meshTools;
     std::shared_ptr<const MeshToolCommitState> m_meshToolCommit;
+    QPointer<CAlphaMeshDialog> m_alphaMeshDialog;
+    std::shared_ptr<CExportControl> m_alphaMeshLoadControl;
 
     // Dock 面板
     CModelTreePanel* m_treePanel = nullptr;

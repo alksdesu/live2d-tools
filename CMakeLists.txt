@@ -56,6 +56,8 @@ add_library(model_data STATIC
     live2dstruct/cdraworder.cpp
     live2dstruct/cmeshtopology.cpp
     live2dstruct/cmesheditplanner.cpp
+    live2dstruct/calphameshplanner.cpp
+    live2dstruct/calphameshsource.cpp
     live2dstruct/cmotiontimeline.cpp
     live2dstruct/cmotiontangent.cpp
     live2dstruct/conionskin.cpp
@@ -227,6 +229,13 @@ if(BUILD_TESTING)
     add_executable(mesh_edit_planner_tests tests/mesh_edit_planner_tests.cpp)
     target_link_libraries(mesh_edit_planner_tests PRIVATE model_data Qt6::Test)
     add_test(NAME mesh_edit_planner COMMAND mesh_edit_planner_tests)
+    add_executable(alpha_mesh_planner_tests tests/alpha_mesh_planner_tests.cpp)
+    target_link_libraries(alpha_mesh_planner_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME alpha_mesh_planner COMMAND alpha_mesh_planner_tests)
+    add_executable(alpha_mesh_source_tests tests/alpha_mesh_source_tests.cpp)
+    target_link_libraries(alpha_mesh_source_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(alpha_mesh_source_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME alpha_mesh_source COMMAND alpha_mesh_source_tests)
     if(TARGET live2d_core)
         add_executable(deformer_column_state_core_tests tests/deformer_column_state_tests.cpp)
         target_link_libraries(deformer_column_state_core_tests PRIVATE model_data live2d_core Qt6::Test)
@@ -264,6 +273,10 @@ if(BUILD_TESTING)
         target_link_libraries(mesh_edit_planner_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(mesh_edit_planner_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME mesh_edit_planner_core COMMAND mesh_edit_planner_core_tests)
+        add_executable(alpha_mesh_core_tests tests/alpha_mesh_core_tests.cpp)
+        target_link_libraries(alpha_mesh_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(alpha_mesh_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME alpha_mesh_core COMMAND alpha_mesh_core_tests)
         add_executable(moc_material_core_tests tests/material_moc_core_tests.cpp)
         target_link_libraries(moc_material_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(moc_material_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -402,6 +415,10 @@ if(BUILD_TESTING)
     target_link_libraries(mesh_toolbar_tests PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME mesh_toolbar COMMAND mesh_toolbar_tests)
     set_tests_properties(mesh_toolbar PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(alpha_mesh_dialog_tests tests/alpha_mesh_dialog_tests.cpp ui/calphameshdialog.cpp)
+    target_link_libraries(alpha_mesh_dialog_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    add_test(NAME alpha_mesh_dialog COMMAND alpha_mesh_dialog_tests)
+    set_tests_properties(alpha_mesh_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(dock_toggle_tests tests/dock_toggle_tests.cpp)
     target_include_directories(dock_toggle_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(dock_toggle_tests PRIVATE Qt6::Widgets Qt6::Test)

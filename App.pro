@@ -57,6 +57,8 @@ SOURCES += \
     live2dstruct/cdraworder.cpp \
     live2dstruct/cmeshtopology.cpp \
     live2dstruct/cmesheditplanner.cpp \
+    live2dstruct/calphameshplanner.cpp \
+    live2dstruct/calphameshsource.cpp \
     ui/cinspectorpanel.cpp \
     ui/ckeyformmatrix.cpp \
     ui/cbindingkeysdialog.cpp \
@@ -219,6 +221,7 @@ SOURCES += \
     ui/mainwindowparametervalues.cpp \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
+    ui/calphameshdialog.cpp \
     ui/mainwindowdeformers.cpp \
     ui/mainwindowtextures.cpp \
     ui/cmeshtoolbar.cpp \
@@ -334,6 +337,9 @@ HEADERS += \
     live2dstruct/cdrawableflags.h \
     live2dstruct/cmeshtopology.h \
     live2dstruct/cmesheditplanner.h \
+    live2dstruct/calphameshplanner.h \
+    live2dstruct/calphameshsource.h \
+    ui/calphameshdialog.h \
     ui/cmeshtoolbar.h \
     ui/cdocktoggle.h \
     ui/cworkspacelayouts.h \

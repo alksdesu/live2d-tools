@@ -4,6 +4,8 @@
 #include "cmocmeshstructurebuilder.h"
 #include <QPointF>
 
+class CExportControl;
+
 namespace live2dstruct {
 class CMeshEditPlanner
 {
@@ -43,6 +45,20 @@ public:
         QVector<int> affectedTriangles;
         bool boundaryChanged = false;
     };
+    struct ConstrainedInput
+    {
+        QVector<QPointF> points;
+        QVector<Edge> constraints;
+        qint64 maximumWork = MaximumWork;
+        qint64 maximumWorkingBytes = 512LL * 1024 * 1024;
+        int maximumVertices = CMocMeshStructureBuilder::MaximumVertices;
+    };
+    struct ConstrainedResult
+    {
+        QVector<QPointF> points;
+        QVector<quint16> indices;
+        qint64 operations = 0;
+    };
 
     static bool Insert(const Input&, QPointF point, int seedTriangle,
                        Result&, Diagnostic* = nullptr);
@@ -53,6 +69,8 @@ public:
     static bool Retriangulate(const Input&, const QVector<int>& triangles,
                               Result&, Diagnostic* = nullptr);
     static bool TriangulateVertices(const Input&, Result&, Diagnostic* = nullptr);
+    static bool TriangulateConstraints(
+        const ConstrainedInput&, ConstrainedResult&, Diagnostic* = nullptr, CExportControl* = nullptr);
 };
 }
 
