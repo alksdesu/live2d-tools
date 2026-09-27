@@ -717,6 +717,8 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
     QVector<CAtlasMeshUv> candidate;
     candidate.reserve(meshCount);
     QSet<QString> ids;
+    QHash<QString, const CAtlasMeshUv*> previous;
+    for (const auto& mesh : m_meshes) previous.insert(mesh.name, &mesh);
 
     for (int i = 0; i < meshCount; ++i) {
         CArt_meshes* mesh = table.art_meshes[i];
@@ -786,6 +788,14 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
         }
         if (uv.triangles.isEmpty()) continue;
 
+        const auto* cached = previous.value(uv.name, nullptr);
+        if (cached && m_atlasSizes.value(cached->textureNo) == atlasSize &&
+            cached->points == uv.points && cached->triangles == uv.triangles) {
+            uv.outline = cached->outline;
+            uv.fillPath = cached->fillPath;
+            candidate.append(std::move(uv));
+            continue;
+        }
         uv.fillPath.setFillRule(Qt::WindingFill);
         for (int t = 0; t + 2 < uv.triangles.size(); t += 3) {
             const QPointF& p0 = uv.points[uv.triangles[t]];
@@ -824,6 +834,7 @@ bool CTexturePanel::UpdateUvMeshes(const QByteArray& mocBytes, QString* error)
 bool CTexturePanel::UpdateUvSnapshot(const QByteArray& mocBytes, QString* error)
 {
     if (error) error->clear();
+    if (!m_mocBytes.isEmpty() && mocBytes == m_mocBytes) return true;
     QVector<CAtlasMeshUv> candidate;
     std::unique_ptr<CUvOverlayItem> overlay;
     QString information;

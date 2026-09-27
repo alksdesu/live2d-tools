@@ -1,4 +1,5 @@
 #include "live2dstruct/cmocdeformerorder.h"
+#include "live2dstruct/cmocruntimesnapshot.h"
 #include "live2dstruct/cblendshaperelations.h"
 #include "deformer_order_fixture.h"
 #include "real_core_model_fixture.h"
@@ -19,6 +20,46 @@ class DeformerOrderMocCoreTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void sealedSnapshotPreservesEveryCorePose_data()
+    {
+        QTest::addColumn<QString>("path");
+        for (const auto& model : models()) QTest::newRow(qPrintable(model.first)) << model.second;
+    }
+
+    void sealedSnapshotPreservesEveryCorePose()
+    {
+        QFETCH(QString, path);
+        const auto original = Fixture::read(path);
+        auto reader = CReader::FromBytes(original);
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        auto source = Fixture::permute(original, Fixture::reverseOrder(table));
+        QVERIFY(!source.isEmpty());
+        const auto borrowed = QByteArray::fromRawData(source.constData(), source.size());
+        CMocRuntimeSnapshot runtime;
+        QString error;
+        QVERIFY2(CMocRuntimeSnapshot::Create(borrowed, runtime, &error), qPrintable(error));
+        const auto accepted = runtime;
+        source.fill('\0');
+        source.clear();
+        QVERIFY(!CMocRuntimeSnapshot::Create(QByteArray("invalid"), runtime, &error));
+        QCOMPARE(runtime.Bytes(), accepted.Bytes());
+        QCOMPARE(runtime.Digest(), accepted.Digest());
+        CoreModel expected, actual;
+        QVERIFY(expected.load(original));
+        QVERIFY(actual.load(runtime.Bytes()));
+        runtime = {};
+        for (const auto& pose : poses(expected.value)) {
+            expected.pose(pose);
+            actual.pose(pose);
+            const auto message = difference(frame(expected.value), frame(actual.value));
+            QVERIFY2(message.isEmpty(), qPrintable(message));
+        }
+        QVERIFY(expected.intact());
+        QVERIFY(actual.intact());
+        QCOMPARE(Fixture::read(path), original);
+    }
+
     void reversedHierarchyMatchesSortedSourceEachFrame_data()
     {
         QTest::addColumn<QString>("path");

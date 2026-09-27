@@ -24,6 +24,8 @@
 #include <QSpinBox>
 #include <QSet>
 #include <QTableWidget>
+#include <QPersistentModelIndex>
+#include <QHash>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QDialog>
@@ -72,6 +74,29 @@ public:
             result = result.expandedTo(style->sizeFromContents(QStyle::CT_ItemViewItem, &value, {}, value.widget));
         }
         return result;
+    }
+};
+
+class GeometryEditorDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    std::function<void(QWidget*, const QModelIndex&, bool)> editorChanged;
+    std::function<bool(QWidget*)> canCommit;
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        auto* editor = QStyledItemDelegate::createEditor(parent, option, index);
+        if (editor && editorChanged) editorChanged(editor, index, true);
+        return editor;
+    }
+    void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override
+    {
+        if (canCommit && canCommit(editor)) QStyledItemDelegate::setModelData(editor, model, index);
+    }
+    void destroyEditor(QWidget* editor, const QModelIndex& index) const override
+    {
+        if (editorChanged) editorChanged(editor, index, false);
+        QStyledItemDelegate::destroyEditor(editor, index);
     }
 };
 
@@ -128,8 +153,108 @@ QString indexValue(int index, const QString& fallback = QStringLiteral("根"))
 }
 }
 
+struct CInspectorPanel::ProjectionState
+{
+    struct Context {
+        const live2dstruct::CModelDocument* document = nullptr;
+        QByteArray source;
+        QString path, name, type;
+        int keyform = -1;
+        bool locked = false;
+        live2dstruct::CMocParameterStructureBuilder::ColumnState structure;
+        QVector<quint16> indices;
+        bool operator==(const Context& other) const {
+            return document == other.document && source == other.source && path == other.path && name == other.name &&
+                type == other.type && keyform == other.keyform && locked == other.locked && structure == other.structure && indices == other.indices;
+        }
+    };
+    struct Table { Context context; QVector<float> values; bool valid = false; };
+    struct Editor { QPersistentModelIndex index; quint64 generation; };
+    Context context, metadata;
+    QHash<QTableWidget*, Table> tables;
+    QHash<QWidget*, Editor> editors;
+    QList<QPointer<GeometryEditorDelegate>> delegates;
+    QSet<QString> locks;
+    quint64 generation = 0, revision = 0;
+    bool contextValid = false, metadataValid = false, pending = false, queued = false, force = false;
+    bool visibilityKnown = false, visible = true;
+};
+
+void CInspectorPanel::InvalidateProjection()
+{
+    auto& state = *m_projection;
+    ++state.generation; state.contextValid = state.metadataValid = false;
+    state.pending = state.queued = false; state.tables.clear(); state.editors.clear();
+}
+
+void CInspectorPanel::PrepareProjectionContext(int keyform)
+{
+    ProjectionState::Context next;
+    next.document = m_document; next.name = m_selectionName; next.type = m_selectionType; next.keyform = keyform;
+    if (m_document) {
+        next.source = m_document->SourceDigest(); next.path = m_document->SourcePath();
+        next.structure = m_document->ParameterStructure(); next.locked = IsLocked(next.type, next.name);
+        if (next.type == QLatin1String("artmesh")) next.indices = m_document->DrawableIndices(next.name);
+    }
+    auto& state = *m_projection;
+    if (!state.contextValid || !(state.context == next)) {
+        ++state.generation; state.editors.clear(); state.pending = state.queued = false;
+        state.context = std::move(next); state.contextValid = true;
+    }
+}
+
+void CInspectorPanel::QueueProjection()
+{
+    auto& state = *m_projection;
+    if (state.queued || !state.pending) return;
+    state.queued = true; const auto generation = state.generation;
+    QTimer::singleShot(0, this, [this, generation] {
+        auto& current = *m_projection;
+        if (generation != current.generation) return;
+        current.queued = false;
+        if (current.visibilityKnown && !current.visible) return;
+        RefreshSelection();
+    });
+}
+
+void CInspectorPanel::ClearGeometryTable(QTableWidget* table)
+{
+    m_projection->tables.remove(table);
+    if (table->rowCount()) table->setRowCount(0);
+}
+
+void CInspectorPanel::UpdateGeometryTable(QTableWidget* table, const QVector<float>& values, int columns, bool rotation)
+{
+    PrepareProjectionContext(GetActiveGeometryKeyformIndex());
+    auto& state = *m_projection; auto& cached = state.tables[table];
+    const int rows = values.size() / columns;
+    const bool reset = !cached.valid || !(cached.context == state.context) || cached.values.size() != values.size() || table->rowCount() != rows;
+    if (!reset && state.visibilityKnown && !state.visible && !state.force) { state.pending = true; return; }
+    const QSignalBlocker blocker(table);
+    if (reset) {
+        table->setRowCount(0); table->setRowCount(rows);
+        cached = {state.context, values, true};
+        for (int row = 0; row < rows; ++row) {
+            auto* item = new QTableWidgetItem(QString::number(row)); item->setFlags(item->flags() & ~Qt::ItemIsEditable); table->setItem(row, 0, item);
+        }
+    }
+    for (int row = 0; row < rows; ++row) for (int column = 0; column < columns; ++column) {
+        const int at = row * columns + column;
+        if (!reset && !state.force && cached.values[at] == values[at]) continue;
+        bool editing = false;
+        if (!state.force) for (auto editor = state.editors.cbegin(); editor != state.editors.cend(); ++editor)
+            if (editor->generation == state.generation && editor->index.isValid() && editor->index.model() == table->model() &&
+                editor->index.row() == row && editor->index.column() == column + 1) { editing = true; break; }
+        if (editing) { state.pending = true; continue; }
+        const QString text = rotation && column >= 4 ? (values[at] != 0 ? QStringLiteral("是") : QStringLiteral("否")) : QString::number(values[at], 'g', 9);
+        if (auto* item = table->item(row, column + 1)) { if (item->text() != text) item->setText(text); }
+        else table->setItem(row, column + 1, new QTableWidgetItem(text));
+        cached.values[at] = values[at];
+    }
+}
+
 CInspectorPanel::CInspectorPanel(QWidget* parent)
-    : QDockWidget(QStringLiteral("属性"), parent)
+    : QDockWidget(QStringLiteral("属性"), parent), m_projection(std::make_unique<ProjectionState>())
 {
     setObjectName(QStringLiteral("inspectorPanel"));
     auto* content = new QWidget(this);
@@ -368,6 +493,27 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     for (QWidget* field : QList<QWidget*>{m_warpKeyformCombo, m_warpKeyformTable})
         field->setProperty("inspectorTypes", QStringList{QStringLiteral("warp")});
     for (QTableWidget* table : {m_vertexTable, m_rotationKeyformTable, m_warpKeyformTable}) {
+        auto* delegate = new GeometryEditorDelegate(table); m_projection->delegates.append(delegate);
+        const QPointer<CInspectorPanel> owner(this);
+        delegate->canCommit = [owner](QWidget* editor) {
+            if (!owner) return false;
+            const auto& state = *owner->m_projection;
+            const auto found = state.editors.constFind(editor);
+            return found != state.editors.cend() && found->generation == state.generation && found->index.isValid();
+        };
+        delegate->editorChanged = [owner](QWidget* editor, const QModelIndex& index, bool opened) {
+            if (!owner) return;
+            auto& state = *owner->m_projection;
+            if (opened) {
+                state.editors.insert(editor, {QPersistentModelIndex(index), state.generation});
+                const auto generation = state.generation;
+                QObject::connect(editor, &QObject::destroyed, owner, [owner, editor, generation] {
+                    if (!owner || generation != owner->m_projection->generation) return;
+                    owner->m_projection->editors.remove(editor); owner->QueueProjection();
+                });
+            } else { state.editors.remove(editor); owner->QueueProjection(); }
+        };
+        table->setItemDelegate(delegate);
         table->setItemDelegateForColumn(0, new NumericIndexDelegate(table));
         table->setMinimumHeight(120);
         table->setMaximumHeight(280);
@@ -615,10 +761,15 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
     });
     ClearSelection();
+    connect(this, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        m_projection->visibilityKnown = true; m_projection->visible = visible;
+        if (visible) QueueProjection();
+    });
 }
 
 CInspectorPanel::~CInspectorPanel()
 {
+    for (auto delegate : m_projection->delegates) if (delegate) { delegate->editorChanged = {}; delegate->canCommit = {}; }
     // 浮动窗口销毁时会提交编辑，须在派生成员释放前断开。
     for (QObject* child : findChildren<QObject*>()) QObject::disconnect(child, nullptr, this, nullptr);
 }
@@ -626,6 +777,7 @@ CInspectorPanel::~CInspectorPanel()
 void CInspectorPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
     const bool sameDocument = m_document == document;
+    InvalidateProjection();
     m_document = document;
     if (m_selectionName.isEmpty()) ClearSelection();
     else showModelObject(m_selectionName, m_selectionType, sameDocument);
@@ -676,7 +828,9 @@ void CInspectorPanel::RejectEdit(const QString& error)
 {
     {
         const QSignalBlocker blocker(this);
+        m_projection->force = true;
         RefreshSelection();
+        m_projection->force = false;
     }
     emit EditRejected(error.isEmpty() ? QStringLiteral("无法提交当前编辑，已保留原状态") : error);
 }
@@ -759,6 +913,7 @@ void CInspectorPanel::SetSelections(const QStringList& names, const QStringList&
         else SetSelection(names.first(), types.value(0));
         return;
     }
+    InvalidateProjection();
     m_selectionName.clear();
     m_matrixSnapshot.reset();
     m_keyformMatrix->Clear();
@@ -870,7 +1025,7 @@ void CInspectorPanel::RefreshSelection()
     else if (!m_selectionName.isEmpty()) showModelObject(m_selectionName, m_selectionType);
 }
 
-bool CInspectorPanel::SyncActiveKeyform(const QString& id, const QString& type, int keyform)
+bool CInspectorPanel::SyncActiveKeyform(const QString& id, const QString& type, int keyform, bool refresh)
 {
     if (!m_document || keyform < 0) return false;
     int count = 0;
@@ -887,7 +1042,7 @@ bool CInspectorPanel::SyncActiveKeyform(const QString& id, const QString& type, 
     m_visibilityCheck->setTristate(false);
     m_activeKeyformIndex = type == QLatin1String("artmesh") ? keyform : -1;
     m_activeDeformerKeyform = type == QLatin1String("artmesh") ? -1 : keyform;
-    showModelObject(id, type, true);
+    if (refresh) showModelObject(id, type, true);
     return true;
 }
 
@@ -1012,61 +1167,37 @@ void CInspectorPanel::RequestMatrixKeyform(int keyform)
 void CInspectorPanel::RebuildKeyformTable()
 {
     m_updatingKeyform = true;
-    m_vertexTable->setRowCount(0);
-    const int keyformIndex = m_activeKeyformIndex;
-    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
-        keyformIndex < 0 || IsLocked(m_selectionType, m_selectionName)) {
-        m_vertexTable->setEnabled(false);
-        m_updatingKeyform = false;
-        return;
-    }
-    const QVector<float> positions = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
-    if (positions.isEmpty() || positions.size() % 2 != 0) {
-        m_vertexTable->setEnabled(false);
-        m_updatingKeyform = false;
-        return;
-    }
-    m_vertexTable->setRowCount(positions.size() / 2);
-    for (int row = 0; row < m_vertexTable->rowCount(); ++row) {
-        auto* indexItem = new QTableWidgetItem(QString::number(row));
-        indexItem->setFlags(indexItem->flags() & ~Qt::ItemIsEditable);
-        m_vertexTable->setItem(row, 0, indexItem);
-        m_vertexTable->setItem(row, 1, new QTableWidgetItem(QString::number(positions[row * 2], 'g', 9)));
-        m_vertexTable->setItem(row, 2, new QTableWidgetItem(QString::number(positions[row * 2 + 1], 'g', 9)));
-    }
-    m_vertexTable->setEnabled(true);
-    m_updatingKeyform = false;
+    const auto reset = qScopeGuard([this] { m_updatingKeyform = false; });
+    const auto positions = m_document && m_selectionType == QLatin1String("artmesh") &&
+        !IsLocked(m_selectionType, m_selectionName)
+        ? m_document->DrawableKeyformPositions(m_selectionName, m_activeKeyformIndex) : QVector<float>();
+    if (positions.isEmpty() || positions.size() % 2) ClearGeometryTable(m_vertexTable);
+    else UpdateGeometryTable(m_vertexTable, positions, 2);
+    m_vertexTable->setEnabled(!positions.isEmpty());
 }
 
 void CInspectorPanel::RebuildRotationKeyformTable()
 {
     m_updatingRotationKeyform = true;
-    m_rotationKeyformTable->setRowCount(0);
+    const auto reset = qScopeGuard([this] { m_updatingRotationKeyform = false; });
     if (!m_document || m_selectionType != QLatin1String("rotation") || m_selectionName.isEmpty()) {
+        ClearGeometryTable(m_rotationKeyformTable);
         m_rotationKeyformTable->setEnabled(false);
-        m_updatingRotationKeyform = false;
         return;
     }
-    const QVector<live2dstruct::CModelRotationKeyform> keyforms =
-        m_document->DeformerRotationKeyforms(m_selectionName);
-    const bool unlocked = !IsLocked(m_selectionType, m_selectionName);
-    m_rotationKeyformTable->setRowCount(keyforms.size());
-    for (int row = 0; row < keyforms.size(); ++row) {
-        const auto& keyform = keyforms[row];
-        auto* index = new QTableWidgetItem(QString::number(row));
-        index->setFlags(index->flags() & ~Qt::ItemIsEditable);
-        m_rotationKeyformTable->setItem(row, 0, index);
-        m_rotationKeyformTable->setItem(row, 1, new QTableWidgetItem(QString::number(keyform.angle, 'g', 9)));
-        m_rotationKeyformTable->setItem(row, 2, new QTableWidgetItem(QString::number(keyform.originX, 'g', 9)));
-        m_rotationKeyformTable->setItem(row, 3, new QTableWidgetItem(QString::number(keyform.originY, 'g', 9)));
-        m_rotationKeyformTable->setItem(row, 4, new QTableWidgetItem(QString::number(keyform.scale, 'g', 9)));
-        m_rotationKeyformTable->setItem(row, 5, new QTableWidgetItem(keyform.reflectX ? QStringLiteral("是") : QStringLiteral("否")));
-        m_rotationKeyformTable->setItem(row, 6, new QTableWidgetItem(keyform.reflectY ? QStringLiteral("是") : QStringLiteral("否")));
-    }
-    m_rotationKeyformTable->setEnabled(unlocked);
-    if (m_activeDeformerKeyform >= 0 && m_activeDeformerKeyform < keyforms.size())
+    const auto keyforms = m_document->DeformerRotationKeyforms(m_selectionName);
+    QVector<float> values;
+    values.reserve(keyforms.size() * 6);
+    for (const auto& form : keyforms)
+        values << form.angle << form.originX << form.originY << form.scale << float(form.reflectX) << float(form.reflectY);
+    PrepareProjectionContext(m_activeDeformerKeyform);
+    const auto previous = m_projection->tables.constFind(m_rotationKeyformTable);
+    const bool changedContext = previous == m_projection->tables.cend() || !(previous->context == m_projection->context);
+    UpdateGeometryTable(m_rotationKeyformTable, values, 6, true);
+    m_rotationKeyformTable->setEnabled(!IsLocked(m_selectionType, m_selectionName));
+    const bool restoreRejectedSelection = m_projection->force && m_rotationKeyformTable->currentRow() != m_activeDeformerKeyform;
+    if ((changedContext || restoreRejectedSelection) && m_activeDeformerKeyform >= 0 && m_activeDeformerKeyform < keyforms.size())
         m_rotationKeyformTable->setCurrentCell(m_activeDeformerKeyform, 0);
-    m_updatingRotationKeyform = false;
 }
 
 void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
@@ -1082,7 +1213,9 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
         bool value = false;
         if (text == QStringLiteral("是") || text == QStringLiteral("true") || text == QStringLiteral("1")) value = true;
         else if (text != QStringLiteral("否") && text != QStringLiteral("false") && text != QStringLiteral("0")) {
+            m_projection->force = true;
             RebuildRotationKeyformTable();
+            m_projection->force = false;
             return;
         }
         if (column == 5) after[row].reflectX = value;
@@ -1091,7 +1224,9 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
         bool ok = false;
         const double number = m_rotationKeyformTable->item(row, column)->text().toDouble(&ok);
         if (!ok || !std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max()) {
+            m_projection->force = true;
             RebuildRotationKeyformTable();
+            m_projection->force = false;
             return;
         }
         const float value = static_cast<float>(number);
@@ -1101,7 +1236,9 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
         else if (column == 4) after[row].scale = value;
     }
     if (!after[row].IsValid()) {
+        m_projection->force = true;
         RebuildRotationKeyformTable();
+        m_projection->force = false;
         return;
     }
     if (after == before) return;
@@ -1118,32 +1255,16 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
 void CInspectorPanel::RebuildWarpKeyformTable()
 {
     m_updatingWarpKeyform = true;
-    m_warpKeyformTable->setRowCount(0);
-    if (!m_document || m_selectionType != QLatin1String("warp") || m_selectionName.isEmpty()) {
+    const auto reset = qScopeGuard([this] { m_updatingWarpKeyform = false; });
+    const auto keyforms = m_document && m_selectionType == QLatin1String("warp")
+        ? m_document->DeformerWarpKeyforms(m_selectionName) : QVector<live2dstruct::CModelWarpKeyform>();
+    if (m_activeDeformerKeyform < 0 || m_activeDeformerKeyform >= keyforms.size()) {
+        ClearGeometryTable(m_warpKeyformTable);
         m_warpKeyformTable->setEnabled(false);
-        m_updatingWarpKeyform = false;
         return;
     }
-    const int keyformIndex = m_activeDeformerKeyform;
-    const QVector<live2dstruct::CModelWarpKeyform> keyforms = m_document->DeformerWarpKeyforms(m_selectionName);
-    if (keyformIndex < 0 || keyformIndex >= keyforms.size()) {
-        m_warpKeyformTable->setEnabled(false);
-        m_updatingWarpKeyform = false;
-        return;
-    }
-    const auto& keyform = keyforms[keyformIndex];
-    const int pointCount = keyform.positions.size() / 2;
-    const bool unlocked = !IsLocked(m_selectionType, m_selectionName);
-    m_warpKeyformTable->setRowCount(pointCount);
-    for (int row = 0; row < pointCount; ++row) {
-        auto* index = new QTableWidgetItem(QString::number(row));
-        index->setFlags(index->flags() & ~Qt::ItemIsEditable);
-        m_warpKeyformTable->setItem(row, 0, index);
-        m_warpKeyformTable->setItem(row, 1, new QTableWidgetItem(QString::number(keyform.positions[row * 2], 'g', 9)));
-        m_warpKeyformTable->setItem(row, 2, new QTableWidgetItem(QString::number(keyform.positions[row * 2 + 1], 'g', 9)));
-    }
-    m_warpKeyformTable->setEnabled(unlocked);
-    m_updatingWarpKeyform = false;
+    UpdateGeometryTable(m_warpKeyformTable, keyforms[m_activeDeformerKeyform].positions, 2);
+    m_warpKeyformTable->setEnabled(!IsLocked(m_selectionType, m_selectionName));
 }
 
 void CInspectorPanel::ApplyWarpKeyformCellEdit(int row, int column)
@@ -1157,7 +1278,9 @@ void CInspectorPanel::ApplyWarpKeyformCellEdit(int row, int column)
     bool ok = false;
     const double number = m_warpKeyformTable->item(row, column)->text().toDouble(&ok);
     if (!ok || !std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max()) {
+        m_projection->force = true;
         RebuildWarpKeyformTable();
+        m_projection->force = false;
         return;
     }
     after[keyformIndex].positions[row * 2 + (column - 1)] = float(number);
@@ -1494,6 +1617,7 @@ void CInspectorPanel::PasteCurrentKeyform()
 
 void CInspectorPanel::ClearSelection()
 {
+    InvalidateProjection();
     m_matrixSnapshot.reset();
     m_keyformMatrix->Clear();
     m_editBindingKeys->setEnabled(false);
@@ -1834,63 +1958,76 @@ void CInspectorPanel::Redo()
 
 void CInspectorPanel::showModelObject(const QString& name, const QString& type, bool preserveKeyforms)
 {
-    const QPointer<CInspectorPanel> owner(this);
-    const auto rows = qScopeGuard([owner] {
-        if (!owner) return;
-        owner->RefreshKeyformMatrix();
-        updateObjectRows(owner, owner->GetSelectionType());
-    });
-
-    if (!m_document || name.isEmpty()) {
-        ClearSelection();
-        return;
-    }
+    if (!m_document || name.isEmpty()) { ClearSelection(); return; }
     const int selectedKeyform = preserveKeyforms ? m_activeKeyformIndex : 0;
     const int selectedDeformerKeyform = preserveKeyforms ? m_activeDeformerKeyform : 0;
-    m_activeKeyformIndex = -1;
-    m_activeDeformerKeyform = -1;
-    m_emptyLabel->setVisible(false);
-    m_typeLabel->setText(type == QLatin1String("artmesh") ? QStringLiteral("ArtMesh")
-                       : type == QLatin1String("part") ? QStringLiteral("Part")
-                       : type == QLatin1String("warp") ? QStringLiteral("Warp Deformer")
-                       : type == QLatin1String("rotation") ? QStringLiteral("Rotation Deformer")
-                       : type);
-    m_idLabel->setText(name);
-    m_parentLabel->setText(QStringLiteral("—"));
-    m_deformerLabel->setText(QStringLiteral("—"));
-    m_visibilityLabel->setText(QStringLiteral("—"));
-    m_geometryLabel->setText(QStringLiteral("—"));
-    m_textureLabel->setText(QStringLiteral("—"));
-    m_drawOrderLabel->setText(QStringLiteral("—"));
-    m_blendLabel->setText(QStringLiteral("—"));
-    m_maskLabel->setText(QStringLiteral("—"));
-    m_keyformLabel->setText(QStringLiteral("—"));
-    m_updatingDeformerParent = true;
-    m_deformerParentCombo->clear();
-    m_deformerParentCombo->setEnabled(false);
-    m_updatingDeformerParent = false;
-    ResetMaskControls();
+    PrepareProjectionContext(type == QLatin1String("artmesh") ? selectedKeyform : selectedDeformerKeyform);
+    auto& projection = *m_projection;
+    const bool sameContext = projection.metadataValid && projection.metadata == projection.context;
+    if (sameContext && projection.revision == m_document->Revision() && projection.locks == m_lockedKeys &&
+        !projection.force && (!projection.pending || (projection.visibilityKnown && !projection.visible))) return;
+    projection.pending = false;
+    const auto revision = m_document->Revision();
+    const auto context = projection.context;
+    const QPointer<CInspectorPanel> owner(this);
+    const auto rows = qScopeGuard([owner, revision, context] {
+        if (!owner || !owner->m_document || owner->m_document != context.document ||
+            owner->m_document->SourceDigest() != context.source || owner->m_document->SourcePath() != context.path ||
+            owner->m_document->Revision() != revision || owner->m_selectionName != context.name ||
+            owner->m_selectionType != context.type) return;
+        owner->RefreshKeyformMatrix();
+        if (!owner) return;
+        updateObjectRows(owner, owner->GetSelectionType());
+        auto& state = *owner->m_projection;
+        state.metadata = state.context; state.metadataValid = true;
+        state.revision = revision; state.locks = owner->m_lockedKeys;
+    });
     const bool unlocked = !IsLocked(type, name);
-    m_visibilityCheck->setEnabled(unlocked);
-    m_opacitySpin->setEnabled(false);
-    m_drawOrderSpin->setEnabled(false);
-    m_updatingKeyform = true;
-    m_keyformCombo->clear();
-    m_keyformCombo->setEnabled(false);
-    m_vertexTable->setRowCount(0);
-    m_vertexTable->setEnabled(false);
-    m_rotationKeyformTable->setRowCount(0);
-    setRowVisible(m_rotationKeyformTable, false);
-    m_rotationKeyformTable->setEnabled(false);
-    m_warpKeyformCombo->clear();
-    m_warpKeyformCombo->setEnabled(false);
-    m_warpKeyformTable->setRowCount(0);
-    setRowVisible(m_warpKeyformTable, false);
-    m_warpKeyformTable->setEnabled(false);
-    m_mirrorHorizontal->setEnabled(false);
-    m_mirrorVertical->setEnabled(false);
-    m_interpolatePrevious->setEnabled(false);
-    m_updatingKeyform = false;
+    if (!sameContext) {
+        m_activeKeyformIndex = -1;
+        m_activeDeformerKeyform = -1;
+        m_emptyLabel->setVisible(false);
+        m_typeLabel->setText(type == QLatin1String("artmesh") ? QStringLiteral("ArtMesh")
+                           : type == QLatin1String("part") ? QStringLiteral("Part")
+                           : type == QLatin1String("warp") ? QStringLiteral("Warp Deformer")
+                           : type == QLatin1String("rotation") ? QStringLiteral("Rotation Deformer")
+                           : type);
+        m_idLabel->setText(name);
+        m_parentLabel->setText(QStringLiteral("—"));
+        m_deformerLabel->setText(QStringLiteral("—"));
+        m_visibilityLabel->setText(QStringLiteral("—"));
+        m_geometryLabel->setText(QStringLiteral("—"));
+        m_textureLabel->setText(QStringLiteral("—"));
+        m_drawOrderLabel->setText(QStringLiteral("—"));
+        m_blendLabel->setText(QStringLiteral("—"));
+        m_maskLabel->setText(QStringLiteral("—"));
+        m_keyformLabel->setText(QStringLiteral("—"));
+        m_updatingDeformerParent = true;
+        m_deformerParentCombo->clear();
+        m_deformerParentCombo->setEnabled(false);
+        m_updatingDeformerParent = false;
+        ResetMaskControls();
+        m_visibilityCheck->setEnabled(unlocked);
+        m_opacitySpin->setEnabled(false);
+        m_drawOrderSpin->setEnabled(false);
+        m_updatingKeyform = true;
+        m_keyformCombo->clear();
+        m_keyformCombo->setEnabled(false);
+        if (type != QLatin1String("artmesh")) ClearGeometryTable(m_vertexTable);
+        m_vertexTable->setEnabled(false);
+        if (type != QLatin1String("rotation")) ClearGeometryTable(m_rotationKeyformTable);
+        setRowVisible(m_rotationKeyformTable, false);
+        m_rotationKeyformTable->setEnabled(false);
+        m_warpKeyformCombo->clear();
+        m_warpKeyformCombo->setEnabled(false);
+        if (type != QLatin1String("warp")) ClearGeometryTable(m_warpKeyformTable);
+        setRowVisible(m_warpKeyformTable, false);
+        m_warpKeyformTable->setEnabled(false);
+        m_mirrorHorizontal->setEnabled(false);
+        m_mirrorVertical->setEnabled(false);
+        m_interpolatePrevious->setEnabled(false);
+        m_updatingKeyform = false;
+    }
 
     if (type == QLatin1String("artmesh")) {
         for (const auto& drawable : m_document->Drawables()) {
@@ -1903,9 +2040,11 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
             m_visibilityCheck->setChecked(drawable.visible);
             m_updatingVisibility = false;
             m_updatingVisibility = true;
-            m_opacitySpin->setValue(m_document->DrawableOpacity(drawable));
+            if (m_opacitySpin->value() != m_document->DrawableOpacity(drawable) || projection.force)
+                m_opacitySpin->setValue(m_document->DrawableOpacity(drawable));
             m_opacitySpin->setEnabled(unlocked);
-            m_drawOrderSpin->setValue(qRound(m_document->DrawableDrawOrder(drawable)));
+            if (m_drawOrderSpin->value() != qRound(m_document->DrawableDrawOrder(drawable)) || projection.force)
+                m_drawOrderSpin->setValue(qRound(m_document->DrawableDrawOrder(drawable)));
             m_drawOrderSpin->setEnabled(unlocked);
             m_updatingVisibility = false;
             m_geometryLabel->setText(QStringLiteral("%1 顶点，%2 索引").arg(drawable.vertexCount).arg(drawable.indices.size()));
@@ -1925,8 +2064,10 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
             m_maskLabel->setText(masks.isEmpty() ? QStringLiteral("无") : QString::number(masks.size()));
             m_keyformLabel->setText(QString::number(drawable.keyforms.size()));
             m_updatingKeyform = true;
-            for (int keyformIndex = 0; keyformIndex < drawable.keyforms.size(); ++keyformIndex) {
-                m_keyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
+            if (m_keyformCombo->count() != drawable.keyforms.size()) {
+                m_keyformCombo->clear();
+                for (int keyformIndex = 0; keyformIndex < drawable.keyforms.size(); ++keyformIndex)
+                    m_keyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
             }
             m_keyformCombo->setEnabled(unlocked && !drawable.keyforms.isEmpty());
             m_mirrorHorizontal->setEnabled(unlocked && !drawable.keyforms.isEmpty());
@@ -2000,8 +2141,11 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
                 m_geometryLabel->setText(QStringLiteral("Warp %1 × %2").arg(deformer.columns).arg(deformer.rows));
                 const auto keyforms = m_document->DeformerWarpKeyforms(name);
                 m_updatingWarpKeyform = true;
-                for (int keyformIndex = 0; keyformIndex < keyforms.size(); ++keyformIndex)
-                    m_warpKeyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
+                if (m_warpKeyformCombo->count() != keyforms.size()) {
+                    m_warpKeyformCombo->clear();
+                    for (int keyformIndex = 0; keyformIndex < keyforms.size(); ++keyformIndex)
+                        m_warpKeyformCombo->addItem(QStringLiteral("Keyform %1").arg(keyformIndex), keyformIndex);
+                }
                 m_warpKeyformCombo->setEnabled(unlocked && !keyforms.isEmpty());
                 setRowVisible(m_warpKeyformTable, !keyforms.isEmpty());
                 m_warpKeyformTable->setEnabled(unlocked && !keyforms.isEmpty());

@@ -481,7 +481,8 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
             CModelEdit command = edit;
             command.runtime = std::make_shared<CModelEditRuntimeState>();
             command.coalesce = false;
-            if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("网格结构修改无效或数据已改变"));
+            if (!candidate.ExecuteEdit(command) || !candidate.PeekUndoEdit(&command))
+                return fail(error, QStringLiteral("网格结构修改无效或数据已改变"));
             return PublishMesh(std::move(candidate), command, true, error);
         } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备网格结构，原文档和预览保持不变")); }
     }

@@ -1,6 +1,8 @@
 #include "live2dstruct/ctreemanage.h"
 #include "live2dstruct/ckeyformmappingcontext.h"
+#include "live2dstruct/cmocruntimesnapshot.h"
 #include "deformer_snapshot_fixture.h"
+#include "deformer_order_fixture.h"
 
 #include <QtTest>
 #include <QTemporaryDir>
@@ -26,6 +28,33 @@ private:
     }
 
 private slots:
+    void rawAndPreparedSnapshotsKeepTheirOwnByteIdentity()
+    {
+        Fixture fixture;
+        const auto source = DeformerOrderFixture::permute(fixture.bytes, {2, 1, 0});
+        QVERIFY(!source.isEmpty());
+        CTreeManage::Snapshot raw, prepared;
+        CMocRuntimeSnapshot runtime;
+        QString error;
+        QVERIFY2(CMocRuntimeSnapshot::Create(source, runtime, &error), qPrintable(error));
+        QVERIFY2(CTreeManage::PrepareSnapshot(source, {{"P", 0}}, raw, &error), qPrintable(error));
+        QVERIFY2(CTreeManage::PrepareSnapshot(runtime, {{"P", 0}}, prepared, &error), qPrintable(error));
+        QCOMPARE(raw.MocDigest(), QCryptographicHash::hash(source, QCryptographicHash::Sha256));
+        QCOMPARE(prepared.MocDigest(), runtime.Digest());
+        QVERIFY(raw.MocDigest() != prepared.MocDigest());
+        QVERIFY(near(meshPositions(*raw.tree), meshPositions(*prepared.tree)));
+        QCOMPARE(raw.Pose(), prepared.Pose());
+        auto* accepted = prepared.tree.get();
+        const auto digest = prepared.MocDigest();
+        QVERIFY(!CTreeManage::PrepareSnapshot(CMocRuntimeSnapshot{}, {{"P", 0}}, prepared, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(prepared.tree.get(), accepted);
+        QCOMPARE(prepared.MocDigest(), digest);
+        QVERIFY(!CTreeManage::PrepareSnapshot(runtime, {{"unknown", 0}}, prepared, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(prepared.tree.get(), accepted);
+        QCOMPARE(prepared.MocDigest(), digest);
+    }
     void cleanup()
     {
         CTreeManage::ReleaseInstance();

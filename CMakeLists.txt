@@ -81,6 +81,7 @@ add_library(model_data STATIC
     live2dstruct/cmaterialeditcontroller.cpp
     live2dstruct/cuveditdraft.cpp
     live2dstruct/cmodeldocumentstructure.cpp
+    live2dstruct/cmodeldocumentmeshverification.cpp
     live2dstruct/cmodeldocumentorganization.cpp
     live2dstruct/cmodelgeometryedit.cpp
     live2dstruct/cmodeldocumentgeometry.cpp
@@ -98,6 +99,7 @@ add_library(model_data STATIC
     live2dstruct/ckeyformgridsnapshot.cpp
     live2dstruct/cmocpreviewbuilder.cpp
     live2dstruct/cmocruntimebuilder.cpp
+    live2dstruct/cmocruntimesnapshot.cpp
     live2dstruct/cmocdeformerorder.cpp
     live2dstruct/cruntimepackage.cpp
     live2dstruct/cphysicsdocument.cpp
@@ -369,7 +371,7 @@ if(BUILD_TESTING)
     target_link_libraries(caff_archive_tests PRIVATE cmo3_data Qt6::Test)
     add_test(NAME caff_archive COMMAND caff_archive_tests)
 
-    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit model_resource_path directory_export runtime_moc runtime_package physics_document parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete mesh_structure_session)
+    foreach(data_test IN ITEMS parent_graph blend_shape_relations visibility_edit model_resource_path directory_export runtime_moc runtime_moc_snapshot runtime_package physics_document parameter_references parameter_reference_editor parameter_resource_edits parameter_reference_plan parameter_structure parameter_structure_document parameter_delete mesh_structure_session)
         add_executable(${data_test}_tests tests/${data_test}_tests.cpp)
         target_link_libraries(${data_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${data_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -445,7 +447,7 @@ if(BUILD_TESTING)
     target_link_libraries(workspace_layout_tests PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME workspace_layout COMMAND workspace_layout_tests)
     set_tests_properties(workspace_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller keyform_logical_state geometry_batch_document geometry_batch_controller geometry_pair_controller rotation_frame geometry_pair_planner deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller deformer_structure_controller tree_snapshot)
+    foreach(keyform_test IN ITEMS keyform_mapping keyform_edit_controller keyform_logical_state geometry_batch_document geometry_batch_controller geometry_pair_controller rotation_frame geometry_pair_planner deformer_edit_context deformer_edit_controller parameter_definition_edit parameter_structure_controller mesh_structure_controller deformer_structure_controller tree_snapshot mesh_transaction)
         add_executable(${keyform_test}_tests tests/${keyform_test}_tests.cpp)
         target_link_libraries(${keyform_test}_tests PRIVATE deformer_tree_data Qt6::Test)
         target_compile_definitions(${keyform_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

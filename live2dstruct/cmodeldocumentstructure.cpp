@@ -370,6 +370,7 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
 
 bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
 {
+    if (!edit.meshVerification.IsEmpty()) return false;
     CModelDocument check = *this;
     const QString& id = edit.name;
     switch (edit.field) {
@@ -732,49 +733,56 @@ bool CModelDocument::SameDeformerDirectory(const CModelDocument& candidate, QStr
     return true;
 }
 
+bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModelEdit& edit,
+                                           CModelSession& session, QString* error) const
+{
+    if (!HasValidStructureRequests(edit)) return fail(error, QStringLiteral("绑定关键值请求与结构命令不匹配"));
+    const auto current = ParameterStructureState();
+    if (state.keys() != current.keys() || state.value("sourceDigest") != m_sourceDigest || state.value("sourcePath") != m_sourcePath)
+        return fail(error, QStringLiteral("参数结构状态来源或字段不匹配"));
+    QHash<QString, float> parameters;
+    QSet<QString> locks;
+    if (!read(state, "meshStructure", session.meshStructure) ||
+        !read(state, "deformerStructure", session.deformerStructure) ||
+        !read(state, "materialStructure", session.materialStructure) || !read(state, "materials", session.drawableMaterials) ||
+        !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
+        !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
+        !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
+        !read(state, "parameterOrganization", session.parameterOrganization) ||
+        !read(state, "geometryObjectPairs", session.geometryObjectPairs) ||
+        !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
+        !read(state, "opacity", session.drawableOpacity) || !read(state, "drawOrder", session.drawableDrawOrder) ||
+        !read(state, "positions", session.drawableKeyformPositions) || !read(state, "indices", session.drawableIndices) ||
+        !read(state, "masks", session.drawableMaskIndices) || !read(state, "parents", session.deformerParentIndices) ||
+        !read(state, "rotation", session.deformerRotationKeyforms) || !read(state, "warp", session.deformerWarpKeyforms) ||
+        !read(state, "inverted", session.drawableMaskInverted))
+        return fail(error, QStringLiteral("参数结构状态类型无效"));
+    session.parameters = ordered(parameters);
+    for (const auto& lock : locks) session.locked.insert(lock, true);
+    session.sourceDigest = m_sourceDigest;
+    session.sourceMoc = m_sourcePath;
+    CTextureWorkspace::State workspace;
+    if (!read(state, "textureWorkspace", workspace)) return fail(error, QStringLiteral("图集结构状态类型无效"));
+    if (workspace != m_textureWorkspace) return fail(error, QStringLiteral("模型结构操作不能改变图集工作区"));
+    if (!read(state, "artwork", session.artwork)) return fail(error, QStringLiteral("模型素材关联状态类型无效"));
+    if (edit.field != CModelEdit::MeshStructure && session.artwork != m_artwork)
+        return fail(error, QStringLiteral("当前结构操作不能改变素材关联"));
+    if (HasTextureWorkspace()) {
+        CTextureWorkspace::Draft draft;
+        if (!CTextureWorkspace::CaptureDraft(m_textureSources, workspace, draft, error)) return false;
+        session.textureWorkspace = std::move(draft);
+    }
+    session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+    if (session.textureWorkspace) session.version = 11;
+    if (!session.artwork.IsEmpty()) session.version = 12;
+    return true;
+}
+
 bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error)
 {
     try {
-        if (!HasValidStructureRequests(edit)) return fail(error, QStringLiteral("绑定关键值请求与结构命令不匹配"));
-        const auto current = ParameterStructureState();
-        if (state.keys() != current.keys() || state.value("sourceDigest") != m_sourceDigest || state.value("sourcePath") != m_sourcePath)
-            return fail(error, QStringLiteral("参数结构状态来源或字段不匹配"));
         CModelSession session;
-        QHash<QString, float> parameters;
-        QSet<QString> locks;
-        if (!read(state, "meshStructure", session.meshStructure) ||
-            !read(state, "deformerStructure", session.deformerStructure) ||
-            !read(state, "materialStructure", session.materialStructure) || !read(state, "materials", session.drawableMaterials) ||
-            !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
-            !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
-            !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
-            !read(state, "parameterOrganization", session.parameterOrganization) ||
-            !read(state, "geometryObjectPairs", session.geometryObjectPairs) ||
-            !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
-            !read(state, "opacity", session.drawableOpacity) || !read(state, "drawOrder", session.drawableDrawOrder) ||
-            !read(state, "positions", session.drawableKeyformPositions) || !read(state, "indices", session.drawableIndices) ||
-            !read(state, "masks", session.drawableMaskIndices) || !read(state, "parents", session.deformerParentIndices) ||
-            !read(state, "rotation", session.deformerRotationKeyforms) || !read(state, "warp", session.deformerWarpKeyforms) ||
-            !read(state, "inverted", session.drawableMaskInverted))
-            return fail(error, QStringLiteral("参数结构状态类型无效"));
-        session.parameters = ordered(parameters);
-        for (const auto& lock : locks) session.locked.insert(lock, true);
-        session.sourceDigest = m_sourceDigest;
-        session.sourceMoc = m_sourcePath;
-        CTextureWorkspace::State workspace;
-        if (!read(state, "textureWorkspace", workspace)) return fail(error, QStringLiteral("图集结构状态类型无效"));
-        if (workspace != m_textureWorkspace) return fail(error, QStringLiteral("模型结构操作不能改变图集工作区"));
-        if (!read(state, "artwork", session.artwork)) return fail(error, QStringLiteral("模型素材关联状态类型无效"));
-        if (edit.field != CModelEdit::MeshStructure && session.artwork != m_artwork)
-            return fail(error, QStringLiteral("当前结构操作不能改变素材关联"));
-        if (HasTextureWorkspace()) {
-            CTextureWorkspace::Draft draft;
-            if (!CTextureWorkspace::CaptureDraft(m_textureSources, workspace, draft, error)) return false;
-            session.textureWorkspace = std::move(draft);
-        }
-        session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
-        if (session.textureWorkspace) session.version = 11;
-        if (!session.artwork.IsEmpty()) session.version = 12;
+        if (!DecodeStructureState(state, edit, session, error)) return false;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
@@ -1116,10 +1124,12 @@ bool CModelDocument::BuildMeshBase(const CMocMeshStructureBuilder::Request& requ
     return BuildPreviewMoc(preview, error) && CMocRuntimeBuilder::Build(preview, indices, bytes, error);
 }
 
-bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request,
+bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Request& sourceRequest,
                                           CModelEdit& edit, QString* error) const
 {
     try {
+        CMocMeshStructureBuilder::Request request;
+        if (!FreezeMeshRequest(sourceRequest, request, error)) return false;
         if (request.meshes.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格"));
         QVector<Builder::BindingRequest> owners;
         for (const auto& mesh : request.meshes) {
@@ -1157,6 +1167,7 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         command.meshRemaps = result.meshes;
         command.meshRequest = std::make_shared<const CMocMeshStructureBuilder::Request>(request);
         if (!ValidateMeshTransition(candidate, command, true, error)) return false;
+        if (!SealMeshStructureEdit(command, candidate, error)) return false;
         edit = std::move(command);
         if (error) error->clear();
         return true;

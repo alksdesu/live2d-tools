@@ -1577,7 +1577,7 @@ void MainWindow::RefreshKeyformUi(bool changed, bool markSession, bool syncParam
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
     if (m_keyformEditor.IsActive()) {
         if (m_inspectorPanel)
-            m_inspectorPanel->SyncActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Type(), m_keyformEditor.Keyform());
+            m_inspectorPanel->SyncActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Type(), m_keyformEditor.Keyform(), false);
         if (m_openglwindows) {
             if (m_keyformEditor.Type() == QLatin1String("artmesh"))
                 m_openglwindows->SetActiveKeyform(m_keyformEditor.Target(), m_keyformEditor.Keyform());
@@ -1611,13 +1611,17 @@ void MainWindow::RefreshKeyformUi(bool changed, bool markSession, bool syncParam
             m_blendShapePanel->SyncParameterValue(it.key(), it.value());
     } else if (m_openglwindows) m_openglwindows->ClearDeformerEditTarget();
     RefreshMeshTools();
-    if (!changed) return;
+    if (!alive) return;
+    if (m_inspectorPanel) {
+        const QSignalBlocker blocker(m_inspectorPanel);
+        m_inspectorPanel->RefreshSelection();
+    }
+    if (!alive || !changed) return;
     if (markSession) m_sessionDirty = true;
     m_historySource = HistorySource::Inspector;
     if (markSession) RefreshWindowTitle();
     if (m_inspectorPanel) {
         const QSignalBlocker blocker(m_inspectorPanel);
-        m_inspectorPanel->RefreshSelection();
         m_inspectorPanel->SyncHistoryState();
     }
     if (m_paramPanel) {

@@ -61,6 +61,12 @@ struct CModelSession
     static QByteArray ComputeSourceDigest(const QString& path);
     bool Save(const QString& path, QString* error = nullptr) const;
     static bool Load(const QString& path, CModelSession* session, QString* error = nullptr);
+private:
+    friend class CModelDocument;
+    bool RestorePreparedDocument(const CModelDocument& loaded, const CModelDocument& prepared,
+                                 CModelDocument& result, QString* error) const;
+    bool RestoreDocumentImpl(const CModelDocument& loaded, const CModelDocument* prepared,
+                             CModelDocument& result, QString* error) const;
 };
 
 }

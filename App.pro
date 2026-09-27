@@ -70,6 +70,7 @@ SOURCES += \
     opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
     live2dstruct/cmodeldocumentstructure.cpp \
+    live2dstruct/cmodeldocumentmeshverification.cpp \
     live2dstruct/cparameterreferences.cpp \
     live2dstruct/cparameterreferenceeditor.cpp \
     live2dstruct/cparameterresourceedits.cpp \
@@ -85,6 +86,7 @@ SOURCES += \
     live2dstruct/ckeyformpairing.cpp \
     live2dstruct/cmocpreviewbuilder.cpp \
     live2dstruct/cmocruntimebuilder.cpp \
+    live2dstruct/cmocruntimesnapshot.cpp \
     live2dstruct/cmocdeformerorder.cpp \
     live2dstruct/cruntimepackage.cpp \
     live2dstruct/cphysicsdocument.cpp \
@@ -366,6 +368,7 @@ HEADERS += \
     live2dstruct/cdeformereditcontext.h \
     live2dstruct/cmocpreviewbuilder.h \
     live2dstruct/cmocruntimebuilder.h \
+    live2dstruct/cmocruntimesnapshot.h \
     live2dstruct/cmocdeformerorder.h \
     live2dstruct/cruntimepackage.h \
     live2dstruct/cphysicsdocument.h \

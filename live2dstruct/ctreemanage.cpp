@@ -1,5 +1,6 @@
 #include "ctreemanage.h"
 #include "ckeyformbindinggrid.h"
+#include "cmocruntimesnapshot.h"
 
 #include <QCryptographicHash>
 #include <cmath>
@@ -47,6 +48,19 @@ void CTreeManage::Snapshot::Swap(Snapshot& other) noexcept
 bool CTreeManage::PrepareSnapshot(const QByteArray& bytes, const QMap<QString, float>& pose,
                                   Snapshot& result, QString* error)
 {
+    return PrepareSnapshotData(bytes, nullptr, pose, result, error);
+}
+
+bool CTreeManage::PrepareSnapshot(const CMocRuntimeSnapshot& runtime, const QMap<QString, float>& pose,
+                                  Snapshot& result, QString* error)
+{
+    if (!runtime.IsValid()) return fail(error, QStringLiteral("运行时 MOC 快照尚未准备"));
+    return PrepareSnapshotData(runtime.Bytes(), &runtime.Digest(), pose, result, error);
+}
+
+bool CTreeManage::PrepareSnapshotData(const QByteArray& bytes, const QByteArray* digest,
+                                      const QMap<QString, float>& pose, Snapshot& result, QString* error)
+{
     if (error) error->clear();
     try {
         CReader reader = CReader::FromBytes(bytes);
@@ -65,7 +79,7 @@ bool CTreeManage::PrepareSnapshot(const QByteArray& bytes, const QMap<QString, f
         CKeyformBindingGrid bindings;
         if (!bindings.Build(section, error)) return false;
         Snapshot candidate;
-        candidate.m_digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+        candidate.m_digest = digest ? *digest : QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
         const int count = section.deformers.size();
         QVector<int> firstChild(count, -1), nextSibling(count, -1), pending;
         QSet<QString> ids;

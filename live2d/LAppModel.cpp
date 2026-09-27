@@ -701,11 +701,28 @@ bool LAppModel::ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourc
         if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
         return false;
     }
+    live2dstruct::CMocRuntimeSnapshot runtime;
+    return live2dstruct::CMocRuntimeSnapshot::Create(bytes, runtime, error) &&
+        ApplyPreviewMoc(runtime, sourceDigest, error);
+}
+
+bool LAppModel::ApplyPreviewMoc(const live2dstruct::CMocRuntimeSnapshot& runtime,
+                               const QByteArray& sourceDigest, QString* error)
+{
+    if (error) error->clear();
+    if (HasExportPreview()) {
+        if (error) *error = QStringLiteral("导出期间不能替换模型预览");
+        return false;
+    }
+    if (HasEditorPreview()) return ApplyEditorPreview(runtime, sourceDigest, m_editorPose, error);
+    if (!_initialized || _updating || m_physicsDragActive || !_model || sourceDigest.isEmpty() ||
+        sourceDigest != m_sourceMocDigest || !runtime.IsValid()) {
+        if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
+        return false;
+    }
     try {
-        const QByteArray digest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
-        if (digest == m_previewMocDigest) return true;
-        const QByteArray ownedBytes(bytes.constData(), bytes.size());
-        return ApplyPreviewTransaction(ownedBytes, sourceDigest, {}, error);
+        if (runtime.Digest() == m_previewMocDigest) return true;
+        return ApplyPreviewTransaction(runtime, sourceDigest, {}, error);
     } catch (const std::exception&) {
         if (error) *error = QStringLiteral("无法保存预览 MOC 字节快照");
         return false;
@@ -725,13 +742,29 @@ bool LAppModel::ApplyEditorPreview(const QByteArray& bytes, const QByteArray& so
         if (error) *error = QStringLiteral("编辑姿态与当前模型的加载快照不匹配");
         return false;
     }
+    live2dstruct::CMocRuntimeSnapshot runtime;
+    return live2dstruct::CMocRuntimeSnapshot::Create(bytes, runtime, error) &&
+        ApplyEditorPreview(runtime, sourceDigest, pose, error);
+}
+
+bool LAppModel::ApplyEditorPreview(const live2dstruct::CMocRuntimeSnapshot& runtime, const QByteArray& sourceDigest,
+                                  const QMap<QString, float>& pose, QString* error)
+{
+    if (error) error->clear();
+    if (HasExportPreview()) {
+        if (error) *error = QStringLiteral("导出期间不能改变编辑姿态");
+        return false;
+    }
+    if (!_initialized || _updating || !_model || sourceDigest.isEmpty() ||
+        sourceDigest != m_sourceMocDigest || !runtime.IsValid()) {
+        if (error) *error = QStringLiteral("编辑姿态与当前模型的加载快照不匹配");
+        return false;
+    }
     try {
-        const QByteArray ownedBytes(bytes.constData(), bytes.size());
-        const QByteArray digest = QCryptographicHash::hash(ownedBytes, QCryptographicHash::Sha256);
         QMap<QString, float> frozenPose;
         for (auto it = pose.cbegin(); it != pose.cend(); ++it)
             frozenPose.insert(QString(it.key().constData(), it.key().size()), it.value());
-        if (HasEditorPreview() && digest == m_previewMocDigest && frozenPose == m_editorPose) return true;
+        if (HasEditorPreview() && runtime.Digest() == m_previewMocDigest && frozenPose == m_editorPose) return true;
         std::unique_ptr<CubismModel::RuntimeValueSnapshot> entry;
         QMap<QString, float> baseParameters;
         if (!HasEditorPreview()) {
@@ -744,7 +777,7 @@ bool LAppModel::ApplyEditorPreview(const QByteArray& bytes, const QByteArray& so
             ApplyPartVisibility(*candidate);
             return true;
         };
-        if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepareModel, error)) return false;
+        if (!ApplyPreviewTransaction(runtime, sourceDigest, prepareModel, error)) return false;
         if (entry) {
             m_editorEntryState = std::move(entry);
             m_editorBaseParameters.swap(baseParameters);
@@ -796,9 +829,30 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
         return false;
     }
-    QByteArray runtime;
-    if (!live2dstruct::CMocDeformerOrder::Normalize(ownedBytes, runtime, error)) return false;
-    const QByteArray digest = QCryptographicHash::hash(runtime, QCryptographicHash::Sha256);
+    live2dstruct::CMocRuntimeSnapshot runtime;
+    return live2dstruct::CMocRuntimeSnapshot::Create(ownedBytes, runtime, error) &&
+        ApplyPreviewTransaction(runtime, sourceDigest, prepareModel, error, policy, seeds, physicsReferences,
+                                physicsDraft, geometry, textureState, materialDrawableIds, atlasState);
+}
+
+bool LAppModel::ApplyPreviewTransaction(const live2dstruct::CMocRuntimeSnapshot& snapshot, const QByteArray& sourceDigest,
+                                       const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
+                                       CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
+                                       const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
+                                       const CMeshGeometryMigration* geometry, const TextureState* textureState,
+                                       const QSet<QString>* materialDrawableIds, const AtlasState* atlasState)
+{
+    if (m_userParameterModelGeneration == std::numeric_limits<quint64>::max()) {
+        if (error) *error = QStringLiteral("模型实例版本计数已耗尽");
+        return false;
+    }
+    if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
+        !snapshot.IsValid()) {
+        if (error) *error = QStringLiteral("预览数据与当前模型的加载快照不匹配");
+        return false;
+    }
+    QByteArray runtime = snapshot.Bytes();
+    const QByteArray digest = snapshot.Digest();
     auto* previous = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
     auto* delegate = LAppDelegate::GetInstance();
     if (!previous || delegate->IsOffScreen() || delegate->m_isDraggingDeformer ||

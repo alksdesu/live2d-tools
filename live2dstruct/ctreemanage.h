@@ -6,6 +6,7 @@
 #include <memory>
 
 namespace live2dstruct {
+class CMocRuntimeSnapshot;
 class CTreeManage
 {
 public:
@@ -33,6 +34,8 @@ public:
 
     static bool PrepareSnapshot(const QByteArray& bytes, const QMap<QString, float>& pose,
                                 Snapshot& result, QString* error = nullptr);
+    static bool PrepareSnapshot(const CMocRuntimeSnapshot& runtime, const QMap<QString, float>& pose,
+                                Snapshot& result, QString* error = nullptr);
     static void SwapSnapshot(Snapshot& candidate) noexcept;
     static bool EvaluateSnapshot(Snapshot& snapshot, QString* error = nullptr);
     static bool RefreshCurrentSnapshot(QString* error = nullptr);
@@ -47,6 +50,8 @@ public:
     static bool InitOpenLive2d(const QString& name, QString* error = nullptr);
 
 private:
+    static bool PrepareSnapshotData(const QByteArray& bytes, const QByteArray* digest,
+                                    const QMap<QString, float>& pose, Snapshot& result, QString* error);
     static Snapshot m_snapshot;
 };
 }

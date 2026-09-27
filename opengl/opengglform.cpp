@@ -6,6 +6,7 @@
 #include "conionskinrenderer.h"
 #include "live2d/LAppPal.hpp"
 #include "live2dstruct/cmocdeformerorder.h"
+#include "live2dstruct/cmocruntimesnapshot.h"
 #include <QSurfaceFormat>
 #include <QSurface>
 #include <QScopeGuard>
@@ -893,8 +894,8 @@ bool OpengGlForm::ApplyMocPreview(const QByteArray& bytes, const QByteArray& sou
     auto* model = CurrentModel();
     if (!model) return MeshError(error, QStringLiteral("当前没有模型"));
     try {
-        QByteArray compiled;
-        if (!live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error)) return false;
+        live2dstruct::CMocRuntimeSnapshot compiled;
+        if (!live2dstruct::CMocRuntimeSnapshot::Create(bytes, compiled, error)) return false;
         auto* view = LAppDelegate::GetInstance()->GetView();
         if (!view) return MeshError(error, QStringLiteral("变形器预览视图尚未就绪"));
         CTreeManage::Snapshot tree;

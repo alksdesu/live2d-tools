@@ -583,6 +583,73 @@ private slots:
         QVERIFY(!pixmap->pixmap().isNull());
     }
 
+    void samePixelVerticesUseCurrentAtlasBounds()
+    {
+        CTexturePanel panel;
+        QString id, error;
+        for (int size : {32, 64, 32}) {
+            QImage image(size, size, QImage::Format_RGBA8888);
+            image.fill(Qt::white);
+            QBuffer png;
+            QVERIFY(png.open(QIODevice::WriteOnly));
+            QVERIFY(image.save(&png, "PNG"));
+            CTextureAssets::Source source;
+            QVERIFY(CTextureAssets::MakeSource("/frozen/atlas.png", png.data(), source));
+            const CTextureAssets::Catalog sources{{0, source}};
+            CTextureWorkspace::State workspace;
+            QVERIFY(CTextureWorkspace::Initialize(sources, {}, workspace));
+            const auto moc = meshBytes(id, {8.f / size, 8.f / size, 56.f / size, 8.f / size,
+                8.f / size, 56.f / size}, {0, 1, 2});
+            QVERIFY2(panel.LoadWorkspaceSnapshot(sources, workspace, moc, &error), qPrintable(error));
+            panel.HighlightMesh(id);
+            panel.findChild<QCheckBox*>()->setChecked(true);
+            CTexturePanel fresh;
+            QVERIFY2(fresh.LoadWorkspaceSnapshot(sources, workspace, moc, &error), qPrintable(error));
+            fresh.HighlightMesh(id);
+            fresh.findChild<QCheckBox*>()->setChecked(true);
+            auto* view = panel.findChild<CAtlasView*>();
+            QCOMPARE(view->sceneRect().size(), QSizeF(size, size));
+            QCOMPARE(renderScene(view->scene()), renderScene(fresh.findChild<CAtlasView*>()->scene()));
+            QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked);
+            view->ScenePosClicked(QPointF(40, 12));
+            QCOMPARE(picked.size(), size == 64 ? 1 : 0);
+        }
+    }
+
+    void borrowedMocCannotMutateThePreviousSnapshot()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("atlas.png");
+        QImage image(32, 32, QImage::Format_RGBA8888);
+        image.fill(Qt::white);
+        QVERIFY(image.save(path));
+        QString id, error;
+        auto moc = meshBytes(id, {.1f, .1f, .9f, .1f, .1f, .9f}, {0, 1, 2});
+        auto reader = CReader::FromBytes(moc);
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        const int offset = table.sectionOffsetTable->uvs->uvs + table.art_meshes[0]->uv_sources_begin_indices * 4;
+        QByteArray storage(moc.constData(), moc.size());
+        const auto borrowed = QByteArray::fromRawData(storage.constData(), storage.size());
+        CTexturePanel panel;
+        panel.LoadTextures({{0, path}});
+        QVERIFY2(panel.UpdateUvMeshes(borrowed, &error), qPrintable(error));
+        auto* view = panel.findChild<CAtlasView*>();
+        panel.findChild<QCheckBox*>()->setChecked(true);
+        const auto original = renderScene(view->scene());
+        const auto items = view->scene()->items();
+        QVERIFY(panel.UpdateUvMeshes(borrowed, &error));
+        QCOMPARE(view->scene()->items(), items);
+        writeFloat(storage, offset, .5f);
+        QVERIFY(panel.UpdateUvMeshes(borrowed, &error));
+        QVERIFY(renderScene(view->scene()) != original);
+        CTexturePanel fresh;
+        fresh.LoadTextures({{0, path}});
+        QVERIFY(fresh.UpdateUvMeshes(storage, &error));
+        fresh.findChild<QCheckBox*>()->setChecked(true);
+        QCOMPARE(renderScene(view->scene()), renderScene(fresh.findChild<CAtlasView*>()->scene()));
+    }
+
     void activeAtlasAndRuntimeOrderSurviveUpdates()
     {
         QTemporaryDir directory;const auto path=directory.filePath("atlas.png");const auto otherPath=directory.filePath("other.png");

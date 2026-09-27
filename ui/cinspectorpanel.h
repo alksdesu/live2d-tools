@@ -36,7 +36,7 @@ public:
     void SetSelections(const QStringList& names, const QStringList& types);
     void ClearSelection();
     void RefreshSelection();
-    bool SyncActiveKeyform(const QString& id, const QString& type, int keyform);
+    bool SyncActiveKeyform(const QString& id, const QString& type, int keyform, bool refresh = true);
     void SetLockedState(const QSet<QString>& lockedKeys);
     void SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler);
     void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);
@@ -68,6 +68,13 @@ signals:
     void EditRejected(const QString& error);
 
 private:
+    struct ProjectionState;
+    std::unique_ptr<ProjectionState> m_projection;
+    void InvalidateProjection();
+    void PrepareProjectionContext(int keyform);
+    void QueueProjection();
+    void ClearGeometryTable(QTableWidget* table);
+    void UpdateGeometryTable(QTableWidget* table, const QVector<float>& values, int columns, bool rotation = false);
     void showModelObject(const QString& name, const QString& type, bool preserveKeyforms = true);
     void EmitEdit(const live2dstruct::CModelEdit& edit, bool forward);
     void RebuildKeyformTable();

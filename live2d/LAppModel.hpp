@@ -23,6 +23,7 @@
 #include "live2dstruct/ctextureassets.h"
 #include "live2dstruct/ctextureworkspace.h"
 #include "live2dstruct/conionskin.h"
+#include "live2dstruct/cmocruntimesnapshot.h"
 #include "framework/Model/CubismParameterReferences.hpp"
 #include "framework/Physics/CubismPhysicsObservation.hpp"
 
@@ -87,6 +88,8 @@ public:
     const QByteArray& GetPreviewMocDigest() const { return m_previewMocDigest; }
     const QByteArray& GetPreviewMocBytes() const { return m_previewMocBytes; }
     bool ApplyPreviewMoc(const QByteArray& bytes, const QByteArray& sourceDigest, QString* error = nullptr);
+    bool ApplyPreviewMoc(const live2dstruct::CMocRuntimeSnapshot& runtime, const QByteArray& sourceDigest,
+                         QString* error = nullptr);
     using ParameterDefinitionPreparation = std::function<bool(const Csm::CubismModel&, QString*)>;
     bool CaptureMeshEditorState(CMeshEditorSnapshot& state, QString* error = nullptr) const;
     bool ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
@@ -131,6 +134,8 @@ public:
                                         const QSet<QString>* materialDrawableIds = nullptr,
                                  const AtlasState* atlasState = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                            const QMap<QString, float>& pose, QString* error = nullptr);
+    bool ApplyEditorPreview(const live2dstruct::CMocRuntimeSnapshot& runtime, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool HasEditorPreview() const { return m_editorEntryState != nullptr; }
@@ -235,6 +240,16 @@ private:
     void ApplyPartVisibility();
     void ApplyPartVisibility(Csm::CubismModel& model) const;
     bool ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByteArray& sourceDigest,
+                                 const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
+                                 QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits,
+                                 const ParameterStructureSeeds& seeds = {},
+                                 const ParameterPhysicsReferences* physicsReferences = nullptr,
+                                 const PhysicsDraft* physicsDraft = nullptr,
+                                 const CMeshGeometryMigration* geometry = nullptr,
+                                 const TextureState* textureState = nullptr,
+                                 const QSet<QString>* materialDrawableIds = nullptr,
+                                 const AtlasState* atlasState = nullptr);
+    bool ApplyPreviewTransaction(const live2dstruct::CMocRuntimeSnapshot& runtime, const QByteArray& sourceDigest,
                                  const Csm::CubismModelReplacement::ModelPreparation& prepareModel,
                                  QString* error, Csm::CubismModelUpdatePolicy policy = Csm::CubismModelUpdatePolicy::AllowClippingEdits,
                                  const ParameterStructureSeeds& seeds = {},

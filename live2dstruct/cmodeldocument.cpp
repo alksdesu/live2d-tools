@@ -1098,6 +1098,7 @@ bool CModelDocument::IsLocked(const QString& type, const QString& id) const
 
 bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 {
+    if (!edit.meshVerification.IsEmpty() && edit.field != CModelEdit::MeshStructure) return false;
     if (edit.field == CModelEdit::DeformerStructure) {
         if (!edit.deformerRequest || edit.deformerRequest->operation.valueless_by_exception() ||
             edit.type != QLatin1String("deformer") || edit.parameterChange != CModelEdit::ParameterChange::None ||
@@ -1113,6 +1114,7 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
+    if (!edit.meshVerification.IsEmpty() && edit.field != CModelEdit::MeshStructure) return false;
     if (edit.field == CModelEdit::AtlasLayout) return ApplyAtlasEdit(edit, forward);
     if (edit.field == CModelEdit::DrawableMaterials) return ApplyMaterialEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryKeyforms) return ApplyGeometryEdit(edit, forward);
@@ -1145,6 +1147,8 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         if (edit.type != type || edit.before.metaType() != QMetaType::fromType<QVariantMap>() ||
             edit.after.metaType() != QMetaType::fromType<QVariantMap>() ||
             ParameterStructureState() != (forward ? edit.before : edit.after).toMap()) return false;
+        if (edit.field == CModelEdit::MeshStructure && !edit.meshVerification.IsEmpty())
+            return ApplyVerifiedMeshEdit(edit, forward);
         return ApplyStructureState(value.toMap(), edit, forward);
     }
     if (edit.field == CModelEdit::VisibilityValues) {
@@ -1242,6 +1246,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
 {
     try {
+        if (!edit.meshVerification.IsEmpty() && edit.field != CModelEdit::MeshStructure) return false;
         if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
             (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
@@ -1314,6 +1319,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             storage->before = EditStorage(command);
         }
         if (!candidate.ApplyEdit(command, true)) return false;
+        if (!command.meshVerification.IsEmpty()) FreezeVerifiedMeshCommand(command);
         if (command.parameterChange != CModelEdit::ParameterChange::None) {
             QStringList beforeIds, afterIds;
             for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
@@ -1327,6 +1333,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         }
         if (storage) storage->after = candidate.EditStorage(command);
         command.storage = std::move(storage);
+        command.meshVerification = {};
         if (candidate.m_editIndex < candidate.m_editHistory.size()) candidate.m_editHistory.resize(candidate.m_editIndex);
         bool merged = false;
         if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure && command.field != CModelEdit::DeformerStructure &&

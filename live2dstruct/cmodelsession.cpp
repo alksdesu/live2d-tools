@@ -1,6 +1,7 @@
 #include "cmodelsession.h"
 #include "cmotiontimeline.h"
 #include "cmeshtopology.h"
+#include "csectiontable.h"
 
 #include <QFile>
 #include <QSaveFile>
@@ -845,7 +846,30 @@ catch (const std::exception&)
     return false;
 }
 
-bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error) const try
+bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument& result, QString* error) const
+{
+    return RestoreDocumentImpl(loaded, nullptr, result, error);
+}
+
+bool CModelSession::RestorePreparedDocument(const CModelDocument& loaded, const CModelDocument& prepared,
+                                          CModelDocument& result, QString* error) const
+{
+    if (!prepared.IsLoaded() || !meshStructure || !prepared.HasMeshStructure()
+        || prepared.SourceBytes() != loaded.SourceBytes() || prepared.SourceDigest() != loaded.SourceDigest()
+        || prepared.SourcePath() != loaded.SourcePath() || prepared.ParameterStructure() != structure
+        || prepared.HasMaterialStructure() != materialStructure || prepared.HasDeformerStructure() != deformerStructure
+        || (deformerStructure ? prepared.SourceDeformerIds() : QSet<QString> {}) != sourceDeformerIds
+        || prepared.HasTextureWorkspace() != loaded.HasTextureWorkspace()
+        || prepared.TextureSources() != loaded.TextureSources() || !textures.isEmpty()
+        || !animation.isEmpty() || !parameterResources.IsEmpty() || physicsDraft) {
+        setError(error, QStringLiteral("已准备的网格结构与会话来源或结构状态不匹配"));
+        return false;
+    }
+    return RestoreDocumentImpl(loaded, &prepared, result, error);
+}
+
+bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CModelDocument* prepared,
+                                      CModelDocument& result, QString* error) const try
 {
     const auto fail = [error](const QString& field, const QString& id = QString()) {
         setError(error, id.isEmpty() ? QStringLiteral("会话字段无效：%1").arg(field)
@@ -898,27 +922,41 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
         if (map.count > 100000) return fail(QString::fromLatin1(map.name));
 
     CModelDocument candidate;
-    if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
-    if (textureWorkspace && !loaded.HasTextureWorkspace()) return fail(QStringLiteral("textureWorkspace"));
-    if (loaded.HasTextureWorkspace()) {
-        CTextureAssets::State legacy;
-        if (!CTextureAssets::RestoreDraft(loaded.TextureSources(), textures, legacy, error) ||
-            !candidate.InitializeTextureWorkspace(loaded.TextureSources(), legacy, error)) return false;
+    QSet<QString> removedParameters;
+    if (prepared) {
+        candidate = *prepared;
+        auto sourceReader = CReader::FromBytes(loaded.SourceBytes());
+        CSectionTable sourceTable(sourceReader);
+        if (!sourceTable.IsValid()) return fail(QStringLiteral("preparedSource"));
+        for (const auto* parameter : sourceTable.parameters) removedParameters.insert(parameter->ids);
+        if (bool(textureWorkspace) != loaded.HasTextureWorkspace()) return fail(QStringLiteral("textureWorkspace"));
         if (textureWorkspace) {
             CTextureWorkspace::State restored;
-            if (!CTextureWorkspace::RestoreDraft(loaded.TextureSources(), *textureWorkspace, restored, error) ||
-                !candidate.SetTextureWorkspace(restored, error)) return false;
+            if (!CTextureWorkspace::RestoreDraft(loaded.TextureSources(), *textureWorkspace, restored, error)
+                || restored != candidate.TextureWorkspace()) return fail(QStringLiteral("textureWorkspace"));
         }
+    } else {
+        if (!candidate.LoadBytes(loaded.SourceBytes(), loaded.SourcePath(), error)) return false;
+        if (textureWorkspace && !loaded.HasTextureWorkspace()) return fail(QStringLiteral("textureWorkspace"));
+        if (loaded.HasTextureWorkspace()) {
+            CTextureAssets::State legacy;
+            if (!CTextureAssets::RestoreDraft(loaded.TextureSources(), textures, legacy, error) ||
+                !candidate.InitializeTextureWorkspace(loaded.TextureSources(), legacy, error)) return false;
+            if (textureWorkspace) {
+                CTextureWorkspace::State restored;
+                if (!CTextureWorkspace::RestoreDraft(loaded.TextureSources(), *textureWorkspace, restored, error) ||
+                    !candidate.SetTextureWorkspace(restored, error)) return false;
+            }
+        }
+        for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
+        if (materialStructure) {
+            if (!candidate.SetMaterialStructure(structure, meshStructure, deformerStructure, sourceDeformerIds, error)) return false;
+        } else if (deformerStructure) {
+            if (!candidate.SetDeformerStructure(structure, meshStructure, sourceDeformerIds, error)) return false;
+        } else if (meshStructure) {
+            if (!candidate.SetAuthoringStructure(structure, error)) return false;
+        } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
     }
-    QSet<QString> removedParameters;
-    for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
-    if (materialStructure) {
-        if (!candidate.SetMaterialStructure(structure, meshStructure, deformerStructure, sourceDeformerIds, error)) return false;
-    } else if (deformerStructure) {
-        if (!candidate.SetDeformerStructure(structure, meshStructure, sourceDeformerIds, error)) return false;
-    } else if (meshStructure) {
-        if (!candidate.SetAuthoringStructure(structure, error)) return false;
-    } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
     CModelMaterialState materialValues;
     for (const auto& material : drawableMaterials) materialValues.append(material);
     if (!candidate.SetDrawableMaterials(materialValues, error)) return false;

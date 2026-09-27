@@ -26,6 +26,7 @@ namespace live2dstruct {
 class CReader;
 class CKeyformBindingGrid;
 class CMocPreviewBuilder;
+struct CModelSession;
 
 struct CModelDiagnostic
 {
@@ -178,6 +179,16 @@ struct CModelEditStorageState
     QVariantMap after;
 };
 
+class CModelMeshEditVerification
+{
+public:
+    bool IsEmpty() const { return !m_data; }
+private:
+    struct Data;
+    std::shared_ptr<const Data> m_data;
+    friend class CModelDocument;
+};
+
 struct CModelEdit
 {
     enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout };
@@ -197,6 +208,7 @@ struct CModelEdit
     std::shared_ptr<const CMocMeshStructureBuilder::Request> meshRequest;
     std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysRequest> bindingKeysRequest;
     std::shared_ptr<const CDeformerPreserveRequest> deformerRequest;
+    CModelMeshEditVerification meshVerification;
 };
 
 class CModelDocument
@@ -372,6 +384,13 @@ private:
     bool MakeParameterStructureEdit(const CMocParameterStructureBuilder::Result& result, const QString& id,
                                     const QString* displayName, bool created, CModelEdit& edit, QString* error,
                                     const CMocParameterStructureBuilder::EditBindingKeysRequest* keys = nullptr) const;
+    bool DecodeStructureState(const QVariantMap& state, const CModelEdit& edit, CModelSession& session,
+                              QString* error) const;
+    bool FreezeMeshRequest(const CMocMeshStructureBuilder::Request& request,
+                           CMocMeshStructureBuilder::Request& frozen, QString* error) const;
+    bool SealMeshStructureEdit(CModelEdit& edit, const CModelDocument& prepared, QString* error) const;
+    bool ApplyVerifiedMeshEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
+    void FreezeVerifiedMeshCommand(CModelEdit& edit) const;
     bool ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit, bool forward, QString* error) const;
     bool ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,

@@ -136,6 +136,231 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void rejectedGeometrySelectionRestoresAcceptedFormWithoutRebuilding_data()
+    {
+        QTest::addColumn<QString>("type");
+        for (const char* type : {"artmesh", "warp", "rotation"}) QTest::newRow(type) << QString(type);
+    }
+
+    void rejectedGeometrySelectionRestoresAcceptedFormWithoutRebuilding()
+    {
+        using namespace live2dstruct;
+        QFETCH(QString, type);
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QString id;
+        if (type == "artmesh") {
+            for (const auto& mesh : document.Drawables()) if (mesh.keyforms.size() > 1) { id = mesh.id; break; }
+        } else for (const auto& deformer : document.Deformers()) {
+            if ((type == "warp" && deformer.type == CModelDeformer::Warp && deformer.warpKeyforms.size() > 1) ||
+                (type == "rotation" && deformer.type == CModelDeformer::Rotation && deformer.rotationKeyforms.size() > 1)) { id = deformer.id; break; }
+        }
+        QVERIFY(!id.isEmpty());
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type);
+        auto* table = panel.findChild<QTableWidget*>(type == "artmesh" ? "keyformVertexTable" : type == "warp" ? "warpKeyformTable" : "rotationKeyformTable");
+        QVERIFY(table && table->rowCount());
+        auto* original = table->item(0, 1); const auto text = original->text();
+        const auto revision = document.Revision();
+        QSignalSpy removed(table->model(), &QAbstractItemModel::rowsRemoved), rejected(&panel, &CInspectorPanel::EditRejected);
+        int attempts = 0;
+        panel.SetKeyformHandler([&](const QString&, int, QString* error) { ++attempts; *error = "preview refused"; return false; });
+        panel.SetDeformerKeyformHandler([&](const QString&, const QString&, int, QString* error) { ++attempts; *error = "preview refused"; return false; });
+        if (type == "rotation") {
+            table->setCurrentCell(1, 0);
+            QCOMPARE(table->currentRow(), 0);
+        } else {
+            auto* selector = panel.findChild<QComboBox*>(type == "artmesh" ? "keyformSelector" : "warpKeyformSelector");
+            QVERIFY(selector && selector->count() > 1);
+            QTest::keyClick(selector, Qt::Key_Down);
+            QCOMPARE(selector->currentIndex(), 0);
+        }
+        QCOMPARE(attempts, 1); QCOMPARE(rejected.count(), 1); QCOMPARE(removed.count(), 0);
+        QCOMPARE(panel.GetActiveGeometryKeyformIndex(), 0); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(table->item(0, 1), original); QCOMPARE(original->text(), text);
+        panel.RefreshSelection(); QCoreApplication::processEvents();
+        QCOMPARE(panel.GetActiveGeometryKeyformIndex(), 0); QCOMPARE(attempts, 1); QCOMPARE(removed.count(), 0);
+    }
+
+    void geometryProjectionPreservesRowsAndPendingEditors_data()
+    {
+        QTest::addColumn<QString>("type");
+        for (const char* type : {"artmesh", "warp", "rotation"}) QTest::newRow(type) << QString(type);
+    }
+
+    void geometryProjectionPreservesRowsAndPendingEditors()
+    {
+        using namespace live2dstruct;
+        QFETCH(QString, type);
+        CModelDocument document;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QString id;
+        if (type == "artmesh") id = document.Drawables().first().id;
+        else for (const auto& deformer : document.Deformers()) {
+            if ((type == "warp" && deformer.type == CModelDeformer::Warp && !deformer.warpKeyforms.isEmpty()) ||
+                (type == "rotation" && deformer.type == CModelDeformer::Rotation && !deformer.rotationKeyforms.isEmpty())) { id = deformer.id; break; }
+        }
+        QVERIFY(!id.isEmpty());
+        CInspectorPanel panel;
+        panel.SetDocument(&document); panel.SetSelection(id, type); panel.resize(640, 1000); panel.show();
+        auto* table = panel.findChild<QTableWidget*>(type == "artmesh" ? "keyformVertexTable" : type == "warp" ? "warpKeyformTable" : "rotationKeyformTable");
+        QVERIFY(table && table->rowCount() > 0);
+        QCoreApplication::processEvents();
+        table->setCurrentCell(type == "rotation" ? 0 : table->rowCount() - 1, 2);
+        table->setRangeSelected(QTableWidgetSelectionRange(0, 1, 0, 2), true);
+        table->scrollToBottom(); QCoreApplication::processEvents();
+        const auto selected = table->selectionModel()->selectedIndexes();
+        const auto current = table->currentIndex();
+        const int scroll = table->verticalScrollBar()->value();
+        auto* originalItem = table->item(0, 1);
+        const float before = originalItem->text().toFloat();
+        QSignalSpy removed(table->model(), &QAbstractItemModel::rowsRemoved);
+        QSignalSpy inserted(table->model(), &QAbstractItemModel::rowsInserted);
+        QSignalSpy changed(table->model(), &QAbstractItemModel::dataChanged);
+        for (int count = 0; count < 4; ++count) { panel.RefreshSelection(); QVERIFY(panel.SyncActiveKeyform(id, type, 0)); }
+        QCOMPARE(removed.count(), 0); QCOMPARE(inserted.count(), 0); QCOMPARE(changed.count(), 0);
+        QCOMPARE(table->selectionModel()->selectedIndexes(), selected); QCOMPARE(table->currentIndex(), current);
+        QCOMPARE(table->verticalScrollBar()->value(), scroll); QCOMPARE(table->item(0, 1), originalItem);
+        table->openPersistentEditor(originalItem);
+        QPointer<QLineEdit> editor = table->findChild<QLineEdit*>(); QVERIFY(editor);
+        editor->setText("1.234567");
+        CModelEdit edit; edit.name = id; edit.type = type; edit.index = 0;
+        if (type == "artmesh") {
+            auto values = document.DrawableKeyformPositions(id, 0); edit.before = QVariant::fromValue(values);
+            values[0] = before + .5f; edit.after = QVariant::fromValue(values); edit.field = CModelEdit::KeyformPositions;
+        } else if (type == "warp") {
+            auto values = document.DeformerWarpKeyforms(id); edit.before = QVariant::fromValue(values);
+            values[0].positions[0] = before + .5f; edit.after = QVariant::fromValue(values); edit.field = CModelEdit::WarpKeyforms;
+        } else {
+            auto values = document.DeformerRotationKeyforms(id); edit.before = QVariant::fromValue(values);
+            values[0].angle = before + .5f; edit.after = QVariant::fromValue(values); edit.field = CModelEdit::RotationKeyforms;
+        }
+        QVERIFY(document.ExecuteEdit(edit));
+        for (int count = 0; count < 3; ++count) panel.RefreshSelection();
+        QVERIFY(editor); QCOMPARE(editor->text(), QString("1.234567")); QCOMPARE(originalItem->text().toFloat(), before);
+        QCOMPARE(removed.count(), 0); QCOMPARE(inserted.count(), 0);
+        table->closePersistentEditor(originalItem);
+        QTRY_COMPARE(originalItem->text().toFloat(), before + .5f);
+        QCOMPARE(changed.count(), 1);
+        panel.Undo(); QCOMPARE(originalItem->text().toFloat(), before);
+        panel.Redo(); QCOMPARE(originalItem->text().toFloat(), before + .5f);
+        QCOMPARE(removed.count(), 0); QCOMPARE(inserted.count(), 0);
+        QCOMPARE(table->selectionModel()->selectedIndexes(), selected); QCOMPARE(table->currentIndex(), current);
+        QCOMPARE(table->verticalScrollBar()->value(), scroll);
+        panel.SetEditHandler([](const CModelEdit&, QString* error) { *error = "rejected"; return false; });
+        originalItem->setText("8.5"); QCOMPARE(originalItem->text().toFloat(), before + .5f);
+        originalItem->setText("invalid"); QCOMPARE(originalItem->text().toFloat(), before + .5f);
+        QCOMPARE(removed.count(), 0); QCOMPARE(inserted.count(), 0);
+        QCOMPARE(table->selectionModel()->selectedIndexes(), selected); QCOMPARE(table->currentIndex(), current);
+        QCOMPARE(table->verticalScrollBar()->value(), scroll);
+    }
+
+    void deferredGeometryRefreshKeepsContextAndLifetime()
+    {
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto id = document.Drawables().first().id;
+        QMainWindow window;
+        auto* panel = new CInspectorPanel(&window); window.addDockWidget(Qt::RightDockWidgetArea, panel);
+        auto* other = new QDockWidget("other", &window); other->setWidget(new QLabel("other"));
+        window.addDockWidget(Qt::RightDockWidgetArea, other); window.tabifyDockWidget(panel, other);
+        panel->SetDocument(&document); panel->SetSelection(id, "artmesh");
+        window.resize(800, 1000); window.show(); panel->raise(); QCoreApplication::processEvents();
+        auto* table = panel->findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table && table->rowCount());
+        QSignalSpy removed(table->model(), &QAbstractItemModel::rowsRemoved), changed(table->model(), &QAbstractItemModel::dataChanged);
+        auto values = document.DrawableKeyformPositions(id, 0); const float old = values[0]; values[0] += .5f;
+        other->raise(); QCoreApplication::processEvents();
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, values));
+        panel->RefreshSelection(); panel->RefreshSelection();
+        QCOMPARE(changed.count(), 0); QCOMPARE(table->item(0, 1)->text().toFloat(), old);
+        panel->raise(); QTRY_COMPARE(table->item(0, 1)->text().toFloat(), values[0]); QCOMPARE(removed.count(), 0);
+        table->openPersistentEditor(table->item(0, 1)); QPointer<QLineEdit> editor = table->findChild<QLineEdit*>(); QVERIFY(editor);
+        editor->setText("9.125"); values[0] += .5f; QVERIFY(document.SetDrawableKeyformPositions(id, 0, values)); panel->RefreshSelection();
+        table->closePersistentEditor(table->item(0, 1));
+        panel->SetSelection(document.Drawables().at(1).id, "artmesh");
+        QCoreApplication::processEvents();
+        QCOMPARE(table->item(0, 1)->text().toFloat(), document.DrawableKeyformPositions(document.Drawables().at(1).id, 0)[0]);
+        QVERIFY(removed.count() > 0); QCOMPARE(document.DrawableKeyformPositions(id, 0), values);
+        table->openPersistentEditor(table->item(0, 1));
+        panel->RefreshSelection(); table->closePersistentEditor(table->item(0, 1));
+        delete panel; QCoreApplication::processEvents();
+    }
+
+    void geometryEditorCannotCommitAcrossContextChanges_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<bool>("lock");
+        for (const char* type : {"artmesh", "warp", "rotation"})
+            for (bool lock : {false, true}) QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(lock))) << QString(type) << lock;
+    }
+
+    void geometryEditorCannotCommitAcrossContextChanges()
+    {
+        using namespace live2dstruct;
+        QFETCH(QString, type); QFETCH(bool, lock);
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        QString id;
+        if (type == "artmesh") id = document.Drawables().first().id;
+        else for (const auto& deformer : document.Deformers())
+            if ((type == "warp" && deformer.type == CModelDeformer::Warp && !deformer.warpKeyforms.isEmpty()) ||
+                (type == "rotation" && deformer.type == CModelDeformer::Rotation && !deformer.rotationKeyforms.isEmpty())) { id = deformer.id; break; }
+        QVERIFY(!id.isEmpty());
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type); panel.resize(640, 1000); panel.show();
+        auto* table = panel.findChild<QTableWidget*>(type == "artmesh" ? "keyformVertexTable" : type == "warp" ? "warpKeyformTable" : "rotationKeyformTable");
+        QVERIFY(table && table->rowCount()); QCoreApplication::processEvents();
+        table->openPersistentEditor(table->item(0, 1)); QPointer<QLineEdit> editor = table->findChild<QLineEdit*>(); QVERIFY(editor);
+        editor->setText("15.125");
+        int submissions = 0; panel.SetEditHandler([&](const CModelEdit&, QString*) { ++submissions; return false; });
+        const auto revision = document.Revision();
+        if (lock) panel.SetLockedState({type + '|' + id});
+        else panel.SetSelection(document.Drawables().at(1).id, "artmesh");
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); QCoreApplication::processEvents();
+        QVERIFY(!editor); QCOMPARE(submissions, 0); QCOMPARE(document.Revision(), revision);
+        if (lock) { panel.SetLockedState({}); QCOMPARE(panel.GetSelectionId(), id); QVERIFY(table->isEnabled()); }
+        else QCOMPARE(panel.GetSelectionId(), document.Drawables().at(1).id);
+    }
+
+    void explicitDocumentReplacementInvalidatesIdenticalRevision()
+    {
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const QString id = "EyeL4";
+        auto replacement = document;
+        auto positions = document.DrawableKeyformPositions(id, 1); QVERIFY(!positions.isEmpty());
+        auto otherPositions = positions; positions[0] += .25f; otherPositions[0] += .5f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 1, positions));
+        QVERIFY(replacement.SetDrawableKeyformPositions(id, 1, otherPositions));
+        QVERIFY(document.SetDrawableOpacity(id, .3f)); QVERIFY(replacement.SetDrawableOpacity(id, .6f));
+        QCOMPARE(document.Revision(), replacement.Revision());
+        QCOMPARE(document.SourceDigest(), replacement.SourceDigest()); QCOMPARE(document.SourcePath(), replacement.SourcePath());
+        CInspectorPanel panel; panel.SetDocument(&document); QVERIFY(panel.SyncActiveKeyform(id, "artmesh", 1));
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table && table->rowCount());
+        QCOMPARE(table->item(0, 1)->text().toFloat(), positions[0]);
+        auto* opacity = panel.findChild<QDoubleSpinBox*>(); QVERIFY(opacity); QCOMPARE(opacity->value(), .3);
+        table->openPersistentEditor(table->item(0, 1)); QPointer<QLineEdit> editor = table->findChild<QLineEdit*>(); QVERIFY(editor);
+        editor->setText("8.125");
+        document = replacement; panel.SetDocument(&document);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); QCoreApplication::processEvents();
+        QVERIFY(!editor); QCOMPARE(panel.GetActiveGeometryKeyformIndex(), 1);
+        QCOMPARE(table->item(0, 1)->text().toFloat(), otherPositions[0]); QCOMPARE(opacity->value(), .6);
+        QCOMPARE(document.DrawableKeyformPositions(id, 1), otherPositions);
+    }
+
+    void largeGeometryProjectionUpdatesOnlyChangedCells()
+    {
+        using namespace live2dstruct;
+        WideMeshData::Fixture wide; QString error;
+        QVERIFY2(WideMeshData::make(65536, WideMeshData::Layout::Sparse, wide, &error, 1, 2), qPrintable(error));
+        CModelDocument document; QVERIFY2(document.LoadBytes(wide.bytes, "incremental.moc3", &error), qPrintable(error));
+        const auto id = wide.ids.first(); CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QCOMPARE(table->rowCount(), 65536);
+        QSignalSpy removed(table->model(), &QAbstractItemModel::rowsRemoved), changed(table->model(), &QAbstractItemModel::dataChanged);
+        auto* item = table->item(65535, 1); auto values = document.DrawableKeyformPositions(id, 0); values[131070] += .25f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, values)); panel.RefreshSelection(); panel.RefreshSelection();
+        QCOMPARE(removed.count(), 0); QCOMPARE(changed.count(), 1); QCOMPARE(table->item(65535, 1), item);
+        QCOMPARE(item->text().toFloat(), values[131070]);
+        QVERIFY(panel.SyncActiveKeyform(id, "artmesh", 1)); QVERIFY(removed.count() > 0);
+        QCOMPARE(table->item(65535, 1)->text().toFloat(), document.DrawableKeyformPositions(id, 1)[131070]);
+        const auto indices = document.DrawableIndices(id); auto altered = indices; std::swap(altered[0], altered[1]);
+        removed.clear(); QVERIFY(document.SetDrawableIndices(id, altered)); panel.RefreshSelection(); QVERIFY(removed.count() > 0);
+    }
     void bindingKeyDialogCommitsOneHistoryEntry_data()
     {
         QTest::addColumn<QString>("model"); QTest::addColumn<QString>("id"); QTest::addColumn<QString>("type");
