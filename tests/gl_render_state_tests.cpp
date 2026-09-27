@@ -19,6 +19,7 @@ struct State
 {
     GLint vao = 0, array = 0, program = 0, activeTexture = 0;
     std::array<GLint, 3> textures{};
+    std::array<GLint, 3> samplers{};
     std::array<GLboolean, 4> capabilities{};
     std::vector<GLboolean> blendEnabled;
     std::vector<std::array<GLboolean, 4>> colorMasks;
@@ -37,6 +38,7 @@ struct State
         if (program != other.program) changed << "program";
         if (activeTexture != other.activeTexture) changed << "active texture";
         if (textures != other.textures) changed << "texture bindings";
+        if (samplers != other.samplers) changed << "sampler bindings";
         if (capabilities != other.capabilities) changed << "capabilities";
         if (blendEnabled != other.blendEnabled) changed << "indexed blend enable";
         if (colorMasks != other.colorMasks) changed << "indexed color masks";
@@ -87,6 +89,7 @@ class GlRenderStateTests : public QObject
     std::array<GLuint, 2> m_vaos{}, m_framebuffers{}, m_attachments{};
     std::array<GLuint, 5> m_buffers{};
     std::array<GLuint, 4> m_textures{};
+    std::array<GLuint, 3> m_samplers{};
     std::array<VaoState, 2> m_expectedVaos;
 
     State state()
@@ -99,6 +102,7 @@ class GlRenderStateTests : public QObject
         for (size_t index = 0; index < TextureUnits.size(); ++index) {
             m_gl.glActiveTexture(TextureUnits[index]);
             m_gl.glGetIntegerv(GL_TEXTURE_BINDING_2D, &result.textures[index]);
+            m_gl.glGetIntegerv(GL_SAMPLER_BINDING, &result.samplers[index]);
         }
         m_gl.glActiveTexture(static_cast<GLenum>(result.activeTexture));
         for (size_t index = 0; index < Capabilities.size(); ++index)
@@ -165,6 +169,7 @@ class GlRenderStateTests : public QObject
         for (size_t index = 0; index < TextureUnits.size(); ++index) {
             m_gl.glActiveTexture(TextureUnits[index]);
             m_gl.glBindTexture(GL_TEXTURE_2D, m_textures[index]);
+            m_gl.glBindSampler(TextureUnits[index] - GL_TEXTURE0, m_samplers[index]);
         }
         for (size_t index = 0; index < Capabilities.size(); ++index) {
             if ((int(index) + caller) % 2 == 0) m_gl.glEnable(Capabilities[index]);
@@ -199,6 +204,8 @@ class GlRenderStateTests : public QObject
         m_gl.glBindTexture(GL_TEXTURE_2D, m_textures[3]);
         m_gl.glActiveTexture(GL_TEXTURE1);
         m_gl.glBindTexture(GL_TEXTURE_2D, m_textures[0]);
+        m_gl.glBindSampler(0, m_samplers[2]);
+        m_gl.glBindSampler(1, m_samplers[0]);
         for (size_t index = 0; index < Capabilities.size(); ++index) {
             if ((int(index) + caller) % 2 == 0) m_gl.glDisable(Capabilities[index]);
             else m_gl.glEnable(Capabilities[index]);
@@ -249,6 +256,7 @@ private slots:
             QVERIFY2(program->link(), qPrintable(program->log()));
         }
         m_gl.glGenVertexArrays(2, m_vaos.data());
+        m_gl.glGenSamplers(m_samplers.size(), m_samplers.data());
         m_gl.glGenBuffers(5, m_buffers.data());
         for (size_t index = 0; index < m_vaos.size(); ++index) {
             m_gl.glBindVertexArray(m_vaos[index]);
@@ -308,6 +316,7 @@ private slots:
         m_gl.glDeleteFramebuffers(2, m_framebuffers.data());
         m_gl.glDeleteTextures(2, m_attachments.data());
         m_gl.glDeleteTextures(4, m_textures.data());
+        m_gl.glDeleteSamplers(m_samplers.size(), m_samplers.data());
         m_gl.glDeleteBuffers(5, m_buffers.data());
         m_gl.glDeleteVertexArrays(2, m_vaos.data());
     }

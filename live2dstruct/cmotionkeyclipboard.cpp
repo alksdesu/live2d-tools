@@ -53,9 +53,10 @@ bool decode(const QByteArray& bytes, Clipboard& output, QString* error)
         return fail(error, QStringLiteral("关键帧剪贴板不是有效 JSON"));
     const auto root = document.object();
     if (!keys(root, {"format", "version", "restricted", "tracks"}) || root.value("format") != QJsonValue(Format) ||
-        !root.value("version").isDouble() || root.value("version").toDouble() != 1 ||
+        !root.value("version").isDouble() || (root.value("version").toDouble() != 1 && root.value("version").toDouble() != 2) ||
         !root.value("restricted").isBool() || !root.value("tracks").isArray())
         return fail(error, QStringLiteral("关键帧剪贴板格式或版本不受支持"));
+    const bool authoring = root.value("version").toDouble() == 2;
     const auto tracks = root.value("tracks").toArray();
     if (tracks.isEmpty() || tracks.size() > CMotionTimeline::MaximumPointCount)
         return fail(error, QStringLiteral("关键帧剪贴板的轨道数量无效"));
@@ -81,7 +82,8 @@ bool decode(const QByteArray& bytes, Clipboard& output, QString* error)
         for (const auto& entry : points) {
             if (!entry.isObject()) return fail(error, QStringLiteral("剪贴板关键帧不是对象"));
             const auto p = entry.toObject();
-            if (!keys(p, {"time", "value", "segment"}, {"start", "controls"}) || !p.value("time").isDouble() ||
+            const QSet<QString> required = authoring ? QSet<QString>{"time", "value", "segment", "tangent"} : QSet<QString>{"time", "value", "segment"};
+            if (!keys(p, required, {"start", "controls"}) || !p.value("time").isDouble() ||
                 !p.value("value").isDouble() || !p.value("segment").isDouble()) return fail(error, QStringLiteral("剪贴板关键帧字段无效"));
             const double segment = p.value("segment").toDouble();
             CMotionTimeline::PointInsertion insertion; insertion.track = track;
@@ -90,6 +92,11 @@ bool decode(const QByteArray& bytes, Clipboard& output, QString* error)
                 segment < 0 || segment > 3 || std::floor(segment) != segment)
                 return fail(error, QStringLiteral("剪贴板关键帧的时间、数值或插值无效"));
             insertion.segmentType = int(segment);
+            if (authoring) {
+                CMotionTimeline::TangentState tangent;
+                if (!p.value("tangent").isObject() || !CMotionTimeline::DecodeTangent(p.value("tangent").toObject(), tangent, error)) return false;
+                insertion.tangent = tangent;
+            }
             if (p.contains("start")) {
                 QPointF start;
                 if (!point(p.value("start"), start) || !previous || start != *previous)
@@ -141,6 +148,8 @@ bool CMotionKeyClipboard::Capture(const CMotionTimeline& timeline, const CMotion
             }
             seen.insert(ref); selected[ref.track].append(ref.index); earliest = std::min(earliest, curve->at(ref.index).x());
         }
+        bool authoring = false;
+        for (const auto& ref : selection) authoring = authoring || timeline.Tangent(ref.track, ref.index) != CMotionTimeline::TangentState{};
         QJsonArray tracks;
         for (auto it = selected.begin(); it != selected.end(); ++it) {
             std::sort(it->begin(), it->end());
@@ -151,6 +160,15 @@ bool CMotionKeyClipboard::Capture(const CMotionTimeline& timeline, const CMotion
                 const bool connected = previous == index - 1;
                 const int segment = connected ? timeline.SegmentType(it.key(), index) : 0;
                 QJsonObject point{{"time", value.x()}, {"value", value.y()}, {"segment", segment}};
+                if (authoring) {
+                    auto tangent = timeline.Tangent(it.key(), index);
+                    if (timeline.AreBeziersRestricted() && (tangent.mode == CMotionTimeline::TangentMode::Aligned || tangent.mode == CMotionTimeline::TangentMode::Flat)) {
+                        const auto capabilities = timeline.Capabilities({it.key(), index});
+                        if (capabilities.incoming.available) tangent.incomingFraction = 1.0 / 3;
+                        if (capabilities.outgoing.available) tangent.outgoingFraction = 1.0 / 3;
+                    }
+                    point.insert("tangent", CMotionTimeline::EncodeTangent(tangent));
+                }
                 if (connected) point.insert("start", encodedPoint(shifted(curve->at(index - 1), -earliest)));
                 if (segment == 1) {
                     const auto controls = timeline.BezierControls(it.key(), index);
@@ -161,7 +179,7 @@ bool CMotionKeyClipboard::Capture(const CMotionTimeline& timeline, const CMotion
             }
             tracks.append(QJsonObject{{"target", it.key().TargetName()}, {"id", it.key().id}, {"points", points}});
         }
-        const auto bytes = QJsonDocument(QJsonObject{{"format", Format}, {"version", 1},
+        const auto bytes = QJsonDocument(QJsonObject{{"format", Format}, {"version", authoring ? 2 : 1},
             {"restricted", timeline.AreBeziersRestricted()}, {"tracks", tracks}}).toJson(QJsonDocument::Compact);
         Clipboard checked;
         if (!decode(bytes, checked, error)) return false;

@@ -4,6 +4,9 @@
 #include "ctableeditdelegate.h"
 #include "live2dstruct/cmotionkeyclipboard.h"
 #include <QApplication>
+#include <QActionGroup>
+#include <QPushButton>
+#include <QSpinBox>
 #include <QClipboard>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -103,7 +106,8 @@ void CMotionPanel::SetKeyframeSelection(CMotionPointSelection selection)
     std::sort(selection.begin(), selection.end());
     selection.erase(std::unique(selection.begin(), selection.end()), selection.end());
     m_selectedPoints = std::move(selection);
-    const QSignalBlocker block(m_timelineTable->selectionModel());
+    const QPointer<CMotionPanel> alive(this);
+    QSignalBlocker block(m_timelineTable->selectionModel());
     QItemSelection rows;
     QVector<int> indices;
     indices.reserve(m_selectedPoints.size());
@@ -116,7 +120,7 @@ void CMotionPanel::SetKeyframeSelection(CMotionPointSelection selection)
         const int first = indices[index];
         int last = first;
         while (++index < indices.size() && indices[index] == last + 1) last = indices[index];
-        rows.select(m_keyModel->index(first, 0), m_keyModel->index(last, 3));
+        rows.select(m_keyModel->index(first, 0), m_keyModel->index(last, m_keyModel->columnCount() - 1));
     }
     m_timelineTable->selectionModel()->select(rows, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     if (!m_selectedPoints.isEmpty()) {
@@ -128,6 +132,9 @@ void CMotionPanel::SetKeyframeSelection(CMotionPointSelection selection)
         }
     } else m_timelineTable->selectionModel()->clearCurrentIndex();
     m_curveView->SetSelectedPoints(m_selectedPoints);
+    if (!alive) { block.dismiss(); return; }
+    RefreshTangentActions();
+    if (!alive) block.dismiss();
 }
 
 void CMotionPanel::ConnectKeyframeEditing()
@@ -155,11 +162,10 @@ void CMotionPanel::ConnectKeyframeEditing()
     connect(m_curveView, &CMotionCurveView::SelectionTranslated, this, &CMotionPanel::TranslateCurveSelection);
     connect(m_curveView, &CMotionCurveView::SelectionDragFinished, this, &CMotionPanel::FinishCurveGesture);
     connect(m_curveView, &CMotionCurveView::SelectionDragCanceled, this, &CMotionPanel::CancelCurveGesture);
-    connect(m_curveView, &CMotionCurveView::BezierDragStarted, this,
-            [this](const auto& track, int index) { BeginCurveGesture({{track, index}}, true); });
-    connect(m_curveView, &CMotionCurveView::BezierControlsEdited, this, &CMotionPanel::EditCurveControls);
-    connect(m_curveView, &CMotionCurveView::BezierDragFinished, this, &CMotionPanel::FinishCurveGesture);
-    connect(m_curveView, &CMotionCurveView::BezierDragCanceled, this, &CMotionPanel::CancelCurveGesture);
+    connect(m_curveView, &CMotionCurveView::TangentDragStarted, this, &CMotionPanel::BeginTangentGesture);
+    connect(m_curveView, &CMotionCurveView::TangentHandleEdited, this, &CMotionPanel::EditTangentHandle);
+    connect(m_curveView, &CMotionCurveView::TangentDragFinished, this, &CMotionPanel::FinishCurveGesture);
+    connect(m_curveView, &CMotionCurveView::TangentDragCanceled, this, &CMotionPanel::CancelCurveGesture);
 }
 
 bool CMotionPanel::ApplyTimelineCellEdit(const CMotionPointRef& ref, int column, const QString& input, QString* error)
@@ -239,28 +245,41 @@ void CMotionPanel::TranslateCurveSelection(double time, double value)
     if (m_curveGesture != CurveGesture::Points || !m_editGroupBefore) return;
     CMotionTimeline candidate = m_editGroupBefore->value.timeline;
     CMotionTimeline::BatchEdit edit;
-    for (const auto& ref : m_gesturePoints) {
-        const auto found = candidate.Tracks().constFind(ref.track);
-        if (found == candidate.Tracks().cend() || ref.index < 0 || ref.index >= found->size()) return;
-        edit.updates.append({ref, found->at(ref.index) + QPointF(time, value)});
-    }
+    edit.transform = CMotionTimeline::PointTransform{m_gesturePoints, {}, {time, value}, 1, 1};
     CMotionTimeline::BatchResult result;
     QString error;
     if (!candidate.EditPoints(edit, result, &error)) { m_timelineStatus->setText(error); return; }
     PublishCurveGesture(std::move(candidate), result);
 }
 
-void CMotionPanel::EditCurveControls(const CMotionTrack& track, int index, const QVector<QPointF>& controls)
+void CMotionPanel::BeginTangentGesture(CMotionPointRef key, CMotionTimeline::HandleSide side, bool linkForGesture)
 {
-    if (m_curveGesture != CurveGesture::Bezier || !m_editGroupBefore ||
-        m_gesturePoints != CMotionPointSelection{{track, index}}) return;
+    const QPointer<CMotionPanel> alive(this);
+    BeginCurveGesture({key}, true);
+    if (!alive) return;
+    if (m_curveGesture != CurveGesture::Bezier || !m_editGroupBefore) return;
+    const auto handle = m_editGroupBefore->value.timeline.TangentHandle(key, side);
+    if (!handle) { m_curveView->CancelDrag(); return; }
+    m_gestureHandle = CMotionTimeline::HandleEdit{key, side, *handle, linkForGesture}; m_activeHandle = m_gestureHandle;
+    m_activeHandleKeyPoint = m_timeline.Tracks().value(key.track).value(key.index);
+    RefreshTangentActions(); if (alive) ScheduleOnionRequest();
+}
+
+void CMotionPanel::EditTangentHandle(CMotionPointRef key, CMotionTimeline::HandleSide side, QPointF position)
+{
+    if (m_curveGesture != CurveGesture::Bezier || !m_editGroupBefore || !m_gestureHandle || m_gestureHandle->ref != key || m_gestureHandle->side != side) return;
     CMotionTimeline candidate = m_editGroupBefore->value.timeline;
-    CMotionTimeline::BatchEdit edit;
-    edit.segments.append({{track, index}, 1, controls});
-    CMotionTimeline::BatchResult result;
-    QString error;
+    CMotionTimeline::BatchEdit edit; edit.handles.append({key, side, position, m_gestureHandle->linkForGesture});
+    CMotionTimeline::BatchResult result; QString error;
     if (!candidate.EditPoints(edit, result, &error)) { m_timelineStatus->setText(error); return; }
-    PublishCurveGesture(std::move(candidate), result);
+    const bool automatic = m_editGroupBefore->value.timeline.Tangent(key.track, key.index).mode == CMotionTimeline::TangentMode::AutoClamped;
+    const bool converted = automatic && candidate.Tangent(key.track, key.index).mode == CMotionTimeline::TangentMode::Aligned;
+    const bool linked = m_gestureHandle->linkForGesture;
+    const QPointer<CMotionPanel> alive(this); PublishCurveGesture(std::move(candidate), result);
+    if (!alive || m_curveGesture != CurveGesture::Bezier || !m_gestureHandle) return;
+    if (converted) m_timelineStatus->setText(QStringLiteral("自动切线已转为对齐；Esc 取消并恢复自动模式"));
+    else if (linked && m_timeline.Tangent(key.track, key.index).mode == CMotionTimeline::TangentMode::Broken)
+        m_timelineStatus->setText(QStringLiteral("本次联动两侧手柄，独立模式保持；Esc 取消"));
 }
 
 void CMotionPanel::PublishCurveGesture(CMotionTimeline candidate, const CMotionTimeline::BatchResult& result)
@@ -280,7 +299,7 @@ void CMotionPanel::FinishCurveGesture()
 {
     if (m_curveGesture == CurveGesture::None) return;
     m_curveGesture = CurveGesture::None;
-    m_gesturePoints.clear();
+    m_gesturePoints.clear(); m_gestureHandle.reset();
     EndTimelineEditGroup();
 }
 
@@ -288,7 +307,7 @@ void CMotionPanel::CancelCurveGesture()
 {
     if (m_curveGesture == CurveGesture::None) return;
     m_curveGesture = CurveGesture::None;
-    m_gesturePoints.clear();
+    m_gesturePoints.clear(); m_gestureHandle.reset();
     const auto before = m_editGroupBefore;
     const QPointer<CMotionPanel> alive(this);
     m_editGroupActive = false;
@@ -339,6 +358,41 @@ QToolBar* CMotionPanel::CreateKeyframeTools(QWidget* parent)
     }
     interpolation->setMenu(modeMenu);
     qobject_cast<QToolButton*>(tools->widgetForAction(interpolation))->setPopupMode(QToolButton::InstantPopup);
+    m_tangentAction = action(QStringLiteral("切线"), QStringLiteral("motionTangentMode"));
+    auto* tangents = new QMenu(tools); auto* modes = new QActionGroup(tangents); modes->setExclusive(true);
+    for (const auto mode : {CMotionTimeline::TangentMode::Broken, CMotionTimeline::TangentMode::Aligned, CMotionTimeline::TangentMode::Flat, CMotionTimeline::TangentMode::AutoClamped}) {
+        auto* item = tangents->addAction(CMotionKeyModel::TangentName(mode)); item->setObjectName(QStringLiteral("motionTangentMode%1").arg(int(mode)));
+        item->setCheckable(true); item->setData(int(mode)); modes->addAction(item); m_tangentModes.append(item);
+        connect(item, &QAction::triggered, this, [this, mode] { SetTangentMode(mode); });
+    }
+    tangents->addSeparator(); m_tangentNumbers = tangents->addAction(QStringLiteral("编辑手柄数值…")); m_tangentNumbers->setObjectName(QStringLiteral("motionTangentNumbers"));
+    connect(m_tangentNumbers, &QAction::triggered, this, &CMotionPanel::EditTangentNumbers);
+    m_tangentUnrestricted = tangents->addAction(QStringLiteral("转换为自由 Bézier"));
+    m_tangentUnrestricted->setObjectName(QStringLiteral("motionConvertUnrestricted"));
+    m_tangentUnrestricted->setToolTip(QStringLiteral("将整条动作的受限 Bézier 转换为自由 Bézier，保留曲线形状并允许横向编辑手柄；可撤销"));
+    connect(m_tangentUnrestricted, &QAction::triggered, this, [this] {
+        const QPointer<CMotionPanel> alive(this);
+        if (!TryCommitTimelineCells() || !alive || m_editGroupActive || m_timeline.IsRecording()) return;
+        auto candidate = m_timeline;
+        QString error;
+        if (!candidate.ConvertToUnrestricted(&error) ||
+            !PublishKeyframeEdit(std::move(candidate), m_selectedPoints, QStringLiteral("转换为自由 Bézier"), &error)) {
+            if (alive) m_timelineStatus->setText(error);
+        }
+    });
+    m_tangentAction->setMenu(tangents); qobject_cast<QToolButton*>(tools->widgetForAction(m_tangentAction))->setPopupMode(QToolButton::InstantPopup);
+    m_timelineTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_timelineTable, &QWidget::customContextMenuRequested, this, [this, tangents](QPoint position) {
+        if (HasPendingTimelineCells() || m_editGroupActive) return;
+        const QPointer<CMotionPanel> alive(this);
+        const auto index = m_timelineTable->indexAt(position);
+        if (index.isValid() && !m_timelineTable->selectionModel()->isRowSelected(index.row(), {})) {
+            const auto* row = m_keyModel->RowAt(index.row()); if (row) SetKeyframeSelection({row->ref});
+        }
+        if (!alive) return;
+        RefreshTangentActions(); if (!alive) return;
+        tangents->popup(m_timelineTable->viewport()->mapToGlobal(position));
+    });
     m_snapFrames = action(QStringLiteral("帧吸附"), QStringLiteral("motionFrameSnapping"));
     m_snapFrames->setCheckable(true);
     m_snapFrames->setObjectName(QStringLiteral("motionFrameSnapping"));
@@ -353,8 +407,214 @@ QToolBar* CMotionPanel::CreateKeyframeTools(QWidget* parent)
         }
         m_curveView->SetFrameSnapping(enabled);
     });
+    ConfigureOnionUi(parent, tools);
+    tools->insertAction(tools->actions().first(), m_onionEnabled);
+    tools->insertAction(tools->actions().first(), m_tangentAction);
+    qobject_cast<QToolButton*>(tools->widgetForAction(m_tangentAction))->setPopupMode(QToolButton::InstantPopup);
+    qobject_cast<QToolButton*>(tools->widgetForAction(m_onionEnabled))->setPopupMode(QToolButton::MenuButtonPopup);
     for (auto* button : tools->findChildren<QToolButton*>()) button->setFocusPolicy(Qt::StrongFocus);
+    RefreshTangentActions();
     return tools;
+}
+
+void CMotionPanel::RefreshTangentActions()
+{
+    if (!m_tangentAction) return;
+    int eligible = 0; bool mixed = false; std::optional<CMotionTimeline::TangentMode> common;
+    for (const auto& key : m_selectedPoints) {
+        const auto capability = m_timeline.Capabilities(key);
+        if (!common) common = capability.state.mode; else if (*common != capability.state.mode) mixed = true;
+        if (capability.valid && (capability.incoming.available || capability.outgoing.available)) ++eligible;
+    }
+    if (m_activeHandle && (!m_selectedPoints.contains(m_activeHandle->ref) ||
+        m_timeline.Tracks().value(m_activeHandle->ref.track).value(m_activeHandle->ref.index) != m_activeHandleKeyPoint)) m_activeHandle.reset();
+    const bool enabled = !IsPreviewTransportSuspended() && !m_timeline.IsRecording() && !m_editGroupActive && !m_timelineMutation && !m_restoringTimeline && !HasPendingTimelineCells();
+    const QPointer<CMotionPanel> alive(this);
+    m_tangentAction->setText(!common ? QStringLiteral("切线") : QStringLiteral("切线：%1").arg(mixed ? QStringLiteral("混合") : CMotionKeyModel::TangentName(*common)));
+    if (!alive) return;
+    m_tangentAction->setToolTip(QStringLiteral("已选 %1 点，%2 点有 Bézier 手柄；模式应用到可用点，其余点保持。Ctrl/⌘ 开始拖动可临时联动独立手柄；自动柄拖动会转为对齐。")
+        .arg(m_selectedPoints.size()).arg(eligible));
+    m_tangentAction->setEnabled(enabled && eligible > 0); if (!alive) return;
+    for (auto* item : m_tangentModes) {
+        const QSignalBlocker block(item); item->setChecked(common && !mixed && int(*common) == item->data().toInt());
+    }
+    m_tangentNumbers->setEnabled(enabled && eligible == 1 && m_selectedPoints.size() == 1);
+    if (!alive) return;
+    m_tangentUnrestricted->setEnabled(enabled && m_timeline.AreBeziersRestricted());
+}
+
+void CMotionPanel::SetTangentMode(CMotionTimeline::TangentMode mode)
+{
+    if (!CheckParameterEditGuard() || m_editGroupActive || m_timelineMutation || m_timeline.IsRecording()) return;
+    const ScopedFlag approved(this, m_parameterEditApproved, true); const QPointer<CMotionPanel> alive(this);
+    if (!TryCommitTimelineCells() || !alive || m_selectedPoints.isEmpty()) return;
+    CMotionTimeline::BatchEdit edit;
+    for (const auto& key : m_selectedPoints) {
+        const auto capability = m_timeline.Capabilities(key);
+        if (!capability.valid || (!capability.incoming.available && !capability.outgoing.available)) continue;
+        const auto side = m_activeHandle && m_activeHandle->ref == key ? std::optional<CMotionTimeline::HandleSide>(m_activeHandle->side) : std::nullopt;
+        edit.tangents.append({key, mode, side});
+    }
+    if (edit.tangents.isEmpty()) { m_timelineStatus->setText(QStringLiteral("所选关键点没有可用的 Bézier 手柄；请先显式修改前段插值")); RefreshTangentActions(); return; }
+    const auto skipped = m_selectedPoints.size() - edit.tangents.size(); QString error;
+    if (!ApplyKeyframeBatch(edit, QStringLiteral("修改关键点切线模式"), &error)) { if (alive) { m_timelineStatus->setText(error); RefreshTangentActions(); } return; }
+    if (!alive) return;
+    m_timelineStatus->setText(QStringLiteral("%1 点已应用%2切线%3").arg(edit.tangents.size()).arg(CMotionKeyModel::TangentName(mode), skipped ? QStringLiteral("；%1 点没有 Bézier 手柄，保持原状态").arg(skipped) : QString()));
+    ScheduleOnionRequest();
+}
+
+void CMotionPanel::EditTangentNumbers()
+{
+    if (!CheckParameterEditGuard() || m_editGroupActive || m_timelineMutation || m_timeline.IsRecording()) return;
+    const ScopedFlag approved(this, m_parameterEditApproved, true); const QPointer<CMotionPanel> alive(this);
+    if (!TryCommitTimelineCells() || !alive || m_selectedPoints.size() != 1) return;
+    PauseTimelinePreview(); if (!alive) return;
+    const auto key = m_selectedPoints.first(); const auto capability = m_timeline.Capabilities(key); const auto source = m_timeline; const auto revision = m_timelineRevision;
+    if (!capability.incoming.available && !capability.outgoing.available) return;
+    QPointer<QDialog> dialog = new QDialog(this); const auto cleanup = qScopeGuard([dialog] { if (dialog) dialog->deleteLater(); });
+    dialog->setObjectName(QStringLiteral("motionTangentValues")); dialog->setWindowTitle(QStringLiteral("编辑切线手柄"));
+    auto* form = new QFormLayout(dialog); form->setRowWrapPolicy(QFormLayout::WrapLongRows); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    auto* side = new QComboBox(dialog); side->setObjectName(QStringLiteral("motionTangentSide"));
+    if (capability.incoming.available) side->addItem(QStringLiteral("入柄"), int(CMotionTimeline::HandleSide::Incoming));
+    if (capability.outgoing.available) side->addItem(QStringLiteral("出柄"), int(CMotionTimeline::HandleSide::Outgoing));
+    if (m_activeHandle && m_activeHandle->ref == key) side->setCurrentIndex(qMax(0, side->findData(int(m_activeHandle->side))));
+    auto* time = new QLineEdit(dialog); time->setObjectName(QStringLiteral("motionHandleTime"));
+    auto* value = new QLineEdit(dialog); value->setObjectName(QStringLiteral("motionHandleValue"));
+    auto* linked = new QCheckBox(QStringLiteral("本次联动另一侧，独立模式保持"), dialog); linked->setObjectName(QStringLiteral("motionHandleLinked")); linked->setEnabled(capability.state.mode == CMotionTimeline::TangentMode::Broken);
+    auto* status = new QLabel(dialog); status->setObjectName(QStringLiteral("motionHandleStatus")); status->setTextFormat(Qt::PlainText); status->setWordWrap(true); status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    const auto update = [=] {
+        const auto which = CMotionTimeline::HandleSide(side->currentData().toInt()); const auto point = source.TangentHandle(key, which);
+        const auto allowed = which == CMotionTimeline::HandleSide::Incoming ? capability.incoming : capability.outgoing;
+        time->setText(point ? QString::number(point->x(), 'g', 17) : QString()); value->setText(point ? QString::number(point->y(), 'g', 17) : QString());
+        time->setReadOnly(!allowed.moveTime); value->setReadOnly(!allowed.moveValue);
+        status->setText(capability.state.mode == CMotionTimeline::TangentMode::AutoClamped ? QStringLiteral("有效修改会将自动切线转为对齐；取消保留原模式") : capability.restricted ? QStringLiteral("受限 Bézier 的手柄时间固定；需要横向调整时，请先显式转换为自由 Bézier") : QStringLiteral("时间为秒，数值与轨道相同；支持科学计数法"));
+    };
+    connect(side, &QComboBox::currentIndexChanged, dialog, update); update();
+    form->addRow(QStringLiteral("手柄"), side); form->addRow(QStringLiteral("时间（秒）"), time); form->addRow(QStringLiteral("值"), value); form->addRow(linked); form->addRow(status);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog); form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [=] {
+        if (!alive || !dialog) return;
+        if (m_timelineRevision != revision || !m_timeline.HasSameContent(source) || m_selectedPoints != CMotionPointSelection{key} || HasPendingTimelineCells()) { status->setText(QStringLiteral("时间轴或选区已改变，请取消后重新打开")); return; }
+        bool validTime = false, validValue = false; const double x = time->text().toDouble(&validTime), y = value->text().toDouble(&validValue);
+        if (!validTime || !validValue || !std::isfinite(x) || !std::isfinite(y)) { status->setText(QStringLiteral("请输入有限的手柄时间与数值")); return; }
+        CMotionTimeline::BatchEdit edit; const auto which = CMotionTimeline::HandleSide(side->currentData().toInt()); edit.handles.append({key, which, {x, y}, linked->isEnabled() && linked->isChecked()}); QString error;
+        if (!ApplyKeyframeBatch(edit, QStringLiteral("编辑切线手柄"), &error)) { if (alive && dialog) status->setText(error); return; }
+        if (!alive || !dialog) return;
+        m_activeHandle = edit.handles.first(); m_activeHandleKeyPoint = m_timeline.Tracks().value(key.track).value(key.index); dialog->accept();
+    });
+    dialog->resize(fontMetrics().averageCharWidth() * 62, dialog->sizeHint().height()); dialog->exec();
+}
+
+live2dstruct::COnionSkin::Settings CMotionPanel::OnionSettings() const
+{
+    live2dstruct::COnionSkin::Settings result; if (!m_onionEnabled) return result;
+    result.enabled = m_onionEnabled->isChecked(); result.duringPlayback = m_onionPlayback->isChecked();
+    result.before = m_onionBefore->value(); result.after = m_onionAfter->value(); result.stepFrames = m_onionInterval->value();
+    result.beforeOpacity = float(m_onionBeforeOpacity->value() / 100); result.afterOpacity = float(m_onionAfterOpacity->value() / 100); return result;
+}
+
+void CMotionPanel::ConfigureOnionUi(QWidget* parent, QToolBar* tools)
+{
+    m_onionEnabled = tools->addAction(QStringLiteral("洋葱皮")); m_onionEnabled->setObjectName(QStringLiteral("motionOnionSkin")); m_onionEnabled->setCheckable(true);
+    m_onionEnabled->setToolTip(QStringLiteral("在主画布当前模型后方显示时间轴前后帧；不改变当前播放或参数"));
+    auto* menu = new QMenu(tools); auto* settings = menu->addAction(QStringLiteral("设置…")); settings->setObjectName(QStringLiteral("motionOnionSettings")); settings->setCheckable(true);
+    m_onionEnabled->setMenu(menu); qobject_cast<QToolButton*>(tools->widgetForAction(m_onionEnabled))->setPopupMode(QToolButton::MenuButtonPopup);
+    m_onionSettingsPanel = new QWidget(parent); m_onionSettingsPanel->setObjectName(QStringLiteral("motionOnionSettingsPanel"));
+    auto* form = new QFormLayout(m_onionSettingsPanel); form->setRowWrapPolicy(QFormLayout::WrapLongRows); form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    const auto integer = [&](const char* name, const QString& label, int minimum, int maximum, int value) {
+        auto* input = new QSpinBox(m_onionSettingsPanel); input->setObjectName(QString::fromLatin1(name)); input->setAccessibleName(label); input->setRange(minimum, maximum); input->setValue(value); input->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        form->addRow(label, input); connect(input, &QSpinBox::valueChanged, this, &CMotionPanel::RefreshOnionSettings); return input;
+    };
+    m_onionBefore = integer("motionOnionBefore", QStringLiteral("前帧数量"), 0, live2dstruct::COnionSkin::MaximumPerSide, 1);
+    m_onionAfter = integer("motionOnionAfter", QStringLiteral("后帧数量"), 0, live2dstruct::COnionSkin::MaximumPerSide, 1);
+    m_onionInterval = integer("motionOnionInterval", QStringLiteral("间隔（动作帧）"), 1, std::numeric_limits<int>::max(), 1);
+    const auto opacity = [&](const char* name, const QString& label) {
+        auto* input = new QDoubleSpinBox(m_onionSettingsPanel); input->setObjectName(QString::fromLatin1(name)); input->setAccessibleName(label); input->setRange(0, 100); input->setDecimals(1); input->setValue(25); input->setSuffix(QStringLiteral("%")); input->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        form->addRow(label, input); connect(input, &QDoubleSpinBox::valueChanged, this, &CMotionPanel::RefreshOnionSettings); return input;
+    };
+    m_onionBeforeOpacity = opacity("motionOnionBeforeOpacity", QStringLiteral("前帧透明度")); m_onionAfterOpacity = opacity("motionOnionAfterOpacity", QStringLiteral("后帧透明度"));
+    m_onionPlayback = new QCheckBox(QStringLiteral("播放时显示"), m_onionSettingsPanel); m_onionPlayback->setObjectName(QStringLiteral("motionOnionDuringPlayback")); form->addRow(m_onionPlayback);
+    connect(m_onionPlayback, &QCheckBox::toggled, this, &CMotionPanel::RefreshOnionSettings);
+    m_onionIntervalLabel = new QLabel(m_onionSettingsPanel); m_onionIntervalLabel->setObjectName(QStringLiteral("motionOnionDescription")); m_onionIntervalLabel->setTextFormat(Qt::PlainText); m_onionIntervalLabel->setWordWrap(true); m_onionIntervalLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); form->addRow(m_onionIntervalLabel);
+    m_onionStatusLabel = new QLabel(parent); m_onionStatusLabel->setObjectName(QStringLiteral("motionOnionStatus")); m_onionStatusLabel->setTextFormat(Qt::PlainText); m_onionStatusLabel->setWordWrap(true); m_onionStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); m_onionStatusLabel->hide();
+    auto* layout = qobject_cast<QVBoxLayout*>(parent->layout()); layout->insertWidget(2, m_onionSettingsPanel); layout->insertWidget(3, m_onionStatusLabel); m_onionSettingsPanel->hide();
+    connect(settings, &QAction::toggled, m_onionSettingsPanel, &QWidget::setVisible);
+    connect(m_onionEnabled, &QAction::toggled, this, [this](bool enabled) { if (enabled && !m_onionCaptureError.isEmpty()) m_onionContentDirty = true; RefreshOnionSettings(); });
+    connect(this, &CMotionPanel::MotionTimelineChanged, this, [this] { ScheduleOnionRequest(true); });
+    connect(this, &CMotionPanel::TimelineFrameChanged, this, [this] { ScheduleOnionRequest(); });
+    connect(this, &CMotionPanel::TimelinePreviewStopped, this, [this] { ScheduleOnionRequest(); });
+    connect(m_keyModel, &CMotionKeyModel::DraftChanged, this, [this] { ScheduleOnionRequest(); });
+    connect(m_recordTimelineCb, &QCheckBox::toggled, this, [this] { ScheduleOnionRequest(); });
+    connect(m_playTimelineButton, &QPushButton::clicked, this, [this] { ScheduleOnionRequest(); });
+    RefreshOnionSettings();
+}
+
+void CMotionPanel::RefreshOnionSettings()
+{
+    if (!m_onionIntervalLabel) return;
+    const double fps = m_timeline.Timing().fps; const double seconds = std::isfinite(fps) && fps > 0 ? m_onionInterval->value() / fps : 0;
+    m_onionIntervalLabel->setText(QStringLiteral("当前间隔 %1 秒。原色参考帧位于当前模型后方，依据时间轴曲线。实时物理可先烘焙，眨眼和呼吸等效果通过参数关键点加入。")
+        .arg(seconds, 0, 'g', 8));
+    m_onionStatusLabel->setVisible(m_onionEnabled->isChecked());
+    if (m_onionEnabled->isChecked() && m_onionStatusLabel->text().isEmpty()) m_onionStatusLabel->setText(QStringLiteral("等待时间轴参考帧"));
+    ScheduleOnionRequest();
+}
+
+void CMotionPanel::ScheduleOnionRequest(bool contentChanged)
+{
+    if (contentChanged) { m_onionContentDirty = true; m_onionCaptureError.clear(); }
+    if (m_onionRequestQueued) return; m_onionRequestQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_onionRequestQueued = false; const QPointer<CMotionPanel> alive(this); RefreshTangentActions();
+        if (!alive) return;
+        if (m_onionIntervalLabel) {
+            const double fps = m_timeline.Timing().fps;
+            m_onionIntervalLabel->setText(QStringLiteral("当前间隔 %1 秒。原色参考帧位于当前模型后方，依据时间轴曲线。实时物理可先烘焙，眨眼和呼吸等效果通过参数关键点加入。")
+                .arg(std::isfinite(fps) && fps > 0 ? m_onionInterval->value() / fps : 0, 0, 'g', 8));
+        }
+        emit OnionSkinRequestChanged();
+    });
+}
+
+bool CMotionPanel::CaptureOnionSkinRequest(live2dstruct::COnionSkin::Request& request, QString* error) const
+{
+    if (error) error->clear(); live2dstruct::COnionSkin::Request candidate;
+    candidate.settings = OnionSettings(); candidate.time = m_timelineTime; candidate.useFades = m_previewFades && m_previewFades->isChecked(); candidate.loop = m_loopCb && m_loopCb->isChecked();
+    candidate.playing = m_timelineTimer && m_timelineTimer->isActive(); candidate.recording = m_timeline.IsRecording();
+    if (!candidate.settings.enabled) { request = std::move(candidate); return true; }
+    if (IsPreviewTransportSuspended()) candidate.suspensionReason = QStringLiteral("预览传输暂停中，参考帧暂停");
+    else if (candidate.recording) candidate.suspensionReason = QStringLiteral("正在录制，参考帧暂停");
+    else if (m_editGroupActive || m_curveGesture != CurveGesture::None || m_timelineMutation || m_restoringTimeline || m_updatingTimeline) candidate.suspensionReason = QStringLiteral("正在编辑或恢复时间轴，结束后更新参考帧");
+    else if (HasPendingTimelineCells()) candidate.suspensionReason = QStringLiteral("请先确认或取消关键点输入，参考帧已暂停");
+    else if (!m_timeline.HasCurves()) candidate.suspensionReason = QStringLiteral("时间轴暂无可采样的模型曲线");
+    candidate.suspended = !candidate.suspensionReason.isEmpty();
+    if (candidate.suspended) { request = std::move(candidate); return true; }
+    if (m_onionContentDirty) {
+        m_onionContentDirty = false; m_onionCaptureError.clear();
+        if (!live2dstruct::COnionSkin::CaptureTimeline(m_timeline, m_onionTimeline, &m_onionCaptureError)) m_onionTimeline = {};
+    }
+    if (!m_onionCaptureError.isEmpty()) { if (error) *error = m_onionCaptureError; return false; }
+    candidate.timeline = m_onionTimeline; request = std::move(candidate); return true;
+}
+
+void CMotionPanel::SetOnionSkinStatus(const live2dstruct::COnionSkin::Status& status)
+{
+    if (status.generation < m_onionStatus.generation || status == m_onionStatus) return;
+    m_onionStatus = status; if (!m_onionStatusLabel) return;
+    using State = live2dstruct::COnionSkin::Status::State;
+    QString text = status.message;
+    if (status.state == State::Ready) {
+        QStringList times; for (double time : status.sampleTimes) times.append(QStringLiteral("%1s").arg(time, 0, 'g', 8));
+        text = QStringLiteral("已显示 %1 个参考帧%2").arg(times.size()).arg(times.isEmpty() ? QString() : QStringLiteral("：") + times.join(QStringLiteral("、")));
+        if (status.omitted) text += QStringLiteral("；边界或重复采样省略 %1 帧").arg(status.omitted);
+        if (status.reducedResolution) text += QStringLiteral("；参考分辨率 %1 × %2").arg(status.renderedSize.width()).arg(status.renderedSize.height());
+    } else if (text.isEmpty()) {
+        if (status.state == State::Preparing) text = QStringLiteral("正在生成时间轴参考帧…");
+        else if (status.state == State::Suspended) text = QStringLiteral("参考帧已暂停");
+        else if (status.state == State::Failed) text = QStringLiteral("参考帧生成失败；当前模型保持不变，可重新启用后重试");
+    }
+    m_onionStatusLabel->setText(text); m_onionStatusLabel->setVisible(m_onionEnabled && m_onionEnabled->isChecked());
 }
 
 void CMotionPanel::CopyKeyframes(bool cut)
@@ -471,10 +731,7 @@ void CMotionPanel::TransformKeyframes()
             status->setText(QStringLiteral("时间轴或选区已改变，请取消后重新打开")); return;
         }
         CMotionTimeline::BatchEdit edit;
-        for (const auto& ref : selection) {
-            const auto point = source.Tracks().value(ref.track).at(ref.index);
-            edit.updates.append({ref, QPointF(pivot + (point.x() - pivot) * scale->value() + offset->value(), point.y() + value->value())});
-        }
+        edit.transform = CMotionTimeline::PointTransform{selection, {pivot, 0}, {offset->value(), value->value()}, scale->value(), 1};
         QString error;
         if (!ApplyKeyframeBatch(edit, QStringLiteral("平移 / 缩放关键帧"), &error)) {
             if (alive && dialog) status->setText(error);

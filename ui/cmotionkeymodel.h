@@ -11,12 +11,13 @@ class CMotionKeyModel : public QAbstractTableModel
 {
     Q_OBJECT
 public:
-    struct Row { CMotionPointRef ref; QPointF point; int segmentType = 0; };
+    struct Row { CMotionPointRef ref; QPointF point; int segmentType = 0; CMotionTimeline::TangentState tangent; bool tangentAvailable = false; };
     using EditHandler = std::function<bool(const CMotionPointRef&, int column, const QString& text, QString* error)>;
     explicit CMotionKeyModel(QObject* parent = nullptr);
     void SetRows(QVector<Row> rows);
     void SetEditHandler(EditHandler handler);
     const Row* RowAt(int row) const;
+    static QString TangentName(CMotionTimeline::TangentMode mode);
     int RowFor(const CMotionPointRef& ref) const;
     bool HasRejectedDraft() const { return m_draft.has_value(); }
     QString DraftError() const;

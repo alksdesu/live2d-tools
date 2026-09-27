@@ -27,6 +27,7 @@
 #include "cdeformerhandleoverlay.h"
 
 using Live2D::Cubism::Framework::CubismModel;
+class COnionSkinRenderer;
 
 
 class OpengGlForm : public QOpenGLWidget
@@ -171,6 +172,14 @@ public slots:
     void SyncPreviewView();
     bool SetHighPrecisionMasks(bool enabled, QString* error = nullptr);
     bool HighPrecisionMasks() const;
+public:
+    using OnionSkinRequestProvider = std::function<bool(live2dstruct::COnionSkin::Request&, QString*)>;
+    void SetOnionSkinRequestProvider(OnionSkinRequestProvider provider);
+    bool SetOnionSkinRequest(const live2dstruct::COnionSkin::Request& request, QString* error = nullptr);
+    void ClearOnionSkin(const QString& error = {});
+    live2dstruct::COnionSkin::Status OnionSkinStatus() const { return m_onionStatus; }
+public slots:
+    void DrawOnionSkinUnderlay();
 
 
 signals:
@@ -182,6 +191,7 @@ signals:
     void KeyformEditingFinishedRequested();
     void MeshToolChanged(OpengGlForm::MeshTool tool, const QString& target);
     void MeshSelectionChanged(const QString& target, const QVector<int>& vertices);
+    void OnionSkinStatusChanged(const live2dstruct::COnionSkin::Status& status);
 
 protected:
     void initializeGL() override;
@@ -214,6 +224,14 @@ protected:
     std::optional<QSize> m_deferredResize;
     bool m_runtimeReady = false;
     bool m_initializationCompleted = false;
+    std::shared_ptr<COnionSkinRenderer> m_onionRenderer;
+    OnionSkinRequestProvider m_onionProvider;
+    live2dstruct::COnionSkin::Request m_onionRequest;
+    live2dstruct::COnionSkin::Status m_onionStatus;
+    quint64 m_onionGeneration = 0;
+    bool m_onionStatusQueued = false;
+    QMetaObject::Connection m_onionContextConnection;
+    void PublishOnionSkinStatus(const live2dstruct::COnionSkin::Status& status);
     bool MakeRuntimeCurrent();
     bool ChangeModel(const QString& name, QString* error);
     bool m_meshEditEnabled = false;

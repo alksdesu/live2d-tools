@@ -149,6 +149,8 @@ SOURCES += \
     live2dstruct/cmotionbezier.cpp \
     ui/cmotionsettingsdialog.cpp \
     live2dstruct/cmotiontimeline.cpp \
+    live2dstruct/cmotiontangent.cpp \
+    live2dstruct/conionskin.cpp \
     live2dstruct/cmotionblendpreview.cpp \
     ui/cmotioncurveview.cpp \
     ui/cphysicspanel.cpp \
@@ -422,6 +424,7 @@ HEADERS += \
     live2dstruct/cmotionbezier.h \
     ui/cmotionsettingsdialog.h \
     live2dstruct/cmotiontimeline.h \
+    live2dstruct/conionskin.h \
     live2dstruct/cmotionblendpreview.h \
     ui/cmotioncurveview.h \
     ui/cphysicsgraph.h \
@@ -734,6 +737,11 @@ SOURCES += \
     ui/mainwindowartwork.cpp
 
 SOURCES += ui/mainwindowartworkpackage.cpp
+SOURCES += ui/mainwindowonionskin.cpp
+SOURCES += live2d/LAppModelOnionSkin.cpp \
+    opengl/conionskinrenderer.cpp \
+    opengl/opengglformonionskin.cpp
+HEADERS += opengl/conionskinrenderer.h
 HEADERS += \
     live2dstruct/cmaterialvalidationcache.h \
     live2dstruct/cmaterialresourcebudget.h \

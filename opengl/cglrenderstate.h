@@ -20,6 +20,7 @@ private:
     GLint m_vertexArray = 0, m_arrayBuffer = 0, m_program = 0;
     GLint m_activeTexture = 0;
     std::array<GLint, 2> m_textures{};
+    std::array<GLint, 2> m_samplers{};
     std::array<GLboolean, 4> m_enabled{};
     std::vector<GLboolean> m_blendEnabled;
     std::vector<std::array<GLboolean, 4>> m_colorMasks;

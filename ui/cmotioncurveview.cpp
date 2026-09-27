@@ -115,7 +115,7 @@ void CMotionCurveView::endGesture(bool canceled)
     if (gesture.kind == Gesture::Points) {
         if (canceled) emit SelectionDragCanceled(); else emit SelectionDragFinished();
     } else {
-        if (canceled) emit BezierDragCanceled(); else emit BezierDragFinished();
+        if (canceled) emit TangentDragCanceled(); else emit TangentDragFinished();
     }
     if (alive && serial == m_gestureSerial) emit EditFinished();
 }
@@ -188,12 +188,41 @@ QString CMotionCurveView::eventToolTip(const EventMarker& marker) const
     return QStringLiteral("<qt>%1</qt>").arg(lines.join(QStringLiteral("<br>")));
 }
 
+QString CMotionCurveView::controlToolTip(const CMotionPointRef& segment, int control, bool* movable) const
+{
+    if (movable) *movable = false;
+    if (!m_timeline || control < 0 || control > 1) return {};
+    const CMotionPointRef key{segment.track, control == 0 ? segment.index - 1 : segment.index};
+    const auto capabilities = m_timeline->Capabilities(key);
+    const auto capability = control == 0 ? capabilities.outgoing : capabilities.incoming;
+    if (!capability.available) return {};
+    if (!capability.moveTime && !capability.moveValue)
+        return QStringLiteral("水平切线的值与受限 Bézier 的时间均固定；请在切线菜单转换为自由 Bézier，或更改切线模式");
+    if (movable) *movable = true;
+    QString text;
+    switch (capabilities.state.mode) {
+    case CMotionTimeline::TangentMode::Broken:
+        text = QStringLiteral("独立切线；Ctrl/⌘ 开始拖动可临时联动另一侧，模式保持独立"); break;
+    case CMotionTimeline::TangentMode::Aligned:
+        text = QStringLiteral("对齐切线；调整一侧时，两侧保持相同斜率"); break;
+    case CMotionTimeline::TangentMode::Flat:
+        text = QStringLiteral("水平切线；可横向调整手柄长度，数值保持水平"); break;
+    case CMotionTimeline::TangentMode::AutoClamped:
+        text = QStringLiteral("自动钳制切线；有效拖动会转为对齐，Esc 取消并恢复自动模式"); break;
+    }
+    if (capabilities.restricted) text += QStringLiteral("；受限 Bézier 的手柄时间固定");
+    return text;
+}
+
 bool CMotionCurveView::event(QEvent* event)
 {
     if (event->type() == QEvent::ToolTip) {
         const auto* help = static_cast<QHelpEvent*>(event);
         const auto* marker = hitEvent(help->pos());
+        CMotionPointRef segment; int control = -1;
         if (marker && !m_gesture) QToolTip::showText(help->globalPos(), eventToolTip(*marker), this, eventRect().toRect());
+        else if (!m_gesture && hitControl(help->pos(), segment, control))
+            QToolTip::showText(help->globalPos(), controlToolTip(segment, control), this);
         else QToolTip::hideText();
         return true;
     }
@@ -302,6 +331,8 @@ bool CMotionCurveView::hitControl(const QPointF& position, CMotionPointRef& segm
             if (!showControls(track.key(), index)) continue;
             const auto controls = m_timeline->BezierControls(track.key(), index);
             for (int at = 0; at < controls.size(); ++at) {
+                const CMotionPointRef owner{track.key(), at == 0 ? index - 1 : index};
+                if (!m_selectedSet.contains(owner)) continue;
                 const auto delta = mapPoint(controls[at], frame.plot, frame.duration, frame.minimum, frame.maximum) - position;
                 const double distance = QPointF::dotProduct(delta, delta);
                 if (distance < nearest || (!found && distance == nearest)) {
@@ -397,13 +428,15 @@ void CMotionCurveView::paintEvent(QPaintEvent*)
                 if (!showControls(it.key(), index)) continue;
                 const auto controls = m_timeline->BezierControls(it.key(), index);
                 if (controls.size() != 2) continue;
-                painter.setPen(QPen(color, 1.0, Qt::DashLine)); painter.setBrush(Qt::NoBrush);
-                painter.drawLine(mapped(it->at(index - 1)), mapped(controls[0]));
-                painter.drawLine(mapped(it->at(index)), mapped(controls[1]));
-                painter.setPen(QPen(text, 1.0)); painter.setBrush(color);
-                for (const auto& control : controls) {
-                    const auto center = mapped(control);
-                    painter.drawRect(QRectF(center.x() - 4, center.y() - 4, 8, 8));
+                for (int side = 0; side < controls.size(); ++side) {
+                    const int owner = side == 0 ? index - 1 : index;
+                    if (!m_selectedSet.contains({it.key(), owner})) continue;
+                    const auto capability = m_timeline->Capabilities({it.key(), owner});
+                    const auto handle = side == 0 ? capability.outgoing : capability.incoming;
+                    painter.setPen(QPen(color, 1.0, Qt::DashLine)); painter.setBrush(Qt::NoBrush);
+                    painter.drawLine(mapped(it->at(owner)), mapped(controls[side]));
+                    painter.setPen(QPen(text, 1.0)); painter.setBrush(handle.moveTime || handle.moveValue ? QBrush(color) : QBrush(Qt::NoBrush));
+                    const auto center = mapped(controls[side]); painter.drawRect(QRectF(center.x() - 4, center.y() - 4, 8, 8));
                 }
             }
             painter.setBrush(color);
@@ -456,11 +489,16 @@ void CMotionCurveView::mousePressEvent(QMouseEvent* event)
     gesture.previousSelection = m_selectedPoints; gesture.fps = m_timeline->Timing().fps;
     CMotionPointRef segment; int control = -1;
     if (hitControl(event->position(), segment, control)) {
-        gesture.kind = Gesture::Bezier; gesture.point = segment; gesture.control = control;
+        gesture.kind = Gesture::Bezier; gesture.point = {segment.track, control == 0 ? segment.index - 1 : segment.index}; gesture.control = control;
+        gesture.side = control == 0 ? CMotionTimeline::HandleSide::Outgoing : CMotionTimeline::HandleSide::Incoming;
+        const auto capabilities = m_timeline->Capabilities(gesture.point);
+        const auto capability = gesture.side == CMotionTimeline::HandleSide::Incoming ? capabilities.incoming : capabilities.outgoing;
+        if (!capability.available || (!capability.moveTime && !capability.moveValue)) { event->accept(); return; }
         gesture.controls = m_timeline->BezierControls(segment.track, segment.index);
         const auto& points = m_timeline->Tracks()[segment.track];
         gesture.segmentStart = points[segment.index - 1]; gesture.segmentEnd = points[segment.index];
-        gesture.anchor = gesture.controls[control]; gesture.restricted = m_timeline->AreBeziersRestricted();
+        gesture.anchor = gesture.controls[control]; gesture.restricted = !capability.moveTime; gesture.moveValue = capability.moveValue;
+        gesture.linkForGesture = event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier);
     } else {
         CMotionTrack track; int index = -1;
         if (!hitPoint(event->position(), &track, &index)) {
@@ -490,7 +528,7 @@ void CMotionCurveView::mousePressEvent(QMouseEvent* event)
     m_gesture = gesture;
     event->accept(); update();
     if (gesture.kind == Gesture::Points) emit SelectionDragStarted(gesture.anchors);
-    else emit BezierDragStarted(gesture.point.track, gesture.point.index);
+    else emit TangentDragStarted(gesture.point, gesture.side, gesture.linkForGesture);
     if (!alive || !m_gesture || m_gesture->serial != gesture.serial) return;
     emit EditStarted();
     if (!alive || !m_gesture || m_gesture->serial != gesture.serial) return;
@@ -537,11 +575,10 @@ void CMotionCurveView::updateDrag(const QPointF& position, Qt::KeyboardModifiers
     if (!std::isfinite(dt) || !std::isfinite(dv)) return;
     const QPointer<CMotionCurveView> alive(this);
     if (gesture.kind == Gesture::Bezier) {
-        auto controls = gesture.controls;
-        controls[gesture.control] = QPointF(gesture.restricted ? gesture.anchor.x() :
-            std::clamp(gesture.anchor.x() + dt, gesture.segmentStart.x(), gesture.segmentEnd.x()), gesture.anchor.y() + dv);
-        if (!std::isfinite(controls[gesture.control].y())) return;
-        emit BezierControlsEdited(gesture.point.track, gesture.point.index, controls);
+        const QPointF candidate = dt == 0 && dv == 0 ? gesture.anchor : QPointF(gesture.restricted ? gesture.anchor.x() :
+            std::clamp(gesture.anchor.x() + dt, gesture.segmentStart.x(), gesture.segmentEnd.x()), gesture.moveValue ? gesture.anchor.y() + dv : gesture.anchor.y());
+        if (!std::isfinite(candidate.y())) return;
+        emit TangentHandleEdited(gesture.point, gesture.side, candidate);
         return;
     }
     emit SelectionTranslated(dt, dv);
@@ -562,9 +599,12 @@ void CMotionCurveView::mouseMoveEvent(QMouseEvent* event)
     if (!m_gesture) {
         CMotionPointRef segment; int control;
         const auto* marker = hitEvent(event->position());
-        setCursor(marker || hitControl(event->position(), segment, control) ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        bool movable = false;
+        const auto text = hitControl(event->position(), segment, control) ? controlToolTip(segment, control, &movable) : QString();
+        setCursor(marker || movable ? Qt::PointingHandCursor : Qt::ArrowCursor);
         if (QToolTip::isVisible()) {
             if (marker) QToolTip::showText(event->globalPosition().toPoint(), eventToolTip(*marker), this, eventRect().toRect());
+            else if (!text.isEmpty()) QToolTip::showText(event->globalPosition().toPoint(), text, this);
             else QToolTip::hideText();
         }
         return;

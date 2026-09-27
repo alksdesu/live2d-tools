@@ -224,6 +224,7 @@ void CMotionTimeline::SwapContent(CMotionTimeline& other) noexcept
     m_curves.swap(other.m_curves);
     m_segmentTypes.swap(other.m_segmentTypes);
     m_bezierControls.swap(other.m_bezierControls);
+    m_tangents.swap(other.m_tangents);
 }
 
 bool CMotionTimeline::ParameterTracks::IsEmpty() const
@@ -259,10 +260,12 @@ bool CMotionTimeline::RemoveParameterTracks(const QSet<QString>& ids, ParameterT
             record.points = m_curves.value(key);
             record.segments = m_segmentTypes.value(key);
             record.controls = m_bezierControls.value(key);
+            record.tangents = m_tangents.value(key);
             archive.m_tracks.insert(id, std::move(record));
             candidate.m_curves.remove(key);
             candidate.m_segmentTypes.remove(key);
             candidate.m_bezierControls.remove(key);
+            candidate.m_tangents.remove(key);
         }
         const auto sourceCurves = m_source.value(QStringLiteral("Curves")).toArray();
         QJsonArray retained;
@@ -289,7 +292,7 @@ bool CMotionTimeline::RemoveParameterTracks(const QSet<QString>& ids, ParameterT
             meta.insert(QStringLiteral("Duration"), duration);
             candidate.m_source.insert(QStringLiteral("Meta"), meta);
         }
-        if (!candidate.BuildJson(nullptr, candidate.Fps(), candidate.Loop(), true, error)) return false;
+        if (!candidate.ValidateEditableState(error)) return false;
         *this = std::move(candidate);
         removed = std::move(archive);
         return true;
@@ -322,6 +325,7 @@ bool CMotionTimeline::RestoreParameterTracks(const ParameterTracks& tracks, QStr
                 return fail(QStringLiteral("同名参数轨道已重新创建，无法覆盖：%1").arg(it.key()));
             if (it->present) {
                 candidate.m_curves.insert(key, it->points);
+                candidate.m_tangents.insert(key, it->tangents);
                 if (!it->points.isEmpty()) requiredDuration = qMax(requiredDuration, it->points.last().x());
             }
             if (it->segmentsPresent) candidate.m_segmentTypes.insert(key, it->segments);
@@ -332,6 +336,13 @@ bool CMotionTimeline::RestoreParameterTracks(const ParameterTracks& tracks, QStr
                 for (int index = 1; index < it->points.size(); ++index)
                     if (it->segments.value(index) == 1)
                         controls[index] = canonicalRestrictedControls(it->controls.value(index), it->points[index - 1], it->points[index]);
+                auto& tangents = candidate.m_tangents[key];
+                for (int index = 0; index < tangents.size(); ++index) {
+                    auto& tangent = tangents[index];
+                    if (tangent.mode != TangentMode::Aligned && tangent.mode != TangentMode::Flat) continue;
+                    if (it->segments.value(index) == 1) tangent.incomingFraction = 1.0 / 3;
+                    if (it->segments.value(index + 1) == 1) tangent.outgoingFraction = 1.0 / 3;
+                }
             }
             if (it->sourceIndex >= 0) sources.append(qMakePair(it->sourceIndex, it->source));
         }
@@ -348,7 +359,7 @@ bool CMotionTimeline::RestoreParameterTracks(const ParameterTracks& tracks, QStr
             if (!tracks.m_metaPresent && meta.isEmpty()) candidate.m_source.remove(QStringLiteral("Meta"));
             else candidate.m_source.insert(QStringLiteral("Meta"), meta);
         }
-        if (!candidate.BuildJson(nullptr, candidate.Fps(), candidate.Loop(), true, error)) return false;
+        if (!candidate.ValidateEditableState(error)) return false;
         *this = std::move(candidate);
         return true;
     } catch (const std::exception&) { return fail(QStringLiteral("无法准备参数轨道恢复")); }
@@ -425,6 +436,7 @@ void CMotionTimeline::Clear()
     m_curves.clear();
     m_segmentTypes.clear();
     m_bezierControls.clear();
+    m_tangents.clear();
 }
 
 void CMotionTimeline::Record(const QString& parameterId, float value)
@@ -464,13 +476,18 @@ bool CMotionTimeline::RecordValues(const QMap<QString, float>& values, QString* 
         auto curves = m_curves;
         auto segmentTypes = m_segmentTypes;
         auto controls = m_bezierControls;
+        auto tangents = m_tangents;
         for (auto value = values.cbegin(); value != values.cend(); ++value) {
             const CMotionTrack track{CMotionTarget::Parameter, value.key()};
             curves[track].append({time, value.value()});
             segmentTypes[track].append(0);
             controls[track].append(QVector<QPointF>{});
+            tangents[track].append(TangentState{});
         }
-        m_curves.swap(curves); m_segmentTypes.swap(segmentTypes); m_bezierControls.swap(controls);
+        auto candidate = *this;
+        candidate.m_curves.swap(curves); candidate.m_segmentTypes.swap(segmentTypes); candidate.m_bezierControls.swap(controls); candidate.m_tangents.swap(tangents);
+        if (candidate.HasAuthoringTangents() && !candidate.ValidateEditableState(error)) return false;
+        SwapContent(candidate);
         m_recordLastMs = *elapsed;
         return true;
     } catch (...) { return fail(QStringLiteral("无法录制整组参数，原关键点保持不变")); }
@@ -480,9 +497,10 @@ bool CMotionTimeline::AddPoint(const CMotionTrack& track, float time, float valu
 {
     if (track.TargetName().isEmpty() || track.id.trimmed().isEmpty() || track.id.contains(QChar::Null) || !std::isfinite(time) || time < 0.0f || !std::isfinite(value)) return false;
     if (TotalPointCount() >= maximumMotionPoints) return false;
-    QVector<QPointF>& points = m_curves[track];
-    QVector<int>& segmentTypes = m_segmentTypes[track];
-    QVector<QVector<QPointF>>& bezierControls = m_bezierControls[track];
+    auto candidate = *this;
+    QVector<QPointF>& points = candidate.m_curves[track];
+    QVector<int>& segmentTypes = candidate.m_segmentTypes[track];
+    QVector<QVector<QPointF>>& bezierControls = candidate.m_bezierControls[track];
     if (!points.isEmpty()) {
         const float lastTime = static_cast<float>(points.last().x());
         time = qMax(time, lastTime);
@@ -495,7 +513,9 @@ bool CMotionTimeline::AddPoint(const CMotionTrack& track, float time, float valu
     points.append(QPointF(time, value));
     segmentTypes.append(0);
     bezierControls.append(QVector<QPointF>());
-    return true;
+    candidate.m_tangents[track].append(TangentState{});
+    if (candidate.HasAuthoringTangents() && !candidate.ValidateEditableState(nullptr)) return false;
+    SwapContent(candidate); return true;
 }
 
 bool CMotionTimeline::ReplaceParameterSamples(const QMap<QString, QVector<QPointF>>& samples, QString* error,
@@ -529,6 +549,7 @@ bool CMotionTimeline::ReplaceParameterSamples(const QMap<QString, QVector<QPoint
             candidate.m_curves.insert(track, *curve);
             candidate.m_segmentTypes.insert(track, QVector<int>(curve->size(), 0));
             candidate.m_bezierControls.insert(track, QVector<QVector<QPointF>>(curve->size()));
+            candidate.m_tangents.insert(track, QVector<TangentState>(curve->size()));
         }
         if (resetFades) {
             auto curves = candidate.m_source.value(QStringLiteral("Curves")).toArray();
@@ -555,7 +576,7 @@ bool CMotionTimeline::ReplaceParameterSamples(const QMap<QString, QVector<QPoint
             meta.insert(QStringLiteral("Duration"), previousDuration);
             candidate.m_source.insert(QStringLiteral("Meta"), meta);
         }
-        if (!candidate.BuildJson(nullptr, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+        if (!candidate.ValidateEditableState(error)) return false;
         SwapContent(candidate);
         return true;
     } catch (const std::exception&) {
@@ -587,6 +608,13 @@ void CMotionTimeline::UnrestrictBezierControls()
             if (SegmentType(curve.key(), index) == 1)
                 controls[index] = canonicalRestrictedControls(controls[index], curve->at(index - 1), curve->at(index));
     }
+    for (auto curve = m_tangents.begin(); curve != m_tangents.end(); ++curve)
+        for (int index = 0; index < curve->size(); ++index) {
+            auto& tangent = (*curve)[index];
+            if (tangent.mode != TangentMode::Aligned && tangent.mode != TangentMode::Flat) continue;
+            if (SegmentType(curve.key(), index) == 1) tangent.incomingFraction = 1.0 / 3;
+            if (SegmentType(curve.key(), index + 1) == 1) tangent.outgoingFraction = 1.0 / 3;
+        }
     auto meta = m_source.value(QStringLiteral("Meta")).toObject();
     meta.insert(QStringLiteral("AreBeziersRestricted"), false);
     m_source.insert(QStringLiteral("Meta"), meta);
@@ -601,7 +629,7 @@ bool CMotionTimeline::ConvertToUnrestricted(QString* error)
     try {
         auto candidate = *this;
         candidate.UnrestrictBezierControls();
-        if (!candidate.BuildJson(nullptr, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+        if (!candidate.ValidateEditableState(error)) return false;
         SwapContent(candidate);
         return true;
     } catch (const std::exception&) { return fail(QStringLiteral("无法转换曲线，原动画保持不变")); }
@@ -614,6 +642,8 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
     if (m_recording) return fail(QStringLiteral("请结束录制后再编辑关键帧"));
     if (request.updates.size() > MaximumPointCount || request.removes.size() > MaximumPointCount ||
         request.insertions.size() > MaximumPointCount || request.segments.size() > MaximumPointCount ||
+        request.tangents.size() > MaximumPointCount || request.handles.size() > MaximumPointCount ||
+        (request.transform && request.transform->selection.size() > MaximumPointCount) ||
         request.updates.size() + request.removes.size() > MaximumPointCount)
         return fail(QStringLiteral("待编辑的关键帧数量超过限制"));
     try {
@@ -626,13 +656,29 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
         };
         QMap<CMotionPointRef, QPointF> updates;
         QMap<CMotionPointRef, SegmentEdit> segments;
-        QSet<CMotionPointRef> removes;
+        QMap<CMotionPointRef, TangentModeEdit> tangentEdits;
+        QMap<CMotionPointRef, HandleEdit> handleEdits;
+        QSet<CMotionPointRef> removes, transformed;
         std::set<CMotionTrack> affected;
         for (const auto& update : request.updates) {
             if (!validRef(update.ref) || !validMotionPoint(update.point) || updates.contains(update.ref))
                 return fail(QStringLiteral("待移动的关键帧已失效、重复或坐标无效"));
             updates.insert(update.ref, update.point);
             affected.insert(update.ref.track);
+        }
+        if (request.transform) {
+            const auto& transform = *request.transform;
+            if (!std::isfinite(transform.timeScale) || transform.timeScale <= 0 || !std::isfinite(transform.valueScale) ||
+                !std::isfinite(transform.pivot.x()) || !std::isfinite(transform.pivot.y()) || !std::isfinite(transform.offset.x()) || !std::isfinite(transform.offset.y()))
+                return fail(QStringLiteral("关键帧仿射变换参数无效"));
+            for (const auto& ref : transform.selection) {
+                if (!validRef(ref) || transformed.contains(ref) || updates.contains(ref)) return fail(QStringLiteral("变换关键点已失效或重复"));
+                const auto original = m_curves[ref.track][ref.index];
+                const QPointF point(transform.pivot.x() + (original.x() - transform.pivot.x()) * transform.timeScale + transform.offset.x(),
+                                    transform.pivot.y() + (original.y() - transform.pivot.y()) * transform.valueScale + transform.offset.y());
+                if (!validMotionPoint(point)) return fail(QStringLiteral("变换后的关键点超出运行时数值范围"));
+                transformed.insert(ref); updates.insert(ref, point); affected.insert(ref.track);
+            }
         }
         for (const auto& ref : request.removes) {
             if (!validRef(ref) || removes.contains(ref) || updates.contains(ref))
@@ -650,6 +696,18 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
             segments.insert(segment.ref, segment);
             affected.insert(segment.ref.track);
         }
+        for (const auto& edit : request.tangents) {
+            if (!validRef(edit.ref) || tangentEdits.contains(edit.ref) || removes.contains(edit.ref) || !ValidateTangent(TangentState{edit.mode}, error) ||
+                (edit.referenceSide && *edit.referenceSide != HandleSide::Incoming && *edit.referenceSide != HandleSide::Outgoing))
+                return fail(QStringLiteral("切线模式请求重复、已失效或无效"));
+            tangentEdits.insert(edit.ref, edit); affected.insert(edit.ref.track);
+        }
+        for (const auto& edit : request.handles) {
+            if (!validRef(edit.ref) || handleEdits.contains(edit.ref) || tangentEdits.contains(edit.ref) || removes.contains(edit.ref) ||
+                (edit.side != HandleSide::Incoming && edit.side != HandleSide::Outgoing) || !validMotionPoint(edit.position))
+                return fail(QStringLiteral("切线手柄请求重复、冲突或无效"));
+            handleEdits.insert(edit.ref, edit); affected.insert(edit.ref.track);
+        }
         QMap<CMotionTrack, QVector<int>> insertions;
         const bool restricted = AreBeziersRestricted();
         for (int index = 0; index < request.insertions.size(); ++index) {
@@ -659,6 +717,7 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
                 (insertion.controls.size() != 0 && insertion.controls.size() != 2) ||
                 (!insertion.controls.isEmpty() && (insertion.segmentType != 1 || !insertion.segmentStart)))
                 return fail(QStringLiteral("待插入的关键帧、插值或控制柄无效"));
+            if (insertion.tangent && !ValidateTangent(*insertion.tangent, error)) return false;
             if (insertion.segmentStart && (!validMotionPoint(*insertion.segmentStart) ||
                 static_cast<float>(insertion.segmentStart->x()) >= static_cast<float>(insertion.point.x())))
                 return fail(QStringLiteral("待插入曲线的起点必须早于终点"));
@@ -696,6 +755,7 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
             QVector<QPointF> points;
             QVector<int> types;
             QVector<QVector<QPointF>> controls;
+            QVector<TangentState> tangents;
             points.reserve(entries.size()); types.reserve(entries.size()); controls.reserve(entries.size());
             float previous = -1;
             for (int index = 0; index < entries.size(); ++index) {
@@ -744,13 +804,75 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
                             return fail(QStringLiteral("插入后 Bézier 控制柄超出数值范围"));
                     }
                 }
-                points.append(entry.point); types.append(type); controls.append(std::move(handles));
+                auto tangent = entry.oldIndex >= 0 ? Tangent(track, entry.oldIndex) : request.insertions[entry.insertion].tangent.value_or(TangentState{});
+                if (request.transform && entry.oldIndex >= 0 && transformed.contains({track, entry.oldIndex}) && tangent.mode == TangentMode::Aligned) {
+                    tangent.slope = (tangent.slope * request.transform->valueScale) / request.transform->timeScale;
+                    if (!ValidateTangent(tangent, error)) return false;
+                }
+                if (request.transform && type == 1 && handles.size() == 2 && entry.oldIndex > 0 && segment == segments.cend()) {
+                    const auto original = BezierControls(track, entry.oldIndex);
+                    for (int handle = 0; handle < 2; ++handle) {
+                        const int owner = entry.oldIndex - (handle == 0 ? 1 : 0);
+                        if (transformed.contains({track, owner})) handles[handle].ry() +=
+                            (request.transform->valueScale - 1) * (original[handle].y() - before[owner].y());
+                        if (!validMotionPoint(handles[handle])) return fail(QStringLiteral("变换后的控制柄超出运行时数值范围"));
+                    }
+                }
+                points.append(entry.point); types.append(type); controls.append(std::move(handles)); tangents.append(tangent);
             }
             if (points.isEmpty()) {
-                candidate.m_curves.remove(track); candidate.m_segmentTypes.remove(track); candidate.m_bezierControls.remove(track);
+                candidate.m_curves.remove(track); candidate.m_segmentTypes.remove(track); candidate.m_bezierControls.remove(track); candidate.m_tangents.remove(track);
             } else {
                 candidate.m_curves.insert(track, std::move(points)); candidate.m_segmentTypes.insert(track, std::move(types));
-                candidate.m_bezierControls.insert(track, std::move(controls));
+                candidate.m_bezierControls.insert(track, std::move(controls)); candidate.m_tangents.insert(track, std::move(tangents));
+            }
+        }
+        for (const auto& edit : tangentEdits) {
+            auto mapped = edit; mapped.ref.index = output.oldToNew[edit.ref.track][edit.ref.index];
+            if (!candidate.EditTangent(mapped, error)) return false;
+        }
+        QSet<CMotionPointRef> segmentTargets;
+        QMap<CMotionPointRef, QVector<QPointF>> suppliedControls;
+        for (const auto& segment : segments) {
+            const CMotionPointRef ref{segment.ref.track, output.oldToNew[segment.ref.track][segment.ref.index]};
+            segmentTargets.insert(ref);
+            if (!segment.controls.isEmpty()) suppliedControls.insert(ref, candidate.BezierControls(ref.track, ref.index));
+        }
+        QSet<CMotionTrack> affectedTracks;
+        for (const auto& track : affected) affectedTracks.insert(track);
+        if (!candidate.ApplyTangentConstraints(affectedTracks, error)) return false;
+        for (auto segment = suppliedControls.cbegin(); segment != suppliedControls.cend(); ++segment) {
+            const auto actual = candidate.BezierControls(segment.key().track, segment.key().index);
+            for (int handle = 0; handle < 2; ++handle) {
+                const int owner = segment.key().index - (handle == 0 ? 1 : 0);
+                if (candidate.Tangent(segment.key().track, owner).mode != TangentMode::Broken &&
+                    (actual[handle].x() != (*segment)[handle].x() || actual[handle].y() != (*segment)[handle].y()))
+                    return fail(QStringLiteral("受切线模式约束的控制柄请通过手柄编辑请求修改"));
+            }
+        }
+        for (const auto& edit : handleEdits) {
+            auto mapped = edit; mapped.ref.index = output.oldToNew[edit.ref.track][edit.ref.index];
+            const int segmentIndex = mapped.ref.index + (edit.side == HandleSide::Outgoing ? 1 : 0);
+            if (segmentTargets.contains({mapped.ref.track, segmentIndex}))
+                return fail(QStringLiteral("同一曲线段不能同时直接编辑插值与手柄"));
+            if (!candidate.EditHandle(mapped, error)) return false;
+        }
+        if (!candidate.ApplyTangentConstraints(affectedTracks, error)) return false;
+        for (const auto& track : affectedTracks) {
+            const auto points = candidate.m_curves.value(track); QVector<int> inverse(points.size(), -1);
+            const auto mapping = output.oldToNew.value(track);
+            for (int old = 0; old < mapping.size(); ++old) if (mapping[old] >= 0) inverse[mapping[old]] = old;
+            for (int index = 0; index < points.size(); ++index) {
+                const int old = inverse[index]; bool changed = old < 0;
+                if (!changed) {
+                    const auto before = m_curves[track][old];
+                    changed = before.x() != points[index].x() || before.y() != points[index].y() || Tangent(track, old) != candidate.Tangent(track, index);
+                    for (auto side : {HandleSide::Incoming, HandleSide::Outgoing}) {
+                        const auto a = TangentHandle({track, old}, side), b = candidate.TangentHandle({track, index}, side);
+                        changed = changed || a.has_value() != b.has_value() || (a && b && (a->x() != b->x() || a->y() != b->y()));
+                    }
+                }
+                if (changed) output.affected.append({track, index});
             }
         }
         const double previousDuration = Timing().duration;
@@ -762,7 +884,9 @@ bool CMotionTimeline::EditPoints(const BatchEdit& request, BatchResult& result, 
         QJsonObject before, after;
         if (!BuildJson(&before, Timing().fps, Loop(), true, error) ||
             !candidate.BuildJson(&after, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
-        output.changed = before != after;
+        QJsonObject authoring;
+        if (candidate.HasAuthoringTangents() && !candidate.SaveState(&authoring, candidate.Loop(), 0, error)) return false;
+        output.changed = before != after || m_tangents != candidate.m_tangents;
         if (output.changed) SwapContent(candidate);
         result = std::move(output);
         return true;
@@ -790,14 +914,8 @@ bool CMotionTimeline::RemovePoint(const CMotionTrack& track, int index)
 
 bool CMotionTimeline::SetSegmentType(const CMotionTrack& track, int pointIndex, int segmentType)
 {
-    if (pointIndex <= 0 || segmentType < 0 || segmentType > 3) return false;
-    auto curve = m_curves.find(track);
-    if (curve == m_curves.end() || pointIndex >= curve->size()) return false;
-    QVector<int>& types = m_segmentTypes[track];
-    types.resize(curve->size());
-    m_bezierControls[track].resize(curve->size());
-    types[pointIndex] = segmentType;
-    return true;
+    BatchEdit request; request.segments.append({{track, pointIndex}, segmentType, {}});
+    BatchResult result; return EditPoints(request, result);
 }
 
 int CMotionTimeline::SegmentType(const CMotionTrack& track, int pointIndex) const
@@ -1029,7 +1147,7 @@ bool CMotionTimeline::SetSource(QJsonObject source, QString* error)
     if (source == m_source) return true;
     CMotionTimeline candidate = *this;
     candidate.m_source = std::move(source);
-    if (!candidate.BuildJson(nullptr, candidate.Timing().fps, candidate.Loop(), true, error)) return false;
+    if (!candidate.ValidateEditableState(error)) return false;
     m_source = std::move(candidate.m_source);
     m_cachedEvents = std::move(candidate.m_cachedEvents);
     m_sortedEvents = std::move(candidate.m_sortedEvents);
@@ -1104,6 +1222,7 @@ int CMotionTimeline::TotalPointCount() const
 
 bool CMotionTimeline::BuildJson(QJsonObject* output, double fps, bool loop, bool draft, QString* error) const
 {
+    if (!ValidateTangentState(error)) return false;
     const double outputFps = finiteFloat(fps) && static_cast<float>(fps) > 0.0f ? fps : 30.0;
     const QJsonArray originals = m_source.value(QStringLiteral("Curves")).toArray();
     QMap<CMotionTrack, QJsonObject> curveFields;
@@ -1346,6 +1465,8 @@ bool CMotionTimeline::LoadJson(const QJsonObject& root, bool draft, QString* err
     m_curves.swap(curves);
     m_segmentTypes.swap(segmentTypes);
     m_bezierControls.swap(bezierControls);
+    m_tangents.clear();
+    for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it) m_tangents.insert(it.key(), QVector<TangentState>(it->size()));
     return true;
 }
 
@@ -1361,8 +1482,21 @@ bool CMotionTimeline::HasAnimation() const
 
 bool CMotionTimeline::HasSameContent(const CMotionTimeline& other) const
 {
-    return m_source == other.m_source && m_curves == other.m_curves &&
-           m_segmentTypes == other.m_segmentTypes && m_bezierControls == other.m_bezierControls;
+    if (m_source != other.m_source || m_segmentTypes != other.m_segmentTypes || m_tangents != other.m_tangents ||
+        m_curves.keys() != other.m_curves.keys() || m_bezierControls.keys() != other.m_bezierControls.keys()) return false;
+    const auto pointsEqual = [](const QVector<QPointF>& first, const QVector<QPointF>& second) {
+        if (first.size() != second.size()) return false;
+        for (qsizetype index = 0; index < first.size(); ++index)
+            if (first[index].x() != second[index].x() || first[index].y() != second[index].y()) return false;
+        return true;
+    };
+    for (auto it = m_curves.cbegin(); it != m_curves.cend(); ++it) if (!pointsEqual(*it, other.m_curves[it.key()])) return false;
+    for (auto it = m_bezierControls.cbegin(); it != m_bezierControls.cend(); ++it) {
+        const auto controls = other.m_bezierControls.constFind(it.key());
+        if (it->size() != controls->size()) return false;
+        for (qsizetype index = 0; index < it->size(); ++index) if (!pointsEqual(it->at(index), controls->at(index))) return false;
+    }
+    return true;
 }
 
 bool CMotionTimeline::SaveState(QJsonObject* state, bool loop, double playhead, QString* error) const
@@ -1373,8 +1507,20 @@ bool CMotionTimeline::SaveState(QJsonObject* state, bool loop, double playhead, 
     }
     QJsonObject motion;
     if (!BuildJson(&motion, Timing().fps, loop, true, error)) return false;
-    const QJsonObject result{{QStringLiteral("version"), 1}, {QStringLiteral("motion"), motion},
-                             {QStringLiteral("playhead"), qBound(0.0, playhead, Timing().duration)}};
+    QJsonObject result{{QStringLiteral("version"), HasAuthoringTangents() ? 2 : 1}, {QStringLiteral("motion"), motion},
+                       {QStringLiteral("playhead"), qBound(0.0, playhead, Timing().duration)}};
+    if (HasAuthoringTangents()) {
+        QJsonArray tracks;
+        for (auto it = m_tangents.cbegin(); it != m_tangents.cend(); ++it) {
+            bool authored = false; for (const auto& tangent : *it) authored = authored || tangent != TangentState{};
+            if (!authored) continue;
+            QJsonArray keys;
+            for (int index = 0; index < it->size(); ++index) if (it->at(index) != TangentState{})
+                keys.append(QJsonObject{{"index", index}, {"state", EncodeTangent(it->at(index))}});
+            tracks.append(QJsonObject{{"target", it.key().TargetName()}, {"id", it.key().id}, {"keys", keys}});
+        }
+        result.insert("tangents", tracks);
+    }
     if (QJsonDocument(result).toJson(QJsonDocument::Compact).size() > maximumMotionBytes) {
         if (error) *error = QStringLiteral("动画草稿过大");
         return false;
@@ -1391,7 +1537,8 @@ bool CMotionTimeline::RestoreState(const QJsonObject& state, float* playhead, QS
         return true;
     }
     const auto time = state.value(QStringLiteral("playhead"));
-    if (state.value(QStringLiteral("version")).toDouble(-1) != 1.0 ||
+    const double version = state.value(QStringLiteral("version")).toDouble(-1);
+    if ((version != 1 && version != 2) || (version == 1 && state.contains("tangents")) ||
         !state.value(QStringLiteral("motion")).isObject() || !time.isDouble() ||
         !finiteFloat(time.toDouble()) || time.toDouble() < 0.0 ||
         QJsonDocument(state).toJson(QJsonDocument::Compact).size() > maximumMotionBytes) {
@@ -1400,6 +1547,46 @@ bool CMotionTimeline::RestoreState(const QJsonObject& state, float* playhead, QS
     }
     CMotionTimeline candidate(m_recordingClock);
     if (!candidate.LoadJson(state.value(QStringLiteral("motion")).toObject(), true, error)) return false;
+    if (version == 2) {
+        const auto keys = state.keys();
+        if (QSet<QString>(keys.cbegin(), keys.cend()) != QSet<QString>{"version", "motion", "playhead", "tangents"} || !state["tangents"].isArray()) {
+            if (error) *error = QStringLiteral("动画切线草稿字段无效"); return false;
+        }
+        QSet<CMotionTrack> seen; const auto tracks = state["tangents"].toArray();
+        if (tracks.size() > MaximumPointCount) { if (error) *error = QStringLiteral("切线轨道数量过多"); return false; }
+        for (const auto& value : tracks) {
+            if (!value.isObject()) { if (error) *error = QStringLiteral("切线轨道不是对象"); return false; }
+            const auto row = value.toObject(); const auto names = row.keys();
+            if (QSet<QString>(names.cbegin(), names.cend()) != QSet<QString>{"target", "id", "keys"} || !row["target"].isString() || !row["id"].isString() || !row["keys"].isArray()) {
+                if (error) *error = QStringLiteral("切线轨道字段无效"); return false;
+            }
+            CMotionTrack track; track.id = row["id"].toString(); const auto target = row["target"].toString();
+            if (target == "Parameter") track.target = CMotionTarget::Parameter;
+            else if (target == "Model") track.target = CMotionTarget::Model;
+            else if (target == "PartOpacity") track.target = CMotionTarget::PartOpacity;
+            else { if (error) *error = QStringLiteral("切线轨道类型无效"); return false; }
+            const auto points = candidate.m_curves.constFind(track); const auto keys = row["keys"].toArray();
+            if (seen.contains(track) || points == candidate.m_curves.cend() || keys.isEmpty() || keys.size() > points->size()) {
+                if (error) *error = QStringLiteral("切线轨道重复或与关键点不匹配"); return false;
+            }
+            seen.insert(track); QVector<TangentState> decoded(points->size()); QSet<int> indices;
+            for (const auto& entry : keys) {
+                if (!entry.isObject()) { if (error) *error = QStringLiteral("切线关键点不是对象"); return false; }
+                const auto key = entry.toObject(); const auto names = key.keys(); const double index = key["index"].toDouble(-1);
+                if (QSet<QString>(names.cbegin(), names.cend()) != QSet<QString>{"index", "state"} || !key["index"].isDouble() ||
+                    !std::isfinite(index) || std::floor(index) != index || index < 0 || index >= points->size() || indices.contains(int(index)) || !key["state"].isObject()) {
+                    if (error) *error = QStringLiteral("切线关键点索引重复或无效"); return false;
+                }
+                TangentState tangent;
+                if (!DecodeTangent(key["state"].toObject(), tangent, error) || tangent == TangentState{}) {
+                    if (error && error->isEmpty()) *error = QStringLiteral("默认切线状态不应重复存储"); return false;
+                }
+                indices.insert(int(index)); decoded[int(index)] = tangent;
+            }
+            candidate.m_tangents.insert(track, std::move(decoded));
+        }
+        if (!candidate.ValidateTangentState(error)) return false;
+    }
     if (time.toDouble() > candidate.Timing().duration) {
         if (error) *error = QStringLiteral("动画播放头超出草稿时长");
         return false;

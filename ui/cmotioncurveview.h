@@ -31,10 +31,10 @@ signals:
     void SelectionTranslated(double timeDelta, double valueDelta);
     void SelectionDragFinished();
     void SelectionDragCanceled();
-    void BezierDragStarted(const CMotionTrack& track, int endIndex);
-    void BezierControlsEdited(const CMotionTrack& track, int endIndex, const QVector<QPointF>& controls);
-    void BezierDragFinished();
-    void BezierDragCanceled();
+    void TangentDragStarted(CMotionPointRef key, CMotionTimeline::HandleSide side, bool linkForGesture);
+    void TangentHandleEdited(CMotionPointRef key, CMotionTimeline::HandleSide side, QPointF position);
+    void TangentDragFinished();
+    void TangentDragCanceled();
     void PointSelected(const CMotionTrack& track, int pointIndex);
     void PointEdited(const CMotionTrack& track, int pointIndex, float time, float value);
     void EditStarted();
@@ -81,7 +81,8 @@ private:
         double fps = 30;
         int control = -1;
         Qt::KeyboardModifiers modifiers;
-        bool restricted = false;
+        bool restricted = false, moveValue = true, linkForGesture = false;
+        CMotionTimeline::HandleSide side = CMotionTimeline::HandleSide::Incoming;
         std::optional<double> previousTime, nextTime;
     };
     std::optional<Gesture> m_gesture;
@@ -94,6 +95,7 @@ private:
     void rebuildEventMarkers();
     const EventMarker* hitEvent(const QPointF& position) const;
     QString eventToolTip(const EventMarker& marker) const;
+    QString controlToolTip(const CMotionPointRef& segment, int control, bool* movable = nullptr) const;
     bool valueRange(double* minimum, double* maximum) const;
     bool projection(Projection& result) const;
     bool validPoint(const CMotionPointRef& point) const;

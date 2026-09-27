@@ -390,7 +390,7 @@ bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
                 _clearedMaskBufferFlags[clipContext->_bufferIndex] = true;
             }
             renderer->SetClippingContextBufferForMask(clipContext);
-            if (!renderer->DrawMeshOpenGL(model, clipDrawIndex,LAppDelegate::GetInstance()->m_IsPrintALl)) return false;
+            if (!renderer->DrawMeshOpenGL(model, clipDrawIndex, renderer->IncludeHiddenForPass())) return false;
         }
     }
 
@@ -638,7 +638,7 @@ void CubismRenderer_OpenGLES2::PreDraw()
     glColorMask(1, 1, 1, 1);
 
     //異方性フィルタリング。プラットフォームのOpenGLによっては未対応の場合があるので、未設定のときは設定しない
-    if (GetAnisotropy() > 0.0f)
+    if (!_snapshotScene && GetAnisotropy() > 0.0f)
     {
         for (auto texture = _textures.Begin(); texture != _textures.End(); ++texture)
         {
@@ -670,7 +670,7 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
         if (!MaskSourceAvailable(clipDrawIndex)) continue;
         IsCulling(GetModel()->GetDrawableCulling(clipDrawIndex) != 0);
         SetClippingContextBufferForMask(clipContext);
-        if (!DrawMeshOpenGL(*GetModel(), clipDrawIndex, LAppDelegate::GetInstance()->m_IsPrintALl)) return false;
+        if (!DrawMeshOpenGL(*GetModel(), clipDrawIndex, IncludeHiddenForPass())) return false;
     }
     if (!surface->EndDraw()) return false;
     drawing = false;
@@ -700,6 +700,25 @@ bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QStri
                         false, true)) return false;
     }
     return delegate->read.UpdateFrame();
+}
+
+bool CubismRenderer_OpenGLES2::IncludeHiddenForPass() const
+{
+    return !_snapshotScene && LAppDelegate::GetInstance()->m_IsPrintALl;
+}
+
+bool CubismRenderer_OpenGLES2::DrawSnapshotModel(const SnapshotScene& scene, QString* error)
+{
+    if (error) error->clear();
+    if (_snapshotScene || _psdExport || IsDrawing() || !GetModel() || !GetModel()->HasFiniteDrawableState())
+        return PreparationFailed(error, QStringLiteral("独立模型帧尚未就绪"));
+    for (float opacity : scene.opacity)
+        if (!std::isfinite(opacity) || opacity < 0 || opacity > 1)
+            return PreparationFailed(error, QStringLiteral("独立模型帧透明度无效"));
+    _snapshotScene = &scene;
+    const auto restore = qScopeGuard([this] { _snapshotScene = nullptr; });
+    InvalidateTextureMapping();
+    return DrawModel() || PreparationFailed(error, QStringLiteral("无法绘制独立模型帧"));
 }
 
 csmBool CubismRenderer_OpenGLES2::DoDrawModel()
@@ -741,22 +760,29 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
         }
     }
 
-    auto* delegate = LAppDelegate::GetInstance();
-    const bool offscreen = delegate->IsOffScreen();
+    auto* delegate = _snapshotScene ? nullptr : LAppDelegate::GetInstance();
+    const bool offscreen = delegate && delegate->IsOffScreen();
     if (offscreen && (!delegate->GetCPsdWriteList() || !delegate->read.PreDraw())) return false;
     PreDraw();
     const csmInt32 drawableCount = GetModel()->GetDrawableCount();
-    const QVector<int> drawableOrder = GetModel()->GetSortedDrawableIndices(
-        delegate->m_drawableDrawOrderOverrides, delegate->m_drawableOrderGroupIndices, delegate->m_drawOrderGroups);
+    const auto& orderOverrides = _snapshotScene ? _snapshotScene->drawOrder : delegate->m_drawableDrawOrderOverrides;
+    const auto& orderGroups = _snapshotScene ? _snapshotScene->orderGroups : delegate->m_drawableOrderGroupIndices;
+    const auto& groups = _snapshotScene ? _snapshotScene->groups : delegate->m_drawOrderGroups;
+    const auto& opacities = _snapshotScene ? _snapshotScene->opacity : delegate->m_drawableOpacityOverrides;
+    const auto hidden = _snapshotScene ? _snapshotScene->hiddenDrawables
+        : delegate->m_hiddenDrawables | delegate->m_hiddenDeformerDrawables;
+    const bool includeHidden = IncludeHiddenForPass();
+    const QVector<int> drawableOrder = GetModel()->GetSortedDrawableIndices(orderOverrides, orderGroups, groups);
+    if (drawableOrder.size() != drawableCount) return false;
     _sortedDrawableIndexList.Resize(drawableCount);
     for (csmInt32 i = 0; i < drawableCount; ++i) _sortedDrawableIndexList[i] = drawableOrder[i];
     QStringList names;
-    for (int index : drawableOrder) {
+    if (!_snapshotScene) for (int index : drawableOrder) {
         const auto id = GetModel()->GetDrawableId(index);
         if (id) names.append(QString::fromUtf8(id->GetString().GetRawString()));
     }
-    GetModel()->GetMeshMap()->SetRenderOrder(names);
-    if (const QWidget* window = delegate->GetWindow()) {
+    if (!_snapshotScene) GetModel()->GetMeshMap()->SetRenderOrder(names);
+    if (const QWidget* window = _snapshotScene ? nullptr : delegate->GetWindow()) {
         QMetaObject::invokeMethod(const_cast<QWidget*>(window), "PublishRenderOrder",
                                   Qt::DirectConnection, Q_ARG(QStringList, names));
     }
@@ -771,8 +797,8 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
         if (!DrawHighPrecisionMask(clipContext)) return false;
         SetClippingContextBufferForDraw(clipContext);
         IsCulling(GetModel()->GetDrawableCulling(drawableIndex) != 0);
-        const csmFloat32 opacityOverride = delegate->m_drawableOpacityOverrides.value(drawName, -1.0f);
-        if (!DrawMeshOpenGL(*GetModel(), drawableIndex, delegate->m_IsPrintALl, opacityOverride)) return false;
+        const csmFloat32 opacityOverride = opacities.value(drawName, -1.0f);
+        if (!DrawMeshOpenGL(*GetModel(), drawableIndex, includeHidden, opacityOverride)) return false;
         return !offscreen || WritePsdLayer(drawableIndex, drawName, opacityOverride, clipContext != nullptr);
     };
 
@@ -793,20 +819,20 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
                 continue;
             }
             const csmInt32 index = order[i].first;
-            if (!delegate->m_IsPrintALl && !GetModel()->GetDrawableDynamicFlagIsVisible(index)) continue;
+            if (!includeHidden && !GetModel()->GetDrawableDynamicFlagIsVisible(index)) continue;
             const QString name(GetModel()->GetDrawableId(index)->GetString().GetRawString());
-            if (delegate->m_hiddenDrawables.contains(name) || delegate->m_hiddenDeformerDrawables.contains(name)) continue;
+            if (hidden.contains(name)) continue;
             if (!drawDrawable(index, name)) return false;
         }
     } else {
         for (csmInt32 i = 0; i < drawableCount; ++i) {
             const csmInt32 index = _sortedDrawableIndexList[i];
             const QString name(GetModel()->GetDrawableId(index)->GetString().GetRawString());
-            if (delegate->m_hiddenDrawables.contains(name) || delegate->m_hiddenDeformerDrawables.contains(name)) continue;
-            if (!delegate->m_IsPrintALl && !GetModel()->GetDrawableDynamicFlagIsVisible(index)) continue;
+            if (hidden.contains(name)) continue;
+            if (!includeHidden && !GetModel()->GetDrawableDynamicFlagIsVisible(index)) continue;
             if (!drawDrawable(index, name)) return false;
         }
-        if (!offscreen) {
+        if (!offscreen && !_snapshotScene) {
             for (csmInt32 i = 0; i < drawableCount; ++i) {
                 const QString name(GetModel()->GetDrawableId(i)->GetString().GetRawString());
                 if (delegate->m_hiddenDrawables.contains(name) || delegate->m_hiddenDeformerDrawables.contains(name)) continue;
@@ -837,7 +863,7 @@ bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
     const int vertexCount = model.GetDrawableVertexCount(index);
     const int indexCount = model.GetDrawableVertexIndexCount(index);
     const float* positions = model.GetDrawableVertices(index);
-    auto* delegate = _psdExport ? nullptr : LAppDelegate::GetInstance();
+    auto* delegate = _psdExport || _snapshotScene ? nullptr : LAppDelegate::GetInstance();
     if (delegate && delegate->m_isDraggingDeformer && !delegate->IsOffScreen()) {
         const auto saved = delegate->m_savedVertices.constFind(index);
         if (saved != delegate->m_savedVertices.cend()) {
@@ -857,7 +883,7 @@ bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
     if (generatingMask) {
         if (!shader->SetupShaderProgramForMask(this, model, index)) return false;
     } else if (!shader->SetupShaderProgramForDraw(this, model, index, IsAll, opacityOverride,
-        (_psdExport || delegate->IsOffScreen()) ? CubismShader_OpenGLES2::DrawMode::IsolatedPsdLayer : CubismShader_OpenGLES2::DrawMode::Preview)) {
+        (_psdExport || (delegate && delegate->IsOffScreen())) ? CubismShader_OpenGLES2::DrawMode::IsolatedPsdLayer : CubismShader_OpenGLES2::DrawMode::Preview)) {
         return false;
     }
     if (!mesh->Draw(GL_TRIANGLES)) return false;

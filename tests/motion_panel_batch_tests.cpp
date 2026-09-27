@@ -10,6 +10,10 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QComboBox>
 #include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QMimeData>
@@ -17,6 +21,7 @@
 #include <QTableView>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolBar>
 #include <QUndoStack>
 #include <QScrollBar>
 #include <QScrollArea>
@@ -275,10 +280,11 @@ private slots:
         QCOMPARE(panel.Timeline().SegmentType(parameter("A"), 1), 1);
         const auto before = panel.Timeline();
         auto* view = panel.findChild<CMotionCurveView*>();
-        emit view->BezierDragStarted(parameter("A"), 1);
-        emit view->BezierControlsEdited(parameter("A"), 1, {{.5, 8}, {1.5, -8}});
-        emit view->BezierDragFinished();
-        QCOMPARE(panel.Timeline().BezierControls(parameter("A"), 1), QVector<QPointF>({{.5, 8}, {1.5, -8}}));
+        emit view->TangentDragStarted({parameter("A"), 0}, CMotionTimeline::HandleSide::Outgoing, false);
+        emit view->TangentHandleEdited({parameter("A"), 0}, CMotionTimeline::HandleSide::Outgoing, {.5, 8});
+        emit view->TangentDragFinished();
+        QCOMPARE(panel.Timeline().BezierControls(parameter("A"), 1).first(), QPointF(.5, 8));
+        QCOMPARE(panel.Timeline().BezierControls(parameter("A"), 1).last(), before.BezierControls(parameter("A"), 1).last());
         panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(before));
         panel.UndoTimeline(); QCOMPARE(panel.Timeline().SegmentType(parameter("A"), 1), 0);
     }
@@ -309,12 +315,261 @@ private slots:
         select(panel, {{parameter("A"), 10}, {parameter("A"), 11}, {parameter("A"), 12}});
         panel.findChild<QAction*>("motionInterpolation1")->trigger();
         QVERIFY(panel.findChild<QToolButton*>("pasteMotionKeys")->isEnabled());
+        auto* toolbar = panel.findChild<QToolBar*>("motionKeyframeTools");
+        auto* tangent = qobject_cast<QToolButton*>(toolbar->widgetForAction(panel.findChild<QAction*>("motionTangentMode")));
+        QTRY_VERIFY(tangent->isVisible() && tangent->width() >= tangent->sizeHint().width());
+        auto* onion = toolbar->widgetForAction(panel.findChild<QAction*>("motionOnionSkin"));
+        QTRY_VERIFY(onion->isVisible() && onion->width() >= onion->sizeHint().width());
         const QImage image = panel.grab().toImage(); QVERIFY(!image.isNull());
         const QString folder = qEnvironmentVariable("LIVE2D_MOTION_UI_OUTPUT");
         if (!folder.isEmpty()) {
             QVERIFY(QDir().mkpath(folder));
             QVERIFY(image.save(QDir(folder).filePath(QString("%1-%2.png").arg(dark ? "dark" : "light").arg(width))));
         }
+        panel.hide(); qApp->setStyleSheet({});
+    }
+
+
+    void tangentModesShowMixedAndSkipLinearKeys()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state()));
+        select(panel, {{parameter("A"), 1}}); panel.findChild<QAction*>("motionInterpolation1")->trigger();
+        const auto before = panel.Timeline();
+        select(panel, {{parameter("A"), 0}, {parameter("B"), 0}});
+        auto* action = panel.findChild<QAction*>("motionTangentMode"); QVERIFY(action->isEnabled());
+        panel.findChild<QAction*>("motionTangentMode2")->trigger();
+        QCOMPARE(panel.Timeline().Tangent(parameter("A"), 0).mode, CMotionTimeline::TangentMode::Flat);
+        QCOMPARE(panel.Timeline().Tangent(parameter("B"), 0).mode, CMotionTimeline::TangentMode::Broken);
+        QVERIFY(action->text().contains(QStringLiteral("混合")));
+        for (int mode = 0; mode < 4; ++mode) QVERIFY(!panel.findChild<QAction*>(QString("motionTangentMode%1").arg(mode))->isChecked());
+        auto* model = panel.findChild<CMotionKeyModel*>(); QVERIFY(model);
+        const auto cell = model->index(model->RowFor({parameter("A"), 0}), 4);
+        QVERIFY(!(model->flags(cell) & Qt::ItemIsEditable)); QCOMPARE(model->data(cell).toString(), QStringLiteral("水平"));
+        panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(before));
+        panel.RedoTimeline(); QCOMPARE(panel.Timeline().Tangent(parameter("A"), 0).mode, CMotionTimeline::TangentMode::Flat);
+        select(panel, {{parameter("A"), 1}}); panel.findChild<QAction*>("motionInterpolation0")->trigger();
+        select(panel, {{parameter("A"), 0}}); QVERIFY(!action->isEnabled());
+        QVERIFY(model->data(model->index(model->RowFor({parameter("A"), 0}), 4)).toString().contains(QStringLiteral("待用")));
+    }
+
+    void automaticHandleGestureRestoresModeAndOneHistory_data()
+    {
+        QTest::addColumn<int>("ending");
+        QTest::newRow("no-op") << 0; QTest::newRow("return-origin") << 1;
+        QTest::newRow("cancel") << 2; QTest::newRow("commit") << 3;
+    }
+    void automaticHandleGestureRestoresModeAndOneHistory()
+    {
+        QFETCH(int, ending); CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state()));
+        select(panel, {{parameter("A"), 1}}); panel.findChild<QAction*>("motionInterpolation1")->trigger();
+        select(panel, {{parameter("A"), 0}}); panel.findChild<QAction*>("motionTangentMode3")->trigger(); panel.MarkTimelineSaved();
+        const auto before = panel.Timeline(); auto* history = panel.findChild<QUndoStack*>(); const int count = history->count();
+        auto* view = panel.findChild<CMotionCurveView*>(); const CMotionPointRef key{parameter("A"), 0};
+        const auto side = CMotionTimeline::HandleSide::Outgoing; const auto anchor = *before.TangentHandle(key, side);
+        emit view->TangentDragStarted(key, side, false);
+        if (ending) {
+            emit view->TangentHandleEdited(key, side, anchor + QPointF(0, 1));
+            QCOMPARE(panel.Timeline().Tangent(key.track, key.index).mode, CMotionTimeline::TangentMode::Aligned);
+            emit view->TangentHandleEdited(key, side, anchor + QPointF(0, 2));
+            QCOMPARE(*panel.Timeline().TangentHandle(key, side), anchor + QPointF(0, 2));
+        }
+        if (ending <= 1) emit view->TangentHandleEdited(key, side, anchor);
+        if (ending == 2) emit view->TangentDragCanceled(); else emit view->TangentDragFinished();
+        QCOMPARE(history->count(), count + int(ending == 3));
+        if (ending == 3) { QVERIFY(panel.HasUnsavedTimelineChanges()); panel.UndoTimeline(); }
+        QVERIFY(panel.Timeline().HasSameContent(before)); QVERIFY(!panel.HasUnsavedTimelineChanges());
+    }
+
+
+    void restrictedNumbersLockTimeAndExplicitConversionPreservesSamples()
+    {
+        auto saved = state(); auto motion = saved["motion"].toObject(); auto meta = motion["Meta"].toObject(); meta["AreBeziersRestricted"] = true; motion["Meta"] = meta; saved["motion"] = motion;
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(saved)); select(panel, {{parameter("A"), 1}}); panel.findChild<QAction*>("motionInterpolation1")->trigger();
+        select(panel, {{parameter("A"), 0}}); const auto before = panel.Timeline();
+        QTimer::singleShot(0, &panel, [&] {
+            auto* dialog = panel.findChild<QDialog*>("motionTangentValues"); QVERIFY(dialog);
+            QVERIFY(dialog->findChild<QLineEdit*>("motionHandleTime")->isReadOnly());
+            QVERIFY(!dialog->findChild<QLineEdit*>("motionHandleValue")->isReadOnly()); dialog->reject();
+        });
+        panel.findChild<QAction*>("motionTangentNumbers")->trigger(); QVERIFY(panel.Timeline().HasSameContent(before));
+        auto* convert = panel.findChild<QAction*>("motionConvertUnrestricted"); QVERIFY(convert->isEnabled()); convert->trigger();
+        QVERIFY(!panel.Timeline().AreBeziersRestricted());
+        for (int i = 0; i <= 20; ++i) QCOMPARE(panel.Timeline().Evaluate("A", i * .1f), before.Evaluate("A", i * .1f));
+        panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(before));
+    }
+
+
+    void flatHandleCannotCollapseOntoItsKeyInDragOrNumericEditor()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state())); select(panel, {{parameter("A"), 1}});
+        panel.findChild<QAction*>("motionInterpolation1")->trigger(); select(panel, {{parameter("A"), 0}});
+        panel.findChild<QAction*>("motionTangentMode2")->trigger(); panel.MarkTimelineSaved(); const auto before = panel.Timeline();
+        auto* view = panel.findChild<CMotionCurveView*>(); const CMotionPointRef key{parameter("A"), 0}; const auto side = CMotionTimeline::HandleSide::Outgoing;
+        const int count = panel.findChild<QUndoStack*>()->count(); emit view->TangentDragStarted(key, side, false);
+        emit view->TangentHandleEdited(key, side, {0, 0}); QVERIFY(panel.Timeline().HasSameContent(before));
+        QVERIFY(!panel.findChild<QLabel*>("motionTimelineStatus")->text().isEmpty()); emit view->TangentDragFinished();
+        QCOMPARE(panel.findChild<QUndoStack*>()->count(), count); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QTRY_VERIFY(panel.findChild<QAction*>("motionTangentNumbers")->isEnabled());
+        QTimer::singleShot(0, &panel, [&] {
+            auto* dialog = panel.findChild<QDialog*>("motionTangentValues"); QVERIFY(dialog);
+            auto* time = dialog->findChild<QLineEdit*>("motionHandleTime"); auto* value = dialog->findChild<QLineEdit*>("motionHandleValue");
+            QVERIFY(!time->isReadOnly()); QVERIFY(value->isReadOnly()); auto* buttons = dialog->findChild<QDialogButtonBox*>();
+            time->setText("0"); buttons->button(QDialogButtonBox::Ok)->click(); QVERIFY(dialog->isVisible()); QCOMPARE(time->text(), QString("0"));
+            QVERIFY(panel.Timeline().HasSameContent(before)); QVERIFY(!dialog->findChild<QLabel*>("motionHandleStatus")->text().isEmpty());
+            time->setText(".4"); buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        panel.findChild<QAction*>("motionTangentNumbers")->trigger();
+        QCOMPARE(panel.Timeline().Tangent(key.track, key.index).mode, CMotionTimeline::TangentMode::Flat);
+        QCOMPARE(*panel.Timeline().TangentHandle(key, side), QPointF(.4, 0)); QCOMPARE(panel.findChild<QUndoStack*>()->count(), count + 1);
+        panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(before));
+    }
+
+    void motionExportKeepsAuthoringBaselineUntilSessionSaved()
+    {
+        QTemporaryDir folder; CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state()));
+        select(panel, {{parameter("A"), 1}}); panel.findChild<QAction*>("motionInterpolation1")->trigger(); panel.MarkTimelineSaved();
+        const auto baseline = panel.Timeline(); select(panel, {{parameter("A"), 0}});
+        panel.findChild<QAction*>("motionTangentMode1")->trigger(); QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.SaveTimeline(folder.filePath("author.motion3.json"))); QVERIFY(panel.HasUnsavedTimelineChanges());
+        panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(baseline)); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.RedoTimeline(); panel.MarkTimelineSaved(); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.SaveTimeline(folder.filePath("saved.motion3.json"))); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        panel.findChild<QAction*>("motionTangentMode0")->trigger(); QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.SaveTimeline(folder.filePath("broken.motion3.json"))); QVERIFY(!panel.HasUnsavedTimelineChanges());
+        CMotionTimeline reimported; QVERIFY(reimported.Load(folder.filePath("author.motion3.json"))); QVERIFY(!reimported.HasAuthoringTangents());
+    }
+
+    void tangentNumberDialogRetainsInvalidDraftAndUsesScientificInput()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state()));
+        select(panel, {{parameter("A"), 1}}); panel.findChild<QAction*>("motionInterpolation1")->trigger();
+        select(panel, {{parameter("A"), 0}}); const int count = panel.findChild<QUndoStack*>()->count();
+        QTimer::singleShot(0, &panel, [&] {
+            auto* dialog = panel.findChild<QDialog*>("motionTangentValues"); QVERIFY(dialog);
+            auto* value = dialog->findChild<QLineEdit*>("motionHandleValue"); auto* buttons = dialog->findChild<QDialogButtonBox*>();
+            value->setText("nan"); buttons->button(QDialogButtonBox::Ok)->click(); QVERIFY(dialog->isVisible()); QCOMPARE(value->text(), QString("nan"));
+            QVERIFY(!dialog->findChild<QLabel*>("motionHandleStatus")->text().isEmpty());
+            value->setText("4.125e1"); buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        panel.findChild<QAction*>("motionTangentNumbers")->trigger();
+        QCOMPARE(panel.Timeline().TangentHandle({parameter("A"), 0}, CMotionTimeline::HandleSide::Outgoing)->y(), 41.25);
+        QCOMPARE(panel.findChild<QUndoStack*>()->count(), count + 1);
+    }
+
+    void onionCaptureIsReadOnlyAndReusesFrozenTimelineAcrossSeek()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state())); panel.findChild<QAction*>("motionOnionSkin")->setChecked(true);
+        QCoreApplication::processEvents(); const auto before = panel.Timeline(); const auto revision = panel.TimelineRevision();
+        QSignalSpy changes(&panel, &CMotionPanel::MotionTimelineChanged), requests(&panel, &CMotionPanel::OnionSkinRequestChanged);
+        live2dstruct::COnionSkin::Request first, second; QVERIFY(panel.CaptureOnionSkinRequest(first)); QVERIFY(first.timeline.IsValid());
+        for (int index = 0; index < 20; ++index) { QVERIFY(panel.CaptureOnionSkinRequest(second)); QCOMPARE(second.timeline.Fingerprint(), first.timeline.Fingerprint()); }
+        QCOMPARE(changes.size(), 0); QCOMPARE(requests.size(), 0); QCOMPARE(panel.TimelineRevision(), revision); QVERIFY(panel.Timeline().HasSameContent(before));
+        panel.findChild<QSlider*>("motionTimelinePlayhead")->setValue(500);
+        QVERIFY(panel.CaptureOnionSkinRequest(second)); QVERIFY(second.time > first.time); QCOMPARE(second.timeline.Fingerprint(), first.timeline.Fingerprint());
+        QVERIFY(panel.AddTimelinePoint(parameter("A"), 1, 7)); QVERIFY(panel.CaptureOnionSkinRequest(second));
+        QVERIFY(second.timeline.Fingerprint() != first.timeline.Fingerprint());
+    }
+
+    void onionSuspendsForDraftGestureAndTransportWithoutFinishingThem()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state())); panel.findChild<QAction*>("motionOnionSkin")->setChecked(true);
+        auto* model = panel.findChild<CMotionKeyModel*>(); auto* view = panel.findChild<CMotionCurveView*>(); live2dstruct::COnionSkin::Request request;
+        const auto index = model->index(model->RowFor({parameter("A"), 0}), 0); QVERIFY(!model->setData(index, "invalid"));
+        QVERIFY(panel.CaptureOnionSkinRequest(request)); QVERIFY(request.suspended); QCOMPARE(model->data(index, Qt::EditRole).toString(), QString("invalid"));
+        QVERIFY(model->setData(index, "0")); select(panel, {{parameter("A"), 0}});
+        emit view->SelectionDragStarted({{parameter("A"), 0}}); emit view->SelectionTranslated(.25, 1);
+        const auto draft = panel.Timeline(); const auto count = panel.findChild<QUndoStack*>()->count();
+        QVERIFY(panel.CaptureOnionSkinRequest(request)); QVERIFY(request.suspended); QVERIFY(panel.Timeline().HasSameContent(draft)); QCOMPARE(panel.findChild<QUndoStack*>()->count(), count);
+        emit view->SelectionDragCanceled(); CMotionPanel::PreviewTransportLease lease; QVERIFY(panel.SuspendPreviewTransport(lease));
+        QVERIFY(panel.CaptureOnionSkinRequest(request)); QVERIFY(request.suspended); QVERIFY(panel.IsPreviewTransportSuspended());
+        QVERIFY(panel.ResumePreviewTransport(lease)); QVERIFY(panel.CaptureOnionSkinRequest(request)); QVERIFY(!request.suspended);
+        CMotionPanel empty; empty.findChild<QAction*>("motionOnionSkin")->setChecked(true); QString error;
+        QVERIFY(empty.CaptureOnionSkinRequest(request, &error)); QVERIFY(error.isEmpty()); QVERIFY(request.suspended); QVERIFY(!request.timeline.IsValid());
+    }
+
+
+    void onionCaptureDoesNotCommitAnOpenValidCellEditor()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state())); panel.findChild<QAction*>("motionOnionSkin")->setChecked(true);
+        auto* table = panel.findChild<QTableView*>("motionTimelineTable"); auto* model = panel.findChild<CMotionKeyModel*>();
+        const auto before = panel.Timeline(); const auto index = model->index(model->RowFor({parameter("A"), 0}), 2);
+        table->edit(index); auto* editor = table->findChild<QLineEdit*>(); QVERIFY(editor); editor->setText("1.2345e1");
+        live2dstruct::COnionSkin::Request request; QVERIFY(panel.CaptureOnionSkinRequest(request)); QVERIFY(request.suspended);
+        QCOMPARE(editor->text(), QString("1.2345e1")); QVERIFY(panel.Timeline().HasSameContent(before)); QCOMPARE(panel.findChild<QUndoStack*>()->count(), 0);
+        QTest::keyClick(editor, Qt::Key_Escape);
+    }
+
+    void tangentCallbacksMayDestroyThePanel_data()
+    {
+        QTest::addColumn<int>("stage"); QTest::newRow("mode") << 0; QTest::newRow("press") << 1; QTest::newRow("move") << 2;
+    }
+    void tangentCallbacksMayDestroyThePanel()
+    {
+        QFETCH(int, stage); QPointer<CMotionPanel> panel = new CMotionPanel; QVERIFY(panel->RestoreTimelineState(state()));
+        select(*panel, {{parameter("A"), 1}}); panel->findChild<QAction*>("motionInterpolation1")->trigger(); select(*panel, {{parameter("A"), 0}});
+        QPointer<CMotionCurveView> view = panel->findChild<CMotionCurveView*>(); const CMotionPointRef key{parameter("A"), 0}; const auto side = CMotionTimeline::HandleSide::Outgoing;
+        if (stage == 1) connect(panel, &CMotionPanel::TimelineActivated, this, [&] { delete panel; });
+        else connect(panel, &CMotionPanel::MotionTimelineChanged, this, [&] { delete panel; });
+        if (stage == 0) panel->findChild<QAction*>("motionTangentMode2")->trigger();
+        else {
+            emit view->TangentDragStarted(key, side, false);
+            if (stage == 2) emit view->TangentHandleEdited(key, side, {.5, 5});
+        }
+        QVERIFY(!panel); QVERIFY(!view); QCoreApplication::processEvents();
+    }
+
+    void onionSettingsStayInLayoutAndRejectMalformedValues()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state())); const auto before = panel.Timeline();
+        panel.findChild<QAction*>("motionOnionSkin")->setChecked(true); panel.findChild<QSpinBox*>("motionOnionBefore")->setValue(4);
+        panel.findChild<QSpinBox*>("motionOnionAfter")->setValue(0); panel.findChild<QSpinBox*>("motionOnionInterval")->setValue(13);
+        panel.findChild<QDoubleSpinBox*>("motionOnionBeforeOpacity")->setValue(37.4);
+        panel.findChild<QCheckBox*>("motionOnionDuringPlayback")->setChecked(true);
+        live2dstruct::COnionSkin::Request expected, actual; QVERIFY(panel.CaptureOnionSkinRequest(expected));
+        CMotionPanel restored; restored.RestoreLayout(panel.SaveLayout()); QVERIFY(restored.CaptureOnionSkinRequest(actual)); QCOMPARE(actual.settings, expected.settings);
+        QVERIFY(panel.Timeline().HasSameContent(before)); QVERIFY(!panel.HasUnsavedTimelineChanges()); QCOMPARE(panel.findChild<QUndoStack*>()->count(), 0);
+        auto malformed = QJsonDocument::fromJson(panel.SaveLayout()).object(); auto options = malformed["onion"].toObject(); options["before"] = 1.5; malformed["onion"] = options;
+        restored.RestoreLayout(QJsonDocument(malformed).toJson()); QVERIFY(restored.CaptureOnionSkinRequest(actual)); QCOMPARE(actual.settings, live2dstruct::COnionSkin::Settings{});
+    }
+
+    void onionStatusReportsActualTimesAndIgnoresOlderGeneration()
+    {
+        CMotionPanel panel; panel.findChild<QAction*>("motionOnionSkin")->setChecked(true);
+        live2dstruct::COnionSkin::Status status; status.state = decltype(status.state)::Ready; status.generation = 7;
+        status.sampleTimes = {.1, .2}; status.omitted = 3; status.reducedResolution = true; status.renderedSize = {640, 360};
+        panel.SetOnionSkinStatus(status); auto* label = panel.findChild<QLabel*>("motionOnionStatus");
+        QVERIFY(label->text().contains("0.1s")); QVERIFY(label->text().contains("0.2s")); QVERIFY(label->text().contains("640")); QVERIFY(label->text().contains(QStringLiteral("省略 3")));
+        const auto previous = label->text(); status.generation = 6; status.state = decltype(status.state)::Failed; status.message = "stale failure";
+        panel.SetOnionSkinStatus(status); QCOMPARE(label->text(), previous);
+        QPointer<CMotionPanel> pending = new CMotionPanel; pending->findChild<QAction*>("motionOnionSkin")->setChecked(true); delete pending; QCoreApplication::processEvents(); QVERIFY(!pending);
+    }
+
+
+    void onionControlsWrapAndRemainReachable_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::addColumn<int>("width");
+        for (bool dark : {false, true}) for (int width : {520, 900})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(dark ? "dark" : "light").arg(width))) << dark << width;
+    }
+    void onionControlsWrapAndRemainReachable()
+    {
+        QFETCH(bool, dark); QFETCH(int, width); qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(state())); select(panel, {{parameter("A"), 1}});
+        panel.findChild<QAction*>("motionInterpolation1")->trigger(); select(panel, {{parameter("A"), 0}});
+        panel.findChild<QAction*>("motionTangentMode3")->trigger(); panel.findChild<QAction*>("motionOnionSkin")->setChecked(true);
+        panel.findChild<QAction*>("motionOnionSettings")->setChecked(true);
+        live2dstruct::COnionSkin::Status status; status.state = decltype(status.state)::Suspended; status.message = QStringLiteral("请在主画布选择时间轴帧，随后显示实际采样结果"); panel.SetOnionSkinStatus(status);
+        panel.resize(width, 740); panel.show(); QTest::qWait(30);
+        auto* scroll = panel.findChild<QScrollArea*>("motionWorkspaceScroll"); auto* controls = panel.findChild<QWidget*>("motionOnionSettingsPanel");
+        QVERIFY(controls->isVisible()); QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0); QCOMPARE(panel.width(), width);
+        for (const char* name : {"motionOnionBefore", "motionOnionAfter", "motionOnionInterval", "motionOnionBeforeOpacity", "motionOnionAfterOpacity", "motionOnionDuringPlayback"}) {
+            auto* input = panel.findChild<QWidget*>(name); QVERIFY(input); scroll->ensureWidgetVisible(input); QCoreApplication::processEvents();
+            const auto rect = QRect(input->mapTo(scroll->viewport(), QPoint()), input->size());
+            QVERIFY2(scroll->viewport()->rect().contains(rect), name); QVERIFY(input->focusPolicy() != Qt::NoFocus);
+        }
+        scroll->ensureWidgetVisible(controls, 0, 0); QTest::qWait(30);
+        const QString folder = qEnvironmentVariable("LIVE2D_MOTION_UI_OUTPUT");
+        if (!folder.isEmpty()) { QVERIFY(QDir().mkpath(folder)); QVERIFY(panel.grab().save(QDir(folder).filePath(QString("onion-%1-%2.png").arg(dark ? "dark" : "light").arg(width)))); }
         panel.hide(); qApp->setStyleSheet({});
     }
 

@@ -271,22 +271,22 @@ private slots:
     {
         QFETCH(bool, restricted); CMotionTimeline timeline; QVERIFY(bezier(timeline, restricted));
         const CMotionTrack track{CMotionTarget::Parameter, "A"};
-        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetSelectedPoints({{track, 1}}); view.show();
-        QSignalSpy started(&view, &CMotionCurveView::BezierDragStarted);
-        QSignalSpy edited(&view, &CMotionCurveView::BezierControlsEdited);
-        QSignalSpy completed(&view, &CMotionCurveView::BezierDragFinished);
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetSelectedPoints({{track, 0}}); view.show();
+        QSignalSpy started(&view, &CMotionCurveView::TangentDragStarted);
+        QSignalSpy edited(&view, &CMotionCurveView::TangentHandleEdited);
+        QSignalSpy completed(&view, &CMotionCurveView::TangentDragFinished);
         const auto original = timeline; const auto controls = timeline.BezierControls(track, 1);
-        connect(&view, &CMotionCurveView::BezierControlsEdited, &view, [&](const auto& key, int end, const auto& values) {
-            auto candidate = original; CMotionTimeline::BatchEdit request; request.segments.append({{key, end}, 1, values});
+        connect(&view, &CMotionCurveView::TangentHandleEdited, &view, [&](const auto& key, auto side, auto position) {
+            auto candidate = original; CMotionTimeline::BatchEdit request; request.handles.append({key, side, position});
             CMotionTimeline::BatchResult result; QVERIFY(candidate.EditPoints(request, result)); timeline = candidate; view.SetTimeline(&timeline);
         });
         const QPoint press = screenPoint(controls[0], -.4, 8.4).toPoint();
         QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press); QCOMPARE(started.size(), 1);
         movePoint(view, press + QPoint(90, 20)); QCOMPARE(edited.size(), 1);
-        const auto emitted = edited.last()[2].value<QVector<QPointF>>();
-        QCOMPARE(emitted.size(), 2); QVERIFY(emitted[0].y() < 8);
-        if (restricted) QCOMPARE(emitted[0].x(), controls[0].x());
-        else { QCOMPARE(emitted[0].x(), 1.0); QVERIFY(emitted[0].x() > emitted[1].x()); }
+        const auto emitted = edited.last()[2].toPointF();
+        QVERIFY(emitted.y() < 8);
+        if (restricted) QCOMPARE(emitted.x(), controls[0].x());
+        else { QCOMPARE(emitted.x(), 1.0); QVERIFY(emitted.x() > controls[1].x()); }
         QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press + QPoint(90, 20)); QCOMPARE(completed.size(), 1);
         QByteArray bytes; QVERIFY(timeline.ToJson(bytes, 30, false));
         if (restricted) {
@@ -294,6 +294,60 @@ private slots:
             QCOMPARE(values[3].toDouble(), .9); QCOMPARE(values[5].toDouble(), .1);
         }
         QImage image(view.size(), QImage::Format_ARGB32); view.render(&image); QVERIFY(!image.isNull());
+    }
+
+
+    void tangentModifierIsFrozenAtPressAndOwnedBySelectedKey_data()
+    {
+        QTest::addColumn<bool>("linked"); QTest::newRow("plain") << false; QTest::newRow("control") << true;
+    }
+    void tangentModifierIsFrozenAtPressAndOwnedBySelectedKey()
+    {
+        QFETCH(bool, linked); CMotionTimeline timeline; QVERIFY(bezier(timeline));
+        const CMotionTrack track{CMotionTarget::Parameter, "A"}; const CMotionPointRef selected{track, 0};
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetSelectedPoints({selected}); view.show();
+        QSignalSpy start(&view, &CMotionCurveView::TangentDragStarted), edit(&view, &CMotionCurveView::TangentHandleEdited), cancel(&view, &CMotionCurveView::TangentDragCanceled);
+        const QPoint press = screenPoint({.9, 8}, -.4, 8.4).toPoint();
+        QTest::mousePress(&view, Qt::LeftButton, linked ? Qt::ControlModifier : Qt::NoModifier, press);
+        QCOMPARE(start.size(), 1); QCOMPARE(start.first()[0].value<CMotionPointRef>(), selected);
+        QCOMPARE(start.first()[1].value<CMotionTimeline::HandleSide>(), CMotionTimeline::HandleSide::Outgoing);
+        QCOMPARE(start.first()[2].toBool(), linked);
+        movePoint(view, press + QPoint(0, 20), linked ? Qt::NoModifier : Qt::ControlModifier);
+        QCOMPARE(edit.size(), 1); QCOMPARE(edit.first()[0].value<CMotionPointRef>(), selected);
+        QTest::keyClick(&view, Qt::Key_Escape); QCOMPARE(cancel.size(), 1); QCOMPARE(start.size(), 1);
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press); QCOMPARE(cancel.size(), 1);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, screenPoint({.1, 8}, -.4, 8.4).toPoint());
+        QCOMPARE(start.size(), 1); view.CancelDrag();
+    }
+
+    void flatRestrictedHandleCannotStartGesture()
+    {
+        CMotionTimeline timeline; QVERIFY(bezier(timeline, true));
+        const CMotionPointRef key{{CMotionTarget::Parameter, "A"}, 0}; CMotionTimeline::BatchEdit edit; edit.tangents.append({key, CMotionTimeline::TangentMode::Flat});
+        CMotionTimeline::BatchResult result; QVERIFY(timeline.EditPoints(edit, result));
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetSelectedPoints({key}); view.show();
+        QSignalSpy start(&view, &CMotionCurveView::TangentDragStarted);
+        const auto handle = *timeline.TangentHandle(key, CMotionTimeline::HandleSide::Outgoing);
+        const auto position = screenPoint(handle, -.4, 8.4).toPoint(); movePoint(view, position);
+        QCOMPARE(view.cursor().shape(), Qt::ArrowCursor);
+        QHelpEvent help(QEvent::ToolTip, position, view.mapToGlobal(position)); QCoreApplication::sendEvent(&view, &help);
+        QVERIFY(QToolTip::text().contains(QStringLiteral("固定")));
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, position);
+        QCOMPARE(start.size(), 0); view.CancelDrag(); QToolTip::hideText();
+    }
+
+
+    void automaticHandleExplainsManualTransitionBeforeDragging()
+    {
+        CMotionTimeline timeline; QVERIFY(bezier(timeline));
+        const CMotionPointRef key{{CMotionTarget::Parameter, "A"}, 0}; CMotionTimeline::BatchEdit edit; edit.tangents.append({key, CMotionTimeline::TangentMode::AutoClamped});
+        CMotionTimeline::BatchResult result; QVERIFY(timeline.EditPoints(edit, result));
+        CMotionCurveView view; view.resize(320, 190); view.SetTimeline(&timeline); view.SetSelectedPoints({key}); view.show();
+        const auto handle = *timeline.TangentHandle(key, CMotionTimeline::HandleSide::Outgoing);
+        const auto position = screenPoint(handle, -.4, 8.4).toPoint(); movePoint(view, position); QCOMPARE(view.cursor().shape(), Qt::PointingHandCursor);
+        QHelpEvent help(QEvent::ToolTip, position, view.mapToGlobal(position)); QCoreApplication::sendEvent(&view, &help);
+        QVERIFY(QToolTip::text().contains(QStringLiteral("转为对齐"))); QVERIFY(QToolTip::text().contains(QStringLiteral("Esc")));
+        QCOMPARE(timeline.Tangent(key.track, key.index).mode, CMotionTimeline::TangentMode::AutoClamped); QToolTip::hideText();
     }
 
     void hidingOrVetoingADragCancelsOnceAndStopsLaterSamples()

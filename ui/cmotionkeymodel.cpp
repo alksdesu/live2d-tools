@@ -49,12 +49,23 @@ const CMotionKeyModel::Row* CMotionKeyModel::RowAt(int row) const
 int CMotionKeyModel::RowFor(const CMotionPointRef& ref) const { return m_indices.value(ref, -1); }
 QString CMotionKeyModel::DraftError() const { return m_draft ? m_draft->error : QString(); }
 int CMotionKeyModel::rowCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : m_rows.size(); }
-int CMotionKeyModel::columnCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : 4; }
+int CMotionKeyModel::columnCount(const QModelIndex& parent) const { return parent.isValid() ? 0 : 5; }
+
+QString CMotionKeyModel::TangentName(CMotionTimeline::TangentMode mode)
+{
+    switch (mode) {
+    case CMotionTimeline::TangentMode::Broken: return QStringLiteral("独立");
+    case CMotionTimeline::TangentMode::Aligned: return QStringLiteral("对齐");
+    case CMotionTimeline::TangentMode::Flat: return QStringLiteral("水平");
+    case CMotionTimeline::TangentMode::AutoClamped: return QStringLiteral("自动钳制");
+    }
+    return {};
+}
 
 QVariant CMotionKeyModel::data(const QModelIndex& index, int role) const
 {
     const auto* row = RowAt(index.row());
-    if (!index.isValid() || !row || index.column() < 0 || index.column() >= 4) return {};
+    if (!index.isValid() || !row || index.column() < 0 || index.column() >= 5) return {};
     if (role == Qt::UserRole) return QVariant::fromValue(row->ref);
     if (m_draft && m_draft->ref == row->ref && m_draft->column == index.column()) {
         if (role == Qt::DisplayRole || role == Qt::EditRole) return m_draft->text;
@@ -65,6 +76,9 @@ QVariant CMotionKeyModel::data(const QModelIndex& index, int role) const
             return QColor(Theme::tokens(dark).value(QStringLiteral("@danger@")));
         }
     }
+    if (role == Qt::ToolTipRole && index.column() == 4)
+        return row->tangentAvailable ? QStringLiteral("此关键点的切线模式；通过切线菜单修改，可同时应用到多选点")
+            : QStringLiteral("当前没有相邻 Bézier 手柄；保留模式：%1").arg(TangentName(row->tangent.mode));
     if (role == Qt::ToolTipRole && index.column() == 3 && row->ref.index > 0)
         return QStringLiteral("此关键点之前的曲线段：0 线性，1 Bézier，2 阶梯，3 反阶梯");
     if (role != Qt::DisplayRole && role != Qt::EditRole) return {};
@@ -72,13 +86,14 @@ QVariant CMotionKeyModel::data(const QModelIndex& index, int role) const
     if (index.column() == 0) return QString::number(row->point.x(), 'g', precision);
     if (index.column() == 1) return row->ref.track.TargetName() + QStringLiteral(" · ") + row->ref.track.id;
     if (index.column() == 2) return QString::number(row->point.y(), 'g', precision);
+    if (index.column() == 4) return TangentName(row->tangent.mode) + (row->tangentAvailable ? QString() : QStringLiteral("（待用）"));
     return row->ref.index == 0 ? QStringLiteral("起点") : segmentName(row->segmentType);
 }
 
 QVariant CMotionKeyModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) return {};
-    const QStringList labels{QStringLiteral("时间"), QStringLiteral("曲线"), QStringLiteral("值"), QStringLiteral("插值")};
+    const QStringList labels{QStringLiteral("时间"), QStringLiteral("曲线"), QStringLiteral("值"), QStringLiteral("前段插值"), QStringLiteral("切线")};
     return section >= 0 && section < labels.size() ? labels[section] : QVariant();
 }
 
@@ -87,7 +102,7 @@ Qt::ItemFlags CMotionKeyModel::flags(const QModelIndex& index) const
     const auto* row = RowAt(index.row());
     if (!index.isValid() || !row) return Qt::NoItemFlags;
     auto result = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
-    if (index.column() != 1 && (index.column() != 3 || row->ref.index > 0)) result |= Qt::ItemIsEditable;
+    if ((index.column() == 0 || index.column() == 2 || index.column() == 3) && (index.column() != 3 || row->ref.index > 0)) result |= Qt::ItemIsEditable;
     return result;
 }
 

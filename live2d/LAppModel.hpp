@@ -22,6 +22,7 @@
 #include "live2dstruct/cmotiontimeline.h"
 #include "live2dstruct/ctextureassets.h"
 #include "live2dstruct/ctextureworkspace.h"
+#include "live2dstruct/conionskin.h"
 #include "framework/Model/CubismParameterReferences.hpp"
 #include "framework/Physics/CubismPhysicsObservation.hpp"
 
@@ -149,6 +150,10 @@ public:
     { return {_timelinePreview, m_timelineExplicitParameterIds, _timelinePreviewActive}; }
     QMap<QString, float> GetTimelineBaseParameters() const { return _timelineBaseParameters; }
     void GetTimelineEffectIds(QSet<QString>& eye, QSet<QString>& lip) const;
+    bool CaptureOnionSkinBase(live2dstruct::COnionSkin::Base& base, QString* error = nullptr) const;
+    bool CanSampleOnionSkin() const
+    { return _model && _initialized && !_updating && !HasExportPreview() && !HasEditorPreview() &&
+        !m_userParameterSnapshotActive && !m_deformerDrag.IsActive() && !m_physicsDragActive; }
     QMap<QString, float> GetParameterValues() const;
     void UpdateParaValue(const QString& parId,float value,bool IsInit);
     bool Draw(Csm::CubismMatrix44& matrix);

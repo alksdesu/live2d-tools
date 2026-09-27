@@ -15,6 +15,7 @@
 #include <QPointer>
 #include <memory>
 #include "live2dstruct/cmotiontimeline.h"
+#include "live2dstruct/conionskin.h"
 
 class QLabel;
 class QPushButton;
@@ -30,6 +31,8 @@ class CTableEditDelegate;
 class QUndoStack;
 class QTabWidget;
 class QSplitter;
+class QSpinBox;
+class QDoubleSpinBox;
 
 class CMotionPanel : public QDockWidget
 {
@@ -116,6 +119,8 @@ public:
     QByteArray SaveLayout() const;
     void RestoreLayout(const QByteArray& state);
     quint64 TimelineRevision() const { return m_timelineRevision; }
+    bool CaptureOnionSkinRequest(live2dstruct::COnionSkin::Request& request, QString* error = nullptr) const;
+    void SetOnionSkinStatus(const live2dstruct::COnionSkin::Status& status);
     bool ConfirmTimelineReplacement();
     bool LoadTimeline(const QString& path, QString* error = nullptr);
     bool SaveTimeline(const QString& path, QString* error = nullptr);
@@ -172,6 +177,7 @@ signals:
     void PoseConfigChanged();
     void PoseSaved();
     void MotionTimelineChanged();
+    void OnionSkinRequestChanged();
     void TimelineDirtyChanged(bool dirty);
     void TimelineHistoryChanged(bool canUndo, bool canRedo);
     void TimelineActivated();
@@ -345,13 +351,39 @@ private:
     void SetKeyframeInterpolation(int type);
     void BeginCurveGesture(const CMotionPointSelection& selection, bool bezier);
     void TranslateCurveSelection(double time, double value);
-    void EditCurveControls(const CMotionTrack& track, int index, const QVector<QPointF>& controls);
+    void BeginTangentGesture(CMotionPointRef key, CMotionTimeline::HandleSide side, bool linkForGesture);
+    void EditTangentHandle(CMotionPointRef key, CMotionTimeline::HandleSide side, QPointF position);
+    void SetTangentMode(CMotionTimeline::TangentMode mode);
+    void EditTangentNumbers();
+    void RefreshTangentActions();
+    void ScheduleOnionRequest(bool contentChanged = false);
+    void ConfigureOnionUi(QWidget* parent, QToolBar* tools);
+    void RefreshOnionSettings();
+    live2dstruct::COnionSkin::Settings OnionSettings() const;
     void FinishCurveGesture();
     void CancelCurveGesture();
     void PublishCurveGesture(CMotionTimeline candidate, const CMotionTimeline::BatchResult& result);
     enum class CurveGesture { None, Points, Bezier };
     CurveGesture m_curveGesture = CurveGesture::None;
     CMotionPointSelection m_gesturePoints;
+    std::optional<CMotionTimeline::HandleEdit> m_gestureHandle;
+    std::optional<CMotionTimeline::HandleEdit> m_activeHandle;
+    QPointF m_activeHandleKeyPoint;
+    QAction* m_tangentAction = nullptr;
+    QAction* m_tangentUnrestricted = nullptr;
+    QAction* m_tangentNumbers = nullptr;
+    QVector<QAction*> m_tangentModes;
+    QAction* m_onionEnabled = nullptr;
+    QWidget* m_onionSettingsPanel = nullptr;
+    QSpinBox *m_onionBefore = nullptr, *m_onionAfter = nullptr, *m_onionInterval = nullptr;
+    QDoubleSpinBox *m_onionBeforeOpacity = nullptr, *m_onionAfterOpacity = nullptr;
+    QCheckBox* m_onionPlayback = nullptr;
+    QLabel *m_onionStatusLabel = nullptr, *m_onionIntervalLabel = nullptr;
+    bool m_onionRequestQueued = false;
+    mutable bool m_onionContentDirty = true;
+    mutable QString m_onionCaptureError;
+    mutable live2dstruct::COnionSkin::Timeline m_onionTimeline;
+    live2dstruct::COnionSkin::Status m_onionStatus;
     QLabel* m_timelineStatus = nullptr;
     QPushButton* m_playTimelineButton = nullptr;
     QTimer* m_timelineTimer = nullptr;

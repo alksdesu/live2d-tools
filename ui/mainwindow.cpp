@@ -1870,6 +1870,7 @@ void MainWindow::SetWorkspaceMode(int mode)
     if (changed && mode != 1 && m_motionPanel) m_motionPanel->StopTimelinePreview();
     m_historySource = mode == 1 ? HistorySource::Timeline : mode == 2 ? HistorySource::Physics : HistorySource::Parameters;
     RefreshUndoActions();
+    RefreshOnionSkin();
 }
 
 void MainWindow::ApplyDefaultWorkspaceLayout(int mode)
@@ -2744,6 +2745,8 @@ bool MainWindow::CloseModel()
 
     // 停止渲染定时器
     m_openglwindows->m_timer.stop();
+    m_openglwindows->SetOnionSkinRequestProvider({});
+    m_openglwindows->ClearOnionSkin();
 
     // 删除 Dock 面板
     if(m_treePanel)   { removeDockWidget(m_treePanel);   delete m_treePanel;   m_treePanel = nullptr; }
@@ -3762,6 +3765,7 @@ void MainWindow::RestDock(const QString &name)
     ConfigurePhysicsSaving();
 
     ConfigureParameterValueEditing();
+    ConfigureOnionSkin();
     RefreshRelatedParameters();
     MarkDocumentSaved();
     RefreshWindowTitle();

@@ -33,6 +33,7 @@ bool CGlRenderState::Save(const QOpenGLContext* context)
     for (size_t index = 0; index < m_textures.size(); ++index) {
         gl->glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(index));
         gl->glGetIntegerv(GL_TEXTURE_BINDING_2D, &m_textures[index]);
+        gl->glGetIntegerv(GL_SAMPLER_BINDING, &m_samplers[index]);
     }
     for (size_t index = 0; index < capabilities.size(); ++index)
         m_enabled[index] = gl->glIsEnabled(capabilities[index]);
@@ -69,6 +70,7 @@ bool CGlRenderState::Restore()
     for (size_t index = 0; index < m_textures.size(); ++index) {
         gl->glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(index));
         gl->glBindTexture(GL_TEXTURE_2D, m_textures[index]);
+        gl->glBindSampler(static_cast<GLuint>(index), m_samplers[index]);
     }
     gl->glActiveTexture(m_activeTexture);
     for (size_t index = 0; index < capabilities.size(); ++index) {

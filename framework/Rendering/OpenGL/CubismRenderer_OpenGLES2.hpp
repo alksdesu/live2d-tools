@@ -94,6 +94,13 @@ class CubismRenderer_OpenGLES2 : public  CubismRenderer,  QOpenGLFunctions_3_3_C
     friend class ::PsdCooperativeGlTests;
 
 public:
+    struct SnapshotScene {
+        QSet<QString> hiddenDrawables;
+        QHash<QString, float> opacity;
+        QHash<QString, int> drawOrder, orderGroups;
+        QVector<live2dstruct::CDrawableOrderGroup> groups;
+    };
+    bool DrawSnapshotModel(const SnapshotScene& scene, QString* error = nullptr);
     bool setGlOwningContext(const QOpenGLContext *context){
         if (!context || QOpenGLContext::currentContext() != context || !context->isValid() ||
             (owningContext() && owningContext() != context)) return false;
@@ -242,6 +249,7 @@ private:
     const csmBool inline IsGeneratingMask() const;
     GLuint GetBindedTextureId(csmInt32 textureId);
     bool MaskSourceAvailable(csmInt32 drawable) const;
+    bool IncludeHiddenForPass() const;
 
 
 
@@ -262,6 +270,7 @@ private:
     csmInt32 _requestedMaskBufferCount = 1;
     CubismVector2 _requestedMaskBufferSize{256, 256};
     std::unique_ptr<PsdExportState> _psdExport;
+    const SnapshotScene* _snapshotScene = nullptr;
 };
 
 }}}}

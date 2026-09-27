@@ -213,6 +213,11 @@ void LAppDelegate::paint()
     glClearColor(m_clearColor[0], m_clearColor[1], m_clearColor[2], m_clearColor[3]);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glClearDepth(1.0);
+    const QPointer<QWidget> window(const_cast<QWidget*>(_windows));
+    if (!_IsOffScreen && window && window->metaObject()->indexOfMethod("DrawOnionSkinUnderlay()") >= 0) {
+        QMetaObject::invokeMethod(window, "DrawOnionSkinUnderlay", Qt::DirectConnection);
+        if (!window) return;
+    }
     _view->Render();
 
 }

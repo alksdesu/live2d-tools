@@ -3,6 +3,7 @@
 #include "ccanvascoordinates.h"
 #include "framework/Id/CubismIdManager.hpp"
 #include "framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.hpp"
+#include "conionskinrenderer.h"
 #include "live2d/LAppPal.hpp"
 #include "live2dstruct/cmocdeformerorder.h"
 #include <QSurfaceFormat>
@@ -96,6 +97,8 @@ OpengGlForm::OpengGlForm(QWidget *par):QOpenGLWidget(par)
 OpengGlForm::~OpengGlForm()
 {
     if (context()) makeCurrent();
+    QObject::disconnect(m_onionContextConnection);
+    m_onionRenderer.reset();
     LAppDelegate::GetInstance()->Release();
     LAppDelegate::ReleaseInstance();
     if (context()) doneCurrent();
@@ -1337,6 +1340,7 @@ bool OpengGlForm::ChangeModel(const QString& fileName, QString* error)
     FinishDeformerDrag();
     const bool loaded = LAppDelegate::GetInstance()->ChangeScene(fileName);
     if (!loaded) return MeshError(error, QStringLiteral("无法载入模型，原模型保持不变：%1").arg(fileName));
+    m_onionRenderer.reset();
     m_ceditstate.AddState(CEditState::ModelOpen);
     m_currentModelJson = nextPath;
     ResetMeshToolState();
@@ -1464,6 +1468,12 @@ void OpengGlForm::SyncPreviewView()
 
 void OpengGlForm::initializeGL()
 {
+    QObject::disconnect(m_onionContextConnection);
+    m_onionContextConnection = connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
+        const RestoreContext restore;
+        makeCurrent();
+        m_onionRenderer.reset();
+    }, Qt::DirectConnection);
     auto* delegate = LAppDelegate::GetInstance();
     const bool loaded = delegate->Initialize(this, m_config.GetInitFileName());
     m_runtimeReady = delegate->IsRuntimeReady() && delegate->getGlOwningContext() == context();

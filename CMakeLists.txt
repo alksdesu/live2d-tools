@@ -57,6 +57,8 @@ add_library(model_data STATIC
     live2dstruct/cmeshtopology.cpp
     live2dstruct/cmesheditplanner.cpp
     live2dstruct/cmotiontimeline.cpp
+    live2dstruct/cmotiontangent.cpp
+    live2dstruct/conionskin.cpp
     live2dstruct/cmotionkeyclipboard.cpp
     live2dstruct/cmotionbezier.cpp
     live2dstruct/cmotionblendpreview.cpp
@@ -819,6 +821,12 @@ if(BUILD_TESTING)
     add_executable(motion_batch_edit_tests tests/motion_batch_edit_tests.cpp)
     target_link_libraries(motion_batch_edit_tests PRIVATE model_data Qt6::Test)
     add_test(NAME motion_batch_edit COMMAND motion_batch_edit_tests)
+    add_executable(motion_tangent_tests tests/motion_tangent_tests.cpp)
+    target_link_libraries(motion_tangent_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME motion_tangent COMMAND motion_tangent_tests)
+    add_executable(onion_skin_tests tests/onion_skin_tests.cpp)
+    target_link_libraries(onion_skin_tests PRIVATE model_data Qt6::Test)
+    add_test(NAME onion_skin COMMAND onion_skin_tests)
     add_executable(motion_key_clipboard_tests tests/motion_key_clipboard_tests.cpp)
     target_link_libraries(motion_key_clipboard_tests PRIVATE model_data Qt6::Test)
     add_test(NAME motion_key_clipboard COMMAND motion_key_clipboard_tests)

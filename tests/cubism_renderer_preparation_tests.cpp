@@ -208,6 +208,67 @@ class CubismRendererPreparationTests : public QObject
     }
 
 private slots:
+    void snapshotScenePreservesBlendAndMasksWithoutDelegate_data()
+    {
+        QTest::addColumn<int>("blend"); QTest::addColumn<bool>("high"); QTest::addColumn<bool>("inverted");
+        for (int blend = 0; blend < 3; ++blend) for (bool high : {false, true}) for (bool inverted : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2-%3").arg(blend).arg(high).arg(inverted))) << blend << high << inverted;
+    }
+    void snapshotScenePreservesBlendAndMasksWithoutDelegate()
+    {
+        QFETCH(int, blend); QFETCH(bool, high); QFETCH(bool, inverted);
+        GetterState state; state.drawableCount = 3; state.flags.fill(Core::csmIsDoubleSided);
+        if (blend == 1) state.flags[2] |= Core::csmBlendAdditive;
+        if (blend == 2) state.flags[2] |= Core::csmBlendMultiplicative;
+        if (inverted) state.flags[2] |= Core::csmIsInvertedMask;
+        state.maskCounts = {0, 0, 1}; state.masks[2] = {0, 0};
+        state.dynamicFlags.fill(Core::csmIsVisible); state.drawableOpacities.fill(.9f);
+        state.multiply[2] = {.8f, .6f, .4f, 1}; state.screen[2] = {.1f, .2f, .3f, 1};
+        auto model = Model(state); auto renderer = Renderer(); auto& target = Gl(renderer);
+        QVERIFY(target.setGlOwningContext(&m_context)); QVERIFY(target.Initialize(model.get()));
+        target.UseHighPrecisionMask(high); target.SetClippingMaskBufferSize(32, 32); target.SetModelColor(.6f, .8f, .4f, .5f);
+        CubismMatrix44 matrix; matrix.LoadIdentity(); target.SetMvpMatrix(&matrix);
+        const std::array<GLuint, 3> textures{Texture(64), Texture(), Texture()};
+        const auto cleanup = qScopeGuard([&] { m_gl.glDeleteTextures(textures.size(), textures.data()); });
+        const std::array<uchar, 4> pixel{128, 64, 192, 128};
+        m_gl.glBindTexture(GL_TEXTURE_2D, textures[2]); m_gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
+        for (int slot = 0; slot < 3; ++slot) target.BindTexture(slot, textures[slot]);
+        CubismRenderer_OpenGLES2::SnapshotScene scene; scene.hiddenDrawables = {"MeshA", "MeshB"}; scene.opacity["MeshC"] = .6f;
+        allowDraw = true; auto* delegate = LAppDelegate::GetInstance(); delegate->m_hiddenDrawables = {"MeshC"};
+        delegate->m_isDraggingDeformer = true; delegate->m_savedVertices[2] = {999}; delegate->m_IsPrintALl = true;
+        const auto restoreDelegate = qScopeGuard([&] {
+            allowDraw = true; delegate->m_hiddenDrawables.clear(); delegate->m_isDraggingDeformer = false;
+            delegate->m_savedVertices.clear(); delegate->m_IsPrintALl = false; allowDraw = false;
+        });
+        allowDraw = false;
+        QOpenGLFramebufferObject framebuffer(64, 64); QVERIFY(framebuffer.isValid());
+        const std::array<float, 3> background{40.f / 255, 91.f / 255, 133.f / 255};
+        for (int maskAlpha : {64, 192}) {
+            const std::array<uchar, 4> mask{255, 255, 255, uchar(maskAlpha)};
+            m_gl.glBindTexture(GL_TEXTURE_2D, textures[0]); m_gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, mask.data());
+            QVERIFY(framebuffer.bind()); m_gl.glViewport(0, 0, 64, 64); m_gl.glDisable(GL_SCISSOR_TEST);
+            m_gl.glDisable(GL_DITHER); m_gl.glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            m_gl.glClearColor(background[0], background[1], background[2], 1); m_gl.glClear(GL_COLOR_BUFFER_BIT);
+            const auto before = State(); QString error;
+            QVERIFY2(target.DrawSnapshotModel(scene, &error), qPrintable(error)); QCOMPARE(State(), before);
+            const auto image = framebuffer.toImage(); const QRgb actual = image.pixel(32, 32);
+            const double coverage = inverted ? 1 - maskAlpha / 255. : maskAlpha / 255.;
+            const double alpha = 128. / 255 * .6 * .5 * coverage;
+            const std::array<double, 3> multiply{.8, .6, .4}, screen{.1, .2, .3}, rgb{.6, .8, .4};
+            const int channels[]{qRed(actual), qGreen(actual), qBlue(actual)};
+            for (int channel = 0; channel < 3; ++channel) {
+                const double multiplied = pixel[channel] / 255. * multiply[channel];
+                const double color = (multiplied + screen[channel] - multiplied * screen[channel]) * rgb[channel];
+                const double expected = blend == 0 ? color * alpha + background[channel] * (1 - alpha)
+                    : blend == 1 ? color * alpha + background[channel] : background[channel] * (color * alpha + 1 - alpha);
+                QVERIFY2(std::abs(channels[channel] - qRound(expected * 255)) <= 3, qPrintable(QString("blend %1 mask %2 channel %3 actual %4 expected %5").arg(blend).arg(maskAlpha).arg(channel).arg(channels[channel]).arg(expected * 255)));
+            }
+            QCOMPARE(qAlpha(actual), 255); QCOMPARE(state.updates, 0); QVERIFY(!target._snapshotScene);
+        }
+        scene.opacity["MeshC"] = std::numeric_limits<float>::quiet_NaN(); const auto before = State();
+        QVERIFY(!target.DrawSnapshotModel(scene)); QCOMPARE(State(), before); QVERIFY(!target._snapshotScene);
+    }
+
     void initTestCase()
     {
         QSurfaceFormat format;

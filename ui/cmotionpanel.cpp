@@ -56,18 +56,24 @@ namespace {
 class CParameterGuardedTimelineDelegate final : public CTableEditDelegate
 {
 public:
-    CParameterGuardedTimelineDelegate(QObject* parent, std::function<bool()> guard)
-        : CTableEditDelegate(parent), m_guard(std::move(guard)) {}
+    CParameterGuardedTimelineDelegate(QObject* parent, std::function<bool()> guard, QObject* context, std::function<void()> changed)
+        : CTableEditDelegate(parent), m_guard(std::move(guard)), m_context(context), m_changed(std::move(changed)) {}
     QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override
     {
         const QPointer<const CParameterGuardedTimelineDelegate> alive(this);
         const QPersistentModelIndex target(index);
         const auto guard = m_guard;
         if ((guard && !guard()) || !alive || !target.isValid()) return nullptr;
-        return CTableEditDelegate::createEditor(parent, option, target);
+        auto* editor = CTableEditDelegate::createEditor(parent, option, target);
+        if (auto* line = qobject_cast<QLineEdit*>(editor); line && m_context) {
+            const auto changed = m_changed; QObject::connect(line, &QLineEdit::textChanged, m_context, [changed] { if (changed) changed(); });
+        }
+        return editor;
     }
 private:
     std::function<bool()> m_guard;
+    QPointer<QObject> m_context;
+    std::function<void()> m_changed;
 };
 
 class CTimelineEdit : public QUndoCommand
@@ -924,12 +930,13 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_timelineTable->installEventFilter(this);
     m_curveView->installEventFilter(this);
     m_timelineTable->setObjectName(QStringLiteral("motionTimelineTable"));
-    m_timelineDelegate = new CParameterGuardedTimelineDelegate(m_timelineTable, [this] { return CheckParameterEditGuard(); });
+    m_timelineDelegate = new CParameterGuardedTimelineDelegate(m_timelineTable, [this] { return CheckParameterEditGuard(); }, this, [this] { ScheduleOnionRequest(); });
     m_timelineTable->setItemDelegate(m_timelineDelegate);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_timelineTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_timelineTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_timelineTable->verticalHeader()->setVisible(false);
     m_timelineTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_timelineTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
@@ -1275,8 +1282,10 @@ void CMotionPanel::RefreshTimelineTable()
     const int column = m_timelineTable->currentIndex().isValid() ? m_timelineTable->currentIndex().column() : 0;
     QVector<CMotionKeyModel::Row> rows;
     rows.reserve(points.size());
-    for (const auto& point : points)
-        rows.append({{point.track, point.pointIndex}, point.point, point.segmentType});
+    for (const auto& point : points) {
+        const CMotionPointRef ref{point.track, point.pointIndex}; const auto capability = m_timeline.Capabilities(ref);
+        rows.append({ref, point.point, point.segmentType, capability.state, capability.incoming.available || capability.outgoing.available});
+    }
     m_keyModel->SetRows(std::move(rows));
     if (!alive) return;
     SetKeyframeSelection(m_selectedPoints);
@@ -1473,6 +1482,7 @@ void CMotionPanel::PauseTimelinePreview()
     ++m_timelineRevision;
     m_timelineTimer->stop();
     m_playTimelineButton->setText(QStringLiteral("预览"));
+    ScheduleOnionRequest();
 }
 
 void CMotionPanel::StopTimelinePreview()
@@ -1928,7 +1938,11 @@ QByteArray CMotionPanel::SaveLayout() const
         {QStringLiteral("curves"), QString::fromLatin1(m_curveSplitter->saveState().toBase64())},
         {QStringLiteral("tab"), m_assetTabs->currentIndex()},
         {QStringLiteral("fades"), m_previewFades->isChecked()},
-        {QStringLiteral("snap"), m_snapFrames->isChecked()}
+        {QStringLiteral("snap"), m_snapFrames->isChecked()},
+        {QStringLiteral("onion"), QJsonObject{
+            {QStringLiteral("enabled"), OnionSettings().enabled}, {QStringLiteral("playback"), OnionSettings().duringPlayback},
+            {QStringLiteral("before"), OnionSettings().before}, {QStringLiteral("after"), OnionSettings().after}, {QStringLiteral("step"), OnionSettings().stepFrames},
+            {QStringLiteral("beforeOpacity"), OnionSettings().beforeOpacity}, {QStringLiteral("afterOpacity"), OnionSettings().afterOpacity}}}
     }).toJson(QJsonDocument::Compact);
 }
 
@@ -1942,6 +1956,27 @@ void CMotionPanel::RestoreLayout(const QByteArray& state)
     UpdateWorkspaceOrientation();
     m_previewFades->setChecked(object.value(QStringLiteral("fades")).toBool(false));
     m_snapFrames->setChecked(object.value(QStringLiteral("snap")).toBool(true));
+    live2dstruct::COnionSkin::Settings onion; const auto saved = object.value(QStringLiteral("onion")).toObject(); bool valid = true;
+    const auto integer = [&](const char* name, int fallback) {
+        const auto value = saved.value(QLatin1String(name)); if (value.isUndefined()) return fallback;
+        const double number = value.toDouble(-1); if (!value.isDouble() || !std::isfinite(number) || std::trunc(number) != number || number < 0 || number > std::numeric_limits<int>::max()) { valid = false; return fallback; }
+        return int(number);
+    };
+    for (const char* name : {"enabled", "playback"}) if (saved.contains(QLatin1String(name)) && !saved.value(QLatin1String(name)).isBool()) valid = false;
+    onion.enabled = saved.value(QStringLiteral("enabled")).toBool(false); onion.duringPlayback = saved.value(QStringLiteral("playback")).toBool(false);
+    onion.before = integer("before", 1); onion.after = integer("after", 1); onion.stepFrames = integer("step", 1);
+    const auto opacity = [&](const char* name) {
+        const auto value = saved.value(QLatin1String(name)); if (value.isUndefined()) return .25f;
+        const double number = value.toDouble(-1); if (!value.isDouble() || !std::isfinite(number) || number < 0 || number > 1) { valid = false; return .25f; } return float(number);
+    };
+    onion.beforeOpacity = opacity("beforeOpacity"); onion.afterOpacity = opacity("afterOpacity");
+    if (!valid || !live2dstruct::COnionSkin::Validate(onion)) onion = {};
+    {
+        const QSignalBlocker enabled(m_onionEnabled), before(m_onionBefore), after(m_onionAfter), step(m_onionInterval), previous(m_onionBeforeOpacity), next(m_onionAfterOpacity), playing(m_onionPlayback);
+        m_onionEnabled->setChecked(onion.enabled); m_onionBefore->setValue(onion.before); m_onionAfter->setValue(onion.after); m_onionInterval->setValue(onion.stepFrames);
+        m_onionBeforeOpacity->setValue(onion.beforeOpacity * 100); m_onionAfterOpacity->setValue(onion.afterOpacity * 100); m_onionPlayback->setChecked(onion.duringPlayback);
+    }
+    RefreshOnionSettings();
     const int tab = object.value(QStringLiteral("tab")).toInt(-1);
     if (tab < 0 || tab >= m_assetTabs->count()) return;
     m_savedAssetTab = tab;
@@ -1958,6 +1993,9 @@ void CMotionPanel::RefreshTimelineHistory()
     m_redoTimelineButton->setEnabled(CanRedoTimeline());
     m_undoTimelineButton->setToolTip(PendingTimelineEdit() ? m_editGroupLabel : m_timelineHistory->undoText());
     m_redoTimelineButton->setToolTip(m_timelineHistory->redoText());
+    RefreshTangentActions();
+    if (!alive) return;
+    ScheduleOnionRequest();
     emit TimelineHistoryChanged(CanUndoTimeline(), CanRedoTimeline());
 }
 
@@ -2178,8 +2216,9 @@ bool CMotionPanel::SaveTimeline(const QString& path, QString* error)
     m_curveView->FinishDrag();
     if (!alive) return false;
     if (!m_timeline.Save(path, m_timeline.Fps(), m_loopCb->isChecked(), error)) return false;
-    MarkTimelineSaved();
-    if (alive) m_timelineStatus->setText(QStringLiteral("已导出 motion3"));
+    if (!m_timeline.HasAuthoringTangents()) MarkTimelineSaved();
+    if (alive) m_timelineStatus->setText(m_timeline.HasAuthoringTangents()
+        ? QStringLiteral("已导出 motion3 曲线数值；切线编辑模式请保存工作会话") : QStringLiteral("已导出 motion3"));
     return true;
 }
 

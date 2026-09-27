@@ -36,6 +36,11 @@ struct CMotionPointRef
     bool operator<(const CMotionPointRef& other) const { return track != other.track ? track < other.track : index < other.index; }
 };
 
+inline size_t qHash(const CMotionTrack& track, size_t seed = 0)
+{
+    return qHashMulti(seed, static_cast<int>(track.target), track.id);
+}
+
 inline size_t qHash(const CMotionPointRef& point, size_t seed = 0) noexcept
 {
     return qHashMulti(seed, static_cast<int>(point.track.target), point.track.id, point.index);
@@ -86,6 +91,41 @@ class CMotionTimeline
 {
 public:
     static constexpr int MaximumPointCount = 100000;
+    enum class TangentMode { Broken, Aligned, Flat, AutoClamped };
+    enum class HandleSide { Incoming, Outgoing };
+    struct TangentState {
+        TangentMode mode = TangentMode::Broken;
+        double slope = 0;
+        double incomingFraction = 1.0 / 3.0;
+        double outgoingFraction = 1.0 / 3.0;
+        bool operator==(const TangentState& other) const;
+        bool operator!=(const TangentState& other) const { return !(*this == other); }
+    };
+    struct HandleCapability {
+        bool available = false, moveTime = false, moveValue = false;
+        QString reason;
+    };
+    struct TangentCapabilities {
+        bool valid = false, restricted = false;
+        TangentState state;
+        HandleCapability incoming, outgoing;
+    };
+    struct TangentModeEdit {
+        CMotionPointRef ref;
+        TangentMode mode = TangentMode::Broken;
+        std::optional<HandleSide> referenceSide;
+    };
+    struct HandleEdit {
+        CMotionPointRef ref;
+        HandleSide side = HandleSide::Incoming;
+        QPointF position;
+        bool linkForGesture = false;
+    };
+    struct PointTransform {
+        CMotionPointSelection selection;
+        QPointF pivot, offset;
+        double timeScale = 1, valueScale = 1;
+    };
     struct PointUpdate { CMotionPointRef ref; QPointF point; };
     struct PointInsertion {
         CMotionTrack track;
@@ -93,6 +133,7 @@ public:
         int segmentType = 0;
         QVector<QPointF> controls;
         std::optional<QPointF> segmentStart;
+        std::optional<TangentState> tangent;
     };
     struct SegmentEdit {
         CMotionPointRef ref;
@@ -104,12 +145,24 @@ public:
         CMotionPointSelection removes;
         QVector<PointInsertion> insertions;
         QVector<SegmentEdit> segments;
+        QVector<TangentModeEdit> tangents;
+        QVector<HandleEdit> handles;
+        std::optional<PointTransform> transform;
     };
     struct BatchResult {
         QMap<CMotionTrack, QVector<int>> oldToNew;
         CMotionPointSelection inserted;
         bool changed = false;
+        CMotionPointSelection affected;
     };
+    bool HasAuthoringTangents() const;
+    TangentState Tangent(const CMotionTrack& track, int index) const;
+    TangentCapabilities Capabilities(const CMotionPointRef& key) const;
+    std::optional<QPointF> TangentHandle(const CMotionPointRef& key, HandleSide side) const;
+    static bool ValidateTangent(const TangentState& tangent, QString* error = nullptr);
+    static QJsonObject EncodeTangent(const TangentState& tangent);
+    static bool DecodeTangent(const QJsonObject& object, TangentState& tangent, QString* error = nullptr);
+    bool TransformPoints(const PointTransform& transform, BatchResult& result, QString* error = nullptr);
     bool EditPoints(const BatchEdit& request, BatchResult& result, QString* error = nullptr);
     QVector<QPointF> BezierControls(const CMotionTrack& track, int pointIndex) const;
     bool AreBeziersRestricted() const;
@@ -130,6 +183,7 @@ public:
             QVector<QPointF> points;
             QVector<int> segments;
             QVector<QVector<QPointF>> controls;
+            QVector<TangentState> tangents;
             QJsonObject source;
             int sourceIndex = -1;
         };
@@ -199,6 +253,11 @@ public:
 
 private:
     void UnrestrictBezierControls();
+    bool ApplyTangentConstraints(const QSet<CMotionTrack>& tracks, QString* error);
+    bool ValidateTangentState(QString* error = nullptr) const;
+    bool ValidateEditableState(QString* error) const;
+    bool EditTangent(const TangentModeEdit& edit, QString* error);
+    bool EditHandle(const HandleEdit& edit, QString* error);
     bool BuildJson(QJsonObject* root, double fps, bool loop, bool draft, QString* error) const;
     bool LoadJson(const QJsonObject& root, bool draft, QString* error, bool allowEmpty = false);
     double ContentDuration() const;
@@ -220,8 +279,11 @@ private:
     QMap<CMotionTrack, QVector<QPointF>> m_curves;
     QMap<CMotionTrack, QVector<int>> m_segmentTypes;
     QMap<CMotionTrack, QVector<QVector<QPointF>>> m_bezierControls;
+    QMap<CMotionTrack, QVector<TangentState>> m_tangents;
 };
 
+Q_DECLARE_METATYPE(CMotionTimeline::TangentMode)
+Q_DECLARE_METATYPE(CMotionTimeline::HandleSide)
 Q_DECLARE_METATYPE(CMotionTrack)
 Q_DECLARE_METATYPE(CMotionPointRef)
 Q_DECLARE_METATYPE(CMotionPointSelection)

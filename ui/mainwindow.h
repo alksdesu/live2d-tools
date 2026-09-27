@@ -16,6 +16,7 @@
 #include "ui/psdbatchresult.h"
 #include "live2dstruct/cruntimepackage.h"
 #include "live2dstruct/cparameterselectionquery.h"
+#include "live2dstruct/conionskin.h"
 #include <QAction>
 #include <QLabel>
 #include <QPushButton>
@@ -150,6 +151,9 @@ private:
     live2dstruct::CMaterialEditController m_materialEditor;
     QPointer<CUvEditDialog> m_uvDialog;
     void ClearTimelinePreview();
+    void ConfigureOnionSkin();
+    void RefreshOnionSkin();
+    bool CaptureOnionSkinRequest(live2dstruct::COnionSkin::Request& request, QString* error) const;
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
     bool PublishParameterDefinitions(const live2dstruct::CModelDocument& document,
