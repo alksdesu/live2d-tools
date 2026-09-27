@@ -9,6 +9,7 @@
 #include "live2dstruct/cparentgraph.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "live2dstruct/cphysicsdocument.h"
+#include "live2dstruct/ctextureassets.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "opengl/ctextureextractor.h"
 #include <QDir>
@@ -1888,29 +1889,52 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
         }
     }
 
-    // 纹理图集定位：moc3 同目录 model3.json 或 textures/ 推断
-    QVector<QString> atlasPaths;
-    {
+    CTextureExtractor extractor;
+    if (opt.texturePngs) {
+        if (opt.texturePngs->isEmpty() || opt.texturePngs->size() > CTextureAssets::MaximumSlots ||
+            opt.texturePngs->firstKey() < 0 || opt.texturePngs->lastKey() >= CTextureAssets::MaximumSlots) {
+            if (outError) *outError = QStringLiteral("显式纹理快照为空或包含无效槽号");
+            return false;
+        }
+        for (const auto* mesh : table.art_meshes) {
+            const auto texture = opt.texturePngs->constFind(mesh->texture_nos);
+            if (texture == opt.texturePngs->cend() || texture->isEmpty()) {
+                if (outError) *outError = QStringLiteral("显式纹理快照缺少网格 %1 使用的槽 %2").arg(mesh->ids).arg(mesh->texture_nos);
+                return false;
+            }
+        }
+        QVector<QByteArray> atlases(opt.texturePngs->lastKey() + 1);
+        for (auto it = opt.texturePngs->cbegin(); it != opt.texturePngs->cend(); ++it) {
+            if (it->isEmpty()) {
+                if (outError) *outError = QStringLiteral("显式纹理快照的槽 %1 没有 PNG 数据").arg(it.key());
+                return false;
+            }
+            atlases[it.key()] = it.value();
+        }
+        if (!extractor.LoadAtlasBytes(atlases)) {
+            if (outError) *outError = QStringLiteral("显式纹理 PNG 快照解码失败或超出限制");
+            return false;
+        }
+    } else {
+        QVector<QString> atlasPaths;
         const QDir dir = QFileInfo(opt.mocPath).dir();
         const bool hasModelConfig = !dir.entryList({QStringLiteral("*.model3.json")}, QDir::Files).isEmpty();
         const bool loadedModelConfig = loadModelTextures(dir, opt.mocPath, &atlasPaths);
         if (atlasPaths.isEmpty() && !hasModelConfig) {
             QDir texDir(dir.filePath(QStringLiteral("textures")));
             if (!texDir.exists()) texDir = dir;
-            const QStringList pngs = texDir.entryList({ QStringLiteral("*.png") }, QDir::Files, QDir::Name);
+            const QStringList pngs = texDir.entryList({QStringLiteral("*.png")}, QDir::Files, QDir::Name);
             for (const QString& png : pngs) atlasPaths.append(texDir.filePath(png));
         }
         if (hasModelConfig && !loadedModelConfig) atlasPaths.clear();
-    }
-    if (atlasPaths.isEmpty()) {
-        if (outError) *outError = QStringLiteral("找不到纹理图集 PNG");
-        return false;
-    }
-
-    CTextureExtractor extractor;
-    if (!extractor.LoadAtlases(atlasPaths)) {
-        if (outError) *outError = QStringLiteral("纹理图集加载失败");
-        return false;
+        if (atlasPaths.isEmpty()) {
+            if (outError) *outError = QStringLiteral("找不到纹理图集 PNG");
+            return false;
+        }
+        if (!extractor.LoadAtlases(atlasPaths)) {
+            if (outError) *outError = QStringLiteral("纹理图集加载失败");
+            return false;
+        }
     }
     QVector<ExtractedMaterial> extracted;
     if (!extractor.ExtractMaterials(&table, extracted, outError)) return false;

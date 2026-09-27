@@ -986,7 +986,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                                                 const LAppModel::TimelinePreviewPreparation& prepareTimeline,
                                                 const LAppModel::PhysicsDraft* physicsDraft,
                                                 const CMeshGeometryMigration* geometry,
-                                                const QMap<QString, float>* requestedEditorPose)
+                                                const QMap<QString, float>* requestedEditorPose,
+                                                const LAppModel::TextureState* textureState)
 {
     if (error) error->clear();
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
@@ -1012,7 +1013,7 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
         };
         if (!model->ApplyParameterStructurePreview(compiled, sourceDigest, addedSeeds, baseValues,
                                                    keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline,
-                                                   physicsDraft, geometry, requestedEditorPose)) return false;
+                                                   physicsDraft, geometry, requestedEditorPose, textureState)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         preparedPose.swap(pose);
@@ -1023,6 +1024,21 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
     } catch (const std::exception&) {
         return MeshError(error, QStringLiteral("无法准备参数结构的变形器预览"));
     }
+}
+
+bool OpengGlForm::ApplyTextureState(const LAppModel::TextureState& state, QString* error)
+{
+    if (error) error->clear();
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive ||
+        IsKeyformDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture)
+        return MeshError(error, QStringLiteral("请先结束当前画布操作或导出"));
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("纹理预览尚未就绪"));
+    auto* model = CurrentModel();
+    if (!model || !model->ApplyTextureState(state, error)) return false;
+    update();
+    NotifyMeshSelection();
+    return true;
 }
 
 bool OpengGlForm::EndEditorPreview(QString* error)

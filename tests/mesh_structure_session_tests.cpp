@@ -197,7 +197,7 @@ private slots:
         if(mutation==2) {session.sourceDigest.clear();json.remove("sourceDigest");}
         if(mutation==3) {session.sourceDigest=QByteArray(31,'x');json["sourceDigest"]=QString::fromLatin1(session.sourceDigest.toHex());}
         if(mutation==4) {session.sourceDigest=QByteArray(33,'x');json["sourceDigest"]=QString::fromLatin1(session.sourceDigest.toHex());}
-        if(mutation==5) {session.version=7;json["version"]=7;}
+        if(mutation==5) {session.version=8;json["version"]=8;}
         QVERIFY(session.ToJson().isEmpty());CModelSession decoded;decoded.sourceMoc="keep";QString error;
         QVERIFY(!CModelSession::FromJson(QJsonDocument(json).toJson(),&decoded,&error));QCOMPARE(decoded.sourceMoc,QString("keep"));
         CModelDocument target=m_original;const auto before=target.AuthoringStructureState();const auto revision=target.Revision();

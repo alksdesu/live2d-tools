@@ -8,6 +8,8 @@
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
+#include <QBuffer>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 
@@ -17,6 +19,12 @@ QByteArray read(const QString& path) { QFile file(path); return file.open(QIODev
 bool write(const QString& path, const QByteArray& bytes) { QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(); }
 QByteArray digest(const QByteArray& bytes) { return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256); }
 QByteArray json(const QJsonObject& root) { return QJsonDocument(root).toJson(QJsonDocument::Indented); }
+QByteArray png(QRgb color, QSize size = {4, 4})
+{
+    QImage image(size, QImage::Format_ARGB32); image.fill(color);
+    QByteArray bytes; QBuffer buffer(&bytes);
+    return buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG") ? bytes : QByteArray();
+}
 QByteArray entry(const CRuntimePackage::Prepared& prepared, const QString& name)
 {
     for (const auto& file : prepared.entries) if (file.relativePath == name) return file.bytes;
@@ -57,6 +65,153 @@ class RuntimePackageTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void textureSnapshotsSurviveDiskChangesAndKeepOriginalIdentity_data()
+    {
+        QTest::addColumn<bool>("remove"); QTest::newRow("changed") << false; QTest::newRow("deleted") << true;
+    }
+    void textureSnapshotsSurviveDiskChangesAndKeepOriginalIdentity()
+    {
+        QFETCH(bool, remove); Fixture fixture;
+        const auto original = png(qRgba(91, 20, 31, 74)), replacement = png(qRgba(2, 194, 83, 49));
+        const auto path = fixture.directory.filePath("original.png"); QVERIFY(write(path, original));
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, original, source, &error));
+        auto input = request(fixture.path); input.textureSources = CTextureAssets::Catalog{{0, source}};
+        input.textureState = {{0, replacement}}; input.expectedSourceDigests[path] = source.digest;
+        if (remove) QVERIFY(QFile::remove(path)); else QVERIFY(write(path, "external non-PNG content"));
+        CRuntimePackage::Prepared prepared;
+        QVERIFY2(CRuntimePackage::Prepare(input, prepared, nullptr, &error), qPrintable(error));
+        const auto output = prepared.model["FileReferences"].toObject()["Textures"].toArray().first().toString();
+        QCOMPARE(entry(prepared, output), replacement); QVERIFY(output.endsWith(".png"));
+        QVERIFY(prepared.protectedPaths.contains(path)); int matched = 0;
+        for (const auto& captured : prepared.sources) if (captured.path == path) {
+            ++matched; QCOMPARE(captured.digest, digest(original)); QCOMPARE(captured.size, original.size());
+        }
+        QCOMPARE(matched, 1); QCOMPARE(input.textureSources->value(0), source);
+        QCOMPARE(remove ? QByteArray() : read(path), remove ? QByteArray() : QByteArray("external non-PNG content"));
+        CDirectoryExport::Options options; options.protectedPaths = prepared.protectedPaths;
+        CDirectoryExport::Result published;
+        QVERIFY(!CDirectoryExport::Publish(fixture.directory.path(), prepared.entries, options, published, nullptr, &error));
+    }
+
+    void repeatedSourcePathsAllowIndependentSlotsAndEmptyHoles()
+    {
+        Fixture fixture; const auto original = png(qRgba(12, 61, 42, 18));
+        const auto first = png(qRgba(118, 20, 7, 27)), last = png(qRgba(14, 19, 229, 54));
+        const auto path = fixture.directory.filePath("shared.png");
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"shared.png", "", "./shared.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, original, source, &error));
+        auto input = request(fixture.path); input.textureSources = CTextureAssets::Catalog{{0, source}, {2, source}};
+        input.textureState = {{0, first}, {2, last}}; input.expectedSourceDigests[path] = source.digest;
+        CRuntimePackage::Prepared prepared; QVERIFY2(CRuntimePackage::Prepare(input, prepared, nullptr, &error), qPrintable(error));
+        const auto textures = prepared.model["FileReferences"].toObject()["Textures"].toArray(); QCOMPARE(textures.size(), 3);
+        QCOMPARE(textures[1].toString(), QString()); QVERIFY(textures[0] != textures[2]);
+        QCOMPARE(entry(prepared, textures[0].toString()), first); QCOMPARE(entry(prepared, textures[2].toString()), last);
+        int sources = 0; for (const auto& value : prepared.sources) sources += value.path == path;
+        QCOMPARE(sources, 1); QVERIFY(!QFileInfo::exists(path));
+    }
+
+    void invalidTextureSnapshotsPreservePreparedOutput_data()
+    {
+        QTest::addColumn<int>("kind");
+        const char* rows[]{"missing-slot", "extra-slot", "empty-slot", "different-path", "wrong-digest", "wrong-size",
+            "invalid-source", "different-dimensions", "unknown-state-slot", "state-without-catalog", "effective-digest", "same-path-different-source"};
+        for (int i = 0; i < 12; ++i) QTest::newRow(rows[i]) << i;
+    }
+    void invalidTextureSnapshotsPreservePreparedOutput()
+    {
+        QFETCH(int, kind); Fixture fixture; const auto original = png(qRgba(12, 91, 42, 98)), replacement = png(qRgba(129, 71, 24, 57));
+        const auto path = fixture.directory.filePath("original.png");
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png", ""};
+        if (kind == 11) files["Textures"] = QJsonArray{"original.png", "original.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, original, source, &error));
+        auto input = request(fixture.path); input.textureSources = CTextureAssets::Catalog{{0, source}};
+        input.textureState = {{0, replacement}};
+        if (kind == 0) input.textureSources->clear();
+        if (kind == 1) (*input.textureSources)[2] = source;
+        if (kind == 2) (*input.textureSources)[1] = source;
+        if (kind == 3) (*input.textureSources)[0].path = fixture.directory.filePath("other.png");
+        if (kind == 4) (*input.textureSources)[0].digest = QByteArray(32, 'x');
+        if (kind == 5) (*input.textureSources)[0].size = QSize(3, 4);
+        if (kind == 6) { (*input.textureSources)[0].png = "invalid"; (*input.textureSources)[0].digest = digest("invalid"); }
+        if (kind == 7) input.textureState[0] = png(qRgba(1, 2, 3, 4), {5, 4});
+        if (kind == 8) input.textureState[3] = replacement;
+        if (kind == 9) input.textureSources.reset();
+        if (kind == 10) input.expectedSourceDigests[path] = digest(replacement);
+        if (kind == 11) { CTextureAssets::Source other; QVERIFY(CTextureAssets::MakeSource(path, replacement, other, &error)); (*input.textureSources)[1] = other; }
+        CRuntimePackage::Prepared prepared; prepared.model = {{"preserved", true}}; prepared.entries.append(CDirectoryExport::Entry{"keep", "original"});
+        prepared.protectedPaths = {"protected"}; prepared.totalBytes = 8;
+        QVERIFY(!CRuntimePackage::Prepare(input, prepared, nullptr, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(prepared.model, QJsonObject({{"preserved", true}})); QCOMPARE(prepared.entries.size(), 1);
+        QCOMPARE(prepared.entries[0].relativePath, QString("keep")); QCOMPARE(prepared.entries[0].bytes, QByteArray("original"));
+        QCOMPARE(prepared.protectedPaths, QStringList{"protected"}); QCOMPARE(prepared.totalBytes, 8);
+    }
+
+    void textureSnapshotCallbacksCaptureRequestAndCancelAtomically()
+    {
+        Fixture fixture; const auto original = png(qRgba(91, 20, 31, 74)), replacement = png(qRgba(2, 194, 83, 49));
+        const auto path = fixture.directory.filePath("original.png");
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, original, source, &error));
+        auto input = request(fixture.path); input.textureSources = CTextureAssets::Catalog{{0, source}}; input.textureState = {{0, replacement}};
+        const auto saved = input; CExportControl control; bool called = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) {
+            if (!called) { called = true; input = {}; } return true;
+        }));
+        CRuntimePackage::Prepared prepared; QVERIFY2(CRuntimePackage::Prepare(input, prepared, &control, &error), qPrintable(error)); QVERIFY(called);
+        const auto output = prepared.model["FileReferences"].toObject()["Textures"].toArray().first().toString(); QCOMPARE(entry(prepared, output), replacement);
+        const auto accepted = prepared.model; const auto total = prepared.totalBytes;
+        CExportControl canceled; bool reached = false;
+        QVERIFY(canceled.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.detail.startsWith(QStringLiteral("收集纹理快照"))) { reached = true; canceled.Cancel(); }
+            return true;
+        }));
+        QVERIFY(!CRuntimePackage::Prepare(saved, prepared, &canceled, &error)); QVERIFY(reached); QVERIFY(canceled.WasCanceled());
+        QCOMPARE(prepared.model, accepted); QCOMPARE(prepared.totalBytes, total); QCOMPARE(entry(prepared, output), replacement);
+    }
+
+    void textureSnapshotBudgetsPreservePreparedOutput_data()
+    {
+        QTest::addColumn<int>("kind"); QTest::newRow("source-file") << 0; QTest::newRow("effective-file") << 1;
+        QTest::newRow("total") << 2; QTest::newRow("file-count") << 3;
+    }
+    void textureSnapshotBudgetsPreservePreparedOutput()
+    {
+        QFETCH(int, kind); Fixture fixture; auto original = png(qRgba(91, 20, 31, 74));
+        auto replacement = png(qRgba(2, 194, 83, 49)); const auto path = fixture.directory.filePath("original.png");
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        auto input = request(fixture.path); const auto limit = input.mocBytes.size() + read(fixture.path).size();
+        if (kind == 0) original.append(QByteArray(limit, 'x'));
+        if (kind == 1) replacement.append(QByteArray(limit, 'y'));
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, original, source, &error));
+        input.textureSources = CTextureAssets::Catalog{{0, source}}; input.textureState = {{0, replacement}};
+        if (kind < 2) input.maximumFileBytes = limit;
+        if (kind == 2) input.maximumTotalBytes = limit;
+        if (kind == 3) input.maximumFiles = 2;
+        CRuntimePackage::Prepared prepared; prepared.model = {{"preserved", true}};
+        QVERIFY(!CRuntimePackage::Prepare(input, prepared, nullptr, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(prepared.model, QJsonObject({{"preserved", true}})); QVERIFY(prepared.entries.isEmpty());
+    }
+
+    void textureSnapshotsKeepOtherSourceChecks()
+    {
+        Fixture fixture; const auto original = png(qRgba(91, 20, 31, 74)); const auto path = fixture.directory.filePath("original.png");
+        auto files = fixture.root["FileReferences"].toObject(); files["Textures"] = QJsonArray{"original.png"};
+        fixture.root["FileReferences"] = files; QVERIFY(fixture.save());
+        const auto names = json({{"Version", 3}, {"Parameters", QJsonArray{}}}); fixture.resource("DisplayInfo", "names.json", names);
+        CTextureAssets::Source source; QString error; QVERIFY(CTextureAssets::MakeSource(path, original, source, &error));
+        auto input = request(fixture.path); input.textureSources = CTextureAssets::Catalog{{0, source}};
+        input.expectedSourceDigests[fixture.directory.filePath("names.json")] = digest(names);
+        QVERIFY(write(fixture.directory.filePath("names.json"), json({{"Version", 3}, {"Custom", true}})));
+        CRuntimePackage::Prepared prepared; QVERIFY(!CRuntimePackage::Prepare(input, prepared, nullptr, &error));
+        QVERIFY(error.contains("names.json")); QVERIFY(prepared.entries.isEmpty());
+    }
+
     void newlySavedUserDataRegistrationKeepsOtherSourceChecks_data()
     {
         QTest::addColumn<int>("index");

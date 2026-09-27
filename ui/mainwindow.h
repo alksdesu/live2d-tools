@@ -5,6 +5,7 @@
 #include "std/cmodeljson.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
+#include "live2dstruct/ctextureeditcontroller.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/ctreemanage.h"
@@ -95,6 +96,13 @@ private:
     void SyncDocumentToRuntime();
     void InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loaded);
     void RefreshTextureGeometry();
+    bool InitializeTextureEditing(QString* error);
+    bool PublishTextureState(const live2dstruct::CTextureAssets::State& state, QString* error);
+    bool ReplaceTexture(int slot, const QByteArray& png, QString* error);
+    void RefreshTextureEditing(bool changed = false);
+    void ApplyTextureHistory(bool undo);
+    live2dstruct::CTextureEditController m_textureEditor;
+    const live2dstruct::CTextureAssets::State* m_restoringTextures = nullptr;
     void ClearTimelinePreview();
     bool PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                               const QMap<QString, float>& pose, bool editing, QString* error);
@@ -143,6 +151,8 @@ private:
     QString m_savedPhysicsPath;
     quint64 m_timelinePreviewStopRevision = 0;
     QStringList m_selectedObjectIds, m_selectedObjectTypes;
+    bool HasSessionChanges() const { return m_sessionDirty || m_textureEditor.IsDirty(); }
+    void RefreshWindowTitle();
     void RefreshUndoActions();
     void UndoDocumentEdit();
     void RedoDocumentEdit();
@@ -181,7 +191,7 @@ private:
     bool m_workspaceReady = false;
     bool m_runtimePanelsInitialized = false;
     bool m_syncingVisibility = false;
-    enum class HistorySource { None, Parameters, Inspector, Timeline, Physics };
+    enum class HistorySource { None, Parameters, Inspector, Timeline, Physics, Textures };
     HistorySource m_historySource = HistorySource::None;
     std::optional<HistorySource> m_keyformDragHistorySource;
     CWorkspaceLayouts m_workspaceLayouts;

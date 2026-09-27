@@ -282,6 +282,32 @@ private slots:
         QCOMPARE(blue->clipping, quint8(0));
     }
 
+    void replacementAlphaReplaysUnchangedVerticesIntoPsd_data()
+    {
+        QTest::addColumn<bool>("high"); QTest::addColumn<bool>("inverted");
+        for (bool high : {false, true}) for (bool inverted : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(high).arg(inverted))) << high << inverted;
+    }
+    void replacementAlphaReplaysUnchangedVerticesIntoPsd()
+    {
+        QFETCH(bool, high); QFETCH(bool, inverted);
+        const auto [model, renderer] = scene(true, high, false, inverted);
+        GLuint replacement = 0; m_gl->glGenTextures(1,&replacement); m_textures.append(replacement);
+        m_gl->glBindTexture(GL_TEXTURE_2D,replacement); const std::array<quint8,4> rgba{255,0,0,64};
+        m_gl->glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
+        m_gl->glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST); m_gl->glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        renderer->BindTexture(0,replacement);
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            CExportControl control; auto render = session(model,renderer,control); QString error; QVERIFY(render->Begin(true,&error));
+            QTemporaryDir temporary; const QString path = temporary.filePath("replaced.psd");
+            QVERIFY2(CPsdFileTask::Execute(path,QSize(64,64),false,[&](CPsdExportItem& item,QString* detail) { return render->Next(item,detail); },&control,&error),qPrintable(error));
+            QVERIFY(render->Finish(true)); PsdBinary::Document doc; QVERIFY2(PsdBinary::Parse(bytes(path),doc,&error),qPrintable(error));
+            const auto* blue = layer(doc,QStringLiteral("蓝色")); QVERIFY(blue);
+            QVERIFY(qAbs(int(pixel(*blue,-1,32,32)) - (inverted ? 96 : 32)) <= 1);
+            QCOMPARE(pixel(*blue,-1,1,1),quint8(inverted ? 128 : 0)); QCOMPARE(blue->clipping,quint8(0));
+        }
+    }
+
     void cancellationBetweenLayersPreservesOldOutput()
     {
         const auto [model, renderer] = scene();

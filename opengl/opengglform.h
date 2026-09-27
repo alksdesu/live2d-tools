@@ -125,7 +125,9 @@ public:
                                         const LAppModel::TimelinePreviewPreparation& prepareTimeline = {},
                                         const LAppModel::PhysicsDraft* physicsDraft = nullptr,
                                         const CMeshGeometryMigration* geometry = nullptr,
-                                        const QMap<QString, float>* requestedEditorPose = nullptr);
+                                        const QMap<QString, float>* requestedEditorPose = nullptr,
+                                        const LAppModel::TextureState* textureState = nullptr);
+    bool ApplyTextureState(const LAppModel::TextureState& state, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);
     bool CancelMeshDrag(QString* error = nullptr);

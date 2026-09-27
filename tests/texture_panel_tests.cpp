@@ -246,7 +246,7 @@ private slots:
         QCOMPARE(picked.size(), 0);
     }
 
-    void missingTexturesAndReloadsClearOldSelections()
+    void failedTextureReloadPreservesSnapshotAndEmptyReloadClearsSelections()
     {
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
@@ -266,7 +266,7 @@ private slots:
         QVERIFY(!wireframe->isEnabled() && !exportPng->isEnabled());
         QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked);
         for (int reload = 0; reload < 4; ++reload) {
-            panel.LoadTextures({{0, texturePath}, {1, temporary.filePath("missing.png")}}, mocPath);
+            panel.LoadTextures({{0, texturePath}}, mocPath);
             panel.HighlightMesh(name);
             wireframe->setChecked(true);
             QVERIFY(exportPng->isEnabled());
@@ -274,13 +274,12 @@ private slots:
             view->ScenePosClicked(QPointF(16, 24));
             QCOMPARE(picked.size(), 1);
             QCOMPARE(picked.takeFirst()[0].toString(), name);
-            selector->setCurrentIndex(1);
-            QVERIFY(view->scene()->items().isEmpty());
-            QVERIFY(view->scene()->sceneRect().isEmpty());
-            QVERIFY(!wireframe->isEnabled() && !exportPng->isEnabled());
-            view->ScenePosClicked(QPointF(16, 24));
-            QCOMPARE(picked.size(), 0);
-            selector->setCurrentIndex(0);
+            const auto items = view->scene()->items();
+            const auto sceneRect = view->scene()->sceneRect();
+            panel.LoadTextures({{0, texturePath}, {1, temporary.filePath("missing.png")}}, mocPath);
+            QCOMPARE(selector->count(), 1);
+            QCOMPARE(view->scene()->items(), items);
+            QCOMPARE(view->scene()->sceneRect(), sceneRect);
             QVERIFY(wireframe->isEnabled() && exportPng->isEnabled());
             view->ScenePosClicked(QPointF(16, 24));
             QCOMPARE(picked.size(), 1);
@@ -467,12 +466,17 @@ private slots:
         atlas.fill(Qt::white);
         QVERIFY(atlas.save(texturePath));
         CTexturePanel panel;
+        panel.LoadTextures({{0, texturePath}});
+        const auto originalItems = panel.findChild<CAtlasView*>()->scene()->items();
+        QSignalSpy rejected(&panel, &CTexturePanel::EditRejected);
         panel.LoadTextures({{0, texturePath}}, mocPath);
         auto* view = panel.findChild<CAtlasView*>();
         auto* wireframe = panel.findChild<QCheckBox*>();
         QVERIFY(view && wireframe);
         QVERIFY(!wireframe->isEnabled());
         QCOMPARE(view->scene()->items().size(), 1);
+        QCOMPARE(view->scene()->items(), originalItems);
+        QCOMPARE(rejected.size(), 1);
         QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked);
         view->ScenePosClicked(QPointF(16, 24));
         QCOMPARE(picked.size(), 0);

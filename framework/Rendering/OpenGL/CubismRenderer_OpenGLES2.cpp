@@ -177,7 +177,7 @@ bool CubismRenderer_OpenGLES2::DrawPsdMaskSource(CubismClippingContext_OpenGLES2
     glViewport(0, 0, surface->GetBufferWidth(), surface->GetBufferHeight());
     PreDraw();
     if (clear && !surface->Clear(1, 1, 1, 1)) return false;
-    if (source >= 0 && GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(source)) {
+    if (source >= 0 && MaskSourceAvailable(source)) {
         IsCulling(GetModel()->GetDrawableCulling(source) != 0);
         SetClippingContextBufferForMask(clip);
         if (!DrawMeshOpenGL(*GetModel(), source, _psdExport->all)) return false;
@@ -249,7 +249,7 @@ bool CubismRenderer_OpenGLES2::DoPsdStep()
         }
         if (clip->_bufferIndex < 0 || clip->_bufferIndex >= state.cleared.size()) return false;
         const int source = clip->_clippingIdList[state.source++];
-        const bool available = GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(source);
+        const bool available = MaskSourceAvailable(source);
         const bool clear = !state.cleared[clip->_bufferIndex] && (state.forceRedraw || available);
         if (!DrawPsdMaskSource(clip, source, clear)) return false;
         if (clear) state.cleared[clip->_bufferIndex] = true;
@@ -379,7 +379,7 @@ bool CubismClippingManager_OpenGLES2::SetupClippingContext(CubismModel& model, C
         for (csmInt32 i = 0; i < clipDrawCount; i++)
         {
             const csmInt32 clipDrawIndex = clipContext->_clippingIdList[i];
-            if (!model.GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex))
+            if (!renderer->MaskSourceAvailable(clipDrawIndex))
             {
                 continue;
             }
@@ -608,8 +608,10 @@ bool CubismRenderer_OpenGLES2::PrepareModelReplacement(CubismModel* model,
                 return PreparationFailed(error, QStringLiteral("原渲染器纹理绑定无效"));
             _textures[texture->First] = texture->Second;
         }
-        return InitializeResources(model, previous._requestedMaskBufferCount,
-                                   previous._requestedMaskBufferSize, true, error);
+        if (!InitializeResources(model, previous._requestedMaskBufferCount,
+                                 previous._requestedMaskBufferSize, true, error)) return false;
+        _textureMaskReplay = previous._textureMaskReplay;
+        return true;
     } catch (const std::bad_alloc&) {
         return PreparationFailed(error, QStringLiteral("复制渲染设置时内存不足"));
     } catch (const std::length_error&) {
@@ -656,7 +658,7 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
     if (!surface->Clear(1.0f, 1.0f, 1.0f, 1.0f)) return false;
     for (csmInt32 index = 0; index < clipContext->_clippingIdCount; ++index) {
         const csmInt32 clipDrawIndex = clipContext->_clippingIdList[index];
-        if (!GetModel()->GetDrawableDynamicFlagVertexPositionsDidChange(clipDrawIndex)) continue;
+        if (!MaskSourceAvailable(clipDrawIndex)) continue;
         IsCulling(GetModel()->GetDrawableCulling(clipDrawIndex) != 0);
         SetClippingContextBufferForMask(clipContext);
         if (!DrawMeshOpenGL(*GetModel(), clipDrawIndex, LAppDelegate::GetInstance()->m_IsPrintALl)) return false;
@@ -868,7 +870,21 @@ csmBool CubismRenderer_OpenGLES2::RestoreProfile()
 void CubismRenderer_OpenGLES2::BindTexture(csmUint32 modelTextureIndex, GLuint glTextureIndex)
 {
     if (_psdExport) return;
+    for (auto entry = _textures.Begin(); entry != _textures.End(); ++entry)
+        if (entry->First == csmInt32(modelTextureIndex) && entry->Second != glTextureIndex) {
+            _maskBuffersNeedRedraw = true;
+            _textureMaskReplay = true;
+            break;
+        }
     _textures[modelTextureIndex] = glTextureIndex;
+}
+
+bool CubismRenderer_OpenGLES2::MaskSourceAvailable(csmInt32 drawable) const
+{
+    const auto* model = GetModel();
+    if (!model || drawable < 0 || drawable >= model->GetDrawableCount()) return false;
+    if (model->GetDrawableDynamicFlagVertexPositionsDidChange(drawable)) return true;
+    return _textureMaskReplay && model->GetDrawableVertexCount(drawable) > 0 && model->GetDrawableVertices(drawable);
 }
 
 const csmMap<csmInt32, GLuint>& CubismRenderer_OpenGLES2::GetBindedTextures() const

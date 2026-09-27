@@ -12,10 +12,9 @@
 #include <algorithm>
 #include <limits>
 
-#define STBI_NO_STDIO
-#define STBI_ONLY_PNG
-#define STB_IMAGE_IMPLEMENTATION
-#include "std/stb_image.h"
+#include "std/cpngimage.h"
+#include <QImage>
+#include <exception>
 
 LAppTextureManager::LAppTextureManager() = default;
 
@@ -52,83 +51,102 @@ LAppTextureManager::TextureInfo* LAppTextureManager::CreateTextureFromPngFile(st
     std::unique_ptr<Csm::csmByte, decltype(&LAppPal::ReleaseBytes)> address(
         LAppPal::LoadFileAsBytes(fileName, &size), &LAppPal::ReleaseBytes);
     if (!address || size == 0 || size > static_cast<Csm::csmSizeInt>(std::numeric_limits<int>::max())) return nullptr;
-    int width = 0, height = 0, channels = 0;
-    if (!stbi_info_from_memory(address.get(), static_cast<int>(size), &width, &height, &channels)) return nullptr;
-    GLint maximumSize = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximumSize);
-    if (width <= 0 || height <= 0 || width > maximumSize || height > maximumSize ||
-        qint64(width) * height > std::numeric_limits<int>::max() / 4) return nullptr;
+    return UploadPng(QByteArray(reinterpret_cast<const char*>(address.get()), int(size)), std::move(fileName), {}, nullptr);
+}
 
-    int decodedWidth = 0, decodedHeight = 0;
-    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
-        stbi_load_from_memory(address.get(), static_cast<int>(size), &decodedWidth, &decodedHeight,
-                              &channels, STBI_rgb_alpha), &stbi_image_free);
-    if (!pixels || decodedWidth != width || decodedHeight != height) return nullptr;
-#ifdef PREMULTIPLIED_ALPHA_ENABLE
-    for (qint64 pixel = 0; pixel < qint64(width) * height; ++pixel) {
-        stbi_uc* color = pixels.get() + pixel * 4;
-        color[0] = color[0] * (color[3] + 1) >> 8;
-        color[1] = color[1] * (color[3] + 1) >> 8;
-        color[2] = color[2] * (color[3] + 1) >> 8;
+LAppTextureManager::TextureInfo* LAppTextureManager::CreateTextureFromPngBytes(const QByteArray& png,
+                                                                             const QSize& expectedSize, QString* error)
+{
+    if (error) error->clear();
+    if (!expectedSize.isValid() || expectedSize.isEmpty()) {
+        if (error) *error = QStringLiteral("替换纹理缺少有效原始尺寸");
+        return nullptr;
     }
+    return UploadPng(png, {}, expectedSize, error);
+}
+
+LAppTextureManager::TextureInfo* LAppTextureManager::UploadPng(const QByteArray& png, std::string fileName,
+                                                            const QSize& expectedSize, QString* error)
+{
+    const auto fail = [&](const QString& message) -> TextureInfo* { if (error) *error = message; return nullptr; };
+    if (!CanUseContext()) return fail(QStringLiteral("纹理上传需要所属 OpenGL 上下文"));
+    try {
+        QSize size;
+        if (!CPngImage::Size(png, size, error)) return nullptr;
+        if (expectedSize.isValid() && size != expectedSize) return fail(QStringLiteral("替换纹理尺寸必须保持 %1×%2").arg(expectedSize.width()).arg(expectedSize.height()));
+        const int width = size.width(), height = size.height();
+        GLint maximumSize = 0;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximumSize);
+        if (width > maximumSize || height > maximumSize) return fail(QStringLiteral("纹理尺寸超过 OpenGL 支持范围"));
+        QImage pixels;
+        if (!CPngImage::Decode(png, pixels, error)) return nullptr;
+#ifdef PREMULTIPLIED_ALPHA_ENABLE
+        for (qint64 pixel = 0; pixel < qint64(width) * height; ++pixel) {
+            uchar* color = pixels.bits() + pixel * 4;
+            color[0] = color[0] * (color[3] + 1) >> 8;
+            color[1] = color[1] * (color[3] + 1) >> 8;
+            color[2] = color[2] * (color[3] + 1) >> 8;
+        }
 #endif
 
-    GLint binding = 0, unpackBuffer = 0, alignment = 0, rowLength = 0, skipRows = 0, skipPixels = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
-    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpackBuffer);
-    glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
-    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rowLength);
-    glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skipRows);
-    glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skipPixels);
-    const auto restore = qScopeGuard([&] {
-        glBindTexture(GL_TEXTURE_2D, binding);
-        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpackBuffer);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLength);
-        glPixelStorei(GL_UNPACK_SKIP_ROWS, skipRows);
-        glPixelStorei(GL_UNPACK_SKIP_PIXELS, skipPixels);
-    });
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-    GLuint textureId = 0;
-    glGenTextures(1, &textureId);
-    if (!textureId) return nullptr;
-    const auto release = qScopeGuard([&] { if (textureId) glDeleteTextures(1, &textureId); });
-    glBindTexture(GL_TEXTURE_2D, textureId);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.get());
-    GLint uploadedWidth = 0, uploadedHeight = 0;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &uploadedWidth);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &uploadedHeight);
-    if (uploadedWidth != width || uploadedHeight != height) return nullptr;
-    glGenerateMipmap(GL_TEXTURE_2D);
-    for (int level = 1, mipWidth = width, mipHeight = height; mipWidth > 1 || mipHeight > 1; ++level) {
-        mipWidth = std::max(1, mipWidth / 2);
-        mipHeight = std::max(1, mipHeight / 2);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &uploadedWidth);
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &uploadedHeight);
-        if (uploadedWidth != mipWidth || uploadedHeight != mipHeight) return nullptr;
-    }
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        GLint binding = 0, unpackBuffer = 0, alignment = 0, rowLength = 0, skipRows = 0, skipPixels = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+        glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpackBuffer);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rowLength);
+        glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skipRows);
+        glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skipPixels);
+        const auto restore = qScopeGuard([&] {
+            glBindTexture(GL_TEXTURE_2D, binding);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, unpackBuffer);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, rowLength);
+            glPixelStorei(GL_UNPACK_SKIP_ROWS, skipRows);
+            glPixelStorei(GL_UNPACK_SKIP_PIXELS, skipPixels);
+        });
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+        GLuint textureId = 0;
+        glGenTextures(1, &textureId);
+        if (!textureId) return fail(QStringLiteral("无法创建 OpenGL 纹理"));
+        const auto release = qScopeGuard([&] { if (textureId) glDeleteTextures(1, &textureId); });
+        glBindTexture(GL_TEXTURE_2D, textureId);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.constBits());
+        GLint uploadedWidth = 0, uploadedHeight = 0;
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &uploadedWidth);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &uploadedHeight);
+        if (uploadedWidth != width || uploadedHeight != height) return fail(QStringLiteral("OpenGL 纹理上传失败"));
+        glGenerateMipmap(GL_TEXTURE_2D);
+        for (int level = 1, mipWidth = width, mipHeight = height; mipWidth > 1 || mipHeight > 1; ++level) {
+            mipWidth = std::max(1, mipWidth / 2);
+            mipHeight = std::max(1, mipHeight / 2);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &uploadedWidth);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &uploadedHeight);
+            if (uploadedWidth != mipWidth || uploadedHeight != mipHeight) return fail(QStringLiteral("OpenGL 纹理缩略层创建失败"));
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    auto info = std::make_unique<TextureInfo>();
-    info->fileName = std::move(fileName);
-    info->width = width;
-    info->height = height;
-    info->id = textureId;
-    info->sourceDigest = QCryptographicHash::hash(
-        QByteArrayView(reinterpret_cast<const char*>(address.get()), static_cast<qsizetype>(size)), QCryptographicHash::Sha256);
-    TextureInfo* result = info.get();
-    m_textures.push_back(std::move(info));
-    textureId = 0;
-    return result;
+        auto info = std::make_unique<TextureInfo>();
+        info->fileName = std::move(fileName);
+        info->width = width;
+        info->height = height;
+        info->id = textureId;
+        info->pngBytes = QByteArray(png.constData(), png.size());
+        info->sourceDigest = QCryptographicHash::hash(info->pngBytes, QCryptographicHash::Sha256);
+        TextureInfo* result = info.get();
+        m_textures.push_back(std::move(info));
+        textureId = 0;
+        return result;
+    } catch (const std::exception&) { return fail(QStringLiteral("无法准备纹理内存或 OpenGL 资源")); }
 }
 
 void LAppTextureManager::RemoveModelTexture(const std::string& fileName)
 {
+    if (fileName.empty()) return;
     const QString path = QString::fromUtf8(fileName.c_str());
     for (auto entry = m_modelTex.begin(); entry != m_modelTex.end();) {
         if (entry.value() == path) entry = m_modelTex.erase(entry);
@@ -162,11 +180,11 @@ void LAppTextureManager::ReleaseTexture(std::string fileName)
     if (texture) ReleaseTexture(texture->id);
 }
 
-void LAppTextureManager::ReleaseUnusedTextures(const QSet<QString>& retainedPaths)
+void LAppTextureManager::ReleaseUnusedTextures(const QSet<QString>& retainedPaths, const QSet<GLuint>& retainedIds)
 {
     if (!CanUseContext()) return;
     for (auto texture = m_textures.begin(); texture != m_textures.end();) {
-        if (retainedPaths.contains(QString::fromUtf8((*texture)->fileName.c_str()))) {
+        if (retainedIds.contains((*texture)->id) || (!(*texture)->fileName.empty() && retainedPaths.contains(QString::fromUtf8((*texture)->fileName.c_str())))) {
             ++texture;
             continue;
         }
@@ -184,6 +202,7 @@ LAppTextureManager::TextureInfo* LAppTextureManager::GetTextureInfoById(GLuint t
 
 LAppTextureManager::TextureInfo* LAppTextureManager::GetTextureInfoByName(const std::string& fileName) const
 {
+    if (fileName.empty()) return nullptr;
     for (const auto& texture : m_textures) if (texture->fileName == fileName) return texture.get();
     return nullptr;
 }

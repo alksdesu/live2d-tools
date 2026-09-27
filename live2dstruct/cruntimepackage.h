@@ -3,6 +3,7 @@
 
 #include "cmodeldocument.h"
 #include "cparameterresourceedits.h"
+#include "ctextureassets.h"
 #include "std/cdirectoryexport.h"
 #include <optional>
 
@@ -17,6 +18,8 @@ public:
         QByteArray modelSettingsDigest, sourceMocDigest, mocBytes;
         QByteArray loadedModelSettingsBytes;
         QString registeredUserDataPath;
+        std::optional<CTextureAssets::Catalog> textureSources;
+        CTextureAssets::State textureState;
         CParameterResourceEdits::State references;
         QMap<QString, QByteArray> expectedSourceDigests;
         QHash<QString, CModelParameterMetadata> parameterMetadata;

@@ -5,6 +5,11 @@
 #include "live2dstruct/cdrawableflags.h"
 #include "live2dstruct/ccanvasgeometry.h"
 #include "std/cexportcontrol.h"
+#include "std/cpngimage.h"
+#include "live2dstruct/ctextureassets.h"
+#include <QFile>
+#include <QFileInfo>
+#include <QDateTime>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -23,35 +28,106 @@ CTextureExtractor::~CTextureExtractor() {}
 bool CTextureExtractor::LoadAtlases(const QVector<QString>& atlasPaths, CExportControl* control)
 {
     try {
-        if (control && !control->Checkpoint()) return false;
-        if (atlasPaths.isEmpty()) {
-            if (control) control->Fail(QStringLiteral("没有可加载的纹理图集"));
+        const auto paths = atlasPaths;
+        if (paths.size() > CTextureAssets::MaximumSlots) {
+            if (control) control->Fail(QStringLiteral("纹理图集数量超出限制"));
             return false;
         }
-        QVector<QImage> candidate;
-        candidate.reserve(atlasPaths.size());
-        for (const QString& path : atlasPaths) {
-            if (control && !control->Report(CExportControl::Phase::Preparing, candidate.size(), atlasPaths.size(), path)) return false;
-            QImage img(path);
+        QVector<QByteArray> pngs;
+        pngs.reserve(paths.size());
+        qint64 total = 0;
+        for (const auto& path : paths) {
             if (control && !control->Checkpoint()) return false;
-            if (img.isNull()) {
-                qWarning("CTextureExtractor: 无法加载纹理图集: %s", path.toUtf8().constData());
-                if (control) control->Fail(QStringLiteral("无法加载纹理图集：%1").arg(path));
+            if (path.isEmpty()) { pngs.append(QByteArray()); continue; }
+            const QFileInfo before(path);
+            const auto canonical = before.canonicalFilePath();
+            if (!before.isFile() || canonical.isEmpty() || before.size() > CTextureAssets::MaximumBytes - total) {
+                if (control) control->Fail(QStringLiteral("纹理图集不存在或大小超出限制：%1").arg(path));
                 return false;
             }
-            QImage converted = img.convertToFormat(QImage::Format_ARGB32);
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly)) {
+                if (control) control->Fail(QStringLiteral("无法读取纹理图集：%1").arg(path));
+                return false;
+            }
+            QByteArray bytes;
+            while (!file.atEnd()) {
+                if (control && !control->Checkpoint()) return false;
+                const auto chunk = file.read(256 * 1024);
+                if (file.error() != QFileDevice::NoError || (chunk.isEmpty() && !file.atEnd()) ||
+                    chunk.size() > CTextureAssets::MaximumBytes - total - bytes.size()) {
+                    if (control) control->Fail(QStringLiteral("纹理图集读取失败或大小超出限制：%1").arg(path));
+                    return false;
+                }
+                bytes.append(chunk);
+            }
+            const QFileInfo after(path);
+            if (after.canonicalFilePath() != canonical || before.size() != bytes.size() || after.size() != bytes.size() ||
+                before.lastModified() != after.lastModified() || before.metadataChangeTime() != after.metadataChangeTime()) {
+                if (control) control->Fail(QStringLiteral("纹理图集在读取期间发生变化：%1").arg(path));
+                return false;
+            }
+            if (bytes.isEmpty()) {
+                if (control) control->Fail(QStringLiteral("纹理图集为空：%1").arg(path));
+                return false;
+            }
+            total += bytes.size(); pngs.append(std::move(bytes));
+        }
+        return LoadAtlasBytes(pngs, control);
+    } catch (const std::exception&) {
+        if (control) control->Fail(QStringLiteral("无法读取纹理图集，原图集保持不变"));
+        return false;
+    }
+}
+
+bool CTextureExtractor::LoadAtlasBytes(const QVector<QByteArray>& atlasPngs, CExportControl* control)
+{
+    try {
+        const auto pngs = atlasPngs;
+        if (control && !control->Checkpoint()) return false;
+        if (pngs.isEmpty() || pngs.size() > CTextureAssets::MaximumSlots) {
+            if (control) control->Fail(QStringLiteral("纹理图集数量为空或超出限制"));
+            return false;
+        }
+        qint64 bytes = 0, pixels = 0;
+        for (const auto& png : pngs) {
             if (control && !control->Checkpoint()) return false;
+            if (png.isEmpty()) continue;
+            QSize size; QString error;
+            if (png.size() > CTextureAssets::MaximumBytes - bytes || !CPngImage::Size(png, size, &error)) {
+                if (control) control->Fail(error.isEmpty() ? QStringLiteral("纹理图集编码总量超出限制") : error);
+                return false;
+            }
+            const qint64 count = qint64(size.width()) * size.height();
+            if (count > MaximumMaterialPixels || count > MaximumTotalMaterialPixels - pixels) {
+                if (control) control->Fail(QStringLiteral("纹理图集解码像素总量超出限制"));
+                return false;
+            }
+            bytes += png.size(); pixels += count;
+        }
+        QVector<QImage> candidate;
+        candidate.reserve(pngs.size());
+        for (const auto& png : pngs) {
+            if (control && !control->Report(CExportControl::Phase::Preparing, candidate.size(), pngs.size())) return false;
+            if (png.isEmpty()) { candidate.append(QImage()); continue; }
+            QImage image; QString error;
+            if (!CPngImage::Decode(png, image, &error)) {
+                if (control) control->Fail(error);
+                return false;
+            }
+            if (control && !control->Checkpoint()) return false;
+            auto converted = image.convertToFormat(QImage::Format_ARGB32);
             if (converted.isNull()) {
-                if (control) control->Fail(QStringLiteral("无法转换纹理图集像素格式：%1").arg(path));
+                if (control) control->Fail(QStringLiteral("无法转换纹理图集像素格式"));
                 return false;
             }
             candidate.append(std::move(converted));
         }
-        if (control && !control->Report(CExportControl::Phase::Preparing, candidate.size(), atlasPaths.size())) return false;
+        if (control && !control->Report(CExportControl::Phase::Preparing, candidate.size(), pngs.size())) return false;
         m_atlases.swap(candidate);
         return true;
-    } catch (const std::exception& exception) {
-        if (control) control->Fail(QStringLiteral("加载纹理图集失败：%1").arg(QString::fromUtf8(exception.what())));
+    } catch (const std::exception&) {
+        if (control) control->Fail(QStringLiteral("无法解码纹理图集，原图集保持不变"));
         return false;
     }
 }

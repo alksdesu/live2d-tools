@@ -83,7 +83,7 @@ public:
         m_observed.insert(path, canonical);
         const auto found = m_sources.constFind(canonical);
         if (found != m_sources.cend()) { bytes = found->bytes; return expected(path, found->digest, error); }
-        if (m_sources.size() >= m_request.maximumFiles || before.size() > m_request.maximumFileBytes ||
+        if (m_sources.size() + m_snapshots.size() >= m_request.maximumFiles || before.size() > m_request.maximumFileBytes ||
             before.size() > m_request.maximumTotalBytes - m_readBytes)
             return fail(error, QStringLiteral("模型资源数量或大小超出限制：%1").arg(path));
         QFile file(path);
@@ -112,8 +112,29 @@ public:
         return true;
     }
 
+    bool textureSnapshot(const CTextureAssets::Source& source, QString* error)
+    {
+        const auto path = CModelResourcePath::Resolve(m_home, source.path);
+        if (path.isEmpty() || !expected(path, source.digest, error)) return false;
+        if (m_snapshots.contains(path)) return true;
+        const auto observed = m_observed.constFind(path);
+        if (observed != m_observed.cend() && m_sources.value(*observed).digest != source.digest)
+            return fail(error, QStringLiteral("同一路径的资源快照不一致：%1").arg(path));
+        if (m_sources.size() + m_snapshots.size() >= m_request.maximumFiles ||
+            source.png.size() > m_request.maximumFileBytes || source.png.size() > m_request.maximumTotalBytes - m_readBytes)
+            return fail(error, QStringLiteral("纹理源快照数量或大小超出限制：%1").arg(path));
+        m_snapshots.insert(path, source.digest);
+        m_readBytes += source.png.size();
+        m_result.sources.append({path, source.digest, source.png.size()});
+        m_result.protectedPaths.append(path);
+        return report(QStringLiteral("收集纹理快照 %1").arg(QFileInfo(path).fileName()), error);
+    }
+
     bool expected(const QString& path, const QByteArray& digest, QString* error) const
     {
+        const auto snapshot = m_snapshots.constFind(path);
+        if (snapshot != m_snapshots.cend() && *snapshot != digest)
+            return fail(error, QStringLiteral("同一路径的资源快照不一致：%1").arg(path));
         for (auto it = m_request.expectedSourceDigests.cbegin(); it != m_request.expectedSourceDigests.cend(); ++it)
             if (CModelResourcePath::Resolve(m_home, it.key()) == path && (it->size() != 32 || *it != digest))
                 return fail(error, QStringLiteral("模型资源与已加载版本不一致：%1").arg(path));
@@ -153,7 +174,7 @@ public:
     {
         for (auto it = m_request.expectedSourceDigests.cbegin(); it != m_request.expectedSourceDigests.cend(); ++it) {
             const auto path = CModelResourcePath::Resolve(m_home, it.key());
-            if (path.isEmpty() || !m_observed.contains(path))
+            if (path.isEmpty() || (!m_observed.contains(path) && !m_snapshots.contains(path)))
                 return fail(error, QStringLiteral("已加载的资源未登记在模型包中：%1").arg(it.key()));
         }
         for (auto it = m_sources.cbegin(); it != m_sources.cend(); ++it) {
@@ -183,6 +204,7 @@ private:
     QMap<QByteArray, QString> m_outputs;
     QMap<QString, int> m_counts;
     QMap<QString, QString> m_observed;
+    QMap<QString, QByteArray> m_snapshots;
     qint64 m_readBytes = 0;
 };
 
@@ -335,14 +357,17 @@ bool registeredUserData(const Package::Request& request, const QByteArray& curre
 }
 }
 
-bool CRuntimePackage::Prepare(const Request& request, Prepared& prepared, CExportControl* control, QString* error)
+bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportControl* control, QString* error)
 {
     if (error) error->clear();
-    if (!text(request.modelJsonPath) || request.modelSettingsDigest.size() != 32 || request.sourceMocDigest.size() != 32 ||
-        request.mocBytes.isEmpty() || request.maximumFiles < 1 || request.maximumFileBytes < 1 || request.maximumTotalBytes < 1)
-        return fail(error, QStringLiteral("运行时模型包请求无效"));
-    if (!CParameterResourceEdits::Validate(request.references, error)) return false;
     try {
+        const Request request = input;
+        if (!text(request.modelJsonPath) || request.modelSettingsDigest.size() != 32 || request.sourceMocDigest.size() != 32 ||
+            request.mocBytes.isEmpty() || request.maximumFiles < 1 || request.maximumFileBytes < 1 || request.maximumTotalBytes < 1)
+            return fail(error, QStringLiteral("运行时模型包请求无效"));
+        if (!request.textureSources && !request.textureState.isEmpty())
+            return fail(error, QStringLiteral("纹理覆盖需要完整的原始纹理快照"));
+        if (!CParameterResourceEdits::Validate(request.references, error)) return false;
         Prepared candidate;
         Collector collector(request, candidate, control);
         QByteArray sourceSettings;
@@ -381,12 +406,41 @@ bool CRuntimePackage::Prepare(const Request& request, Prepared& prepared, CExpor
         files.insert(QStringLiteral("Moc"), output);
         QJsonArray textures, packagedTextures;
         if (files.contains(QStringLiteral("Textures")) && !array(files, QStringLiteral("Textures"), textures, error)) return false;
-        for (const auto& value : textures) {
+        if (request.textureSources) {
+            if (textures.size() > CTextureAssets::MaximumSlots)
+                return fail(error, QStringLiteral("模型声明的纹理槽数量超出限制"));
+            int present = 0;
+            const auto home = QFileInfo(request.modelJsonPath).absolutePath();
+            for (int slot = 0; slot < textures.size(); ++slot) {
+                QString path;
+                if (!reference(textures[slot], path, error, true)) return false;
+                const auto source = request.textureSources->constFind(slot);
+                if (path.isEmpty()) {
+                    if (source != request.textureSources->cend()) return fail(error, QStringLiteral("空纹理槽不能带有来源快照：%1").arg(slot));
+                    continue;
+                }
+                ++present;
+                if (source == request.textureSources->cend() ||
+                    CModelResourcePath::Resolve(home, source->path) != CModelResourcePath::Resolve(home, path))
+                    return fail(error, QStringLiteral("纹理槽 %1 的来源与模型声明不一致").arg(slot));
+            }
+            if (present != request.textureSources->size())
+                return fail(error, QStringLiteral("纹理来源快照包含未声明的槽"));
+            if (control && !control->Checkpoint()) return fail(error, control->Error());
+            if (!CTextureAssets::ValidateCatalog(*request.textureSources, error) ||
+                !CTextureAssets::ValidateState(*request.textureSources, request.textureState, error)) return false;
+        }
+        for (int slot = 0; slot < textures.size(); ++slot) {
             QString path;
-            if (!reference(value, path, error, true)) return false;
+            if (!reference(textures[slot], path, error, true)) return false;
             if (path.isEmpty()) { packagedTextures.append(QString()); continue; }
             QByteArray data;
-            if (!collector.read(path, data, error) || !collector.add(QStringLiteral("textures"), suffix(path), data, output, error)) return false;
+            if (request.textureSources) {
+                const auto& source = request.textureSources->value(slot);
+                if (!collector.textureSnapshot(source, error)) return false;
+                data = request.textureState.value(slot, source.png);
+            } else if (!collector.read(path, data, error)) return false;
+            if (!collector.add(QStringLiteral("textures"), request.textureSources ? QStringLiteral(".png") : suffix(path), data, output, error)) return false;
             packagedTextures.append(output);
         }
         if (files.contains(QStringLiteral("Textures"))) files.insert(QStringLiteral("Textures"), packagedTextures);

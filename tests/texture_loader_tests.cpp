@@ -288,6 +288,34 @@ private slots:
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
+    void byteCandidatesKeepOriginalPathCacheAndRetainById()
+    {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const QString path = temporary.filePath("shared.png");
+        QVERIFY(savePng(path)); const auto png = readFile(path); LAppTextureManager manager; manager.setGlOwningContext(m_context.get());
+        const auto* original = manager.CreateTextureFromPngFile(pathBytes(path)); QVERIFY(original);
+        const GLuint originalId = original->id; const auto originalPixels = gpuPixels(originalId);
+        QCOMPARE(original->pngBytes, png); manager.SetModelTextures({{0, path}, {1, path}});
+        const auto mapping = manager.GetModelTex(); QString error;
+        const auto* candidate = manager.CreateTextureFromPngBytes(png, QSize(3, 2), &error); QVERIFY2(candidate, qPrintable(error));
+        const GLuint candidateId = candidate->id; QVERIFY(candidateId != originalId);
+        QCOMPARE(candidate->pngBytes, png); QCOMPARE(candidate->sourceDigest, original->sourceDigest); QVERIFY(candidate->fileName.empty());
+        QCOMPARE(manager.GetTextureInfoByName(pathBytes(path)), original);
+        QVERIFY(!manager.GetTextureInfoByName({})); QCOMPARE(manager.GetModelTex(), mapping);
+        QCOMPARE(gpuPixels(candidateId), originalPixels);
+        QVERIFY(!manager.CreateTextureFromPngBytes(png, QSize(2, 3), &error)); QVERIFY(!error.isEmpty());
+        QVERIFY(!manager.CreateTextureFromPngBytes(png.left(33), QSize(3, 2), &error));
+        QCOMPARE(manager.GetTextureInfoById(originalId), original); QCOMPARE(manager.GetModelTex(), mapping);
+        manager.ReleaseUnusedTextures({path}, {candidateId});
+        QVERIFY(m_gl.glIsTexture(originalId)); QVERIFY(m_gl.glIsTexture(candidateId));
+        manager.ReleaseUnusedTextures({path});
+        QVERIFY(!m_gl.glIsTexture(candidateId)); QVERIFY(m_gl.glIsTexture(originalId)); QCOMPARE(manager.GetModelTex(), mapping);
+        const auto* second = manager.CreateTextureFromPngBytes(png, QSize(3, 2), &error); QVERIFY(second);
+        const GLuint secondId = second->id;
+        m_context->doneCurrent(); QVERIFY(!manager.CreateTextureFromPngBytes(png, QSize(3, 2), &error));
+        QVERIFY(m_context->makeCurrent(m_surface.get())); QVERIFY(m_gl.glIsTexture(secondId));
+        manager.ReleaseTexture(secondId); QCOMPARE(manager.GetModelTex(), mapping); QCOMPARE(gpuPixels(originalId), originalPixels);
+    }
+
     void failedInputsNeverEnterCacheAndCanBeRetried()
     {
         QTemporaryDir temporary;

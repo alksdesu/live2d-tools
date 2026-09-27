@@ -17,6 +17,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QString>
+#include <QSize>
 
 class LAppTextureManager : public QOpenGLFunctions_3_3_Core
 {
@@ -28,16 +29,18 @@ public:
         int height = 0;
         std::string fileName;
         QByteArray sourceDigest;
+        QByteArray pngBytes;
     };
 
     LAppTextureManager();
     ~LAppTextureManager();
     void setGlOwningContext(const QOpenGLContext* context);
     TextureInfo* CreateTextureFromPngFile(std::string fileName);
+    TextureInfo* CreateTextureFromPngBytes(const QByteArray& png, const QSize& expectedSize, QString* error = nullptr);
     void ReleaseTextures();
     void ReleaseTexture(GLuint textureId);
     void ReleaseTexture(std::string fileName);
-    void ReleaseUnusedTextures(const QSet<QString>& retainedPaths);
+    void ReleaseUnusedTextures(const QSet<QString>& retainedPaths, const QSet<GLuint>& retainedIds = {});
 
     TextureInfo* GetTextureInfoById(GLuint textureId) const;
     TextureInfo* GetTextureInfoByName(const std::string& fileName) const;
@@ -53,6 +56,7 @@ public:
 
 private:
     bool CanUseContext();
+    TextureInfo* UploadPng(const QByteArray& png, std::string fileName, const QSize& expectedSize, QString* error);
     void RemoveModelTexture(const std::string& fileName);
     std::vector<std::unique_ptr<TextureInfo>> m_textures;
     QMap<int, QString> m_modelTex;

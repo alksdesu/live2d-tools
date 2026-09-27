@@ -440,10 +440,10 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
     const auto topology = m_meshIndexOverrides;
     const auto opacity = m_drawableOpacityOverrides;
     const QSet<QString> hidden = m_hiddenDrawables | m_hiddenDeformerDrawables;
-    QVector<QString> atlases;
-    const auto texturePaths = _textureManager->GetModelTex();
-    for (auto texture = texturePaths.cbegin(); texture != texturePaths.cend(); ++texture) {
-        while (atlases.size() <= texture.key()) atlases.append(QString());
+    QVector<QByteArray> atlases;
+    const auto texturePngs = model->GetEffectiveTexturePngs();
+    for (auto texture = texturePngs.cbegin(); texture != texturePngs.cend(); ++texture) {
+        while (atlases.size() <= texture.key()) atlases.append(QByteArray());
         atlases[texture.key()] = texture.value();
     }
     QStringList order;
@@ -468,7 +468,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
         order.append(QString::fromUtf8(runtime->GetDrawableId(index)->GetString().GetRawString()));
     return CExportTaskRunner::Run([=](const CExportTaskRunner::GuiCall&, QString* detail) {
         CTextureExtractor extractor;
-        if (!extractor.LoadAtlases(atlases, control)) { if (detail) *detail = control->Error(); return false; }
+        if (!extractor.LoadAtlasBytes(atlases, control)) { if (detail) *detail = control->Error(); return false; }
         auto reader = live2dstruct::CReader::FromBytes(source);
         live2dstruct::CSectionTable table(reader);
         if (!table.IsValid()) { if (detail) *detail = QStringLiteral("moc3 解析失败：%1").arg(reader.Error()); return false; }

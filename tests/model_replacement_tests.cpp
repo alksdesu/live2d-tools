@@ -2304,8 +2304,9 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArra
                                        const CubismModelReplacement::ModelPreparation& prepareModel,
                                        QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
-                                       const CMeshGeometryMigration* geometry)
+                                       const CMeshGeometryMigration* geometry, const TextureState* textureState)
 {
+    if (textureState) { if (error) *error = QStringLiteral("测试边界不提供 GL 纹理上传"); return false; }
     return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences, physicsDraft, geometry);
 }
 

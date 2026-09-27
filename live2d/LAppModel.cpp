@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Copyright(c) Live2D Inc. All rights reserved.
  *
  * Use of this source code is governed by the Live2D Open Software license
@@ -98,6 +98,7 @@ LAppModel::LAppModel()
 LAppModel::~LAppModel()
 {
     DeleteRenderer();
+    ReleaseOwnedTextures();
     ReleasePendingTextures();
     _renderBuffer.DestroyOffscreenSurface();
 
@@ -781,7 +782,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                                        const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
                                        CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
-                                       const CMeshGeometryMigration* geometry)
+                                       const CMeshGeometryMigration* geometry, const TextureState* textureState)
 {
     if (!_initialized || _updating || !_model || sourceDigest.isEmpty() || sourceDigest != m_sourceMocDigest ||
         ownedBytes.isEmpty() || ownedBytes.size() > std::numeric_limits<int>::max()) {
@@ -798,11 +799,16 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         if (error) *error = QStringLiteral("请在模型预览就绪且拖拽、导出结束后更新关键形");
         return false;
     }
-    const auto prepare = [](Rendering::CubismRenderer* renderer, CubismModel* model,
+    PreparedTextures textures;
+    if (textureState && !PrepareTextures(m_textureSources, *textureState, textures, error)) return false;
+    const auto prepare = [&](Rendering::CubismRenderer* renderer, CubismModel* model,
                             const Rendering::CubismRenderer& source, QString* preparationError) {
         auto* candidate = dynamic_cast<Rendering::CubismRenderer_OpenGLES2*>(renderer);
         const auto* previous = dynamic_cast<const Rendering::CubismRenderer_OpenGLES2*>(&source);
-        return candidate && previous && candidate->PrepareModelReplacement(model, *previous, preparationError);
+        if (!candidate || !previous || !candidate->PrepareModelReplacement(model, *previous, preparationError)) return false;
+        if (textureState) for (auto it = textures.bindings.cbegin(); it != textures.bindings.cend(); ++it)
+            candidate->BindTexture(it.key(), it.value());
+        return true;
     };
     const auto prepareCompiledModel = [&](CubismModel* candidate, QString* detail) {
         candidate->ClearDrawableIndicesOverrides();
@@ -811,7 +817,9 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     QByteArray draftBytes = physicsDraft ? physicsDraft->bytes : m_physicsDraftBytes;
     const bool draftActive = physicsDraft || m_hasPhysicsDraft;
     PhysicsPreparation preparePhysics;
-    if (draftActive || !m_physicsSourceBytes.isEmpty() || _physics) {
+    const bool texturesOnly = textureState && runtime == m_previewMocBytes && seeds.isEmpty() &&
+        !physicsReferences && !physicsDraft && !geometry;
+    if (!texturesOnly && (draftActive || !m_physicsSourceBytes.isEmpty() || _physics)) {
         if (m_physicsGeneration == std::numeric_limits<quint64>::max()) {
             if (error) *error = QStringLiteral("物理实例版本计数已耗尽");
             return false;
@@ -827,6 +835,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                       prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
                       prepareCompiledModel, physicsReferences, preparePhysics, geometry))
         return false;
+    if (textureState) CommitTextures(textures);
     if (preparePhysics && (hadPhysics || _physics)) ++m_physicsGeneration;
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
     m_previewMocBytes.swap(runtime);
@@ -852,48 +861,6 @@ bool LAppModel::ReloadRenderer()
     }
     _initialized = true;
     if (m_textureCacheCommitted) CommitTextureCache();
-    return true;
-}
-
-bool LAppModel::SetupTextures()
-{
-    if (!_model || !_modelSetting) return false;
-    auto* renderer = GetRenderer<Rendering::CubismRenderer_OpenGLES2>();
-    auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
-    if (!renderer) return false;
-    QMap<int, QString> paths;
-    QMap<int, GLuint> bindings;
-    QSet<GLuint> created;
-    auto rollback = qScopeGuard([&] {
-        for (GLuint textureId : created) textures->ReleaseTexture(textureId);
-    });
-    for (csmInt32 modelTextureNumber = 0; modelTextureNumber < _modelSetting->GetTextureCount(); modelTextureNumber++)
-    {
-        const csmChar* textureName = _modelSetting->GetTextureFileName(modelTextureNumber);
-        if (!textureName) return false;
-        if (textureName[0] == '\0') continue;
-        if (!textures) return false;
-        const QString path = CModelResourcePath::Resolve(QString::fromUtf8(_modelHomeDir.GetRawString()), QString::fromUtf8(textureName));
-        if (path.isEmpty()) return false;
-        const std::string fileName = path.toUtf8().toStdString();
-        auto* texture = textures->GetTextureInfoByName(fileName);
-        if (!texture) {
-            texture = textures->CreateTextureFromPngFile(fileName);
-            if (texture && texture->id != 0) created.insert(texture->id);
-        }
-        if (!texture || texture->id == 0 || texture->width <= 0 || texture->height <= 0) return false;
-        paths.insert(modelTextureNumber, path);
-        bindings.insert(modelTextureNumber, texture->id);
-    }
-    for (auto it = bindings.cbegin(); it != bindings.cend(); ++it) renderer->BindTexture(it.key(), it.value());
-#ifdef PREMULTIPLIED_ALPHA_ENABLE
-    renderer->IsPremultipliedAlpha(true);
-#else
-    renderer->IsPremultipliedAlpha(false);
-#endif
-    m_texturePaths = std::move(paths);
-    m_pendingTextureIds.unite(created);
-    rollback.dismiss();
     return true;
 }
 

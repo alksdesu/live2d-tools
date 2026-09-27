@@ -11,6 +11,7 @@
 #include <optional>
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cparameterresourceedits.h"
+#include "live2dstruct/ctextureassets.h"
 
 namespace live2dstruct {
 
@@ -31,6 +32,7 @@ struct CModelSession
     QSet<QString> sourceDeformerIds;
     CParameterResourceEdits::State parameterResources;
     std::optional<PhysicsDraft> physicsDraft;
+    CTextureAssets::Draft textures;
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
     QMap<QString, bool> visibility;

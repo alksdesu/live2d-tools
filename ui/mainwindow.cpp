@@ -400,10 +400,10 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     for (auto it = catalog.motions.cbegin(); it != catalog.motions.cend(); ++it) if (!add(it.key(), it.value())) return false;
     for (auto it = catalog.expressions.cbegin(); it != catalog.expressions.cend(); ++it) if (!add(it.key(), it.value())) return false;
     if (!catalog.physicsPath.isEmpty() && !add(catalog.physicsPath, catalog.physicsDigest)) return false;
-    for (const auto& path : model->GetTexturePaths()) {
-        const auto* texture = textures->GetTextureInfoByName(path.toStdString());
-        if (!texture || !add(path, texture->sourceDigest)) return fail(QStringLiteral("纹理与当前预览的来源不一致：%1").arg(path));
-    }
+    candidate.textureSources = model->GetTextureSources();
+    candidate.textureState = model->GetTextureState();
+    for (const auto& texture : *candidate.textureSources)
+        if (!add(texture.path, texture.digest)) return fail(QStringLiteral("纹理与当前预览的来源不一致：%1").arg(texture.path));
     if (m_cidJson && !m_cidJson->SourcePath().isEmpty() && !add(m_cidJson->SourcePath(), m_cidJson->SourceDigest())) return false;
     if (m_motionPanel && !m_motionPanel->PoseSourcePath().isEmpty() &&
         !add(m_motionPanel->PoseSourcePath(), m_motionPanel->PoseSourceDigest())) return false;
@@ -555,6 +555,8 @@ void MainWindow::on_actionCmo3Export_triggered()
     cmo3::CCmo3Builder::Options options;
     options.mocPath = m_currentMoc;
     options.outPath = outPath;
+    if (auto* manager = LAppLive2DManager::GetInstance(); manager && manager->GetModelNum())
+        options.texturePngs = manager->GetModel(0)->GetEffectiveTexturePngs();
     {
         CModelJson modelJson;
         modelJson.Parse(m_openglwindows->GetCurrentModelJson());
@@ -693,6 +695,10 @@ bool MainWindow::SaveSession()
     session.deformerStructure = m_document.HasDeformerStructure();
     if (session.deformerStructure) session.sourceDeformerIds = m_document.SourceDeformerIds();
     session.parameterResources = m_parameterResources;
+    if (!live2dstruct::CTextureAssets::CaptureDraft(m_textureEditor.Sources(), m_textureEditor.Current(), session.textures, &animationError)) {
+        QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
+        return false;
+    }
     if (m_physicsPanel) {
         CPhysicsPanel::Snapshot physics;
         if (!m_physicsPanel->CaptureSnapshot(physics, &animationError)) {
@@ -742,10 +748,11 @@ bool MainWindow::SaveSession()
     m_savedPhysicsPath = session.physicsDraft ? session.physicsDraft->sourcePath : QString();
     ConfigurePhysicsSaving();
     if (m_physicsPanel) m_physicsPanel->MarkSessionSaved();
+    m_textureEditor.MarkSaved();
     m_sessionDirty = false;
     if (m_exportState && m_motionPanel && m_motionPanel->IsPreviewTransportSuspended()) m_exportState->timelineSaved = true;
     if (m_motionPanel) m_motionPanel->MarkTimelineSaved();
-    setWindowTitle(QStringLiteral("live2d2psd"));
+    RefreshWindowTitle();
     statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
     return !m_motionPanel || m_motionPanel->IsPreviewTransportSuspended() || !m_motionPanel->HasUnsavedTimelineChanges();
 }
@@ -776,12 +783,17 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
-    const bool restoreResources = m_physicsPanel || !session.parameterResources.IsEmpty() || !m_parameterResources.IsEmpty() ||
-        session.physicsDraft.has_value() || m_physicsInSession;
+    live2dstruct::CTextureEditController textureCandidate;
+    if (!m_textureEditor.PrepareRestore(session.textures, textureCandidate, &loadError)) {
+        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
+        return;
+    }
+    const bool restoreResources = true;
     const bool restorePhysics = restoreResources || candidate.ParameterStructure() != m_document.ParameterStructure();
     if (!ConfirmCloseWithUnsavedChanges(true, restorePhysics)) return;
     const QScopedValueRollback<bool> restoring(m_applyingSession, true);
     const QScopedValueRollback<const live2dstruct::CModelSession*> resourceSession(m_restoringSession, &session);
+    const QScopedValueRollback<const live2dstruct::CTextureAssets::State*> textureSession(m_restoringTextures, &textureCandidate.Current());
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
@@ -790,6 +802,8 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
+    m_textureEditor.Swap(textureCandidate);
+    RefreshTextureEditing();
     m_physicsInSession = session.physicsDraft.has_value() || !m_parameterResources.IsEmpty();
     m_savedPhysicsDraft = m_physicsInSession && m_physicsPanel ? m_physicsPanel->DocumentSnapshot() : QJsonObject{};
     m_savedPhysicsPath = m_physicsInSession && m_physicsPanel ? m_physicsPanel->FilePath() : QString();
@@ -840,7 +854,7 @@ void MainWindow::on_actionLoadSession_triggered()
     m_historySource = HistorySource::None;
     RefreshUndoActions();
     m_sessionDirty = false;
-    setWindowTitle(QStringLiteral("live2d2psd"));
+    RefreshWindowTitle();
     statusBar()->showMessage(QStringLiteral("会话已载入"), 5000);
 }
 
@@ -1195,7 +1209,8 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
         changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline, changePhysics ? &physicsDraft : nullptr,
         geometry ? &*geometry : nullptr,
         editing && (command.parameterChange == live2dstruct::CModelEdit::ParameterChange::BindingKeys ||
-            command.field == live2dstruct::CModelEdit::DeformerStructure) ? &pose : nullptr))
+            command.field == live2dstruct::CModelEdit::DeformerStructure) ? &pose : nullptr,
+        restoring ? m_restoringTextures : nullptr))
         return false;
     if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
     if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
@@ -1786,17 +1801,27 @@ void MainWindow::ClearTimelinePreview()
         if (it.key() != m_parameterBeingEdited) m_blendShapePanel->SyncParameterValue(it.key(), it.value());
 }
 
+void MainWindow::RefreshWindowTitle()
+{
+    const bool dirty = HasSessionChanges() || m_poseDirty || HasUnsavedPhysicsChanges() ||
+        (m_motionPanel && (m_motionPanel->HasUnsavedTimelineChanges() || m_motionPanel->HasUnsavedPoseChanges())) ||
+        (m_userDataPanel && m_userDataPanel->HasUnsavedChanges());
+    setWindowTitle(dirty ? QStringLiteral("live2d2psd · 未保存") : QStringLiteral("live2d2psd"));
+}
+
 void MainWindow::RefreshUndoActions()
 {
     const bool loaded = m_openglwindows && !m_closingModel;
     const bool timeline = m_historySource == HistorySource::Timeline && m_motionPanel;
     const bool physics = m_historySource == HistorySource::Physics && m_physicsPanel;
-    if (m_undoAction) m_undoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanUndoTimeline() : physics ? m_physicsPanel->CanUndo() : m_document.CanUndoEdit()));
-    if (m_redoAction) m_redoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanRedoTimeline() : physics ? m_physicsPanel->CanRedo() : m_document.CanRedoEdit()));
+    const bool textures = m_historySource == HistorySource::Textures;
+    if (m_undoAction) m_undoAction->setEnabled(loaded && (textures ? m_textureEditor.CanUndo() : timeline ? m_motionPanel->CanUndoTimeline() : physics ? m_physicsPanel->CanUndo() : m_document.CanUndoEdit()));
+    if (m_redoAction) m_redoAction->setEnabled(loaded && (textures ? m_textureEditor.CanRedo() : timeline ? m_motionPanel->CanRedoTimeline() : physics ? m_physicsPanel->CanRedo() : m_document.CanRedoEdit()));
 }
 
 void MainWindow::UndoDocumentEdit()
 {
+    if (m_historySource == HistorySource::Textures) { ApplyTextureHistory(true); return; }
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
         if (!m_physicsPanel->Undo(&error) && !error.isEmpty()) statusBar()->showMessage(error, 8000);
@@ -1819,6 +1844,7 @@ void MainWindow::UndoDocumentEdit()
 
 void MainWindow::RedoDocumentEdit()
 {
+    if (m_historySource == HistorySource::Textures) { ApplyTextureHistory(false); return; }
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
         if (!m_physicsPanel->Redo(&error) && !error.isEmpty()) statusBar()->showMessage(error, 8000);
@@ -1995,6 +2021,8 @@ void MainWindow::ReportExportStage(const QString& outputPath, PsdExportStage sta
 
 void MainWindow::RefreshExportActions()
 {
+    if (m_texturePanel) m_texturePanel->SetEditingEnabled(m_runtimePanelsInitialized && !m_closingModel &&
+        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy());
     const bool exporting = m_psdBatch || m_batchExporting;
     const bool busy = exporting || m_previewExport.IsBusy();
     if (myBatchAction) myBatchAction->setEnabled(!busy && !m_closingModel);
@@ -2422,12 +2450,12 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession, bool repl
     const bool userDataDirty = !replacingSession && m_userDataPanel && m_userDataPanel->HasUnsavedChanges();
     const bool animationDirty = m_motionPanel && m_motionPanel->HasUnsavedTimelineChanges() &&
         !(m_exportState && m_exportState->timelineSaved);
-    if (!m_sessionDirty && !physicsDirty && !poseDirty && !userDataDirty && !animationDirty) return true;
+    if (!HasSessionChanges() && !physicsDirty && !poseDirty && !userDataDirty && !animationDirty) return true;
     QMessageBox prompt(this);
     prompt.setWindowTitle(QStringLiteral("未保存的编辑"));
     prompt.setText(QStringLiteral("当前模型有未保存的编辑。"));
     QStringList pending;
-    if (m_sessionDirty) pending.append(QStringLiteral("工作会话"));
+    if (HasSessionChanges()) pending.append(QStringLiteral("工作会话"));
     if (animationDirty) pending.append(QStringLiteral("动画草稿"));
     if (physicsDirty) pending.append(QStringLiteral("物理配置"));
     if (poseDirty) pending.append(QStringLiteral("Pose 配置"));
@@ -2440,7 +2468,7 @@ bool MainWindow::ConfirmCloseWithUnsavedChanges(bool replacingSession, bool repl
     prompt.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
     prompt.exec();
     if (prompt.clickedButton() == save) {
-        const bool sessionSaved = !(m_sessionDirty || animationDirty || sessionPhysics) || SaveSession();
+        const bool sessionSaved = !(HasSessionChanges() || animationDirty || sessionPhysics) || SaveSession();
         const bool physicsSaved = !physicsDirty || (sessionPhysics ? sessionSaved : m_physicsPanel && m_physicsPanel->SavePhysics());
         if (physicsDirty && physicsSaved && !sessionPhysics && m_exportState)
             m_exportState->physicsReload = m_physicsPanel->FilePath();
@@ -2560,6 +2588,7 @@ bool MainWindow::CloseModel()
         if (m_blendShapePanel) settings.setValue(QStringLiteral("blendShapePanelLayout"), m_blendShapePanel->SaveLayout());
     }
     m_historySource = HistorySource::None;
+    m_textureEditor.Initialize({});
     m_parameterResources = {};
     m_physicsInSession = false;
     m_savedPhysicsDraft = {};
@@ -2664,12 +2693,13 @@ void MainWindow::InitializeRuntimePanels(OpengGlForm* expectedWindow, bool loade
     }
     SyncDocumentToRuntime();
     RefreshKeyformUi();
-    if (m_texturePanel && m_document.SourceMatchesDisk(&sourceError)) {
-        auto* textures = LAppDelegate::GetInstance()->GetTextureManager();
-        if (textures) m_texturePanel->LoadTextures(textures->GetModelTex());
+    if (!InitializeTextureEditing(&sourceError)) {
+        statusBar()->showMessage(QStringLiteral("纹理编辑初始化失败：%1").arg(sourceError), 10000);
+        return;
     }
     applyBgColor();
     m_runtimePanelsInitialized = true;
+    RefreshTextureEditing();
     RefreshTextureGeometry();
     RefreshMeshTools();
     RefreshExportActions();
@@ -2886,12 +2916,7 @@ void MainWindow::RestDock(const QString &name)
         m_historySource = HistorySource::Timeline;
         RefreshUndoActions();
     });
-    const auto updateModifiedTitle = [this] {
-        const bool dirty = m_sessionDirty || m_poseDirty || HasUnsavedPhysicsChanges() ||
-            (m_motionPanel && (m_motionPanel->HasUnsavedTimelineChanges() || m_motionPanel->HasUnsavedPoseChanges())) ||
-            (m_userDataPanel && m_userDataPanel->HasUnsavedChanges());
-        setWindowTitle(dirty ? QStringLiteral("live2d2psd · 未保存") : QStringLiteral("live2d2psd"));
-    };
+    const auto updateModifiedTitle = [this] { RefreshWindowTitle(); };
     connect(m_motionPanel, &CMotionPanel::TimelineDirtyChanged, this, [this, updateModifiedTitle](bool dirty){
         updateModifiedTitle();
         if (dirty) {
@@ -2979,6 +3004,8 @@ void MainWindow::RestDock(const QString &name)
         statusBar()->showMessage(QStringLiteral("UserData 加载失败：%1").arg(userDataError), 8000);
     m_userDataPanel->hide();
     connect(m_userDataPanel, &CUserDataPanel::DirtyChanged, this, [this](bool dirty){
+        if (m_closingModel) return;
+        RefreshWindowTitle();
         if (dirty) statusBar()->showMessage(QStringLiteral("网格标签有未保存的修改"));
     });
     connect(m_userDataPanel, &CUserDataPanel::UserDataSaved, this, [this](const QString& path){
@@ -3169,6 +3196,20 @@ void MainWindow::RestDock(const QString &name)
     connect(m_openglwindows, &OpengGlForm::SendSelectMesh, m_treePanel, &CModelTreePanel::HighlightMesh);
 
     // 信号连接：纹理面板点击图集 → 树面板 + 主视图 + 面板自身高亮同步
+    m_texturePanel->SetEditHandler([this, sourcePath = m_document.SourcePath(), sourceDigest = m_document.SourceDigest(),
+                                   modelJson = QFileInfo(name).absoluteFilePath()](int slot, const QByteArray& png, QString* error) {
+        if (m_document.SourcePath() != sourcePath || m_document.SourceDigest() != sourceDigest || !m_openglwindows ||
+            QFileInfo(m_openglwindows->GetCurrentModelJson()).absoluteFilePath() != modelJson) {
+            if (error) *error = QStringLiteral("模型已改变，请重新选择要替换的纹理");
+            return false;
+        }
+        return ReplaceTexture(slot, png, error);
+    });
+    connect(m_texturePanel, &CTexturePanel::HistorySelected, this, [this] {
+        m_historySource = HistorySource::Textures;
+        RefreshUndoActions();
+    });
+    connect(m_texturePanel, &CTexturePanel::EditRejected, this, [this](const QString& error) { statusBar()->showMessage(error, 8000); });
     connect(m_texturePanel, &CTexturePanel::AtlasMeshPicked, m_treePanel, &CModelTreePanel::HighlightMesh);
     // 反向：主视图点击 mesh → 纹理面板高亮
     connect(m_openglwindows, &OpengGlForm::RenderOrderChanged, m_texturePanel, &CTexturePanel::SetRenderOrder);
@@ -3341,13 +3382,13 @@ void MainWindow::RestDock(const QString &name)
     connect(m_physicsPanel, &CPhysicsPanel::EditRejected, this,
         [this](const QString& error) { statusBar()->showMessage(error, 8000); });
     connect(m_physicsPanel, &CPhysicsPanel::PhysicsSaved, this, [this](const QString& path){
+        RefreshWindowTitle();
         LAppLive2DManager* mgr = LAppLive2DManager::GetInstance();
         LAppModel* model = (mgr && mgr->GetModelNum() > 0) ? mgr->GetModel(0) : nullptr;
         if (model && !model->ReloadPhysicsFromFile(path)) {
             statusBar()->showMessage(QStringLiteral("物理配置已保存，但运行时重载失败"), 8000);
             return;
         }
-        if (!m_sessionDirty) setWindowTitle(QStringLiteral("live2d2psd"));
         statusBar()->showMessage(QStringLiteral("物理配置已保存"), 5000);
     });
     connect(m_paramPanel, &CParamPanel::HistoryChanged, m_diagnosticsPanel, &CModelDiagnosticsPanel::Refresh);
@@ -3451,7 +3492,7 @@ void MainWindow::RestDock(const QString &name)
     });
     connect(m_motionPanel, &CMotionPanel::PoseSaved, this, [this](){
         m_poseDirty = false;
-        if (!m_sessionDirty) setWindowTitle(QStringLiteral("live2d2psd"));
+        RefreshWindowTitle();
     });
     connect(m_motionPanel, &CMotionPanel::PosePartChanged, this, [this](const QStringList& showIds, const QStringList& hideIds){
         if (!EndKeyformEditing()) return;
@@ -3542,6 +3583,8 @@ void MainWindow::createActions()
             m_historySource = HistorySource::Timeline;
         } else if (m_physicsPanel && (m_physicsPanel == current || m_physicsPanel->isAncestorOf(current))) {
             m_historySource = HistorySource::Physics;
+        } else if (m_texturePanel && (m_texturePanel == current || m_texturePanel->isAncestorOf(current))) {
+            m_historySource = HistorySource::Textures;
         } else {
             const auto contains = [current](QWidget* editor){
                 return editor && (editor == current || editor->isAncestorOf(current));

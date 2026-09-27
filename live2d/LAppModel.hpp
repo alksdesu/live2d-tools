@@ -20,10 +20,13 @@
 #include <QSet>
 #include <QByteArray>
 #include "live2dstruct/cmotiontimeline.h"
+#include "live2dstruct/ctextureassets.h"
 #include "framework/Model/CubismParameterReferences.hpp"
 #include "framework/Physics/CubismPhysicsObservation.hpp"
 
 namespace Live2D { namespace Cubism { namespace Framework { class CubismMotion; }}}
+
+class LAppTextureManager;
 
 class LAppModel : public Csm::CubismUserModel
 {
@@ -57,7 +60,14 @@ public:
     virtual ~LAppModel();
     bool LoadAssets(const Csm::csmChar* dir, const Csm::csmChar* fileName);
     bool ReloadRenderer();
+    using TextureCatalog = live2dstruct::CTextureAssets::Catalog;
+    using TextureState = live2dstruct::CTextureAssets::State;
     const QMap<int, QString>& GetTexturePaths() const { return m_texturePaths; }
+    const TextureCatalog& GetTextureSources() const { return m_textureSources; }
+    const TextureState& GetTextureState() const { return m_textureState; }
+    TextureState GetEffectiveTexturePngs() const;
+    const QMap<int, Csm::csmUint32>& GetTextureBindings() const { return m_textureBindings; }
+    bool ApplyTextureState(const TextureState& state, QString* error = nullptr);
     const QByteArray& GetSourceMocBytes() const { return m_sourceMocBytes; }
     const QByteArray& GetSourceMocDigest() const { return m_sourceMocDigest; }
     const QByteArray& GetPreviewMocDigest() const { return m_previewMocDigest; }
@@ -88,7 +98,8 @@ public:
                                         const TimelinePreviewPreparation& prepareTimeline = {},
                                         const PhysicsDraft* physicsDraft = nullptr,
                                         const CMeshGeometryMigration* geometry = nullptr,
-                                        const QMap<QString, float>* requestedEditorPose = nullptr);
+                                        const QMap<QString, float>* requestedEditorPose = nullptr,
+                                        const TextureState* textureState = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -195,7 +206,8 @@ private:
                                  const ParameterStructureSeeds& seeds = {},
                                  const ParameterPhysicsReferences* physicsReferences = nullptr,
                                  const PhysicsDraft* physicsDraft = nullptr,
-                                 const CMeshGeometryMigration* geometry = nullptr);
+                                 const CMeshGeometryMigration* geometry = nullptr,
+                                 const TextureState* textureState = nullptr);
     bool PreparePhysicsCandidate(const Csm::CubismModel& previous, const Csm::CubismModel& replacement,
                                  const ParameterPhysicsReferences& references, bool draftActive,
                                  const QByteArray& bytes, bool stabilize, bool keepOptions,
@@ -214,8 +226,18 @@ private:
     float _timelineBaseOpacity = 1.0f;
     bool _timelinePreviewActive = false;
 
+    struct PreparedTextures {
+        TextureState state;
+        QMap<int, Csm::csmUint32> bindings;
+        QSet<Csm::csmUint32> owned, release, retired;
+        LAppTextureManager* manager = nullptr;
+        ~PreparedTextures();
+    };
     bool SetupTextures();
+    bool PrepareTextures(const TextureCatalog& sources, const TextureState& state, PreparedTextures& result, QString* error);
+    void CommitTextures(PreparedTextures& prepared) noexcept;
     void ReleasePendingTextures();
+    void ReleaseOwnedTextures();
 
 
     void PreloadMotionGroup(const Csm::csmChar* group);
@@ -249,6 +271,10 @@ private:
 
     QString m_mocName;
     QMap<int, QString> m_texturePaths;
+    TextureCatalog m_textureSources;
+    TextureState m_textureState;
+    QMap<int, Csm::csmUint32> m_textureBindings;
+    QSet<Csm::csmUint32> m_ownedTextureIds;
     QByteArray m_sourceMocBytes;
     QByteArray m_sourceMocDigest;
     QByteArray m_previewMocDigest;

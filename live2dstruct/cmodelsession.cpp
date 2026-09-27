@@ -177,7 +177,7 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 6) return {};
+    if (version < 1 || version > 7) return {};
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
@@ -186,11 +186,16 @@ QByteArray CModelSession::ToJson() const
     if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
     if (physicsDraft && physicsDraft->sourcePath.isEmpty() && storedVersion < 4) storedVersion = 4;
     if (meshStructure && storedVersion < 5) storedVersion = 5;
-    if (deformerStructure) storedVersion = 6;
+    if (deformerStructure && storedVersion < 6) storedVersion = 6;
+    if (!textures.isEmpty() && storedVersion < 7) storedVersion = 7;
     if (!validPhysicsDraft(*this, storedVersion, nullptr) || !validMeshStructure(*this, storedVersion, nullptr) || !validDeformerStructure(*this, storedVersion, nullptr)) return {};
+    QJsonArray textureRows;
+    if (!CTextureAssets::ToJson(textures, textureRows)) return {};
+    if (!textures.isEmpty() && (sourceMoc.isEmpty() || sourceMoc.contains(QChar::Null) || sourceDigest.size() != 32)) return {};
+    if (storedVersion >= 7) root.insert(QStringLiteral("textures"), textureRows);
     root.insert(QStringLiteral("version"), storedVersion);
     if (storedVersion >= 5) root.insert(QStringLiteral("meshStructure"), meshStructure);
-    if (storedVersion == 6) {
+    if (storedVersion >= 6) {
         root.insert(QStringLiteral("deformerStructure"), deformerStructure);
         QStringList ids(sourceDeformerIds.cbegin(), sourceDeformerIds.cend());
         std::sort(ids.begin(), ids.end());
@@ -338,7 +343,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 6) {
+    if (parsedVersion < 1 || parsedVersion > 7) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
@@ -352,7 +357,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     }
     result.meshStructure = root.value(QStringLiteral("meshStructure")).toBool(false);
     if ((parsedVersion < 6 && (root.contains(QStringLiteral("deformerStructure")) || root.contains(QStringLiteral("sourceDeformerIds")))) ||
-        (parsedVersion == 6 && (!root.value(QStringLiteral("deformerStructure")).isBool() || !root.value(QStringLiteral("sourceDeformerIds")).isArray()))) {
+        (parsedVersion >= 6 && (!root.value(QStringLiteral("deformerStructure")).isBool() || !root.value(QStringLiteral("sourceDeformerIds")).isArray()))) {
         setError(error, QStringLiteral("变形器结构字段需要版本 6 及有效的能力与身份列表"));
         return false;
     }
@@ -365,6 +370,12 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDeformerIds.insert(value.toString());
     }
+    if ((parsedVersion < 7 && root.contains(QStringLiteral("textures"))) ||
+        (parsedVersion >= 7 && !root.value(QStringLiteral("textures")).isArray())) {
+        setError(error, QStringLiteral("纹理覆盖需要版本 7 及有效数组"));
+        return false;
+    }
+    if (!CTextureAssets::FromJson(root.value(QStringLiteral("textures")).toArray(), result.textures, error)) return false;
     QJsonObject resources;
     if (!readObject(root, QStringLiteral("parameterResources"), &resources, error) ||
         !CParameterResourceEdits::FromJson(resources, result.parameterResources, error)) return false;
@@ -407,6 +418,10 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             return false;
         }
         result.sourceDigest = decoded;
+    }
+    if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
+        setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
+        return false;
     }
     if (!validPhysicsDraft(result, parsedVersion, error) || !validMeshStructure(result, parsedVersion, error) || !validDeformerStructure(result, parsedVersion, error)) return false;
 
@@ -731,12 +746,14 @@ bool CModelSession::RestoreDocument(const CModelDocument& loaded, CModelDocument
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 6) ||
+    if ((version < 1 || version > 7) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
-        (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)))
+        (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()))
         return fail(QStringLiteral("version"));
     if (!validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
         !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validDeformerStructure(*this, version, error)) return false;
+    if (!CTextureAssets::ValidateDraft(textures, error)) return false;
+    if (!textures.isEmpty() && (sourceMoc.isEmpty() || sourceMoc.contains(QChar::Null) || sourceDigest.size() != 32)) return fail(QStringLiteral("textures"));
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
         setError(error, QStringLiteral("没有可恢复会话的模型快照"));
         return false;

@@ -2,6 +2,7 @@
 #define CTEXTUREEXTRACTOR_H
 
 #include <QImage>
+#include <QByteArray>
 #include <QRect>
 #include <QString>
 #include <QVector>
@@ -49,6 +50,7 @@ public:
 
     /// 从文件路径列表加载纹理图集 PNG
     bool LoadAtlases(const QVector<QString>& atlasPaths, CExportControl* control = nullptr);
+    bool LoadAtlasBytes(const QVector<QByteArray>& atlasPngs, CExportControl* control = nullptr);
 
     bool ExtractMaterials(live2dstruct::CSectionTable* table, QVector<ExtractedMaterial>& result,
                           QString* error = nullptr) const;

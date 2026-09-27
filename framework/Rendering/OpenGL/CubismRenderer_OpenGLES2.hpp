@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <QOpenGLFunctions_3_3_Core>
 #include "../CubismRenderer.hpp"
 #include "../CubismClippingManager.hpp"
@@ -240,6 +240,7 @@ private:
     CubismClippingContext_OpenGLES2* GetClippingContextBufferForDraw() const;
     const csmBool inline IsGeneratingMask() const;
     GLuint GetBindedTextureId(csmInt32 textureId);
+    bool MaskSourceAvailable(csmInt32 drawable) const;
 
 
 
@@ -256,6 +257,7 @@ private:
     bool _forceMaskRedraw = false;
     bool _maskTopologyUpdated = false;
     bool _maskBuffersNeedRedraw = false;
+    bool _textureMaskReplay = false;
     csmInt32 _requestedMaskBufferCount = 1;
     CubismVector2 _requestedMaskBufferSize{256, 256};
     std::unique_ptr<PsdExportState> _psdExport;

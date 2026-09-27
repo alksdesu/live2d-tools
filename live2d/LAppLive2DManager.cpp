@@ -287,13 +287,17 @@ void LAppLive2DManager::CommitModelTextures()
     if (!textures) return;
     textures->SetModelTextures(!_models.empty() ? _models[0]->GetTexturePaths() : QMap<int, QString>());
     QSet<QString> retained;
+    QSet<GLuint> retainedIds;
     for (const auto& model : _models) {
         for (const QString& path : model->GetTexturePaths()) retained.insert(path);
+        for (GLuint id : model->GetTextureBindings()) retainedIds.insert(id);
         model->CommitTextureCache();
     }
-    for (const auto& model : m_suspendedModels)
+    for (const auto& model : m_suspendedModels) {
         for (const QString& path : model->GetTexturePaths()) retained.insert(path);
-    textures->ReleaseUnusedTextures(retained);
+        for (GLuint id : model->GetTextureBindings()) retainedIds.insert(id);
+    }
+    textures->ReleaseUnusedTextures(retained, retainedIds);
 }
 
 csmUint32 LAppLive2DManager::GetModelNum() const

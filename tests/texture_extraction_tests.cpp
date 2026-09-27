@@ -3,6 +3,7 @@
 #include "std/cexportcontrol.h"
 
 #include <QtTest>
+#include <QBuffer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -20,6 +21,12 @@ QImage ColoredAtlas(int size = 4)
         for (int x = 0; x < size; ++x)
             image.setPixel(x, y, qRgba(12 + x * 20, 18 + y * 18, 30 + x * 3 + y * 5, 70 + x * 4 + y * 6));
     return image;
+}
+
+QByteArray Png(const QImage& image)
+{
+    QByteArray bytes; QBuffer buffer(&bytes);
+    return buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG") ? bytes : QByteArray();
 }
 
 bool HasVisiblePixel(const QImage& image)
@@ -83,6 +90,11 @@ public:
             table.art_meshes[index]->ids = id;
         }
     }
+    void TextureSlot(int slot) { table.art_meshes[0]->texture_nos = slot; }
+    bool LoadBytes(const QVector<QByteArray>& bytes, CExportControl* control = nullptr)
+    {
+        return extractor.LoadAtlasBytes(bytes, control);
+    }
     const std::vector<float>& Uvs() const { return table.uvs->uvs; }
     const std::vector<short>& Indices() const { return table.position_indices->indices; }
     QString WriteAtlas(const QImage& image, const QString& name)
@@ -115,6 +127,52 @@ class TextureExtractionTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void byteSnapshotsPreserveSparseSlotsAndStraightAlpha()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        const auto atlas = ColoredAtlas(); const auto png = Png(atlas); QVERIFY(!png.isEmpty());
+        mesh.Geometry({0, 0, 1, 0, 1, 1, 0, 1}, {0, 1, 2, 0, 2, 3});
+        mesh.TextureSlot(1); QVERIFY(mesh.LoadBytes({{}, png}));
+        const auto layers = mesh.Extract(); QCOMPARE(layers.size(), 1); QCOMPARE(layers[0].image, atlas);
+        mesh.TextureSlot(0); QVERIFY(mesh.Extract().isEmpty());
+        QVERIFY(mesh.LoadBytes({png})); QCOMPARE(mesh.Extract()[0].image, atlas);
+        QVERIFY(mesh.LoadAtlas(atlas)); QCOMPARE(mesh.Extract()[0].image, atlas);
+    }
+
+    void failedOrCanceledByteReloadIsAtomic()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        const auto atlas = ColoredAtlas(); QVERIFY(mesh.LoadAtlas(atlas));
+        mesh.Geometry({0, 0, 1, 0, 1, 1, 0, 1}, {0, 1, 2, 0, 2, 3});
+        QImage replacement(4, 4, QImage::Format_ARGB32); replacement.fill(qRgba(190, 21, 101, 74));
+        const auto png = Png(replacement);
+        for (const auto& invalid : QVector<QVector<QByteArray>>{{}, {png, "invalid"}, {png, png.left(33)}}) {
+            CExportControl control; QVERIFY(!mesh.LoadBytes(invalid, &control));
+            QVERIFY(!control.Error().isEmpty()); QCOMPARE(mesh.Extract()[0].image, atlas);
+        }
+        CExportControl canceled; bool reached = false;
+        QVERIFY(canceled.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.phase == CExportControl::Phase::Preparing && progress.current == 1 && progress.total == 2) {
+                reached = true; canceled.Cancel();
+            }
+            return true;
+        }));
+        QVERIFY(!mesh.LoadBytes({png, png}, &canceled)); QVERIFY(reached); QVERIFY(canceled.WasCanceled());
+        QCOMPARE(mesh.Extract()[0].image, atlas);
+        QVERIFY(mesh.LoadBytes({png})); QCOMPARE(mesh.Extract()[0].image, replacement);
+    }
+
+    void byteReloadCapturesInputBeforeProgressCallbacks()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid());
+        const auto atlas = ColoredAtlas(); QVector<QByteArray> bytes{Png(atlas)};
+        mesh.Geometry({0, 0, 1, 0, 1, 1, 0, 1}, {0, 1, 2, 0, 2, 3});
+        CExportControl control; bool called = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) { called = true; bytes.clear(); return true; }));
+        QVERIFY(mesh.LoadBytes(bytes, &control)); QVERIFY(called); QVERIFY(bytes.isEmpty());
+        QCOMPARE(mesh.Extract()[0].image, atlas);
+    }
+
     void frozenModelCoordinatesReplaceParentLocalPlacement()
     {
         MeshFixture mesh; QVERIFY(mesh.IsValid());

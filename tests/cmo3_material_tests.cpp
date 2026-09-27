@@ -5,6 +5,7 @@
 #include "live2dstruct/csectiontable.h"
 #include <QtTest>
 #include <QFile>
+#include <QBuffer>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -113,6 +114,11 @@ bool write(const QString& path, const QByteArray& bytes)
 {
     QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
 }
+QByteArray png(const QImage& image)
+{
+    QByteArray bytes; QBuffer buffer(&bytes);
+    return buffer.open(QIODevice::WriteOnly) && image.save(&buffer, "PNG") ? bytes : QByteArray();
+}
 QRect sourceRect(const CSectionTable& table, const CArt_meshes* mesh, QSize size)
 {
     double left = 1e100, top = left, right = -left, bottom = -left;
@@ -157,6 +163,58 @@ private slots:
         for (int y=0;y<m_atlas.height();++y) for (int x=0;x<m_atlas.width();++x)
             m_atlas.setPixel(x,y,qRgba((x*13+47)%256,(y*17+83)%256,(x*3+y*7+121)%256,(x+y)%3 ? 1+(x*19+y*23)%255 : 0));
     }
+    void explicitSnapshotsIgnoreDiskTexturesAndKeepDistinctSparseSlots()
+    {
+        auto bytes = m_bytes; auto reader = CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        for (int i = 0; i < table.art_meshes.size(); ++i)
+            qToLittleEndian(qint32(i == 1 ? 2 : 0), bytes.data() + table.sectionOffsetTable->art_meshes->texture_nos + i * 4);
+        QImage first(32, 20, QImage::Format_ARGB32), second(first.size(), first.format());
+        first.fill(qRgba(192, 41, 13, 77)); second.fill(qRgba(8, 114, 211, 39));
+        QTemporaryDir temp; QVERIFY(temp.isValid());
+        QVERIFY(write(temp.filePath("Mark.model3.json"), QJsonDocument(QJsonObject{{"FileReferences", QJsonObject{
+            {"Moc", "Mark.moc3"}, {"Textures", QJsonArray{"missing.png"}}}}}).toJson()));
+        cmo3::CCmo3Builder::Options options; options.mocPath = temp.filePath("Mark.moc3");
+        options.mocBytes = bytes; options.outPath = temp.filePath("snapshot.cmo3");
+        options.texturePngs = QMap<int, QByteArray>{{0, png(first)}, {2, png(second)}};
+        QString error; QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        Archive output; QVERIFY2(output.load(options.outPath, error), qPrintable(error));
+        for (int i = 0; i < table.art_meshes.size(); ++i) {
+            const auto* mesh = table.art_meshes[i]; if (!mesh->vertex_counts) continue;
+            const auto* material = output.material(output.source(mesh->ids)); QVERIFY(material);
+            const auto* input = output.descendant(material, "CLayerInputData"); QVERIFY(input);
+            const auto* layer = output.resolve(input->child("layer")); QVERIFY(layer);
+            const auto image = output.image(layer->child("imageResource")); QVERIFY(!image.isNull());
+            const auto expected = (i == 1 ? second : first).pixel(0, 0);
+            for (int y = 0; y < image.height(); ++y) for (int x = 0; x < image.width(); ++x) QCOMPARE(image.pixel(x, y), expected);
+        }
+        QVERIFY(!QFileInfo::exists(options.mocPath)); QVERIFY(!QFileInfo::exists(temp.filePath("missing.png")));
+    }
+
+    void invalidExplicitSnapshotsNeverFallBackOrReplaceOutput_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("empty") << 0; QTest::newRow("missing-used-slot") << 1; QTest::newRow("negative") << 2;
+        QTest::newRow("too-large-slot") << 3; QTest::newRow("invalid-png") << 4; QTest::newRow("empty-png") << 5;
+        QTest::newRow("unused-empty-png") << 6; QTest::newRow("unused-invalid-png") << 7;
+    }
+    void invalidExplicitSnapshotsNeverFallBackOrReplaceOutput()
+    {
+        QFETCH(int, kind); QTemporaryDir temp; QVERIFY(temp.isValid());
+        const auto image = png(m_atlas); QVERIFY(write(temp.filePath("atlas.png"), image));
+        QVERIFY(write(temp.filePath("Mark.model3.json"), QJsonDocument(QJsonObject{{"FileReferences", QJsonObject{
+            {"Moc", "Mark.moc3"}, {"Textures", QJsonArray{"atlas.png"}}}}}).toJson()));
+        cmo3::CCmo3Builder::Options options; options.mocPath = temp.filePath("Mark.moc3"); options.mocBytes = m_bytes;
+        options.outPath = temp.filePath("keep.cmo3"); QVERIFY(write(options.outPath, "preserved"));
+        QMap<int, QByteArray> textures{{0, image}};
+        if (kind == 0) textures.clear(); if (kind == 1) { textures.clear(); textures[1] = image; }
+        if (kind == 2) textures[-1] = image; if (kind == 3) textures[10000] = image;
+        if (kind == 4) textures[0] = "invalid"; if (kind == 5) textures[0].clear();
+        if (kind == 6) textures[2].clear(); if (kind == 7) textures[2] = "invalid";
+        options.texturePngs = textures; QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error)); QVERIFY(!error.isEmpty());
+        QFile output(options.outPath); QVERIFY(output.open(QIODevice::ReadOnly)); QCOMPARE(output.readAll(), QByteArray("preserved"));
+    }
+
     void imageEncodingFailureKeepsArchiveAndPath() {
         cmo3::CCaffArchive archive; archive.AddEntry("keep.bin", "old");
         cmo3::CXsXmlWriter xml; xml.BeginDocument({}, {}, "3.0"); xml.BeginShared();

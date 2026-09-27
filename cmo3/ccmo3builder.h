@@ -27,6 +27,7 @@ public:
     struct Options {
         QString mocPath;                 // 输入 .moc3
         QByteArray mocBytes;
+        std::optional<QMap<int, QByteArray>> texturePngs;
         QString outPath;                 // 输出 .cmo3
         QString modelName;               // 模型显示名（默认取文件名）
         QString cdiPath;                 // 可选 .cdi3.json（显示名映射）

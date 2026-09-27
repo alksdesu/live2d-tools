@@ -45,6 +45,9 @@ OBJECTS_DIR = $${OUTPUTDIR}/objs
 DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
+    std/cpngimage.cpp \
+    live2dstruct/ctextureassets.cpp \
+    live2dstruct/ctextureeditcontroller.cpp \
     live2dstruct/cparentgraph.cpp \
     live2dstruct/cblendshaperelations.cpp \
     ui/cmodelhierarchymodel.cpp \
@@ -193,6 +196,7 @@ SOURCES += \
     ui/mainwindowphysics.cpp \
     ui/mainwindowmesh.cpp \
     ui/mainwindowdeformers.cpp \
+    ui/mainwindowtextures.cpp \
     ui/cmeshtoolbar.cpp \
     ui/cworkspacelayouts.cpp \
     framework/CubismCdiJson.cpp\
@@ -292,6 +296,9 @@ SOURCES += \
     cmo3/ccmo3builder.cpp \
 
 HEADERS += \
+    std/cpngimage.h \
+    live2dstruct/ctextureassets.h \
+    live2dstruct/ctextureeditcontroller.h \
     std/cmacosqtcompat.h \
     live2dstruct/cparentgraph.h \
     live2dstruct/cblendshaperelations.h \
@@ -627,6 +634,7 @@ SOURCES += \
     live2d/LAppModelUpdate.cpp \
     live2d/LAppModelParameterDefinitions.cpp \
     live2d/LAppModelParameterStructure.cpp \
+    live2d/LAppModelTextures.cpp \
     live2d/LAppModelMeshGeometry.cpp \
     live2d/LAppModelParameterReferences.cpp \
     ui/cpreviewexporttransaction.cpp \
