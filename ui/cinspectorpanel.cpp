@@ -26,6 +26,8 @@
 #include <QTableWidget>
 #include <QPersistentModelIndex>
 #include <QHash>
+#include <QCache>
+#include <QEvent>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QDialog>
@@ -58,10 +60,269 @@ protected:
     }
 };
 
+bool stableMetricRole(const QVariant& value, int depth, int& budget, QVector<int>& types)
+{
+    if (--budget < 0 || depth > 8) return false;
+    types.append(value.metaType().id());
+    if (!value.isValid()) return true;
+    switch (value.metaType().id()) {
+    case QMetaType::QVariantList: {
+        const auto values = value.toList();
+        if (values.size() > budget) return false;
+        for (const auto& item : values) if (!stableMetricRole(item, depth + 1, budget, types)) return false;
+        return true;
+    }
+    case QMetaType::QVariantMap: {
+        const auto values = value.toMap();
+        if (values.size() > budget) return false;
+        for (auto item = values.cbegin(); item != values.cend(); ++item)
+            if (!stableMetricRole(item.value(), depth + 1, budget, types)) return false;
+        return true;
+    }
+    case QMetaType::QVariantHash: {
+        QMap<QString, QVariant> values;
+        const auto hash = value.toHash();
+        if (hash.size() > budget) return false;
+        for (auto item = hash.cbegin(); item != hash.cend(); ++item) values.insert(item.key(), item.value());
+        for (auto item = values.cbegin(); item != values.cend(); ++item)
+            if (!stableMetricRole(item.value(), depth + 1, budget, types)) return false;
+        return true;
+    }
+    case QMetaType::Bool:
+    case QMetaType::Int:
+    case QMetaType::UInt:
+    case QMetaType::LongLong:
+    case QMetaType::ULongLong:
+    case QMetaType::Long:
+    case QMetaType::ULong:
+    case QMetaType::Short:
+    case QMetaType::UShort:
+    case QMetaType::Char:
+    case QMetaType::SChar:
+    case QMetaType::UChar:
+    case QMetaType::Float:
+    case QMetaType::Double:
+    case QMetaType::QChar:
+    case QMetaType::QString:
+    case QMetaType::QStringList:
+    case QMetaType::QByteArray:
+    case QMetaType::QSize:
+    case QMetaType::QPoint:
+    case QMetaType::QRect:
+    case QMetaType::QLine:
+    case QMetaType::QFont:
+    case QMetaType::QColor:
+    case QMetaType::QBrush:
+    case QMetaType::QIcon:
+    case QMetaType::QImage:
+    case QMetaType::QPixmap:
+    case QMetaType::QBitmap:
+    case QMetaType::QTransform:
+    case QMetaType::QPolygon:
+    case QMetaType::QRegion:
+        return true;
+    default:
+        return false;
+    }
+}
+
+class ItemMetricCache : public QObject
+{
+public:
+    explicit ItemMetricCache(QTableWidget* table, int capacity = 1024)
+        : m_table(table), m_entries(capacity)
+    {
+        WatchParents();
+        qApp->installEventFilter(this);
+        auto* model = table->model();
+        const auto clear = [this] { m_entries.clear(); };
+        connect(model, &QAbstractItemModel::modelAboutToBeReset, this, clear);
+        connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, clear);
+        connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, clear);
+        connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, clear);
+        connect(model, &QAbstractItemModel::columnsAboutToBeInserted, this, clear);
+        connect(model, &QAbstractItemModel::columnsAboutToBeRemoved, this, clear);
+        connect(model, &QObject::destroyed, this, clear);
+    }
+
+    ~ItemMetricCache() override
+    {
+        if (qApp) qApp->removeEventFilter(this);
+    }
+
+    QSize Get(const QStyleOptionViewItem& option, int digits, const std::function<QSize()>& measure) const
+    {
+        if (!option.index.isValid() || option.type != QStyleOptionViewItem::Type ||
+            option.version != QStyleOptionViewItem::Version) return measure();
+        const auto* widget = option.widget;
+        Entry current;
+        current.option = option;
+        current.roles = option.index.model()->itemData(option.index);
+        current.explicitSize = option.index.data(Qt::SizeHintRole);
+        int roleBudget = 256;
+        for (auto role = current.roles.cbegin(); role != current.roles.cend(); ++role) {
+            if (!stableMetricRole(role.value(), 0, roleBudget, current.roleTypes)) {
+                m_entries.remove(option.index);
+                return measure();
+            }
+        }
+        if (!stableMetricRole(current.explicitSize, 0, roleBudget, current.roleTypes)) return measure();
+        current.flags = option.index.flags();
+        current.digits = digits;
+        current.rows = option.index.model()->rowCount(option.index.parent());
+        current.columns = option.index.model()->columnCount(option.index.parent());
+        current.epoch = m_epoch;
+        current.style = widget ? widget->style() : QApplication::style();
+        current.applicationStyle = qApp->styleSheet();
+        if (widget) {
+            current.widgetStyle = widget->styleSheet();
+            current.widgetSize = widget->size();
+            current.dpr = widget->devicePixelRatioF();
+            current.dpi = {widget->logicalDpiX(), widget->logicalDpiY()};
+            current.macSize = int(widget->testAttribute(Qt::WA_MacSmallSize)) |
+                (int(widget->testAttribute(Qt::WA_MacMiniSize)) << 1);
+        }
+        if (const auto* saved = m_entries.object(option.index); saved && saved->Matches(current)) return saved->size;
+        current.size = measure();
+        m_entries.insert(option.index, new Entry(std::move(current)));
+        return m_entries.object(option.index)->size;
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched != qApp && !m_watched.contains(watched)) return false;
+        switch (event->type()) {
+        case QEvent::StyleChange:
+        case QEvent::FontChange:
+        case QEvent::ApplicationFontChange:
+        case QEvent::PaletteChange:
+        case QEvent::ApplicationPaletteChange:
+        case QEvent::ThemeChange:
+        case QEvent::DevicePixelRatioChange:
+        case QEvent::LayoutDirectionChange:
+        case QEvent::LocaleChange:
+        case QEvent::EnabledChange:
+        case QEvent::ContentsRectChange:
+        case QEvent::DynamicPropertyChange:
+        case QEvent::ParentAboutToChange:
+        case QEvent::ParentChange:
+            ++m_epoch;
+            m_entries.clear();
+            if (event->type() == QEvent::ParentChange) WatchParents();
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    struct Entry {
+        QStyleOptionViewItem option;
+        QMap<int, QVariant> roles;
+        QVector<int> roleTypes;
+        QVariant explicitSize;
+        Qt::ItemFlags flags;
+        const QStyle* style = nullptr;
+        QString applicationStyle, widgetStyle;
+        QSize widgetSize, dpi, size;
+        qreal dpr = 1;
+        quint64 epoch = 0;
+        int digits = 0, rows = 0, columns = 0, macSize = 0;
+        bool Matches(const Entry& other) const
+        {
+            const auto& a = option;
+            const auto& b = other.option;
+            return epoch == other.epoch && style == other.style && roles == other.roles && roleTypes == other.roleTypes &&
+                explicitSize == other.explicitSize && flags == other.flags &&
+                digits == other.digits && rows == other.rows && columns == other.columns &&
+                applicationStyle == other.applicationStyle && widgetStyle == other.widgetStyle &&
+                widgetSize == other.widgetSize && dpi == other.dpi && dpr == other.dpr && macSize == other.macSize &&
+                a.version == b.version && a.type == b.type && a.state == b.state && a.direction == b.direction &&
+                a.rect == b.rect && a.fontMetrics == b.fontMetrics && a.palette == b.palette &&
+                a.palette.currentColorGroup() == b.palette.currentColorGroup() && a.styleObject == b.styleObject &&
+                a.displayAlignment == b.displayAlignment && a.decorationAlignment == b.decorationAlignment &&
+                a.textElideMode == b.textElideMode && a.decorationPosition == b.decorationPosition &&
+                a.decorationSize == b.decorationSize && a.font == b.font &&
+                a.showDecorationSelected == b.showDecorationSelected && a.features == b.features &&
+                a.locale == b.locale && a.widget == b.widget && a.index == b.index && a.checkState == b.checkState &&
+                a.icon.cacheKey() == b.icon.cacheKey() && a.text == b.text && a.viewItemPosition == b.viewItemPosition &&
+                a.backgroundBrush == b.backgroundBrush;
+        }
+    };
+    void WatchParents()
+    {
+        for (const auto& connection : m_nameConnections) QObject::disconnect(connection);
+        m_nameConnections.clear();
+        m_watched.clear();
+        if (!m_table) return;
+        for (auto* widget = static_cast<QWidget*>(m_table.data()); widget; widget = widget->parentWidget())
+            m_watched.insert(widget);
+        m_watched.insert(m_table->viewport());
+        m_watched.insert(m_table->horizontalHeader());
+        m_watched.insert(m_table->verticalHeader());
+        for (auto* object : m_watched)
+            m_nameConnections.append(connect(object, &QObject::objectNameChanged, this, [this] {
+                ++m_epoch;
+                m_entries.clear();
+            }));
+    }
+    QVector<QMetaObject::Connection> m_nameConnections;
+    QPointer<QTableWidget> m_table;
+    QSet<QObject*> m_watched;
+    quint64 m_epoch = 0;
+    mutable QCache<QModelIndex, Entry> m_entries;
+};
+
+class GeometryNotifications
+{
+public:
+    explicit GeometryNotifications(QVector<QPoint> protectedCells) : m_protected(std::move(protectedCells))
+    {
+        std::sort(m_protected.begin(), m_protected.end(), [](QPoint a, QPoint b) {
+            return a.y() == b.y() ? a.x() < b.x() : a.y() < b.y();
+        });
+    }
+    void Add(int row, int column)
+    {
+        const QRect cell(column, row, 1, 1);
+        if (!m_ranges.isEmpty()) {
+            auto& previous = m_ranges.last();
+            const auto joined = previous.area.united(cell);
+            if (qint64(joined.width()) * joined.height() <= qint64(previous.changed + 1) * 4 && !ContainsEditor(joined)) {
+                previous.area = joined;
+                ++previous.changed;
+                return;
+            }
+        }
+        m_ranges.append({cell, 1});
+    }
+    void Publish(QAbstractItemModel* model, bool allRoles) const
+    {
+        const QList<int> roles = allRoles ? QList<int>() : QList<int>{Qt::DisplayRole, Qt::EditRole};
+        for (const auto& range : m_ranges)
+            emit model->dataChanged(model->index(range.area.top(), range.area.left()),
+                                   model->index(range.area.bottom(), range.area.right()), roles);
+    }
+private:
+    bool ContainsEditor(const QRect& area) const
+    {
+        auto cell = std::lower_bound(m_protected.cbegin(), m_protected.cend(), area.top(),
+            [](QPoint point, int row) { return point.y() < row; });
+        for (; cell != m_protected.cend() && cell->y() <= area.bottom(); ++cell)
+            if (cell->x() >= area.left() && cell->x() <= area.right()) return true;
+        return false;
+    }
+    struct Range { QRect area; int changed = 0; };
+    QVector<Range> m_ranges;
+    QVector<QPoint> m_protected;
+};
+
 class NumericIndexDelegate : public QStyledItemDelegate
 {
 public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    explicit NumericIndexDelegate(QTableWidget* table) : QStyledItemDelegate(table), m_metrics(table) {}
     QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
     {
         QSize result = QStyledItemDelegate::sizeHint(option, index);
@@ -69,18 +330,30 @@ public:
         QStyleOptionViewItem value(option); initStyleOption(&value, index);
         const int digits = QString::number(std::max(0, index.model()->rowCount(index.parent()) - 1)).size();
         const auto* style = value.widget ? value.widget->style() : QApplication::style();
-        for (char digit = '0'; digit <= '9'; ++digit) {
-            value.text = QString(digits, QChar(digit));
-            result = result.expandedTo(style->sizeFromContents(QStyle::CT_ItemViewItem, &value, {}, value.widget));
-        }
-        return result;
+        const QSize lowerBound = m_metrics.Get(value, digits, [&] {
+            QSize measured;
+            for (char digit = '0'; digit <= '9'; ++digit) {
+                value.text = QString(digits, QChar(digit));
+                measured = measured.expandedTo(style->sizeFromContents(QStyle::CT_ItemViewItem, &value, {}, value.widget));
+            }
+            return measured;
+        });
+        return result.expandedTo(lowerBound);
     }
+private:
+    ItemMetricCache m_metrics;
 };
 
 class GeometryEditorDelegate : public QStyledItemDelegate
 {
 public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    explicit GeometryEditorDelegate(QTableWidget* table) : QStyledItemDelegate(table), m_metrics(table, 8192) {}
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        QStyleOptionViewItem value(option);
+        initStyleOption(&value, index);
+        return m_metrics.Get(value, 0, [&] { return QStyledItemDelegate::sizeHint(option, index); });
+    }
     std::function<void(QWidget*, const QModelIndex&, bool)> editorChanged;
     std::function<bool(QWidget*)> canCommit;
     QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override
@@ -98,6 +371,8 @@ public:
         if (editorChanged) editorChanged(editor, index, false);
         QStyledItemDelegate::destroyEditor(editor, index);
     }
+private:
+    ItemMetricCache m_metrics;
 };
 
 class InspectorComboBox : public QComboBox
@@ -234,8 +509,18 @@ void CInspectorPanel::UpdateGeometryTable(QTableWidget* table, const QVector<flo
     if (reset) {
         table->setRowCount(0); table->setRowCount(rows);
         cached = {state.context, values, true};
+    }
+    QVector<QPoint> protectedCells;
+    if (!state.force) for (auto editor = state.editors.cbegin(); editor != state.editors.cend(); ++editor)
+        if (editor->generation == state.generation && editor->index.isValid() && editor->index.model() == table->model())
+            protectedCells.append({editor->index.column(), editor->index.row()});
+    GeometryNotifications notifications(std::move(protectedCells));
+    QSignalBlocker modelBlocker(table->model());
+    bool allRoles = reset;
+    if (reset) {
         for (int row = 0; row < rows; ++row) {
             auto* item = new QTableWidgetItem(QString::number(row)); item->setFlags(item->flags() & ~Qt::ItemIsEditable); table->setItem(row, 0, item);
+            notifications.Add(row, 0);
         }
     }
     for (int row = 0; row < rows; ++row) for (int column = 0; column < columns; ++column) {
@@ -247,10 +532,17 @@ void CInspectorPanel::UpdateGeometryTable(QTableWidget* table, const QVector<flo
                 editor->index.row() == row && editor->index.column() == column + 1) { editing = true; break; }
         if (editing) { state.pending = true; continue; }
         const QString text = rotation && column >= 4 ? (values[at] != 0 ? QStringLiteral("是") : QStringLiteral("否")) : QString::number(values[at], 'g', 9);
-        if (auto* item = table->item(row, column + 1)) { if (item->text() != text) item->setText(text); }
-        else table->setItem(row, column + 1, new QTableWidgetItem(text));
+        if (auto* item = table->item(row, column + 1)) {
+            if (item->text() != text) { item->setText(text); notifications.Add(row, column + 1); }
+        } else {
+            table->setItem(row, column + 1, new QTableWidgetItem(text));
+            notifications.Add(row, column + 1);
+            allRoles = true;
+        }
         cached.values[at] = values[at];
     }
+    modelBlocker.unblock();
+    notifications.Publish(table->model(), allRoles);
 }
 
 CInspectorPanel::CInspectorPanel(QWidget* parent)

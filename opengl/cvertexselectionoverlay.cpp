@@ -12,10 +12,23 @@
 namespace {
 bool finite(QPointF point) { return std::isfinite(point.x()) && std::isfinite(point.y()); }
 bool fail(QString* error, const QString& message) { if (error) *error = message; return false; }
+bool equal(QPointF a, QPointF b) { return a.x() == b.x() && a.y() == b.y(); }
+bool equal(const QVector<QPointF>& a, const QVector<QPointF>& b)
+{
+    return a.size() == b.size() && std::equal(a.cbegin(), a.cend(), b.cbegin(), [](QPointF x, QPointF y) { return equal(x, y); });
+}
+bool equal(const std::optional<QPointF>& a, const std::optional<QPointF>& b)
+{
+    return bool(a) == bool(b) && (!a || equal(*a, *b));
+}
+bool equal(const std::optional<QRectF>& a, const std::optional<QRectF>& b)
+{
+    return bool(a) == bool(b) && (!a || (equal(a->topLeft(), b->topLeft()) && a->width() == b->width() && a->height() == b->height()));
+}
 bool same(const CVertexSelectionOverlay::Frame& a, const CVertexSelectionOverlay::Frame& b)
 {
-    return a.viewport == b.viewport && a.points == b.points && a.weights == b.weights && a.hard == b.hard &&
-        a.rectangle == b.rectangle && a.lasso == b.lasso && a.brushCenter == b.brushCenter &&
+    return a.viewport == b.viewport && equal(a.points, b.points) && a.weights == b.weights && a.hard == b.hard &&
+        equal(a.rectangle, b.rectangle) && equal(a.lasso, b.lasso) && equal(a.brushCenter, b.brushCenter) &&
         a.brushRadius == b.brushRadius && a.brushHardness == b.brushHardness && a.brushOperation == b.brushOperation && a.drawPoints == b.drawPoints;
 }
 }

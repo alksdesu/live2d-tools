@@ -155,6 +155,35 @@ private slots:
         QVERIFY(host.childAt(40,50) != &overlay); QTest::mouseClick(&host, Qt::LeftButton, {}, QPoint(40,50)); QCOMPARE(host.presses, 1);
         overlay.resize(400,240); const auto stale = render(overlay); overlay.Clear(); QCOMPARE(render(overlay), stale);
     }
+    void subpixelValuesAreNotSilentlyMerged_data()
+    {
+        QTest::addColumn<int>("field");
+        const QStringList fields{"point-x", "point-y", "brush-x", "brush-y", "lasso-x", "lasso-y", "rectangle-x", "rectangle-y", "rectangle-width", "rectangle-height"};
+        for (int field = 0; field < fields.size(); ++field) QTest::newRow(qPrintable(fields[field])) << field;
+    }
+    void subpixelValuesAreNotSilentlyMerged()
+    {
+        QFETCH(int, field);
+        Overlay overlay; auto f = frame(); f.rectangle = QRectF(20, 25, 33, 41); f.brushCenter = QPointF(50, 70); f.lasso = {{30, 32}, {47, 62}};
+        QVERIFY(overlay.SetFrame(f)); render(overlay);
+        const auto next = [](qreal value) { return std::nextafter(value, 100.); };
+        if (field == 0) f.points[0].setX(next(f.points[0].x()));
+        if (field == 1) f.points[0].setY(next(f.points[0].y()));
+        if (field == 2) f.brushCenter->setX(next(f.brushCenter->x()));
+        if (field == 3) f.brushCenter->setY(next(f.brushCenter->y()));
+        if (field == 4) f.lasso[0].setX(next(f.lasso[0].x()));
+        if (field == 5) f.lasso[0].setY(next(f.lasso[0].y()));
+        if (field == 6) f.rectangle->moveLeft(next(f.rectangle->x()));
+        if (field == 7) f.rectangle->moveTop(next(f.rectangle->y()));
+        if (field == 8) f.rectangle->setWidth(next(f.rectangle->width()));
+        if (field == 9) f.rectangle->setHeight(next(f.rectangle->height()));
+        QVERIFY(overlay.SetFrame(f)); const auto& current = overlay.CurrentFrame();
+        QVERIFY(current.points[0].x() == f.points[0].x()); QVERIFY(current.points[0].y() == f.points[0].y());
+        QVERIFY(current.brushCenter->x() == f.brushCenter->x()); QVERIFY(current.brushCenter->y() == f.brushCenter->y());
+        QVERIFY(current.lasso[0].x() == f.lasso[0].x()); QVERIFY(current.lasso[0].y() == f.lasso[0].y());
+        QVERIFY(current.rectangle->x() == f.rectangle->x()); QVERIFY(current.rectangle->y() == f.rectangle->y());
+        QVERIFY(current.rectangle->width() == f.rectangle->width()); QVERIFY(current.rectangle->height() == f.rectangle->height());
+    }
     void parentDestructionIsSafe() { auto* parent = new Host; QPointer<Overlay> overlay = new Overlay(parent); QVERIFY(overlay->SetFrame(frame())); delete parent; QVERIFY(!overlay); }
 };
 QTEST_MAIN(VertexSelectionOverlayTests)

@@ -18,6 +18,10 @@
 #include <QHeaderView>
 #include <QStyle>
 #include <QStyledItemDelegate>
+#include <QProxyStyle>
+#include <QStyleFactory>
+#include <QPolygonF>
+#include <QLineF>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -48,6 +52,45 @@
 #include <cstring>
 
 namespace {
+double metricCoordinate(QVariant value)
+{
+    if (value.metaType().id() == QMetaType::QVariantMap) value = value.toMap().value("value");
+    switch (value.metaType().id()) {
+    case QMetaType::QPointF: return value.toPointF().x();
+    case QMetaType::QSizeF: return value.toSizeF().width();
+    case QMetaType::QRectF: return value.toRectF().x();
+    case QMetaType::QLineF: return value.toLineF().x1();
+    case QMetaType::QPolygonF: return value.value<QPolygonF>().first().x();
+    default: return 1;
+    }
+}
+
+class MetricProbeStyle : public QProxyStyle
+{
+public:
+    static constexpr int ExtraWidthRole = Qt::UserRole + 18;
+    static constexpr int MutableWidthRole = Qt::UserRole + 19;
+    static constexpr int FloatingWidthRole = Qt::UserRole + 20;
+    MetricProbeStyle() : QProxyStyle(QStyleFactory::create("Fusion")) {}
+    mutable int indexMeasures = 0, valueMeasures = 0;
+    QSize sizeFromContents(ContentsType type, const QStyleOption* option, const QSize& size,
+                          const QWidget* widget) const override
+    {
+        auto result = QProxyStyle::sizeFromContents(type, option, size, widget);
+        if (type == CT_ItemViewItem) if (const auto* item = qstyleoption_cast<const QStyleOptionViewItem*>(option)) {
+            if (item->index.column() == 0) ++indexMeasures; else ++valueMeasures;
+            const auto extra = item->index.data(ExtraWidthRole);
+            result.rwidth() += extra.toInt() + (extra.metaType().id() == QMetaType::Double ? 17 : 0);
+            const auto mutableWidth = item->index.data(MutableWidthRole);
+            auto* source = mutableWidth.metaType().id() == QMetaType::QVariantMap
+                ? mutableWidth.toMap().value("source").value<QObject*>() : mutableWidth.value<QObject*>();
+            if (source) result.rwidth() += source->property("extraWidth").toInt();
+            if (metricCoordinate(item->index.data(FloatingWidthRole)) != 1.0) ++result.rwidth();
+        }
+        return result;
+    }
+};
+
 class IndexTextProbe : public QStyledItemDelegate
 {
 public:
@@ -136,6 +179,226 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void metricMemoReadsCurrentRolesAndCompleteOptions()
+    {
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(document.Drawables().first().id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table && table->rowCount());
+        auto* style = new MetricProbeStyle; style->setParent(table); table->setStyle(style);
+        auto* delegate = table->itemDelegateForColumn(1); if (!delegate) delegate = table->itemDelegate(); QVERIFY(delegate);
+        QStyledItemDelegate reference;
+        QStyleOptionViewItem option; option.initFrom(table); option.widget = table; option.rect = QRect(0, 0, 80, 30);
+        const auto index = table->model()->index(0, 1);
+        const auto compare = [&](const QStyleOptionViewItem& value) {
+            return delegate->sizeHint(value, index) == reference.sizeHint(value, index);
+        };
+        QVERIFY(compare(option));
+        style->valueMeasures = 0;
+        delegate->sizeHint(option, index); delegate->sizeHint(option, index);
+        QCOMPARE(style->valueMeasures, 0);
+        const QSignalBlocker blockedModel(table->model());
+        auto* item = table->item(0, 1);
+        item->setData(Qt::SizeHintRole, QSize(431, 87));
+        QCOMPARE(delegate->sizeHint(option, index), QSize(431, 87));
+        item->setData(Qt::SizeHintRole, {}); QVERIFY(compare(option));
+        auto larger = table->font(); larger.setPixelSize(31); item->setFont(larger); QVERIFY(compare(option));
+        item->setData(Qt::FontRole, {}); QVERIFY(compare(option));
+        const auto previous = delegate->sizeHint(option, index);
+        item->setData(MetricProbeStyle::ExtraWidthRole, 120);
+        const auto custom = delegate->sizeHint(option, index); QCOMPARE(custom.width(), previous.width() + 120);
+        QVERIFY(compare(option));
+        item->setData(MetricProbeStyle::ExtraWidthRole, {});
+        item->setData(MetricProbeStyle::ExtraWidthRole, 120.0);
+        QCOMPARE(item->data(MetricProbeStyle::ExtraWidthRole).metaType().id(), QMetaType::Double);
+        QCOMPARE(delegate->sizeHint(option, index).width(), previous.width() + 137);
+        QVERIFY(compare(option)); item->setData(MetricProbeStyle::ExtraWidthRole, {});
+        item->setText(QString(60, QChar('8'))); option.features |= QStyleOptionViewItem::WrapText;
+        option.rect.setWidth(45); QVERIFY(compare(option));
+        option.rect.setWidth(200); style->valueMeasures = 0;
+        const auto wider = delegate->sizeHint(option, index); QVERIFY(style->valueMeasures > 0);
+        QCOMPARE(wider, reference.sizeHint(option, index));
+        QPixmap icon(24, 33); icon.fill(Qt::red); item->setIcon(QIcon(icon)); item->setCheckState(Qt::Checked);
+        option.decorationPosition = QStyleOptionViewItem::Top; option.decorationSize = QSize(24, 33); QVERIFY(compare(option));
+        option.direction = Qt::RightToLeft; option.state |= QStyle::State_Selected; QVERIFY(compare(option));
+        option.viewItemPosition = QStyleOptionViewItem::End; option.features |= QStyleOptionViewItem::Alternate; QVERIFY(compare(option));
+        option.displayAlignment = Qt::AlignRight | Qt::AlignBottom; option.showDecorationSelected = true; QVERIFY(compare(option));
+        item->setForeground(QColor(Qt::blue)); item->setBackground(QColor(Qt::yellow)); QVERIFY(compare(option));
+        item->setData(Qt::TextAlignmentRole, int(Qt::AlignCenter)); QVERIFY(compare(option));
+        ++option.version; style->valueMeasures = 0;
+        delegate->sizeHint(option, index); delegate->sizeHint(option, index); QVERIFY(style->valueMeasures >= 2);
+    }
+
+    void metricMemoBypassesOpaqueMutableRoles_data()
+    {
+        QTest::addColumn<int>("column"); QTest::addColumn<bool>("nested");
+        for (int column : {0, 1}) for (bool nested : {false, true})
+            QTest::newRow(qPrintable(QString("column-%1-nested-%2").arg(column).arg(nested))) << column << nested;
+    }
+
+    void metricMemoBypassesOpaqueMutableRoles()
+    {
+        QFETCH(int, column); QFETCH(bool, nested);
+        QObject source; source.setProperty("extraWidth", 0);
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(document.Drawables().first().id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table);
+        auto* style = new MetricProbeStyle; style->setParent(table); table->setStyle(style);
+        auto* delegate = column == 0 ? table->itemDelegateForColumn(0) : table->itemDelegate();
+        const QVariant pointer = QVariant::fromValue<QObject*>(&source);
+        const QVariant role = nested ? QVariant(QVariantMap{{"source", pointer}}) : pointer;
+        const QSignalBlocker blocked(table->model());
+        table->item(0, column)->setData(MetricProbeStyle::MutableWidthRole, role);
+        QStyleOptionViewItem option; option.initFrom(table); option.widget = table;
+        const auto index = table->model()->index(0, column);
+        const auto first = delegate->sizeHint(option, index);
+        source.setProperty("extraWidth", 180);
+        const auto changed = delegate->sizeHint(option, index);
+        QCOMPARE(changed.width(), first.width() + 180);
+        source.setProperty("extraWidth", 7);
+        QCOMPARE(delegate->sizeHint(option, index).width(), first.width() + 7);
+    }
+
+    void metricMemoBypassesFuzzyValueRoles_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("nested");
+        for (int type : {QMetaType::QPointF, QMetaType::QSizeF, QMetaType::QRectF, QMetaType::QLineF, QMetaType::QPolygonF})
+            for (bool nested : {false, true})
+                QTest::newRow(qPrintable(QString("%1-nested-%2").arg(QMetaType(type).name()).arg(nested))) << type << nested;
+    }
+
+    void metricMemoBypassesFuzzyValueRoles()
+    {
+        QFETCH(int, type); QFETCH(bool, nested);
+        const auto make = [&](double coordinate) {
+            QVariant value;
+            if (type == QMetaType::QPointF) value = QPointF(coordinate, 2);
+            else if (type == QMetaType::QSizeF) value = QSizeF(coordinate, 2);
+            else if (type == QMetaType::QRectF) value = QRectF(coordinate, 2, 3, 4);
+            else if (type == QMetaType::QLineF) value = QLineF(coordinate, 2, 3, 4);
+            else value = QVariant::fromValue(QPolygonF{QPointF(coordinate, 2), QPointF(3, 4)});
+            return nested ? QVariant(QVariantMap{{"value", value}}) : value;
+        };
+        const double next = std::nextafter(1.0, 2.0);
+        const auto before = make(1), after = make(next);
+        QVERIFY(before == after);
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(document.Drawables().first().id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table);
+        auto* style = new MetricProbeStyle; style->setParent(table); table->setStyle(style);
+        const QSignalBlocker blocked(table->model());
+        QStyleOptionViewItem option; option.initFrom(table); option.widget = table;
+        for (int column : {0, 1}) {
+            auto* delegate = column == 0 ? table->itemDelegateForColumn(0) : table->itemDelegate();
+            auto* item = table->item(0, column); const auto index = table->model()->index(0, column);
+            item->setData(MetricProbeStyle::FloatingWidthRole, before);
+            const auto original = delegate->sizeHint(option, index);
+            item->setData(MetricProbeStyle::FloatingWidthRole, {});
+            item->setData(MetricProbeStyle::FloatingWidthRole, after);
+            QVERIFY(metricCoordinate(item->data(MetricProbeStyle::FloatingWidthRole)) == next);
+            QCOMPARE(delegate->sizeHint(option, index).width(), original.width() + 1);
+        }
+    }
+
+    void metricMemoInvalidatesForFontStyleAndDigitBoundaries()
+    {
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(document.Drawables().first().id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table && table->rowCount());
+        auto* delegate = table->itemDelegateForColumn(0); QVERIFY(delegate);
+        QStyleOptionViewItem option; option.initFrom(table); option.widget = table;
+        const auto hint = [&] {
+            option.initFrom(table); option.widget = table; option.font = table->font();
+            return delegate->sizeHint(option, table->model()->index(0, 0));
+        };
+        table->setRowCount(10000); const auto fourDigits = hint();
+        table->setRowCount(10001); const auto fiveDigits = hint(); QVERIFY(fiveDigits.width() > fourDigits.width());
+        table->setRowCount(10); QVERIFY(hint().width() < fourDigits.width());
+        table->setRowCount(65536); const auto beforeFont = hint();
+        auto font = table->font(); font.setPixelSize(table->fontMetrics().height() * 2); table->setFont(font);
+        QVERIFY(hint().width() > beforeFont.width());
+        table->setStyleSheet("QTableWidget::item { padding: 2px; }");
+        const QStyle* identity = table->style(); const auto beforePadding = hint();
+        table->setStyleSheet("QTableWidget::item { padding: 19px; }");
+        QCOMPARE(table->style(), identity); QVERIFY(hint().width() >= beforePadding.width() + 34);
+        auto* values = table->itemDelegate(); QStyledItemDelegate reference;
+        const auto index = table->model()->index(0, 1); option.initFrom(table); option.widget = table;
+        QCOMPARE(values->sizeHint(option, index), reference.sizeHint(option, index));
+    }
+
+    void batchedGeometryNotificationsProtectEveryActiveEditor()
+    {
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        const auto id = document.Drawables().first().id;
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, "artmesh"); panel.resize(640, 1100); panel.show();
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table && table->rowCount() > 4);
+        QCoreApplication::processEvents();
+        const QVector<QPoint> drafts{{1, 1}, {2, 2}};
+        QVector<QPointer<QLineEdit>> editors;
+        for (const auto cell : drafts) {
+            table->openPersistentEditor(table->item(cell.y(), cell.x()));
+            QLineEdit* created = nullptr;
+            for (auto* editor : table->findChildren<QLineEdit*>()) if (!editors.contains(editor)) created = editor;
+            QVERIFY(created); editors.append(created); created->setText("2.7182818");
+        }
+        table->setRangeSelected(QTableWidgetSelectionRange(0, 1, 3, 2), true);
+        const auto selection = table->selectionModel()->selectedIndexes(); const auto current = table->currentIndex();
+        const int scroll = table->verticalScrollBar()->value();
+        QSignalSpy notifications(table->model(), &QAbstractItemModel::dataChanged);
+        auto positions = document.DrawableKeyformPositions(id, 0);
+        for (int i = 0; i < 8; ++i) positions[i] += .25f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, positions)); const auto revision = document.Revision();
+        panel.RefreshSelection();
+        QVERIFY(!notifications.isEmpty());
+        for (const auto& notification : notifications) {
+            const auto first = qvariant_cast<QModelIndex>(notification[0]), last = qvariant_cast<QModelIndex>(notification[1]);
+            const QRect notified(first.column(), first.row(), last.column() - first.column() + 1, last.row() - first.row() + 1);
+            for (const auto cell : drafts) QVERIFY2(!notified.contains(cell), "A merged notification covers an unsubmitted editor");
+        }
+        for (const auto& editor : editors) { QVERIFY(editor); QCOMPARE(editor->text(), QString("2.7182818")); }
+        QCOMPARE(table->selectionModel()->selectedIndexes(), selection); QCOMPARE(table->currentIndex(), current);
+        QCOMPARE(table->verticalScrollBar()->value(), scroll);
+        table->closePersistentEditor(table->item(1, 1)); QCoreApplication::processEvents();
+        QCOMPARE(table->item(1, 1)->text().toFloat(), positions[2]); QVERIFY(editors[1]); QCOMPARE(editors[1]->text(), QString("2.7182818"));
+        table->closePersistentEditor(table->item(2, 2)); QCoreApplication::processEvents();
+        QCOMPARE(table->item(2, 2)->text().toFloat(), positions[5]); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(document.DrawableKeyformPositions(id, 0), positions);
+    }
+
+    void sparseGeometryNotificationsDoNotExpandAcrossTheWholeTable()
+    {
+        using namespace live2dstruct;
+        WideMeshData::Fixture wide; QString error; QVERIFY2(WideMeshData::make(65536, WideMeshData::Layout::Sparse, wide, &error), qPrintable(error));
+        CModelDocument document; QVERIFY(document.LoadBytes(wide.bytes, "sparse-notifications.moc3", &error));
+        const auto id = wide.ids.first(); CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QSignalSpy changed(table->model(), &QAbstractItemModel::dataChanged);
+        auto positions = document.DrawableKeyformPositions(id, 0); positions[0] += .2f; positions[131070] += .2f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, positions)); panel.RefreshSelection();
+        QCOMPARE(changed.size(), 2);
+        for (const auto& notification : changed) QCOMPARE(qvariant_cast<QModelIndex>(notification[0]), qvariant_cast<QModelIndex>(notification[1]));
+        changed.clear(); positions[131070] += .2f; positions[131071] += .2f;
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, positions)); panel.RefreshSelection();
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(qvariant_cast<QModelIndex>(changed[0][0]), table->model()->index(65535, 1));
+        QCOMPARE(qvariant_cast<QModelIndex>(changed[0][1]), table->model()->index(65535, 2));
+    }
+
+    void geometryMetricCacheIsBoundedAndAvoidsRepeatedMeasurements()
+    {
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(document.Drawables().first().id, "artmesh");
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(table);
+        auto* style = new MetricProbeStyle; style->setParent(table); table->setStyle(style);
+        table->setRowCount(9000);
+        auto* delegate = table->itemDelegate(); QStyleOptionViewItem option; option.initFrom(table); option.widget = table;
+        const auto first = table->model()->index(0, 1);
+        delegate->sizeHint(option, first); style->valueMeasures = 0;
+        delegate->sizeHint(option, first); QCOMPARE(style->valueMeasures, 0);
+        for (int row = 1; row < 9000; ++row) delegate->sizeHint(option, table->model()->index(row, 1));
+        style->valueMeasures = 0; delegate->sizeHint(option, first); QVERIFY(style->valueMeasures > 0);
+        style->valueMeasures = 0; delegate->sizeHint(option, first); QCOMPARE(style->valueMeasures, 0);
+    }
+
     void rejectedGeometrySelectionRestoresAcceptedFormWithoutRebuilding_data()
     {
         QTest::addColumn<QString>("type");
