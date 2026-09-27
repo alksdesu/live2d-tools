@@ -18,6 +18,7 @@
 #include "ckeyformgridsnapshot.h"
 #include "cparameterorganization.h"
 #include "cmodelgeometryedit.h"
+#include "cmodelmaterialedit.h"
 #include "cgeometryobjectpairs.h"
 
 namespace live2dstruct {
@@ -178,7 +179,7 @@ struct CModelEditStorageState
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials };
     QString name;
     QString type;
     Field field = Visibility;
@@ -224,6 +225,15 @@ public:
     const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }
     const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
     bool SetParameterStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
+    bool CaptureDrawableMaterials(CModelMaterialState& result, QString* error = nullptr) const;
+    bool CaptureDrawableMaterial(const QString& id, CModelDrawableMaterial& result, QString* error = nullptr) const;
+    bool MakeMaterialEdit(const CModelMaterialState& before, const CModelMaterialState& after,
+                          CModelEdit& edit, QString* error = nullptr) const;
+    bool SetDrawableMaterials(const CModelMaterialState& state, QString* error = nullptr);
+    const CModelMaterialOverrides& DrawableMaterialOverrides() const { return m_drawableMaterialOverrides; }
+    bool HasMaterialStructure() const { return m_hasMaterialStructure; }
+    bool SetMaterialStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
+                              bool deformerStructure, const QSet<QString>& sourceIds, QString* error = nullptr);
     bool HasMeshStructure() const { return m_hasMeshStructure; }
     bool HasDeformerStructure() const { return m_hasDeformerStructure; }
     const QSet<QString>& SourceDeformerIds() const { return m_sourceDeformerIds; }
@@ -339,7 +349,7 @@ private:
     bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
                            CModelDocument& candidate, QString* error) const;
     bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
-                           bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory,
+                           bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory, bool materialStructure,
                            CModelDocument& candidate, QString* error) const;
     bool ValidateDeformerTransition(const CModelDocument& candidate, const CModelEdit& edit,
                                     bool forward, QString* error) const;
@@ -362,6 +372,8 @@ private:
     QByteArray m_workingBaseBytes;
     CMocParameterStructureBuilder::ColumnState m_structure;
     bool m_hasMeshStructure = false;
+    bool m_hasMaterialStructure = false;
+    CModelMaterialOverrides m_drawableMaterialOverrides;
     QHash<QString, int> m_sourceDeformerParents;
     QSet<QString> m_sourceDeformerIds;
     bool m_hasDeformerStructure = false;
@@ -396,6 +408,8 @@ private:
                                        const CMocParameterStructureBuilder::EditBindingKeysRequest* keys,
                                        QString* error) const;
     bool ApplyEdit(const CModelEdit& edit, bool forward);
+    bool ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
+    bool ValidateMaterialEditStorage(const CModelEdit& edit) const;
     bool ApplyGeometryEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateGeometryEditStorage(const CModelEdit& edit) const;
     QByteArray GeometryEditStorageFingerprint(const CModelEdit& edit) const;

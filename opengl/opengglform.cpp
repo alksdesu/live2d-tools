@@ -941,6 +941,40 @@ bool OpengGlForm::ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteA
     }
 }
 
+bool OpengGlForm::ApplyDrawableMaterialPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                              const QByteArray& expectedPreviewDigest, const QSet<QString>& allowedDrawableIds,
+                                              QString* error)
+{
+    if (error) error->clear();
+    if (m_exportSuspended || m_meshToolDispatchActive || m_meshEditCallbackActive || m_deformerCallbackActive ||
+        IsKeyformDragging() || m_controlDragActive || m_physicsDragActive || m_meshToolGesture)
+        return MeshError(error, QStringLiteral("请先结束当前画布操作或导出"));
+    const RestoreContext restore;
+    if (!IsModelReady() || !MakeRuntimeCurrent()) return MeshError(error, QStringLiteral("材质预览的 OpenGL 上下文尚未就绪"));
+    auto* model = CurrentModel();
+    auto* view = LAppDelegate::GetInstance()->GetView();
+    if (!model || !view) return MeshError(error, QStringLiteral("模型或变形器预览视图尚未就绪"));
+    try {
+        QByteArray compiled;
+        if (!live2dstruct::CMocDeformerOrder::Normalize(bytes, compiled, error)) return false;
+        CTreeManage::Snapshot tree;
+        LAppView::PreparedDeformerOverlays overlays;
+        const auto prepare = [&](const CubismModel& candidate, QString* detail) {
+            CubismModel::RuntimeValueSnapshot values;
+            return candidate.CaptureRuntimeValues(values, detail) &&
+                CTreeManage::PrepareSnapshot(compiled, values.Parameters(), tree, detail) &&
+                view->PrepareDeformerOverlays(tree, overlays, detail);
+        };
+        if (!model->ApplyDrawableMaterialPreview(compiled, sourceDigest, expectedPreviewDigest, allowedDrawableIds, error, prepare)) return false;
+        CTreeManage::SwapSnapshot(tree);
+        view->SwapDeformerOverlays(overlays);
+        update();
+        return true;
+    } catch (const std::exception&) {
+        return MeshError(error, QStringLiteral("无法准备材质预览的图层与变形器视图"));
+    }
+}
+
 bool OpengGlForm::ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                                  const QMap<QString, float>& baseValues, bool keepEditorPreview,
                                                  QString* error)
@@ -987,7 +1021,8 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
                                                 const LAppModel::PhysicsDraft* physicsDraft,
                                                 const CMeshGeometryMigration* geometry,
                                                 const QMap<QString, float>* requestedEditorPose,
-                                                const LAppModel::TextureState* textureState)
+                                                const LAppModel::TextureState* textureState,
+                                                const QSet<QString>* materialDrawableIds)
 {
     if (error) error->clear();
     if (m_meshToolDispatchActive) return MeshError(error, QStringLiteral("正在提交网格操作"));
@@ -1013,7 +1048,7 @@ bool OpengGlForm::ApplyParameterStructurePreview(const QByteArray& bytes, const 
         };
         if (!model->ApplyParameterStructurePreview(compiled, sourceDigest, addedSeeds, baseValues,
                                                    keepEditorPreview, error, prepare, references, restoreEditor, prepareTimeline,
-                                                   physicsDraft, geometry, requestedEditorPose, textureState)) return false;
+                                                   physicsDraft, geometry, requestedEditorPose, textureState, materialDrawableIds)) return false;
         CTreeManage::SwapSnapshot(tree);
         view->SwapDeformerOverlays(overlays);
         preparedPose.swap(pose);

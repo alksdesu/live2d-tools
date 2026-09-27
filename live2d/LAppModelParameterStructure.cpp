@@ -114,12 +114,13 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
                                                const ParameterReferenceState* references, const EditorPreviewContext* restoreEditor,
                                                const TimelinePreviewPreparation& prepareTimeline, const PhysicsDraft* physicsDraft,
                                                const CMeshGeometryMigration* geometry,
-                                               const QMap<QString, float>* requestedEditorPose, const TextureState* textureState)
+                                               const QMap<QString, float>* requestedEditorPose, const TextureState* textureState,
+                                               const QSet<QString>* materialDrawableIds)
 {
     if (error) error->clear();
     if (HasExportPreview() || !_initialized || _updating || !_model || sourceDigest.isEmpty() ||
         sourceDigest != m_sourceMocDigest || bytes.isEmpty() || bytes.size() > std::numeric_limits<int>::max() ||
-        (textureState && m_physicsDragActive)) {
+        ((textureState || materialDrawableIds) && (m_physicsDragActive || m_userParameterSnapshotActive))) {
         if (error) *error = QStringLiteral("当前模型状态不允许修改参数结构");
         return false;
     }
@@ -352,8 +353,9 @@ bool LAppModel::ApplyParameterStructurePreview(const QByteArray& bytes, const QB
         auto policy = CubismModelUpdatePolicy::AllowClippingEdits | CubismModelUpdatePolicy::AllowParameterDefinitionEdits |
             CubismModelUpdatePolicy::AllowParameterStructureEdits;
         if (geometry) policy = policy | CubismModelUpdatePolicy::AllowDrawableGeometryEdits;
+        if (materialDrawableIds) policy = policy | CubismModelUpdatePolicy::AllowDrawableMaterialEdits;
         if (!ApplyPreviewTransaction(ownedBytes, sourceDigest, prepare, error, policy, addedSeeds,
-                                     referenceCandidate ? &referenceCandidate->physics : nullptr, physicsDraft, geometry, textureState)) return false;
+                                     referenceCandidate ? &referenceCandidate->physics : nullptr, physicsDraft, geometry, textureState, materialDrawableIds)) return false;
         if (commitReferences) commitReferences();
         m_mapParaToIndex.swap(nextIndices);
         _timelinePreview.parameters.swap(nextTimeline.frame.parameters);

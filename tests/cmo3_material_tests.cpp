@@ -1,3 +1,5 @@
+#include "live2dstruct/cmocmaterialbuilder.h"
+#include "deformer_snapshot_fixture.h"
 #include "cmo3/ccaffarchive.h"
 #include "cmo3/ccmo3builder.h"
 #include "cmo3/ccmo3entities.h"
@@ -121,21 +123,24 @@ QByteArray png(const QImage& image)
 }
 QRect sourceRect(const CSectionTable& table, const CArt_meshes* mesh, QSize size)
 {
+    CModelMaterialOverrides materials; CMocMaterialBuilder::Capture(table, materials); const auto values = materials.value(mesh->ids).uvs;
     double left = 1e100, top = left, right = -left, bottom = -left;
     for (int index = 0; index < mesh->vertex_counts; ++index) {
-        const double x = double(table.uvs->uvs[mesh->uv_sources_begin_indices + index * 2]) * size.width();
-        const double y = double(table.uvs->uvs[mesh->uv_sources_begin_indices + index * 2 + 1]) * size.height();
+        const double x = double(values[index * 2]) * size.width();
+        const double y = double(values[index * 2 + 1]) * size.height();
         left = std::min(left,x); right = std::max(right,x); top = std::min(top,y); bottom = std::max(bottom,y);
     }
     const int x = int(std::floor(left)) - 1, y = int(std::floor(top)) - 1;
     return QRect(x,y,int(std::ceil(right))+1-x,int(std::ceil(bottom))+1-y);
 }
-QVector<double> sample(const QImage& image, double x, double y)
+int repeat(int value, int size) { const int remainder = value % size; return remainder < 0 ? remainder + size : remainder; }
+QVector<double> sample(const QImage& image, double x, double y, bool repeating = false)
 {
     x -= .5; y -= .5; const int ix = int(std::floor(x)), iy = int(std::floor(y)); const double dx = x-ix, dy = y-iy;
     QVector<double> values(4,0);
     for (int row = 0; row < 2; ++row) for (int column = 0; column < 2; ++column) {
-        const auto p = image.pixel(std::clamp(ix+column,0,image.width()-1), std::clamp(iy+row,0,image.height()-1));
+        const auto p = image.pixel(repeating ? repeat(ix+column,image.width()) : std::clamp(ix+column,0,image.width()-1),
+                                   repeating ? repeat(iy+row,image.height()) : std::clamp(iy+row,0,image.height()-1));
         const double weight = (column ? dx : 1-dx)*(row ? dy : 1-dy);
         const int channels[]{qRed(p),qGreen(p),qBlue(p),qAlpha(p)};
         for (int channel = 0; channel < 4; ++channel) values[channel] += channels[channel]*weight;
@@ -229,6 +234,31 @@ private slots:
         QCOMPARE(archive.Entries().size(),2);
         xml.EndShared(); xml.EndDocument(); QVERIFY(!xml.HasError());
     }
+    void unsigned16TriangleIndicesRoundTrip()
+    {
+        DeformerSnapshotData::Fixture source; const auto& offsets = *source.table.sectionOffsetTable;
+        const auto positions = source.bytes.mid(offsets.keyform_positions->xys, 20 * 4);
+        source.column(offsets.art_meshes->vertex_counts, 0, 65536);
+        source.appendColumn(0x178, QVector<int>(65536 * 2, 0)); source.count(15, 65536 * 2);
+        source.appendColumn(0x15c, QVector<int>(20 + 65536 * 4, 0)); source.count(10, 20 + 65536 * 4);
+        const int positionStart = DeformerSnapshotData::integer(source.bytes, 0x15c);
+        source.bytes.replace(positionStart, positions.size(), positions);
+        source.column(offsets.art_mesh_keyforms->keyform_position_sources_begin_indices, 0, 20);
+        source.column(offsets.art_mesh_keyforms->keyform_position_sources_begin_indices, 1, 20 + 65536 * 2);
+        const int uvStart = DeformerSnapshotData::integer(source.bytes, 0x178);
+        DeformerSnapshotData::real(source.bytes, uvStart + 65534 * 8, 1.0f);
+        DeformerSnapshotData::real(source.bytes, uvStart + 65535 * 8 + 4, 1.0f);
+        const QVector<quint16> expected{32768, 65534, 65535};
+        for (int index = 0; index < 3; ++index) qToLittleEndian(expected[index], source.bytes.data() + offsets.position_indices->indices + index * 2);
+        QTemporaryDir temp; QVERIFY(temp.isValid()); cmo3::CCmo3Builder::Options options;
+        options.mocPath = temp.filePath("unsigned.moc3"); options.mocBytes = source.bytes;
+        options.outPath = temp.filePath("unsigned.cmo3"); options.texturePngs = QMap<int, QByteArray>{{0, png(m_atlas)}};
+        QString error; QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        Archive output; QVERIFY2(output.load(options.outPath, error), qPrintable(error));
+        const auto* mesh = output.source("Mesh"); QVERIFY(mesh);
+        const QVector<float> indices{32768, 65534, 65535}; QCOMPARE(floats(mesh->child("indices")), indices);
+        QCOMPARE(floats(mesh->child("uvs")).size(), 65536 * 2);
+    }
     void repeatedMaterialEncodingBudgetPreservesExistingTarget() {
         auto bytes=m_bytes; auto reader=CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
         constexpr int size=3072;
@@ -245,11 +275,22 @@ private slots:
         QFile preserved(options.outPath); QVERIFY(preserved.open(QIODevice::ReadOnly)); QCOMPARE(preserved.readAll(),QByteArray("original target"));
     }
     void materialGraphPreservesPixelsAndFormCoordinates_data() {
-        QTest::addColumn<bool>("editForm"); QTest::newRow("baseline")<<false; QTest::newRow("edited-local-form")<<true;
+        QTest::addColumn<bool>("editForm"); QTest::addColumn<int>("uvMode");
+        QTest::newRow("baseline") << false << 0; QTest::newRow("edited-local-form") << true << 0;
+        QTest::newRow("outside-repeat") << false << 1; QTest::newRow("odd-shared-uv") << false << 2;
     }
     void materialGraphPreservesPixelsAndFormCoordinates() {
-        QFETCH(bool, editForm); auto reader=CReader::FromBytes(m_bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
-        QTemporaryDir temp; QVERIFY(temp.isValid()); const auto moc=temp.filePath("Mark.moc3"); QVERIFY(write(moc,m_bytes)); QVERIFY(m_atlas.save(temp.filePath("atlas.png"),"PNG"));
+        QFETCH(bool, editForm); QFETCH(int, uvMode); auto bytes = m_bytes;
+        auto sourceReader = CReader::FromBytes(bytes); CSectionTable sourceTable(sourceReader); QVERIFY(sourceTable.IsValid());
+        if (uvMode == 1) for (int index = 0; index < sourceTable.uvs->uvs.size(); ++index) {
+            const float value = sourceTable.uvs->uvs[index] + (index % 2 ? 1.0f : -2.0f); quint32 bits; std::memcpy(&bits, &value, 4);
+            qToLittleEndian(bits, bytes.data() + sourceTable.sectionOffsetTable->uvs->uvs + index * 4);
+        }
+        if (uvMode == 2) qToLittleEndian(qint32(sourceTable.art_meshes[0]->uv_sources_begin_indices + 1),
+            bytes.data() + sourceTable.sectionOffsetTable->art_meshes->uv_sources_begin_indices + 4);
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        CModelMaterialOverrides materials; QVERIFY(CMocMaterialBuilder::Capture(table, materials));
+        QTemporaryDir temp; QVERIFY(temp.isValid()); const auto moc=temp.filePath("Mark.moc3"); QVERIFY(write(moc,bytes)); QVERIFY(m_atlas.save(temp.filePath("atlas.png"),"PNG"));
         int maximumTexture=0, parented=-1;
         for(int i=0;i<table.art_meshes.size();++i) {maximumTexture=std::max(maximumTexture,table.art_meshes[i]->texture_nos); if(table.art_meshes[i]->parent_deformer_indices>=0) parented=i;}
         QVERIFY(parented>=0); QJsonArray textures; for(int i=0;i<=maximumTexture;++i) textures.append("atlas.png");
@@ -292,12 +333,13 @@ private slots:
             QCOMPARE(output.resolve(cache->child("rawImage")),resource);
             const auto crop=sourceRect(table,mesh,m_atlas.size()); QCOMPARE(image.size(),crop.size());
             for(int y=0;y<image.height();++y) for(int x=0;x<image.width();++x)
-                QCOMPARE(image.pixel(x,y),m_atlas.pixel(std::clamp(crop.x()+x,0,m_atlas.width()-1),std::clamp(crop.y()+y,0,m_atlas.height()-1)));
+                QCOMPARE(image.pixel(x,y),m_atlas.pixel(repeat(crop.x()+x,m_atlas.width()),repeat(crop.y()+y,m_atlas.height())));
+            const auto authorUvs = materials.value(mesh->ids).uvs;
             const auto positions=floats(source->child("positions")), uvs=floats(source->child("uvs"));
             QCOMPARE(positions.size(),mesh->vertex_counts*2); QCOMPARE(uvs.size(),positions.size());
             const int envelope[]{(image.width()+63)/64*64,(image.height()+63)/64*64};
             for(int v=0;v<mesh->vertex_counts;++v) for(int axis=0;axis<2;++axis) {
-                const double original=double(table.uvs->uvs[mesh->uv_sources_begin_indices+v*2+axis])*(axis?m_atlas.height():m_atlas.width());
+                const double original=double(authorUvs[v*2+axis])*(axis?m_atlas.height():m_atlas.width());
                 const int offset=axis?origin.y():origin.x(), cropOffset=axis?crop.y():crop.x();
                 QCOMPARE(positions[v*2+axis],float(original-cropOffset+offset));
                 QCOMPARE(uvs[v*2+axis],float((double(positions[v*2+axis])-offset)/envelope[axis]));
@@ -317,12 +359,12 @@ private slots:
             for(int tri=0;tri<mesh->position_index_sources_counts;tri+=3) {
                 double oldX=0,oldY=0,newX=0,newY=0;
                 for(int side=0;side<3;++side) {
-                    const int vertex=table.position_indices->indices[mesh->position_index_sources_begin_indices+tri+side];
-                    oldX+=double(table.uvs->uvs[mesh->uv_sources_begin_indices+vertex*2])*m_atlas.width()/3;
-                    oldY+=double(table.uvs->uvs[mesh->uv_sources_begin_indices+vertex*2+1])*m_atlas.height()/3;
+                    const int vertex=static_cast<quint16>(table.position_indices->indices[mesh->position_index_sources_begin_indices+tri+side]);
+                    oldX+=double(authorUvs[vertex*2])*m_atlas.width()/3;
+                    oldY+=double(authorUvs[vertex*2+1])*m_atlas.height()/3;
                     newX+=double(uvs[vertex*2])*envelope[0]/3; newY+=double(uvs[vertex*2+1])*envelope[1]/3;
                 }
-                const auto expected=sample(m_atlas,oldX,oldY), actual=sample(image,newX,newY);
+                const auto expected=sample(m_atlas,oldX,oldY,true), actual=sample(image,newX,newY);
                 for(int channel=0;channel<4;++channel) QVERIFY(std::abs(expected[channel]-actual[channel])<.002);
             }
             ++checked;

@@ -17,7 +17,7 @@ bool MainWindow::InitializeTextureEditing(QString* error)
 bool MainWindow::PublishTextureState(const live2dstruct::CTextureAssets::State& state, QString* error)
 {
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
-    if (m_closingModel || m_applyingSession || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
+    if (m_materialEditor.IsActive() || m_closingModel || m_applyingSession || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() ||
         !m_runtimePanelsInitialized || !m_openglwindows || !m_openglwindows->IsModelReady())
         return fail(QStringLiteral("请等待模型就绪，并先结束当前导出或会话恢复"));
     if (!RuntimeMatchesDocument(error)) return false;
@@ -40,6 +40,7 @@ void MainWindow::RefreshTextureEditing(bool changed)
 {
     if (changed) {
         m_historySource = HistorySource::Textures;
+        m_textureHistoryUsesDocument = false;
         RefreshWindowTitle();
     }
     if (m_texturePanel) {

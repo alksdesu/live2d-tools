@@ -85,6 +85,7 @@ public:
 
 signals:
     void HistorySelected();
+    void EditUvRequested(const QString& meshName);
     void EditRejected(const QString& error);
     // 点击图集命中 ArtMesh（用于联动树面板与主视图高亮）
     void AtlasMeshPicked(const QString& meshName);
@@ -123,6 +124,7 @@ private:
     QToolButton* m_btnExport;
     QToolButton* m_btnReplace;
     QToolButton* m_btnRestore;
+    QToolButton* m_btnEditUv;
     QLabel* m_infoLabel;
     QLabel* m_errorLabel;
 

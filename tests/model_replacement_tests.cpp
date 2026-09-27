@@ -1519,6 +1519,51 @@ private slots:
         QVERIFY(preview.HasEditorPreview());
     }
 
+    void materialReplacementKeepsSelectionAndOverrides()
+    {
+        auto source = createSource();
+        auto* mesh = source->model->GetMeshMap()->GetDrawMesh("MeshA");
+        const auto oldCount = mesh->GetSelectPoint().size();
+        runtime.configureModel = [](GetterState& data) { data.uvs[0][0].X = .25f; data.textures[0] = 3; };
+        CubismModelReplacement next; QString error;
+        QVERIFY2(next.Prepare(candidateBytes.data(), candidateBytes.size(), *source->moc, *source->model,
+            *source->renderer, normalPreparation(), CubismModelUpdatePolicy::AllowDrawableMaterialEdits, &error), qPrintable(error));
+        QVERIFY(next.GetModel()->HasDrawableIndicesOverrides());
+        QCOMPARE(next.GetModel()->GetMeshMap()->GetDrawMesh("MeshA")->GetSelectPoint().size(), oldCount);
+        QCOMPARE(next.GetModel()->GetDrawableVertexIndices(0)[2], source->model->GetDrawableVertexIndices(0)[2]);
+        QCOMPARE(next.GetModel()->GetParameterValue(0), .7f);
+        QVERIFY(next.Commit(source->moc, source->model, source->renderer));
+        QCOMPARE(source->model->GetDrawableTextureIndex(0), 3);
+        QCOMPARE(source->model->GetDrawableVertexUvs(0)[0].X, .25f);
+        source->model->LoadParameters(); QCOMPARE(source->model->GetParameterValue(0), .2f);
+    }
+
+    void materialReplacementFailurePreservesAllObjects_data()
+    {
+        QTest::addColumn<bool>("throws"); QTest::newRow("reject") << false; QTest::newRow("throw") << true;
+    }
+    void materialReplacementFailurePreservesAllObjects()
+    {
+        QFETCH(bool, throws);
+        auto source = createSource();
+        auto* model = source->model; auto* renderer = source->renderer; auto* moc = source->moc;
+        const auto oldCount = runtime.allocations.size();
+        auto* selected = model->GetMeshMap()->GetDrawMesh("MeshA")->GetSelectPoint().front();
+        runtime.configureModel = [](GetterState& data) { data.uvs[0][0].X = .25f; data.textures[0] = 3; };
+        const auto reject = [throws](CubismRenderer*, CubismModel*, const CubismRenderer&, QString*) {
+            if (throws) throw std::runtime_error("material renderer allocation");
+            return false;
+        };
+        CubismModelReplacement next; QString error;
+        QVERIFY(!next.Prepare(candidateBytes.data(), candidateBytes.size(), *moc, *model, *renderer,
+            reject, CubismModelUpdatePolicy::AllowDrawableMaterialEdits, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(source->model, model); QCOMPARE(source->renderer, renderer); QCOMPARE(source->moc, moc);
+        QCOMPARE(model->GetMeshMap()->GetDrawMesh("MeshA")->GetSelectPoint().front(), selected);
+        QCOMPARE(model->GetParameterValue(0), .7f); QVERIFY(model->HasDrawableIndicesOverrides());
+        QCOMPARE(runtime.allocations.size(), oldCount);
+    }
+
     void geometryReplacementRemapsSelectionAndDropsSourceEbo()
     {
         auto source=createSource();auto* oldMesh=source->model->GetMeshMap()->GetDrawMesh("MeshA");
@@ -2304,8 +2349,10 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& bytes, const QByteArra
                                        const CubismModelReplacement::ModelPreparation& prepareModel,
                                        QString* error, CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
-                                       const CMeshGeometryMigration* geometry, const TextureState* textureState)
+                                       const CMeshGeometryMigration* geometry, const TextureState* textureState,
+                                        const QSet<QString>* materialDrawableIds)
 {
+    if (materialDrawableIds) { if (error) *error = QStringLiteral("测试边界不提供材质映射发布"); return false; }
     if (textureState) { if (error) *error = QStringLiteral("测试边界不提供 GL 纹理上传"); return false; }
     return ModelReplacementTests::publishPreview(*this, bytes, sourceDigest, prepareModel, error, policy, seeds, physicsReferences, physicsDraft, geometry);
 }

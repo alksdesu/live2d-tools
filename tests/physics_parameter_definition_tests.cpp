@@ -731,6 +731,66 @@ private slots:
         QVERIFY(simulation->CaptureObservation(*target, sample)); QCOMPARE(observationState(sample), sourceFrame);
     }
 
+    void observationRebindPreservesSamplesAndFollowingSimulation()
+    {
+        auto simulation = physics(), control = physics();
+        auto target = model(), reference = model(), replacement = model();
+        QVERIFY(simulation->SetObservationGroup(0)); QVERIFY(control->SetObservationGroup(0));
+        for (int frame = 0; frame < 7; ++frame) {
+            target->SetParameterValue(0, .3f); reference->SetParameterValue(0, .3f);
+            simulation->Evaluate(target.get(), 1.f / 120); control->Evaluate(reference.get(), 1.f / 120);
+        }
+        PhysicsObservation before; QVERIFY(simulation->CaptureObservation(*target, before));
+        const auto sample = observationState(before); const auto dynamics = dynamicState(*simulation);
+        const auto revision = simulation->_stateRevision;
+        QVERIFY(replacement->CopyRuntimeStateFrom(*target));
+        QVERIFY(simulation->RebindObservationModel(*target, *replacement));
+        QCOMPARE(simulation->_stateRevision, revision); QCOMPARE(dynamicState(*simulation), dynamics);
+        target.reset();
+        PhysicsObservation after; QVERIFY(simulation->CaptureObservation(*replacement, after));
+        QCOMPARE(observationState(after), sample);
+        for (int frame = 0; frame < 24; ++frame) {
+            const float value = std::sin(frame / 5.f);
+            replacement->SetParameterValue(0, value); reference->SetParameterValue(0, value);
+            simulation->Evaluate(replacement.get(), 1.f / 120); control->Evaluate(reference.get(), 1.f / 120);
+            QCOMPARE(State(replacement->GetModel()).values, State(reference->GetModel()).values);
+            QCOMPARE(dynamicState(*simulation), dynamicState(*control));
+            PhysicsObservation actual, expected;
+            QVERIFY(simulation->CaptureObservation(*replacement, actual)); QVERIFY(control->CaptureObservation(*reference, expected));
+            QCOMPARE(observationState(actual), observationState(expected));
+        }
+    }
+
+    void observationRebindRejectsChangedDefinitions_data()
+    {
+        QTest::addColumn<int>("kind");
+        for (int kind = 0; kind < 9; ++kind) QTest::newRow(qPrintable(QString::number(kind))) << kind;
+    }
+    void observationRebindRejectsChangedDefinitions()
+    {
+        QFETCH(int, kind);
+        auto simulation = physics(); auto target = model(), unrelated = model();
+        QVERIFY(simulation->SetObservationGroup(0)); simulation->Evaluate(target.get(), 1.f / 30);
+        auto replacement = model([kind](GetterState& value) {
+            switch (kind) {
+            case 0: CubismModelFixture::SetParameterLayout(value, {"ParamB", "ParamA"}); break;
+            case 1: value.minimum[0] = -2; break;
+            case 2: value.maximum[0] = 2; break;
+            case 3: value.defaults[0] = .5f; break;
+            case 4: value.types[0] = Core::csmParameterType_BlendShape; break;
+            case 5: value.keyCounts[0] = 1; break;
+            case 6: value.keys[0][0] = -.5f; break;
+            case 7: value.nullGetters.insert("csmGetParameterDefaultValues"); break;
+            }
+        });
+        const auto dynamics = dynamicState(*simulation); const auto revision = simulation->_stateRevision;
+        PhysicsObservation before; QVERIFY(simulation->CaptureObservation(*target, before));
+        QVERIFY(!simulation->RebindObservationModel(kind == 8 ? *unrelated : *target, *replacement));
+        QCOMPARE(dynamicState(*simulation), dynamics); QCOMPARE(simulation->_stateRevision, revision);
+        PhysicsObservation after; QVERIFY(simulation->CaptureObservation(*target, after));
+        QCOMPARE(observationState(after), observationState(before));
+    }
+
     void observingNeverChangesTheOriginalFrameSequence()
     {
         auto baseline = physics(), observed = physics(); auto first = model(), second = model();

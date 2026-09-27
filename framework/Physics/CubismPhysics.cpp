@@ -628,6 +628,37 @@ bool SameObservationRange(const PhysicsInputObservation& first, const PhysicsInp
 }
 }
 
+bool CubismPhysics::RebindObservationModel(const CubismModel& previous, const CubismModel& replacement) noexcept
+{
+    if (!previous.GetModel() || !replacement.GetModel() ||
+        (_observation.sampled && _observationModel != &previous)) return false;
+    const int count = previous.GetParameterCount();
+    if (count < 0 || count > 1000000 || count != replacement.GetParameterCount()) return false;
+    const auto* oldTypes = Core::csmGetParameterTypes(previous.GetModel());
+    const auto* nextTypes = Core::csmGetParameterTypes(replacement.GetModel());
+    const auto* oldKeys = Core::csmGetParameterKeyCounts(previous.GetModel());
+    const auto* nextKeys = Core::csmGetParameterKeyCounts(replacement.GetModel());
+    const auto* oldValues = Core::csmGetParameterKeyValues(previous.GetModel());
+    const auto* nextValues = Core::csmGetParameterKeyValues(replacement.GetModel());
+    for (const auto& pair : {std::pair{Core::csmGetParameterMinimumValues(previous.GetModel()), Core::csmGetParameterMinimumValues(replacement.GetModel())},
+                            std::pair{Core::csmGetParameterMaximumValues(previous.GetModel()), Core::csmGetParameterMaximumValues(replacement.GetModel())},
+                            std::pair{Core::csmGetParameterDefaultValues(previous.GetModel()), Core::csmGetParameterDefaultValues(replacement.GetModel())}}) {
+        if (count && (!pair.first || !pair.second)) return false;
+        for (int index = 0; index < count; ++index)
+            if (!std::isfinite(pair.first[index]) || pair.first[index] != pair.second[index]) return false;
+    }
+    if (count && (!oldTypes || !nextTypes || !oldKeys || !nextKeys)) return false;
+    for (int index = 0; index < count; ++index) {
+        if (previous.GetParameterId(index) != replacement.GetParameterId(index) || oldTypes[index] != nextTypes[index] ||
+            oldKeys[index] < 0 || oldKeys[index] > 1000000 || oldKeys[index] != nextKeys[index]) return false;
+        if (oldKeys[index] && (!oldValues || !nextValues || !oldValues[index] || !nextValues[index])) return false;
+        for (int key = 0; key < oldKeys[index]; ++key)
+            if (!std::isfinite(oldValues[index][key]) || oldValues[index][key] != nextValues[index][key]) return false;
+    }
+    if (_observationModel == &previous) _observationModel = &replacement;
+    return true;
+}
+
 bool CubismPhysics::CaptureObservation(const CubismModel& model, PhysicsObservation& result, QString* error) const
 {
     if (error) error->clear();

@@ -3,6 +3,8 @@
 #include "std/cmodeljson.h"
 #include "std/cmodelresourcepath.h"
 #include "std/cexportcontrol.h"
+#include "live2dstruct/csectiontable.h"
+#include <QtEndian>
 #include <QtTest>
 #include <QCryptographicHash>
 #include <QTemporaryDir>
@@ -65,6 +67,43 @@ class RuntimePackageTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void drawableTextureSlotsMustResolve_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("past-declared-slots") << 0;
+        QTest::newRow("empty-declared-slot") << 1;
+        QTest::newRow("textures-field-absent") << 2;
+        QTest::newRow("catalog-empty-slot") << 3;
+    }
+    void drawableTextureSlotsMustResolve()
+    {
+        QFETCH(int, kind);
+        Fixture fixture;
+        auto files = fixture.root["FileReferences"].toObject();
+        const auto original = files["Textures"].toArray().first();
+        if (kind == 1 || kind == 3) files["Textures"] = QJsonArray{original, ""};
+        if (kind == 2) files.remove("Textures");
+        fixture.root["FileReferences"] = files;
+        QVERIFY(fixture.save());
+        auto input = request(fixture.path);
+        if (kind != 2) {
+            auto reader = CReader::FromBytes(input.mocBytes); CSectionTable table(reader);
+            QVERIFY(table.IsValid()); QVERIFY(!table.art_meshes.isEmpty());
+            qToLittleEndian<qint32>(1, input.mocBytes.data() + table.sectionOffsetTable->art_meshes->texture_nos);
+        }
+        if (kind == 3) {
+            CTextureAssets::Source source; QString detail;
+            QVERIFY(CTextureAssets::MakeSource(original.toString(), read(original.toString()), source, &detail));
+            input.textureSources = CTextureAssets::Catalog{{0, source}};
+        }
+        CRuntimePackage::Prepared output; output.model = {{"kept", true}};
+        QString error;
+        QVERIFY(!CRuntimePackage::Prepare(input, output, nullptr, &error));
+        QVERIFY(error.contains(QStringLiteral("纹理槽")));
+        QCOMPARE(output.model, (QJsonObject{{"kept", true}}));
+        QVERIFY(output.entries.isEmpty());
+    }
+
     void textureSnapshotsSurviveDiskChangesAndKeepOriginalIdentity_data()
     {
         QTest::addColumn<bool>("remove"); QTest::newRow("changed") << false; QTest::newRow("deleted") << true;
@@ -274,6 +313,13 @@ private slots:
     {
         QFETCH(int, index); Fixture fixture;
         auto files = fixture.root["FileReferences"].toObject();
+        auto moc = read(files["Moc"].toString());
+        auto reader = CReader::FromBytes(moc); CSectionTable table(reader); QVERIFY(table.IsValid());
+        for (int mesh = 0; mesh < table.art_meshes.size(); ++mesh) {
+            qToLittleEndian<qint32>(0, moc.data() + table.sectionOffsetTable->art_meshes->vertex_counts + mesh * 4);
+            qToLittleEndian<qint32>(0, moc.data() + table.sectionOffsetTable->art_meshes->position_index_sources_counts + mesh * 4);
+        }
+        const auto emptyMoc = fixture.directory.filePath("empty.moc3"); QVERIFY(write(emptyMoc, moc)); files["Moc"] = emptyMoc;
         if (index == 0) files.remove("Textures");
         else files["Textures"] = index == 1 ? QJsonArray{} : QJsonArray{""};
         files["Expressions"] = QJsonArray{QJsonObject{{"Name", "empty"}, {"File", ""}}};

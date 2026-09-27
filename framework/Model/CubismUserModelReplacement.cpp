@@ -73,6 +73,7 @@ bool CubismUserModel::ReplaceModel(const csmByte* bytes, csmSizeInt size,
         if (error) *error = QStringLiteral("预览源模型在准备期间发生变化");
         return false;
     }
+    if (_physics && !preparePhysics && !migratePhysics) _physics->RebindObservationModel(*previous, *_model);
     if (migratePhysics) _physics->CommitParameterDefinitionChange(physicsState);
     if (preparePhysics) {
         auto* retired = _physics;

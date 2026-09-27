@@ -90,6 +90,13 @@ public:
             table.art_meshes[index]->ids = id;
         }
     }
+    void AdditionalGeometry(const std::vector<float>& uvs)
+    {
+        MeshCount(2); auto* mesh = table.art_meshes[1];
+        mesh->vertex_counts = uvs.size() / 2; mesh->uv_sources_begin_indices = table.uvs->uvs.size();
+        mesh->position_index_sources_counts = 3;
+        table.uvs->uvs.insert(table.uvs->uvs.end(), uvs.begin(), uvs.end());
+    }
     void TextureSlot(int slot) { table.art_meshes[0]->texture_nos = slot; }
     bool LoadBytes(const QVector<QByteArray>& bytes, CExportControl* control = nullptr)
     {
@@ -444,7 +451,7 @@ private slots:
         QCOMPARE(layers[0].canvasRect, QRect(0, 0, 4, 4));
     }
 
-    void crossingRightEdgeClipsScanAreaWithoutMovingVertices()
+    void crossingRightEdgeRepeatsWithoutMovingVertices()
     {
         MeshFixture mesh;
         QVERIFY(mesh.IsValid());
@@ -453,11 +460,11 @@ private slots:
         mesh.Geometry({0, 0, 2, 0, 0, 1});
         const auto layers = mesh.Extract();
         QCOMPARE(layers.size(), 1);
-        QCOMPARE(layers[0].image.size(), QSize(4, 4));
+        QCOMPARE(layers[0].image.size(), QSize(9, 4));
         for (int y = 0; y < 4; ++y)
-            for (int x = 0; x < 4; ++x) {
+            for (int x = 0; x < 9; ++x) {
                 const bool covered = y + 0.5 <= 4.0 - (x + 0.5) / 2.0;
-                QCOMPARE(layers[0].image.pixel(x, y), covered ? atlas.pixel(x, y) : QRgb(0));
+                QCOMPARE(layers[0].image.pixel(x, y), covered ? atlas.pixel(x % 4, y) : QRgb(0));
             }
         QCOMPARE(layers[0].image.pixel(3, 1), atlas.pixel(3, 1));
     }
@@ -471,15 +478,27 @@ private slots:
         mesh.Geometry({-1, 0, 1, 0, 1, 1});
         const auto layers = mesh.Extract();
         QCOMPARE(layers.size(), 1);
-        QCOMPARE(layers[0].image.size(), QSize(4, 4));
+        QCOMPARE(layers[0].image.size(), QSize(9, 4)); QCOMPARE(layers[0].canvasRect, QRect(-5, 0, 9, 4));
         for (int y = 0; y < 4; ++y)
-            for (int x = 0; x < 4; ++x) {
-                const bool covered = y + 0.5 <= (x + 0.5) / 2.0 + 2.0;
-                QCOMPARE(layers[0].image.pixel(x, y), covered ? atlas.pixel(x, y) : QRgb(0));
+            for (int x = 0; x < 9; ++x) {
+                const int sourceX = x - 5;
+                const bool covered = sourceX >= -4 && y + 0.5 <= (sourceX + 0.5) / 2.0 + 2.0;
+                QCOMPARE(layers[0].image.pixel(x, y), covered ? atlas.pixel((sourceX % 4 + 4) % 4, y) : QRgb(0));
             }
-        QCOMPARE(layers[0].image.pixel(0, 1), atlas.pixel(0, 1));
+        QCOMPARE(layers[0].image.pixel(5, 1), atlas.pixel(0, 1));
     }
 
+    void unsigned16IndicesReachTheLastVertex()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); const auto atlas = ColoredAtlas(); QVERIFY(mesh.LoadAtlas(atlas));
+        std::vector<float> uvs(65536 * 2, 0.0f);
+        uvs[65534 * 2] = 1; uvs[65535 * 2 + 1] = 1;
+        mesh.Geometry(uvs, {short(quint16(32768)), short(quint16(65534)), short(quint16(65535))});
+        const auto layers = mesh.Extract(); QCOMPARE(layers.size(), 1);
+        QCOMPARE(layers[0].image.pixel(0, 0), atlas.pixel(0, 0)); QCOMPARE(layers[0].image.pixel(3, 3), QRgb(0));
+        const QHash<QString, QVector<quint16>> overrides{{mesh.Id(), {65535, 65534, 32768}}};
+        const auto reversed = mesh.Extract(nullptr, &overrides); QCOMPARE(reversed.size(), 1); QCOMPARE(reversed[0].image, layers[0].image);
+    }
     void croppedTextureSamplesWithItsAtlasOrigin()
     {
         MeshFixture mesh;
@@ -498,7 +517,7 @@ private slots:
             }
     }
 
-    void outsideAndNonfiniteUvDoNotProduceLayers()
+    void outOfRangeUvRepeatsAndNonfiniteFails()
     {
         MeshFixture mesh;
         QVERIFY(mesh.IsValid());
@@ -512,9 +531,10 @@ private slots:
             {maximum, 0, maximum / 2, 0, maximum, 1},
             {0, 0, 1, 0, nan, 1}, {0, 0, 1, infinity, 0, 1}
         };
-        for (const auto& uv : cases) {
-            mesh.Geometry(uv);
-            QVERIFY(mesh.Extract().isEmpty());
+        for (qsizetype index = 0; index < cases.size(); ++index) {
+            mesh.Geometry(cases[index]); CExportControl control; const auto layers = mesh.Extract(&control);
+            if (index < 4) { QCOMPARE(layers.size(), 1); QVERIFY(HasVisiblePixel(layers[0].image)); QVERIFY(control.Error().isEmpty()); }
+            else { QVERIFY(layers.isEmpty()); QVERIFY(!control.Error().isEmpty()); }
         }
     }
 
@@ -535,12 +555,11 @@ private slots:
         QVERIFY(!HasVisiblePixel(layers[0].image));
         const float maximum = std::numeric_limits<float>::max();
         mesh.Geometry({-maximum, -maximum, maximum, -maximum, 0, maximum});
-        layers = mesh.Extract();
-        QCOMPARE(layers.size(), 1);
-        QCOMPARE(layers[0].image, atlas);
+        CExportControl control; layers = mesh.Extract(&control);
+        QVERIFY(layers.isEmpty()); QVERIFY(!control.Error().isEmpty());
     }
 
-    void hugeNarrowTriangleRetainsVisiblePixels()
+    void unboundedRepeatExtentFailsAtomically()
     {
         MeshFixture mesh;
         QVERIFY(mesh.IsValid());
@@ -550,16 +569,18 @@ private slots:
         for (bool reverse : {false, true}) {
             mesh.Geometry({-maximum, -maximum, maximum, maximum, 0, 1},
                           reverse ? std::vector<short>{2, 1, 0} : std::vector<short>{0, 1, 2});
-            const auto layers = mesh.Extract();
-            QCOMPARE(layers.size(), 1);
-            QCOMPARE(layers[0].image.size(), atlas.size());
-            for (int y = 0; y < 4; ++y)
-                for (int x = 0; x < 4; ++x)
-                    QCOMPARE(layers[0].image.pixel(x, y), y >= x ? atlas.pixel(x, y) : QRgb(0));
-            QCOMPARE(layers[0].image.pixel(0, 1), atlas.pixel(0, 1));
+            CExportControl control; const auto layers = mesh.Extract(&control);
+            QVERIFY(layers.isEmpty()); QVERIFY(control.Error().contains(QStringLiteral("限制")));
         }
     }
 
+    void oversizedLaterLayerCannotReturnPartialExtraction()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.Geometry({0,0,1,0,0,1}); mesh.AdditionalGeometry({0,0,100000,0,0,100000});
+        CExportControl control; QVERIFY(mesh.Extract(&control).isEmpty()); QVERIFY(control.Error().contains(QStringLiteral("限制")));
+        QVERIFY(mesh.Extract().isEmpty());
+    }
     void canvasBoundsUseDoubleAndRejectUnrepresentableRectangles()
     {
         MeshFixture mesh;

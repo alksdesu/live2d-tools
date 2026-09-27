@@ -784,7 +784,8 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
                                        const CubismModelReplacement::ModelPreparation& prepareModel, QString* error,
                                        CubismModelUpdatePolicy policy, const ParameterStructureSeeds& seeds,
                                        const ParameterPhysicsReferences* physicsReferences, const PhysicsDraft* physicsDraft,
-                                       const CMeshGeometryMigration* geometry, const TextureState* textureState)
+                                       const CMeshGeometryMigration* geometry, const TextureState* textureState,
+                                       const QSet<QString>* materialDrawableIds)
 {
     if (m_userParameterModelGeneration == std::numeric_limits<quint64>::max()) {
         if (error) *error = QStringLiteral("模型实例版本计数已耗尽");
@@ -805,6 +806,12 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         if (error) *error = QStringLiteral("请在模型预览就绪且拖拽、导出结束后更新关键形");
         return false;
     }
+    const bool materialOnly = policy == CubismModelUpdatePolicy::AllowDrawableMaterialEdits && !geometry &&
+        seeds.isEmpty() && !physicsReferences && !physicsDraft && !textureState;
+    if (AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableMaterialEdits) != (materialDrawableIds != nullptr)) {
+        if (error) *error = QStringLiteral("材质预览需要明确的对象授权集合");
+        return false;
+    }
     PreparedTextures textures;
     if (textureState && !PrepareTextures(m_textureSources, *textureState, textures, error)) return false;
     const auto prepare = [&](Rendering::CubismRenderer* renderer, CubismModel* model,
@@ -814,10 +821,12 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
         if (!candidate || !previous || !candidate->PrepareModelReplacement(model, *previous, preparationError)) return false;
         if (textureState) for (auto it = textures.bindings.cbegin(); it != textures.bindings.cend(); ++it)
             candidate->BindTexture(it.key(), it.value());
+        if (materialDrawableIds) candidate->InvalidateTextureMapping();
         return true;
     };
     const auto prepareCompiledModel = [&](CubismModel* candidate, QString* detail) {
-        candidate->ClearDrawableIndicesOverrides();
+        if (materialDrawableIds && !ValidateMaterialCandidate(*candidate, *materialDrawableIds, geometry != nullptr, detail)) return false;
+        if (!materialOnly) candidate->ClearDrawableIndicesOverrides();
         return !prepareModel || prepareModel(candidate, detail);
     };
     QByteArray draftBytes = physicsDraft ? physicsDraft->bytes : m_physicsDraftBytes;
@@ -825,7 +834,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     PhysicsPreparation preparePhysics;
     const bool texturesOnly = textureState && runtime == m_previewMocBytes && seeds.isEmpty() &&
         !physicsReferences && !physicsDraft && !geometry;
-    if (!texturesOnly && (draftActive || !m_physicsSourceBytes.isEmpty() || _physics)) {
+    if (!texturesOnly && !materialOnly && (draftActive || !m_physicsSourceBytes.isEmpty() || _physics)) {
         if (m_physicsGeneration == std::numeric_limits<quint64>::max()) {
             if (error) *error = QStringLiteral("物理实例版本计数已耗尽");
             return false;
@@ -838,7 +847,7 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     }
     const bool hadPhysics = _physics != nullptr;
     if (!ReplaceModel(reinterpret_cast<const csmByte*>(runtime.constData()), csmSizeInt(runtime.size()),
-                      prepare, policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
+                      prepare, materialOnly ? policy : policy | CubismModelUpdatePolicy::AllowDrawableTopologyEdits, seeds, error,
                       prepareCompiledModel, physicsReferences, preparePhysics, geometry))
         return false;
     ++m_userParameterModelGeneration;
@@ -847,8 +856,10 @@ bool LAppModel::ApplyPreviewTransaction(const QByteArray& ownedBytes, const QByt
     if (physicsDraft) { m_physicsDraftBytes.swap(draftBytes); m_hasPhysicsDraft = true; }
     m_previewMocBytes.swap(runtime);
     m_previewMocDigest = digest;
-    delegate->m_savedVertices.clear();
-    delegate->m_meshOverlayPositions.clear();
+    if (!materialOnly) {
+        delegate->m_savedVertices.clear();
+        delegate->m_meshOverlayPositions.clear();
+    }
     if (geometry) {
         delegate->m_meshIndexOverrides.clear();
         delegate->m_meshOverlayKeyformIndices.clear();

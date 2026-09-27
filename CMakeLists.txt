@@ -61,6 +61,11 @@ add_library(model_data STATIC
     live2dstruct/cmotionbezier.cpp
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
+    live2dstruct/cmodelmaterialedit.cpp
+    live2dstruct/cmocmaterialbuilder.cpp
+    live2dstruct/cmodeldocumentmaterial.cpp
+    live2dstruct/cmaterialeditcontroller.cpp
+    live2dstruct/cuveditdraft.cpp
     live2dstruct/cmodeldocumentstructure.cpp
     live2dstruct/cmodeldocumentorganization.cpp
     live2dstruct/cmodelgeometryedit.cpp
@@ -240,6 +245,10 @@ if(BUILD_TESTING)
         target_link_libraries(mesh_edit_planner_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(mesh_edit_planner_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME mesh_edit_planner_core COMMAND mesh_edit_planner_core_tests)
+        add_executable(moc_material_core_tests tests/material_moc_core_tests.cpp)
+        target_link_libraries(moc_material_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(moc_material_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME moc_material_core COMMAND moc_material_core_tests)
         add_executable(moc_mesh_structure_core_tests tests/mesh_structure_moc_core_tests.cpp)
         target_link_libraries(moc_mesh_structure_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(moc_mesh_structure_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -692,7 +701,7 @@ if(BUILD_TESTING)
     target_link_libraries(psd_print_dialog_tests PRIVATE Qt6::Test Qt6::Widgets)
     add_test(NAME psd_print_dialog COMMAND psd_print_dialog_tests)
     set_tests_properties(psd_print_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    foreach(parameter_test IN ITEMS parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint canvas_geometry_inverse geometry_object_pairs geometry_object_pairs_document geometry_object_pairs_session)
+    foreach(parameter_test IN ITEMS material_document material_edit_controller uv_edit_draft parameter_organization parameter_organization_document parameter_organization_export parameter_value_edit_controller parameter_selection_query model_save_fingerprint canvas_geometry_inverse geometry_object_pairs geometry_object_pairs_document geometry_object_pairs_session)
         add_executable(${parameter_test}_tests tests/${parameter_test}_tests.cpp)
         target_link_libraries(${parameter_test}_tests PRIVATE model_data Qt6::Test)
         target_compile_definitions(${parameter_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
@@ -708,6 +717,11 @@ if(BUILD_TESTING)
     target_link_libraries(geometry_pairs_export_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(geometry_pairs_export_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME geometry_pairs_export COMMAND geometry_pairs_export_tests)
+    add_executable(uv_edit_dialog_tests tests/uv_edit_dialog_tests.cpp ui/cuvcanvasview.cpp ui/cuveditdialog.cpp)
+    target_link_libraries(uv_edit_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    target_compile_definitions(uv_edit_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME uv_edit_dialog COMMAND uv_edit_dialog_tests)
+    set_tests_properties(uv_edit_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(geometry_pairs_dialog_tests tests/geometry_pairs_dialog_tests.cpp ui/cgeometrypairsdialog.cpp ui/para/ccidjson.cpp)
     target_link_libraries(geometry_pairs_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(geometry_pairs_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

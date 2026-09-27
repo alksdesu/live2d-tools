@@ -128,6 +128,7 @@ public:
      *
      */
     void BindTexture(csmUint32 modelTextureIndex, GLuint glTextureIndex);
+    void InvalidateTextureMapping() noexcept;
 
     /**
      * @brief   OpenGLにバインドされたテクスチャのリストを取得する

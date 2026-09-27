@@ -56,13 +56,15 @@ void checkSentinel(const QVector<ExtractedMaterial>& result)
     QCOMPARE(result[0].textureNo, 34); QCOMPARE(result[0].atlasRect, QRect(-2,4,2,3)); QCOMPARE(result[0].atlasSize, QSize(7,8));
     QCOMPARE(result[0].image, atlasImage(2,3)); QVERIFY(!result[0].visible);
 }
-QVector<double> bilinear(const QImage& image, double u, double v)
+int repeat(int value, int size) { const int remainder = value % size; return remainder < 0 ? remainder + size : remainder; }
+QVector<double> bilinear(const QImage& image, double u, double v, bool repeating = false)
 {
     const double px = u * image.width() - .5, py = v * image.height() - .5;
     const int x = int(std::floor(px)), y = int(std::floor(py)); const double dx = px - x, dy = py - y;
     QVector<double> result(4, 0);
     for (int iy = 0; iy < 2; ++iy) for (int ix = 0; ix < 2; ++ix) {
-        const QRgb pixel = image.pixel(std::clamp(x + ix, 0, image.width() - 1), std::clamp(y + iy, 0, image.height() - 1));
+        const QRgb pixel = image.pixel(repeating ? repeat(x + ix, image.width()) : std::clamp(x + ix, 0, image.width() - 1),
+                                       repeating ? repeat(y + iy, image.height()) : std::clamp(y + iy, 0, image.height() - 1));
         const double weight = (ix ? dx : 1 - dx) * (iy ? dy : 1 - dy);
         const int channels[]{qRed(pixel), qGreen(pixel), qBlue(pixel), qAlpha(pixel)};
         for (int channel = 0; channel < 4; ++channel) result[channel] += channels[channel] * weight;
@@ -84,7 +86,7 @@ private slots:
         QCOMPARE(material.image.size(), material.atlasRect.size()); QCOMPARE(material.name, mesh->ids); QCOMPARE(material.meshIndex, 0); QVERIFY(!material.visible);
         QCOMPARE(material.image.format(), QImage::Format_ARGB32);
         for (int y = 0; y < material.image.height(); ++y) for (int x = 0; x < material.image.width(); ++x)
-            QCOMPARE(material.image.pixel(x,y), atlas.pixel(std::min(7, x + 1), std::min(3, y)));
+            QCOMPARE(material.image.pixel(x,y), atlas.pixel(repeat(x + 1, 8), repeat(y, 4)));
         fixture.table.position_indices->indices = {2,1,0}; QVector<ExtractedMaterial> reversed;
         QVERIFY(fixture.extractor.ExtractMaterials(&fixture.table, reversed, &error)); QCOMPARE(reversed.first().image, material.image);
         QCOMPARE(reversed.first().atlasRect, material.atlasRect);
@@ -101,23 +103,23 @@ private slots:
         QVERIFY2(fixture.extractor.ExtractMaterials(&fixture.table, result, &error), qPrintable(error)); const auto& material = result.first();
         for (int y = 0; y <= 16; ++y) for (int x = 0; x <= 16; ++x) {
             const double u = low + double(high - low) * x / 16, v = low + double(high - low) * y / 16;
-            const auto expected = bilinear(atlas, u, v);
+            const auto expected = bilinear(atlas, u, v, true);
             const auto actual = bilinear(material.image, (u * atlas.width() - material.atlasRect.x()) / material.image.width(),
                                          (v * atlas.height() - material.atlasRect.y()) / material.image.height());
             for (int channel = 0; channel < 4; ++channel) QVERIFY(std::abs(actual[channel] - expected[channel]) < 1e-8);
         }
     }
-    void entirelyOutsideCoordinatesUseEdgePixels_data()
+    void entirelyOutsideCoordinatesRepeatAtlas_data()
     {
         QTest::addColumn<float>("uv"); QTest::newRow("negative") << -1000.25f; QTest::newRow("positive") << 1000.25f;
     }
-    void entirelyOutsideCoordinatesUseEdgePixels()
+    void entirelyOutsideCoordinatesRepeatAtlas()
     {
         QFETCH(float, uv); Fixture fixture; QVERIFY(fixture.valid()); const auto atlas = atlasImage(4,3); QVERIFY(fixture.atlas(atlas));
         fixture.mesh(0, {uv,uv}, {}); QVector<ExtractedMaterial> result; QString error;
         QVERIFY2(fixture.extractor.ExtractMaterials(&fixture.table, result, &error), qPrintable(error)); QCOMPARE(result.size(), 1);
-        const QRgb expected = atlas.pixel(uv < 0 ? 0 : 3, uv < 0 ? 0 : 2);
-        for (int y = 0; y < result[0].image.height(); ++y) for (int x = 0; x < result[0].image.width(); ++x) QCOMPARE(result[0].image.pixel(x,y), expected);
+        for (int y = 0; y < result[0].image.height(); ++y) for (int x = 0; x < result[0].image.width(); ++x)
+            QCOMPARE(result[0].image.pixel(x,y), atlas.pixel(repeat(result[0].atlasRect.x() + x, atlas.width()), repeat(result[0].atlasRect.y() + y, atlas.height())));
     }
     void distinctAtlasesAndDuplicateRectsKeepIdentity()
     {
@@ -168,6 +170,19 @@ private slots:
         auto result = sentinel(); QString error; QVERIFY(!fixture.extractor.ExtractMaterials(&fixture.table, result, &error)); QVERIFY(!error.isEmpty()); checkSentinel(result);
         QVERIFY(!fixture.extractor.ExtractMaterials(nullptr, result, &error)); checkSentinel(result);
     }
+    void unsigned16IndicesAndSharedOddUvHaveExactMaterials()
+    {
+        Fixture fixture; QVERIFY(fixture.valid()); const auto atlas = atlasImage(4, 3); QVERIFY(fixture.atlas(atlas));
+        std::vector<float> uvs(65536 * 2, .25f); uvs[65534 * 2] = .75f; uvs[65535 * 2 + 1] = .75f;
+        fixture.mesh(0, uvs, {short(quint16(32768)), short(quint16(65534)), short(quint16(65535))});
+        auto* second = fixture.mesh(1, {.1f,.2f,.3f,.4f,.5f,.6f}); second->uv_sources_begin_indices = 1;
+        QVector<ExtractedMaterial> result; QString error;
+        QVERIFY2(fixture.extractor.ExtractMaterials(&fixture.table, result, &error), qPrintable(error)); QCOMPARE(result.size(), 2);
+        QCOMPARE(result[0].authorUvs[1], .25f); QCOMPARE(result[0].authorUvs[2], .75f);
+        QCOMPARE(result[1].authorUvs[0], .75f); QCOMPARE(result[1].authorUvs[1], .25f);
+        for (const auto& material : result) for (int y = 0; y < material.image.height(); ++y) for (int x = 0; x < material.image.width(); ++x)
+            QCOMPARE(material.image.pixel(x, y), atlas.pixel(repeat(material.atlasRect.x() + x, atlas.width()), repeat(material.atlasRect.y() + y, atlas.height())));
+    }
     void pixelLimitsAreCheckedBeforeImagesAreAllocated()
     {
         Fixture fixture; QVERIFY(fixture.valid()); QVERIFY(fixture.atlas(atlasImage(2,2)));
@@ -182,7 +197,7 @@ private slots:
         Fixture fixture; QVERIFY(fixture.valid()); QVERIFY(fixture.atlas(atlasImage(2,2)));
         auto* first = fixture.mesh(0, std::vector<float>(20000,.5f));
         while (fixture.table.art_meshes.size() < 1800) fixture.table.art_meshes.append(new CArt_meshes(*first));
-        for (auto* mesh : fixture.table.art_meshes) *mesh = *first;
+        for (int index = 0; index < fixture.table.art_meshes.size(); ++index) { *fixture.table.art_meshes[index] = *first; fixture.table.art_meshes[index]->ids = QString::number(index); }
         fixture.table.count_info->art_meshes = fixture.table.art_meshes.size();
         QVector<ExtractedMaterial> result; QString error;
         QVERIFY2(fixture.extractor.ExtractMaterials(&fixture.table, result, &error), qPrintable(error)); QCOMPARE(result.size(), 1800);

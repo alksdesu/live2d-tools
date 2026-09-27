@@ -7,6 +7,7 @@
 #include <QtTest>
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QTemporaryDir>
 
 using namespace live2dstruct;
@@ -187,7 +188,18 @@ private slots:
     {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
-        const QJsonObject json{{"Version", 3}, {"FileReferences", QJsonObject{{"Moc", m_source.SourcePath()}}}};
+        const QFileInfo sourceInfo(m_source.SourcePath());
+        const QDir resources = sourceInfo.dir();
+        const auto originals = QJsonDocument::fromJson(Fixture::read(resources.filePath(sourceInfo.completeBaseName() + ".model3.json")))
+            .object().value("FileReferences").toObject().value("Textures").toArray();
+        QVERIFY(!originals.isEmpty());
+        QJsonArray textures;
+        for (int index = 0; index < originals.size(); ++index) {
+            const auto name = QStringLiteral("texture_%1.png").arg(index);
+            QVERIFY(QFile::copy(resources.filePath(originals[index].toString()), directory.filePath(name)));
+            textures.append(name);
+        }
+        const QJsonObject json{{"Version", 3}, {"FileReferences", QJsonObject{{"Moc", m_source.SourcePath()}, {"Textures", textures}}}};
         const auto settings = QJsonDocument(json).toJson();
         const auto path = directory.filePath(QStringLiteral("model.model3.json"));
         QFile file(path);

@@ -481,7 +481,7 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, QStrin
 bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, CubismModelUpdatePolicy policy, QString* error) const
 {
     if (error) error->clear();
-    if (static_cast<unsigned int>(policy) & ~31u)
+    if (static_cast<unsigned int>(policy) & ~63u)
         return runtimeStateError(error, QStringLiteral("Invalid model update policy"));
     if (!_model || !source._model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
     const bool structureEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterStructureEdits);
@@ -560,6 +560,7 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     const auto* sourceFlags = Core::csmGetDrawableConstantFlags(source._model);
     const bool clippingEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowClippingEdits);
     const bool geometryEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableGeometryEdits);
+    const bool materialEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableMaterialEdits);
     const bool topologyEdits = geometryEdits || AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableTopologyEdits);
     if (!equalRuntimeArray(partParents, Core::csmGetPartParentPartIndices(source._model), parts) ||
         !equalRuntimeArray(drawableParents, Core::csmGetDrawableParentPartIndices(source._model), drawables) ||
@@ -568,7 +569,8 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
         (drawables && (!indexCounts || !sourceIndexCounts)) ||
         (!topologyEdits && !equalRuntimeArray(indexCounts, sourceIndexCounts, drawables)) ||
         (!clippingEdits && !equalRuntimeArray(maskCounts, sourceMaskCounts, drawables)) ||
-        !equalRuntimeArray(textures, Core::csmGetDrawableTextureIndices(source._model), drawables) ||
+        (drawables && (!textures || !Core::csmGetDrawableTextureIndices(source._model))) ||
+        (!materialEdits && !equalRuntimeArray(textures, Core::csmGetDrawableTextureIndices(source._model), drawables)) ||
         (drawables && (!flags || !sourceFlags)))
         return runtimeStateError(error, QStringLiteral("Part hierarchy or drawable definition differs or is invalid"));
     if (!HasValidClippingDefinitions(error) || !source.HasValidClippingDefinitions(error)) return false;
@@ -593,10 +595,11 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
             return runtimeStateError(error, QStringLiteral("Drawable %1 constant flags differ").arg(i));
         if (!validRuntimeCount(vertices[i]) || !validRuntimeCount(sourceVertices[i]) ||
             !validRuntimeCount(maskCounts[i], clippingEdits ? MaximumRuntimeIndices : drawables) || textures[i] < 0 ||
+            Core::csmGetDrawableTextureIndices(source._model)[i] < 0 ||
             drawableParents[i] < -1 || drawableParents[i] >= parts ||
             (vertices[i] && (!uvs || !equalRuntimeArray(uvs[i], uvs[i], vertices[i]))) ||
             (sourceVertices[i] && (!sourceUvs || !equalRuntimeArray(sourceUvs[i], sourceUvs[i], sourceVertices[i]))) ||
-            (!geometryEdits && vertices[i] && !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i])) ||
+            (!geometryEdits && !materialEdits && vertices[i] && !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i])) ||
             !validIndices(indices ? indices[i] : nullptr, indexCounts[i], vertices[i]) ||
             !validIndices(sourceIndices ? sourceIndices[i] : nullptr, sourceIndexCounts[i], sourceVertices[i]) ||
             (!topologyEdits && indexCounts[i] && !equalRuntimeArray(indices[i], sourceIndices[i], indexCounts[i])) ||

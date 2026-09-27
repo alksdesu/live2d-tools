@@ -879,6 +879,12 @@ void CubismRenderer_OpenGLES2::BindTexture(csmUint32 modelTextureIndex, GLuint g
     _textures[modelTextureIndex] = glTextureIndex;
 }
 
+void CubismRenderer_OpenGLES2::InvalidateTextureMapping() noexcept
+{
+    _maskBuffersNeedRedraw = true;
+    _textureMaskReplay = true;
+}
+
 bool CubismRenderer_OpenGLES2::MaskSourceAvailable(csmInt32 drawable) const
 {
     const auto* model = GetModel();

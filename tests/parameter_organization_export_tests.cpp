@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QCryptographicHash>
 #include <QFile>
+#include <QDir>
 
 using namespace live2dstruct;
 using Organization = CParameterOrganization;
@@ -20,6 +21,8 @@ QByteArray entry(const CRuntimePackage::Prepared& package, const QString& path)
 }
 struct Fixture {
     QTemporaryDir directory;
+    QJsonArray textures;
+    bool ready = false;
     CModelDocument document;
     QString path;
     QStringList ids;
@@ -27,10 +30,19 @@ struct Fixture {
         document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
         for (const auto& parameter : document.Parameters()) ids.append(parameter.id);
         path = directory.filePath("model.model3.json");
-        save(false);
+        const QDir resources(QString(TEST_RESOURCES) + QStringLiteral("/Mark"));
+        const auto originals = QJsonDocument::fromJson(read(resources.filePath("Mark.model3.json")))
+            .object().value("FileReferences").toObject().value("Textures").toArray();
+        if (originals.isEmpty()) return;
+        for (int index = 0; index < originals.size(); ++index) {
+            const auto name = QStringLiteral("texture_%1.png").arg(index);
+            if (!QFile::copy(resources.filePath(originals[index].toString()), directory.filePath(name))) return;
+            textures.append(name);
+        }
+        ready = save(false);
     }
     bool save(bool display) {
-        QJsonObject files{{"Moc", document.SourcePath()}, {"Textures", QJsonArray{}}};
+        QJsonObject files{{"Moc", document.SourcePath()}, {"Textures", textures}};
         if (display) files["DisplayInfo"] = "names.cdi3.json";
         return write(path, QJsonDocument(QJsonObject{{"Version", 3}, {"FileReferences", files}}).toJson());
     }
@@ -59,7 +71,7 @@ class ParameterOrganizationExportTests : public QObject
 private slots:
     void configuredOrganizationCreatesDisplayInfoAndReopensWithPairs()
     {
-        Fixture fixture; QVERIFY(fixture.document.IsLoaded()); QVERIFY(fixture.document.SetParameterOrganization(fixture.state()));
+        Fixture fixture; QVERIFY(fixture.ready); QVERIFY(fixture.document.IsLoaded()); QVERIFY(fixture.document.SetParameterOrganization(fixture.state()));
         auto input = fixture.request(); CRuntimePackage::Prepared package; QString error;
         QVERIFY2(CRuntimePackage::Prepare(input, package, nullptr, &error), qPrintable(error));
         const auto files = package.model["FileReferences"].toObject(); const auto root = QJsonDocument::fromJson(entry(package, files["DisplayInfo"].toString())).object();
@@ -83,7 +95,7 @@ private slots:
 
     void configuredExportPreservesNamesUnknownFieldsAndOrphanDisplayRecords()
     {
-        Fixture fixture; const auto combined = QJsonArray{QJsonArray{fixture.ids[1], fixture.ids[2]}};
+        Fixture fixture; QVERIFY(fixture.ready); const auto combined = QJsonArray{QJsonArray{fixture.ids[1], fixture.ids[2]}};
         const QJsonObject source{{"Version", 3}, {"RootExtra", QJsonObject{{"keep", true}}}, {"Parts", QJsonArray{QJsonObject{{"Id", "Part"}, {"Extra", 3}}}},
             {"Parameters", QJsonArray{QJsonObject{{"Id", fixture.ids[0]}, {"Name", "Friendly"}, {"GroupId", "face"}, {"RowExtra", 9}},
                 QJsonObject{{"Id", fixture.ids[1]}, {"Name", "Old"}, {"RowExtra", 11}},
@@ -110,7 +122,7 @@ private slots:
 
     void deletedSourceParametersAndTheirCombinedRowsStayRemoved()
     {
-        Fixture fixture; const auto deleted = fixture.ids[0];
+        Fixture fixture; QVERIFY(fixture.ready); const auto deleted = fixture.ids[0];
         const auto combined = QJsonArray{QJsonArray{deleted, fixture.ids[1]}, QJsonArray{fixture.ids[1], fixture.ids[2]}};
         QVERIFY(fixture.cdi({{"Version", 3}, {"Parameters", QJsonArray{QJsonObject{{"Id", deleted}, {"Name", "Removed"}},
             QJsonObject{{"Id", "Host"}, {"Name", "Kept"}}}}, {"CombinedParameters", combined}}));
@@ -127,7 +139,7 @@ private slots:
 
     void clearedOrganizationDoesNotReviveSourceExtension()
     {
-        Fixture fixture; QJsonObject state; QVERIFY(Organization::ToJson(fixture.state(), state));
+        Fixture fixture; QVERIFY(fixture.ready); QJsonObject state; QVERIFY(Organization::ToJson(fixture.state(), state));
         QJsonObject source{{"Version", 3}, {"Parameters", QJsonArray{QJsonObject{{"Id", fixture.ids[0]}, {"Name", "Friendly"}}}},
             {"Opaque", "kept"}, {"Live2DToolsParameterOrganization", QJsonObject{{"Version", 1}, {"State", state}}}};
         QVERIFY(fixture.cdi(source)); CRuntimePackage::Prepared package; QString error;
@@ -143,7 +155,7 @@ private slots:
     }
     void malformedSourcesAndStateDoNotReplacePreparedOutput()
     {
-        QFETCH(int, kind); Fixture fixture; QJsonObject source{{"Version", 3}};
+        QFETCH(int, kind); Fixture fixture; QVERIFY(fixture.ready); QJsonObject source{{"Version", 3}};
         if (kind == 0) source["Parameters"] = QJsonArray{QJsonObject{{"Id", fixture.ids[0]}}, QJsonObject{{"Id", fixture.ids[0]}}};
         if (kind == 1) source["ParameterGroups"] = QJsonArray{QJsonObject{{"Id", "face"}}, QJsonObject{{"Id", "face"}}};
         QVERIFY(fixture.cdi(source)); auto input = fixture.request(); input.parameterOrganization = fixture.state();

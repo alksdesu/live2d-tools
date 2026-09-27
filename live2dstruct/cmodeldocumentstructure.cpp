@@ -40,7 +40,7 @@ template<class T> bool read(const QVariantMap& state, const QString& key, T& val
     return true;
 }
 
-template<class T> void captureEntries(QVariantMap& state, const QString& name, const QHash<QString, T>& values,
+template<class T, template<class, class> class Map> void captureEntries(QVariantMap& state, const QString& name, const Map<QString, T>& values,
                                      const QSet<QString>& ids)
 {
     QVariantMap entries;
@@ -53,7 +53,7 @@ template<class T> void captureEntries(QVariantMap& state, const QString& name, c
     state.insert(name, entries);
 }
 
-template<class T> bool restoreEntries(const QVariantMap& state, const QString& name, QHash<QString, T>& values)
+template<class T, template<class, class> class Map> bool restoreEntries(const QVariantMap& state, const QString& name, Map<QString, T>& values)
 {
     if (!state.contains(name)) return true;
     if (state.value(name).metaType() != QMetaType::fromType<QVariantMap>()) return false;
@@ -269,6 +269,16 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     QVariantMap state;
     QSet<QString> ids{edit.name};
     switch (edit.field) {
+    case CModelEdit::DrawableMaterials: {
+        CModelMaterialOverrides selected;
+        ids.clear();
+        for (const auto& value : {edit.before, edit.after})
+            for (const auto& material : value.value<CModelMaterialState>()) ids.insert(material.id);
+        captureEntries(state, "materials", m_drawableMaterialOverrides, ids);
+        for (const auto& id : ids) if (m_drawableMaterialOverrides.contains(id)) selected.insert(id, m_drawableMaterialOverrides.value(id));
+        state.insert("materialFingerprint", CModelMaterialEdit::Fingerprint(selected));
+        break;
+    }
     case CModelEdit::GeometryKeyforms: {
         QSet<QString> meshes, warps, rotations;
         for (const auto& value : {edit.before, edit.after}) {
@@ -321,7 +331,8 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         restoreEntries(state, "positions", m_drawableKeyformPositionOverrides) && restoreEntries(state, "indices", m_drawableIndexOverrides) &&
         restoreEntries(state, "masks", m_drawableMaskIndexOverrides) && restoreEntries(state, "inverted", m_drawableMaskInvertedOverrides) &&
         restoreEntries(state, "parents", m_deformerParentOverrides) && restoreEntries(state, "warp", m_deformerWarpKeyformOverrides) &&
-        restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides))) return false;
+        restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides) &&
+        restoreEntries(state, "materials", m_drawableMaterialOverrides))) return false;
     if (state.contains("geometryObjectPairs")) {
         const auto value = state.value("geometryObjectPairs");
         if (value.metaType() != QMetaType::fromType<CGeometryObjectPairs::State>() ||
@@ -335,6 +346,8 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     CModelDocument check = *this;
     const QString& id = edit.name;
     switch (edit.field) {
+    case CModelEdit::DrawableMaterials:
+        return ValidateMaterialEditStorage(edit);
     case CModelEdit::GeometryKeyforms:
         return ValidateGeometryEditStorage(edit);
     case CModelEdit::ParameterMetadata:
@@ -382,6 +395,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
     QVariantMap state{
         {"sourceDigest", m_sourceDigest}, {"sourcePath", m_sourcePath}, {"meshStructure", m_hasMeshStructure},
         {"deformerStructure", m_hasDeformerStructure},
+        {"materialStructure", m_hasMaterialStructure}, {"materials", QVariant::fromValue(m_drawableMaterialOverrides)},
         {"sourceDeformerIds", QVariant::fromValue(m_hasDeformerStructure ? m_sourceDeformerIds : QSet<QString>{})},
         {"columns", QVariant::fromValue(m_structure.columns)},
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
@@ -398,6 +412,7 @@ QVariantMap CModelDocument::AuthoringStructureState() const
     QDataStream stream(&exact, QIODevice::WriteOnly);
     stream.setVersion(QDataStream::Qt_6_0);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    stream << CModelMaterialEdit::Fingerprint(m_drawableMaterialOverrides);
     stream << ordered(m_parameterValues) << ordered(m_drawableOpacityOverrides) << ordered(m_drawableKeyformPositionOverrides);
     const auto metadata = ordered(m_parameterMetadataOverrides);
     stream << qint64(metadata.size());
@@ -434,11 +449,11 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
                                      CModelDocument& candidate, QString* error) const
 {
     return PrepareStructure(structure, meshStructure, m_hasDeformerStructure,
-                            m_sourceDeformerIds, false, candidate, error);
+                            m_sourceDeformerIds, false, m_hasMaterialStructure || !m_drawableMaterialOverrides.isEmpty(), candidate, error);
 }
 
 bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, bool meshStructure,
-                                     bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory,
+                                     bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory, bool materialStructure,
                                      CModelDocument& candidate, QString* error) const
 {
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
@@ -522,13 +537,14 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
         const auto& before = original.m_drawables[index]; const auto& after = next.m_drawables[index];
         if (before.id != after.id || before.parentPartIndex != after.parentPartIndex ||
             (!changeDirectory && directory.m_drawables[index].parentDeformerIndex != after.parentDeformerIndex) ||
-            before.textureIndex != after.textureIndex || (before.flags & ~8) != (after.flags & ~8) ||
+            (!materialStructure && before.textureIndex != after.textureIndex) || (materialStructure && after.textureIndex < 0) || (before.flags & ~8) != (after.flags & ~8) ||
             before.visible != after.visible || before.enabled != after.enabled)
             return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
         if (after.parentDeformerIndex < -1 || after.parentDeformerIndex >= next.m_deformers.size())
             return fail(error, QStringLiteral("ArtMesh 父变形器引用无效：%1").arg(after.id));
         if (before.vertexCount != after.vertexCount || before.uvs != after.uvs || before.indices != after.indices) {
-            if (!meshStructure) return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
+            if (!meshStructure && (!materialStructure || before.vertexCount != after.vertexCount || before.indices != after.indices))
+                return fail(error, QStringLiteral("参数结构改变了 ArtMesh 拓扑或定义：%1").arg(before.id));
             if (after.vertexCount <= 0 || after.vertexCount > CMocMeshStructureBuilder::MaximumVertices)
                 return fail(error, QStringLiteral("网格结构顶点数量无效：%1").arg(before.id));
             if (after.vertexCount > 1000000 - geometryVertices || after.uvs.size() != after.vertexCount * 2 ||
@@ -582,6 +598,7 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
             return fail(error, QStringLiteral("参数结构破坏了变形器绑定：%1").arg(deformer.id));
     next.m_structure = structure;
     next.m_hasMeshStructure = meshStructure;
+    next.m_hasMaterialStructure = materialStructure;
     next.m_hasDeformerStructure = deformerStructure;
     next.m_sourceDeformerIds = deformerStructure ? sourceIds : original.m_sourceDeformerIds;
     next.m_sourceDeformerParents.clear();
@@ -612,6 +629,18 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     return true;
 }
 
+bool CModelDocument::SetMaterialStructure(const Builder::ColumnState& structure, bool meshStructure,
+                                         bool deformerStructure, const QSet<QString>& sourceIds, QString* error)
+{
+    try {
+        if (!deformerStructure && !sourceIds.isEmpty()) return fail(error, QStringLiteral("变形器源身份需要变形器作者结构"));
+        CModelDocument candidate;
+        if (!PrepareStructure(structure, meshStructure, deformerStructure, sourceIds, deformerStructure, true, candidate, error)) return false;
+        CommitCandidate(std::move(candidate));
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复材质作者结构")); }
+}
+
 bool CModelDocument::SetParameterStructure(const Builder::ColumnState& structure, QString* error)
 {
     try {
@@ -637,7 +666,7 @@ bool CModelDocument::SetDeformerStructure(const Builder::ColumnState& structure,
 {
     try {
         CModelDocument candidate;
-        if (!PrepareStructure(structure, meshStructure, true, sourceIds, true, candidate, error)) return false;
+        if (!PrepareStructure(structure, meshStructure, true, sourceIds, true, m_hasMaterialStructure || !m_drawableMaterialOverrides.isEmpty(), candidate, error)) return false;
         CommitCandidate(std::move(candidate));
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法恢复变形器结构")); }
@@ -675,6 +704,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         QSet<QString> locks;
         if (!read(state, "meshStructure", session.meshStructure) ||
             !read(state, "deformerStructure", session.deformerStructure) ||
+            !read(state, "materialStructure", session.materialStructure) || !read(state, "materials", session.drawableMaterials) ||
             !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
             !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
             !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
@@ -691,7 +721,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         for (const auto& lock : locks) session.locked.insert(lock, true);
         session.sourceDigest = m_sourceDigest;
         session.sourceMoc = m_sourcePath;
-        session.version = !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
+        session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
@@ -703,9 +733,12 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         } else {
             if (candidate.m_hasMeshStructure != m_hasMeshStructure || !edit.meshRemaps.isEmpty())
                 return fail(error, QStringLiteral("参数编辑不能改变网格结构模式"));
+            CModelMaterialState beforeMaterials, afterMaterials;
+            if (!CaptureDrawableMaterials(beforeMaterials, error) || !candidate.CaptureDrawableMaterials(afterMaterials, error) || beforeMaterials != afterMaterials)
+                return fail(error, QStringLiteral("参数编辑不能改变网格材质"));
             for (int index = 0; index < m_drawables.size(); ++index) {
                 const auto& before = m_drawables[index]; const auto& after = candidate.m_drawables[index];
-                if (before.vertexCount != after.vertexCount || before.uvs != after.uvs ||
+                if (before.vertexCount != after.vertexCount ||
                     DrawableIndices(before.id) != candidate.DrawableIndices(after.id))
                     return fail(error, QStringLiteral("参数编辑不能改变网格几何：%1").arg(before.id));
             }
@@ -842,7 +875,7 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
         Builder::ColumnState structure;
         if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
         CModelDocument candidate;
-        if (!PrepareStructure(structure, m_hasMeshStructure, true, sourceIds, true, candidate, error) ||
+        if (!PrepareStructure(structure, m_hasMeshStructure, true, sourceIds, true, m_hasMaterialStructure || !m_drawableMaterialOverrides.isEmpty(), candidate, error) ||
             !PreserveStructureProperties(candidate, error)) return false;
         if (!ReconcileGeometryObjectPairs(candidate, {}, nullptr, nullptr, error)) return false;
         CModelEdit command{impact.structure.id, QStringLiteral("deformer"), CModelEdit::DeformerStructure,
@@ -915,6 +948,11 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
             return fail(error, QStringLiteral("顶点映射不是可逆的存活点对应：%1").arg(remap.artMeshId));
         addOwner(remap.artMeshId);
     }
+    CModelMaterialState beforeMaterials, afterMaterials;
+    if (!CaptureDrawableMaterials(beforeMaterials, error) || !candidate.CaptureDrawableMaterials(afterMaterials, error)) return false;
+    CModelMaterialOverrides beforeMaterialMap, afterMaterialMap;
+    for (const auto& material : beforeMaterials) beforeMaterialMap.insert(material.id, material);
+    for (const auto& material : afterMaterials) afterMaterialMap.insert(material.id, material);
     for (int index = 0; index < m_drawables.size(); ++index) {
         const auto& before = m_drawables[index]; const auto& after = candidate.m_drawables[index];
         if (!sameAxes(m_keyformBindings->Axes(CKeyformBindingGrid::ArtMesh, before.id),
@@ -922,7 +960,9 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
             before.keyforms.size() != after.keyforms.size() || DrawableMaskIndices(before.id) != candidate.DrawableMaskIndices(after.id) ||
             DrawableMaskInverted(before.id) != candidate.DrawableMaskInverted(after.id))
             return fail(error, QStringLiteral("网格结构不能改变绑定或蒙版：%1").arg(before.id));
-        if (!affected.contains(before.id) && (before.vertexCount != after.vertexCount || before.uvs != after.uvs ||
+        if (!affected.contains(before.id) && beforeMaterialMap.value(before.id) != afterMaterialMap.value(after.id))
+            return fail(error, QStringLiteral("网格结构改变了未映射对象的材质：%1").arg(before.id));
+        if (!affected.contains(before.id) && (before.vertexCount != after.vertexCount ||
             DrawableIndices(before.id) != candidate.DrawableIndices(after.id)))
             return fail(error, QStringLiteral("网格结构改变了未映射的网格：%1").arg(before.id));
         for (int form = 0; form < before.keyforms.size(); ++form) {

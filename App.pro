@@ -684,3 +684,21 @@ HEADERS += \
     ui/cpreviewexporttransaction.h \
     ui/psdbatchresult.h \
     ui/cexportresultspanel.h
+
+SOURCES += \
+    live2dstruct/cmodelmaterialedit.cpp \
+    live2dstruct/cmocmaterialbuilder.cpp \
+    live2dstruct/cmodeldocumentmaterial.cpp \
+    live2dstruct/cmaterialeditcontroller.cpp \
+    live2dstruct/cuveditdraft.cpp \
+    live2d/LAppModelMaterial.cpp \
+    ui/cuvcanvasview.cpp \
+    ui/cuveditdialog.cpp \
+    ui/mainwindowmaterials.cpp
+HEADERS += \
+    live2dstruct/cmodelmaterialedit.h \
+    live2dstruct/cmocmaterialbuilder.h \
+    live2dstruct/cmaterialeditcontroller.h \
+    live2dstruct/cuveditdraft.h \
+    ui/cuvcanvasview.h \
+    ui/cuveditdialog.h

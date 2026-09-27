@@ -1,4 +1,5 @@
 #include "cmodeldocument.h"
+#include "cmocmaterialbuilder.h"
 #include "cmocruntimebuilder.h"
 #include "cmocdeformerorder.h"
 #include "cmeshtopology.h"
@@ -121,6 +122,8 @@ void CModelDocument::Clear()
     m_workingBaseBytes.clear();
     m_structure = {};
     m_hasMeshStructure = false;
+    m_hasMaterialStructure = false;
+    m_drawableMaterialOverrides.clear();
     m_sourceDeformerParents.clear();
     m_sourceDeformerIds.clear();
     m_hasDeformerStructure = false;
@@ -295,8 +298,7 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty() &&
         m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty() &&
         m_parameterMetadataOverrides.isEmpty()) {
-        bytes = m_workingBaseBytes;
-        return true;
+        return CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, bytes, error);
     }
     if (!m_previewBuilder) {
         setError(error, m_previewError);
@@ -310,7 +312,9 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
     overrides.drawableMasks = m_drawableMaskIndexOverrides;
     overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
     overrides.parameterMetadata = m_parameterMetadataOverrides;
-    return m_previewBuilder->BuildOverrides(overrides, bytes, error);
+    QByteArray preview;
+    return m_previewBuilder->BuildOverrides(overrides, preview, error) &&
+        CMocMaterialBuilder::Build(preview, m_drawableMaterialOverrides, bytes, error);
 }
 
 bool CModelDocument::BuildRuntimeMoc(QByteArray& bytes, QString* error) const
@@ -459,10 +463,10 @@ bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QS
         if (validSlice(source->position_index_sources_begin_indices, source->position_index_sources_counts,
                        static_cast<int>(table.position_indices->indices.size()))) {
             for (int i = 0; i < source->position_index_sources_counts; ++i) {
-                const short rawIndex = table.position_indices->indices[
-                    source->position_index_sources_begin_indices + i];
-                if (rawIndex < 0 || rawIndex >= source->vertex_counts) continue;
-                drawable.indices.append(static_cast<quint16>(rawIndex));
+                const quint16 index = static_cast<quint16>(table.position_indices->indices[
+                    source->position_index_sources_begin_indices + i]);
+                if (index >= source->vertex_counts) continue;
+                drawable.indices.append(index);
             }
         }
         if (validSlice(source->drawable_mask_sources_begin_indices, source->drawable_mask_sources_counts,
@@ -1102,6 +1106,7 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
+    if (edit.field == CModelEdit::DrawableMaterials) return ApplyMaterialEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryKeyforms) return ApplyGeometryEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryObjectPairs) {
         const auto type = QMetaType::fromType<CGeometryObjectPairs::State>();
@@ -1547,7 +1552,7 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("ArtMesh 所属 Deformer 越界"), i});
         }
         for (quint16 index : drawable.indices) {
-            if (index >= drawable.vertexCount || index > 32767) {
+            if (index >= drawable.vertexCount) {
                 diagnostics.append({CModelDiagnostic::Error, QStringLiteral("index_range"),
                                      QStringLiteral("ArtMesh 三角形索引越界"), i});
                 break;

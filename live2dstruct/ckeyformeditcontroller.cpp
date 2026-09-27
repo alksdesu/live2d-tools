@@ -635,6 +635,8 @@ bool CKeyformEditController::Restore(CModelDocument candidate, QString* error, b
     if (!Ready(error)) return false;
     if (forceStructure || candidate.ParameterStructure() != m_document->ParameterStructure() ||
         candidate.HasMeshStructure() != m_document->HasMeshStructure() ||
+        candidate.HasMaterialStructure() != m_document->HasMaterialStructure() ||
+        candidate.DrawableMaterialOverrides() != m_document->DrawableMaterialOverrides() ||
         candidate.DeformerStructureState() != m_document->DeformerStructureState()) {
         CModelEdit command;
         command.field = CModelEdit::ParameterStructure;

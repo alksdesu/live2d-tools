@@ -37,6 +37,7 @@ struct ExtractedMaterial {
     QRect atlasRect;
     QSize atlasSize;
     bool visible = true;
+    QVector<float> authorUvs;
 };
 
 class CTextureExtractor
@@ -82,7 +83,7 @@ private:
     QImage RasterizeMesh(const QImage& atlas,
                          const float* uvData, int vertexCount,
                          const short* indexData, int indexCount,
-                         QRect& outUvRect, CExportControl* control);
+                         QRect& outUvRect, qint64& pixels, CExportControl* control);
 
     /// 计算模型空间顶点在画布上的像素包围盒
     QRect ComputeCanvasRect(const float* positions, int vertexCount,

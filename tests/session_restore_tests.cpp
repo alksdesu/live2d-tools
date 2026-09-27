@@ -271,7 +271,7 @@ private slots:
         else if (field == "long-digest") session.sourceDigest = QByteArray(33, 'x');
         else if (field == "nul-path") session.physicsDraft->sourcePath = QString("rig") + QChar::Null;
         else if (field == "document") session.physicsDraft->document = {};
-        else session.version = 10;
+        else session.version = 11;
         QVERIFY(session.ToJson().isEmpty());
         QTemporaryDir directory; const auto path = directory.filePath("existing.json"); QVERIFY(write(path, "unchanged")); QString error;
         QVERIFY(!session.Save(path, &error)); QVERIFY(!error.isEmpty());

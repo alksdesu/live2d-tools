@@ -32,6 +32,8 @@ QJsonObject extension(const Pairs::State& state)
 }
 struct Fixture {
     QTemporaryDir directory;
+    QJsonArray textures;
+    bool ready = false;
     CModelDocument document;
     QString path, moc;
     Fixture() {
@@ -39,10 +41,19 @@ struct Fixture {
         if (!load(source)) return;
         path = directory.filePath("model.model3.json"); moc = directory.filePath("model.moc3");
         if (!write(moc, source.SourceBytes()) || !document.Load(moc)) return;
-        save(false);
+        const QDir resources(QString(TEST_RESOURCES) + QStringLiteral("/Mark"));
+        const auto originals = QJsonDocument::fromJson(read(resources.filePath("Mark.model3.json")))
+            .object().value("FileReferences").toObject().value("Textures").toArray();
+        if (originals.isEmpty()) return;
+        for (int index = 0; index < originals.size(); ++index) {
+            const auto name = QStringLiteral("texture_%1.png").arg(index);
+            if (!QFile::copy(resources.filePath(originals[index].toString()), directory.filePath(name))) return;
+            textures.append(name);
+        }
+        ready = save(false);
     }
     bool save(bool hasDisplay) const {
-        QJsonObject files{{"Moc", "model.moc3"}, {"Textures", QJsonArray{}}};
+        QJsonObject files{{"Moc", "model.moc3"}, {"Textures", textures}};
         if (hasDisplay) files["DisplayInfo"] = "names.cdi3.json";
         return write(path, QJsonDocument(QJsonObject{{"Version", 3}, {"FileReferences", files}}).toJson());
     }
@@ -65,7 +76,7 @@ class GeometryPairsExportTests : public QObject
 private slots:
     void changedRuntimeMocIsNormalizedAndPairDigestReanchored()
     {
-        Fixture fixture; QString error; QVERIFY(fixture.document.IsLoaded());
+        Fixture fixture; QVERIFY(fixture.ready); QString error; QVERIFY(fixture.document.IsLoaded());
         const auto original = paired(fixture.document); QVERIFY(fixture.document.SetGeometryObjectPairs(original)); QVERIFY(fixture.edit());
         auto input = fixture.request(); QVERIFY(digest(input.mocBytes) != input.sourceMocDigest);
         auto reader = CReader::FromBytes(input.mocBytes); CSectionTable table(reader); QVERIFY(table.IsValid());
@@ -97,7 +108,7 @@ private slots:
 
     void editedBindingKeysMatchTheExportedPairSignatures()
     {
-        Fixture fixture; QString error; QVERIFY(fixture.document.SetGeometryObjectPairs(paired(fixture.document))); QVERIFY(fixture.edit());
+        Fixture fixture; QVERIFY(fixture.ready); QString error; QVERIFY(fixture.document.SetGeometryObjectPairs(paired(fixture.document))); QVERIFY(fixture.edit());
         CMocParameterStructureBuilder::EditBindingKeysRequest keys;
         keys.owner = {CMocParameterStructureBuilder::Owner::ArtMesh, "Mesh"}; keys.axisIndex = 0;
         keys.parameterId = "P"; keys.expectedKeys = {0, 1}; keys.keys = {{.2f, 0}, {.8f, 1}};
@@ -117,7 +128,7 @@ private slots:
 
     void unknownDisplayFieldsAndNamesRemainIntact()
     {
-        Fixture fixture; const QJsonObject source{{"Version", 3}, {"RootExtra", QJsonObject{{"opaque", QJsonArray{1, 2, "three"}}}},
+        Fixture fixture; QVERIFY(fixture.ready); const QJsonObject source{{"Version", 3}, {"RootExtra", QJsonObject{{"opaque", QJsonArray{1, 2, "three"}}}},
             {"Parts", QJsonArray{QJsonObject{{"Id", "ExternalPart"}, {"Name", "Part name"}, {"Extra", 7}}}},
             {"Deformers", QJsonArray{QJsonObject{{"Id", "Root"}, {"Name", "Friendly root"}, {"Extra", 8}}}},
             {"Parameters", QJsonArray{QJsonObject{{"Id", "P"}, {"Name", "Parameter name"}, {"GroupId", "face"}, {"Extra", 9}}}},
@@ -138,7 +149,7 @@ private slots:
     }
     void sourceAndStructureMismatchDoNotReplacePreparedOutput()
     {
-        QFETCH(int, failure); Fixture fixture; QVERIFY(fixture.document.SetGeometryObjectPairs(paired(fixture.document))); QVERIFY(fixture.edit());
+        QFETCH(int, failure); Fixture fixture; QVERIFY(fixture.ready); QVERIFY(fixture.document.SetGeometryObjectPairs(paired(fixture.document))); QVERIFY(fixture.edit());
         auto input = fixture.request();
         if (failure == 0) input.geometryObjectPairs.sourceDigest[0] ^= 1;
         if (failure == 1) input.sourceMocDigest[0] ^= 1;
@@ -156,7 +167,7 @@ private slots:
 
     void reviewStateSurvivesChangedTopologyExport()
     {
-        Fixture fixture; QVERIFY(fixture.document.SetGeometryObjectPairs(paired(fixture.document))); QVERIFY(fixture.edit());
+        Fixture fixture; QVERIFY(fixture.ready); QVERIFY(fixture.document.SetGeometryObjectPairs(paired(fixture.document))); QVERIFY(fixture.edit());
         auto indices = fixture.document.DrawableIndices("Mesh"); std::swap(indices[0], indices[1]);
         QVERIFY(fixture.document.SetDrawableIndices("Mesh", indices));
         const auto before = fixture.document.GeometryObjectPairs(); QVERIFY(before.pairs[0].requiresReview);
@@ -175,7 +186,7 @@ private slots:
     }
     void removedAndDisabledMetadataDoesNotReviveFromSourceExtension()
     {
-        QFETCH(int, mode); Fixture fixture; const auto active = paired(fixture.document);
+        QFETCH(int, mode); Fixture fixture; QVERIFY(fixture.ready); const auto active = paired(fixture.document);
         const QJsonObject source{{"Version", 3}, {"Opaque", "kept"}, {"Live2DToolsGeometryObjectPairs", extension(active)}};
         QVERIFY(fixture.cdi(source)); auto input = fixture.request();
         if (mode == 1) { input.geometryObjectPairs = active; input.geometryObjectPairs.pairs[0].enabled = false; }
@@ -197,7 +208,7 @@ private slots:
     }
     void parserFailureRetainsAllPriorState()
     {
-        QFETCH(int, failure); Fixture fixture; const auto state = paired(fixture.document);
+        QFETCH(int, failure); Fixture fixture; QVERIFY(fixture.ready); const auto state = paired(fixture.document);
         QJsonObject valid{{"Version", 3}, {"Parameters", QJsonArray{QJsonObject{{"Id", "P"}, {"Name", "Saved name"}, {"GroupId", "face"}}}},
             {"Parts", QJsonArray{QJsonObject{{"Id", "Part"}, {"Name", "Saved part"}}}},
             {"Deformers", QJsonArray{QJsonObject{{"Id", "Root"}, {"Name", "Saved deformer"}}}},

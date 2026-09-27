@@ -49,7 +49,7 @@ bool CModelSaveFingerprint::Capture(const CModelDocument& document, QByteArray& 
     std::sort(locks.begin(), locks.end());
     auto sourceDeformers = document.HasDeformerStructure() ? document.SourceDeformerIds().values() : QStringList{};
     std::sort(sourceDeformers.begin(), sourceDeformers.end());
-    stream << document.VisibilityState() << locks << document.HasMeshStructure() << document.HasDeformerStructure()
+    stream << document.VisibilityState() << locks << document.HasMeshStructure() << document.HasDeformerStructure() << document.HasMaterialStructure()
            << sourceDeformers << QJsonDocument(organization).toJson(QJsonDocument::Compact)
            << QJsonDocument(pairs).toJson(QJsonDocument::Compact);
     if (stream.status() != QDataStream::Ok) {

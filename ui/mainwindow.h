@@ -6,6 +6,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/ctextureeditcontroller.h"
+#include "live2dstruct/cmaterialeditcontroller.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/cparametervalueeditcontroller.h"
 #include "live2dstruct/coor/cwarpcoortype.h"
@@ -30,6 +31,7 @@ class CMotionPanel;
 class CPhysicsPanel;
 class CBlendShapePanel;
 class CTexturePanel;
+class CUvEditDialog;
 class CInspectorPanel;
 class CModelDiagnosticsPanel;
 class CUserDataPanel;
@@ -118,6 +120,14 @@ private:
     bool ReplaceTexture(int slot, const QByteArray& png, QString* error);
     void RefreshTextureEditing(bool changed = false);
     void ApplyTextureHistory(bool undo);
+    void EditUv(const QString& selectedMesh);
+    void RefreshMaterialEditing(bool changed);
+    bool PublishDrawableMaterials(const live2dstruct::CModelDocument& before,
+                                  const live2dstruct::CModelDocument& after,
+                                  const QSet<QString>& ids, QString* error);
+    live2dstruct::CMaterialEditController m_materialEditor;
+    QPointer<CUvEditDialog> m_uvDialog;
+    bool m_textureHistoryUsesDocument = false;
     live2dstruct::CTextureEditController m_textureEditor;
     const live2dstruct::CTextureAssets::State* m_restoringTextures = nullptr;
     void ClearTimelinePreview();

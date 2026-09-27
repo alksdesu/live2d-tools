@@ -7,6 +7,7 @@
 #include "std/cexportcontrol.h"
 #include "std/cpngimage.h"
 #include "live2dstruct/ctextureassets.h"
+#include "live2dstruct/cmocmaterialbuilder.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QDateTime>
@@ -21,6 +22,19 @@
 #include <QDebug>
 
 using namespace live2dstruct;
+
+namespace {
+int repeatCoordinate(qint64 value, int size)
+{
+    const qint64 remainder = value % size;
+    return int(remainder < 0 ? remainder + size : remainder);
+}
+bool validIndices(const QVector<quint16>& indices, int vertices)
+{
+    if (indices.isEmpty() || indices.size() % 3 || indices.size() > 3000000) return false;
+    return std::all_of(indices.cbegin(), indices.cend(), [vertices](quint16 index) { return index < vertices; });
+}
+}
 
 CTextureExtractor::CTextureExtractor() {}
 CTextureExtractor::~CTextureExtractor() {}
@@ -140,6 +154,8 @@ bool CTextureExtractor::ExtractMaterials(CSectionTable* table, QVector<Extracted
         if (!table || !table->IsValid() || !table->count_info || !table->uvs || !table->position_indices ||
             table->count_info->art_meshes < 0 || table->count_info->art_meshes != table->art_meshes.size())
             return fail(QStringLiteral("无法提取 CMO3 素材：模型区段数据无效"));
+        CModelMaterialOverrides materials;
+        if (!CMocMaterialBuilder::Capture(*table, materials, error)) return false;
         using Slice = std::tuple<int, int, int>;
         using ImageKey = std::tuple<int, int, int, int, int>;
         std::map<Slice, QRect> uvBounds;
@@ -177,20 +193,22 @@ bool CTextureExtractor::ExtractMaterials(CSectionTable* table, QVector<Extracted
                 if (indexSlices.find(slice) == indexSlices.end()) {
                     if (!consume(indexCount)) return fail(QStringLiteral("CMO3 素材的顶点和索引检查总量超过限制"));
                     for (int at = 0; at < indexCount; ++at) {
-                        const int vertex = table->position_indices->indices[mesh->position_index_sources_begin_indices + at];
+                        const int vertex = static_cast<quint16>(table->position_indices->indices[mesh->position_index_sources_begin_indices + at]);
                         if (vertex < 0 || vertex >= vertexCount) return fail(QStringLiteral("CMO3 素材的三角索引越界：%1").arg(label));
                     }
                     indexSlices.emplace(slice, true);
                 }
             }
+            const auto authorUvs = materials.value(mesh->ids).uvs;
+            if (authorUvs.size() != vertexCount * 2) return fail(QStringLiteral("CMO3 素材缺少有效 UV：%1").arg(label));
             const Slice uvSlice{atlasIndex, mesh->uv_sources_begin_indices, vertexCount};
             auto foundBounds = uvBounds.find(uvSlice);
             if (foundBounds == uvBounds.end()) {
                 if (!consume(vertexCount)) return fail(QStringLiteral("CMO3 素材的顶点和索引检查总量超过限制"));
                 double minX = std::numeric_limits<double>::max(), minY = minX, maxX = -minX, maxY = -minX;
                 for (int vertex = 0; vertex < vertexCount; ++vertex) {
-                    const double u = table->uvs->uvs[mesh->uv_sources_begin_indices + vertex * 2];
-                    const double v = table->uvs->uvs[mesh->uv_sources_begin_indices + vertex * 2 + 1];
+                    const double u = authorUvs[vertex * 2];
+                    const double v = authorUvs[vertex * 2 + 1];
                     if (!std::isfinite(u) || !std::isfinite(v)) return fail(QStringLiteral("CMO3 素材的 UV 包含非有限值：%1").arg(label));
                     const double x = u * atlas.width(), y = v * atlas.height();
                     minX = std::min(minX, x); maxX = std::max(maxX, x);
@@ -218,22 +236,23 @@ bool CTextureExtractor::ExtractMaterials(CSectionTable* table, QVector<Extracted
                 foundImage = imageIndices.emplace(key, images.size()).first;
                 images.append({atlasIndex, rect, {}});
             }
-            candidate.append({mesh->ids, index, atlasIndex, {}, rect, atlas.size(), mesh->is_visible});
+            candidate.append({mesh->ids, index, atlasIndex, {}, rect, atlas.size(), mesh->is_visible, authorUvs});
             materialImages.append(foundImage->second);
         }
         for (auto& plan : images) {
             const auto& atlas = m_atlases[plan.atlas]; const auto& rect = plan.rect;
             QImage image(rect.size(), QImage::Format_ARGB32);
             if (image.isNull()) return fail(QStringLiteral("无法分配 CMO3 素材图像"));
-            const int first = int(std::clamp(-qint64(rect.x()), qint64(0), qint64(rect.width())));
-            const int last = int(std::clamp(qint64(atlas.width()) - rect.x(), qint64(0), qint64(rect.width())));
             for (int y = 0; y < rect.height(); ++y) {
-                const int sourceY = int(std::clamp(qint64(rect.y()) + y, qint64(0), qint64(atlas.height() - 1)));
+                const int sourceY = repeatCoordinate(qint64(rect.y()) + y, atlas.height());
                 const auto* source = reinterpret_cast<const QRgb*>(atlas.constScanLine(sourceY));
                 auto* target = reinterpret_cast<QRgb*>(image.scanLine(y));
-                std::fill(target, target + first, source[0]);
-                if (last > first) std::memcpy(target + first, source + qint64(rect.x()) + first, size_t(last - first) * sizeof(QRgb));
-                std::fill(target + last, target + rect.width(), source[atlas.width() - 1]);
+                int written = 0, sourceX = repeatCoordinate(rect.x(), atlas.width());
+                while (written < rect.width()) {
+                    const int count = std::min(rect.width() - written, atlas.width() - sourceX);
+                    std::memcpy(target + written, source + sourceX, size_t(count) * sizeof(QRgb));
+                    written += count; sourceX = 0;
+                }
             }
             plan.image = std::move(image);
         }
@@ -264,6 +283,8 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                                                       CExportControl* control,
                                                       const QHash<QString, QVector<float>>* modelPositions)
 {
+    CExportControl localControl;
+    if (!control) control = &localControl;
     try {
         QVector<ExtractedLayer> results;
         if (control && !control->Checkpoint()) return {};
@@ -275,6 +296,10 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
         int meshCount = table->count_info->art_meshes;
         meshCount = std::min(meshCount, static_cast<int>(table->art_meshes.size()));
         results.reserve(meshCount);
+        CModelMaterialOverrides materials;
+        QString materialError;
+        if (!CMocMaterialBuilder::Capture(*table, materials, &materialError)) { control->Fail(materialError); return {}; }
+        qint64 pixels = 0;
 
         for (int i = 0; i < meshCount; ++i) {
             CArt_meshes* mesh = table->art_meshes[i];
@@ -316,14 +341,16 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             }
 
             // 准备 UV 数据指针
-            const float* uvPtr = &table->uvs->uvs[uvBegin];
+            const auto authorUvs = materials.value(mesh->ids).uvs;
+            if (authorUvs.size() != uvCount) { control->Fail(QStringLiteral("纹理提取缺少有效 UV")); return {}; }
+            const float* uvPtr = authorUvs.constData();
             QVector<short> overrideIndices;
             const short* idxPtr = &table->position_indices->indices[idxBegin];
             if (indexOverrides) {
                 const auto overrideIt = indexOverrides->constFind(mesh->ids);
                 if (control && !control->Checkpoint()) return {};
                 if (overrideIt != indexOverrides->cend() &&
-                    CMeshTopology::IsValid(overrideIt.value(), mesh->vertex_counts)) {
+                    validIndices(overrideIt.value(), mesh->vertex_counts)) {
                     if (control && !control->Checkpoint()) return {};
                     overrideIndices.reserve(overrideIt.value().size());
                     for (qsizetype index = 0; index < overrideIt.value().size(); ++index) {
@@ -337,7 +364,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             bool indicesValid = true;
             for (int t = 0; t < idxCount; ++t) {
                 if (control && t % 1024 == 0 && !control->Checkpoint()) return {};
-                if (idxPtr[t] < 0 || idxPtr[t] >= mesh->vertex_counts) {
+                if (static_cast<quint16>(idxPtr[t]) >= mesh->vertex_counts) {
                     indicesValid = false;
                     break;
                 }
@@ -347,7 +374,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             // 通过 UV 三角形光栅化从 atlas 提取原始纹理
             QRect uvPixelRect;
             QImage meshImage = RasterizeMesh(atlas, uvPtr, mesh->vertex_counts,
-                                             idxPtr, idxCount, uvPixelRect, control);
+                                             idxPtr, idxCount, uvPixelRect, pixels, control);
             if (control && !control->Checkpoint()) return {};
 
             if (meshImage.isNull() || meshImage.width() == 0 || meshImage.height() == 0) {
@@ -427,7 +454,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
 QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
                                          const float* uvData, int vertexCount,
                                          const short* indexData, int indexCount,
-                                         QRect& outUvRect, CExportControl* control)
+                                         QRect& outUvRect, qint64& pixels, CExportControl* control)
 {
     outUvRect = QRect();
     const int atlasW = atlas.width(), atlasH = atlas.height();
@@ -445,12 +472,20 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
         maxPx = std::max(maxPx, x);
         maxPy = std::max(maxPy, y);
     }
-    if (maxPx < 0.0 || maxPy < 0.0 || minPx > atlasW || minPy > atlasH) return {};
-    const int left = static_cast<int>(std::max(0.0, std::floor(std::clamp(minPx, 0.0, double(atlasW))) - 1.0));
-    const int top = static_cast<int>(std::max(0.0, std::floor(std::clamp(minPy, 0.0, double(atlasH))) - 1.0));
-    const int right = static_cast<int>(std::min(double(atlasW), std::ceil(std::clamp(maxPx, 0.0, double(atlasW))) + 1.0));
-    const int bottom = static_cast<int>(std::min(double(atlasH), std::ceil(std::clamp(maxPy, 0.0, double(atlasH))) + 1.0));
-    if (right <= left || bottom <= top) return {};
+    const double leftValue = minPx >= 0 ? std::max(0.0, std::floor(minPx) - 1) : std::floor(minPx) - 1;
+    const double topValue = minPy >= 0 ? std::max(0.0, std::floor(minPy) - 1) : std::floor(minPy) - 1;
+    const double rightValue = maxPx <= atlasW ? std::min(double(atlasW), std::ceil(maxPx) + 1) : std::ceil(maxPx) + 1;
+    const double bottomValue = maxPy <= atlasH ? std::min(double(atlasH), std::ceil(maxPy) + 1) : std::ceil(maxPy) + 1;
+    const double width = rightValue - leftValue, height = bottomValue - topValue;
+    if (leftValue < std::numeric_limits<int>::min() || topValue < std::numeric_limits<int>::min() ||
+        rightValue > std::numeric_limits<int>::max() || bottomValue > std::numeric_limits<int>::max() ||
+        width <= 0 || height <= 0 || width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max() ||
+        width * height > MaximumMaterialPixels || width * height > MaximumTotalMaterialPixels - pixels) {
+        if (control) control->Fail(QStringLiteral("纹理提取的完整 UV 区域超出像素或坐标限制"));
+        return {};
+    }
+    const int left = int(leftValue), top = int(topValue), right = int(rightValue), bottom = int(bottomValue);
+    pixels += qint64(width) * qint64(height);
     QImage output(right - left, bottom - top, QImage::Format_ARGB32);
     if (output.isNull()) {
         if (control) control->Fail(QStringLiteral("无法分配纹理裁片图像"));
@@ -460,7 +495,8 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
     outUvRect = QRect(left, top, right - left, bottom - top);
     for (int triangle = 0; triangle < indexCount; triangle += 3) {
         if (control && !control->Checkpoint()) return {};
-        const int i0 = indexData[triangle], i1 = indexData[triangle + 1], i2 = indexData[triangle + 2];
+        const int i0 = static_cast<quint16>(indexData[triangle]), i1 = static_cast<quint16>(indexData[triangle + 1]),
+            i2 = static_cast<quint16>(indexData[triangle + 2]);
         if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
         const double x0 = double(uvData[i0 * 2]) * atlasW;
         const double y0 = double(uvData[i0 * 2 + 1]) * atlasH;
@@ -520,8 +556,8 @@ bool CTextureExtractor::RasterizeTriangle(QImage& output, const QImage& atlas,
             if (!CUvGeometry::ContainsTriangle(point, a, b, c)) continue;
             // UV 裁片只改变原点，直接采样可避免大坐标重心插值抵消。
             const qint64 sampleX = qint64(px) + atlasLeft, sampleY = qint64(py) + atlasTop;
-            if (sampleX < 0 || sampleY < 0 || sampleX >= atlas.width() || sampleY >= atlas.height()) continue;
-            const QRgb pixel = reinterpret_cast<const QRgb*>(atlas.constScanLine(static_cast<int>(sampleY)))[sampleX];
+            const QRgb pixel = reinterpret_cast<const QRgb*>(atlas.constScanLine(repeatCoordinate(sampleY, atlas.height())))
+                [repeatCoordinate(sampleX, atlas.width())];
             if (qAlpha(pixel) > 0 || qAlpha(outputRow[px]) == 0) outputRow[px] = pixel;
         }
     }

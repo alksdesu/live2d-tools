@@ -703,6 +703,8 @@ bool MainWindow::SaveSession()
     session.sourceDigest = m_document.SourceDigest();
     session.structure = m_document.ParameterStructure();
     session.meshStructure = m_document.HasMeshStructure();
+    session.materialStructure = m_document.HasMaterialStructure();
+    session.drawableMaterials = m_document.DrawableMaterialOverrides();
     session.deformerStructure = m_document.HasDeformerStructure();
     if (session.deformerStructure) session.sourceDeformerIds = m_document.SourceDeformerIds();
     session.parameterResources = m_parameterResources;
@@ -910,7 +912,8 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
         QMap<QString, float> values;
         if (!m_runtimePanelsInitialized)
             for (const auto& parameter : document.Parameters()) values.insert(parameter.id, document.ParameterValue(parameter.id));
-        if (!m_runtimePanelsInitialized && (document.HasMeshStructure() || !document.ParameterStructure().columns.isEmpty() ||
+        if (!m_runtimePanelsInitialized && (document.HasMeshStructure() || document.HasMaterialStructure() ||
+            !document.DrawableMaterialOverrides().isEmpty() || !document.ParameterStructure().columns.isEmpty() ||
             !document.ParameterStructure().counts.isEmpty())) {
             auto* manager = LAppLive2DManager::GetInstance();
             auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
@@ -929,8 +932,12 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
                 geometry.emplace();
                 if (!PrepareMeshMigration(document, nullptr, true, *geometry, nullptr, error)) return false;
             }
+            QSet<QString> materials;
+            if (document.HasMaterialStructure() || !document.DrawableMaterialOverrides().isEmpty())
+                for (const auto& drawable : document.Drawables()) materials.insert(drawable.id);
             return m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, false, prepared,
-                error, nullptr, nullptr, {}, nullptr, geometry ? &*geometry : nullptr);
+                error, nullptr, nullptr, {}, nullptr, geometry ? &*geometry : nullptr, nullptr, nullptr,
+                materials.isEmpty() ? nullptr : &materials);
         }
         return m_openglwindows->ApplyParameterDefinitionPreview(bytes, document.SourceDigest(), values, false, error);
     }
@@ -1221,12 +1228,16 @@ bool MainWindow::PublishParameterStructure(const live2dstruct::CModelDocument& d
         geometry.emplace();
         if (!PrepareMeshMigration(document, nullptr, true, *geometry, nullptr, error)) return false;
     }
+    QSet<QString> materials;
+    if (restoring && (document.HasMaterialStructure() || m_document.HasMaterialStructure() ||
+        !document.DrawableMaterialOverrides().isEmpty() || !m_document.DrawableMaterialOverrides().isEmpty()))
+        for (const auto& drawable : document.Drawables()) materials.insert(drawable.id);
     if (!m_openglwindows->ApplyParameterStructurePreview(bytes, document.SourceDigest(), entering, values, editing, pose, error,
         changeReferences ? &references.runtime : nullptr, restoreEditor, prepareTimeline, changePhysics ? &physicsDraft : nullptr,
         geometry ? &*geometry : nullptr,
         editing && (command.parameterChange == live2dstruct::CModelEdit::ParameterChange::BindingKeys ||
             command.field == live2dstruct::CModelEdit::DeformerStructure) ? &pose : nullptr,
-        restoring ? m_restoringTextures : nullptr))
+        restoring ? m_restoringTextures : nullptr, materials.isEmpty() ? nullptr : &materials))
         return false;
     if (changePhysics && !m_physicsPanel->CommitPreparedSnapshot(physics, error)) return false;
     if (changeTracks && !m_motionPanel->CommitPreparedParameterTracks(tracks, capturedState->tracks)) {
@@ -1469,6 +1480,12 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     }
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
+    if (pending.field == live2dstruct::CModelEdit::DrawableMaterials) {
+        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
+        if (!m_materialEditor.History(undo, edit, error)) return false;
+        RefreshMaterialEditing(true);
+        return true;
+    }
     if (pending.field == live2dstruct::CModelEdit::ParameterValue || pending.field == live2dstruct::CModelEdit::ParameterValues)
         return ApplyParameterValueHistory(undo, edit, error);
     if (pending.field == live2dstruct::CModelEdit::ParameterOrganization ||
@@ -1871,7 +1888,7 @@ void MainWindow::RefreshWindowTitle()
 
 void MainWindow::RefreshUndoActions()
 {
-    const bool loaded = m_openglwindows && !m_closingModel;
+    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive();
     const bool timeline = m_historySource == HistorySource::Timeline && m_motionPanel;
     const bool physics = m_historySource == HistorySource::Physics && m_physicsPanel;
     const bool textures = m_historySource == HistorySource::Textures;
@@ -1881,6 +1898,7 @@ void MainWindow::RefreshUndoActions()
 
 void MainWindow::UndoDocumentEdit()
 {
+    if (m_materialEditor.IsActive()) return;
     if (m_historySource == HistorySource::Textures) { ApplyTextureHistory(true); return; }
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
@@ -1904,6 +1922,7 @@ void MainWindow::UndoDocumentEdit()
 
 void MainWindow::RedoDocumentEdit()
 {
+    if (m_materialEditor.IsActive()) return;
     if (m_historySource == HistorySource::Textures) { ApplyTextureHistory(false); return; }
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
@@ -2610,6 +2629,10 @@ QWidget* MainWindow::createEmptyState()
 
 bool MainWindow::CloseModel()
 {
+    if (m_materialEditor.IsActive()) {
+        statusBar()->showMessage(QStringLiteral("请先保存或取消 UV 编辑"), 8000);
+        return false;
+    }
     if (m_batchExporting || m_closingModel) return false;
     if (m_psdBatch) StopPsdBatch();
     if (!m_openglwindows) {
@@ -2717,6 +2740,8 @@ bool MainWindow::CloseModel()
     }
 
     m_keyformEditor.SetDocument(nullptr);
+    m_materialEditor.SetDocument(nullptr);
+    m_textureHistoryUsesDocument = false;
     m_keyformBaseValues.clear();
     m_document.Clear();
     m_placeholder = createEmptyState();
@@ -2785,6 +2810,10 @@ void MainWindow::RestDock(const QString &name)
         return;
     }
     m_keyformEditor.SetDocument(&m_document);
+    m_materialEditor.SetDocument(&m_document);
+    m_materialEditor.SetPublisher([this](const auto& before, const auto& after, const auto& ids, QString* error) {
+        return PublishDrawableMaterials(before, after, ids, error);
+    });
     m_keyformBaseValues.clear();
     m_keyformEditor.SetPublisher(
         [this](const auto& document, const auto& pose, bool editing, QString* error) {
@@ -3297,8 +3326,9 @@ void MainWindow::RestDock(const QString &name)
         }
         return ReplaceTexture(slot, png, error);
     });
+    connect(m_texturePanel, &CTexturePanel::EditUvRequested, this, &MainWindow::EditUv);
     connect(m_texturePanel, &CTexturePanel::HistorySelected, this, [this] {
-        m_historySource = HistorySource::Textures;
+        m_historySource = m_textureHistoryUsesDocument ? HistorySource::Inspector : HistorySource::Textures;
         RefreshUndoActions();
     });
     connect(m_texturePanel, &CTexturePanel::EditRejected, this, [this](const QString& error) { statusBar()->showMessage(error, 8000); });
@@ -3681,7 +3711,7 @@ void MainWindow::createActions()
         } else if (m_physicsPanel && (m_physicsPanel == current || m_physicsPanel->isAncestorOf(current))) {
             m_historySource = HistorySource::Physics;
         } else if (m_texturePanel && (m_texturePanel == current || m_texturePanel->isAncestorOf(current))) {
-            m_historySource = HistorySource::Textures;
+            m_historySource = m_textureHistoryUsesDocument ? HistorySource::Inspector : HistorySource::Textures;
         } else {
             const auto contains = [current](QWidget* editor){
                 return editor && (editor == current || editor->isAncestorOf(current));

@@ -73,6 +73,7 @@ public:
     const QByteArray& SourceDigest() const { return _sourceDigest; }
     bool SetObservationGroup(int groupIndex);
     bool CaptureObservation(const CubismModel& model, PhysicsObservation& result, QString* error = nullptr) const;
+    bool RebindObservationModel(const CubismModel& previous, const CubismModel& replacement) noexcept;
     bool CaptureConfiguration(QJsonObject& result, QString* error = nullptr) const;
     bool HasFiniteRuntimeState(QString* error = nullptr) const;
 

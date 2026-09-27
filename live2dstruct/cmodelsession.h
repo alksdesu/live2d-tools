@@ -28,6 +28,8 @@ struct CModelSession
     QByteArray sourceDigest;
     CMocParameterStructureBuilder::ColumnState structure;
     bool meshStructure = false;
+    bool materialStructure = false;
+    CModelMaterialOverrides drawableMaterials;
     bool deformerStructure = false;
     QSet<QString> sourceDeformerIds;
     CParameterResourceEdits::State parameterResources;

@@ -526,6 +526,12 @@ bool CRuntimePackage::Prepare(const Request& input, Prepared& prepared, CExportC
             if (!collector.add(QStringLiteral("textures"), request.textureSources ? QStringLiteral(".png") : suffix(path), data, output, error)) return false;
             packagedTextures.append(output);
         }
+        for (const auto& drawable : current.Drawables()) {
+            if (!drawable.vertexCount) continue;
+            if (drawable.textureIndex < 0 || drawable.textureIndex >= packagedTextures.size() ||
+                packagedTextures[drawable.textureIndex].toString().isEmpty())
+                return fail(error, QStringLiteral("网格 %1 引用了没有图集的纹理槽 %2").arg(drawable.id).arg(drawable.textureIndex));
+        }
         if (files.contains(QStringLiteral("Textures"))) files.insert(QStringLiteral("Textures"), packagedTextures);
         const auto scalar = [&](const QString& field, const QString& suffix, const std::optional<QByteArray>& replacement,
                                 const std::optional<Editor::Kind>& kind) {

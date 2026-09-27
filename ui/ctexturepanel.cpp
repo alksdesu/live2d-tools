@@ -1,6 +1,7 @@
 #include "ctexturepanel.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/cmocmaterialbuilder.h"
 #include "opengl/cuvgeometry.h"
 #include "std/cpngimage.h"
 #include <QAction>
@@ -292,6 +293,7 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     };
     m_btnReplace = button(QStringLiteral("替换 PNG…"), QStringLiteral("使用同尺寸 PNG 替换当前图集，原文件保持不变"), "textureReplace");
     m_btnRestore = button(QStringLiteral("恢复原图"), QStringLiteral("恢复模型首次加载时的素材，可撤销"), "textureRestore");
+    m_btnEditUv = button(QStringLiteral("编辑 UV…"), QStringLiteral("调整网格的纹理采样坐标或分配到已有图集"), "textureEditUv");
     tools->addSeparator();
     m_btnFit = button(QStringLiteral("适应窗口"), QStringLiteral("缩放图集以适应窗口"), "textureFit");
     m_btnOriginal = button(QStringLiteral("1:1"), QStringLiteral("按原始像素显示"), "textureOriginalSize");
@@ -332,6 +334,7 @@ CTexturePanel::CTexturePanel(QWidget *parent)
     connect(m_btnExport->defaultAction(), &QAction::triggered, this, &CTexturePanel::onExportPng);
     connect(m_btnReplace->defaultAction(), &QAction::triggered, this, &CTexturePanel::onReplacePng);
     connect(m_btnRestore->defaultAction(), &QAction::triggered, this, &CTexturePanel::onRestoreOriginal);
+    connect(m_btnEditUv->defaultAction(), &QAction::triggered, this, [this] { emit EditUvRequested(m_selectedMesh); });
     connect(m_selector, &QComboBox::activated, this, [this] { if (!m_loading) emit HistorySelected(); });
     connect(m_checkWireframe, &QCheckBox::toggled, this, [this](bool on){
         if (m_overlay) m_overlay->setVisible(on);
@@ -521,6 +524,7 @@ void CTexturePanel::RefreshActions()
     const bool loaded = m_images.contains(m_currentTexKey);
     m_btnReplace->defaultAction()->setEnabled(CanEdit());
     m_btnRestore->defaultAction()->setEnabled(CanEdit() && m_state.contains(m_currentTexKey));
+    m_btnEditUv->defaultAction()->setEnabled(m_editingEnabled && loaded && !m_busy && !m_meshes.isEmpty());
     m_btnExport->defaultAction()->setEnabled(loaded && !m_busy);
     m_btnFit->defaultAction()->setEnabled(loaded);
     m_btnOriginal->defaultAction()->setEnabled(loaded);
@@ -604,6 +608,8 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
 
     const int meshCount = table.count_info->art_meshes;
     if (meshCount < 0 || meshCount != table.art_meshes.size()) return fail(QStringLiteral("UV 网格数量与模型不一致"));
+    CModelMaterialOverrides materials;
+    if (!CMocMaterialBuilder::Capture(table, materials, error)) return false;
     QVector<CAtlasMeshUv> candidate;
     candidate.reserve(meshCount);
     QSet<QString> ids;
@@ -629,6 +635,7 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
             return fail(QStringLiteral("UV 三角形切片无效：%1").arg(mesh->ids));
         if (!mesh->vertex_counts && mesh->position_index_sources_counts)
             return fail(QStringLiteral("空网格包含三角形：%1").arg(mesh->ids));
+        if (!mesh->vertex_counts) continue;
 
         CAtlasMeshUv uv;
         uv.name = mesh->ids;
@@ -646,7 +653,10 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
         const double h = atlasSize.height();
         const QRectF atlasRect(0, 0, w, h);
 
-        const float* uvPtr = uvCount ? &table.uvs->uvs[mesh->uv_sources_begin_indices] : nullptr;
+        const auto material = materials.constFind(mesh->ids);
+        if (material == materials.cend() || material->uvs.size() != uvCount)
+            return fail(QStringLiteral("UV 网格的有效纹理坐标不完整：%1").arg(mesh->ids));
+        const float* uvPtr = material->uvs.constData();
         uv.points.reserve(mesh->vertex_counts);
         bool uvValid = true;
         for (int v = 0; v < mesh->vertex_counts; ++v) {
@@ -664,8 +674,8 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
         const short* idxPtr = idxCount ? &table.position_indices->indices[mesh->position_index_sources_begin_indices] : nullptr;
         uv.triangles.reserve(idxCount);
         for (int t = 0; t < idxCount; ++t) {
-            const int index = idxPtr[t];
-            if (index < 0 || index >= uv.points.size()) {
+            const int index = static_cast<quint16>(idxPtr[t]);
+            if (index >= uv.points.size()) {
                 return fail(QStringLiteral("UV 三角形索引越界：%1").arg(mesh->ids));
             }
             uv.triangles.append(index);
@@ -737,6 +747,7 @@ bool CTexturePanel::UpdateUvMeshes(const QByteArray& mocBytes, QString* error)
     m_overlay = overlay.release();
     m_checkWireframe->setEnabled(m_currentTexKey < 0 ? !m_meshes.isEmpty() : m_overlay != nullptr);
     if (!information.isEmpty()) m_infoLabel->setText(information);
+    RefreshActions();
     return true;
 }
 

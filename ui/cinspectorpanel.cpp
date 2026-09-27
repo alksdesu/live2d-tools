@@ -1889,7 +1889,11 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
             m_drawOrderSpin->setEnabled(unlocked);
             m_updatingVisibility = false;
             m_geometryLabel->setText(QStringLiteral("%1 顶点，%2 索引").arg(drawable.vertexCount).arg(drawable.indices.size()));
-            m_textureLabel->setText(drawable.textureIndex < 0 ? QStringLiteral("无") : QString::number(drawable.textureIndex));
+            live2dstruct::CModelDrawableMaterial material;
+            QString materialError;
+            const bool materialValid = m_document->CaptureDrawableMaterial(drawable.id, material, &materialError);
+            m_textureLabel->setText(!materialValid ? materialError : material.textureIndex < 0
+                ? QStringLiteral("无") : QString::number(material.textureIndex));
             const QString blend = drawable.blendMode == 1 ? QStringLiteral("ADD")
                                : drawable.blendMode == 2 ? QStringLiteral("MULTIPLY")
                                                           : QStringLiteral("NORMAL");

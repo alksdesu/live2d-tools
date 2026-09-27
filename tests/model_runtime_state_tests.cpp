@@ -279,7 +279,76 @@ private slots:
         QCOMPARE(candidate->GetModelOpacity(), 0.6f);
         candidate->LoadParameters(); QCOMPARE(candidate->GetParameterValue(0), 0.3f);
         QCOMPARE(next.updates, 0);
-        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, static_cast<CubismModelUpdatePolicy>(32)));
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, static_cast<CubismModelUpdatePolicy>(64)));
+    }
+
+    void materialPolicyPreservesRuntimeAndTopology()
+    {
+        auto source = create(), candidate = create();
+        source->InitMesh();
+        QVERIFY(source->SetDrawableIndicesOverride(0, {0, 1, 3}));
+        source->_savedParameters = {.2f};
+        source->SetParameterValue(0, .7f);
+        source->SetParameterValue(1, .8f);
+        source->SetPartOpacity(0, .45f);
+        source->SetModelOpacity(.6f);
+        const auto virtualId = idManager->GetId("Virtual");
+        source->SetParameterValue(virtualId, .9f);
+        auto& next = State(candidate->GetModel());
+        next.uvs[0][0] = {.25f, 1.25f};
+        next.textures[0] = 7;
+        for (const auto policy : {CubismModelUpdatePolicy::Strict, CubismModelUpdatePolicy::AllowDrawableTopologyEdits,
+                                 CubismModelUpdatePolicy::AllowDrawableGeometryEdits})
+            QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, policy));
+        QString error;
+        QVERIFY2(candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowDrawableMaterialEdits, &error), qPrintable(error));
+        QCOMPARE(candidate->GetDrawableTextureIndex(0), 7);
+        QCOMPARE(candidate->GetDrawableVertexUvs(0)[0].X, .25f);
+        QCOMPARE(candidate->GetDrawableVertexUvs(0)[0].Y, 1.25f);
+        QVERIFY(candidate->HasDrawableIndicesOverrides());
+        QCOMPARE(candidate->GetDrawableVertexIndexCount(0), 3);
+        QCOMPARE(candidate->GetDrawableVertexIndices(0)[2], quint16(3));
+        QCOMPARE(candidate->GetParameterValue(0), .7f);
+        QCOMPARE(candidate->GetParameterValue(1), .8f);
+        QCOMPARE(candidate->GetParameterValue(virtualId), .9f);
+        QCOMPARE(candidate->_savedParameters, source->_savedParameters);
+        QCOMPARE(candidate->GetPartOpacity(0), .45f);
+        QCOMPARE(candidate->GetModelOpacity(), .6f);
+        QCOMPARE(next.updates, 0);
+        QVERIFY(!candidate->IsCompatibleForKeyformUpdate(*source, static_cast<CubismModelUpdatePolicy>(96)));
+    }
+
+    void materialPolicyRejectsOtherChanges_data()
+    {
+        QTest::addColumn<bool>("oldSide"); QTest::addColumn<int>("mutation");
+        for (bool oldSide : {false, true}) for (int mutation = 0; mutation < 13; ++mutation)
+            QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(oldSide).arg(mutation))) << oldSide << mutation;
+    }
+    void materialPolicyRejectsOtherChanges()
+    {
+        QFETCH(bool, oldSide); QFETCH(int, mutation);
+        auto source = create(), candidate = create();
+        auto& data = State((oldSide ? source : candidate)->GetModel());
+        switch (mutation) {
+        case 0: data.vertexCounts[0] = 3; break;
+        case 1: data.indexCounts[0] = 3; break;
+        case 2: data.indices[0][2] = 3; break;
+        case 3: data.uvPointers[0] = nullptr; break;
+        case 4: data.uvs[0][0].X = std::numeric_limits<float>::quiet_NaN(); break;
+        case 5: data.uvs[0][0].Y = std::numeric_limits<float>::infinity(); break;
+        case 6: data.textures[0] = -1; break;
+        case 7: data.flags[0] ^= Core::csmIsDoubleSided; break;
+        case 8: data.parameterIds[0] = "Other"; break;
+        case 9: data.maximum[0] = 3; break;
+        case 10: data.keys[0][0] = -.5f; break;
+        case 11: data.maskCounts[1] = 0; break;
+        case 12: data.nullGetters.insert("csmGetDrawableTextureIndices"); break;
+        }
+        QString error;
+        QVERIFY(!candidate->CopyRuntimeStateFrom(*source, CubismModelUpdatePolicy::AllowDrawableMaterialEdits, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(State(candidate->GetModel()).updates, 0);
+        QCOMPARE(State(source->GetModel()).updates, 0);
     }
 
     void geometryPolicyChangesCountsUvsAndDropsLegacyTopology()

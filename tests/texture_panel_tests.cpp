@@ -1,7 +1,9 @@
 #include "ui/ctexturepanel.h"
 #include "live2dstruct/csectiontable.h"
+#include "deformer_replay_fixture.h"
 
 #include <QtTest>
+#include <QAction>
 #include <QDir>
 #include <QFile>
 #include <QGraphicsPixmapItem>
@@ -117,6 +119,71 @@ class TexturePanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void unsignedTriangleIndicesKeepHighVerticesSelectable()
+    {
+        const auto source = DeformerReplayFixture::read("Mark");
+        auto reader = CReader::FromBytes(source); CSectionTable table(reader); QVERIFY(table.IsValid());
+        DeformerReplayFixture::RawColumns raw(source);
+        auto uvs = raw.column("uvs.uvs"); const int uvStart = uvs.size() / 4;
+        constexpr int count = 32769;
+        uvs.append(QByteArray(count * 8, '\0'));
+        writeFloat(uvs, uvStart * 4, .1f); writeFloat(uvs, uvStart * 4 + 4, .1f);
+        writeFloat(uvs, uvStart * 4 + 8, .9f); writeFloat(uvs, uvStart * 4 + 12, .1f);
+        writeFloat(uvs, (uvStart + (count - 1) * 2) * 4, .1f);
+        writeFloat(uvs, (uvStart + (count - 1) * 2 + 1) * 4, .9f);
+        const auto uvSpan = raw.spans.value("uvs.uvs");
+        raw.state.columns[uvSpan.slot] = uvs; raw.state.counts[uvSpan.countIndex] = uvs.size() / 4;
+        auto indices = raw.column("position_indices.indices"); const int indexStart = indices.size() / 2;
+        indices.append(QByteArray(6, '\0'));
+        qToLittleEndian<quint16>(1, indices.data() + indexStart * 2 + 2);
+        qToLittleEndian<quint16>(count - 1, indices.data() + indexStart * 2 + 4);
+        const auto indexSpan = raw.spans.value("position_indices.indices");
+        raw.state.columns[indexSpan.slot] = indices; raw.state.counts[indexSpan.countIndex] = indices.size() / 2;
+        raw.set("art_meshes.vertex_counts", 0, count); raw.set("art_meshes.uv_sources_begin_indices", 0, uvStart);
+        raw.set("art_meshes.position_index_sources_begin_indices", 0, indexStart);
+        raw.set("art_meshes.position_index_sources_counts", 0, 3);
+        QString error; const auto bytes = raw.encode(&error); QVERIFY2(!bytes.isEmpty(), qPrintable(error));
+        CTexturePanel panel; panel.LoadTextures(texturesFor("Mark")); panel.SetEditingEnabled(true);
+        auto* edit = panel.findChild<QToolButton*>("textureEditUv"); QVERIFY(edit); QVERIFY(!edit->isEnabled());
+        QVERIFY2(panel.UpdateUvMeshes(bytes, &error), qPrintable(error)); QVERIFY(edit->isEnabled());
+        const QString target = table.art_meshes[0]->ids;
+        QStringList order; for (const auto* drawable : table.art_meshes) if (drawable->ids != target) order.append(drawable->ids);
+        order.append(target); panel.SetRenderOrder(order);
+        QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked); auto* view = panel.findChild<CAtlasView*>();
+        const auto size = view->scene()->sceneRect().size(); view->ScenePosClicked({size.width() * .2, size.height() * .2});
+        QCOMPARE(picked.size(), 1); QCOMPARE(picked.first().first().toString(), target);
+        panel.HighlightMesh(target); QSignalSpy requested(&panel, &CTexturePanel::EditUvRequested);
+        edit->defaultAction()->trigger(); QCOMPARE(requested.size(), 1); QCOMPARE(requested.first().first().toString(), target);
+    }
+    void sharedUvUsesCoreSamplingCoordinates()
+    {
+        const auto source = DeformerReplayFixture::read("Mark");
+        auto reader = CReader::FromBytes(source); CSectionTable table(reader); QVERIFY(table.IsValid());
+        auto bytes = source; const auto* offsets = table.sectionOffsetTable->art_meshes;
+        const auto* mesh = table.art_meshes[0];
+        writeInt(bytes, table.sectionOffsetTable->count_info->count_info_offset + 4 * 4, 2);
+        for (int index = 0; index < 2; ++index) {
+            writeInt(bytes, offsets->vertex_counts + index * 4, 3);
+            writeInt(bytes, offsets->texture_nos + index * 4, 0);
+            writeInt(bytes, offsets->uv_sources_begin_indices + index * 4, mesh->uv_sources_begin_indices);
+            writeInt(bytes, offsets->position_index_sources_begin_indices + index * 4, mesh->position_index_sources_begin_indices);
+            writeInt(bytes, offsets->position_index_sources_counts + index * 4, 3);
+        }
+        const QVector<float> uvs{.1f, .1f, .4f, .1f, .1f, .4f};
+        for (int index = 0; index < uvs.size(); ++index)
+            writeFloat(bytes, table.sectionOffsetTable->uvs->uvs + (mesh->uv_sources_begin_indices + index) * 4, uvs[index]);
+        for (int index = 0; index < 3; ++index)
+            qToLittleEndian<quint16>(index, bytes.data() + table.sectionOffsetTable->position_indices->indices + (mesh->position_index_sources_begin_indices + index) * 2);
+        CTexturePanel panel; panel.LoadTextures(texturesFor("Mark")); QString error;
+        QVERIFY2(panel.UpdateUvMeshes(bytes, &error), qPrintable(error));
+        const QString target = table.art_meshes[1]->ids;
+        panel.SetRenderOrder({table.art_meshes[0]->ids, target});
+        QSignalSpy picked(&panel, &CTexturePanel::AtlasMeshPicked); auto* view = panel.findChild<CAtlasView*>();
+        const auto size = view->scene()->sceneRect().size();
+        view->ScenePosClicked({size.width() * .15, size.height() * .15}); QCOMPARE(picked.size(), 0);
+        view->ScenePosClicked({size.width() * .15, size.height() * .85}); QCOMPARE(picked.size(), 1);
+        QCOMPARE(picked.first().first().toString(), target);
+    }
     void riceBoundaryMeshCanBeHighlightedPickedAndRendered()
     {
         const QString mocPath = QString(TEST_RESOURCES) + QStringLiteral("/Rice/Rice.moc3");

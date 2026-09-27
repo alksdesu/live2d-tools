@@ -88,6 +88,9 @@ public:
     bool ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                    const CMeshGeometryMigration& migration, QString* error = nullptr,
                                    const ParameterDefinitionPreparation& preparePreview = {});
+    bool ApplyDrawableMaterialPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                      const QByteArray& expectedPreviewDigest, const QSet<QString>& allowedDrawableIds,
+                                      QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr, const ParameterDefinitionPreparation& preparePreview = {});
@@ -116,7 +119,8 @@ public:
                                         const PhysicsDraft* physicsDraft = nullptr,
                                         const CMeshGeometryMigration* geometry = nullptr,
                                         const QMap<QString, float>* requestedEditorPose = nullptr,
-                                        const TextureState* textureState = nullptr);
+                                        const TextureState* textureState = nullptr,
+                                        const QSet<QString>* materialDrawableIds = nullptr);
     bool ApplyEditorPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                             const QMap<QString, float>& pose, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
@@ -224,7 +228,10 @@ private:
                                  const ParameterPhysicsReferences* physicsReferences = nullptr,
                                  const PhysicsDraft* physicsDraft = nullptr,
                                  const CMeshGeometryMigration* geometry = nullptr,
-                                 const TextureState* textureState = nullptr);
+                                 const TextureState* textureState = nullptr,
+                                 const QSet<QString>* materialDrawableIds = nullptr);
+    bool ValidateMaterialCandidate(const Csm::CubismModel& candidate, const QSet<QString>& allowedDrawableIds,
+                                   bool geometryChanges, QString* error);
     bool PreparePhysicsCandidate(const Csm::CubismModel& previous, const Csm::CubismModel& replacement,
                                  const ParameterPhysicsReferences& references, bool draftActive,
                                  const QByteArray& bytes, bool stabilize, bool keepOptions,

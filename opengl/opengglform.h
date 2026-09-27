@@ -113,6 +113,9 @@ public:
     bool CaptureMeshEditorState(CMeshEditorSnapshot& state, QString* error = nullptr) const;
     bool ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                    const CMeshGeometryMigration& migration, QString* error = nullptr);
+    bool ApplyDrawableMaterialPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
+                                      const QByteArray& expectedPreviewDigest, const QSet<QString>& allowedDrawableIds,
+                                      QString* error = nullptr);
     bool ApplyParameterDefinitionPreview(const QByteArray& bytes, const QByteArray& sourceDigest,
                                          const QMap<QString, float>& baseValues, bool keepEditorPreview = true,
                                          QString* error = nullptr);
@@ -126,7 +129,8 @@ public:
                                         const LAppModel::PhysicsDraft* physicsDraft = nullptr,
                                         const CMeshGeometryMigration* geometry = nullptr,
                                         const QMap<QString, float>* requestedEditorPose = nullptr,
-                                        const LAppModel::TextureState* textureState = nullptr);
+                                        const LAppModel::TextureState* textureState = nullptr,
+                                        const QSet<QString>* materialDrawableIds = nullptr);
     bool ApplyTextureState(const LAppModel::TextureState& state, QString* error = nullptr);
     bool EndEditorPreview(QString* error = nullptr);
     bool FinishMeshDrag(bool cancel, QString* error = nullptr);

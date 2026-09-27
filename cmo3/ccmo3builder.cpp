@@ -391,7 +391,8 @@ bool Generator::prepareMaterials(QString* error)
         if (m_layerOfMesh[material.meshIndex] >= 0 || mesh->ids != material.name ||
             mesh->texture_nos != material.textureNo || mesh->vertex_counts <= 0 ||
             mesh->vertex_counts > std::numeric_limits<int>::max() / 2 ||
-            !validSlice(mesh->uv_sources_begin_indices, mesh->vertex_counts * 2, m_table.uvs->uvs.size()))
+            !validSlice(mesh->uv_sources_begin_indices, mesh->vertex_counts * 2, m_table.uvs->uvs.size()) ||
+            material.authorUvs.size() != mesh->vertex_counts * 2)
             return fail(QStringLiteral("cmo3 素材与网格数据不匹配：%1").arg(material.name));
         SLayerData layer;
         layer.name = displayName(material.name);
@@ -407,9 +408,8 @@ bool Generator::prepareMaterials(QString* error)
         const qint64 envelopeWidth = ((qint64(layer.image.width()) + MaterialMipmapLevel - 1) / MaterialMipmapLevel) * MaterialMipmapLevel;
         const qint64 envelopeHeight = ((qint64(layer.image.height()) + MaterialMipmapLevel - 1) / MaterialMipmapLevel) * MaterialMipmapLevel;
         for (int v = 0; v < mesh->vertex_counts; ++v) {
-            const int uvIndex = mesh->uv_sources_begin_indices + v * 2;
-            const double localX = double(m_table.uvs->uvs[uvIndex]) * material.atlasSize.width() - material.atlasRect.x();
-            const double localY = double(m_table.uvs->uvs[uvIndex + 1]) * material.atlasSize.height() - material.atlasRect.y();
+            const double localX = double(material.authorUvs[v * 2]) * material.atlasSize.width() - material.atlasRect.x();
+            const double localY = double(material.authorUvs[v * 2 + 1]) * material.atlasSize.height() - material.atlasRect.y();
             const float x = static_cast<float>(localX + origin.x());
             const float y = static_cast<float>(localY + origin.y());
             if (!std::isfinite(x) || !std::isfinite(y))
@@ -879,9 +879,9 @@ void Generator::writeArtMeshEntities()
             mesh->position_index_sources_counts % 3 == 0;
         if (rawIndicesValid) {
             for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
-                const short index = m_table.position_indices->indices[
-                    mesh->position_index_sources_begin_indices + t];
-                if (index < 0 || index >= vertexCount || index > 32767) {
+                const int index = static_cast<quint16>(m_table.position_indices->indices[
+                    mesh->position_index_sources_begin_indices + t]);
+                if (index >= vertexCount) {
                     rawIndicesValid = false;
                     break;
                 }
@@ -991,7 +991,7 @@ void Generator::writeArtMeshEntities()
         if (useOverride) {
             indices.reserve(overrideIt.value().size());
             for (quint16 index : overrideIt.value()) {
-                if (index >= vertexCount || index > 32767) { useOverride = false; break; }
+                if (index >= vertexCount) { useOverride = false; break; }
                 indices.append(static_cast<int>(index));
             }
         }
@@ -999,8 +999,8 @@ void Generator::writeArtMeshEntities()
             indices.clear();
             indices.reserve(mesh->position_index_sources_counts);
             for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
-                indices.append(m_table.position_indices->indices[
-                    mesh->position_index_sources_begin_indices + t]);
+                indices.append(static_cast<quint16>(m_table.position_indices->indices[
+                    mesh->position_index_sources_begin_indices + t]));
             }
         }
         m_xml.IntArray(QStringLiteral("indices"), indices);
