@@ -503,7 +503,7 @@ private slots:
             } else if (fixture.width == 4) {
                 QCOMPARE(table.art_meshes.last()->vertex_counts, integer(source, originalOffset + (count - 1) * 4));
             } else if (fixture.width == 2) {
-                QCOMPARE(table.position_indices->indices.back(), qFromLittleEndian<qint16>(source.constData() + originalOffset + (count - 1) * 2));
+                QCOMPARE(table.position_indices->indices.back(), qFromLittleEndian<quint16>(source.constData() + originalOffset + (count - 1) * 2));
             } else {
                 QCOMPARE(table.art_meshes.last()->drawable_flags, int(static_cast<quint8>(source[originalOffset + count - 1])));
             }

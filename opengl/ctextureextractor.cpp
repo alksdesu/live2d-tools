@@ -221,8 +221,8 @@ bool CTextureExtractor::ExtractMaterials(CSectionTable* table, QVector<Extracted
                 if (indexSlices.find(slice) == indexSlices.end()) {
                     if (!consume(indexCount)) return fail(QStringLiteral("CMO3 素材的顶点和索引检查总量超过限制"));
                     for (int at = 0; at < indexCount; ++at) {
-                        const int vertex = static_cast<quint16>(table->position_indices->indices[mesh->position_index_sources_begin_indices + at]);
-                        if (vertex < 0 || vertex >= vertexCount) return fail(QStringLiteral("CMO3 素材的三角索引越界：%1").arg(label));
+                        const int vertex = table->position_indices->indices[mesh->position_index_sources_begin_indices + at];
+                        if (vertex >= vertexCount) return fail(QStringLiteral("CMO3 素材的三角索引越界：%1").arg(label));
                     }
                     indexSlices.emplace(slice, true);
                 }
@@ -380,8 +380,8 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             const auto authorUvs = materials.value(mesh->ids).uvs;
             if (authorUvs.size() != uvCount) { control->Fail(QStringLiteral("纹理提取缺少有效 UV")); return {}; }
             const float* uvPtr = authorUvs.constData();
-            QVector<short> overrideIndices;
-            const short* idxPtr = &table->position_indices->indices[idxBegin];
+            QVector<quint16> overrideIndices;
+            const quint16* idxPtr = &table->position_indices->indices[idxBegin];
             if (indexOverrides) {
                 const auto overrideIt = indexOverrides->constFind(mesh->ids);
                 if (control && !control->Checkpoint()) return {};
@@ -394,7 +394,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                     overrideIndices.reserve(overrideIt.value().size());
                     for (qsizetype index = 0; index < overrideIt.value().size(); ++index) {
                         if (control && index % 1024 == 0 && !control->Checkpoint()) return {};
-                        overrideIndices.append(static_cast<short>(overrideIt.value()[index]));
+                        overrideIndices.append(overrideIt.value()[index]);
                     }
                     idxPtr = overrideIndices.constData();
                     idxCount = overrideIndices.size();
@@ -403,7 +403,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             bool indicesValid = true;
             for (int t = 0; t < idxCount; ++t) {
                 if (control && t % 1024 == 0 && !control->Checkpoint()) return {};
-                if (static_cast<quint16>(idxPtr[t]) >= mesh->vertex_counts) {
+                if (idxPtr[t] >= mesh->vertex_counts) {
                     indicesValid = false;
                     break;
                 }
@@ -488,7 +488,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
 }
 
 QImage CTextureExtractor::RasterizeCanvasMesh(const QImage& atlas, const float* uvs, const float* positions, int vertexCount,
-                                               const short* indices, int indexCount, const CCanvas_info* canvas,
+                                               const quint16* indices, int indexCount, const CCanvas_info* canvas,
                                                QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control)
 {
     const auto fail = [&](const QString& reason) { control->Fail(reason); return QImage(); };
@@ -516,8 +516,8 @@ QImage CTextureExtractor::RasterizeCanvasMesh(const QImage& atlas, const float* 
     triangles.reserve(indexCount / 3);
     for (int index = 0; index < indexCount; index += 3) {
         if (index % 1023 == 0 && !control->Checkpoint()) return {};
-        const int a = static_cast<quint16>(indices[index]), b = static_cast<quint16>(indices[index + 1]),
-                  c = static_cast<quint16>(indices[index + 2]);
+        const int a = indices[index], b = indices[index + 1],
+                  c = indices[index + 2];
         if (a >= vertexCount || b >= vertexCount || c >= vertexCount)
             return fail(QStringLiteral("纹理采样的三角索引越界"));
         const QPointF pa = vertices[a], pb = vertices[b], pc = vertices[c];
@@ -568,7 +568,7 @@ QImage CTextureExtractor::RasterizeCanvasMesh(const QImage& atlas, const float* 
 
 QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
                                          const float* uvData, int vertexCount,
-                                         const short* indexData, int indexCount,
+                                         const quint16* indexData, int indexCount,
                                          QRect& outUvRect, qint64& pixels, qint64& samples, CExportControl* control)
 {
     outUvRect = QRect();
@@ -602,8 +602,8 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
     const int left = int(leftValue), top = int(topValue), right = int(rightValue), bottom = int(bottomValue);
     for (int triangle = 0; triangle < indexCount; triangle += 3) {
         if (control && triangle % 1023 == 0 && !control->Checkpoint()) return {};
-        const int a = static_cast<quint16>(indexData[triangle]), b = static_cast<quint16>(indexData[triangle + 1]),
-                  c = static_cast<quint16>(indexData[triangle + 2]);
+        const int a = indexData[triangle], b = indexData[triangle + 1],
+                  c = indexData[triangle + 2];
         if (a >= vertexCount || b >= vertexCount || c >= vertexCount) continue;
         const QPointF pa(double(uvData[a * 2]) * atlasW, double(uvData[a * 2 + 1]) * atlasH);
         const QPointF pb(double(uvData[b * 2]) * atlasW, double(uvData[b * 2 + 1]) * atlasH);
@@ -631,9 +631,9 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
     outUvRect = QRect(left, top, right - left, bottom - top);
     for (int triangle = 0; triangle < indexCount; triangle += 3) {
         if (control && !control->Checkpoint()) return {};
-        const int i0 = static_cast<quint16>(indexData[triangle]), i1 = static_cast<quint16>(indexData[triangle + 1]),
-            i2 = static_cast<quint16>(indexData[triangle + 2]);
-        if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
+        const int i0 = indexData[triangle], i1 = indexData[triangle + 1],
+            i2 = indexData[triangle + 2];
+        if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
         const double x0 = double(uvData[i0 * 2]) * atlasW;
         const double y0 = double(uvData[i0 * 2 + 1]) * atlasH;
         const double x1 = double(uvData[i1 * 2]) * atlasW;

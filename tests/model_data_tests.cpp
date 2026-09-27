@@ -643,7 +643,7 @@ private slots:
         source.drawableOpacity.insert(QStringLiteral("Body"), 0.42f);
         source.drawableDrawOrder.insert(QStringLiteral("Body"), 720);
         source.drawableKeyformPositions.insert(QStringLiteral("Body"), {{0.0f, 1.0f, 2.0f, 3.0f}, {4.0f, 5.0f}});
-        source.drawableIndices.insert(QStringLiteral("Body"), {0, 1, 2});
+        source.drawableIndices.insert(QStringLiteral("Body"), {0, 32768, 65535});
         source.drawableMaskIndices.insert(QStringLiteral("Body"), {3, 4});
         source.deformerParentIndices.insert(QStringLiteral("Warp1"), 2);
         source.drawableMaskInverted.insert(QStringLiteral("Body"), true);
@@ -733,7 +733,11 @@ private slots:
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableIndices":{"Body":[0,"bad",2]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
-            R"({"version":1,"drawableIndices":{"Body":[32768,1,2]}})", &session, &error));
+            R"({"version":1,"drawableIndices":{"Body":[65536,1,2]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableIndices":{"Body":[-1,1,2]}})", &session, &error));
+        QVERIFY(!live2dstruct::CModelSession::FromJson(
+            R"({"version":1,"drawableIndices":{"Body":[32768.5,1,2]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(
             R"({"version":1,"drawableMaskIndices":{"Body":[1,1]}})", &session, &error));
         QVERIFY(!live2dstruct::CModelSession::FromJson(

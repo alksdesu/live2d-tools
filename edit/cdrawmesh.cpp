@@ -8,7 +8,7 @@
 #include <exception>
 #include <limits>
 
-CDrawMesh::CDrawMesh(int ebosize, const short* vetebo, int uvsize, const float* vetuv, const float* vetpos)
+CDrawMesh::CDrawMesh(int ebosize, const quint16* vetebo, int uvsize, const float* vetuv, const float* vetpos)
     : mesh(new CTrianglMesh(ebosize, vetebo, uvsize, vetuv, vetpos))
 {}
 

@@ -879,8 +879,7 @@ void Generator::writeArtMeshEntities()
             mesh->position_index_sources_counts % 3 == 0;
         if (rawIndicesValid) {
             for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
-                const int index = static_cast<quint16>(m_table.position_indices->indices[
-                    mesh->position_index_sources_begin_indices + t]);
+                const int index = m_table.position_indices->indices[mesh->position_index_sources_begin_indices + t];
                 if (index >= vertexCount) {
                     rawIndicesValid = false;
                     break;
@@ -999,8 +998,7 @@ void Generator::writeArtMeshEntities()
             indices.clear();
             indices.reserve(mesh->position_index_sources_counts);
             for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
-                indices.append(static_cast<quint16>(m_table.position_indices->indices[
-                    mesh->position_index_sources_begin_indices + t]));
+                indices.append(m_table.position_indices->indices[mesh->position_index_sources_begin_indices + t]);
             }
         }
         m_xml.IntArray(QStringLiteral("indices"), indices);

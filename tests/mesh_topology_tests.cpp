@@ -16,13 +16,30 @@ private slots:
         QVERIFY(!CMeshTopology::IsValid({}, 3));
         QVERIFY(!CMeshTopology::IsValid({0, 1}, 3));
         QVERIFY(!CMeshTopology::IsValid({0, 1, 3}, 3));
-        QVERIFY(!CMeshTopology::IsValid({0, 1, 32768}, 65536));
+        QVERIFY(CMeshTopology::IsValid({ 0, 32768, 65535 }, 65536));
+        QVERIFY(CMeshTopology::IsValid({ 0, 32768, 65535 }, 65537));
+        QVERIFY(!CMeshTopology::IsValid({ 0, 32768, 65535 }, 65535));
         QVERIFY(!CMeshTopology::IsValid({0, 1, 2}, 0));
         QVERIFY(!CMeshTopology::IsValid({0, 1, 2}, -1));
         QVector<quint16> indices(3000000, 0);
         QVERIFY(CMeshTopology::IsValid(indices, 1));
         indices.append({0, 0, 0});
         QVERIFY(!CMeshTopology::IsValid(indices, 1));
+    }
+
+    void highUnsignedVerticesRemainDistinct()
+    {
+        QCOMPARE(CMeshTopology::MaximumIndex, 65535);
+        QCOMPARE(CMeshTopology::IndexCapacity, 65536);
+        const QVector<quint16> input { 0, 32768, 65535, 0, 65534, 65535 };
+        QVector<quint16> output;
+        QVERIFY(CMeshTopology::MergeVertices(input, { 32768, 65534 }, 65536, &output));
+        QCOMPARE(output, (QVector<quint16> { 0, 32768, 65535 }));
+        const auto unchanged = output;
+        QVERIFY(!CMeshTopology::MergeVertices(input, { 0, 65536 }, 65537, &output));
+        QCOMPARE(output, unchanged);
+        QVERIFY(CMeshTopology::CleanTriangles(input, 65536, &output));
+        QCOMPARE(output, input);
     }
 
     void mergeRemovesNonadjacentDuplicates()

@@ -1,4 +1,5 @@
 #include "cmesheditplanner.h"
+#include "cboundsspatial.h"
 #include "opengl/cuvgeometry.h"
 #include "std/cexportcontrol.h"
 #include <QMap>
@@ -128,10 +129,7 @@ struct Face {
 };
 struct Adjacent { int face; int opposite; int direction; };
 using Adjacency = std::map<Key, QVector<Adjacent>>;
-struct Box {
-    double left, right, top, bottom;
-    bool overlaps(const Box& other) const { return top <= other.bottom && other.top <= bottom && left <= other.right && other.left <= right; }
-};
+using Box = CBoundsSpatial::Box;
 Box bounds(QPointF a, QPointF b)
 {
     return {std::min(a.x(), b.x()), std::max(a.x(), b.x()), std::min(a.y(), b.y()), std::max(a.y(), b.y())};
@@ -187,7 +185,7 @@ public:
             reject(Code::LimitExceeded, "局部拓扑计算超过工作量限制");
         work += amount;
         if (precise
-            && qint64(points.size()) * 1024 + qint64(faces.size()) * 512 + sourceReferences * 32 > maximumWorkingBytes)
+            && qint64(points.size()) * 1024 + qint64(faces.size()) * 1536 + sourceReferences * 32 > maximumWorkingBytes)
             reject(Code::LimitExceeded, "约束剖分超过内存预算");
         if (control && !control->Checkpoint())
             reject(Code::LimitExceeded, "网格规划已取消");
@@ -261,9 +259,12 @@ public:
         struct BoundedEdge { Edge e; Box box; };
         QVector<BoundedEdge> edges; edges.reserve(adj.size());
         for (const auto& item : adj) { const Edge e = edge(item.first); edges.append({e, bounds(points[e.a], points[e.b])}); }
-        std::sort(edges.begin(), edges.end(), [](const auto& a, const auto& b) { return a.box.left < b.box.left; });
-        for (int i = 0; i < edges.size(); ++i) for (int j = i + 1; j < edges.size() && edges[j].box.left <= edges[i].box.right; ++j) {
-            tick(); if (!edges[i].box.overlaps(edges[j].box)) continue;
+        QVector<Box> edgeBoxes;
+        edgeBoxes.reserve(edges.size());
+        for (const auto& item : edges)
+            edgeBoxes.append(item.box);
+        const auto spend = [&] { tick(); };
+        CBoundsSpatial(edgeBoxes, spend).pairs(false, spend, [&](int i, int j) {
             const Edge a = edges[i].e, b = edges[j].e;
             const int shared = a.a == b.a || a.a == b.b ? a.a : (a.b == b.a || a.b == b.b ? a.b : -1);
             if (shared >= 0) {
@@ -272,7 +273,7 @@ public:
                     reject(Code::Intersection, "网格包含重叠边或 T 形连接", {shared}, {}, {a, b});
             } else if (intersects(points[a.a], points[a.b], points[b.a], points[b.b]))
                 reject(Code::Intersection, "网格边在非共享顶点处相交", {}, {}, {a, b});
-        }
+        });
         struct BoundedFace { int index; Box box; };
         QVector<BoundedFace> boxes; boxes.reserve(activeCount);
         for (int i = 0; i < faces.size(); ++i) if (faces[i].active) {
@@ -280,13 +281,22 @@ public:
             box.left = std::min(box.left, points[v[2]].x()); box.right = std::max(box.right, points[v[2]].x());
             box.top = std::min(box.top, points[v[2]].y()); box.bottom = std::max(box.bottom, points[v[2]].y()); boxes.append({i, box});
         }
-        std::sort(boxes.begin(), boxes.end(), [](const auto& a, const auto& b) { return a.box.left < b.box.left; });
-        for (int i = 0; i < boxes.size(); ++i) for (int j = i + 1; j < boxes.size() && boxes[j].box.left < boxes[i].box.right; ++j) {
-            tick(); if (!boxes[i].box.overlaps(boxes[j].box)) continue;
-            const auto& a = faces[boxes[i].index].vertices; const auto& b = faces[boxes[j].index].vertices;
-            for (int v : a) if (strictlyInside(points[v], b)) reject(Code::Intersection, "参考姿态中有相互覆盖的三角形", {v}, {boxes[i].index, boxes[j].index});
-            for (int v : b) if (strictlyInside(points[v], a)) reject(Code::Intersection, "参考姿态中有相互覆盖的三角形", {v}, {boxes[i].index, boxes[j].index});
-        }
+        QVector<Box> faceBoxes;
+        faceBoxes.reserve(boxes.size());
+        for (const auto& item : boxes)
+            faceBoxes.append(item.box);
+        CBoundsSpatial(faceBoxes, spend).pairs(true, spend, [&](int i, int j) {
+            const auto& a = faces[boxes[i].index].vertices;
+            const auto& b = faces[boxes[j].index].vertices;
+            for (int v : a)
+                if (strictlyInside(points[v], b))
+                    reject(
+                        Code::Intersection, "参考姿态中有相互覆盖的三角形", { v }, { boxes[i].index, boxes[j].index });
+            for (int v : b)
+                if (strictlyInside(points[v], a))
+                    reject(
+                        Code::Intersection, "参考姿态中有相互覆盖的三角形", { v }, { boxes[i].index, boxes[j].index });
+        });
     }
     int orientation(const std::array<int, 3>& v) const { return orient(points[v[0]], points[v[1]], points[v[2]]); }
     bool strictlyInside(QPointF p, const std::array<int, 3>& v) const
@@ -484,12 +494,14 @@ public:
         alive[vertex] = false;
         triangulate(polygon, winding);
         for (int v : polygon) selected.append(v);
-        validate();
     }
-    void embed(int vertex)
+    bool embed(int vertex)
     {
-        for (const auto& face : faces) if (face.active && std::find(face.vertices.begin(), face.vertices.end(), vertex) != face.vertices.end()) return;
+        for (const auto& face : faces)
+            if (face.active && std::find(face.vertices.begin(), face.vertices.end(), vertex) != face.vertices.end())
+                return false;
         insert(points[vertex], -1, vertex);
+        return true;
     }
     bool interval(int index, QPointF first, QPointF second, Fraction& low, Fraction& high)
     {
@@ -673,9 +685,9 @@ public:
     {
         checkVertex(first); checkVertex(second);
         if (first == second) reject(Code::InvalidSelection, "连边需要两个不同顶点", {first});
-        embed(first);
-        embed(second);
-        if (!precise)
+        const bool firstEmbedded = embed(first);
+        const bool secondEmbedded = embed(second);
+        if (!precise && (firstEmbedded || secondEmbedded))
             validate();
         QVector<QPair<double, Key>> crossings;
         const QPointF a = points[first], b = points[second];
@@ -957,7 +969,11 @@ bool CMeshEditPlanner::Delete(const Input& input, const QVector<int>& vertices, 
         QSet<int> unique;
         for (int vertex : vertices) { planner.checkVertex(vertex); unique.insert(vertex); }
         auto ordered = unique.values(); std::sort(ordered.begin(), ordered.end());
-        for (int vertex : ordered) planner.deleteVertex(vertex, policy);
+        for (int index = 0; index < ordered.size(); ++index) {
+            planner.deleteVertex(ordered[index], policy);
+            if (index + 1 < ordered.size())
+                planner.validate();
+        }
     });
 }
 bool CMeshEditPlanner::Connect(const Input& input, int first, int second, CrossingPolicy policy, Result& result, Diagnostic* diagnostic)
@@ -999,7 +1015,7 @@ bool CMeshEditPlanner::TriangulateConstraints(
             || source.maximumWorkingBytes > 512LL * 1024 * 1024 || source.points.size() < 3
             || source.points.size() > source.maximumVertices || source.constraints.size() > 100000)
             reject(Code::LimitExceeded, "约束剖分的点、边或工作量限制无效");
-        const qint64 fixedBytes = source.points.size() * 128LL + source.constraints.size() * 128LL;
+        const qint64 fixedBytes = source.points.size() * 600LL + source.constraints.size() * 600LL;
         if (fixedBytes >= source.maximumWorkingBytes)
             reject(Code::LimitExceeded, "约束剖分输入超过内存预算");
         ConstrainedInput frozen;
@@ -1016,7 +1032,7 @@ bool CMeshEditPlanner::TriangulateConstraints(
         const auto tick = [&] {
             if (++work > frozen.maximumWork)
                 reject(Code::LimitExceeded, "约束剖分超过工作量限制");
-            if (frozen.points.size() * 128LL + initialConstraintCount * 256LL + chainReferences * 64
+            if (frozen.points.size() * 600LL + initialConstraintCount * 600LL + chainReferences * 64
                 >= frozen.maximumWorkingBytes)
                 reject(Code::LimitExceeded, "约束平面化超过内存预算");
             if (control && !control->Checkpoint())
@@ -1037,12 +1053,13 @@ bool CMeshEditPlanner::TriangulateConstraints(
             return std::abs(b.x() - a.x()) >= std::abs(b.y() - a.y()) ? (p.x() - a.x()) / (b.x() - a.x())
                                                                       : (p.y() - a.y()) / (b.y() - a.y());
         };
-        struct ConstraintBox
-        {
-            int index;
-            Box box;
-        };
-        QVector<ConstraintBox> boxes;
+        QVector<Box> pointBoxes;
+        pointBoxes.reserve(frozen.points.size());
+        for (const auto point : frozen.points)
+            pointBoxes.append(bounds(point, point));
+        const CBoundsSpatial pointIndex(pointBoxes, tick, CBoundsSpatial::Usage::Queries);
+        QVector<Box> boxes;
+        boxes.reserve(originalConstraints.size());
         for (int index = 0; index < originalConstraints.size(); ++index) {
             tick();
             const auto edge = originalConstraints[index];
@@ -1050,31 +1067,23 @@ bool CMeshEditPlanner::TriangulateConstraints(
                 || edge.a == edge.b)
                 reject(Code::InvalidConstraint, "约束边端点无效");
             chains[index] = { { 0, edge.a }, { 1, edge.b } };
-            boxes.append({ index, bounds(frozen.points[edge.a], frozen.points[edge.b]) });
-            for (int vertex = 0; vertex < frozen.points.size(); ++vertex) {
-                tick();
+            boxes.append(bounds(frozen.points[edge.a], frozen.points[edge.b]));
+            pointIndex.query(boxes.last(), tick, [&](int vertex) {
                 if (vertex != edge.a && vertex != edge.b
                     && onSegment(frozen.points[vertex], frozen.points[edge.a], frozen.points[edge.b])) {
                     ++chainReferences;
                     chains[index].append({ parameter(edge, frozen.points[vertex]), vertex });
                 }
-            }
+            });
         }
-        std::sort(boxes.begin(), boxes.end(), [&](const auto& a, const auto& b) {
-            tick();
-            return a.box.left < b.box.left;
-        });
-        for (int i = 0; i < boxes.size(); ++i)
-            for (int j = i + 1; j < boxes.size() && boxes[j].box.left <= boxes[i].box.right; ++j) {
-                tick();
-                if (!boxes[i].box.overlaps(boxes[j].box))
-                    continue;
-                const int first = boxes[i].index, second = boxes[j].index;
+        CBoundsSpatial(boxes, tick)
+            .pairs(false, tick, [&](int i, int j) {
+                const int first = i, second = j;
                 const auto one = originalConstraints[first], two = originalConstraints[second];
                 const auto a = frozen.points[one.a], b = frozen.points[one.b], c = frozen.points[two.a],
                            d = frozen.points[two.b];
                 if (!properCross(a, b, c, d))
-                    continue;
+                    return;
                 const long double dx = static_cast<long double>(b.x()) - a.x(),
                                   dy = static_cast<long double>(b.y()) - a.y();
                 const long double ex = static_cast<long double>(d.x()) - c.x(),
@@ -1102,7 +1111,7 @@ bool CMeshEditPlanner::TriangulateConstraints(
                 chainReferences += 2;
                 chains[first].append({ double(t), vertex });
                 chains[second].append({ double(u), vertex });
-            }
+            });
         frozen.constraints.clear();
         QSet<quint64> splitEdges;
         for (auto& chain : chains) {
@@ -1124,7 +1133,7 @@ bool CMeshEditPlanner::TriangulateConstraints(
             }
         }
         if (frozen.constraints.size() > 100000
-            || frozen.points.size() * 128LL + frozen.constraints.size() * 128LL >= frozen.maximumWorkingBytes)
+            || frozen.points.size() * 600LL + frozen.constraints.size() * 600LL >= frozen.maximumWorkingBytes)
             reject(Code::LimitExceeded, "平面化约束超过内存或边数预算");
         QVector<int> order;
         for (int index = 0; index < frozen.points.size(); ++index) {

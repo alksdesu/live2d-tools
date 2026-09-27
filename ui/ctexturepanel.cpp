@@ -775,10 +775,10 @@ bool CTexturePanel::PrepareUvMeshes(const QByteArray& mocBytes, const QMap<int, 
         if (!uvValid) return fail(QStringLiteral("UV 网格含非有限坐标：%1").arg(mesh->ids));
 
         const int idxCount = mesh->position_index_sources_counts;
-        const short* idxPtr = idxCount ? &table.position_indices->indices[mesh->position_index_sources_begin_indices] : nullptr;
+        const quint16* idxPtr = idxCount ? &table.position_indices->indices[mesh->position_index_sources_begin_indices] : nullptr;
         uv.triangles.reserve(idxCount);
         for (int t = 0; t < idxCount; ++t) {
-            const int index = static_cast<quint16>(idxPtr[t]);
+            const int index = idxPtr[t];
             if (index >= uv.points.size()) {
                 return fail(QStringLiteral("UV 三角形索引越界：%1").arg(mesh->ids));
             }

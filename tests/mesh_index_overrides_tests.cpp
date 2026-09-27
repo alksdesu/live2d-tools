@@ -48,13 +48,31 @@ private slots:
         }
         QVERIFY(!overrides.Set(2, 0, original));
         QVERIFY(!overrides.Set(2, -1, original));
-        QVERIFY(!overrides.Set(2, 65536, {0, 1, 32768}));
         QVERIFY(!overrides.Set(2, 3, QVector<quint16>(3000003, 0)));
         QCOMPARE(*overrides.Find(2), original);
         QVERIFY(!overrides.Set(-1, 3, original));
         QVERIFY(!overrides.Find(-1));
         QCOMPARE(*overrides.Find(2), original);
         QCOMPARE(overrides.Revision(), quint64(1));
+    }
+
+    void unsignedBoundaryAndLargeSourceCountsPreserveExactViews()
+    {
+        CMeshIndexOverrides overrides;
+        QVERIFY(overrides.Set(0, 32769, {0, 1, 32768}));
+        QCOMPARE(*overrides.Find(0), (QVector<quint16>{0, 1, 32768}));
+        QVERIFY(overrides.Set(0, 65536, {32768, 65534, 65535}));
+        const auto revision = overrides.Revision();
+        QVERIFY(overrides.Set(0, 65537, {32768, 65534, 65535}));
+        QCOMPARE(overrides.Revision(), revision);
+        QVERIFY(!overrides.Set(0, 65535, {32768, 65534, 65535}));
+        QCOMPARE(*overrides.Find(0), (QVector<quint16>{32768, 65534, 65535}));
+        QCOMPARE(overrides.Revision(), revision);
+        QVector<quint16> indices;
+        for (int triangle = 0; triangle < 21846; ++triangle) indices.append({32768, 65534, 65535});
+        QVERIFY(overrides.Set(1, 65536, indices));
+        QCOMPARE(overrides.Find(1)->size(), 65538);
+        QCOMPARE(overrides.Find(1)->last(), quint16(65535));
     }
 
     void removalAndClearRestoreMissingOverride()

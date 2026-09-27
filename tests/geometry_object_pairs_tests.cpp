@@ -112,6 +112,30 @@ class GeometryObjectPairsTests : public QObject
     Pairs::State m_meshState;
     QTemporaryDir m_directory;
 private slots:
+    void unsignedEndpointIndicesRoundTripWithoutNarrowing()
+    {
+        auto state = sample(); auto& pair = state.pairs[0];
+        pair.reversedWinding = false;
+        for (auto* value : {&pair.first, &pair.second}) {
+            value->vertexCount = 65536;
+            value->triangles = {0, 32768, 65535};
+        }
+        pair.firstVertexToSecondVertex = identity(65536);
+        QString error; Pairs::State expected;
+        QVERIFY2(Pairs::Normalize(state, expected, &error), qPrintable(error));
+        QJsonObject json; QVERIFY(Pairs::ToJson(expected, json, &error));
+        Pairs::State actual; QVERIFY2(Pairs::FromJson(json, actual, &error), qPrintable(error));
+        QCOMPARE(actual, expected); QCOMPARE(actual.pairs[0].firstVertexToSecondVertex.last(), 65535);
+        QCOMPARE(actual.pairs[0].first.triangles, (QVector<quint16>{0, 32768, 65535}));
+        for (double invalid : {-1., 65536., 32768.5}) {
+            auto changed = json; auto pairs = changed["pairs"].toArray(); auto item = pairs[0].toObject();
+            auto endpoint = item["first"].toObject(); endpoint["triangles"] = QJsonArray{0, 1, invalid};
+            item["first"] = endpoint; pairs[0] = item; changed["pairs"] = pairs;
+            QVERIFY(!Pairs::FromJson(changed, actual, &error)); QCOMPARE(actual, expected);
+        }
+        state.pairs[0].first.vertexCount = 65537;
+        QVERIFY(!Pairs::Normalize(state, actual, &error)); QCOMPARE(actual, expected);
+    }
     void initTestCase()
     {
         QVERIFY(m_directory.isValid()); QFile file(m_directory.filePath("paired.moc3")); QVERIFY(file.open(QIODevice::WriteOnly));

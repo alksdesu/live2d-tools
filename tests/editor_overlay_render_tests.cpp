@@ -194,12 +194,34 @@ private slots:
         qInfo() << "Overlay GL:" << reinterpret_cast<const char*>(m_gl.glGetString(GL_VERSION));
     }
 
+    void unsignedHighVertexCanBePickedHighlightedAndDrawn()
+    {
+        QVector<float> points(65536 * 2, 0);
+        points[32768 * 2] = -.75f; points[32768 * 2 + 1] = -.75f;
+        points[65534 * 2] = .75f; points[65534 * 2 + 1] = -.75f;
+        points[65535 * 2] = 0; points[65535 * 2 + 1] = .75f;
+        const quint16 indices[]{32768, 65534, 65535};
+        CDrawMesh mesh(3, indices, points.size(), points.constData(), points.constData());
+        mesh.SetShow(true);
+        QVERIFY(mesh.ClickMesh({0, 0}));
+        QVERIFY(mesh.SelectNearestPoint({0, .75f}, .001f));
+        QCOMPARE(mesh.GetSelectPoint().size(), size_t(1));
+        QCOMPARE(mesh.GetSelectPoint().front(), mesh.GetMesh()->GetWolrd()[65535]);
+        QVERIFY(Prepare());
+        QMatrix4x4 projection;
+        QVERIFY(Draw([&] { mesh.Draw(projection); }));
+        const auto red = [](QRgb pixel) { return qRed(pixel) > 200 && qGreen(pixel) < 80 && qBlue(pixel) < 80; };
+        QVERIFY(Count(m_framebuffer->toImage(), Near(0, .75f), red) >= 4);
+        QVERIFY(Count(m_framebuffer->toImage(), Near(.375f, 0)) > 0);
+        QCOMPARE(mesh.GetMesh()->GetEBOIndex()[2], quint16(65535));
+    }
+
     void meshStateMigrationKeepsCandidateGeometryAndGpuOwnership()
     {
         m_context->doneCurrent();
         const float original[]{-0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f};
         const float changed[]{-0.8f, -0.2f, 0.2f, -0.2f, -0.3f, 0.8f};
-        const short indices[]{0, 1, 2};
+        const quint16 indices[]{0, 1, 2};
         auto source = std::make_unique<CDrawMesh>(3, indices, 6, original, original);
         CDrawMesh candidate(3, indices, 6, original, changed);
         source->SetShow(true);
@@ -270,7 +292,7 @@ private slots:
     {
         m_context->doneCurrent();
         const float positions[]{-0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f};
-        const short indices[]{0, 1, 2};
+        const quint16 indices[]{0, 1, 2};
         CDrawMesh mesh(3, indices, 6, positions, positions);
         mesh.SetShow(true);
         QVERIFY(!mesh.shader);
@@ -483,7 +505,7 @@ private slots:
     void establishedOverlaysRejectForeignAndMissingContexts()
     {
         const float positions[]{-0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f};
-        const short indices[]{0, 1, 2};
+        const quint16 indices[]{0, 1, 2};
         CDrawMesh mesh(3, indices, 6, positions, positions);
         CDrawRect rectangle(QVector3D(1, 1, 1));
         live2dstruct::CRotationNode node(QStringLiteral("rotation"));

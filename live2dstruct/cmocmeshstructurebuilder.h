@@ -2,6 +2,7 @@
 #define CMOCMESHSTRUCTUREBUILDER_H
 
 #include "cmocparameterstructurebuilder.h"
+#include "cmeshtopology.h"
 #include <QVector>
 #include <QStringList>
 
@@ -9,7 +10,7 @@ namespace live2dstruct {
 class CMocMeshStructureBuilder
 {
 public:
-    static constexpr int MaximumVertices = 32768;
+    static constexpr int MaximumVertices = CMeshTopology::IndexCapacity;
     static constexpr double WeightTolerance = 1e-9;
     struct VertexSource {
         QVector<int> indices;

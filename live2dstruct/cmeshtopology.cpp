@@ -7,9 +7,9 @@ namespace live2dstruct {
 
 bool CMeshTopology::IsValid(const QVector<quint16>& indices, int vertexCount)
 {
-    if (indices.isEmpty() || indices.size() % 3 != 0 || indices.size() > 3000000) return false;
+    if (vertexCount < 0 || indices.isEmpty() || indices.size() % 3 != 0 || indices.size() > 3000000) return false;
     for (quint16 index : indices)
-        if (index >= vertexCount || index > 32767) return false;
+        if (index >= vertexCount) return false;
     return true;
 }
 
@@ -42,7 +42,7 @@ bool CMeshTopology::MergeVertices(const QVector<quint16>& indices, const QSet<in
 {
     if (!output || selected.size() < 2 || !IsValid(indices, vertexCount)) return false;
     for (int index : selected)
-        if (index < 0 || index >= vertexCount || index > 32767) return false;
+        if (index < 0 || index >= vertexCount || index > MaximumIndex) return false;
     const quint16 target = static_cast<quint16>(*std::min_element(selected.cbegin(), selected.cend()));
     QVector<quint16> remapped = indices;
     for (quint16& index : remapped)

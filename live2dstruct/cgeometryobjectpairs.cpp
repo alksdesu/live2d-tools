@@ -1,5 +1,6 @@
 #include "cgeometryobjectpairs.h"
 #include "cmodeldocument.h"
+#include "cmeshtopology.h"
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
@@ -114,7 +115,7 @@ bool endpoint(Pairs::Endpoint& value, qint64& budget, QString* error)
     budget += value.vertexCount + value.triangles.size();
     if (budget > Pairs::MaximumMappings) return fail(error, QStringLiteral("配对数据超过总量限制"));
     if (value.object.type == Pairs::Type::ArtMesh) {
-        if (value.rows != 0 || value.columns != 0 || value.vertexCount < 1 || value.vertexCount > 32768 ||
+        if (value.rows != 0 || value.columns != 0 || value.vertexCount < 1 || value.vertexCount > CMeshTopology::IndexCapacity ||
             value.triangles.isEmpty() || value.triangles.size() % 3 != 0)
             return fail(error, QStringLiteral("ArtMesh 配对拓扑无效"));
         for (const auto index : value.triangles)
@@ -299,7 +300,7 @@ bool readEndpoint(const QJsonValue& value, Pairs::Endpoint& result, qint64& budg
         !integer(object["columns"], result.columns, 0, Pairs::MaximumVertices) ||
         !integer(object["keyformCount"], result.keyformCount, 1, Pairs::MaximumMappings)) return false;
     QVector<int> indices;
-    if (!readInts(object["triangles"], indices, 32767, budget)) return false;
+    if (!readInts(object["triangles"], indices, CMeshTopology::MaximumIndex, budget)) return false;
     for (const auto index : indices) result.triangles.append(quint16(index));
     const auto axes = object["axes"].toArray(); budget += axes.size();
     if (budget > Pairs::MaximumMappings) return false;

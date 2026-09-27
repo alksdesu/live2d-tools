@@ -8,7 +8,6 @@
 namespace {
 constexpr int kMaxVertices = 1000000;
 constexpr int kMaxIndices = 3000000;
-constexpr int kMaxIndex = std::numeric_limits<short>::max();
 constexpr double kWeightTolerance = 32.0 * std::numeric_limits<double>::epsilon();
 
 bool finitePoint(const QVector2D& point)
@@ -51,14 +50,14 @@ CEdge::CEdge(int start, int end) : start(start), end(end), IsEAdd(false) {}
 
 CTriangl::CTriangl(int a, int b, int c) : pointA(a), pointB(b), pointC(c) {}
 
-CTrianglMesh::CTrianglMesh(int ebosize, const short* indices, int uvsize, const float* uvs, const float* positions)
+CTrianglMesh::CTrianglMesh(int ebosize, const quint16* indices, int uvsize, const float* uvs, const float* positions)
 {
     if (ebosize < 0 || ebosize > kMaxIndices || ebosize % 3 != 0 ||
         uvsize < 0 || uvsize > kMaxVertices * 2 || uvsize % 2 != 0 ||
         (ebosize > 0 && !indices) || (uvsize > 0 && (!uvs || !positions))) return;
     const int count = uvsize / 2;
     for (int i = 0; i < ebosize; ++i) {
-        if (indices[i] < 0 || indices[i] >= count) return;
+        if (indices[i] >= count) return;
     }
     for (int i = 0; i < uvsize; ++i) {
         if (!std::isfinite(uvs[i]) || !std::isfinite(positions[i])) return;
@@ -108,9 +107,9 @@ void CTrianglMesh::normalizing()
     vetuv.reserve(vetTexPoint.size() * 2);
     vetpos.reserve(vetPosPoint.size() * 2);
     for (const CTriangl* triangle : vetTriangl) {
-        vetebo.push_back(static_cast<short>(triangle->pointA));
-        vetebo.push_back(static_cast<short>(triangle->pointB));
-        vetebo.push_back(static_cast<short>(triangle->pointC));
+        vetebo.push_back(static_cast<quint16>(triangle->pointA));
+        vetebo.push_back(static_cast<quint16>(triangle->pointB));
+        vetebo.push_back(static_cast<quint16>(triangle->pointC));
     }
     if (vetPosPoint.empty()) return;
     double left = std::numeric_limits<double>::max();
@@ -178,7 +177,7 @@ bool CTrianglMesh::GetContentPoint(const QPointF& point) const
 
 bool CTrianglMesh::AddPoint(const QVector2D& position)
 {
-    if (!finitePoint(position) || vetPosPoint.size() > kMaxIndex || vetTriangl.size() * 3 > kMaxIndices - 6) return false;
+    if (!finitePoint(position) || vetPosPoint.size() >= size_t(live2dstruct::CMeshTopology::IndexCapacity) || vetTriangl.size() * 3 > kMaxIndices - 6) return false;
     for (size_t i = 0; i < vetTriangl.size(); ++i) {
         const CTriangl triangle = *vetTriangl[i];
         double weights[3];
@@ -280,7 +279,7 @@ QVector<float> CTrianglMesh::Positions() const
 
 void CTrianglMesh::DeleteEdge(int, int) {}
 
-const short* CTrianglMesh::GetEBOIndex() const
+const quint16* CTrianglMesh::GetEBOIndex() const
 {
     return vetebo.data();
 }

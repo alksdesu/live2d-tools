@@ -1,4 +1,5 @@
 #include "calphameshplanner.h"
+#include "cboundsspatial.h"
 #include "cmesheditplanner.h"
 #include "opengl/cuvgeometry.h"
 #include "std/cexportcontrol.h"
@@ -231,52 +232,45 @@ public:
             }
             triangles.append(t);
         }
-        QVector<int> order;
-        for (int i = 0; i < triangles.size(); ++i)
-            order.append(i);
-        std::sort(order.begin(), order.end(), [&](int a, int b) {
-            tick();
-            return triangles[a].box.left() < triangles[b].box.left();
-        });
-        for (int i = 0; i < order.size(); ++i)
-            for (int j = i + 1; j < order.size() && triangles[order[j]].box.left() <= triangles[order[i]].box.right();
-                ++j) {
-                tick();
-                const auto &a = triangles[order[i]], &b = triangles[order[j]];
-                if (a.box.bottom() < b.box.top() || b.box.bottom() < a.box.top())
-                    continue;
-                for (int side = 0; side < 3; ++side)
-                    for (int other = 0; other < 3; ++other) {
-                        tick();
-                        const auto p = input.pixelCoordinates[a.v[side]],
-                                   q = input.pixelCoordinates[a.v[(side + 1) % 3]],
-                                   r = input.pixelCoordinates[b.v[other]],
-                                   s = input.pixelCoordinates[b.v[(other + 1) % 3]];
-                        if (orient(p, q, r) * orient(p, q, s) < 0 && orient(r, s, p) * orient(r, s, q) < 0)
-                            reject(QStringLiteral("原网格 UV 三角形相交，不能唯一迁移"));
-                    }
-                const auto strict = [&](int vertex, const Triangle& t) {
-                    const auto p = input.pixelCoordinates[vertex];
-                    int signs[3];
-                    for (int s = 0; s < 3; ++s)
-                        signs[s] = orient(input.pixelCoordinates[t.v[s]], input.pixelCoordinates[t.v[(s + 1) % 3]], p);
-                    return signs[0] && signs[0] == signs[1] && signs[1] == signs[2];
-                };
-                for (int v : a.v)
-                    if (strict(v, b))
-                        reject(QStringLiteral("原网格 UV 三角形重叠，不能唯一迁移"));
-                for (int v : b.v)
-                    if (strict(v, a))
-                        reject(QStringLiteral("原网格 UV 三角形重叠，不能唯一迁移"));
-                const auto center
-                    = (input.pixelCoordinates[a.v[0]] + input.pixelCoordinates[a.v[1]] + input.pixelCoordinates[a.v[2]])
-                    / 3;
+        QVector<CBoundsSpatial::Box> sourceBoxes;
+        sourceBoxes.reserve(triangles.size());
+        for (const auto& triangle : triangles)
+            sourceBoxes.append(
+                { triangle.box.left(), triangle.box.right(), triangle.box.top(), triangle.box.bottom() });
+        const auto spend = [&] { tick(); };
+        CBoundsSpatial(sourceBoxes, spend).pairs(true, spend, [&](int first, int second) {
+            const auto& a = triangles[first];
+            const auto& b = triangles[second];
+            for (int side = 0; side < 3; ++side)
+                for (int other = 0; other < 3; ++other) {
+                    tick();
+                    const auto p = input.pixelCoordinates[a.v[side]], q = input.pixelCoordinates[a.v[(side + 1) % 3]],
+                               r = input.pixelCoordinates[b.v[other]], s = input.pixelCoordinates[b.v[(other + 1) % 3]];
+                    if (orient(p, q, r) * orient(p, q, s) < 0 && orient(r, s, p) * orient(r, s, q) < 0)
+                        reject(QStringLiteral("原网格 UV 三角形相交，不能唯一迁移"));
+                }
+            const auto strict = [&](int vertex, const Triangle& t) {
+                const auto p = input.pixelCoordinates[vertex];
                 int signs[3];
                 for (int s = 0; s < 3; ++s)
-                    signs[s] = orient(input.pixelCoordinates[b.v[s]], input.pixelCoordinates[b.v[(s + 1) % 3]], center);
-                if (signs[0] && signs[0] == signs[1] && signs[1] == signs[2])
-                    reject(QStringLiteral("原网格 UV 三角形覆盖同一区域，不能唯一迁移"));
-            }
+                    signs[s] = orient(input.pixelCoordinates[t.v[s]], input.pixelCoordinates[t.v[(s + 1) % 3]], p);
+                return signs[0] && signs[0] == signs[1] && signs[1] == signs[2];
+            };
+            for (int v : a.v)
+                if (strict(v, b))
+                    reject(QStringLiteral("原网格 UV 三角形重叠，不能唯一迁移"));
+            for (int v : b.v)
+                if (strict(v, a))
+                    reject(QStringLiteral("原网格 UV 三角形重叠，不能唯一迁移"));
+            const auto center
+                = (input.pixelCoordinates[a.v[0]] + input.pixelCoordinates[a.v[1]] + input.pixelCoordinates[a.v[2]])
+                / 3;
+            int signs[3];
+            for (int s = 0; s < 3; ++s)
+                signs[s] = orient(input.pixelCoordinates[b.v[s]], input.pixelCoordinates[b.v[(s + 1) % 3]], center);
+            if (signs[0] && signs[0] == signs[1] && signs[1] == signs[2])
+                reject(QStringLiteral("原网格 UV 三角形覆盖同一区域，不能唯一迁移"));
+        });
         for (const auto& item : edges)
             if (item.second.size() == 2) {
                 const int a = int(item.first >> 32), b = int(quint32(item.first));

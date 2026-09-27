@@ -468,8 +468,7 @@ bool CModelDocument::LoadInternal(CReader& reader, const QString& sourcePath, QS
         if (validSlice(source->position_index_sources_begin_indices, source->position_index_sources_counts,
                        static_cast<int>(table.position_indices->indices.size()))) {
             for (int i = 0; i < source->position_index_sources_counts; ++i) {
-                const quint16 index = static_cast<quint16>(table.position_indices->indices[
-                    source->position_index_sources_begin_indices + i]);
+                const quint16 index = table.position_indices->indices[source->position_index_sources_begin_indices + i];
                 if (index >= source->vertex_counts) continue;
                 drawable.indices.append(index);
             }

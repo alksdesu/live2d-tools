@@ -3,6 +3,8 @@
 #include <QScopeGuard>
 #include "live2dstruct/csectiontable.h"
 #include "deformer_replay_fixture.h"
+#include "wide_mesh_fixture.h"
+#include <QComboBox>
 
 #include <QtTest>
 #include <QAction>
@@ -226,6 +228,20 @@ private slots:
         deleted.atlases[0].size = resized.size(); deleted.atlases[0].png = resizedPng.data();
         QVERIFY2(panel.LoadWorkspaceSnapshot(sources, deleted, {}, &error), qPrintable(error)); QCOMPARE(view->scene()->sceneRect().size(), QSizeF(128, 96));
         view->ScenePosClicked({32, 48}); QCOMPARE(picked.size(), 1); QCOMPARE(picked.first()[0].toString(), id);
+    }
+    void canonicalWideMeshIsPickedThroughViewportClick()
+    {
+        WideMeshData::Fixture wide; QString error; QVERIFY2(WideMeshData::make(65536,WideMeshData::Layout::Sparse,wide,&error),qPrintable(error));
+        auto reader = CReader::FromBytes(wide.bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        const auto target = std::find_if(table.art_meshes.cbegin(),table.art_meshes.cend(),[&](const auto* mesh){return mesh->ids == wide.ids.first();}); QVERIFY(target != table.art_meshes.cend());
+        CTexturePanel panel; panel.LoadTextures(texturesFor("Mark")); panel.SetEditingEnabled(true); QVERIFY2(panel.UpdateUvMeshes(wide.bytes,&error),qPrintable(error));
+        auto* selector = panel.findChild<QComboBox*>("textureSlot"); QVERIFY(selector); const int slot = selector->findData((*target)->texture_nos); QVERIFY(slot >= 0); selector->setCurrentIndex(slot);
+        QStringList order; for (const auto* mesh : table.art_meshes) if (mesh->ids != wide.ids.first()) order.append(mesh->ids); order.append(wide.ids.first()); panel.SetRenderOrder(order);
+        panel.resize(600,500); panel.show(); QVERIFY(QTest::qWaitForWindowExposed(&panel)); QTest::qWait(40);
+        auto* view = panel.findChild<CAtlasView*>(); QVERIFY(view); QSignalSpy picked(&panel,&CTexturePanel::AtlasMeshPicked);
+        const QPoint click = view->mapFromScene(view->scene()->sceneRect().center()); QVERIFY(view->viewport()->rect().contains(click)); QTest::mouseClick(view->viewport(),Qt::LeftButton,{},click);
+        QCOMPARE(picked.size(),1); QCOMPARE(picked.first().first().toString(),wide.ids.first());
+        panel.HighlightMesh(wide.ids.first()); QSignalSpy requested(&panel,&CTexturePanel::EditUvRequested); auto* edit = panel.findChild<QToolButton*>("textureEditUv"); QVERIFY(edit && edit->isEnabled()); edit->defaultAction()->trigger(); QCOMPARE(requested.size(),1); QCOMPARE(requested.first().first().toString(),wide.ids.first());
     }
     void unsignedTriangleIndicesKeepHighVerticesSelectable()
     {

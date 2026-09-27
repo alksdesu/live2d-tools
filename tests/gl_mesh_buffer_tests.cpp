@@ -220,6 +220,42 @@ private slots:
         m_gl.glDeleteVertexArrays(1, &m_sentinelVao);
     }
 
+    void unsignedHighIndicesAndLargeIndexCountReachGpuWithoutTruncation()
+    {
+        QVector<float> positions(65536 * 2, 0);
+        const quint16 corners[]{32768, 65534, 65535};
+        const float triangle[]{-.75f, -.75f, .75f, -.75f, 0, .75f};
+        for (int index = 0; index < 3; ++index) {
+            positions[corners[index] * 2] = triangle[index * 2];
+            positions[corners[index] * 2 + 1] = triangle[index * 2 + 1];
+        }
+        QVector<quint16> indices;
+        for (int triangle = 0; triangle < 21846; ++triangle) indices.append({32768, 65534, 65535});
+        CGlMeshBuffer mesh;
+        QVERIFY(mesh.SetContext(m_context.get()));
+        const auto before = state();
+        QVERIFY(mesh.Upload(positions.constData(), 65536, nullptr, indices.constData(), indices.size()));
+        QVERIFY(state() == before);
+        const auto gpu = ids(mesh);
+        QCOMPARE(bufferSize(gpu.indices), GLint(indices.size() * sizeof(quint16)));
+        QVector<quint16> readback(indices.size(), 0);
+        m_gl.glBindBuffer(GL_ARRAY_BUFFER, gpu.indices);
+        m_gl.glGetBufferSubData(GL_ARRAY_BUFFER, 0, readback.size() * sizeof(quint16), readback.data());
+        m_gl.glBindBuffer(GL_ARRAY_BUFFER, GLuint(before.array));
+        QCOMPARE(readback, indices);
+        QImage image;
+        QVERIFY(render(mesh, GL_TRIANGLES, false, image));
+        QCOMPARE(image.pixelColor(32, 32), QColor(Qt::white));
+        QVERIFY(foregroundCount(image) > 900);
+        QVERIFY(!mesh.Upload(positions.constData(), 65535, nullptr, indices.constData(), indices.size()));
+        QVERIFY(ids(mesh) == gpu);
+        QImage preserved; QVERIFY(render(mesh, GL_TRIANGLES, false, preserved)); QCOMPARE(preserved, image);
+        const quint16 line[]{65534, 65535};
+        QVERIFY(mesh.Upload(positions.constData(), 65536, nullptr, line, 2));
+        QVERIFY(render(mesh, GL_LINES, false, image));
+        QVERIFY(foregroundCount(image) > 30);
+    }
+
     void texturedGeometryUsesBothAttributesAndPreservesCallerState()
     {
         CGlMeshBuffer mesh;

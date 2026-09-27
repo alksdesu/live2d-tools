@@ -802,24 +802,23 @@ void CubismModel::InitMesh()
 
         int indexCount = GetDrawableVertexIndexCount(index);//点的数量
         const csmUint16* rawIndexArray = GetDrawableVertexIndices(index);
-        const short* indexArray = reinterpret_cast<const short*>(rawIndexArray);//Indices
         int drawableVertexCount = GetDrawableVertexCount(index);
 
         if (indexCount < 0 || indexCount % 3 != 0 || indexCount > 3000000 ||
             drawableVertexCount < 0 || drawableVertexCount > 1000000 ||
-            (!drawableVertexCount && indexCount) || (indexCount && !indexArray)) continue;
+            (!drawableVertexCount && indexCount) || (indexCount && !rawIndexArray)) continue;
         const float* vertexArray = drawableVertexCount && positions ? reinterpret_cast<const float*>(positions[index]) : nullptr;
         const float* uvArray = drawableVertexCount && uvs ? reinterpret_cast<const float*>(uvs[index]) : nullptr;
         if (drawableVertexCount && (!vertexArray || !uvArray)) continue;
         bool indicesValid = true;
         for (int i = 0; i < indexCount; ++i) {
-            if (rawIndexArray[i] >= drawableVertexCount || rawIndexArray[i] > 32767) {
+            if (rawIndexArray[i] >= drawableVertexCount) {
                 indicesValid = false;
                 break;
             }
         }
         if (!indicesValid) continue;
-        auto drawMesh = std::make_unique<CDrawMesh>(indexCount,indexArray,drawableVertexCount*2,uvArray,vertexArray);
+        auto drawMesh = std::make_unique<CDrawMesh>(indexCount,rawIndexArray,drawableVertexCount*2,uvArray,vertexArray);
         m_vetDrawMesh.insert(drawName,drawMesh.get());
         drawMesh.release();
     }

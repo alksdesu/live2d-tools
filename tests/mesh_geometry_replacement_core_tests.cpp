@@ -7,6 +7,7 @@
 #include "framework/Id/CubismIdManager.hpp"
 #include "live2dstruct/cmocmeshstructurebuilder.h"
 #include "live2dstruct/csectiontable.h"
+#include "wide_mesh_fixture.h"
 #include <QtTest>
 #include <QFile>
 #include <QCryptographicHash>
@@ -82,6 +83,131 @@ private slots:
     void cleanupTestCase() {
         CubismFramework::Dispose();CubismFramework::CleanUp();QVERIFY(allocator.plain.isEmpty());QVERIFY(allocator.aligned.empty());
     }
+    void unsignedSourcesKeepTheirEditorDirectoryAndOverrides_data()
+    {
+        QTest::addColumn<int>("count"); QTest::addColumn<bool>("grid");
+        QTest::newRow("high-bit") << 32769 << false;
+        QTest::newRow("full-index-grid") << 65536 << true;
+        QTest::newRow("unreferenced-source-tail") << 65537 << false;
+    }
+    void unsignedSourcesKeepTheirEditorDirectoryAndOverrides()
+    {
+        QFETCH(int, count); QFETCH(bool, grid);
+        WideMeshData::Fixture fixture; QString error;
+        QVERIFY2(WideMeshData::make(count, grid ? WideMeshData::Layout::Grid : WideMeshData::Layout::Sparse, fixture, &error), qPrintable(error));
+        ModelOwner source; QVERIFY(source.Load(fixture.bytes));
+        const auto name = fixture.ids.first();
+        const int drawable = source.model->GetDrawableIndex(CubismFramework::GetIdManager()->GetId(name.toUtf8().constData()));
+        QVERIFY(drawable >= 0); QCOMPARE(source.model->GetDrawableVertexCount(drawable), count);
+        auto* mesh = source.model->GetMeshMap()->GetDrawMesh(name); QVERIFY(mesh);
+        QCOMPARE(mesh->GetMesh()->GetWolrd().size(), size_t(count));
+        const int indexCount = source.model->GetDrawableVertexIndexCount(drawable);
+        QCOMPARE(indexCount, fixture.indices.size()); if (grid) QVERIFY(indexCount > 65536);
+        const auto* raw = source.model->GetDrawableVertexIndices(drawable);
+        QVector<quint16> indices(raw, raw + indexCount);
+        QVERIFY(indices.contains(quint16(count >= 65536 ? 65535 : 32768)));
+        QCOMPARE(QVector<quint16>(mesh->GetMesh()->GetEBOIndex(), mesh->GetMesh()->GetEBOIndex() + mesh->GetMesh()->GetEBOSize()), indices);
+        std::swap(indices[0], indices[1]);
+        QVERIFY(source.model->SetDrawableIndicesOverride(drawable, indices));
+        CDrawMesh::EditorState state; QVERIFY(mesh->CaptureEditorState(state));
+        state.shown = true; state.paintedWeights = QVector<double>(count, 0);
+        (*state.paintedWeights)[count >= 65536 ? 65535 : 32768] = .375;
+        QVERIFY(mesh->RestoreEditorState(state));
+        source.model->SaveParameters();
+        source.model->SetParameterValue(0, source.model->GetParameterMaximumValue(0));
+        source.model->SetParameterValue(CubismFramework::GetIdManager()->GetId("WideVirtual"), .625f);
+        source.model->SetModelOpacity(.75f); source.model->Update();
+        CubismModel::RuntimeValueSnapshot before; QVERIFY(source.model->CaptureRuntimeValues(before));
+        CubismModelReplacement rejected;
+        const auto reject = [](CubismRenderer*, CubismModel*, const CubismRenderer&, QString* error) { *error = "controlled rejection"; return false; };
+        QVERIFY(!rejected.Prepare(reinterpret_cast<const csmByte*>(fixture.bytes.constData()), fixture.bytes.size(),
+            *source.moc, *source.model, *source.renderer, reject, &error));
+        QCOMPARE(source.model->GetMeshMap()->GetDrawMesh(name), mesh);
+        CDrawMesh::EditorState held; QVERIFY(mesh->CaptureEditorState(held)); QCOMPARE(held.paintedWeights, state.paintedWeights);
+        CubismModelReplacement candidate;
+        QVERIFY2(candidate.Prepare(reinterpret_cast<const csmByte*>(fixture.bytes.constData()), fixture.bytes.size(),
+            *source.moc, *source.model, *source.renderer, prepareRenderer(), &error), qPrintable(error));
+        auto* next = candidate.GetModel();
+        CubismModel::RuntimeValueSnapshot after; QVERIFY(next->CaptureRuntimeValues(after));
+        QCOMPARE(after.parameterValues, before.parameterValues); QCOMPARE(after.savedParameters, before.savedParameters);
+        QCOMPARE(after.savedPresence, before.savedPresence); QCOMPARE(after.partOpacities, before.partOpacities);
+        QCOMPARE(after.virtualParameterIds, before.virtualParameterIds); QCOMPARE(after.virtualParameterValues, before.virtualParameterValues);
+        QCOMPARE(after.modelOpacity, before.modelOpacity);
+        QCOMPARE(QVector<quint16>(next->GetDrawableVertexIndices(drawable), next->GetDrawableVertexIndices(drawable) + indexCount), indices);
+        for (int index = 0; index < source.model->GetDrawableCount(); ++index) {
+            QCOMPARE(next->GetDrawableVertexCount(index), source.model->GetDrawableVertexCount(index));
+            QCOMPARE(next->GetDrawableVertexIndexCount(index), source.model->GetDrawableVertexIndexCount(index));
+            const int vertices = source.model->GetDrawableVertexCount(index), triangles = source.model->GetDrawableVertexIndexCount(index);
+            QCOMPARE(QByteArray(reinterpret_cast<const char*>(next->GetDrawableVertices(index)), vertices * 2 * sizeof(float)),
+                     QByteArray(reinterpret_cast<const char*>(source.model->GetDrawableVertices(index)), vertices * 2 * sizeof(float)));
+            QCOMPARE(QByteArray(reinterpret_cast<const char*>(next->GetDrawableVertexUvs(index)), vertices * 2 * sizeof(float)),
+                     QByteArray(reinterpret_cast<const char*>(source.model->GetDrawableVertexUvs(index)), vertices * 2 * sizeof(float)));
+            QCOMPARE(QByteArray(reinterpret_cast<const char*>(next->GetDrawableVertexIndices(index)), triangles * sizeof(quint16)),
+                     QByteArray(reinterpret_cast<const char*>(source.model->GetDrawableVertexIndices(index)), triangles * sizeof(quint16)));
+        }
+        auto* nextMesh = next->GetMeshMap()->GetDrawMesh(name); QVERIFY(nextMesh);
+        CDrawMesh::EditorState restored; QVERIFY(nextMesh->CaptureEditorState(restored));
+        QCOMPARE(restored.vertexCount, count); QCOMPARE(restored.paintedWeights, state.paintedWeights); QVERIFY(restored.shown);
+        QVERIFY(candidate.Commit(source.moc, source.model, source.renderer));
+        QCOMPARE(source.model->GetDrawableVertexIndices(drawable)[0], indices.first());
+    }
+
+    void unsignedInsertionAndUndoRetainPaintedVertexIdentity_data()
+    {
+        QTest::addColumn<int>("count");
+        QTest::newRow("cross-signed-boundary") << 32768;
+        QTest::newRow("fill-unsigned-capacity") << 65535;
+    }
+    void unsignedInsertionAndUndoRetainPaintedVertexIdentity()
+    {
+        QFETCH(int, count); WideMeshData::Fixture fixture; QString error;
+        QVERIFY2(WideMeshData::make(count, WideMeshData::Layout::Sparse, fixture, &error), qPrintable(error));
+        auto reader = live2dstruct::CReader::FromBytes(fixture.bytes); live2dstruct::CSectionTable table(reader); QVERIFY(table.IsValid());
+        int target = -1; for (int i = 0; i < table.art_meshes.size(); ++i) if (table.art_meshes[i]->ids == fixture.ids.first()) target = i;
+        QVERIFY(target >= 0); auto edit = identity(table, target);
+        const auto a = edit.indices[0], b = edit.indices[1], c = edit.indices[2];
+        edit.vertices.append({{a, b, c}, {.5, .25, .25}});
+        edit.indices = {a, b, quint16(count), b, c, quint16(count), c, a, quint16(count)};
+        Builder::Request request; request.meshes.append(edit); Builder::Result built;
+        QVERIFY2(Builder::Build(fixture.bytes, request, built, &error), qPrintable(error));
+        ModelOwner source; QVERIFY(source.Load(fixture.bytes));
+        const auto name = fixture.ids.first(); const int drawable = source.model->GetDrawableIndex(CubismFramework::GetIdManager()->GetId(name.toUtf8().constData()));
+        auto* mesh = source.model->GetMeshMap()->GetDrawMesh(name); QVERIFY(mesh);
+        CDrawMesh::EditorState state; QVERIFY(mesh->CaptureEditorState(state));
+        state.paintedWeights = QVector<double>(count, 0); (*state.paintedWeights)[count - 1] = .625;
+        QVERIFY(mesh->RestoreEditorState(state));
+        CMeshEditorSnapshot original; QVERIFY(source.model->GetMeshMap()->CaptureEditorState(original));
+        source.model->SaveParameters(); source.model->SetParameterValue(0, source.model->GetParameterMaximumValue(0)); source.model->Update();
+        CubismModel::RuntimeValueSnapshot before; QVERIFY(source.model->CaptureRuntimeValues(before));
+        auto migrated = migration(built.meshes.first()); CubismModelReplacement next;
+        const auto policy = CubismModelUpdatePolicy::AllowDrawableGeometryEdits;
+        QVERIFY2(next.Prepare(reinterpret_cast<const csmByte*>(built.bytes.constData()), built.bytes.size(), *source.moc, *source.model,
+            *source.renderer, prepareRenderer(), policy, {}, &error, {}, &migrated), qPrintable(error));
+        QCOMPARE(next.GetModel()->GetDrawableVertexCount(drawable), count + 1);
+        QCOMPARE(next.GetModel()->GetDrawableVertexIndexCount(drawable), 9);
+        const auto* ebo = next.GetModel()->GetDrawableVertexIndices(drawable);
+        QVERIFY(std::find(ebo, ebo + 9, quint16(count)) != ebo + 9);
+        CDrawMesh::EditorState actual; QVERIFY(next.GetModel()->GetMeshMap()->GetDrawMesh(name)->CaptureEditorState(actual));
+        QCOMPARE(actual.paintedWeights->size(), count + 1); QCOMPARE(actual.paintedWeights->at(count - 1), .625); QCOMPARE(actual.paintedWeights->at(count), 0.);
+        CubismModel::RuntimeValueSnapshot after; QVERIFY(next.GetModel()->CaptureRuntimeValues(after));
+        QCOMPARE(after.parameterValues, before.parameterValues); QCOMPARE(after.savedParameters, before.savedParameters); QCOMPARE(after.savedPresence, before.savedPresence);
+        QVERIFY(next.Commit(source.moc, source.model, source.renderer));
+        if (count + 1 == Builder::MaximumVertices) {
+            auto parsed = live2dstruct::CReader::FromBytes(built.bytes); live2dstruct::CSectionTable current(parsed);
+            auto overflow = identity(current, target); overflow.vertices.append({{0}, {1}});
+            Builder::Request invalid; invalid.meshes.append(overflow); Builder::Result sentinel; sentinel.bytes = "keep";
+            QVERIFY(!Builder::Build(built.bytes, invalid, sentinel, &error)); QCOMPARE(sentinel.bytes, QByteArray("keep"));
+        }
+        CMeshGeometryMigration undo; undo.remaps.insert(name, {count + 1, count, built.meshes.first().newToOld}); undo.targetState = original;
+        CubismModelReplacement restored;
+        QVERIFY2(restored.Prepare(reinterpret_cast<const csmByte*>(fixture.bytes.constData()), fixture.bytes.size(), *source.moc, *source.model,
+            *source.renderer, prepareRenderer(), policy, {}, &error, {}, &undo), qPrintable(error));
+        QVERIFY(restored.Commit(source.moc, source.model, source.renderer));
+        QVERIFY(source.model->GetMeshMap()->GetDrawMesh(name)->CaptureEditorState(actual));
+        QCOMPARE(actual.vertexCount, count); QCOMPARE(actual.paintedWeights, state.paintedWeights);
+        QVERIFY(source.model->CaptureRuntimeValues(after)); QCOMPARE(after.parameterValues, before.parameterValues); QCOMPARE(after.savedParameters, before.savedParameters);
+    }
+
     void emptyRawDrawableRetainsIdentityAndUndoSelection()
     {
         const auto bytes=read(QString(TEST_RESOURCES)+"/Mark/Mark.moc3");auto reader=live2dstruct::CReader::FromBytes(bytes);live2dstruct::CSectionTable table(reader);QVERIFY(table.IsValid());

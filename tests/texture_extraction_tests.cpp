@@ -1,6 +1,7 @@
 #include "live2dstruct/csectiontable.h"
 #include "opengl/ctextureextractor.h"
 #include "std/cexportcontrol.h"
+#include "wide_mesh_fixture.h"
 
 #include <QtTest>
 #include <QBuffer>
@@ -57,7 +58,7 @@ public:
         const QString path = temp.filePath("atlas.png");
         return image.save(path, "PNG") && extractor.LoadAtlases({path});
     }
-    void Geometry(const std::vector<float>& uvs, const std::vector<short>& indices = {0, 1, 2})
+    void Geometry(const std::vector<float>& uvs, const std::vector<quint16>& indices = {0, 1, 2})
     {
         table.uvs->uvs = uvs;
         table.position_indices->indices = indices;
@@ -103,7 +104,7 @@ public:
         return extractor.LoadAtlasBytes(bytes, control);
     }
     const std::vector<float>& Uvs() const { return table.uvs->uvs; }
-    const std::vector<short>& Indices() const { return table.position_indices->indices; }
+    const std::vector<quint16>& Indices() const { return table.position_indices->indices; }
     QString WriteAtlas(const QImage& image, const QString& name)
     {
         const QString path = temp.filePath(name);
@@ -302,7 +303,7 @@ private slots:
             CExportControl control; QVERIFY(mesh.Extract(&control, &overrides, &positions).isEmpty());
             QVERIFY(!control.Error().isEmpty());
         }
-        std::vector<short> repeated;
+        std::vector<quint16> repeated;
         for (int triangle = 0; triangle < 513; ++triangle) repeated.insert(repeated.end(), {0, 1, 2});
         mesh.Geometry({0, 0, 1, 0, 0, 1}, repeated);
         CExportControl work; bool scanned = false;
@@ -363,7 +364,7 @@ private slots:
         const auto expected = mesh.Extract(nullptr, nullptr, &positions); QCOMPARE(expected.size(), 1);
         std::vector<float> uvs(65536 * 2, 0.0f);
         uvs[65534 * 2] = 1; uvs[65535 * 2 + 1] = 1;
-        mesh.Geometry(uvs, {static_cast<short>(65533), static_cast<short>(65534), static_cast<short>(65535)});
+        mesh.Geometry(uvs, {65533, 65534, 65535});
         QVector<float> points(65536 * 2, 0.0f); points[65534 * 2] = 4; points[65535 * 2 + 1] = -4;
         positions[mesh.Id()] = points;
         CExportControl control; const auto actual = mesh.Extract(&control, nullptr, &positions);
@@ -637,12 +638,40 @@ private slots:
         QCOMPARE(layers[0].image.pixel(5, 1), atlas.pixel(0, 1));
     }
 
+    void canonicalWideSourceAndOverridesKeepCanvasAndUvPixels()
+    {
+        WideMeshData::Fixture wide; QString error; QVERIFY2(WideMeshData::make(65536, WideMeshData::Layout::Sparse, wide, &error), qPrintable(error));
+        auto reader = CReader::FromBytes(wide.bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        CArt_meshes* target = nullptr; int atlasCount = 0;
+        for (auto* mesh : table.art_meshes) { mesh->is_visible = mesh->ids == wide.ids.first(); if (mesh->is_visible) target = mesh; atlasCount = std::max(atlasCount, mesh->texture_nos + 1); }
+        QVERIFY(target); QCOMPARE(target->vertex_counts, 65536); const int first = target->position_index_sources_begin_indices;
+        for (int corner = 0; corner < 3; ++corner) QCOMPARE(table.position_indices->indices[first + corner], wide.indices[corner]);
+        auto positions = wide.positions;
+        for (int corner = 0; corner < 3; ++corner) for (int axis = 0; axis < 2; ++axis) {
+            table.uvs->uvs[target->uv_sources_begin_indices + corner * 2 + axis] = table.uvs->uvs[target->uv_sources_begin_indices + wide.indices[corner] * 2 + axis];
+            positions[corner * 2 + axis] = positions[wide.indices[corner] * 2 + axis];
+        }
+        table.canvas_info->pixels_per_unit = 10; table.canvas_info->origin_x = table.canvas_info->origin_y = 0;
+        const auto atlas = ColoredAtlas(8); CTextureExtractor extractor; QVERIFY(extractor.LoadAtlasBytes(QVector<QByteArray>(atlasCount, Png(atlas))));
+        const QHash<QString, QVector<quint16>> low{{target->ids,{0,1,2}}}, reverse{{target->ids,{65535,65534,32768}}};
+        const QHash<QString,QVector<float>> frozen{{target->ids,positions}};
+        for (bool canvas : {false,true}) {
+            const auto* pose = canvas ? &frozen : nullptr;
+            CExportControl originalControl, lowControl, reversedControl;
+            const auto original = extractor.ExtractAll(&table,false,nullptr,&originalControl,pose);
+            const auto control = extractor.ExtractAll(&table,false,&low,&lowControl,pose);
+            const auto reversed = extractor.ExtractAll(&table,false,&reverse,&reversedControl,pose);
+            QVERIFY2(originalControl.Checkpoint(),qPrintable(originalControl.Error())); QVERIFY(lowControl.Checkpoint()); QVERIFY(reversedControl.Checkpoint());
+            QCOMPARE(original.size(),1); QCOMPARE(control.size(),1); QCOMPARE(reversed.size(),1); QVERIFY(HasVisiblePixel(original[0].image));
+            QCOMPARE(original[0].image,control[0].image); QCOMPARE(original[0].image,reversed[0].image); QCOMPARE(original[0].canvasRect,control[0].canvasRect); QCOMPARE(original[0].opacity,control[0].opacity);
+        }
+    }
     void unsigned16IndicesReachTheLastVertex()
     {
         MeshFixture mesh; QVERIFY(mesh.IsValid()); const auto atlas = ColoredAtlas(); QVERIFY(mesh.LoadAtlas(atlas));
         std::vector<float> uvs(65536 * 2, 0.0f);
         uvs[65534 * 2] = 1; uvs[65535 * 2 + 1] = 1;
-        mesh.Geometry(uvs, {short(quint16(32768)), short(quint16(65534)), short(quint16(65535))});
+        mesh.Geometry(uvs, {32768, 65534, 65535});
         const auto layers = mesh.Extract(); QCOMPARE(layers.size(), 1);
         QCOMPARE(layers[0].image.pixel(0, 0), atlas.pixel(0, 0)); QCOMPARE(layers[0].image.pixel(3, 3), QRgb(0));
         const QHash<QString, QVector<quint16>> overrides{{mesh.Id(), {65535, 65534, 32768}}};
@@ -717,7 +746,7 @@ private slots:
         const float maximum = std::numeric_limits<float>::max();
         for (bool reverse : {false, true}) {
             mesh.Geometry({-maximum, -maximum, maximum, maximum, 0, 1},
-                          reverse ? std::vector<short>{2, 1, 0} : std::vector<short>{0, 1, 2});
+                          reverse ? std::vector<quint16>{2, 1, 0} : std::vector<quint16>{0, 1, 2});
             CExportControl control; const auto layers = mesh.Extract(&control);
             QVERIFY(layers.isEmpty()); QVERIFY(control.Error().contains(QStringLiteral("限制")));
         }

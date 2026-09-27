@@ -56,6 +56,25 @@ protected:
     }
 };
 
+class NumericIndexDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        QSize result = QStyledItemDelegate::sizeHint(option, index);
+        if (!index.isValid()) return result;
+        QStyleOptionViewItem value(option); initStyleOption(&value, index);
+        const int digits = QString::number(std::max(0, index.model()->rowCount(index.parent()) - 1)).size();
+        const auto* style = value.widget ? value.widget->style() : QApplication::style();
+        for (char digit = '0'; digit <= '9'; ++digit) {
+            value.text = QString(digits, QChar(digit));
+            result = result.expandedTo(style->sizeFromContents(QStyle::CT_ItemViewItem, &value, {}, value.widget));
+        }
+        return result;
+    }
+};
+
 class InspectorComboBox : public QComboBox
 {
 public:
@@ -349,6 +368,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     for (QWidget* field : QList<QWidget*>{m_warpKeyformCombo, m_warpKeyformTable})
         field->setProperty("inspectorTypes", QStringList{QStringLiteral("warp")});
     for (QTableWidget* table : {m_vertexTable, m_rotationKeyformTable, m_warpKeyformTable}) {
+        table->setItemDelegateForColumn(0, new NumericIndexDelegate(table));
         table->setMinimumHeight(120);
         table->setMaximumHeight(280);
         table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -1411,7 +1431,7 @@ void CInspectorPanel::PasteTopology()
     after.reserve(values.size());
     for (const QJsonValue& value : values) {
         const double number = value.toDouble(-1.0);
-        if (!value.isDouble() || std::floor(number) != number || number < 0.0 || number >= vertexCount || number > 65535.0) {
+        if (!value.isDouble() || std::floor(number) != number || number < 0.0 || number >= vertexCount || number > live2dstruct::CMeshTopology::MaximumIndex) {
             QMessageBox::warning(this, QStringLiteral("粘贴拓扑失败"), QStringLiteral("索引超出目标网格范围"));
             return;
         }

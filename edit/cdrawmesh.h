@@ -27,7 +27,7 @@ public:
         bool hovered = false;
         std::optional<QVector<double>> paintedWeights;
     };
-    CDrawMesh(int ebosize,const short* vetebo,int uvsize,const float* vetuv,const float* vetpos);
+    CDrawMesh(int ebosize,const quint16* vetebo,int uvsize,const float* vetuv,const float* vetpos);
     ~CDrawMesh();
     void Draw(const QMatrix4x4& projection);
 

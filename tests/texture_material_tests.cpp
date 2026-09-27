@@ -1,5 +1,6 @@
 #include "opengl/ctextureextractor.h"
 #include "live2dstruct/csectiontable.h"
+#include "wide_mesh_fixture.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <algorithm>
@@ -31,7 +32,7 @@ public:
         if (!image.save(path, "PNG")) return false;
         paths.append(path); return extractor.LoadAtlases(paths);
     }
-    CArt_meshes* mesh(int index, const std::vector<float>& uv, const std::vector<short>& indices = {0,1,2}, int texture = 0)
+    CArt_meshes* mesh(int index, const std::vector<float>& uv, const std::vector<quint16>& indices = {0,1,2}, int texture = 0)
     {
         auto* object = table.art_meshes[index]; object->vertex_counts = int(uv.size() / 2);
         object->uv_sources_begin_indices = table.uvs->uvs.size(); object->texture_nos = texture;
@@ -160,7 +161,7 @@ private slots:
         case 9: mesh->uv_sources_begin_indices = 1; break;
         case 10: fixture.table.uvs->uvs[0] = std::numeric_limits<float>::quiet_NaN(); break;
         case 11: fixture.table.uvs->uvs[0] = std::numeric_limits<float>::infinity(); break;
-        case 12: fixture.table.position_indices->indices[0] = -1; break;
+        case 12: fixture.table.position_indices->indices[0] = std::numeric_limits<quint16>::max(); break;
         case 13: fixture.table.position_indices->indices[0] = 3; break;
         case 14: mesh->position_index_sources_begin_indices = -1; break;
         case 15: mesh->position_index_sources_begin_indices = 1; break;
@@ -170,11 +171,32 @@ private slots:
         auto result = sentinel(); QString error; QVERIFY(!fixture.extractor.ExtractMaterials(&fixture.table, result, &error)); QVERIFY(!error.isEmpty()); checkSentinel(result);
         QVERIFY(!fixture.extractor.ExtractMaterials(nullptr, result, &error)); checkSentinel(result);
     }
+    void canonicalWideSourceRetainsStraightRgbaAndUnreferencedTail_data()
+    {
+        QTest::addColumn<int>("vertices"); QTest::newRow("addressable-end") << 65536; QTest::newRow("unreferenced-tail") << 65537;
+    }
+    void canonicalWideSourceRetainsStraightRgbaAndUnreferencedTail()
+    {
+        QFETCH(int,vertices); WideMeshData::Fixture wide; QString error;
+        QVERIFY2(WideMeshData::make(vertices,WideMeshData::Layout::Sparse,wide,&error),qPrintable(error));
+        auto reader = CReader::FromBytes(wide.bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        const auto atlas = atlasImage(7,5); QTemporaryDir directory; QVERIFY(directory.isValid()); const QString path = directory.filePath("rgba.png"); QVERIFY(atlas.save(path));
+        int atlasCount = 0; for (const auto* mesh : table.art_meshes) atlasCount = std::max(atlasCount,mesh->texture_nos + 1);
+        CTextureExtractor extractor; QVERIFY(extractor.LoadAtlases(QVector<QString>(atlasCount,path))); QVector<ExtractedMaterial> materials;
+        QVERIFY2(extractor.ExtractMaterials(&table,materials,&error),qPrintable(error));
+        const auto found = std::find_if(materials.cbegin(),materials.cend(),[&](const auto& value){return value.name == wide.ids.first();}); QVERIFY(found != materials.cend());
+        QCOMPARE(found->authorUvs.size(),vertices*2); bool transparentRgb = false;
+        for (int y=0;y<found->image.height();++y) for (int x=0;x<found->image.width();++x) {
+            const QRgb expected = atlas.pixel(repeat(found->atlasRect.x()+x,atlas.width()),repeat(found->atlasRect.y()+y,atlas.height()));
+            QCOMPARE(found->image.pixel(x,y),expected); transparentRgb |= qAlpha(expected)==0 && (qRed(expected)||qGreen(expected)||qBlue(expected));
+        }
+        QVERIFY(transparentRgb);
+    }
     void unsigned16IndicesAndSharedOddUvHaveExactMaterials()
     {
         Fixture fixture; QVERIFY(fixture.valid()); const auto atlas = atlasImage(4, 3); QVERIFY(fixture.atlas(atlas));
         std::vector<float> uvs(65536 * 2, .25f); uvs[65534 * 2] = .75f; uvs[65535 * 2 + 1] = .75f;
-        fixture.mesh(0, uvs, {short(quint16(32768)), short(quint16(65534)), short(quint16(65535))});
+        fixture.mesh(0, uvs, {32768, 65534, 65535});
         auto* second = fixture.mesh(1, {.1f,.2f,.3f,.4f,.5f,.6f}); second->uv_sources_begin_indices = 1;
         QVector<ExtractedMaterial> result; QString error;
         QVERIFY2(fixture.extractor.ExtractMaterials(&fixture.table, result, &error), qPrintable(error)); QCOMPARE(result.size(), 2);
@@ -182,6 +204,8 @@ private slots:
         QCOMPARE(result[1].authorUvs[0], .75f); QCOMPARE(result[1].authorUvs[1], .25f);
         for (const auto& material : result) for (int y = 0; y < material.image.height(); ++y) for (int x = 0; x < material.image.width(); ++x)
             QCOMPARE(material.image.pixel(x, y), atlas.pixel(repeat(material.atlasRect.x() + x, atlas.width()), repeat(material.atlasRect.y() + y, atlas.height())));
+        fixture.table.art_meshes[0]->vertex_counts = 65535; result = sentinel();
+        QVERIFY(!fixture.extractor.ExtractMaterials(&fixture.table, result, &error)); QVERIFY(error.contains(QStringLiteral("索引越界"))); checkSentinel(result);
     }
     void pixelLimitsAreCheckedBeforeImagesAreAllocated()
     {

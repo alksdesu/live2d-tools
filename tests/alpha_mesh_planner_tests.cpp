@@ -64,6 +64,38 @@ class AlphaMeshPlannerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void highUnsignedSourceVerticesKeepTheirMigrationIdentity()
+    {
+        auto input = square(8);
+        fill(input.image, { 0, 0, 8, 8 });
+        const auto originalPoints = input.pixelCoordinates;
+        const auto originalUvs = input.uvs;
+        input.pixelCoordinates.resize(65536);
+        input.uvs.resize(65536 * 2);
+        const QVector<int> high { 32768, 65533, 65534, 65535 };
+        for (int i = 0; i < high.size(); ++i) {
+            input.pixelCoordinates[high[i]] = originalPoints[i];
+            input.uvs[high[i] * 2] = originalUvs[i * 2];
+            input.uvs[high[i] * 2 + 1] = originalUvs[i * 2 + 1];
+        }
+        input.indices = { 32768, 65533, 65534, 32768, 65534, 65535 };
+        Planner::Plan result;
+        QString error;
+        QVERIFY2(Planner::Build(input, settings(), result, &error), qPrintable(error));
+        QVERIFY2(Planner::Validate(input, result, &error), qPrintable(error));
+        QCOMPARE(result.edit.oldToNew.size(), 65536);
+        for (int vertex : high)
+            QVERIFY(result.edit.oldToNew[vertex] >= 0);
+        for (const auto& source : result.edit.vertices)
+            for (int vertex : source.indices)
+                QVERIFY(high.contains(vertex));
+        const auto before = result.edit.indices;
+        input.pixelCoordinates.append({ 1, 1 });
+        input.uvs.append({ .125f, .125f });
+        QVERIFY(!Planner::Build(input, settings(), result, &error));
+        QCOMPARE(result.edit.indices, before);
+    }
+
     void constrainedGraphKeepsCrossings()
     {
         Mesh::ConstrainedInput input;

@@ -33,7 +33,7 @@ private:
     int drawable_flags;
     int vertex_counts;
     std::vector<float>  uv;//纹理坐标位置
-    std::vector<short>  position;//构成的三角形顶点
+    std::vector<quint16>  position;//构成的三角形顶点
 };
 }
 #endif // CARTMESHNODE_H

@@ -346,7 +346,7 @@ bool CMocRuntimeBuilder::Build(const QByteArray& source, const Overrides& overri
                 return fail(error, QStringLiteral("ArtMesh 三角索引无效：%1").arg(mesh->ids));
             bool same = indices->size() == mesh->position_index_sources_counts;
             for (int row = 0; same && row < indices->size(); ++row)
-                same = (*indices)[row] == quint16(table.position_indices->indices[mesh->position_index_sources_begin_indices + row]);
+                same = (*indices)[row] == table.position_indices->indices[mesh->position_index_sources_begin_indices + row];
             if (!same) {
                 changedIndices.insert(index);
                 int destination;

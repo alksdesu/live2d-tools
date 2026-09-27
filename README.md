@@ -27,6 +27,7 @@ PSD export renders every drawable (art mesh) individually into its own layer, pr
 - Edit parameter names, ranges, defaults, decimal precision and repeat settings; range changes and the current base value share one undo step and session restore path
 - Versioned editor sessions (parameters, visibility and camera) with recent-model shortcuts and persistent workspace layout/theme
 - ArtMesh and Warp point editing offers move, rectangle, lasso, distance falloff and an influence brush. Hard selections alone control topology operations; soft and painted weights scale movement. Brush strokes have separate undo/redo, while geometric edits use document history.
+- Mesh editing, pairing, sessions, previews and exports preserve unsigned 16-bit indices through 65535. Topology structure edits support up to 65536 vertices; larger source vertex arrays remain readable when their indices are valid. Dense mesh checks use spatial filtering, and repeated edits reuse free storage instead of exhausting it through accumulated copies.
 - Distance influence can follow mesh edges, stay within connected islands, or cross islands within the object. Brush radius, hardness and per-stroke strength are adjustable; retracing one stroke does not repeatedly accumulate weight. Painted fields survive keyform changes but are temporary and are cleared when loading a session.
 - Generate a mesh from artwork transparency for one selected ArtMesh, with three density presets, point spacing, alpha threshold and boundary margin. Inspect the candidate over the artwork before applying it as one undo step; UVs, ordinary and Blend Shape keyforms, and linked artwork coordinates migrate together.
 - Automatic generation stays within the existing UV domain and retains its triangle constraints. Coarse presets need not reduce the original vertex count, and nonlinear deformation can change after resampling. Existing Glue endpoints stay pinned; new vertices do not acquire Glue pairs. Linked artwork uses its pinned source revision; an atlas fallback cannot separate other artwork already inside the UV domain.
@@ -178,6 +179,7 @@ PSD 导出逐个渲染模型中的每个 drawable（art mesh），写入独立�
 - 变形器结构编辑只接受可证明保形的变换；不支持的动画父级、非线性转换或绑定会给出原因。部分旋转／反射转换可能产生微小的浮点舍入差异，不保证逐位一致
 - 支持最近模型、持久化窗口布局，以及浅色/深色工作区主题
 - ArtMesh 与 Warp 共用选择／移动、框选、套索、距离柔化和影响笔刷。只有硬选点参与删除、连边等拓扑操作，其余权重只决定移动幅度；笔触有独立撤回／重做，模型形变仍使用文档历史
+- 网格编辑、配对、会话、预览和导出完整保留 0–65535 的无符号索引，拓扑结构编辑最多支持 65536 个顶点；更大来源顶点数组在索引合法时仍可读取。稠密网格校验使用空间筛选，连续编辑会复用空闲存储，避免旧数据累积导致过早失败
 - 距离柔化可沿网格边、限制在连通区域，或允许同一对象跨岛影响。笔刷可调半径、硬度与每笔强度，同一笔重复经过不会反复叠加。切换关键形保留手绘权重；权重属于临时编辑状态，加载会话会清除
 - 选中单个 ArtMesh 后可按素材透明轮廓生成网格，提供低／标准／高密度、点间距、透明度阈值和边缘余量。先在素材上查看候选，应用只增加一条撤销记录；UV、普通与 Blend Shape 关键形、关联素材坐标一起迁移
 - 自动生成限定在原 UV 覆盖域内并保留原三角约束，因此低密度不保证减少原有顶点，重采样后的非线性变形外观可能改变。保留已有 Glue 端点，新增顶点不会自动获得接缝配对；关联素材使用固定来源版本，回退到图集时无法分离已混入 UV 覆盖域的其它图案

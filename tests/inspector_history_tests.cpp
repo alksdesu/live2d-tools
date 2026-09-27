@@ -2,6 +2,7 @@
 #include "ui/ckeyformmatrix.h"
 #include "ui/cbindingkeysdialog.h"
 #include "ui/theme.h"
+#include "wide_mesh_fixture.h"
 #include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
@@ -15,6 +16,9 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QHeaderView>
+#include <QStyle>
+#include <QStyledItemDelegate>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -44,6 +48,18 @@
 #include <cstring>
 
 namespace {
+class IndexTextProbe : public QStyledItemDelegate
+{
+public:
+    static bool Fits(QTableWidget* table, int row)
+    {
+        IndexTextProbe probe; QStyleOptionViewItem option; option.initFrom(table); option.widget = table;
+        const auto index = table->model()->index(row,0); probe.initStyleOption(&option,index); option.rect = table->visualItemRect(table->item(row,0));
+        const auto area = table->style()->subElementRect(QStyle::SE_ItemViewItemText,&option,table);
+        const int required = probe.QStyledItemDelegate::sizeHint(option,index).width();
+        return option.rect.width() >= required && option.fontMetrics.elidedText(option.text,Qt::ElideRight,area.width()) == option.text;
+    }
+};
 bool topologyDocument(const QVector<float>& positions, const QVector<quint16>& indices,
                       live2dstruct::CModelDocument& document, QString& id, QString* error, bool multipleKeyforms = false)
 {
@@ -2381,6 +2397,61 @@ private slots:
         QCOMPARE(history.count(), 0);
     }
 
+    void wideIndexColumnRemainsReadableAcrossNativeThemes()
+    {
+        WideMeshData::Fixture wide; QString error; QVERIFY2(WideMeshData::make(65536,WideMeshData::Layout::Sparse,wide,&error),qPrintable(error));
+        live2dstruct::CModelDocument document; QVERIFY2(document.LoadBytes(wide.bytes,"wide-display.moc3",&error),qPrintable(error));
+        const auto originalStyle = qApp->styleSheet(); const auto restoreStyle = qScopeGuard([&] { qApp->setStyleSheet(originalStyle); });
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(wide.ids.first(),"artmesh"); panel.resize(520,640); panel.show();
+        auto* vertices = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(vertices); QCOMPARE(vertices->rowCount(),65536);
+        for (bool dark : {false,true}) {
+            qApp->setStyleSheet(Theme::globalStyleSheet(dark)); vertices->scrollToItem(vertices->item(65535,0)); QTest::qWait(30);
+            const int needed = vertices->fontMetrics().horizontalAdvance("65535") + 2 * (vertices->style()->pixelMetric(QStyle::PM_FocusFrameHMargin)+1);
+            QVERIFY2(vertices->columnWidth(0) >= needed,qPrintable(QString("index column %1, required %2").arg(vertices->columnWidth(0)).arg(needed)));
+            QCOMPARE(vertices->item(65535,0)->text(),QString("65535")); QCOMPARE(vertices->horizontalHeader()->resizeContentsPrecision(),1000);
+            for (int row = 65530; row <= 65535; ++row) QVERIFY2(IndexTextProbe::Fits(vertices,row),qPrintable(QString("Painted index %1 is elided").arg(row)));
+            const QString directory = qEnvironmentVariable("WIDE_UI_IMAGES"); if (!directory.isEmpty()) { QDir().mkpath(directory); QVERIFY(vertices->grab().save(directory + QString("/inspector-%1.png").arg(dark ? "dark" : "light"))); }
+        }
+    }
+    void wideIndicesRemainVisibleAndEditableThroughClipboardAndHistory()
+    {
+        if (QGuiApplication::platformName() != QLatin1String("offscreen")) QSKIP("Uses the offscreen platform clipboard; never access the user's system clipboard");
+        WideMeshData::Fixture wide; QString error; QVERIFY2(WideMeshData::make(65536,WideMeshData::Layout::Sparse,wide,&error),qPrintable(error));
+        live2dstruct::CModelDocument document; QVERIFY2(document.LoadBytes(wide.bytes,"wide.moc3",&error),qPrintable(error)); const QString id = wide.ids.first();
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id,"artmesh"); panel.resize(500,700); panel.show(); QApplication::processEvents();
+        auto* vertices = panel.findChild<QTableWidget*>("keyformVertexTable"); QVERIFY(vertices); QCOMPARE(vertices->rowCount(),65536);
+        const auto before = document.DrawableKeyformPositions(id,0); QCOMPARE(before.size(),131072);
+        for (int row : {32768,65535}) { QCOMPARE(vertices->item(row,0)->text(),QString::number(row)); QCOMPARE(vertices->item(row,1)->text().toFloat(),before[row*2]); QCOMPARE(vertices->item(row,2)->text().toFloat(),before[row*2+1]); }
+        vertices->scrollToItem(vertices->item(65535,1)); QApplication::processEvents(); QVERIFY(vertices->verticalScrollBar()->value() > 0);
+        const QString screenshot = qEnvironmentVariable("WIDE_INSPECTOR_SCREENSHOT"); if (!screenshot.isEmpty()) QVERIFY(vertices->grab().save(screenshot));
+        const int needed = vertices->fontMetrics().horizontalAdvance("65535") + 2 * (vertices->style()->pixelMetric(QStyle::PM_FocusFrameHMargin) + 1);
+        QVERIFY2(vertices->columnWidth(0) >= needed, qPrintable(QString("Index column %1 px, full text requires %2 px; header resize precision %3").arg(vertices->columnWidth(0)).arg(needed).arg(vertices->horizontalHeader()->resizeContentsPrecision())));
+        QCOMPARE(vertices->horizontalHeader()->sectionResizeMode(0),QHeaderView::ResizeToContents); QCOMPARE(vertices->horizontalHeader()->resizeContentsPrecision(),1000);
+        const auto originalFont = vertices->font(); auto larger = originalFont; larger.setPixelSize(vertices->fontMetrics().height()*2); vertices->setFont(larger); QTest::qWait(20);
+        QVERIFY(vertices->columnWidth(0) >= vertices->fontMetrics().horizontalAdvance("65535") + 2 * (vertices->style()->pixelMetric(QStyle::PM_FocusFrameHMargin) + 1)); vertices->setFont(originalFont);
+        const auto originalStyle = qApp->styleSheet(); const auto restoreStyle = qScopeGuard([&] { qApp->setStyleSheet(originalStyle); });
+        for (bool dark : {true,false}) { qApp->setStyleSheet(Theme::globalStyleSheet(dark)); QTest::qWait(20); QVERIFY(vertices->columnWidth(0) >= vertices->fontMetrics().horizontalAdvance("65535") + 2 * (vertices->style()->pixelMetric(QStyle::PM_FocusFrameHMargin) + 1)); }
+        QSignalSpy positions(&panel,&CInspectorPanel::DrawableKeyformPositionsChanged); QSignalSpy history(&panel,&CInspectorPanel::HistoryChanged);
+        vertices->item(65535,1)->setText("1.25"); QCOMPARE(document.DrawableKeyformPositions(id,0)[131070],1.25f); QCOMPARE(document.DrawableKeyformPositions(id,0)[0],before[0]); QCOMPARE(positions.size(),1); QCOMPARE(history.size(),1);
+        panel.Undo(); QCOMPARE(document.DrawableKeyformPositions(id,0),before); panel.Redo(); QCOMPARE(document.DrawableKeyformPositions(id,0)[131070],1.25f); panel.Undo(); document.ClearEditHistory(); positions.clear(); history.clear();
+        auto* copy = panel.findChild<QPushButton*>("copyTopology"); auto* paste = panel.findChild<QPushButton*>("pasteTopology"); QVERIFY(copy && paste); QVERIFY(copy->isEnabled() && paste->isEnabled());
+        copy->click(); QJsonObject clipboard = QJsonDocument::fromJson(QApplication::clipboard()->text().toUtf8()).object(); QCOMPARE(clipboard["vertexCount"].toInt(),65536); QCOMPARE(clipboard["indices"].toArray().last().toInt(),65535);
+        const auto original = document.DrawableIndices(id); const QVector<quint16> changed{65535,65534,32768}; QVERIFY(original != changed);
+        clipboard["indices"] = QJsonArray{65535,65534,32768}; QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(clipboard).toJson()));
+        QSignalSpy indices(&panel,&CInspectorPanel::DrawableIndicesChanged); paste->click(); QCOMPARE(document.DrawableIndices(id),changed); QCOMPARE(indices.size(),1); QCOMPARE(history.size(),1);
+        panel.Undo(); QCOMPARE(document.DrawableIndices(id),original); panel.Redo(); QCOMPARE(document.DrawableIndices(id),changed);
+        document.ClearEditHistory(); indices.clear(); history.clear();
+        for (double invalid : {65536.0,-1.0,65535.5}) {
+            clipboard["indices"] = QJsonArray{0,1,invalid}; QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(clipboard).toJson())); bool rejected = false;
+            QTimer::singleShot(0,&panel,[&] { for (auto* message : panel.findChildren<QMessageBox*>()) { rejected = true; message->accept(); } }); paste->click();
+            QVERIFY(rejected); QCOMPARE(document.DrawableIndices(id),changed); QVERIFY(!document.CanUndoEdit()); QCOMPARE(indices.size(),0); QCOMPARE(history.size(),0); QCOMPARE(vertices->item(65535,0)->text(),QString("65535"));
+        }
+        WideMeshData::Fixture smaller; QVERIFY2(WideMeshData::make(65535,WideMeshData::Layout::Sparse,smaller,&error),qPrintable(error));
+        panel.SetDocument(nullptr); QVERIFY2(document.LoadBytes(smaller.bytes,"smaller-wide.moc3",&error),qPrintable(error)); panel.SetDocument(&document); panel.SetSelection(smaller.ids.first(),"artmesh");
+        const auto smallerBefore = document.DrawableIndices(smaller.ids.first()); clipboard["vertexCount"] = 65535; clipboard["indices"] = QJsonArray{0,1,65535}; QApplication::clipboard()->setText(QString::fromUtf8(QJsonDocument(clipboard).toJson()));
+        bool rejected = false; QTimer::singleShot(0,&panel,[&] { for (auto* message : panel.findChildren<QMessageBox*>()) { rejected = true; message->accept(); } }); paste->click();
+        QVERIFY(rejected); QCOMPARE(document.DrawableIndices(smaller.ids.first()),smallerBefore); QVERIFY(!document.CanUndoEdit());
+    }
     void invalidTopologyLeavesDocumentUnchanged()
     {
         live2dstruct::CModelDocument document;

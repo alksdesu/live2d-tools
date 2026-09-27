@@ -71,7 +71,7 @@ public:
 
 private:
     QImage RasterizeCanvasMesh(const QImage& atlas, const float* uvs, const float* positions, int vertexCount,
-                               const short* indices, int indexCount, const live2dstruct::CCanvas_info* canvas,
+                               const quint16* indices, int indexCount, const live2dstruct::CCanvas_info* canvas,
                                QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control);
     /// 从 atlas 中通过 UV 三角形网格光栅化提取 mesh 图像
     /// @param atlas 纹理图集图像
@@ -83,7 +83,7 @@ private:
     /// @return 裁剪后的 RGBA 图像
     QImage RasterizeMesh(const QImage& atlas,
                          const float* uvData, int vertexCount,
-                         const short* indexData, int indexCount,
+                         const quint16* indexData, int indexCount,
                          QRect& outUvRect, qint64& pixels, qint64& samples, CExportControl* control);
 
     /// 计算模型空间顶点在画布上的像素包围盒

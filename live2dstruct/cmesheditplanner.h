@@ -10,7 +10,7 @@ namespace live2dstruct {
 class CMeshEditPlanner
 {
 public:
-    static constexpr qint64 MaximumWork = 8000000;
+    static constexpr qint64 MaximumWork = 16000000;
     struct Edge {
         int a = -1;
         int b = -1;

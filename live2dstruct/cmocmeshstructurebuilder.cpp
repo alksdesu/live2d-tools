@@ -35,6 +35,87 @@ void appendIndex(QByteArray& bytes, int value)
     char encoded[2]; qToLittleEndian(quint16(value), encoded); bytes.append(encoded, 2);
 }
 
+struct AllocationFailure
+{
+    QString message;
+};
+
+class PoolSpace
+{
+public:
+    PoolSpace() = default;
+    PoolSpace(int count, QString label)
+        : highWater(count)
+        , label(std::move(label))
+    {
+        if (count < 0 || count > MaximumCount)
+            throw AllocationFailure { QStringLiteral("网格结构的 %1 数量超过 1000000").arg(this->label) };
+    }
+    void protect(int first, qint64 count)
+    {
+        if (!count) {
+            if (first < -1 || first > highWater)
+                throw AllocationFailure { QStringLiteral("网格结构的 %1 空引用范围无效").arg(label) };
+            return;
+        }
+        if (!range(first, count, highWater))
+            throw AllocationFailure { QStringLiteral("网格结构的 %1 存活引用越界").arg(label) };
+        occupied.append({ first, first + int(count) });
+    }
+    void prepare()
+    {
+        std::sort(occupied.begin(), occupied.end());
+        int end = 0;
+        for (const auto& interval : occupied) {
+            if (interval.first > end)
+                free.insert(end, interval.first);
+            end = std::max(end, interval.second);
+        }
+        if (end < MaximumCount)
+            free.insert(end, MaximumCount);
+        occupied.clear();
+    }
+    int allocate(int count, qint64& work)
+    {
+        if (count < 0 || count > MaximumCount)
+            throw AllocationFailure { QStringLiteral("网格结构的 %1 数量超过 1000000").arg(label) };
+        if (!count)
+            return 0;
+        for (auto it = free.begin(); it != free.end(); ++it) {
+            if (++work > 16000000)
+                throw AllocationFailure { QStringLiteral("网格结构空闲区间分配超过工作量限制") };
+            if (count > it.value() - it.key())
+                continue;
+            const int first = it.key(), end = it.value();
+            free.erase(it);
+            if (first + count < end)
+                free.insert(first + count, end);
+            highWater = std::max(highWater, first + count);
+            return first;
+        }
+        throw AllocationFailure { QStringLiteral("网格结构的 %1 没有足够连续空间，池数量限制为 1000000").arg(label) };
+    }
+    int size() const { return highWater; }
+
+private:
+    int highWater = 0;
+    QString label;
+    QVector<QPair<int, int>> occupied;
+    QMap<int, int> free;
+};
+
+struct Storage
+{
+    PoolSpace uvs, indices, positions, keyforms, bindings, glue;
+    qint64 references = 0, work = 0;
+    void reference(qint64 count = 1)
+    {
+        if (count < 0 || count > MaximumCount - references)
+            throw AllocationFailure { QStringLiteral("网格结构存活引用检查总数超过 1000000") };
+        references += count;
+    }
+};
+
 class Columns
 {
 public:
@@ -58,7 +139,12 @@ public:
         const auto found = state.columns.constFind(column.slot);
         if (found != state.columns.cend()) return *found;
         if (!column.offset) return {};
-        return bytes.mid(column.offset, column.count * column.width);
+        return originalData(name);
+    }
+    QByteArray originalData(const QByteArray& name) const
+    {
+        const auto& column = span(name);
+        return column.offset ? bytes.mid(column.offset, column.count * column.width) : QByteArray();
     }
     QByteArray cell(const QByteArray& name, int row) const
     {
@@ -82,52 +168,62 @@ public:
         const auto encoded = encodedInt(value);
         std::memcpy(found->data() + qint64(row) * 4, encoded.constData(), 4);
     }
-    int appendRows(const QByteArray& name, int first, int count)
+    void write(const QByteArray& name, int first, const QByteArray& payload, int count)
+    {
+        const auto& column = span(name);
+        if (count < counts.value(column.countIndex) || count > MaximumCount || payload.size() % column.width
+            || !range(first, payload.size() / column.width, count))
+            throw std::length_error("MOC reusable pool range mismatch");
+        auto& next = writable(name);
+        const qint64 required = qint64(count) * column.width;
+        if (next.size() < required)
+            next.append(QByteArray(required - next.size(), '\0'));
+        if (next.size() != required)
+            throw std::length_error("MOC reusable pool count mismatch");
+        if (!payload.isEmpty())
+            std::memcpy(next.data() + qint64(first) * column.width, payload.constData(), payload.size());
+        counts[column.countIndex] = count;
+        state.counts[column.countIndex] = count;
+    }
+    int copyRows(const QByteArray& name, int first, int count, PoolSpace& space, qint64& work)
     {
         const auto group = name.left(name.indexOf('.'));
         const auto& primary = span(name);
-        const int previous = counts.value(primary.countIndex);
-        if (!range(first, count, previous) || count > MaximumCount - previous) throw std::length_error("MOC mesh keyform count limit");
+        if (!range(first, count, primary.count))
+            throw std::length_error("MOC mesh original keyform range mismatch");
+        const int destination = space.allocate(count, work);
         for (auto it = spans.cbegin(); it != spans.cend(); ++it) {
             const auto& column = *it;
-            if (column.countIndex != primary.countIndex) continue;
-            if (column.optional && !column.offset && !state.columns.contains(column.slot)) continue;
-            if (data(it.key()).size() != qint64(previous) * column.width || !it.key().startsWith(group + '.'))
-                throw std::length_error("MOC mesh row group length mismatch");
-            QByteArray added;
-            {
-                const auto original = data(it.key());
-                added = QByteArray(original.constData() + qint64(first) * column.width, qint64(count) * column.width);
-            }
-            writable(it.key()).append(added);
+            if (column.countIndex != primary.countIndex)
+                continue;
+            if (column.optional && !column.offset)
+                continue;
+            if (!it.key().startsWith(group + '.'))
+                throw std::length_error("MOC mesh row group mismatch");
+            const auto original = originalData(it.key());
+            if (original.size() != qint64(primary.count) * column.width)
+                throw std::length_error("MOC mesh original row group length mismatch");
+            const auto payload = original.mid(qint64(first) * column.width, qint64(count) * column.width);
+            write(it.key(), destination, payload, space.size());
         }
-        counts[primary.countIndex] = previous + count; state.counts[primary.countIndex] = previous + count;
-        return previous;
+        return destination;
     }
-    int appendPool(const QByteArray& name, const QByteArray& payload)
+    int writePool(const QByteArray& name, const QByteArray& payload, PoolSpace& space, qint64& work)
     {
-        const auto& column = span(name); const int previous = counts.value(column.countIndex);
-        if (payload.size() % column.width || payload.size() / column.width > MaximumCount - previous)
-            throw std::length_error("MOC mesh pool count limit");
-        auto& next = writable(name);
-        if (next.size() != qint64(previous) * column.width) throw std::length_error("MOC mesh pool length mismatch");
-        next.append(payload);
-        counts[column.countIndex] = previous + payload.size() / column.width;
-        state.counts[column.countIndex] = counts[column.countIndex];
-        return previous;
+        const auto& column = span(name);
+        if (payload.size() % column.width)
+            throw std::length_error("MOC mesh reusable pool payload mismatch");
+        const int first = space.allocate(payload.size() / column.width, work);
+        write(name, first, payload, space.size());
+        return first;
     }
-    void appendGlue(const QByteArray& indices, const QByteArray& weights, int& begin)
+    void writeGlue(const QByteArray& indices, const QByteArray& weights, Storage& storage, int& begin)
     {
-        if (indices.size() % 2 || weights.size() != indices.size() * 2) throw std::length_error("Glue pair columns mismatch");
-        const auto& indexColumn = span("glue_info.position_indices");
-        begin = counts.value(indexColumn.countIndex);
-        const int added = indices.size() / 2;
-        if (added > MaximumCount - begin) throw std::length_error("Glue pair count limit");
-        if (data("glue_info.position_indices").size() != qint64(begin) * 2 || data("glue_info.weights").size() != qint64(begin) * 4)
-            throw std::length_error("Glue pair source length mismatch");
-        writable("glue_info.position_indices").append(indices);
-        writable("glue_info.weights").append(weights);
-        counts[indexColumn.countIndex] = begin + added; state.counts[indexColumn.countIndex] = begin + added;
+        if (indices.size() % 2 || weights.size() != indices.size() * 2)
+            throw std::length_error("Glue pair columns mismatch");
+        begin = storage.glue.allocate(indices.size() / 2, storage.work);
+        write("glue_info.position_indices", begin, indices, storage.glue.size());
+        write("glue_info.weights", begin, weights, storage.glue.size());
     }
     CMocParameterStructureBuilder::ColumnState state;
 private:
@@ -275,7 +371,7 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
         retargets.insert(key, index);
     }
     QSet<quint64> usedRetargets;
-    qint64 glueRows = table.glue_info.size(), traversedGlueRows = 0;
+    qint64 traversedGlueRows = 0;
     for (int index = 0; index < table.glue.size(); ++index) {
         const auto* glue = table.glue[index];
         const int a = glue->art_mesh_indices_a, b = glue->art_mesh_indices_b;
@@ -320,9 +416,6 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
             for (int side = 0; side < 2; ++side) { appendIndex(plan.indices, std::max(0, next[side])); appendFloat(plan.weights, info[side]->weights); }
         }
         if (changed) {
-            const qint64 added = qint64(plan.change.newPairCount) * 2;
-            if (added > MaximumCount - glueRows) return fail(error, QStringLiteral("重映射后的 Glue 条目超过 1000000"));
-            glueRows += added;
             result.impact.glues.append(plan.change); result.glues.append(std::move(plan));
         }
     }
@@ -330,46 +423,115 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
     return true;
 }
 
-bool validateOutputBudgets(const CSectionTable& table, const Plan& plan, QString* error)
+bool prepareStorage(const CSectionTable& table, const Plan& plan, Storage& storage, QString* error)
 {
-    qint64 keyforms = table.art_mesh_keyforms.size(), positions = table.keyform_positions->xys.size();
-    qint64 uvs = table.uvs->uvs.size(), indices = table.position_indices->indices.size();
-    qint64 bindings = table.blend_shape_keyform_bindings.size();
-    const auto reserve = [&](qint64& size, qint64 added, const QString& label) {
-        if (added < 0 || added > MaximumCount - size)
-            return fail(error, QStringLiteral("网格结构的 %1 数量超过 1000000").arg(label));
-        size += added; return true;
-    };
+    storage.uvs = PoolSpace(table.uvs->uvs.size(), QStringLiteral("UV"));
+    storage.indices = PoolSpace(table.position_indices->indices.size(), QStringLiteral("三角索引"));
+    storage.positions = PoolSpace(table.keyform_positions->xys.size(), QStringLiteral("关键形位置"));
+    storage.keyforms = PoolSpace(table.art_mesh_keyforms.size(), QStringLiteral("ArtMesh 关键形"));
+    storage.bindings = PoolSpace(table.blend_shape_keyform_bindings.size(), QStringLiteral("BlendShape 绑定"));
+    storage.glue = PoolSpace(table.glue_info.size(), QStringLiteral("Glue 信息"));
+    QSet<int> geometry, changedUvs, changedIndices, changedGlues;
     for (const auto& mesh : plan.meshes) {
-        if (mesh.topology && !reserve(indices, mesh.edit.indices.size(), QStringLiteral("三角索引"))) return false;
-        if (!mesh.geometry) continue;
-        if (mesh.uvChanged && !reserve(uvs, qint64(mesh.edit.vertices.size()) * 2, QStringLiteral("UV"))) return false;
-        const auto* source = table.art_meshes[mesh.index];
-        QSet<int> begins;
-        const auto addKeyforms = [&](int first, int count) {
-            if (!range(first, count, table.art_mesh_keyforms.size())) return fail(error, QStringLiteral("网格普通或 BlendShape 关键形越界"));
-            if (!reserve(keyforms, count, QStringLiteral("关键形"))) return false;
-            for (int row = first; row < first + count; ++row) {
-                const int begin = table.art_mesh_keyforms[row]->keyform_position_sources_begin_indices;
-                if (!range(begin, qint64(source->vertex_counts) * 2, table.keyform_positions->xys.size()))
-                    return fail(error, QStringLiteral("网格关键形位置切片越界"));
-                begins.insert(begin);
-            }
+        if (mesh.geometry)
+            geometry.insert(mesh.index);
+        if (mesh.uvChanged)
+            changedUvs.insert(mesh.index);
+        if (mesh.topology)
+            changedIndices.insert(mesh.index);
+    }
+    for (const auto& glue : plan.glues)
+        changedGlues.insert(glue.change.glueIndex);
+    const auto validReference = [](int first, int count, qint64 size) {
+        return count == 0 ? first >= -1 && first <= size : range(first, count, size);
+    };
+    QVector<int> warpVertices;
+    for (const auto* warp : table.warp_deformers) {
+        const qint64 count
+            = warp->rows >= 0 && warp->columns >= 0 ? (qint64(warp->rows) + 1) * (qint64(warp->columns) + 1) : 0;
+        if (count <= 0 || count > MaximumCount || count != warp->vertex_counts)
+            return fail(error, QStringLiteral("Warp 顶点数与网格行列定义不一致，不能回收关键形位置"));
+        warpVertices.append(int(count));
+    }
+    const auto artForms = [&](int first, int count, int vertices, bool released) {
+        storage.reference(count);
+        if (!validReference(first, count, table.art_mesh_keyforms.size()) || vertices < 0)
+            return fail(error, QStringLiteral("ArtMesh 存活关键形引用范围无效"));
+        if (released)
             return true;
-        };
-        if (!addKeyforms(source->keyform_sources_begin_indices, source->keyform_sources_counts)) return false;
-        for (const auto* shape : table.blend_shapes_art_meshes) {
-            if (shape->target_indices != mesh.index) continue;
-            const int first = shape->blend_shape_keyform_binding_sources_begin_indices, count = shape->blend_shape_keyform_binding_sources_counts;
-            if (!range(first, count, table.blend_shape_keyform_bindings.size())) return fail(error, QStringLiteral("ArtMesh BlendShape 绑定范围无效"));
-            if (!reserve(bindings, count, QStringLiteral("BlendShape 绑定"))) return false;
+        storage.keyforms.protect(first, count);
+        for (int row = first; row < first + count; ++row)
+            storage.positions.protect(
+                table.art_mesh_keyforms[row]->keyform_position_sources_begin_indices, qint64(vertices) * 2);
+        return true;
+    };
+    const auto warpForms = [&](int first, int count, int vertices) {
+        storage.reference(count);
+        if (!validReference(first, count, table.warp_deformer_keyforms.size()) || vertices < 0)
+            return fail(error, QStringLiteral("Warp 存活关键形引用范围无效"));
+        for (int row = first; row < first + count; ++row)
+            storage.positions.protect(
+                table.warp_deformer_keyforms[row]->keyform_position_sources_begin_indices, qint64(vertices) * 2);
+        return true;
+    };
+    for (int index = 0; index < table.art_meshes.size(); ++index) {
+        storage.reference();
+        const auto* mesh = table.art_meshes[index];
+        if (!changedUvs.contains(index))
+            storage.uvs.protect(mesh->uv_sources_begin_indices, qint64(mesh->vertex_counts) * 2);
+        if (!changedIndices.contains(index))
+            storage.indices.protect(mesh->position_index_sources_begin_indices, mesh->position_index_sources_counts);
+        if (!artForms(mesh->keyform_sources_begin_indices, mesh->keyform_sources_counts, mesh->vertex_counts,
+                geometry.contains(index)))
+            return false;
+    }
+    for (const auto* warp : table.warp_deformers) {
+        storage.reference();
+        if (!warpForms(warp->keyform_sources_begin_indices, warp->keyform_sources_counts, warp->vertex_counts))
+            return false;
+    }
+    enum class ShapeOwner { ArtMesh, Warp, Part, Rotation };
+    const auto shapes = [&](const auto& owners, ShapeOwner kind, int targetCount) {
+        for (const auto* shape : owners) {
+            storage.reference();
+            const int target = shape->target_indices;
+            const int first = shape->blend_shape_keyform_binding_sources_begin_indices;
+            const int count = shape->blend_shape_keyform_binding_sources_counts;
+            if (target < 0 || target >= targetCount
+                || !validReference(first, count, table.blend_shape_keyform_bindings.size()))
+                return fail(error, QStringLiteral("BlendShape 存活目标或绑定引用范围无效"));
+            const bool released = kind == ShapeOwner::ArtMesh && geometry.contains(target);
+            if (!released)
+                storage.bindings.protect(first, count);
+            storage.reference(count);
             for (int row = first; row < first + count; ++row) {
                 const auto* binding = table.blend_shape_keyform_bindings[row];
-                if (!addKeyforms(binding->keyform_sources_blend_shape_indices, binding->keyform_sources_blend_shape_counts)) return false;
+                if (kind == ShapeOwner::ArtMesh
+                    && !artForms(binding->keyform_sources_blend_shape_indices,
+                        binding->keyform_sources_blend_shape_counts, table.art_meshes[target]->vertex_counts, released))
+                    return false;
+                if (kind == ShapeOwner::Warp
+                    && !warpForms(binding->keyform_sources_blend_shape_indices,
+                        binding->keyform_sources_blend_shape_counts, warpVertices[target]))
+                    return false;
             }
         }
-        if (!reserve(positions, qint64(begins.size()) * mesh.edit.vertices.size() * 2, QStringLiteral("关键形位置"))) return false;
+        return true;
+    };
+    if (!shapes(table.blend_shapes_art_meshes, ShapeOwner::ArtMesh, table.art_meshes.size())
+        || !shapes(table.blend_shapes_warp_deformers, ShapeOwner::Warp, table.warp_deformers.size())
+        || !shapes(table.blend_shapes_parts, ShapeOwner::Part, table.parts.size())
+        || !shapes(table.blend_shapes_rotation_deformers, ShapeOwner::Rotation, table.rotation_deformers.size()))
+        return false;
+    for (int index = 0; index < table.glue.size(); ++index) {
+        storage.reference();
+        const auto* glue = table.glue[index];
+        if (!changedGlues.contains(index))
+            storage.glue.protect(glue->glue_info_sources_begin_indices, glue->glue_info_sources_counts);
     }
+    for (auto* pool :
+        { &storage.uvs, &storage.indices, &storage.positions, &storage.keyforms, &storage.bindings, &storage.glue })
+        pool->prepare();
     return true;
 }
 
@@ -403,21 +565,32 @@ bool resample(const std::vector<float>& source, int first, int oldCount, const M
 
 bool transform(const CSectionTable& table, const Plan& plan, Columns& columns, QString* error)
 {
+    if (plan.glues.isEmpty() && std::none_of(plan.meshes.cbegin(), plan.meshes.cend(), [](const MeshPlan& mesh) {
+            return mesh.geometry || mesh.topology;
+        }))
+        return true;
+    Storage storage;
+    if (!prepareStorage(table, plan, storage, error))
+        return false;
     for (const auto& mesh : plan.meshes) {
         const auto* source = table.art_meshes[mesh.index];
         if (mesh.geometry) {
             columns.set("art_meshes.vertex_counts", mesh.index, mesh.edit.vertices.size());
-            if (mesh.uvChanged) columns.set("art_meshes.uv_sources_begin_indices", mesh.index, columns.appendPool("uvs.uvs", mesh.uvs));
+            if (mesh.uvChanged)
+                columns.set("art_meshes.uv_sources_begin_indices", mesh.index,
+                    columns.writePool("uvs.uvs", mesh.uvs, storage.uvs, storage.work));
             QHash<int, int> positions;
             const auto cloneRows = [&](int first, int count, int& newFirst) {
                 if (!range(first, count, table.art_mesh_keyforms.size())) return fail(error, QStringLiteral("网格普通或 BlendShape 关键形越界"));
-                newFirst = columns.appendRows("art_mesh_keyforms.opacities", first, count);
+                newFirst
+                    = columns.copyRows("art_mesh_keyforms.opacities", first, count, storage.keyforms, storage.work);
                 for (int local = 0; local < count; ++local) {
                     const int begin = table.art_mesh_keyforms[first + local]->keyform_position_sources_begin_indices;
                     if (!positions.contains(begin)) {
                         QByteArray values;
                         if (!resample(table.keyform_positions->xys, begin, source->vertex_counts, mesh, values, error)) return false;
-                        positions.insert(begin, columns.appendPool("keyform_positions.xys", values));
+                        positions.insert(
+                            begin, columns.writePool("keyform_positions.xys", values, storage.positions, storage.work));
                     }
                     columns.set("art_mesh_keyforms.keyform_position_sources_begin_indices", newFirst + local, positions.value(begin));
                 }
@@ -433,7 +606,9 @@ bool transform(const CSectionTable& table, const Plan& plan, Columns& columns, Q
                 const int bindingCount = shape->blend_shape_keyform_binding_sources_counts;
                 if (!range(firstBinding, bindingCount, table.blend_shape_keyform_bindings.size()))
                     return fail(error, QStringLiteral("ArtMesh BlendShape 绑定范围无效"));
-                const int newBinding = columns.appendRows("blend_shape_keyform_bindings.parameter_binding_sources_indices", firstBinding, bindingCount);
+                const int newBinding
+                    = columns.copyRows("blend_shape_keyform_bindings.parameter_binding_sources_indices", firstBinding,
+                        bindingCount, storage.bindings, storage.work);
                 columns.set("blend_shapes_art_meshes.blend_shape_keyform_binding_sources_begin_indices", shapeIndex, newBinding);
                 for (int index = 0; index < bindingCount; ++index) {
                     const auto* binding = table.blend_shape_keyform_bindings[firstBinding + index];
@@ -445,12 +620,14 @@ bool transform(const CSectionTable& table, const Plan& plan, Columns& columns, Q
         if (mesh.topology) {
             QByteArray values; values.reserve(mesh.edit.indices.size() * 2);
             for (quint16 index : mesh.edit.indices) appendIndex(values, index);
-            columns.set("art_meshes.position_index_sources_begin_indices", mesh.index, columns.appendPool("position_indices.indices", values));
+            columns.set("art_meshes.position_index_sources_begin_indices", mesh.index,
+                columns.writePool("position_indices.indices", values, storage.indices, storage.work));
             columns.set("art_meshes.position_index_sources_counts", mesh.index, mesh.edit.indices.size());
         }
     }
     for (const auto& glue : plan.glues) {
-        int begin; columns.appendGlue(glue.indices, glue.weights, begin);
+        int begin;
+        columns.writeGlue(glue.indices, glue.weights, storage, begin);
         columns.set("glue.glue_info_sources_begin_indices", glue.change.glueIndex, begin);
         columns.set("glue.glue_info_sources_counts", glue.change.glueIndex, glue.change.newPairCount * 2);
     }
@@ -465,30 +642,47 @@ template<class Operation> bool execute(const QByteArray& base, QString* error, O
         if (!table.IsValid() || base.size() < 8 || quint8(base[5]) != 0)
             return fail(error, QStringLiteral("网格结构需要有效的小端 MOC：%1").arg(reader.Error()));
         return operation(table);
-    } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备网格结构，原模型保持不变")); }
+    } catch (const AllocationFailure& rejected) {
+        return fail(error, rejected.message);
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("无法准备网格结构，原模型保持不变"));
+    }
 }
 }
 
 bool CMocMeshStructureBuilder::Analyze(const QByteArray& base, const Request& request, Impact& result, QString* error)
 {
     return execute(base, error, [&](const CSectionTable& table) {
-        Plan plan; if (!makePlan(table, request, plan, error) || !validateOutputBudgets(table, plan, error)) return false;
-        result = std::move(plan.impact); return true;
+        Plan plan;
+        if (!makePlan(table, request, plan, error))
+            return false;
+        Columns columns(base, table);
+        if (!transform(table, plan, columns, error))
+            return false;
+        result = std::move(plan.impact);
+        return true;
     });
 }
 
 bool CMocMeshStructureBuilder::Build(const QByteArray& base, const Request& request, Result& result, QString* error)
 {
     return execute(base, error, [&](const CSectionTable& table) {
-        Plan plan; if (!makePlan(table, request, plan, error) || !validateOutputBudgets(table, plan, error)) return false;
-        if (!plan.impact.blockingReasons.isEmpty()) return fail(error, plan.impact.blockingReasons.join(QLatin1Char('\n')));
+        Plan plan;
+        if (!makePlan(table, request, plan, error))
+            return false;
+        if (!plan.impact.blockingReasons.isEmpty())
+            return fail(error, plan.impact.blockingReasons.join(QLatin1Char('\n')));
         Columns columns(base, table);
-        if (!transform(table, plan, columns, error)) return false;
+        if (!transform(table, plan, columns, error))
+            return false;
         Result candidate;
-        if (!CMocParameterStructureBuilder::BuildColumnState(base, columns.state, candidate.bytes, error)) return false;
+        if (!CMocParameterStructureBuilder::BuildColumnState(base, columns.state, candidate.bytes, error))
+            return false;
         candidate.state = std::move(columns.state);
-        candidate.meshes = std::move(plan.impact.meshes); candidate.glues = std::move(plan.impact.glues);
-        result = std::move(candidate); return true;
+        candidate.meshes = std::move(plan.impact.meshes);
+        candidate.glues = std::move(plan.impact.glues);
+        result = std::move(candidate);
+        return true;
     });
 }
 }

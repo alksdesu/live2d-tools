@@ -38,7 +38,7 @@ public:
 
 class CTrianglMesh{
 public:
-    CTrianglMesh(int ebosize,const short* vetebo,int uvsize,const float* vetuv,const float* vetpos);
+    CTrianglMesh(int ebosize,const quint16* vetebo,int uvsize,const float* vetuv,const float* vetpos);
     ~CTrianglMesh();
     CTrianglMesh(const CTrianglMesh&) = delete;
     CTrianglMesh& operator=(const CTrianglMesh&) = delete;
@@ -50,7 +50,7 @@ public:
     void MoveSelected(const QVector2D& delta);
     QVector<float> Positions() const;
     void DeleteEdge(int satat,int end);
-    const short* GetEBOIndex() const;
+    const quint16* GetEBOIndex() const;
     const int GetEBOSize()const ;
     const float* GetUV() const;
     const float* GetPos() const ;
@@ -74,7 +74,7 @@ private:
     std::vector<CTriangl*> vetTriangl;//一系列组合三角形
 
 
-    std::vector<short> vetebo;    //这个通过计算获取
+    std::vector<quint16> vetebo;    //这个通过计算获取
     std::vector<float> vetuv;
     std::vector<float> vetpos;
     QRectF m_meshRect;

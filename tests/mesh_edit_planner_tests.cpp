@@ -1,9 +1,12 @@
+#include "live2dstruct/cboundsspatial.h"
 #include "live2dstruct/cmesheditplanner.h"
 #include "opengl/cuvgeometry.h"
-#include <QtTest>
 #include <QMap>
+#include <QtTest>
 #include <cmath>
 #include <limits>
+#include <random>
+#include <set>
 
 using namespace live2dstruct;
 using Planner = CMeshEditPlanner;
@@ -84,6 +87,146 @@ class MeshEditPlannerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void spatialPairsMatchIndependentExhaustiveOracle()
+    {
+        using Box = CBoundsSpatial::Box;
+        std::mt19937 random(13891);
+        QVector<Box> boxes;
+        for (int i = 0; i < 400; ++i) {
+            const double x = int(random() % 100) - 50, y = int(random() % 100) - 50;
+            boxes.append({ x, x + int(random() % 15), y, y + int(random() % 15) });
+        }
+        const double huge = std::numeric_limits<double>::max();
+        boxes.append({ -huge, huge, -huge, huge });
+        boxes.append({ 0, 0, -huge, huge });
+        boxes.append({ -huge, huge, 0, 0 });
+        for (bool interior : { false, true }) {
+            std::set<std::pair<int, int>> expected, actual;
+            for (int i = 0; i < boxes.size(); ++i)
+                for (int j = i + 1; j < boxes.size(); ++j) {
+                    const auto a = boxes[i], b = boxes[j];
+                    const double width = std::min(a.right, b.right) - std::max(a.left, b.left);
+                    const double height = std::min(a.bottom, b.bottom) - std::max(a.top, b.top);
+                    if (interior ? width > 0 && height > 0 : width >= 0 && height >= 0)
+                        expected.emplace(i, j);
+                }
+            qint64 work = 0;
+            const auto spend = [&] { ++work; };
+            const CBoundsSpatial index(boxes, spend);
+            index.pairs(interior, spend, [&](int i, int j) { QVERIFY(actual.emplace(i, j).second); });
+            QCOMPARE(actual, expected);
+            QVERIFY(work < 100000);
+        }
+    }
+
+    void spatialQueryFreezesInputsAndHonorsBudget()
+    {
+        QVector<CBoundsSpatial::Box> boxes { { 0, 0, 0, 0 }, { 1, 1, 1, 1 }, { 2, 2, 2, 2 } };
+        int work = 0;
+        const CBoundsSpatial index(
+            boxes,
+            [&] {
+                boxes.clear();
+                ++work;
+            },
+            CBoundsSpatial::Usage::Queries);
+        QVector<int> result;
+        index.query({ 0, 1, 0, 1 }, [&] { ++work; }, [&](int i) { result.append(i); });
+        std::sort(result.begin(), result.end());
+        QCOMPARE(result, (QVector<int> { 0, 1 }));
+        QVERIFY(work > 0);
+        struct Cancelled
+        {
+        };
+        QVERIFY_EXCEPTION_THROWN(index.pairs(false, [] { throw Cancelled { }; }, [](int, int) { }), Cancelled);
+        QVERIFY_EXCEPTION_THROWN(
+            CBoundsSpatial((QVector<CBoundsSpatial::Box> { { 1, 0, 0, 0 } }), [] { }), std::invalid_argument);
+    }
+
+    void spatialContactsAndNestedIntervalsRemainVisible()
+    {
+        using Box = CBoundsSpatial::Box;
+        const QVector<Box> boxes { { 0, 2, 0, 2 }, { 2, 4, 2, 4 }, { 2, 2, 2, 2 },
+            { -100, 100, 1, 1 }, { 1, 1, -100, 100 }, { -4, 4, -4, 4 }, { -.5, .5, -.5, .5 } };
+        const CBoundsSpatial index(boxes, [] { }, CBoundsSpatial::Usage::Queries);
+        for (bool interior : { false, true }) {
+            std::set<std::pair<int, int>> pairs;
+            index.pairs(interior, [] { }, [&](int i, int j) { QVERIFY(pairs.emplace(i, j).second); });
+            for (int i = 0; i < boxes.size(); ++i)
+                for (int j = i + 1; j < boxes.size(); ++j) {
+                    const auto a = boxes[i], b = boxes[j];
+                    const double width = std::min(a.right, b.right) - std::max(a.left, b.left);
+                    const double height = std::min(a.bottom, b.bottom) - std::max(a.top, b.top);
+                    const bool expected = interior ? width > 0 && height > 0 : width >= 0 && height >= 0;
+                    QCOMPARE(pairs.count({ i, j }) != 0, expected);
+                }
+        }
+        for (const auto query : boxes) {
+            QSet<int> actual;
+            index.query(query, [] { }, [&](int i) { QVERIFY(!actual.contains(i)); actual.insert(i); });
+            for (int i = 0; i < boxes.size(); ++i) {
+                const auto box = boxes[i];
+                const bool expected = std::max(query.left, box.left) <= std::min(query.right, box.right)
+                    && std::max(query.top, box.top) <= std::min(query.bottom, box.bottom);
+                QCOMPARE(actual.contains(i), expected);
+            }
+        }
+    }
+
+    void pathologicalOverlapStillFailsWithinWorkBudget()
+    {
+        Planner::Input input;
+        input.artMeshId = "ParallelStrips";
+        for (int i = 0; i < 2500; ++i) {
+            const int first = input.positions.size() / 2;
+            const float y = i * 2;
+            input.positions.append({ 0, y, 1, y + 20000, 1, y + 20000.5f, 0, y + .5f });
+            input.indices.append({ quint16(first), quint16(first + 1), quint16(first + 2),
+                quint16(first), quint16(first + 2), quint16(first + 3) });
+        }
+        Planner::Result output;
+        output.edit.artMeshId = "sentinel";
+        output.edit.indices = { 9, 8, 7 };
+        Planner::Diagnostic diagnostic;
+        QVERIFY(!Planner::Connect(input, 0, 1, Planner::CrossingPolicy::RejectProtected, output, &diagnostic));
+        QCOMPARE(diagnostic.code, Planner::Code::LimitExceeded);
+        QCOMPARE(output.edit.artMeshId, QString("sentinel"));
+        QCOMPARE(output.edit.indices, (QVector<quint16> { 9, 8, 7 }));
+    }
+
+    void fullUnsignedGridSupportsLocalEditing()
+    {
+        const auto input = grid(255, 255);
+        QCOMPARE(input.positions.size() / 2, 65536);
+        QCOMPARE(input.indices.size(), 390150);
+        QSet<int> used;
+        for (quint16 vertex : input.indices)
+            used.insert(vertex);
+        QCOMPARE(used.size(), 65536);
+        Planner::Result connected, removed, inserted;
+        Planner::Diagnostic diagnostic;
+        QVERIFY2(
+            Planner::Connect(input, 65279, 65534, Planner::CrossingPolicy::RejectProtected, connected, &diagnostic),
+            qPrintable(diagnostic.message));
+        QVERIFY(hasEdge(connected.edit.indices, 65279, 65534));
+        QVERIFY(!hasEdge(connected.edit.indices, 65278, 65535));
+        QCOMPARE(connected.edit.vertices.size(), 65536);
+        QVERIFY2(Planner::Delete(input, { 65021 }, Planner::BoundaryPolicy::PreserveBoundary, removed, &diagnostic),
+            qPrintable(diagnostic.message));
+        QCOMPARE(removed.edit.vertices.size(), 65535);
+        QCOMPARE(removed.edit.oldToNew[65021], -1);
+        QCOMPARE(removed.edit.oldToNew[65535], 65534);
+        const auto reduced = applied(input, removed);
+        QVERIFY2(Planner::Insert(reduced, { 253, 253 }, -1, inserted, &diagnostic), qPrintable(diagnostic.message));
+        QCOMPARE(inserted.edit.vertices.size(), 65536);
+        QCOMPARE(inserted.insertedVertices, (QVector<int> { 65535 }));
+        QVERIFY(inserted.edit.indices.contains(65535));
+        const auto before = inserted.edit.indices;
+        QVERIFY(!Planner::Insert(input, { .25, .5 }, -1, inserted, &diagnostic));
+        QCOMPARE(diagnostic.code, Planner::Code::LimitExceeded);
+        QCOMPARE(inserted.edit.indices, before);
+    }
+
     void fullReconstructionCoversTheConvexHull_data()
     {
         QTest::addColumn<Planner::Input>("input");

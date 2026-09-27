@@ -1,9 +1,10 @@
 #include "live2dstruct/cmocmeshstructurebuilder.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/csectionvalidation.h"
-#include <QtTest>
+#include "wide_mesh_fixture.h"
 #include <QFile>
 #include <QtEndian>
+#include <QtTest>
 #include <cmath>
 #include <limits>
 
@@ -20,11 +21,417 @@ Builder::MeshEdit identity(const CSectionTable& table, int index) {
     for (int i = 0; i < mesh->position_index_sources_counts; ++i) result.indices.append(quint16(table.position_indices->indices[mesh->position_index_sources_begin_indices + i]));
     return result;
 }
+QMap<QString, QByteArray> livePositions(const QByteArray& bytes, const CSectionTable& table, int omittedMesh)
+{
+    QMap<QString, QByteArray> result;
+    const auto slice = [&](const QString& key, int first, int vertices) {
+        result.insert(
+            key, bytes.mid(table.sectionOffsetTable->keyform_positions->xys + qint64(first) * 4, qint64(vertices) * 8));
+    };
+    for (int mesh = 0; mesh < table.art_meshes.size(); ++mesh) {
+        if (mesh == omittedMesh)
+            continue;
+        const auto* owner = table.art_meshes[mesh];
+        for (int row = 0; row < owner->keyform_sources_counts; ++row)
+            slice(QString("mesh/%1/%2").arg(mesh).arg(row),
+                table.art_mesh_keyforms[owner->keyform_sources_begin_indices + row]
+                    ->keyform_position_sources_begin_indices,
+                owner->vertex_counts);
+    }
+    for (int warp = 0; warp < table.warp_deformers.size(); ++warp) {
+        const auto* owner = table.warp_deformers[warp];
+        for (int row = 0; row < owner->keyform_sources_counts; ++row)
+            slice(QString("warp/%1/%2").arg(warp).arg(row),
+                table.warp_deformer_keyforms[owner->keyform_sources_begin_indices + row]
+                    ->keyform_position_sources_begin_indices,
+                owner->vertex_counts);
+    }
+    const auto shapes = [&](const auto& owners, bool warp) {
+        for (int index = 0; index < owners.size(); ++index) {
+            const auto* shape = owners[index];
+            if (!warp && shape->target_indices == omittedMesh)
+                continue;
+            const int vertices = warp ? table.warp_deformers[shape->target_indices]->vertex_counts
+                                      : table.art_meshes[shape->target_indices]->vertex_counts;
+            for (int binding = 0; binding < shape->blend_shape_keyform_binding_sources_counts; ++binding) {
+                const auto* item
+                    = table.blend_shape_keyform_bindings[shape->blend_shape_keyform_binding_sources_begin_indices
+                        + binding];
+                for (int row = 0; row < item->keyform_sources_blend_shape_counts; ++row) {
+                    const int key = item->keyform_sources_blend_shape_indices + row;
+                    slice(QString("blend/%1/%2/%3/%4").arg(warp).arg(index).arg(binding).arg(row),
+                        warp ? table.warp_deformer_keyforms[key]->keyform_position_sources_begin_indices
+                             : table.art_mesh_keyforms[key]->keyform_position_sources_begin_indices,
+                        vertices);
+                }
+            }
+        }
+    };
+    shapes(table.blend_shapes_art_meshes, false);
+    shapes(table.blend_shapes_warp_deformers, true);
+    return result;
+}
+QByteArray versionFive(QByteArray bytes)
+{
+    const auto get = [&](int offset) { return qFromLittleEndian<qint32>(bytes.constData() + offset); };
+    const auto put = [&](int offset, int value) { qToLittleEndian(qint32(value), bytes.data() + offset); };
+    if (bytes.size() < 0x840 || bytes[4] != 3)
+        return { };
+    const int counts = get(0x40), canvas = get(0x44);
+    bytes.insert(canvas, QByteArray(64, '\0'));
+    for (int slot = 0x40; slot < counts; slot += 4)
+        if (get(slot) >= canvas)
+            put(slot, get(slot) + 64);
+    bytes[4] = 5;
+    put(counts + 32 * 4, 0);
+    put(counts + 33 * 4, 0);
+    return bytes;
+}
+void integerColumn(DeformerReplayFixture::RawColumns& raw, const QByteArray& name, const QVector<int>& values)
+{
+    const auto span = raw.spans.value(name);
+    QByteArray payload;
+    for (int value : values) {
+        char encoded[4];
+        qToLittleEndian(qint32(value), encoded);
+        payload.append(encoded, 4);
+    }
+    raw.state.columns[span.slot] = payload;
+    raw.state.counts[span.countIndex] = values.size();
+}
+QVector<int> poolCounts(const CSectionTable& table)
+{
+    return { int(table.uvs->uvs.size()), int(table.position_indices->indices.size()),
+        int(table.keyform_positions->xys.size()), int(table.art_mesh_keyforms.size()),
+        int(table.blend_shape_keyform_bindings.size()), int(table.glue_info.size()) };
+}
 }
 class MocMeshStructureTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void repeatedWideEditsReuseEveryPoolWithoutChangingOtherOwners()
+    {
+        WideMeshData::Fixture fixture;
+        QString error;
+        QVERIFY2(WideMeshData::make(65536, WideMeshData::Layout::Grid, fixture, &error, 1, 2), qPrintable(error));
+        QByteArray current = fixture.bytes;
+        QVector<int> stableCounts;
+        for (int round = 0; round < 12; ++round) {
+            for (bool insert : { false, true }) {
+                const auto original = current;
+                auto reader = CReader::FromBytes(current);
+                CSectionTable table(reader);
+                QVERIFY(table.IsValid());
+                int target = -1;
+                for (int i = 0; i < table.art_meshes.size(); ++i)
+                    if (table.art_meshes[i]->ids == fixture.ids.first())
+                        target = i;
+                QVERIFY(target >= 0);
+                auto edit = identity(table, target);
+                const auto siblings = livePositions(current, table, target);
+                if (insert) {
+                    edit.vertices.append({ { 65278, 65279, 65534 }, { .25, .25, .5 } });
+                    edit.indices.append({ 65533, 65534, 65535 });
+                } else {
+                    edit.vertices.removeLast();
+                    edit.oldToNew.last() = -1;
+                    QVector<quint16> kept;
+                    for (int i = 0; i < edit.indices.size(); i += 3)
+                        if (edit.indices[i] != 65535 && edit.indices[i + 1] != 65535 && edit.indices[i + 2] != 65535)
+                            kept.append({ edit.indices[i], edit.indices[i + 1], edit.indices[i + 2] });
+                    edit.indices = kept;
+                }
+                Builder::Request request;
+                request.meshes = { edit };
+                Builder::Impact impact;
+                QVERIFY2(Builder::Analyze(current, request, impact, &error), qPrintable(error));
+                QVERIFY(impact.blockingReasons.isEmpty());
+                Builder::Result result;
+                QVERIFY2(Builder::Build(current, request, result, &error), qPrintable(error));
+                QCOMPARE(current, original);
+                auto afterReader = CReader::FromBytes(result.bytes);
+                CSectionTable after(afterReader);
+                QVERIFY(after.IsValid());
+                QCOMPARE(livePositions(result.bytes, after, target), siblings);
+                QCOMPARE(after.art_meshes[target]->vertex_counts, insert ? 65536 : 65535);
+                const auto counts = poolCounts(after);
+                if (round)
+                    QCOMPARE(counts, stableCounts);
+                if (insert && !round)
+                    stableCounts = counts;
+                current = result.bytes;
+            }
+        }
+    }
+
+    void fragmentedFreeSpaceRejectsAtomically()
+    {
+        const auto original = source("Mark");
+        auto reader = CReader::FromBytes(original);
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        DeformerReplayFixture::RawColumns raw(original);
+        const auto span = raw.spans.value("position_indices.indices");
+        raw.state.columns[span.slot] = QByteArray(2000000, '\0');
+        raw.state.counts[span.countIndex] = 1000000;
+        for (int i = 0; i < table.art_meshes.size(); ++i) {
+            raw.set("art_meshes.position_index_sources_begin_indices", i,
+                i == 0 ? 0 : int(qint64(i) * 1000000 / table.art_meshes.size()));
+            raw.set("art_meshes.position_index_sources_counts", i, 3);
+        }
+        QString error;
+        const auto bytes = raw.encode(&error);
+        QVERIFY2(!bytes.isEmpty(), qPrintable(error));
+        auto loadedReader = CReader::FromBytes(bytes);
+        CSectionTable loaded(loadedReader);
+        auto edit = identity(loaded, 0);
+        edit.indices.clear();
+        for (int i = 0; i < 130050; ++i)
+            edit.indices.append({ 0, 1, 2 });
+        Builder::Request request;
+        request.meshes = { edit };
+        Builder::Result result;
+        result.bytes = "sentinel";
+        QVERIFY(!Builder::Build(bytes, request, result, &error));
+        QVERIFY(error.contains(QStringLiteral("连续空间")));
+        QCOMPARE(result.bytes, QByteArray("sentinel"));
+        Builder::Impact impact;
+        impact.blockingReasons = { "sentinel" };
+        QVERIFY(!Builder::Analyze(bytes, request, impact, &error));
+        QCOMPARE(impact.blockingReasons, QStringList { "sentinel" });
+    }
+
+    void sharedBlendBindingsStayProtectedForEveryOwnerType_data()
+    {
+        QTest::addColumn<int>("kind");
+        for (int kind = 0; kind < 4; ++kind)
+            QTest::newRow(qPrintable(QString::number(kind))) << kind;
+    }
+    void sharedBlendBindingsStayProtectedForEveryOwnerType()
+    {
+        QFETCH(int, kind);
+        const auto base = versionFive(source("Mark"));
+        auto baseReader = CReader::FromBytes(base);
+        CSectionTable original(baseReader);
+        QVERIFY2(original.IsValid(), qPrintable(baseReader.Error()));
+        int target = 0;
+        for (int i = 1; i < original.art_meshes.size(); ++i)
+            if (original.art_meshes[i]->vertex_counts < original.art_meshes[target]->vertex_counts)
+                target = i;
+        const int peer = target == 0 ? 1 : 0;
+        DeformerReplayFixture::RawColumns raw(base);
+        integerColumn(raw, "blend_shape_keyform_bindings.parameter_binding_sources_indices", { 0 });
+        integerColumn(raw, "blend_shape_keyform_bindings.keyform_sources_blend_shape_indices", { 0 });
+        integerColumn(raw, "blend_shape_keyform_bindings.keyform_sources_blend_shape_counts", { 1 });
+        integerColumn(raw, "blend_shape_keyform_bindings.blend_shape_constraint_index_sources_begin_indices", { 0 });
+        integerColumn(raw, "blend_shape_keyform_bindings.blend_shape_constraint_index_sources_counts", { 0 });
+        const QVector<QByteArray> groups { "blend_shapes_art_meshes", "blend_shapes_warp_deformers",
+            "blend_shapes_parts", "blend_shapes_rotation_deformers" };
+        for (int i = 0; i < groups.size(); ++i) {
+            QVector<int> targets;
+            if (i == 0)
+                targets.append(target);
+            if (i == kind)
+                targets.append(i == 0 ? peer : 0);
+            integerColumn(raw, groups[i] + ".target_indices", targets);
+            integerColumn(
+                raw, groups[i] + ".blend_shape_keyform_binding_sources_begin_indices", QVector<int>(targets.size(), 0));
+            integerColumn(
+                raw, groups[i] + ".blend_shape_keyform_binding_sources_counts", QVector<int>(targets.size(), 1));
+        }
+        QString error;
+        QByteArray current = raw.encode(&error);
+        QVERIFY2(!current.isEmpty(), qPrintable(error));
+        int stableBindings = -1, stableRows = -1;
+        for (int round = 0; round < 12; ++round) {
+            auto reader = CReader::FromBytes(current);
+            CSectionTable table(reader);
+            QVERIFY(table.IsValid());
+            const auto siblings = livePositions(current, table, target);
+            auto edit = identity(table, target);
+            edit.vertices.append({ { 0, 1 }, { .25, .75 } });
+            Builder::Request request;
+            request.meshes = { edit };
+            Builder::Result result;
+            QVERIFY2(Builder::Build(current, request, result, &error), qPrintable(error));
+            auto afterReader = CReader::FromBytes(result.bytes);
+            CSectionTable after(afterReader);
+            QVERIFY(after.IsValid());
+            QCOMPARE(livePositions(result.bytes, after, target), siblings);
+            const int rewritten
+                = after.blend_shapes_art_meshes.first()->blend_shape_keyform_binding_sources_begin_indices;
+            QVERIFY(rewritten != 0);
+            const DeformerReplayFixture::RawColumns afterColumns(result.bytes);
+            for (const auto& span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
+                if (!QByteArray(span.name).startsWith("blend_shape_keyform_bindings."))
+                    continue;
+                const auto newOffset = afterColumns.spans.value(span.name).offset;
+                QCOMPARE(result.bytes.mid(newOffset, span.width), current.mid(span.offset, span.width));
+            }
+            if (round) {
+                QCOMPARE(after.blend_shape_keyform_bindings.size(), stableBindings);
+                QCOMPARE(after.art_mesh_keyforms.size(), stableRows);
+            } else {
+                stableBindings = after.blend_shape_keyform_bindings.size();
+                stableRows = after.art_mesh_keyforms.size();
+            }
+            current = result.bytes;
+        }
+    }
+
+    void repeatedGlueRemapsReuseTheCoupledPool()
+    {
+        QByteArray current = source("Natori");
+        QVector<int> stableCounts;
+        for (int round = 0; round < 12; ++round) {
+            auto reader = CReader::FromBytes(current);
+            CSectionTable table(reader);
+            QVERIFY(table.IsValid());
+            QVERIFY(!table.glue.isEmpty());
+            const int target = table.glue.first()->art_mesh_indices_a;
+            auto edit = identity(table, target);
+            QVERIFY(edit.vertices.size() >= 2);
+            std::swap(edit.vertices[0], edit.vertices[1]);
+            std::swap(edit.oldToNew[0], edit.oldToNew[1]);
+            for (auto& index : edit.indices)
+                index = edit.oldToNew[index];
+            Builder::Request request;
+            request.meshes = { edit };
+            Builder::Result result;
+            QString error;
+            QVERIFY2(Builder::Build(current, request, result, &error), qPrintable(error));
+            auto afterReader = CReader::FromBytes(result.bytes);
+            CSectionTable after(afterReader);
+            QVERIFY(after.IsValid());
+            if (round)
+                QCOMPARE(poolCounts(after), stableCounts);
+            else
+                stableCounts = poolCounts(after);
+            for (int glue = 0; glue < table.glue.size(); ++glue) {
+                const auto* before = table.glue[glue];
+                const auto* next = after.glue[glue];
+                QCOMPARE(next->glue_info_sources_counts, before->glue_info_sources_counts);
+                for (int i = 0; i < before->glue_info_sources_counts; ++i) {
+                    const auto* a = table.glue_info[before->glue_info_sources_begin_indices + i];
+                    const auto* b = after.glue_info[next->glue_info_sources_begin_indices + i];
+                    const bool affected = (i % 2 ? before->art_mesh_indices_b : before->art_mesh_indices_a) == target;
+                    QCOMPARE(b->position_indices, affected ? edit.oldToNew[a->position_indices] : a->position_indices);
+                    QCOMPARE(b->weights, a->weights);
+                }
+            }
+            current = result.bytes;
+        }
+    }
+
+    void aLongerWarpSliceProtectsTheFullSharedPositionRange()
+    {
+        auto bytes = source("Mark");
+        auto reader = CReader::FromBytes(bytes);
+        CSectionTable original(reader);
+        int target = -1, warpIndex = -1, shared = -1;
+        for (int mesh = 0; mesh < original.art_meshes.size() && target < 0; ++mesh) {
+            const auto* art = original.art_meshes[mesh];
+            if (art->vertex_counts < 2 || art->keyform_sources_counts <= 0)
+                continue;
+            const int begin = original.art_mesh_keyforms[art->keyform_sources_begin_indices]
+                                  ->keyform_position_sources_begin_indices;
+            for (int warp = 0; warp < original.warp_deformers.size(); ++warp) {
+                const auto* owner = original.warp_deformers[warp];
+                if (owner->vertex_counts > art->vertex_counts && owner->keyform_sources_counts > 0
+                    && begin + owner->vertex_counts * 2 <= original.keyform_positions->xys.size()) {
+                    target = mesh;
+                    warpIndex = warp;
+                    shared = begin;
+                    break;
+                }
+            }
+        }
+        QVERIFY(target >= 0);
+        const int row = original.warp_deformers[warpIndex]->keyform_sources_begin_indices;
+        qToLittleEndian(qint32(shared),
+            bytes.data() + original.sectionOffsetTable->warp_deformer_keyforms->keyform_position_sources_begin_indices
+                + row * 4);
+        auto changedReader = CReader::FromBytes(bytes);
+        CSectionTable changed(changedReader);
+        QVERIFY(changed.IsValid());
+        const auto others = livePositions(bytes, changed, target);
+        auto edit = identity(changed, target);
+        edit.vertices.append({ { 0, 1 }, { .25, .75 } });
+        Builder::Request request;
+        request.meshes = { edit };
+        Builder::Result result;
+        QString error;
+        QVERIFY2(Builder::Build(bytes, request, result, &error), qPrintable(error));
+        auto afterReader = CReader::FromBytes(result.bytes);
+        CSectionTable after(afterReader);
+        QVERIFY(after.IsValid());
+        QCOMPARE(livePositions(result.bytes, after, target), others);
+        const int preserved = after.warp_deformer_keyforms[row]->keyform_position_sources_begin_indices;
+        QCOMPARE(preserved, shared);
+        QCOMPARE(result.bytes.mid(after.sectionOffsetTable->keyform_positions->xys + shared * 4,
+                     after.warp_deformers[warpIndex]->vertex_counts * 8),
+            bytes.mid(changed.sectionOffsetTable->keyform_positions->xys + shared * 4,
+                changed.warp_deformers[warpIndex]->vertex_counts * 8));
+    }
+
+    void malformedWarpReadDomainCannotBeReclaimed()
+    {
+        auto bytes = source("Mark");
+        auto reader = CReader::FromBytes(bytes);
+        CSectionTable table(reader);
+        QVERIFY(!table.warp_deformers.isEmpty());
+        qToLittleEndian(qint32(1), bytes.data() + table.sectionOffsetTable->warp_deformers->vertex_counts);
+        auto edit = identity(table, 0);
+        edit.vertices.append({ { 0, 1 }, { .5, .5 } });
+        Builder::Request request;
+        request.meshes = { edit };
+        Builder::Result result;
+        result.bytes = "sentinel";
+        QString error;
+        QVERIFY(!Builder::Build(bytes, request, result, &error));
+        QVERIFY(error.contains(QStringLiteral("Warp 顶点数")));
+        QCOMPARE(result.bytes, QByteArray("sentinel"));
+    }
+
+    void unsignedCapacityPreservesIdentityAndRejectsOverflow()
+    {
+        WideMeshData::Fixture fixture;
+        QString error;
+        QVERIFY2(WideMeshData::make(65536, WideMeshData::Layout::Grid, fixture, &error), qPrintable(error));
+        auto reader = CReader::FromBytes(fixture.bytes);
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        int target = -1;
+        for (int i = 0; i < table.art_meshes.size(); ++i)
+            if (table.art_meshes[i]->ids == fixture.ids.first())
+                target = i;
+        QVERIFY(target >= 0);
+        const auto edit = identity(table, target);
+        QCOMPARE(edit.vertices.size(), 65536);
+        QCOMPARE(edit.indices.size(), 390150);
+        QVERIFY(edit.indices.contains(65535));
+        Builder::Request request;
+        request.meshes = { edit };
+        Builder::Result result;
+        QVERIFY2(Builder::Build(fixture.bytes, request, result, &error), qPrintable(error));
+        QCOMPARE(result.bytes, fixture.bytes);
+        request.meshes.first().vertices.append({ { 65535 }, { 1 } });
+        result.bytes = "sentinel";
+        QVERIFY(!Builder::Build(fixture.bytes, request, result, &error));
+        QCOMPARE(result.bytes, QByteArray("sentinel"));
+        QVERIFY2(WideMeshData::make(65537, WideMeshData::Layout::Sparse, fixture, &error), qPrintable(error));
+        reader = CReader::FromBytes(fixture.bytes);
+        CSectionTable larger(reader);
+        QVERIFY(larger.IsValid());
+        for (int i = 0; i < larger.art_meshes.size(); ++i)
+            if (larger.art_meshes[i]->ids == fixture.ids.first())
+                target = i;
+        request.meshes = { identity(larger, target) };
+        QVERIFY(!Builder::Build(fixture.bytes, request, result, &error));
+        QCOMPARE(result.bytes, QByteArray("sentinel"));
+    }
+
     void identityPreservesEveryByte_data() {
         QTest::addColumn<QString>("name"); for (const char* name : {"Mark", "Natori", "Rice", "Wanko"}) QTest::newRow(name) << QString(name);
     }
@@ -214,7 +621,8 @@ private slots:
                 QVERIFY(!result.state.columns.contains(span.slot));
     }
 
-    void manyDistinctKeyformSlicesKeepPrefixAndOrder() {
+    void manyDistinctKeyformSlicesKeepLiveValuesAndOrder()
+    {
         const auto original = source("Mark"); auto reader = CReader::FromBytes(original); CSectionTable table(reader); QVERIFY(table.IsValid());
         int target = -1;
         for (int index = 0; index < table.art_meshes.size(); ++index)
@@ -248,8 +656,7 @@ private slots:
         Builder::Request request; auto edit = identity(expanded, target); edit.vertices.append({{0,1},{.25,.75}}); request.meshes.append(edit);
         Builder::Result result; QVERIFY2(Builder::Build(bytes, request, result, &error), qPrintable(error));
         auto afterReader = CReader::FromBytes(result.bytes); CSectionTable after(afterReader); QVERIFY(after.IsValid());
-        QCOMPARE(result.bytes.mid(after.sectionOffsetTable->keyform_positions->xys, expanded.keyform_positions->xys.size() * 4),
-                 bytes.mid(expanded.sectionOffsetTable->keyform_positions->xys, expanded.keyform_positions->xys.size() * 4));
+        QCOMPARE(livePositions(result.bytes, after, target), livePositions(bytes, expanded, target));
         const auto* next = after.art_meshes[target]; QCOMPARE(next->keyform_sources_counts, count);
         for (int row = 0; row < count; ++row) {
             const int beforeFirst = expanded.art_mesh_keyforms[expanded.art_meshes[target]->keyform_sources_begin_indices + row]->keyform_position_sources_begin_indices;

@@ -372,6 +372,7 @@ HEADERS += \
     live2dstruct/cmocparameterstructurebuilder.h \
     live2dstruct/cmocmeshstructurebuilder.h \
     live2dstruct/cvertexselection.h \
+    live2dstruct/cboundsspatial.h \
     live2dstruct/cmocdeformerstructurebuilder.h \
     live2dstruct/cdeformerpreserverequest.h \
     live2dstruct/cdeformerstructurereplay.h \

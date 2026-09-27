@@ -7,8 +7,8 @@ namespace {
 const float sourcePositions[]{-0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f};
 const float candidatePositions[]{-0.8f, -0.2f, 0.2f, -0.2f, -0.3f, 0.8f};
 const float candidateUvs[]{0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f};
-const short sourceIndices[]{0, 1, 2};
-const short candidateIndices[]{2, 1, 0};
+const quint16 sourceIndices[]{0, 1, 2};
+const quint16 candidateIndices[]{2, 1, 0};
 
 QVector<bool> selected(const CDrawMesh& mesh)
 {
@@ -22,6 +22,42 @@ class MeshEditorStateTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void highVertexIdentityPreservesHardAndPaintedSnapshots()
+    {
+        QVector<float> positions(65536 * 2, 0);
+        const quint16 indices[]{32768, 65534, 65535};
+        CDrawMesh sourceMesh(3, indices, positions.size(), positions.constData(), positions.constData());
+        CDrawMesh targetMesh(3, indices, positions.size(), positions.constData(), positions.constData());
+        CDrawMesh::EditorState sourceState;
+        QVERIFY(sourceMesh.CaptureEditorState(sourceState));
+        sourceState.paintedWeights = QVector<double>(65536, 0);
+        (*sourceState.paintedWeights)[0] = .125;
+        (*sourceState.paintedWeights)[65535] = .875;
+        QVERIFY(sourceMesh.RestoreEditorState(sourceState));
+        CMeshMap source, target;
+        source.insert("wide", &sourceMesh); target.insert("wide", &targetMesh);
+        CMeshGeometryMigration migration;
+        QVector<int> oldToNew(65536); for (int index = 0; index < oldToNew.size(); ++index) oldToNew[index] = index;
+        std::swap(oldToNew[0], oldToNew[65535]);
+        migration.remaps.insert("wide", {65536, 65536, oldToNew});
+        QVERIFY(target.CopyEditorStateFrom(source, migration));
+        CDrawMesh::EditorState actual;
+        QVERIFY(targetMesh.CaptureEditorState(actual));
+        QCOMPARE(actual.vertexCount, 65536);
+        QCOMPARE(actual.paintedWeights->at(0), .875);
+        QCOMPARE(actual.paintedWeights->at(65535), .125);
+        QVERIFY(actual.selectedVertices.isEmpty());
+        sourceState.paintedWeights.reset(); sourceState.selectedVertices = {65535};
+        QVERIFY(sourceMesh.RestoreEditorState(sourceState));
+        QVERIFY(target.CopyEditorStateFrom(source, migration));
+        QVERIFY(targetMesh.CaptureEditorState(actual));
+        QCOMPARE(actual.selectedVertices, QVector<int>{0}); QVERIFY(!actual.paintedWeights);
+        QVERIFY(target.CopyEditorStateFrom(source));
+        QVERIFY(targetMesh.CaptureEditorState(actual));
+        QCOMPARE(actual.selectedVertices, QVector<int>{65535});
+        QCOMPARE(targetMesh.GetSelectPoint().front(), targetMesh.GetMesh()->GetWolrd()[65535]);
+    }
+
     void paintedStateCopiesWithoutChangingHardSelectionOrGeometry()
     {
         CDrawMesh source(3, sourceIndices, 6, sourcePositions, sourcePositions);
@@ -179,7 +215,7 @@ private slots:
     void topologyCountChangesKeepPointSelection()
     {
         QFETCH(int, sourceCount); QFETCH(int, candidateCount);
-        const short indices[]{0, 1, 2, 2, 1, 0};
+        const quint16 indices[]{0, 1, 2, 2, 1, 0};
         CDrawMesh sourceMesh(sourceCount, sourceCount ? indices : nullptr, 6, sourcePositions, sourcePositions);
         CDrawMesh targetMesh(candidateCount, candidateCount ? indices : nullptr, 6, candidateUvs, candidatePositions);
         sourceMesh.SetShow(true); sourceMesh.SetIsOver(true);
@@ -246,7 +282,7 @@ private slots:
     void geometryRemapPreservesIdentityAndRestoresDeletedSelection()
     {
         const float quad[]{-1, -1, 1, -1, 1, 1, -1, 1};
-        const short triangles[]{0, 1, 2, 0, 2, 3};
+        const quint16 triangles[]{0, 1, 2, 0, 2, 3};
         CDrawMesh sourceMesh(6, triangles, 8, quad, quad);
         CDrawMesh removedMesh(3, sourceIndices, 6, candidateUvs, candidatePositions);
         CDrawMesh restoredMesh(6, triangles, 8, quad, quad);
