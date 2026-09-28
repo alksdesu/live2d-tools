@@ -792,6 +792,7 @@ bool MainWindow::SaveSession()
         QMessageBox::warning(this, QStringLiteral("保存会话失败"), saveError);
         return false;
     }
+    if (!m_protectedSessionPaths.contains(path)) m_protectedSessionPaths.append(QString(path.constData(), path.size()));
     m_physicsInSession = session.physicsDraft.has_value();
     m_savedPhysicsDraft = session.physicsDraft ? session.physicsDraft->document : QJsonObject{};
     m_savedPhysicsPath = session.physicsDraft ? session.physicsDraft->sourcePath : QString();
@@ -842,8 +843,18 @@ void MainWindow::on_actionLoadSession_triggered()
     const bool restoreResources = true;
     const bool restorePhysics = restoreResources || candidate.ParameterStructure() != m_document.ParameterStructure();
     if (!ConfirmCloseWithUnsavedChanges(true, restorePhysics)) return;
-    const QScopedValueRollback<bool> restoring(m_applyingSession, true);
-    const QScopedValueRollback<const live2dstruct::CModelSession*> resourceSession(m_restoringSession, &session);
+    const QPointer<MainWindow> alive(this);
+    const bool previousApplying = m_applyingSession;
+    const auto* previousSession = m_restoringSession;
+    const auto restoreSessionState = qScopeGuard([alive, previousApplying, previousSession] {
+        if (!alive) return;
+        alive->m_applyingSession = previousApplying;
+        alive->m_restoringSession = previousSession;
+        alive->RefreshExportActions();
+        if (alive) alive->RefreshMeshTools();
+    });
+    m_applyingSession = true;
+    m_restoringSession = &session;
     if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
@@ -852,6 +863,7 @@ void MainWindow::on_actionLoadSession_triggered()
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }
+    if (!m_protectedSessionPaths.contains(path)) m_protectedSessionPaths.append(QString(path.constData(), path.size()));
     RefreshTextureEditing();
     m_physicsInSession = session.physicsDraft.has_value() || !m_parameterResources.IsEmpty();
     m_savedPhysicsDraft = m_physicsInSession && m_physicsPanel ? m_physicsPanel->DocumentSnapshot() : QJsonObject{};
@@ -2266,7 +2278,7 @@ void MainWindow::RefreshExportActions()
         m_exportResultsPanel->SetBusy(exporting);
         if (!alive) return;
         m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy() && !m_exportResultsAreRecovery,
-            m_exportResultsAreRecovery ? QStringLiteral("请在“从工程恢复 PSD”窗口重新选择保存路径并重试。") :
+            m_exportResultsAreRecovery ? QStringLiteral("请在 PSD 来源恢复窗口重新选择保存路径并重试。") :
                 QStringLiteral("请先恢复或关闭当前预览，再重试失败项。"));
         if (!alive) return;
     }
@@ -2917,6 +2929,7 @@ bool MainWindow::CloseModel()
     m_atlasEditor.SetDocument(nullptr);
     m_keyformBaseValues.clear();
     m_document.Clear();
+    m_protectedSessionPaths.clear();
     m_placeholder = createEmptyState();
     setCentralWidget(m_placeholder);
 
@@ -2968,6 +2981,10 @@ void MainWindow::RefreshSessionActions()
     if (m_saveSessionAction) m_saveSessionAction->setEnabled(ready() && (!m_previewExport.IsBusy() || m_previewExport.NeedsRecovery()));
     if (!alive) return;
     if (m_loadSessionAction) m_loadSessionAction->setEnabled(ready() && !m_previewExport.IsBusy());
+    if (!alive) return;
+    if (m_savedPsdRecoveryAction) m_savedPsdRecoveryAction->setEnabled(HasSavedPsdSources() && !m_closingModel &&
+        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_artworkLoading && !m_applyingSession &&
+        !m_materialEditor.IsActive() && !m_atlasEditor.IsActive());
 }
 
 bool MainWindow::SetAuthoringReady(bool ready)
@@ -3303,7 +3320,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_blendShapePanel, &CBlendShapePanel::ObjectSelected, m_treePanel, &CModelTreePanel::HighlightObject);
 
     m_texturePanel = new CTexturePanel(this);
-    m_texturePanel->SetArtworkActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction});
+    m_texturePanel->SetArtworkActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction});
     addDockWidget(Qt::BottomDockWidgetArea, m_texturePanel);
     tabifyDockWidget(m_blendShapePanel, m_texturePanel);
 
@@ -4091,11 +4108,15 @@ void MainWindow::setupUI()
     mainToolBar->addAction(myOpenAction);
     auto* artworkButton = new QToolButton(mainToolBar); artworkButton->setObjectName(QStringLiteral("artworkMenu")); artworkButton->setText(QStringLiteral("素材"));
     artworkButton->setPopupMode(QToolButton::InstantPopup); artworkButton->setFocusPolicy(Qt::StrongFocus);
-    auto* artworkMenu = new QMenu(artworkButton); artworkMenu->addActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction}); artworkButton->setMenu(artworkMenu); mainToolBar->addWidget(artworkButton);
+    auto* artworkMenu = new QMenu(artworkButton); artworkMenu->addActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction}); artworkButton->setMenu(artworkMenu); mainToolBar->addWidget(artworkButton);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);
-    mainToolBar->addAction(m_psdRecoveryAction);
+    auto* recoveryButton = new QToolButton(mainToolBar);
+    recoveryButton->setObjectName(QStringLiteral("psdRecoveryMenu"));
+    recoveryButton->setDefaultAction(m_psdRecoveryAction); recoveryButton->setPopupMode(QToolButton::MenuButtonPopup);
+    auto* recoveryMenu = new QMenu(recoveryButton); recoveryMenu->addActions({m_psdRecoveryAction, m_savedPsdRecoveryAction});
+    recoveryButton->setMenu(recoveryMenu); mainToolBar->addWidget(recoveryButton);
     mainToolBar->addAction(myCmo3Action);
     mainToolBar->addAction(m_runtimeExportAction);
     mainToolBar->addAction(m_exportResultsAction);

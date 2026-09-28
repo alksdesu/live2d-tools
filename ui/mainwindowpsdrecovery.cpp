@@ -4,6 +4,7 @@
 #include "cexporttaskrunner.h"
 #include "cmo3/ccmo3artworkreader.h"
 #include "psd/cpsdsourcewriter.h"
+#include "live2dstruct/cartworkpsdrecovery.h"
 #include "std/cexportcontrol.h"
 #include <QElapsedTimer>
 #include <QFileDialog>
@@ -21,7 +22,7 @@ bool runSourceTask(QWidget* parent, const std::shared_ptr<CExportControl>& contr
     const QPointer<QWidget> owner(parent);
     QPointer<QProgressDialog> progress = new QProgressDialog(title, QStringLiteral("取消"), 0, 0, parent);
     progress->setObjectName(QStringLiteral("psdRecoveryProgress"));
-    progress->setWindowTitle(QStringLiteral("从工程恢复 PSD"));
+    progress->setWindowTitle(QStringLiteral("导出来源 PSD"));
     progress->setWindowModality(Qt::ApplicationModal); progress->setMinimumDuration(0);
     progress->setAutoClose(false); progress->setAutoReset(false);
     for (auto* label : progress->findChildren<QLabel*>()) label->setTextFormat(Qt::PlainText);
@@ -54,8 +55,15 @@ CExportDiagnostics sourceDiagnostics(const CPsdSourceCatalog& catalog, int index
         }
     };
     append(catalog.diagnostics);
-    if (index >= 0 && index < catalog.documents.size()) append(catalog.documents[index].diagnostics);
-    return CExportDiagnostics::Capture(result, catalog.sourcePath, catalog.sourceDigest);
+    QString path = catalog.sourcePath; QByteArray digest = catalog.sourceDigest;
+    if (index >= 0 && index < catalog.documents.size()) {
+        const auto& document = catalog.documents[index]; append(document.diagnostics);
+        if (const auto* reconstructed = document.Reconstructed()) append(reconstructed->diagnostics);
+        if (!document.origin.sourcePath.isEmpty() || document.Original()) path = document.origin.sourcePath;
+        if (document.origin.sourceDigest.size() == 32) digest = document.origin.sourceDigest;
+        if (const auto* original = document.Original(); original && original->Directory()) digest = original->Directory()->sha256;
+    }
+    return CExportDiagnostics::Capture(result, path, digest);
 }
 }
 
@@ -65,6 +73,11 @@ void MainWindow::ConfigurePsdRecoveryAction()
     m_psdRecoveryAction->setObjectName(QStringLiteral("recoverPsdFromProject"));
     m_psdRecoveryAction->setStatusTip(QStringLiteral("读取 CMO3 中保存的来源文档与图层，不改变当前模型"));
     connect(m_psdRecoveryAction, &QAction::triggered, this, [this] { RecoverPsdFromProject(); });
+    m_savedPsdRecoveryAction = new QAction(QStringLiteral("另存已保存的 PSD…"), this);
+    m_savedPsdRecoveryAction->setObjectName(QStringLiteral("recoverSavedPsdSources"));
+    m_savedPsdRecoveryAction->setStatusTip(QStringLiteral("原样另存项目保存的 PSD 版本，不改变当前素材关联"));
+    m_savedPsdRecoveryAction->setEnabled(false);
+    connect(m_savedPsdRecoveryAction, &QAction::triggered, this, &MainWindow::RecoverSavedPsdSources);
 }
 
 void MainWindow::FinishPsdRecovery()
@@ -97,6 +110,7 @@ void MainWindow::RecoverPsdFromProject(const QString& requestedPath)
         statusBar()->showMessage(QStringLiteral("来源工程路径过长或含无效字符"), 15000); return;
     }
     const QString frozenPath(path.constData(), path.size());
+    const auto protectedPaths = PsdRecoveryProtectedPaths();
     m_psdRecoveryActive = true; m_batchExporting = true;
     auto control = std::make_shared<CExportControl>(); m_activeExportControl = control;
     RefreshExportActions(); if (!alive) return;
@@ -119,7 +133,13 @@ void MainWindow::RecoverPsdFromProject(const QString& requestedPath)
         }
         return;
     }
-    std::shared_ptr<const CPsdSourceCatalog> frozen = catalog;
+    catalog->protectedPaths.append(protectedPaths);
+    ShowPsdRecoveryCatalog(std::move(catalog));
+}
+
+void MainWindow::ShowPsdRecoveryCatalog(std::shared_ptr<const CPsdSourceCatalog> frozen)
+{
+    const QPointer<MainWindow> alive(this);
     auto* dialog = new CPsdRecoveryDialog(frozen, this); m_psdRecoveryDialog = dialog;
     const QPointer<CPsdRecoveryDialog> retained(dialog);
     dialog->SetExportHandler([alive, frozen](int index, const QString& output, QString* detail) {
@@ -131,6 +151,64 @@ void MainWindow::RecoverPsdFromProject(const QString& requestedPath)
     connect(dialog, &QObject::destroyed, this, [this] { FinishPsdRecovery(); });
     dialog->show();
     if (alive && retained) retained->raise();
+}
+
+bool MainWindow::HasSavedPsdSources() const
+{
+    if (!m_document.IsLoaded()) return false;
+    const auto& artwork = m_document.Artwork();
+    for (const auto& revision : artwork.revisions) {
+        const auto family = artwork.families.constFind(revision.familyId);
+        if (family != artwork.families.cend() && family->kind == live2dstruct::CModelArtwork::SourceKind::Psd &&
+            revision.sourceDigest.size() == 32 && revision.sourceBytes.startsWith("8BPS")) return true;
+    }
+    return false;
+}
+
+QStringList MainWindow::PsdRecoveryProtectedPaths() const
+{
+    QStringList paths = m_protectedSessionPaths;
+    paths.append(m_currentMoc); paths.append(m_document.SourcePath());
+    if (m_openglwindows) paths.append(m_openglwindows->GetCurrentModelJson());
+    for (const auto& source : m_document.TextureSources()) paths.append(source.path);
+    for (const auto& revision : m_document.Artwork().revisions) paths.append(revision.path);
+    return CPsdRecoveryDialog::CaptureProtectedPaths(paths).values();
+}
+
+void MainWindow::RecoverSavedPsdSources()
+{
+    const QPointer<MainWindow> alive(this);
+    if (m_psdRecoveryDialog) { m_psdRecoveryDialog->show(); if (alive && m_psdRecoveryDialog) m_psdRecoveryDialog->raise(); return; }
+    if (!HasSavedPsdSources() || m_psdRecoveryActive || m_batchExporting || !m_psdBatch.isNull() || m_previewExport.IsBusy() ||
+        m_activeExportControl || m_closingModel || m_artworkLoading || m_applyingSession ||
+        m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return;
+    live2dstruct::CModelArtwork::State artwork;
+    QString error;
+    if (!live2dstruct::CModelArtwork::Freeze(m_document.Artwork(), artwork, &error)) {
+        statusBar()->showMessage(QStringLiteral("无法读取已保存的 PSD 来源：%1").arg(error), 15000); return;
+    }
+    const auto source = m_document.SourceDigest(); const auto revision = m_document.Revision();
+    const auto protectedPaths = PsdRecoveryProtectedPaths();
+    m_psdRecoveryActive = true; m_batchExporting = true;
+    auto control = std::make_shared<CExportControl>(); m_activeExportControl = control;
+    RefreshExportActions(); if (!alive) return;
+    auto catalog = std::make_shared<CPsdSourceCatalog>();
+    const bool prepared = runSourceTask(this, control, QStringLiteral("正在准备项目保存的 PSD 来源版本"),
+        [artwork = std::move(artwork), catalog, control](const CExportTaskRunner::GuiCall&, QString* detail) {
+            return live2dstruct::CArtworkPsdRecovery::Prepare(artwork, *catalog, detail, control.get());
+        }, &error);
+    if (!alive) return;
+    m_activeExportControl.reset();
+    const bool changed = m_document.SourceDigest() != source || m_document.Revision() != revision;
+    if (!prepared || changed || m_closeAfterExport) {
+        const bool canceled = control->WasCanceled() || m_closeAfterExport;
+        FinishPsdRecovery(); if (!alive) return;
+        statusBar()->showMessage(canceled ? QStringLiteral("PSD 来源准备已取消") : changed ?
+            QStringLiteral("项目已改变，请重新选择已保存的 PSD 来源") : QStringLiteral("PSD 来源准备失败：%1").arg(error), 15000);
+        return;
+    }
+    catalog->protectedPaths.append(protectedPaths);
+    ShowPsdRecoveryCatalog(std::move(catalog));
 }
 
 bool MainWindow::ExportRecoveredPsd(const std::shared_ptr<const CPsdSourceCatalog>& catalog, int documentIndex,
@@ -147,17 +225,31 @@ bool MainWindow::ExportRecoveredPsd(const std::shared_ptr<const CPsdSourceCatalo
         if (error) *error = QStringLiteral("来源导出状态已失效，请重新打开工程");
         return false;
     }
-    if (!CPsdRecoveryDialog::ValidateOutputPath(catalog->sourcePath, frozenPath, error)) return false;
+    QStringList sources = catalog->protectedPaths; sources.append(catalog->sourcePath);
+    for (const auto& item : catalog->documents) sources.append(item.origin.sourcePath);
+    const auto protectedPaths = CPsdRecoveryDialog::CaptureProtectedPaths(sources);
+    if (!CPsdRecoveryDialog::ValidateProtectedOutputPath(protectedPaths, frozenPath, error)) return false;
+    const auto& document = catalog->documents[documentIndex];
+    const bool original = document.Original() != nullptr;
+    if (original && !document.Original()->IsValid()) { if (error) *error = QStringLiteral("这个 PSD 来源版本不完整，不能原样另存"); return false; }
     const QPointer<MainWindow> alive(this);
     const QPointer<CPsdRecoveryDialog> dialog(m_psdRecoveryDialog);
     const auto diagnostics = sourceDiagnostics(*catalog, documentIndex);
     if (diagnostics.ErrorCount()) { if (error) *error = diagnostics.FirstError(); return false; }
     auto control = std::make_shared<CExportControl>(); m_activeExportControl = control;
-    control->SetHandler([source = catalog->sourcePath, frozenPath](const CExportControl::Progress&, QString* reason) {
-        return CPsdRecoveryDialog::ValidateOutputPath(source, frozenPath, reason);
+    control->SetHandler([protectedPaths, frozenPath](const CExportControl::Progress&, QString* reason) {
+        return CPsdRecoveryDialog::ValidateProtectedOutputPath(protectedPaths, frozenPath, reason);
     });
     PsdBatchFileResult result;
-    result.index = 0; result.sourcePath = catalog->sourcePath; result.outputPath = frozenPath;
+    CExportSourceInfo::Details sourceInfo;
+    sourceInfo.method = original ? CExportSourceInfo::Method::OriginalPsd : CExportSourceInfo::Method::ReconstructedLayers;
+    sourceInfo.documentId = original ? document.origin.revisionId : document.Reconstructed()->id;
+    sourceInfo.documentName = original ? document.origin.fileName : document.Reconstructed()->name;
+    sourceInfo.familyId = document.origin.familyId; sourceInfo.revisionId = document.origin.revisionId;
+    sourceInfo.inputDigest = original ? document.Original()->Directory()->sha256 :
+        document.origin.sourceDigest.isEmpty() ? catalog->sourceDigest : document.origin.sourceDigest;
+    result.sourceInfo = CExportSourceInfo::Capture(sourceInfo);
+    result.index = 0; result.sourcePath = document.origin.sourcePath.isEmpty() && !original ? catalog->sourcePath : document.origin.sourcePath; result.outputPath = frozenPath;
     result.state = PsdBatchFileState::Running; result.stage = PsdExportStage::Preparing;
     result.diagnostics = diagnostics;
     m_exportResultsAreRecovery = true;
@@ -172,14 +264,20 @@ bool MainWindow::ExportRecoveredPsd(const std::shared_ptr<const CPsdSourceCatalo
     RefreshExportActions(); if (!alive) return false;
     QElapsedTimer elapsed; elapsed.start();
     QString detail;
-    const bool written = runSourceTask(dialog, control, QStringLiteral("正在写出所选来源文档"),
-        [catalog, documentIndex, frozenPath, control](const CExportTaskRunner::GuiCall&, QString* reason) {
-            if (!CPsdRecoveryDialog::ValidateOutputPath(catalog->sourcePath, frozenPath, reason)) return false;
-            return CPsdSourceWriter::Write(frozenPath, catalog->documents[documentIndex], control.get(), reason);
+    const bool written = runSourceTask(dialog, control, original ? QStringLiteral("正在原样另存 PSD 原文件") : QStringLiteral("正在重建所选 PSD 文档"),
+        [catalog, documentIndex, protectedPaths, frozenPath, control](const CExportTaskRunner::GuiCall&, QString* reason) {
+            if (!CPsdRecoveryDialog::ValidateProtectedOutputPath(protectedPaths, frozenPath, reason)) return false;
+            const auto& selected = catalog->documents[documentIndex];
+            if (const auto* source = selected.Original()) return source->Write(frozenPath, control.get(), reason);
+            return CPsdSourceWriter::Write(frozenPath, *selected.Reconstructed(), control.get(), reason);
         }, &detail);
     if (!alive) return false;
     m_activeExportControl.reset();
     result.elapsedMs = elapsed.elapsed(); result.outputCommitted = control->IsCommitted();
+    if (original && written && result.outputCommitted) {
+        sourceInfo.outputDigest = sourceInfo.inputDigest;
+        result.sourceInfo = CExportSourceInfo::Capture(sourceInfo);
+    }
     const bool canceled = control->WasCanceled() && !result.outputCommitted;
     result.state = written ? PsdBatchFileState::Succeeded : canceled ? PsdBatchFileState::Canceled : PsdBatchFileState::Failed;
     const auto phase = control->Snapshot().phase;
@@ -190,7 +288,7 @@ bool MainWindow::ExportRecoveredPsd(const std::shared_ptr<const CPsdSourceCatalo
     if (error) *error = canceled ? QStringLiteral("导出已取消，未替换目标文件") : detail;
     const bool recorded = !m_exportResultsPanel || m_exportResultsPanel->UpdateResult(0, result);
     if (!alive) return written;
-    statusBar()->showMessage(written ? QStringLiteral("来源 PSD 已保存：%1").arg(frozenPath) :
+    statusBar()->showMessage(written ? (original ? QStringLiteral("PSD 原文件已原样另存：%1") : QStringLiteral("来源图层已重建为 PSD：%1")).arg(frozenPath) :
         canceled ? QStringLiteral("来源 PSD 导出已取消") : QStringLiteral("来源 PSD 导出失败：%1").arg(detail), 15000);
     if (!alive) return written;
     if (!recorded) {

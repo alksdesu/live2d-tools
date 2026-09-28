@@ -1434,3 +1434,18 @@ ArtPath、完整 Animator 时间轴和 alpha 版专有格式在讨论中明确�
 - 两个实际 Main 流程覆盖 DPR2／DPR4，六份 Mark 来源 PSD 字节完全一致，并与独立逐像素验证的 CLI 文件相同。载入模型后，即使保留不同 current／saved 值、选择和可双向历史，恢复导出前后 MOC、纹理、参数、编辑状态与视图快照都相同。另九个独立进程覆盖读写取消、关闭、窗口延迟销毁、非法文件失败及借用路径回调修改。
 - 界面使用原生主题和字体尺寸，修复新树控件在深色主题下的分支箭头低对比。实际窄窗在 DPR2 为 560×560、DPR4 为 560×422，操作按钮均位于视口，树和详情可滚动；DPR4 的 920 宽截图超过物理可用宽度，仅属完整控件截图，不冒称整个宽窗同屏可用。
 - 汇总：`/tmp/live2d-source-workspace-checks.json`；全仓：`/tmp/live2d-source-full-ctest.json`；来源逐层回读：`/tmp/live2d-source-recovery-oracle-final.json`；Main：`/tmp/live2d-source-psd-main-proof.json`；读取链：`/tmp/live2d-cmo-source-read-research/verification-final.json`；写出边界：`/tmp/live2d-source-psd-writer/bounds-final-proof.json`。验证使用 Qt 程序事件及隔离设置；本次系统工具确认 Mac 锁定，已请求解锁，Photoshop 实际回读仍待完成。既有 Photoshop 验证不替代此次恢复模式；Windows GUI、Cubism Editor GUI、仅凭 MOC 的逆变形和把来源映射回当前模型仍未完成。
+
+### 已保存 PSD 来源的完整另存
+
+- “另存已保存的 PSD…”读取当前文档来源库中保留的原文件，包含当前版本、仍被网格引用的旧版本、已解除关联及未使用的版本。会话或模型包重新载入后仍可使用，不要求原作者路径存在；不切换当前来源、不修改模型关联和历史，也不将当前模型编辑写入原文件。现有会话及来源附件格式不变。
+- 封存的原 PSD 以完整字节和 SHA-256 为身份。恢复目录从原字节读取，忽略素材库中可编辑名称、图层描述及转换后的 PNG；相同摘要还须逐字节相等才能共享。单个损坏 PSD 版本保留错误说明，其它有效版本仍可导出；来源图谱不合法、总量超限或取消时不发布半份目录。
+- 新目录读取入口与像素读取共用结构解析和 RAW／RLE／ZIP／预测压缩验证，但不保留所有展开通道或 RGBA。累计展开量仍计入工作预算，ZIP 使用固定大小缓冲；大尺寸或高压缩率数据不能绕过限制。原样写出采用原子提交，保留包括蒙版、图层效果、智能对象、ICC、合成预览及未知区段在内的全部字节，不声称这些效果已经能够合成导入模型。
+- 真实双蒙版文件暴露出扩展字段排列的兼容缺陷。现在同时校验参数在前和实际生产文件中的真实蒙版在前两种排列；边界、标志、全部字段和尾部必须合法，两种解释产生不同内容时明确拒绝。普通像素读取与恢复目录使用同一修复，不仅给另存入口放行。
+- 恢复界面按原文件目录展示真实层级，分别标明“原样另存 PSD”与“重建所选 PSD”。保护全部来源路径、当前模型、纹理及本次打开或保存的会话文件；成功、失败、取消均进入导出记录。来源记录使用 v3 报告，附恢复方式、文档和版本身份及来源摘要，原文件成功另存还附相同的输出摘要；普通模型导出报告保持 v2，来源失败项不会进入 model3 重试。
+- 同类动作检查修复会话恢复后仍停留在忙碌状态的问题：退出恢复作用域后统一更新导出、素材、会话、网格和顶点工具，包括提前退出路径。物理和洋葱皮分别沿用已有定时及逐帧刷新，未增加重复刷新。
+- 独立验证覆盖 9 份真实 RGB 8 位 PSD、54 个图层与组记录，其中包含 11 个栅格蒙版、17 个矢量蒙版、22 个带效果图层、10 个剪切图层及 4 个组。全部另存文件与原文件逐字节相同，目录顺序、父级、名称、ID、属性、边界及 ICC 经 psd-tools 独立核对。另一个 32 位样本按现有支持范围拒绝，未扩大为全 PSD／PSB 模式支持。样本取自 psd-tools 上游并核对 Git blob 摘要，文件及来源证据保留在 `/tmp/live2d-original-real-fixtures/provenance.json`，结果在 `/tmp/live2d-original-real-acceptance/formal-summary.json`。
+- CMO3 原有重建路径另以四份原生工程回归，七份输出与上一轮已逐层及逐像素验收的 PSD 完全相同；本轮变更不改写 CMO3 来源重建结果。记录：`/tmp/live2d-original-cmo-compatibility/summary.json`。
+- 全仓 225 个 CTest 目标通过，224 个独立二进制执行前后无变化；原生应用完整重编 388 单元，1204 项生产输入与 69 项原资源保持。数据链七个测试组在普通及 ASAN／UBSAN 下各通过 194 项，包含旧 PSD 读取、导入、匹配、采样与严格写出消费端；导出报告另通过 15 项 ASAN／UBSAN。各组合有重叠，不相加为独立总数；macOS 不支持的 LeakSanitizer 未启用。记录：`/tmp/live2d-original-full-ctest.json`、`/tmp/live2d-original-native-inputs.json`、`/tmp/live2d-original-psd-data/summary.json`。
+- 两个实际 Main 进程覆盖 DPR2／DPR4：从 UI 导入并关联旧版、仅保存新版及未使用来源，保存会话后移走原 PSD，再实际载入会话；恢复入口及网格工具立即可用。随后导出带来源模型包、搬移整个目录并重新打开，两条路径共十二次另存均与原字节相同，v3 报告摘要同步一致。四次受控姿态的完整前后状态保持，包括非默认 current／saved 差异、模型字节、来源版本、历史、选区、纹理和视图；取消保留已有目标，关闭清理忙碌状态。独立复核：`/tmp/live2d-original-main-independent.json`；Main：`/tmp/live2d-saved-psd-main-proof.json`。
+- 最后截图检查发现窄窗中具体错误被追加在长详情底部。修复后错误置于首段，CMO 与原 PSD 共用路径均覆盖；旧代码五个负例失败、修复后完整组件普通／ASAN／Cocoa 两档 DPI 各 23 项通过。仅一个 CPP 增量重编并重链原生应用，变化的 CTest 目标补验，其余目标使用相同已通过二进制。证据：`/tmp/live2d-saved-psd-error-proof.json`、`/tmp/live2d-original-native-error-inputs.json`、`/tmp/live2d-original-reconciled-ctest.json`。
+- 主窗口使用隔离设置和 Qt 程序事件。早期测试驱动的对话框存活、重开确认框及未冻结动画姿态问题保留在证明中；普通重绘对照确认未冻结姿态本身会恢复参数，未将其误判为来源恢复修改模型。高 DPI 窄窗实际为 560×422，按钮及具体错误可见；920 宽截图不代表全窗同屏可用。Photoshop 实际回读仍待解锁后完成，原样保留已知字节不能替代 CMO 重建文件的外部应用验证；32 位、PSB、MOC 单独逆变形及来源映射回当前模型仍保留明确边界。

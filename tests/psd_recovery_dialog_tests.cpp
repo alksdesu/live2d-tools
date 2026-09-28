@@ -12,11 +12,44 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QTextBlock>
 #include <QTreeView>
 #include <QtTest>
+#include <QtEndian>
+#include <QCryptographicHash>
 #include <cmath>
 
 namespace {
+QByteArray be16(quint16 value) { char bytes[2]; qToBigEndian(value, bytes); return QByteArray(bytes, 2); }
+QByteArray be32(quint32 value) { char bytes[4]; qToBigEndian(value, bytes); return QByteArray(bytes, 4); }
+QByteArray block(const QByteArray& value) { return be32(value.size()) + value; }
+QByteArray tag(const QByteArray& key, const QByteArray& value) { return "8BIM" + key + block(value); }
+QByteArray originalBytes()
+{
+    QByteArray records, channels;
+    for (int kind : {3, 0, 1}) {
+        records += be32(0) + be32(0) + be32(kind ? 0 : 2) + be32(kind ? 0 : 2) + be16(kind ? 0 : 4);
+        if (!kind) for (int channel = 0; channel < 4; ++channel) {
+            records += be16(channel == 3 ? -1 : channel) + be32(6);
+            channels += be16(0) + QByteArray(4, char(channel * 40));
+        }
+        records += "8BIMnorm"; records += char(255); records += char(0); records += char(kind == 1 ? 2 : 0); records += char(0);
+        const QString name = kind ? QStringLiteral("真实来源组") : QStringLiteral("<b>原始素材</b>");
+        QByteArray unicode = be32(name.size()); for (auto value : name) unicode += be16(value.unicode());
+        QByteArray extra = be32(0) + be32(0) + QByteArray(4, 0) + tag("luni", unicode);
+        if (kind) extra += tag("lsct", be32(kind)); else extra += tag("lfx2", be32(16));
+        records += block(extra);
+    }
+    QByteArray info = be16(3) + records + channels; if (info.size() % 2) info += char(0);
+    return QByteArray("8BPS") + be16(1) + QByteArray(6, 0) + be16(3) + be32(2) + be32(2) + be16(8) + be16(3) +
+        be32(0) + be32(0) + block(block(info) + be32(0)) + be16(0) + QByteArray(12, 0);
+}
+CPsdOriginal original()
+{
+    const auto bytes = originalBytes(); CPsdOriginal result; QString error;
+    if (!CPsdOriginal::Prepare(bytes, QCryptographicHash::hash(bytes, QCryptographicHash::Sha256), result, &error)) qFatal("%s", qPrintable(error));
+    return result;
+}
 std::shared_ptr<CPsdSourceCatalog> catalog(const QString& source)
 {
     auto result = std::make_shared<CPsdSourceCatalog>(); result->sourcePath = source;
@@ -79,8 +112,10 @@ private slots:
         dialog.findChild<QComboBox*>("psdRecoveryDocuments")->setCurrentIndex(1);
         QVERIFY(!dialog.ExportTo(temp.filePath("result.psd"))); QCOMPARE(dialog.SelectedDocumentIndex(), 1);
         QCOMPARE(dialog.Error(), QStringLiteral("<i>目标只读</i>")); QVERIFY(save(dialog)->isEnabled());
-        QVERIFY(dialog.findChild<QPlainTextEdit*>("psdRecoveryDetails")->toPlainText().contains(dialog.Error()));
+        auto* details = dialog.findChild<QPlainTextEdit*>("psdRecoveryDetails");
+        QCOMPARE(details->document()->firstBlock().text(), QStringLiteral("未能完成操作：%1").arg(dialog.Error()));
         QVERIFY(dialog.ExportTo(temp.filePath("result.psd"))); QVERIFY(dialog.Error().isEmpty()); QCOMPARE(calls, 2);
+        QVERIFY(details->toPlainText().startsWith(QStringLiteral("根据 CMO3 工程内保存的来源图层重建 PSD。")));
     }
 
     void activeExportCannotReenterAndCloseCancelsBeforeFinishing()
@@ -138,10 +173,10 @@ private slots:
     void invalidHierarchyAndErrorsDisableOnlyAffectedDocuments()
     {
         QTemporaryDir temp; auto data = catalog(temp.filePath("source.cmo3"));
-        data->documents[0].diagnostics.append({CPsdSourceDiagnostic::Severity::Error, "missing", QStringLiteral("像素资源缺失"), "r"});
+        std::get<CPsdSourceDocument>(data->documents[0].content).diagnostics.append({CPsdSourceDiagnostic::Severity::Error, "missing", QStringLiteral("像素资源缺失"), "r"});
         CPsdRecoveryDialog dialog(data); dialog.SetExportHandler([](int, const QString&, QString*) { return true; });
         QVERIFY(!save(dialog)->isEnabled()); dialog.findChild<QComboBox*>("psdRecoveryDocuments")->setCurrentIndex(1); QVERIFY(save(dialog)->isEnabled());
-        data = catalog(temp.filePath("source.cmo3")); data->documents[0].layers[0].parentIndex = 0;
+        data = catalog(temp.filePath("source.cmo3")); std::get<CPsdSourceDocument>(data->documents[0].content).layers[0].parentIndex = 0;
         CPsdRecoveryDialog broken(data); broken.SetExportHandler([](int, const QString&, QString*) { return true; });
         QVERIFY(!save(broken)->isEnabled()); QCOMPARE(broken.findChild<QTreeView*>()->model()->rowCount(), 0);
     }
@@ -179,6 +214,52 @@ private slots:
         CPsdRecoveryDialog empty(std::make_shared<CPsdSourceCatalog>()); QVERIFY(!save(empty)->isEnabled()); QCOMPARE(empty.SelectedDocumentIndex(), -1);
     }
 
+    void originalDirectoryAndVersionLabelsDoNotUsePngPresence()
+    {
+        QTemporaryDir temp; auto data = std::make_shared<CPsdSourceCatalog>();
+        CPsdSourceCatalog::Origin source; source.sourcePath = temp.filePath("stored.psd"); source.familyName = QStringLiteral("<b>来源</b>");
+        source.fileName = QStringLiteral("初始PSD"); source.revisionId = "old"; source.linkedMeshes = 2; source.detachedMeshes = 1;
+        data->documents.append({original(), source}); source.revisionId = "new"; source.currentRevision = true; source.linkedMeshes = source.detachedMeshes = 0;
+        data->documents.append({original(), source});
+        CPsdRecoveryDialog dialog(data); dialog.SetExportHandler([](int, const QString&, QString*) { return true; });
+        QCOMPARE(save(dialog)->text(), QStringLiteral("原样另存 PSD…")); QVERIFY(save(dialog)->isEnabled());
+        auto* tree = dialog.findChild<QTreeView*>(); auto* model = tree->model();
+        QAbstractItemModelTester tester(model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+        QCOMPARE(model->rowCount(), 1); const auto group = model->index(0, 0); QCOMPARE(group.data().toString(), QStringLiteral("真实来源组"));
+        QCOMPARE(model->rowCount(group), 1); const auto layer = model->index(0, 0, group);
+        QCOMPARE(layer.data().toString(), QStringLiteral("<b>原始素材</b>")); QVERIFY(model->index(0, 1, group).data().toString().contains(QStringLiteral("原文件图层")));
+        const auto summary = dialog.findChild<QLabel*>("psdRecoverySummary")->text(); QVERIFY(!summary.contains(QStringLiteral("空图层"))); QVERIFY(summary.contains(QStringLiteral("2 个对象正在关联")));
+        const auto detail = dialog.findChild<QPlainTextEdit*>("psdRecoveryDetails")->toPlainText();
+        QVERIFY(detail.contains(QStringLiteral("蒙版、效果"))); QVERIFY(!detail.contains(QStringLiteral("PSD 未预先合成预览")));
+        dialog.findChild<QComboBox*>("psdRecoveryDocuments")->setCurrentIndex(1);
+        const auto current = dialog.findChild<QLabel*>("psdRecoverySummary")->text(); QVERIFY(current.contains(QStringLiteral("目录当前版本"))); QVERIFY(current.contains(QStringLiteral("当前未被对象使用")));
+        QCOMPARE(data->documents[0].origin.revisionId, QStringLiteral("old")); QCOMPARE(data->documents[0].origin.linkedMeshes, 2);
+    }
+
+    void invalidOriginalIsDistinctFromOtherValidSourceVersions()
+    {
+        auto data = std::make_shared<CPsdSourceCatalog>(); CPsdSourceCatalog::Origin source; source.fileName = "bad.psd";
+        CPsdSourceCatalog::Document invalid(CPsdOriginal(), source);
+        invalid.diagnostics.append({CPsdSourceDiagnostic::Severity::Error, "digest", QStringLiteral("原文件摘要不一致"), {}});
+        data->documents.append(invalid); source.fileName = "good.psd"; data->documents.append({original(), source});
+        CPsdRecoveryDialog dialog(data); dialog.SetExportHandler([](int, const QString&, QString*) { return true; });
+        QVERIFY(!save(dialog)->isEnabled()); QVERIFY(dialog.findChild<QPlainTextEdit*>("psdRecoveryDetails")->toPlainText().contains(QStringLiteral("摘要不一致")));
+        QVERIFY(!dialog.findChild<QLabel*>("psdRecoverySummary")->text().contains(QStringLiteral("空图层")));
+        dialog.findChild<QComboBox*>("psdRecoveryDocuments")->setCurrentIndex(1); QVERIFY(save(dialog)->isEnabled());
+    }
+
+    void everyCatalogInputIsProtectedAcrossSelections()
+    {
+        QTemporaryDir temp; auto data = catalog(temp.filePath("project.cmo3")); const auto first = temp.filePath("first.psd"), second = temp.filePath("second.psd");
+        data->documents[0].origin.sourcePath = first; data->documents[1].origin.sourcePath = second;
+        const auto model = temp.filePath("model.moc3"), texture = temp.filePath("texture.png"), session = temp.filePath("session.json");
+        data->protectedPaths = {model, texture, session}; CPsdRecoveryDialog dialog(data); int calls = 0;
+        dialog.SetExportHandler([&](int, const QString&, QString*) { ++calls; return true; });
+        for (const auto& path : {first, second, model, texture, session, data->sourcePath}) QVERIFY(!dialog.ExportTo(path));
+        dialog.findChild<QComboBox*>("psdRecoveryDocuments")->setCurrentIndex(1); QVERIFY(!dialog.ExportTo(first)); QCOMPARE(calls, 0);
+        QVERIFY(dialog.ExportTo(temp.filePath("new.psd"))); QCOMPARE(calls, 1);
+    }
+
     void escapeClosesWithoutStartingExport()
     {
         QTemporaryDir temp; CPsdRecoveryDialog dialog(catalog(temp.filePath("source.cmo3"))); int calls = 0;
@@ -191,13 +272,21 @@ private slots:
 
     void compactThemesKeepActionsAndScrollableDetails_data()
     {
-        QTest::addColumn<bool>("dark"); QTest::newRow("light") << false; QTest::newRow("dark") << true;
+        QTest::addColumn<bool>("dark"); QTest::addColumn<bool>("originalSource");
+        QTest::newRow("light-cmo") << false << false; QTest::newRow("dark-cmo") << true << false;
+        QTest::newRow("light-original") << false << true; QTest::newRow("dark-original") << true << true;
     }
     void compactThemesKeepActionsAndScrollableDetails()
     {
-        QFETCH(bool, dark); qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        QFETCH(bool, dark); QFETCH(bool, originalSource); qApp->setStyleSheet(Theme::globalStyleSheet(dark));
         QTemporaryDir temp; auto data = catalog(temp.filePath(QString(200, QChar(0x8def)) + ".cmo3"));
-        data->documents[0].name = QString(200, QChar(0x5c42));
+        std::get<CPsdSourceDocument>(data->documents[0].content).name = QString(200, QChar(0x5c42));
+        if (originalSource) {
+            CPsdSourceCatalog::Origin source; source.sourcePath = temp.filePath(QString(200, QChar(0x8def)) + ".psd");
+            source.fileName = QString(200, QChar(0x5c42)) + ".psd"; source.familyName = QStringLiteral("素材来源");
+            source.revisionId = "old"; source.currentRevision = true; source.linkedMeshes = 2; source.detachedMeshes = 1;
+            data->documents = {CPsdSourceCatalog::Document(original(), source)};
+        }
         CPsdRecoveryDialog dialog(data); dialog.SetExportHandler([](int, const QString&, QString*) { return true; });
         dialog.resize(560, 560); dialog.show(); QTest::qWait(30);
         QCOMPARE(dialog.width(), 560);
@@ -222,13 +311,26 @@ private slots:
         QVERIFY2(contrast >= 3, qPrintable(QStringLiteral("branch pixel contrast %1").arg(contrast)));
         const auto directory = qEnvironmentVariable("PSD_RECOVERY_SCREENSHOTS");
         if (!directory.isEmpty()) {
-            QDir().mkpath(directory); const auto path = directory + (dark ? "/recovery-dark-560" : "/recovery-light-560");
+            QDir().mkpath(directory); const auto path = directory + (originalSource ? "/original" : "/reconstructed") + (dark ? "-dark-560" : "-light-560");
             QVERIFY(dialog.grab().save(path + ".png"));
             QFile geometry(path + ".json"); QVERIFY(geometry.open(QIODevice::WriteOnly));
             geometry.write(QJsonDocument(QJsonObject{{"width", dialog.width()}, {"height", dialog.height()},
                 {"dpr", dialog.devicePixelRatioF()}, {"availableWidth", available.width()}, {"availableHeight", available.height()},
                 {"treeWidth", dialog.findChild<QTreeView*>()->width()}, {"treeHeight", dialog.findChild<QTreeView*>()->height()},
                 {"detailsHeight", details->height()}}).toJson());
+        }
+        const QString normalDetails = details->toPlainText();
+        const auto sourcePath = originalSource ? data->documents[0].origin.sourcePath : data->sourcePath;
+        QVERIFY(!dialog.ExportTo(sourcePath)); QTest::qWait(30);
+        const auto first = details->document()->firstBlock();
+        QCOMPARE(first.text(), QStringLiteral("未能完成操作：%1").arg(dialog.Error()));
+        QVERIFY(details->toPlainText().endsWith(normalDetails));
+        QTextCursor errorStart(first), errorEnd(first); errorEnd.movePosition(QTextCursor::EndOfBlock);
+        QVERIFY(details->viewport()->rect().contains(details->cursorRect(errorStart)));
+        QVERIFY(details->viewport()->rect().contains(details->cursorRect(errorEnd)));
+        if (!directory.isEmpty()) {
+            const auto path = directory + (originalSource ? "/original" : "/reconstructed") + (dark ? "-dark-560-error" : "-light-560-error");
+            QVERIFY(dialog.grab().save(path + ".png"));
         }
         qApp->setStyleSheet({});
     }

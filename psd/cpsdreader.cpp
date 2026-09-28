@@ -10,6 +10,7 @@
 #include <QSet>
 #include <QtEndian>
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 
@@ -47,6 +48,7 @@ struct Reader
     qint64 decoded = 0, metadata = 0;
     int metadataEntries = 0;
     bool mergedAvailable = true;
+    bool directoryOnly = false;
 
     void check() { if (!control.Checkpoint()) invalid(control.Error()); }
     void reserve(qint64 bytes, qint64& used, qint64 maximum, const QString& label) {
@@ -72,23 +74,35 @@ struct Reader
         const qint64 count = qint64(width) * height * planes;
         reserve(count, decoded, limits.maximumDecodedBytes, QStringLiteral("通道解码总量"));
         const int compression = data.u16();
-        QByteArray output(qsizetype(count), Qt::Uninitialized);
+        QByteArray output;
+        if (!directoryOnly) output = QByteArray(qsizetype(count), Qt::Uninitialized);
         if (compression == 0) {
             if (data.remaining() != count) invalid(QStringLiteral("PSD RAW 通道长度与边界不一致"));
-            for (qint64 at = 0; at < count; at += 65536) { check(); const auto amount = std::min(qint64(65536), count - at); std::memcpy(output.data() + at, data.take(amount), size_t(amount)); }
+            for (qint64 at = 0; at < count; at += 65536) {
+                check();
+                const auto amount = std::min(qint64(65536), count - at);
+                const auto* bytes = data.take(amount);
+                if (!directoryOnly) std::memcpy(output.data() + at, bytes, size_t(amount));
+            }
         } else if (compression == 1) {
             const qint64 rows = qint64(height) * planes;
             Cursor lengths = data.sub(rows * 2);
             for (qint64 row = 0; row < rows; ++row) {
                 check(); Cursor packed = data.sub(lengths.u16()); int written = 0;
+                qsizetype checkpointAt = 0;
                 while (packed.remaining()) {
+                    if (packed.position - checkpointAt >= 65536) { check(); checkpointAt = packed.position; }
                     const int value = int(qint8(packed.u8()));
                     if (value == -128) continue;
                     const int amount = value < 0 ? 1 - value : value + 1;
                     if (amount > width - written) invalid(QStringLiteral("PSD RLE 行解压超过声明宽度"));
-                    char* target = output.data() + row * width + written;
-                    if (value < 0) std::memset(target, packed.u8(), size_t(amount));
-                    else std::memcpy(target, packed.take(amount), size_t(amount));
+                    if (value < 0) {
+                        const auto repeated = packed.u8();
+                        if (!directoryOnly) std::memset(output.data() + row * width + written, repeated, size_t(amount));
+                    } else {
+                        const auto* bytes = packed.take(amount);
+                        if (!directoryOnly) std::memcpy(output.data() + row * width + written, bytes, size_t(amount));
+                    }
                     written += amount;
                 }
                 if (written != width) invalid(QStringLiteral("PSD RLE 行数据不完整"));
@@ -101,10 +115,11 @@ struct Reader
             stream.next_in = reinterpret_cast<const unsigned char*>(data.data + data.position);
             stream.avail_in = unsigned(data.remaining());
             qint64 produced = 0; unsigned char excess = 0;
+            std::array<unsigned char, 65536> scratch;
             while (true) {
                 check();
                 const auto capacity = unsigned(std::min(qint64(65536), count - produced));
-                stream.next_out = capacity ? reinterpret_cast<unsigned char*>(output.data() + produced) : &excess;
+                stream.next_out = capacity ? directoryOnly ? scratch.data() : reinterpret_cast<unsigned char*>(output.data() + produced) : &excess;
                 stream.avail_out = capacity ? capacity : 1;
                 const auto inputBefore = stream.avail_in, available = stream.avail_out;
                 const int status = mz_inflate(&stream, MZ_NO_FLUSH);
@@ -117,7 +132,7 @@ struct Reader
                 }
                 if (status != MZ_OK || (inputBefore == stream.avail_in && !wrote)) invalid(QStringLiteral("PSD ZIP 通道损坏或截断"));
             }
-            if (compression == 3) for (qint64 row = 0; row < qint64(height) * planes; ++row) {
+            if (compression == 3 && !directoryOnly) for (qint64 row = 0; row < qint64(height) * planes; ++row) {
                 check(); auto* pixels = reinterpret_cast<unsigned char*>(output.data() + row * width);
                 for (int x = 1; x < width; ++x) pixels[x] = static_cast<unsigned char>(pixels[x] + pixels[x - 1]);
             }
@@ -184,6 +199,60 @@ struct Reader
         cursor.padding(3);
     }
     struct Record { QVector<QPair<int, quint32>> channels; std::optional<QRect> mask, realMask; };
+    struct MaskTail {
+        std::optional<QRect> realMask;
+        quint8 realFlags = 0, realBackground = 0;
+        QByteArray parameters;
+        bool operator==(const MaskTail& other) const {
+            return realMask == other.realMask && realFlags == other.realFlags &&
+                realBackground == other.realBackground && parameters == other.parameters;
+        }
+    };
+    QByteArray maskParameters(Cursor& cursor, bool present) {
+        if (!present) return {};
+        const auto start = cursor.position;
+        const int flags = cursor.u8();
+        if (flags & ~15) invalid(QStringLiteral("PSD 蒙版参数标记无效"));
+        if (flags & 1) cursor.take(1);
+        if (flags & 2) cursor.take(8);
+        if (flags & 4) cursor.take(1);
+        if (flags & 8) cursor.take(8);
+        return QByteArray(cursor.data + start, cursor.position - start);
+    }
+    MaskTail maskTail(Cursor cursor, int flags, bool realFirst) {
+        MaskTail result;
+        const auto real = [&] {
+            result.realFlags = cursor.u8(); result.realBackground = cursor.u8();
+            result.realMask = rectangle(cursor);
+        };
+        if (realFirst) {
+            real();
+            result.parameters = maskParameters(cursor, (flags | result.realFlags) & 16);
+        } else {
+            result.parameters = maskParameters(cursor, flags & 16);
+            if (cursor.remaining() >= 18) {
+                real();
+                if (!(flags & 16)) result.parameters = maskParameters(cursor, result.realFlags & 16);
+            }
+        }
+        cursor.padding(3);
+        return result;
+    }
+    MaskTail readMaskTail(Cursor cursor, int flags) {
+        std::optional<MaskTail> parameterFirst, realFirst;
+        QString reason;
+        try { parameterFirst = maskTail(cursor, flags, false); }
+        catch (const Failure& failure) { reason = failure.message; }
+        if (cursor.remaining() >= 18) {
+            try { realFirst = maskTail(cursor, flags, true); }
+            catch (const Failure& failure) { if (reason.isEmpty()) reason = failure.message; }
+        }
+        if (parameterFirst && realFirst && !(*parameterFirst == *realFirst))
+            invalid(QStringLiteral("PSD 双蒙版参数布局存在歧义"));
+        if (realFirst) return *realFirst;
+        if (parameterFirst) return *parameterFirst;
+        invalid(reason.isEmpty() ? QStringLiteral("PSD 蒙版扩展数据无效") : reason);
+    }
     Record record(Cursor& cursor, CPsdLayer& layer) {
         Record result; layer.bounds = rectangle(cursor);
         const int count = cursor.u16(); if (count > 56) invalid(QStringLiteral("PSD 图层通道数量超出限制"));
@@ -204,13 +273,7 @@ struct Reader
         if (maskLength) {
             diagnostic(layer, QStringLiteral("mask"), QStringLiteral("图层含蒙版，已保留原通道但未烘焙蒙版"));
             result.mask = rectangle(mask); mask.u8(); const int maskFlags = mask.u8();
-            if (maskFlags & 16) {
-                const int parameters = mask.u8(); if (parameters & ~15) invalid(QStringLiteral("PSD 蒙版参数标记无效"));
-                if (parameters & 1) mask.take(1); if (parameters & 2) mask.take(8);
-                if (parameters & 4) mask.take(1); if (parameters & 8) mask.take(8);
-            }
-            if (mask.remaining() >= 18) { mask.take(2); result.realMask = rectangle(mask); }
-            mask.padding(3);
+            result.realMask = readMaskTail(mask, maskFlags).realMask;
         }
         const auto rangeLength = extra.u32(); auto ranges = extra.sub(rangeLength); metadataBytes(rangeLength);
         if (rangeLength % 8) invalid(QStringLiteral("PSD 混合范围长度无效"));
@@ -285,7 +348,7 @@ struct Reader
                 if (!layer.bounds.isEmpty() && layer.kind == CPsdLayer::Kind::Raster) {
                     if (!planes.contains(0) || !planes.contains(1) || !planes.contains(2)) {
                         diagnostic(layer, QStringLiteral("missing-rgb"), QStringLiteral("此图层没有完整 RGB 栅格素材"));
-                    } else layer.image = rgba(planes, layer.bounds.size());
+                    } else if (!directoryOnly) layer.image = rgba(planes, layer.bounds.size());
                 }
             }
             info.padding(3);
@@ -329,16 +392,18 @@ struct Reader
         if (cursor.u32() != 0) invalid(QStringLiteral("RGB PSD 不应包含色彩模式数据"));
         resources(cursor.sub(cursor.u32())); layerSection(cursor.sub(cursor.u32()));
         const auto merged = decode(cursor, width, height, snapshot.channels);
-        const qsizetype count = qsizetype(width) * height;
-        QMap<int, QByteArray> planes;
-        // 临时平面只引用本次已拥有的 merged 缓冲，不向调用方暴露借用数据。
-        for (int index = 0; index < 3; ++index) planes.insert(index, QByteArray::fromRawData(merged.constData() + count * index, count));
-        if (snapshot.hasMergedTransparency) {
-            if (snapshot.channels < 4) invalid(QStringLiteral("PSD 合成透明标记缺少透明通道"));
-            planes.insert(-1, QByteArray::fromRawData(merged.constData() + count * 3, count));
+        if (snapshot.hasMergedTransparency && snapshot.channels < 4)
+            invalid(QStringLiteral("PSD 合成透明标记缺少透明通道"));
+        if (!directoryOnly && mergedAvailable) {
+            const qsizetype count = qsizetype(width) * height;
+            QMap<int, QByteArray> planes;
+            // 临时平面只引用本次已拥有的 merged 缓冲，不向调用方暴露借用数据。
+            for (int index = 0; index < 3; ++index) planes.insert(index, QByteArray::fromRawData(merged.constData() + count * index, count));
+            if (snapshot.hasMergedTransparency)
+                planes.insert(-1, QByteArray::fromRawData(merged.constData() + count * 3, count));
+            snapshot.mergedImage = rgba(planes, snapshot.canvasSize);
         }
-        if (mergedAvailable) snapshot.mergedImage = rgba(planes, snapshot.canvasSize);
-        else snapshot.diagnostics.append({QStringLiteral("missing-merged-preview"), QStringLiteral("文件声明没有有效合成预览，不使用占位像素")});
+        if (!mergedAvailable) snapshot.diagnostics.append({QStringLiteral("missing-merged-preview"), QStringLiteral("文件声明没有有效合成预览，不使用占位像素")});
         snapshot.diagnostics.append({QStringLiteral("color-policy"), snapshot.iccProfile.isEmpty() ? QStringLiteral("保留原始 RGB 数值；文件未提供 ICC，不推断或转换色彩空间") : QStringLiteral("保留原始 ICC 与 RGB 数值，未执行色彩空间转换")});
         snapshot.diagnostics.append({QStringLiteral("merged-preview"), QStringLiteral("合成图仅供参考，不替代缺失或不支持的独立图层素材")});
         check();
@@ -408,4 +473,62 @@ bool CPsdReader::ReadFile(const QString& path, CPsdSnapshot& result, QString* er
         candidate.canonicalPath = canonical; result = std::move(candidate); return true;
     } catch (const Failure& failure) { return failed(failure.message, error, control); }
     catch (...) { return failed(QStringLiteral("PSD 文件读取失败，原快照保持不变"), error, control); }
+}
+
+bool CPsdReader::ReadDirectoryBytes(const QByteArray& bytes, CPsdDirectory& result, QString* error,
+                                    CExportControl* requested, const CPsdReadLimits& requestedLimits)
+{
+    const auto limits = requestedLimits;
+    if (error) error->clear();
+    CExportControl local;
+    auto& control = requested ? *requested : local;
+    try {
+        validateLimits(limits);
+        if (bytes.size() > limits.maximumFileBytes) invalid(QStringLiteral("PSD 文件大小超出预算"));
+        Reader reader{limits, control, {}, 0, 0};
+        reader.directoryOnly = true;
+        reader.snapshot.bytes = QByteArray(bytes.constData(), bytes.size());
+        reader.check();
+        reader.snapshot.sha256 = QCryptographicHash::hash(reader.snapshot.bytes, QCryptographicHash::Sha256);
+        reader.parse();
+        auto& snapshot = reader.snapshot;
+        CPsdDirectory candidate;
+        candidate.bytes = std::move(snapshot.bytes);
+        candidate.sha256 = std::move(snapshot.sha256);
+        candidate.iccProfile = std::move(snapshot.iccProfile);
+        candidate.canvasSize = snapshot.canvasSize;
+        candidate.version = snapshot.version;
+        candidate.depth = snapshot.depth;
+        candidate.colorMode = snapshot.colorMode;
+        candidate.channels = snapshot.channels;
+        candidate.hasMergedTransparency = snapshot.hasMergedTransparency;
+        candidate.hasMergedPreview = reader.mergedAvailable;
+        candidate.displayOrder = std::move(snapshot.displayOrder);
+        candidate.diagnostics = std::move(snapshot.diagnostics);
+        candidate.layers.reserve(snapshot.layers.size());
+        for (auto& layer : snapshot.layers) {
+            reader.check();
+            CPsdDirectoryLayer next;
+            next.recordIndex = layer.recordIndex;
+            next.parentIndex = layer.parentIndex;
+            next.kind = layer.kind;
+            next.layerId = layer.layerId;
+            next.name = std::move(layer.name);
+            next.bounds = layer.bounds;
+            next.opacity = layer.opacity;
+            next.blendMode = std::move(layer.blendMode);
+            next.visible = layer.visible;
+            next.clipping = layer.clipping;
+            next.additionalInfo = std::move(layer.additionalInfo);
+            next.diagnostics = std::move(layer.diagnostics);
+            candidate.layers.append(std::move(next));
+        }
+        reader.check();
+        result = std::move(candidate);
+        return true;
+    } catch (const Failure& failure) {
+        return failed(failure.message, error, control);
+    } catch (...) {
+        return failed(QStringLiteral("PSD 目录读取或内存分配失败，原目录保持不变"), error, control);
+    }
 }

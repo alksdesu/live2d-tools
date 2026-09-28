@@ -71,6 +71,7 @@ private slots:
     void on_actionpsdPrint_triggered();
     void on_actionBatchPsd_triggered();
     void RecoverPsdFromProject(const QString& path = {});
+    void RecoverSavedPsdSources();
     void on_actionCloseModel_triggered();
     void on_actionCmo3Export_triggered();
     void ExportRuntimePackage();
@@ -95,6 +96,9 @@ private:
     void RefreshExportActions();
     void ConfigurePsdRecoveryAction();
     void FinishPsdRecovery();
+    void ShowPsdRecoveryCatalog(std::shared_ptr<const CPsdSourceCatalog> catalog);
+    bool HasSavedPsdSources() const;
+    QStringList PsdRecoveryProtectedPaths() const;
     bool ExportRecoveredPsd(const std::shared_ptr<const CPsdSourceCatalog>& catalog, int documentIndex,
                             const QString& path, QString* error);
     bool ConfirmCloseWithUnsavedChanges(bool replacingSession = false, bool replacingPhysics = false);
@@ -301,9 +305,11 @@ private:
     QAction* m_recoverPreviewAction = nullptr;
     QAction* m_exportResultsAction = nullptr;
     QAction* m_psdRecoveryAction = nullptr;
+    QAction* m_savedPsdRecoveryAction = nullptr;
     QPointer<CPsdRecoveryDialog> m_psdRecoveryDialog;
     bool m_psdRecoveryActive = false;
     bool m_exportResultsAreRecovery = false;
+    QStringList m_protectedSessionPaths;
     struct BatchOptions {
         QString outputDirectory;
         bool all = false;

@@ -18,7 +18,7 @@
 namespace {
 bool retryable(const PsdBatchFileResult& result)
 {
-    return result.state == PsdBatchFileState::Failed && !result.outputCommitted;
+    return result.state == PsdBatchFileState::Failed && !result.outputCommitted && result.sourceInfo.IsEmpty();
 }
 
 QString elapsedText(const PsdBatchFileResult& result)
@@ -35,7 +35,11 @@ QString detailText(const PsdBatchFileResult& result)
         switch (result.state) {
         case PsdBatchFileState::Pending: summary = QStringLiteral("等待开始导出。"); break;
         case PsdBatchFileState::Running: summary = QStringLiteral("正在%1。").arg(PsdExportStageText(result.stage)); break;
-        case PsdBatchFileState::Succeeded: summary = QStringLiteral("导出成功。"); break;
+        case PsdBatchFileState::Succeeded:
+            summary = result.sourceInfo.IsEmpty() ? QStringLiteral("导出成功。") :
+                result.sourceInfo.Get().method == CExportSourceInfo::Method::OriginalPsd
+                    ? QStringLiteral("原始 PSD 已完整另存。") : QStringLiteral("来源图层已重建。");
+            break;
         case PsdBatchFileState::Failed: summary = QStringLiteral("导出失败，未提供详细原因。"); break;
         case PsdBatchFileState::NotRun: summary = QStringLiteral("未执行导出。"); break;
         case PsdBatchFileState::Canceled: summary = QStringLiteral("当前文件导出已取消。"); break;
@@ -45,11 +49,19 @@ QString detailText(const PsdBatchFileResult& result)
         result.state == PsdBatchFileState::Canceled ? QStringLiteral("未提交新的输出文件。") :
         result.state == PsdBatchFileState::Pending || result.state == PsdBatchFileState::NotRun
             ? QStringLiteral("尚未开始写入文件。") : QStringLiteral("文件写入未确认。");
-    QString details = QStringLiteral("%1\n%2\n\n源模型：%3\n输出文件：%4\n状态：%5\n阶段：%6\n耗时：%7")
-        .arg(summary, writeStatus, result.sourcePath, result.outputPath, PsdBatchStateText(result.state),
+    QString details = QStringLiteral("%1\n%2\n\n%3：%4\n输出文件：%5\n状态：%6\n阶段：%7\n耗时：%8")
+        .arg(summary, writeStatus, result.sourceInfo.IsEmpty() ? QStringLiteral("源模型") : QStringLiteral("来源文件"),
+             result.sourcePath, result.outputPath, PsdBatchStateText(result.state),
              PsdExportStageText(result.stage), elapsedText(result));
     if (result.diagnostics.ErrorCount() || result.diagnostics.WarningCount())
-        details += QStringLiteral("\n\n模型检查：\n%1").arg(result.diagnostics.Text());
+        details += QStringLiteral("\n\n%1：\n%2").arg(result.sourceInfo.IsEmpty() ? QStringLiteral("模型检查") : QStringLiteral("来源检查"), result.diagnostics.Text());
+    if (!result.sourceInfo.IsEmpty()) {
+        const auto& source = result.sourceInfo.Get();
+        details += QStringLiteral("\n\n恢复方式：%1\n来源文档：%2\n来源版本：%3\n来源摘要：%4")
+            .arg(result.sourceInfo.MethodText(), source.documentName, source.revisionId,
+                 QString::fromLatin1(source.inputDigest.toHex()));
+        if (!source.outputDigest.isEmpty()) details += QStringLiteral("\n输出摘要：%1").arg(QString::fromLatin1(source.outputDigest.toHex()));
+    }
     return details;
 }
 }
@@ -80,7 +92,7 @@ CExportResultsPanel::CExportResultsPanel(QWidget* parent) : QDockWidget(QStringL
     m_table = new QTableWidget(splitter);
     m_table->setObjectName(QStringLiteral("exportResultsTable"));
     m_table->setColumnCount(6);
-    m_table->setHorizontalHeaderLabels({QStringLiteral("源模型"), QStringLiteral("输出路径"), QStringLiteral("状态"),
+    m_table->setHorizontalHeaderLabels({QStringLiteral("来源文件"), QStringLiteral("输出路径"), QStringLiteral("状态"),
                                       QStringLiteral("阶段"), QStringLiteral("耗时"), QStringLiteral("错误 / 说明")});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -168,7 +180,7 @@ void CExportResultsPanel::WriteRow(int index)
     const QString state = result.state == PsdBatchFileState::Succeeded && result.diagnostics.WarningCount()
         ? QStringLiteral("成功（有提示）") : PsdBatchStateText(result.state);
     const QString explanation = result.error.isEmpty() && result.diagnostics.WarningCount()
-        ? QStringLiteral("%1 条模型提示，详情见下方").arg(result.diagnostics.WarningCount()) : result.error;
+        ? QStringLiteral("%1 条检查提示，详情见下方").arg(result.diagnostics.WarningCount()) : result.error;
     const QStringList values{result.sourcePath, result.outputPath, state,
                              PsdExportStageText(result.stage), elapsedText(result), explanation};
     for (int column = 0; column < values.size(); ++column) {
@@ -200,7 +212,7 @@ void CExportResultsPanel::RefreshSummary()
             .arg(m_results.size()).arg(m_counts[int(PsdBatchFileState::Succeeded)]).arg(m_counts[int(PsdBatchFileState::Failed)])
             .arg(m_counts[int(PsdBatchFileState::Canceled)])
             .arg(m_counts[int(PsdBatchFileState::NotRun)]).arg(m_counts[int(PsdBatchFileState::Running)]).arg(m_counts[int(PsdBatchFileState::Pending)]));
-    if (m_warningFiles) m_summary->setText(m_summary->text() + QStringLiteral("\n%1 项包含模型提示").arg(m_warningFiles));
+    if (m_warningFiles) m_summary->setText(m_summary->text() + QStringLiteral("\n%1 项包含检查提示").arg(m_warningFiles));
     m_retry->setEnabled(!m_busy && m_retryAvailable && m_retryable > 0);
     m_copy->setEnabled(!m_results.isEmpty());
 }
@@ -228,13 +240,20 @@ QStringList CExportResultsPanel::RetrySources() const
 QJsonObject CExportResultsPanel::ReportJson() const
 {
     QJsonArray files;
-    for (const auto& item : m_results)
-        files.append(QJsonObject{{QStringLiteral("index"), item.index}, {QStringLiteral("source"), item.sourcePath},
+    bool hasSource = false;
+    for (const auto& item : m_results) {
+        QJsonObject file{{QStringLiteral("index"), item.index}, {QStringLiteral("source"), item.sourcePath},
             {QStringLiteral("output"), item.outputPath}, {QStringLiteral("state"), PsdBatchStateKey(item.state)},
             {QStringLiteral("stage"), PsdExportStageKey(item.stage)}, {QStringLiteral("error"), item.error},
             {QStringLiteral("elapsedMs"), item.elapsedMs}, {QStringLiteral("outputCommitted"), item.outputCommitted},
-            {QStringLiteral("diagnostics"), item.diagnostics.ToJson()}});
-    return QJsonObject{{QStringLiteral("version"), 2}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
+            {QStringLiteral("diagnostics"), item.diagnostics.ToJson()}};
+        if (!item.sourceInfo.IsEmpty()) {
+            file.insert(QStringLiteral("sourceRecovery"), item.sourceInfo.ToJson());
+            hasSource = true;
+        }
+        files.append(file);
+    }
+    return QJsonObject{{QStringLiteral("version"), hasSource ? 3 : 2}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
 }
 
 QString CExportResultsPanel::ReportText() const

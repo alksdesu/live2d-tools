@@ -50,6 +50,66 @@ class ExportResultsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void archivedPsdReportKeepsVersionAndExactContentEvidence()
+    {
+        CExportResultsPanel panel;
+        auto output = result(0, PsdBatchFileState::Succeeded, "/missing/original.psd", "/restored.psd", true);
+        CExportSourceInfo::Details source;
+        source.method = CExportSourceInfo::Method::OriginalPsd;
+        source.documentId = source.revisionId = "pinned-revision";
+        source.documentName = QStringLiteral("<b>眼睛</b>"); source.familyId = "source-family";
+        source.inputDigest = source.outputDigest = QByteArray(32, 'd');
+        output.sourceInfo = CExportSourceInfo::Capture(source);
+        QVERIFY(panel.SetResults({output}));
+        const auto report = panel.ReportJson();
+        QCOMPARE(report["version"].toInt(), 3);
+        const auto info = report["files"].toArray().first().toObject()["sourceRecovery"].toObject();
+        QCOMPARE(info["method"].toString(), QString("original_psd"));
+        QCOMPARE(info["revisionId"].toString(), QString("pinned-revision"));
+        QCOMPARE(info["inputDigest"], info["outputDigest"]);
+        const auto details = panel.findChild<QPlainTextEdit*>("exportResultDetails")->toPlainText();
+        QVERIFY(details.contains(source.documentName));
+        QVERIFY(details.contains(QStringLiteral("原始 PSD 已完整另存")));
+        auto invalid = output;
+        source.outputDigest = QByteArray(32, 'x');
+        invalid.sourceInfo = CExportSourceInfo::Capture(source);
+        QVERIFY(!IsPsdBatchResultValid(invalid));
+        QVERIFY(!panel.SetResults({invalid}));
+        source.outputDigest.clear(); invalid.sourceInfo = CExportSourceInfo::Capture(source);
+        QVERIFY(!IsPsdBatchResultValid(invalid));
+        invalid.state = PsdBatchFileState::Failed; invalid.outputCommitted = false;
+        QVERIFY(panel.SetResults({invalid}));
+        panel.SetRetryAvailable(true);
+        QVERIFY(!button(panel, "exportRetryFailed")->isEnabled());
+        source.method = CExportSourceInfo::Method::ReconstructedLayers;
+        output.sourceInfo = CExportSourceInfo::Capture(source);
+        QVERIFY(IsPsdBatchResultValid(output));
+        QVERIFY(panel.SetResults({output}));
+        QCOMPARE(panel.ReportJson()["files"].toArray().first().toObject()["sourceRecovery"].toObject()["method"].toString(), QString("reconstructed_layers"));
+    }
+
+    void sourceReportOwnsBorrowedMetadataAndParticipatesInIdentity()
+    {
+        QString name = "original-name";
+        QByteArray digest(32, 'q');
+        CExportSourceInfo::Details details;
+        details.documentId = "document";
+        details.documentName = QString::fromRawData(name.constData(), name.size());
+        details.inputDigest = QByteArray::fromRawData(digest.constData(), digest.size());
+        auto before = result(0, PsdBatchFileState::Failed, "/source.cmo3", "/out.psd");
+        before.sourceInfo = CExportSourceInfo::Capture(details);
+        auto after = before;
+        name.fill('x'); digest.fill('z');
+        QCOMPARE(before.sourceInfo.Get().documentName, QString("original-name"));
+        QCOMPARE(before.sourceInfo.Get().inputDigest, QByteArray(32, 'q'));
+        QVERIFY(before == after);
+        details.documentName = "changed-name";
+        after.sourceInfo = CExportSourceInfo::Capture(details);
+        QVERIFY(before != after);
+        details.documentName = QString(32769, 'a');
+        QVERIFY(!CExportSourceInfo::Capture(details).IsValid());
+    }
+
     void successfulOutputKeepsStructuredWarnings()
     {
         CExportResultsPanel panel;
@@ -63,7 +123,7 @@ private slots:
         auto* summary = panel.findChild<QLabel*>("exportResultsSummary");
         QCOMPARE(table->item(0, 2)->text(), QStringLiteral("成功（有提示）"));
         QVERIFY(details->toPlainText().contains(QStringLiteral("<b>保留重复蒙版</b>")));
-        QVERIFY(summary->text().contains(QStringLiteral("1 项包含模型提示")));
+        QVERIFY(summary->text().contains(QStringLiteral("1 项包含检查提示")));
         const auto json = panel.ReportJson();
         QCOMPARE(json["version"].toInt(), 2);
         const auto file = json["files"].toArray().first().toObject();

@@ -5,6 +5,7 @@
 #include <QString>
 #include <QVector>
 #include "std/cexportdiagnostics.h"
+#include "std/cexportsourceinfo.h"
 
 enum class PsdBatchFileState { Pending, Running, Succeeded, Failed, NotRun, Canceled };
 enum class PsdExportStage { Queued, Preflight, Preparing, Exporting, Encoding, Writing, Restoring, Done };
@@ -20,12 +21,14 @@ struct PsdBatchFileResult
     qint64 elapsedMs = 0;
     bool outputCommitted = false;
     CExportDiagnostics diagnostics;
+    CExportSourceInfo sourceInfo;
 
     bool operator==(const PsdBatchFileResult& other) const
     {
         return index == other.index && sourcePath == other.sourcePath && outputPath == other.outputPath &&
                state == other.state && stage == other.stage && error == other.error &&
-               elapsedMs == other.elapsedMs && outputCommitted == other.outputCommitted && diagnostics == other.diagnostics;
+               elapsedMs == other.elapsedMs && outputCommitted == other.outputCommitted && diagnostics == other.diagnostics &&
+               sourceInfo == other.sourceInfo;
     }
     bool operator!=(const PsdBatchFileResult& other) const { return !(*this == other); }
 };

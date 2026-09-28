@@ -89,6 +89,12 @@ QByteArray archive(const QString& xml, const QByteArray& pixels, bool includePng
     if (!file.open(QIODevice::ReadOnly)) return {};
     return file.readAll();
 }
+const CPsdSourceDocument& reconstructed(const CPsdSourceCatalog& catalog, int index = 0)
+{
+    const auto* document = catalog.documents.at(index).Reconstructed();
+    if (!document) qFatal("CMO output must contain reconstructed layers");
+    return *document;
+}
 bool hasDiagnostic(const CPsdSourceDocument& document, const QString& code, CPsdSourceDiagnostic::Severity severity)
 {
     for (const auto& diagnostic : document.diagnostics) if (diagnostic.code == code && diagnostic.severity == severity) return true;
@@ -109,7 +115,11 @@ private slots:
         QCOMPARE(result.sourceDigest, QCryptographicHash::hash(bytes, QCryptographicHash::Sha256));
         QCOMPARE(result.sourceVersion, QString("502020000"));
         QCOMPARE(result.documents.size(), 1);
-        const auto& doc = result.documents.first();
+        QVERIFY(result.documents[0].Original() == nullptr);
+        QCOMPARE(result.documents[0].origin.sourcePath, result.sourcePath);
+        QCOMPARE(result.documents[0].origin.sourceDigest, result.sourceDigest);
+        QCOMPARE(result.protectedPaths, QStringList{"source.cmo3"});
+        const auto& doc = reconstructed(result);
         QCOMPARE(doc.name, QString("原画文档"));
         QCOMPARE(doc.canvasSize, QSize(20, 30));
         QCOMPARE(doc.layers.size(), 3);
@@ -138,13 +148,13 @@ private slots:
         CPsdSourceCatalog result;
         QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(xml, pixels), {}, result, &error), qPrintable(error));
-        QCOMPARE(result.documents[0].layers.size(), 4);
-        for (const auto& layer : result.documents[0].layers) {
+        QCOMPARE(reconstructed(result, 0).layers.size(), 4);
+        for (const auto& layer : reconstructed(result, 0).layers) {
             QCOMPARE(layer.opacity, quint8(123));
             QVERIFY(!layer.visible);
             QVERIFY(layer.clipping);
         }
-        QCOMPARE(result.documents[0].layers[1].parentIndex, 0);
+        QCOMPARE(reconstructed(result, 0).layers[1].parentIndex, 0);
     }
     void unsupportedSourceMetadataBlocksOnlyItsDocument_data()
     {
@@ -159,8 +169,8 @@ private slots:
         const auto pixels = png(); QString xml = project(pixels); xml.replace(before, after);
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(xml, pixels), {}, result, &error), qPrintable(error));
-        QVERIFY(hasDiagnostic(result.documents[0], "unsupported-source-field", CPsdSourceDiagnostic::Severity::Error));
-        QCOMPARE(result.documents[0].layers[0].png, pixels);
+        QVERIFY(hasDiagnostic(reconstructed(result), "unsupported-source-field", CPsdSourceDiagnostic::Severity::Error));
+        QCOMPARE(reconstructed(result, 0).layers[0].png, pixels);
     }
     void structuralFailureIsAtomic_data()
     {
@@ -244,9 +254,9 @@ private slots:
         xml.replace(begin, end - begin, layer);
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(xml, pixels), {}, result, &error), qPrintable(error));
-        QCOMPARE(result.documents[0].layers[0].bounds, QRect(-3, 4, 0, 0));
-        QVERIFY(result.documents[0].layers[0].png.isEmpty());
-        QCOMPARE(result.documents[0].layers[2].png, pixels);
+        QCOMPARE(reconstructed(result, 0).layers[0].bounds, QRect(-3, 4, 0, 0));
+        QVERIFY(reconstructed(result, 0).layers[0].png.isEmpty());
+        QCOMPARE(reconstructed(result, 0).layers[2].png, pixels);
     }
 
     void resourcesNeverReadOutsideArchive()
@@ -273,8 +283,8 @@ private slots:
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(xml, pixels), {}, result, &error), qPrintable(error));
         QCOMPARE(result.documents.size(), 2);
-        QCOMPARE(result.documents[0].id, QString("doc-guid")); QCOMPARE(result.documents[1].id, QString("doc-guid-2"));
-        QCOMPARE(result.documents[0].layers[0].png, result.documents[1].layers[0].png);
+        QCOMPARE(reconstructed(result, 0).id, QString("doc-guid")); QCOMPARE(reconstructed(result, 1).id, QString("doc-guid-2"));
+        QCOMPARE(reconstructed(result, 0).layers[0].png, reconstructed(result, 1).layers[0].png);
         QCOMPARE(result.diagnostics.size(), 1); QCOMPARE(result.diagnostics[0].code, QString("unrelated-invalid-references"));
     }
     void knownAndUnknownBlends_data()
@@ -292,8 +302,8 @@ private slots:
         const auto pixels = png(); QString xml = project(pixels); xml.replace("CBlend_Normal", type);
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(xml, pixels), {}, result, &error), qPrintable(error));
-        QCOMPARE(result.documents[0].layers[0].blendMode, key);
-        QCOMPARE(hasDiagnostic(result.documents[0], "unsupported-blend", CPsdSourceDiagnostic::Severity::Error), key.isEmpty());
+        QCOMPARE(reconstructed(result, 0).layers[0].blendMode, key);
+        QCOMPARE(hasDiagnostic(reconstructed(result), "unsupported-blend", CPsdSourceDiagnostic::Severity::Error), key.isEmpty());
     }
     void rgbTransparencyAndProfiles()
     {
@@ -306,12 +316,12 @@ private slots:
         pixels = withProfile(pixels, profile);
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(project(pixels), pixels), {}, result, &error), qPrintable(error));
-        QCOMPARE(result.documents[0].iccProfile, profile);
-        QVERIFY(result.documents[0].iccProfile.capacity() < 1024);
-        QImage decoded; QVERIFY(CPngImage::Decode(result.documents[0].layers[0].png, decoded, &error));
+        QCOMPARE(reconstructed(result, 0).iccProfile, profile);
+        QVERIFY(reconstructed(result, 0).iccProfile.capacity() < 1024);
+        QImage decoded; QVERIFY(CPngImage::Decode(reconstructed(result, 0).layers[0].png, decoded, &error));
         QCOMPARE(decoded.pixelColor(0, 0), QColor(17, 29, 43, 0));
         QCOMPARE(decoded.pixelColor(1, 0), QColor(83, 109, 151, 255));
-        QVERIFY(!hasDiagnostic(result.documents[0], "missing-icc", CPsdSourceDiagnostic::Severity::Warning));
+        QVERIFY(!hasDiagnostic(reconstructed(result), "missing-icc", CPsdSourceDiagnostic::Severity::Warning));
     }
     void partiallyProfiledDocumentIsBlocked()
     {
@@ -328,7 +338,7 @@ private slots:
         QTemporaryDir directory; const QString path = directory.filePath("model.cmo3"); QVERIFY(source.Save(path));
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadFile(path, result, &error), qPrintable(error));
-        QVERIFY(hasDiagnostic(result.documents[0], "partial-icc", CPsdSourceDiagnostic::Severity::Error));
+        QVERIFY(hasDiagnostic(reconstructed(result), "partial-icc", CPsdSourceDiagnostic::Severity::Error));
     }
     void unsupportedBitDepthNeverSilentlyConverts()
     {
@@ -349,8 +359,8 @@ private slots:
         xml.replace(start, end - start, group);
         CPsdSourceCatalog result; QString error;
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(archive(xml, pixels), {}, result, &error), qPrintable(error));
-        QCOMPARE(result.documents[0].layers[1].blendMode, QByteArray("pass"));
-        QVERIFY(!hasDiagnostic(result.documents[0], "unsupported-blend", CPsdSourceDiagnostic::Severity::Error));
+        QCOMPARE(reconstructed(result, 0).layers[1].blendMode, QByteArray("pass"));
+        QVERIFY(!hasDiagnostic(reconstructed(result), "unsupported-blend", CPsdSourceDiagnostic::Severity::Error));
     }
 
     void corruptPngIsRejectedWithoutChangingOutput()
@@ -377,7 +387,7 @@ private slots:
         QVERIFY2(cmo3::CCmo3ArtworkReader::ReadBytes(input, path, result, &error, &control), qPrintable(error));
         QVERIFY(called); QCOMPARE(result.sourcePath, QString("borrowed.cmo3"));
         QCOMPARE(result.sourceDigest, QCryptographicHash::hash(expected, QCryptographicHash::Sha256));
-        QCOMPARE(result.documents[0].layers[0].png, pixels);
+        QCOMPARE(reconstructed(result, 0).layers[0].png, pixels);
     }
     void cancelAndFileReadAreAtomic()
     {

@@ -3,6 +3,7 @@
 
 #include "psd/cpsdsourcedocument.h"
 #include <QDialog>
+#include <QSet>
 #include <functional>
 #include <memory>
 
@@ -23,6 +24,8 @@ public:
     bool IsExporting() const { return m_exporting; }
     QString Error() const { return m_error; }
     static bool ValidateOutputPath(const QString& source, const QString& output, QString* error = nullptr);
+    static QSet<QString> CaptureProtectedPaths(const QStringList& sources);
+    static bool ValidateProtectedOutputPath(const QSet<QString>& protectedPaths, const QString& output, QString* error = nullptr);
 
 public slots:
     bool ExportTo(const QString& path);
@@ -48,6 +51,7 @@ private:
     QPushButton* m_save = nullptr;
     QPushButton* m_close = nullptr;
     QString m_error;
+    QSet<QString> m_protectedPaths;
     bool m_exporting = false;
     bool m_closePending = false;
     bool m_validDocument = false;

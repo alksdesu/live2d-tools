@@ -2,6 +2,7 @@
 #define CPSDREADER_H
 
 #include "cpsdsnapshot.h"
+#include "cpsddirectory.h"
 
 class CExportControl;
 
@@ -21,6 +22,8 @@ public:
                           CExportControl* control = nullptr, const CPsdReadLimits& limits = {});
     static bool ReadFile(const QString& path, CPsdSnapshot& result, QString* error = nullptr,
                          CExportControl* control = nullptr, const CPsdReadLimits& limits = {});
+    static bool ReadDirectoryBytes(const QByteArray& bytes, CPsdDirectory& result, QString* error = nullptr,
+                                   CExportControl* control = nullptr, const CPsdReadLimits& limits = {});
 };
 
 #endif

@@ -4,8 +4,12 @@
 #include <QByteArray>
 #include <QRect>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <optional>
+#include <variant>
+#include <utility>
+#include "cpsdoriginal.h"
 
 struct CPsdSourceDiagnostic
 {
@@ -42,7 +46,25 @@ struct CPsdSourceCatalog
     QString sourcePath;
     QByteArray sourceDigest;
     QString sourceVersion;
-    QVector<CPsdSourceDocument> documents;
+    struct Origin {
+        QString sourcePath;
+        QByteArray sourceDigest;
+        QString familyId, familyName, revisionId, fileName;
+        bool currentRevision = false;
+        int linkedMeshes = 0, detachedMeshes = 0;
+    };
+    struct Document {
+        std::variant<CPsdSourceDocument, CPsdOriginal> content;
+        Origin origin;
+        QVector<CPsdSourceDiagnostic> diagnostics;
+        Document() = default;
+        Document(CPsdSourceDocument document) : content(std::move(document)) {}
+        Document(CPsdOriginal document, Origin source) : content(std::move(document)), origin(std::move(source)) {}
+        const CPsdSourceDocument* Reconstructed() const { return std::get_if<CPsdSourceDocument>(&content); }
+        const CPsdOriginal* Original() const { return std::get_if<CPsdOriginal>(&content); }
+    };
+    QStringList protectedPaths;
+    QVector<Document> documents;
     QVector<CPsdSourceDiagnostic> diagnostics;
 };
 

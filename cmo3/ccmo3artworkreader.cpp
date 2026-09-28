@@ -546,6 +546,12 @@ bool readOwned(const QByteArray& bytes, const QString& path, CPsdSourceCatalog& 
     candidate.sourceDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
     Reader reader(archive, control);
     reader.read(candidate);
+    if (!path.isEmpty()) candidate.protectedPaths.append(path);
+    for (auto& document : candidate.documents) {
+        document.origin.sourcePath = path;
+        document.origin.sourceDigest = candidate.sourceDigest;
+        document.origin.fileName = QFileInfo(path).fileName();
+    }
     checkpoint(control);
     result = std::move(candidate);
     return true;
