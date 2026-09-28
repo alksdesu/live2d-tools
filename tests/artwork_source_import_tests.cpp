@@ -1,11 +1,14 @@
 #include "live2dstruct/cartworksourceimport.h"
 #include "live2dstruct/cpsdlayermatcher.h"
 #include "live2dstruct/cartworksampler.h"
+#include "live2dstruct/cartworkupdateplanner.h"
 #include "psd/cpsdreader.h"
 #include "std/cpngimage.h"
 #include "std/cexportcontrol.h"
 #include <QtTest>
 #include <QColorSpace>
+#include <QDataStream>
+#include <QJsonObject>
 #include <QtEndian>
 using namespace live2dstruct;
 namespace {
@@ -52,6 +55,55 @@ QImage image(const CArtworkSourceImport::SourceCandidate& source, int index = 0)
 class ArtworkSourceImportTests : public QObject {
     Q_OBJECT
 private slots:
+    void reinterpretedPsdRetainsSerializedLegacyRevision()
+    {
+        using Artwork = CModelArtwork;
+        using Planner = CArtworkUpdatePlanner;
+        Layer layer; layer.extra = tag("clbl", QByteArray::fromHex("01000000"));
+        CPsdReadDocument document; QString error;
+        QVERIFY2(CPsdReader::OpenBytes(psd({layer}), document, &error), qPrintable(error));
+        const auto& directory = *document.Directory();
+        const auto policy = Artwork::ColorPolicy::PreserveValues;
+        const QTransform mapping;
+        QByteArray legacyBytes; QDataStream stream(&legacyBytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
+        stream << directory.sha256 << directory.canonicalPath << QString("family") << qint32(policy)
+            << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
+        const auto legacyId = QStringLiteral("revision:") + QString::fromLatin1(QCryptographicHash::hash(legacyBytes, QCryptographicHash::Sha256).toHex());
+        const auto currentId = CArtworkSourceImport::RevisionIdentity(directory, "family", policy, mapping);
+        QVERIFY(currentId != legacyId);
+        QCOMPARE(currentId, CArtworkSourceImport::RevisionIdentity(directory, "family", policy, mapping));
+        QVERIFY(currentId != CArtworkSourceImport::RevisionIdentity(directory, "other", policy, mapping));
+        QVERIFY(currentId != CArtworkSourceImport::RevisionIdentity(directory, "family", Artwork::ColorPolicy::ConvertToSRgb, mapping));
+        QVERIFY(currentId != CArtworkSourceImport::RevisionIdentity(directory, "family", policy, QTransform::fromTranslate(1, 0)));
+        auto moved = directory; moved.canonicalPath = "/moved/source.psd";
+        QVERIFY(currentId != CArtworkSourceImport::RevisionIdentity(moved, "family", policy, mapping));
+        auto changed = directory; changed.sha256 = QCryptographicHash::hash("different", QCryptographicHash::Sha256);
+        QVERIFY(currentId != CArtworkSourceImport::RevisionIdentity(changed, "family", policy, mapping));
+        Planner::Request request;
+        QVERIFY2(CArtworkSourceImport::Prepare(document, "family", currentId, policy, mapping, request.incoming, &error), qPrintable(error));
+        QVERIFY(request.incoming.revision.layers[0].pixelEquivalent);
+        auto legacy = request.incoming.revision; legacy.id = legacyId;
+        legacy.layers[0].pixelEquivalent = false;
+        legacy.layers[0].diagnostics = {QStringLiteral("unapplied-tag: clbl")};
+        Artwork::State historical; historical.images = request.incoming.images; historical.revisions.insert(legacyId, legacy);
+        historical.families.insert("family", {"family", "source", Artwork::SourceKind::Psd, legacyId});
+        QJsonObject saved; QVERIFY2(Artwork::ToJson(historical, saved, &error), qPrintable(error));
+        Planner::Snapshot snapshot; snapshot.sourceDigest = QCryptographicHash::hash("model", QCryptographicHash::Sha256);
+        QVERIFY2(CTextureWorkspace::Initialize({}, {}, snapshot.baseline.workspace, &error), qPrintable(error));
+        QVERIFY2(Artwork::FromJson(saved, snapshot.baseline.artwork, &error), qPrintable(error));
+        const auto baseline = snapshot.baseline;
+        auto collision = request; collision.incoming.revision.id = legacyId;
+        Planner::Plan plan; QVERIFY(!Planner::Build(snapshot, collision, plan, &error));
+        QVERIFY(error.contains(QStringLiteral("不能改写历史来源")));
+        QVERIFY2(Planner::Build(snapshot, request, plan, &error), qPrintable(error));
+        QVERIFY2(Planner::Validate(snapshot, plan, &error), qPrintable(error));
+        QCOMPARE(plan.state.artwork.revisions.size(), 2);
+        QCOMPARE(plan.state.artwork.revisions[legacyId], legacy);
+        QCOMPARE(plan.state.artwork.revisions[currentId], request.incoming.revision);
+        QCOMPARE(plan.state.artwork.families["family"].currentRevision, currentId);
+        QCOMPARE(snapshot.baseline, baseline);
+    }
+
     void invalidSealedDocumentDoesNotReplaceCandidateOrInvokeCallbacks() {
         const auto before = prepare(psd()); auto result = before; CPsdReadDocument source;
         CExportControl control; bool called = false; QString error;

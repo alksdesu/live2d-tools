@@ -11,6 +11,7 @@
 #include <QtEndian>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -172,6 +173,67 @@ struct Reader
         }
         return image;
     }
+    bool zeroPadding(Cursor& payload, qsizetype maximum) {
+        if (payload.remaining() > maximum) return false;
+        while (payload.remaining()) if (payload.u8()) return false;
+        return true;
+    }
+    bool finiteDouble(Cursor& payload) {
+        if (payload.remaining() < 8) return false;
+        const auto bits = qFromBigEndian<quint64>(payload.take(8));
+        double value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return std::isfinite(value);
+    }
+    bool timestampMetadata(Cursor payload) {
+        if (payload.remaining() < 8 || payload.u32() != 16) return false;
+        const auto nameLength = payload.u32();
+        if (nameLength > 1 || (nameLength && (payload.remaining() < 2 || payload.u16()))) return false;
+        if (payload.remaining() < 16 || payload.u32() != 8 || payload.bytes(8) != "metadata" || payload.u32() != 1) return false;
+        if (payload.remaining() < 17 || payload.u32() != 9 || payload.bytes(9) != "layerTime" || payload.bytes(4) != "doub") return false;
+        return finiteDouble(payload) && zeroPadding(payload, 3);
+    }
+    bool metadataSettings(Cursor payload) {
+        if (payload.remaining() < 4) return false;
+        const auto count = payload.u32();
+        if (count > quint64(payload.remaining() / 16)) return false;
+        if (count > quint32(65536 - metadataEntries)) invalid(QStringLiteral("PSD 元数据记录数量超出限制"));
+        bool equivalent = true;
+        QSet<QByteArray> keys;
+        for (quint32 index = 0; index < count; ++index) {
+            check(); ++metadataEntries;
+            if (payload.remaining() < 16) return false;
+            const auto signature = payload.bytes(4), key = payload.bytes(4);
+            const auto copy = payload.u8(); auto padding = payload.sub(3);
+            const auto length = payload.u32();
+            if (length > quint64(payload.remaining())) return false;
+            auto item = payload.sub(length);
+            const bool neutral = signature == "8BIM" && key == "cust" && copy <= 1 &&
+                zeroPadding(padding, 3) && timestampMetadata(item);
+            equivalent = neutral && !keys.contains(key) && equivalent;
+            keys.insert(key);
+        }
+        return zeroPadding(payload, 3) && equivalent;
+    }
+    bool neutralMetadata(const QByteArray& key, Cursor payload) {
+        if (key == "clbl" || key == "infx" || key == "knko") {
+            if (payload.remaining() != 4) return false;
+            const auto value = payload.u8();
+            return value == (key == "clbl" ? 1 : 0) && zeroPadding(payload, 3);
+        }
+        if (key == "lspf") return payload.remaining() == 4 && !(payload.u32() & ~quint32(15));
+        if (key == "lclr") {
+            if (payload.remaining() != 8) return false;
+            payload.u16(); return zeroPadding(payload, 6);
+        }
+        if (key == "fxrp") return payload.remaining() == 16 && finiteDouble(payload) && finiteDouble(payload);
+        if (key == "lyvr") {
+            if (payload.remaining() != 4) return false;
+            const auto version = payload.u32(); return version == 70 || version == 80;
+        }
+        if (key == "shmd") return metadataSettings(payload);
+        return false;
+    }
     void tags(Cursor& cursor, CPsdLayer* layer, int alignment) {
         QSet<QByteArray> unique;
         while (cursor.remaining() >= 12) {
@@ -194,7 +256,8 @@ struct Reader
             }
             layer->additionalInfo.append({key, QByteArray(payload.data, payload.size)});
             const bool structural = key == "luni" || key == "lyid" || key == "lsct" || key == "lsdk";
-            if (structural && unique.contains(key)) invalid(QStringLiteral("PSD 图层结构字段重复：%1").arg(QString::fromLatin1(key)));
+            const bool duplicate = unique.contains(key);
+            if (structural && duplicate) invalid(QStringLiteral("PSD 图层结构字段重复：%1").arg(QString::fromLatin1(key)));
             unique.insert(key);
             if (key == "luni") {
                 const quint32 count = payload.u32();
@@ -213,10 +276,11 @@ struct Reader
                 if (payload.remaining() >= 8) { if (payload.bytes(4) != "8BIM") invalid(QStringLiteral("PSD 分组混合模式签名无效")); layer->blendMode = payload.bytes(4); }
                 if (payload.remaining() >= 4) payload.u32();
                 payload.padding(0);
-            } else if (key == "lspf" || key == "lclr" || key == "fxrp") {
-                diagnostic(*layer, QStringLiteral("metadata"), QStringLiteral("已保留图层元数据 %1").arg(QString::fromLatin1(key)), true);
             } else {
-                diagnostic(*layer, QStringLiteral("unapplied-tag"), QStringLiteral("区段 %1 的效果尚未应用，栅格通道不能视为完整图层外观").arg(QString::fromLatin1(key)));
+                const bool neutral = neutralMetadata(key, payload);
+                if (neutral && !duplicate)
+                    diagnostic(*layer, QStringLiteral("metadata"), QStringLiteral("已保留图层元数据 %1").arg(QString::fromLatin1(key)), true);
+                else diagnostic(*layer, QStringLiteral("unapplied-tag"), QStringLiteral("区段 %1 包含未支持或无效的设置，栅格通道不能视为完整图层外观").arg(QString::fromLatin1(key)));
             }
         }
         cursor.padding(3);

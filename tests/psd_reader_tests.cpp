@@ -6,6 +6,8 @@
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QtEndian>
+#include <cstring>
+#include <limits>
 
 namespace {
 QByteArray be16(quint16 value) { char bytes[2]; qToBigEndian(value, bytes); return QByteArray(bytes, 2); }
@@ -14,6 +16,22 @@ QByteArray block(const QByteArray& bytes) { return be32(bytes.size()) + bytes; }
 QByteArray tag(const QByteArray& key, const QByteArray& data) { return "8BIM" + key + block(data); }
 QByteArray unicode(const QString& name) {
     QByteArray result = be32(name.size()); for (const auto character : name) result += be16(character.unicode()); return result;
+}
+QByteArray number(double value) {
+    quint64 bits; std::memcpy(&bits, &value, sizeof(bits)); char bytes[8]; qToBigEndian(bits, bytes); return QByteArray(bytes, 8);
+}
+QByteArray timestamp(double value = 1234567890.25, bool terminatedName = true) {
+    QByteArray result = be32(16) + unicode(terminatedName ? QString(QChar(0)) : QString()) + block("metadata") + be32(1) +
+        block("layerTime") + "doub" + number(value);
+    result += QByteArray((4 - result.size() % 4) % 4, 0); return result;
+}
+QByteArray metadataItem(const QByteArray& key, const QByteArray& data, const QByteArray& signature = "8BIM", quint8 copy = 0) {
+    return signature + key + char(copy) + QByteArray(3, 0) + block(data);
+}
+QByteArray metadata(const QByteArray& descriptor = timestamp()) { return be32(1) + metadataItem("cust", descriptor); }
+QByteArray neutralTags() {
+    return tag("clbl", QByteArray::fromHex("01000000")) + tag("infx", be32(0)) + tag("knko", be32(0)) +
+        tag("lspf", be32(0)) + tag("lclr", QByteArray(8, 0)) + tag("fxrp", QByteArray(16, 0)) + tag("shmd", metadata());
 }
 QByteArray packed(const QByteArray& bytes, int width, int compression) {
     QByteArray result = be16(compression);
@@ -31,7 +49,7 @@ QByteArray packed(const QByteArray& bytes, int width, int compression) {
 }
 struct Layer {
     int kind = 0, compression = 0; QString name = QString::fromUtf8("左目😀");
-    QByteArray extras, mask, ranges; QRect bounds{-1, -2, 2, 2}; quint8 flags = 0, opacity = 255, clipping = 0;
+    QByteArray extras, mask, ranges, blendMode = "norm"; QRect bounds{-1, -2, 2, 2}; quint8 flags = 0, opacity = 255, clipping = 0;
     QVector<QPair<int, QByteArray>> channels{{0, QByteArray::fromHex("10f030e0")}, {1, QByteArray::fromHex("20404080")},
         {2, QByteArray::fromHex("306020a0")}, {-1, QByteArray::fromHex("0080ff40")}};
 };
@@ -44,7 +62,7 @@ QByteArray fixture(const QVector<Layer>& layers = {Layer()}, int compositeCompre
             const auto data = packed(channel.second, layer.bounds.width(), layer.compression);
             records += be16(quint16(channel.first)) + be32(data.size()); images += data;
         }
-        records += "8BIMnorm"; records += char(layer.opacity); records += char(layer.clipping); records += char(layer.flags); records += char(0);
+        records += "8BIM" + layer.blendMode; records += char(layer.opacity); records += char(layer.clipping); records += char(layer.flags); records += char(0);
         QByteArray extra = block(layer.mask) + block(layer.ranges) + QByteArray::fromHex("01610000");
         extra += tag("luni", unicode(layer.name)) + tag("lyid", be32(42));
         if (layer.kind) extra += tag("lsct", be32(layer.kind));
@@ -162,6 +180,146 @@ private slots:
         QVERIFY2(CPsdReader::ReadBytes(fixture({layer}), result, &error), qPrintable(error));
         QCOMPARE(result.layers[0].additionalInfo.size(), 4); QVERIFY(!result.layers[0].pixelEquivalent);
         QCOMPARE(result.layers[0].additionalInfo[2].data, QByteArray("one")); QCOMPARE(result.layers[0].additionalInfo[3].data, QByteArray("two"));
+    }
+    void neutralMetadataEligibility_data() {
+        QTest::addColumn<QByteArray>("extras"); QTest::addColumn<bool>("equivalent");
+        const auto add = [](const QByteArray& name, const QByteArray& extras, bool equivalent) {
+            QTest::newRow(name.constData()) << extras << equivalent;
+        };
+        const QVector<QPair<QByteArray, QByteArray>> defaults{{"clbl", QByteArray::fromHex("01000000")},
+            {"infx", be32(0)}, {"knko", be32(0)}, {"lspf", be32(0)}, {"lclr", QByteArray(8, 0)},
+            {"fxrp", QByteArray(16, 0)}, {"shmd", metadata()}, {"lyvr", be32(80)}};
+        for (const auto& value : defaults) {
+            const auto encoded = tag(value.first, value.second);
+            add(value.first + "-default", encoded, true);
+            add(value.first + "-duplicate", encoded + encoded, false);
+            add(value.first + "-truncated", tag(value.first, value.second.left(3)), false);
+            add(value.first + "-unknown-before", tag("zzzz", "preserved") + encoded, false);
+            add(value.first + "-effect-after", encoded + tag("lfx2", "preserved"), false);
+        }
+        add("all-defaults", neutralTags(), true);
+        for (const auto& key : {QByteArray("clbl"), QByteArray("infx"), QByteArray("knko")}) {
+            for (int value = 0; value <= 2; ++value)
+                add(key + "-value-" + QByteArray::number(value), tag(key, QByteArray(1, char(value)) + QByteArray(3, 0)), value == (key == "clbl" ? 1 : 0));
+            const auto expected = key == "clbl" ? char(1) : char(0);
+            add(key + "-padding", tag(key, QByteArray(1, expected) + QByteArray::fromHex("000001")), false);
+            add(key + "-too-long", tag(key, QByteArray(1, expected) + QByteArray(4, 0)), false);
+            add(key + "-conflicting-duplicate", tag(key, QByteArray(4, char(1))) + tag(key, QByteArray(1, expected) + QByteArray(3, 0)), false);
+        }
+        add("edit-locks", tag("lspf", be32(15)), true);
+        add("unknown-locks", tag("lspf", be32(16)), false);
+        add("color-label", tag("lclr", be16(7) + QByteArray(6, 0)), true);
+        add("future-color-label", tag("lclr", be16(65535) + QByteArray(6, 0)), true);
+        add("color-reserved-data", tag("lclr", QByteArray(7, 0) + char(1)), false);
+        add("finite-reference", tag("fxrp", number(-12.5) + number(9000.25)), true);
+        add("nan-reference", tag("fxrp", number(std::numeric_limits<double>::quiet_NaN()) + number(0)), false);
+        add("infinite-reference", tag("fxrp", number(0) + number(std::numeric_limits<double>::infinity())), false);
+        add("version-70", tag("lyvr", be32(70)), true);
+        add("unknown-version", tag("lyvr", be32(900)), false);
+        add("empty-metadata", tag("shmd", be32(0)), true);
+        add("empty-descriptor-name", tag("shmd", metadata(timestamp(0, false))), true);
+        add("negative-timestamp", tag("shmd", metadata(timestamp(-1.25))), true);
+        add("nan-timestamp", tag("shmd", metadata(timestamp(std::numeric_limits<double>::quiet_NaN()))), false);
+        add("infinite-timestamp", tag("shmd", metadata(timestamp(std::numeric_limits<double>::infinity()))), false);
+        add("copy-on-duplication", tag("shmd", be32(1) + metadataItem("cust", timestamp(), "8BIM", 1)), true);
+        add("invalid-copy-flag", tag("shmd", be32(1) + metadataItem("cust", timestamp(), "8BIM", 2)), false);
+        add("unknown-signature", tag("shmd", be32(1) + metadataItem("cust", timestamp(), "8ELE")), false);
+        add("unknown-subkey", tag("shmd", be32(1) + metadataItem("zzzz", timestamp())), false);
+        add("duplicate-cust", tag("shmd", be32(2) + metadataItem("cust", timestamp()) + metadataItem("cust", timestamp())), false);
+        add("mixed-known-and-unknown", tag("shmd", be32(2) + metadataItem("cust", timestamp()) + metadataItem("mlst", timestamp())), false);
+        add("metadata-count-overflow", tag("shmd", be32(0xffffffff) + metadataItem("cust", timestamp())), false);
+        add("metadata-trailing-data", tag("shmd", metadata() + QByteArray(4, 0)), false);
+        for (const auto& change : QVector<QPair<QByteArray, QByteArray>>{{"metadata", "unknownx"}, {"layerTime", "otherTime"}, {"doub", "tdta"}}) {
+            auto data = timestamp(); data.replace(change.first, change.second);
+            add("timestamp-unknown-" + change.first, tag("shmd", metadata(data)), false);
+        }
+        auto data = metadata(); data[15] = char(1); add("metadata-nonzero-padding", tag("shmd", data), false);
+        data = metadata(); data.replace(16, 4, be32(0xffffffff)); add("metadata-length-overflow", tag("shmd", data), false);
+        data = timestamp(); data[3] = char(17); add("descriptor-version", tag("shmd", metadata(data)), false);
+        data = timestamp(); data.replace(4, 4, be32(0xffffffff)); add("descriptor-name-overflow", tag("shmd", metadata(data)), false);
+        data = timestamp(); data[9] = char('x'); add("descriptor-nonempty-name", tag("shmd", metadata(data)), false);
+        data = timestamp(); data.replace(22, 4, be32(2)); add("descriptor-extra-item", tag("shmd", metadata(data)), false);
+        data = timestamp(); data[data.size() - 1] = char(1); add("descriptor-nonzero-padding", tag("shmd", metadata(data)), false);
+    }
+    void neutralMetadataEligibility() {
+        QFETCH(QByteArray, extras); QFETCH(bool, equivalent);
+        Layer layer; layer.extras = extras; const auto bytes = fixture({layer});
+        CPsdSnapshot baseline, eager; CPsdDirectory directory; CPsdReadDocument sealed; QString error;
+        QVERIFY(CPsdReader::ReadBytes(fixture(), baseline));
+        QVERIFY2(CPsdReader::ReadBytes(bytes, eager, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::ReadDirectoryBytes(bytes, directory, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::OpenBytes(bytes, sealed, &error), qPrintable(error));
+        QCOMPARE(eager.layers[0].pixelEquivalent, equivalent);
+        QCOMPARE(hasDiagnostic(eager.layers[0], QStringLiteral("unapplied-tag")), !equivalent);
+        QCOMPARE(eager.layers[0].image, baseline.layers[0].image); QCOMPARE(eager.mergedImage, baseline.mergedImage);
+        QCOMPARE(eager.bytes, bytes); QCOMPARE(directory.bytes, bytes); QCOMPARE(sealed.Directory()->bytes, bytes);
+        for (const auto* actual : {static_cast<const CPsdDirectory*>(&directory), sealed.Directory()}) {
+            QCOMPARE(actual->layers[0].pixelEquivalent, equivalent);
+            QCOMPARE(actual->layers[0].diagnostics.size(), eager.layers[0].diagnostics.size());
+            for (int index = 0; index < actual->layers[0].diagnostics.size(); ++index) {
+                QCOMPARE(actual->layers[0].diagnostics[index].code, eager.layers[0].diagnostics[index].code);
+                QCOMPARE(actual->layers[0].diagnostics[index].message, eager.layers[0].diagnostics[index].message);
+            }
+            QCOMPARE(actual->layers[0].additionalInfo.size(), eager.layers[0].additionalInfo.size());
+            for (int index = 0; index < actual->layers[0].additionalInfo.size(); ++index) {
+                QCOMPARE(actual->layers[0].additionalInfo[index].key, eager.layers[0].additionalInfo[index].key);
+                QCOMPARE(actual->layers[0].additionalInfo[index].data, eager.layers[0].additionalInfo[index].data);
+            }
+        }
+        QImage image; QVERIFY(sealed.ReadLayer(0, image)); QCOMPARE(image, baseline.layers[0].image);
+        QByteArray retained;
+        for (int index = 2; index < eager.layers[0].additionalInfo.size(); ++index)
+            retained += tag(eager.layers[0].additionalInfo[index].key, eager.layers[0].additionalInfo[index].data);
+        QCOMPARE(retained, extras);
+    }
+    void truncatedTimestampRemainsRecoverable() {
+        const auto descriptor = timestamp();
+        for (int size = 0; size < descriptor.size() - 1; ++size) {
+            Layer layer; layer.extras = tag("shmd", metadata(descriptor.left(size))); const auto bytes = fixture({layer});
+            CPsdSnapshot eager; CPsdDirectory directory; CPsdReadDocument sealed; QString error;
+            QVERIFY2(CPsdReader::ReadBytes(bytes, eager, &error), qPrintable(error));
+            QVERIFY2(CPsdReader::ReadDirectoryBytes(bytes, directory, &error), qPrintable(error));
+            QVERIFY2(CPsdReader::OpenBytes(bytes, sealed, &error), qPrintable(error));
+            QVERIFY(!eager.layers[0].pixelEquivalent); QVERIFY(!directory.layers[0].pixelEquivalent); QVERIFY(!sealed.Directory()->layers[0].pixelEquivalent);
+            QCOMPARE(eager.bytes, bytes); QCOMPARE(directory.bytes, bytes); QCOMPARE(sealed.Directory()->bytes, bytes);
+        }
+    }
+    void nestedMetadataRespectsBudgetAndCancellation() {
+        const auto item = metadataItem("zzzz", {});
+        Layer layer; layer.extras = tag("shmd", be32(65533) + item.repeated(65533));
+        CPsdSnapshot eager; CPsdDirectory directory; CPsdReadDocument sealed; QString error;
+        const auto accepted = fixture({layer});
+        QVERIFY2(CPsdReader::ReadBytes(accepted, eager, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::ReadDirectoryBytes(accepted, directory, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::OpenBytes(accepted, sealed, &error), qPrintable(error));
+        QVERIFY(!eager.layers[0].pixelEquivalent);
+        layer.extras = tag("shmd", be32(65534) + item.repeated(65534)); const auto rejected = fixture({layer});
+        QVERIFY(!CPsdReader::ReadBytes(rejected, eager, &error)); QVERIFY(error.contains(QStringLiteral("数量"))); QCOMPARE(eager.bytes, accepted);
+        QVERIFY(!CPsdReader::ReadDirectoryBytes(rejected, directory, &error)); QCOMPARE(directory.bytes, accepted);
+        QVERIFY(!CPsdReader::OpenBytes(rejected, sealed, &error)); QCOMPARE(sealed.Directory()->bytes, accepted);
+        for (int path = 0; path < 3; ++path) {
+            CExportControl control; int calls = 0;
+            QVERIFY(control.SetHandler([&](const auto&, QString*) { if (++calls == 64) control.Cancel(); return true; }));
+            const bool result = path == 0 ? CPsdReader::ReadBytes(accepted, eager, &error, &control) : path == 1
+                ? CPsdReader::ReadDirectoryBytes(accepted, directory, &error, &control) : CPsdReader::OpenBytes(accepted, sealed, &error, &control);
+            QVERIFY(!result); QVERIFY(control.WasCanceled()); QCOMPARE(calls, 64);
+            QCOMPARE(eager.bytes, accepted); QCOMPARE(directory.bytes, accepted); QCOMPARE(sealed.Directory()->bytes, accepted);
+        }
+    }
+    void neutralMetadataDoesNotOverrideCompositing() {
+        for (int kind = 0; kind < 5; ++kind) {
+            Layer layer; layer.extras = neutralTags();
+            if (kind == 0) layer.blendMode = "mul ";
+            if (kind == 1) layer.blendMode = "lddg";
+            if (kind == 2) layer.clipping = 1;
+            if (kind == 3) layer.extras = tag("lrFX", "effect") + layer.extras;
+            if (kind == 4) layer.flags = 24;
+            CPsdSnapshot eager; CPsdReadDocument sealed; QString error; const auto bytes = fixture({layer});
+            QVERIFY2(CPsdReader::ReadBytes(bytes, eager, &error), qPrintable(error));
+            QVERIFY2(CPsdReader::OpenBytes(bytes, sealed, &error), qPrintable(error));
+            QVERIFY(!eager.layers[0].pixelEquivalent); QVERIFY(!sealed.Directory()->layers[0].pixelEquivalent);
+            QImage image; QVERIFY(sealed.ReadLayer(0, image)); QCOMPARE(image, eager.layers[0].image);
+        }
     }
     void malformedUnicodeAndRleAndZipAreRejected() {
         Layer layer; layer.name = QString(QChar(0xd800)); CPsdSnapshot result; QString error;

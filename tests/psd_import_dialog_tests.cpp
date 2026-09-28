@@ -9,6 +9,7 @@
 #include <QColorSpace>
 #include <QComboBox>
 #include <QCryptographicHash>
+#include <QDataStream>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -33,6 +34,14 @@ using Planner = CArtworkUpdatePlanner;
 using Artwork = CModelArtwork;
 namespace {
 QByteArray hash(const QByteArray& value) { return QCryptographicHash::hash(value, QCryptographicHash::Sha256); }
+QString derivedIdentity(const CArtworkSourceImport::SourceCandidate& source, Artwork::ColorPolicy policy, const QTransform& mapping, bool versioned)
+{
+    QByteArray bytes; QDataStream stream(&bytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
+    stream << source.revision.id << source.revision.familyId << source.revision.sourceDigest << qint32(policy)
+        << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
+    if (versioned) stream << CArtworkSourceImport::PsdInterpretationVersion;
+    return QStringLiteral("revision:") + QString::fromLatin1(hash(bytes).toHex());
+}
 QByteArray u16(quint16 value) { char data[2]; qToBigEndian(value, data); return QByteArray(data, 2); }
 QByteArray u32(quint32 value) { char data[4]; qToBigEndian(value, data); return QByteArray(data, 4); }
 QByteArray block(const QByteArray& value) { return u32(value.size()) + value; }
@@ -219,6 +228,96 @@ private slots:
         QVERIFY(after.pixelColor(0, 0).red() > before.pixelColor(0, 0).red()); QCOMPARE(after.pixelColor(0, 0).alpha(), before.pixelColor(0, 0).alpha());
         color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::PreserveValues))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision.id, source.revision.id);
     }
+    void mappingOnlyUsesAcceptedPixelsWithoutReadingPsdAgain()
+    {
+        auto c = context(); c.incoming.revision.sourceBytes = "saved source with prepared pixels"; c.incoming.revision.sourceDigest = hash(c.incoming.revision.sourceBytes);
+        Dialog d(c); connectHandlers(d); QVERIFY(settled(d)); const auto images = d.DraftRequest().incoming.images;
+        control<QDoubleSpinBox>(d, "psdDocumentX")->setValue(2); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        const auto expected = derivedIdentity(c.incoming, c.incoming.revision.colorPolicy, QTransform::fromTranslate(2, 0), true);
+        QCOMPARE(d.DraftRequest().incoming.revision.id, expected); QCOMPARE(d.DraftRequest().incoming.images, images);
+        QVERIFY(expected != derivedIdentity(c.incoming, c.incoming.revision.colorPolicy, QTransform::fromTranslate(2, 0), false));
+        QVERIFY(associate(d)); click(d, "psdPreview"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        QCOMPARE(d.DraftRequest().incoming.images, images); QCOMPARE(d.DraftRequest().incoming.revision.id, expected);
+        click(d, "psdSaveSourceOnly"); QVERIFY(settled(d)); QCOMPARE(d.result(), int(QDialog::Accepted));
+        QVERIFY(d.Result().state.artwork.bindings.isEmpty()); QCOMPARE(d.Result().state.artwork.revisions[expected].sourceBytes, c.incoming.revision.sourceBytes);
+    }
+    void acceptedColorRecipeSurvivesAllBuildConsumers()
+    {
+        auto c = boundContext(); c.incoming = incoming({Layer()}, "next", {8, 6}, QColorSpace(QColorSpace::SRgbLinear).iccProfile());
+        Dialog d(c); connectHandlers(d); QVERIFY(settled(d));
+        control<QComboBox>(d, "psdColorPolicy")->setCurrentIndex(control<QComboBox>(d, "psdColorPolicy")->findData(int(Artwork::ColorPolicy::ConvertToSRgb)));
+        click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        const auto accepted = d.DraftRequest().incoming;
+        QCOMPARE(accepted.revision.id, derivedIdentity(c.incoming, Artwork::ColorPolicy::ConvertToSRgb, {}, true));
+        click(d, "psdConfirmKnown"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        QCOMPARE(d.DraftRequest().incoming.revision, accepted.revision); QCOMPARE(d.DraftRequest().incoming.images, accepted.images);
+        action(d, Planner::Action::Keep); click(d, "psdApplySelection"); QVERIFY(settled(d));
+        control<QLineEdit>(d, "psdFamilyName")->setText("accepted recipe"); click(d, "psdPreview"); QVERIFY(settled(d));
+        QCOMPARE(d.DraftRequest().incoming.revision, accepted.revision); QCOMPARE(d.DraftRequest().incoming.images, accepted.images); QCOMPARE(d.DraftRequest().incoming.diagnostics, accepted.diagnostics);
+        control<QDoubleSpinBox>(d, "psdDocumentX")->setValue(3); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QCOMPARE(d.DraftRequest().incoming.images, accepted.images); QCOMPARE(d.DraftRequest().incoming.revision.id, derivedIdentity(c.incoming, Artwork::ColorPolicy::ConvertToSRgb, QTransform::fromTranslate(3, 0), true));
+        click(d, "psdUndo"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision, accepted.revision);
+        click(d, "psdRedo"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.images, accepted.images);
+        click(d, "psdSaveSourceOnly"); QVERIFY(settled(d)); QCOMPARE(d.result(), int(QDialog::Accepted));
+        QCOMPARE(d.Result().state.materials, c.snapshot.baseline.materials); QCOMPARE(d.Result().state.artwork.bindings, c.snapshot.baseline.artwork.bindings);
+    }
+    void frozenRecipeIgnoresBorrowedInputChanges()
+    {
+        auto c = context(incoming({Layer()}, "revision", {8, 6}, QColorSpace(QColorSpace::SRgbLinear).iccProfile()));
+        QByteArray bytes = c.incoming.revision.sourceBytes, png = c.incoming.images.first().png; QString name = c.incoming.revision.layers[0].name;
+        auto* sourceMemory = bytes.data(); auto* pixelMemory = png.data(); auto* nameMemory = name.data();
+        c.incoming.revision.sourceBytes = QByteArray::fromRawData(sourceMemory, bytes.size()); c.incoming.images.first().png = QByteArray::fromRawData(pixelMemory, png.size());
+        c.incoming.revision.layers[0].name = QString::fromRawData(nameMemory, name.size());
+        Dialog d(c); connectHandlers(d); QVERIFY(settled(d)); const auto original = d.DraftRequest().incoming;
+        sourceMemory[0] ^= 1; pixelMemory[0] ^= 1; nameMemory[0] = 'X';
+        auto* color = control<QComboBox>(d, "psdColorPolicy"); color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb)));
+        click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error())); const auto converted = d.DraftRequest().incoming;
+        QCOMPARE(converted.revision.sourceBytes, original.revision.sourceBytes); QCOMPARE(converted.revision.layers[0].name, original.revision.layers[0].name);
+        click(d, "psdPreview"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision, converted.revision); QCOMPARE(d.DraftRequest().incoming.images, converted.images);
+        color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::PreserveValues))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QCOMPARE(d.DraftRequest().incoming.revision, original.revision); QCOMPARE(d.DraftRequest().incoming.images, original.images);
+    }
+    void recipeFailuresAndHistoryBranchesRemainTransactional_data()
+    {
+        QTest::addColumn<int>("failure"); QTest::newRow("preview-rejected") << 0; QTest::newRow("preview-exception") << 1; QTest::newRow("canceled") << 2;
+    }
+    void recipeFailuresAndHistoryBranchesRemainTransactional()
+    {
+        QFETCH(int, failure); const auto source = incoming({Layer()}, "revision", {8, 6}, QColorSpace(QColorSpace::SRgbLinear).iccProfile());
+        Dialog d(context(source)); connectHandlers(d); QVERIFY(settled(d)); const auto original = d.Result().token;
+        if (failure == 0) d.SetPreviewHandler([](const auto&, QString* error) { *error = "reject recipe"; return false; });
+        if (failure == 1) d.SetPreviewHandler([](const auto&, QString*) -> bool { throw std::runtime_error("recipe"); });
+        auto* color = control<QComboBox>(d, "psdColorPolicy"); color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb)));
+        click(d, "psdApplyDocumentAlignment"); if (failure == 2) click(d, "psdStop"); QVERIFY(settled(d));
+        QCOMPARE(d.Result().token, original); QVERIFY(!d.Error().isEmpty());
+        click(d, "psdDiscardInput"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision, source.revision);
+        connectHandlers(d); color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error())); const auto converted = d.DraftRequest().incoming;
+        click(d, "psdUndo"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision, source.revision);
+        control<QDoubleSpinBox>(d, "psdDocumentX")->setValue(2); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QVERIFY(!control<QPushButton>(d, "psdRedo")->isEnabled());
+        color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QCOMPARE(d.DraftRequest().incoming.images, converted.images); QCOMPARE(d.DraftRequest().incoming.revision.id, derivedIdentity(source, Artwork::ColorPolicy::ConvertToSRgb, QTransform::fromTranslate(2, 0), true));
+        const auto accepted = d.Result().token; d.SetSubmissionHandler([](const auto&, QString* error) { *error = "retry save"; return false; });
+        click(d, "psdSaveSourceOnly"); QVERIFY(settled(d)); QCOMPARE(d.Result().token, accepted); QVERIFY(d.Error().contains("retry save"));
+        int submitted = 0; connectHandlers(d, nullptr, &submitted); click(d, "psdSaveSourceOnly"); QVERIFY(settled(d)); QCOMPARE(submitted, 1);
+    }
+    void preparedRecipesRespectTheExistingHistoryLimit()
+    {
+        Dialog d(context(incoming({Layer()}, "revision", {8, 6}, QColorSpace(QColorSpace::SRgbLinear).iccProfile()))); connectHandlers(d); QVERIFY(settled(d));
+        auto* color = control<QComboBox>(d, "psdColorPolicy"); color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb)));
+        click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); const auto pixels = d.DraftRequest().incoming.images;
+        for (int index = 0; index < 126; ++index) {
+            control<QLineEdit>(d, "psdFamilyName")->setText(QString::number(index)); click(d, "psdPreview"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        }
+        const auto before = d.Result().token; control<QLineEdit>(d, "psdFamilyName")->setText("overflow"); click(d, "psdPreview"); QVERIFY(settled(d));
+        QVERIFY(d.Error().contains("上限")); QCOMPARE(d.Result().token, before);
+        QVERIFY(control<QPushButton>(d, "psdDiscardInput")->isEnabled()); QVERIFY(control<QPushButton>(d, "psdPreview")->isEnabled());
+        click(d, "psdDiscardInput"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.images, pixels);
+        QCOMPARE(control<QLineEdit>(d, "psdFamilyName")->text(), QString("125")); QVERIFY(control<QPushButton>(d, "psdUndo")->isEnabled());
+        click(d, "psdUndo"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error())); QCOMPARE(d.DraftRequest().incoming.images, pixels);
+        QVERIFY(d.Result().token != before); QCOMPARE(control<QLineEdit>(d, "psdFamilyName")->text(), QString("124"));
+    }
     void canvasChangeNeedsDocumentAlignmentEvenForSourceOnly()
     {
         auto c = boundContext(); c.incoming = incoming({Layer()}, "resized", {20, 10}); Dialog d(c); int saves = 0; connectHandlers(d, nullptr, &saves); QVERIFY(settled(d));
@@ -319,6 +418,7 @@ private slots:
         Dialog d(c); connectHandlers(d); QVERIFY(settled(d)); QVERIFY2(d.IsValid(), qPrintable(d.Error())); QVERIFY(!control<QComboBox>(d, "psdColorPolicy")->isEnabled());
         control<QDoubleSpinBox>(d, "psdDocumentX")->setValue(2); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
         QCOMPARE(d.DraftRequest().incoming.kind, Artwork::SourceKind::Png); QCOMPARE(d.DraftRequest().incoming.revision.sourceBytes, c.incoming.revision.sourceBytes);
+        QCOMPARE(d.DraftRequest().incoming.revision.id, derivedIdentity(c.incoming, c.incoming.revision.colorPolicy, QTransform::fromTranslate(2, 0), false));
     }
     void baseDoneCannotBypassFailedCancellation()
     {

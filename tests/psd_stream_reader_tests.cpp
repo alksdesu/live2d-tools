@@ -93,6 +93,35 @@ class PsdStreamReaderTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void adobeSavedRasterMetadata()
+    {
+        const auto path = QFINDTESTDATA("fixtures/psd/adobe-plain-raster.psd"); QVERIFY(!path.isEmpty());
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto bytes = file.readAll();
+        QCOMPARE(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
+                 QByteArray("3fc03e13d36eea6f4b66ea6c32ff0c05bdaebff66ccf78f76ecfa44cf7f0b7d0"));
+        CPsdSnapshot eager; CPsdDirectory directory; CPsdReadDocument sealed; QString error;
+        QVERIFY2(CPsdReader::ReadBytes(bytes, eager, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::ReadDirectoryBytes(bytes, directory, &error), qPrintable(error)); compareDirectory(directory, eager);
+        QVERIFY2(CPsdReader::OpenBytes(bytes, sealed, &error), qPrintable(error)); compareDirectory(*sealed.Directory(), eager);
+        QCOMPARE(eager.layers.size(), 2); QCOMPARE(eager.layers[0].name, QStringLiteral("Background"));
+        QCOMPARE(eager.layers[1].name, QStringLiteral("Empty top"));
+        for (int index = 0; index < 2; ++index) {
+            const auto& layer = eager.layers[index]; QVERIFY(layer.pixelEquivalent); QCOMPARE(layer.additionalInfo.size(), 9);
+            QCOMPARE(layer.layerId, std::optional<quint32>(101 + index));
+            for (const auto& diagnostic : layer.diagnostics) QVERIFY(diagnostic.code != QStringLiteral("unapplied-tag"));
+            const auto metadata = std::find_if(layer.additionalInfo.cbegin(), layer.additionalInfo.cend(), [](const auto& item) { return item.key == "shmd"; });
+            QVERIFY(metadata != layer.additionalInfo.cend()); QCOMPARE(metadata->data.size(), 72);
+            QImage image; QVERIFY(sealed.ReadLayer(index, image)); QCOMPARE(image, layer.image);
+            QCOMPARE(image.isNull(), index == 1);
+        }
+        const auto image = eager.layers[0].image.convertToFormat(QImage::Format_RGBA8888);
+        QCOMPARE(image.size(), QSize(64, 64)); QCOMPARE(image.bytesPerLine(), 256);
+        QCOMPARE(QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char*>(image.constBits()), image.sizeInBytes()), QCryptographicHash::Sha256).toHex(),
+                 QByteArray("ce7c5fcbc9d2d7ca525c98822902e2735ec9c93cd59380ad723a64b290dffcd7"));
+        QVERIFY2(CPsdReader::ReadFile(path, eager, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::OpenFile(path, sealed, &error), qPrintable(error)); compareDirectory(*sealed.Directory(), eager);
+        QVERIFY(eager.layers[0].pixelEquivalent); QVERIFY(eager.layers[1].pixelEquivalent);
+    }
     void compressionMetadataAndPixelsMatchEager_data()
     {
         QTest::addColumn<int>("compression"); QTest::addColumn<bool>("effects"); QTest::addColumn<bool>("grouped");

@@ -53,6 +53,8 @@ public:
                       QString* error = nullptr, CExportControl* control = nullptr);
     static bool Validate(const Snapshot& snapshot, const Plan& plan, QString* error = nullptr,
                          bool requireConfirmed = false);
+    static bool PreparedSource(const Snapshot& snapshot, const Plan& plan, CArtworkSourceImport::SourceCandidate& result,
+                               QString* error = nullptr);
 };
 }
 #endif

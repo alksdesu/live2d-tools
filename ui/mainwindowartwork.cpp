@@ -6,8 +6,6 @@
 #include "psdbatchjob.h"
 #include "psd/cpsdreader.h"
 #include "std/cexportcontrol.h"
-#include <QCryptographicHash>
-#include <QDataStream>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QComboBox>
@@ -27,12 +25,6 @@ namespace {
 using Artwork = live2dstruct::CModelArtwork;
 using Planner = live2dstruct::CArtworkUpdatePlanner;
 bool fail(QString* error, const QString& text) { if (error) *error = text; return false; }
-QString revisionIdentity(const CPsdDirectory& source, const QString& family, Artwork::ColorPolicy policy, const QTransform& mapping)
-{
-    QByteArray bytes; QDataStream stream(&bytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
-    stream << source.sha256 << source.canonicalPath << family << qint32(policy) << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
-    return QStringLiteral("revision:") + QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
-}
 QString selectArtworkItem(QWidget* parent, const QString& objectName, const QString& title, const QString& prompt,
                           const QVector<QPair<QString, QString>>& items, const QString& current = {})
 {
@@ -205,7 +197,8 @@ void MainWindow::EditArtwork(const QString& familyId, const QString& path, const
             const auto previous = s.baseline.artwork.revisions.value(s.baseline.artwork.families.value(family).currentRevision);
             const auto policy = previous.id.isEmpty() ? Artwork::ColorPolicy::ConvertToSRgb : previous.colorPolicy;
             const auto mapping = previous.id.isEmpty() ? QTransform() : previous.documentToFamily;
-            if (!live2dstruct::CArtworkSourceImport::Prepare(source, family, revisionIdentity(*source.Directory(), family, policy, mapping), policy, mapping, prepared->incoming, detail, control.get())) return false;
+            const auto identity = live2dstruct::CArtworkSourceImport::RevisionIdentity(*source.Directory(), family, policy, mapping);
+            if (!live2dstruct::CArtworkSourceImport::Prepare(source, family, identity, policy, mapping, prepared->incoming, detail, control.get())) return false;
         }
         return control->Checkpoint();
     }, control.get(), &error);

@@ -1530,3 +1530,18 @@ Photoshop 2022 实际回读发现，零面积且没有任何通道的栅格层�
 同一新文件通过生产默认的封存读取入口，并逐层生成全部 247 张非空图像；独立读取进程峰值 RSS 约 582 MiB。旧完整图像入口仍按默认 1 GiB 预算提前拒绝，已有输出对象不变。这个峰值不包含完整应用、PNG 编码、会话序列化或历史。颜色配方重复准备与 Session 的整体性能仍需后续处理；Photoshop 添加的中性附加标签目前仍可能使图层被保守标为不可直接关联，原始像素与整份 PSD 仍保留。
 
 本次新证据位于 `build/revalidation-20260928`：`native-proof.json`、`workspace-checks.json`、`asan/summary.json`、`photoshop-gui-observations.json`、`controls/production-control-manifest.json`、`review/empty-photoshop-roundtrip.json`、`review/source-empty-photoshop-roundtrip.json`、`review/mao-photoshop-roundtrip.json` 和 `mao-default-reader/summary.json`。之前 `/tmp` 下的构建、样本及验证文件已由用户清理，前文路径属于历史记录。本次系统前台输入与 Photoshop 回读不替代 Cubism Editor 或 Windows 验证，也不表示全部建模、动画及来源恢复目标已完成。
+
+
+## Photoshop 元数据识别与导入配方复用
+
+Photoshop 2022 保存普通栅格时会写入默认混合开关及非空的图层时间戳元数据。读取器现在逐项识别已知中性值，以及完整的 `shmd/cust/metadata/layerTime` 描述结构；同时校验锁定、标签色、参考点和已知层版本提示。错误长度、重复项、未知内部字段、非有限数值及未支持效果仍保留原字节并标为不可直接采样，已有蒙版／裁剪／混合诊断不会被后续中性字段清除。嵌套元数据继续受数量预算与取消检查约束。真实 Photoshop 保存的 64×64 测试文件已纳入仓库，并对三个读取入口核对像素、标签及诊断。
+
+新 PSD 来源身份包含解释版本，颜色配方的派生身份也包含该版本。旧会话重新导入同一文件时生成新的不可变修订，保留旧像素、诊断、关联与历史；不放宽同 ID 对应不同内容的冲突检查，也不就地重写旧会话。管理已保存来源仍使用当时的解释结果，需要显式重新导入才能更新识别能力。存档格式没有改变。
+
+素材导入对话框从验证计划的私有冻结 Request 中取回已准备来源，复用已有接受历史中的颜色转换结果；只改变文档坐标时也复用 PNG。五个入口仍建立新计划，重新校验选区决定、快照身份和提交条件。缓存不单独持有另一套常驻图像，也不把失败、取消或预览拒绝的候选写入历史。对公开候选及借用缓冲的修改不能污染已接受来源。LLVM 函数与分支计数证明，换色场景的六次 UI 构建只有第一次重新准备 PSD，后五次命中接受历史；另一个仅改坐标的四次构建均未重新准备 PSD。这是调用次数证明，不是完整应用的耗时或内存上限。
+
+回归还重现了达到 128 项草稿历史上限后，计算已结束但按钮仍禁用的问题。发布入口现在在所有退出路径统一刷新控件；保留历史上限和错误提示，并验证放弃输入、撤销及撤销后的真实计划变化。首次失败日志保留在 `build/psd-compatibility-20260928/component-tests.log`。
+
+最终原生 397 单元全量构建、全仓 232 个 CTest 目标通过；五个 ASAN／UBSAN 组件共 287 项通过，源码、测试文件和资源没有漂移。Qt 未插桩、macOS 泄漏检查关闭，闭源 Core 不在这组 ASAN 测试中。真实 Adobe 文件还经过独立消费链：读取、来源准备、关联一个已有网格、文档应用、撤销重做、Session 12 重载及关联来源的自动网格输入；原 PSD 字节、空层、未选对象和全部关键形保持。
+
+新应用实际加载 Mark；外部桌面自动化未能确认素材菜单展开，不把这条输入路径写为通过。随后独立 Cocoa 主窗口在空模型和 Mark 下均通过鼠标中心、箭头、按钮 click 与 Space 的菜单事件验证，四个菜单项存在且导入可用，未发现需要修改菜单代码的证据。该原生 Qt 程序事件验证不等于外部 AX 路径验证。证据分别位于 `build/psd-compatibility-20260928` 的 `native-proof.json`、`workspace-checks.json`、`asan/summary.json`、`integration/final-proof.json` 和 `menu-probe/final-proof.json`，以及 `build/psd-recipe-20260928/performance/final-proof.json`。全目标继续保留后续建模、动画、来源关联和外部应用兼容范围。

@@ -260,6 +260,53 @@ private slots:
         tampered = plan; tampered.impacts[0].newSlot = 100; QVERIFY(!Planner::Validate(source, tampered));
         ++source.documentRevision; QVERIFY(!Planner::Validate(source, plan));
     }
+    void preparedSourceComesFromTheFrozenRequest()
+    {
+        const auto source = snapshot(); auto edit = request();
+        QByteArray bytes = edit.incoming.revision.sourceBytes, pixels = edit.incoming.images.first().png;
+        QString diagnostic = edit.incoming.diagnostics.first(), name = edit.incoming.revision.layers.first().name;
+        auto* byteMemory = bytes.data(); auto* pixelMemory = pixels.data(); auto* diagnosticMemory = diagnostic.data(); auto* nameMemory = name.data();
+        edit.incoming.revision.sourceBytes = QByteArray::fromRawData(byteMemory, bytes.size());
+        edit.incoming.images.first().png = QByteArray::fromRawData(pixelMemory, pixels.size());
+        edit.incoming.diagnostics[0] = QString::fromRawData(diagnosticMemory, diagnostic.size());
+        edit.incoming.revision.layers[0].name = QString::fromRawData(nameMemory, name.size());
+        Planner::Plan plan; QVERIFY(Planner::Build(source, edit, plan));
+        CArtworkSourceImport::SourceCandidate first; QVERIFY(Planner::PreparedSource(source, plan, first));
+        QCOMPARE(first.revision, edit.incoming.revision); QCOMPARE(first.images, edit.incoming.images); QCOMPARE(first.diagnostics, edit.incoming.diagnostics);
+        byteMemory[0] ^= 1; pixelMemory[0] ^= 1; diagnosticMemory[0] = 'X'; nameMemory[0] = 'X';
+        CArtworkSourceImport::SourceCandidate second; QVERIFY(Planner::PreparedSource(source, plan, second));
+        QCOMPARE(second.revision, first.revision); QCOMPARE(second.images, first.images); QCOMPARE(second.diagnostics, first.diagnostics);
+        first.revision.sourceBytes[0] ^= 1; first.images.first().png[0] ^= 1; first.revision.layers[0].name = "changed"; first.diagnostics[0] = "changed";
+        CArtworkSourceImport::SourceCandidate third; QVERIFY(Planner::PreparedSource(source, plan, third));
+        QCOMPARE(third.revision, second.revision); QCOMPARE(third.images, second.images); QCOMPARE(third.diagnostics, second.diagnostics);
+        QVERIFY(Planner::Validate(source, plan));
+    }
+    void preparedSourceRejectsChangedProofWithoutChangingOutput_data()
+    {
+        QTest::addColumn<int>("fault"); for (int fault = 0; fault < 7; ++fault) QTest::newRow(qPrintable(QString::number(fault))) << fault;
+    }
+    void preparedSourceRejectsChangedProofWithoutChangingOutput()
+    {
+        QFETCH(int, fault); auto source = snapshot(); Planner::Plan plan; QVERIFY(Planner::Build(source, request(), plan));
+        if (fault == 0) plan = {};
+        if (fault == 1) ++source.documentRevision;
+        if (fault == 2) plan.token[0] ^= 1;
+        if (fault == 3) plan.images.last().fill(Qt::red);
+        if (fault == 4) plan.warnings.append("changed");
+        if (fault == 5) plan.state.artwork.revisions["revision"].layers[0].name = "changed";
+        if (fault == 6) plan.unconfirmed.insert("B");
+        auto result = incoming("sentinel"); const auto before = result; QString error;
+        QVERIFY(!Planner::PreparedSource(source, plan, result, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(result.revision, before.revision); QCOMPARE(result.images, before.images); QCOMPARE(result.diagnostics, before.diagnostics); QCOMPARE(result.kind, before.kind);
+    }
+    void preparedSourceExcludesUnrelatedBaselineRevisions()
+    {
+        auto source = snapshot(); Planner::Plan previous; QVERIFY(Planner::Build(source, request(), previous)); source = accept(source, previous);
+        auto edit = request(); edit.incoming = incoming("next"); edit.decisions.clear(); edit.incoming.diagnostics = {"next source"};
+        Planner::Plan plan; QVERIFY(Planner::Build(source, edit, plan)); QCOMPARE(plan.state.artwork.revisions.size(), 2);
+        CArtworkSourceImport::SourceCandidate result; QVERIFY(Planner::PreparedSource(source, plan, result));
+        QCOMPARE(result.revision, edit.incoming.revision); QCOMPARE(result.images, edit.incoming.images); QCOMPARE(result.diagnostics, edit.incoming.diagnostics);
+    }
 };
 QTEST_GUILESS_MAIN(ArtworkUpdatePlannerTests)
 #include "artwork_update_planner_tests.moc"

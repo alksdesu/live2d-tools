@@ -24,6 +24,7 @@ struct CArtworkUpdateVerification
 {
     static void Seal(CArtworkUpdatePlanner::Snapshot source, CArtworkUpdatePlanner::Request request, CArtworkUpdatePlanner::Plan& plan);
     static bool Check(const CArtworkUpdatePlanner::Snapshot& source, const CArtworkUpdatePlanner::Plan& plan);
+    static CArtworkSourceImport::SourceCandidate Source(const CArtworkUpdatePlanner::Plan& plan);
 };
 namespace {
 using Planner = CArtworkUpdatePlanner;
@@ -443,6 +444,8 @@ bool CArtworkUpdateVerification::Check(const Planner::Snapshot& source, const Pl
     }
     return true;
 }
+CArtworkSourceImport::SourceCandidate CArtworkUpdateVerification::Source(const Planner::Plan& plan)
+{ return plan.m_verification->request.incoming; }
 bool CArtworkUpdatePlanner::Validate(const Snapshot& snapshot, const Plan& plan, QString* error, bool requireConfirmed) try
 {
     if (!CArtworkUpdateVerification::Check(snapshot, plan)) return fail(error, QStringLiteral("素材更新预览与当前模型或完整计划不一致"));
@@ -450,4 +453,10 @@ bool CArtworkUpdatePlanner::Validate(const Snapshot& snapshot, const Plan& plan,
     if (error) error->clear(); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法验证素材更新计划")); }
+bool CArtworkUpdatePlanner::PreparedSource(const Snapshot& snapshot, const Plan& plan, CArtworkSourceImport::SourceCandidate& result, QString* error) try
+{
+    if (!Validate(snapshot, plan, error)) return false;
+    auto candidate = CArtworkUpdateVerification::Source(plan); result = std::move(candidate); return true;
+}
+catch (const std::exception&) { return fail(error, QStringLiteral("无法读取已验证的来源素材")); }
 }

@@ -5,6 +5,7 @@
 #include <QBuffer>
 #include <QColorSpace>
 #include <QCryptographicHash>
+#include <QDataStream>
 #include <QFileInfo>
 #include <QtEndian>
 #include <algorithm>
@@ -125,6 +126,17 @@ bool prepareDocument(CPsdReadDocument document, const QString& familyId, const Q
     } catch (...) { return fail(error, QStringLiteral("无法准备来源素材，现有素材保持不变")); }
 }
 
+}
+
+QString CArtworkSourceImport::RevisionIdentity(const CPsdDirectory& source, const QString& familyId,
+                                               Artwork::ColorPolicy colorPolicy, const QTransform& documentToFamily)
+{
+    QByteArray bytes;
+    QDataStream stream(&bytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
+    stream << PsdInterpretationVersion << source.sha256 << source.canonicalPath << familyId << qint32(colorPolicy)
+        << documentToFamily.m11() << documentToFamily.m12() << documentToFamily.m21() << documentToFamily.m22()
+        << documentToFamily.dx() << documentToFamily.dy();
+    return QStringLiteral("revision:") + QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
 }
 
 bool CArtworkSourceImport::Prepare(const CPsdReadDocument& source, const QString& familyId, const QString& revisionId,

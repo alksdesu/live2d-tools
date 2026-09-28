@@ -100,18 +100,42 @@ QString colorPolicyText(const CArtworkSourceImport::SourceCandidate& source)
     return QStringLiteral("颜色：已根据来源 ICC 转换到 sRGB；原始来源和 ICC 保存在工作会话中。");
 }
 bool supported(const Artwork::Layer& layer) { return layer.kind == Artwork::LayerKind::Raster && layer.pixelEquivalent; }
-bool prepareRecipe(const CArtworkSourceImport::SourceCandidate& original, CArtworkSourceImport::SourceCandidate& target, QString* error, CExportControl* control)
+QString recipeIdentity(const CArtworkSourceImport::SourceCandidate& original, Artwork::ColorPolicy policy, const QTransform& mapping)
 {
-    const auto policy = target.revision.colorPolicy; const auto mapping = target.revision.documentToFamily;
-    if (policy == original.revision.colorPolicy && same(mapping, original.revision.documentToFamily)) { target = original; return true; }
+    if (policy == original.revision.colorPolicy && same(mapping, original.revision.documentToFamily)) return original.revision.id;
     QByteArray recipe; QDataStream stream(&recipe, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
     stream << original.revision.id << original.revision.familyId << original.revision.sourceDigest << qint32(policy)
         << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
-    const auto id = QStringLiteral("revision:") + QString::fromLatin1(QCryptographicHash::hash(recipe, QCryptographicHash::Sha256).toHex());
+    if (original.kind == Artwork::SourceKind::Psd) stream << CArtworkSourceImport::PsdInterpretationVersion;
+    return QStringLiteral("revision:") + QString::fromLatin1(QCryptographicHash::hash(recipe, QCryptographicHash::Sha256).toHex());
+}
+bool prepareRecipe(const Planner::Snapshot& snapshot, const Planner::Plan& initial, const QVector<Planner::Plan>& history,
+                   CArtworkSourceImport::SourceCandidate& target, QString* error, CExportControl* control)
+{
+    if (control && !control->Checkpoint()) return fail(error, control->Error());
+    const auto policy = target.revision.colorPolicy; const auto mapping = target.revision.documentToFamily;
+    if ((policy != Artwork::ColorPolicy::PreserveValues && policy != Artwork::ColorPolicy::ConvertToSRgb) ||
+        !Artwork::ValidateTransform(mapping, error)) return fail(error, QStringLiteral("来源颜色策略或文档变换无效"));
+    CArtworkSourceImport::SourceCandidate original;
+    if (!Planner::PreparedSource(snapshot, initial, original, error)) return false;
+    const auto id = recipeIdentity(original, policy, mapping);
+    if (policy == original.revision.colorPolicy) {
+        target = original; target.revision.id = id; target.revision.documentToFamily = mapping; return true;
+    }
+    for (const auto& plan : history) {
+        if (control && !control->Checkpoint()) return fail(error, control->Error());
+        CArtworkSourceImport::SourceCandidate cached;
+        if (!Planner::PreparedSource(snapshot, plan, cached, error)) return false;
+        const auto& revision = cached.revision;
+        if (cached.kind != original.kind || revision.familyId != original.revision.familyId || revision.sourceDigest != original.revision.sourceDigest ||
+            revision.path != original.revision.path || revision.fileName != original.revision.fileName || revision.colorPolicy != policy ||
+            revision.id != recipeIdentity(original, revision.colorPolicy, revision.documentToFamily)) continue;
+        target = std::move(cached); target.revision.id = id; target.revision.documentToFamily = mapping; return true;
+    }
     if (original.kind == Artwork::SourceKind::Psd) {
-        CPsdSnapshot snapshot; snapshot.bytes = original.revision.sourceBytes; snapshot.canonicalPath = original.revision.path;
+        CPsdSnapshot source; source.bytes = original.revision.sourceBytes; source.canonicalPath = original.revision.path;
         CArtworkSourceImport::SourceCandidate candidate;
-        if (!CArtworkSourceImport::Prepare(snapshot, original.revision.familyId, id, policy, mapping, candidate, error, control)) return false;
+        if (!CArtworkSourceImport::Prepare(source, original.revision.familyId, id, policy, mapping, candidate, error, control)) return false;
         candidate.revision.path = original.revision.path; candidate.revision.fileName = original.revision.fileName;
         target = std::move(candidate);
     } else { target = original; target.revision.id = id; target.revision.documentToFamily = mapping; }
@@ -385,6 +409,7 @@ void CPsdImportDialog::Initialize()
     auto* worker = QThread::create([job, context] {
         try {
             if (!Planner::Build(context.snapshot, sourceOnly(job->request), job->plan, &job->error, &job->control)) return;
+            if (!Planner::PreparedSource(context.snapshot, job->plan, job->request.incoming, &job->error)) return;
             const auto baselineSlots = context.snapshot.baseline.workspace.atlases.keys();
             if (!context.atlasImages.isEmpty() && context.atlasImages.keys() != baselineSlots) { job->error = QStringLiteral("冻结图集目录与文档不一致"); return; }
             for (const auto slot : baselineSlots) {
@@ -403,10 +428,10 @@ void CPsdImportDialog::Initialize()
                     const auto placement = artwork.placements.constFind(binding->placementId);
                     if (placement != artwork.placements.cend()) {
                         const auto material = artwork.materials.constFind(placement->materialId);
-                        if (material != artwork.materials.cend() && material->familyId == context.incoming.revision.familyId) {
+                        if (material != artwork.materials.cend() && material->familyId == job->request.incoming.revision.familyId) {
                             if (!matches.contains(material->revisionId)) {
                                 CPsdLayerMatcher::Result result;
-                                if (!CPsdLayerMatcher::Compare(artwork.revisions.value(material->revisionId), context.incoming.revision, result, &job->error, &job->control)) return;
+                                if (!CPsdLayerMatcher::Compare(artwork.revisions.value(material->revisionId), job->request.incoming.revision, result, &job->error, &job->control)) return;
                                 matches.insert(material->revisionId, result);
                             }
                             for (const auto& match : matches[material->revisionId].matches) if (match.oldLayerId == material->layerId) {
@@ -420,7 +445,7 @@ void CPsdImportDialog::Initialize()
                     }
                 }
                 if (!job->suggested.contains(decision.meshId)) {
-                    QStringList names; for (const auto& layer : context.incoming.revision.layers) if (supported(layer) && layer.name == decision.meshId) names.append(layer.id);
+                    QStringList names; for (const auto& layer : job->request.incoming.revision.layers) if (supported(layer) && layer.name == decision.meshId) names.append(layer.id);
                     if (names.size() == 1) { job->suggested[decision.meshId] = names.first(); job->reasons[decision.meshId] += QStringLiteral("\n名称相同，仅为候选，尚未确认关联或空间映射。"); }
                     else if (names.size() > 1) job->reasons[decision.meshId] += QStringLiteral("\n存在多个同名图层，请按完整路径选择。");
                 }
@@ -435,6 +460,7 @@ void CPsdImportDialog::Initialize()
         if (!job->success || job->control.IsCancellationRequested()) { m_valid = false; ShowError(job->error.isEmpty() ? QStringLiteral("读取已停止") : job->error); Refresh(); return; }
         m_context.atlasImages.clear();
         for (const auto slot : m_context.snapshot.baseline.workspace.atlases.keys()) m_context.atlasImages.insert(slot, job->plan.images.value(slot));
+        m_context.incoming = m_request.incoming = job->request.incoming;
         m_plan = job->plan; m_acceptedRequest = sourceOnly(m_request); m_history = {{m_acceptedRequest, m_plan, m_documentAlignmentConfirmed}};
         m_suggestedLayers = job->suggested; m_matchReasons = job->reasons; m_knownMatches = job->known;
         m_layerModel->SetLayers(m_request.incoming.revision.layers); m_meshModel->SetMeshes(m_context.snapshot.meshes, m_context.meshDisplayNames); m_meshModel->SetDecisions(m_request);
@@ -452,9 +478,11 @@ void CPsdImportDialog::Build(Request request, bool submit)
 {
     if (IsBusy() || !m_ready || !m_valid) return;
     auto job = std::make_shared<Job>(); job->request = std::move(request); job->submit = submit; job->alignmentConfirmed = m_documentAlignmentConfirmed; m_job = job;
-    const auto generation = ++m_generation; const auto snapshot = m_context.snapshot; const auto original = m_context.incoming;
-    auto* worker = QThread::create([job, snapshot, original] { try {
-        if (!prepareRecipe(original, job->request.incoming, &job->error, &job->control)) return;
+    const auto generation = ++m_generation; const auto snapshot = m_context.snapshot; const auto initial = m_history.first().plan;
+    QVector<Plan> history; history.reserve(m_history.size()); history.append(m_history[m_historyIndex].plan);
+    for (int index = m_history.size() - 1; index >= 0; --index) if (index != m_historyIndex) history.append(m_history[index].plan);
+    auto* worker = QThread::create([job, snapshot, initial, history] { try {
+        if (!prepareRecipe(snapshot, initial, history, job->request.incoming, &job->error, &job->control)) return;
         job->success = Planner::Build(snapshot, job->request, job->plan, &job->error, &job->control); } catch (...) { job->error = QStringLiteral("素材规划失败，已接受预览保持不变"); } });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     connect(worker, &QThread::finished, this, [this, job, generation] {
@@ -537,9 +565,9 @@ void CPsdImportDialog::LoadView()
 bool CPsdImportDialog::Publish(Plan plan, Request request, bool remember)
 {
     if (IsBusy() || !m_ready) return false;
-    QString error; if (!Planner::Validate(m_context.snapshot, plan, &error)) { ShowError(error); return false; }
+    const QPointer<CPsdImportDialog> alive(this); const auto refresh = qScopeGuard([alive] { if (alive) alive->Refresh(); });
+    QString error; if (!Planner::PreparedSource(m_context.snapshot, plan, request.incoming, &error)) { ShowError(error); return false; }
     if (!m_preview) { ShowError(QStringLiteral("素材预览尚未连接")); return false; }
-    const QPointer<CPsdImportDialog> alive(this);
     try {
         auto history = m_history;
         if (remember) { history.resize(m_historyIndex + 1); history.append({request, plan, m_documentAlignmentConfirmed}); }
@@ -564,10 +592,10 @@ bool CPsdImportDialog::Publish(Plan plan, Request request, bool remember)
         const auto handler = m_preview; m_busy = true; bool accepted = false;
         try { accepted = handler(plan, &error); } catch (...) { error = QStringLiteral("素材预览失败，原有预览保持不变"); }
         if (!alive) return false; m_busy = false;
-        if (!accepted) { ShowError(error.isEmpty() ? QStringLiteral("素材预览未能发布") : error); Refresh(); return false; }
+        if (!accepted) { ShowError(error.isEmpty() ? QStringLiteral("素材预览未能发布") : error); return false; }
         m_plan = std::move(plan); m_request = m_acceptedRequest = std::move(request); m_published = true;
         if (remember) { m_history.swap(history); m_historyIndex = m_history.size() - 1; }
-        m_requestDirty = false; ShowError({}); Refresh(); return true;
+        m_requestDirty = false; ShowError({}); return true;
     } catch (...) { if (alive) { m_busy = false; ShowError(QStringLiteral("无法保留素材草稿历史")); } return false; }
 }
 
