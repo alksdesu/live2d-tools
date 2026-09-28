@@ -83,7 +83,7 @@ private slots:
                      bool isTexExtract = false, bool cubismCompat = false, QString* error = nullptr,
                      PsdExportStage* stage = nullptr, bool* outputCommitted = nullptr,
                      bool savedParameterSnapshot = false, bool* canceled = nullptr,
-                     CExportDiagnostics* diagnostics = nullptr);
+                     CExportDiagnostics* diagnostics = nullptr, CPsdExportCoverage* coverage = nullptr);
 
 
 
@@ -321,6 +321,7 @@ private:
     QPointer<CPsdRecoveryDialog> m_psdRecoveryDialog;
     bool m_psdRecoveryActive = false;
     bool m_exportResultsAreRecovery = false;
+    bool m_exportResultsAreSingle = false;
     QStringList m_protectedSessionPaths;
     struct BatchOptions {
         QString outputDirectory;

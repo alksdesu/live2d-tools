@@ -21,6 +21,8 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
     auto* pathRow = new QHBoxLayout();
     auto* pathTitle = new QLabel("保存路径:", this);
     m_pathLabel = new QLabel("", this);
+    m_pathLabel->setTextFormat(Qt::PlainText);
+    m_pathLabel->setWordWrap(true);
     m_pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     pathRow->addWidget(pathTitle);
     pathRow->addWidget(m_pathLabel, 1);
@@ -37,6 +39,11 @@ CPsdPrintDialog::CPsdPrintDialog(QWidget *parent)
     layout->addWidget(m_checkTexExtract);
     layout->addWidget(m_checkSnapshot);
     layout->addWidget(m_checkCubism);
+    auto* coverageNotice = new QLabel(QStringLiteral("包含隐藏时也导出编辑器中隐藏的对象。当前姿态没有像素的对象会保留为空图层，不代表原始素材已恢复；具体对象与原因见导出结果。"), this);
+    coverageNotice->setObjectName(QStringLiteral("psdCoverageNotice"));
+    coverageNotice->setTextFormat(Qt::PlainText);
+    coverageNotice->setWordWrap(true);
+    layout->addWidget(coverageNotice);
 
     auto* btns = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(btns, &QDialogButtonBox::accepted, this, &CPsdPrintDialog::on_pushButton_clicked);

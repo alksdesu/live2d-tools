@@ -309,7 +309,8 @@ uint32_t CTextureExtractor::BlendModeToPsd(int drawableFlags)
 QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool includeHidden,
                                                       const QHash<QString, QVector<quint16>>* indexOverrides,
                                                       CExportControl* control,
-                                                      const QHash<QString, QVector<float>>* modelPositions)
+                                                      const QHash<QString, QVector<float>>* modelPositions,
+                                                      const QSet<QString>* excludedIds)
 {
     CExportControl localControl;
     if (!control) control = &localControl;
@@ -334,13 +335,68 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             CArt_meshes* mesh = table->art_meshes[i];
             if (control && !control->Report(CExportControl::Phase::Extracting, i, meshCount, mesh->ids)) return {};
 
+            if (excludedIds && excludedIds->contains(mesh->ids)) continue;
+
             // 跳过隐藏图层（如果不包括的话）
             if (!includeHidden && !mesh->is_visible) {
                 continue;
             }
 
+            const int keyformBegin = mesh->keyform_sources_begin_indices;
+            const auto appendLayer = [&](const QImage& image, const QRect& rect, CPsdExportCoverage::Reason reason) -> bool {
+                // 读取默认透明度
+                float opacity = 1.0f;
+                if (keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
+                    opacity = table->art_mesh_keyforms[keyformBegin]->opacities;
+                }
+
+                // 读取裁剪蒙版信息
+                QVector<int> maskIndices;
+                int maskBegin = mesh->drawable_mask_sources_begin_indices;
+                int maskCount = mesh->drawable_mask_sources_counts;
+                const int maskSize = static_cast<int>(table->drawable_masks.size());
+                if (maskBegin >= 0 && maskCount >= 0 && maskBegin <= maskSize && maskCount <= maskSize - maskBegin) {
+                    for (int m = 0; m < maskCount; ++m) {
+                        if (control && m % 1024 == 0 && !control->Checkpoint()) return false;
+                        int maskIdx = maskBegin + m;
+                        maskIndices.append(table->drawable_masks[maskIdx]->art_mesh_sources_indices);
+                    }
+                }
+
+                // 构建结果
+                ExtractedLayer layer;
+                layer.image = image;
+                layer.canvasRect = rect;
+                layer.name = mesh->ids;
+                layer.meshIndex = i;
+                layer.textureNo = mesh->texture_nos;
+                layer.drawableFlags = mesh->drawable_flags;
+                layer.opacity = opacity;
+                layer.isVisible = mesh->is_visible;
+                layer.isEnabled = mesh->is_enabled;
+                layer.parentPartIndex = mesh->parent_part_indices;
+                layer.maskIndices = maskIndices;
+
+                layer.emptyReason = reason;
+                results.append(layer);
+                return true;
+            };
+            if (modelPositions) {
+                const auto found = modelPositions->constFind(mesh->ids);
+                if (mesh->vertex_counts < 0 || mesh->vertex_counts > 1000000 || found == modelPositions->cend() ||
+                    found->size() != qint64(mesh->vertex_counts) * 2 || !CCanvasGeometry::Validate(table->canvas_info)) {
+                    control->Fail(QStringLiteral("纹理导出缺少有效的完整模型坐标：%1").arg(mesh->ids)); return {};
+                }
+                for (float value : *found) if (!std::isfinite(value)) {
+                    control->Fail(QStringLiteral("纹理导出模型坐标不是有限数值：%1").arg(mesh->ids)); return {};
+                }
+            }
             if (mesh->vertex_counts >= 0 && mesh->position_index_sources_counts == 0 &&
-                (!indexOverrides || !indexOverrides->contains(mesh->ids))) continue;
+                (!indexOverrides || !indexOverrides->contains(mesh->ids))) {
+                if (modelPositions && !appendLayer({}, {}, mesh->vertex_counts == 0 ? CPsdExportCoverage::Reason::NoVertices
+                                                                                : CPsdExportCoverage::Reason::NoTriangles)) return {};
+                continue;
+            }
 
             // 跳过无顶点的 mesh
             if (mesh->vertex_counts <= 0 || mesh->vertex_counts > 1000000 ||
@@ -371,7 +427,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             const int uvSize = static_cast<int>(table->uvs->uvs.size());
             const int indexSize = static_cast<int>(table->position_indices->indices.size());
             if (uvBegin < 0 || uvCount < 0 || uvBegin > uvSize || uvCount > uvSize - uvBegin ||
-                idxBegin < 0 || idxCount < 3 || idxCount % 3 != 0 || idxBegin > indexSize || idxCount > indexSize - idxBegin) {
+                idxBegin < 0 || idxCount < 0 || idxCount % 3 != 0 || idxBegin > indexSize || idxCount > indexSize - idxBegin) {
                 if (modelPositions) { control->Fail(QStringLiteral("纹理采样的网格数据范围无效")); return {}; }
                 continue;
             }
@@ -381,7 +437,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             if (authorUvs.size() != uvCount) { control->Fail(QStringLiteral("纹理提取缺少有效 UV")); return {}; }
             const float* uvPtr = authorUvs.constData();
             QVector<quint16> overrideIndices;
-            const quint16* idxPtr = &table->position_indices->indices[idxBegin];
+            const quint16* idxPtr = idxCount ? &table->position_indices->indices[idxBegin] : nullptr;
             if (indexOverrides) {
                 const auto overrideIt = indexOverrides->constFind(mesh->ids);
                 if (control && !control->Checkpoint()) return {};
@@ -400,6 +456,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                     idxCount = overrideIndices.size();
                 }
             }
+            if (!idxCount) continue;
             bool indicesValid = true;
             for (int t = 0; t < idxCount; ++t) {
                 if (control && t % 1024 == 0 && !control->Checkpoint()) return {};
@@ -416,7 +473,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             QRect uvPixelRect;
             QImage meshImage;
             QRect canvasRect;
-            int keyformBegin = mesh->keyform_sources_begin_indices;
+            auto emptyReason = CPsdExportCoverage::Reason::None;
             if (modelPositions) {
                 const auto found = modelPositions->constFind(mesh->ids);
                 if (found == modelPositions->cend() || found->size() != uvCount) {
@@ -424,8 +481,8 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
                     return {};
                 }
                 meshImage = RasterizeCanvasMesh(atlas, uvPtr, found->constData(), mesh->vertex_counts,
-                                                idxPtr, idxCount, table->canvas_info, canvasRect, pixels, samples, control);
-                if (meshImage.isNull()) return {};
+                                                idxPtr, idxCount, table->canvas_info, canvasRect, pixels, samples, control, emptyReason);
+                if (!control->Checkpoint() || (meshImage.isNull() && emptyReason == CPsdExportCoverage::Reason::None)) return {};
             } else {
                 meshImage = RasterizeMesh(atlas, uvPtr, mesh->vertex_counts,
                                            idxPtr, idxCount, uvPixelRect, pixels, samples, control);
@@ -443,40 +500,7 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
             }
             if (canvasRect.isEmpty()) canvasRect = uvPixelRect;
 
-            // 读取默认透明度
-            float opacity = 1.0f;
-            if (keyformBegin >= 0 && keyformBegin < table->art_mesh_keyforms.size()) {
-                opacity = table->art_mesh_keyforms[keyformBegin]->opacities;
-            }
-
-            // 读取裁剪蒙版信息
-            QVector<int> maskIndices;
-            int maskBegin = mesh->drawable_mask_sources_begin_indices;
-            int maskCount = mesh->drawable_mask_sources_counts;
-            const int maskSize = static_cast<int>(table->drawable_masks.size());
-            if (maskBegin >= 0 && maskCount >= 0 && maskBegin <= maskSize && maskCount <= maskSize - maskBegin) {
-                for (int m = 0; m < maskCount; ++m) {
-                    if (control && m % 1024 == 0 && !control->Checkpoint()) return {};
-                    int maskIdx = maskBegin + m;
-                    maskIndices.append(table->drawable_masks[maskIdx]->art_mesh_sources_indices);
-                }
-            }
-
-            // 构建结果
-            ExtractedLayer layer;
-            layer.image = meshImage;
-            layer.canvasRect = canvasRect;
-            layer.name = mesh->ids;
-            layer.meshIndex = i;
-            layer.textureNo = texNo;
-            layer.drawableFlags = mesh->drawable_flags;
-            layer.opacity = opacity;
-            layer.isVisible = mesh->is_visible;
-            layer.isEnabled = mesh->is_enabled;
-            layer.parentPartIndex = mesh->parent_part_indices;
-            layer.maskIndices = maskIndices;
-
-            results.append(layer);
+            if (!appendLayer(meshImage, canvasRect, emptyReason)) return {};
         }
 
         if (control && !control->Report(CExportControl::Phase::Extracting, meshCount, meshCount)) return {};
@@ -489,12 +513,13 @@ QVector<ExtractedLayer> CTextureExtractor::ExtractAll(CSectionTable* table, bool
 
 QImage CTextureExtractor::RasterizeCanvasMesh(const QImage& atlas, const float* uvs, const float* positions, int vertexCount,
                                                const quint16* indices, int indexCount, const CCanvas_info* canvas,
-                                               QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control)
+                                               QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control,
+                                               CPsdExportCoverage::Reason& emptyReason)
 {
     const auto fail = [&](const QString& reason) { control->Fail(reason); return QImage(); };
-    bounds = ComputeCanvasRect(positions, vertexCount, canvas, control);
+    bounds = ComputeCanvasRect(positions, vertexCount, canvas, control, &emptyReason);
     if (!control->Checkpoint()) return {};
-    if (bounds.isEmpty()) return fail(QStringLiteral("当前姿态的网格没有有效画布边界"));
+    if (bounds.isEmpty()) return {};
     if (indexCount < 3 || indexCount > 3000000 || indexCount % 3)
         return fail(QStringLiteral("纹理采样的三角索引数量无效"));
     const qint64 count = qint64(bounds.width()) * bounds.height();
@@ -646,15 +671,20 @@ QImage CTextureExtractor::RasterizeMesh(const QImage& atlas,
 }
 
 QRect CTextureExtractor::ComputeCanvasRect(const float* positions, int vertexCount,
-                                            const CCanvas_info* canvasInfo, CExportControl* control)
+                                            const CCanvas_info* canvasInfo, CExportControl* control, CPsdExportCoverage::Reason* emptyReason)
 {
-    if (!positions || !canvasInfo || vertexCount <= 0 || vertexCount > 1000000) return {};
+    if (emptyReason) *emptyReason = CPsdExportCoverage::Reason::None;
+    const auto invalid = [&] {
+        if (emptyReason && control) control->Fail(QStringLiteral("纹理采样的画布坐标无效或超出范围"));
+        return QRect();
+    };
+    if (!positions || !canvasInfo || vertexCount <= 0 || vertexCount > 1000000) return invalid();
     double minX = std::numeric_limits<double>::max(), minY = minX;
     double maxX = -minX, maxY = -minX;
     for (int vertex = 0; vertex < vertexCount; ++vertex) {
         if (control && vertex % 1024 == 0 && !control->Checkpoint()) return {};
         QPointF pixels;
-        if (!CCanvasGeometry::ModelToPixels(canvasInfo, QPointF(positions[vertex * 2], positions[vertex * 2 + 1]), pixels)) return {};
+        if (!CCanvasGeometry::ModelToPixels(canvasInfo, QPointF(positions[vertex * 2], positions[vertex * 2 + 1]), pixels)) return invalid();
         minX = std::min(minX, pixels.x());
         minY = std::min(minY, pixels.y());
         maxX = std::max(maxX, pixels.x());
@@ -664,7 +694,12 @@ QRect CTextureExtractor::ComputeCanvasRect(const float* positions, int vertexCou
     const double right = std::ceil(maxX), bottom = std::ceil(maxY);
     const double minimum = std::numeric_limits<int>::min(), maximum = std::numeric_limits<int>::max();
     if (left < minimum || top < minimum || right > maximum || bottom > maximum ||
-        right <= left || bottom <= top || right - left > maximum || bottom - top > maximum) return {};
+        right - left > maximum || bottom - top > maximum) return invalid();
+    if (emptyReason && (minX == maxX || minY == maxY)) {
+        *emptyReason = CPsdExportCoverage::Reason::DegenerateBounds;
+        return {};
+    }
+    if (right <= left || bottom <= top) return invalid();
     return QRect(static_cast<int>(left), static_cast<int>(top),
                  static_cast<int>(right - left), static_cast<int>(bottom - top));
 }

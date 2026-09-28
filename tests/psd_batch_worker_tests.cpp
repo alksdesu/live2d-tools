@@ -14,6 +14,65 @@ class PsdBatchWorkerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void objectCoverageRetainsPartialWorkAndRejectsStaleCompletion()
+    {
+        using Coverage = CPsdExportCoverage;
+        Coverage::Context input;
+        input.sourceMocDigest = QByteArray(32, 's'); input.runtimeMocDigest = QByteArray(32, 'r');
+        input.canvas = QSize(16, 16); input.runtimeCount = 2;
+        QVector<Coverage::Record> rows{{0, "A", "同名", "", 1, Coverage::State::Raster, Coverage::Reason::None, QRect(0, 0, 2, 2)},
+            {1, "B", "同名", "", 2, Coverage::State::Empty, Coverage::Reason::NoVertices, {}}};
+        Coverage complete, partial;
+        QVERIFY(Coverage::Capture(input, rows, true, complete));
+        rows[1].state = Coverage::State::Pending; rows[1].reason = Coverage::Reason::None;
+        QVERIFY(Coverage::Capture(input, rows, false, partial));
+        PsdBatchJob job; QTemporaryDir directory; QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QVERIFY(job.start({"/first.json", "/second.json", "/third.json"}, directory.path(), false, false));
+        QTRY_COMPARE(requests.size(), 1);
+        const QString first = requests[0][1].toString();
+        job.completeDetailed(true, first, {}, PsdExportStage::Done, true, {}, complete);
+        QTRY_COMPARE(requests.size(), 2);
+        const QString second = requests[1][1].toString();
+        job.completeCanceled(first, PsdExportStage::Encoding, {}, {}, partial);
+        QVERIFY(job.results()[1].coverage.IsEmpty());
+        job.completeCanceled(second, PsdExportStage::Encoding, "停止", {}, partial);
+        QTRY_COMPARE(requests.size(), 3);
+        job.completeDetailed(false, second, "旧完成", PsdExportStage::Writing, false, {}, complete);
+        QVERIFY(job.results()[2].coverage.IsEmpty());
+        job.completeDetailed(false, requests[2][1].toString(), "恢复失败", PsdExportStage::Restoring, true, {}, complete);
+        QTRY_VERIFY(!job.isRunning());
+        const auto results = job.results();
+        QVERIFY(results[0].coverage == complete); QCOMPARE(results[0].state, PsdBatchFileState::Succeeded);
+        QVERIFY(results[1].coverage == partial); QCOMPARE(results[1].state, PsdBatchFileState::Canceled);
+        QVERIFY(!results[1].outputCommitted); QCOMPARE(results[1].coverage.Statistics().pending, 1);
+        QVERIFY(results[2].coverage == complete); QCOMPARE(results[2].state, PsdBatchFileState::Failed);
+        QVERIFY(results[2].outputCommitted);
+        for (const auto& result : results) QVERIFY(IsPsdBatchResultValid(result));
+    }
+
+    void objectCoverageCannotInventACommitOrDiscardAReportedCommit_data()
+    {
+        QTest::addColumn<bool>("committed");
+        QTest::newRow("no-commit") << false;
+        QTest::newRow("commit-with-incomplete-report") << true;
+    }
+    void objectCoverageCannotInventACommitOrDiscardAReportedCommit()
+    {
+        QFETCH(bool, committed);
+        CPsdExportCoverage::Context input;
+        input.sourceMocDigest = input.runtimeMocDigest = QByteArray(32, 's'); input.canvas = QSize(16, 16); input.runtimeCount = 1;
+        CPsdExportCoverage partial;
+        QVERIFY(CPsdExportCoverage::Capture(input, {{0, "A", "", "", 1}}, false, partial));
+        PsdBatchJob job; QTemporaryDir directory; QSignalSpy requests(&job, &PsdBatchJob::requestExport);
+        QVERIFY(job.start({"/model.json"}, directory.path(), false, false)); QTRY_COMPARE(requests.size(), 1);
+        job.completeDetailed(true, requests[0][1].toString(), {}, PsdExportStage::Writing, committed, {}, partial);
+        QTRY_VERIFY(!job.isRunning());
+        const auto result = job.results()[0];
+        QCOMPARE(result.state, PsdBatchFileState::Failed); QCOMPARE(result.outputCommitted, committed);
+        QVERIFY(result.coverage == partial); QVERIFY(result.error.contains(QStringLiteral("不一致")));
+        QVERIFY(IsPsdBatchResultValid(result));
+    }
+
     void resultsRetainDiagnosticsAcrossSuccessFailureAndCancel()
     {
         PsdBatchJob job;

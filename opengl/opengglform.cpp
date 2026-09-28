@@ -1,4 +1,5 @@
 #include "opengglform.h"
+#include "std/cpsdexportcoverage.h"
 #include "edit/cmeshmap.h"
 #include "ccanvascoordinates.h"
 #include "framework/Id/CubismIdManager.hpp"
@@ -139,8 +140,9 @@ bool OpengGlForm::do_OffSeceen(const QString& fileName,bool IsALl,bool IsFenzu,b
 }
 
 bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool IsFenzu, bool cubismCompat, QString* error,
-                                   CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot)
+                                   CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot, CPsdExportCoverage* coverage)
 {
+    if (coverage) *coverage = {};
     const auto names = snapshot;
     if (error) error->clear();
     if (fileName.isEmpty()) return MeshError(error, QStringLiteral("PSD 导出路径为空"));
@@ -166,7 +168,7 @@ bool OpengGlForm::do_OffSeceenSilent(const QString &fileName, bool IsALl, bool I
         surface->m_ceditstate.RemoveState(CEditState::PrintAllPsd);
         surface->m_ceditstate.RemoveState(CEditState::PrintFenzuPsd);
     });
-    return LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat,error,control,names);
+    return LAppDelegate::GetInstance()->StartOffset_FunpsdList(fileName,IsALl,IsFenzu,cubismCompat,error,control,names,coverage);
 }
 
 bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat)
@@ -187,8 +189,9 @@ bool OpengGlForm::do_TextureExtract(const QString& fileName, bool isAll, bool is
 }
 
 bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, bool isFenzu, bool cubismCompat, QString* error,
-                                         CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot)
+                                         CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot, CPsdExportCoverage* coverage)
 {
+    if (coverage) *coverage = {};
     const auto names = snapshot;
     if (error) error->clear();
     if (fileName.isEmpty()) return MeshError(error, QStringLiteral("PSD 导出路径为空"));
@@ -196,7 +199,7 @@ bool OpengGlForm::do_TextureExtractSilent(const QString& fileName, bool isAll, b
     auto* delegate = LAppDelegate::GetInstance();
     if (!context() || delegate->getGlOwningContext() != context())
         return MeshError(error, QStringLiteral("当前模型不属于此预览窗口"));
-    return delegate->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat,error,control,names);
+    return delegate->StartTextureExtraction(fileName, isAll, isFenzu, cubismCompat,error,control,names,coverage);
 }
 
 void OpengGlForm::do_ShowMesh(const QString &artName)

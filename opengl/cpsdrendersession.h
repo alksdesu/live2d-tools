@@ -49,6 +49,8 @@ private:
     CExportControl* m_control;
     COffscreenBuffer m_buffer;
     qsizetype m_index = 0;
+    qsizetype m_metadataIndex = -1;
+    CPsdExportItem m_metadata;
     bool m_started = false;
     bool m_includeHidden = false;
 };

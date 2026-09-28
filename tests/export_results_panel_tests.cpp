@@ -1,4 +1,5 @@
 #include "ui/cexportresultspanel.h"
+#include "ui/theme.h"
 #include <QtTest>
 #include <QApplication>
 #include <QClipboard>
@@ -6,6 +7,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMainWindow>
+#include <QStatusBar>
+#include <QToolBar>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopeGuard>
@@ -50,6 +54,152 @@ class ExportResultsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void coverageVersionFourKeepsOriginalReportFieldsAndPlainIdentity()
+    {
+        using Coverage = CPsdExportCoverage;
+        Coverage::Context input; input.sourceMocDigest = QByteArray(32, 's'); input.runtimeMocDigest = QByteArray(32, 'r');
+        input.canvas = QSize(32, 48); input.runtimeCount = 3;
+        QVector<Coverage::Record> rows{{0, "Mesh0", "同名", "Part", 1, Coverage::State::Raster, Coverage::Reason::None, QRect(0, 0, 2, 3)},
+            {1, "Mesh1", "<b>当前无像素</b>", "Part", 2, Coverage::State::Empty, Coverage::Reason::OutsideCanvas, {}},
+            {2, "Mesh2", "隐藏", "", 3, Coverage::State::Excluded, Coverage::Reason::EditorHidden, {}}};
+        auto output = result(0, PsdBatchFileState::Succeeded, "/model.json", "/model.psd", true);
+        QVERIFY(Coverage::Capture(input, rows, true, output.coverage));
+        CExportResultsPanel panel; QVERIFY(panel.SetResults({output}));
+        const auto report = panel.ReportJson(); QCOMPARE(report["version"].toInt(), 4);
+        const auto file = report["files"].toArray()[0].toObject();
+        QCOMPARE(file["source"].toString(), output.sourcePath); QVERIFY(file["outputCommitted"].toBool());
+        QVERIFY(file.contains("diagnostics")); QVERIFY(!file.contains("sourceRecovery"));
+        const auto coverage = file["objectCoverage"].toObject(); QCOMPARE(coverage["version"].toInt(), 1);
+        QCOMPARE(coverage["records"].toArray().size(), 3);
+        QCOMPARE(coverage["records"].toArray()[1].toObject()["psdLayerId"].toInt(), 2);
+        const auto details = panel.findChild<QPlainTextEdit*>("exportResultDetails");
+        QVERIFY(details); QVERIFY(details->toPlainText().contains(QStringLiteral("<b>当前无像素</b>")));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("不代表原始素材已恢复")));
+        auto invalid = output; invalid.outputCommitted = false; QVERIFY(!panel.SetResults({invalid}));
+        invalid = output; invalid.state = PsdBatchFileState::Canceled; QVERIFY(!panel.SetResults({invalid}));
+        QCOMPARE(panel.ReportJson(), report);
+        QVERIFY(panel.SetResults({result(0, PsdBatchFileState::Succeeded, "/legacy.json", "/legacy.psd", true)}));
+        QCOMPARE(panel.ReportJson()["version"].toInt(), 2);
+    }
+
+    void canceledCoverageShowsPreparedLayersAndCompleteReport()
+    {
+        using Coverage = CPsdExportCoverage;
+        Coverage::Context input; input.sourceMocDigest = input.runtimeMocDigest = QByteArray(32, 's');
+        input.canvas = QSize(32, 32); input.runtimeCount = 105;
+        QVector<Coverage::Record> rows;
+        for (int index = 0; index < 105; ++index) rows.append({index, QString::number(index), QStringLiteral("长名称"), {}, quint32(index + 1)});
+        rows[0].state = Coverage::State::Raster; rows[0].bounds = QRect(0, 0, 1, 1);
+        auto output = result(0, PsdBatchFileState::Canceled, "/model.json", "/model.psd");
+        output.error = QStringLiteral("用户已取消");
+        QVERIFY(Coverage::Capture(input, rows, false, output.coverage));
+        CExportResultsPanel panel; QVERIFY(panel.SetResults({output}));
+        const auto text = panel.findChild<QPlainTextEdit*>("exportResultDetails")->toPlainText();
+        QVERIFY(text.startsWith(output.error + QLatin1Char('\n') + QStringLiteral("未提交新的输出文件。")));
+        QVERIFY(text.contains(QStringLiteral("尚未提交")));
+        QVERIFY(text.contains(QStringLiteral("另有 4 项")));
+        QCOMPARE(panel.ReportJson()["files"].toArray()[0].toObject()["objectCoverage"].toObject()["records"].toArray().size(), 105);
+        QVERIFY(!button(panel, "exportRetryFailed")->isEnabled());
+    }
+
+    void coverageDetailsRemainReadableInNarrowThemes_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::addColumn<int>("width");
+        QTest::newRow("light-560") << false << 560;
+        QTest::newRow("dark-560") << true << 560;
+        QTest::newRow("light-960") << false << 960;
+        QTest::newRow("dark-960") << true << 960;
+    }
+    void coverageDetailsRemainReadableInNarrowThemes()
+    {
+        QFETCH(bool, dark); QFETCH(int, width);
+        const QString original = qApp->styleSheet();
+        const auto restore = qScopeGuard([&] { qApp->setStyleSheet(original); });
+        qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        CPsdExportCoverage::Context input;
+        input.sourceMocDigest = input.runtimeMocDigest = QByteArray(32, 's'); input.canvas = QSize(32, 32); input.runtimeCount = 1;
+        auto output = result(0, PsdBatchFileState::Failed, QString(300, 'S'), QString(300, 'O'));
+        output.error = QStringLiteral("写入失败：磁盘空间不足");
+        QVERIFY(CPsdExportCoverage::Capture(input, {{0, "Mesh", QStringLiteral("<b>很长的对象名称</b>"), "Part", 1}}, false, output.coverage));
+        CExportResultsPanel panel; QVERIFY(panel.SetResults({output})); panel.resize(width, 520); panel.show(); panel.raise(); panel.activateWindow();
+        QVERIFY(QTest::qWaitForWindowExposed(&panel)); QTest::qWait(50);
+        auto* details = panel.findChild<QPlainTextEdit*>("exportResultDetails"); QVERIFY(details);
+        QVERIFY(details->isVisible()); QVERIFY(details->viewport()->height() >= details->fontMetrics().height() * 3);
+        QVERIFY(details->document()->firstBlock().text().startsWith(output.error));
+        QCOMPARE(details->verticalScrollBar()->value(), details->verticalScrollBar()->minimum());
+        const QRect first = details->cursorRect(QTextCursor(details->document()->firstBlock()));
+        QVERIFY(details->viewport()->rect().intersects(first));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("<b>很长的对象名称</b>")));
+        const QString directory = qEnvironmentVariable("PSD_COVERAGE_IMAGE_DIR");
+        if (!directory.isEmpty()) {
+            QDir().mkpath(directory);
+            QVERIFY(panel.grab().save(directory + QStringLiteral("/coverage-%1-%2.png").arg(dark ? "dark" : "light").arg(width)));
+            qInfo() << "actual" << panel.size() << "dpr" << panel.devicePixelRatioF() << "details" << details->viewport()->size();
+        }
+    }
+
+    void dockedReportKeepsOneCompleteRowAndSelectedCounts_data()
+    {
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("light") << false;
+        QTest::newRow("dark") << true;
+    }
+    void dockedReportKeepsOneCompleteRowAndSelectedCounts()
+    {
+        QFETCH(bool, dark);
+        const QString original = qApp->styleSheet();
+        const auto restore = qScopeGuard([&] { qApp->setStyleSheet(original); });
+        qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        QMainWindow window; window.setWindowFlag(Qt::FramelessWindowHint);
+        auto* canvas = new QWidget(&window); canvas->setMinimumSize(270, canvas->fontMetrics().lineSpacing() * 10);
+        window.setCentralWidget(canvas); window.addToolBar(QStringLiteral("工具"))->addAction(QStringLiteral("导出 PSD"));
+        window.statusBar()->showMessage(QStringLiteral("查看导出结果"));
+        auto* panel = new CExportResultsPanel(&window); window.addDockWidget(Qt::BottomDockWidgetArea, panel);
+        auto value = result(0, PsdBatchFileState::Canceled, "/model.json", "/model.psd"); value.error = QStringLiteral("用户取消");
+        CPsdExportCoverage::Context context; context.sourceMocDigest = context.runtimeMocDigest = QByteArray(32, 's');
+        context.canvas = QSize(32, 32); context.runtimeCount = 1;
+        QVERIFY(CPsdExportCoverage::Capture(context, {{0, "Mesh", QStringLiteral("对象"), {}, 1}}, false, value.coverage));
+        QVERIFY(panel->SetResults({value})); window.resize(1000, 760); window.show(); window.raise(); window.activateWindow();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto* table = panel->findChild<QTableWidget*>("exportResultsTable");
+        auto* details = panel->findChild<QPlainTextEdit*>("exportResultDetails");
+        auto* summary = panel->findChild<QLabel*>("exportResultsSummary");
+        QVERIFY(table && details && summary);
+        for (int fontChange = 0; fontChange < 2; ++fontChange) {
+            if (fontChange) {
+                const int before = details->fontMetrics().lineSpacing();
+                panel->setStyleSheet(QStringLiteral("QTableWidget, QHeaderView, QPlainTextEdit { font-size: %1px; }").arg(details->fontMetrics().height() + 2));
+                QVERIFY(details->fontMetrics().lineSpacing() > before);
+            }
+            for (const QSize size : {QSize(900, 720), QSize(1000, 760)}) {
+                window.resize(size); window.resizeDocks({panel}, {1}, Qt::Vertical); QTest::qWait(80);
+                QVERIFY(window.width() <= size.width() && window.height() <= size.height());
+                const QRect row = table->visualItemRect(table->item(0, 0));
+                QVERIFY2(row.height() > 0 && row.top() >= 0 && row.bottom() < table->viewport()->height(),
+                    qPrintable(QStringLiteral("row %1..%2; viewport %3").arg(row.top()).arg(row.bottom()).arg(table->viewport()->height())));
+                qInfo() << "detail metrics" << details->size() << details->minimumSizeHint() << details->frameWidth() << details->contentsMargins() << details->viewport()->geometry() << details->fontMetrics().lineSpacing() << details->document()->documentMargin();
+                QVERIFY(details->viewport()->height() >= details->fontMetrics().lineSpacing() * 2);
+                QVERIFY(summary->text().contains(value.coverage.Summary()));
+                QVERIFY(summary->text().contains(QStringLiteral("未提交")));
+                QVERIFY(window.rect().contains(QRect(panel->mapTo(&window, QPoint()), panel->size())));
+                QVERIFY(canvas->height() >= canvas->minimumHeight());
+                const QString directory = qEnvironmentVariable("PSD_COVERAGE_IMAGE_DIR");
+                if (!directory.isEmpty()) {
+                    QDir().mkpath(directory);
+                    QVERIFY(window.grab().save(directory + QStringLiteral("/docked-%1-%2-font%3.png").arg(dark ? "dark" : "light").arg(size.width()).arg(fontChange)));
+                    qInfo() << "docked" << window.size() << "dpr" << window.devicePixelRatioF() << "row" << row << "viewport" << table->viewport()->size() << "details" << details->viewport()->size();
+                }
+            }
+        }
+        auto* splitter = panel->findChild<QSplitter*>(); QVERIFY(splitter);
+        splitter->setSizes({0, splitter->height()}); QTest::qWait(20);
+        QCOMPARE(splitter->sizes().first(), 0);
+        auto second = value; second.index = 1; second.outputPath = "/other.psd"; second.coverage = {};
+        QVERIFY(panel->SetResults({value, second})); table->setCurrentCell(1, 0);
+        QVERIFY(!summary->text().contains(value.coverage.Summary()));
+        table->setCurrentCell(0, 0); QVERIFY(summary->text().contains(value.coverage.Summary()));
+    }
+
     void archivedPsdReportKeepsVersionAndExactContentEvidence()
     {
         CExportResultsPanel panel;

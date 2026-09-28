@@ -70,6 +70,72 @@ bool captureExportNames(LAppModel* model, const live2dstruct::CModelExportSnapsh
     }
     return live2dstruct::CModelExportSnapshot::Create(model->GetSourceMocDigest(), model->GetPreviewMocBytes(), names, result, error);
 }
+
+struct PsdCoveragePlan
+{
+    CPsdExportCoverage::Context context;
+    QVector<CPsdExportCoverage::Record> records;
+    QHash<QString, int> indices;
+    QSet<QString> excluded;
+
+    bool Initialize(CubismModel* model, const live2dstruct::CModelExportSnapshot& names,
+                    const QSize& canvas, bool includeHidden, CPsdExportCoverage::Method method,
+                    const QSet<QString>& hidden, QString* error)
+    {
+        context = {names.SourceDigest(), names.RuntimeDigest(), canvas, method, includeHidden, model->GetDrawableCount()};
+        if (context.runtimeCount < 0 || context.runtimeCount > CPsdExportCoverage::MaximumRecords) {
+            if (error) *error = QStringLiteral("PSD 对象数量超出范围");
+            return false;
+        }
+        records.reserve(context.runtimeCount);
+        for (int index = 0; index < context.runtimeCount; ++index) {
+            CPsdExportCoverage::Record record;
+            record.runtimeIndex = index;
+            record.psdLayerId = quint32(index) + 1;
+            record.id = QString::fromUtf8(model->GetDrawableId(index)->GetString().GetRawString());
+            record.displayName = names.DisplayName(QStringLiteral("artmesh"), record.id);
+            const int part = model->GetDrawableParentPartIndex(index);
+            if (part < -1 || part >= model->GetPartCount()) {
+                if (error) *error = QStringLiteral("PSD 对象所属部件无效：%1").arg(record.id);
+                return false;
+            }
+            if (part >= 0) record.partId = QString::fromUtf8(model->GetPartId(part)->GetString().GetRawString());
+            if (!includeHidden) {
+                if (hidden.contains(record.id)) record.reason = CPsdExportCoverage::Reason::EditorHidden;
+                else if (!model->GetDrawableDynamicFlagIsVisible(index)) record.reason = CPsdExportCoverage::Reason::RuntimeHidden;
+                if (record.reason != CPsdExportCoverage::Reason::None) {
+                    record.state = CPsdExportCoverage::State::Excluded;
+                    excluded.insert(record.id);
+                }
+            }
+            indices.insert(record.id, index);
+            records.append(std::move(record));
+        }
+        CPsdExportCoverage initial;
+        return CPsdExportCoverage::Capture(context, records, false, initial, error);
+    }
+
+    bool Accept(int index, const QRect& bounds, CPsdExportCoverage::Reason reason, QString* error)
+    {
+        if (index < 0 || index >= records.size() || records[index].state != CPsdExportCoverage::State::Pending) {
+            if (error) *error = QStringLiteral("PSD 对象重复写入或没有对应的导出计划");
+            return false;
+        }
+        auto& record = records[index];
+        record.bounds = bounds;
+        record.reason = reason;
+        record.state = reason == CPsdExportCoverage::Reason::None ? CPsdExportCoverage::State::Raster : CPsdExportCoverage::State::Empty;
+        return true;
+    }
+
+    bool Publish(bool committed, CPsdExportCoverage* output, QString* error = nullptr) const
+    {
+        CPsdExportCoverage candidate;
+        if (!CPsdExportCoverage::Capture(context, records, committed, candidate, error)) return false;
+        if (output) *output = std::move(candidate);
+        return true;
+    }
+};
 }
 
 LAppDelegate* LAppDelegate::GetInstance()
@@ -315,8 +381,9 @@ CPsdWriteList *LAppDelegate::GetCPsdWriteList()
 
 
 bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidden, bool groups, bool cubismCompat,
-                                        QString* error, CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot)
+                                        QString* error, CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot, CPsdExportCoverage* coverage)
 {
+    if (coverage) *coverage = {};
     CExportControl localControl;
     if (!control) control = &localControl;
     const auto fail = [&](const QString& reason) {
@@ -354,12 +421,15 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
         return fail(QStringLiteral("PSD 画布尺寸、原点或缩放无效"));
     CubismMatrix44 matrix;
     matrix.SetMatrix(projection.data());
+    PsdCoveragePlan plan;
+    if (!plan.Initialize(core, names, canvas, includeHidden, CPsdExportCoverage::Method::Gpu,
+                         m_hiddenDrawables | m_hiddenDeformerDrawables, error)) return false;
+    const auto publish = qScopeGuard([&] { plan.Publish(control->IsCommitted(), coverage); });
     const auto sorted = core->GetSortedDrawableIndices(m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups);
     QVector<CPsdRenderSession::Entry> entries;
     const auto appendLayer = [&](int index) {
-        if (!includeHidden && !core->GetDrawableDynamicFlagIsVisible(index)) return;
         const QString id = QString::fromUtf8(core->GetDrawableId(index)->GetString().GetRawString());
-        if (m_hiddenDrawables.contains(id) || m_hiddenDeformerDrawables.contains(id)) return;
+        if (plan.excluded.contains(id)) return;
         entries.append({CPsdExportItem::Type::Layer, index, names.DisplayName(QStringLiteral("artmesh"), id), m_drawableOpacityOverrides.value(id, -1.0f)});
     };
     if (groups) {
@@ -384,11 +454,11 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
             const QString id = QString::fromUtf8(core->GetDrawableId(index)->GetString().GetRawString());
             const int sourceIndex = sourceIndices.value(id, -1);
             if (sourceIndex < 0 || runtimeIndices.contains(sourceIndex)) return fail(QStringLiteral("PSD 分组无法映射运行时网格：%1").arg(id));
-            sources.append(sourceIndex);
+            if (!plan.excluded.contains(id)) sources.append(sourceIndex);
             runtimeIndices.insert(sourceIndex, index);
         }
         const auto order = live2dstruct::BuildGroupedLayerOrder(document.Parts(), document.Drawables(), sources);
-        if (!sorted.isEmpty() && order.isEmpty()) return fail(QStringLiteral("PSD 分组计划为空"));
+        if (!sources.isEmpty() && order.isEmpty()) return fail(QStringLiteral("PSD 分组计划为空"));
         for (const auto& entry : order) {
             if (!control->Checkpoint()) { if (error) *error = control->Error(); return false; }
             if (entry.type == live2dstruct::CLayerOrderItem::Layer) appendLayer(runtimeIndices.value(entry.drawableIndex));
@@ -426,8 +496,11 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
                 if (detail) *detail = QStringLiteral("PSD 导出窗口或会话已关闭");
                 return false;
             }
-            return session->Next(item, detail);
-        }, control, error);
+            if (!session->Next(item, detail)) return false;
+            return item.type != CPsdExportItem::Type::Done || plan.Publish(true, nullptr, detail);
+        }, control, error, [&](const CPsdExportItem& item, QString* detail) {
+            return plan.Accept(item.runtimeIndex, item.rect, item.emptyReason, detail);
+        });
     if (!surface || s_instance != this || m_psdExportSession.get() != session)
         return fail(QStringLiteral("PSD 导出窗口或会话已关闭"));
     QString cleanupError;
@@ -451,8 +524,9 @@ bool LAppDelegate::RecoverPsdExport(QString* error)
 }
 
 bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidden, bool groups, bool cubismCompat,
-                                         QString* error, CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot)
+                                         QString* error, CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot, CPsdExportCoverage* coverage)
 {
+    if (coverage) *coverage = {};
     CExportControl localControl;
     if (!control) control = &localControl;
     if (error) error->clear();
@@ -477,7 +551,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
     const QByteArray source = model->GetPreviewMocBytes();
     if (source.isEmpty()) return fail(QStringLiteral("当前模型缺少有效 MOC 快照，无法提取纹理"));
     const auto topology = m_meshIndexOverrides;
-    const auto opacity = m_drawableOpacityOverrides;
+    auto opacity = m_drawableOpacityOverrides;
     const QSet<QString> hidden = m_hiddenDrawables | m_hiddenDeformerDrawables;
     QVector<QByteArray> atlases;
     const auto texturePngs = model->GetEffectiveTexturePngs();
@@ -489,6 +563,13 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
     QHash<QString, QVector<float>> modelPositions;
     model->Update();
     auto* runtime = model->GetModel();
+    Live2D::Cubism::Core::csmVector2 pixels{}, origin{};
+    csmFloat32 ppu = 0;
+    Live2D::Cubism::Core::csmReadCanvasInfo(runtime->GetModel(), &pixels, &origin, &ppu);
+    PsdCoveragePlan plan;
+    if (!plan.Initialize(runtime, names, live2dstruct::CCanvasGeometry::PixelSize(pixels.X, pixels.Y),
+                         includeHidden, CPsdExportCoverage::Method::Cpu, hidden, error)) return false;
+    const auto publish = qScopeGuard([&] { plan.Publish(control->IsCommitted(), coverage); });
     for (int index = 0; index < runtime->GetDrawableCount(); ++index) {
         const auto id = QString::fromUtf8(runtime->GetDrawableId(index)->GetString().GetRawString());
         const int count = runtime->GetDrawableVertexCount(index);
@@ -502,10 +583,13 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
             copy.append(positions[coordinate]);
         }
         modelPositions.insert(id, std::move(copy));
+        const float alpha = opacity.value(id, runtime->GetDrawableOpacityAll(index, includeHidden)) * runtime->GetModelOpacity();
+        if (!std::isfinite(alpha)) return fail(QStringLiteral("纹理采样的图层透明度不是有限数值：%1").arg(id));
+        opacity.insert(id, alpha);
     }
     for (int index : runtime->GetSortedDrawableIndices(m_drawableDrawOrderOverrides, m_drawableOrderGroupIndices, m_drawOrderGroups))
         order.append(QString::fromUtf8(runtime->GetDrawableId(index)->GetString().GetRawString()));
-    return CExportTaskRunner::Run([=](const CExportTaskRunner::GuiCall&, QString* detail) {
+    return CExportTaskRunner::Run([=, &plan](const CExportTaskRunner::GuiCall&, QString* detail) {
         CTextureExtractor extractor;
         if (!extractor.LoadAtlasBytes(atlases, control)) { if (detail) *detail = control->Error(); return false; }
         auto reader = live2dstruct::CReader::FromBytes(source);
@@ -515,22 +599,32 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
         CPsdWriteList writer;
         writer.SetControl(control);
         if (!writer.CreatePsd(path, canvas.width(), canvas.height(), cubismCompat)) { if (detail) *detail = control->Error(); return false; }
-        const auto layers = extractor.ExtractAll(&table, includeHidden, &topology, control, &modelPositions);
+        const auto layers = extractor.ExtractAll(&table, true, &topology, control, &modelPositions, &plan.excluded);
         if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
         QHash<QString, const ExtractedLayer*> byId;
         for (const auto& layer : layers) byId.insert(layer.name, &layer);
         const auto writeLayer = [&](const QString& id) {
-            if (hidden.contains(id)) return true;
+            if (plan.excluded.contains(id)) return true;
             const auto* layer = byId.value(id, nullptr);
-            if (!layer) return true;
-            if (layer->image.size() != layer->canvasRect.size()) {
+            const int index = plan.indices.value(id, -1);
+            if (!layer || index < 0) { control->Fail(QStringLiteral("纹理采样缺少导出对象：%1").arg(id)); return false; }
+            const float alpha = opacity.value(id, layer->opacity);
+            const auto opacityByte = static_cast<quint8>(qBound(0.0f, alpha * 255.0f, 255.0f));
+            if (layer->emptyReason != CPsdExportCoverage::Reason::None) {
+                if (!layer->image.isNull() || layer->canvasRect != QRect()) {
+                    control->Fail(QStringLiteral("纹理采样的空图层包含不一致的像素：%1").arg(id)); return false;
+                }
+                return writer.AddEmptyLayer(names.DisplayName(QStringLiteral("artmesh"), id), opacityByte,
+                    CTextureExtractor::BlendModeToPsd(layer->drawableFlags), false, quint32(index) + 1) &&
+                    plan.Accept(index, {}, layer->emptyReason, detail);
+            }
+            if (layer->image.isNull() || layer->image.size() != layer->canvasRect.size()) {
                 control->Fail(QStringLiteral("纹理采样图层与画布边界尺寸不一致：%1").arg(id));
                 return false;
             }
-            const float alpha = opacity.value(id, layer->opacity);
             return writer.AddLayer(names.DisplayName(QStringLiteral("artmesh"), id), layer->canvasRect, layer->image,
-                                   static_cast<quint8>(qBound(0.0f, alpha * 255.0f, 255.0f)),
-                                   CTextureExtractor::BlendModeToPsd(layer->drawableFlags), false, false);
+                                   opacityByte, CTextureExtractor::BlendModeToPsd(layer->drawableFlags), false, false, quint32(index) + 1) &&
+                   plan.Accept(index, layer->canvasRect, CPsdExportCoverage::Reason::None, detail);
         };
         if (groups) {
             live2dstruct::CModelDocument document;
@@ -540,7 +634,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
             QVector<int> sources;
             for (const QString& id : order) {
                 if (!sourceIndices.contains(id)) { if (detail) *detail = QStringLiteral("纹理分组无法映射运行时网格：%1").arg(id); return false; }
-                if (byId.contains(id) && !hidden.contains(id)) sources.append(sourceIndices.value(id));
+                if (!plan.excluded.contains(id)) sources.append(sourceIndices.value(id));
             }
             const auto grouped = live2dstruct::BuildGroupedLayerOrder(document.Parts(), document.Drawables(), sources);
             for (const auto& entry : grouped) {
@@ -556,7 +650,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
                 if (!writeLayer(id)) return false;
             }
         }
-        return writer.WritePsd();
+        return plan.Publish(true, nullptr, detail) && writer.WritePsd();
     }, control, error);
 }
 

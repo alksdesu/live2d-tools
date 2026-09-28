@@ -162,6 +162,30 @@ private slots:
         QVERIFY(restored.DrawableKeyformPositions(QStringLiteral("missing"), editedIndex).isEmpty());
     }
 
+    void projectedBoundsClassifyEmptyObjects()
+    {
+        using State = MeshBounds::ProjectionState;
+        const auto identity = [](float x, float y) { return QPointF(x, y); };
+        const QSize canvas(100, 80);
+        const float point[]{0.2f, 0.3f, 0.2f, 0.3f};
+        QCOMPARE(MeshBounds::ProjectViewport(point, 2, identity, canvas).state, State::DegenerateBounds);
+        const float line[]{0.2f, 0.3f, 0.2f, 0.8f};
+        QCOMPARE(MeshBounds::ProjectViewport(line, 2, identity, canvas).state, State::DegenerateBounds);
+        const float outside[]{2, 2, 3, 3};
+        QCOMPARE(MeshBounds::ProjectViewport(outside, 2, identity, canvas).state, State::OutsideViewport);
+        const float partial[]{0, 0, 3, 3};
+        const auto projected = MeshBounds::ProjectViewport(partial, 2, identity, canvas);
+        QCOMPARE(projected.state, State::Pixels);
+        QCOMPARE(projected.rect, QRect(50, 40, 50, 40));
+        QCOMPARE(MeshBounds::ProjectViewport(nullptr, 0, identity, canvas).state, State::NoVertices);
+        QCOMPARE(MeshBounds::ProjectViewport(nullptr, 1, identity, canvas).state, State::Invalid);
+        const float invalid[]{0, 0, std::numeric_limits<float>::infinity(), 1};
+        QCOMPARE(MeshBounds::ProjectViewport(invalid, 2, identity, canvas).state, State::Invalid);
+        QCOMPARE(MeshBounds::ProjectViewport(partial, 2, [](float, float) {
+            return QPointF(std::numeric_limits<double>::quiet_NaN(), 0);
+        }, canvas).state, State::Invalid);
+    }
+
     void drawableBounds()
     {
         const float vertices[] = {-1, -1, 1, -1, 1, 1, -1, 1};

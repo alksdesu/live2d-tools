@@ -678,6 +678,99 @@ private slots:
         QCOMPARE(existing.read(6), QByteArray::fromHex("384250530001"));
     }
 
+    void emptyRasterRetainsIdentityAttributesAndGroupPosition()
+    {
+        QTemporaryDir directory;
+        const auto path = directory.filePath("identity.psd");
+        CPsdList writer;
+        QVERIFY(writer.SetPsd(path, 4, 3));
+        QVERIFY(writer.AddGroupStart());
+        QVERIFY(writer.AddEmptyLayer(QStringLiteral("同名图层"), 73, 0x6d756c20, true, 17));
+        QImage pixel(1, 1, QImage::Format_ARGB32); pixel.fill(qRgba(41, 67, 89, 127));
+        QVERIFY(writer.AddLayer(QStringLiteral("同名图层"), pixel, QRect(-2, -3, 1, 1), 191, 0x6c646467, false, false, 18));
+        QVERIFY(writer.AddGroupEnd("group"));
+        QVERIFY(writer.AddEmptyLayer("default"));
+        QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed; QString error;
+        QVERIFY2(PsdBinary::Parse(ReadFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers.size(), 5);
+        QCOMPARE(parsed.layers[0].sectionType, quint32(3)); QCOMPARE(parsed.layers[3].sectionType, quint32(1));
+        const auto& empty = parsed.layers[1];
+        QCOMPARE(empty.name, QStringLiteral("同名图层")); QCOMPARE(empty.bounds, QRect(0, 0, 0, 0));
+        QVERIFY(empty.channels.isEmpty()); QCOMPARE(empty.opacity, quint8(73)); QCOMPARE(empty.blend, QByteArray("mul "));
+        QCOMPARE(empty.clipping, quint8(1)); QCOMPARE(empty.layerId, std::optional<quint32>(17));
+        const auto& raster = parsed.layers[2];
+        QCOMPARE(raster.name, empty.name); QCOMPARE(raster.bounds, QRect(-2, -3, 1, 1));
+        QCOMPARE(raster.layerId, std::optional<quint32>(18)); QCOMPARE(raster.blend, QByteArray("lddg"));
+        QCOMPARE(raster.opacity, quint8(191)); QCOMPARE(raster.Plane(-1), QByteArray(1, char(127)));
+        QCOMPARE(parsed.layers[4].opacity, quint8(255)); QCOMPARE(parsed.layers[4].blend, QByteArray("norm"));
+        QVERIFY(parsed.layers[4].channels.isEmpty()); QVERIFY(!parsed.layers[4].layerId);
+    }
+    void layerIdsRetainAllUnsignedBits_data()
+    {
+        QTest::addColumn<quint32>("id");
+        QTest::newRow("zero") << quint32(0);
+        QTest::newRow("sign-bit") << quint32(0x80000000u);
+        QTest::newRow("maximum") << quint32(0xffffffffu);
+    }
+    void layerIdsRetainAllUnsignedBits()
+    {
+        QFETCH(quint32, id); QTemporaryDir directory;
+        const auto path = directory.filePath("ids.psd"); CPsdList writer;
+        QVERIFY(writer.SetPsd(path, 2, 2)); QVERIFY(writer.AddEmptyLayer("empty", 0, 0x6e6f726d, false, id));
+        QImage image(1, 1, QImage::Format_ARGB32); image.fill(Qt::red);
+        QVERIFY(writer.AddLayer("pixel", image, image.rect(), 255, 0x6e6f726d, false, false, id));
+        QVERIFY(writer.CreatePsd()); PsdBinary::Document parsed; QString error;
+        QVERIFY2(PsdBinary::Parse(ReadFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers[0].layerId, std::optional<quint32>(id));
+        QCOMPARE(parsed.layers[1].layerId, std::optional<quint32>(id));
+    }
+    void explicitEmptyDoesNotTurnInvalidRasterIntoSuccess()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("kept.psd"); QVERIFY(SeedDestination(path));
+        CPsdList writer; QVERIFY(writer.SetPsd(path, 2, 2)); QVERIFY(writer.AddEmptyLayer("identity", 255, 0x6e6f726d, false, 1));
+        QVERIFY(!writer.AddLayer("bad", QImage(), QRect(0, 0, 1, 1), 255, 0x6e6f726d, false, false, 2));
+        QVERIFY(!writer.CreatePsd()); QCOMPARE(ReadFile(path), QByteArray("original"));
+    }
+    void emptyLayerNameIsOwnedBeforeCallbackAndCancelKeepsDestination()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("owned.psd");
+        QString text = QStringLiteral("原始名字"); const QString borrowed = QString::fromRawData(text.data(), text.size());
+        CPsdList writer; QVERIFY(writer.SetPsd(path, 2, 2)); CExportControl control;
+        bool changed = false;
+        control.SetHandler([&](const auto&, QString*) { if (!changed) { changed = true; text.fill('x'); } return true; });
+        writer.SetControl(&control); QVERIFY(writer.AddEmptyLayer(borrowed, 129, 0x6e6f726d, false, 12)); QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed; QString error;
+        QVERIFY2(PsdBinary::Parse(ReadFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers[0].name, QStringLiteral("原始名字"));
+        const auto saved = ReadFile(path);
+        for (bool duringWrite : {false, true}) {
+            CPsdList canceled; CExportControl cancel;
+            QVERIFY(canceled.SetPsd(path, 2, 2)); canceled.SetControl(&cancel);
+            cancel.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+                if (!duringWrite || progress.phase == CExportControl::Phase::Writing) cancel.Cancel();
+                return true;
+            });
+            if (duringWrite) QVERIFY(canceled.AddEmptyLayer("empty"));
+            else QVERIFY(!canceled.AddEmptyLayer("empty"));
+            QVERIFY(!canceled.CreatePsd()); QVERIFY(cancel.WasCanceled()); QCOMPARE(ReadFile(path), saved);
+        }
+    }
+    void emptyLayersConsumeRecordBudgetAndRejectInvalidNames()
+    {
+        QTemporaryDir directory; const auto path = directory.filePath("capacity.psd"); QVERIFY(SeedDestination(path));
+        CPsdList writer; QVERIFY(writer.SetPsd(path, 1, 1));
+        for (unsigned int index = 0; index < psd::ExportDocument::MAX_LAYER_COUNT; ++index)
+            QVERIFY(writer.AddEmptyLayer("empty", 255, 0x6e6f726d, false, index + 1));
+        QVERIFY(!writer.AddEmptyLayer("overflow")); QVERIFY(!writer.CreatePsd()); QCOMPARE(ReadFile(path), QByteArray("original"));
+        QVERIFY(writer.SetPsd(path, 1, 1));
+        QVERIFY(!writer.AddEmptyLayer(QString(QChar::Null))); QVERIFY(!writer.CreatePsd()); QCOMPARE(ReadFile(path), QByteArray("original"));
+        QVERIFY(writer.SetPsd(path, 1, 1)); QVERIFY(writer.AddEmptyLayer("only object", 0)); QVERIFY(writer.CreatePsd());
+        PsdBinary::Document parsed; QString error;
+        QVERIFY2(PsdBinary::Parse(ReadFile(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers.size(), 1); QVERIFY(parsed.layers[0].channels.isEmpty());
+    }
+
     void invalidResetCannotWritePreviousDocument()
     {
         QTemporaryDir temp;

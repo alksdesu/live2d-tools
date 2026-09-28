@@ -34,7 +34,10 @@ bool capturedPremultiplied = false;
 uint8_t capturedOpacity = 0;
 uint32_t capturedBlendKey = 0;
 CubismRenderer::CubismBlendMode capturedBlendMode = CubismRenderer::CubismBlendMode_Normal;
-int layerCalls = 0, frameClears = 0;
+int layerCalls = 0, frameClears = 0, emptyLayerCalls = 0, readCalls = 0;
+std::optional<quint32> capturedLayerId;
+enum class ReadCapture { Pixels, Empty, MissingImage, Failure };
+ReadCapture readCapture = ReadCapture::Pixels;
 
 void* Allocate(csmSizeType size)
 {
@@ -116,22 +119,38 @@ bool CReadOpengl::GetScreenNode(const float*, int, const float*, int width, int 
 {
     if (!allowLayerCapture || capturedFrame.isNull() || width != capturedFrame.width() || height != capturedFrame.height())
         UnexpectedRuntime();
-    image = capturedFrame;
-    rect = image.rect();
+    ++readCalls;
+    if (readCapture == ReadCapture::Failure) return false;
+    image = readCapture == ReadCapture::Pixels ? capturedFrame : QImage();
+    rect = readCapture == ReadCapture::Empty ? QRect() : capturedFrame.rect();
     return true;
 }
 bool CPsdWriteList::AddGroupStart(const QString&) { UnexpectedRuntime(); }
 bool CPsdWriteList::AddGroupEnd() { UnexpectedRuntime(); }
 bool CPsdWriteList::AddLayer(const QString&, const QRect&, const QImage& image, uint8_t opacity, uint32_t blendKey,
-                           bool clipping, bool premultiplied)
+                           bool clipping, bool premultiplied, std::optional<quint32> layerId)
 {
     if (!allowLayerCapture) UnexpectedRuntime();
     capturedLayer = image;
+    capturedLayerId = layerId;
     capturedClipping = clipping;
     capturedPremultiplied = premultiplied;
     capturedOpacity = opacity;
     capturedBlendKey = blendKey;
     ++layerCalls;
+    return true;
+}
+bool CPsdWriteList::AddEmptyLayer(const QString&, quint8 opacity, quint32 blend, bool clipping, std::optional<quint32> layerId)
+{
+    if (!allowLayerCapture) UnexpectedRuntime();
+    capturedLayer = {};
+    capturedLayerId = layerId;
+    capturedOpacity = opacity;
+    capturedBlendKey = blend;
+    capturedClipping = clipping;
+    capturedPremultiplied = false;
+    ++layerCalls;
+    ++emptyLayerCalls;
     return true;
 }
 uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mode)
@@ -413,8 +432,51 @@ private slots:
         allowDraw = allowLayerCapture = isolatedLayer = false;
         capturedFrame = capturedLayer = {};
         capturedClipping = true;
-        layerCalls = frameClears = 0;
+        layerCalls = frameClears = emptyLayerCalls = readCalls = 0;
+        capturedLayerId.reset(); readCapture = ReadCapture::Pixels;
         while (m_gl.glGetError() != GL_NO_ERROR) {}
+    }
+
+    void legacyPsdLayerRetainsEmptyIdentityAndRejectsInvalidInput_data()
+    {
+        QTest::addColumn<QString>("mode");
+        for (const char* mode : {"pixels", "empty", "no-triangles", "no-vertices", "missing-image", "read-failure",
+                                 "bad-index", "negative-count", "incomplete-indices", "nan-opacity", "invalid-drawable"})
+            QTest::newRow(mode) << QString::fromLatin1(mode);
+    }
+    void legacyPsdLayerRetainsEmptyIdentityAndRejectsInvalidInput()
+    {
+        QFETCH(QString, mode);
+        GetterState state; state.drawableCount = 3; state.maskCounts = {0, 0, 0};
+        state.flags.fill(Core::csmIsDoubleSided | Core::csmBlendAdditive);
+        auto model = Model(state); auto renderer = Renderer(); auto& gl = Gl(renderer);
+        QVERIFY(gl.setGlOwningContext(&m_context)); QVERIFY(gl.Initialize(model.get()));
+        gl.SetModelColor(1, 1, 1, 0.5f);
+        m_gl.glViewport(0, 0, 4, 4); QVERIFY(gl._rendererProfile.Save(&m_context));
+        capturedFrame = QImage(4, 4, QImage::Format_RGBA8888); capturedFrame.fill(qRgba(13, 29, 41, 91));
+        if (mode == "empty" || mode == "no-vertices") readCapture = ReadCapture::Empty;
+        if (mode == "missing-image") readCapture = ReadCapture::MissingImage;
+        if (mode == "read-failure") readCapture = ReadCapture::Failure;
+        if (mode == "no-triangles" || mode == "no-vertices") state.indexCounts[2] = 0;
+        if (mode == "no-vertices") { state.vertexCounts[2] = 0; state.positionPointers[2] = nullptr; }
+        if (mode == "bad-index") state.indices[2][0] = 99;
+        if (mode == "negative-count") state.indexCounts[2] = -1;
+        if (mode == "incomplete-indices") state.indexCounts[2] = 4;
+        const float opacity = mode == "nan-opacity" ? std::numeric_limits<float>::quiet_NaN() : 0.25f;
+        allowLayerCapture = true;
+        const bool accepted = gl.WritePsdLayer(mode == "invalid-drawable" ? -1 : 2, "identity", opacity, true);
+        const bool expected = mode == "pixels" || mode == "empty" || mode == "no-triangles" || mode == "no-vertices";
+        QCOMPARE(accepted, expected);
+        QCOMPARE(layerCalls, expected ? 1 : 0); QCOMPARE(frameClears, expected ? 1 : 0);
+        if (expected) {
+            QCOMPARE(readCalls, 1); QCOMPARE(capturedLayerId, std::optional<quint32>(3));
+            QCOMPARE(capturedOpacity, quint8(31)); QCOMPARE(capturedBlendMode, CubismRenderer::CubismBlendMode_Additive);
+            QCOMPARE(capturedBlendKey, 0x12345601u); QVERIFY(!capturedClipping);
+            QCOMPARE(emptyLayerCalls, mode == "pixels" ? 0 : 1);
+            if (mode == "pixels") { QCOMPARE(capturedLayer, capturedFrame); QVERIFY(capturedPremultiplied); }
+            else QVERIFY(capturedLayer.isNull());
+        }
+        QVERIFY(gl._rendererProfile.Restore());
     }
 
     void replacementTextureDirectoryIsExactAndTransactional()

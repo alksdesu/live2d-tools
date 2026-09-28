@@ -4,7 +4,7 @@
 #include "ui/cexporttaskrunner.h"
 
 bool CPsdFileTask::Execute(const QString& path, const QSize& canvas, bool cubismCompatible,
-                           const Next& next, CExportControl* control, QString* error)
+                           const Next& next, CExportControl* control, QString* error, const Accepted& onAccepted)
 {
     if (!next) {
         if (error) *error = QStringLiteral("PSD 导出缺少图层来源");
@@ -28,9 +28,20 @@ bool CPsdFileTask::Execute(const QString& path, const QSize& canvas, bool cubism
             case CPsdExportItem::Type::Done:
                 return writer.WritePsd();
             case CPsdExportItem::Type::Layer:
-                if (!item.rect.isEmpty())
-                    accepted = writer.AddLayer(item.name, item.rect, item.image, item.opacity,
-                                               item.blendMode, false, item.premultiplied);
+                accepted = !item.rect.isEmpty() && !item.image.isNull() && item.image.size() == item.rect.size() &&
+                    item.emptyReason == CPsdExportCoverage::Reason::None &&
+                    writer.AddLayer(item.name, item.rect, item.image, item.opacity,
+                        item.blendMode, false, item.premultiplied,
+                        item.psdLayerId ? std::optional<quint32>(item.psdLayerId) : std::nullopt);
+                break;
+            case CPsdExportItem::Type::EmptyLayer:
+                accepted = item.rect == QRect() && item.image.isNull() &&
+                    (item.emptyReason == CPsdExportCoverage::Reason::NoVertices ||
+                     item.emptyReason == CPsdExportCoverage::Reason::NoTriangles ||
+                     item.emptyReason == CPsdExportCoverage::Reason::DegenerateBounds ||
+                     item.emptyReason == CPsdExportCoverage::Reason::OutsideCanvas) &&
+                    writer.AddEmptyLayer(item.name, item.opacity, item.blendMode, false,
+                        item.psdLayerId ? std::optional<quint32>(item.psdLayerId) : std::nullopt);
                 break;
             case CPsdExportItem::Type::GroupStart:
                 accepted = writer.AddGroupStart(item.name);
@@ -43,6 +54,8 @@ bool CPsdFileTask::Execute(const QString& path, const QSize& canvas, bool cubism
                 if (detail) *detail = control && !control->Error().isEmpty() ? control->Error() : QStringLiteral("PSD 图层编码失败");
                 return false;
             }
+            if (onAccepted && (item.type == CPsdExportItem::Type::Layer || item.type == CPsdExportItem::Type::EmptyLayer) &&
+                !onAccepted(item, detail)) return false;
         }
     }, control, error);
 }

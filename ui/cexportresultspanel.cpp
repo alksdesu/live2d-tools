@@ -10,12 +10,79 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QScrollBar>
+#include <QTextDocument>
+#include <cmath>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <limits>
 
 namespace {
+class ResultTable final : public QTableWidget
+{
+public:
+    using QTableWidget::QTableWidget;
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QTableWidget::minimumSizeHint();
+        const auto margins = contentsMargins();
+        const int frame = qMax(2 * frameWidth(), margins.top() + margins.bottom());
+        const int header = horizontalHeader()->isHidden() ? 0 :
+            qMax(horizontalHeader()->height(), horizontalHeader()->sizeHint().height());
+        const int row = rowCount() ? rowHeight(0) : verticalHeader()->defaultSectionSize();
+        const bool scrolling = horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOn ||
+            (horizontalScrollBarPolicy() == Qt::ScrollBarAsNeeded && horizontalScrollBar()->maximum() > 0);
+        hint.setHeight(frame + header + row + (scrolling ? horizontalScrollBar()->sizeHint().height() : 0));
+        return hint;
+    }
+protected:
+    bool event(QEvent* event) override
+    {
+        const bool accepted = QTableWidget::event(event);
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange ||
+            event->type() == QEvent::Polish || event->type() == QEvent::Show ||
+            event->type() == QEvent::Resize || event->type() == QEvent::DevicePixelRatioChange) {
+            const int minimum = minimumSizeHint().height();
+            if (minimumHeight() != minimum) {
+                setMinimumHeight(minimum);
+                updateGeometry();
+            }
+        }
+        return accepted;
+    }
+};
+
+class ResultDetails final : public QPlainTextEdit
+{
+public:
+    using QPlainTextEdit::QPlainTextEdit;
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QPlainTextEdit::minimumSizeHint();
+        const auto margins = contentsMargins();
+        const int frame = margins.top() + margins.bottom();
+        const int text = fontMetrics().lineSpacing() * 2 + int(std::ceil(2 * document()->documentMargin()));
+        hint.setHeight(frame + text);
+        return hint;
+    }
+protected:
+    bool event(QEvent* event) override
+    {
+        const bool accepted = QPlainTextEdit::event(event);
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange ||
+            event->type() == QEvent::Polish || event->type() == QEvent::Show ||
+            event->type() == QEvent::Resize || event->type() == QEvent::DevicePixelRatioChange) {
+            const int minimum = minimumSizeHint().height();
+            if (minimumHeight() != minimum) {
+                setMinimumHeight(minimum);
+                updateGeometry();
+            }
+        }
+        return accepted;
+    }
+};
+
 bool retryable(const PsdBatchFileResult& result)
 {
     return result.state == PsdBatchFileState::Failed && !result.outputCommitted && result.sourceInfo.IsEmpty();
@@ -49,8 +116,10 @@ QString detailText(const PsdBatchFileResult& result)
         result.state == PsdBatchFileState::Canceled ? QStringLiteral("未提交新的输出文件。") :
         result.state == PsdBatchFileState::Pending || result.state == PsdBatchFileState::NotRun
             ? QStringLiteral("尚未开始写入文件。") : QStringLiteral("文件写入未确认。");
-    QString details = QStringLiteral("%1\n%2\n\n%3：%4\n输出文件：%5\n状态：%6\n阶段：%7\n耗时：%8")
-        .arg(summary, writeStatus, result.sourceInfo.IsEmpty() ? QStringLiteral("源模型") : QStringLiteral("来源文件"),
+    QString details = QStringLiteral("%1\n%2").arg(summary, writeStatus);
+    if (!result.coverage.IsEmpty()) details += QStringLiteral("\n\n当前姿态对象：\n") + result.coverage.Text();
+    details += QStringLiteral("\n\n%1：%2\n输出文件：%3\n状态：%4\n阶段：%5\n耗时：%6")
+        .arg(result.sourceInfo.IsEmpty() ? QStringLiteral("源模型") : QStringLiteral("来源文件"),
              result.sourcePath, result.outputPath, PsdBatchStateText(result.state),
              PsdExportStageText(result.stage), elapsedText(result));
     if (result.diagnostics.ErrorCount() || result.diagnostics.WarningCount())
@@ -89,7 +158,7 @@ CExportResultsPanel::CExportResultsPanel(QWidget* parent) : QDockWidget(QStringL
     actions->addWidget(m_copy);
     layout->addLayout(actions);
     auto* splitter = new QSplitter(Qt::Vertical, content);
-    m_table = new QTableWidget(splitter);
+    m_table = new ResultTable(splitter);
     m_table->setObjectName(QStringLiteral("exportResultsTable"));
     m_table->setColumnCount(6);
     m_table->setHorizontalHeaderLabels({QStringLiteral("来源文件"), QStringLiteral("输出路径"), QStringLiteral("状态"),
@@ -100,7 +169,7 @@ CExportResultsPanel::CExportResultsPanel(QWidget* parent) : QDockWidget(QStringL
     m_table->setWordWrap(false);
     m_table->verticalHeader()->setVisible(false);
     m_table->horizontalHeader()->setStretchLastSection(true);
-    m_details = new QPlainTextEdit(splitter);
+    m_details = new ResultDetails(splitter);
     m_details->setObjectName(QStringLiteral("exportResultDetails"));
     m_details->setReadOnly(true);
     m_details->setPlaceholderText(QStringLiteral("选择文件查看完整路径、提示和错误原因"));
@@ -144,6 +213,7 @@ bool CExportResultsPanel::SetResults(const PsdBatchResults& results)
     m_warningFiles = warningFiles;
     m_table->clearContents();
     m_table->setRowCount(m_results.size());
+    m_table->updateGeometry();
     for (int index = 0; index < m_results.size(); ++index) WriteRow(index);
     if (!m_results.isEmpty()) m_table->setCurrentCell(0, 0);
     RefreshSummary();
@@ -179,8 +249,12 @@ void CExportResultsPanel::WriteRow(int index)
     const auto& result = m_results[index];
     const QString state = result.state == PsdBatchFileState::Succeeded && result.diagnostics.WarningCount()
         ? QStringLiteral("成功（有提示）") : PsdBatchStateText(result.state);
-    const QString explanation = result.error.isEmpty() && result.diagnostics.WarningCount()
+    QString explanation = result.error.isEmpty() && result.diagnostics.WarningCount()
         ? QStringLiteral("%1 条检查提示，详情见下方").arg(result.diagnostics.WarningCount()) : result.error;
+    if (!result.coverage.IsEmpty()) {
+        if (!explanation.isEmpty()) explanation += QLatin1Char('\n');
+        explanation += result.coverage.Summary();
+    }
     const QStringList values{result.sourcePath, result.outputPath, state,
                              PsdExportStageText(result.stage), elapsedText(result), explanation};
     for (int column = 0; column < values.size(); ++column) {
@@ -212,6 +286,14 @@ void CExportResultsPanel::RefreshSummary()
             .arg(m_results.size()).arg(m_counts[int(PsdBatchFileState::Succeeded)]).arg(m_counts[int(PsdBatchFileState::Failed)])
             .arg(m_counts[int(PsdBatchFileState::Canceled)])
             .arg(m_counts[int(PsdBatchFileState::NotRun)]).arg(m_counts[int(PsdBatchFileState::Running)]).arg(m_counts[int(PsdBatchFileState::Pending)]));
+    const int selected = m_table->currentRow();
+    if (selected >= 0 && selected < m_results.size() && !m_results[selected].coverage.IsEmpty()) {
+        const auto& result = m_results[selected];
+        const QString status = result.outputCommitted
+            ? result.coverage.IsCommitted() ? QStringLiteral("已写出") : QStringLiteral("对象记录未确认")
+            : QStringLiteral("未提交");
+        m_summary->setText(m_summary->text() + QStringLiteral("\n所选文件（%1）：%2").arg(status, result.coverage.Summary()));
+    }
     if (m_warningFiles) m_summary->setText(m_summary->text() + QStringLiteral("\n%1 项包含检查提示").arg(m_warningFiles));
     m_retry->setEnabled(!m_busy && m_retryAvailable && m_retryable > 0);
     m_copy->setEnabled(!m_results.isEmpty());
@@ -225,6 +307,7 @@ bool CExportResultsPanel::CanOpen(int index) const
 
 void CExportResultsPanel::RefreshSelection()
 {
+    RefreshSummary();
     const int index = m_table->currentRow();
     m_open->setEnabled(CanOpen(index));
     m_details->setPlainText(index >= 0 && index < m_results.size() ? detailText(m_results[index]) : QString());
@@ -241,6 +324,7 @@ QJsonObject CExportResultsPanel::ReportJson() const
 {
     QJsonArray files;
     bool hasSource = false;
+    bool hasCoverage = false;
     for (const auto& item : m_results) {
         QJsonObject file{{QStringLiteral("index"), item.index}, {QStringLiteral("source"), item.sourcePath},
             {QStringLiteral("output"), item.outputPath}, {QStringLiteral("state"), PsdBatchStateKey(item.state)},
@@ -251,9 +335,13 @@ QJsonObject CExportResultsPanel::ReportJson() const
             file.insert(QStringLiteral("sourceRecovery"), item.sourceInfo.ToJson());
             hasSource = true;
         }
+        if (!item.coverage.IsEmpty()) {
+            file.insert(QStringLiteral("objectCoverage"), item.coverage.ToJson());
+            hasCoverage = true;
+        }
         files.append(file);
     }
-    return QJsonObject{{QStringLiteral("version"), hasSource ? 3 : 2}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
+    return QJsonObject{{QStringLiteral("version"), hasCoverage ? 4 : hasSource ? 3 : 2}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
 }
 
 QString CExportResultsPanel::ReportText() const

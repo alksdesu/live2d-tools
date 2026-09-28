@@ -179,6 +179,96 @@ class PsdCooperativeGlTests : public QObject
     }
 
 private slots:
+    void emptyGeometryWritesIdentifiedLayers_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("coincident") << 0;
+        QTest::newRow("outside") << 1;
+        QTest::newRow("no-triangles") << 2;
+        QTest::newRow("no-vertices") << 3;
+    }
+
+    void emptyGeometryWritesIdentifiedLayers()
+    {
+        QFETCH(int, kind);
+        const auto [model, renderer] = scene();
+        auto& state = *coreStates.at(model->GetModel());
+        if (kind == 0) for (auto& point : state.positions[0]) point = {0.25f, 0.25f};
+        if (kind == 1) for (auto& point : state.positions[0]) { point.X += 4; point.Y += 4; }
+        if (kind >= 2) state.indexCounts[0] = 0;
+        if (kind == 3) state.vertexCounts[0] = 0;
+        QTemporaryDir temporary; QVERIFY(temporary.isValid());
+        const QString path = temporary.filePath("empty.psd");
+        CExportControl control; QString error;
+        auto render = session(model, renderer, control);
+        QVERIFY2(render->Begin(true, &error), qPrintable(error));
+        QVector<CPsdExportItem> accepted;
+        QVERIFY2(CPsdFileTask::Execute(path, QSize(64, 64), false,
+            [&](CPsdExportItem& item, QString* detail) { return render->Next(item, detail); }, &control, &error,
+            [&](const CPsdExportItem& item, QString*) { accepted.append(item); return true; }), qPrintable(error));
+        QVERIFY2(render->Finish(true, &error), qPrintable(error));
+        QVERIFY(control.IsCommitted()); QCOMPARE(accepted.size(), 2);
+        QCOMPARE(accepted[0].type, CPsdExportItem::Type::EmptyLayer);
+        QCOMPARE(accepted[0].runtimeIndex, 0); QCOMPARE(accepted[0].psdLayerId, quint32(1));
+        using Reason = CPsdExportCoverage::Reason;
+        QCOMPARE(accepted[0].emptyReason, kind == 0 ? Reason::DegenerateBounds : kind == 1 ? Reason::OutsideCanvas :
+                                          kind == 2 ? Reason::NoTriangles : Reason::NoVertices);
+        PsdBinary::Document decoded;
+        QVERIFY2(PsdBinary::Parse(bytes(path), decoded, &error), qPrintable(error));
+        const auto* empty = layer(decoded, QStringLiteral("红色😀")); QVERIFY(empty);
+        QCOMPARE(empty->bounds, QRect()); QCOMPARE(empty->channels.size(), 0);
+        QVERIFY(empty->layerId); QCOMPARE(*empty->layerId, quint32(1));
+        const auto* raster = layer(decoded, QStringLiteral("蓝色")); QVERIFY(raster); QVERIFY(!raster->bounds.isEmpty());
+    }
+
+    void malformedEmptyGeometryDoesNotReplaceTarget_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("empty-with-indices") << 0;
+        QTest::newRow("collapsed-bad-index") << 1;
+        QTest::newRow("nonfinite-matrix") << 2;
+        QTest::newRow("nonfinite-without-triangles") << 3;
+        QTest::newRow("nonfinite-opacity") << 4;
+        QTest::newRow("nonfinite-model-opacity") << 5;
+    }
+
+    void malformedEmptyGeometryDoesNotReplaceTarget()
+    {
+        QFETCH(int, kind);
+        const auto [model, renderer] = scene();
+        auto& state = *coreStates.at(model->GetModel());
+        for (auto& point : state.positions[0]) point = {0.25f, 0.25f};
+        if (kind == 0) state.vertexCounts[0] = 0;
+        if (kind == 1) state.indices[0][0] = 65535;
+        if (kind == 3) { state.indexCounts[0] = 0; state.positions[0][0].X = std::numeric_limits<float>::quiet_NaN(); }
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const auto path = temporary.filePath("bad.psd");
+        QVERIFY(seed(path)); CExportControl control; QString error;
+        auto render = session(model, renderer, control);
+        if (kind == 2) render->m_matrix.GetArray()[0] = std::numeric_limits<float>::quiet_NaN();
+        if (kind == 4) render->m_entries[0].opacityOverride = std::numeric_limits<float>::quiet_NaN();
+        if (kind == 5) model->SetModelOpacity(std::numeric_limits<float>::quiet_NaN());
+        const bool began = render->Begin(true, &error);
+        if (kind == 2) QVERIFY(!began);
+        else {
+            QVERIFY2(began, qPrintable(error));
+            QVERIFY(!CPsdFileTask::Execute(path, QSize(64, 64), false,
+                [&](CPsdExportItem& item, QString* detail) { return render->Next(item, detail); }, &control, &error));
+            QVERIFY(render->Finish(false));
+        }
+        QVERIFY(!error.isEmpty()); QCOMPARE(bytes(path), QByteArray("original-project")); QVERIFY(!control.IsCommitted());
+    }
+
+    void unspecifiedEmptyRasterFailsWithoutReplacingTarget()
+    {
+        QTemporaryDir temporary; QVERIFY(temporary.isValid()); const auto path = temporary.filePath("bad.psd");
+        QVERIFY(seed(path)); CExportControl control; QString error; int index = 0;
+        QVERIFY(!CPsdFileTask::Execute(path, QSize(64, 64), false, [&](CPsdExportItem& item, QString*) {
+            item.type = index++ == 0 ? CPsdExportItem::Type::Layer : CPsdExportItem::Type::Done;
+            item.name = QStringLiteral("invalid"); return true;
+        }, &control, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(bytes(path), QByteArray("original-project")); QVERIFY(!control.IsCommitted());
+    }
+
     void repeatedSourcesKeepTheirCoverageInSteppedPsd_data()
     {
         QTest::addColumn<bool>("high");

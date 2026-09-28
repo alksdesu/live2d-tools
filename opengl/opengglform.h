@@ -29,6 +29,7 @@
 
 using Live2D::Cubism::Framework::CubismModel;
 class COnionSkinRenderer;
+class CPsdExportCoverage;
 class CVertexSelectionOverlay;
 
 
@@ -83,11 +84,11 @@ public:
     bool do_OffSeceen(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false);
     // 批量导出静默版本（不弹窗、不自动打开文件夹）
     bool do_OffSeceenSilent(const QString& name,bool IsALl,bool IsFenzu,bool cubismCompat = false, QString* error = nullptr,
-                            CExportControl* control = nullptr, const live2dstruct::CModelExportSnapshot& snapshot = {});
+                            CExportControl* control = nullptr, const live2dstruct::CModelExportSnapshot& snapshot = {}, CPsdExportCoverage* coverage = nullptr);
     // 原始纹理提取导出（不需要OpenGL渲染）
     bool do_TextureExtract(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false);
     bool do_TextureExtractSilent(const QString& name, bool isAll, bool isFenzu, bool cubismCompat = false, QString* error = nullptr,
-                                 CExportControl* control = nullptr, const live2dstruct::CModelExportSnapshot& snapshot = {});
+                                 CExportControl* control = nullptr, const live2dstruct::CModelExportSnapshot& snapshot = {}, CPsdExportCoverage* coverage = nullptr);
     const QString& GetCurrentModelJson() const { return m_currentModelJson; }
     float ViewScale() const { return m_config.GeteScalefactor(); }
     QVector2D ViewPosition() const;

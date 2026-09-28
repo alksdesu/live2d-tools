@@ -7,6 +7,8 @@
 #include <QString>
 #include <QVector>
 #include <QHash>
+#include <QSet>
+#include "std/cpsdexportcoverage.h"
 
 class CExportControl;
 
@@ -16,6 +18,7 @@ class CCanvas_info;
 }
 
 struct ExtractedLayer {
+    CPsdExportCoverage::Reason emptyReason = CPsdExportCoverage::Reason::None;
     QImage image;               // RGBA 像素（直通 alpha，非预乘）
     QRect canvasRect;           // 在画布上的像素位置
     QString name;               // art mesh ID (例如 "ArtMesh17")
@@ -61,7 +64,8 @@ public:
     QVector<ExtractedLayer> ExtractAll(live2dstruct::CSectionTable* table, bool includeHidden,
                                        const QHash<QString, QVector<quint16>>* indexOverrides = nullptr,
                                        CExportControl* control = nullptr,
-                                       const QHash<QString, QVector<float>>* modelPositions = nullptr);
+                                       const QHash<QString, QVector<float>>* modelPositions = nullptr,
+                                       const QSet<QString>* excludedIds = nullptr);
 
     /// 获取画布像素尺寸
     static QSize GetCanvasPixelSize(const live2dstruct::CCanvas_info* canvasInfo);
@@ -72,7 +76,8 @@ public:
 private:
     QImage RasterizeCanvasMesh(const QImage& atlas, const float* uvs, const float* positions, int vertexCount,
                                const quint16* indices, int indexCount, const live2dstruct::CCanvas_info* canvas,
-                               QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control);
+                               QRect& bounds, qint64& pixels, qint64& samples, CExportControl* control,
+                               CPsdExportCoverage::Reason& emptyReason);
     /// 从 atlas 中通过 UV 三角形网格光栅化提取 mesh 图像
     /// @param atlas 纹理图集图像
     /// @param uvData UV 坐标数组 (vertex_count * 2 floats)
@@ -88,7 +93,8 @@ private:
 
     /// 计算模型空间顶点在画布上的像素包围盒
     QRect ComputeCanvasRect(const float* positions, int vertexCount,
-                            const live2dstruct::CCanvas_info* canvasInfo, CExportControl* control);
+                            const live2dstruct::CCanvas_info* canvasInfo, CExportControl* control,
+                            CPsdExportCoverage::Reason* emptyReason = nullptr);
 
     /// 光栅化单个三角形：从 atlas 采样写入输出图像
     /// 三角形顶点使用原始 atlas 像素坐标

@@ -9,6 +9,11 @@ bool IsPsdBatchTerminal(PsdBatchFileState state)
 bool IsPsdBatchResultValid(const PsdBatchFileResult& result)
 {
     const bool original = !result.sourceInfo.IsEmpty() && result.sourceInfo.Get().method == CExportSourceInfo::Method::OriginalPsd;
+    if (!result.coverage.IsEmpty() && (!result.sourceInfo.IsEmpty() ||
+        (result.state != PsdBatchFileState::Failed && result.coverage.IsCommitted() != result.outputCommitted) ||
+        (result.state == PsdBatchFileState::Succeeded && !result.coverage.IsCommitted()) ||
+        (result.state == PsdBatchFileState::Canceled && result.coverage.IsCommitted()) ||
+        result.state == PsdBatchFileState::Pending || result.state == PsdBatchFileState::NotRun)) return false;
     return result.index >= 0 && result.elapsedMs >= 0 && result.sourceInfo.IsValid() &&
            (!original || result.state != PsdBatchFileState::Succeeded ||
             (result.outputCommitted && result.sourceInfo.Get().outputDigest == result.sourceInfo.Get().inputDigest)) &&

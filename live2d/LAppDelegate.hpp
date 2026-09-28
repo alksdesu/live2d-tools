@@ -25,6 +25,7 @@
 class LAppView;
 class LAppTextureManager;
 class CExportControl;
+class CPsdExportCoverage;
 class CPsdRenderSession;
 using Live2D::Cubism::Framework::CubismModel;
 
@@ -88,10 +89,10 @@ public:
     void StopDeformerDrag();    // 松手时调用
     bool StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu,bool cubismCompat = false,
                                QString* error = nullptr, CExportControl* control = nullptr,
-                               const live2dstruct::CModelExportSnapshot& snapshot = {});
+                               const live2dstruct::CModelExportSnapshot& snapshot = {}, CPsdExportCoverage* coverage = nullptr);
     bool StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat = false,
                                 QString* error = nullptr, CExportControl* control = nullptr,
-                                const live2dstruct::CModelExportSnapshot& snapshot = {});
+                                const live2dstruct::CModelExportSnapshot& snapshot = {}, CPsdExportCoverage* coverage = nullptr);
     bool RecoverPsdExport(QString* error = nullptr);
 
 

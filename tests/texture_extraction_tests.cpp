@@ -135,6 +135,77 @@ class TextureExtractionTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void frozenEmptyObjectsKeepIdentityAndMetadata_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::newRow("coincident-integer") << 0;
+        QTest::newRow("coincident-fractional") << 1;
+        QTest::newRow("vertical-line") << 2;
+        QTest::newRow("no-triangles") << 3;
+        QTest::newRow("no-vertices") << 4;
+    }
+
+    void frozenEmptyObjectsKeepIdentityAndMetadata()
+    {
+        QFETCH(int, kind);
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.CanvasPositions({}, 1);
+        mesh.Geometry(kind == 4 ? std::vector<float>{} : std::vector<float>{0, 0, 1, 0, 0, 1},
+                      kind >= 3 ? std::vector<quint16>{} : std::vector<quint16>{0, 1, 2});
+        QVector<float> points = kind == 4 ? QVector<float>{} : QVector<float>(6, kind == 1 ? 0.25f : 0.0f);
+        if (kind == 2) { points[3] = 1; points[5] = 2; }
+        const QHash<QString, QVector<float>> positions{{mesh.Id(), points}};
+        CExportControl control;
+        const auto actual = mesh.Extract(&control, nullptr, &positions);
+        QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(actual.size(), 1);
+        QCOMPARE(actual[0].name, mesh.Id()); QCOMPARE(actual[0].meshIndex, 0);
+        QVERIFY(actual[0].image.isNull()); QCOMPARE(actual[0].canvasRect, QRect());
+        using Reason = CPsdExportCoverage::Reason;
+        QCOMPARE(actual[0].emptyReason, kind == 4 ? Reason::NoVertices : kind == 3 ? Reason::NoTriangles : Reason::DegenerateBounds);
+        if (kind != 4) {
+            auto invalid = positions; invalid[mesh.Id()][0] = std::numeric_limits<float>::quiet_NaN();
+            CExportControl bad;
+            QVERIFY(mesh.Extract(&bad, nullptr, &invalid).isEmpty()); QVERIFY(!bad.Error().isEmpty());
+        }
+    }
+
+    void nonemptyTopologyOverrideCanReplaceEmptySource()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.CanvasPositions({}, 1); mesh.Geometry({0, 0, 1, 0, 0, 1});
+        const QHash<QString, QVector<float>> positions{{mesh.Id(), {0, 0, 4, 0, 0, -4}}};
+        const QHash<QString, QVector<quint16>> replacement{{mesh.Id(), {0, 1, 2}}};
+        const auto expected = mesh.Extract(nullptr, &replacement, &positions); QCOMPARE(expected.size(), 1);
+        const auto expectedRaw = mesh.Extract(nullptr, &replacement); QCOMPARE(expectedRaw.size(), 1);
+        mesh.Geometry({0, 0, 1, 0, 0, 1}, {});
+        const auto empty = mesh.Extract(nullptr, nullptr, &positions); QCOMPARE(empty.size(), 1);
+        QCOMPARE(empty[0].emptyReason, CPsdExportCoverage::Reason::NoTriangles);
+        CExportControl control;
+        const auto actual = mesh.Extract(&control, &replacement, &positions);
+        QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(actual.size(), 1);
+        QCOMPARE(actual[0].emptyReason, CPsdExportCoverage::Reason::None);
+        QCOMPARE(actual[0].image, expected[0].image); QCOMPARE(actual[0].canvasRect, expected[0].canvasRect);
+        const auto raw = mesh.Extract(nullptr, &replacement); QCOMPARE(raw.size(), 1);
+        QCOMPARE(raw[0].image, expectedRaw[0].image); QCOMPARE(raw[0].canvasRect, expectedRaw[0].canvasRect);
+        for (const auto& indices : QVector<QVector<quint16>>{{}, {0, 1}, {0, 1, 3}}) {
+            const QHash<QString, QVector<quint16>> invalid{{mesh.Id(), indices}};
+            CExportControl bad; QVERIFY(mesh.Extract(&bad, &invalid, &positions).isEmpty());
+            QVERIFY(!bad.Error().isEmpty());
+            CExportControl legacy; QVERIFY(mesh.Extract(&legacy, &invalid).isEmpty()); QVERIFY(legacy.Checkpoint());
+        }
+    }
+
+    void canvasSamplingKeepsOffCanvasPixels()
+    {
+        MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
+        mesh.CanvasPositions({}, 1); mesh.Geometry({0, 0, 1, 0, 0, 1});
+        QHash<QString, QVector<float>> positions{{mesh.Id(), {-20, 20, -16, 20, -20, 16}}};
+        CExportControl control; const auto result = mesh.Extract(&control, nullptr, &positions);
+        QVERIFY2(control.Checkpoint(), qPrintable(control.Error())); QCOMPARE(result.size(), 1);
+        QCOMPARE(result[0].canvasRect, QRect(-20, -20, 4, 4)); QVERIFY(HasVisiblePixel(result[0].image));
+        QCOMPARE(result[0].emptyReason, CPsdExportCoverage::Reason::None);
+    }
+
     void byteSnapshotsPreserveSparseSlotsAndStraightAlpha()
     {
         MeshFixture mesh; QVERIFY(mesh.IsValid());
@@ -213,8 +284,7 @@ private slots:
         const float largest = std::numeric_limits<float>::max();
         const QVector<QHash<QString, QVector<float>>> inputs{
             {}, {{"unknown", {0, 0, 1, 0, 0, 1}}}, {{mesh.Id(), {0, 0}}},
-            {{mesh.Id(), {0, 0, infinity, 0, 0, 1}}}, {{mesh.Id(), {0, 0, largest, 0, 0, 1}}},
-            {{mesh.Id(), {0, 0, 0, 0, 0, 0}}}};
+            {{mesh.Id(), {0, 0, infinity, 0, 0, 1}}}, {{mesh.Id(), {0, 0, largest, 0, 0, 1}}}};
         for (const auto& input : inputs) {
             CExportControl control;
             QVERIFY(mesh.Extract(&control, nullptr, &input).isEmpty());
@@ -323,7 +393,7 @@ private slots:
         QVERIFY(pixels.Error().contains(QStringLiteral("像素总量")));
     }
 
-    void frozenSamplingSkipsValidEmptyDrawables()
+    void frozenSamplingRequiresSnapshotEvenForEmptyDrawables()
     {
         MeshFixture mesh; QVERIFY(mesh.IsValid()); QVERIFY(mesh.LoadAtlas(ColoredAtlas()));
         mesh.CanvasPositions({}, 1);
@@ -331,7 +401,7 @@ private slots:
         for (const auto& uvs : std::vector<std::vector<float>>{{}, {0, 0, 1, 0, 0, 1}}) {
             mesh.Geometry(uvs, {});
             CExportControl control; QVERIFY(mesh.Extract(&control, nullptr, &positions).isEmpty());
-            QVERIFY2(control.Checkpoint(), qPrintable(control.Error()));
+            QVERIFY(!control.Checkpoint()); QVERIFY(!control.Error().isEmpty());
         }
         mesh.Geometry({}, {0, 0, 0});
         CExportControl invalid; QVERIFY(mesh.Extract(&invalid, nullptr, &positions).isEmpty());

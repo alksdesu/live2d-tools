@@ -13,7 +13,7 @@ CPsdBatchDialog::CPsdBatchDialog(QWidget *parent)
     auto* layout = new QVBoxLayout(this);
 
     // Options
-    m_checkAll = new QCheckBox("导出所有图层", this);
+    m_checkAll = new QCheckBox("导出所有图层（包括隐藏）", this);
     m_checkFenzu = new QCheckBox("按分组导出", this);
     m_checkTexExtract = new QCheckBox("纹理采样导出（保留当前网格形状）", this);
     m_checkTexExtract->setToolTip(QStringLiteral("按网格形状采样图集，保留图层透明度与混合模式，不烘焙裁剪蒙版、乘色或屏幕色。此模式不恢复原始 PSD。"));
@@ -25,6 +25,11 @@ CPsdBatchDialog::CPsdBatchDialog(QWidget *parent)
     optRow->addWidget(m_checkCubism);
     optRow->addStretch(1);
     layout->addLayout(optRow);
+    auto* coverageNotice = new QLabel(QStringLiteral("包含隐藏时也导出编辑器中隐藏的对象。当前姿态没有像素的对象会保留为空图层，不代表原始素材已恢复；具体对象与原因见导出结果。"), this);
+    coverageNotice->setObjectName(QStringLiteral("psdCoverageNotice"));
+    coverageNotice->setTextFormat(Qt::PlainText);
+    coverageNotice->setWordWrap(true);
+    layout->addWidget(coverageNotice);
 
     // List
     m_list = new QListWidget(this);

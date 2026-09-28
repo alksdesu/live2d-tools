@@ -681,23 +681,38 @@ bool CubismRenderer_OpenGLES2::DrawHighPrecisionMask(CubismClippingContext_OpenG
 bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QString& drawName,
                                             csmFloat32 opacityOverride, bool)
 {
+    const auto* model = GetModel();
+    if (!model || drawableIndex < 0 || drawableIndex >= model->GetDrawableCount() || !std::isfinite(opacityOverride)) return false;
+    const int vertexCount = model->GetDrawableVertexCount(drawableIndex);
+    const int indexCount = model->GetDrawableVertexIndexCount(drawableIndex);
+    if (vertexCount < 0 || vertexCount > CGlMeshBuffer::MaxVertices || indexCount < 0 ||
+        indexCount > CGlMeshBuffer::MaxIndices || indexCount % 3 || (!vertexCount && indexCount)) return false;
+    const auto* indices = model->GetDrawableVertexIndices(drawableIndex);
+    if (indexCount && !indices) return false;
     auto* delegate = LAppDelegate::GetInstance();
     auto* writer = delegate->GetCPsdWriteList();
     if (!writer) return false;
+    for (int index = 0; index < indexCount; ++index) {
+        if ((index & 1023) == 0 && writer->Control() && !writer->Control()->Checkpoint()) return false;
+        if (indices[index] >= vertexCount) return false;
+    }
     QImage image;
     QRect rect;
-    if (!delegate->read.GetScreenNode(GetModel()->GetDrawableVertices(drawableIndex),
-            GetModel()->GetDrawableVertexCount(drawableIndex), GetMvpMatrix().GetArray(),
-            _rendererProfile.Viewport()[2], _rendererProfile.Viewport()[3], image, rect)) return false;
-    if (!rect.isEmpty()) {
-        if (image.isNull()) return false;
-        const csmFloat32 effectiveOpacity = opacityOverride >= 0.0f ? opacityOverride :
-            GetModel()->GetDrawableOpacityAll(drawableIndex, delegate->m_IsPrintALl);
-        const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f, effectiveOpacity * GetModelColor().A * 255.0f, 255.0f));
+    if (!delegate->read.GetScreenNode(model->GetDrawableVertices(drawableIndex), vertexCount,
+            GetMvpMatrix().GetArray(), _rendererProfile.Viewport()[2], _rendererProfile.Viewport()[3], image, rect)) return false;
+    if (rect.isEmpty() != image.isNull() || (!rect.isEmpty() && image.size() != rect.size())) return false;
+    const csmFloat32 effectiveOpacity = opacityOverride >= 0.0f ? opacityOverride :
+        model->GetDrawableOpacityAll(drawableIndex, delegate->m_IsPrintALl);
+    const float alpha = effectiveOpacity * GetModelColor().A;
+    if (!std::isfinite(alpha)) return false;
+    const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f, alpha * 255.0f, 255.0f));
+    const auto blend = CPsdWriteList::CubismBlendModeToPsd(model->GetDrawableBlendMode(drawableIndex));
+    const quint32 layerId = quint32(drawableIndex) + 1;
+    if (rect.isEmpty() || !indexCount) {
+        if (!writer->AddEmptyLayer(drawName, opacity, blend, false, layerId)) return false;
+    } else {
         // Core clipping is already baked into the layer alpha.
-        if (!writer->AddLayer(drawName, rect, image, opacity,
-                        CPsdWriteList::CubismBlendModeToPsd(GetModel()->GetDrawableBlendMode(drawableIndex)),
-                        false, true)) return false;
+        if (!writer->AddLayer(drawName, rect, image, opacity, blend, false, true, layerId)) return false;
     }
     return delegate->read.UpdateFrame();
 }

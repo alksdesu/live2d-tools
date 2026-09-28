@@ -50,15 +50,16 @@ bool CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismComp
 // Cubism 导入时同名图层会关联错乱，兼容模式下对重名追加序号后缀
 QString CPsdWriteList::UniqueName(const QString &name)
 {
+    const QString frozen(name.constData(), name.size());
     if (!m_cubismCompat) {
-        return name;
+        return frozen;
     }
-    int& count = m_nameUse[name];
+    int& count = m_nameUse[frozen];
     ++count;
     if (count == 1) {
-        return name;
+        return frozen;
     }
-    return name + QString(" #%1").arg(count);
+    return frozen + QString(" #%1").arg(count);
 }
 
 bool CPsdWriteList::WritePsd()
@@ -79,13 +80,24 @@ bool CPsdWriteList::AddLayer(const QString& layerName, const QRect& rect, const 
 }
 
 bool CPsdWriteList::AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
-                             uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied)
+                             uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied,
+                             std::optional<quint32> layerId)
 {
     if (!m_list) {
         if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
         return false;
     }
-    return m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied);
+    return m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied, layerId);
+}
+
+bool CPsdWriteList::AddEmptyLayer(const QString& name, quint8 opacity, quint32 blendModeKey,
+                                 bool isClipped, std::optional<quint32> layerId)
+{
+    if (!m_list) {
+        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
+        return false;
+    }
+    return m_list->AddEmptyLayer(UniqueName(name), opacity, blendModeKey, isClipped, layerId);
 }
 
 bool CPsdWriteList::AddGroupStart(const QString& groupName)

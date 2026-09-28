@@ -804,3 +804,6 @@ HEADERS += \
 
 SOURCES += ui/mainwindowobjectnames.cpp ui/cobjectnamesimportdialog.cpp
 HEADERS += ui/cobjectnamesimportdialog.h
+
+SOURCES += std/cpsdexportcoverage.cpp
+HEADERS += std/cpsdexportcoverage.h

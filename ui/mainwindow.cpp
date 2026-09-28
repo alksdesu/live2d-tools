@@ -326,55 +326,95 @@ void MainWindow::on_actionOpen_triggered()
 
 void MainWindow::on_actionpsdPrint_triggered()
 {
+    const QPointer<MainWindow> alive(this);
     if (!m_openglwindows) {
         QMessageBox::information(this, QStringLiteral("PSD 导出"), QStringLiteral("请先打开模型"));
         return;
     }
-    if (!ConfirmExportReady(QStringLiteral("PSD 导出"))) return;
+    if (!ConfirmExportReady(QStringLiteral("PSD 导出")) || !alive) return;
     const QString output = CFileOption::GetSvaePsdFile(this);
-    if (output.isEmpty()) return;
-    CPsdPrintDialog dialog(this);
-    dialog.SetName(output);
-    if (dialog.exec() != QDialog::Accepted || !dialog.m_IsPrint) return;
-    QString error;
-    PsdExportStage stage = PsdExportStage::Preparing;
-    bool committed = false;
+    if (!alive || output.isEmpty()) return;
+    auto* options = new CPsdPrintDialog(this);
+    const QPointer<CPsdPrintDialog> dialog(options);
+    options->SetName(output);
+    const int accepted = options->exec();
+    if (!alive || !dialog) return;
+    const bool all = dialog->m_IsAll, groups = dialog->m_IsFenZu, textures = dialog->m_IsTexExtract;
+    const bool cubism = dialog->m_IsCubismCompat, snapshot = dialog->m_IsSnapshot;
+    const bool print = accepted == QDialog::Accepted && dialog->m_IsPrint;
+    delete dialog;
+    if (!alive || !print) return;
+    PsdBatchFileResult result;
+    result.index = 0;
+    result.sourcePath = m_openglwindows ? m_openglwindows->GetCurrentModelJson() : QString();
+    result.outputPath = output;
+    result.state = PsdBatchFileState::Running;
+    result.stage = PsdExportStage::Preparing;
+    m_exportResultsAreRecovery = false;
+    m_exportResultsAreSingle = true;
+    m_batchExporting = true;
+    const auto finish = qScopeGuard([alive] {
+        if (!alive) return;
+        alive->m_batchExporting = false;
+        if (alive->m_singleExportProgress) alive->m_singleExportProgress->deleteLater();
+        alive->m_singleExportProgress = nullptr;
+        alive->RefreshExportActions();
+        if (!alive || !alive->m_closeAfterExport) return;
+        alive->m_closeAfterExport = false;
+        QTimer::singleShot(0, alive.data(), [alive] { if (alive) alive->close(); });
+    });
+    if (!m_exportResultsPanel->SetResults({result})) return;
+    if (!alive) return;
+    m_exportResultsPanel->show();
+    if (!alive) return;
+    QElapsedTimer elapsed;
+    elapsed.start();
     bool canceled = false;
     bool ok = false;
-    const QString modelPath = m_openglwindows->GetCurrentModelJson();
     {
-        const QScopedValueRollback<bool> exporting(m_batchExporting, true);
+        RefreshExportActions();
+        if (!alive) return;
         m_singleExportProgress = exportProgress(this, 0);
         connect(m_singleExportProgress, &QProgressDialog::canceled, this, [this] {
             if (m_activeExportControl) m_activeExportControl->Cancel();
             statusBar()->showMessage(QStringLiteral("正在取消导出并恢复预览"));
         });
-        const auto closeProgress = qScopeGuard([this] {
-            if (m_singleExportProgress) delete m_singleExportProgress;
-        });
         m_singleExportProgress->show();
+        if (!alive) return;
         try {
-            ok = doExportOne(modelPath, output, dialog.m_IsAll, dialog.m_IsFenZu,
-                             dialog.m_IsTexExtract, dialog.m_IsCubismCompat, &error, &stage, &committed,
-                             dialog.m_IsSnapshot, &canceled);
+            ok = doExportOne(result.sourcePath, output, all, groups, textures, cubism, &result.error,
+                             &result.stage, &result.outputCommitted, snapshot, &canceled, &result.diagnostics, &result.coverage);
         } catch (const std::exception& exception) {
-            error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
+            result.error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
         } catch (...) {
-            error = QStringLiteral("导出发生未知异常");
+            result.error = QStringLiteral("导出发生未知异常");
         }
     }
-    RefreshExportActions();
-    if (m_closeAfterExport) {
-        QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
-        return;
+    if (!alive) return;
+    const QPointer<QProgressDialog> progress = m_singleExportProgress;
+    m_singleExportProgress = nullptr;
+    if (progress) progress->hide();
+    if (progress) progress->deleteLater();
+    if (!alive) return;
+    result.state = ok ? PsdBatchFileState::Succeeded : canceled ? PsdBatchFileState::Canceled : PsdBatchFileState::Failed;
+    result.elapsedMs = elapsed.elapsed();
+    if (!m_exportResultsPanel->UpdateResult(0, result)) {
+        if (!alive) return;
+        QMessageBox::warning(this, QStringLiteral("导出报告"), QStringLiteral("导出结果与文件提交状态不一致，未更新报告。"));
     }
+    if (!alive) return;
+    RefreshExportActions();
+    if (!alive) return;
+    if (m_closeAfterExport) return;
     if (ok) {
-        QMessageBox::information(this, QStringLiteral("PSD 导出完成"), QStringLiteral("已保存：%1").arg(output));
+        QMessageBox::information(this, QStringLiteral("PSD 导出完成"),
+            QStringLiteral("已保存：%1\n%2").arg(output, result.coverage.Summary()));
+        if (!alive) return;
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(output).absolutePath()));
     } else if (canceled) {
-        statusBar()->showMessage(QStringLiteral("导出已取消，目标文件未被替换"), 8000);
+        statusBar()->showMessage(QStringLiteral("导出已取消，目标文件未被替换；对象处理记录见导出结果。"), 8000);
     } else {
-        const QString message = committed ? QStringLiteral("文件已写出，但预览恢复未完成：\n%1\n%2").arg(output, error) : error;
+        const QString message = result.outputCommitted ? QStringLiteral("文件已写出，但预览恢复未完成：\n%1\n%2").arg(output, result.error) : result.error;
         QMessageBox::warning(this, QStringLiteral("PSD 导出失败"), message);
     }
 }
@@ -2148,6 +2188,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
     if (models.isEmpty() || outputDirectory.isEmpty() || m_psdBatch || m_batchExporting ||
         m_closingModel || m_previewExport.IsBusy() || !EndKeyformEditing()) return;
     m_exportResultsAreRecovery = false;
+    m_exportResultsAreSingle = false;
     m_lastBatchOptions = {outputDirectory, all, groups, textures, cubismCompat};
     auto* job = new PsdBatchJob(this);
     m_psdBatch = job;
@@ -2184,6 +2225,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         if (m_psdBatch != job || m_closingModel) return;
         QString error;
         CExportDiagnostics diagnostics;
+        CPsdExportCoverage coverage;
         PsdExportStage stage = PsdExportStage::Preflight;
         bool committed = false;
         bool canceled = false;
@@ -2191,7 +2233,7 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         const QScopedValueRollback<bool> exporting(m_batchExporting, true);
         bool ok = false;
         try {
-            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed, false, &canceled, &diagnostics);
+            ok = doExportOne(model, output, all, groups, textures, cubism, &error, &stage, &committed, false, &canceled, &diagnostics, &coverage);
         } catch (const std::exception& exception) {
             error = QStringLiteral("导出发生异常：%1").arg(QString::fromUtf8(exception.what()));
         } catch (...) {
@@ -2199,8 +2241,8 @@ void MainWindow::StartPsdBatch(const QStringList& models, const QString& outputD
         }
         if (m_psdBatch != job) return;
         if (m_previewExport.NeedsRecovery()) job->cancel();
-        if (canceled) job->completeCanceled(output, stage, error, diagnostics);
-        else job->completeDetailed(ok, output, error, stage, committed, diagnostics);
+        if (canceled) job->completeCanceled(output, stage, error, diagnostics, coverage);
+        else job->completeDetailed(ok, output, error, stage, committed, diagnostics, coverage);
         if (m_closeAfterExport) {
             StopPsdBatch();
             QTimer::singleShot(0, this, [this] { m_closeAfterExport = false; close(); });
@@ -2288,8 +2330,9 @@ void MainWindow::RefreshExportActions()
     if (m_exportResultsPanel) {
         m_exportResultsPanel->SetBusy(exporting);
         if (!alive) return;
-        m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy() && !m_exportResultsAreRecovery,
+        m_exportResultsPanel->SetRetryAvailable(!m_previewExport.IsBusy() && !m_exportResultsAreRecovery && !m_exportResultsAreSingle,
             m_exportResultsAreRecovery ? QStringLiteral("请在 PSD 来源恢复窗口重新选择保存路径并重试。") :
+            m_exportResultsAreSingle ? QStringLiteral("请重新打开 PSD 导出，确认当前姿态与保存路径后重试。") :
                 QStringLiteral("请先恢复或关闭当前预览，再重试失败项。"));
         if (!alive) return;
     }
@@ -2330,13 +2373,14 @@ void MainWindow::RecoverExportPreview()
 bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, bool isAll, bool isFenzu,
                              bool isTexExtract, bool cubismCompat, QString* error,
                              PsdExportStage* stage, bool* outputCommitted, bool savedParameterSnapshot, bool* canceled,
-                             CExportDiagnostics* diagnostics)
+                             CExportDiagnostics* diagnostics, CPsdExportCoverage* coverage)
 {
     if (error) error->clear();
     if (stage) *stage = PsdExportStage::Preflight;
     if (outputCommitted) *outputCommitted = false;
     if (canceled) *canceled = false;
     if (diagnostics) *diagnostics = {};
+    if (coverage) *coverage = {};
     const auto fail = [&](PsdExportStage failedStage, const QString& reason) {
         if (error) *error = reason;
         if (stage) *stage = failedStage;
@@ -2490,7 +2534,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             };
         }
         steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat,
-                            savedParameterSnapshot, currentModel, control, nameSnapshot](QString* detail) {
+                            savedParameterSnapshot, currentModel, control, nameSnapshot, coverage](QString* detail) {
             if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
             if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
             if (!currentModel && !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
@@ -2501,8 +2545,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             state->exportModel = model;
             state->failureStage = PsdExportStage::Exporting;
             const bool exported = isTexExtract
-                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), nameSnapshot)
-                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), nameSnapshot);
+                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), nameSnapshot, coverage)
+                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), nameSnapshot, coverage);
             state->outputCommitted = exported || control->IsCommitted();
             if (!exported) state->failureStage = exportStage(control->Snapshot().phase);
             return exported;
@@ -2649,7 +2693,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         state->surface->m_timer.stop();
         return state->surface->SetExportSuspended(true, detail);
     };
-    steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat, control](QString* detail) {
+    steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat, control, coverage](QString* detail) {
         if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
         if (!state->surface || !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
         auto* manager = LAppLive2DManager::GetInstance();
@@ -2659,8 +2703,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         state->exportModel = model;
         state->failureStage = PsdExportStage::Exporting;
         const bool exported = isTexExtract
-            ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get())
-            : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get());
+            ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), {}, coverage)
+            : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), {}, coverage);
         state->outputCommitted = exported || control->IsCommitted();
         if (!exported) state->failureStage = exportStage(control->Snapshot().phase);
         return exported;

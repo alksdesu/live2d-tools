@@ -6,6 +6,7 @@
 #include <QString>
 #include <QVector>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -90,6 +91,7 @@ struct Layer
     quint8 opacity = 0;
     quint8 clipping = 0;
     quint32 sectionType = 0;
+    std::optional<quint32> layerId;
     QVector<Channel> channels;
     QByteArray Plane(qint16 id) const
     {
@@ -152,6 +154,9 @@ inline Layer ReadLayer(Reader& input)
             Require(units <= static_cast<quint64>(block.Remaining()) / 2, "truncated Unicode name");
             for (quint32 i = 0; i < units; ++i) layer.name += QChar(block.U16());
             block.ZeroPadding();
+        } else if (key == "lyid") {
+            Require(size == 4 && !layer.layerId, "invalid or repeated layer ID");
+            layer.layerId = block.U32();
         } else if (key == "lsct") {
             layer.sectionType = block.U32();
             Require(layer.sectionType <= 3, "invalid section type");

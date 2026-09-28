@@ -2,6 +2,7 @@
 #define CPSDWRITELIST_H
 #include "psd/cpsdlist.h"
 #include <QVector>
+#include <optional>
 #include <QList>
 #include "live2dstruct/cmodeldocument.h"
 #include "ui/para/ccidjson.h"
@@ -25,7 +26,9 @@ public:
     bool AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
     bool AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
                   uint8_t opacity, uint32_t blendModeKey, bool isClipped,
-                  bool isPremultiplied = false);
+                  bool isPremultiplied = false, std::optional<quint32> layerId = {});
+    bool AddEmptyLayer(const QString& name, quint8 opacity = 255, quint32 blendModeKey = 0x6e6f726d,
+                       bool isClipped = false, std::optional<quint32> layerId = {});
     bool AddGroupStart(const QString& groupName);
     bool AddGroupEnd();
     void ClosePsd(){

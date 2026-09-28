@@ -135,7 +135,7 @@ bool CReadOpengl::GetScreenNode(const float* vertices, int vertexCount, const fl
         (vertexCount > 0 && !vertices)) return false;
     for (int index = 0; index < 16; ++index) if (!std::isfinite(mvp[index])) return false;
     bool valid = true;
-    const QRect rect = MeshBounds::Viewport(vertices, vertexCount, [&](float x, float y) {
+    const auto projection = MeshBounds::ProjectViewport(vertices, vertexCount, [&](float x, float y) {
         const double px = double(mvp[0]) * x + double(mvp[4]) * y + mvp[12];
         const double py = double(mvp[1]) * x + double(mvp[5]) * y + mvp[13];
         const double pw = double(mvp[3]) * x + double(mvp[7]) * y + mvp[15];
@@ -143,7 +143,8 @@ bool CReadOpengl::GetScreenNode(const float* vertices, int vertexCount, const fl
         if (!std::isfinite(nx) || !std::isfinite(ny)) valid = false;
         return QPointF(nx, ny);
     }, QSize(width, height));
-    if (!valid) return false;
+    if (!valid || projection.state == MeshBounds::ProjectionState::Invalid) return false;
+    const QRect rect = projection.rect;
     QImage candidate;
     if (!rect.isEmpty() && !ReadImage(rect, QSize(width, height), candidate)) return false;
     image = std::move(candidate);

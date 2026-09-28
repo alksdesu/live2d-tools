@@ -14,6 +14,21 @@ private slots:
         QVERIFY(!dialog.m_IsPrint);
     }
 
+    void scopeAndEmptyIdentityNoticeDoesNotChangeDefaultOptions()
+    {
+        CPsdPrintDialog dialog;
+        const auto* notice = dialog.findChild<QLabel*>("psdCoverageNotice");
+        QVERIFY(notice); QCOMPARE(notice->textFormat(), Qt::PlainText); QVERIFY(notice->wordWrap());
+        QVERIFY(notice->text().contains(QStringLiteral("不代表原始素材已恢复")));
+        for (const auto* check : dialog.findChildren<QCheckBox*>()) QVERIFY(!check->isChecked());
+        dialog.SetName(QStringLiteral("<b>source.psd</b>"));
+        bool found = false;
+        for (const auto* label : dialog.findChildren<QLabel*>()) if (label->text() == QStringLiteral("<b>source.psd</b>")) {
+            QCOMPARE(label->textFormat(), Qt::PlainText); found = true;
+        }
+        QVERIFY(found);
+    }
+
     void acceptsOptions()
     {
         CPsdPrintDialog dialog;

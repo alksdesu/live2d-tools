@@ -123,39 +123,48 @@ void PsdBatchJob::complete(bool ok, const QString& outPath)
 }
 
 void PsdBatchJob::completeDetailed(bool ok, const QString& outPath, const QString& error,
-                                   PsdExportStage stage, bool outputCommitted, const CExportDiagnostics& diagnostics)
+                                   PsdExportStage stage, bool outputCommitted, const CExportDiagnostics& diagnostics, const CPsdExportCoverage& coverage)
 {
     if (m_state != State::Running || !m_exportDispatched || m_pendingIndex < 0 || outPath != m_pendingOutput) return;
     const int index = m_pendingIndex;
     auto& result = m_results[index];
     result.diagnostics = diagnostics;
+    result.coverage = coverage;
     const bool reportedSuccess = ok;
-    ok = ok && diagnostics.ErrorCount() == 0;
+    const bool coverageAccepted = coverage.IsEmpty() || (coverage.IsCommitted() == outputCommitted &&
+        (!ok || coverage.IsCommitted()));
+    ok = ok && diagnostics.ErrorCount() == 0 && coverageAccepted;
     result.state = ok ? PsdBatchFileState::Succeeded : PsdBatchFileState::Failed;
     result.stage = ok ? PsdExportStage::Done :
         stage >= PsdExportStage::Preflight && stage <= PsdExportStage::Restoring ? stage : result.stage;
     result.error = ok ? QString() : !error.isEmpty() ? error : diagnostics.ErrorCount()
-        ? diagnostics.FirstError() : QStringLiteral("导出失败，未提供详细原因");
-    result.outputCommitted = reportedSuccess || outputCommitted;
+        ? diagnostics.FirstError() : !coverageAccepted ? QStringLiteral("PSD 对象报告与文件提交状态不一致")
+        : QStringLiteral("导出失败，未提供详细原因");
+    result.outputCommitted = coverage.IsEmpty() ? reportedSuccess || outputCommitted : outputCommitted;
     result.elapsedMs = m_elapsed.isValid() ? qMax(qint64(0), m_elapsed.elapsed()) : 0;
     clearPending();
     if (publishResult(index)) acknowledge(ok, outPath);
 }
 
 void PsdBatchJob::completeCanceled(const QString& outPath, PsdExportStage stage, const QString& reason,
-                                  const CExportDiagnostics& diagnostics)
+                                  const CExportDiagnostics& diagnostics, const CPsdExportCoverage& coverage)
 {
     if (m_state != State::Running || !m_exportDispatched || m_pendingIndex < 0 || outPath != m_pendingOutput) return;
     const int index = m_pendingIndex;
     auto& result = m_results[index];
     result.diagnostics = diagnostics;
-    result.state = PsdBatchFileState::Canceled;
+    result.coverage = coverage;
+    result.state = coverage.IsCommitted() ? PsdBatchFileState::Failed : PsdBatchFileState::Canceled;
     result.stage = stage >= PsdExportStage::Preflight && stage <= PsdExportStage::Restoring ? stage : result.stage;
-    result.error = reason.isEmpty() ? QStringLiteral("当前文件导出已取消") : reason;
-    result.outputCommitted = false;
+    result.error = coverage.IsCommitted() ? QStringLiteral("文件已提交，不能标记为取消") :
+        reason.isEmpty() ? QStringLiteral("当前文件导出已取消") : reason;
+    result.outputCommitted = coverage.IsCommitted();
     result.elapsedMs = m_elapsed.isValid() ? qMax(qint64(0), m_elapsed.elapsed()) : 0;
     clearPending();
-    if (publishResult(index)) skip(outPath);
+    if (publishResult(index)) {
+        if (coverage.IsCommitted()) acknowledge(false, outPath);
+        else skip(outPath);
+    }
 }
 
 void PsdBatchJob::acknowledge(bool ok, const QString& outPath)

@@ -124,7 +124,8 @@ bool CPsdList::AddLayer(const QString& name, const QImage& image, const QRect& r
 }
 
 bool CPsdList::AddLayer(const QString& name, const QImage& image, const QRect& rect,
-                       uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied)
+                       uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied,
+                       std::optional<quint32> layerId)
 {
     if (!CanAppendLayer()) return false;
     try {
@@ -171,9 +172,14 @@ bool CPsdList::AddLayer(const QString& name, const QImage& image, const QRect& r
             }
         }
         const unsigned int layerIndex = psd::AddLayer(document, &allocator, name.toUtf8().constData());
-        psd::SetLayerBlendMode(document, layerIndex, blendModeKey);
-        psd::SetLayerOpacity(document, layerIndex, opacity);
-        psd::SetLayerClipping(document, layerIndex, isClipped ? 1u : 0u);
+        psd::ExportLayerAttributes attributes;
+        attributes.opacity = opacity;
+        attributes.blendModeKey = blendModeKey;
+        attributes.clipping = isClipped ? 1u : 0u;
+        attributes.hasLayerId = layerId.has_value();
+        attributes.layerId = layerId.value_or(0);
+        if (!psd::SetLayerAttributes(document, layerIndex, attributes))
+            return Fail(QStringLiteral("PSD 图层属性无效：%1").arg(name));
         const exportChannel::Enum channels[]{exportChannel::RED, exportChannel::GREEN, exportChannel::BLUE, exportChannel::ALPHA};
         for (int channel = 0; channel < 4; ++channel) {
             const ExportCheckpoint checkpoint = [&](uint32_t current, uint32_t) {
@@ -189,6 +195,30 @@ bool CPsdList::AddLayer(const QString& name, const QImage& image, const QRect& r
         return Fail(QStringLiteral("PSD 图层编码异常：%1").arg(QString::fromUtf8(exception.what())));
     } catch (...) {
         return Fail(QStringLiteral("PSD 图层编码发生未知异常"));
+    }
+}
+
+bool CPsdList::AddEmptyLayer(const QString& name, quint8 opacity, quint32 blendModeKey,
+                            bool isClipped, std::optional<quint32> layerId)
+{
+    try {
+        const QString frozenName(name.constData(), name.size());
+        if (!CanAppendLayer()) return false;
+        if (frozenName.contains(QChar::Null)) return Fail(QStringLiteral("PSD 空图层名称无效"));
+        const QByteArray utf8 = frozenName.toUtf8();
+        const unsigned int index = psd::AddLayer(document, &allocator, utf8.constData());
+        psd::ExportLayerAttributes attributes;
+        attributes.opacity = opacity;
+        attributes.blendModeKey = blendModeKey;
+        attributes.clipping = isClipped ? 1u : 0u;
+        attributes.hasLayerId = layerId.has_value();
+        attributes.layerId = layerId.value_or(0);
+        if (!psd::SetLayerAttributes(document, index, attributes) ||
+            !psd::SetEmptyLayerBounds(document, index, 0, 0, 0, 0))
+            return Fail(QStringLiteral("PSD 空图层属性或边界无效：%1").arg(frozenName));
+        return true;
+    } catch (const std::exception&) {
+        return Fail(QStringLiteral("PSD 空图层编码失败"));
     }
 }
 
