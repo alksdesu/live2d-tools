@@ -13,13 +13,14 @@ inline constexpr qint64 MaximumXmlBytes = 64LL * 1024 * 1024;
 inline constexpr qint64 MaximumMetadataBytes = 128LL * 1024 * 1024;
 inline constexpr int MaximumDepth = 128;
 struct ReadError { QString message; };
+struct ReadAborted { QString message; };
 inline void require(bool condition, const QString& message)
 {
     if (!condition) throw ReadError{message};
 }
 inline void checkpoint(CExportControl* control)
 {
-    if (control && !control->Checkpoint()) throw ReadError{control->Error()};
+    if (control && !control->Checkpoint()) throw ReadAborted{control->Error()};
 }
 struct Node {
     QString type, value;
@@ -31,6 +32,7 @@ class Xml
 public:
     QVector<Node> nodes;
     QHash<QString, int> definitions;
+    QMap<QString, qint64> versions;
     int unrelatedInvalidReferences = 0;
     qint64 metadataBytes = 0;
 
@@ -44,7 +46,17 @@ public:
             const auto token = stream.readNext();
             require(token != QXmlStreamReader::DTD && token != QXmlStreamReader::EntityReference,
                     QStringLiteral("CMO XML 不允许 DTD 或自定义实体"));
-            if (token == QXmlStreamReader::StartElement) {
+            if (token == QXmlStreamReader::ProcessingInstruction && stream.processingInstructionTarget() == QStringLiteral("version")) {
+                const QString value = stream.processingInstructionData().toString().trimmed();
+                const int separator = value.indexOf(QChar(':'));
+                require(separator > 0 && separator < 256 && value.size() <= 384,
+                        QStringLiteral("CMO 版本声明无效"));
+                const QString name = value.left(separator);
+                const qint64 version = number(value.mid(separator + 1));
+                require(version >= 0 && !versions.contains(name) && versions.size() < 256,
+                        QStringLiteral("CMO 版本声明重复或无效"));
+                versions.insert(name, version);
+            } else if (token == QXmlStreamReader::StartElement) {
                 require(nodes.size() < 1000000 && stack.size() < MaximumDepth,
                         QStringLiteral("CMO XML 节点数量或深度超出预算"));
                 require(stream.qualifiedName().size() <= 256, QStringLiteral("CMO XML 类型名称过长"));
@@ -92,6 +104,16 @@ public:
             try { resolve(index); }
             catch (const ReadError&) { ++unrelatedInvalidReferences; }
         }
+    }
+
+    QString sourceVersion() const
+    {
+        require(!nodes.isEmpty(), QStringLiteral("CMO XML 尚未读取"));
+        const QString version = nodes[0].attributes.value(QStringLiteral("fileFormatVersion"));
+        if (!version.isEmpty()) return version;
+        const auto legacy = versions.constFind(QStringLiteral("SerializeFormatVersion"));
+        require(legacy != versions.cend() && legacy.value() > 0, QStringLiteral("CMO 缺少来源版本"));
+        return QStringLiteral("SerializeFormatVersion:%1").arg(legacy.value());
     }
 
     int resolve(int index) const
@@ -162,8 +184,21 @@ public:
         if (index < 0) return true;
         index = resolve(index);
         const auto& node = nodes[index];
-        if (node.type == QStringLiteral("null")) return true;
-        if (node.attributes.contains(QStringLiteral("count"))) return array(index).isEmpty();
+        for (auto it = node.attributes.cbegin(); it != node.attributes.cend(); ++it) {
+            if (it.key() == QStringLiteral("xs.n") || it.key() == QStringLiteral("xs.id") ||
+                it.key() == QStringLiteral("count")) continue;
+            if (it.key() == QStringLiteral("xs.idx")) {
+                bool valid = false;
+                const qint64 index = it.value().toLongLong(&valid);
+                if (valid && index >= 0) continue;
+                return false;
+            }
+            if (it.key() == QStringLiteral("keyType") && it.value() == QStringLiteral("string") &&
+                (node.type == QStringLiteral("hash_map") || node.type == QStringLiteral("linked_map")) &&
+                node.attributes.contains(QStringLiteral("count"))) continue;
+            return false;
+        }
+        if (node.attributes.contains(QStringLiteral("count"))) return array(index).isEmpty() && node.value.trimmed().isEmpty();
         return node.children.isEmpty() && node.value.isEmpty();
     }
 };

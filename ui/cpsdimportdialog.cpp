@@ -1,4 +1,5 @@
 #include "cpsdimportdialog.h"
+#include "cmo3/ccmo3project.h"
 #include "live2dstruct/cmodeldisplaynames.h"
 #include "cartworksourceview.h"
 #include "theme.h"
@@ -107,6 +108,7 @@ QString recipeIdentity(const CArtworkSourceImport::SourceCandidate& original, Ar
     stream << original.revision.id << original.revision.familyId << original.revision.sourceDigest << qint32(policy)
         << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
     if (original.kind == Artwork::SourceKind::Psd) stream << CArtworkSourceImport::PsdInterpretationVersion;
+    else if (original.kind == Artwork::SourceKind::Cmo3) stream << original.revision.sourceDocumentId << CArtworkSourceImport::CmoInterpretationVersion;
     return QStringLiteral("revision:") + QString::fromLatin1(QCryptographicHash::hash(recipe, QCryptographicHash::Sha256).toHex());
 }
 bool prepareRecipe(const Planner::Snapshot& snapshot, const Planner::Plan& initial, const QVector<Planner::Plan>& history,
@@ -128,7 +130,7 @@ bool prepareRecipe(const Planner::Snapshot& snapshot, const Planner::Plan& initi
         if (!Planner::PreparedSource(snapshot, plan, cached, error)) return false;
         const auto& revision = cached.revision;
         if (cached.kind != original.kind || revision.familyId != original.revision.familyId || revision.sourceDigest != original.revision.sourceDigest ||
-            revision.path != original.revision.path || revision.fileName != original.revision.fileName || revision.colorPolicy != policy ||
+            revision.sourceDocumentId != original.revision.sourceDocumentId || revision.path != original.revision.path || revision.fileName != original.revision.fileName || revision.colorPolicy != policy ||
             revision.id != recipeIdentity(original, revision.colorPolicy, revision.documentToFamily)) continue;
         target = std::move(cached); target.revision.id = id; target.revision.documentToFamily = mapping; return true;
     }
@@ -136,6 +138,13 @@ bool prepareRecipe(const Planner::Snapshot& snapshot, const Planner::Plan& initi
         CPsdSnapshot source; source.bytes = original.revision.sourceBytes; source.canonicalPath = original.revision.path;
         CArtworkSourceImport::SourceCandidate candidate;
         if (!CArtworkSourceImport::Prepare(source, original.revision.familyId, id, policy, mapping, candidate, error, control)) return false;
+        candidate.revision.path = original.revision.path; candidate.revision.fileName = original.revision.fileName;
+        target = std::move(candidate);
+    } else if (original.kind == Artwork::SourceKind::Cmo3) {
+        cmo3::CCmo3Project project;
+        if (!cmo3::CCmo3Project::OpenBytes(original.revision.sourceBytes, original.revision.path, project, error, control)) return false;
+        CArtworkSourceImport::SourceCandidate candidate;
+        if (!CArtworkSourceImport::Prepare(project, original.revision.sourceDocumentId, original.revision.familyId, id, policy, mapping, candidate, error, control)) return false;
         candidate.revision.path = original.revision.path; candidate.revision.fileName = original.revision.fileName;
         target = std::move(candidate);
     } else { target = original; target.revision.id = id; target.revision.documentToFamily = mapping; }
@@ -196,7 +205,7 @@ public:
         return {};
     }
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override
-    { return orientation == Qt::Horizontal && role == Qt::DisplayRole ? QVariant(section ? QStringLiteral("状态") : QStringLiteral("PSD 图层")) : QVariant(); }
+    { return orientation == Qt::Horizontal && role == Qt::DisplayRole ? QVariant(section ? QStringLiteral("状态") : QStringLiteral("来源图层")) : QVariant(); }
     QModelIndex Find(const QString& id) const
     { for (int index = 0; index < m_layers.size(); ++index) if (m_layers[index].id == id) return createIndex(m_rows[index], 0, quintptr(index + 1)); return {}; }
 private:
@@ -268,7 +277,7 @@ struct CPsdImportDialog::Job
 
 CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QDialog(parent), m_context(context)
 {
-    setObjectName(QStringLiteral("psdImportDialog")); setWindowTitle(QStringLiteral("PSD 素材与模型关联")); setModal(true);
+    setObjectName(QStringLiteral("psdImportDialog")); setWindowTitle(context.incoming.kind == Artwork::SourceKind::Cmo3 ? QStringLiteral("CMO3 素材与模型关联") : QStringLiteral("PSD 素材与模型关联")); setModal(true);
     m_request.incoming = context.incoming; m_request.familyName = context.familyName;
     if (m_request.familyName.trimmed().isEmpty()) m_request.familyName = context.incoming.revision.fileName;
     for (const auto& mesh : context.snapshot.meshes) m_request.decisions.append({mesh.material.id});
@@ -302,7 +311,7 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     auto* center = m_center = new QWidget(m_splitter); auto* middle = new QVBoxLayout(center); middle->setContentsMargins(0, 0, 0, 0);
     auto* viewTools = new QHBoxLayout; auto* fitAll = button(QStringLiteral("适应文档"), "psdFitAll", viewTools); auto* fitSource = button(QStringLiteral("适应图层"), "psdFitLayer", viewTools); auto* fitReference = button(QStringLiteral("适应参照"), "psdFitReference", viewTools); middle->addLayout(viewTools);
     m_source = new CArtworkSourceView(center); m_source->setMinimumHeight(fontMetrics().height() * 8); middle->addWidget(m_source, 1);
-    m_coordinates = new QLabel(QStringLiteral("PSD 文档像素；参照来自当前图集，不使用模型姿态包围盒。"), center); m_coordinates->setObjectName(QStringLiteral("psdCoordinates")); m_coordinates->setTextFormat(Qt::PlainText); m_coordinates->setWordWrap(true); middle->addWidget(m_coordinates);
+    m_coordinates = new QLabel(QStringLiteral("来源文档像素；参照来自当前图集，不使用模型姿态包围盒。"), center); m_coordinates->setObjectName(QStringLiteral("psdCoordinates")); m_coordinates->setTextFormat(Qt::PlainText); m_coordinates->setWordWrap(true); middle->addWidget(m_coordinates);
     auto* opacity = new QHBoxLayout;
     const auto slider = [&](const QString& label, const char* name, int value) { auto* s = new QSlider(Qt::Horizontal, center); s->setObjectName(QString::fromLatin1(name)); s->setAccessibleName(label); s->setRange(0, 100); s->setValue(value); opacity->addWidget(new QLabel(label, center)); opacity->addWidget(s, 1); return s; };
     m_sourceOpacity = slider(QStringLiteral("源图层预览"), "psdSourceOpacity", 100); m_referenceOpacity = slider(QStringLiteral("图集参照预览"), "psdReferenceOpacity", 50); middle->addLayout(opacity);
@@ -315,7 +324,7 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     m_selectionInfo = new QLabel(m_right); m_selectionInfo->setObjectName(QStringLiteral("psdSelectionInfo")); m_selectionInfo->setWordWrap(true); m_selectionInfo->setTextFormat(Qt::PlainText); right->addWidget(m_selectionInfo);
     auto* decisions = new QFormLayout; decisions->setRowWrapPolicy(QFormLayout::WrapLongRows); decisions->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_action = new QComboBox(m_right); m_action->setObjectName(QStringLiteral("psdAction")); for (const auto action : {Planner::Action::Keep, Planner::Action::Associate, Planner::Action::Update, Planner::Action::Detach}) m_action->addItem(actionName(action), int(action)); decisions->addRow(QStringLiteral("当前选区"), m_action);
-    m_layerOpacity = new QCheckBox(QStringLiteral("将 PSD 图层透明度应用到素材像素"), m_right); m_layerOpacity->setObjectName(QStringLiteral("psdApplyLayerOpacity")); m_layerOpacity->setChecked(true); m_layerOpacity->setToolTip(QStringLiteral("将 PSD 图层透明度乘入素材 PNG 像素；不替代模型现有透明度。")); decisions->addRow(m_layerOpacity);
+    m_layerOpacity = new QCheckBox(QStringLiteral("将 来源图层透明度应用到素材像素"), m_right); m_layerOpacity->setObjectName(QStringLiteral("psdApplyLayerOpacity")); m_layerOpacity->setChecked(true); m_layerOpacity->setToolTip(QStringLiteral("将 来源图层透明度乘入素材 PNG 像素；不替代模型现有透明度。")); decisions->addRow(m_layerOpacity);
     m_confirm = new QCheckBox(QStringLiteral("确认所选图层与像素对齐"), m_right); m_confirm->setObjectName(QStringLiteral("psdConfirmAssociation")); decisions->addRow(m_confirm); right->addLayout(decisions);
     m_alignmentInfo = new QLabel(m_right); m_alignmentInfo->setObjectName(QStringLiteral("psdAlignmentInfo")); m_alignmentInfo->setWordWrap(true); m_alignmentInfo->setTextFormat(Qt::PlainText); right->addWidget(m_alignmentInfo);
     auto* transforms = new QFormLayout; transforms->setRowWrapPolicy(QFormLayout::WrapLongRows); transforms->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -334,7 +343,7 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     m_colorPolicy->addItem(QStringLiteral("转换到 sRGB"), int(Artwork::ColorPolicy::ConvertToSRgb));
     m_colorPolicy->addItem(QStringLiteral("保留原始颜色数值"), int(Artwork::ColorPolicy::PreserveValues));
     m_colorPolicy->setCurrentIndex(m_colorPolicy->findData(int(context.incoming.revision.colorPolicy)));
-    m_colorPolicy->setEnabled(context.incoming.kind == Artwork::SourceKind::Psd); registration->addRow(QStringLiteral("PSD 颜色"), m_colorPolicy);
+    m_colorPolicy->setEnabled(context.incoming.kind == Artwork::SourceKind::Psd || context.incoming.kind == Artwork::SourceKind::Cmo3); registration->addRow(QStringLiteral("来源颜色"), m_colorPolicy);
     auto* alignDocument = button(QStringLiteral("应用来源设置并预览"), "psdApplyDocumentAlignment", right);
     m_impacts = new QPlainTextEdit(m_right); m_impacts->setObjectName(QStringLiteral("psdImpacts")); m_impacts->setReadOnly(true); m_impacts->setLineWrapMode(QPlainTextEdit::WidgetWidth); m_impacts->setFocusPolicy(Qt::StrongFocus); m_impacts->setMinimumHeight(fontMetrics().height() * 7); right->addWidget(m_impacts); right->addStretch(); scroll->setWidget(m_right);
     m_splitter->addWidget(m_left); m_splitter->addWidget(center); m_splitter->addWidget(scroll); m_splitter->setStretchFactor(0, 0); m_splitter->setStretchFactor(1, 1); m_splitter->setStretchFactor(2, 0); layout->addWidget(m_splitter, 1);
@@ -369,7 +378,7 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     connect(m_source, &CArtworkSourceView::GestureFinished, this, [this] { Refresh(); }); connect(m_source, &CArtworkSourceView::GestureStarted, this, [this] { Refresh(); });
     connect(m_source, &CArtworkSourceView::EditRejected, this, &CPsdImportDialog::ShowError);
     connect(m_source, &CArtworkSourceView::PointerMoved, this, [this](QPointF document, QPointF local, QPointF atlas, bool) {
-        m_coordinates->setText(QStringLiteral("PSD 文档：%1, %2 px    图层局部：%3, %4 px    图集：%5, %6 px")
+        m_coordinates->setText(QStringLiteral("来源文档：%1, %2 px    图层局部：%3, %4 px    图集：%5, %6 px")
             .arg(document.x(), 0, 'f', 2).arg(document.y(), 0, 'f', 2).arg(local.x(), 0, 'f', 2).arg(local.y(), 0, 'f', 2).arg(atlas.x(), 0, 'f', 2).arg(atlas.y(), 0, 'f', 2));
     });
     auto* undo = new QShortcut(QKeySequence::Undo, this); connect(undo, &QShortcut::activated, this, &CPsdImportDialog::Undo); auto* redo = new QShortcut(QKeySequence::Redo, this); connect(redo, &QShortcut::activated, this, &CPsdImportDialog::Redo);
@@ -451,7 +460,7 @@ void CPsdImportDialog::Initialize()
                 }
             }
             job->success = job->control.Checkpoint();
-        } catch (...) { job->error = QStringLiteral("无法准备 PSD 关联，当前模型保持不变"); }
+        } catch (...) { job->error = QStringLiteral("无法准备 来源关联，当前模型保持不变"); }
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     connect(worker, &QThread::finished, this, [this, job, generation] {
@@ -613,14 +622,14 @@ void CPsdImportDialog::Refresh()
     m_applySelection->setEnabled(available && !m_selectedMeshes.isEmpty() && !m_numericDirty && !m_recipeDirty);
     m_confirmKnown->setEnabled(available && !HasPendingInput() && !m_knownMatches.isEmpty());
     m_documentInfo->setText(m_context.snapshot.baseline.artwork.revisions.contains(m_request.incoming.revision.id) ? QStringLiteral("管理已保存来源；修改配准或颜色将创建新修订，旧素材只有选择更新才改变。") : m_documentAlignmentConfirmed
-        ? QStringLiteral("来源修订已准备；文档对齐只定义来源坐标，保留原样的对象仍使用旧版素材。") : QStringLiteral("PSD 画布尺寸发生变化。请先确认文档对齐，不能按旧模型包围盒推断。"));
-    if (!m_ready) { m_status->setText(m_job ? QStringLiteral("正在准备 PSD 来源与关联建议…") : QStringLiteral("来源尚未就绪")); return; }
+        ? QStringLiteral("来源修订已准备；文档对齐只定义来源坐标，保留原样的对象仍使用旧版素材。") : QStringLiteral("来源画布尺寸发生变化。请先确认文档对齐，不能按旧模型包围盒推断。"));
+    if (!m_ready) { m_status->setText(m_job ? QStringLiteral("正在准备 素材来源与关联建议…") : QStringLiteral("来源尚未就绪")); return; }
     m_meshModel->SetDecisions(m_request);
     QSet<QString> used; for (const auto& decision : m_request.decisions)
         if (decision.action == Planner::Action::Associate || decision.action == Planner::Action::Update) used.insert(decision.layerId);
     { const QSignalBlocker selection(m_layers->selectionModel()); m_layerModel->SetUsed(used); }
     m_alignmentInfo->setText(m_mixedMapping ? QStringLiteral("选区包含不同的映射；当前显示第一个对象。关联或配准请逐对象处理，保持每个对象的独立映射。") :
-        QStringLiteral("当前图集像素 → PSD 文档像素\n[%1  %2  %3; %4  %5  %6]\n数值调整作用于当前映射，可用负缩放反射。")
+        QStringLiteral("当前图集像素 → 来源文档像素\n[%1  %2  %3; %4  %5  %6]\n数值调整作用于当前映射，可用负缩放反射。")
             .arg(m_alignment.m11(), 0, 'g', 6).arg(m_alignment.m21(), 0, 'g', 6).arg(m_alignment.dx(), 0, 'g', 6).arg(m_alignment.m12(), 0, 'g', 6).arg(m_alignment.m22(), 0, 'g', 6).arg(m_alignment.dy(), 0, 'g', 6));
     if (m_displayedImpactToken != m_plan.token) {
         QStringList impacts{colorPolicyText(m_request.incoming)};
@@ -647,7 +656,7 @@ void CPsdImportDialog::RefreshDecision()
     for (const auto& id : ids) { if (!m_matchReasons.value(id).isEmpty()) notes.append(id + QStringLiteral("：") + m_matchReasons.value(id));
         for (const auto& mesh : m_context.snapshot.meshes) if (mesh.material.id == id && !mesh.editable) notes.append(id + QStringLiteral("：") + mesh.reason); }
     const int layer = LayerIndex(m_layerId);
-    if (layer >= 0) { const auto& value = m_request.incoming.revision.layers[layer]; notes.prepend(QStringLiteral("所选图层：%1").arg(path(m_request.incoming.revision.layers, layer))); notes += diagnosticText(value.diagnostics); if (!value.visible) notes.append(QStringLiteral("PSD 中该层已隐藏；导入保留模型对象的可见性。")); }
+    if (layer >= 0) { const auto& value = m_request.incoming.revision.layers[layer]; notes.prepend(QStringLiteral("所选图层：%1").arg(path(m_request.incoming.revision.layers, layer))); notes += diagnosticText(value.diagnostics); if (!value.visible) notes.append(QStringLiteral("来源中该层已隐藏；导入保留模型对象的可见性。")); }
     m_selectionInfo->setText(QStringLiteral("已选 %1 个模型对象\n%2").arg(ids.size()).arg(notes.join(QLatin1Char('\n'))));
 }
 
@@ -731,7 +740,7 @@ void CPsdImportDialog::ProposeAlignment()
     const QTransform candidate(x, 0, 0, y, target.x() - source.x() * x, target.y() - source.y() * y); QString error;
     if (!m_source->SetMapping(candidate, &error)) { ShowError(error); return; }
     m_alignment = candidate; MarkMappingEdited(); Refresh();
-    ShowError(QStringLiteral("这是按当前图集裁片与 PSD 图层区域生成的提案，请检查后明确确认；未使用模型姿态包围盒。"));
+    ShowError(QStringLiteral("这是按当前图集裁片与 来源图层区域生成的提案，请检查后明确确认；未使用模型姿态包围盒。"));
 }
 void CPsdImportDialog::ApplyDocumentAlignment()
 {
@@ -789,7 +798,7 @@ void CPsdImportDialog::SaveSourceOnly()
 {
     if (!CheckInput()) return;
     if (HasPendingInput()) { ShowError(QStringLiteral("请先应用或放弃配准输入，再仅保存来源")); return; }
-    if (!m_documentAlignmentConfirmed) { ShowError(QStringLiteral("请先确认新旧 PSD 文档画布的对齐关系")); return; }
+    if (!m_documentAlignmentConfirmed) { ShowError(QStringLiteral("请先确认新旧 来源文档画布的对齐关系")); return; }
     Build(sourceOnly(m_request), true);
 }
 void CPsdImportDialog::Submit(const Plan& plan)

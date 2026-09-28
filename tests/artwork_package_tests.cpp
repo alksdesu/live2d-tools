@@ -82,6 +82,31 @@ struct Fixture {
 class ArtworkPackageTests : public QObject {
     Q_OBJECT
 private slots:
+    void cmoDocumentsShareOneOriginalBlobAcrossPortableRevisions() {
+        Fixture f; QVERIFY2(f.initialize(), qPrintable(f.error)); auto& artwork = f.request.state.artwork;
+        const QByteArray raw("CAFF retained original archive bytes"); const auto digest = hash(raw);
+        artwork.families["family"].kind = Artwork::SourceKind::Cmo3;
+        for (auto& revision : artwork.revisions) {
+            revision.sourceBytes = raw; revision.sourceDigest = digest; revision.sourceDocumentId = "document-one";
+            revision.fileName = "source.cmo3"; revision.path = "/offline/source.cmo3";
+        }
+        auto other = artwork.revisions["revision1"]; other.id = "other-revision"; other.familyId = "other-family"; other.sourceDocumentId = "document-two";
+        artwork.revisions.insert(other.id, other); artwork.families.insert(other.familyId, {other.familyId, "第二份原稿", Artwork::SourceKind::Cmo3, other.id});
+        Package::Prepared prepared; QVERIFY2(Package::Prepare(f.request, prepared, nullptr, &f.error), qPrintable(f.error));
+        const auto index = QJsonDocument::fromJson(prepared.entries.last().bytes).object();
+        QCOMPARE(index["version"].toInt(), 1); QCOMPARE(index["artwork"].toObject()["version"].toInt(), 2);
+        QCOMPARE(index["objects"].toObject().size(), 2);
+        const auto object = index["objects"].toObject()[QString::fromLatin1(digest.toHex())].toObject();
+        QVERIFY(object["path"].toString().endsWith(".bin"));
+        const auto first = f.temporary.filePath("first"), moved = f.temporary.filePath("moved");
+        QVERIFY(f.publish(first, prepared)); QVERIFY(QDir().rename(first, moved)); CModelDocument model; QVERIFY(f.loaded(moved, model));
+        Package::Loaded loaded; QVERIFY2(Package::Load(moved + '/' + f.request.modelFile, f.request.modelSettingsBytes, model, loaded, nullptr, &f.error), qPrintable(f.error));
+        QCOMPARE(loaded.state.artwork.revisions["revision1"].sourceDocumentId, QString("document-one"));
+        QCOMPARE(loaded.state.artwork.revisions["other-revision"].sourceDocumentId, QString("document-two"));
+        for (const auto& revision : loaded.state.artwork.revisions) {
+            QCOMPARE(revision.sourceBytes, raw); QCOMPARE(revision.sourceDigest, digest); QVERIFY(revision.path.startsWith(moved + '/'));
+        }
+    }
     void archiveSharesExactSessionMetadataAndOwnsBlobs() {
         Fixture f; QVERIFY(f.initialize()); Artwork::Archive archive; QJsonObject json;
         QVERIFY2(Artwork::EncodeArchive(f.request.state.artwork, archive, &f.error), qPrintable(f.error)); QVERIFY(Artwork::ToJson(f.request.state.artwork, json, &f.error));

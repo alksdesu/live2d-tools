@@ -15,7 +15,7 @@ class CMaterialValidationCache;
 class CModelArtwork
 {
 public:
-    enum class SourceKind { Psd, Png, AtlasSnapshot };
+    enum class SourceKind { Psd, Png, AtlasSnapshot, Cmo3 };
     enum class LayerKind { Raster, Group };
     enum class Boundary { Transparent, Repeat };
     enum class ColorPolicy { PreserveValues, ConvertToSRgb };
@@ -54,6 +54,7 @@ public:
         ColorPolicy colorPolicy = ColorPolicy::PreserveValues;
         QTransform documentToFamily;
         QVector<Layer> layers;
+        QString sourceDocumentId;
         bool operator==(const Revision& other) const;
     };
     struct Material {

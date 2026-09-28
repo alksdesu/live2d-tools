@@ -1,4 +1,5 @@
 #include "cartworkupdateplanner.h"
+#include "cartworksourcelibraryplanner.h"
 #include "cartworkreconciler.h"
 #include "cartworksampler.h"
 #include "std/cexportcontrol.h"
@@ -18,6 +19,11 @@ struct CArtworkUpdatePlanner::Plan::Verification
 {
     Snapshot source;
     Request request;
+    Plan plan;
+};
+struct CArtworkSourceLibraryPlanner::Plan::Verification
+{
+    Snapshot source;
     Plan plan;
 };
 struct CArtworkUpdateVerification
@@ -55,12 +61,12 @@ bool same(const Planner::Snapshot& first, const Planner::Snapshot& second)
     }
     return true;
 }
-bool prepare(const Planner::Snapshot& input, const Planner::Request& request, Planner::Snapshot& snapshot, Planner::Request& frozen,
-             QMap<QString, Mesh>& meshes, CArtworkReconciler::Triangles& triangles, QByteArray& token, QString* error)
+bool prepareSnapshot(const Planner::Snapshot& input, Planner::Snapshot& snapshot, QMap<QString, Mesh>& meshes,
+                     CArtworkReconciler::Triangles& triangles, QString* error)
 {
-    if (input.sourceDigest.size() != 32 || input.limits.maximumDimension <= 0 || input.limits.maximumPixels <= 0 || input.limits.maximumOperations <= 0 ||
-        request.decisions.size() > Artwork::MaximumRecords || request.familyName.size() > 32768 || request.familyName.contains(QChar::Null) ||
-        request.incoming.diagnostics.size() > Artwork::MaximumRecords) return fail(error, QStringLiteral("素材更新来源或预算无效"));
+    if (input.sourceDigest.size() != 32 || input.limits.maximumDimension <= 0 || input.limits.maximumPixels <= 0 ||
+        input.limits.maximumOperations <= 0 || input.meshes.size() > Artwork::MaximumRecords)
+        return fail(error, QStringLiteral("素材更新来源或预算无效"));
     snapshot = input; snapshot.sourceDigest = owned(input.sourceDigest);
     if (!CTextureAssets::ValidateCatalog(input.sources, error)) return false;
     QMap<QByteArray, QByteArray> blobs;
@@ -87,12 +93,13 @@ bool prepare(const Planner::Snapshot& input, const Planner::Request& request, Pl
             (!material.uvs.isEmpty() && !snapshot.baseline.workspace.atlases.contains(material.textureIndex)))
             return fail(error, QStringLiteral("素材更新网格与材质或图集快照不一致"));
     if (!CArtworkReconciler::ValidateLinks(snapshot.baseline.artwork, snapshot.baseline.workspace, snapshot.baseline.materials, triangles, error)) return false;
-    Artwork::State incoming, checked;
-    incoming.images = request.incoming.images; incoming.revisions.insert(request.incoming.revision.id, request.incoming.revision);
-    incoming.families.insert(request.incoming.revision.familyId, {request.incoming.revision.familyId, request.familyName,
-        request.incoming.kind, request.incoming.revision.id});
-    if (!Artwork::Freeze(incoming, checked, error)) return false;
-    frozen.incoming.revision = checked.revisions.first(); frozen.incoming.images = checked.images; frozen.incoming.kind = request.incoming.kind;
+    return true;
+}
+bool prepareSourceMetadata(const Planner::Request& request, Planner::Request& frozen, QString* error)
+{
+    if (request.familyName.size() > 32768 || request.familyName.contains(QChar::Null) ||
+        request.incoming.diagnostics.size() > Artwork::MaximumRecords)
+        return fail(error, QStringLiteral("素材来源名称或诊断超出预算"));
     frozen.familyName = owned(request.familyName);
     qint64 textBytes = 0;
     for (const auto& diagnostic : request.incoming.diagnostics) {
@@ -100,6 +107,47 @@ bool prepare(const Planner::Snapshot& input, const Planner::Request& request, Pl
             return fail(error, QStringLiteral("素材来源诊断超过范围"));
         textBytes += diagnostic.size() * 2; frozen.incoming.diagnostics.append(owned(diagnostic));
     }
+    return true;
+}
+bool prepareSource(const Planner::Request& request, Planner::Request& frozen, Artwork::State& checked, QString* error)
+{
+    if (!prepareSourceMetadata(request, frozen, error)) return false;
+    Artwork::State incoming;
+    incoming.images = request.incoming.images; incoming.revisions.insert(request.incoming.revision.id, request.incoming.revision);
+    incoming.families.insert(request.incoming.revision.familyId, {request.incoming.revision.familyId, request.familyName,
+        request.incoming.kind, request.incoming.revision.id});
+    if (!Artwork::Freeze(incoming, checked, error)) return false;
+    frozen.incoming.revision = checked.revisions.first(); frozen.incoming.images = checked.images; frozen.incoming.kind = request.incoming.kind;
+    return true;
+}
+bool mergeSource(Artwork::State& artwork, const Planner::Request& request, QString* error)
+{
+    const auto& revision = request.incoming.revision;
+    const auto originalFamily = artwork.families.constFind(revision.familyId);
+    if (originalFamily != artwork.families.cend() && originalFamily->kind != request.incoming.kind)
+        return fail(error, QStringLiteral("已有素材来源类型不能被新的修订改写"));
+    const auto previous = artwork.revisions.constFind(revision.id);
+    if (previous != artwork.revisions.cend() && !(*previous == revision))
+        return fail(error, QStringLiteral("已有素材修订标识对应不同内容，不能改写历史来源"));
+    for (auto image = request.incoming.images.cbegin(); image != request.incoming.images.cend(); ++image) {
+        const auto existing = artwork.images.constFind(image.key());
+        if (existing != artwork.images.cend() && !(*existing == *image))
+            return fail(error, QStringLiteral("已有素材图像摘要对应不同内容"));
+        artwork.images.insert(image.key(), *image);
+    }
+    artwork.revisions.insert(revision.id, revision);
+    auto family = artwork.families.find(revision.familyId);
+    if (family == artwork.families.end())
+        artwork.families.insert(revision.familyId, {revision.familyId, request.familyName, request.incoming.kind, revision.id});
+    else { family->name = request.familyName; family->currentRevision = revision.id; }
+    return true;
+}
+bool prepare(const Planner::Snapshot& input, const Planner::Request& request, Planner::Snapshot& snapshot, Planner::Request& frozen,
+             QMap<QString, Mesh>& meshes, CArtworkReconciler::Triangles& triangles, QByteArray& token, QString* error)
+{
+    if (request.decisions.size() > Artwork::MaximumRecords) return fail(error, QStringLiteral("素材更新决策超出预算"));
+    Artwork::State checked;
+    if (!prepareSnapshot(input, snapshot, meshes, triangles, error) || !prepareSource(request, frozen, checked, error)) return false;
     QMap<QString, Planner::Decision> decisions;
     for (const auto& decision : request.decisions) {
         if (!meshes.contains(decision.meshId) || decisions.contains(decision.meshId) || decision.layerId.size() > 1024 || decision.layerId.contains(QChar::Null) ||
@@ -268,20 +316,7 @@ bool CArtworkUpdatePlanner::Build(const Snapshot& input, const Request& requeste
     if (!prepare(input, requested, snapshot, request, meshes, triangles, candidate.token, error) || !checkpoint(control, error)) return false;
     candidate.state = snapshot.baseline; candidate.warnings = request.incoming.diagnostics;
     auto& artwork = candidate.state.artwork; const auto& revision = request.incoming.revision;
-    const auto originalFamily = artwork.families.constFind(revision.familyId);
-    if (originalFamily != artwork.families.cend() && originalFamily->kind != request.incoming.kind)
-        return fail(error, QStringLiteral("已有素材来源类型不能被新的修订改写"));
-    const auto previous = artwork.revisions.constFind(revision.id);
-    if (previous != artwork.revisions.cend() && !(*previous == revision)) return fail(error, QStringLiteral("已有素材修订标识对应不同内容，不能改写历史来源"));
-    for (auto image = request.incoming.images.cbegin(); image != request.incoming.images.cend(); ++image) {
-        const auto existing = artwork.images.constFind(image.key());
-        if (existing != artwork.images.cend() && !(*existing == *image)) return fail(error, QStringLiteral("已有素材图像摘要对应不同内容"));
-        artwork.images.insert(image.key(), *image);
-    }
-    artwork.revisions.insert(revision.id, revision);
-    auto family = artwork.families.find(revision.familyId);
-    if (family == artwork.families.end()) artwork.families.insert(revision.familyId, {revision.familyId, request.familyName, request.incoming.kind, revision.id});
-    else { family->name = request.familyName; family->currentRevision = revision.id; }
+    if (!mergeSource(artwork, request, error)) return false;
     QMap<QString, Artwork::Layer> layers; for (const auto& layer : revision.layers) layers.insert(layer.id, layer);
     QMap<QString, QMap<QString, int>> layerIndices;
     QMap<QString, QMap<quint32, int>> externalCounts;
@@ -334,7 +369,10 @@ bool CArtworkUpdatePlanner::Build(const Snapshot& input, const Request& requeste
             const int oldIndex = layerIndices.value(material.revisionId).value(material.layerId, -1);
             if (oldRevision == artwork.revisions.cend() || oldIndex < 0) return fail(error, QStringLiteral("既有素材原图层不存在"));
             const auto& oldLayer = oldRevision->layers[oldIndex];
-            confirmed |= oldRevision->id == revision.id ? oldLayer.id == layer->id : oldLayer.externalId && layer->externalId && oldLayer.externalId == layer->externalId &&
+            if (oldRevision->id == revision.id) confirmed |= oldLayer.id == layer->id;
+            else if (!oldRevision->sourceDocumentId.isEmpty() || !revision.sourceDocumentId.isEmpty())
+                confirmed |= !revision.sourceDocumentId.isEmpty() && oldRevision->sourceDocumentId == revision.sourceDocumentId && oldLayer.id == layer->id;
+            else confirmed |= oldLayer.externalId && layer->externalId && oldLayer.externalId == layer->externalId &&
                 externalCounts.value(oldRevision->id).value(*oldLayer.externalId) == 1 && externalCounts.value(revision.id).value(*layer->externalId) == 1;
             coordinates = binding->familyCoordinates; mapping = placement.familyToAtlas; group.gutter = placement.gutter; group.boundary = material.boundary;
         }
@@ -459,4 +497,58 @@ bool CArtworkUpdatePlanner::PreparedSource(const Snapshot& snapshot, const Plan&
     auto candidate = CArtworkUpdateVerification::Source(plan); result = std::move(candidate); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法读取已验证的来源素材")); }
+
+bool CArtworkSourceLibraryPlanner::Build(const Snapshot& input, const QVector<Source>& sources, Plan& result,
+                                          QString* error, CExportControl* control) try
+{
+    if (error) error->clear();
+    if (sources.isEmpty() || sources.size() > Artwork::MaximumRecords) return fail(error, QStringLiteral("素材来源批次为空或超出预算"));
+    Snapshot snapshot; QMap<QString, Mesh> meshes; CArtworkReconciler::Triangles triangles;
+    if (!prepareSnapshot(input, snapshot, meshes, triangles, error)) return false;
+    Plan candidate; candidate.state = snapshot.baseline; candidate.documentCount = sources.size();
+    QSet<QString> families; QStringList names;
+    for (const auto& source : sources) {
+        Planner::Request request, metadata;
+        request.incoming = source.incoming; request.familyName = source.familyName;
+        if (!prepareSourceMetadata(request, metadata, error)) return false;
+        const auto& revision = request.incoming.revision;
+        if (families.contains(revision.familyId)) return fail(error, QStringLiteral("同一批次不能多次改写同一素材来源"));
+        if (revision.layers.size() > Artwork::MaximumRecords - candidate.layerCount) return fail(error, QStringLiteral("素材来源批次的图层数量超出预算"));
+        candidate.layerCount += revision.layers.size(); families.insert(revision.familyId); names.append(std::move(metadata.familyName));
+        if (!mergeSource(candidate.state.artwork, request, error)) return false;
+    }
+    Artwork::State checked;
+    if (!Artwork::Freeze(candidate.state.artwork, checked, error) ||
+        !CArtworkReconciler::ValidateLinks(checked, candidate.state.workspace, candidate.state.materials, triangles, error)) return false;
+    candidate.state.artwork = std::move(checked);
+    if (!checkpoint(control, error)) return false;
+    for (int index = 0; index < names.size(); ++index)
+        if (control && !control->Report(CExportControl::Phase::Preparing, index, names.size(), names[index])) return fail(error, control->Error());
+    QByteArray previous, next, workspace, bytes;
+    if (!Artwork::Fingerprint(snapshot.baseline.artwork, previous, error) ||
+        !Artwork::Fingerprint(candidate.state.artwork, next, error) ||
+        !CTextureWorkspace::Fingerprint(snapshot.sources, snapshot.baseline.workspace, workspace, error)) return false;
+    QDataStream stream(&bytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
+    stream << QStringLiteral("source-library") << quint32(1) << snapshot.sourceDigest << snapshot.documentRevision
+        << previous << next << workspace << candidate.documentCount << candidate.layerCount;
+    for (const auto& mesh : snapshot.meshes) stream << CModelMaterialEdit::Fingerprint({{mesh.material.id, mesh.material}}) << mesh.triangles << mesh.editable << mesh.reason;
+    stream << snapshot.limits.maximumDimension << snapshot.limits.maximumPixels << snapshot.limits.maximumOperations;
+    if (stream.status() != QDataStream::Ok) return fail(error, QStringLiteral("无法计算来源素材库快照标识"));
+    candidate.token = hash(bytes);
+    if (!checkpoint(control, error)) return false;
+    auto proof = std::make_shared<Plan::Verification>(); proof->source = std::move(snapshot); proof->plan = candidate;
+    candidate.m_verification = std::move(proof); result = std::move(candidate); return true;
+}
+catch (...) { return fail(error, QStringLiteral("无法准备来源素材库，当前模型保持不变")); }
+
+bool CArtworkSourceLibraryPlanner::Validate(const Snapshot& snapshot, const Plan& plan, QString* error) try
+{
+    if (!plan.m_verification || !same(snapshot, plan.m_verification->source)) return fail(error, QStringLiteral("素材库计划与当前模型快照不一致"));
+    const auto& stored = plan.m_verification->plan;
+    if (plan.state != stored.state || plan.token != stored.token || plan.documentCount != stored.documentCount || plan.layerCount != stored.layerCount)
+        return fail(error, QStringLiteral("素材库计划在验证后被改动"));
+    if (error) error->clear(); return true;
+}
+catch (...) { return fail(error, QStringLiteral("无法验证来源素材库计划")); }
+
 }

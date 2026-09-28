@@ -1,4 +1,6 @@
 #include "ui/cpsdimportdialog.h"
+#include "cmo_artwork_source_fixture.h"
+#include "cmo3/ccmo3project.h"
 #include "ui/cartworksourceview.h"
 #include "ui/theme.h"
 #include "std/cpngimage.h"
@@ -39,7 +41,8 @@ QString derivedIdentity(const CArtworkSourceImport::SourceCandidate& source, Art
     QByteArray bytes; QDataStream stream(&bytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
     stream << source.revision.id << source.revision.familyId << source.revision.sourceDigest << qint32(policy)
         << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
-    if (versioned) stream << CArtworkSourceImport::PsdInterpretationVersion;
+    if (versioned && source.kind == Artwork::SourceKind::Cmo3) stream << source.revision.sourceDocumentId << CArtworkSourceImport::CmoInterpretationVersion;
+    else if (versioned) stream << CArtworkSourceImport::PsdInterpretationVersion;
     return QStringLiteral("revision:") + QString::fromLatin1(hash(bytes).toHex());
 }
 QByteArray u16(quint16 value) { char data[2]; qToBigEndian(value, data); return QByteArray(data, 2); }
@@ -74,6 +77,14 @@ CArtworkSourceImport::SourceCandidate incoming(QVector<Layer> layers = {Layer()}
     CPsdSnapshot snapshot; snapshot.bytes = psd(layers, canvas, icc); snapshot.canonicalPath = "/not-on-disk/source.psd";
     CArtworkSourceImport::SourceCandidate result; QString error;
     if (!CArtworkSourceImport::Prepare(snapshot, "family", id, Artwork::ColorPolicy::PreserveValues, {}, result, &error)) qFatal("%s", qPrintable(error));
+    return result;
+}
+CArtworkSourceImport::SourceCandidate cmoIncoming(const QString& documentId = "d0-guid")
+{
+    cmo3::CCmo3Project project; QString error;
+    if (!cmo3::CCmo3Project::OpenBytes(cmo_artwork_source_fixture::archive(), "/not-on-disk/source.cmo3", project, &error)) qFatal("%s", qPrintable(error));
+    CArtworkSourceImport::SourceCandidate result;
+    if (!CArtworkSourceImport::Prepare(project, documentId, "family", "cmo-revision", Artwork::ColorPolicy::PreserveValues, {}, result, &error)) qFatal("%s", qPrintable(error));
     return result;
 }
 QByteArray png(QImage image) { QBuffer output; output.open(QIODevice::WriteOnly); image.save(&output, "PNG"); return output.data(); }
@@ -227,6 +238,49 @@ private slots:
         QImage before, after; QVERIFY(CPngImage::Decode(source.images.first().png, before)); QVERIFY(CPngImage::Decode(d.DraftRequest().incoming.images.first().png, after));
         QVERIFY(after.pixelColor(0, 0).red() > before.pixelColor(0, 0).red()); QCOMPARE(after.pixelColor(0, 0).alpha(), before.pixelColor(0, 0).alpha());
         color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::PreserveValues))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision.id, source.revision.id);
+    }
+    void cmoColorRecipeRetainsNativeDocumentAndFrozenSource()
+    {
+        const auto source = cmoIncoming("d1-guid"); const auto c = context(source); Dialog d(c); connectHandlers(d); QVERIFY(settled(d));
+        auto* color = control<QComboBox>(d, "psdColorPolicy"); QVERIFY(color->isEnabled());
+        color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error())); const auto accepted = d.DraftRequest().incoming;
+        QCOMPARE(accepted.kind, Artwork::SourceKind::Cmo3); QCOMPARE(accepted.revision.sourceDocumentId, QString("d1-guid"));
+        QCOMPARE(accepted.revision.sourceBytes, source.revision.sourceBytes); QCOMPARE(accepted.revision.sourceDigest, source.revision.sourceDigest);
+        QCOMPARE(accepted.revision.layers.size(), source.revision.layers.size());
+        QCOMPARE(accepted.revision.id, derivedIdentity(source, Artwork::ColorPolicy::ConvertToSRgb, {}, true));
+        for (int i = 0; i < source.revision.layers.size(); ++i) {
+            QCOMPARE(accepted.revision.layers[i].id, source.revision.layers[i].id);
+            QCOMPARE(accepted.revision.layers[i].parentIndex, source.revision.layers[i].parentIndex);
+        }
+        QImage before, after; QVERIFY(CPngImage::Decode(source.images.first().png, before)); QVERIFY(CPngImage::Decode(accepted.images.first().png, after));
+        QCOMPARE(after.size(), before.size()); for (int x = 0; x < before.width(); ++x) QCOMPARE(after.pixelColor(x, 0).alpha(), before.pixelColor(x, 0).alpha());
+        control<QDoubleSpinBox>(d, "psdDocumentX")->setValue(3); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QCOMPARE(d.DraftRequest().incoming.images, accepted.images);
+        QCOMPARE(d.DraftRequest().incoming.revision.id, derivedIdentity(source, Artwork::ColorPolicy::ConvertToSRgb, QTransform::fromTranslate(3, 0), true));
+        click(d, "psdUndo"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision, accepted.revision);
+        click(d, "psdRedo"); QVERIFY(settled(d)); click(d, "psdSaveSourceOnly"); QVERIFY(settled(d));
+        QCOMPARE(d.result(), int(QDialog::Accepted)); QCOMPARE(d.Result().state.materials, c.snapshot.baseline.materials);
+        QCOMPARE(d.Result().state.artwork.bindings, c.snapshot.baseline.artwork.bindings);
+    }
+    void cmoMissingDocumentRecipeDoesNotFallBackToAnotherDocument()
+    {
+        auto source = cmoIncoming(); source.revision.sourceDocumentId = "missing-doc"; Dialog d(context(source)); connectHandlers(d); QVERIFY(settled(d));
+        const auto before = d.Result(); auto* color = control<QComboBox>(d, "psdColorPolicy");
+        color->setCurrentIndex(color->findData(int(Artwork::ColorPolicy::ConvertToSRgb))); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d));
+        QVERIFY(!d.Error().isEmpty()); QCOMPARE(d.Result().token, before.token); QCOMPARE(d.Result().state.artwork.revisions, before.state.artwork.revisions);
+        QCOMPARE(d.DraftRequest().incoming.revision.sourceDocumentId, source.revision.sourceDocumentId);
+        click(d, "psdDiscardInput"); QVERIFY(settled(d)); QCOMPARE(d.DraftRequest().incoming.revision, source.revision);
+    }
+    void cmoMappingOnlyUsesPreparedPixelsAndVersionedDocumentIdentity()
+    {
+        auto source = cmoIncoming(); source.revision.sourceBytes = "saved CMO source with prepared pixels"; source.revision.sourceDigest = hash(source.revision.sourceBytes);
+        Dialog d(context(source)); connectHandlers(d); QVERIFY(settled(d));
+        control<QDoubleSpinBox>(d, "psdDocumentX")->setValue(2); click(d, "psdApplyDocumentAlignment"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        const auto identity = derivedIdentity(source, source.revision.colorPolicy, QTransform::fromTranslate(2, 0), true);
+        QCOMPARE(d.DraftRequest().incoming.revision.id, identity); QCOMPARE(d.DraftRequest().incoming.images, source.images);
+        auto other = source; other.revision.sourceDocumentId = "d1-guid";
+        QVERIFY(identity != derivedIdentity(other, other.revision.colorPolicy, QTransform::fromTranslate(2, 0), true));
     }
     void mappingOnlyUsesAcceptedPixelsWithoutReadingPsdAgain()
     {

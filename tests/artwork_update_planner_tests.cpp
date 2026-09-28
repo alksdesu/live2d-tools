@@ -65,6 +65,25 @@ class ArtworkUpdatePlannerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void nativeGuidRequiresSameDocumentInsteadOfCoincidentNumericLayerId()
+    {
+        const auto initial = snapshot(); auto edit = request();
+        edit.incoming.kind = Artwork::SourceKind::Cmo3; edit.incoming.revision.sourceDocumentId = "document-a";
+        Planner::Plan first; QString error;
+        QVERIFY2(Planner::Build(initial, edit, first, &error), qPrintable(error));
+        const auto before = accept(initial, first);
+        edit.decisions[0].action = Planner::Action::Update; edit.decisions[0].confirmed = false;
+        edit.incoming.revision.id = "next";
+        Planner::Plan result; QVERIFY2(Planner::Build(before, edit, result, &error), qPrintable(error));
+        QVERIFY(result.unconfirmed.isEmpty());
+        edit.incoming.revision.sourceDocumentId = "document-b";
+        QVERIFY2(Planner::Build(before, edit, result, &error), qPrintable(error));
+        QCOMPARE(result.unconfirmed, QSet<QString>{"A"});
+        edit.incoming.revision.sourceDocumentId = "document-a";
+        edit.incoming.revision.layers[0].id = "other-guid"; edit.decisions[0].layerId = "other-guid";
+        QVERIFY2(Planner::Build(before, edit, result, &error), qPrintable(error));
+        QCOMPARE(result.unconfirmed, QSet<QString>{"A"});
+    }
     void firstAssociationKeepsUnselectedPixelsAndNeedsSealedConfirmation()
     {
         const auto source = snapshot(); const auto held = source; auto edit = request({"A"}, false); Planner::Plan plan; QString error;

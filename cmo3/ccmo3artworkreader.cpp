@@ -1,4 +1,5 @@
 #include "ccmo3artworkreader.h"
+#include "ccmo3project.h"
 #include "ccmo3xml_p.h"
 #include "ccaffarchive.h"
 #include "std/cexportcontrol.h"
@@ -31,7 +32,7 @@ using detail::Xml;
 const QMap<QString, QByteArray>& blendModes()
 {
     static const QMap<QString, QByteArray> result {
-        {"CBlend_Normal", "norm"}, {"CBlend_Dissolve", "diss"}, {"CBlend_Darken", "dark"},
+        {"CBlend_Normal", "norm"}, {"CBlend_Normal_Original", "norm"}, {"CBlend_Dissolve", "diss"}, {"CBlend_Darken", "dark"},
         {"CBlend_Multiply", "mul "}, {"CBlend_ColorBurn", "idiv"}, {"CBlend_LinearBurn", "lbrn"},
         {"CBlend_DarkerColor", "dkCl"}, {"CBlend_Lighten", "lite"}, {"CBlend_Screen", "scrn"},
         {"CBlend_ColorDodge", "div "}, {"CBlend_LinearDodge", "lddg"}, {"CBlend_LighterColor", "lgCl"},
@@ -118,7 +119,7 @@ class Reader
 public:
     const CCaffArchive& archive;
     CExportControl* control;
-    Xml xml;
+    const Xml& xml;
     QHash<QString, const CCaffArchive::Entry*> resources;
     QHash<QString, PngInfo> pngs;
     QSet<QString> unprofiledDocuments;
@@ -127,7 +128,8 @@ public:
     qint64 pixels = 0;
     int layers = 0;
 
-    Reader(const CCaffArchive& input, CExportControl* progress) : archive(input), control(progress) {}
+    Reader(const CCaffArchive& input, const Xml& parsed, CExportControl* progress)
+        : archive(input), control(progress), xml(parsed) {}
     QString guid(int owner, const QString& type)
     {
         const int value = xml.typed(xml.field(owner, QStringLiteral("guid")), type);
@@ -193,6 +195,9 @@ public:
         const int blend = xml.field(entry, QStringLiteral("blend"));
         const auto& type = xml.nodes[blend].type;
         layer.blendMode = blendModes().value(type);
+        if (type == QStringLiteral("CBlend_Normal_Original"))
+            diagnostic(document, CPsdSourceDiagnostic::Severity::Information, QStringLiteral("legacy-normal-blend"),
+                       QStringLiteral("保留旧混合类型 CBlend_Normal_Original，按普通图层写入；不保证合成算法逐像素一致"), layer.id);
         if (type == QStringLiteral("CBlend_NotSupported"))
             layer.blendMode = xml.text(xml.field(blend, QStringLiteral("blendKey"))).toLatin1();
         if (!blendModes().values().contains(layer.blendMode) || (!group && layer.blendMode == "pass"))
@@ -348,17 +353,8 @@ public:
     }
     void read(CPsdSourceCatalog& result)
     {
-        const CCaffArchive::Entry* main = nullptr;
-        for (const auto& entry : archive.Entries()) {
-            resources.insert(entry.path, &entry);
-            if (entry.tag != QStringLiteral("main_xml")) continue;
-            require(!main, QStringLiteral("CMO 包含多个主 XML"));
-            main = &entry;
-        }
-        require(main, QStringLiteral("CMO 缺少主 XML"));
-        xml.parse(main->content, control);
-        result.sourceVersion = xml.nodes[0].attributes.value(QStringLiteral("fileFormatVersion"));
-        require(!result.sourceVersion.isEmpty(), QStringLiteral("CMO 缺少来源版本"));
+        for (const auto& entry : archive.Entries()) resources.insert(entry.path, &entry);
+        result.sourceVersion = xml.sourceVersion();
         int mainNode = -1;
         for (int child : xml.nodes[0].children) if (xml.nodes[child].type == QStringLiteral("main")) {
             require(mainNode < 0, QStringLiteral("CMO 包含多个 main 节点"));
@@ -384,70 +380,46 @@ public:
             QStringLiteral("no-source-documents"), QStringLiteral("此工程没有保留源素材文档"), {}});
     }
 };
-bool readOwned(const QByteArray& bytes, const QString& path, CPsdSourceCatalog& result,
-               QString* error, CExportControl* control)
+}
+
+CPsdSourceCatalog CCmo3ArtworkReader::Extract(const CCaffArchive& archive, const detail::Xml& xml,
+                                             const QString& path, const QByteArray& digest, CExportControl* control)
 {
-    CCaffArchive archive;
-    const bool loaded = archive.LoadBytes(bytes, error, control);
-    require(loaded, error ? *error : QStringLiteral("CMO 归档读取失败"));
     CPsdSourceCatalog candidate;
     candidate.sourcePath = path;
-    candidate.sourceDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
-    Reader reader(archive, control);
+    candidate.sourceDigest = digest;
+    Reader reader(archive, xml, control);
     reader.read(candidate);
     if (!path.isEmpty()) candidate.protectedPaths.append(path);
     for (auto& document : candidate.documents) {
         document.origin.sourcePath = path;
-        document.origin.sourceDigest = candidate.sourceDigest;
+        document.origin.sourceDigest = digest;
         document.origin.fileName = QFileInfo(path).fileName();
+        document.origin.sourceVersion = candidate.sourceVersion;
     }
     checkpoint(control);
-    result = std::move(candidate);
-    return true;
-}
+    return candidate;
 }
 
-bool CCmo3ArtworkReader::ReadBytes(const QByteArray& input, const QString& sourcePath,
+bool CCmo3ArtworkReader::ReadBytes(const QByteArray& bytes, const QString& sourcePath,
                                   CPsdSourceCatalog& result, QString* error, CExportControl* control)
 {
-    if (error) error->clear();
-    try {
-        require(input.size() <= CCaffReadLimits{}.maximumFileBytes && sourcePath.size() <= 32768 &&
-                !sourcePath.contains(QChar::Null) && sourcePath.isValidUtf16(), QStringLiteral("CMO 输入或来源路径超出预算"));
-        const QByteArray bytes(input.constData(), input.size());
-        const QString path(sourcePath.constData(), sourcePath.size());
-        return readOwned(bytes, path, result, error, control);
-    } catch (const ReadError& failure) {
-        if (error) *error = failure.message;
-    } catch (const std::bad_alloc&) {
-        if (error) *error = QStringLiteral("CMO 源素材读取内存不足");
-    } catch (const std::length_error&) {
-        if (error) *error = QStringLiteral("CMO 源素材长度超出可表示范围");
-    }
-    return false;
+    CCmo3Project project;
+    if (!CCmo3Project::OpenBytes(bytes, sourcePath, project, error, control)) return false;
+    const auto* artwork = project.Artwork();
+    if (!artwork) { if (error) *error = project.ArtworkError(); return false; }
+    result = *artwork;
+    return true;
 }
 
-bool CCmo3ArtworkReader::ReadFile(const QString& input, CPsdSourceCatalog& result,
+bool CCmo3ArtworkReader::ReadFile(const QString& path, CPsdSourceCatalog& result,
                                  QString* error, CExportControl* control)
 {
-    if (error) error->clear();
-    try {
-        require(!input.isEmpty() && input.size() <= 32768 && !input.contains(QChar::Null) && input.isValidUtf16(),
-                QStringLiteral("CMO 文件路径无效"));
-        const QString path(input.constData(), input.size());
-        const QString canonical = QFileInfo(path).canonicalFilePath();
-        require(!canonical.isEmpty(), QStringLiteral("CMO 来源文件不存在"));
-        QByteArray bytes;
-        const bool loaded = CCaffArchive::ReadFileBytes(canonical, bytes, error, control);
-        require(loaded, error ? *error : QStringLiteral("CMO 文件读取失败"));
-        return readOwned(bytes, canonical, result, error, control);
-    } catch (const ReadError& failure) {
-        if (error) *error = failure.message;
-    } catch (const std::bad_alloc&) {
-        if (error) *error = QStringLiteral("CMO 文件读取内存不足");
-    } catch (const std::length_error&) {
-        if (error) *error = QStringLiteral("CMO 文件长度超出可表示范围");
-    }
-    return false;
+    CCmo3Project project;
+    if (!CCmo3Project::OpenFile(path, project, error, control)) return false;
+    const auto* artwork = project.Artwork();
+    if (!artwork) { if (error) *error = project.ArtworkError(); return false; }
+    result = *artwork;
+    return true;
 }
 }

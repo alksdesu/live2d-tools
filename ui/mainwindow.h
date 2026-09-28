@@ -148,13 +148,14 @@ private:
     void ConfigureArtworkActions();
     void RefreshArtworkActions();
     void ImportPsd(bool reimport = false);
+    void ImportCmoSources();
     void ManageArtwork();
     void EditArtwork(const QString& familyId, const QString& path = {}, const QString& revisionId = {});
     QPointer<CPsdImportDialog> m_artworkDialog;
     std::shared_ptr<CExportControl> m_artworkLoadControl;
     bool m_artworkLoading = false;
     QString m_artworkPackageWarning;
-    QAction *m_importPsdAction = nullptr, *m_reimportPsdAction = nullptr, *m_manageArtworkAction = nullptr;
+    QAction *m_importPsdAction = nullptr, *m_importCmoAction = nullptr, *m_reimportPsdAction = nullptr, *m_manageArtworkAction = nullptr;
     bool PublishAtlasPreview(const live2dstruct::CModelDocument& before,
                              const live2dstruct::CModelDocument& after,
                              const QSet<QString>& ids, QString* error);

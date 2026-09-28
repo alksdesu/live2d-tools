@@ -1,4 +1,5 @@
 #include "ccmo3namereader.h"
+#include "ccmo3project.h"
 #include "ccmo3xml_p.h"
 #include "ccaffarchive.h"
 #include "ccmo3ids.h"
@@ -88,20 +89,9 @@ struct Parsed {
     QStringList diagnostics;
     QSize canvas;
 };
-Parsed parse(const QByteArray& bytes, CExportControl* control)
+Parsed parse(const Xml& xml, CExportControl* control)
 {
-    CCaffArchive archive;
-    QString error;
-    require(archive.LoadBytes(bytes, &error, control), error);
-    const CCaffArchive::Entry* main = nullptr;
-    for (const auto& entry : archive.Entries()) if (entry.tag == QStringLiteral("main_xml")) {
-        require(!main, QStringLiteral("CMO 包含多个主 XML"));
-        main = &entry;
-    }
-    require(main, QStringLiteral("CMO 缺少主 XML"));
-    Xml xml;
-    xml.parse(main->content, control);
-    require(!xml.nodes[0].attributes.value(QStringLiteral("fileFormatVersion")).isEmpty(), QStringLiteral("CMO 缺少来源版本"));
+    xml.sourceVersion();
     int mainNode = -1;
     for (int child : xml.nodes[0].children) if (xml.nodes[child].type == QStringLiteral("main")) {
         require(mainNode < 0, QStringLiteral("CMO 包含多个 main 节点"));
@@ -273,45 +263,41 @@ QString CCmo3NameReader::TypeName(ObjectType type)
     return {};
 }
 
-bool CCmo3NameReader::ReadBytes(const QByteArray& input, const QString& sourcePath, Catalog& result,
-                              QString* error, CExportControl* control)
+CCmo3NameReader::Catalog CCmo3NameReader::Extract(const detail::Xml& xml, const QString& path,
+                                                  const QByteArray& digest, CExportControl* control)
 {
-    if (error) error->clear();
-    try {
-        require(input.size() <= CCaffReadLimits{}.maximumFileBytes && sourcePath.size() <= 32768 &&
-                !sourcePath.contains(QChar::Null) && sourcePath.isValidUtf16(), QStringLiteral("CMO 输入或来源路径无效"));
-        const QByteArray bytes(input.constData(), input.size());
-        const QString path = owned(sourcePath);
-        auto parsed = parse(bytes, control);
-        auto data = std::make_shared<Catalog::Data>();
-        data->objects = std::move(parsed.objects);
-        data->diagnostics = std::move(parsed.diagnostics);
-        data->canvas = parsed.canvas;
-        data->sourcePath = path;
-        data->sourceDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
-        checkpoint(control);
-        Catalog candidate;
-        candidate.m_data = std::move(data);
-        result = std::move(candidate);
-        return true;
-    } catch (const ReadError& failure) { if (error) *error = failure.message; }
-    catch (const std::exception&) { if (error) *error = QStringLiteral("CMO 名称读取超出资源限制"); }
-    return false;
+    auto parsed = parse(xml, control);
+    auto data = std::make_shared<Catalog::Data>();
+    data->objects = std::move(parsed.objects);
+    data->diagnostics = std::move(parsed.diagnostics);
+    data->canvas = parsed.canvas;
+    data->sourcePath = path;
+    data->sourceDigest = digest;
+    checkpoint(control);
+    Catalog candidate;
+    candidate.m_data = std::move(data);
+    return candidate;
 }
 
-bool CCmo3NameReader::ReadFile(const QString& input, Catalog& result, QString* error, CExportControl* control)
+bool CCmo3NameReader::ReadBytes(const QByteArray& bytes, const QString& sourcePath, Catalog& result,
+                              QString* error, CExportControl* control)
 {
-    if (error) error->clear();
-    try {
-        require(!input.isEmpty() && input.size() <= 32768 && !input.contains(QChar::Null) && input.isValidUtf16(), QStringLiteral("CMO 文件路径无效"));
-        const QString path = QFileInfo(owned(input)).canonicalFilePath();
-        require(!path.isEmpty(), QStringLiteral("CMO 来源文件不存在"));
-        QByteArray bytes;
-        require(CCaffArchive::ReadFileBytes(path, bytes, error, control), error ? *error : QStringLiteral("CMO 文件读取失败"));
-        return ReadBytes(bytes, path, result, error, control);
-    } catch (const ReadError& failure) { if (error) *error = failure.message; }
-    catch (const std::exception&) { if (error) *error = QStringLiteral("CMO 名称文件读取失败"); }
-    return false;
+    CCmo3Project project;
+    if (!CCmo3Project::OpenBytes(bytes, sourcePath, project, error, control)) return false;
+    const auto* names = project.Names();
+    if (!names) { if (error) *error = project.NamesError(); return false; }
+    result = *names;
+    return true;
+}
+
+bool CCmo3NameReader::ReadFile(const QString& path, Catalog& result, QString* error, CExportControl* control)
+{
+    CCmo3Project project;
+    if (!CCmo3Project::OpenFile(path, project, error, control)) return false;
+    const auto* names = project.Names();
+    if (!names) { if (error) *error = project.NamesError(); return false; }
+    result = *names;
+    return true;
 }
 
 bool CCmo3NameReader::BuildProposal(const Catalog& input, const QByteArray& sourceMocBytes, Proposal& result,
@@ -495,7 +481,8 @@ bool CCmo3NameReader::BuildProposal(const Catalog& input, const QByteArray& sour
         checkpoint(control);
         result = std::move(candidate);
         return true;
-    } catch (const ReadError& failure) { if (error) *error = failure.message; }
+    } catch (const detail::ReadAborted& failure) { if (error) *error = failure.message; }
+    catch (const ReadError& failure) { if (error) *error = failure.message; }
     catch (const std::exception&) { if (error) *error = QStringLiteral("CMO 名称匹配超出资源限制"); }
     return false;
 }

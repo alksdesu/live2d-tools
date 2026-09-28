@@ -52,6 +52,7 @@ struct CPsdSourceCatalog
         QString familyId, familyName, revisionId, fileName;
         bool currentRevision = false;
         int linkedMeshes = 0, detachedMeshes = 0;
+        QString sourceVersion;
     };
     struct Document {
         std::variant<CPsdSourceDocument, CPsdOriginal> content;

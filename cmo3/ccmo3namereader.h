@@ -10,6 +10,7 @@
 class CExportControl;
 
 namespace cmo3 {
+namespace detail { class Xml; }
 class CCmo3NameReader
 {
 public:
@@ -58,6 +59,10 @@ public:
                           QString* error = nullptr, CExportControl* control = nullptr);
     static bool BuildProposal(const Catalog& catalog, const QByteArray& sourceMocBytes, Proposal& result,
                               QString* error = nullptr, CExportControl* control = nullptr);
+private:
+    friend class CCmo3Project;
+    static Catalog Extract(const detail::Xml& xml, const QString& path,
+                           const QByteArray& digest, CExportControl* control);
 };
 }
 

@@ -20,6 +20,32 @@ Matcher::Result compare(const Artwork::Revision& old, const Artwork::Revision& n
 class PsdLayerMatcherTests : public QObject {
     Q_OBJECT
 private slots:
+    void nativeGuidsSurviveRenamingReorderingAndReusedPsdNumbers() {
+        auto old = revision("old", {layer("guid-a", "A", 7), layer("guid-b", "B", 7)});
+        auto next = revision("new", {layer("guid-b", "改名", 8), layer("guid-a", "改名", 9)});
+        old.sourceDocumentId = next.sourceDocumentId = "source-document";
+        const auto result = compare(old, next);
+        QCOMPARE(result.matches[0].status, Matcher::Status::Matched); QCOMPARE(result.matches[0].matchedLayerId, QString("guid-a"));
+        QCOMPARE(result.matches[1].status, Matcher::Status::Matched); QCOMPARE(result.matches[1].matchedLayerId, QString("guid-b"));
+        QVERIFY(result.unmatchedNewLayerIds.isEmpty());
+    }
+    void nativeDocumentOrLayerMismatchCannotUseNumericPsdIdentity() {
+        auto old = revision("old", {layer("native-layer", "相同名称", 42)}); old.sourceDocumentId = "document-a";
+        for (int failure = 0; failure < 3; ++failure) {
+            auto next = revision("new", old.layers); next.sourceDocumentId = old.sourceDocumentId;
+            if (failure == 0) next.sourceDocumentId = "document-b";
+            if (failure == 1) next.sourceDocumentId.clear();
+            if (failure == 2) next.layers[0].id = "different-native-layer";
+            const auto result = compare(old, next);
+            QCOMPARE(result.matches[0].status, Matcher::Status::NeedsConfirmation); QVERIFY(result.matches[0].matchedLayerId.isEmpty());
+        }
+    }
+    void nativeGuidDoesNotOverrideUnsupportedLayerSemantics() {
+        auto old = revision("old", {layer("native-layer", "源", 42)}); old.sourceDocumentId = "document";
+        auto next = old; next.id = "new"; next.layers[0].pixelEquivalent = false;
+        const auto result = compare(old, next); QCOMPARE(result.matches[0].status, Matcher::Status::Incompatible);
+        QVERIFY(result.matches[0].matchedLayerId.isEmpty());
+    }
     void uniqueIdsSurviveRenameReorderAndHiddenState() {
         auto first = layer("record:0", "Eye left", 10), second = layer("record:1", "Eye right", 11);
         auto renamed = first; renamed.id = "record:1"; renamed.name = "Renamed"; renamed.visible = false; renamed.bounds.translate(99, -17);

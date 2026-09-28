@@ -810,3 +810,6 @@ HEADERS += ui/cobjectnamesimportdialog.h
 SOURCES += std/cpsdexportcoverage.cpp
 HEADERS += std/cpsdexportcoverage.h psd/cpsdpreview.h
 HEADERS += psd/cpsdreaddocument.h
+
+SOURCES += cmo3/ccmo3project.cpp ui/ccmosourceimportdialog.cpp
+HEADERS += cmo3/ccmo3project.h ui/ccmosourceimportdialog.h live2dstruct/cartworksourcelibraryplanner.h

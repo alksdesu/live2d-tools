@@ -73,9 +73,9 @@ void MainWindow::ConfigurePsdRecoveryAction()
     m_psdRecoveryAction->setObjectName(QStringLiteral("recoverPsdFromProject"));
     m_psdRecoveryAction->setStatusTip(QStringLiteral("读取 CMO3 中保存的来源文档与图层，不改变当前模型"));
     connect(m_psdRecoveryAction, &QAction::triggered, this, [this] { RecoverPsdFromProject(); });
-    m_savedPsdRecoveryAction = new QAction(QStringLiteral("另存已保存的 PSD…"), this);
+    m_savedPsdRecoveryAction = new QAction(QStringLiteral("从已保存来源恢复 PSD…"), this);
     m_savedPsdRecoveryAction->setObjectName(QStringLiteral("recoverSavedPsdSources"));
-    m_savedPsdRecoveryAction->setStatusTip(QStringLiteral("原样另存项目保存的 PSD 版本，不改变当前素材关联"));
+    m_savedPsdRecoveryAction->setStatusTip(QStringLiteral("从项目保存的 PSD 或 CMO3 原始图层恢复 PSD，不改变当前素材关联"));
     m_savedPsdRecoveryAction->setEnabled(false);
     connect(m_savedPsdRecoveryAction, &QAction::triggered, this, &MainWindow::RecoverSavedPsdSources);
 }
@@ -159,8 +159,9 @@ bool MainWindow::HasSavedPsdSources() const
     const auto& artwork = m_document.Artwork();
     for (const auto& revision : artwork.revisions) {
         const auto family = artwork.families.constFind(revision.familyId);
-        if (family != artwork.families.cend() && family->kind == live2dstruct::CModelArtwork::SourceKind::Psd &&
-            revision.sourceDigest.size() == 32 && revision.sourceBytes.startsWith("8BPS")) return true;
+        if (family == artwork.families.cend() || revision.sourceDigest.size() != 32) continue;
+        if (family->kind == live2dstruct::CModelArtwork::SourceKind::Psd && revision.sourceBytes.startsWith("8BPS")) return true;
+        if (family->kind == live2dstruct::CModelArtwork::SourceKind::Cmo3 && !revision.sourceDocumentId.isEmpty() && !revision.sourceBytes.isEmpty()) return true;
     }
     return false;
 }

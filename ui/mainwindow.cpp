@@ -3392,7 +3392,7 @@ void MainWindow::RestDock(const QString &name)
     connect(m_blendShapePanel, &CBlendShapePanel::ObjectSelected, m_treePanel, &CModelTreePanel::HighlightObject);
 
     m_texturePanel = new CTexturePanel(this);
-    m_texturePanel->SetArtworkActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction});
+    m_texturePanel->SetArtworkActions({m_importPsdAction, m_importCmoAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction});
     addDockWidget(Qt::BottomDockWidgetArea, m_texturePanel);
     tabifyDockWidget(m_blendShapePanel, m_texturePanel);
 
@@ -4186,7 +4186,7 @@ void MainWindow::setupUI()
     namesButton->setMenu(namesMenu); mainToolBar->addWidget(namesButton);
     auto* artworkButton = new QToolButton(mainToolBar); artworkButton->setObjectName(QStringLiteral("artworkMenu")); artworkButton->setText(QStringLiteral("素材"));
     artworkButton->setPopupMode(QToolButton::InstantPopup); artworkButton->setFocusPolicy(Qt::StrongFocus);
-    auto* artworkMenu = new QMenu(artworkButton); artworkMenu->addActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction}); artworkButton->setMenu(artworkMenu); mainToolBar->addWidget(artworkButton);
+    auto* artworkMenu = new QMenu(artworkButton); artworkMenu->addActions({m_importPsdAction, m_importCmoAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction}); artworkButton->setMenu(artworkMenu); mainToolBar->addWidget(artworkButton);
     mainToolBar->addSeparator();
     mainToolBar->addAction(myAction);
     mainToolBar->addAction(myBatchAction);

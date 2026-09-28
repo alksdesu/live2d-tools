@@ -115,6 +115,27 @@ Meshes::MeshEdit identity(const CModelDocument& document, const QString& id) {
 class ArtworkDocumentTests : public QObject {
     Q_OBJECT
 private slots:
+    void cmoSourceLibrarySurvivesSessionAndOneStepUndoWithoutAppearanceChanges() {
+        Fixture f; QVERIFY2(f.initialize(), qPrintable(f.error)); const auto baseline = f.document;
+        auto next = state(f.document); next.artwork = f.library(false);
+        const QByteArray raw("retained CMO archive"); const auto digest = hash(raw);
+        next.artwork.families["family"].kind = Artwork::SourceKind::Cmo3;
+        auto& original = next.artwork.revisions["revision-one"];
+        original.sourceBytes = raw; original.sourceDigest = digest; original.sourceDocumentId = "document-one";
+        original.path = "/offline/source.cmo3"; original.fileName = "source.cmo3";
+        auto other = original; other.id = "revision-two"; other.familyId = "family-two"; other.sourceDocumentId = "document-two";
+        next.artwork.revisions.insert(other.id, other); next.artwork.families.insert(other.familyId, {other.familyId, "第二份原稿", Artwork::SourceKind::Cmo3, other.id});
+        QVERIFY2(execute(f.document, next, &f.error), qPrintable(f.error));
+        const auto imported = state(f.document); QCOMPARE(moc(f.document), moc(baseline)); QVERIFY(imported.workspace == state(baseline).workspace); QCOMPARE(imported.materials, state(baseline).materials);
+        QVERIFY(f.document.UndoEdit()); QVERIFY(f.document.Artwork().IsEmpty()); QVERIFY(!f.document.CanUndoEdit());
+        QVERIFY(f.document.RedoEdit()); QVERIFY(state(f.document) == imported);
+        const auto bytes = session(f.document).ToJson(); QVERIFY(!bytes.isEmpty()); const auto root = QJsonDocument::fromJson(bytes).object();
+        QCOMPARE(root["version"].toInt(), 12); QCOMPARE(root["artwork"].toObject()["version"].toInt(), 2);
+        CModelSession parsed; QVERIFY2(CModelSession::FromJson(bytes, &parsed, &f.error), qPrintable(f.error));
+        CModelDocument restored; QVERIFY2(parsed.RestoreDocument(baseline, restored, &f.error), qPrintable(f.error));
+        QVERIFY(state(restored) == imported); QCOMPARE(restored.Artwork().revisions["revision-two"].sourceDocumentId, QString("document-two"));
+        for (const auto& revision : restored.Artwork().revisions) QCOMPARE(revision.sourceBytes, raw);
+    }
     void libraryImportIsOneDirtyHistoryEntryWithoutChangingMoc() {
         Fixture f; QVERIFY2(f.initialize(), qPrintable(f.error)); const auto original = state(f.document); const auto originalMoc = moc(f.document);
         const auto baseline = saved(f.document); QVERIFY(!baseline.isEmpty()); auto next = original; next.artwork = f.library(false);

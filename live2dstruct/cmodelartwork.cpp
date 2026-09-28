@@ -32,6 +32,12 @@ QString owned(const QString& value) { return QString(value.constData(), value.si
 bool text(const QString& value, int maximum, bool required = false)
 { return value.size() <= maximum && !value.contains(QChar::Null) && (!required || !value.trimmed().isEmpty()); }
 bool id(const QString& value) { return text(value, 1024, true); }
+bool hasCmoSources(const Artwork::State& state)
+{
+    return std::any_of(state.families.cbegin(), state.families.cend(), [](const auto& family) {
+        return family.kind == Artwork::SourceKind::Cmo3;
+    });
+}
 bool same(double first, double second) { return std::memcmp(&first, &second, sizeof(double)) == 0; }
 std::array<double, 9> coefficients(const QTransform& value)
 { return {value.m11(), value.m12(), value.m13(), value.m21(), value.m22(), value.m23(), value.m31(), value.m32(), value.m33()}; }
@@ -210,7 +216,8 @@ bool collect(const Artwork::State& state, Budget& budget, QString* error)
     for (auto it = state.families.cbegin(); it != state.families.cend(); ++it) {
         const auto& family = *it;
         if (it.key() != family.id || !id(family.id) || !text(family.name, 32768) || !id(family.currentRevision) ||
-            (family.kind != Artwork::SourceKind::Psd && family.kind != Artwork::SourceKind::Png && family.kind != Artwork::SourceKind::AtlasSnapshot) ||
+            (family.kind != Artwork::SourceKind::Psd && family.kind != Artwork::SourceKind::Png &&
+             family.kind != Artwork::SourceKind::AtlasSnapshot && family.kind != Artwork::SourceKind::Cmo3) ||
             !texts({it.key(), family.id, family.name, family.currentRevision})) return fail(error, QStringLiteral("素材来源标识或类型无效"));
         const auto revision = state.revisions.constFind(family.currentRevision);
         if (revision == state.revisions.cend() || revision->familyId != family.id) return fail(error, QStringLiteral("素材来源的当前修订不存在"));
@@ -226,8 +233,11 @@ bool collect(const Artwork::State& state, Budget& budget, QString* error)
             (revision.colorPolicy != Artwork::ColorPolicy::PreserveValues && revision.colorPolicy != Artwork::ColorPolicy::ConvertToSRgb) ||
             !Artwork::ValidateTransform(revision.documentToFamily, error) || !budget.addRecords(revision.layers.size(), sizeof(Artwork::Layer)) ||
             !budget.payload(revision.sourceDigest.size()) ||
-            !texts({it.key(), revision.id, revision.familyId, revision.path, revision.fileName}))
+            !texts({it.key(), revision.id, revision.familyId, revision.path, revision.fileName, revision.sourceDocumentId}))
             return fail(error, QStringLiteral("素材修订的来源、坐标或数量无效"));
+        const bool cmo = state.families.value(revision.familyId).kind == Artwork::SourceKind::Cmo3;
+        if (cmo ? !id(revision.sourceDocumentId) || !revision.sourceDocumentId.isValidUtf16() : !revision.sourceDocumentId.isEmpty())
+            return fail(error, QStringLiteral("素材修订的原生文档标识与来源类型不一致"));
         QMap<QString, int> layerIds; QSet<int> sourceIndices;
         for (int index = 0; index < revision.layers.size(); ++index) {
             const auto& layer = revision.layers[index];
@@ -331,7 +341,7 @@ bool CModelArtwork::Layer::operator==(const Layer& o) const
 bool CModelArtwork::Revision::operator==(const Revision& o) const
 {
     return id == o.id && familyId == o.familyId && path == o.path && fileName == o.fileName && sourceDigest == o.sourceDigest &&
-        sourceBytes == o.sourceBytes && iccProfile == o.iccProfile && canvasSize == o.canvasSize && colorPolicy == o.colorPolicy &&
+        sourceBytes == o.sourceBytes && iccProfile == o.iccProfile && sourceDocumentId == o.sourceDocumentId && canvasSize == o.canvasSize && colorPolicy == o.colorPolicy &&
         same(documentToFamily, o.documentToFamily) && layers == o.layers;
 }
 bool CModelArtwork::Material::operator==(const Material& o) const
@@ -438,6 +448,7 @@ bool CModelArtwork::Freeze(const State& state, State& result, QString* error) tr
     for (auto it = state.revisions.cbegin(); it != state.revisions.cend(); ++it) {
         Revision revision = *it;
         revision.id = owned(it->id); revision.familyId = owned(it->familyId); revision.path = owned(it->path); revision.fileName = owned(it->fileName);
+        revision.sourceDocumentId = owned(it->sourceDocumentId);
         revision.sourceDigest = owned(it->sourceDigest); revision.sourceBytes = copyBlob(it->sourceBytes, it->sourceDigest); revision.iccProfile = copyBlob(it->iccProfile);
         revision.layers.clear(); revision.layers.reserve(it->layers.size());
         for (const auto& original : it->layers) {
@@ -478,6 +489,7 @@ bool CModelArtwork::EncodeArchive(const State& input, Archive& result, QString* 
     CMaterialValidationCache cache;
     if (!ValidateWithCache(state, cache, nullptr, error)) return false;
     Budget budget(cache); if (!collect(state, budget, error)) return false;
+    const int version = hasCmoSources(state) ? 2 : 1;
     QJsonObject images, families, revisions, materials, placements, bindings;
     for (auto it = state.images.cbegin(); it != state.images.cend(); ++it) images.insert(QString::fromLatin1(it.key().toHex()), QJsonArray{it->size.width(), it->size.height()});
     for (auto it = state.families.cbegin(); it != state.families.cend(); ++it)
@@ -492,10 +504,12 @@ bool CModelArtwork::EncodeArchive(const State& input, Archive& result, QString* 
                 {"clipping", layer.clipping}, {"pixelEquivalent", layer.pixelEquivalent}, {"opacity", layer.opacity},
                 {"blendMode", QString::fromLatin1(layer.blendMode)}, {"imageDigest", QString::fromLatin1(layer.imageDigest.toHex())}, {"diagnostics", diagnostics}});
         }
-        revisions.insert(it.key(), QJsonObject{{"familyId", it->familyId}, {"path", it->path}, {"fileName", it->fileName},
+        QJsonObject revision{{"familyId", it->familyId}, {"path", it->path}, {"fileName", it->fileName},
             {"sourceDigest", QString::fromLatin1(it->sourceDigest.toHex())}, {"iccDigest", it->iccProfile.isEmpty() ? QString() : QString::fromLatin1(digest(it->iccProfile).toHex())},
             {"canvasSize", QJsonArray{it->canvasSize.width(), it->canvasSize.height()}}, {"colorPolicy", int(it->colorPolicy)},
-            {"documentToFamily", QString::fromLatin1(transformBits(it->documentToFamily).toHex())}, {"layers", layers}});
+            {"documentToFamily", QString::fromLatin1(transformBits(it->documentToFamily).toHex())}, {"layers", layers}};
+        if (version >= 2) revision.insert("sourceDocumentId", it->sourceDocumentId);
+        revisions.insert(it.key(), std::move(revision));
     }
     for (auto it = state.materials.cbegin(); it != state.materials.cend(); ++it)
         materials.insert(it.key(), QJsonObject{{"name", it->name}, {"familyId", it->familyId}, {"revisionId", it->revisionId}, {"layerId", it->layerId},
@@ -510,7 +524,7 @@ bool CModelArtwork::EncodeArchive(const State& input, Archive& result, QString* 
             {"sampledMaterial", sampled}, {"topologyDigest", QString::fromLatin1(it->topologyDigest.toHex())}, {"status", int(it->status)}, {"detachedReason", it->detachedReason}});
     }
     Archive candidate; candidate.blobs = std::move(budget.blobs);
-    candidate.metadata = QJsonObject{{"version", 1}, {"images", images}, {"families", families}, {"revisions", revisions},
+    candidate.metadata = QJsonObject{{"version", version}, {"images", images}, {"families", families}, {"revisions", revisions},
         {"materials", materials}, {"placements", placements}, {"bindings", bindings}};
     result = std::move(candidate); if (error) error->clear(); return true;
 }
@@ -522,7 +536,7 @@ bool CModelArtwork::DecodeArchive(const Archive& archive, State& result, QString
     const auto invalid = [&] { return fail(error, QStringLiteral("作者素材存储格式或引用无效")); };
     int version;
     if (!fields(object, {"version", "images", "families", "revisions", "materials", "placements", "bindings"}) ||
-        !integer(object["version"], version, 1, 1)) return invalid();
+        !integer(object["version"], version, 1, 2)) return invalid();
     qint64 records = 0;
     if (archive.blobs.size() > MaximumRecords * 3) return invalid();
     for (const auto* name : {"images", "families", "revisions", "materials", "placements", "bindings"}) {
@@ -553,13 +567,16 @@ bool CModelArtwork::DecodeArchive(const Archive& archive, State& result, QString
         if (!it->isObject() || !id(it.key())) return invalid();
         const auto row = it->toObject(); Family family; family.id = it.key(); int kind;
         if (!fields(row, {"name", "kind", "currentRevision"}) || !string(row["name"], family.name) ||
-            !integer(row["kind"], kind, 0, 2) || !string(row["currentRevision"], family.currentRevision, 1024)) return invalid();
+            !integer(row["kind"], kind, 0, version == 1 ? 2 : 3) || !string(row["currentRevision"], family.currentRevision, 1024)) return invalid();
         family.kind = SourceKind(kind); candidate.families.insert(it.key(), std::move(family));
     }
     const auto revisions = object["revisions"].toObject();
     for (auto it = revisions.begin(); it != revisions.end(); ++it) {
         if (!it->isObject() || !id(it.key())) return invalid();
-        const auto row = it->toObject(); Revision revision; revision.id = it.key(); QByteArray icc; int policy;
+        auto row = it->toObject(); Revision revision; revision.id = it.key(); QByteArray icc; int policy;
+        if (version >= 2) {
+            if (!string(row.take("sourceDocumentId"), revision.sourceDocumentId, 1024)) return invalid();
+        }
         if (!fields(row, {"familyId", "path", "fileName", "sourceDigest", "iccDigest", "canvasSize", "colorPolicy", "documentToFamily", "layers"}) ||
             !string(row["familyId"], revision.familyId, 1024) || !string(row["path"], revision.path) || !string(row["fileName"], revision.fileName) ||
             !hashValue(row["sourceDigest"], revision.sourceDigest) || !blob(revision.sourceDigest, revision.sourceBytes) ||
@@ -672,7 +689,8 @@ catch (const std::exception&) { return fail(error, QStringLiteral("无法计算�
 bool CModelArtwork::WriteFingerprint(const State& state, QByteArray& result, QString* error) try
 {
     QByteArray bytes; FingerprintWriter stream(bytes);
-    stream << quint32(1) << qint64(state.images.size());
+    const bool cmo = hasCmoSources(state);
+    stream << quint32(cmo ? 2 : 1) << qint64(state.images.size());
     for (auto it = state.images.cbegin(); it != state.images.cend(); ++it) stream << it.key() << it->size << qint64(it->png.size());
     stream << qint64(state.families.size());
     for (const auto& value : state.families) stream << value.id << value.name << qint32(value.kind) << value.currentRevision;
@@ -686,6 +704,7 @@ bool CModelArtwork::WriteFingerprint(const State& state, QByteArray& result, QSt
             if (layer.externalId) stream << *layer.externalId;
             stream << layer.bounds << layer.visible << layer.clipping << layer.pixelEquivalent << layer.opacity << layer.blendMode << layer.imageDigest << layer.diagnostics;
         }
+        if (cmo) stream << value.sourceDocumentId;
     }
     stream << qint64(state.materials.size());
     for (const auto& value : state.materials) stream << value.id << value.name << value.familyId << value.revisionId << value.layerId << qint32(value.boundary) << value.applyLayerOpacity << value.missingInRevision;

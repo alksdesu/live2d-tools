@@ -94,6 +94,18 @@ private slots:
         dialog.SetExportHandler([](int, const QString&, QString*) { return true; }); QVERIFY(save(dialog)->isEnabled());
     }
 
+    void savedCmoSourcesUseTheirOwnVersionAndAssociationStatus()
+    {
+        auto data = catalog("/not-on-disk/original.cmo3"); auto& origin = data->documents[0].origin;
+        origin.sourceVersion = "legacy-9"; origin.revisionId = "saved-cmo-revision"; origin.currentRevision = true; origin.linkedMeshes = 2;
+        CPsdRecoveryDialog dialog(data); auto* details = dialog.findChild<QPlainTextEdit*>("psdRecoveryDetails");
+        QVERIFY(details->toPlainText().contains(QStringLiteral("工程版本：legacy-9")));
+        QVERIFY(!details->toPlainText().contains(QStringLiteral("工程版本：5.3")));
+        QVERIFY(details->toPlainText().contains(QStringLiteral("目录当前版本")));
+        dialog.findChild<QComboBox*>("psdRecoveryDocuments")->setCurrentIndex(1);
+        QVERIFY(details->toPlainText().contains(QStringLiteral("工程版本：5.3")));
+    }
+
     void duplicateNamesSelectDistinctDocumentsAndRemainOpenAfterExport()
     {
         QTemporaryDir temp; CPsdRecoveryDialog dialog(catalog(temp.filePath("source.cmo3")));

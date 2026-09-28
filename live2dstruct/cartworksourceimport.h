@@ -7,12 +7,14 @@
 class CExportControl;
 class CPsdReadDocument;
 struct CPsdDirectory;
+namespace cmo3 { class CCmo3Project; }
 
 namespace live2dstruct {
 class CArtworkSourceImport
 {
 public:
     static constexpr quint32 PsdInterpretationVersion = 2;
+    static constexpr quint32 CmoInterpretationVersion = 1;
     struct SourceCandidate {
         CModelArtwork::Revision revision;
         QMap<QByteArray, CModelArtwork::Image> images;
@@ -21,6 +23,13 @@ public:
     };
     static QString RevisionIdentity(const CPsdDirectory& source, const QString& familyId,
                                     CModelArtwork::ColorPolicy colorPolicy, const QTransform& documentToFamily);
+    static QString RevisionIdentity(const cmo3::CCmo3Project& project, const QString& documentId,
+                                    const QString& familyId, CModelArtwork::ColorPolicy colorPolicy,
+                                    const QTransform& documentToFamily);
+    static bool Prepare(const cmo3::CCmo3Project& project, const QString& documentId, const QString& familyId,
+                        const QString& revisionId, CModelArtwork::ColorPolicy colorPolicy,
+                        const QTransform& documentToFamily, SourceCandidate& result,
+                        QString* error = nullptr, CExportControl* control = nullptr);
     static bool Prepare(const CPsdReadDocument& document, const QString& familyId, const QString& revisionId,
                         CModelArtwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
                         SourceCandidate& result, QString* error = nullptr, CExportControl* control = nullptr);

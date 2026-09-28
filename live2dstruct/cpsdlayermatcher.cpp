@@ -25,8 +25,9 @@ struct Layer {
     bool supported = false;
 };
 struct Directory {
-    QString family;
+    QString family, sourceDocument;
     QVector<Layer> layers;
+    QHash<QString, int> nativeIds;
     QHash<quint32, QVector<int>> external;
     QHash<QString, QVector<int>> names;
     QHash<QByteArray, QVector<int>> pixels;
@@ -35,10 +36,12 @@ struct Directory {
 };
 bool freeze(const Artwork::Revision& revision, Directory& result, QString* error, CExportControl& control)
 {
-    if (!validText(revision.id, 1024, true) || !validText(revision.familyId, 1024, true) || revision.layers.size() > Artwork::MaximumRecords)
+    if (!validText(revision.id, 1024, true) || !validText(revision.familyId, 1024, true) ||
+        !validText(revision.sourceDocumentId, 1024) || !revision.sourceDocumentId.isValidUtf16() ||
+        (!revision.sourceDocumentId.isEmpty() && revision.sourceDocumentId.trimmed().isEmpty()) || revision.layers.size() > Artwork::MaximumRecords)
         return fail(error, QStringLiteral("图层匹配的来源或目录数量无效"));
-    Directory directory; directory.family = owned(revision.familyId); directory.layers.reserve(revision.layers.size());
-    qint64 metadata = 0; QSet<QString> ids;
+    Directory directory; directory.family = owned(revision.familyId); directory.sourceDocument = owned(revision.sourceDocumentId); directory.layers.reserve(revision.layers.size());
+    qint64 metadata = qint64(directory.sourceDocument.size()) * 2; QSet<QString> ids;
     for (const auto& layer : revision.layers) {
         if (control.IsCancellationRequested()) { control.Checkpoint(); return fail(error, control.Error()); }
         const qint64 width = qint64(layer.bounds.right()) - layer.bounds.x() + 1;
@@ -58,6 +61,7 @@ bool freeze(const Artwork::Revision& revision, Directory& result, QString* error
         Layer value; value.id = owned(layer.id); value.name = owned(layer.name); value.parent = layer.parentIndex;
         value.kind = layer.kind; value.external = layer.externalId; value.size = QSize(int(width), int(height));
         value.pixels = QByteArray(layer.imageDigest.constData(), layer.imageDigest.size()); value.supported = layer.pixelEquivalent;
+        if (!directory.sourceDocument.isEmpty()) directory.nativeIds.insert(value.id, directory.layers.size());
         directory.layers.append(std::move(value));
     }
     QVector<QByteArray> paths(directory.layers.size());
@@ -121,12 +125,25 @@ bool CPsdLayerMatcher::Compare(const Artwork::Revision& previous, const Artwork:
         if (before.family != after.family) return fail(error, QStringLiteral("不能在不同素材来源之间自动匹配图层"));
         if (!control.Checkpoint()) return fail(error, control.Error());
         Result output; QSet<int> confirmed; qint64 candidates = 0;
+        const bool native = !before.sourceDocument.isEmpty() || !after.sourceDocument.isEmpty();
+        const bool sameDocument = native && before.sourceDocument == after.sourceDocument;
         for (int index = 0; index < before.layers.size(); ++index) {
             const auto& old = before.layers[index]; if (old.kind != Artwork::LayerKind::Raster) continue;
             if (!control.Report(CExportControl::Phase::Preparing, index, before.layers.size(), old.name)) return fail(error, control.Error());
             Match match; match.oldLayerId = old.id;
             const auto external = old.external ? after.external.value(*old.external) : QVector<int>();
-            if (old.external && before.external.value(*old.external).size() == 1 && external.size() == 1) {
+            const auto nativeMatch = after.nativeIds.constFind(old.id);
+            if (sameDocument && nativeMatch != after.nativeIds.cend()) {
+                if (candidates >= Artwork::MaximumRecords) return fail(error, QStringLiteral("图层匹配候选总量超出预算"));
+                const int next = *nativeMatch; auto value = candidate(old, after.layers[next]);
+                value.reasons.prepend(QStringLiteral("native-layer-id: 原生图层 GUID 相同"));
+                match.candidates.append(value); ++candidates;
+                match.reasons.append(QStringLiteral("native-document-layer-id: 同一来源文档中的原生图层 GUID 一致"));
+                if (value.compatible) { match.status = Status::Matched; match.matchedLayerId = value.layerId; confirmed.insert(next); }
+                else match.status = Status::Incompatible;
+                output.matches.append(std::move(match)); continue;
+            }
+            if (!native && old.external && before.external.value(*old.external).size() == 1 && external.size() == 1) {
                 if (candidates >= Artwork::MaximumRecords) return fail(error, QStringLiteral("图层匹配候选总量超出预算"));
                 const int next = external[0]; auto value = candidate(old, after.layers[next]);
                 match.candidates.append(value); ++candidates;
@@ -135,7 +152,9 @@ bool CPsdLayerMatcher::Compare(const Artwork::Revision& previous, const Artwork:
                 else match.status = Status::Incompatible;
                 output.matches.append(std::move(match)); continue;
             }
-            if (!old.external) match.reasons.append(QStringLiteral("missing-external-id: 旧图层没有稳定 ID，需用户确认"));
+            if (native) match.reasons.append(sameDocument ? QStringLiteral("native-layer-not-found: 新版没有对应原生图层 GUID，需用户确认") :
+                QStringLiteral("native-document-mismatch: 原生文档身份不同，不能按 PSD 图层编号自动关联"));
+            else if (!old.external) match.reasons.append(QStringLiteral("missing-external-id: 旧图层没有稳定 ID，需用户确认"));
             else if (before.external.value(*old.external).size() > 1 || external.size() > 1)
                 match.reasons.append(QStringLiteral("duplicate-external-id: 来源图层 ID 重复，不能自动关联"));
             else match.reasons.append(QStringLiteral("external-id-not-found: 新版没有对应稳定 ID"));

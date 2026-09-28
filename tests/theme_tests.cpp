@@ -95,6 +95,26 @@ void activateTestWindow(QWidget& host)
     QT_WARNING_POP
 }
 
+void hoverWidget(QWidget& widget, const QPointF& position)
+{
+    const auto global = widget.mapToGlobal(position.toPoint());
+    QEnterEvent enter(position, widget.mapTo(widget.window(), position.toPoint()), global);
+    QCoreApplication::sendEvent(&widget, &enter);
+    QMouseEvent move(QEvent::MouseMove, position, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&widget, &move);
+    QHoverEvent hover(QEvent::HoverMove, position, global, QPointF(), Qt::NoModifier);
+    QCoreApplication::sendEvent(&widget, &hover);
+}
+
+void leaveWidget(QWidget& widget)
+{
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(&widget, &leave);
+    const QPoint outside(-1, -1);
+    QHoverEvent hover(QEvent::HoverLeave, outside, widget.mapToGlobal(outside), QPointF(), Qt::NoModifier);
+    QCoreApplication::sendEvent(&widget, &hover);
+}
+
 QStringList styles()
 {
     static const QString nativeStyle = qApp->style()->objectName();
@@ -292,9 +312,24 @@ private slots:
             for (auto* bar : {documentTabs->tabBar(), ordinaryTabs->tabBar(), dockTabs}) {
                 const int selected = bar->currentIndex();
                 const int other = selected == 0 ? 1 : 0;
+                leaveWidget(*bar);
                 verifyPair(bar->grab(bar->tabRect(selected)).toImage(),
                            QColor(colors.value(QStringLiteral("@accentInk@"))),
                            QColor(colors.value(QStringLiteral("@accentSoft@"))));
+                verifyPair(bar->grab(bar->tabRect(other)).toImage(),
+                           QColor(colors.value(QStringLiteral("@textMuted@"))),
+                           QColor(colors.value(QStringLiteral("@window@"))));
+                hoverWidget(*bar, bar->tabRect(other).center());
+                verifyPair(bar->grab(bar->tabRect(other)).toImage(),
+                           QColor(colors.value(QStringLiteral("@text@"))),
+                           QColor(colors.value(QStringLiteral("@surfaceHover@"))));
+                verifyPair(bar->grab(bar->tabRect(selected)).toImage(),
+                           QColor(colors.value(QStringLiteral("@accentInk@"))),
+                           QColor(colors.value(QStringLiteral("@accentSoft@"))));
+                QCOMPARE(bar->currentIndex(), selected);
+                QCOMPARE(qobject_cast<QLineEdit*>(documentTabs->widget(0))->text(), QStringLiteral("Preserved input"));
+                QVERIFY(changed.isEmpty());
+                leaveWidget(*bar);
                 verifyPair(bar->grab(bar->tabRect(other)).toImage(),
                            QColor(colors.value(QStringLiteral("@textMuted@"))),
                            QColor(colors.value(QStringLiteral("@window@"))));
@@ -350,12 +385,7 @@ private slots:
         item->setCheckState(Qt::Checked); QCoreApplication::processEvents(); const auto checked = view.viewport()->grab().toImage();
         QVERIFY(pixelsOf(checked, QColor(colors.value(QStringLiteral("@accent@")))) > 32); QVERIFY(changedPixels(unchecked, checked) > 32);
         const QPointF position = view.visualRect(model.index(1, 0)).center();
-        QEnterEvent enter(position, view.viewport()->mapTo(&view, position.toPoint()), view.viewport()->mapToGlobal(position.toPoint()));
-        QCoreApplication::sendEvent(view.viewport(), &enter);
-        QMouseEvent move(QEvent::MouseMove, position, view.viewport()->mapToGlobal(position.toPoint()), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(view.viewport(), &move);
-        QHoverEvent hover(QEvent::HoverMove, position, view.viewport()->mapToGlobal(position.toPoint()), QPointF(), Qt::NoModifier);
-        QCoreApplication::sendEvent(view.viewport(), &hover);
+        hoverWidget(*view.viewport(), position);
         const auto hovered = view.viewport()->grab().toImage(); QVERIFY(pixelsOf(hovered, QColor(colors.value(QStringLiteral("@surfaceHover@")))) > 32);
         view.setCurrentIndex(model.index(0, 0)); qApp->setStyleSheet(Theme::globalStyleSheet(!dark)); QCoreApplication::processEvents();
         QCOMPARE(item->checkState(), Qt::Checked); QCOMPARE(view.currentIndex(), model.index(0, 0)); const auto next = Theme::tokens(!dark);

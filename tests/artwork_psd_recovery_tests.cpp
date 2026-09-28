@@ -1,8 +1,12 @@
 #include "live2dstruct/cartworkpsdrecovery.h"
 #include "live2dstruct/cartworksourceimport.h"
 #include "psd/cpsdreader.h"
+#include "psd/cpsdsourcewriter.h"
+#include "psd_binary_reader.h"
 #include "std/cexportcontrol.h"
 #include "psd_original_fixture.h"
+#include "cmo_artwork_source_fixture.h"
+#include "cmo3/ccmo3project.h"
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QFile>
@@ -57,12 +61,129 @@ const CPsdSourceCatalog::Document* revision(const CPsdSourceCatalog& catalog, co
     for (const auto& entry : catalog.documents) if (entry.origin.revisionId == id) return &entry;
     return nullptr;
 }
+Artwork::State cmoFixture(const QByteArray& bytes, QString* error)
+{
+    cmo3::CCmo3Project project;
+    if (!cmo3::CCmo3Project::OpenBytes(bytes, "/offline/native.cmo3", project, error) || !project.Artwork()) return {};
+    Artwork::State result;
+    for (const auto& entry : project.Artwork()->documents) {
+        const auto* document = entry.Reconstructed(); if (!document) return {};
+        Artwork::Revision revision; revision.id = "revision:" + document->id; revision.familyId = "family:" + document->id;
+        revision.path = project.SourcePath(); revision.fileName = "native.cmo3"; revision.sourceBytes = project.Bytes(); revision.sourceDigest = project.SourceDigest();
+        revision.sourceDocumentId = document->id; revision.canvasSize = document->canvasSize; revision.iccProfile = document->iccProfile;
+        for (const auto& source : document->layers) {
+            Artwork::Layer layer; layer.id = source.id; layer.name = source.name; layer.parentIndex = source.parentIndex;
+            layer.sourceIndex = revision.layers.size(); layer.kind = source.kind == CPsdSourceLayer::Kind::Group ? Artwork::LayerKind::Group : Artwork::LayerKind::Raster;
+            layer.bounds = source.bounds; layer.visible = source.visible; layer.clipping = source.clipping; layer.opacity = source.opacity;
+            layer.blendMode = source.blendMode; layer.externalId = source.externalId;
+            if (!source.png.isEmpty()) { layer.imageDigest = digest(source.png); result.images.insert(layer.imageDigest, {source.bounds.size(), source.png}); }
+            revision.layers.append(std::move(layer));
+        }
+        result.families.insert(revision.familyId, {revision.familyId, document->name, Artwork::SourceKind::Cmo3, revision.id});
+        result.revisions.insert(revision.id, std::move(revision));
+    }
+    return result;
+}
 }
 
 class ArtworkPsdRecoveryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void savedCmoDocumentsRecoverNativeTreesFromOneEmbeddedArchive()
+    {
+        const auto bytes = cmo_artwork_source_fixture::archive(); QVERIFY(!bytes.isEmpty()); QString error;
+        auto state = cmoFixture(bytes, &error); QVERIFY2(!state.IsEmpty(), qPrintable(error));
+        QCOMPARE(state.families.size(), 2); QCOMPARE(state.images.size(), 1);
+        auto alternate = state.revisions.first(); alternate.id = "alternate-policy"; alternate.colorPolicy = Artwork::ColorPolicy::ConvertToSRgb;
+        alternate.documentToFamily = QTransform(2, 0, 0, 3, 100, -90); state.revisions.insert(alternate.id, alternate);
+        QImage working(2, 1, QImage::Format_RGBA8888); working.fill(Qt::green); QByteArray png; QBuffer buffer(&png);
+        QVERIFY(buffer.open(QIODevice::WriteOnly)); QVERIFY(working.save(&buffer, "PNG")); state.images.clear(); state.images.insert(digest(png), {working.size(), png});
+        for (auto& value : state.revisions) for (auto& layer : value.layers) {
+            layer.name = "伪造工作名称"; if (!layer.imageDigest.isEmpty()) layer.imageDigest = digest(png);
+        }
+        int reads = 0; CExportControl control; QString previousDetail;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.detail == QStringLiteral("读取 CAFF 资源") && previousDetail != progress.detail) ++reads;
+            previousDetail = progress.detail; return true;
+        }));
+        CPsdSourceCatalog catalog; QVERIFY2(Recovery::Prepare(state, catalog, &error, &control), qPrintable(error));
+        QCOMPARE(reads, 1); QCOMPARE(catalog.documents.size(), 3); QCOMPARE(catalog.protectedPaths, QStringList{"/offline/native.cmo3"});
+        for (const auto& entry : catalog.documents) {
+            QVERIFY(entry.Reconstructed()); QVERIFY(!entry.Original()); QVERIFY(entry.diagnostics.isEmpty());
+            QCOMPARE(entry.origin.sourceVersion, QString("502020000")); QCOMPARE(entry.origin.sourceDigest, digest(bytes));
+            const auto& doc = *entry.Reconstructed(); QCOMPARE(doc.id, state.revisions[entry.origin.revisionId].sourceDocumentId);
+            QCOMPARE(doc.name, QString("同名文档")); QCOMPARE(doc.layers.size(), 3); QVERIFY(!doc.iccProfile.isEmpty());
+            QCOMPARE(doc.layers[0].name, QString("原始分组")); QCOMPARE(doc.layers[1].parentIndex, 0); QCOMPARE(doc.layers[2].parentIndex, 0);
+            QCOMPARE(doc.layers[1].png, cmo_artwork_source_fixture::pixels()); QVERIFY(doc.layers[2].png.isEmpty());
+            QCOMPARE(doc.layers[1].bounds, QRect(-3, 4, 2, 1)); QCOMPARE(doc.layers[1].opacity, quint8(127)); QVERIFY(!doc.layers[1].visible);
+        }
+    }
+    void savedCmoRestoresAReadablePsdWithOriginalPixelsAndEmptyLayers()
+    {
+        QString error; const auto state = cmoFixture(cmo_artwork_source_fixture::archive(), &error);
+        QVERIFY2(!state.IsEmpty(), qPrintable(error)); CPsdSourceCatalog catalog;
+        QVERIFY2(Recovery::Prepare(state, catalog, &error), qPrintable(error)); QTemporaryDir directory;
+        for (const auto& entry : catalog.documents) {
+            const auto* source = entry.Reconstructed(); QVERIFY(source);
+            const auto path = directory.filePath(source->id + ".psd");
+            QVERIFY2(CPsdSourceWriter::Write(path, *source, nullptr, &error), qPrintable(error));
+            CPsdSnapshot restored; QVERIFY2(CPsdReader::ReadFile(path, restored, &error), qPrintable(error));
+            QCOMPARE(restored.canvasSize, source->canvasSize); QCOMPARE(restored.iccProfile, source->iccProfile);
+            QCOMPARE(restored.displayOrder.size(), source->layers.size()); QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+            PsdBinary::Document binary; QVERIFY2(PsdBinary::Parse(file.readAll(), binary, &error), qPrintable(error));
+            for (int index = 0; index < source->layers.size(); ++index) {
+                const auto& expected = source->layers[index]; const int record = restored.displayOrder[index];
+                const auto& actual = restored.layers[record];
+                QCOMPARE(actual.name, expected.name); QCOMPARE(actual.bounds, expected.bounds);
+                QCOMPARE(actual.parentIndex, expected.parentIndex < 0 ? -1 : restored.displayOrder[expected.parentIndex]);
+                QCOMPARE(actual.visible, expected.visible); QCOMPARE(actual.opacity, expected.opacity);
+                QCOMPARE(actual.blendMode, expected.blendMode); QCOMPARE(actual.clipping, expected.clipping);
+                QCOMPARE(actual.layerId, expected.externalId);
+                if (!expected.png.isEmpty()) {
+                    QImage original; QVERIFY(original.loadFromData(expected.png, "PNG"));
+                    const auto expectedPixels = original.convertToFormat(QImage::Format_RGBA8888);
+                    const auto actualPixels = actual.image.convertToFormat(QImage::Format_RGBA8888);
+                    QCOMPARE(actualPixels.size(), expectedPixels.size());
+                    for (int y = 0; y < expectedPixels.height(); ++y)
+                        QCOMPARE(QByteArray(reinterpret_cast<const char*>(actualPixels.constScanLine(y)), actualPixels.width() * 4),
+                                 QByteArray(reinterpret_cast<const char*>(expectedPixels.constScanLine(y)), expectedPixels.width() * 4));
+                } else if (expected.kind == CPsdSourceLayer::Kind::Raster) {
+                    QVERIFY(actual.image.isNull()); QCOMPARE(binary.layers[record].channels.size(), 4);
+                    for (const auto& channel : binary.layers[record].channels) { QCOMPARE(channel.length, quint32(2)); QVERIFY(channel.pixels.isEmpty()); }
+                }
+            }
+        }
+    }
+    void cmoMissingDocumentAndBrokenArchiveRemainVisibleAlongsideValidSources()
+    {
+        QString error; auto state = cmoFixture(cmo_artwork_source_fixture::archive(), &error); QVERIFY2(!state.IsEmpty(), qPrintable(error));
+        auto missing = state.revisions.first(); missing.id = "missing-document"; missing.sourceDocumentId = "not-in-archive";
+        state.revisions.insert(missing.id, missing);
+        auto corrupt = missing; corrupt.id = "broken-archive"; corrupt.sourceBytes = "not a CMO"; corrupt.sourceDigest = digest(corrupt.sourceBytes);
+        state.revisions.insert(corrupt.id, corrupt);
+        CPsdSourceCatalog result; QVERIFY2(Recovery::Prepare(state, result, &error), qPrintable(error)); QCOMPARE(result.documents.size(), 4);
+        for (const auto& id : {"missing-document", "broken-archive"}) {
+            const auto* entry = revision(result, id); QVERIFY(entry && entry->Reconstructed());
+            QCOMPARE(entry->diagnostics.size(), 1); QCOMPARE(entry->diagnostics[0].severity, CPsdSourceDiagnostic::Severity::Error);
+        }
+        const auto* valid = revision(result, "revision:d0-guid"); QVERIFY(valid && valid->diagnostics.isEmpty()); QVERIFY(error.isEmpty());
+    }
+    void cmoRecoveryFreezesInputAndKeepsPerSourceVersions()
+    {
+        QString error; auto state = cmoFixture(cmo_artwork_source_fixture::archive(1), &error); QVERIFY2(!state.IsEmpty(), qPrintable(error));
+        const auto nextBytes = cmo_artwork_source_fixture::archive(1, "503000000");
+        auto next = state.revisions.first(); next.id = "new"; next.sourceBytes = nextBytes; next.sourceDigest = digest(nextBytes); state.revisions.insert(next.id, next);
+        state.families.begin()->currentRevision = next.id;
+        CExportControl control; QVERIFY(control.SetHandler([&](const auto&, QString*) { state = {}; return true; }));
+        CPsdSourceCatalog result; QVERIFY2(Recovery::Prepare(state, result, &error, &control), qPrintable(error));
+        QCOMPARE(result.documents.size(), 2); QCOMPARE(revision(result, "new")->origin.sourceVersion, QString("503000000"));
+        QCOMPARE(revision(result, "revision:d0-guid")->origin.sourceVersion, QString("502020000"));
+        QVERIFY(revision(result, "new")->origin.currentRevision); QVERIFY(!revision(result, "revision:d0-guid")->origin.currentRevision);
+        auto again = cmoFixture(nextBytes, &error); CExportControl canceled;
+        QVERIFY(canceled.SetHandler([&](const CExportControl::Progress& progress, QString*) { if (progress.phase == CExportControl::Phase::Extracting) canceled.Cancel(); return true; }));
+        result.sourcePath = "retained"; QVERIFY(!Recovery::Prepare(again, result, &error, &canceled)); QCOMPARE(result.sourcePath, QString("retained"));
+    }
     void allRevisionsRemainDistinctAndCountsFollowPinnedMaterials()
     {
         const auto source = fixture(); QVERIFY(!source.IsEmpty()); QString error;

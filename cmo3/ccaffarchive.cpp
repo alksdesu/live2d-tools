@@ -200,7 +200,7 @@ bool CCaffArchive::Load(const QString& filePath, QString* outError, CExportContr
     const CCaffReadLimits frozenLimits = limits;
     QByteArray bytes;
     return ReadFileBytes(filePath, bytes, outError, control, frozenLimits) &&
-           LoadBytes(bytes, outError, control, frozenLimits);
+           LoadOwned(bytes, outError, control, frozenLimits);
 }
 
 bool CCaffArchive::ReadFileBytes(const QString& filePath, QByteArray& result, QString* outError,
@@ -257,15 +257,31 @@ bool CCaffArchive::ReadFileBytes(const QString& filePath, QByteArray& result, QS
 bool CCaffArchive::LoadBytes(const QByteArray& input, QString* outError, CExportControl* control,
                              const CCaffReadLimits& inputLimits)
 {
+    if (outError) outError->clear();
+    try {
+        const CCaffReadLimits limits = inputLimits;
+        if (!validLimits(limits) || input.size() > limits.maximumFileBytes) {
+            setErr(outError, QStringLiteral("CAFF 输入或读取预算无效"));
+            return false;
+        }
+        const QByteArray bytes(input.constData(), input.size());
+        return LoadOwned(bytes, outError, control, limits);
+    } catch (const std::bad_alloc&) { setErr(outError, QStringLiteral("CAFF 读取内存不足")); }
+    catch (const std::length_error&) { setErr(outError, QStringLiteral("CAFF 资源长度超出可表示范围")); }
+    return false;
+}
+
+bool CCaffArchive::LoadOwned(const QByteArray& data, QString* outError, CExportControl* control,
+                             const CCaffReadLimits& inputLimits)
+{
     const CCaffReadLimits limits = inputLimits;
     if (outError) outError->clear();
     const auto fail = [outError](const QString& message) { setErr(outError, message); return false; };
     if (!validLimits(limits))
         return fail(QStringLiteral("CAFF 读取预算无效"));
-    if (input.size() > limits.maximumFileBytes || input.size() < kHeaderSize + 6)
+    if (data.size() > limits.maximumFileBytes || data.size() < kHeaderSize + 6)
         return fail(QStringLiteral("CAFF 文件为空、截断或超出读取预算"));
     try {
-        const QByteArray data(input.constData(), input.size());
         if (control && !control->Report(CExportControl::Phase::Preparing, 0, 0, QStringLiteral("读取 CAFF 资源")))
             return fail(control->Error());
         if (data.left(4) != QByteArray(kMagic, 4) || data.right(2) != QByteArrayLiteral("bc"))

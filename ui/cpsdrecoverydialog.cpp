@@ -291,7 +291,9 @@ void CPsdRecoveryDialog::SelectLayer()
     } else {
         detail.append(QStringLiteral("根据 CMO3 工程内保存的来源图层重建 PSD。空图层只保留身份，不代表已找回缺失像素。"));
         detail.append(QStringLiteral("PSD 未预先合成预览；请在 Photoshop 中打开并重新保存，由 Photoshop 重建合成预览。"));
-        if (!m_catalog->sourceVersion.isEmpty()) detail.append(QStringLiteral("工程版本：%1").arg(m_catalog->sourceVersion));
+        const auto version = document.origin.sourceVersion.isEmpty() ? m_catalog->sourceVersion : document.origin.sourceVersion;
+        if (!version.isEmpty()) detail.append(QStringLiteral("工程版本：%1").arg(version));
+        if (!document.origin.revisionId.isEmpty()) detail.append(versionDescription(document.origin));
         const auto documentNotes = notes(document.Reconstructed()->diagnostics); if (!documentNotes.isEmpty()) detail.append(documentNotes);
     }
     detail.append(QStringLiteral("来源路径：%1").arg(originPath(*m_catalog, document)));

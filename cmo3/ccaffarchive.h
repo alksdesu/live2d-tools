@@ -57,6 +57,9 @@ public:
     void SetObfuscateKey(qint32 key) { m_key = key; }
 
 private:
+    friend class CCmo3Project;
+    bool LoadOwned(const QByteArray& bytes, QString* outError, CExportControl* control,
+                   const CCaffReadLimits& limits);
     static QByteArray zipWrap(const QByteArray& content);
     static bool zipUnwrap(const QByteArray& blob, QByteArray& result, qint64 maximumBytes,
                           QString* outError, CExportControl* control);

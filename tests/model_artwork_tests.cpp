@@ -50,6 +50,53 @@ class ModelArtworkTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void cmoDocumentProvenanceUsesVersionTwoAndOwnsItsIdentity()
+    {
+        auto original = state(); original.families["source"].kind = Artwork::SourceKind::Cmo3;
+        QString identity = "native-document-guid";
+        original.revisions["revision"].sourceDocumentId = QString::fromRawData(identity.constData(), identity.size());
+        Artwork::State frozen; QString error;
+        QVERIFY2(Artwork::Freeze(original, frozen, &error), qPrintable(error));
+        identity.fill('x'); QCOMPARE(frozen.revisions["revision"].sourceDocumentId, QString("native-document-guid"));
+        Artwork::Archive archive; QVERIFY(Artwork::EncodeArchive(frozen, archive, &error));
+        QCOMPARE(archive.metadata["version"].toInt(), 2);
+        QCOMPARE(archive.metadata["revisions"].toObject()["revision"].toObject()["sourceDocumentId"].toString(), QString("native-document-guid"));
+        Artwork::State restored; QVERIFY2(Artwork::DecodeArchive(archive, restored, &error), qPrintable(error)); QVERIFY(restored == frozen);
+        QByteArray before, after; QVERIFY(Artwork::Fingerprint(frozen, before));
+        restored.revisions["revision"].sourceDocumentId = "another-document";
+        QVERIFY(restored != frozen); QVERIFY(Artwork::Fingerprint(restored, after)); QVERIFY(before != after);
+        auto legacy = archive; legacy.metadata["version"] = 1;
+        restored = frozen; QVERIFY(!Artwork::DecodeArchive(legacy, restored, &error)); QVERIFY(restored == frozen);
+    }
+    void legacyAndMixedSourceArchivesKeepStrictDocumentIdentityFields()
+    {
+        const auto original = state(); Artwork::Archive legacy; QString error;
+        QVERIFY(Artwork::EncodeArchive(original, legacy, &error)); QCOMPARE(legacy.metadata["version"].toInt(), 1);
+        QVERIFY(!legacy.metadata["revisions"].toObject()["revision"].toObject().contains("sourceDocumentId"));
+        auto mixed = original; auto native = mixed.revisions["revision"];
+        native.id = "native-revision"; native.familyId = "native-family"; native.sourceDocumentId = "native-document";
+        mixed.revisions.insert(native.id, native);
+        mixed.families.insert(native.familyId, {native.familyId, "CMO", Artwork::SourceKind::Cmo3, native.id});
+        Artwork::Archive archive; QVERIFY(Artwork::EncodeArchive(mixed, archive, &error)); QCOMPARE(archive.metadata["version"].toInt(), 2);
+        QCOMPARE(archive.blobs.size(), legacy.blobs.size());
+        Artwork::State restored; QVERIFY(Artwork::DecodeArchive(archive, restored, &error)); QVERIFY(restored == mixed);
+        for (int failure = 0; failure < 4; ++failure) {
+            auto broken = mixed;
+            if (failure == 0) broken.revisions[native.id].sourceDocumentId.clear();
+            if (failure == 1) broken.revisions[native.id].sourceDocumentId = QString(1025, 'x');
+            if (failure == 2) broken.revisions["revision"].sourceDocumentId = "not-a-cmo";
+            if (failure == 3) broken.revisions[native.id].sourceDocumentId = QString(QChar(0xd800));
+            QVERIFY(!Artwork::Validate(broken, nullptr, &error));
+        }
+        for (int failure = 0; failure < 3; ++failure) {
+            auto broken = archive; auto revisions = broken.metadata["revisions"].toObject(); auto row = revisions[native.id].toObject();
+            if (failure == 0) row.remove("sourceDocumentId");
+            if (failure == 1) row["sourceDocumentId"] = 7;
+            if (failure == 2) row["sourceDocumentId"] = "";
+            revisions[native.id] = row; broken.metadata["revisions"] = revisions;
+            QVERIFY(!Artwork::DecodeArchive(broken, restored, &error)); QVERIFY(restored == mixed);
+        }
+    }
     void emptyStateIsRoundTrippable()
     {
         const Artwork::State empty; QVERIFY(empty.IsEmpty()); QString error; Artwork::Usage usage{7, 9, 11, 13};
