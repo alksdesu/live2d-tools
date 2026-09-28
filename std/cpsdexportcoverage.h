@@ -8,6 +8,7 @@
 #include <QString>
 #include <QVector>
 #include <memory>
+#include "psd/cpsdpreview.h"
 
 class CPsdExportCoverage
 {
@@ -21,6 +22,7 @@ public:
         Method method = Method::Gpu;
         bool includeHidden = false;
         int runtimeCount = 0;
+        CPsdPreviewKind preview = CPsdPreviewKind::Unknown;
     };
     struct Record {
         int runtimeIndex = -1;

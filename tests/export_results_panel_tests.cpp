@@ -54,6 +54,48 @@ class ExportResultsPanelTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void committedPreviewUpdatesDetailsAndReportWithoutGrowingSummary_data()
+    {
+        QTest::addColumn<int>("kind"); QTest::addColumn<QString>("key"); QTest::addColumn<QString>("message");
+        QTest::newRow("composite") << int(CPsdPreviewKind::Composite) << QString("composite") << QStringLiteral("含透明合成预览");
+        QTest::newRow("layers") << int(CPsdPreviewKind::RebuildFromLayers) << QString("layers_required") << QStringLiteral("需按图层重建预览");
+    }
+    void committedPreviewUpdatesDetailsAndReportWithoutGrowingSummary()
+    {
+        QFETCH(int, kind); QFETCH(QString, key); QFETCH(QString, message);
+        CPsdExportCoverage::Context input;
+        input.sourceMocDigest = input.runtimeMocDigest = QByteArray(32, 's'); input.canvas = QSize(32, 32);
+        auto output = result(0, PsdBatchFileState::Succeeded, "/model.json", "/model.psd", true);
+        QVERIFY(CPsdExportCoverage::Capture(input, {}, true, output.coverage));
+        CExportResultsPanel panel; QVERIFY(panel.SetResults({output}));
+        auto* summary = panel.findChild<QLabel*>("exportResultsSummary"); QVERIFY(summary);
+        const QString originalSummary = summary->text();
+        const auto oldCoverage = output.coverage;
+        input.preview = static_cast<CPsdPreviewKind>(kind);
+        QVERIFY(CPsdExportCoverage::Capture(input, {}, true, output.coverage));
+        QVERIFY(output.coverage != oldCoverage);
+        QVERIFY(!panel.UpdateResult(0, output));
+        QVERIFY(panel.SetResults({result(0, PsdBatchFileState::Running, output.sourcePath, output.outputPath)}));
+        QVERIFY(panel.UpdateResult(0, output));
+        QCOMPARE(summary->text(), originalSummary);
+        const auto* details = panel.findChild<QPlainTextEdit*>("exportResultDetails"); QVERIFY(details);
+        QVERIFY(details->toPlainText().contains(message));
+        const auto report = QJsonDocument::fromJson(panel.ReportText().toUtf8()).object();
+        QCOMPARE(report, panel.ReportJson()); QCOMPARE(report["version"].toInt(), 5);
+        const auto coverage = report["files"].toArray()[0].toObject()["objectCoverage"].toObject();
+        QCOMPARE(coverage["version"].toInt(), 2); QCOMPARE(coverage["mergedPreview"].toString(), key);
+        output.state = PsdBatchFileState::Failed; output.stage = PsdExportStage::Restoring;
+        output.error = QStringLiteral("恢复预览失败");
+        QVERIFY(panel.SetResults({result(0, PsdBatchFileState::Running, output.sourcePath, output.outputPath)}));
+        QVERIFY(panel.UpdateResult(0, output));
+        QVERIFY(details->toPlainText().startsWith(output.error));
+        QVERIFY(details->toPlainText().contains(message));
+        input.preview = CPsdPreviewKind::Unknown; output.state = PsdBatchFileState::Canceled;
+        output.outputCommitted = false; output.error = QStringLiteral("已取消");
+        QVERIFY(CPsdExportCoverage::Capture(input, {}, false, output.coverage));
+        QVERIFY(panel.SetResults({output})); QCOMPARE(panel.ReportJson()["version"].toInt(), 4);
+        QVERIFY(!details->toPlainText().contains(message));
+    }
     void coverageVersionFourKeepsOriginalReportFieldsAndPlainIdentity()
     {
         using Coverage = CPsdExportCoverage;

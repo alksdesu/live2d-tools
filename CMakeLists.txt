@@ -33,7 +33,8 @@ if(APPLE AND TARGET WrapOpenGL::WrapOpenGL)
     endif()
 endif()
 
-add_library(export_control STATIC std/cexportcontrol.cpp std/cexportdiagnostics.cpp std/cexportsourceinfo.cpp std/cpsdexportcoverage.cpp)
+add_library(export_control STATIC std/cexportcontrol.cpp std/cexportdiagnostics.cpp std/cexportsourceinfo.cpp
+    std/cpsdexportcoverage.cpp psd/cpsdpreview.h)
 target_include_directories(export_control PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(export_control PUBLIC Qt6::Core)
 add_library(export_task_runner STATIC ui/cexporttaskrunner.cpp)
@@ -1007,6 +1008,7 @@ if(BUILD_TESTING)
     add_test(NAME cmo3_material COMMAND cmo3_material_tests)
     add_library(psd_data STATIC
         psd/cpsdlist.cpp
+        psd/cpsdcomposite.cpp psd/cpsdcomposite.h
         psd/cpsdsourcewriter.cpp
         psd/psdSamples/Exporter/PsdExport.cpp
         psd/psdSamples/ImageUtil/PsdDecompressRle.cpp
@@ -1026,6 +1028,9 @@ if(BUILD_TESTING)
     set_target_properties(psd_tests PROPERTIES AUTORCC ON)
     target_link_libraries(psd_tests PRIVATE psd_data Qt6::Test)
     add_test(NAME psd COMMAND psd_tests)
+    add_executable(psd_composite_tests tests/psd_composite_tests.cpp)
+    target_link_libraries(psd_composite_tests PRIVATE psd_data psd_reader_data Qt6::Test)
+    add_test(NAME psd_composite COMMAND psd_composite_tests)
     add_executable(psd_source_writer_tests tests/psd_source_writer_tests.cpp)
     target_link_libraries(psd_source_writer_tests PRIVATE psd_data psd_reader_data Qt6::Test)
     add_test(NAME psd_source_writer COMMAND psd_source_writer_tests)

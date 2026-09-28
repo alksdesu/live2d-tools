@@ -16,6 +16,10 @@ struct ExportDocument;
 class File;
 class Allocator;
 using ExportCheckpoint = std::function<bool(uint32_t current, uint32_t total)>;
+// PSD merged RGB is white-matted; providers synchronously supply consecutive row bands.
+using MergedImageSink = std::function<bool(uint32_t firstRow, uint32_t rowCount,
+    const uint8_t* red, const uint8_t* green, const uint8_t* blue, const uint8_t* alpha)>;
+using MergedImageProvider = std::function<bool(const MergedImageSink&)>;
 
 //#include "psd/psdSamples/Zip/Psdminiz.h"
 
@@ -157,5 +161,7 @@ void SetSourceDocumentOptions(ExportDocument* document);
 /// Exports a document to the given file.
 bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file);
 bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, const ExportCheckpoint& checkpoint);
+bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file,
+                   const ExportCheckpoint& checkpoint, const MergedImageProvider& mergedImage);
 
 PSD_NAMESPACE_END

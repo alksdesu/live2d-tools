@@ -25,7 +25,7 @@ CPsdBatchDialog::CPsdBatchDialog(QWidget *parent)
     optRow->addWidget(m_checkCubism);
     optRow->addStretch(1);
     layout->addLayout(optRow);
-    auto* coverageNotice = new QLabel(QStringLiteral("包含隐藏时也导出编辑器中隐藏的对象。当前姿态没有像素的对象会保留为空图层，不代表原始素材已恢复；具体对象与原因见导出结果。"), this);
+    auto* coverageNotice = new QLabel(QStringLiteral("合成预览按导出的图层生成；纹理采样结果可能与实时画布不同。包含隐藏时也导出编辑器中隐藏的对象。当前姿态没有像素的对象会保留为空图层，不代表原始素材已恢复；具体对象与原因见导出结果。"), this);
     coverageNotice->setObjectName(QStringLiteral("psdCoverageNotice"));
     coverageNotice->setTextFormat(Qt::PlainText);
     coverageNotice->setWordWrap(true);

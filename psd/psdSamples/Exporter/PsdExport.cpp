@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <memory>
 #include <new>
+#include <stdexcept>
+#include <array>
 
 
 PSD_NAMESPACE_BEGIN
@@ -828,17 +830,16 @@ unsigned int AddAlphaChannel(ExportDocument* document, Allocator* allocator, con
 template <typename T>
 void UpdateChannelImpl(ExportDocument* document, Allocator* allocator, unsigned int channelIndex, const T* data)
 {
-	// free old data
-	memoryUtil::FreeArray(allocator, document->alphaChannelData[channelIndex]);
-
-	// copy raw data
-	const uint32_t size = document->width*document->height;
-	T* channelData = memoryUtil::AllocateArray<T>(allocator, size);
-	for (unsigned int i = 0u; i < size; ++i)
-	{
-		channelData[i] = endianUtil::NativeToBigEndian(data[i]);
-	}
-	document->alphaChannelData[channelIndex] = channelData;
+    if (!document || !allocator || !data || channelIndex >= document->alphaChannelCount ||
+        channelIndex >= ExportDocument::MAX_ALPHA_CHANNEL_COUNT || document->bitsPerChannel != sizeof(T) * 8u ||
+        !document->width || !document->height ||
+        document->height > std::numeric_limits<uint32_t>::max() / sizeof(T) / document->width)
+        throw std::invalid_argument("Invalid alpha channel");
+    const uint32_t size = document->width * document->height;
+    auto channelData = MakeBuffer<T>(allocator, size);
+    for (uint32_t i = 0u; i < size; ++i) channelData.get()[i] = endianUtil::NativeToBigEndian(data[i]);
+    memoryUtil::FreeArray(allocator, document->alphaChannelData[channelIndex]);
+    document->alphaChannelData[channelIndex] = channelData.release();
 }
 
 
@@ -871,25 +872,23 @@ void UpdateChannel(ExportDocument* document, Allocator* allocator, unsigned int 
 template <typename T>
 void UpdateMergedImageImpl(ExportDocument* document, Allocator* allocator, const T* planarDataR, const T* planarDataG, const T* planarDataB)
 {
-	// free old data
-	memoryUtil::FreeArray(allocator, document->mergedImageData[0]);
-	memoryUtil::FreeArray(allocator, document->mergedImageData[1]);
-	memoryUtil::FreeArray(allocator, document->mergedImageData[2]);
-
-	// copy raw data
-	const uint32_t size = document->width*document->height;
-	T* memoryR = memoryUtil::AllocateArray<T>(allocator, size);
-	T* memoryG = memoryUtil::AllocateArray<T>(allocator, size);
-	T* memoryB = memoryUtil::AllocateArray<T>(allocator, size);
-	for (unsigned int i = 0u; i < size; ++i)
-	{
-		memoryR[i] = endianUtil::NativeToBigEndian(planarDataR[i]);
-		memoryG[i] = endianUtil::NativeToBigEndian(planarDataG[i]);
-		memoryB[i] = endianUtil::NativeToBigEndian(planarDataB[i]);
-	}
-	document->mergedImageData[0] = memoryR;
-	document->mergedImageData[1] = memoryG;
-	document->mergedImageData[2] = memoryB;
+    if (!document || !allocator || !planarDataR || !planarDataG || !planarDataB ||
+        document->bitsPerChannel != sizeof(T) * 8u || !document->width || !document->height ||
+        document->height > std::numeric_limits<uint32_t>::max() / sizeof(T) / document->width)
+        throw std::invalid_argument("Invalid merged image");
+    const uint32_t size = document->width * document->height;
+    auto memoryR = MakeBuffer<T>(allocator, size);
+    auto memoryG = MakeBuffer<T>(allocator, size);
+    auto memoryB = MakeBuffer<T>(allocator, size);
+    for (uint32_t i = 0u; i < size; ++i) {
+        memoryR.get()[i] = endianUtil::NativeToBigEndian(planarDataR[i]);
+        memoryG.get()[i] = endianUtil::NativeToBigEndian(planarDataG[i]);
+        memoryB.get()[i] = endianUtil::NativeToBigEndian(planarDataB[i]);
+    }
+    for (void* plane : document->mergedImageData) memoryUtil::FreeArray(allocator, plane);
+    document->mergedImageData[0] = memoryR.release();
+    document->mergedImageData[1] = memoryG.release();
+    document->mergedImageData[2] = memoryB.release();
 }
 
 
@@ -926,7 +925,28 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file)
 
 bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, const ExportCheckpoint& checkpoint)
 {
-    if (!document || !allocator || !file || !CheckExport(checkpoint, 0, document->layerCount)) return false;
+    return WriteDocument(document, allocator, file, checkpoint, {});
+}
+
+bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file,
+                   const ExportCheckpoint& checkpoint, const MergedImageProvider& mergedImage)
+{
+    const MergedImageProvider provider = mergedImage;
+    const ExportCheckpoint check = checkpoint;
+    if (!document || !allocator || !file || document->layerCount > ExportDocument::MAX_LAYER_COUNT ||
+        document->alphaChannelCount > ExportDocument::MAX_ALPHA_CHANNEL_COUNT ||
+        (document->colorMode != exportColorMode::RGB && document->colorMode != exportColorMode::GRAYSCALE) ||
+        (document->bitsPerChannel != 8u && document->bitsPerChannel != 16u && document->bitsPerChannel != 32u) ||
+        !document->width || !document->height ||
+        document->height > std::numeric_limits<uint32_t>::max() / (document->bitsPerChannel / 8u) / document->width ||
+        (provider && (document->bitsPerChannel != 8u || document->colorMode != exportColorMode::RGB || document->omitMergedPreview)) ||
+        !CheckExport(check, 0, document->layerCount)) return false;
+    const bool transparency = bool(provider);
+    const bool hasMergedData = !document->omitMergedPreview && (transparency ||
+        (document->mergedImageData[0] && (document->colorMode == exportColorMode::GRAYSCALE ||
+         (document->mergedImageData[1] && document->mergedImageData[2]))));
+    const uint16_t documentChannelCount = static_cast<uint16_t>(document->colorMode + document->alphaChannelCount + unsigned(transparency));
+    if (documentChannelCount > 56u) return false;
 	SyncFileWriter writer(file);
 
 	// signature
@@ -940,7 +960,6 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 	fileUtil::WriteToFile(writer, zeroes);
 
 	// channel count
-	const uint16_t documentChannelCount = static_cast<uint16_t>(document->colorMode + document->alphaChannelCount);
 	fileUtil::WriteToFileBE(writer, documentChannelCount);
 
 	// header
@@ -1023,20 +1042,19 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 		const bool hasExifData = (document->exifData != nullptr);
 		const bool hasThumbnail = (document->thumbnail != nullptr);
 		const bool hasAlphaChannels = (document->alphaChannelCount != 0u);
-		const bool hasImageResources = (hasMetaData || hasIccProfile || hasExifData || hasThumbnail || hasAlphaChannels || document->omitMergedPreview);
 
 		// write image resources section with optional XMP meta data, ICC profile, EXIF data, thumbnail, alpha channels
-		if (hasImageResources)
 		{
 			const uint32_t metaDataSize = hasMetaData ? GetMetaDataResourceSize(document) : 0u;
 			const uint32_t iccProfileSize = hasIccProfile ? GetIccProfileResourceSize(document) : 0u;
 			const uint32_t exifDataSize = hasExifData ? GetExifDataResourceSize(document) : 0u;
 			const uint32_t thumbnailSize = hasThumbnail ? GetThumbnailResourceSize(document) : 0u;
 			const uint32_t displayInfoSize = hasAlphaChannels ? GetDisplayInfoResourceSize(document) : 0u;
-			const uint32_t channelNamesSize = hasAlphaChannels ? GetChannelNamesResourceSize(document) : 0u;
-			const uint32_t unicodeChannelNamesSize = hasAlphaChannels ? GetUnicodeChannelNamesResourceSize(document) : 0u;
+			const uint32_t channelNamesSize = hasAlphaChannels ? GetChannelNamesResourceSize(document) + (transparency ? 13u : 0u) : 0u;
+			const uint32_t unicodeChannelNamesSize = hasAlphaChannels ? GetUnicodeChannelNamesResourceSize(document) + (transparency ? 30u : 0u) : 0u;
 
-			uint32_t sectionLength = document->omitMergedPreview ? GetImageResourceSize() + 18u : 0u;
+			uint32_t sectionLength = GetImageResourceSize() + 18u;
+            if (transparency) sectionLength += GetImageResourceSize() + 4u * (document->alphaChannelCount + 1u);
 			sectionLength += hasMetaData ? bitUtil::RoundUpToMultiple(GetImageResourceSize() + metaDataSize, 2u) : 0u;
 			sectionLength += hasIccProfile ? bitUtil::RoundUpToMultiple(GetImageResourceSize() + iccProfileSize, 2u) : 0u;
 			sectionLength += hasExifData ? bitUtil::RoundUpToMultiple(GetImageResourceSize() + exifDataSize, 2u) : 0u;
@@ -1047,14 +1065,19 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 
 			// image resource section starts with length of the whole section
 			fileUtil::WriteToFileBE(writer, sectionLength);
-            if (document->omitMergedPreview) {
+            {
                 WriteImageResource(writer, 1057u, 17u);
                 fileUtil::WriteToFileBE(writer, uint32_t(1u));
-                fileUtil::WriteToFileBE(writer, uint8_t(0u));
+                fileUtil::WriteToFileBE(writer, uint8_t(hasMergedData));
                 fileUtil::WriteToFileBE(writer, uint32_t(0u));
                 fileUtil::WriteToFileBE(writer, uint32_t(0u));
                 fileUtil::WriteToFileBE(writer, uint32_t(1u));
                 fileUtil::WriteToFileBE(writer, uint8_t(0u));
+            }
+            if (transparency) {
+                WriteImageResource(writer, 1053u, 4u * (document->alphaChannelCount + 1u));
+                for (uint32_t channel = 0; channel <= document->alphaChannelCount; ++channel)
+                    fileUtil::WriteToFileBE(writer, channel);
             }
 
 			if (hasMetaData)
@@ -1184,6 +1207,10 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 					WriteImageResource(writer, imageResource::ALPHA_CHANNEL_ASCII_NAMES, channelNamesSize);
 
 					const uint64_t start = writer.GetPosition();
+                    if (transparency) {
+                        fileUtil::WriteToFileBE(writer, uint8_t(12u));
+                        writer.Write("Transparency", 12u);
+                    }
 
 					for (unsigned int i = 0u; i < document->alphaChannelCount; ++i)
 					{
@@ -1204,6 +1231,10 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 					WriteImageResource(writer, imageResource::ALPHA_CHANNEL_UNICODE_NAMES, unicodeChannelNamesSize);
 
 					const uint64_t start = writer.GetPosition();
+                    if (transparency) {
+                        fileUtil::WriteToFileBE(writer, uint32_t(13u));
+                        for (char character : "Transparency") fileUtil::WriteToFileBE(writer, uint16_t(character));
+                    }
 
 					for (unsigned int i = 0u; i < document->alphaChannelCount; ++i)
 					{
@@ -1230,11 +1261,6 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 				}
 			}
 		}
-		else
-		{
-			// no image resources
-			fileUtil::WriteToFileBE(writer, static_cast<uint32_t>(0u));
-		}
 	}
 
 	// layer mask section
@@ -1249,7 +1275,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 	{
 		// 8-bit data
 		// layer mask section length also includes global layer mask info marker. layer info follows directly after that
-		const uint32_t layerMaskSectionLength = layerInfoSectionLength + 8u;
+		const uint32_t layerMaskSectionLength = layerInfoSectionLength + 8u + (transparency ? 12u : 0u);
 		fileUtil::WriteToFileBE(writer, layerMaskSectionLength);
 	}
 	else
@@ -1283,12 +1309,12 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 	fileUtil::WriteToFileBE(writer, layerInfoSectionLength);
 
 	// layer count
-	fileUtil::WriteToFileBE(writer, document->layerCount);
+	fileUtil::WriteToFileBE(writer, static_cast<int16_t>(transparency ? -int(document->layerCount) : int(document->layerCount)));
 
 	// per-layer info
 	for (unsigned int i = 0u; i < document->layerCount; ++i)
 	{
-        if (!CheckExport(checkpoint, i, document->layerCount) || writer.HasError()) return false;
+        if (!CheckExport(check, i, document->layerCount) || writer.HasError()) return false;
 		ExportLayer* layer = document->layers + i;
 		
 		fileUtil::WriteToFileBE(writer, layer->top);
@@ -1383,7 +1409,7 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 	// per-layer data
 	for (unsigned int i = 0u; i < document->layerCount; ++i)
 	{
-        if (!CheckExport(checkpoint, i, document->layerCount) || writer.HasError()) return false;
+        if (!CheckExport(check, i, document->layerCount) || writer.HasError()) return false;
 		ExportLayer* layer = document->layers + i;
 
 		// per-channel data
@@ -1410,53 +1436,89 @@ bool WriteDocument(ExportDocument* document, Allocator* allocator, File* file, c
 		fileUtil::WriteToFileBE(writer, globalLayerMaskInfoLength);
 	}
 
+    if (transparency) {
+        fileUtil::WriteToFileBE(writer, util::Key<'8', 'B', 'I', 'M'>::VALUE);
+        fileUtil::WriteToFileBE(writer, util::Key<'M', 't', 'r', 'n'>::VALUE);
+        fileUtil::WriteToFileBE(writer, uint32_t(0u));
+    }
 	if (writer.HasError()) return false;
 
-	// for some reason, Photoshop insists on having an (uncompressed) Image Data section for 32-bit files.
-	// this is unfortunate, because it makes the files very large. don't think this is intentional, but rather a bug.
-	// additionally, for documents of a certain size, Photoshop also expects merged data to be there.
-	// hence we bite the bullet and just write the merged data section in all cases.
-	//×îºóµÄÍ¼Ïñ²ãÊý¾Ý£¬ÕâÀï¿ÉÒÔ±£´æÏÂ»æÐÅÏ¢
-	// merged data section
-	{
-        const uint32_t bytesPerChannel = document->bitsPerChannel / 8u;
-        if (!bytesPerChannel || !document->width || !document->height ||
-            document->height > std::numeric_limits<uint32_t>::max() / bytesPerChannel / document->width) return false;
-        const uint32_t size = document->width * document->height * bytesPerChannel;
-        auto empty = MakeBuffer<uint8_t>(allocator, size);
-        uint8_t* emptyMemory = empty.get();
-        for (uint32_t offset = 0; offset < size;) {
-            if (!CheckExport(checkpoint, offset, size)) return false;
-            const uint32_t chunk = std::min(uint32_t(1024 * 1024), size - offset);
-            memset(emptyMemory + offset, 0, chunk);
-            offset += chunk;
+    const uint32_t planeBytes = document->width * document->height * (document->bitsPerChannel / 8u);
+    fileUtil::WriteToFileBE(writer, static_cast<uint16_t>(compressionType::RAW));
+    if (writer.HasError()) return false;
+    if (provider) {
+        const uint32_t width = document->width, height = document->height;
+        const uint64_t begin = writer.GetPosition();
+        if (begin > std::numeric_limits<uint64_t>::max() - uint64_t(planeBytes) * 4u) return false;
+        struct StreamState {
+            SyncFileWriter* writer = nullptr;
+            uint32_t nextRow = 0;
+            bool failed = false;
+            bool writing = false;
+        };
+        auto state = std::make_shared<StreamState>();
+        state->writer = &writer;
+        const MergedImageSink sink = [state, width, height, begin, planeBytes, check](uint32_t firstRow,
+            uint32_t rowCount, const uint8_t* red, const uint8_t* green, const uint8_t* blue, const uint8_t* alpha) {
+            if (!state->writer || state->failed) return false;
+            if (state->writing || firstRow != state->nextRow || !rowCount || rowCount > height - state->nextRow ||
+                !red || !green || !blue || !alpha) {
+                state->failed = true;
+                return false;
+            }
+            state->writing = true;
+            const uint32_t bytes = width * rowCount;
+            const uint8_t* planes[] = {red, green, blue, alpha};
+            for (uint32_t plane = 0; plane < 4 && !state->failed; ++plane) {
+                for (uint32_t offset = 0; offset < bytes;) {
+                    if (!CheckExport(check, firstRow, height) || state->failed) {
+                        state->failed = true;
+                        break;
+                    }
+                    const uint32_t count = std::min(uint32_t(1024 * 1024), bytes - offset);
+                    state->writer->WriteAt(planes[plane] + offset, count,
+                        begin + uint64_t(planeBytes) * plane + uint64_t(firstRow) * width + offset);
+                    if (state->writer->HasError()) { state->failed = true; break; }
+                    offset += count;
+                }
+            }
+            if (!state->failed) state->nextRow += rowCount;
+            state->writing = false;
+            return !state->failed;
+        };
+        bool complete = false;
+        try { complete = provider(sink); }
+        catch (...) { state->writer = nullptr; throw; }
+        state->writer = nullptr;
+        if (!complete || state->failed || state->nextRow != height ||
+            writer.GetPosition() != begin + uint64_t(planeBytes) * 4u) return false;
+    } else {
+        std::array<uint8_t, 65536> empty{};
+        const unsigned count = document->colorMode == exportColorMode::GRAYSCALE ? 1u : 3u;
+        for (unsigned plane = 0; plane < count; ++plane) {
+            const auto* data = static_cast<const uint8_t*>(document->mergedImageData[plane]);
+            for (uint32_t offset = 0; offset < planeBytes;) {
+                if (!CheckExport(check, offset, planeBytes)) return false;
+                const uint32_t bytes = std::min(uint32_t(empty.size()), planeBytes - offset);
+                writer.Write(data ? data + offset : empty.data(), bytes);
+                if (writer.HasError()) return false;
+                offset += bytes;
+            }
         }
+    }
+    for (unsigned plane = 0; plane < document->alphaChannelCount; ++plane) {
+        const auto* data = static_cast<const uint8_t*>(document->alphaChannelData[plane]);
+        if (!data) return false;
+        for (uint32_t offset = 0; offset < planeBytes;) {
+            if (!CheckExport(check, offset, planeBytes)) return false;
+            const uint32_t bytes = std::min(uint32_t(1024 * 1024), planeBytes - offset);
+            writer.Write(data + offset, bytes);
+            if (writer.HasError()) return false;
+            offset += bytes;
+        }
+    }
 
-		// write merged image
-		fileUtil::WriteToFileBE(writer, static_cast<uint16_t>(compressionType::RAW));
-		if (document->colorMode == exportColorMode::GRAYSCALE)
-		{
-			const void* dataGray = document->mergedImageData[0] ? document->mergedImageData[0] : emptyMemory;
-			writer.Write(dataGray, size);
-		}
-		else if (document->colorMode == exportColorMode::RGB)
-		{
-			const void* dataR = document->mergedImageData[0] ? document->mergedImageData[0] : emptyMemory;
-			const void* dataG = document->mergedImageData[1] ? document->mergedImageData[1] : emptyMemory;
-			const void* dataB = document->mergedImageData[2] ? document->mergedImageData[2] : emptyMemory;
-			writer.Write(dataR, size);
-			writer.Write(dataG, size);
-			writer.Write(dataB, size);
-		}
-
-		// write alpha channels
-		for (unsigned int i = 0u; i < document->alphaChannelCount; ++i)
-		{
-			writer.Write(document->alphaChannelData[i], size);
-		}
-
-	}
-	return !writer.HasError() && CheckExport(checkpoint, document->layerCount, document->layerCount);
+	return !writer.HasError() && CheckExport(check, document->layerCount, document->layerCount);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -6,6 +6,7 @@
 
 #include "psd/psdSamples/Interfaces/PsdFile.h"
 #include <limits>
+#include <algorithm>
 
 
 PSD_NAMESPACE_BEGIN
@@ -24,19 +25,24 @@ SyncFileWriter::SyncFileWriter(File* file)
 // ---------------------------------------------------------------------------------------------------------------------
 void SyncFileWriter::Write(const void* buffer, uint32_t count)
 {
+	WriteAt(buffer, count, m_position);
+}
+
+void SyncFileWriter::WriteAt(const void* buffer, uint32_t count, uint64_t position)
+{
 	if (m_failed || count == 0) return;
-	if (!buffer || m_position > std::numeric_limits<uint64_t>::max() - count)
+	if (!buffer || position > std::numeric_limits<uint64_t>::max() - count)
 	{
 		m_failed = true;
 		return;
 	}
-	File::WriteOperation op = m_file->Write(buffer, count, m_position);
+	File::WriteOperation op = m_file->Write(buffer, count, position);
 	if (!op || !m_file->WaitForWrite(op))
 	{
 		m_failed = true;
 		return;
 	}
-	m_position += count;
+	m_position = std::max(m_position, position + count);
 }
 
 

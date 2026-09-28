@@ -23,7 +23,9 @@ private slots:
         QVector<Coverage::Record> rows{{0, "A", "同名", "", 1, Coverage::State::Raster, Coverage::Reason::None, QRect(0, 0, 2, 2)},
             {1, "B", "同名", "", 2, Coverage::State::Empty, Coverage::Reason::NoVertices, {}}};
         Coverage complete, partial;
+        input.preview = CPsdPreviewKind::Composite;
         QVERIFY(Coverage::Capture(input, rows, true, complete));
+        input.preview = CPsdPreviewKind::Unknown;
         rows[1].state = Coverage::State::Pending; rows[1].reason = Coverage::Reason::None;
         QVERIFY(Coverage::Capture(input, rows, false, partial));
         PsdBatchJob job; QTemporaryDir directory; QSignalSpy requests(&job, &PsdBatchJob::requestExport);
@@ -43,10 +45,13 @@ private slots:
         QTRY_VERIFY(!job.isRunning());
         const auto results = job.results();
         QVERIFY(results[0].coverage == complete); QCOMPARE(results[0].state, PsdBatchFileState::Succeeded);
+        QCOMPARE(results[0].coverage.GetContext().preview, CPsdPreviewKind::Composite);
         QVERIFY(results[1].coverage == partial); QCOMPARE(results[1].state, PsdBatchFileState::Canceled);
         QVERIFY(!results[1].outputCommitted); QCOMPARE(results[1].coverage.Statistics().pending, 1);
+        QCOMPARE(results[1].coverage.GetContext().preview, CPsdPreviewKind::Unknown);
         QVERIFY(results[2].coverage == complete); QCOMPARE(results[2].state, PsdBatchFileState::Failed);
         QVERIFY(results[2].outputCommitted);
+        QCOMPARE(results[2].coverage.GetContext().preview, CPsdPreviewKind::Composite);
         for (const auto& result : results) QVERIFY(IsPsdBatchResultValid(result));
     }
 

@@ -139,7 +139,7 @@ struct Reader
         } else invalid(QStringLiteral("不支持 PSD 通道压缩方式 %1").arg(compression));
         return output;
     }
-    QImage rgba(const QMap<int, QByteArray>& planes, QSize size) {
+    QImage rgba(const QMap<int, QByteArray>& planes, QSize size, bool whiteMatte = false) {
         if (size.isEmpty()) return {};
         const qint64 count = qint64(size.width()) * size.height();
         reserve(count * 4, decoded, limits.maximumDecodedBytes, QStringLiteral("图层和预览 RGBA 总量"));
@@ -150,7 +150,13 @@ struct Reader
             for (int x = 0; x < size.width(); ++x) {
                 const qsizetype at = qsizetype(y) * size.width() + x;
                 const auto channel = [&](int id, int fallback) { auto found = planes.constFind(id); return found == planes.cend() ? fallback : int(quint8(found->at(at))); };
-                row[x] = qRgba(channel(0, 0), channel(1, 0), channel(2, 0), channel(-1, 255));
+                const int alpha = channel(-1, 255);
+                const auto color = [&](int id) {
+                    const int value = channel(id, 0);
+                    return !whiteMatte ? value : !alpha ? 0 :
+                        std::clamp(((value + alpha - 255) * 255 + alpha / 2) / alpha, 0, 255);
+                };
+                row[x] = qRgba(color(0), color(1), color(2), alpha);
             }
         }
         return image;
@@ -166,6 +172,12 @@ struct Reader
             metadataBytes(qint64(length) + 12); auto payload = cursor.sub(length);
             if (alignment > 1) cursor.take((alignment - length % alignment) % alignment);
             if (!layer) {
+                if (key == "Mtrn") {
+                    if (unique.contains(key) || payload.remaining()) invalid(QStringLiteral("PSD 合成透明标记重复或长度无效"));
+                    unique.insert(key);
+                    snapshot.hasMergedTransparency = true;
+                    continue;
+                }
                 snapshot.diagnostics.append({QStringLiteral("global-tag"), QStringLiteral("保留文件中的全局区段 %1，未应用其显示效果").arg(QString::fromLatin1(key))});
                 continue;
             }
@@ -401,7 +413,7 @@ struct Reader
             for (int index = 0; index < 3; ++index) planes.insert(index, QByteArray::fromRawData(merged.constData() + count * index, count));
             if (snapshot.hasMergedTransparency)
                 planes.insert(-1, QByteArray::fromRawData(merged.constData() + count * 3, count));
-            snapshot.mergedImage = rgba(planes, snapshot.canvasSize);
+            snapshot.mergedImage = rgba(planes, snapshot.canvasSize, snapshot.hasMergedTransparency);
         }
         if (!mergedAvailable) snapshot.diagnostics.append({QStringLiteral("missing-merged-preview"), QStringLiteral("文件声明没有有效合成预览，不使用占位像素")});
         snapshot.diagnostics.append({QStringLiteral("color-policy"), snapshot.iccProfile.isEmpty() ? QStringLiteral("保留原始 RGB 数值；文件未提供 ICC，不推断或转换色彩空间") : QStringLiteral("保留原始 ICC 与 RGB 数值，未执行色彩空间转换")});

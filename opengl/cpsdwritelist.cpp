@@ -1,6 +1,7 @@
 #include "cpsdwritelist.h"
 #include "live2dstruct/cdraworder.h"
 #include "std/cexportcontrol.h"
+#include <QScopedValueRollback>
 
 CPsdWriteList::CPsdWriteList() {
     m_list=nullptr;
@@ -14,8 +15,23 @@ CPsdWriteList::~CPsdWriteList()
     }
 }
 
+bool CPsdWriteList::Fail(const QString& error)
+{
+    if (m_control && !m_control->WasCanceled() && !m_control->IsCancellationRequested())
+        m_control->Fail(error);
+    return false;
+}
+
+bool CPsdWriteList::RejectReentry()
+{
+    if (!m_busy) return false;
+    Fail(QStringLiteral("PSD 导出操作不能在回调中重入"));
+    return true;
+}
+
 void CPsdWriteList::SetControl(CExportControl* control)
 {
+    if (RejectReentry()) return;
     m_control = control;
     if (m_list) m_list->SetControl(control);
 }
@@ -31,6 +47,8 @@ uint32_t CPsdWriteList::CubismBlendModeToPsd(Live2D::Cubism::Framework::Renderin
 
 bool CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismCompat)
 {
+    if (RejectReentry()) return false;
+    const QScopedValueRollback<bool> busy(m_busy, true);
     if (m_list) {
         delete m_list;
         m_list = nullptr;
@@ -62,13 +80,14 @@ QString CPsdWriteList::UniqueName(const QString &name)
     return frozen + QString(" #%1").arg(count);
 }
 
-bool CPsdWriteList::WritePsd()
+bool CPsdWriteList::WritePsd(CPsdPreviewKind* preview)
 {
-    if (!m_list) {
-        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
-        return false;
-    }
+    if (RejectReentry()) return false;
+    const QScopedValueRollback<bool> busy(m_busy, true);
+    if (preview) *preview = CPsdPreviewKind::Unknown;
+    if (!m_list) return Fail(QStringLiteral("PSD 文档尚未创建"));
     bool ok = m_list->CreatePsd();
+    if (ok && preview) *preview = m_list->Preview();
     delete m_list;
     m_list= nullptr;
     return ok;
@@ -83,40 +102,37 @@ bool CPsdWriteList::AddLayer(const QString& layerName, const QRect& rect, const 
                              uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied,
                              std::optional<quint32> layerId)
 {
-    if (!m_list) {
-        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
-        return false;
-    }
+    if (RejectReentry()) return false;
+    const QScopedValueRollback<bool> busy(m_busy, true);
+    if (!m_list) return Fail(QStringLiteral("PSD 文档尚未创建"));
     return m_list->AddLayer(UniqueName(layerName), image, rect, opacity, blendModeKey, isClipped, isPremultiplied, layerId);
 }
 
 bool CPsdWriteList::AddEmptyLayer(const QString& name, quint8 opacity, quint32 blendModeKey,
                                  bool isClipped, std::optional<quint32> layerId)
 {
-    if (!m_list) {
-        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
-        return false;
-    }
+    if (RejectReentry()) return false;
+    const QScopedValueRollback<bool> busy(m_busy, true);
+    if (!m_list) return Fail(QStringLiteral("PSD 文档尚未创建"));
     return m_list->AddEmptyLayer(UniqueName(name), opacity, blendModeKey, isClipped, layerId);
 }
 
 bool CPsdWriteList::AddGroupStart(const QString& groupName)
 {
-    if (!m_list) {
-        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
-        return false;
-    }
+    if (RejectReentry()) return false;
+    const QScopedValueRollback<bool> busy(m_busy, true);
+    const QString frozenName(groupName.constData(), groupName.size());
+    if (!m_list) return Fail(QStringLiteral("PSD 文档尚未创建"));
     if (!m_list->AddGroupStart()) return false;
-    m_groupNameStack.push_back(groupName);
+    m_groupNameStack.push_back(frozenName);
     return true;
 }
 
 bool CPsdWriteList::AddGroupEnd()
 {
-    if (!m_list) {
-        if (m_control) m_control->Fail(QStringLiteral("PSD 文档尚未创建"));
-        return false;
-    }
+    if (RejectReentry()) return false;
+    const QScopedValueRollback<bool> busy(m_busy, true);
+    if (!m_list) return Fail(QStringLiteral("PSD 文档尚未创建"));
     const QString name = m_groupNameStack.isEmpty() ? QStringLiteral("Group") : m_groupNameStack.last();
     const QByteArray utf8 = UniqueName(name).toUtf8();
     if (!m_list->AddGroupEnd(utf8.constData())) return false;
@@ -127,6 +143,7 @@ bool CPsdWriteList::AddGroupEnd()
 QVector<QPair<int, CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndexList(
     const QVector<int>& sortedDrawableIndexList, CubismModel* model)
 {
+    if (RejectReentry()) return {};
     partNameToName.clear();
     if (!model || m_mocName.isEmpty()) return {};
     CModelDocument document;

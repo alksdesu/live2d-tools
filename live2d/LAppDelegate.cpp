@@ -500,7 +500,7 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
             return item.type != CPsdExportItem::Type::Done || plan.Publish(true, nullptr, detail);
         }, control, error, [&](const CPsdExportItem& item, QString* detail) {
             return plan.Accept(item.runtimeIndex, item.rect, item.emptyReason, detail);
-        });
+        }, &plan.context.preview);
     if (!surface || s_instance != this || m_psdExportSession.get() != session)
         return fail(QStringLiteral("PSD 导出窗口或会话已关闭"));
     QString cleanupError;
@@ -650,7 +650,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
                 if (!writeLayer(id)) return false;
             }
         }
-        return plan.Publish(true, nullptr, detail) && writer.WritePsd();
+        return plan.Publish(true, nullptr, detail) && writer.WritePsd(&plan.context.preview);
     }, control, error);
 }
 

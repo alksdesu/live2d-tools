@@ -4,8 +4,10 @@
 #include "ui/cexporttaskrunner.h"
 
 bool CPsdFileTask::Execute(const QString& path, const QSize& canvas, bool cubismCompatible,
-                           const Next& next, CExportControl* control, QString* error, const Accepted& onAccepted)
+                           const Next& next, CExportControl* control, QString* error, const Accepted& onAccepted,
+                           CPsdPreviewKind* preview)
 {
+    if (preview) *preview = CPsdPreviewKind::Unknown;
     if (!next) {
         if (error) *error = QStringLiteral("PSD 导出缺少图层来源");
         return false;
@@ -26,7 +28,7 @@ bool CPsdFileTask::Execute(const QString& path, const QSize& canvas, bool cubism
             case CPsdExportItem::Type::Progress:
                 continue;
             case CPsdExportItem::Type::Done:
-                return writer.WritePsd();
+                return writer.WritePsd(preview);
             case CPsdExportItem::Type::Layer:
                 accepted = !item.rect.isEmpty() && !item.image.isNull() && item.image.size() == item.rect.size() &&
                     item.emptyReason == CPsdExportCoverage::Reason::None &&

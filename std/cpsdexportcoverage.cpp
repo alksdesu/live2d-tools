@@ -62,6 +62,11 @@ bool CPsdExportCoverage::Capture(const Context& context, const QVector<Record>& 
         (context.method != Method::Gpu && context.method != Method::Cpu) || context.runtimeCount < 0 ||
         context.runtimeCount > MaximumRecords || records.size() != context.runtimeCount)
         return fail(QStringLiteral("PSD 对象报告的模型身份、画布或对象数量无效"));
+    if (context.preview != CPsdPreviewKind::Unknown && context.preview != CPsdPreviewKind::Composite &&
+        context.preview != CPsdPreviewKind::RebuildFromLayers)
+        return fail(QStringLiteral("PSD 对象报告包含未知的合成预览状态"));
+    if (!committed && context.preview != CPsdPreviewKind::Unknown)
+        return fail(QStringLiteral("PSD 文件尚未提交，不能确认合成预览状态"));
     try {
         QSet<QString> ids;
         qsizetype characters = 0;
@@ -154,13 +159,18 @@ QJsonObject CPsdExportCoverage::ToJson() const
     }
     const auto& context = m_data->context;
     const auto& counts = m_data->counts;
-    return {{"version", 1}, {"scope", "runtime_artmesh"}, {"method", context.method == Method::Gpu ? "gpu" : "cpu"},
+    QJsonObject result{{"version", context.preview == CPsdPreviewKind::Unknown ? 1 : 2},
+        {"scope", "runtime_artmesh"}, {"method", context.method == Method::Gpu ? "gpu" : "cpu"},
         {"sourceMocDigest", QString::fromLatin1(context.sourceMocDigest.toHex())},
         {"runtimeMocDigest", QString::fromLatin1(context.runtimeMocDigest.toHex())}, {"includeHidden", context.includeHidden},
         {"canvas", QJsonObject{{"width", context.canvas.width()}, {"height", context.canvas.height()}}},
         {"clipsToCanvas", context.method == Method::Gpu}, {"runtimeCount", context.runtimeCount}, {"outputCommitted", m_data->committed}, {"counts", QJsonObject{{"source", counts.source}, {"requested", counts.requested},
             {"raster", counts.raster}, {"empty", counts.empty}, {"excluded", counts.excluded}, {"pending", counts.pending}}},
         {"records", records}};
+    if (context.preview != CPsdPreviewKind::Unknown)
+        result.insert(QStringLiteral("mergedPreview"), context.preview == CPsdPreviewKind::Composite
+            ? QStringLiteral("composite") : QStringLiteral("layers_required"));
+    return result;
 }
 
 QString CPsdExportCoverage::StateText(State state)
@@ -202,6 +212,10 @@ QString CPsdExportCoverage::Text(int maximumDetails) const
     QString text = Summary() + QLatin1Char('\n') + (m_data->committed
         ? QStringLiteral("上述图层已写入目标 PSD。")
         : QStringLiteral("像素层与空图层数量仅表示已准备，尚未提交到目标 PSD。"));
+    if (m_data->context.preview == CPsdPreviewKind::Composite)
+        text += QStringLiteral("\n文件含透明合成预览，按导出的图层生成。");
+    else if (m_data->context.preview == CPsdPreviewKind::RebuildFromLayers)
+        text += QStringLiteral("\n文件需按图层重建预览；请在 Photoshop 中打开并重新保存。");
     text += m_data->context.method == Method::Gpu
         ? QStringLiteral("\nGPU 导出按画布裁剪；画布外对象保留为空图层。")
         : QStringLiteral("\n纹理采样保留网格在画布外的像素，不烘焙裁剪蒙版、乘色或屏幕色。");
@@ -232,7 +246,7 @@ bool CPsdExportCoverage::operator==(const CPsdExportCoverage& other) const
     const auto& b = other.m_data->context;
     if (m_data->committed != other.m_data->committed || a.sourceMocDigest != b.sourceMocDigest ||
         a.runtimeMocDigest != b.runtimeMocDigest || a.canvas != b.canvas || a.method != b.method ||
-        a.includeHidden != b.includeHidden || a.runtimeCount != b.runtimeCount) return false;
+        a.includeHidden != b.includeHidden || a.runtimeCount != b.runtimeCount || a.preview != b.preview) return false;
     for (int index = 0; index < m_data->records.size(); ++index) {
         const auto& left = m_data->records[index];
         const auto& right = other.m_data->records[index];

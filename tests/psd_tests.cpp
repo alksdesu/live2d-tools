@@ -110,6 +110,243 @@ class PsdTests : public QObject
 {
     Q_OBJECT
 private slots:
+
+    void randomWritesKeepHighWaterAndStopAfterError()
+    {
+        psd::MallocAllocator allocator;
+        FaultFile file(&allocator, 0);
+        psd::SyncFileWriter writer(&file);
+        writer.WriteAt("ef", 2, 4);
+        QCOMPARE(writer.GetPosition(), quint64(6));
+        writer.WriteAt("abcd", 4, 0);
+        QCOMPARE(writer.GetPosition(), quint64(6));
+        writer.Write("gh", 2);
+        QCOMPARE(file.bytes, QByteArray("abcdefgh"));
+        QCOMPARE(file.positions, QVector<quint64>({4, 0, 6}));
+        writer.WriteAt("z", 1, std::numeric_limits<quint64>::max());
+        QVERIFY(writer.HasError());
+        QCOMPARE(writer.GetPosition(), quint64(8));
+        writer.WriteAt("ignored", 7, 0);
+        QCOMPARE(file.writes, 3);
+        QCOMPARE(file.outstanding, 0);
+    }
+
+    void mergedProviderWritesAllPlanes_data()
+    {
+        QTest::addColumn<bool>("empty");
+        QTest::addColumn<bool>("extraAlpha");
+        for (bool empty : {false, true}) for (bool extraAlpha : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(empty).arg(extraAlpha))) << empty << extraAlpha;
+    }
+
+    void mergedProviderWritesAllPlanes()
+    {
+        QFETCH(bool, empty);
+        QFETCH(bool, extraAlpha);
+        psd::MallocAllocator allocator;
+        auto* document = psd::CreateExportDocument(&allocator, 2, 3, 8, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        if (!empty) psd::AddLayer(document, &allocator, "identity");
+        const uint8_t user[] = {1, 2, 3, 4, 5, 6};
+        if (extraAlpha) {
+            const auto index = psd::AddAlphaChannel(document, &allocator, "user", 0, 0, 0, 0, 100, psd::AlphaChannel::Mode::SPOT);
+            psd::UpdateChannel(document, &allocator, index, user);
+        }
+        const uint8_t red[] = {11, 12, 13, 14, 15, 16}, green[] = {21, 22, 23, 24, 25, 26};
+        const uint8_t blue[] = {31, 32, 33, 34, 35, 36}, alpha[] = {41, 42, 43, 44, 45, 46};
+        FaultFile file(&allocator, 0);
+        psd::MergedImageSink escaped;
+        QVERIFY(psd::WriteDocument(document, &allocator, &file, {}, [&](const psd::MergedImageSink& sink) {
+            escaped = sink;
+            return sink(0, 1, red, green, blue, alpha) && sink(1, 2, red + 2, green + 2, blue + 2, alpha + 2);
+        }));
+        QVERIFY(!escaped(0, 1, red, green, blue, alpha));
+        PsdBinary::Document parsed;
+        QString error;
+        QVERIFY2(PsdBinary::Parse(file.bytes, parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.channels, quint16(extraAlpha ? 5 : 4));
+        QCOMPARE(parsed.layerCount, qint16(empty ? 0 : -1));
+        QVERIFY(parsed.globalTags.contains("Mtrn"));
+        QVERIFY(parsed.globalTags.value("Mtrn").isEmpty());
+        QCOMPARE(quint8(parsed.resources.value(1057).at(4)), quint8(1));
+        QCOMPARE(parsed.resources.value(1053), QByteArray::fromHex(extraAlpha ? "0000000000000001" : "00000000"));
+        if (extraAlpha) QCOMPARE(parsed.resources.value(1006), QByteArray("\x0c" "Transparency\x04user", 18));
+        QByteArray expected;
+        for (const auto* plane : {red, green, blue, alpha}) expected += QByteArray(reinterpret_cast<const char*>(plane), 6);
+        if (extraAlpha) expected += QByteArray(reinterpret_cast<const char*>(user), 6);
+        QCOMPARE(parsed.merged, expected);
+        QCOMPARE(file.outstanding, 0);
+    }
+
+    void mergedProviderRejectsInvalidStreams_data()
+    {
+        QTest::addColumn<QString>("failure");
+        for (const auto* value : {"empty", "gap", "zero", "overflow", "null", "repeat", "missing", "late-failure", "ignored-error", "cancel"})
+            QTest::newRow(value) << QString::fromLatin1(value);
+    }
+
+    void mergedProviderRejectsInvalidStreams()
+    {
+        QFETCH(QString, failure);
+        psd::MallocAllocator allocator;
+        auto* document = psd::CreateExportDocument(&allocator, 2, 3, 8, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        uint8_t data[6]{};
+        FaultFile file(&allocator, 0);
+        bool canceled = false;
+        const auto checkpoint = [&](uint32_t, uint32_t) { return !canceled; };
+        QVERIFY(!psd::WriteDocument(document, &allocator, &file, checkpoint, [&](const psd::MergedImageSink& sink) {
+            if (failure == "empty") return true;
+            if (failure == "gap") return sink(1, 1, data, data, data, data);
+            if (failure == "zero") return sink(0, 0, data, data, data, data);
+            if (failure == "overflow") return sink(0, UINT32_MAX, data, data, data, data);
+            if (failure == "null") return sink(0, 1, data, data, data, nullptr);
+            if (failure == "ignored-error") { sink(0, 0, data, data, data, data); return true; }
+            if (!sink(0, 1, data, data, data, data)) return false;
+            if (failure == "repeat") return sink(0, 1, data, data, data, data);
+            if (failure == "missing") return true;
+            if (failure == "cancel") canceled = true;
+            const bool complete = sink(1, 2, data + 2, data + 2, data + 2, data + 2);
+            return complete && failure != "late-failure";
+        }));
+        QCOMPARE(file.outstanding, 0);
+    }
+
+    void mergedProviderWriteFailuresAndRetainedCallback()
+    {
+        psd::MallocAllocator allocator;
+        auto* document = psd::CreateExportDocument(&allocator, 2, 3, 8, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        uint8_t data[6]{};
+        const psd::MergedImageProvider provider = [&](const psd::MergedImageSink& sink) {
+            return sink(0, 1, data, data, data, data) && sink(1, 2, data + 2, data + 2, data + 2, data + 2);
+        };
+        FaultFile control(&allocator, 0);
+        QVERIFY(psd::WriteDocument(document, &allocator, &control, {}, provider));
+        for (int failure = 1; failure <= control.writes; ++failure) for (bool nullOperation : {false, true}) {
+            FaultFile file(&allocator, failure, nullOperation);
+            QVERIFY(!psd::WriteDocument(document, &allocator, &file, {}, provider));
+            QCOMPARE(file.writes, failure);
+            QCOMPARE(file.outstanding, 0);
+        }
+        FaultFile throwing(&allocator, 0);
+        psd::MergedImageSink escaped;
+        QVERIFY_EXCEPTION_THROWN(psd::WriteDocument(document, &allocator, &throwing, {}, [&](const psd::MergedImageSink& sink) -> bool {
+            escaped = sink;
+            throw std::runtime_error("provider failed");
+        }), std::runtime_error);
+        QVERIFY(!escaped(0, 1, data, data, data, data));
+        document->omitMergedPreview = true;
+        FaultFile source(&allocator, 0);
+        QVERIFY(!psd::WriteDocument(document, &allocator, &source, {}, provider));
+        QCOMPARE(source.writes, 0);
+    }
+
+    void mergedProviderRejectsUnsupportedDimensionsAndReentrantSink()
+    {
+        psd::MallocAllocator allocator;
+        const auto exercise = [&](uint32_t width, uint32_t height, unsigned depth, psd::exportColorMode::Enum mode) {
+            auto* document = psd::CreateExportDocument(&allocator, width, height, depth, mode);
+            const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+            FaultFile file(&allocator, 0);
+            bool called = false;
+            QVERIFY(!psd::WriteDocument(document, &allocator, &file, {}, [&](const psd::MergedImageSink&) { called = true; return true; }));
+            QVERIFY(!called);
+            QCOMPARE(file.writes, 0);
+        };
+        exercise(2, 2, 16, psd::exportColorMode::RGB);
+        exercise(2, 2, 8, psd::exportColorMode::GRAYSCALE);
+        exercise(UINT32_MAX, 2, 8, psd::exportColorMode::RGB);
+        auto* document = psd::CreateExportDocument(&allocator, 1, 1, 8, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        uint8_t data = 255;
+        psd::MergedImageSink nested;
+        bool reentered = false;
+        FaultFile file(&allocator, 0);
+        QVERIFY(!psd::WriteDocument(document, &allocator, &file, [&](uint32_t, uint32_t) {
+            if (nested && !reentered) {
+                reentered = true;
+                if (nested(0, 1, &data, &data, &data, &data)) return false;
+            }
+            return true;
+        }, [&](const psd::MergedImageSink& sink) {
+            nested = sink;
+            return sink(0, 1, &data, &data, &data, &data);
+        }));
+        QVERIFY(reentered);
+        QVERIFY(!nested(0, 1, &data, &data, &data, &data));
+        QCOMPARE(file.outstanding, 0);
+        psd::MergedImageProvider provider = [&](const psd::MergedImageSink& sink) {
+            return sink(0, 1, &data, &data, &data, &data);
+        };
+        bool cleared = false;
+        FaultFile owned(&allocator, 0);
+        QVERIFY(psd::WriteDocument(document, &allocator, &owned, [&](uint32_t, uint32_t) {
+            if (!cleared) { provider = {}; cleared = true; }
+            return true;
+        }, provider));
+        QVERIFY(cleared);
+    }
+
+    void mergedAllocationFailuresPreserveExistingPlanes_data()
+    {
+        QTest::addColumn<int>("depth");
+        for (int depth : {8, 16, 32}) QTest::newRow(qPrintable(QString::number(depth))) << depth;
+    }
+
+    void mergedAllocationFailuresPreserveExistingPlanes()
+    {
+        QFETCH(int, depth);
+        TrackingAllocator allocator;
+        auto* document = psd::CreateExportDocument(&allocator, 2, 2, depth, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        const auto exercise = [&](auto sample) {
+            using T = decltype(sample);
+            const T data[] = {sample, sample, sample, sample};
+            psd::UpdateMergedImage(document, &allocator, data, data, data);
+            const auto allocated = allocator.active;
+            const void* original = document->mergedImageData[0];
+            for (int failure = 0; failure < 3; ++failure) {
+                allocator.untilFailure = failure;
+                QVERIFY_EXCEPTION_THROWN(psd::UpdateMergedImage(document, &allocator, data, data, data), std::bad_alloc);
+                allocator.untilFailure = -1;
+                QCOMPARE(document->mergedImageData[0], original);
+                QCOMPARE(allocator.active, allocated);
+            }
+            QVERIFY_EXCEPTION_THROWN(psd::UpdateMergedImage(document, &allocator, static_cast<const T*>(nullptr), data, data), std::invalid_argument);
+            QCOMPARE(document->mergedImageData[0], original);
+            const auto index = psd::AddAlphaChannel(document, &allocator, "user", 0, 0, 0, 0, 100, psd::AlphaChannel::Mode::SPOT);
+            psd::UpdateChannel(document, &allocator, index, data);
+            const auto withAlpha = allocator.active;
+            const void* previous = document->alphaChannelData[index];
+            allocator.untilFailure = 0;
+            QVERIFY_EXCEPTION_THROWN(psd::UpdateChannel(document, &allocator, index, data), std::bad_alloc);
+            allocator.untilFailure = -1;
+            QCOMPARE(document->alphaChannelData[index], previous);
+            QCOMPARE(allocator.active, withAlpha);
+        };
+        if (depth == 8) exercise(uint8_t(42));
+        else if (depth == 16) exercise(uint16_t(0x1234));
+        else exercise(float(0.25));
+    }
+
+    void omittedAndExplicitMergedDataHaveHonestVersionInfo()
+    {
+        psd::MallocAllocator allocator;
+        auto* document = psd::CreateExportDocument(&allocator, 1, 1, 8, psd::exportColorMode::RGB);
+        const auto cleanup = qScopeGuard([&] { psd::DestroyExportDocument(document, &allocator); });
+        const uint8_t r = 1, g = 2, b = 3;
+        for (int mode = 0; mode < 3; ++mode) {
+            if (mode == 1) psd::UpdateMergedImage(document, &allocator, &r, &g, &b);
+            if (mode == 2) psd::SetSourceDocumentOptions(document);
+            FaultFile file(&allocator, 0);
+            QVERIFY(psd::WriteDocument(document, &allocator, &file));
+            PsdBinary::Document parsed;
+            QVERIFY(PsdBinary::Parse(file.bytes, parsed));
+            QCOMPARE(parsed.channels, quint16(3));
+            QCOMPARE(quint8(parsed.resources.value(1057).at(4)), quint8(mode == 1));
+        }
+    }
     void cancelableChannelsKeepOldDataOnAbort_data()
     {
         QTest::addColumn<int>("depth");
@@ -287,8 +524,14 @@ private slots:
         QVERIFY(writer.CreatePsd());
         QVERIFY(checkpoints > 20);
         QCOMPARE(ReadFile(controlled), ReadFile(plain));
-        QCOMPARE(QCryptographicHash::hash(ReadFile(controlled), QCryptographicHash::Sha256).toHex(),
-                 QByteArray("7da358fac4b14ecd2cede9e3d260e4196e6a1a9bd2e8ebefb5a093d7e7f0ef00"));
+        PsdBinary::Document parsed;
+        QVERIFY(PsdBinary::Parse(ReadFile(controlled), parsed));
+        QCOMPARE(parsed.layers.size(), 3);
+        QCOMPARE(parsed.layers[1].name, QStringLiteral("内容"));
+        QCOMPARE(parsed.layers[1].Plane(0), QByteArray(6, char(100)));
+        QCOMPARE(parsed.layers[1].Plane(1), QByteArray(6, char(50)));
+        QCOMPARE(parsed.layers[1].Plane(2), QByteArray(6, char(20)));
+        QCOMPARE(parsed.layers[1].Plane(-1), QByteArray(6, char(127)));
         QVERIFY(control.IsCommitted());
         control.Cancel();
         QVERIFY(control.Checkpoint());
@@ -611,7 +854,13 @@ private slots:
         QCOMPARE(input.U16(), quint16(depth));
         QCOMPARE(input.U16(), quint16(3));
         input.Section();
-        QCOMPARE(input.Section().Remaining(), qsizetype(0));
+        PsdBinary::Reader resources = input.Section();
+        resources.Signature("8BIM");
+        QCOMPARE(resources.U16(), quint16(1057));
+        QCOMPARE(resources.Take(2), QByteArray(2, '\0'));
+        const auto version = resources.Take(resources.U32());
+        QCOMPARE(quint8(version.at(4)), quint8(1));
+        resources.ZeroPadding();
         PsdBinary::Reader mask = input.Section();
         QCOMPARE(mask.U32(), quint32(0));
         QCOMPARE(mask.U32(), quint32(0));

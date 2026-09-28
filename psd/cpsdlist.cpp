@@ -1,9 +1,11 @@
 #include "cpsdlist.h"
 #include "cpsdsourcedocument.h"
+#include "cpsdcomposite.h"
 #include <QtEndian>
 #include "psd/psdSamples/Exporter/PsdExportDocument.h"
 #include <QFile>
 #include <QSaveFile>
+#include <QScopedValueRollback>
 #include "std/cexportcontrol.h"
 #include <exception>
 #include <algorithm>
@@ -70,8 +72,17 @@ CPsdList::~CPsdList()
     }
 }
 
+void CPsdList::SetControl(CExportControl* control)
+{
+    if (m_busy) { Fail(QStringLiteral("PSD 文档正在处理")); return; }
+    m_control = control;
+}
+
 bool CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
+    m_preview = CPsdPreviewKind::Unknown;
     m_docname = name;
     if (document) {
         DestroyExportDocument(document, &allocator);
@@ -106,7 +117,7 @@ bool CPsdList::SetPsd(const QString &name, int w, int h, bool cubismCompat)
 bool CPsdList::Fail(const QString& error)
 {
     m_failed = true;
-    if (m_control && !m_control->WasCanceled()) m_control->Fail(error);
+    if (m_control && !m_control->IsCancellationRequested() && !m_control->WasCanceled()) m_control->Fail(error);
     return false;
 }
 
@@ -127,6 +138,8 @@ bool CPsdList::AddLayer(const QString& name, const QImage& image, const QRect& r
                        uint8_t opacity, uint32_t blendModeKey, bool isClipped, bool isPremultiplied,
                        std::optional<quint32> layerId)
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
     if (!CanAppendLayer()) return false;
     try {
         int left, top, lastX, lastY;
@@ -201,6 +214,8 @@ bool CPsdList::AddLayer(const QString& name, const QImage& image, const QRect& r
 bool CPsdList::AddEmptyLayer(const QString& name, quint8 opacity, quint32 blendModeKey,
                             bool isClipped, std::optional<quint32> layerId)
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
     try {
         const QString frozenName(name.constData(), name.size());
         if (!CanAppendLayer()) return false;
@@ -234,39 +249,55 @@ bool CPsdList::AddGroupChannels(unsigned int index)
 
 bool CPsdList::AddGroupStart()
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
     if (!CanAppendLayer()) return false;
     return AddGroupChannels(psd::AddLayerGroupStart(document, &allocator, "</Layer group>"));
 }
 
 bool CPsdList::AddGroupEnd(const char* groupName)
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
     if (!CanAppendLayer()) return false;
     if (!groupName) return Fail(QStringLiteral("PSD 分组名称为空"));
-    return AddGroupChannels(psd::AddLayerGroupEnd(document, &allocator, groupName));
+    const auto index = psd::AddLayerGroupEnd(document, &allocator, groupName);
+    psd::ExportLayerAttributes attributes;
+    attributes.blendModeKey = 0x70617373;
+    if (!psd::SetLayerAttributes(document, index, attributes)) return Fail(QStringLiteral("PSD 分组混合模式无效"));
+    return AddGroupChannels(index);
 }
 
 bool CPsdList::CreatePsd()
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
     if (!document || m_failed) return false;
     const auto fail = [&](const QString& reason) {
-        if (m_control && !m_control->WasCanceled()) m_control->Fail(reason);
+        if (m_control && !m_control->IsCancellationRequested() && !m_control->WasCanceled()) m_control->Fail(reason);
         return false;
     };
     QSaveFile output(m_docname);
     output.setDirectWriteFallback(false);
     try {
+        CPsdComposite composite;
+        QString compositeError;
+        if (!composite.Prepare(*document, m_control, &compositeError)) return fail(compositeError);
+        psd::MergedImageProvider provider;
+        if (composite.IsSupported()) provider = [&](const psd::MergedImageSink& sink) { return composite.Write(sink, &compositeError); };
         if (m_control && !m_control->Report(CExportControl::Phase::Writing)) return false;
         if (!output.open(QIODevice::WriteOnly)) return fail(QStringLiteral("无法打开 PSD 输出文件：%1\n%2").arg(m_docname, output.errorString()));
         CPsdOutputFile file(&allocator, output, m_control);
         const ExportCheckpoint checkpoint = [&](uint32_t, uint32_t) { return !m_control || m_control->Checkpoint(); };
-        if (!WriteDocument(document, &allocator, &file, checkpoint)) {
+        if (!WriteDocument(document, &allocator, &file, checkpoint, provider)) {
             output.cancelWriting();
-            return fail(QStringLiteral("PSD 文件写入未完成：%1").arg(m_docname));
+            return fail(compositeError.isEmpty() ? QStringLiteral("PSD 文件写入未完成：%1").arg(m_docname) : compositeError);
         }
         if (m_control && !m_control->BeginCommit()) { output.cancelWriting(); return false; }
         const bool committed = output.commit();
         if (m_control) m_control->CommitFinished(committed, output.errorString());
         if (!committed) return fail(QStringLiteral("无法提交 PSD 输出文件：%1\n%2").arg(m_docname, output.errorString()));
+        m_preview = composite.IsSupported() ? CPsdPreviewKind::Composite : CPsdPreviewKind::RebuildFromLayers;
         DestroyExportDocument(document, &allocator);
         return true;
     } catch (const std::exception& exception) {
@@ -294,6 +325,8 @@ bool CPsdList::AddSourceDivider()
 
 bool CPsdList::AddSourceLayer(const CPsdSourceLayer& layer, const QImage& pixels)
 {
+    if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
+    QScopedValueRollback<bool> busy(m_busy, true);
     if (!CanAppendLayer()) return false;
     const bool group = layer.kind == CPsdSourceLayer::Kind::Group;
     const QByteArray name = layer.name.toUtf8();

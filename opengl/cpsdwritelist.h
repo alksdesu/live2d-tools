@@ -21,7 +21,7 @@ public:
     CExportControl* Control() const { return m_control; }
 
     bool CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
-    bool WritePsd();
+    bool WritePsd(CPsdPreviewKind* preview = nullptr);
     static uint32_t CubismBlendModeToPsd(Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode mode);
     bool AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
     bool AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
@@ -32,6 +32,7 @@ public:
     bool AddGroupStart(const QString& groupName);
     bool AddGroupEnd();
     void ClosePsd(){
+        if (RejectReentry()) return;
         partNameToName.clear();
         m_groupNameStack.clear();
         m_nameUse.clear();
@@ -44,26 +45,32 @@ public:
         return  partNameToName;
     }
     void SetMocName(const QString& name){
+        if (RejectReentry()) return;
         m_mocName = name;
     }
     void SetCidName(const QString& name){
+        if (RejectReentry()) return;
         m_CidPath = name;
     }
 
 
     void ClaerArtToName(){
+        if (RejectReentry()) return;
         partNameToName.clear();
     }
 
 
 
 private:
+    bool Fail(const QString& error);
+    bool RejectReentry();
     QString UniqueName(const QString& name);
 
 
 private:
     CPsdList* m_list;
     CExportControl* m_control = nullptr;
+    bool m_busy = false;
     QHash<QString,int> m_nameUse;
     bool m_cubismCompat = false;
     QVector<QString> partNameToName;

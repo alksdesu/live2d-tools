@@ -3,6 +3,7 @@
 #include <QString>
 #include <QImage>
 #include <optional>
+#include "cpsdpreview.h"
 #include "psd/psdSamples/PsdDocumentation.h"
 #include "psd/psdSamples/Interfaces/PsdMallocAllocator.h"
 #include "psd/psdSamples/Interfaces/PsdFile.h"
@@ -17,7 +18,7 @@ class CPsdList
 public:
     CPsdList();
     ~CPsdList();
-    void SetControl(CExportControl* control) { m_control = control; }
+    void SetControl(CExportControl* control);
     CExportControl* Control() const { return m_control; }
     bool SetPsd(const QString& name,int w,int h,bool cubismCompat = false);
     bool AddLayer(const QString& name,const QImage& image,const QRect& rect);
@@ -29,6 +30,7 @@ public:
     bool AddGroupStart();
     bool AddGroupEnd(const char* name);
     bool CreatePsd();
+    CPsdPreviewKind Preview() const { return m_preview; }
 
 private:
     friend class CPsdSourceWriter;
@@ -39,7 +41,9 @@ private:
     bool AddGroupChannels(unsigned int index);
     bool Fail(const QString& error);
     CExportControl* m_control = nullptr;
+    bool m_busy = false;
     bool m_failed = false;
+    CPsdPreviewKind m_preview = CPsdPreviewKind::Unknown;
     unsigned int m_canvasWidth;
     unsigned int m_canvasHeight;
     unsigned int m_bitsPerChannel;

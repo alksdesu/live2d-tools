@@ -224,6 +224,7 @@ SOURCES += \
     opengl/cshader.cpp \
     opengl/opengglform.cpp \
     psd/cpsdlist.cpp \
+    psd/cpsdcomposite.cpp \
     opengl/creadopengl.cpp \
     ui/para/ccidjson.cpp \
     main.cpp \
@@ -520,6 +521,7 @@ HEADERS += \
     ui/psdbatchworker.h \
     ui/psdbatchjob.h \
     psd/cpsdlist.h \
+    psd/cpsdcomposite.h \
     opengl/creadopengl.h \
     ui/para/ccidjson.h \
     ui/mainwindow.h \
@@ -806,4 +808,4 @@ SOURCES += ui/mainwindowobjectnames.cpp ui/cobjectnamesimportdialog.cpp
 HEADERS += ui/cobjectnamesimportdialog.h
 
 SOURCES += std/cpsdexportcoverage.cpp
-HEADERS += std/cpsdexportcoverage.h
+HEADERS += std/cpsdexportcoverage.h psd/cpsdpreview.h

@@ -52,7 +52,7 @@ QByteArray fixture(const QVector<Layer>& layers = {Layer()}, int compositeCompre
     }
     QByteArray info = be16(quint16(-layers.size())) + records + images; if (info.size() % 2) info += char(0);
     QByteArray layerMask = block(info) + be32(0);
-    const QByteArray merged = QByteArray::fromHex("10f030e020404080306020a00080ff40");
+    const QByteArray merged = QByteArray::fromHex("ffff7f10ff337f20ff33ff3000cc80ff");
     return QByteArray("8BPS") + be16(1) + QByteArray(6, 0) + be16(4) + be32(2) + be32(2) + be16(8) + be16(3) +
         be32(0) + be32(0) + block(layerMask) + packed(merged, 2, compositeCompression);
 }
@@ -77,9 +77,63 @@ private slots:
         QVERIFY(value.layerId); QCOMPARE(*value.layerId, quint32(42)); QVERIFY(value.pixelEquivalent);
         QCOMPARE(value.image.format(), QImage::Format_ARGB32); QCOMPARE(value.image.size(), QSize(2, 2));
         QCOMPARE(value.image.pixel(0, 0), qRgba(16, 32, 48, 0)); QCOMPARE(value.image.pixel(1, 1), qRgba(224, 128, 160, 64));
-        QCOMPARE(result.mergedImage, value.image); QCOMPARE(result.bytes, bytes);
+        QCOMPARE(result.mergedImage.pixel(0, 0), qRgba(0, 0, 0, 0));
+        QCOMPARE(result.mergedImage.pixel(1, 0), qRgba(255, 0, 0, 204));
+        QCOMPARE(result.mergedImage.pixel(0, 1), qRgba(0, 0, 255, 128));
+        QCOMPARE(result.mergedImage.pixel(1, 1), qRgba(16, 32, 48, 255));
+        QCOMPARE(result.bytes, bytes);
         QCOMPARE(result.sha256, QCryptographicHash::hash(bytes, QCryptographicHash::Sha256)); QCOMPARE(result.displayOrder, QVector<int>{0});
     }
+    void zeroLayersUseMergedTransparencyTag()
+    {
+        const QByteArray info = be16(0) + be16(0);
+        const QByteArray masks = block(info) + be32(0) + tag("Mtrn", {});
+        const QByteArray header = QByteArray("8BPS") + be16(1) + QByteArray(6, 0) + be16(4) + be32(1) + be32(2) +
+            be16(8) + be16(3) + be32(0) + be32(0);
+        const QByteArray merged = be16(0) + QByteArray::fromHex("ffffffffffff00ff");
+        const auto bytes = header + block(masks) + merged;
+        CPsdSnapshot pixels;
+        CPsdDirectory directory;
+        QString error;
+        QVERIFY2(CPsdReader::ReadBytes(bytes, pixels, &error), qPrintable(error));
+        QVERIFY2(CPsdReader::ReadDirectoryBytes(bytes, directory, &error), qPrintable(error));
+        QVERIFY(pixels.layers.isEmpty());
+        QVERIFY(pixels.hasMergedTransparency);
+        QVERIFY(directory.hasMergedTransparency);
+        QVERIFY(directory.hasMergedPreview);
+        QCOMPARE(pixels.mergedImage.pixel(0, 0), qRgba(0, 0, 0, 0));
+        QCOMPARE(pixels.mergedImage.pixel(1, 0), qRgba(255, 255, 255, 255));
+        for (const auto& extra : {tag("Mtrn", QByteArray(4, 0)), tag("Mtrn", {}) + tag("Mtrn", {})}) {
+            const auto malformed = header + block(block(info) + be32(0) + extra) + merged;
+            auto unchanged = pixels;
+            QVERIFY(!CPsdReader::ReadBytes(malformed, unchanged, &error));
+            QCOMPARE(unchanged.bytes, pixels.bytes);
+            QVERIFY(!CPsdReader::ReadDirectoryBytes(malformed, directory, &error));
+            QCOMPARE(directory.bytes, pixels.bytes);
+        }
+        QByteArray missingAlpha = bytes;
+        missingAlpha[13] = 3;
+        missingAlpha.chop(2);
+        QVERIFY(!CPsdReader::ReadBytes(missingAlpha, pixels, &error));
+        QVERIFY(!CPsdReader::ReadDirectoryBytes(missingAlpha, directory, &error));
+    }
+
+    void adobeMergedRedHasStraightLayerAndWhiteMattePreview()
+    {
+        Layer layer;
+        layer.bounds = QRect(0, 0, 2, 2);
+        layer.channels = {{0, QByteArray(4, char(255))}, {1, QByteArray(4, 0)},
+                          {2, QByteArray(4, 0)}, {-1, QByteArray(4, char(204))}};
+        auto bytes = fixture({layer});
+        bytes.chop(18);
+        bytes += be16(0) + QByteArray(4, char(255)) + QByteArray(8, char(51)) + QByteArray(4, char(204));
+        CPsdSnapshot result;
+        QVERIFY(CPsdReader::ReadBytes(bytes, result));
+        QCOMPARE(result.layers[0].image.pixel(0, 0), qRgba(255, 0, 0, 204));
+        QCOMPARE(result.mergedImage.pixel(0, 0), qRgba(255, 0, 0, 204));
+        QCOMPARE(result.mergedImage, result.layers[0].image);
+    }
+
     void frozenInputOwnsBorrowedBytesBeforeCallbacks() {
         auto bytes = fixture(); const QByteArray original(bytes.constData(), bytes.size()); auto borrowed = QByteArray::fromRawData(bytes.constData(), bytes.size());
         CExportControl control; bool called = false;

@@ -31,7 +31,7 @@ public:
     using Accepted = std::function<bool(const CPsdExportItem&, QString*)>;
     static bool Execute(const QString& path, const QSize& canvas, bool cubismCompatible,
                         const Next& next, CExportControl* control = nullptr, QString* error = nullptr,
-                        const Accepted& accepted = {});
+                        const Accepted& accepted = {}, CPsdPreviewKind* preview = nullptr);
 };
 
 #endif

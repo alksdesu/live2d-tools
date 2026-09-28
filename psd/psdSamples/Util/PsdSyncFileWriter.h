@@ -10,7 +10,7 @@ class File;
 
 
 /// \ingroup Files
-/// \brief Synchronous file wrapper using an arbitrary \ref File implementation for sequential writes.
+/// \brief Synchronous file wrapper using an arbitrary \ref File implementation for sequential and positioned writes.
 /// \details In certain situations, working with synchronous write operations is much easier than having to deal with a number
 /// of asynchronous writes, keeping track of individual write operations. This is especially true when e.g. writing header information.
 /// \sa File
@@ -23,6 +23,7 @@ public:
 
 	/// Writes \a count bytes from \a buffer synchronously, incrementing the internal write position.
 	void Write(const void* buffer, uint32_t count);
+	void WriteAt(const void* buffer, uint32_t count, uint64_t position);
 
 	/// Returns the internal write position.
 	uint64_t GetPosition(void) const;

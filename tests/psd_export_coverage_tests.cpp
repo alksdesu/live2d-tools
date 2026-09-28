@@ -27,6 +27,45 @@ class PsdExportCoverageTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void previewStatusRequiresCommitAndPreservesLegacyJson_data()
+    {
+        QTest::addColumn<int>("kind"); QTest::addColumn<QString>("key"); QTest::addColumn<QString>("text");
+        QTest::newRow("legacy") << int(CPsdPreviewKind::Unknown) << QString() << QString();
+        QTest::newRow("composite") << int(CPsdPreviewKind::Composite) << QString("composite") << QStringLiteral("含透明合成预览");
+        QTest::newRow("layers") << int(CPsdPreviewKind::RebuildFromLayers) << QString("layers_required") << QStringLiteral("需按图层重建预览");
+    }
+    void previewStatusRequiresCommitAndPreservesLegacyJson()
+    {
+        QFETCH(int, kind); QFETCH(QString, key); QFETCH(QString, text);
+        auto input = context(0); input.preview = static_cast<CPsdPreviewKind>(kind);
+        Coverage result; QVERIFY(Coverage::Capture(input, {}, true, result));
+        QCOMPARE(result.GetContext().preview, input.preview);
+        QCOMPARE(result.ToJson()["version"].toInt(), key.isEmpty() ? 1 : 2);
+        QCOMPARE(result.ToJson().contains("mergedPreview"), !key.isEmpty());
+        QCOMPARE(result.ToJson()["mergedPreview"].toString(), key);
+        if (!text.isEmpty()) QVERIFY(result.Text().contains(text));
+        else {
+            QVERIFY(!result.Text().contains(QStringLiteral("合成预览")));
+            QVERIFY(!result.Text().contains(QStringLiteral("重建预览")));
+        }
+        Coverage legacy; QVERIFY(Coverage::Capture(context(0), {}, true, legacy));
+        QCOMPARE(result.Summary(), legacy.Summary());
+        QCOMPARE(result == legacy, key.isEmpty());
+        input.preview = CPsdPreviewKind::Unknown;
+        QCOMPARE(result.ToJson()["mergedPreview"].toString(), key);
+        input.preview = static_cast<CPsdPreviewKind>(kind);
+        const auto before = result; QString error;
+        QCOMPARE(Coverage::Capture(input, {}, false, result, &error), key.isEmpty());
+        if (!key.isEmpty()) { QVERIFY(!error.isEmpty()); QVERIFY(result == before); }
+    }
+    void unknownPreviewEnumCannotReplaceAcceptedReport()
+    {
+        auto input = context(0); Coverage result;
+        QVERIFY(Coverage::Capture(input, {}, true, result)); const auto before = result;
+        input.preview = static_cast<CPsdPreviewKind>(99); QString error;
+        QVERIFY(!Coverage::Capture(input, {}, true, result, &error));
+        QVERIFY(!error.isEmpty()); QVERIFY(result == before);
+    }
     void defaultsDistinguishUnknownFromEmptyModel()
     {
         Coverage unknown;

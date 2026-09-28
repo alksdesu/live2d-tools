@@ -179,6 +179,121 @@ class PsdCooperativeGlTests : public QObject
     }
 
 private slots:
+    void emptyWriterPreservesCancellation_data()
+    {
+        QTest::addColumn<QString>("operation"); QTest::addColumn<bool>("settled");
+        for (const auto* action : {"write", "layer", "empty", "start", "end"})
+            for (bool settled : {false, true})
+                QTest::newRow(qPrintable(QString::fromLatin1(action) + (settled ? "-settled" : "-pending")))
+                    << QString::fromLatin1(action) << settled;
+    }
+
+    void emptyWriterPreservesCancellation()
+    {
+        QFETCH(QString, operation); QFETCH(bool, settled);
+        CExportControl control; CPsdWriteList writer; writer.SetControl(&control); control.Cancel();
+        if (settled) QVERIFY(!control.Checkpoint());
+        bool accepted = true; CPsdPreviewKind preview = CPsdPreviewKind::Composite;
+        if (operation == "write") { accepted = writer.WritePsd(&preview); QCOMPARE(preview, CPsdPreviewKind::Unknown); }
+        if (operation == "layer") accepted = writer.AddLayer("layer", QRect(), QImage());
+        if (operation == "empty") accepted = writer.AddEmptyLayer("empty");
+        if (operation == "start") accepted = writer.AddGroupStart("group");
+        if (operation == "end") accepted = writer.AddGroupEnd();
+        QVERIFY(!accepted); QVERIFY(!control.Checkpoint()); QVERIFY(control.WasCanceled());
+        QVERIFY(!control.IsCommitted()); QCOMPARE(writer.Control(), &control);
+    }
+
+    void writerWrapperRejectsCallbackReentry_data()
+    {
+        QTest::addColumn<QString>("operation");
+        QTest::addColumn<bool>("cancelFirst");
+        for (const auto* action : {"create", "write", "layer", "empty", "start", "end", "control", "close", "sort", "moc", "cid", "clear"})
+            for (bool cancel : {false, true})
+                QTest::newRow(qPrintable(QString::fromLatin1(action) + (cancel ? "-cancel" : "-failure")))
+                    << QString::fromLatin1(action) << cancel;
+    }
+
+    void writerWrapperRejectsCallbackReentry()
+    {
+        QFETCH(QString, operation);
+        QFETCH(bool, cancelFirst);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("protected.psd");
+        const auto replacement = directory.filePath("replacement.psd");
+        QVERIFY(seed(path));
+        CPsdWriteList writer;
+        QVERIFY(writer.CreatePsd(path, 2, 137));
+        QImage image(2, 137, QImage::Format_ARGB32);
+        image.fill(qRgba(10, 20, 30, 255));
+        QVERIFY(writer.AddLayer("original", QRect(0, 0, 2, 137), image));
+        CExportControl control;
+        writer.SetControl(&control);
+        bool called = false, rejected = true;
+        CPsdPreviewKind nestedPreview = CPsdPreviewKind::Composite;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (called || progress.detail != QStringLiteral("合成透明预览")) return true;
+            called = true;
+            if (cancelFirst) control.Cancel();
+            if (operation == "create") rejected = !writer.CreatePsd(replacement, 2, 2);
+            if (operation == "write") rejected = !writer.WritePsd(&nestedPreview);
+            if (operation == "layer") rejected = !writer.AddLayer("nested", QRect(0, 0, 2, 137), image);
+            if (operation == "empty") rejected = !writer.AddEmptyLayer("nested");
+            if (operation == "start") rejected = !writer.AddGroupStart("nested");
+            if (operation == "end") rejected = !writer.AddGroupEnd();
+            if (operation == "control") writer.SetControl(nullptr);
+            if (operation == "close") writer.ClosePsd();
+            if (operation == "sort") rejected = writer.GetSortDrawableIndexList({}, nullptr).isEmpty();
+            if (operation == "moc") writer.SetMocName("nested.moc3");
+            if (operation == "cid") writer.SetCidName("nested.cdi3.json");
+            if (operation == "clear") writer.ClaerArtToName();
+            return true;
+        }));
+        CPsdPreviewKind preview = CPsdPreviewKind::Composite;
+        QVERIFY(!writer.WritePsd(&preview));
+        QVERIFY(called);
+        QVERIFY(rejected);
+        QCOMPARE(writer.Control(), &control);
+        QCOMPARE(preview, CPsdPreviewKind::Unknown);
+        QCOMPARE(nestedPreview, CPsdPreviewKind::Composite);
+        QVERIFY(!control.IsCommitted());
+        QCOMPARE(control.WasCanceled(), cancelFirst);
+        QCOMPARE(bytes(path), QByteArray("original-project"));
+        QVERIFY(!QFileInfo::exists(replacement));
+        writer.SetControl(nullptr);
+        QVERIFY(writer.CreatePsd(path, 2, 2));
+        QVERIFY(writer.AddEmptyLayer("retry"));
+        QVERIFY(writer.WritePsd(&preview));
+        QCOMPARE(preview, CPsdPreviewKind::Composite);
+    }
+
+    void writerWrapperFreezesBorrowedGroupNameBeforeCallbacks()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto path = directory.filePath("group.psd");
+        CPsdWriteList writer;
+        QVERIFY(writer.CreatePsd(path, 2, 2));
+        CExportControl control;
+        QString name = QStringLiteral("original folder");
+        const QString borrowed = QString::fromRawData(name.data(), name.size());
+        bool changed = false;
+        writer.SetControl(&control);
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress&, QString*) {
+            if (!changed) { name.fill('x'); changed = true; }
+            return true;
+        }));
+        QVERIFY(writer.AddGroupStart(borrowed));
+        QVERIFY(changed);
+        QVERIFY(writer.AddEmptyLayer("empty"));
+        QVERIFY(writer.AddGroupEnd());
+        QVERIFY(writer.WritePsd());
+        PsdBinary::Document parsed;
+        QString error;
+        QVERIFY2(PsdBinary::Parse(bytes(path), parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.layers.last().name, QStringLiteral("original folder"));
+    }
+
     void emptyGeometryWritesIdentifiedLayers_data()
     {
         QTest::addColumn<int>("kind");

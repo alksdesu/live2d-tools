@@ -107,6 +107,9 @@ struct Document
     quint16 channels = 0;
     QMap<quint16, QByteArray> resources;
     QVector<Layer> layers;
+    qint16 layerCount = 0;
+    QMap<QByteArray, QByteArray> globalTags;
+    QByteArray merged;
 };
 
 inline Layer ReadLayer(Reader& input)
@@ -214,7 +217,8 @@ inline bool Parse(const QByteArray& bytes, Document& document, QString* error = 
         if (mask.Remaining()) {
             Reader info = mask.Section();
             if (info.Remaining()) {
-                const int count = qAbs(static_cast<int>(info.I16()));
+                candidate.layerCount = info.I16();
+                const int count = qAbs(static_cast<int>(candidate.layerCount));
                 Require(count <= info.Remaining() / 34, "invalid layer count");
                 for (int i = 0; i < count; ++i) candidate.layers.append(ReadLayer(info));
                 for (Layer& layer : candidate.layers) ReadPixels(info, layer);
@@ -222,10 +226,17 @@ inline bool Parse(const QByteArray& bytes, Document& document, QString* error = 
                 info.ZeroPadding();
             }
             mask.Section();
-            Require(mask.Remaining() == 0, "unsupported global layer information");
+            while (mask.Remaining()) {
+                mask.Signature("8BIM");
+                const auto key = mask.Take(4);
+                const quint32 size = mask.U32();
+                Require(!candidate.globalTags.contains(key), "duplicate global tag");
+                candidate.globalTags.insert(key, mask.Take(size));
+                mask.Take((4 - size % 4) % 4);
+            }
         }
         Require(input.U16() == 0, "unsupported merged compression");
-        input.Take(static_cast<quint64>(width) * height * candidate.channels);
+        candidate.merged = input.Take(static_cast<quint64>(width) * height * candidate.channels);
         Require(input.Remaining() == 0, "extra image bytes");
         document = std::move(candidate);
         if (error) error->clear();

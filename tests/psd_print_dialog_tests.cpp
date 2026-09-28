@@ -20,6 +20,8 @@ private slots:
         const auto* notice = dialog.findChild<QLabel*>("psdCoverageNotice");
         QVERIFY(notice); QCOMPARE(notice->textFormat(), Qt::PlainText); QVERIFY(notice->wordWrap());
         QVERIFY(notice->text().contains(QStringLiteral("不代表原始素材已恢复")));
+        QVERIFY(notice->text().contains(QStringLiteral("合成预览按导出的图层生成")));
+        QVERIFY(notice->text().contains(QStringLiteral("纹理采样结果可能与实时画布不同")));
         for (const auto* check : dialog.findChildren<QCheckBox*>()) QVERIFY(!check->isChecked());
         dialog.SetName(QStringLiteral("<b>source.psd</b>"));
         bool found = false;

@@ -325,6 +325,7 @@ QJsonObject CExportResultsPanel::ReportJson() const
     QJsonArray files;
     bool hasSource = false;
     bool hasCoverage = false;
+    bool hasPreview = false;
     for (const auto& item : m_results) {
         QJsonObject file{{QStringLiteral("index"), item.index}, {QStringLiteral("source"), item.sourcePath},
             {QStringLiteral("output"), item.outputPath}, {QStringLiteral("state"), PsdBatchStateKey(item.state)},
@@ -338,10 +339,12 @@ QJsonObject CExportResultsPanel::ReportJson() const
         if (!item.coverage.IsEmpty()) {
             file.insert(QStringLiteral("objectCoverage"), item.coverage.ToJson());
             hasCoverage = true;
+            hasPreview = hasPreview || item.coverage.GetContext().preview != CPsdPreviewKind::Unknown;
         }
         files.append(file);
     }
-    return QJsonObject{{QStringLiteral("version"), hasCoverage ? 4 : hasSource ? 3 : 2}, {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
+    return QJsonObject{{QStringLiteral("version"), hasPreview ? 5 : hasCoverage ? 4 : hasSource ? 3 : 2},
+        {QStringLiteral("busy"), m_busy}, {QStringLiteral("files"), files}};
 }
 
 QString CExportResultsPanel::ReportText() const
