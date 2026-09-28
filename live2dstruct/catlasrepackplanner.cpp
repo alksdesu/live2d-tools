@@ -6,6 +6,7 @@
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QUuid>
+#include <QStringView>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -22,7 +23,11 @@ struct CAtlasRepackPlanner::Plan::Verification
 struct CAtlasPlanVerification
 {
     static bool Check(const CAtlasRepackPlanner::Snapshot& source, const CAtlasRepackPlanner::Plan& plan);
-    static void Seal(const CAtlasRepackPlanner::Snapshot& source, CAtlasRepackPlanner::Plan& plan);
+    static bool Capture(const CAtlasRepackPlanner::Snapshot& source, const CAtlasRepackPlanner::Plan& plan,
+                        CAtlasRepackPlanner::Snapshot& frozenSource, CAtlasRepackPlanner::Plan& frozenPlan, QString* error);
+    static bool Freeze(const CAtlasRepackPlanner::Snapshot& source,
+                       std::shared_ptr<const CAtlasRepackPlanner::Snapshot>& result, QString* error);
+    static void Seal(std::shared_ptr<const CAtlasRepackPlanner::Snapshot> source, CAtlasRepackPlanner::Plan& plan);
     static void Seal(const CAtlasRepackPlanner::Plan& before, CAtlasRepackPlanner::Plan& plan);
 };
 namespace {
@@ -149,9 +154,52 @@ bool budget(const Snapshot& snapshot, qint64 added, qint64& total, QString* erro
         return fail(error, QStringLiteral("图集计算超出操作预算，请分批处理素材"));
     total += added; return true;
 }
+class SupportCache
+{
+public:
+    SupportCache(const Snapshot& snapshot, const Plan& plan, int gutter, qint64& operations)
+        : m_snapshot(snapshot), m_plan(plan), m_gutter(gutter), m_operations(operations) {}
+    bool Bounds(const QString& id, QRect& result, QString* error)
+    {
+        const auto cached = m_meshes.constFind(id);
+        if (cached != m_meshes.cend()) { result = *cached; return true; }
+        const auto points = m_plan.pixelCoordinates.constFind(id);
+        if (points == m_plan.pixelCoordinates.cend()) return fail(error, QStringLiteral("素材缺少像素坐标：%1").arg(id));
+        if (!budget(m_snapshot, points->size() + 1, m_operations, error)) return false;
+        const auto binding = m_plan.state.artwork.bindings.constFind(id);
+        const bool linked = binding != m_plan.state.artwork.bindings.cend() && binding->status == CModelArtwork::BindingStatus::Linked;
+        int gutter = m_gutter;
+        if (linked) gutter = std::max(gutter, m_plan.state.artwork.placements.value(binding->placementId).gutter);
+        QRect bounds;
+        if ((!points->isEmpty() || !linked) && !support(*points, gutter, bounds, error)) return false;
+        if (linked) {
+            auto placement = m_placements.constFind(binding->placementId);
+            if (placement == m_placements.cend()) {
+                QRect domain;
+                if (!budget(m_snapshot, 4, m_operations, error) ||
+                    !CArtworkReconciler::SourcePatch(m_plan.state.artwork, id, m_gutter, domain, error)) return false;
+                placement = m_placements.insert(binding->placementId, domain);
+            }
+            if (bounds.isEmpty()) bounds = *placement;
+            else if (!unite(bounds, *placement, bounds, error)) return false;
+        }
+        m_meshes.insert(id, bounds); result = bounds; return true;
+    }
+private:
+    const Snapshot& m_snapshot;
+    const Plan& m_plan;
+    int m_gutter;
+    qint64& m_operations;
+    QMap<QString, QRect> m_meshes, m_placements;
+};
+bool hasSupport(const Plan& plan, const CModelDrawableMaterial& material)
+{
+    const auto binding = plan.state.artwork.bindings.constFind(material.id);
+    return !material.uvs.isEmpty() || (binding != plan.state.artwork.bindings.cend() && binding->status == CModelArtwork::BindingStatus::Linked);
+}
 bool selected(const Snapshot& snapshot, const Plan& plan, const QStringList& ids, QSet<QString>& result, QString* error)
 {
-    if (ids.isEmpty()) return fail(error, QStringLiteral("请先选择素材"));
+    if (ids.isEmpty() || ids.size() > snapshot.meshes.size()) return fail(error, QStringLiteral("请选择有效数量的素材"));
     QSet<QString> candidate;
     for (const auto& id : ids) {
         if (candidate.contains(id) || !mesh(snapshot, id) || !material(plan, id) || plan.pixelCoordinates.value(id).isEmpty())
@@ -159,6 +207,33 @@ bool selected(const Snapshot& snapshot, const Plan& plan, const QStringList& ids
         candidate.insert(id);
     }
     result.swap(candidate); return true;
+}
+QStringList ownedIds(const QStringList& values)
+{
+    QStringList result; result.reserve(values.size());
+    for (const auto& value : values) result.append(QString(value.constData(), value.size()));
+    return result;
+}
+bool atlasName(const QString& value, QString& result, QString* error)
+{
+    const auto trimmed = QStringView(value).trimmed();
+    if (trimmed.isEmpty() || trimmed.size() > 256 || trimmed.contains(QChar::Null))
+        return fail(error, QStringLiteral("图集名称无效"));
+    result = trimmed.toString(); return true;
+}
+bool selectionArea(const Plan& plan, const QStringList& ids, SupportCache& support, QRect& bounds, int& slot, QString* error)
+{
+    int source = -1; QRect area;
+    for (const auto& id : ids) {
+        const auto* item = material(plan, id);
+        if (source != -1 && item->textureIndex != source) return fail(error, QStringLiteral("跨图集素材请分组移动或使用自动排布"));
+        QRect next;
+        if (!support.Bounds(id, next, error)) return false;
+        if (source == -1) area = next;
+        else if (!unite(area, next, area, error)) return false;
+        source = item->textureIndex;
+    }
+    bounds = area; slot = source; return true;
 }
 bool encode(const QImage& image, QByteArray& result, QString* error)
 {
@@ -284,19 +359,21 @@ QVector<QRect> wrapped(const QRect& rect, QSize size)
     return result;
 }
 bool render(const Snapshot& snapshot, const Plan& plan, const QVector<Placement>& placements,
-            const QSet<int>& clearedSlots, int gutter, Plan& candidate, qint64& operations, QString* error, CExportControl* control)
+            const QSet<int>& clearedSlots, int gutter, Plan& candidate,
+            qint64& operations, QString* error, CExportControl* control)
 {
     QMap<QString, CArtworkReconciler::Rebase> rebases;
     QSet<QString> moved;
     for (const auto& place : placements) for (const auto& id : place.patch.ids) moved.insert(id);
     QMap<int, QVector<QPair<QRect, QString>>> protection;
-    for (const auto& value : plan.state.materials) if (!moved.contains(value.id) && !value.uvs.isEmpty()) {
-        if (!checkpoint(control, error) || !budget(snapshot, plan.pixelCoordinates.value(value.id).size() + 1, operations, error)) return false;
+    SupportCache protectionSupport(snapshot, plan, 1, operations);
+    for (const auto& value : plan.state.materials) if (!moved.contains(value.id) && hasSupport(plan, value)) {
+        if (!checkpoint(control, error)) return false;
         const auto atlas = plan.state.workspace.atlases.constFind(value.textureIndex);
         if (atlas == plan.state.workspace.atlases.cend()) return fail(error, QStringLiteral("未选素材缺少有效图集"));
         if (clearedSlots.contains(value.textureIndex)) return fail(error, QStringLiteral("重排目标仍有未选素材：%1").arg(value.id));
         QRect bounds;
-        if (!support(plan.pixelCoordinates.value(value.id), gutter, bounds, error)) return false;
+        if (!protectionSupport.Bounds(value.id, bounds, error)) return false;
         for (const auto& area : wrapped(bounds, atlas->size)) protection[value.textureIndex].append({area, value.id});
     }
     QSet<int> detachedSlots = clearedSlots;
@@ -383,10 +460,19 @@ bool CAtlasPlanVerification::Check(const Planner::Snapshot& source, const Planne
     }
     return true;
 }
-void CAtlasPlanVerification::Seal(const Planner::Snapshot& source, Planner::Plan& plan)
+bool CAtlasPlanVerification::Capture(const Planner::Snapshot& source, const Planner::Plan& plan,
+                                    Planner::Snapshot& frozenSource, Planner::Plan& frozenPlan, QString* error)
+{
+    if (!Check(source, plan)) return fail(error, QStringLiteral("图集草稿不是当前来源的完整已验证计划"));
+    const auto verified = plan.m_verification;
+    frozenSource = *verified->source; frozenPlan = verified->plan; frozenPlan.m_verification = verified;
+    if (error) error->clear(); return true;
+}
+bool CAtlasPlanVerification::Freeze(const Planner::Snapshot& source, std::shared_ptr<const Planner::Snapshot>& result, QString* error)
 {
     auto baseline = std::make_shared<Planner::Snapshot>(source);
-    baseline->artwork = plan.state.artwork;
+    if (!CTextureWorkspace::Freeze(source.sources, source.workspace, baseline->workspace, error) ||
+        !CModelArtwork::Freeze(source.artwork, baseline->artwork, error)) return false;
     baseline->sourceDigest = QByteArray(source.sourceDigest.constData(), source.sourceDigest.size());
     baseline->topologyDigest = QByteArray(source.topologyDigest.constData(), source.topologyDigest.size());
     QHash<QByteArray, QByteArray> blobs;
@@ -397,20 +483,23 @@ void CAtlasPlanVerification::Seal(const Planner::Snapshot& source, Planner::Plan
         origin.digest = QByteArray(origin.digest.constData(), origin.digest.size());
     }
     for (auto& atlas : baseline->workspace.atlases) {
-        atlas.id = QString(atlas.id.constData(), atlas.id.size()); atlas.name = QString(atlas.name.constData(), atlas.name.size());
         if (!atlas.png.isEmpty()) {
             const auto digest = QCryptographicHash::hash(atlas.png, QCryptographicHash::Sha256);
-            if (!blobs.contains(digest)) blobs.insert(digest, QByteArray(atlas.png.constData(), atlas.png.size()));
+            if (!blobs.contains(digest)) blobs.insert(digest, atlas.png);
             atlas.png = blobs.value(digest);
         }
     }
-    baseline->workspace.sourceFingerprint = QByteArray(source.workspace.sourceFingerprint.constData(), source.workspace.sourceFingerprint.size());
     for (auto& mesh : baseline->meshes) {
-        mesh.material.id = QString(mesh.material.id.constData(), mesh.material.id.size()); mesh.reason = QString(mesh.reason.constData(), mesh.reason.size());
+        mesh.material.id = QString(mesh.material.id.constData(), mesh.material.id.size());
+        if (!mesh.reason.isNull()) mesh.reason = QString(mesh.reason.constData(), mesh.reason.size());
         mesh.material.uvs = QVector<float>(mesh.material.uvs.cbegin(), mesh.material.uvs.cend());
         mesh.triangles = QVector<quint16>(mesh.triangles.cbegin(), mesh.triangles.cend());
     }
-    auto verified = std::make_shared<Planner::Plan::Verification>(); verified->source = std::move(baseline); verified->plan = plan;
+    result = std::move(baseline); return true;
+}
+void CAtlasPlanVerification::Seal(std::shared_ptr<const Planner::Snapshot> source, Planner::Plan& plan)
+{
+    auto verified = std::make_shared<Planner::Plan::Verification>(); verified->source = std::move(source); verified->plan = plan;
     verified->plan.m_verification.reset(); plan.m_verification = std::move(verified);
 }
 void CAtlasPlanVerification::Seal(const Planner::Plan& before, Planner::Plan& plan)
@@ -419,12 +508,14 @@ void CAtlasPlanVerification::Seal(const Planner::Plan& before, Planner::Plan& pl
     verified->plan.m_verification.reset(); plan.m_verification = std::move(verified);
 }
 
-bool CAtlasRepackPlanner::Initialize(const Snapshot& snapshot, Plan& result, QString* error, CExportControl* control) try
+bool CAtlasRepackPlanner::Initialize(const Snapshot& requested, Plan& result, QString* error, CExportControl* control) try
 {
     Plan candidate;
-    if (!checkpoint(control, error) || !token(snapshot, candidate.token, error) ||
-        !CTextureWorkspace::Freeze(snapshot.sources, snapshot.workspace, candidate.state.workspace, error) ||
-        !CModelArtwork::Freeze(snapshot.artwork, candidate.state.artwork, error)) return false;
+    std::shared_ptr<const Snapshot> frozen;
+    if (!token(requested, candidate.token, error) || !CAtlasPlanVerification::Freeze(requested, frozen, error)) return false;
+    const auto& snapshot = *frozen;
+    candidate.state.workspace = snapshot.workspace; candidate.state.artwork = snapshot.artwork;
+    if (!checkpoint(control, error)) return false;
     CTextureAssets::State pngs;
     if (!CTextureWorkspace::Effective(snapshot.sources, snapshot.workspace, pngs, error)) return false;
     QHash<QByteArray, QImage> decoded;
@@ -458,7 +549,7 @@ bool CAtlasRepackPlanner::Initialize(const Snapshot& snapshot, Plan& result, QSt
     }
     std::sort(candidate.state.materials.begin(), candidate.state.materials.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     if (!validateFields(snapshot, candidate, error) || !checkpoint(control, error)) return false;
-    CAtlasPlanVerification::Seal(snapshot, candidate);
+    CAtlasPlanVerification::Seal(std::move(frozen), candidate);
     result = std::move(candidate); return true;
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法准备图集编辑快照")); }
@@ -515,29 +606,27 @@ bool CAtlasRepackPlanner::Validate(const Snapshot& snapshot, const Plan& plan, Q
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法验证图集草稿")); }
 
-bool CAtlasRepackPlanner::SelectionBounds(const Snapshot& snapshot, const Plan& plan, const QStringList& ids,
+bool CAtlasRepackPlanner::SelectionBounds(const Snapshot& requestedSnapshot, const Plan& requestedPlan, const QStringList& requestedIds,
                                          int gutter, QRect& bounds, int& slot, QString* error)
 try
 {
-    if (!Validate(snapshot, plan, error)) return false;
+    Snapshot snapshot; Plan plan;
+    if (!CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error)) return false;
     QSet<QString> unique;
-    if (!selected(snapshot, plan, ids, unique, error)) return false;
-    int source = -1; QVector<QPointF> points;
-    for (const auto& id : ids) {
-        const auto* item = material(plan, id);
-        if (source != -1 && item->textureIndex != source) return fail(error, QStringLiteral("跨图集素材请分组移动或使用自动排布"));
-        source = item->textureIndex; points += plan.pixelCoordinates.value(id);
-    }
-    QRect area;
-    if (!support(points, gutter, area, error)) return false;
-    bounds = area; slot = source; return true;
+    if (!selected(snapshot, plan, requestedIds, unique, error)) return false;
+    const auto ids = ownedIds(requestedIds);
+    qint64 operations = 0; SupportCache support(snapshot, plan, gutter, operations);
+    return selectionArea(plan, ids, support, bounds, slot, error);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法计算素材区域，原结果保持不变")); }
 
-bool CAtlasRepackPlanner::AddAtlas(const Snapshot& snapshot, const Plan& plan, const QString& name, QSize size,
+bool CAtlasRepackPlanner::AddAtlas(const Snapshot& requestedSnapshot, const Plan& requestedPlan, const QString& requestedName, QSize size,
                                   Plan& result, QString* error, CExportControl* control) try
 {
-    if (!Validate(snapshot, plan, error) || !dimensions(snapshot, size, error) || !checkpoint(control, error)) return false;
+    Snapshot snapshot; Plan plan; QString name;
+    if (!atlasName(requestedName, name, error) ||
+        !CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error) ||
+        !dimensions(snapshot, size, error) || !checkpoint(control, error)) return false;
     qint64 operations = 0;
     if (!budget(snapshot, qint64(size.width()) * size.height(), operations, error) || !allocation(snapshot, plan, -1, size, error)) return false;
     const int slot = plan.state.workspace.atlases.isEmpty() ? 0 : plan.state.workspace.atlases.lastKey() + 1;
@@ -545,17 +634,18 @@ bool CAtlasRepackPlanner::AddAtlas(const Snapshot& snapshot, const Plan& plan, c
     Plan candidate = plan; QImage image(size, QImage::Format_RGBA8888);
     if (image.isNull()) return fail(error, QStringLiteral("无法分配新图集"));
     image.fill(Qt::transparent);
-    const auto trimmed = name.trimmed(); const QString frozenName(trimmed.constData(), trimmed.size());
-    candidate.state.workspace.atlases.insert(slot, {QStringLiteral("atlas:") + QUuid::createUuid().toString(QUuid::WithoutBraces), frozenName, -1, size, {}});
+    candidate.state.workspace.atlases.insert(slot, {QStringLiteral("atlas:") + QUuid::createUuid().toString(QUuid::WithoutBraces), name, -1, size, {}});
     candidate.images.insert(slot, image);
     return finish(snapshot, plan, std::move(candidate), result, error, control);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法创建图集")); }
 
-bool CAtlasRepackPlanner::ResizeAtlas(const Snapshot& snapshot, const Plan& plan, int slot, QSize size,
+bool CAtlasRepackPlanner::ResizeAtlas(const Snapshot& requestedSnapshot, const Plan& requestedPlan, int slot, QSize size,
                                      Plan& result, QString* error, CExportControl* control) try
 {
-    if (!Validate(snapshot, plan, error) || !dimensions(snapshot, size, error) || !checkpoint(control, error)) return false;
+    Snapshot snapshot; Plan plan;
+    if (!CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error) ||
+        !dimensions(snapshot, size, error) || !checkpoint(control, error)) return false;
     const auto original = plan.images.constFind(slot);
     if (original == plan.images.cend()) return fail(error, QStringLiteral("要调整的图集不存在"));
     if (size == original->size()) { result = plan; return true; }
@@ -573,16 +663,15 @@ bool CAtlasRepackPlanner::ResizeAtlas(const Snapshot& snapshot, const Plan& plan
         std::memcpy(image.scanLine(y), original->constScanLine(y), size_t(copyWidth) * 4);
         std::memset(occupied.data() + qsizetype(y) * size.width(), 1, size_t(copyWidth));
     }
-    QSet<QString> processed;
-    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && !value.uvs.isEmpty()) {
-        if (!budget(snapshot, plan.pixelCoordinates.value(value.id).size(), operations, error)) return false;
+    QSet<QString> processed; SupportCache support(snapshot, plan, 1, operations);
+    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && hasSupport(plan, value)) {
         if (!mesh(snapshot, value.id)->editable) return fail(error, QStringLiteral("调整尺寸会修改已锁定素材 %1 的 UV").arg(value.id));
         const auto points = plan.pixelCoordinates.value(value.id);
         if (size.width() < original->width() || size.height() < original->height())
             for (const auto& p : points) if (p.x() < 0 || p.y() < 0 || p.x() > size.width() || p.y() > size.height())
                 return fail(error, QStringLiteral("缩小后的图集无法容纳素材 %1，请先重排").arg(value.id));
         QRect bounds;
-        if (!support(points, 1, bounds, error)) return false;
+        if (!support.Bounds(value.id, bounds, error)) return false;
         const auto key = QStringLiteral("%1,%2,%3,%4").arg(bounds.x()).arg(bounds.y()).arg(bounds.width()).arg(bounds.height());
         if (!processed.contains(key)) {
             processed.insert(key);
@@ -603,11 +692,12 @@ bool CAtlasRepackPlanner::ResizeAtlas(const Snapshot& snapshot, const Plan& plan
     candidate.state.workspace.atlases[slot].size = size;
     candidate.images[slot] = std::move(image);
     QMap<QString, CArtworkReconciler::Rebase> rebases;
-    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && !value.uvs.isEmpty()) {
+    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && hasSupport(plan, value)) {
         if (!setPixels(snapshot, candidate, value.id, slot, plan.pixelCoordinates.value(value.id), error)) return false;
-        QRect patch; if (!support(plan.pixelCoordinates.value(value.id), 1, patch, error)) return false;
+        QRect patch; if (!support.Bounds(value.id, patch, error)) return false;
         const auto binding = plan.state.artwork.bindings.constFind(value.id);
-        const int gutter = binding == plan.state.artwork.bindings.cend() ? 1 : plan.state.artwork.placements.value(binding->placementId).gutter;
+        const int gutter = binding == plan.state.artwork.bindings.cend() || binding->status == CModelArtwork::BindingStatus::Detached
+            ? 1 : plan.state.artwork.placements.value(binding->placementId).gutter;
         rebases.insert(value.id, {QTransform(), slot, gutter, patch});
     }
     if (!CArtworkReconciler::RebasePlacements(snapshot.artwork, plan.state, candidate.state.workspace, candidate.state.materials,
@@ -616,39 +706,47 @@ bool CAtlasRepackPlanner::ResizeAtlas(const Snapshot& snapshot, const Plan& plan
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法调整图集尺寸")); }
 
-bool CAtlasRepackPlanner::Move(const Snapshot& snapshot, const Plan& plan, const QStringList& ids, int targetSlot,
+bool CAtlasRepackPlanner::Move(const Snapshot& requestedSnapshot, const Plan& requestedPlan, const QStringList& requestedIds, int targetSlot,
                               QPoint topLeft, int quarterTurns, int gutter, Plan& result, QString* error, CExportControl* control) try
 {
-    if (!Validate(snapshot, plan, error) || !checkpoint(control, error)) return false;
+    Snapshot snapshot; Plan plan; QSet<QString> unique;
+    if (!CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error) ||
+        !selected(snapshot, plan, requestedIds, unique, error)) return false;
+    const auto ids = ownedIds(requestedIds);
+    if (!checkpoint(control, error)) return false;
     if (quarterTurns < 0 || quarterTurns > 3 || !plan.state.workspace.atlases.contains(targetSlot))
         return fail(error, QStringLiteral("目标图集或旋转角度无效"));
-    QRect bounds; int slot;
-    if (!SelectionBounds(snapshot, plan, ids, gutter, bounds, slot, error)) return false;
+    QRect bounds; int slot; qint64 operations = 0;
+    SupportCache support(snapshot, plan, gutter, operations);
+    if (!selectionArea(plan, ids, support, bounds, slot, error)) return false;
     if (targetSlot == slot && topLeft == bounds.topLeft() && quarterTurns == 0) { result = plan; return true; }
-    Plan candidate = plan; qint64 operations = 0;
+    Plan candidate = plan;
     if (!render(snapshot, plan, {{{slot, bounds, ids}, targetSlot, topLeft, quarterTurns}}, {}, gutter, candidate, operations, error, control)) return false;
     return finish(snapshot, plan, std::move(candidate), result, error, control);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法移动图集素材")); }
 
-bool CAtlasRepackPlanner::Pack(const Snapshot& snapshot, const Plan& plan, const QStringList& ids,
-                              const QVector<int>& targetSlots, int gutter, bool rotate90, Plan& result,
+bool CAtlasRepackPlanner::Pack(const Snapshot& requestedSnapshot, const Plan& requestedPlan, const QStringList& requestedIds,
+                              const QVector<int>& requestedTargetSlots, int gutter, bool rotate90, Plan& result,
                               QString* error, CExportControl* control) try
 {
-    QSet<QString> unique;
-    if (!Validate(snapshot, plan, error) || !selected(snapshot, plan, ids, unique, error) || !checkpoint(control, error)) return false;
-    if (gutter < 1 || gutter > 64 || targetSlots.isEmpty()) return fail(error, QStringLiteral("请选择目标图集和 1–64 像素边距"));
+    Snapshot snapshot; Plan plan; QSet<QString> unique;
+    if (!CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error) ||
+        !selected(snapshot, plan, requestedIds, unique, error)) return false;
+    if (gutter < 1 || gutter > 64 || requestedTargetSlots.isEmpty() || requestedTargetSlots.size() > plan.images.size())
+        return fail(error, QStringLiteral("请选择有效数量的目标图集和 1–64 像素边距"));
     QSet<int> targets;
-    for (int slot : targetSlots) {
+    for (int slot : requestedTargetSlots) {
         if (targets.contains(slot) || !plan.images.contains(slot)) return fail(error, QStringLiteral("重排目标重复或不存在"));
         targets.insert(slot);
     }
-    qint64 operations = 0;
+    const auto ids = ownedIds(requestedIds);
+    if (!checkpoint(control, error)) return false;
+    qint64 operations = 0; SupportCache support(snapshot, plan, gutter, operations);
     QVector<Patch> patches;
     for (const auto& id : ids) {
-        if (!budget(snapshot, plan.pixelCoordinates.value(id).size() + 1, operations, error)) return false;
         QRect bounds;
-        if (!support(plan.pixelCoordinates.value(id), gutter, bounds, error)) return false;
+        if (!support.Bounds(id, bounds, error)) return false;
         patches.append({material(plan, id)->textureIndex, bounds, {id}});
     }
     QVector<int> parent(patches.size()); std::iota(parent.begin(), parent.end(), 0);
@@ -736,27 +834,28 @@ bool CAtlasRepackPlanner::Pack(const Snapshot& snapshot, const Plan& plan, const
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法完成图集自动排布")); }
 
-bool CAtlasRepackPlanner::RemoveAtlas(const Snapshot& snapshot, const Plan& plan, int slot, Plan& result,
+bool CAtlasRepackPlanner::RemoveAtlas(const Snapshot& requestedSnapshot, const Plan& requestedPlan, int slot, Plan& result,
                                      QString* error, CExportControl* control) try
 {
-    if (!Validate(snapshot, plan, error) || !checkpoint(control, error)) return false;
+    Snapshot snapshot; Plan plan;
+    if (!CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error) || !checkpoint(control, error)) return false;
     const auto atlas = plan.state.workspace.atlases.constFind(slot);
     if (atlas == plan.state.workspace.atlases.cend() || atlas->sourceSlot >= 0 || slot != plan.state.workspace.atlases.lastKey())
         return fail(error, QStringLiteral("只能删除末尾的生成图集；原始图集需保留来源身份"));
-    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && !value.uvs.isEmpty())
+    for (const auto& value : plan.state.materials) if (value.textureIndex == slot && hasSupport(plan, value))
         return fail(error, QStringLiteral("图集仍被素材 %1 引用，请先移动素材").arg(value.id));
     Plan candidate = plan; candidate.state.workspace.atlases.remove(slot); candidate.images.remove(slot);
     return finish(snapshot, plan, std::move(candidate), result, error, control);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法删除图集")); }
 
-bool CAtlasRepackPlanner::RenameAtlas(const Snapshot& snapshot, const Plan& plan, int slot, const QString& name,
+bool CAtlasRepackPlanner::RenameAtlas(const Snapshot& requestedSnapshot, const Plan& requestedPlan, int slot, const QString& requestedName,
                                      Plan& result, QString* error) try
 {
-    if (!Validate(snapshot, plan, error)) return false;
+    Snapshot snapshot; Plan plan; QString name;
+    if (!atlasName(requestedName, name, error) || !CAtlasPlanVerification::Capture(requestedSnapshot, requestedPlan, snapshot, plan, error)) return false;
     if (!plan.state.workspace.atlases.contains(slot)) return fail(error, QStringLiteral("图集不存在"));
-    Plan candidate = plan; const auto trimmed = name.trimmed();
-    candidate.state.workspace.atlases[slot].name = QString(trimmed.constData(), trimmed.size());
+    Plan candidate = plan; candidate.state.workspace.atlases[slot].name = name;
     return finish(snapshot, plan, std::move(candidate), result, error, nullptr);
 }
 catch (const std::exception&) { return fail(error, QStringLiteral("无法重命名图集")); }

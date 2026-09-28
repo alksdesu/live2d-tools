@@ -111,6 +111,31 @@ Dialog::Context boundContext()
     for (auto& mesh : c.snapshot.meshes) for (const auto& material : plan.state.materials) if (mesh.material.id == material.id) mesh.material = material;
     return c;
 }
+Dialog::Context opacityContext(Artwork::SourceKind kind, const QMap<QString, bool>& policies = {{"A", false}})
+{
+    auto source = kind == Artwork::SourceKind::Cmo3 ? cmoIncoming() : incoming();
+    if (kind == Artwork::SourceKind::Png) {
+        source.kind = kind; source.revision.sourceBytes = source.images.first().png; source.revision.sourceDigest = hash(source.revision.sourceBytes);
+        source.revision.path = "/not-on-disk/source.png"; source.revision.fileName = "source.png";
+    }
+    const auto layer = std::find_if(source.revision.layers.cbegin(), source.revision.layers.cend(), [](const auto& value) { return value.kind == Artwork::LayerKind::Raster && !value.imageDigest.isEmpty(); });
+    auto c = context(source); Planner::Request request; request.incoming = source; request.familyName = c.familyName;
+    const auto mapping = QTransform::fromTranslate(layer->bounds.x() - 2, layer->bounds.y() - 3);
+    for (auto it = policies.cbegin(); it != policies.cend(); ++it) request.decisions.append({it.key(), Planner::Action::Associate, layer->id, mapping, true, it.value()});
+    Planner::Plan plan; QString error; if (!Planner::Build(c.snapshot, request, plan, &error)) qFatal("%s", qPrintable(error));
+    c.snapshot.baseline = plan.state; ++c.snapshot.documentRevision; c.atlasImages = plan.images; c.incoming.revision.id += ":next";
+    for (auto& mesh : c.snapshot.meshes) for (const auto& material : plan.state.materials) if (mesh.material.id == material.id) mesh.material = material;
+    return c;
+}
+bool materialOpacity(const Artwork::State& state, const QString& mesh)
+{
+    return state.materials.value(state.placements.value(state.bindings.value(mesh).placementId).materialId).applyLayerOpacity;
+}
+void sourceKinds()
+{
+    QTest::addColumn<int>("kind"); QTest::newRow("PSD") << int(Artwork::SourceKind::Psd);
+    QTest::newRow("PNG") << int(Artwork::SourceKind::Png); QTest::newRow("CMO3") << int(Artwork::SourceKind::Cmo3);
+}
 void connectHandlers(Dialog& d, int* previews = nullptr, int* saves = nullptr, int* cancels = nullptr)
 {
     d.SetPreviewHandler([previews](const auto&, QString*) { if (previews) ++*previews; return true; });
@@ -143,6 +168,88 @@ class PsdImportDialogTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void inheritedOpacitySurvivesBulkAndManualUpdate_data() { sourceKinds(); }
+    void inheritedOpacitySurvivesBulkAndManualUpdate()
+    {
+        QFETCH(int, kind); auto c = opacityContext(Artwork::SourceKind(kind));
+        for (const auto& layer : c.incoming.revision.layers) if (!layer.imageDigest.isEmpty()) QVERIFY(layer.opacity < 255);
+        Dialog d(c); connectHandlers(d); QVERIFY(settled(d));
+        QCOMPARE(decision(d, "A").applyLayerOpacity, false); QCOMPARE(decision(d, "B").applyLayerOpacity, true);
+        auto* opacity = control<QCheckBox>(d, "psdApplyLayerOpacity"); QCOMPARE(opacity->checkState(), Qt::Unchecked);
+        const int initialSlot = c.snapshot.baseline.artwork.bindings["A"].sampledMaterial.textureIndex;
+        const auto initialPixels = c.atlasImages[initialSlot];
+        click(d, "psdConfirmKnown"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        QCOMPARE(decision(d, "A").action, Planner::Action::Update); QVERIFY(!materialOpacity(d.Result().state.artwork, "A"));
+        const int updatedSlot = d.Result().state.artwork.bindings["A"].sampledMaterial.textureIndex;
+        QCOMPARE(d.Result().images[updatedSlot], initialPixels);
+        click(d, "psdUndo"); QVERIFY(settled(d)); QCOMPARE(decision(d, "A").action, Planner::Action::Keep); QVERIFY(!decision(d, "A").applyLayerOpacity);
+        click(d, "psdRedo"); QVERIFY(settled(d)); QVERIFY(!materialOpacity(d.Result().state.artwork, "A"));
+        action(d, Planner::Action::Update); click(d, "psdApplySelection"); QVERIFY(settled(d)); QVERIFY(!materialOpacity(d.Result().state.artwork, "A"));
+        opacity->setChecked(true); click(d, "psdApplySelection"); QVERIFY(settled(d)); QVERIFY(materialOpacity(d.Result().state.artwork, "A"));
+        const int explicitSlot = d.Result().state.artwork.bindings["A"].sampledMaterial.textureIndex;
+        QVERIFY(d.Result().images[explicitSlot] != initialPixels);
+        click(d, "psdUndo"); QVERIFY(settled(d)); QVERIFY(!materialOpacity(d.Result().state.artwork, "A"));
+        click(d, "psdRedo"); QVERIFY(settled(d)); QVERIFY(materialOpacity(d.Result().state.artwork, "A"));
+    }
+    void mixedOpacityRemainsPerObjectUntilExplicitlyChanged_data() { sourceKinds(); }
+    void mixedOpacityRemainsPerObjectUntilExplicitlyChanged()
+    {
+        QFETCH(int, kind); Dialog d(opacityContext(Artwork::SourceKind(kind), {{"A", false}, {"B", true}})); connectHandlers(d); QVERIFY(settled(d));
+        selectMesh(d, {"A", "B"}); QVERIFY(settled(d)); auto* opacity = control<QCheckBox>(d, "psdApplyLayerOpacity");
+        QCOMPARE(opacity->checkState(), Qt::PartiallyChecked); QVERIFY(control<QPushButton>(d, "psdPreview")->isEnabled());
+        auto* source = d.findChild<CArtworkSourceView*>(); QVERIFY(source); QCOMPARE(source->SourceOpacity(), 1.0);
+        click(d, "psdConfirmKnown"); QVERIFY(settled(d)); QVERIFY2(d.Error().isEmpty(), qPrintable(d.Error()));
+        QVERIFY(!materialOpacity(d.Result().state.artwork, "A")); QVERIFY(materialOpacity(d.Result().state.artwork, "B"));
+        action(d, Planner::Action::Update); click(d, "psdApplySelection"); QVERIFY(settled(d));
+        QVERIFY(!materialOpacity(d.Result().state.artwork, "A")); QVERIFY(materialOpacity(d.Result().state.artwork, "B"));
+        QCOMPARE(opacity->checkState(), Qt::PartiallyChecked);
+        opacity->click(); QCOMPARE(opacity->checkState(), Qt::Checked); QVERIFY(control<QPushButton>(d, "psdDiscardInput")->isEnabled()); QVERIFY(!control<QPushButton>(d, "psdPreview")->isEnabled()); click(d, "psdApplySelection"); QVERIFY(settled(d));
+        QVERIFY(materialOpacity(d.Result().state.artwork, "A")); QVERIFY(materialOpacity(d.Result().state.artwork, "B"));
+        click(d, "psdUndo"); QVERIFY(settled(d)); QCOMPARE(opacity->checkState(), Qt::PartiallyChecked);
+        QVERIFY(!materialOpacity(d.Result().state.artwork, "A")); QVERIFY(materialOpacity(d.Result().state.artwork, "B"));
+        click(d, "psdRedo"); QVERIFY(settled(d)); QCOMPARE(opacity->checkState(), Qt::Checked);
+        opacity->setCheckState(Qt::Unchecked); click(d, "psdApplySelection"); QVERIFY(settled(d));
+        QVERIFY(!materialOpacity(d.Result().state.artwork, "A")); QVERIFY(!materialOpacity(d.Result().state.artwork, "B"));
+    }
+    void mixedOpacityPresentation_data()
+    {
+        QTest::addColumn<bool>("dark"); QTest::newRow("light") << false; QTest::newRow("dark") << true;
+    }
+    void mixedOpacityPresentation()
+    {
+        QFETCH(bool, dark); const auto previous = qApp->styleSheet(); qApp->setStyleSheet(Theme::globalStyleSheet(dark));
+        Dialog d(opacityContext(Artwork::SourceKind::Psd, {{"A", false}, {"B", true}})); connectHandlers(d); QVERIFY(settled(d));
+        selectMesh(d, {"A", "B"}); QVERIFY(settled(d)); auto* opacity = control<QCheckBox>(d, "psdApplyLayerOpacity");
+        QCOMPARE(opacity->checkState(), Qt::PartiallyChecked); QVERIFY(opacity->text().contains(QStringLiteral("混合")));
+        QVERIFY(opacity->accessibleDescription().contains(QStringLiteral("各自")));
+        d.resize(1380, 800); d.show(); QTest::qWait(50);
+        const auto directory = qEnvironmentVariable("OPACITY_POLICY_IMAGES"); if (!directory.isEmpty()) {
+            QDir().mkpath(directory); QVERIFY(opacity->grab().save(directory + (dark ? "/opacity-dark.png" : "/opacity-light.png")));
+            QVERIFY(d.grab().save(directory + (dark ? "/dialog-dark.png" : "/dialog-light.png")));
+        }
+        opacity->click(); QCOMPARE(opacity->checkState(), Qt::Checked); QVERIFY(!opacity->text().contains(QStringLiteral("混合")));
+        click(d, "psdDiscardInput"); QVERIFY(settled(d)); QCOMPARE(opacity->checkState(), Qt::PartiallyChecked);
+        QVERIFY(opacity->text().contains(QStringLiteral("混合"))); d.reject(); qApp->setStyleSheet(previous);
+    }
+    void opacityPolicyDoesNotLeakAcrossFamiliesOrDetachedBindings_data() { sourceKinds(); }
+    void opacityPolicyDoesNotLeakAcrossFamiliesOrDetachedBindings()
+    {
+        QFETCH(int, kind); const auto linked = opacityContext(Artwork::SourceKind(kind));
+        auto otherFamily = linked; otherFamily.incoming.revision.familyId = "other-family"; Dialog other(otherFamily); connectHandlers(other); QVERIFY(settled(other));
+        QVERIFY(decision(other, "A").applyLayerOpacity); QVERIFY(control<QCheckBox>(other, "psdApplyLayerOpacity")->isChecked());
+        QVERIFY(associate(other)); QVERIFY(materialOpacity(other.Result().state.artwork, "A"));
+        auto detached = linked; detached.snapshot.baseline.artwork.bindings["A"].status = Artwork::BindingStatus::Detached;
+        detached.snapshot.baseline.artwork.bindings["A"].detachedReason = "detached fixture";
+        Dialog reconnect(detached); connectHandlers(reconnect); QVERIFY(settled(reconnect)); QVERIFY(decision(reconnect, "A").applyLayerOpacity);
+        QVERIFY(associate(reconnect)); QVERIFY(materialOpacity(reconnect.Result().state.artwork, "A"));
+        Dialog keep(linked); connectHandlers(keep); QVERIFY(settled(keep)); action(keep, Planner::Action::Detach); click(keep, "psdApplySelection"); QVERIFY(settled(keep));
+        QCOMPARE(keep.Result().state.artwork.bindings["A"].status, Artwork::BindingStatus::Detached);
+        QVERIFY(!materialOpacity(keep.Result().state.artwork, "A"));
+        click(keep, "psdUndo"); QVERIFY(settled(keep)); QCOMPARE(keep.Result().state.artwork.bindings["A"].status, Artwork::BindingStatus::Linked);
+        QVERIFY(!decision(keep, "A").applyLayerOpacity);
+        Dialog unbound(context(linked.incoming)); connectHandlers(unbound); QVERIFY(settled(unbound));
+        QVERIFY(decision(unbound, "A").applyLayerOpacity); QVERIFY(associate(unbound)); QVERIFY(materialOpacity(unbound.Result().state.artwork, "A"));
+    }
     void meshDisplayNamesPreserveIdentityAndDoNotConfirmSourceNames()
     {
         auto source = context(); source.meshDisplayNames = {{"A", QStringLiteral("<b>眉毛</b>")}, {"B", QStringLiteral("眼睛")}};

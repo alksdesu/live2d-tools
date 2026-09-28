@@ -97,6 +97,16 @@ bool pixelsEqual(const QByteArray& first, const QByteArray& second, bool& same, 
     for (int y = 0; same && y < a.height(); ++y) same = std::memcmp(a.constScanLine(y), b.constScanLine(y), size_t(a.width()) * 4) == 0;
     return true;
 }
+bool exactCopy(const QTransform& value)
+{
+    if (!value.isAffine()) return false;
+    const double a = value.m11(), b = value.m12(), c = value.m21(), d = value.m22();
+    const auto unit = [](double x) { return x == -1.0 || x == 0.0 || x == 1.0; };
+    return unit(a) && unit(b) && unit(c) && unit(d) && std::abs(a) + std::abs(c) == 1.0 &&
+        std::abs(b) + std::abs(d) == 1.0 && a * b + c * d == 0.0 &&
+        std::isfinite(value.dx()) && std::isfinite(value.dy()) &&
+        value.dx() == std::trunc(value.dx()) && value.dy() == std::trunc(value.dy());
+}
 bool exact(float first, float second) { return std::memcmp(&first, &second, sizeof(float)) == 0; }
 bool samePlacement(Artwork::Placement first, const Artwork::Placement& second)
 { first.id = second.id; return first == second; }
@@ -122,6 +132,41 @@ QString placementId(const Artwork::Placement& value, const QMap<QString, Artwork
     return id;
 }
 }
+
+bool CArtworkReconciler::SourcePatch(const Artwork::State& artwork, const QString& meshId, int gutter,
+                                    QRect& result, QString* error) try
+{
+    if (gutter < 1 || gutter > 64) return fail(error, QStringLiteral("素材复制边距必须为 1–64 像素"));
+    const auto binding = artwork.bindings.constFind(meshId);
+    if (binding == artwork.bindings.cend() || binding->status == Artwork::BindingStatus::Detached) {
+        result = {}; if (error) error->clear(); return true;
+    }
+    const auto placement = artwork.placements.constFind(binding->placementId);
+    if (binding->status != Artwork::BindingStatus::Linked || placement == artwork.placements.cend() ||
+        placement->gutter < 1 || placement->gutter > 64 || !Artwork::ValidateTransform(placement->familyToAtlas, error))
+        return fail(error, QStringLiteral("关联素材的排布或边距无效"));
+    const auto& domain = placement->sourceDomain;
+    if (!std::isfinite(domain.x()) || !std::isfinite(domain.y()) || !std::isfinite(domain.width()) || !std::isfinite(domain.height()) ||
+        domain.width() <= 0 || domain.height() <= 0)
+        return fail(error, QStringLiteral("关联素材的完整范围无效"));
+    double left = std::numeric_limits<double>::infinity(), right = -left, top = left, bottom = -left;
+    for (const auto& point : {domain.topLeft(), domain.topRight(), domain.bottomLeft(), domain.bottomRight()}) {
+        const auto pixel = placement->familyToAtlas.map(point);
+        if (!std::isfinite(pixel.x()) || !std::isfinite(pixel.y())) return fail(error, QStringLiteral("关联素材的完整范围映射超出有限坐标"));
+        left = std::min(left, pixel.x()); right = std::max(right, pixel.x());
+        top = std::min(top, pixel.y()); bottom = std::max(bottom, pixel.y());
+    }
+    const int padding = std::max(gutter, placement->gutter);
+    left = std::floor(left) - padding; top = std::floor(top) - padding;
+    right = std::ceil(right) + padding; bottom = std::ceil(bottom) + padding;
+    const double low = std::numeric_limits<int>::min(), high = std::numeric_limits<int>::max();
+    if (left < low || top < low || right > high || bottom > high || right <= left || bottom <= top ||
+        right - left > high || bottom - top > high)
+        return fail(error, QStringLiteral("关联素材的完整复制范围超出整数坐标，请先调整来源映射"));
+    const QRect patch(int(left), int(top), int(right - left), int(bottom - top));
+    result = patch; if (error) error->clear(); return true;
+}
+catch (const std::exception&) { return fail(error, QStringLiteral("无法计算完整关联素材范围")); }
 
 bool CArtworkReconciler::ValidateLinks(const Artwork::State& artwork, const CTextureWorkspace::State& workspace,
                                       const CModelMaterialState& materials, const Triangles& triangles, QString* error) try
@@ -266,6 +311,7 @@ bool CArtworkReconciler::RebasePlacements(const Artwork::State& baseline, const 
         if (!previous.contains(rebase.key()) || !workspace.atlases.contains(rebase->targetSlot) ||
             rebase->gutter < 1 || rebase->gutter > 64 || !Artwork::ValidateTransform(rebase->pixelDelta, error))
             return fail(error, QStringLiteral("图集素材变换对象或目标无效"));
+        if (!exactCopy(rebase->pixelDelta)) return fail(error, QStringLiteral("图集复制只支持整数平移、直角旋转或镜像，不能隐式重采样"));
         const auto& old = previous[rebase.key()]; const auto& material = next[rebase.key()];
         const auto source = before.workspace.atlases.constFind(old.textureIndex); const auto& atlas = workspace.atlases[rebase->targetSlot];
         if (source == before.workspace.atlases.cend() || material.textureIndex != rebase->targetSlot || old.uvs.size() != material.uvs.size())
@@ -275,13 +321,20 @@ bool CArtworkReconciler::RebasePlacements(const Artwork::State& baseline, const 
         if (width <= 0 || height <= 0 || width > std::numeric_limits<int>::max() || height > std::numeric_limits<int>::max())
             return fail(error, QStringLiteral("图集素材复制范围无效"));
         const QRectF patch(rebase->sourcePatch.x(), rebase->sourcePatch.y(), width, height);
+        QRect required;
+        if (!SourcePatch(before.artwork, rebase.key(), rebase->gutter, required, error)) return false;
+        if (!required.isEmpty() && !rebase->sourcePatch.contains(required))
+            return fail(error, QStringLiteral("图集复制没有保留完整关联素材范围及边距"));
+        const auto binding = candidate.bindings.constFind(rebase.key());
+        const int padding = binding != candidate.bindings.cend() && binding->status == Artwork::BindingStatus::Linked
+            ? std::max(rebase->gutter, candidate.placements.value(binding->placementId).gutter) : rebase->gutter;
+        const QPointF halo(padding, padding);
         for (int vertex = 0; vertex < old.uvs.size() / 2; ++vertex) {
             const QPointF pixel(double(old.uvs[vertex * 2]) * source->size.width(), double(old.uvs[vertex * 2 + 1]) * source->size.height());
             const auto moved = rebase->pixelDelta.map(pixel);
-            if (!contains(patch, pixel) || !close(moved.x() / atlas.size.width(), material.uvs[vertex * 2]) || !close(moved.y() / atlas.size.height(), material.uvs[vertex * 2 + 1]))
+            if (!contains(patch, pixel - halo) || !contains(patch, pixel + halo) || !close(moved.x() / atlas.size.width(), material.uvs[vertex * 2]) || !close(moved.y() / atlas.size.height(), material.uvs[vertex * 2 + 1]))
                 return fail(error, QStringLiteral("图集素材变换与复制范围或候选 UV 不一致"));
         }
-        const auto binding = candidate.bindings.constFind(rebase.key());
         if (binding == candidate.bindings.cend() || binding->status == Artwork::BindingStatus::Detached) continue;
         auto placement = candidate.placements.value(binding->placementId);
         placement.familyToAtlas = placement.familyToAtlas * rebase->pixelDelta;

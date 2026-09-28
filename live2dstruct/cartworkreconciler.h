@@ -15,6 +15,8 @@ public:
         int gutter = 1;
         QRect sourcePatch;
     };
+    static bool SourcePatch(const CModelArtwork::State& artwork, const QString& meshId, int gutter,
+                            QRect& result, QString* error = nullptr);
     static bool ValidateLinks(const CModelArtwork::State& artwork, const CTextureWorkspace::State& workspace,
                               const CModelMaterialState& materials, const Triangles& triangles, QString* error = nullptr);
     static bool ManualAppearance(const CTextureAssets::Catalog& sources, const CModelAtlasState& before,

@@ -100,6 +100,21 @@ QString colorPolicyText(const CArtworkSourceImport::SourceCandidate& source)
         : QStringLiteral("颜色：保留原始 RGB 数值与 ICC，不进行色彩转换。");
     return QStringLiteral("颜色：已根据来源 ICC 转换到 sRGB；原始来源和 ICC 保存在工作会话中。");
 }
+bool initialLayerOpacity(const Artwork::State& artwork, const QString& meshId, const QString& familyId)
+{
+    const auto binding = artwork.bindings.constFind(meshId);
+    if (binding == artwork.bindings.cend() || binding->status != Artwork::BindingStatus::Linked) return true;
+    const auto placement = artwork.placements.constFind(binding->placementId);
+    if (placement == artwork.placements.cend()) return true;
+    const auto material = artwork.materials.constFind(placement->materialId);
+    return material == artwork.materials.cend() || material->familyId != familyId ? true : material->applyLayerOpacity;
+}
+void showOpacityState(QCheckBox* control)
+{
+    const bool mixed = control->checkState() == Qt::PartiallyChecked;
+    control->setText(mixed ? QStringLiteral("来源图层透明度：混合（保留各自设置）") : QStringLiteral("将来源图层透明度应用到素材像素"));
+    control->setAccessibleDescription(mixed ? QStringLiteral("所选对象的透明度策略不同。保持混合状态会保留各自设置；勾选或取消勾选将统一应用。") : QString());
+}
 bool supported(const Artwork::Layer& layer) { return layer.kind == Artwork::LayerKind::Raster && layer.pixelEquivalent; }
 QString recipeIdentity(const CArtworkSourceImport::SourceCandidate& original, Artwork::ColorPolicy policy, const QTransform& mapping)
 {
@@ -280,7 +295,11 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     setObjectName(QStringLiteral("psdImportDialog")); setWindowTitle(context.incoming.kind == Artwork::SourceKind::Cmo3 ? QStringLiteral("CMO3 素材与模型关联") : QStringLiteral("PSD 素材与模型关联")); setModal(true);
     m_request.incoming = context.incoming; m_request.familyName = context.familyName;
     if (m_request.familyName.trimmed().isEmpty()) m_request.familyName = context.incoming.revision.fileName;
-    for (const auto& mesh : context.snapshot.meshes) m_request.decisions.append({mesh.material.id});
+    for (const auto& mesh : context.snapshot.meshes) {
+        Planner::Decision decision{mesh.material.id};
+        decision.applyLayerOpacity = initialLayerOpacity(context.snapshot.baseline.artwork, mesh.material.id, context.incoming.revision.familyId);
+        m_request.decisions.append(std::move(decision));
+    }
     for (const auto& id : context.selectedMeshIds) if (std::any_of(context.snapshot.meshes.cbegin(), context.snapshot.meshes.cend(), [&](const auto& mesh) { return mesh.material.id == id; })) m_selectedMeshes.insert(id);
     if (m_selectedMeshes.isEmpty() && !context.snapshot.meshes.isEmpty()) m_selectedMeshes.insert(context.snapshot.meshes.first().material.id);
     const auto& artwork = context.snapshot.baseline.artwork;
@@ -359,7 +378,7 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     connect(m_familyName, &QLineEdit::textChanged, this, [this](const QString& name) { if (!m_refreshing) { m_request.familyName = name; m_requestDirty = true; Refresh(); } });
     const auto dirty = [this] { if (!m_refreshing) { m_inputDirty = true; Refresh(); } };
     connect(m_action, &QComboBox::currentIndexChanged, this, dirty); connect(m_confirm, &QCheckBox::toggled, this, dirty);
-    connect(m_layerOpacity, &QCheckBox::toggled, this, [this, dirty] { dirty(); RefreshViewOpacity(); });
+    connect(m_layerOpacity, &QCheckBox::stateChanged, this, [this, dirty] { showOpacityState(m_layerOpacity); dirty(); RefreshViewOpacity(); });
     for (auto* input : {m_x, m_y, m_angle, m_sx, m_sy}) connect(input, &QDoubleSpinBox::valueChanged, this, [this] { if (!m_refreshing) { m_numericDirty = true; Refresh(); } });
     const auto recipeDirty = [this] { if (!m_refreshing) { m_recipeDirty = true; Refresh(); } };
     connect(m_documentAlignment, &QComboBox::currentIndexChanged, this, recipeDirty);
@@ -651,7 +670,10 @@ void CPsdImportDialog::RefreshDecision()
     const bool allConfirmed = !ids.isEmpty() && std::all_of(ids.cbegin(), ids.cend(), [&](const QString& id) {
         const auto value = DecisionFor(id); return value.confirmed && value.action == first.action && value.layerId == m_layerId && value.applyLayerOpacity == first.applyLayerOpacity && same(value.atlasToDocument, first.atlasToDocument);
     });
-    m_action->setCurrentIndex(m_action->findData(int(first.action))); m_confirm->setChecked(allConfirmed); m_layerOpacity->setChecked(first.applyLayerOpacity);
+    const bool mixedOpacity = std::any_of(ids.cbegin(), ids.cend(), [&](const QString& id) { return DecisionFor(id).applyLayerOpacity != first.applyLayerOpacity; });
+    m_action->setCurrentIndex(m_action->findData(int(first.action))); m_confirm->setChecked(allConfirmed);
+    m_layerOpacity->setTristate(mixedOpacity); m_layerOpacity->setCheckState(mixedOpacity ? Qt::PartiallyChecked : first.applyLayerOpacity ? Qt::Checked : Qt::Unchecked);
+    showOpacityState(m_layerOpacity);
     QStringList notes;
     for (const auto& id : ids) { if (!m_matchReasons.value(id).isEmpty()) notes.append(id + QStringLiteral("：") + m_matchReasons.value(id));
         for (const auto& mesh : m_context.snapshot.meshes) if (mesh.material.id == id && !mesh.editable) notes.append(id + QStringLiteral("：") + mesh.reason); }
@@ -697,7 +719,8 @@ void CPsdImportDialog::ApplySelection()
     for (auto& decision : request.decisions) if (m_selectedMeshes.contains(decision.meshId)) {
         decision.action = action; decision.layerId = action == Planner::Action::Associate || action == Planner::Action::Update ? m_layerId : QString();
         if (action == Planner::Action::Associate) decision.atlasToDocument = m_alignment;
-        decision.confirmed = m_confirm->isChecked(); decision.applyLayerOpacity = m_layerOpacity->isChecked();
+        decision.confirmed = m_confirm->isChecked();
+        if (m_layerOpacity->checkState() != Qt::PartiallyChecked) decision.applyLayerOpacity = m_layerOpacity->isChecked();
     }
     m_request = request; m_requestDirty = true; Build(std::move(request));
 }
@@ -790,7 +813,10 @@ void CPsdImportDialog::Redo()
 void CPsdImportDialog::RefreshViewOpacity()
 {
     double opacity = m_sourceOpacity->value() / 100.0; const int index = LayerIndex(m_layerId);
-    if (index >= 0 && m_layerOpacity->isChecked()) opacity *= m_request.incoming.revision.layers[index].opacity / 255.0;
+    const auto ids = SelectedMeshes();
+    const bool applyOpacity = m_layerOpacity->checkState() == Qt::PartiallyChecked
+        ? !ids.isEmpty() && DecisionFor(ids.first()).applyLayerOpacity : m_layerOpacity->isChecked();
+    if (index >= 0 && applyOpacity) opacity *= m_request.incoming.revision.layers[index].opacity / 255.0;
     m_source->SetSourceOpacity(opacity); m_source->SetReferenceOpacity(m_referenceOpacity->value() / 100.0);
 }
 void CPsdImportDialog::StopCalculation() { if (m_job) { m_job->control.Cancel(); m_status->setText(QStringLiteral("正在停止计算…")); } }

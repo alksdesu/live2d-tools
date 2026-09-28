@@ -61,6 +61,106 @@ class ArtworkReconcilerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void sourcePatchMapsCompleteDomainBeforeAddingAtlasPixelGutter()
+    {
+        auto f = fixture(); auto& placement = f.state.artwork.placements["placement"];
+        placement.familyToAtlas = QTransform(0, 2, -3, 0, 10, -4);
+        placement.sourceDomain = {1.25, -2.5, 4.5, 3.75}; placement.gutter = 3;
+        const auto held = f.state.artwork; QRect result; QString error;
+        QVERIFY2(Reconciler::SourcePatch(f.state.artwork, "A", 1, result, &error), qPrintable(error));
+        QCOMPARE(result, QRect(3, -5, 18, 16)); QCOMPARE(f.state.artwork, held);
+        QVERIFY(Reconciler::SourcePatch(f.state.artwork, "A", 5, result, &error));
+        QCOMPARE(result, QRect(1, -7, 22, 20));
+        QVERIFY(Reconciler::SourcePatch(f.state.artwork, "missing", 1, result, &error)); QVERIFY(result.isEmpty());
+        f.state.artwork.bindings["A"].status = Artwork::BindingStatus::Detached;
+        f.state.artwork.bindings["A"].detachedReason = "manual";
+        QVERIFY(Reconciler::SourcePatch(f.state.artwork, "A", 1, result, &error)); QVERIFY(result.isEmpty());
+    }
+    void invalidSourcePatchKeepsOutput_data()
+    {
+        QTest::addColumn<int>("fault"); for (int i = 0; i < 9; ++i) QTest::newRow(qPrintable(QString::number(i))) << i;
+    }
+    void invalidSourcePatchKeepsOutput()
+    {
+        QFETCH(int, fault); auto f = fixture(); auto& placement = f.state.artwork.placements["placement"];
+        int gutter = 1;
+        if (fault == 0) placement.sourceDomain.setX(std::numeric_limits<double>::quiet_NaN());
+        if (fault == 1) placement.sourceDomain.setWidth(0);
+        if (fault == 2) placement.sourceDomain.setHeight(std::numeric_limits<double>::infinity());
+        if (fault == 3) placement.familyToAtlas = QTransform(0, 0, 0, 0, 0, 0);
+        if (fault == 4) placement.familyToAtlas = QTransform::fromTranslate(1e20, 0);
+        if (fault == 5) placement.sourceDomain.setWidth(double(std::numeric_limits<int>::max()) * 2);
+        if (fault == 6) placement.gutter = 0;
+        if (fault == 7) gutter = 65;
+        if (fault == 8) f.state.artwork.placements.remove("placement");
+        const QRect held(1, 2, 3, 4); auto result = held; QString error;
+        QVERIFY(!Reconciler::SourcePatch(f.state.artwork, "A", gutter, result, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(result, held);
+    }
+    void integerRotationsAndReflectionsPreserveFullSourceDomain_data()
+    {
+        QTest::addColumn<QTransform>("delta");
+        QTest::newRow("quarter-turn") << QTransform(0, 1, -1, 0, 8, 0);
+        QTest::newRow("mirror") << QTransform(-1, 0, 0, 1, 8, 0);
+    }
+    void integerRotationsAndReflectionsPreserveFullSourceDomain()
+    {
+        QFETCH(QTransform, delta); const auto f = fixture(); auto changed = f.state.materials;
+        changed[0].textureIndex = 1;
+        for (int i = 0; i < changed[0].uvs.size(); i += 2) {
+            const auto point = delta.map(QPointF(double(changed[0].uvs[i]) * 8, double(changed[0].uvs[i + 1]) * 8));
+            changed[0].uvs[i] = float(point.x() / 8); changed[0].uvs[i + 1] = float(point.y() / 8);
+        }
+        Artwork::State result; QString error;
+        QVERIFY2(Reconciler::RebasePlacements(f.state.artwork, f.state, f.state.workspace, changed, f.triangles,
+                                            {{"A", {delta, 1, 1, {-1, -1, 10, 10}}}}, result, &error), qPrintable(error));
+        const auto& binding = result.bindings["A"];
+        QCOMPARE(binding.familyCoordinates, f.state.artwork.bindings["A"].familyCoordinates);
+        QCOMPARE(binding.sampledMaterial, changed[0]);
+        QCOMPARE(result.placements[binding.placementId].sourceDomain, QRectF(0, 0, 8, 8));
+        QVERIFY(Reconciler::ValidateLinks(result, f.state.workspace, changed, f.triangles, &error));
+    }
+    void rebaseRequiresHaloForLegacyVerticesOutsideDeclaredDomain()
+    {
+        auto f = fixture(); f.state.materials[0].uvs[0] = 11.0f / 8;
+        f.state.artwork.bindings["A"].familyCoordinates[0].setX(11);
+        f.state.artwork.bindings["A"].sampledMaterial = f.state.materials[0];
+        auto result = f.state.artwork; QString error;
+        QVERIFY(Reconciler::ValidateLinks(f.state.artwork, f.state.workspace, f.state.materials, f.triangles, &error));
+        QVERIFY(!Reconciler::RebasePlacements(f.state.artwork, f.state, f.state.workspace, f.state.materials, f.triangles,
+                                             {{"A", {QTransform(), 0, 1, {-1, -1, 12, 10}}}}, result, &error));
+        QCOMPARE(result, f.state.artwork);
+        QVERIFY2(Reconciler::RebasePlacements(f.state.artwork, f.state, f.state.workspace, f.state.materials, f.triangles,
+                                             {{"A", {QTransform(), 0, 1, {-1, -1, 13, 10}}}}, result, &error), qPrintable(error));
+        QCOMPARE(result, f.state.artwork);
+    }
+    void rebaseRejectsTruncatedDomainAndNonCopyTransforms_data()
+    {
+        QTest::addColumn<int>("fault");
+        QTest::newRow("only-current-vertices") << 0;
+        QTest::newRow("missing-existing-gutter") << 1;
+        QTest::newRow("fractional-translation") << 2;
+        QTest::newRow("resampling-scale") << 3;
+    }
+    void rebaseRejectsTruncatedDomainAndNonCopyTransforms()
+    {
+        QFETCH(int, fault); auto f = fixture();
+        QTransform delta = QTransform::fromTranslate(2, 1);
+        if (fault == 2) delta = QTransform::fromTranslate(.25, .5);
+        if (fault == 3) delta = QTransform::fromScale(2, 2);
+        if (fault == 1) f.state.artwork.placements["placement"].gutter = 3;
+        auto changed = f.state.materials;
+        changed[0].textureIndex = 1;
+        for (int i = 0; i < changed[0].uvs.size(); i += 2) {
+            const auto mapped = delta.map(QPointF(double(changed[0].uvs[i]) * 8, double(changed[0].uvs[i + 1]) * 8));
+            changed[0].uvs[i] = float(mapped.x() / 8); changed[0].uvs[i + 1] = float(mapped.y() / 8);
+        }
+        const QRect patch = fault == 0 ? QRect(0, 0, 4, 4) : fault == 1 ? QRect(-1, -1, 10, 10) : QRect(-4, -4, 16, 16);
+        Artwork::State result = f.state.artwork; QString error;
+        QVERIFY(!Reconciler::RebasePlacements(f.state.artwork, f.state, f.state.workspace, changed, f.triangles,
+                                             {{"A", {delta, 1, 1, patch}}}, result, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(result, f.state.artwork);
+    }
     void validatesStableAtlasAndExactSampledMaterial_data()
     {
         QTest::addColumn<int>("fault"); for (int i = 0; i < 8; ++i) QTest::newRow(qPrintable(QString::number(i))) << i;
@@ -174,22 +274,22 @@ private slots:
     void partialSharedMovementForksThenRestoresOriginalIdentity()
     {
         const auto f = fixture(); auto after = f.state; after.materials = move(after.materials, {"A"}, 1, {2, 1});
-        const QMap<QString, Reconciler::Rebase> forward{{"A", {QTransform::fromTranslate(2, 1), 1, 1, {0, 0, 4, 4}}}};
+        const QMap<QString, Reconciler::Rebase> forward{{"A", {QTransform::fromTranslate(2, 1), 1, 1, {-1, -1, 10, 10}}}};
         QString error; QVERIFY2(Reconciler::RebasePlacements(f.state.artwork, f.state, after.workspace, after.materials, f.triangles, forward, after.artwork, &error), qPrintable(error));
         QVERIFY(after.artwork.bindings["A"].placementId != after.artwork.bindings["B"].placementId);
         QCOMPARE(after.artwork.bindings["A"].familyCoordinates, f.state.artwork.bindings["A"].familyCoordinates);
         QVERIFY(after.artwork.bindings["B"] == f.state.artwork.bindings["B"]); QVERIFY(after.artwork.placements["placement"] == f.state.artwork.placements["placement"]);
-        Artwork::State returned; const QMap<QString, Reconciler::Rebase> backward{{"A", {QTransform::fromTranslate(-2, -1), 0, 1, {2, 1, 4, 4}}}};
+        Artwork::State returned; const QMap<QString, Reconciler::Rebase> backward{{"A", {QTransform::fromTranslate(-2, -1), 0, 1, {1, 0, 10, 10}}}};
         QVERIFY2(Reconciler::RebasePlacements(f.state.artwork, after, f.state.workspace, f.state.materials, f.triangles, backward, returned, &error), qPrintable(error));
         QVERIFY(returned == f.state.artwork);
     }
     void returningOneOfSharedMovedMeshesProtectsTheOther()
     {
         const auto f = fixture(); auto moved = f.state; moved.materials = move(moved.materials, {"A", "B"}, 1, {2, 1});
-        QMap<QString, Reconciler::Rebase> forward{{"A", {QTransform::fromTranslate(2, 1), 1, 1, {0, 0, 4, 4}}}, {"B", {QTransform::fromTranslate(2, 1), 1, 1, {0, 0, 4, 4}}}};
+        QMap<QString, Reconciler::Rebase> forward{{"A", {QTransform::fromTranslate(2, 1), 1, 1, {-1, -1, 10, 10}}}, {"B", {QTransform::fromTranslate(2, 1), 1, 1, {-1, -1, 10, 10}}}};
         QVERIFY(Reconciler::RebasePlacements(f.state.artwork, f.state, moved.workspace, moved.materials, f.triangles, forward, moved.artwork));
         auto partial = moved; partial.materials = move(partial.materials, {"A"}, 0, {-2, -1});
-        QMap<QString, Reconciler::Rebase> backward{{"A", {QTransform::fromTranslate(-2, -1), 0, 1, {2, 1, 4, 4}}}};
+        QMap<QString, Reconciler::Rebase> backward{{"A", {QTransform::fromTranslate(-2, -1), 0, 1, {1, 0, 10, 10}}}};
         QString error; QVERIFY2(Reconciler::RebasePlacements(f.state.artwork, moved, partial.workspace, partial.materials, f.triangles, backward, partial.artwork, &error), qPrintable(error));
         QCOMPARE(partial.artwork.bindings["B"].sampledMaterial, moved.materials[1]);
         QVERIFY(partial.artwork.bindings["A"].placementId != partial.artwork.bindings["B"].placementId);

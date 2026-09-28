@@ -145,8 +145,17 @@ private slots:
         QVERIFY(f.document.UndoEdit()); QVERIFY(state(f.document) == original); QCOMPARE(saved(f.document), baseline); QVERIFY(!f.document.CanUndoEdit());
         QVERIFY(f.document.RedoEdit()); QVERIFY(state(f.document) == next); QCOMPARE(moc(f.document), originalMoc);
     }
+    void linkedArtworkFollowsAtlasPlansAndReturnsToItsOriginalPlacement_data() {
+        QTest::addColumn<bool>("edgeDomain");
+        QTest::newRow("domain-with-real-gutter") << false;
+        QTest::newRow("full-tile-domain-needs-larger-destination") << true;
+    }
     void linkedArtworkFollowsAtlasPlansAndReturnsToItsOriginalPlacement() {
-        Fixture f; QVERIFY2(f.initialize() && f.attach(), qPrintable(f.error)); const auto initial = state(f.document); const auto sources = f.document.TextureSources();
+        QFETCH(bool, edgeDomain); Fixture f; QVERIFY2(f.initialize(), qPrintable(f.error));
+        auto attached = state(f.document); attached.artwork = f.library(true);
+        if (!edgeDomain) attached.artwork.placements["placement"].sourceDomain = QRectF(1, 1, 62, 30);
+        QVERIFY2(execute(f.document, attached, &f.error), qPrintable(f.error)); f.document.ClearEditHistory();
+        const auto initial = state(f.document); const auto sources = f.document.TextureSources();
         const auto snapshot = f.snapshot(); Planner::Plan original, added, moved, resized, packed, returned, removed;
         QVERIFY2(Planner::Initialize(snapshot, original, &f.error), qPrintable(f.error));
         QRect originalBounds; int originalSlot = -1;
@@ -161,6 +170,14 @@ private slots:
         QVERIFY2(execute(f.document, resized.state, &f.error), qPrintable(f.error));
         QVERIFY2(Planner::Pack(snapshot, resized, {f.meshId}, {target}, 1, true, packed, &f.error), qPrintable(f.error));
         QVERIFY2(execute(f.document, packed.state, &f.error), qPrintable(f.error));
+        if (edgeDomain) {
+            returned = moved;
+            QVERIFY(!Planner::Move(snapshot, moved, {f.meshId}, originalSlot, originalBounds.topLeft(), 3, 1, returned, &f.error));
+            QCOMPARE(returned.state, moved.state); QCOMPARE(state(f.document), packed.state);
+            while (f.document.CanUndoEdit()) QVERIFY(f.document.UndoEdit()); QCOMPARE(state(f.document), initial);
+            while (f.document.CanRedoEdit()) QVERIFY(f.document.RedoEdit()); QCOMPARE(state(f.document), packed.state);
+            return;
+        }
         QVERIFY2(Planner::Move(snapshot, moved, {f.meshId}, originalSlot, originalBounds.topLeft(), 3, 1, returned, &f.error), qPrintable(f.error));
         QVERIFY2(Planner::RemoveAtlas(snapshot, returned, target, removed, &f.error), qPrintable(f.error));
         QVERIFY2(execute(f.document, removed.state, &f.error), qPrintable(f.error));
