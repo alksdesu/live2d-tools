@@ -40,6 +40,11 @@ struct Cursor
     }
 };
 
+struct ChannelSpan
+{
+    qsizetype offset = 0, length = 0;
+};
+
 struct Reader
 {
     const CPsdReadLimits& limits;
@@ -49,7 +54,13 @@ struct Reader
     int metadataEntries = 0;
     bool mergedAvailable = true;
     bool directoryOnly = false;
+    QVector<QMap<int, ChannelSpan>>* channelIndex = nullptr;
+    qint64 maximumLayerWorkingBytes = 0;
 
+    qint64 mergedBytes() const {
+        return qint64(snapshot.canvasSize.width()) * snapshot.canvasSize.height() *
+            (snapshot.channels + (!directoryOnly && mergedAvailable ? 4 : 0));
+    }
     void check() { if (!control.Checkpoint()) invalid(control.Error()); }
     void reserve(qint64 bytes, qint64& used, qint64 maximum, const QString& label) {
         check();
@@ -343,6 +354,38 @@ struct Reader
                 }
                 snapshot.layers.append(std::move(layer));
             }
+            qint64 required = mergedBytes();
+            const auto account = [&](qint64 amount) {
+                if (amount < 0 || required > limits.maximumDecodedBytes || amount > limits.maximumDecodedBytes - required)
+                    invalid(QStringLiteral("PSD 通道和图像总量超出预算"));
+                required += amount;
+            };
+            account(0);
+            for (int index = 0; index < count; ++index) {
+                check();
+                const auto& layer = snapshot.layers[index]; const auto& record = records[index];
+                int rgb = 0;
+                for (const auto& channel : record.channels) {
+                    QRect bounds = layer.bounds;
+                    if (channel.first == -2 || channel.first == -3) {
+                        const auto& mask = channel.first == -2 ? record.mask : record.realMask;
+                        if (!mask) invalid(QStringLiteral("PSD 蒙版通道缺少对应边界"));
+                        bounds = *mask;
+                    }
+                    account(qint64(bounds.width()) * bounds.height());
+                    if (channel.first >= 0 && channel.first <= 2) rgb |= 1 << channel.first;
+                }
+                if (rgb == 7 && !layer.bounds.isEmpty() && layer.kind == CPsdLayer::Kind::Raster) {
+                    const qint64 pixels = qint64(layer.bounds.width()) * layer.bounds.height();
+                    if (!directoryOnly) account(pixels * 4);
+                    if (channelIndex && (pixels * 5 + 65536 > maximumLayerWorkingBytes))
+                        invalid(QStringLiteral("PSD 单图层读取工作内存超出预算"));
+                }
+            }
+            if (channelIndex) {
+                metadataBytes(qint64(count) * sizeof(QMap<int, ChannelSpan>));
+                channelIndex->resize(count);
+            }
             for (int index = 0; index < count; ++index) {
                 auto& layer = snapshot.layers[index]; const auto& record = records[index];
                 if (!control.Report(CExportControl::Phase::Preparing, index, count, layer.name)) invalid(control.Error());
@@ -354,7 +397,14 @@ struct Reader
                         if (!mask) invalid(QStringLiteral("PSD 蒙版通道缺少对应边界")); bounds = *mask;
                     }
                     auto decoded = decode(data, bounds.width(), bounds.height());
-                    if (channel.first >= -1 && channel.first <= 2) planes.insert(channel.first, std::move(decoded));
+                    if (channel.first >= -1 && channel.first <= 2) {
+                        planes.insert(channel.first, std::move(decoded));
+                        if (channelIndex) {
+                            metadataBytes(sizeof(ChannelSpan) + 64);
+                            (*channelIndex)[index].insert(channel.first,
+                                {data.data - snapshot.bytes.constData(), data.size});
+                        }
+                    }
                     else diagnostic(layer, QStringLiteral("extra-channel"), QStringLiteral("附加通道 %1 未应用，原数据保留在文件快照").arg(channel.first));
                 }
                 if (!layer.bounds.isEmpty() && layer.kind == CPsdLayer::Kind::Raster) {
@@ -402,7 +452,9 @@ struct Reader
             invalid(QStringLiteral("PSD 画布尺寸或通道数量超出预算"));
         snapshot.canvasSize = QSize(int(width), int(height));
         if (cursor.u32() != 0) invalid(QStringLiteral("RGB PSD 不应包含色彩模式数据"));
-        resources(cursor.sub(cursor.u32())); layerSection(cursor.sub(cursor.u32()));
+        resources(cursor.sub(cursor.u32()));
+        if (mergedBytes() > limits.maximumDecodedBytes) invalid(QStringLiteral("PSD 合成预览总量超出预算"));
+        layerSection(cursor.sub(cursor.u32()));
         const auto merged = decode(cursor, width, height, snapshot.channels);
         if (snapshot.hasMergedTransparency && snapshot.channels < 4)
             invalid(QStringLiteral("PSD 合成透明标记缺少透明通道"));
@@ -420,6 +472,33 @@ struct Reader
         snapshot.diagnostics.append({QStringLiteral("merged-preview"), QStringLiteral("合成图仅供参考，不替代缺失或不支持的独立图层素材")});
         check();
     }
+    CPsdDirectory takeDirectory() {
+        CPsdDirectory candidate;
+        candidate.bytes = std::move(snapshot.bytes);
+        candidate.sha256 = std::move(snapshot.sha256);
+        candidate.iccProfile = std::move(snapshot.iccProfile);
+        candidate.canonicalPath = std::move(snapshot.canonicalPath);
+        candidate.canvasSize = snapshot.canvasSize;
+        candidate.version = snapshot.version;
+        candidate.depth = snapshot.depth;
+        candidate.colorMode = snapshot.colorMode;
+        candidate.channels = snapshot.channels;
+        candidate.hasMergedTransparency = snapshot.hasMergedTransparency;
+        candidate.hasMergedPreview = mergedAvailable;
+        candidate.displayOrder = std::move(snapshot.displayOrder);
+        candidate.diagnostics = std::move(snapshot.diagnostics);
+        candidate.layers.reserve(snapshot.layers.size());
+        for (auto& layer : snapshot.layers) {
+            check(); CPsdDirectoryLayer next;
+            next.recordIndex = layer.recordIndex; next.parentIndex = layer.parentIndex; next.kind = layer.kind;
+            next.layerId = layer.layerId; next.name = std::move(layer.name); next.bounds = layer.bounds;
+            next.opacity = layer.opacity; next.blendMode = std::move(layer.blendMode);
+            next.visible = layer.visible; next.clipping = layer.clipping; next.pixelEquivalent = layer.pixelEquivalent;
+            next.additionalInfo = std::move(layer.additionalInfo); next.diagnostics = std::move(layer.diagnostics);
+            candidate.layers.append(std::move(next));
+        }
+        check(); return candidate;
+    }
 };
 
 void validateLimits(const CPsdReadLimits& limits)
@@ -431,6 +510,12 @@ void validateLimits(const CPsdReadLimits& limits)
         limits.maximumLayers <= 0 || limits.maximumLayers > 32768 || limits.maximumDepth <= 0 || limits.maximumDepth > 4096 ||
         limits.maximumDimension <= 0 || limits.maximumDimension > 30000) invalid(QStringLiteral("PSD 读取预算配置无效"));
 }
+void validateStreamLimits(const CPsdStreamLimits& limits)
+{
+    validateLimits(limits.document);
+    if (limits.maximumLayerWorkingBytes <= 0 || limits.maximumLayerWorkingBytes > 2LL * 1024 * 1024 * 1024)
+        invalid(QStringLiteral("PSD 逐层读取工作预算无效"));
+}
 bool failed(const QString& reason, QString* error, CExportControl& control)
 {
     const auto message = reason.isEmpty() ? QStringLiteral("PSD 读取已取消或失败") : reason;
@@ -438,6 +523,44 @@ bool failed(const QString& reason, QString* error, CExportControl& control)
     if (control.Checkpoint()) control.Fail(message);
     return false;
 }
+
+struct FileData { QByteArray bytes; QString canonicalPath; };
+FileData readFile(const QString& path, CExportControl& control, const CPsdReadLimits& limits)
+{
+    validateLimits(limits); const QString ownedPath(path.constData(), path.size());
+    const QFileInfo before(ownedPath); const auto canonical = before.canonicalFilePath();
+    const qint64 size = before.size(); const auto modified = before.lastModified(), changed = before.metadataChangeTime();
+    if (!before.isFile() || canonical.isEmpty() || size < 26 || size > limits.maximumFileBytes)
+        invalid(QStringLiteral("PSD 文件不存在或大小超出预算"));
+    QFile file(ownedPath); if (!file.open(QIODevice::ReadOnly)) invalid(QStringLiteral("无法打开 PSD 文件"));
+    QByteArray bytes; bytes.reserve(qsizetype(size));
+    while (!file.atEnd()) {
+        if (!control.Report(CExportControl::Phase::Preparing, bytes.size(), size, QStringLiteral("读取 PSD"))) invalid(control.Error());
+        const auto chunk = file.read(256 * 1024);
+        if (file.error() != QFileDevice::NoError || (chunk.isEmpty() && !file.atEnd()) || chunk.size() > limits.maximumFileBytes - bytes.size())
+            invalid(QStringLiteral("PSD 文件读取失败或超出预算"));
+        bytes.append(chunk);
+    }
+    const QFileInfo after(ownedPath);
+    if (after.canonicalFilePath() != canonical || size != bytes.size() || after.size() != bytes.size() ||
+        modified != after.lastModified() || changed != after.metadataChangeTime())
+        invalid(QStringLiteral("PSD 文件在读取期间发生变化，请重新读取"));
+    return {std::move(bytes), canonical};
+}
+}
+
+struct CPsdReadDocument::Data
+{
+    CPsdDirectory directory;
+    QVector<QMap<int, ChannelSpan>> channels;
+    CPsdStreamLimits limits;
+};
+
+CPsdReadLimits CPsdReadLimits::Directory()
+{
+    CPsdReadLimits limits;
+    limits.maximumDecodedBytes = 4LL * 1024 * 1024 * 1024;
+    return limits;
 }
 
 bool CPsdReader::ReadBytes(const QByteArray& bytes, CPsdSnapshot& result, QString* error,
@@ -462,27 +585,10 @@ bool CPsdReader::ReadFile(const QString& path, CPsdSnapshot& result, QString* er
     const auto limits = requestedLimits;
     if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
     try {
-        validateLimits(limits); const QString ownedPath(path.constData(), path.size());
-        const QFileInfo before(ownedPath); const auto canonical = before.canonicalFilePath();
-        const qint64 size = before.size(); const auto modified = before.lastModified(), changed = before.metadataChangeTime();
-        if (!before.isFile() || canonical.isEmpty() || size < 26 || size > limits.maximumFileBytes)
-            invalid(QStringLiteral("PSD 文件不存在或大小超出预算"));
-        QFile file(ownedPath); if (!file.open(QIODevice::ReadOnly)) invalid(QStringLiteral("无法打开 PSD 文件"));
-        QByteArray bytes; bytes.reserve(qsizetype(size));
-        while (!file.atEnd()) {
-            if (!control.Report(CExportControl::Phase::Preparing, bytes.size(), size, QStringLiteral("读取 PSD"))) invalid(control.Error());
-            const auto chunk = file.read(256 * 1024);
-            if (file.error() != QFileDevice::NoError || (chunk.isEmpty() && !file.atEnd()) || chunk.size() > limits.maximumFileBytes - bytes.size())
-                invalid(QStringLiteral("PSD 文件读取失败或超出预算"));
-            bytes.append(chunk);
-        }
-        const QFileInfo after(ownedPath);
-        if (after.canonicalFilePath() != canonical || size != bytes.size() || after.size() != bytes.size() ||
-            modified != after.lastModified() || changed != after.metadataChangeTime())
-            invalid(QStringLiteral("PSD 文件在读取期间发生变化，请重新读取"));
+        const auto file = readFile(path, control, limits);
         CPsdSnapshot candidate;
-        if (!ReadBytes(bytes, candidate, error, &control, limits)) return false;
-        candidate.canonicalPath = canonical; result = std::move(candidate); return true;
+        if (!ReadBytes(file.bytes, candidate, error, &control, limits)) return false;
+        candidate.canonicalPath = file.canonicalPath; result = std::move(candidate); return true;
     } catch (const Failure& failure) { return failed(failure.message, error, control); }
     catch (...) { return failed(QStringLiteral("PSD 文件读取失败，原快照保持不变"), error, control); }
 }
@@ -503,44 +609,96 @@ bool CPsdReader::ReadDirectoryBytes(const QByteArray& bytes, CPsdDirectory& resu
         reader.check();
         reader.snapshot.sha256 = QCryptographicHash::hash(reader.snapshot.bytes, QCryptographicHash::Sha256);
         reader.parse();
-        auto& snapshot = reader.snapshot;
-        CPsdDirectory candidate;
-        candidate.bytes = std::move(snapshot.bytes);
-        candidate.sha256 = std::move(snapshot.sha256);
-        candidate.iccProfile = std::move(snapshot.iccProfile);
-        candidate.canvasSize = snapshot.canvasSize;
-        candidate.version = snapshot.version;
-        candidate.depth = snapshot.depth;
-        candidate.colorMode = snapshot.colorMode;
-        candidate.channels = snapshot.channels;
-        candidate.hasMergedTransparency = snapshot.hasMergedTransparency;
-        candidate.hasMergedPreview = reader.mergedAvailable;
-        candidate.displayOrder = std::move(snapshot.displayOrder);
-        candidate.diagnostics = std::move(snapshot.diagnostics);
-        candidate.layers.reserve(snapshot.layers.size());
-        for (auto& layer : snapshot.layers) {
-            reader.check();
-            CPsdDirectoryLayer next;
-            next.recordIndex = layer.recordIndex;
-            next.parentIndex = layer.parentIndex;
-            next.kind = layer.kind;
-            next.layerId = layer.layerId;
-            next.name = std::move(layer.name);
-            next.bounds = layer.bounds;
-            next.opacity = layer.opacity;
-            next.blendMode = std::move(layer.blendMode);
-            next.visible = layer.visible;
-            next.clipping = layer.clipping;
-            next.additionalInfo = std::move(layer.additionalInfo);
-            next.diagnostics = std::move(layer.diagnostics);
-            candidate.layers.append(std::move(next));
-        }
-        reader.check();
-        result = std::move(candidate);
+        result = reader.takeDirectory();
         return true;
     } catch (const Failure& failure) {
         return failed(failure.message, error, control);
     } catch (...) {
         return failed(QStringLiteral("PSD 目录读取或内存分配失败，原目录保持不变"), error, control);
     }
+}
+
+const CPsdDirectory* CPsdReadDocument::Directory() const { return m_data ? &m_data->directory : nullptr; }
+
+bool CPsdReadDocument::ReadLayer(int recordIndex, QImage& result, QString* error, CExportControl* requested) const
+{
+    const auto data = m_data;
+    if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
+    try {
+        if (!data || recordIndex < 0 || recordIndex >= data->directory.layers.size())
+            invalid(QStringLiteral("PSD 图层读取对象或编号无效"));
+        Reader reader{data->limits.document, control, {}, 0, 0};
+        const auto& layer = data->directory.layers[recordIndex]; const auto& channels = data->channels[recordIndex];
+        reader.check(); QImage image;
+        if (!layer.bounds.isEmpty() && layer.kind == CPsdLayer::Kind::Raster &&
+            channels.contains(0) && channels.contains(1) && channels.contains(2)) {
+            const qint64 pixels = qint64(layer.bounds.width()) * layer.bounds.height();
+            if (pixels * 5 + 65536 > data->limits.maximumLayerWorkingBytes)
+                invalid(QStringLiteral("PSD 单图层读取工作内存超出预算"));
+            image = QImage(layer.bounds.size(), QImage::Format_ARGB32);
+            if (image.isNull()) invalid(QStringLiteral("无法分配 PSD 图层像素"));
+            image.fill(qRgba(0, 0, 0, 255));
+            for (auto it = channels.cbegin(); it != channels.cend(); ++it) {
+                const auto& span = it.value();
+                if (span.offset < 0 || span.length < 2 || span.offset > data->directory.bytes.size() - span.length)
+                    invalid(QStringLiteral("PSD 已验证通道目录无效"));
+                const auto plane = reader.decode({data->directory.bytes.constData() + span.offset, span.length, 0},
+                                                 image.width(), image.height());
+                const int shift = it.key() == -1 ? 24 : (2 - it.key()) * 8;
+                const quint32 mask = ~(quint32(255) << shift);
+                for (int y = 0; y < image.height(); ++y) {
+                    reader.check(); auto* row = reinterpret_cast<QRgb*>(image.scanLine(y));
+                    const auto* source = reinterpret_cast<const uchar*>(plane.constData()) + qsizetype(y) * image.width();
+                    for (int x = 0; x < image.width(); ++x) row[x] = (row[x] & mask) | (quint32(source[x]) << shift);
+                }
+            }
+        }
+        reader.check(); result = std::move(image); return true;
+    } catch (const Failure& failure) { return failed(failure.message, error, control); }
+    catch (...) { return failed(QStringLiteral("PSD 图层读取失败，原图像保持不变"), error, control); }
+}
+
+bool CPsdReader::OpenOwned(QByteArray bytes, QString canonicalPath, CPsdReadDocument& result, QString* error,
+                           CExportControl& control, const CPsdStreamLimits& limits)
+{
+    if (error) error->clear();
+    try {
+        validateStreamLimits(limits);
+        if (bytes.size() > limits.document.maximumFileBytes) invalid(QStringLiteral("PSD 文件大小超出预算"));
+        auto candidate = std::make_shared<CPsdReadDocument::Data>(); candidate->limits = limits;
+        Reader reader{limits.document, control, {}, 0, 0};
+        reader.directoryOnly = true; reader.channelIndex = &candidate->channels;
+        reader.maximumLayerWorkingBytes = limits.maximumLayerWorkingBytes;
+        reader.snapshot.bytes = std::move(bytes); reader.snapshot.canonicalPath = std::move(canonicalPath);
+        reader.check(); reader.snapshot.sha256 = QCryptographicHash::hash(reader.snapshot.bytes, QCryptographicHash::Sha256);
+        reader.parse(); candidate->directory = reader.takeDirectory();
+        result.m_data = std::move(candidate); return true;
+    } catch (const Failure& failure) { return failed(failure.message, error, control); }
+    catch (...) { return failed(QStringLiteral("PSD 逐层读取准备失败，原读取对象保持不变"), error, control); }
+}
+
+bool CPsdReader::OpenBytes(const QByteArray& bytes, CPsdReadDocument& result, QString* error,
+                           CExportControl* requested, const CPsdStreamLimits& requestedLimits)
+{
+    const auto limits = requestedLimits;
+    if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
+    try {
+        validateStreamLimits(limits);
+        if (bytes.size() > limits.document.maximumFileBytes) invalid(QStringLiteral("PSD 文件大小超出预算"));
+        return OpenOwned(QByteArray(bytes.constData(), bytes.size()), {}, result, error, control, limits);
+    } catch (const Failure& failure) { return failed(failure.message, error, control); }
+    catch (...) { return failed(QStringLiteral("PSD 读取输入复制失败，原读取对象保持不变"), error, control); }
+}
+
+bool CPsdReader::OpenFile(const QString& path, CPsdReadDocument& result, QString* error,
+                          CExportControl* requested, const CPsdStreamLimits& requestedLimits)
+{
+    const auto limits = requestedLimits;
+    if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
+    try {
+        validateStreamLimits(limits);
+        auto file = readFile(path, control, limits.document);
+        return OpenOwned(std::move(file.bytes), std::move(file.canonicalPath), result, error, control, limits);
+    } catch (const Failure& failure) { return failed(failure.message, error, control); }
+    catch (...) { return failed(QStringLiteral("PSD 文件读取失败，原读取对象保持不变"), error, control); }
 }

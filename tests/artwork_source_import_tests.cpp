@@ -13,18 +13,22 @@ QByteArray u16(quint16 value) { char data[2]; qToBigEndian(value, data); return 
 QByteArray u32(quint32 value) { char data[4]; qToBigEndian(value, data); return QByteArray(data, 4); }
 QByteArray block(const QByteArray& value) { return u32(value.size()) + value; }
 QByteArray tag(const QByteArray& key, const QByteArray& value) { return "8BIM" + key + block(value); }
-struct Layer { QString name = "Paint"; int id = 1, kind = 0; bool pixels = true, visible = true; QByteArray extra; quint8 opacity = 255; };
+struct Layer { QString name = "Paint"; int id = 1, kind = 0; bool pixels = true, visible = true; QByteArray extra; quint8 opacity = 255; bool mask = false, extraChannel = false; };
 QByteArray psd(const QVector<Layer>& layers = {Layer()}, const QByteArray& icc = {}) {
     QByteArray records, data;
     for (const auto& layer : layers) {
         const bool empty = layer.kind != 0;
         records += u32(empty ? 0 : -5) + u32(empty ? 0 : -3) + u32(empty ? 0 : -3) + u32(empty ? 0 : -1);
-        const int count = empty || !layer.pixels ? 0 : 4; records += u16(count);
+        const int count = empty || !layer.pixels ? 0 : 4 + int(layer.mask) + int(layer.extraChannel); records += u16(count);
         const QVector<QByteArray> planes{QByteArray::fromHex("804020ff"), QByteArray::fromHex("408020ff"), QByteArray::fromHex("208040ff"), QByteArray::fromHex("004080ff")};
-        for (int c = 0; c < count; ++c) { records += u16(c == 3 ? -1 : c) + u32(6); data += u16(0) + planes[c]; }
+        for (int c = 0; c < count; ++c) {
+            const int channel = c < 3 ? c : c == 3 ? -1 : c == 4 && layer.mask ? -2 : 4;
+            records += u16(channel) + u32(6); data += u16(0) + (c < 4 ? planes[c] : QByteArray(4, 0));
+        }
         records += "8BIMnorm"; records += char(layer.opacity); records += char(0); records += char(layer.visible ? 0 : 2); records += char(0);
         QByteArray name = u32(layer.name.size()); for (QChar c : layer.name) name += u16(c.unicode());
-        QByteArray extra = u32(0) + u32(0) + QByteArray(4, 0) + tag("luni", name);
+        const auto mask = layer.mask ? u32(-5) + u32(-3) + u32(-3) + u32(-1) + QByteArray(4, 0) : QByteArray();
+        QByteArray extra = block(mask) + u32(0) + QByteArray(4, 0) + tag("luni", name);
         if (layer.id >= 0) extra += tag("lyid", u32(layer.id));
         if (layer.kind) extra += tag("lsct", u32(layer.kind));
         records += block(extra + layer.extra);
@@ -48,6 +52,91 @@ QImage image(const CArtworkSourceImport::SourceCandidate& source, int index = 0)
 class ArtworkSourceImportTests : public QObject {
     Q_OBJECT
 private slots:
+    void invalidSealedDocumentDoesNotReplaceCandidateOrInvokeCallbacks() {
+        const auto before = prepare(psd()); auto result = before; CPsdReadDocument source;
+        CExportControl control; bool called = false; QString error;
+        QVERIFY(control.SetHandler([&](const auto&, QString*) { called = true; return true; }));
+        QVERIFY(!CArtworkSourceImport::Prepare(source, "family", "next", CModelArtwork::ColorPolicy::PreserveValues,
+                                               {}, result, &error, &control));
+        QVERIFY(!error.isEmpty()); QVERIFY(!called); QVERIFY(result.revision == before.revision); QCOMPARE(result.images, before.images);
+    }
+    void sealedDocumentOwnsIdentityDuringCallbackReplacement() {
+        CPsdReadDocument source, replacement; QString error;
+        const auto bytes = psd();
+        QVERIFY(CPsdReader::OpenBytes(bytes, source, &error));
+        QVERIFY(CPsdReader::OpenBytes(psd({Layer{"Other"}}), replacement, &error));
+        QChar familyData[]{'f', 'a', 'm'}, revisionData[]{'r', 'e', 'v'};
+        const auto family = QString::fromRawData(familyData, 3), revision = QString::fromRawData(revisionData, 3);
+        QTransform mapping; mapping.translate(13, -7); const auto expectedMapping = mapping;
+        CExportControl control; bool replaced = false;
+        QVERIFY(control.SetHandler([&](const auto&, QString*) {
+            if (!replaced) { replaced = true; source = replacement; familyData[0] = 'X'; revisionData[0] = 'Y'; mapping.reset(); }
+            return true;
+        }));
+        CArtworkSourceImport::SourceCandidate result;
+        QVERIFY2(CArtworkSourceImport::Prepare(source, family, revision, CModelArtwork::ColorPolicy::PreserveValues,
+                                              mapping, result, &error, &control), qPrintable(error));
+        QVERIFY(replaced); QCOMPARE(result.revision.familyId, QString("fam")); QCOMPARE(result.revision.id, QString("rev"));
+        QCOMPARE(result.revision.sourceBytes, bytes); QCOMPARE(result.revision.documentToFamily, expectedMapping);
+        QCOMPARE(result.revision.layers[0].name, QString("Paint")); QCOMPARE(image(result).pixel(1, 1), qRgba(255, 255, 255, 255));
+    }
+    void sealedFileAndLegacySnapshotKeepCanonicalIdentityAfterRemoval() {
+        QTemporaryDir folder; QVERIFY(folder.isValid()); const auto path = folder.filePath("source.psd");
+        const auto bytes = psd(); QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(bytes), bytes.size()); file.close();
+        CPsdReadDocument source; QString error; QVERIFY(CPsdReader::OpenFile(path, source, &error));
+        QVERIFY(source.Directory()); const auto canonical = source.Directory()->canonicalPath; QVERIFY(!canonical.isEmpty());
+        QVERIFY(QFile::remove(path));
+        CArtworkSourceImport::SourceCandidate sealed, legacy;
+        QVERIFY(CArtworkSourceImport::Prepare(source, "family", "revision", CModelArtwork::ColorPolicy::PreserveValues, {}, sealed, &error));
+        CPsdSnapshot snapshot; snapshot.bytes = bytes; snapshot.canonicalPath = canonical;
+        QVERIFY(CArtworkSourceImport::Prepare(snapshot, "family", "revision", CModelArtwork::ColorPolicy::PreserveValues, {}, legacy, &error));
+        QVERIFY(sealed.revision == legacy.revision); QCOMPARE(sealed.images, legacy.images);
+        QCOMPARE(sealed.revision.path, canonical); QCOMPARE(sealed.revision.fileName, QString("source.psd"));
+    }
+    void canceledStreamingImportDoesNotPublishPartialLayers() {
+        CPsdReadDocument source; QString error;
+        QVERIFY(CPsdReader::OpenBytes(psd({Layer{"first", 1}, Layer{"second", 2}}), source, &error));
+        const auto before = prepare(psd()); auto result = before;
+        CExportControl control; bool canceledBetweenLayers = false;
+        QVERIFY(control.SetHandler([&](const CExportControl::Progress& progress, QString*) {
+            if (progress.phase == CExportControl::Phase::Preparing && progress.current == 1 &&
+                progress.total == 2 && progress.detail == QStringLiteral("first")) {
+                canceledBetweenLayers = true; control.Cancel();
+            }
+            return true;
+        }));
+        QVERIFY(!CArtworkSourceImport::Prepare(source, "family", "next", CModelArtwork::ColorPolicy::PreserveValues, {}, result, &error, &control));
+        QVERIFY(canceledBetweenLayers); QVERIFY(control.WasCanceled()); QVERIFY(result.revision == before.revision); QCOMPARE(result.images, before.images);
+    }
+    void streamingPreservesUnappliedMaskAndExtraChannelPixels_data() {
+        QTest::addColumn<bool>("mask"); QTest::addColumn<bool>("extra");
+        QTest::newRow("mask") << true << false;
+        QTest::newRow("extra-channel") << false << true;
+        QTest::newRow("both") << true << true;
+    }
+    void streamingPreservesUnappliedMaskAndExtraChannelPixels() {
+        QFETCH(bool, mask); QFETCH(bool, extra); Layer layer; layer.mask = mask; layer.extraChannel = extra;
+        CPsdReadDocument source; QString error; QVERIFY2(CPsdReader::OpenBytes(psd({layer}), source, &error), qPrintable(error));
+        CArtworkSourceImport::SourceCandidate result;
+        QVERIFY2(CArtworkSourceImport::Prepare(source, "family", "revision", CModelArtwork::ColorPolicy::PreserveValues, {}, result, &error), qPrintable(error));
+        QVERIFY(!result.revision.layers[0].pixelEquivalent); QVERIFY(!result.revision.layers[0].imageDigest.isEmpty());
+        QCOMPARE(image(result), image(prepare(psd())));
+        const auto diagnostics = result.revision.layers[0].diagnostics.join('\n');
+        if (mask) QVERIFY(diagnostics.contains("mask:"));
+        QVERIFY(diagnostics.contains("extra-channel:"));
+    }
+    void colorRecipeCanReuseSealedOriginalAndReturnToExactPreservedPixels() {
+        CPsdReadDocument source; QString error;
+        QVERIFY(CPsdReader::OpenBytes(psd({Layer()}, QColorSpace(QColorSpace::SRgbLinear).iccProfile()), source, &error));
+        CArtworkSourceImport::SourceCandidate preserved, converted, restored;
+        QVERIFY(CArtworkSourceImport::Prepare(source, "family", "preserve", CModelArtwork::ColorPolicy::PreserveValues, {}, preserved, &error));
+        QVERIFY(CArtworkSourceImport::Prepare(source, "family", "convert", CModelArtwork::ColorPolicy::ConvertToSRgb, {}, converted, &error));
+        QVERIFY(CArtworkSourceImport::Prepare(source, "family", "restore", CModelArtwork::ColorPolicy::PreserveValues, {}, restored, &error));
+        QCOMPARE(preserved.images, restored.images); QVERIFY(preserved.images != converted.images);
+        QCOMPARE(preserved.revision.sourceBytes, converted.revision.sourceBytes); QCOMPARE(preserved.revision.iccProfile, converted.revision.iccProfile);
+        for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x)
+            QCOMPARE(qAlpha(image(preserved).pixel(x, y)), qAlpha(image(converted).pixel(x, y)));
+    }
     void sourceBytesAreAuthoritativeAndOwned() {
         QByteArray bytes = psd(); const QByteArray expected(bytes.constData(), bytes.size());
         CPsdSnapshot snapshot; snapshot.bytes = QByteArray::fromRawData(bytes.constData(), bytes.size()); snapshot.canonicalPath = "/hint/original.psd";

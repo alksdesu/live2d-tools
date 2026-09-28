@@ -12,7 +12,7 @@ struct CPsdDirectoryLayer
     QRect bounds;
     quint8 opacity = 255;
     QByteArray blendMode = "norm";
-    bool visible = true, clipping = false;
+    bool visible = true, clipping = false, pixelEquivalent = true;
     QVector<CPsdAdditionalInfo> additionalInfo;
     QVector<CPsdDiagnostic> diagnostics;
 };
@@ -20,6 +20,7 @@ struct CPsdDirectoryLayer
 struct CPsdDirectory
 {
     QByteArray bytes, sha256, iccProfile;
+    QString canonicalPath;
     QSize canvasSize;
     int version = 0, depth = 0, colorMode = 0, channels = 0;
     bool hasMergedTransparency = false, hasMergedPreview = false;

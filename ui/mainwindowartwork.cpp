@@ -27,7 +27,7 @@ namespace {
 using Artwork = live2dstruct::CModelArtwork;
 using Planner = live2dstruct::CArtworkUpdatePlanner;
 bool fail(QString* error, const QString& text) { if (error) *error = text; return false; }
-QString revisionIdentity(const CPsdSnapshot& source, const QString& family, Artwork::ColorPolicy policy, const QTransform& mapping)
+QString revisionIdentity(const CPsdDirectory& source, const QString& family, Artwork::ColorPolicy policy, const QTransform& mapping)
 {
     QByteArray bytes; QDataStream stream(&bytes, QIODevice::WriteOnly); stream.setVersion(QDataStream::Qt_6_0);
     stream << source.sha256 << source.canonicalPath << family << qint32(policy) << mapping.m11() << mapping.m12() << mapping.m21() << mapping.m22() << mapping.dx() << mapping.dy();
@@ -201,11 +201,11 @@ void MainWindow::EditArtwork(const QString& familyId, const QString& path, const
             prepared->incoming.diagnostics.append(QStringLiteral("使用已保存的来源像素；不需要磁盘上的原始文件。"));
         } else {
             if (!control->Report(CExportControl::Phase::Preparing, 0, 0, QStringLiteral("正在读取 PSD 文件"))) return false;
-            CPsdSnapshot source; if (!CPsdReader::ReadFile(path, source, detail, control.get())) return false;
+            CPsdReadDocument source; if (!CPsdReader::OpenFile(path, source, detail, control.get())) return false;
             const auto previous = s.baseline.artwork.revisions.value(s.baseline.artwork.families.value(family).currentRevision);
             const auto policy = previous.id.isEmpty() ? Artwork::ColorPolicy::ConvertToSRgb : previous.colorPolicy;
             const auto mapping = previous.id.isEmpty() ? QTransform() : previous.documentToFamily;
-            if (!live2dstruct::CArtworkSourceImport::Prepare(source, family, revisionIdentity(source, family, policy, mapping), policy, mapping, prepared->incoming, detail, control.get())) return false;
+            if (!live2dstruct::CArtworkSourceImport::Prepare(source, family, revisionIdentity(*source.Directory(), family, policy, mapping), policy, mapping, prepared->incoming, detail, control.get())) return false;
         }
         return control->Checkpoint();
     }, control.get(), &error);

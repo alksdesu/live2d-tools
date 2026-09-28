@@ -5,6 +5,7 @@
 #include "psd/cpsdsnapshot.h"
 
 class CExportControl;
+class CPsdReadDocument;
 
 namespace live2dstruct {
 class CArtworkSourceImport
@@ -16,6 +17,9 @@ public:
         QStringList diagnostics;
         CModelArtwork::SourceKind kind = CModelArtwork::SourceKind::Psd;
     };
+    static bool Prepare(const CPsdReadDocument& document, const QString& familyId, const QString& revisionId,
+                        CModelArtwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
+                        SourceCandidate& result, QString* error = nullptr, CExportControl* control = nullptr);
     static bool Prepare(const CPsdSnapshot& snapshot, const QString& familyId, const QString& revisionId,
                         CModelArtwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
                         SourceCandidate& result, QString* error = nullptr, CExportControl* control = nullptr);

@@ -15,6 +15,19 @@
 #include <vector>
 
 namespace {
+void verifyEmptyChannels(const PsdBinary::Layer& layer)
+{
+    QCOMPARE(layer.channels.size(), 4);
+    QSet<qint16> ids;
+    for (const auto& channel : layer.channels) {
+        ids.insert(channel.id);
+        QCOMPARE(channel.length, quint32(2));
+        QCOMPARE(channel.compression, quint16(0));
+        QVERIFY(channel.pixels.isEmpty());
+    }
+    QCOMPARE(ids, QSet<qint16>({-1, 0, 1, 2}));
+}
+
 class TrackingAllocator : public psd::Allocator
 {
 public:
@@ -946,14 +959,14 @@ private slots:
         QCOMPARE(parsed.layers[0].sectionType, quint32(3)); QCOMPARE(parsed.layers[3].sectionType, quint32(1));
         const auto& empty = parsed.layers[1];
         QCOMPARE(empty.name, QStringLiteral("同名图层")); QCOMPARE(empty.bounds, QRect(0, 0, 0, 0));
-        QVERIFY(empty.channels.isEmpty()); QCOMPARE(empty.opacity, quint8(73)); QCOMPARE(empty.blend, QByteArray("mul "));
+        verifyEmptyChannels(empty); QCOMPARE(empty.opacity, quint8(73)); QCOMPARE(empty.blend, QByteArray("mul "));
         QCOMPARE(empty.clipping, quint8(1)); QCOMPARE(empty.layerId, std::optional<quint32>(17));
         const auto& raster = parsed.layers[2];
         QCOMPARE(raster.name, empty.name); QCOMPARE(raster.bounds, QRect(-2, -3, 1, 1));
         QCOMPARE(raster.layerId, std::optional<quint32>(18)); QCOMPARE(raster.blend, QByteArray("lddg"));
         QCOMPARE(raster.opacity, quint8(191)); QCOMPARE(raster.Plane(-1), QByteArray(1, char(127)));
         QCOMPARE(parsed.layers[4].opacity, quint8(255)); QCOMPARE(parsed.layers[4].blend, QByteArray("norm"));
-        QVERIFY(parsed.layers[4].channels.isEmpty()); QVERIFY(!parsed.layers[4].layerId);
+        verifyEmptyChannels(parsed.layers[4]); QVERIFY(!parsed.layers[4].layerId);
     }
     void layerIdsRetainAllUnsignedBits_data()
     {
@@ -1017,7 +1030,7 @@ private slots:
         QVERIFY(writer.SetPsd(path, 1, 1)); QVERIFY(writer.AddEmptyLayer("only object", 0)); QVERIFY(writer.CreatePsd());
         PsdBinary::Document parsed; QString error;
         QVERIFY2(PsdBinary::Parse(ReadFile(path), parsed, &error), qPrintable(error));
-        QCOMPARE(parsed.layers.size(), 1); QVERIFY(parsed.layers[0].channels.isEmpty());
+        QCOMPARE(parsed.layers.size(), 1); verifyEmptyChannels(parsed.layers[0]);
     }
 
     void invalidResetCannotWritePreviousDocument()

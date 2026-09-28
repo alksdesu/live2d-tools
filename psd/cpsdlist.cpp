@@ -231,19 +231,22 @@ bool CPsdList::AddEmptyLayer(const QString& name, quint8 opacity, quint32 blendM
         if (!psd::SetLayerAttributes(document, index, attributes) ||
             !psd::SetEmptyLayerBounds(document, index, 0, 0, 0, 0))
             return Fail(QStringLiteral("PSD 空图层属性或边界无效：%1").arg(frozenName));
-        return true;
+        return AddEmptyChannels(index);
     } catch (const std::exception&) {
         return Fail(QStringLiteral("PSD 空图层编码失败"));
     }
 }
 
-bool CPsdList::AddGroupChannels(unsigned int index)
+bool CPsdList::AddEmptyChannels(unsigned int index, const QRect& bounds)
 {
     const uint8_t empty = 0;
+    const int left = bounds.x(), top = bounds.y();
+    const int right = int(qint64(left) + bounds.width());
+    const int bottom = int(qint64(top) + bounds.height());
     const ExportCheckpoint checkpoint = [&](uint32_t, uint32_t) { return !m_control || m_control->Checkpoint(); };
     for (auto channel : {exportChannel::RED, exportChannel::GREEN, exportChannel::BLUE, exportChannel::ALPHA})
-        if (!psd::UpdateLayerGroup(document, &allocator, index, channel, 0, 0, 0, 0, &empty, compressionType::RAW, checkpoint))
-            return Fail(QStringLiteral("PSD 分组记录写入失败"));
+        if (!psd::UpdateLayerGroup(document, &allocator, index, channel, left, top, right, bottom, &empty, compressionType::RAW, checkpoint))
+            return Fail(QStringLiteral("PSD 空通道写入失败"));
     return true;
 }
 
@@ -252,7 +255,7 @@ bool CPsdList::AddGroupStart()
     if (m_busy) return Fail(QStringLiteral("PSD 文档正在处理"));
     QScopedValueRollback<bool> busy(m_busy, true);
     if (!CanAppendLayer()) return false;
-    return AddGroupChannels(psd::AddLayerGroupStart(document, &allocator, "</Layer group>"));
+    return AddEmptyChannels(psd::AddLayerGroupStart(document, &allocator, "</Layer group>"));
 }
 
 bool CPsdList::AddGroupEnd(const char* groupName)
@@ -265,7 +268,7 @@ bool CPsdList::AddGroupEnd(const char* groupName)
     psd::ExportLayerAttributes attributes;
     attributes.blendModeKey = 0x70617373;
     if (!psd::SetLayerAttributes(document, index, attributes)) return Fail(QStringLiteral("PSD 分组混合模式无效"));
-    return AddGroupChannels(index);
+    return AddEmptyChannels(index);
 }
 
 bool CPsdList::CreatePsd()
@@ -347,7 +350,7 @@ bool CPsdList::AddSourceLayer(const CPsdSourceLayer& layer, const QImage& pixels
     if (group || layer.bounds.isEmpty()) {
         if (!psd::SetEmptyLayerBounds(document, index, left, top, right, bottom))
             return Fail(QStringLiteral("PSD 来源空图层边界无效"));
-        return true;
+        return group || AddEmptyChannels(index, layer.bounds);
     }
     if (pixels.size() != layer.bounds.size() || pixels.format() != QImage::Format_RGBA8888)
         return Fail(QStringLiteral("PSD 来源像素与图层边界不一致"));

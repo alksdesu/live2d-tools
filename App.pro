@@ -809,3 +809,4 @@ HEADERS += ui/cobjectnamesimportdialog.h
 
 SOURCES += std/cpsdexportcoverage.cpp
 HEADERS += std/cpsdexportcoverage.h psd/cpsdpreview.h
+HEADERS += psd/cpsdreaddocument.h

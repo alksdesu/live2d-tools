@@ -1,5 +1,6 @@
 #include "psd/cpsdsourcewriter.h"
 #include "psd/cpsdreader.h"
+#include "psd_binary_reader.h"
 #include "psd/psdSamples/Exporter/PsdExportDocument.h"
 #include "psd/psdSamples/Exporter/PsdExport.h"
 #include "psd/psdSamples/Interfaces/PsdMallocAllocator.h"
@@ -12,6 +13,19 @@
 #include <limits>
 
 namespace {
+void verifyEmptyChannels(const PsdBinary::Layer& layer)
+{
+    QCOMPARE(layer.channels.size(), 4);
+    QSet<qint16> ids;
+    for (const auto& channel : layer.channels) {
+        ids.insert(channel.id);
+        QCOMPARE(channel.length, quint32(2));
+        QCOMPARE(channel.compression, quint16(0));
+        QVERIFY(channel.pixels.isEmpty());
+    }
+    QCOMPARE(ids, QSet<qint16>({-1, 0, 1, 2}));
+}
+
 class CountingAllocator : public psd::Allocator
 {
 public:
@@ -166,6 +180,8 @@ private slots:
         QVERIFY2(CPsdReader::ReadFile(path, decoded, &error), qPrintable(error));
         QCOMPARE(decoded.layers.size(), 9);
         QCOMPARE(decoded.displayOrder.size(), source.layers.size());
+        PsdBinary::Document binary;
+        QVERIFY2(PsdBinary::Parse(read(path), binary, &error), qPrintable(error));
         for (int index = 0; index < source.layers.size(); ++index) {
             const auto& expected = source.layers[index];
             const auto& actual = decoded.layers[decoded.displayOrder[index]];
@@ -178,8 +194,12 @@ private slots:
             QCOMPARE(actual.layerId, expected.externalId);
             const int expectedParent = expected.parentIndex < 0 ? -1 : decoded.displayOrder[expected.parentIndex];
             QCOMPARE(actual.parentIndex, expectedParent);
-            if (expected.png.isEmpty()) QVERIFY(actual.image.isNull());
-            else QCOMPARE(actual.image.convertToFormat(QImage::Format_RGBA8888), pixels());
+            if (expected.png.isEmpty()) {
+                QVERIFY(actual.image.isNull());
+                const auto& record = binary.layers[decoded.displayOrder[index]];
+                if (expected.kind == CPsdSourceLayer::Kind::Raster) verifyEmptyChannels(record);
+                else QVERIFY(record.channels.isEmpty());
+            } else QCOMPARE(actual.image.convertToFormat(QImage::Format_RGBA8888), pixels());
         }
     }
 
@@ -307,6 +327,10 @@ private slots:
         QVERIFY2(CPsdReader::ReadFile(path, decoded, &error), qPrintable(error));
         QCOMPARE(decoded.layers[0].bounds, source.layers[0].bounds);
         QVERIFY(decoded.layers[0].image.isNull());
+        PsdBinary::Document binary;
+        QVERIFY2(PsdBinary::Parse(read(path), binary, &error), qPrintable(error));
+        QCOMPARE(binary.layers[0].bounds, source.layers[0].bounds);
+        verifyEmptyChannels(binary.layers[0]);
     }
 
     void unknownAndMalformedDocumentsFailAtomically_data()

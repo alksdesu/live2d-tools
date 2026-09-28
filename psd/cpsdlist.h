@@ -38,7 +38,7 @@ private:
     bool AddSourceLayer(const CPsdSourceLayer& layer, const QImage& pixels);
     bool AddSourceDivider();
     bool CanAppendLayer();
-    bool AddGroupChannels(unsigned int index);
+    bool AddEmptyChannels(unsigned int index, const QRect& bounds = {});
     bool Fail(const QString& error);
     CExportControl* m_control = nullptr;
     bool m_busy = false;

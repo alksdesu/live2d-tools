@@ -27,23 +27,29 @@ QByteArray pixelDigest(const QImage& image, CExportControl& control)
     }
     return hash.result();
 }
+
+bool validOptions(const QString& family, const QString& revision, const QString& path,
+                  Artwork::ColorPolicy colorPolicy, const QTransform& transform, QString* error)
+{
+    if (!validId(family) || !validId(revision) || path.size() > 32768 || path.contains(QChar::Null) ||
+        (colorPolicy != Artwork::ColorPolicy::PreserveValues && colorPolicy != Artwork::ColorPolicy::ConvertToSRgb))
+        return fail(error, QStringLiteral("素材来源、修订标识或色彩策略无效"));
+    return Artwork::ValidateTransform(transform, error);
 }
 
-bool CArtworkSourceImport::Prepare(const CPsdSnapshot& snapshot, const QString& familyId, const QString& revisionId,
-                                    Artwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
-                                    SourceCandidate& result, QString* error, CExportControl* requested)
+bool prepareDocument(CPsdReadDocument document, const QString& familyId, const QString& revisionId,
+                     const QString& sourcePath, Artwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
+                     CArtworkSourceImport::SourceCandidate& result, QString* error, CExportControl& control)
 {
-    if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
     try {
-        const auto family = owned(familyId), revision = owned(revisionId), path = owned(snapshot.canonicalPath);
+        const auto family = owned(familyId), revision = owned(revisionId), path = owned(sourcePath);
         const QTransform transform = documentToFamily;
-        if (!validId(family) || !validId(revision) || path.size() > 32768 || path.contains(QChar::Null) ||
-            (colorPolicy != Artwork::ColorPolicy::PreserveValues && colorPolicy != Artwork::ColorPolicy::ConvertToSRgb))
-            return fail(error, QStringLiteral("素材来源、修订标识或色彩策略无效"));
-        if (!Artwork::ValidateTransform(transform, error)) return false;
-        CPsdSnapshot frozen;
-        if (!CPsdReader::ReadBytes(snapshot.bytes, frozen, error, &control)) return false;
-        SourceCandidate candidate;
+        if (!validOptions(family, revision, path, colorPolicy, transform, error)) return false;
+        const auto* directory = document.Directory();
+        if (!directory) return fail(error, QStringLiteral("PSD 来源尚未通过完整性验证"));
+        const auto& frozen = *directory;
+        if (!control.Checkpoint()) return fail(error, control.Error());
+        CArtworkSourceImport::SourceCandidate candidate;
         auto& target = candidate.revision;
         target.id = revision; target.familyId = family; target.path = path; target.fileName = QFileInfo(path).fileName();
         target.sourceBytes = frozen.bytes; target.sourceDigest = frozen.sha256; target.iccProfile = frozen.iccProfile;
@@ -83,8 +89,10 @@ bool CArtworkSourceImport::Prepare(const CPsdSnapshot& snapshot, const QString& 
             output.externalId = layer.layerId; output.bounds = layer.bounds; output.visible = layer.visible; output.clipping = layer.clipping;
             output.pixelEquivalent = layer.pixelEquivalent; output.opacity = layer.opacity; output.blendMode = layer.blendMode;
             for (const auto& value : layer.diagnostics) output.diagnostics.append(diagnostic(value));
-            if (layer.image.isNull() || output.kind == Artwork::LayerKind::Group) continue;
-            QImage image = layer.image;
+            if (output.kind == Artwork::LayerKind::Group || layer.bounds.isEmpty()) continue;
+            QImage image;
+            if (!document.ReadLayer(layer.recordIndex, image, error, &control)) return false;
+            if (image.isNull()) continue;
             if (colorPolicy == Artwork::ColorPolicy::ConvertToSRgb) {
                 image.setColorSpace(source);
                 image = image.convertedToColorSpace(QColorSpace(QColorSpace::SRgb), QImage::Format_RGBA8888);
@@ -114,6 +122,35 @@ bool CArtworkSourceImport::Prepare(const CPsdSnapshot& snapshot, const QString& 
         if (!Artwork::Validate(checked, nullptr, error)) return false;
         if (!control.Checkpoint()) return fail(error, control.Error());
         result = std::move(candidate); return true;
+    } catch (...) { return fail(error, QStringLiteral("无法准备来源素材，现有素材保持不变")); }
+}
+
+}
+
+bool CArtworkSourceImport::Prepare(const CPsdReadDocument& source, const QString& familyId, const QString& revisionId,
+                                   Artwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
+                                   SourceCandidate& result, QString* error, CExportControl* requested)
+{
+    if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
+    const auto document = source;
+    const auto* directory = document.Directory();
+    if (!directory) return fail(error, QStringLiteral("PSD 来源尚未通过完整性验证"));
+    return prepareDocument(document, familyId, revisionId, directory->canonicalPath, colorPolicy,
+                           documentToFamily, result, error, control);
+}
+
+bool CArtworkSourceImport::Prepare(const CPsdSnapshot& snapshot, const QString& familyId, const QString& revisionId,
+                                   Artwork::ColorPolicy colorPolicy, const QTransform& documentToFamily,
+                                   SourceCandidate& result, QString* error, CExportControl* requested)
+{
+    if (error) error->clear(); CExportControl local; auto& control = requested ? *requested : local;
+    try {
+        const auto family = owned(familyId), revision = owned(revisionId), path = owned(snapshot.canonicalPath);
+        const QTransform transform = documentToFamily;
+        if (!validOptions(family, revision, path, colorPolicy, transform, error)) return false;
+        CPsdReadDocument document;
+        if (!CPsdReader::OpenBytes(snapshot.bytes, document, error, &control)) return false;
+        return prepareDocument(std::move(document), family, revision, path, colorPolicy, transform, result, error, control);
     } catch (...) { return fail(error, QStringLiteral("无法准备来源素材，现有素材保持不变")); }
 }
 }

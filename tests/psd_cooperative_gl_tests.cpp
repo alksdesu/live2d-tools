@@ -30,6 +30,19 @@ using CubismModelFixture::GetterState;
 namespace Core = Live2D::Cubism::Core;
 
 namespace {
+void verifyEmptyChannels(const PsdBinary::Layer& layer)
+{
+    QCOMPARE(layer.channels.size(), 4);
+    QSet<qint16> ids;
+    for (const auto& channel : layer.channels) {
+        ids.insert(channel.id);
+        QCOMPARE(channel.length, quint32(2));
+        QCOMPARE(channel.compression, quint16(0));
+        QVERIFY(channel.pixels.isEmpty());
+    }
+    QCOMPARE(ids, QSet<qint16>({-1, 0, 1, 2}));
+}
+
 std::unordered_map<void*, std::size_t> allocations;
 std::unordered_map<void*, std::unique_ptr<GetterState>> coreStates;
 std::unique_ptr<CubismIdManager> ids;
@@ -331,7 +344,7 @@ private slots:
         PsdBinary::Document decoded;
         QVERIFY2(PsdBinary::Parse(bytes(path), decoded, &error), qPrintable(error));
         const auto* empty = layer(decoded, QStringLiteral("红色😀")); QVERIFY(empty);
-        QCOMPARE(empty->bounds, QRect()); QCOMPARE(empty->channels.size(), 0);
+        QCOMPARE(empty->bounds, QRect()); verifyEmptyChannels(*empty);
         QVERIFY(empty->layerId); QCOMPARE(*empty->layerId, quint32(1));
         const auto* raster = layer(decoded, QStringLiteral("蓝色")); QVERIFY(raster); QVERIFY(!raster->bounds.isEmpty());
     }
