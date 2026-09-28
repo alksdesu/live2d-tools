@@ -404,6 +404,19 @@ QStringList CModelHierarchyModel::UpdateDeformerDisplayNames(const QMap<QString,
     return changed;
 }
 
+QStringList CModelHierarchyModel::UpdateDisplayNames(const CModelDisplayNames::State& names)
+{
+    QStringList changed;
+    if (!m_data) return changed;
+    for (auto& object : m_data->objects) {
+        const auto name = CModelDisplayNames::EffectiveName(names, object.type, object.id);
+        if (object.label == name) continue;
+        object.label = name;
+        changed.append(object.key);
+    }
+    return changed;
+}
+
 void CModelHierarchyModel::NotifyDisplayNames(const QStringList& keys)
 {
     const QPointer<CModelHierarchyModel> model(this);

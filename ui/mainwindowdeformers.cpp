@@ -3,6 +3,8 @@
 #include "cdeformercreatedialog.h"
 #include "cdeformerrenamedialog.h"
 #include "cdeformergriddialog.h"
+#include "cobjectnamesimportdialog.h"
+#include "std/cexportcontrol.h"
 #include "cinspectorpanel.h"
 #include "cblendshapepanel.h"
 #include "cmodeltreepanel.h"
@@ -183,105 +185,52 @@ bool MainWindow::PublishDeformerStructure(const live2dstruct::CModelDocument& do
 
 void MainWindow::RefreshDeformerActions()
 {
+    const QPointer<MainWindow> alive(this);
     if (!m_treePanel) return;
     const bool ready = m_workspaceReady && !m_closingModel && !m_batchExporting && !m_psdBatch &&
-        !m_previewExport.IsBusy() && m_openglwindows && m_openglwindows->IsModelReady();
+        !m_previewExport.IsBusy() && !m_nameImportControl && m_openglwindows && m_openglwindows->IsModelReady();
     const bool single = m_selectedObjectIds.size() == 1 && m_selectedObjectTypes.size() == 1;
     const bool deformer = single && (m_selectedObjectTypes.first() == QLatin1String("warp") ||
                                      m_selectedObjectTypes.first() == QLatin1String("rotation"));
     m_treePanel->SetDeformerActionsEnabled(ready, ready && deformer &&
         !m_document.IsLocked(m_selectedObjectTypes.first(), m_selectedObjectIds.first()));
-    m_treePanel->SetRenameDeformerEnabled(ready);
+    if (!alive) return;
+    m_treePanel->SetRenameObjectEnabled(ready);
     if (m_inspectorPanel) {
-        m_inspectorPanel->SetRenameDeformerEnabled(ready);
+        m_inspectorPanel->SetRenameObjectEnabled(ready);
+        if (!alive) return;
         m_inspectorPanel->SetWarpGridResizeEnabled(ready);
+        if (!alive) return;
     }
     RefreshGeometryPairActions();
+    if (alive) RefreshObjectNameActions();
 }
 
 bool MainWindow::InitializeDeformerDisplayNames(Document& document, QString* error) const
-{
-    if (error) error->clear();
-    live2dstruct::CDeformerDisplayNames::State imported;
-    if (m_cidJson) imported = m_cidJson->DeformerDisplayNames();
-    Document source;
-    if (!source.LoadBytes(document.SourceBytes(), document.SourcePath(), error)) return false;
-    if (!m_cidJson || !m_cidJson->HasDeformerDisplayNamesExtension()) {
-        QSet<QString> ids;
-        for (const auto& object : source.Deformers()) ids.insert(object.id);
-        for (auto item = imported.begin(); item != imported.end();)
-            if (!ids.contains(item.key()) || item.value().isEmpty()) item = imported.erase(item); else ++item;
-    }
-    if (!source.SetDeformerDisplayNames(imported, error)) return false;
-    live2dstruct::CDeformerDisplayNames::State names;
-    for (const auto& object : document.Deformers())
-        if ((!document.HasDeformerStructure() || document.SourceDeformerIds().contains(object.id)) &&
-            source.DeformerDisplayNames().contains(object.id))
-            names.insert(object.id, source.DeformerDisplayName(object.id));
-    return document.SetDeformerDisplayNames(names, error);
-}
+{ return InitializeDisplayNames(document, error); }
 
-void MainWindow::RefreshDeformerDisplayNames()
-{
-    const QPointer<MainWindow> alive(this);
-    if (m_treePanel) m_treePanel->ApplyDeformerDisplayNames(m_document.DeformerDisplayNames());
-    if (!alive) return;
-    if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
-    if (!alive) return;
-    if (m_blendShapePanel) m_blendShapePanel->RefreshDeformerDisplayNames();
-    if (!alive) return;
-    RefreshWindowTitle();
-    if (alive) RefreshUndoActions();
-}
+void MainWindow::RefreshDeformerDisplayNames() { RefreshDisplayNames(); }
 
 bool MainWindow::CancelDeformerDialogs()
 {
+    if (m_nameImportControl) { m_nameImportControl->Cancel(); return false; }
+    if (m_objectNamesDialog && m_objectNamesDialog->IsSubmitting()) return false;
     if ((m_deformerRenameDialog && m_deformerRenameDialog->IsSubmitting()) ||
         (m_deformerGridDialog && (m_deformerGridDialog->IsPreparing() || m_deformerGridDialog->IsSubmitting()))) return false;
     const QPointer<MainWindow> alive(this);
+    if (m_objectNamesDialog) m_objectNamesDialog->reject();
+    if (!alive) return false;
     if (m_deformerRenameDialog) m_deformerRenameDialog->reject();
     if (!alive) return false;
     if (m_deformerGridDialog) m_deformerGridDialog->reject();
     return !alive.isNull();
 }
 
-void MainWindow::RenameDeformer(const QString& id, const QString& type)
-{
-    if (m_deformerGridDialog) { m_deformerGridDialog->raise(); return; }
-    if (m_deformerRenameDialog) { m_deformerRenameDialog->raise(); return; }
-    const QPointer<MainWindow> alive(this);
-    QString error;
-    if (!AuthoringReady(&error) || !FinishParameterValueEditing(&error) || !alive ||
-        m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
-    if (!m_openglwindows || !m_openglwindows->FinishMeshDrag(false, &error) || !alive) return;
-    if (m_selectedObjectIds != QStringList{id} || m_selectedObjectTypes != QStringList{type} ||
-        (type != QLatin1String("warp") && type != QLatin1String("rotation"))) return;
-    const auto currentName = m_document.DeformerDisplayName(id);
-    if (currentName.isEmpty()) return;
-    const auto source = m_document.SourceDigest(); const auto path = m_document.SourcePath();
-    const auto revision = m_document.Revision();
-    auto* dialog = new CDeformerRenameDialog(id, type, currentName, this);
-    m_deformerRenameDialog = dialog;
-    const QPointer<CDeformerRenameDialog> child(dialog);
-    const auto cleanup = qScopeGuard([child] { if (child) delete child; });
-    dialog->SetSubmissionHandler([alive, id, type, source, path, revision](const QString& name, QString* detail) {
-        if (!alive || !alive->AuthoringReady(detail) || alive->m_document.Revision() != revision ||
-            alive->m_document.SourceDigest() != source || alive->m_document.SourcePath() != path ||
-            alive->m_selectedObjectIds != QStringList{id} || alive->m_selectedObjectTypes != QStringList{type}) {
-            if (detail) *detail = QStringLiteral("模型或选区已改变，请重新打开重命名窗口");
-            return false;
-        }
-        live2dstruct::CModelEdit command;
-        if (!alive->m_document.MakeDeformerDisplayNameEdit(id, name, command, detail)) return false;
-        if (command.type != type) { if (detail) *detail = QStringLiteral("变形器类型已改变"); return false; }
-        if (command.before == command.after) return true;
-        return alive->SubmitInspectorEdit(command, detail);
-    });
-    dialog->exec();
-}
+void MainWindow::RenameDeformer(const QString& id, const QString& type) { RenameObject(id, type); }
 
 void MainWindow::ResizeWarpGrid(const QString& id)
 {
+    if (m_objectNamesDialog) { m_objectNamesDialog->raise(); return; }
     if (m_deformerGridDialog) { m_deformerGridDialog->raise(); return; }
     if (m_deformerRenameDialog) { m_deformerRenameDialog->raise(); return; }
     const QPointer<MainWindow> alive(this);

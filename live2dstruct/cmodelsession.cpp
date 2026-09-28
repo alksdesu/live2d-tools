@@ -136,8 +136,24 @@ bool validArtwork(const CModelSession& session, int version, QString* error)
     return CModelArtwork::Validate(session.artwork, nullptr, error);
 }
 
-bool validDeformerNames(const CModelSession& session, int version, QString* error)
+bool validDisplayNames(const CModelSession& session, int version, QString* error)
 {
+    if (session.objectDisplayNames) {
+        if (version < 15 || session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32) {
+            setError(error, QStringLiteral("对象名称需要版本 15 及有效源模型指纹")); return false;
+        }
+        CModelDisplayNames::State normalized;
+        if (!CModelDisplayNames::Normalize(*session.objectDisplayNames, normalized, error)) return false;
+        if (session.deformerDisplayNames) {
+            CDeformerDisplayNames::State legacy;
+            if (!CDeformerDisplayNames::Normalize(*session.deformerDisplayNames, legacy, error)) return false;
+            if (legacy != normalized.deformers) {
+                setError(error, QStringLiteral("新旧对象名称状态冲突")); return false;
+            }
+        }
+        return true;
+    }
+    if (version >= 15) { setError(error, QStringLiteral("版本 15 会话缺少对象名称目录")); return false; }
     if (!session.deformerDisplayNames) {
         if (version < 13) return true;
         setError(error, QStringLiteral("版本 13 会话缺少变形器名称对象"));
@@ -235,7 +251,7 @@ bool CModelSession::HasMaskMultiplicityOverrides() const
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 14) return {};
+    if (version < 1 || version > 15) return {};
     if (drawableMaskIndices.size() > 100000) return {};
     for (const auto& values : drawableMaskIndices) {
         if (values.size() > CMaskEditPolicy::MaximumOverrideReferences || std::any_of(values.cbegin(), values.cend(), [](int index) { return index < 0; })) return {};
@@ -257,8 +273,13 @@ QByteArray CModelSession::ToJson() const
     if (!artwork.IsEmpty() && storedVersion < 12) storedVersion = 12;
     if (deformerDisplayNames && storedVersion < 13) storedVersion = 13;
     if (HasMaskMultiplicityOverrides() && storedVersion < 14) storedVersion = 14;
-    if (!validDeformerNames(*this, storedVersion, nullptr)) return {};
-    if (storedVersion >= 13) {
+    if (objectDisplayNames && storedVersion < 15) storedVersion = 15;
+    if (!validDisplayNames(*this, storedVersion, nullptr)) return {};
+    if (storedVersion >= 15) {
+        QJsonObject names;
+        if (!CModelDisplayNames::ToJson(*objectDisplayNames, names)) return {};
+        root.insert(QStringLiteral("objectDisplayNames"), names);
+    } else if (storedVersion >= 13) {
         QJsonObject names;
         for (auto item = deformerDisplayNames->cbegin(); item != deformerDisplayNames->cend(); ++item)
             names.insert(item.key(), item.value());
@@ -446,18 +467,27 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 14) {
+    if (parsedVersion < 1 || parsedVersion > 15) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
 
     CModelSession result;
     result.version = parsedVersion;
+    const auto objectNames = root.value(QStringLiteral("objectDisplayNames"));
+    if ((parsedVersion < 15 && !objectNames.isUndefined()) || (parsedVersion >= 15 && !objectNames.isObject())) {
+        setError(error, QStringLiteral("对象名称需要版本 15 及完整目录")); return false;
+    }
+    if (parsedVersion >= 15) {
+        result.objectDisplayNames.emplace();
+        if (!CModelDisplayNames::FromJson(objectNames.toObject(), *result.objectDisplayNames, error)) return false;
+    }
     const auto names = root.value(QStringLiteral("deformerDisplayNames"));
-    if ((parsedVersion < 13 && !names.isUndefined()) || (parsedVersion >= 13 && !names.isObject())) {
+    if (((parsedVersion < 13 || parsedVersion >= 15) && !names.isUndefined()) ||
+        (parsedVersion >= 13 && parsedVersion < 15 && !names.isObject())) {
         setError(error, QStringLiteral("变形器名称需要版本 13 及有效对象")); return false;
     }
-    if (parsedVersion >= 13) {
+    if (parsedVersion >= 13 && parsedVersion < 15) {
         result.deformerDisplayNames.emplace();
         if (!CDeformerDisplayNames::FromJson(names.toObject(), *result.deformerDisplayNames, error)) return false;
     }
@@ -565,7 +595,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDigest = decoded;
     }
-    if (!validDeformerNames(result, parsedVersion, error)) return false;
+    if (!validDisplayNames(result, parsedVersion, error)) return false;
     if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
         setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
         return false;
@@ -926,7 +956,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 14) ||
+    if ((version < 1 || version > 15) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
@@ -934,7 +964,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace) ||
         (version < 12 && !artwork.IsEmpty()))
         return fail(QStringLiteral("version"));
-    if (!validDeformerNames(*this, version, error)) return false;
+    if (!validDisplayNames(*this, version, error)) return false;
     CGeometryObjectPairs::State normalizedPairs;
     if (!CGeometryObjectPairs::Normalize(geometryObjectPairs, normalizedPairs, error) ||
         (!geometryObjectPairs.sourceDigest.isEmpty() && (sourceDigest.size() != 32 ||
@@ -1009,16 +1039,27 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         } else if ((!structure.columns.isEmpty() || !structure.counts.isEmpty()) && !candidate.SetParameterStructure(structure, error)) return false;
     }
     CModelMaterialState materialValues;
-    auto names = deformerDisplayNames.value_or(loaded.DeformerDisplayNames());
-    if (!deformerDisplayNames) {
+    auto names = objectDisplayNames.value_or(loaded.DisplayNames());
+    if (!objectDisplayNames) {
+        const auto retain = [](const auto& objects, auto& entries) {
+            QSet<QString> current;
+            for (const auto& object : objects) current.insert(object.id);
+            for (auto item = entries.begin(); item != entries.end();)
+                if (!current.contains(item.key())) item = entries.erase(item); else ++item;
+        };
+        retain(candidate.Parts(), names.parts);
+        retain(candidate.Drawables(), names.artMeshes);
+        if (deformerDisplayNames) names.deformers = *deformerDisplayNames;
+    }
+    if (!objectDisplayNames && !deformerDisplayNames) {
         QSet<QString> currentIds;
         for (const auto& object : candidate.Deformers()) currentIds.insert(object.id);
-        for (auto item = names.begin(); item != names.end();)
+        for (auto item = names.deformers.begin(); item != names.deformers.end();)
             if (!currentIds.contains(item.key()) || (candidate.HasDeformerStructure() && !candidate.SourceDeformerIds().contains(item.key())))
-                item = names.erase(item);
+                item = names.deformers.erase(item);
             else ++item;
     }
-    if (!candidate.SetDeformerDisplayNames(names, error)) return false;
+    if (!candidate.SetDisplayNames(names, error)) return false;
     for (const auto& material : drawableMaterials) materialValues.append(material);
     if (!candidate.SetDrawableMaterials(materialValues, error)) return false;
     if (!candidate.SetParameterOrganization(normalizedOrganization, error)) return false;

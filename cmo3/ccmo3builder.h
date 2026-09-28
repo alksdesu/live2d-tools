@@ -10,6 +10,7 @@
 #include <QStringList>
 #include <optional>
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmodeldisplaynames.h"
 
 namespace live2dstruct {
 class CSectionTable;
@@ -50,6 +51,7 @@ public:
         QHash<QString, QVector<live2dstruct::CModelWarpKeyform>> deformerWarpKeyformOverrides;
         QHash<QString, bool> drawableMaskInverted;
         std::optional<QMap<QString, QString>> deformerDisplayNames;
+        std::optional<live2dstruct::CModelDisplayNames::State> displayNames;
     };
 
     struct PhysicsExport {

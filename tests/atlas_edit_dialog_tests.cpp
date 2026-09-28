@@ -79,6 +79,21 @@ class AtlasEditDialogTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void displayNamesFilterWithoutChangingMeshIdentity()
+    {
+        CAtlasEditDialog dialog(snapshot(), {"Face"}); QString error;
+        QVERIFY(dialog.SetMeshDisplayNames({{"Face", QStringLiteral("<b>脸部</b>")}, {"Hair", QStringLiteral("头发")}}, &error));
+        ready(dialog); auto* list = dialog.findChild<QListWidget*>("atlasObjects");
+        if (!list) for (auto* candidate : dialog.findChildren<QListWidget*>()) if (candidate->count() && candidate->item(0)->data(Qt::UserRole).toString() == "Face") list = candidate;
+        QVERIFY(list); QCOMPARE(list->item(0)->data(Qt::UserRole).toString(), QString("Face"));
+        QVERIFY(list->item(0)->text().contains(QStringLiteral("<b>脸部</b> · Face"))); QVERIFY(list->item(0)->toolTip().contains("&lt;b&gt;"));
+        auto* search = dialog.findChild<QLineEdit*>("atlasObjectSearch"); search->setText(QStringLiteral("脸部"));
+        QVERIFY(!list->item(0)->isHidden()); QVERIFY(list->item(1)->isHidden());
+        search->setText("Face"); QVERIFY(!list->item(0)->isHidden());
+        QCOMPARE(dialog.Result().state.materials.first().id, QString("Face"));
+        QVERIFY(!dialog.SetMeshDisplayNames({{"Face", QString(QChar(0))}}, &error));
+        QVERIFY(list->item(0)->text().contains(QStringLiteral("脸部")));
+    }
     void recoveredDialogClosesAndCanBeOpenedAgain()
     {
         QWidget owner; QPointer<QDialog> current; bool active = false, blocked = true; int releases = 0, reports = 0;

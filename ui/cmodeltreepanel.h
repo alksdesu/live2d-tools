@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QModelIndex>
 #include <QStringList>
+#include "live2dstruct/cmodeldisplaynames.h"
 
 class CCidJson;
 class QTabWidget;
@@ -23,6 +24,8 @@ public:
     bool BuildTreeBytes(const QByteArray& bytes, CCidJson* cid, QString* error = nullptr);
     void SetDeformerActionsEnabled(bool create, bool remove);
     void SetRenameDeformerEnabled(bool enabled);
+    void SetRenameObjectEnabled(bool enabled) { SetRenameDeformerEnabled(enabled); }
+    void ApplyDisplayNames(const live2dstruct::CModelDisplayNames::State& names);
     void ApplyDeformerDisplayNames(const QMap<QString, QString>& names);
     void SetGeometryPairActionsEnabled(bool edit, bool mirror, const QString& detail = {});
     void HighlightObjects(const QStringList& ids, const QStringList& types);
@@ -38,6 +41,7 @@ public slots:
 
 signals:
     void RenameDeformerRequested(const QString& id, const QString& type);
+    void RenameObjectRequested(const QString& id, const QString& type);
     void CreateDeformerRequested();
     void RemoveDeformerRequested();
     void EditGeometryPairsRequested();

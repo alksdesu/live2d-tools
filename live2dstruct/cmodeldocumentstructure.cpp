@@ -413,7 +413,9 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
         captureEntries(state, "parameters", m_parameterValues, ids);
         captureEntries(state, "metadata", m_parameterMetadataOverrides, ids); break;
     case CModelEdit::DeformerDisplayName:
-        captureEntries(state, "deformerNames", m_deformerDisplayNames, ids); break;
+        captureEntries(state, "deformerNames", m_displayNames.deformers, ids); break;
+    case CModelEdit::DisplayNames:
+        state.insert("displayNames", QVariant::fromValue(m_displayNames)); break;
     case CModelEdit::Opacity: captureEntries(state, "opacity", m_drawableOpacityOverrides, ids); break;
     case CModelEdit::DrawOrder: captureEntries(state, "drawOrder", m_drawableDrawOrderOverrides, ids); break;
     case CModelEdit::KeyformPositions: captureEntries(state, "positions", m_drawableKeyformPositionOverrides, ids); break;
@@ -435,6 +437,11 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
 
 bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
 {
+    if (state.contains("displayNames")) {
+        const auto names = state.value("displayNames");
+        if (names.metaType() != QMetaType::fromType<CModelDisplayNames::State>() ||
+            !SetDisplayNames(names.value<CModelDisplayNames::State>())) return false;
+    }
     if (state.contains("atlasWorkspace") || state.contains("atlasMaterials")) {
         const auto workspace = state.value("atlasWorkspace"), materials = state.value("atlasMaterials");
         if (!HasTextureWorkspace() || workspace.metaType() != QMetaType::fromType<CTextureWorkspace::State>() ||
@@ -451,7 +458,7 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         restoreEntries(state, "masks", m_drawableMaskIndexOverrides) && restoreEntries(state, "inverted", m_drawableMaskInvertedOverrides) &&
         restoreEntries(state, "parents", m_deformerParentOverrides) && restoreEntries(state, "warp", m_deformerWarpKeyformOverrides) &&
         restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides) &&
-        restoreEntries(state, "deformerNames", m_deformerDisplayNames) &&
+        restoreEntries(state, "deformerNames", m_displayNames.deformers) &&
         restoreEntries(state, "materials", m_drawableMaterialOverrides))) return false;
     if (state.contains("geometryObjectPairs")) {
         const auto value = state.value("geometryObjectPairs");
@@ -472,8 +479,10 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
     CModelDocument check = *this;
     const QString& id = edit.name;
     switch (edit.field) {
+    case CModelEdit::DisplayNames:
+        return check.SetDisplayNames(m_displayNames) && check.DisplayNames() == m_displayNames;
     case CModelEdit::DeformerDisplayName:
-        return check.SetDeformerDisplayNames(m_deformerDisplayNames) && check.DeformerDisplayName(id) == DeformerDisplayName(id);
+        return check.SetDeformerDisplayNames(m_displayNames.deformers) && check.DeformerDisplayName(id) == DeformerDisplayName(id);
     case CModelEdit::AtlasLayout:
         return ValidateAtlasEditStorage(edit);
     case CModelEdit::DrawableMaterials:
@@ -530,7 +539,9 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"columns", QVariant::fromValue(m_structure.columns)},
         {"counts", QVariant::fromValue(m_structure.counts)}, {"parameters", QVariant::fromValue(m_parameterValues)},
         {"parameterMetadata", QVariant::fromValue(m_parameterMetadataOverrides)}, {"visibility", QVariant::fromValue(VisibilityState())},
-        {"deformerDisplayNames", QVariant::fromValue(m_deformerDisplayNames)},
+        {"deformerDisplayNames", QVariant::fromValue(m_displayNames.deformers)},
+        {"partDisplayNames", QVariant::fromValue(m_displayNames.parts)},
+        {"artMeshDisplayNames", QVariant::fromValue(m_displayNames.artMeshes)},
         {"parameterOrganization", QVariant::fromValue(m_parameterOrganization)},
         {"geometryObjectPairs", QVariant::fromValue(m_geometryObjectPairs)},
         {"textureWorkspace", QVariant::fromValue(m_textureWorkspace)},
@@ -761,10 +772,14 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     next.m_textureWorkspaceFingerprint = m_textureWorkspaceFingerprint;
     next.m_artwork = m_artwork;
     next.m_artworkFingerprint = m_artworkFingerprint;
-    CDeformerDisplayNames::State names;
-    for (const auto& node : next.m_deformers)
-        if (m_deformerDisplayNames.contains(node.id)) names.insert(node.id, m_deformerDisplayNames.value(node.id));
-    if (!next.SetDeformerDisplayNames(names, error)) return false;
+    CModelDisplayNames::State names;
+    const auto retain = [](const auto& objects, const auto& before, auto& after) {
+        for (const auto& object : objects) if (before.contains(object.id)) after.insert(object.id, before.value(object.id));
+    };
+    retain(next.m_parts, m_displayNames.parts, names.parts);
+    retain(next.m_drawables, m_displayNames.artMeshes, names.artMeshes);
+    retain(next.m_deformers, m_displayNames.deformers, names.deformers);
+    if (!next.SetDisplayNames(names, error)) return false;
     QStringList beforeIds, afterIds;
     for (const auto& parameter : m_parameters) beforeIds.append(parameter.id);
     for (const auto& parameter : next.m_parameters) afterIds.append(parameter.id);
@@ -850,14 +865,15 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
         return fail(error, QStringLiteral("参数结构状态来源或字段不匹配"));
     QHash<QString, float> parameters;
     QSet<QString> locks;
-    CDeformerDisplayNames::State names;
+    CModelDisplayNames::State names;
     if (!read(state, "meshStructure", session.meshStructure) ||
         !read(state, "deformerStructure", session.deformerStructure) ||
         !read(state, "materialStructure", session.materialStructure) || !read(state, "materials", session.drawableMaterials) ||
         !read(state, "sourceDeformerIds", session.sourceDeformerIds) ||
         !read(state, "columns", session.structure.columns) || !read(state, "counts", session.structure.counts) ||
         !read(state, "parameters", parameters) || !read(state, "parameterMetadata", session.parameterMetadata) ||
-        !read(state, "deformerDisplayNames", names) ||
+        !read(state, "deformerDisplayNames", names.deformers) ||
+        !read(state, "partDisplayNames", names.parts) || !read(state, "artMeshDisplayNames", names.artMeshes) ||
         !read(state, "parameterOrganization", session.parameterOrganization) ||
         !read(state, "geometryObjectPairs", session.geometryObjectPairs) ||
         !read(state, "visibility", session.visibility) || !read(state, "locked", locks) ||
@@ -868,7 +884,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
         !read(state, "inverted", session.drawableMaskInverted))
         return fail(error, QStringLiteral("参数结构状态类型无效"));
     session.parameters = ordered(parameters);
-    session.deformerDisplayNames = std::move(names);
+    session.objectDisplayNames = std::move(names);
     for (const auto& lock : locks) session.locked.insert(lock, true);
     session.sourceDigest = m_sourceDigest;
     session.sourceMoc = m_sourcePath;
@@ -886,7 +902,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
-    session.version = session.HasMaskMultiplicityOverrides() ? 14 : 13;
+    session.version = 15;
     return true;
 }
 
@@ -898,6 +914,8 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
+        if (edit.field != CModelEdit::DeformerStructure && candidate.m_displayNames != m_displayNames)
+            return fail(error, QStringLiteral("参数或网格结构编辑不能附带对象名称修改"));
         if (edit.field == CModelEdit::DeformerStructure) {
             if (!ValidateDeformerTransition(candidate, edit, forward, error)) return false;
         } else if (!SameDeformerDirectory(candidate, error)) return false;
@@ -1089,6 +1107,8 @@ bool CModelDocument::ValidateDeformerTransition(const CModelDocument& candidate,
 bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit,
                                            bool forward, QString* error) const
 {
+    if (candidate.m_displayNames != m_displayNames)
+        return fail(error, QStringLiteral("网格结构编辑不能附带对象名称修改"));
     if (!edit.meshRequest || edit.meshRemaps.isEmpty() || !(forward ? candidate.m_hasMeshStructure : m_hasMeshStructure) ||
         m_parameters.size() != candidate.m_parameters.size() || m_parameterValues != candidate.m_parameterValues ||
         VisibilityState() != candidate.VisibilityState() || m_lockedKeys != candidate.m_lockedKeys ||

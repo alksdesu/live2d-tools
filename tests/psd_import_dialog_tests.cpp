@@ -123,6 +123,21 @@ class PsdImportDialogTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void meshDisplayNamesPreserveIdentityAndDoNotConfirmSourceNames()
+    {
+        auto source = context(); source.meshDisplayNames = {{"A", QStringLiteral("<b>眉毛</b>")}, {"B", QStringLiteral("眼睛")}};
+        Dialog dialog(source); QVERIFY(settled(dialog));
+        auto* view = control<QListView>(dialog, "psdMeshes");
+        QVERIFY(view); auto* model = view->model(); QCOMPARE(model->index(0, 0).data(Qt::UserRole).toString(), QString("A"));
+        QVERIFY(model->index(0, 0).data().toString().contains(QStringLiteral("<b>眉毛</b> · A")));
+        QVERIFY(model->index(0, 0).data(Qt::ToolTipRole).toString().contains("&lt;b&gt;"));
+        auto* search = control<QLineEdit>(dialog, "psdMeshSearch"); search->setText(QStringLiteral("眉毛"));
+        QCOMPARE(model->rowCount(), 1); QCOMPARE(model->index(0, 0).data(Qt::UserRole).toString(), QString("A"));
+        search->setText("A"); QCOMPARE(model->rowCount(), 1); QCOMPARE(model->index(0, 0).data(Qt::UserRole).toString(), QString("A"));
+        search->setText(QStringLiteral("眼睛")); QCOMPARE(model->rowCount(), 1); QCOMPARE(model->index(0, 0).data(Qt::UserRole).toString(), QString("B"));
+        for (const auto& decision : dialog.DraftRequest().decisions) QVERIFY(!decision.confirmed);
+        QCOMPARE(dialog.DraftRequest().incoming.revision.layers.first().name, source.incoming.revision.layers.first().name);
+    }
     void initialReadOnlyNameCandidateNeedsConfirmation()
     {
         Dialog d(context()); int previews = 0; connectHandlers(d, &previews); QVERIFY(settled(d)); QVERIFY2(d.IsValid(), qPrintable(d.Error()));

@@ -53,7 +53,7 @@ bool CModelSaveFingerprint::Capture(const CModelDocument& document, QByteArray& 
            << sourceDeformers << QJsonDocument(organization).toJson(QJsonDocument::Compact)
            << QJsonDocument(pairs).toJson(QJsonDocument::Compact);
     stream << document.TextureWorkspaceFingerprint() << document.ArtworkFingerprint();
-    stream << document.DeformerDisplayNames();
+    stream << document.DisplayNames().parts << document.DisplayNames().artMeshes << document.DisplayNames().deformers;
     if (stream.status() != QDataStream::Ok) {
         if (error) *error = QStringLiteral("无法计算模型保存状态");
         return false;

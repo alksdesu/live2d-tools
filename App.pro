@@ -72,7 +72,7 @@ SOURCES += \
     opengl/cmeshbounds.cpp \
     opengl/cuvgeometry.cpp \
     live2dstruct/cmodeldocument.cpp \
-    live2dstruct/cdeformerdisplaynames.cpp \
+    live2dstruct/cdeformerdisplaynames.cpp live2dstruct/cmodeldisplaynames.cpp live2dstruct/cdisplaynamemetadata.cpp live2dstruct/cmodelexportsnapshot.cpp \
     live2dstruct/cmodeldocumentnames.cpp \
     live2dstruct/cmodeldocumentmasks.cpp \
     live2dstruct/cwarpgridresampler.cpp \
@@ -373,7 +373,7 @@ HEADERS += \
     live2dstruct/cmodeldocument.h \
     live2dstruct/cmodeldiagnostic.h \
     live2dstruct/cmaskeditpolicy.h \
-    live2dstruct/cdeformerdisplaynames.h \
+    live2dstruct/cdeformerdisplaynames.h live2dstruct/cmodeldisplaynames.h live2dstruct/cdisplaynamemetadata.h live2dstruct/cmodelexportsnapshot.h \
     live2dstruct/cwarpgridresampler.h \
     live2dstruct/cmocgeometrypool.h \
     live2dstruct/ckeyformbindinggrid.h \
@@ -765,8 +765,8 @@ SOURCES += psd/cpsdoriginal.cpp live2dstruct/cartworkpsdrecovery.cpp std/cexport
 HEADERS += psd/cpsddirectory.h psd/cpsdoriginal.h live2dstruct/cartworkpsdrecovery.h std/cexportsourceinfo.h
 SOURCES += psd/cpsdsourcewriter.cpp ui/cpsdrecoverydialog.cpp ui/mainwindowpsdrecovery.cpp
 HEADERS += psd/cpsdsourcedocument.h psd/cpsdsourcewriter.h ui/cpsdrecoverydialog.h
-SOURCES += cmo3/ccmo3artworkreader.cpp
-HEADERS += cmo3/ccmo3artworkreader.h
+SOURCES += cmo3/ccmo3artworkreader.cpp cmo3/ccmo3namereader.cpp
+HEADERS += cmo3/ccmo3artworkreader.h cmo3/ccmo3namereader.h cmo3/ccmo3xml_p.h
 SOURCES += live2dstruct/cmodelartwork.cpp live2dstruct/cmodeldocumentartwork.cpp
 HEADERS += live2dstruct/cmodelartwork.h
 SOURCES += \
@@ -801,3 +801,6 @@ HEADERS += \
     live2dstruct/cpsdlayermatcher.h \
     live2dstruct/cartworksampler.h \
     ui/cartworksourceview.h
+
+SOURCES += ui/mainwindowobjectnames.cpp ui/cobjectnamesimportdialog.cpp
+HEADERS += ui/cobjectnamesimportdialog.h

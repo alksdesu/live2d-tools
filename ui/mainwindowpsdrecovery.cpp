@@ -97,7 +97,7 @@ void MainWindow::RecoverPsdFromProject(const QString& requestedPath)
     const QPointer<MainWindow> alive(this);
     if (m_psdRecoveryDialog) { m_psdRecoveryDialog->show(); if (alive && m_psdRecoveryDialog) m_psdRecoveryDialog->raise(); return; }
     const auto unavailable = [&] { return m_psdRecoveryActive || m_batchExporting || !m_psdBatch.isNull() || m_previewExport.IsBusy() ||
-        m_activeExportControl || m_closingModel || m_artworkLoading || m_applyingSession ||
+        m_activeExportControl || m_closingModel || m_artworkLoading || m_nameImportControl || m_applyingSession ||
         m_materialEditor.IsActive() || m_atlasEditor.IsActive(); };
     if (unavailable()) return;
     if (requestedPath.size() > 32768 || requestedPath.contains(QChar::Null)) {
@@ -180,7 +180,7 @@ void MainWindow::RecoverSavedPsdSources()
     const QPointer<MainWindow> alive(this);
     if (m_psdRecoveryDialog) { m_psdRecoveryDialog->show(); if (alive && m_psdRecoveryDialog) m_psdRecoveryDialog->raise(); return; }
     if (!HasSavedPsdSources() || m_psdRecoveryActive || m_batchExporting || !m_psdBatch.isNull() || m_previewExport.IsBusy() ||
-        m_activeExportControl || m_closingModel || m_artworkLoading || m_applyingSession ||
+        m_activeExportControl || m_closingModel || m_artworkLoading || m_nameImportControl || m_applyingSession ||
         m_materialEditor.IsActive() || m_atlasEditor.IsActive()) return;
     live2dstruct::CModelArtwork::State artwork;
     QString error;

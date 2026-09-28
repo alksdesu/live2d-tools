@@ -75,7 +75,7 @@ void MainWindow::ConfigureArtworkActions()
 void MainWindow::RefreshArtworkActions()
 {
     const QPointer<MainWindow> alive(this);
-    const bool enabled = m_workspaceReady && m_runtimePanelsInitialized && !m_closingModel && !m_artworkLoading && !m_applyingSession &&
+    const bool enabled = m_workspaceReady && m_runtimePanelsInitialized && !m_closingModel && !m_artworkLoading && !m_nameImportControl && !m_applyingSession &&
         !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_materialEditor.IsActive() && !m_atlasEditor.IsActive() &&
         m_openglwindows && m_openglwindows->IsModelReady() && m_document.HasTextureWorkspace();
     bool psd = false; for (const auto& family : m_document.Artwork().families) if (family.kind == Artwork::SourceKind::Psd) { psd = true; break; }
@@ -134,6 +134,7 @@ void MainWindow::EditArtwork(const QString& familyId, const QString& path, const
     }
     const auto sourcePath = m_document.SourcePath(), modelPath = surface->GetCurrentModelJson();
     CPsdImportDialog::Context initial;
+    initial.meshDisplayNames = m_document.DisplayNames().artMeshes;
     auto& snapshot = initial.snapshot;
     snapshot.sourceDigest = m_document.SourceDigest(); snapshot.documentRevision = m_document.Revision(); snapshot.sources = m_document.TextureSources();
     if (!m_document.CaptureAtlasState(snapshot.baseline, &error)) { statusBar()->showMessage(error, 10000); return; }

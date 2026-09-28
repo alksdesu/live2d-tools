@@ -723,12 +723,13 @@ void CBlendShapePanel::ActivateItem(QTreeWidgetItem* item)
     else if (m_state->relations.ParameterIndex(id) >= 0) emit ParameterSelected(id);
 }
 
-void CBlendShapePanel::RefreshDeformerDisplayNames()
+void CBlendShapePanel::RefreshDeformerDisplayNames() { RefreshDisplayNames(); }
+
+void CBlendShapePanel::RefreshDisplayNames()
 {
     if (!m_state || !m_document || m_document->SourceDigest() != m_state->digest) return;
     for (const auto& target : m_state->relations.Targets()) {
-        if (target.type == Relations::Part || target.type == Relations::ArtMesh) continue;
-        m_state->targetNames.insert(targetType(target.type) + '|' + target.id, m_document->DeformerDisplayName(target.id));
+        m_state->targetNames.insert(targetType(target.type) + '|' + target.id, live2dstruct::CModelDisplayNames::EffectiveName(m_document->DisplayNames(), targetType(target.type), target.id));
     }
     const QPointer<CBlendShapePanel> panel(this);
     const QPointer<QTreeWidget> details(m_state->details);
@@ -736,13 +737,13 @@ void CBlendShapePanel::RefreshDeformerDisplayNames()
     for (QTreeWidgetItemIterator item(details); *item; ++item) {
         const auto type = (*item)->data(0, TypeRole).toString();
         if ((*item)->data(0, KindRole) == QLatin1String("target") &&
-            (type == QLatin1String("warp") || type == QLatin1String("rotation")))
+            (type == QLatin1String("warp") || type == QLatin1String("rotation") || type == QLatin1String("part") || type == QLatin1String("artmesh")))
             targets.append(details->indexFromItem(*item));
     }
     QSignalBlocker blocker(details);
     for (const auto& index : targets) {
         if (index.isValid()) details->model()->setData(index,
-            m_document->DeformerDisplayName(index.data(Qt::UserRole).toString()), Qt::DisplayRole);
+            m_document->DisplayName(index.data(TypeRole).toString(), index.data(Qt::UserRole).toString()), Qt::DisplayRole);
         if (!details) blocker.dismiss();
         if (!panel || !details || m_state->details != details) return;
     }

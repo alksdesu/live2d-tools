@@ -27,7 +27,7 @@ bool MainWindow::InitializeTextureEditing(QString* error)
 
 bool MainWindow::ReplaceTexture(int slot, const QByteArray& png, QString* error)
 {
-    if (m_artworkLoading) { if (error) *error = QStringLiteral("来源素材正在读取，请先完成或取消"); return false; }
+    if (m_artworkLoading || m_nameImportControl) { if (error) *error = QStringLiteral("来源素材正在读取，请先完成或取消"); return false; }
     if (!FinishParameterValueEditing(error) || !m_openglwindows || !m_openglwindows->FinishMeshDrag(false, error)) return false;
     live2dstruct::CModelAtlasState state;
     if (!m_document.CaptureAtlasState(state, error)) return false;
@@ -61,7 +61,7 @@ void MainWindow::RefreshTextureEditing(bool changed)
     if (m_texturePanel) {
         QString error;
         const bool available = m_runtimePanelsInitialized && !m_closingModel && !m_batchExporting && !m_psdBatch &&
-            !m_previewExport.IsBusy() && !m_artworkLoading && m_openglwindows && m_openglwindows->IsModelReady();
+            !m_previewExport.IsBusy() && !m_artworkLoading && !m_nameImportControl && m_openglwindows && m_openglwindows->IsModelReady();
         auto* manager = available ? LAppLive2DManager::GetInstance() : nullptr;
         auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
         const bool loaded = model && m_texturePanel->LoadWorkspaceSnapshot(model->GetTextureSources(), model->GetTextureWorkspace(),

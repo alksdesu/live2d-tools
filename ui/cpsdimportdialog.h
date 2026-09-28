@@ -40,6 +40,7 @@ public:
         QString familyName;
         QStringList selectedMeshIds;
         QMap<int, QImage> atlasImages;
+        QMap<QString, QString> meshDisplayNames;
     };
     using Handler = std::function<bool(const Plan&, QString*)>;
     using CancellationHandler = std::function<bool(QString*)>;

@@ -30,6 +30,8 @@ public:
     void doItemsLayout() override;
     void selectAll() override;
     void keyboardSearch(const QString& text) override;
+    void BeginDisplayNameUpdate();
+    void EndDisplayNameUpdate();
 
 protected:
     QModelIndex moveCursor(CursorAction action, Qt::KeyboardModifiers modifiers) override;
@@ -84,6 +86,8 @@ private:
     QModelIndex m_anchor, m_pressed;
     bool m_pressedCheck = false, m_pressedBranch = false;
     bool m_rebuilding = false, m_geometryUpdating = false;
+    int m_nameUpdateDepth = 0;
+    bool m_nameUpdatePending = false;
     quint64 m_generation = 0;
     mutable QHash<int, quint32> m_accessibleItems;
     QVector<QMetaObject::Connection> m_connections;

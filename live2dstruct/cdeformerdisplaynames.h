@@ -1,6 +1,8 @@
 #ifndef CDEFORMERDISPLAYNAMES_H
 #define CDEFORMERDISPLAYNAMES_H
 
+#include "cmodeldisplaynames.h"
+
 #include <QJsonObject>
 #include <QMap>
 #include <QString>
@@ -9,8 +11,8 @@ namespace live2dstruct {
 class CDeformerDisplayNames
 {
 public:
-    using State = QMap<QString, QString>;
-    static constexpr int MaximumNameLength = 1024;
+    using State = CModelDisplayNames::Map;
+    static constexpr int MaximumNameLength = CModelDisplayNames::MaximumNameLength;
     static bool ValidateName(const QString& name, QString* error = nullptr);
     static bool Validate(const State& names, QString* error = nullptr);
     static bool Normalize(const State& names, State& result, QString* error = nullptr);

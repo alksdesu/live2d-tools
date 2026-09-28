@@ -1,5 +1,5 @@
 #include "ccidjson.h"
-#include "live2dstruct/cdeformerdisplaynames.h"
+#include "live2dstruct/cdisplaynamemetadata.h"
 #include <QJsonParseError>
 #include <QCryptographicHash>
 #include <QFileInfo>
@@ -109,18 +109,17 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
         groupsToParameters[groupRows.value(groupId)].vetParam.append(id);
     }
 
-    const auto namesExtension = qt.value(QStringLiteral("Live2DToolsDeformerNames"));
-    const bool hasNamesExtension = !namesExtension.isUndefined();
-    if (hasNamesExtension) {
-        const auto names = namesExtension.toObject();
-        if (!namesExtension.isObject() || names.value(QStringLiteral("Version")) != QJsonValue(1) ||
-            !names.value(QStringLiteral("Names")).isObject()) {
-            if (error) *error = QStringLiteral("CDI 变形器名称扩展格式或版本无效");
-            return false;
-        }
-        if (!live2dstruct::CDeformerDisplayNames::FromJson(names.value(QStringLiteral("Names")).toObject(), deformersIdToName, error)) return false;
-    }
-    if(!hasNamesExtension && qt.contains("Deformers")){
+    live2dstruct::CDisplayNameMetadata::Snapshot metadata;
+    if (!live2dstruct::CDisplayNameMetadata::Read(qt, metadata, error)) return false;
+    live2dstruct::CModelDisplayNames::State displayNames;
+    const bool hasDisplayNamesExtension = metadata.names.has_value();
+    const bool hasNamesExtension = metadata.deformerNames.has_value();
+    if (metadata.names) {
+        displayNames = *metadata.names;
+        partsIdToName = displayNames.parts;
+        deformersIdToName = displayNames.deformers;
+    } else if (metadata.deformerNames) deformersIdToName = *metadata.deformerNames;
+    if(!hasNamesExtension && !hasDisplayNamesExtension && qt.contains("Deformers")){
         QJsonArray deformers;
         if (!readArray(QStringLiteral("Deformers"), &deformers)) { return false; }
         for(int i = 0; i < deformers.size(); i++){
@@ -153,7 +152,13 @@ bool CCidJson::Parse(const QString& fileName, QString* error)
     m_GroupIdToName.swap(groupIdToName);
     m_ParametersIdToName.swap(parametersIdToName);
     m_DeformersIdToName.swap(deformersIdToName);
-    m_hasDeformerNamesExtension = hasNamesExtension;
+    if (!hasDisplayNamesExtension) {
+        displayNames.parts = m_PartsIdToName;
+        displayNames.deformers = m_DeformersIdToName;
+    }
+    m_displayNames = std::move(displayNames);
+    m_hasDisplayNamesExtension = hasDisplayNamesExtension;
+    m_hasDeformerNamesExtension = hasNamesExtension || hasDisplayNamesExtension;
     m_VetGroupToParam.swap(groupsToParameters);
     m_CombinedParameters.swap(combinedParameters);
     m_CombinedParamSet.swap(combinedParameterSet);

@@ -12,6 +12,7 @@
 #include <optional>
 #include "live2dstruct/cparameterorganization.h"
 #include "live2dstruct/cgeometryobjectpairs.h"
+#include "live2dstruct/cmodeldisplaynames.h"
 
 
 class CVetGroup{
@@ -37,6 +38,8 @@ public:
     const QByteArray& SourceDigest() const { return m_sourceDigest; }
     const QMap<QString, QString>& DeformerDisplayNames() const { return m_DeformersIdToName; }
     bool HasDeformerDisplayNamesExtension() const { return m_hasDeformerNamesExtension; }
+    const live2dstruct::CModelDisplayNames::State& DisplayNames() const { return m_displayNames; }
+    bool HasDisplayNamesExtension() const { return m_hasDisplayNamesExtension; }
     const std::optional<live2dstruct::CParameterOrganization::State>& ParameterOrganization() const { return m_parameterOrganization; }
     const std::optional<live2dstruct::CGeometryObjectPairs::State>& GeometryObjectPairs() const { return m_geometryObjectPairs; }
 
@@ -81,6 +84,8 @@ private:
     QMap<QString,QString> m_ParametersIdToName;
     QMap<QString,QString> m_DeformersIdToName;
     bool m_hasDeformerNamesExtension = false;
+    live2dstruct::CModelDisplayNames::State m_displayNames;
+    bool m_hasDisplayNamesExtension = false;
     QVector<CVetGroup> m_VetGroupToParam;
     QVector<QVector<QString>> m_CombinedParameters;
     QSet<QString> m_CombinedParamSet;

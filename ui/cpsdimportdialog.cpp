@@ -1,4 +1,5 @@
 #include "cpsdimportdialog.h"
+#include "live2dstruct/cmodeldisplaynames.h"
 #include "cartworksourceview.h"
 #include "theme.h"
 #include "live2dstruct/cpsdlayermatcher.h"
@@ -198,7 +199,7 @@ class CPsdImportMeshModel : public QAbstractListModel
 {
 public:
     explicit CPsdImportMeshModel(QObject* parent) : QAbstractListModel(parent) {}
-    void SetMeshes(const QVector<CAtlasRepackPlanner::Mesh>& meshes) { beginResetModel(); m_meshes = meshes; endResetModel(); }
+    void SetMeshes(const QVector<CAtlasRepackPlanner::Mesh>& meshes, const QMap<QString, QString>& names) { beginResetModel(); m_meshes = meshes; m_names = names; endResetModel(); }
     void SetDecisions(const Planner::Request& request)
     { m_decisions.clear(); for (const auto& decision : request.decisions) m_decisions.insert(decision.meshId, decision); if (!m_meshes.isEmpty()) emit dataChanged(index(0), index(m_meshes.size() - 1)); }
     int rowCount(const QModelIndex& = {}) const override { return m_meshes.size(); }
@@ -206,14 +207,18 @@ public:
     {
         if (!index.isValid() || index.row() >= m_meshes.size()) return {};
         const auto& mesh = m_meshes[index.row()];
+        const auto name = m_names.value(mesh.material.id, mesh.material.id);
+        const auto label = name == mesh.material.id ? mesh.material.id : name + QStringLiteral(" · ") + mesh.material.id;
         if (role == Qt::UserRole) return mesh.material.id;
-        if (role == Qt::DisplayRole) return mesh.material.id + QStringLiteral(" · ") + actionName(m_decisions.value(mesh.material.id).action) + (mesh.editable ? QString() : QStringLiteral(" · 锁定"));
-        if (role == Qt::ToolTipRole) return mesh.material.id + (mesh.reason.isEmpty() ? QString() : QLatin1Char('\n') + mesh.reason);
+        if (role == Qt::UserRole + 1) return label;
+        if (role == Qt::DisplayRole) return label + QStringLiteral(" · ") + actionName(m_decisions.value(mesh.material.id).action) + (mesh.editable ? QString() : QStringLiteral(" · 锁定"));
+        if (role == Qt::ToolTipRole) return QStringLiteral("<qt>%1</qt>").arg((label + (mesh.reason.isEmpty() ? QString() : QLatin1Char('\n') + mesh.reason)).toHtmlEscaped());
         return {};
     }
     QModelIndex Find(const QString& id) const { for (int row = 0; row < m_meshes.size(); ++row) if (m_meshes[row].material.id == id) return index(row); return {}; }
 private:
     QVector<CAtlasRepackPlanner::Mesh> m_meshes;
+    QMap<QString, QString> m_names;
     QHash<QString, Planner::Decision> m_decisions;
 };
 
@@ -279,9 +284,9 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     m_sourceOpacity = slider(QStringLiteral("源图层预览"), "psdSourceOpacity", 100); m_referenceOpacity = slider(QStringLiteral("图集参照预览"), "psdReferenceOpacity", 50); middle->addLayout(opacity);
     auto* scroll = m_inspector = new QScrollArea(m_splitter); scroll->setObjectName(QStringLiteral("psdControlsScroll")); scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame); scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     m_right = new QWidget(scroll); auto* right = new QVBoxLayout(m_right); right->setSpacing(gap);
-    m_meshSearch = new QLineEdit(m_right); m_meshSearch->setObjectName(QStringLiteral("psdMeshSearch")); m_meshSearch->setPlaceholderText(QStringLiteral("搜索模型对象 ID")); right->addWidget(m_meshSearch);
+    m_meshSearch = new QLineEdit(m_right); m_meshSearch->setObjectName(QStringLiteral("psdMeshSearch")); m_meshSearch->setPlaceholderText(QStringLiteral("搜索模型对象名称或 ID")); right->addWidget(m_meshSearch);
     m_meshes = new QListView(m_right); m_meshes->setObjectName(QStringLiteral("psdMeshes")); m_meshes->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    m_meshModel = new CPsdImportMeshModel(this); m_meshProxy = new QSortFilterProxyModel(this); m_meshProxy->setSourceModel(m_meshModel); m_meshProxy->setFilterRole(Qt::UserRole); m_meshProxy->setFilterCaseSensitivity(Qt::CaseInsensitive); m_meshes->setModel(m_meshProxy);
+    m_meshModel = new CPsdImportMeshModel(this); m_meshProxy = new QSortFilterProxyModel(this); m_meshProxy->setSourceModel(m_meshModel); m_meshProxy->setFilterRole(Qt::UserRole + 1); m_meshProxy->setFilterCaseSensitivity(Qt::CaseInsensitive); m_meshes->setModel(m_meshProxy);
     m_meshes->setMinimumHeight(fontMetrics().height() * 6); right->addWidget(m_meshes);
     m_selectionInfo = new QLabel(m_right); m_selectionInfo->setObjectName(QStringLiteral("psdSelectionInfo")); m_selectionInfo->setWordWrap(true); m_selectionInfo->setTextFormat(Qt::PlainText); right->addWidget(m_selectionInfo);
     auto* decisions = new QFormLayout; decisions->setRowWrapPolicy(QFormLayout::WrapLongRows); decisions->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -346,6 +351,10 @@ CPsdImportDialog::CPsdImportDialog(const Context& context, QWidget* parent) : QD
     auto* undo = new QShortcut(QKeySequence::Undo, this); connect(undo, &QShortcut::activated, this, &CPsdImportDialog::Undo); auto* redo = new QShortcut(QKeySequence::Redo, this); connect(redo, &QShortcut::activated, this, &CPsdImportDialog::Redo);
     resize(fontMetrics().averageCharWidth() * 180, fontMetrics().height() * 46);
     m_splitter->setSizes({fontMetrics().averageCharWidth() * 35, fontMetrics().averageCharWidth() * 90, fontMetrics().averageCharWidth() * 52});
+    QString namesError;
+    if (!live2dstruct::CModelDisplayNames::NormalizeMap(context.meshDisplayNames, m_context.meshDisplayNames, &namesError)) {
+        m_valid = false; ShowError(namesError); Refresh(); return;
+    }
     Initialize();
 }
 
@@ -428,7 +437,7 @@ void CPsdImportDialog::Initialize()
         for (const auto slot : m_context.snapshot.baseline.workspace.atlases.keys()) m_context.atlasImages.insert(slot, job->plan.images.value(slot));
         m_plan = job->plan; m_acceptedRequest = sourceOnly(m_request); m_history = {{m_acceptedRequest, m_plan, m_documentAlignmentConfirmed}};
         m_suggestedLayers = job->suggested; m_matchReasons = job->reasons; m_knownMatches = job->known;
-        m_layerModel->SetLayers(m_request.incoming.revision.layers); m_meshModel->SetMeshes(m_context.snapshot.meshes); m_meshModel->SetDecisions(m_request);
+        m_layerModel->SetLayers(m_request.incoming.revision.layers); m_meshModel->SetMeshes(m_context.snapshot.meshes, m_context.meshDisplayNames); m_meshModel->SetDecisions(m_request);
         m_ready = true;
         const QSignalBlocker rows(m_meshes->selectionModel()); for (const auto& id : m_selectedMeshes) m_meshes->selectionModel()->select(m_meshProxy->mapFromSource(m_meshModel->Find(id)), QItemSelectionModel::Select | QItemSelectionModel::Rows);
         if (!m_selectedMeshes.isEmpty()) m_layerId = m_suggestedLayers.value(SelectedMeshes().first());

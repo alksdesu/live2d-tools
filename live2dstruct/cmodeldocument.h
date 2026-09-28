@@ -22,6 +22,7 @@
 #include "cmodelatlasedit.h"
 #include "cgeometryobjectpairs.h"
 #include "cdeformerdisplaynames.h"
+#include "cmodeldisplaynames.h"
 #include "cmodeldiagnostic.h"
 
 namespace live2dstruct {
@@ -185,7 +186,7 @@ private:
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName, DisplayNames };
     QString name;
     QString type;
     Field field = Visibility;
@@ -258,8 +259,15 @@ public:
     bool HasMeshStructure() const { return m_hasMeshStructure; }
     bool HasDeformerStructure() const { return m_hasDeformerStructure; }
     const QSet<QString>& SourceDeformerIds() const { return m_sourceDeformerIds; }
+    const CModelDisplayNames::State& DisplayNames() const { return m_displayNames; }
+    QString DisplayName(const QString& type, const QString& id) const;
+    bool SetDisplayNames(const CModelDisplayNames::State& names, QString* error = nullptr);
+    bool CanEditDisplayName(const QString& type, const QString& id, QString* error = nullptr) const;
+    bool MakeDisplayNameEdit(const QString& type, const QString& id, const QString& name,
+                             CModelEdit& edit, QString* error = nullptr) const;
+    bool MakeDisplayNamesEdit(const CModelDisplayNames::State& names, CModelEdit& edit, QString* error = nullptr) const;
     QString DeformerDisplayName(const QString& id) const;
-    const CDeformerDisplayNames::State& DeformerDisplayNames() const { return m_deformerDisplayNames; }
+    const CDeformerDisplayNames::State& DeformerDisplayNames() const { return m_displayNames.deformers; }
     bool SetDeformerDisplayNames(const CDeformerDisplayNames::State& names, QString* error = nullptr);
     bool MakeDeformerDisplayNameEdit(const QString& id, const QString& name, CModelEdit& edit,
                                      QString* error = nullptr) const;
@@ -399,6 +407,7 @@ private:
     bool ApplyParameterMetadataState(const QString& id, const QVariantMap& state);
     bool CanEditDeformerDisplayName(const QString& id, QString* error = nullptr) const;
     bool ApplyDeformerDisplayNameEdit(const CModelEdit& edit, bool forward);
+    bool ApplyDisplayNamesEdit(const CModelEdit& edit, bool forward);
     struct MaskSourceSnapshot;
     void CaptureMaskSource(const CSectionTable& table);
     bool MaskReferencesAllowed(const QString& id, const QVector<int>& indices, bool constrainToWorking) const;
@@ -437,7 +446,7 @@ private:
     QHash<QString, int> m_drawableDrawOrderOverrides;
     QHash<QString, float> m_parameterValues;
     QHash<QString, CModelParameterMetadata> m_parameterMetadataOverrides;
-    CDeformerDisplayNames::State m_deformerDisplayNames;
+    CModelDisplayNames::State m_displayNames;
     CParameterOrganization::State m_parameterOrganization;
     CGeometryObjectPairs::State m_geometryObjectPairs;
     QHash<QString, QVector<QVector<float>>> m_drawableKeyformPositionOverrides;

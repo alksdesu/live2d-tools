@@ -234,6 +234,41 @@ private slots:
         panel.SetLockedState({type + '|' + id}); QVERIFY(!button->isEnabled());
         panel.ClearSelection(); QVERIFY(!button->isEnabled());
     }
+    void meshAndPartNamesFollowDocumentWithoutChangingSelection_data()
+    {
+        QTest::addColumn<QString>("type");
+        QTest::newRow("artmesh") << QString("artmesh"); QTest::newRow("part") << QString("part");
+    }
+    void meshAndPartNamesFollowDocumentWithoutChangingSelection()
+    {
+        QFETCH(QString, type); live2dstruct::CModelDocument document; QString error;
+        QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error));
+        const auto mesh = std::max_element(document.Drawables().cbegin(), document.Drawables().cend(), [](const auto& a, const auto& b) { return a.vertexCount < b.vertexCount; })->id;
+        const auto id = type == "part" ? document.Parts().first().id : mesh;
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type); panel.SetRenameObjectEnabled(true); panel.resize(560, 760); panel.show(); QTest::qWait(20);
+        auto* label = panel.findChild<QLabel*>("inspectorDeformerName");
+        auto* button = panel.findChild<QPushButton*>("inspectorRenameDeformer");
+        QCOMPARE(label->text(), id); QVERIFY(button->isEnabled());
+        QSignalSpy rename(&panel, &CInspectorPanel::RenameObjectRequested); button->click();
+        QCOMPARE(rename.count(), 1); QCOMPARE(rename.first().at(0).toString(), id); QCOMPARE(rename.first().at(1).toString(), type);
+        auto* table = panel.findChild<QTableWidget*>("keyformVertexTable");
+        auto* item = type == "artmesh" ? table->item(table->rowCount() - 1, 1) : nullptr;
+        QPointer<QLineEdit> draft;
+        if (item) { table->setCurrentItem(item); table->scrollToBottom(); table->editItem(item); draft = table->findChild<QLineEdit*>(); QVERIFY(draft); draft->setText("0.123456"); }
+        const int scroll = table->verticalScrollBar()->value();
+        if (item) QVERIFY(scroll > 0);
+        const auto source = document.SourceBytes(); live2dstruct::CModelEdit edit;
+        auto names = document.DisplayNames(); names.parts.insert(document.Parts().first().id, QStringLiteral("已有名称 <文字> 🌙")); names.artMeshes.insert(mesh, QStringLiteral("已有名称 <文字> 🌙"));
+        QVERIFY(document.MakeDisplayNamesEdit(names, edit, &error));
+        QVERIFY(document.ExecuteEdit(edit)); panel.RefreshSelection(); QCOMPARE(label->text(), QStringLiteral("已有名称 <文字> 🌙"));
+        QCOMPARE(panel.GetSelectionId(), id); QCOMPARE(document.SourceBytes(), source);
+        if (item) { QCOMPARE(table->item(table->rowCount() - 1, 1), item); QCOMPARE(table->verticalScrollBar()->value(), scroll); QVERIFY(draft); QCOMPARE(draft->text(), QString("0.123456")); }
+        QVERIFY(document.UndoEdit()); panel.RefreshSelection(); QCOMPARE(label->text(), id);
+        QCOMPARE(document.DisplayName("artmesh", mesh), mesh); QCOMPARE(document.DisplayName("part", document.Parts().first().id), document.Parts().first().id);
+        QVERIFY(document.RedoEdit()); panel.RefreshSelection(); QCOMPARE(label->text(), QStringLiteral("已有名称 <文字> 🌙"));
+        if (draft) QTest::keyClick(draft, Qt::Key_Escape);
+        panel.SetLockedState({type + '|' + id}); QVERIFY(!button->isEnabled());
+    }
     void metricMemoReadsCurrentRolesAndCompleteOptions()
     {
         live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));

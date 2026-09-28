@@ -1,6 +1,7 @@
 #include "cmo3/ccaffarchive.h"
 #include "cmo3/ccmo3builder.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/cdisplaynamemetadata.h"
 #include <QtTest>
 #include <QDir>
 #include <QJsonArray>
@@ -167,6 +168,44 @@ class Cmo3DeformerTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void ambiguousDisplayNameTargetsAreRejected_data()
+    {
+        QTest::addColumn<QString>("kind");
+        for (const char* kind : {"part", "artmesh", "deformer", "legacy-deformer", "legacy-extension", "standard-part", "standard-deformer"})
+            QTest::newRow(kind) << QString::fromLatin1(kind);
+    }
+    void ambiguousDisplayNameTargetsAreRejected()
+    {
+        QFETCH(QString, kind);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        live2dstruct::CSectionTable table(reader); QVERIFY(table.IsValid());
+        const auto& offsets = *table.sectionOffsetTable;
+        const bool part = kind == "part" || kind == "standard-part";
+        const QString id = part ? table.parts.first()->ids : kind == "artmesh" ? table.art_meshes.first()->ids : table.deformers.first()->ids;
+        const int offset = part ? offsets.parts->ids : kind == "artmesh" ? offsets.art_meshes->ids : offsets.deformers->ids;
+        auto bytes = reader.m_byte; bytes.replace(offset + 64, 64, id.toUtf8().leftJustified(64, '\0'));
+        QTemporaryDir temporary; QVERIFY(visibilityInputs(QDir(temporary.path()), bytes));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = temporary.filePath("fixture.moc3"); options.mocBytes = bytes;
+        options.outPath = temporary.filePath("names.cmo3");
+        if (kind.startsWith("standard-")) {
+            options.cdiPath = temporary.filePath("names.cdi3.json");
+            QVERIFY(saveBytes(options.cdiPath, QJsonDocument(QJsonObject{{part ? "Parts" : "Deformers",
+                QJsonArray{QJsonObject{{"Id", id}, {"Name", "named"}}}}}).toJson()));
+        } else if (kind == "legacy-extension") {
+            options.cdiPath = temporary.filePath("names.cdi3.json");
+            QVERIFY(saveBytes(options.cdiPath, QJsonDocument(QJsonObject{{"Live2DToolsDeformerNames",
+                QJsonObject{{"Version", 1}, {"Names", QJsonObject{{id, "named"}}}}}}).toJson()));
+        } else if (kind == "legacy-deformer") options.deformerDisplayNames = QMap<QString, QString>{{id, "named"}};
+        else {
+            options.displayNames.emplace();
+            auto& names = kind == "part" ? options.displayNames->parts : kind == "artmesh" ? options.displayNames->artMeshes : options.displayNames->deformers;
+            names.insert(id, "named");
+        }
+        QFile output(options.outPath); QVERIFY(output.open(QIODevice::WriteOnly)); output.write("unchanged"); output.close();
+        QString error; QVERIFY(!cmo3::CCmo3Builder::Build(options, &error)); QVERIFY(!error.isEmpty());
+        QVERIFY(output.open(QIODevice::ReadOnly)); QCOMPARE(output.readAll(), QByteArray("unchanged"));
+    }
     void displayNamesStayInTheirOwnObjectDirectory_data()
     {
         QTest::addColumn<int>("deformerType");
@@ -313,8 +352,16 @@ private slots:
         QCOMPARE(file.readAll(), original);
     }
 
+    void namesOnlyChangeLocalNameAndKeepTheCompleteObjectGraph_data()
+    {
+        QTest::addColumn<bool>("full");
+        QTest::newRow("legacy-deformers") << false;
+        QTest::newRow("all-objects") << true;
+    }
+
     void namesOnlyChangeLocalNameAndKeepTheCompleteObjectGraph()
     {
+        QFETCH(bool, full);
         live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
         live2dstruct::CSectionTable table(reader);
         QVERIFY(table.IsValid());
@@ -326,9 +373,21 @@ private slots:
         QVector<ExportXml> results;
         QString error;
         for (bool named : {false, true}) {
-            options.deformerDisplayNames = QMap<QString, QString>{};
-            if (named) for (const auto* deformer : table.deformers)
-                options.deformerDisplayNames->insert(deformer->ids, QStringLiteral("新名称 ") + deformer->ids);
+            if (full) {
+                options.displayNames.emplace();
+                if (named) {
+                    const auto append = [](const auto& objects, auto& names) {
+                        for (const auto* object : objects) names.insert(object->ids, QStringLiteral("新名称 ") + object->ids);
+                    };
+                    append(table.parts, options.displayNames->parts);
+                    append(table.art_meshes, options.displayNames->artMeshes);
+                    append(table.deformers, options.displayNames->deformers);
+                }
+            } else {
+                options.deformerDisplayNames = QMap<QString, QString>{};
+                if (named) for (const auto* deformer : table.deformers)
+                    options.deformerDisplayNames->insert(deformer->ids, QStringLiteral("新名称 ") + deformer->ids);
+            }
             QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
             cmo3::CCaffArchive archive;
             QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
@@ -353,10 +412,79 @@ private slots:
                 ++changed;
             }
         }
-        QCOMPARE(changed, table.deformers.size());
+        QCOMPARE(changed, table.deformers.size() + (full ? table.parts.size() + table.art_meshes.size() : 0));
         QFile source(options.mocPath);
         QVERIFY(source.open(QIODevice::ReadOnly));
         QCOMPARE(source.readAll(), reader.m_byte);
+    }
+
+    void fullNamesRejectUnknownIdentitiesBeforeNormalizing()
+    {
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        QTemporaryDir temporary; QVERIFY(visibilityInputs(QDir(temporary.path()), reader.m_byte));
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = temporary.filePath("fixture.moc3"); options.outPath = temporary.filePath("names.cmo3");
+        QVERIFY(saveBytes(options.outPath, "original output"));
+        for (int type = 0; type < 3; ++type) {
+            options.displayNames.emplace();
+            auto& names = type == 0 ? options.displayNames->parts : type == 1 ? options.displayNames->artMeshes : options.displayNames->deformers;
+            names.insert("missing", "missing"); QString error;
+            QVERIFY(!cmo3::CCmo3Builder::Build(options, &error)); QVERIFY(!error.isEmpty());
+            QFile file(options.outPath); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("original output"));
+        }
+    }
+
+    void fullNameMetadataHasExplicitPrecedence_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("metadata") << 0;
+        QTest::newRow("explicit-empty") << 1;
+        QTest::newRow("legacy-deformer-override") << 2;
+        QTest::newRow("conflicting-extensions") << 3;
+    }
+
+    void fullNameMetadataHasExplicitPrecedence()
+    {
+        QFETCH(int, mode);
+        live2dstruct::CReader reader(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        live2dstruct::CSectionTable table(reader); QVERIFY(table.IsValid());
+        QTemporaryDir temporary; QVERIFY(visibilityInputs(QDir(temporary.path()), reader.m_byte));
+        live2dstruct::CModelDisplayNames::State names;
+        const auto mesh = table.art_meshes.first()->ids, part = table.parts.first()->ids, deformer = table.deformers.first()->ids;
+        names.parts.insert(part, QStringLiteral("头部 <&>")); names.artMeshes.insert(mesh, QStringLiteral("眼睛 🌙"));
+        names.deformers.insert(deformer, QStringLiteral("变形器"));
+        QJsonObject metadata; QVERIFY(live2dstruct::CDisplayNameMetadata::Write(names, metadata));
+        if (mode == 3) metadata["Live2DToolsDeformerNames"] = QJsonObject{{"Version", 1}, {"Names", QJsonObject{}}};
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = temporary.filePath("fixture.moc3"); options.outPath = temporary.filePath("names.cmo3");
+        options.cdiPath = temporary.filePath("names.cdi3.json");
+        QVERIFY(saveBytes(options.cdiPath, QJsonDocument(metadata).toJson()));
+        if (mode == 1) options.displayNames.emplace();
+        if (mode == 2) options.deformerDisplayNames = QMap<QString, QString>{{deformer, "legacy override"}};
+        QString error;
+        if (mode == 3) {
+            QVERIFY(saveBytes(options.outPath, "retained"));
+            QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+            QFile file(options.outPath); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("retained"));
+            return;
+        }
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive; QVERIFY(archive.Load(options.outPath, &error));
+        const auto* main = archive.FindByPath("main.xml"); QVERIFY(main);
+        ExportXml xml; QVERIFY(xml.parse(main->content, &error));
+        QMap<QString, QString> actual;
+        for (int index = 0; index < xml.nodes.size(); ++index) {
+            const auto tag = xml.nodes[index].tag;
+            if ((tag != "CPartSource" && tag != "CArtMeshSource" && tag != "CWarpDeformerSource" && tag != "CRotationDeformerSource") ||
+                xml.attribute(index, "xs.id").isEmpty()) continue;
+            const int base = tag == "CPartSource" ? index : xml.field(index, "super");
+            const auto id = xml.attribute(xml.field(base, "id"), "idstr");
+            actual.insert((tag == "CPartSource" ? "part|" : tag == "CArtMeshSource" ? "artmesh|" : "deformer|") + id,
+                xml.nodes[xml.field(xml.field(base, "super"), "localName")].text);
+        }
+        QCOMPARE(actual.value("part|" + part), mode == 1 ? part : names.parts[part]);
+        QCOMPARE(actual.value("artmesh|" + mesh), mode == 1 ? mesh : names.artMeshes[mesh]);
+        QCOMPARE(actual.value("deformer|" + deformer), mode == 1 ? deformer : mode == 2 ? QString("legacy override") : names.deformers[deformer]);
     }
 
     void originalVisibilitySurvivesCaffExport_data()

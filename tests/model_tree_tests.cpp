@@ -20,10 +20,22 @@
 #include <QItemSelectionModel>
 #include <QMenu>
 #include <QTimer>
+#include <QProxyStyle>
+#include <QStyleFactory>
+#include <QScrollBar>
 #include <algorithm>
 
 namespace {
 using Visibility = QMap<QString, bool>;
+class NameLayoutStyle : public QProxyStyle {
+public:
+    NameLayoutStyle() : QProxyStyle(QStyleFactory::create("Fusion")) {}
+    int pixelMetric(PixelMetric metric, const QStyleOption* option = nullptr, const QWidget* widget = nullptr) const override {
+        if (metric == PM_TreeViewIndentation) ++treeLayouts;
+        return QProxyStyle::pixelMetric(metric, option, widget);
+    }
+    mutable int treeLayouts = 0;
+};
 CModelHierarchyModel* hierarchy(CModelTreePanel& panel, const char* name = "partHierarchy")
 {
     auto* view = panel.findChild<CModelHierarchyView*>(name);
@@ -159,6 +171,35 @@ private slots:
         panel.ApplyDeformerDisplayNames({});
         QCOMPARE(a.data().toString(), node.id); QCOMPARE(b.data().toString(), node.id);
         QVERIFY(a.isValid() && b.isValid());
+    }
+
+    void batchNamesKeepTypedIdentityAndRebuildEachProjectionOnce()
+    {
+        live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CModelTreePanel panel; QVERIFY(panel.BuildTreeBytes(document.SourceBytes(), nullptr));
+        auto* first = panel.findChild<CModelHierarchyView*>("partHierarchy");
+        auto* second = panel.findChild<CModelHierarchyView*>("deformerHierarchy");
+        auto* styleA = new NameLayoutStyle; styleA->setParent(first); first->setStyle(styleA);
+        auto* styleB = new NameLayoutStyle; styleB->setParent(second); second->setStyle(styleB);
+        panel.resize(560, 400); panel.show(); first->expandToDepth(10); second->expandToDepth(10); QTest::qWait(20);
+        const auto mesh = document.Drawables().last().id; panel.HighlightObject(mesh, "artmesh");
+        const QPersistentModelIndex selected(hierarchy(panel)->IndexForObject(mesh, "artmesh"));
+        const auto expanded = first->expandedKeys(); const auto selection = first->selectionModel()->selectedIndexes();
+        const auto scroll = first->verticalScrollBar()->value();
+        QSignalSpy reset(hierarchy(panel), &QAbstractItemModel::modelReset);
+        live2dstruct::CModelDisplayNames::State names;
+        for (const auto& object : document.Parts()) names.parts.insert(object.id, QStringLiteral("部件同名"));
+        for (const auto& object : document.Drawables()) names.artMeshes.insert(object.id, QStringLiteral("网格同名"));
+        for (const auto& object : document.Deformers()) names.deformers.insert(object.id, QStringLiteral("变形器同名"));
+        styleA->treeLayouts = styleB->treeLayouts = 0; panel.ApplyDisplayNames(names);
+        QCOMPARE(styleA->treeLayouts, 1); QCOMPARE(styleB->treeLayouts, 1); QCOMPARE(reset.count(), 0);
+        QVERIFY(selected.isValid()); QCOMPARE(selected.data(Qt::UserRole).toString(), mesh); QCOMPARE(selected.data().toString(), QStringLiteral("网格同名"));
+        QCOMPARE(first->expandedKeys(), expanded); QCOMPARE(first->selectionModel()->selectedIndexes(), selection); QCOMPARE(first->verticalScrollBar()->value(), scroll);
+        const auto part = hierarchy(panel)->IndexForObject(document.Parts().first().id, "part"); QCOMPARE(part.data().toString(), QStringLiteral("部件同名"));
+        panel.SetRenameObjectEnabled(true); panel.HighlightObject(document.Parts().first().id, "part");
+        QSignalSpy renamed(&panel, &CModelTreePanel::RenameObjectRequested);
+        QVERIFY(chooseMenuAction(first, part, QStringLiteral("重命名…"))); QCOMPARE(renamed.count(), 1); QCOMPARE(renamed.first()[1].toString(), QString("part"));
+        panel.ApplyDisplayNames({}); QCOMPARE(part.data().toString(), document.Parts().first().id); QCOMPARE(selected.data().toString(), mesh);
     }
 
     void renameContextMenuUsesTypedStableSelectionAndHonorsLock()

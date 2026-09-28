@@ -116,10 +116,13 @@ private slots:
         const auto bytes = QJsonDocument(source).toJson(); QCOMPARE(file.write(bytes), bytes.size()); file.close();
         CCidJson names; QVERIFY(names.Parse(path, &error));
         QVERIFY(document.SetDeformerDisplayNames(names.DeformerDisplayNames(), &error));
+        const auto mesh = document.Drawables().first().id;
+        auto displayNames = document.DisplayNames(); displayNames.artMeshes.insert(mesh, QStringLiteral("<b>眉毛</b>"));
+        QVERIFY(document.SetDisplayNames(displayNames, &error));
         CGeometryPairsDialog dialog(document, &names, {});
         for (const auto* name : {"geometryPairFirst", "geometryPairSecond"}) {
             auto* combo = dialog.findChild<QComboBox*>(name); QVERIFY(combo);
-            for (const auto& id : {QString("DialogWarpA"), QString("DialogRotationA")}) {
+            for (const auto& id : {QString("DialogWarpA"), QString("DialogRotationA"), mesh}) {
                 const int row = combo->findData(id); QVERIFY(row >= 0);
                 QVERIFY(combo->itemText(row).startsWith(QStringLiteral("<b>眉毛</b> · ") + id));
                 QCOMPARE(combo->itemData(row).toString(), id);

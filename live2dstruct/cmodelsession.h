@@ -40,6 +40,7 @@ struct CModelSession
     QMap<QString, float> parameters;
     QHash<QString, CModelParameterMetadata> parameterMetadata;
     std::optional<CDeformerDisplayNames::State> deformerDisplayNames;
+    std::optional<CModelDisplayNames::State> objectDisplayNames;
     CParameterOrganization::State parameterOrganization;
     CGeometryObjectPairs::State geometryObjectPairs;
     QMap<QString, bool> visibility;

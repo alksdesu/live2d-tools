@@ -295,7 +295,7 @@ CGeometryPairsDialog::CGeometryPairsDialog(const live2dstruct::CModelDocument& d
     auto* form = new QFormLayout; form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow); form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     s.first = combo("geometryPairFirst"); s.second = combo("geometryPairSecond");
     const auto addObject = [&](Pairs::Type type, const QString& id) {
-        QString name = type != Pairs::Type::ArtMesh ? document.DeformerDisplayName(id) : QString();
+        QString name = live2dstruct::CModelDisplayNames::EffectiveName(document.DisplayNames(), Pairs::TypeName(type), id);
         const auto typeName = type == Pairs::Type::ArtMesh ? QStringLiteral("ArtMesh") : type == Pairs::Type::Warp ? QStringLiteral("Warp") : QStringLiteral("Rotation");
         const auto label = (name.isEmpty() || name == id ? id : name + QStringLiteral(" · ") + id) + QStringLiteral(" (%1)").arg(typeName);
         for (auto* target : {s.first, s.second}) { target->addItem(label, id); target->setItemData(target->count() - 1, int(type), Qt::UserRole + 1); }

@@ -1,5 +1,5 @@
 #include "cdeformerrenamedialog.h"
-#include "live2dstruct/cdeformerdisplaynames.h"
+#include "live2dstruct/cmodeldisplaynames.h"
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QLabel>
@@ -17,7 +17,7 @@ CDeformerRenameDialog::CDeformerRenameDialog(const QString& id, const QString& t
     : QDialog(parent)
 {
     setObjectName(QStringLiteral("deformerRenameDialog"));
-    setWindowTitle(QStringLiteral("重命名变形器"));
+    setWindowTitle(QStringLiteral("重命名对象"));
     setModal(true);
     auto* layout = new QVBoxLayout(this);
     auto* scroll = new QScrollArea(this);
@@ -40,8 +40,8 @@ CDeformerRenameDialog::CDeformerRenameDialog(const QString& id, const QString& t
     };
     m_name = new QLineEdit(currentName, content);
     m_name->setObjectName(QStringLiteral("deformerRenameName"));
-    m_name->setAccessibleName(QStringLiteral("变形器名称"));
-    m_name->setMaxLength(live2dstruct::CDeformerDisplayNames::MaximumNameLength);
+    m_name->setAccessibleName(QStringLiteral("对象显示名称"));
+    m_name->setMaxLength(live2dstruct::CModelDisplayNames::MaximumNameLength);
     form->addRow(QStringLiteral("名称"), m_name);
     auto* identifier = new QLineEdit(id, content);
     identifier->setObjectName(QStringLiteral("deformerRenameId"));
@@ -50,9 +50,11 @@ CDeformerRenameDialog::CDeformerRenameDialog(const QString& id, const QString& t
     identifier->setCursorPosition(0);
     form->addRow(QStringLiteral("ID"), identifier);
     form->addRow(QStringLiteral("类型"), label(type == QLatin1String("warp") ?
-        QStringLiteral("弯曲变形器（Warp）") : QStringLiteral("旋转变形器（Rotation）"), "deformerRenameType"));
+        QStringLiteral("弯曲变形器（Warp）") : type == QLatin1String("rotation") ? QStringLiteral("旋转变形器（Rotation）") :
+        type == QLatin1String("artmesh") ? QStringLiteral("网格（ArtMesh）") :
+        type == QLatin1String("part") ? QStringLiteral("部件（Part）") : type, "deformerRenameType"));
     body->addLayout(form);
-    body->addWidget(label(QStringLiteral("名称用于识别对象。ID、父子关系和参数绑定保持不变。"), "deformerRenameHint"));
+    body->addWidget(label(QStringLiteral("只修改显示名称。ID、层级、参数绑定和素材关联保持不变。"), "deformerRenameHint"));
     m_error = label({}, "deformerRenameError");
     body->addWidget(m_error);
     body->addStretch();
@@ -71,7 +73,7 @@ CDeformerRenameDialog::CDeformerRenameDialog(const QString& id, const QString& t
     layout->addWidget(buttons);
     connect(m_name, &QLineEdit::textChanged, this, [this] {
         QString error;
-        live2dstruct::CDeformerDisplayNames::ValidateName(Name(), &error);
+        live2dstruct::CModelDisplayNames::ValidateName(Name(), &error);
         m_error->setText(error);
         Refresh();
     });
@@ -88,7 +90,7 @@ QString CDeformerRenameDialog::Error() const { return m_error->text(); }
 void CDeformerRenameDialog::Refresh()
 {
     m_save->setEnabled(!m_submitting && bool(m_submit) &&
-        live2dstruct::CDeformerDisplayNames::ValidateName(m_name->text()));
+        live2dstruct::CModelDisplayNames::ValidateName(m_name->text()));
     m_error->setToolTip(QStringLiteral("<qt>%1</qt>").arg(m_error->text().toHtmlEscaped()));
     m_error->setVisible(!m_error->text().isEmpty());
 }
@@ -104,7 +106,7 @@ void CDeformerRenameDialog::done(int result)
     const auto finish = qScopeGuard([dialog] { if (dialog) { dialog->m_submitting = false; dialog->Refresh(); } });
     Refresh();
     QString error;
-    if (!live2dstruct::CDeformerDisplayNames::ValidateName(Name(), &error)) { m_error->setText(error); return; }
+    if (!live2dstruct::CModelDisplayNames::ValidateName(Name(), &error)) { m_error->setText(error); return; }
     bool success = false;
     try { success = submit(Name(), &error); }
     catch (const std::exception&) { error = QStringLiteral("未能保存名称，原名称保持不变"); }

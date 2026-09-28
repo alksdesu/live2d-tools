@@ -458,7 +458,8 @@ try {
     candidate.m_drawableMaterialOverrides = session.drawableMaterials;
     candidate.m_parameterValues = state.value("parameters").value<QHash<QString, float>>();
     candidate.m_parameterMetadataOverrides = session.parameterMetadata;
-    candidate.m_deformerDisplayNames = session.deformerDisplayNames.value_or(CDeformerDisplayNames::State{});
+    candidate.m_displayNames = session.objectDisplayNames.value_or(CModelDisplayNames::State{});
+    if (!session.objectDisplayNames) candidate.m_displayNames.deformers = session.deformerDisplayNames.value_or(CDeformerDisplayNames::State{});
     candidate.m_parameterOrganization = session.parameterOrganization;
     candidate.m_geometryObjectPairs = session.geometryObjectPairs;
     candidate.m_lockedKeys = state.value("locked").value<QSet<QString>>();

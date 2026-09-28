@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QStringList>
 #include <memory>
+#include "live2dstruct/cmodeldisplaynames.h"
 
 class CCidJson;
 namespace live2dstruct { class CSectionTable; }
@@ -46,6 +47,7 @@ public:
     QStringList UpdateLocked(const QMap<QString, bool>& values);
     void NotifyObjects(const QStringList& keys);
     QStringList UpdateDeformerDisplayNames(const QMap<QString, QString>& names);
+    QStringList UpdateDisplayNames(const live2dstruct::CModelDisplayNames::State& names);
     void NotifyDisplayNames(const QStringList& keys);
     static QString Key(const QModelIndex& index);
 

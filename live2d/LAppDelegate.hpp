@@ -16,6 +16,7 @@
 #include <QCoreApplication>
 #include "opengl/cpsdwritelist.h"
 #include "live2dstruct/cdraworder.h"
+#include "live2dstruct/cmodelexportsnapshot.h"
 #include <QSet>
 #include <QHash>
 #include <QVector>
@@ -86,9 +87,11 @@ public:
     bool StartDeformerDrag(QString* error = nullptr);
     void StopDeformerDrag();    // 松手时调用
     bool StartOffset_FunpsdList(const QString& name,bool IsAll,bool IsFenzu,bool cubismCompat = false,
-                               QString* error = nullptr, CExportControl* control = nullptr);
+                               QString* error = nullptr, CExportControl* control = nullptr,
+                               const live2dstruct::CModelExportSnapshot& snapshot = {});
     bool StartTextureExtraction(const QString& psdPath, bool includeHidden, bool groupByParts, bool cubismCompat = false,
-                                QString* error = nullptr, CExportControl* control = nullptr);
+                                QString* error = nullptr, CExportControl* control = nullptr,
+                                const live2dstruct::CModelExportSnapshot& snapshot = {});
     bool RecoverPsdExport(QString* error = nullptr);
 
 

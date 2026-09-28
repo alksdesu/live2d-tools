@@ -2,6 +2,7 @@
 #define CRUNTIMEPACKAGE_H
 
 #include "cmodeldocument.h"
+#include "cmodeldisplaynames.h"
 #include "cparameterresourceedits.h"
 #include "ctextureassets.h"
 #include "std/cdirectoryexport.h"
@@ -34,6 +35,7 @@ public:
         int maximumFiles = 10000;
         std::optional<CModelArtwork::State> artwork;
         std::optional<QMap<QString, QString>> deformerDisplayNames;
+        std::optional<CModelDisplayNames::State> displayNames;
     };
     struct Source {
         QString path;

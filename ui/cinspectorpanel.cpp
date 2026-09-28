@@ -577,10 +577,12 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_renameDeformer->setEnabled(false);
     connect(m_renameDeformer, &QPushButton::clicked, this, [this] {
         if (!m_renameEnabled || m_submitting || m_selectionNames.size() != 1 ||
-            (m_selectionType != QLatin1String("warp") && m_selectionType != QLatin1String("rotation")) ||
+            !m_document || !m_document->CanEditDisplayName(m_selectionType, m_selectionName) ||
             IsLocked(m_selectionType, m_selectionName)) return;
         const QString id = m_selectionName, type = m_selectionType;
-        emit RenameDeformerRequested(id, type);
+        const QPointer<CInspectorPanel> alive(this);
+        emit RenameObjectRequested(id, type);
+        if (alive && (type == QLatin1String("warp") || type == QLatin1String("rotation"))) emit RenameDeformerRequested(id, type);
     });
     m_parentLabel = new QLabel(content);
     m_deformerLabel = new QLabel(content);
@@ -700,7 +702,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     }
     form->addRow(QStringLiteral("类型"), m_typeLabel);
     auto* nameRow = new QWidget(content);
-    nameRow->setProperty("inspectorTypes", QStringList{QStringLiteral("warp"), QStringLiteral("rotation")});
+    nameRow->setProperty("inspectorTypes", QStringList{QStringLiteral("warp"), QStringLiteral("rotation"), QStringLiteral("part"), QStringLiteral("artmesh")});
     auto* nameLayout = new QHBoxLayout(nameRow);
     nameLayout->setContentsMargins(0, 0, 0, 0);
     nameLayout->addWidget(m_nameLabel, 1);
@@ -2088,9 +2090,11 @@ void CInspectorPanel::EditMasks()
     for (int index = 0; index < drawables.size(); ++index) {
         const bool self = drawables[index].id == target;
         if (self && !selected.contains(index)) continue;
-        QString label = self ? QStringLiteral("%1（自身 · 原始引用）").arg(drawables[index].id) : drawables[index].id;
+        const auto displayName = live2dstruct::CModelDisplayNames::EffectiveName(document->DisplayNames(), QStringLiteral("artmesh"), drawables[index].id);
+        const auto identity = displayName == drawables[index].id ? drawables[index].id : displayName + QStringLiteral(" · ") + drawables[index].id;
+        QString label = self ? QStringLiteral("%1（自身 · 原始引用）").arg(identity) : identity;
         if (occurrences.value(index) > 1) {
-            duplicates.append(QStringLiteral("%1：%2 次").arg(drawables[index].id).arg(occurrences.value(index)));
+            duplicates.append(QStringLiteral("%1：%2 次").arg(identity).arg(occurrences.value(index)));
             label += QStringLiteral("（原有 %1 次）").arg(occurrences.value(index));
         }
         auto* item = new QListWidgetItem(label, list);
@@ -2359,9 +2363,8 @@ void CInspectorPanel::showModelObject(const QString& name, const QString& type, 
         state.revision = revision; state.locks = owner->m_lockedKeys;
     });
     const bool unlocked = !IsLocked(type, name);
-    const bool deformerSelected = type == QLatin1String("warp") || type == QLatin1String("rotation");
-    m_nameLabel->setText(deformerSelected ? m_document->DeformerDisplayName(name) : QString());
-    m_renameDeformer->setEnabled(m_renameEnabled && deformerSelected && unlocked && !m_submitting);
+    m_nameLabel->setText(m_document->DisplayName(type, name));
+    m_renameDeformer->setEnabled(m_renameEnabled && unlocked && m_document->CanEditDisplayName(type, name) && !m_submitting);
     m_resizeWarpGrid->setEnabled(m_warpGridResizeEnabled && type == QLatin1String("warp") && !m_submitting);
     if (!sameContext) {
         m_activeKeyformIndex = -1;
@@ -2556,8 +2559,7 @@ void CInspectorPanel::SetRenameDeformerEnabled(bool enabled)
 {
     m_renameEnabled = enabled;
     m_renameDeformer->setEnabled(enabled && !m_submitting && m_selectionNames.size() == 1 &&
-        (m_selectionType == QLatin1String("warp") || m_selectionType == QLatin1String("rotation")) &&
-        !IsLocked(m_selectionType, m_selectionName));
+        m_document && m_document->CanEditDisplayName(m_selectionType, m_selectionName) && !IsLocked(m_selectionType, m_selectionName));
 }
 
 void CInspectorPanel::SetWarpGridResizeEnabled(bool enabled)

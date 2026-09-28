@@ -66,7 +66,7 @@ add_library(model_data STATIC
     live2dstruct/cmotionbezier.cpp
     live2dstruct/cmotionblendpreview.cpp
     live2dstruct/cmodeldocument.cpp
-    live2dstruct/cdeformerdisplaynames.cpp
+    live2dstruct/cdeformerdisplaynames.cpp live2dstruct/cmodeldisplaynames.cpp live2dstruct/cdisplaynamemetadata.cpp live2dstruct/cmodelexportsnapshot.cpp
     live2dstruct/cmodeldocumentnames.cpp
     live2dstruct/cmodeldocumentmasks.cpp
     live2dstruct/cwarpgridresampler.cpp
@@ -193,6 +193,7 @@ target_link_libraries(artwork_recovery_data PUBLIC model_data psd_reader_data)
 add_library(cmo3_data STATIC
     cmo3/ccaffarchive.cpp
     cmo3/ccmo3artworkreader.cpp
+    cmo3/ccmo3namereader.cpp
     cmo3/ccmo3entities.cpp
     cmo3/ccmo3builder.cpp
     cmo3/cxsxmlwriter.cpp
@@ -429,6 +430,22 @@ if(BUILD_TESTING)
         target_compile_definitions(${preview_test}_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME ${preview_test} COMMAND ${preview_test}_tests)
     endforeach()
+    add_executable(object_names_import_dialog_tests tests/object_names_import_dialog_tests.cpp ui/cobjectnamesimportdialog.cpp)
+    target_link_libraries(object_names_import_dialog_tests PRIVATE model_data Qt6::Widgets Qt6::Test)
+    add_test(NAME object_names_import_dialog COMMAND object_names_import_dialog_tests)
+    set_tests_properties(object_names_import_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(model_display_names_tests tests/model_display_names_tests.cpp)
+    target_link_libraries(model_display_names_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(model_display_names_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME model_display_names COMMAND model_display_names_tests)
+    add_executable(model_export_snapshot_tests tests/model_export_snapshot_tests.cpp)
+    target_link_libraries(model_export_snapshot_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(model_export_snapshot_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME model_export_snapshot COMMAND model_export_snapshot_tests)
+    add_executable(cmo3_name_reader_tests tests/cmo3_name_reader_tests.cpp)
+    target_link_libraries(cmo3_name_reader_tests PRIVATE cmo3_data Qt6::Test)
+    target_compile_definitions(cmo3_name_reader_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME cmo3_name_reader COMMAND cmo3_name_reader_tests)
     add_executable(model_settings_tests tests/model_settings_tests.cpp)
     target_link_libraries(model_settings_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(model_settings_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

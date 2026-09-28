@@ -1,4 +1,5 @@
 #include "cmodeltreepanel.h"
+#include <QScopeGuard>
 #include <QLabel>
 #include "cmodelhierarchymodel.h"
 #include "cmodelhierarchyview.h"
@@ -397,7 +398,8 @@ bool CModelTreePanel::CanRename(CModelHierarchyView* view) const
     const auto selected = view->selectionModel()->selectedRows();
     if (selected.size() != 1) return false;
     const auto type = selected.first().data(Qt::UserRole + 1).toString();
-    return (type == QLatin1String("warp") || type == QLatin1String("rotation")) &&
+    return (type == QLatin1String("warp") || type == QLatin1String("rotation") ||
+        type == QLatin1String("part") || type == QLatin1String("artmesh")) &&
         !selected.first().data(Qt::UserRole + 2).toBool();
 }
 
@@ -406,13 +408,30 @@ void CModelTreePanel::RequestRename(CModelHierarchyView* view)
     if (!CanRename(view)) return;
     const auto index = view->selectionModel()->selectedRows().first();
     const QString id = index.data(Qt::UserRole).toString(), type = index.data(Qt::UserRole + 1).toString();
-    emit RenameDeformerRequested(id, type);
+    const QPointer<CModelTreePanel> alive(this);
+    emit RenameObjectRequested(id, type);
+    if (alive && (type == QLatin1String("warp") || type == QLatin1String("rotation"))) emit RenameDeformerRequested(id, type);
 }
 
 void CModelTreePanel::ApplyDeformerDisplayNames(const QMap<QString, QString>& names)
 {
     const auto changed = m_partModel->UpdateDeformerDisplayNames(names);
     const QPointer<CModelTreePanel> panel(this);
+    m_partModel->NotifyDisplayNames(changed);
+    if (panel) m_deformerModel->NotifyDisplayNames(changed);
+}
+
+void CModelTreePanel::ApplyDisplayNames(const live2dstruct::CModelDisplayNames::State& names)
+{
+    const auto changed = m_partModel->UpdateDisplayNames(names);
+    if (changed.isEmpty()) return;
+    const QPointer<CModelTreePanel> panel(this);
+    const QPointer<CModelHierarchyView> first(m_partTree), second(m_deformerTree);
+    first->BeginDisplayNameUpdate(); second->BeginDisplayNameUpdate();
+    const auto finish = qScopeGuard([first, second] {
+        if (first) first->EndDisplayNameUpdate();
+        if (second) second->EndDisplayNameUpdate();
+    });
     m_partModel->NotifyDisplayNames(changed);
     if (panel) m_deformerModel->NotifyDisplayNames(changed);
 }

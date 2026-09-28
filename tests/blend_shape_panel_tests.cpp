@@ -772,6 +772,11 @@ private slots:
         panel.RefreshDeformerDisplayNames(); QCOMPARE(warp->text(0), QStringLiteral("眼睛控制")); QCOMPARE(mesh->text(0), QString("Shared"));
         QCOMPARE(warp->child(0), child); QVERIFY(warp->isExpanded()); QCOMPARE(changed.count(), 0);
         QVERIFY(document.SetDeformerDisplayNames({}, &error)); panel.RefreshDeformerDisplayNames(); QCOMPARE(warp->text(0), QString("Shared"));
+        auto names = document.DisplayNames(); names.artMeshes.insert("Shared", QStringLiteral("网格名字")); names.deformers.insert("Shared", QStringLiteral("变形器名字"));
+        QVERIFY(document.SetDisplayNames(names, &error)); panel.RefreshDisplayNames();
+        QCOMPARE(mesh->text(0), QStringLiteral("网格名字")); QCOMPARE(warp->text(0), QStringLiteral("变形器名字"));
+        QCOMPARE(mesh->data(0, Qt::UserRole).toString(), QString("Shared")); QCOMPARE(warp->child(0), child); QCOMPARE(changed.count(), 0);
+        QVERIFY(document.SetDisplayNames({}, &error)); panel.RefreshDisplayNames(); QCOMPARE(mesh->text(0), QString("Shared"));
     }
 
     void versionFivePartAndRotationTargetsNavigateWithIndependentNames()

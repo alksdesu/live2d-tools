@@ -39,6 +39,37 @@ using namespace LAppDefine;
 
 namespace {
     LAppDelegate* s_instance = NULL;
+
+bool captureExportNames(LAppModel* model, const live2dstruct::CModelExportSnapshot& requested,
+                        live2dstruct::CModelExportSnapshot& result, QString* error)
+{
+    if (requested.IsValid()) {
+        if (!requested.Matches(model->GetSourceMocDigest(), model->GetPreviewMocDigest(), error)) return false;
+        result = requested;
+        return true;
+    }
+    live2dstruct::CModelDisplayNames::State names;
+    const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
+    const QString path = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName()));
+    CCidJson metadata;
+    if (!path.isEmpty() && QFileInfo::exists(path)) {
+        if (!metadata.Parse(path, error)) return false;
+        names = metadata.DisplayNames();
+        if (!metadata.HasDisplayNamesExtension()) {
+            live2dstruct::CModelDocument document;
+            if (!document.LoadBytes(model->GetPreviewMocBytes(), {}, error)) return false;
+            const auto filter = [](auto& entries, const auto& objects) {
+                QSet<QString> ids;
+                for (const auto& object : objects) ids.insert(object.id);
+                for (auto item = entries.begin(); item != entries.end();)
+                    if (!ids.contains(item.key()) || item.value().isEmpty()) item = entries.erase(item); else ++item;
+            };
+            filter(names.parts, document.Parts());
+            filter(names.deformers, document.Deformers());
+        }
+    }
+    return live2dstruct::CModelExportSnapshot::Create(model->GetSourceMocDigest(), model->GetPreviewMocBytes(), names, result, error);
+}
 }
 
 LAppDelegate* LAppDelegate::GetInstance()
@@ -284,7 +315,7 @@ CPsdWriteList *LAppDelegate::GetCPsdWriteList()
 
 
 bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidden, bool groups, bool cubismCompat,
-                                        QString* error, CExportControl* control)
+                                        QString* error, CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot)
 {
     CExportControl localControl;
     if (!control) control = &localControl;
@@ -303,6 +334,9 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
     auto* renderer = model ? model->GetRenderer<Rendering::CubismRenderer_OpenGLES2>() : nullptr;
     if (!surface || !model || !model->GetModel() || !renderer || !model->HasExportPreview())
         return fail(QStringLiteral("PSD 导出需要已冻结的模型预览"));
+    live2dstruct::CModelExportSnapshot names;
+    QString namesError;
+    if (!captureExportNames(model, snapshot, names, &namesError)) return fail(namesError);
     m_exportInProgress = true;
     const auto release = qScopeGuard([this, surface] { if (surface && s_instance == this) m_exportInProgress = false; });
     const auto detach = qScopeGuard([this, surface] {
@@ -326,14 +360,14 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
         if (!includeHidden && !core->GetDrawableDynamicFlagIsVisible(index)) return;
         const QString id = QString::fromUtf8(core->GetDrawableId(index)->GetString().GetRawString());
         if (m_hiddenDrawables.contains(id) || m_hiddenDeformerDrawables.contains(id)) return;
-        entries.append({CPsdExportItem::Type::Layer, index, id, m_drawableOpacityOverrides.value(id, -1.0f)});
+        entries.append({CPsdExportItem::Type::Layer, index, names.DisplayName(QStringLiteral("artmesh"), id), m_drawableOpacityOverrides.value(id, -1.0f)});
     };
     if (groups) {
         const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
         const QString mocPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetModelFileName()));
         live2dstruct::CModelDocument document;
         QString sourceError;
-        if (!document.LoadBytes(model->GetSourceMocBytes(), mocPath, &sourceError))
+        if (!document.LoadBytes(model->GetPreviewMocBytes(), mocPath, &sourceError))
             return fail(QStringLiteral("PSD 分组源模型读取失败：%1").arg(sourceError));
         if (document.Drawables().size() != core->GetDrawableCount())
             return fail(QStringLiteral("PSD 分组源网格数量与运行时不一致"));
@@ -353,18 +387,16 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
             sources.append(sourceIndex);
             runtimeIndices.insert(sourceIndex, index);
         }
-        CCidJson names;
-        names.Parse(CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName())));
         const auto order = live2dstruct::BuildGroupedLayerOrder(document.Parts(), document.Drawables(), sources);
         if (!sorted.isEmpty() && order.isEmpty()) return fail(QStringLiteral("PSD 分组计划为空"));
         for (const auto& entry : order) {
             if (!control->Checkpoint()) { if (error) *error = control->Error(); return false; }
             if (entry.type == live2dstruct::CLayerOrderItem::Layer) appendLayer(runtimeIndices.value(entry.drawableIndex));
             else {
-                const QString display = names.getPartName(entry.id);
+                const QString display = names.DisplayName(QStringLiteral("part"), entry.id);
                 entries.append({entry.type == live2dstruct::CLayerOrderItem::GroupStart ? CPsdExportItem::Type::GroupStart
                                                                                      : CPsdExportItem::Type::GroupEnd,
-                                 -1, display.isEmpty() ? entry.id : display, -1.0f});
+                                 -1, display, -1.0f});
             }
         }
     } else {
@@ -375,7 +407,7 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
             if (!surface || surface->context() != context) return false;
             surface->makeCurrent();
             return QOpenGLContext::currentContext() == context;
-        }, [surface, context, model, core, renderer](QString* detail) {
+        }, [surface, context, model, core, renderer, names](QString* detail) {
             if (!surface || surface->context() != context) { if (detail) *detail = QStringLiteral("导出窗口的上下文已改变"); return false; }
             auto* active = LAppLive2DManager::GetInstance();
             if (!active || active->GetModel(0) != model || model->GetModel() != core ||
@@ -383,7 +415,7 @@ bool LAppDelegate::StartOffset_FunpsdList(const QString& name, bool includeHidde
                 if (detail) *detail = QStringLiteral("导出模型或渲染器已改变");
                 return false;
             }
-            return true;
+            return names.Matches(model->GetSourceMocDigest(), model->GetPreviewMocDigest(), detail);
         }, control);
     if (!candidate->Begin(includeHidden, error)) return false;
     m_psdExportSession = std::move(candidate);
@@ -419,7 +451,7 @@ bool LAppDelegate::RecoverPsdExport(QString* error)
 }
 
 bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidden, bool groups, bool cubismCompat,
-                                         QString* error, CExportControl* control)
+                                         QString* error, CExportControl* control, const live2dstruct::CModelExportSnapshot& snapshot)
 {
     CExportControl localControl;
     if (!control) control = &localControl;
@@ -434,11 +466,13 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
     auto* manager = LAppLive2DManager::GetInstance();
     auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
     if (!model || !model->GetModel() || !model->HasExportPreview()) return fail(QStringLiteral("纹理导出需要已冻结的模型预览"));
+    live2dstruct::CModelExportSnapshot names;
+    QString namesError;
+    if (!captureExportNames(model, snapshot, names, &namesError)) return fail(namesError);
     const QPointer<QWidget> surface = const_cast<QWidget*>(_windows);
     m_exportInProgress = true;
     const auto release = qScopeGuard([this, surface] { if (surface && s_instance == this) m_exportInProgress = false; });
     const QString home = QString::fromUtf8(model->GetModelHomeDir().GetRawString());
-    const QString cidPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetDisplayInfoFileName()));
     const QString mocPath = CModelResourcePath::Resolve(home, QString::fromUtf8(model->GetModelSetting()->GetModelFileName()));
     const QByteArray source = model->GetPreviewMocBytes();
     if (source.isEmpty()) return fail(QStringLiteral("当前模型缺少有效 MOC 快照，无法提取纹理"));
@@ -485,8 +519,6 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
         if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
         QHash<QString, const ExtractedLayer*> byId;
         for (const auto& layer : layers) byId.insert(layer.name, &layer);
-        CCidJson names;
-        names.Parse(cidPath);
         const auto writeLayer = [&](const QString& id) {
             if (hidden.contains(id)) return true;
             const auto* layer = byId.value(id, nullptr);
@@ -496,7 +528,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
                 return false;
             }
             const float alpha = opacity.value(id, layer->opacity);
-            return writer.AddLayer(id, layer->canvasRect, layer->image,
+            return writer.AddLayer(names.DisplayName(QStringLiteral("artmesh"), id), layer->canvasRect, layer->image,
                                    static_cast<quint8>(qBound(0.0f, alpha * 255.0f, 255.0f)),
                                    CTextureExtractor::BlendModeToPsd(layer->drawableFlags), false, false);
         };
@@ -515,8 +547,7 @@ bool LAppDelegate::StartTextureExtraction(const QString& path, bool includeHidde
                 if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
                 if (entry.type == live2dstruct::CLayerOrderItem::Layer) { if (!writeLayer(entry.id)) return false; }
                 else if (entry.type == live2dstruct::CLayerOrderItem::GroupStart) {
-                    const QString display = names.getPartName(entry.id);
-                    if (!writer.AddGroupStart(display.isEmpty() ? entry.id : display)) return false;
+                    if (!writer.AddGroupStart(names.DisplayName(QStringLiteral("part"), entry.id))) return false;
                 } else if (!writer.AddGroupEnd()) return false;
             }
         } else {

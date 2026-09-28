@@ -553,13 +553,23 @@ void CModelHierarchyView::changeEvent(QEvent* event)
         event->type() == QEvent::LayoutDirectionChange) Rebuild();
 }
 
+void CModelHierarchyView::BeginDisplayNameUpdate() { ++m_nameUpdateDepth; }
+
+void CModelHierarchyView::EndDisplayNameUpdate()
+{
+    if (m_nameUpdateDepth <= 0 || --m_nameUpdateDepth || !m_nameUpdatePending) return;
+    m_nameUpdatePending = false;
+    Rebuild();
+}
+
 void CModelHierarchyView::dataChanged(const QModelIndex& first, const QModelIndex&, const QList<int>& roles)
 {
     const bool presentationOnly = !roles.isEmpty() && std::all_of(roles.cbegin(), roles.cend(), [&](int role) {
         return role == Qt::CheckStateRole || role == Qt::ToolTipRole || role == Qt::UserRole + 2 ||
             (role == Qt::FontRole && roles.contains(Qt::UserRole + 2));
     });
-    if (!presentationOnly) Rebuild();
+    if (!presentationOnly && m_nameUpdateDepth && roles == QList<int>{Qt::DisplayRole}) m_nameUpdatePending = true;
+    else if (!presentationOnly) Rebuild();
     else {
         viewport()->update();
         const int node = NodeFor(first);

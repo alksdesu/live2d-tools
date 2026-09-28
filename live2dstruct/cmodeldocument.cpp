@@ -147,7 +147,7 @@ void CModelDocument::Clear()
     m_drawableDrawOrderOverrides.clear();
     m_parameterValues.clear();
     m_parameterMetadataOverrides.clear();
-    m_deformerDisplayNames.clear();
+    m_displayNames = {};
     m_parameterOrganization = {};
     m_geometryObjectPairs = {};
     m_drawableKeyformPositionOverrides.clear();
@@ -1127,6 +1127,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     }
     if (!HasValidStructureRequests(edit)) return false;
     if (edit.field == CModelEdit::DeformerDisplayName) return ApplyDeformerDisplayNameEdit(edit, forward);
+    if (edit.field == CModelEdit::DisplayNames) return ApplyDisplayNamesEdit(edit, forward);
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == CModelEdit::ParameterOrganization) {
         const auto type = QMetaType::fromType<CParameterOrganization::State>();
@@ -1247,6 +1248,18 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
             (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
         CModelEdit command = edit;
+        if (command.field == CModelEdit::DisplayNames) {
+            if (command.name != QLatin1String("objects") || command.type != QLatin1String("names") || command.index != -1 || command.coalesce ||
+                command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue || command.meshRequest ||
+                !command.meshRemaps.isEmpty() || command.bindingKeysRequest || command.deformerRequest ||
+                command.before.metaType() != QMetaType::fromType<CModelDisplayNames::State>() ||
+                command.after.metaType() != QMetaType::fromType<CModelDisplayNames::State>() ||
+                command.before.value<CModelDisplayNames::State>() != m_displayNames) return false;
+            CModelEdit frozen;
+            if (!MakeDisplayNamesEdit(command.after.value<CModelDisplayNames::State>(), frozen)) return false;
+            frozen.runtime = command.runtime;
+            command = std::move(frozen);
+        }
         if (command.field == CModelEdit::DeformerDisplayName) {
             if (!CanEditDeformerDisplayName(command.name) || command.before.metaType() != QMetaType::fromType<QString>() ||
                 command.after.metaType() != QMetaType::fromType<QString>()) return false;

@@ -2,7 +2,9 @@
 #include "deformer_order_fixture.h"
 #include "live2dstruct/cruntimepackage.h"
 #include "live2dstruct/cmocdeformerorder.h"
+#include "live2dstruct/cdisplaynamemetadata.h"
 #include "std/cmodeljson.h"
+#include "std/cexportcontrol.h"
 #include "ui/para/ccidjson.h"
 #include <QtTest>
 #include <QTemporaryDir>
@@ -36,9 +38,9 @@ struct Fixture {
     bool ready = false;
     CModelDocument document;
     QString path, moc;
-    Fixture() {
+    Fixture(bool fullModel = false) {
         CModelDocument source;
-        if (!load(source)) return;
+        if (fullModel ? !source.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3") : !load(source)) return;
         path = directory.filePath("model.model3.json"); moc = directory.filePath("model.moc3");
         if (!write(moc, source.SourceBytes()) || !document.Load(moc)) return;
         const QDir resources(QString(TEST_RESOURCES) + QStringLiteral("/Mark"));
@@ -74,6 +76,101 @@ class GeometryPairsExportTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void fallbackNamesRejectAmbiguousSourceOrCurrentIds_data()
+    {
+        QTest::addColumn<bool>("source"); QTest::addColumn<bool>("legacy");
+        for (bool source : {false,true}) for (bool legacy : {false,true})
+            QTest::newRow(qPrintable(QString("%1/%2").arg(source).arg(legacy))) << source << legacy;
+    }
+    void fallbackNamesRejectAmbiguousSourceOrCurrentIds()
+    {
+        QFETCH(bool, source); QFETCH(bool, legacy);
+        Fixture fixture(true); QVERIFY(fixture.ready); QString error;
+        auto bytes = fixture.document.SourceBytes();
+        CReader reader = CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.parts.size() > 1);
+        const auto id = legacy ? table.deformers.first()->ids : table.parts.first()->ids;
+        const auto offset = legacy ? table.sectionOffsetTable->deformers->ids : table.sectionOffsetTable->parts->ids;
+        bytes.replace(offset + 64, 64, id.toUtf8().leftJustified(64, '\0'));
+        CModelDisplayNames::State names; names.parts.insert(id, "ambiguous");
+        QJsonObject cdi;
+        if (legacy) cdi = {{"Live2DToolsDeformerNames", QJsonObject{{"Version", 1}, {"Names", QJsonObject{{id, "ambiguous"}}}}}};
+        else QVERIFY(CDisplayNameMetadata::Write(names, cdi, &error));
+        QVERIFY(fixture.cdi(cdi));
+        if (source) { QVERIFY(write(fixture.moc, bytes)); QVERIFY(fixture.document.Load(fixture.moc, &error)); }
+        auto request = fixture.request(); request.mocBytes = bytes;
+        CRuntimePackage::Prepared result; result.model = {{"retained", true}};
+        QVERIFY(!CRuntimePackage::Prepare(request, result, nullptr, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(result.model, QJsonObject({{"retained", true}}));
+    }
+    void fullObjectNamesCreateDisplayInfoAndReloadWithoutChangingMoc()
+    {
+        Fixture fixture(true); QVERIFY(fixture.ready); QString error;
+        auto request = fixture.request(); request.displayNames.emplace();
+        const auto part = fixture.document.Parts().first().id, mesh = fixture.document.Drawables().first().id;
+        const auto deformer = fixture.document.Deformers().first().id;
+        request.displayNames->parts.insert(part, QStringLiteral("头部 <&> 🌙"));
+        request.displayNames->artMeshes.insert(mesh, QStringLiteral("眼睛高光"));
+        request.displayNames->deformers.insert(deformer, QStringLiteral("头部控制"));
+        CRuntimePackage::Prepared package;
+        QVERIFY2(CRuntimePackage::Prepare(request, package, nullptr, &error), qPrintable(error));
+        QCOMPARE(entry(package, package.model["FileReferences"].toObject()["Moc"].toString()), request.mocBytes);
+        const auto path = fixture.directory.filePath("readback.cdi3.json");
+        QVERIFY(write(path, QJsonDocument(display(package)).toJson()));
+        CCidJson parser; QVERIFY2(parser.Parse(path, &error), qPrintable(error));
+        QVERIFY(parser.HasDisplayNamesExtension()); QVERIFY(parser.HasDeformerDisplayNamesExtension());
+        QCOMPARE(parser.DisplayNames(), *request.displayNames); QCOMPARE(parser.getPartName(part), request.displayNames->parts[part]);
+        QCOMPARE(parser.DeformerDisplayNames(), request.displayNames->deformers);
+        auto original = display(package); original["Foreign"] = 17;
+        QVERIFY(fixture.cdi(original));
+        request = fixture.request(); request.displayNames.emplace();
+        QVERIFY2(CRuntimePackage::Prepare(request, package, nullptr, &error), qPrintable(error));
+        const auto cleared = display(package); QCOMPARE(cleared["Foreign"].toInt(), 17);
+        QVERIFY(write(path, QJsonDocument(cleared).toJson())); QVERIFY(parser.Parse(path, &error));
+        QCOMPARE(parser.DisplayNames(), CModelDisplayNames::State{});
+        QVERIFY(parser.getPartName(part).isEmpty());
+        for (const auto& row : cleared["Parts"].toArray()) QCOMPARE(row.toObject()["Name"], row.toObject()["Id"]);
+    }
+
+    void legacyDeformerUpdatesKeepFullMetadataConsistent()
+    {
+        Fixture fixture; QVERIFY(fixture.ready); CModelDisplayNames::State names;
+        names.artMeshes.insert("Mesh", "mesh name"); names.deformers.insert("Root", "old name");
+        QJsonObject original; QVERIFY(CDisplayNameMetadata::Write(names, original)); QVERIFY(fixture.cdi(original));
+        auto request = fixture.request(); request.deformerDisplayNames = QMap<QString, QString>{{"Root", "new name"}};
+        CRuntimePackage::Prepared package; QString error;
+        QVERIFY2(CRuntimePackage::Prepare(request, package, nullptr, &error), qPrintable(error));
+        CDisplayNameMetadata::Snapshot decoded; QVERIFY(CDisplayNameMetadata::Read(display(package), decoded, &error));
+        QCOMPARE(decoded.names->artMeshes, names.artMeshes); QCOMPARE(decoded.names->deformers, *request.deformerDisplayNames);
+        QCOMPARE(*decoded.deformerNames, *request.deformerDisplayNames);
+        auto conflict = original; conflict["Live2DToolsDeformerNames"] = QJsonObject{{"Version", 1}, {"Names", QJsonObject{}}};
+        QVERIFY(fixture.cdi(conflict)); request = fixture.request(); const auto before = package.model;
+        QVERIFY(!CRuntimePackage::Prepare(request, package, nullptr, &error)); QCOMPARE(package.model, before);
+        const auto path = fixture.directory.filePath("names.cdi3.json"); CCidJson parser;
+        QVERIFY(!parser.Parse(path, &error));
+    }
+
+    void fullNamesRejectUnknownKeysWithoutReplacingPackage()
+    {
+        Fixture fixture; QVERIFY(fixture.ready); auto request = fixture.request(); request.displayNames.emplace();
+        request.displayNames->artMeshes.insert("unknown", "unknown");
+        CRuntimePackage::Prepared package; package.model = {{"retained", true}}; QString error;
+        QVERIFY(!CRuntimePackage::Prepare(request, package, nullptr, &error));
+        QCOMPARE(package.model, QJsonObject({{"retained", true}}));
+    }
+
+    void fullNamesAreOwnedBeforePackageCallbacks()
+    {
+        Fixture fixture; QVERIFY(fixture.ready); auto request = fixture.request(); request.displayNames.emplace();
+        QString name = QStringLiteral("冻结的眼睛名称"); const auto expected = QString(name.constData(), name.size());
+        request.displayNames->artMeshes.insert("Mesh", QString::fromRawData(name.constData(), name.size()));
+        CExportControl control; bool changed = false;
+        control.SetHandler([&](const auto&, QString*) { name.fill('x'); request.displayNames->artMeshes.clear(); changed = true; return true; });
+        CRuntimePackage::Prepared package; QString error;
+        QVERIFY2(CRuntimePackage::Prepare(request, package, &control, &error), qPrintable(error)); QVERIFY(changed);
+        CDisplayNameMetadata::Snapshot decoded; QVERIFY(CDisplayNameMetadata::Read(display(package), decoded, &error));
+        QCOMPARE(decoded.names->artMeshes.value("Mesh"), expected);
+    }
+
     void deformerNamesCreateDisplayInfoAndRoundTripAuthoritativeEmpty()
     {
         Fixture fixture; QVERIFY(fixture.ready); QString error;

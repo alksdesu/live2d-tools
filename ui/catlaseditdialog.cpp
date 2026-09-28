@@ -1,4 +1,5 @@
 #include "catlaseditdialog.h"
+#include "live2dstruct/cmodeldisplaynames.h"
 #include "catlascanvasview.h"
 #include "theme.h"
 #include "std/cexportcontrol.h"
@@ -178,7 +179,7 @@ CAtlasEditDialog::CAtlasEditDialog(const Snapshot& snapshot, const QStringList& 
         m_canvas->SetSelectedMeshes(ids);
     });
     connect(m_search, &QLineEdit::textChanged, this, [this](const QString& text) {
-        for (int index = 0; index < m_meshes->count(); ++index) m_meshes->item(index)->setHidden(!m_meshes->item(index)->data(Qt::UserRole).toString().contains(text, Qt::CaseInsensitive));
+        for (int index = 0; index < m_meshes->count(); ++index) m_meshes->item(index)->setHidden(!m_meshes->item(index)->data(Qt::UserRole + 1).toString().contains(text, Qt::CaseInsensitive));
     });
     connect(m_slot, &QComboBox::currentIndexChanged, this, &CAtlasEditDialog::ChangeSlot);
     const auto dirty = [this](bool& value) { if (!m_refreshing) { value = true; m_discard->setEnabled(true); } };
@@ -209,6 +210,15 @@ QString CAtlasEditDialog::Error() const { return m_error->text(); }
 void CAtlasEditDialog::SetPreviewHandler(Handler handler) { if (!m_busy) m_preview = std::move(handler); }
 void CAtlasEditDialog::SetSubmissionHandler(Handler handler) { if (!m_busy) m_submit = std::move(handler); }
 void CAtlasEditDialog::SetCancellationHandler(CancellationHandler handler) { if (!m_busy) m_cancel = std::move(handler); }
+bool CAtlasEditDialog::SetMeshDisplayNames(const QMap<QString, QString>& names, QString* error)
+{
+    QMap<QString, QString> owned;
+    if (!live2dstruct::CModelDisplayNames::NormalizeMap(names, owned, error)) return false;
+    m_meshDisplayNames = std::move(owned);
+    if (m_ready) Refresh();
+    return true;
+}
+
 void CAtlasEditDialog::ShowError(const QString& error) { m_error->setText(error); m_error->setVisible(!error.isEmpty()); }
 bool CAtlasEditDialog::HasPendingInput() const { return m_moveDirty || m_sizeDirty || m_nameDirty || m_newDirty; }
 QStringList CAtlasEditDialog::Selection() const { auto ids = m_selection.values(); std::sort(ids.begin(), ids.end()); return ids; }
@@ -321,9 +331,12 @@ void CAtlasEditDialog::Refresh()
     m_destination->setCurrentIndex(m_destination->findData(m_moveDirty ? destination : slot));
     m_meshes->clear();
     for (const auto& mesh : m_snapshot.meshes) {
-        auto* item = new QListWidgetItem(mesh.material.id + (mesh.editable ? QString() : QStringLiteral("  · 已锁定")), m_meshes);
-        item->setData(Qt::UserRole, mesh.material.id); item->setToolTip(mesh.editable ? mesh.material.id : mesh.reason); item->setSelected(m_selection.contains(mesh.material.id));
-        item->setHidden(!mesh.material.id.contains(m_search->text(), Qt::CaseInsensitive));
+        const auto name = m_meshDisplayNames.value(mesh.material.id, mesh.material.id);
+        const auto label = name == mesh.material.id ? mesh.material.id : name + QStringLiteral(" · ") + mesh.material.id;
+        auto* item = new QListWidgetItem(label + (mesh.editable ? QString() : QStringLiteral("  · 已锁定")), m_meshes);
+        item->setData(Qt::UserRole, mesh.material.id); item->setData(Qt::UserRole + 1, label);
+        item->setToolTip(QStringLiteral("<qt>%1</qt>").arg((mesh.editable ? label : mesh.reason).toHtmlEscaped())); item->setSelected(m_selection.contains(mesh.material.id));
+        item->setHidden(!label.contains(m_search->text(), Qt::CaseInsensitive));
     }
     const auto atlas = m_plan.state.workspace.atlases.constFind(slot);
     if (atlas != m_plan.state.workspace.atlases.cend()) {

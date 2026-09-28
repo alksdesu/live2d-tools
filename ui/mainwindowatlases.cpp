@@ -38,7 +38,7 @@ bool MainWindow::PublishAtlasPreview(const live2dstruct::CModelDocument& before,
 void MainWindow::EditAtlas(const QString& selectedMesh)
 {
     if (m_artworkDialog) { const auto dialog = m_artworkDialog; dialog->raise(); if (dialog) dialog->activateWindow(); return; }
-    if (m_artworkLoading) return;
+    if (m_artworkLoading || m_nameImportControl) return;
     if (m_atlasDialog) { m_atlasDialog->raise(); m_atlasDialog->activateWindow(); return; }
     if (m_materialEditor.IsActive() || !m_workspaceReady || m_closingModel || m_batchExporting || m_psdBatch ||
         m_previewExport.IsBusy() || !m_openglwindows || !m_openglwindows->IsModelReady()) return;
@@ -94,6 +94,10 @@ void MainWindow::EditAtlas(const QString& selectedMesh)
             if (window) window->RefreshMaterialEditing(false);
         }, [window](const QString& detail) { if (window) window->statusBar()->showMessage(detail, 15000); });
     const auto cleanup = qScopeGuard(settle);
+    if (!m_atlasDialog->SetMeshDisplayNames(m_document.DisplayNames().artMeshes, &error)) {
+        if (window) statusBar()->showMessage(error, 10000); return;
+    }
+    if (!window || !dialog) return;
     if (!m_atlasDialog->IsValid() || !m_atlasEditor.Begin(&error)) {
         statusBar()->showMessage(m_atlasDialog->IsValid() ? error : m_atlasDialog->Error(), 10000); return;
     }

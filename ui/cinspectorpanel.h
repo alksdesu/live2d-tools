@@ -39,6 +39,7 @@ public:
     bool SyncActiveKeyform(const QString& id, const QString& type, int keyform, bool refresh = true);
     void SetLockedState(const QSet<QString>& lockedKeys);
     void SetRenameDeformerEnabled(bool enabled);
+    void SetRenameObjectEnabled(bool enabled) { SetRenameDeformerEnabled(enabled); }
     void SetWarpGridResizeEnabled(bool enabled);
     void SetEditHandler(std::function<bool(const live2dstruct::CModelEdit&, QString*)> handler);
     void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);
@@ -57,6 +58,7 @@ public slots:
 
 signals:
     void RenameDeformerRequested(const QString& id, const QString& type);
+    void RenameObjectRequested(const QString& id, const QString& type);
     void ResizeWarpGridRequested(const QString& id);
     void VisibilityChanged(const QString& name, const QString& type, bool visible);
     void VisibilityBatchChanged(const QMap<QString, bool>& values);

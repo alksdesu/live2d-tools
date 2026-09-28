@@ -15,9 +15,19 @@ class DeformerRenameDialogTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void savesExactTextAndKeepsIdReadOnly_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<QString>("label");
+        QTest::newRow("warp") << QString("warp") << QStringLiteral("弯曲变形器（Warp）");
+        QTest::newRow("rotation") << QString("rotation") << QStringLiteral("旋转变形器（Rotation）");
+        QTest::newRow("mesh") << QString("artmesh") << QStringLiteral("网格（ArtMesh）");
+        QTest::newRow("part") << QString("part") << QStringLiteral("部件（Part）");
+    }
     void savesExactTextAndKeepsIdReadOnly()
     {
-        CDeformerRenameDialog dialog("stable-id", "warp", QStringLiteral("原始名称"));
+        QFETCH(QString, type); QFETCH(QString, label);
+        CDeformerRenameDialog dialog("stable-id", type, QStringLiteral("原始名称"));
+        QCOMPARE(dialog.findChild<QLabel*>("deformerRenameType")->text(), label);
         QString submitted;
         dialog.SetSubmissionHandler([&](const QString& name, QString*) { submitted = name; return true; });
         auto* input = dialog.findChild<QLineEdit*>("deformerRenameName"); QVERIFY(input);

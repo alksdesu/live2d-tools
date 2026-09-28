@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "live2dstruct/cmodelexportsnapshot.h"
 #include "live2dstruct/cmocdeformerorder.h"
 #include "live2dstruct/cwarpgridresampler.h"
 
@@ -185,6 +186,7 @@ MainWindow::~MainWindow()
     if (m_psdRecoveryDialog) disconnect(m_psdRecoveryDialog, nullptr, this, nullptr);
     CancelAutomaticMesh();
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
+    if (m_nameImportControl) m_nameImportControl->Cancel();
     m_workspaceLayouts.Capture(*this);
     m_closingModel = true;
     StopPsdBatch();
@@ -213,7 +215,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) { event->ignore(); return; }
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) { event->ignore(); return; }
     const auto list = event->mimeData()->urls();
     for (const QUrl& url : list) {
         const QString path = url.toLocalFile();
@@ -228,7 +230,7 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 
 void MainWindow::dropEvent(QDropEvent *event)
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) { event->ignore(); return; }
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) { event->ignore(); return; }
     const auto list = event->mimeData()->urls();
     for (const QUrl& url : list) {
         const QString path = url.toLocalFile();
@@ -252,7 +254,7 @@ void MainWindow::dropEvent(QDropEvent *event)
 
 void MainWindow::OpenModelWithConfirm(const QString &jsonPath)
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) return;
     if (m_openglwindows == nullptr) {
         RestDock(jsonPath);
         return;
@@ -311,7 +313,7 @@ QString MainWindow::ResolveMocToJson(const QString &mocPath)
 
 void MainWindow::on_actionOpen_triggered()
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) return;
     QString fileName = CFileOption::GetDigModleFile(this);
     if(fileName.isEmpty()) return;
 
@@ -382,7 +384,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
                                       live2dstruct::CRuntimePackage::Request& request, QString* error, bool includeArtwork) const
 {
     const auto fail = [&](const QString& message) { if (error) *error = message; return false; };
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return fail(QStringLiteral("请先保存或取消素材、图集或 UV 编辑，再捕获模型包"));
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading || m_nameImportControl) return fail(QStringLiteral("请先保存或取消素材、图集或 UV 编辑，再捕获模型包"));
     if (m_paramPanel && m_paramPanel->HasUserValueGesture()) return fail(QStringLiteral("请先结束参数拖动，再捕获模型包"));
     if (!m_runtimePanelsInitialized || !m_document.IsLoaded() || !m_openglwindows || !m_openglwindows->IsModelReady())
         return fail(QStringLiteral("请等待模型加载完成后再导出"));
@@ -399,7 +401,7 @@ bool MainWindow::CaptureRuntimePackage(bool currentDefaults, bool includeTimelin
     candidate.sourceMocDigest = m_document.SourceDigest();
     candidate.references = m_parameterResources;
     candidate.parameterMetadata = m_document.ParameterMetadataOverrides();
-    candidate.deformerDisplayNames = m_document.DeformerDisplayNames();
+    candidate.displayNames = m_document.DisplayNames();
     candidate.parameterOrganization = m_document.ParameterOrganization();
     candidate.geometryObjectPairs = m_document.GeometryObjectPairs();
     if (includeArtwork) {
@@ -680,7 +682,7 @@ void MainWindow::on_actionCmo3Export_triggered()
             options.parameterValues.insert(parameter.id, values.value(parameter.id, m_document.ParameterValue(parameter.id)));
     }
     options.parameterMetadata = m_document.ParameterMetadataOverrides();
-    options.deformerDisplayNames = m_document.DeformerDisplayNames();
+    options.displayNames = m_document.DisplayNames();
     options.hiddenIds = m_document.HiddenIds();
     options.objectVisibility = m_document.VisibilityState();
     options.drawableOpacityOverrides = m_document.DrawableOpacityOverrides();
@@ -768,7 +770,8 @@ bool MainWindow::SaveSession()
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
     }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
-    session.deformerDisplayNames = m_document.DeformerDisplayNames();
+    session.version = 15;
+    session.objectDisplayNames = m_document.DisplayNames();
     session.parameterOrganization = m_document.ParameterOrganization();
     session.geometryObjectPairs = m_document.GeometryObjectPairs();
     session.visibility = m_document.VisibilityState();
@@ -813,7 +816,7 @@ void MainWindow::on_actionLoadSession_triggered()
     QString valueError;
     if (!FinishParameterValueEditing(&valueError)) { statusBar()->showMessage(valueError, 8000); return; }
 
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) return;
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) return;
     if (!m_workspaceReady || !m_openglwindows || !m_motionPanel) {
         QMessageBox::information(this, QStringLiteral("载入会话"), QStringLiteral("请先打开模型并等待工作区准备完成"));
         return;
@@ -836,9 +839,6 @@ void MainWindow::on_actionLoadSession_triggered()
     if (!RuntimeMatchesDocument(&loadError) || !session.RestoreDocument(m_document, candidate, &loadError)) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
-    }
-    if (!session.deformerDisplayNames && !InitializeDeformerDisplayNames(candidate, &loadError)) {
-        QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError); return;
     }
     const bool restoreResources = true;
     const bool restorePhysics = restoreResources || candidate.ParameterStructure() != m_document.ParameterStructure();
@@ -943,7 +943,7 @@ bool MainWindow::RuntimeMatchesDocument(QString* error) const
 bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& document,
                                       const QMap<QString, float>& pose, bool editing, QString* error)
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) {
         if (error) *error = QStringLiteral("模型正在关闭或导出，请稍后编辑");
         return false;
     }
@@ -990,7 +990,7 @@ bool MainWindow::PublishKeyformPreview(const live2dstruct::CModelDocument& docum
 bool MainWindow::PublishParameterDefinitions(const live2dstruct::CModelDocument& document,
                                               const QMap<QString, float>& values, bool editing, QString* error)
 {
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) {
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_previewExport.IsBusy() || m_nameImportControl) {
         if (error) *error = QStringLiteral("模型正在关闭或导出，请稍后编辑参数定义");
         return false;
     }
@@ -1500,20 +1500,25 @@ bool MainWindow::EndKeyformEditing(QString* error, bool finishParameters)
 bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QString* error)
 {
     const QPointer<MainWindow> alive(this);
+    const auto source = m_document.SourceDigest(); const auto path = m_document.SourcePath();
+    const auto revision = m_document.Revision();
     if (!AuthoringReady(error)) return false;
     if (!FinishParameterValueEditing(error) || !alive) return false;
     if (m_previewExport.IsBusy()) {
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
-    if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName) {
+    if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName || edit.field == live2dstruct::CModelEdit::DisplayNames) {
         if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!alive) return false;
+        if (m_document.SourceDigest() != source || m_document.SourcePath() != path || m_document.Revision() != revision) {
+            if (error) *error = QStringLiteral("模型编辑状态已改变，请重新确认名称"); return false;
+        }
         if (!m_document.ExecuteEdit(edit)) {
             if (error) *error = QStringLiteral("名称或对象状态已改变，请重新打开重命名窗口"); return false;
         }
         m_historySource = HistorySource::Inspector;
-        RefreshDeformerDisplayNames();
+        RefreshDisplayNames();
         return !alive.isNull();
     }
     if (edit.field == live2dstruct::CModelEdit::ParameterOrganization ||
@@ -1563,22 +1568,33 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
 bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit, QString* error)
 {
     const QPointer<MainWindow> alive(this);
+    const QPointer<OpengGlForm> surface(m_openglwindows);
+    const auto source = m_document.SourceDigest(); const auto path = m_document.SourcePath();
+    const auto sameSource = [&] {
+        if (!alive) return false;
+        if (m_openglwindows == surface && m_document.SourceDigest() == source && m_document.SourcePath() == path) return true;
+        if (error) *error = QStringLiteral("模型已改变，未执行历史操作");
+        return false;
+    };
     if (!AuthoringReady(error)) return false;
-    if (!FinishParameterValueEditing(error) || !alive) return false;
+    if (!FinishParameterValueEditing(error) || !sameSource()) return false;
     if (m_previewExport.IsBusy()) {
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
+    if (surface && !surface->FinishMeshDrag(false, error)) return false;
+    if (!sameSource() || !AuthoringReady(error)) return false;
+    if (m_previewExport.IsBusy()) {
+        if (error) *error = QStringLiteral("预览已进入导出状态，未执行历史操作"); return false;
+    }
     live2dstruct::CModelEdit pending;
     if (!(undo ? m_document.PeekUndoEdit(&pending) : m_document.PeekRedoEdit(&pending))) return false;
-    if (pending.field == live2dstruct::CModelEdit::DeformerDisplayName) {
-        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
+    if (pending.field == live2dstruct::CModelEdit::DeformerDisplayName || pending.field == live2dstruct::CModelEdit::DisplayNames) {
         if (!alive || !(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
-        RefreshDeformerDisplayNames();
+        RefreshDisplayNames();
         return !alive.isNull();
     }
     if (pending.field == live2dstruct::CModelEdit::AtlasLayout) {
-        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!m_atlasEditor.History(undo, edit, error)) return false;
         RefreshTextureEditing(true);
         if (!alive) return false;
@@ -1586,7 +1602,6 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
         return !alive.isNull();
     }
     if (pending.field == live2dstruct::CModelEdit::DrawableMaterials) {
-        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!m_materialEditor.History(undo, edit, error)) return false;
         RefreshMaterialEditing(true);
         return !alive.isNull();
@@ -1595,7 +1610,6 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
         return ApplyParameterValueHistory(undo, edit, error);
     if (pending.field == live2dstruct::CModelEdit::ParameterOrganization ||
         pending.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
-        if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
         if (m_paramPanel && edit.field == live2dstruct::CModelEdit::ParameterOrganization) m_paramPanel->RefreshOrganization();
         if (!alive) return false;
@@ -1607,9 +1621,6 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
         RefreshGeometryPairActions();
         return !alive.isNull();
     }
-    if (pending.field != live2dstruct::CModelEdit::ParameterMetadata && pending.field != live2dstruct::CModelEdit::ParameterStructure &&
-        pending.field != live2dstruct::CModelEdit::MeshStructure &&
-        m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
     if (live2dstruct::CKeyformEditController::Handles(pending)) {
         if (!m_keyformEditor.History(undo, edit, error) || !alive) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
@@ -1700,7 +1711,7 @@ void MainWindow::RefreshModelTree()
     if (!m_document.BuildPreviewMoc(bytes, &error)) { statusBar()->showMessage(error, 8000); return; }
     const QSignalBlocker blocker(m_treePanel);
     if (!m_treePanel->BuildTreeBytes(bytes, m_cidJson, &error)) { statusBar()->showMessage(error, 8000); return; }
-    m_treePanel->ApplyDeformerDisplayNames(m_document.DeformerDisplayNames());
+    m_treePanel->ApplyDisplayNames(m_document.DisplayNames());
     QMap<QString, bool> visibility, locks;
     const auto add = [&](const QString& type, const QString& id, bool visible) {
         const auto key = type + QLatin1Char('|') + id;
@@ -1807,7 +1818,7 @@ bool MainWindow::ConfirmExportReady(const QString& operation)
     if (!valuesFinished) { statusBar()->showMessage(valueError, 8000); return false; }
     if ((hadSurface && !surface) || m_openglwindows != surface) return false;
 
-    if (m_closingModel || m_batchExporting || m_psdBatch || m_artworkLoading) return false;
+    if (m_closingModel || m_batchExporting || m_psdBatch || m_artworkLoading || m_nameImportControl) return false;
     if (m_previewExport.IsBusy()) {
         statusBar()->showMessage(QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
         return false;
@@ -1879,7 +1890,7 @@ void MainWindow::ApplyVisibilityValues(const QMap<QString, bool>& values)
 
 void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, bool forward)
 {
-    if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName) { RefreshDeformerDisplayNames(); return; }
+    if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName || edit.field == live2dstruct::CModelEdit::DisplayNames) { RefreshDisplayNames(); return; }
     const QVariant& value = forward ? edit.after : edit.before;
     if (edit.field == live2dstruct::CModelEdit::ParameterStructure || edit.field == live2dstruct::CModelEdit::MeshStructure) {
         RefreshParameterStructureUi();
@@ -2039,7 +2050,7 @@ void MainWindow::RefreshWindowTitle()
 void MainWindow::RefreshUndoActions()
 {
     const QPointer<MainWindow> alive(this);
-    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive() && !m_atlasEditor.IsActive() && !m_artworkLoading;
+    const bool loaded = m_openglwindows && !m_closingModel && !m_materialEditor.IsActive() && !m_atlasEditor.IsActive() && !m_artworkLoading && !m_nameImportControl;
     const bool timeline = m_historySource == HistorySource::Timeline && m_motionPanel;
     const bool physics = m_historySource == HistorySource::Physics && m_physicsPanel;
     if (m_undoAction) m_undoAction->setEnabled(loaded && (timeline ? m_motionPanel->CanUndoTimeline() : physics ? m_physicsPanel->CanUndo() : m_document.CanUndoEdit()));
@@ -2051,7 +2062,7 @@ void MainWindow::RefreshUndoActions()
 void MainWindow::UndoDocumentEdit()
 {
     const QPointer<MainWindow> alive(this);
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return;
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading || m_nameImportControl) return;
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
         if (!m_physicsPanel->Undo(&error) && alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
@@ -2075,7 +2086,7 @@ void MainWindow::UndoDocumentEdit()
 void MainWindow::RedoDocumentEdit()
 {
     const QPointer<MainWindow> alive(this);
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading) return;
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading || m_nameImportControl) return;
     if (m_historySource == HistorySource::Physics && m_physicsPanel) {
         QString error;
         if (!m_physicsPanel->Redo(&error) && alive && !error.isEmpty()) statusBar()->showMessage(error, 8000);
@@ -2257,10 +2268,10 @@ void MainWindow::RefreshExportActions()
     const QPointer<MainWindow> alive(this);
     RefreshArtworkActions(); if (!alive) return;
     if (m_texturePanel) m_texturePanel->SetEditingEnabled(m_runtimePanelsInitialized && !m_closingModel &&
-        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_artworkLoading);
+        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_artworkLoading && !m_nameImportControl);
     if (!alive) return;
     const bool exporting = m_psdBatch || m_batchExporting;
-    const bool busy = exporting || m_previewExport.IsBusy() || m_artworkLoading;
+    const bool busy = exporting || m_previewExport.IsBusy() || m_artworkLoading || bool(m_nameImportControl);
     if (m_psdRecoveryAction) m_psdRecoveryAction->setEnabled(!busy && !m_closingModel &&
         !m_materialEditor.IsActive() && !m_atlasEditor.IsActive() && !m_applyingSession);
     if (!alive) return;
@@ -2292,7 +2303,8 @@ void MainWindow::RefreshExportActions()
         if (myCloseAction) myCloseAction->setEnabled(true);
         if (!alive) return;
     }
-    RefreshSessionActions();
+    RefreshUndoActions();
+    if (alive) RefreshObjectNameActions();
 }
 
 void MainWindow::RecoverExportPreview()
@@ -2330,11 +2342,22 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
         if (stage) *stage = failedStage;
         return false;
     };
-    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading)
+    if (m_materialEditor.IsActive() || m_atlasEditor.IsActive() || m_artworkLoading || m_nameImportControl)
         return fail(PsdExportStage::Preflight, QStringLiteral("请先保存或取消素材、图集或 UV 编辑，再导出 PSD"));
     if (m_previewExport.IsBusy() || m_activeExportControl)
         return fail(PsdExportStage::Restoring, QStringLiteral("请先恢复或关闭当前预览，再继续导出"));
     if (outPath.isEmpty()) return fail(PsdExportStage::Preflight, QStringLiteral("未指定输出路径"));
+    live2dstruct::CModelExportSnapshot nameSnapshot;
+    const bool currentNames = m_openglwindows && m_openglwindows->GetCurrentModelJson() == modelPath;
+    if (currentNames) {
+        QString detail;
+        auto* manager = LAppLive2DManager::GetInstance();
+        auto* model = manager && manager->GetModelNum() ? manager->GetModel(0) : nullptr;
+        if (!model || !RuntimeMatchesDocument(&detail) ||
+            !live2dstruct::CModelExportSnapshot::Create(m_document.SourceDigest(), model->GetPreviewMocBytes(),
+                m_document.DisplayNames(), nameSnapshot, &detail))
+            return fail(PsdExportStage::Preflight, detail.isEmpty() ? QStringLiteral("当前模型名称无法冻结") : detail);
+    }
     const QScopedValueRollback<bool> exporting(m_batchExporting, true);
     auto control = std::make_shared<CExportControl>();
     m_activeExportControl = control;
@@ -2467,7 +2490,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             };
         }
         steps.exportFile = [this, state, outPath, isAll, isFenzu, isTexExtract, cubismCompat,
-                            savedParameterSnapshot, currentModel, control](QString* detail) {
+                            savedParameterSnapshot, currentModel, control, nameSnapshot](QString* detail) {
             if (!control->Checkpoint()) { if (detail) *detail = control->Error(); return false; }
             if (!state->surface) { if (detail) *detail = QStringLiteral("预览窗口已关闭"); return false; }
             if (!currentModel && !state->surface->SetHighPrecisionMasks(m_highPrecisionMasks, detail)) return false;
@@ -2478,8 +2501,8 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             state->exportModel = model;
             state->failureStage = PsdExportStage::Exporting;
             const bool exported = isTexExtract
-                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get())
-                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get());
+                ? state->surface->do_TextureExtractSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), nameSnapshot)
+                : state->surface->do_OffSeceenSilent(outPath, isAll, isFenzu, cubismCompat, detail, control.get(), nameSnapshot);
             state->outputCommitted = exported || control->IsCommitted();
             if (!exported) state->failureStage = exportStage(control->Snapshot().phase);
             return exported;
@@ -2812,6 +2835,7 @@ bool MainWindow::CloseModel()
     if (!CancelDeformerDialogs()) return false;
     if (!CancelAutomaticMesh()) return false;
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
+    if (m_nameImportControl) m_nameImportControl->Cancel();
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
         statusBar()->showMessage(QStringLiteral("请先保存或取消素材、图集或 UV 编辑"), 8000);
         return false;
@@ -2939,6 +2963,9 @@ bool MainWindow::CloseModel()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_nameImportControl) {
+        m_closeAfterNameImport = true; m_nameImportControl->Cancel(); event->ignore(); return;
+    }
     if (m_psdRecoveryActive) {
         m_closeAfterExport = true;
         if (m_activeExportControl) m_activeExportControl->Cancel();
@@ -2964,6 +2991,7 @@ bool MainWindow::AuthoringReady(QString* error) const
         if (error) *error = QStringLiteral("模型编辑正在提交，请稍后重试");
         return false;
     }
+    if (m_nameImportControl) { if (error) *error = QStringLiteral("工程名称正在读取，请等待完成或取消"); return false; }
     if (m_artworkLoading) { if (error) *error = QStringLiteral("来源素材正在读取，请等待完成或取消"); return false; }
     if (m_materialEditor.IsActive() || m_atlasEditor.IsActive()) {
         if (error) *error = QStringLiteral("请先保存或取消素材、图集或 UV 编辑");
@@ -2983,7 +3011,7 @@ void MainWindow::RefreshSessionActions()
     if (m_loadSessionAction) m_loadSessionAction->setEnabled(ready() && !m_previewExport.IsBusy());
     if (!alive) return;
     if (m_savedPsdRecoveryAction) m_savedPsdRecoveryAction->setEnabled(HasSavedPsdSources() && !m_closingModel &&
-        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_artworkLoading && !m_applyingSession &&
+        !m_batchExporting && !m_psdBatch && !m_previewExport.IsBusy() && !m_artworkLoading && !m_nameImportControl && !m_applyingSession &&
         !m_materialEditor.IsActive() && !m_atlasEditor.IsActive());
 }
 
@@ -3236,7 +3264,7 @@ void MainWindow::RestDock(const QString &name)
         QString detail;
         if (m_cidJson->ParameterOrganization() && !m_document.SetParameterOrganization(*m_cidJson->ParameterOrganization(), &detail)) errors.append(detail);
         if (m_cidJson->GeometryObjectPairs() && !m_document.SetGeometryObjectPairs(*m_cidJson->GeometryObjectPairs(), &detail)) errors.append(detail);
-        if (!InitializeDeformerDisplayNames(m_document, &detail)) errors.append(detail);
+        if (!InitializeDisplayNames(m_document, &detail)) errors.append(detail);
         displayError = errors.join(QStringLiteral("；"));
     }
     if (!displayError.isEmpty()) statusBar()->showMessage(QStringLiteral("显示信息未完整载入：%1").arg(displayError), 10000);
@@ -3245,7 +3273,7 @@ void MainWindow::RestDock(const QString &name)
     m_treePanel = new CModelTreePanel(this);
     addDockWidget(Qt::LeftDockWidgetArea, m_treePanel);
     m_treePanel->BuildTreeBytes(m_document.SourceBytes(), m_cidJson);
-    m_treePanel->ApplyDeformerDisplayNames(m_document.DeformerDisplayNames());
+    m_treePanel->ApplyDisplayNames(m_document.DisplayNames());
 
     // 右侧面板：参数控制 + 物理设置（tabify）
     m_paramPanel = new CParamPanel(this);
@@ -3496,8 +3524,8 @@ void MainWindow::RestDock(const QString &name)
     connect(m_treePanel, &CModelTreePanel::ObjectsSelected, this, &MainWindow::SelectModelObjects);
     connect(m_treePanel, &CModelTreePanel::CreateDeformerRequested, this, &MainWindow::CreateDeformer);
     connect(m_treePanel, &CModelTreePanel::RemoveDeformerRequested, this, &MainWindow::RemoveDeformer);
-    connect(m_treePanel, &CModelTreePanel::RenameDeformerRequested, this, &MainWindow::RenameDeformer);
-    connect(m_inspectorPanel, &CInspectorPanel::RenameDeformerRequested, this, &MainWindow::RenameDeformer);
+    connect(m_treePanel, &CModelTreePanel::RenameObjectRequested, this, &MainWindow::RenameObject);
+    connect(m_inspectorPanel, &CInspectorPanel::RenameObjectRequested, this, &MainWindow::RenameObject);
     connect(m_inspectorPanel, &CInspectorPanel::ResizeWarpGridRequested, this, &MainWindow::ResizeWarpGrid);
     connect(m_treePanel, &CModelTreePanel::EditGeometryPairsRequested, this, &MainWindow::EditGeometryPairs);
     connect(m_treePanel, &CModelTreePanel::MirrorGeometryPairRequested, this, &MainWindow::MirrorGeometryPair);
@@ -3959,6 +3987,7 @@ void MainWindow::createActions()
     connect(myAction, &QAction::triggered, this, &MainWindow::on_actionpsdPrint_triggered);
     connect(myBatchAction, &QAction::triggered, this, &MainWindow::on_actionBatchPsd_triggered);
     ConfigurePsdRecoveryAction();
+    ConfigureObjectNameActions();
 
     myCloseAction = new QAction(tr("关闭模型"), this);
     myCloseAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
@@ -4106,6 +4135,11 @@ void MainWindow::setupUI()
     mainToolBar->setMovable(false);
     mainToolBar->setFloatable(false);
     mainToolBar->addAction(myOpenAction);
+    auto* namesButton = new QToolButton(mainToolBar); namesButton->setObjectName(QStringLiteral("objectNamesMenu"));
+    namesButton->setText(QStringLiteral("名称")); namesButton->setPopupMode(QToolButton::InstantPopup);
+    namesButton->setFocusPolicy(Qt::StrongFocus);
+    auto* namesMenu = new QMenu(namesButton); namesMenu->addActions({m_renameObjectAction, m_importObjectNamesAction});
+    namesButton->setMenu(namesMenu); mainToolBar->addWidget(namesButton);
     auto* artworkButton = new QToolButton(mainToolBar); artworkButton->setObjectName(QStringLiteral("artworkMenu")); artworkButton->setText(QStringLiteral("素材"));
     artworkButton->setPopupMode(QToolButton::InstantPopup); artworkButton->setFocusPolicy(Qt::StrongFocus);
     auto* artworkMenu = new QMenu(artworkButton); artworkMenu->addActions({m_importPsdAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction}); artworkButton->setMenu(artworkMenu); mainToolBar->addWidget(artworkButton);

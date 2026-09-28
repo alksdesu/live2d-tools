@@ -39,6 +39,7 @@ public:
     void SetPreviewHandler(Handler handler);
     void SetSubmissionHandler(Handler handler);
     void SetCancellationHandler(CancellationHandler handler);
+    bool SetMeshDisplayNames(const QMap<QString, QString>& names, QString* error = nullptr);
     void accept() override;
     void reject() override;
     void done(int result) override;
@@ -84,6 +85,7 @@ private:
     Handler m_preview, m_submit;
     CancellationHandler m_cancel;
     QSet<QString> m_selection;
+    QMap<QString, QString> m_meshDisplayNames;
     CAtlasCanvasView* m_canvas = nullptr;
     QComboBox *m_slot = nullptr, *m_destination = nullptr;
     QListWidget *m_meshes = nullptr, *m_packTargets = nullptr;

@@ -1,4 +1,5 @@
 #include "ccmo3builder.h"
+#include "live2dstruct/cdisplaynamemetadata.h"
 #include "ccaffarchive.h"
 #include "ccmo3entities.h"
 #include "ccmo3ids.h"
@@ -35,6 +36,28 @@ const QString kNoDebug = QStringLiteral("(no debug info)");
 bool validSlice(int begin, int count, int size)
 {
     return begin >= 0 && count >= 0 && begin <= size && count <= size - begin;
+}
+
+template <class Names, class Objects>
+bool validateNameTargets(const Names& names, const Objects& objects, bool allowMissing, QString* error)
+{
+    QHash<QString, int> ids;
+    for (const auto* object : objects) ++ids[object->ids];
+    for (auto name = names.cbegin(); name != names.cend(); ++name) {
+        const int count = ids.value(name.key());
+        if (count != 1 && !(allowMissing && count == 0)) {
+            if (error) *error = QStringLiteral("cmo3 显示名称引用的对象不存在或 ID 不唯一：%1").arg(name.key());
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validateDisplayNames(const CModelDisplayNames::State& names, const CSectionTable& table, QString* error)
+{
+    return CModelDisplayNames::Validate(names, error) && validateNameTargets(names.parts, table.parts, false, error) &&
+        validateNameTargets(names.artMeshes, table.art_meshes, false, error) &&
+        validateNameTargets(names.deformers, table.deformers, false, error);
 }
 
 CModelParameterMetadata effectiveParameterMetadata(const CParameters* parameter, const CCmo3Builder::Options& options)
@@ -342,6 +365,8 @@ private:
         return m_deformerDisplayNames.value(id, id);
     }
 
+    QString artMeshDisplayName(const QString& id) const { return m_artMeshDisplayNames.value(id, id); }
+
     QString parameterDisplayName(const QString& id) const
     {
         const auto metadata = m_opt.parameterMetadata.constFind(id);
@@ -393,6 +418,7 @@ private:
 
     QHash<QString, QString> m_partDisplayNames;
     QMap<QString, QString> m_deformerDisplayNames;
+    QMap<QString, QString> m_artMeshDisplayNames;
     QHash<QString, QString> m_parameterDisplayNames;
     QHash<QString, int> m_paramIndexById;       // 参数 idstr → parameters 表下标
     int m_canvasW = 0;
@@ -512,23 +538,31 @@ bool Generator::loadDisplayNames(QString* error)
         }
     };
     readNames(QStringLiteral("Parameters"), m_parameterDisplayNames);
+    CDisplayNameMetadata::Snapshot metadata;
+    if (!m_opt.displayNames && (!m_opt.deformerDisplayNames || root.contains(QStringLiteral("Live2DToolsDisplayNames"))) &&
+        !CDisplayNameMetadata::Read(root, metadata, error)) return false;
+    if (m_opt.displayNames || metadata.names) {
+        auto names = m_opt.displayNames ? *m_opt.displayNames : *metadata.names;
+        if (!m_opt.displayNames && m_opt.deformerDisplayNames) names.deformers = *m_opt.deformerDisplayNames;
+        if (!validateDisplayNames(names, m_table, error)) return false;
+        for (auto name = names.parts.cbegin(); name != names.parts.cend(); ++name) m_partDisplayNames.insert(name.key(), name.value());
+        m_artMeshDisplayNames = names.artMeshes;
+        m_deformerDisplayNames = names.deformers;
+        return true;
+    }
     readNames(QStringLiteral("Parts"), m_partDisplayNames);
+    if (!validateNameTargets(m_partDisplayNames, m_table.parts, true, error)) return false;
     if (m_opt.deformerDisplayNames) {
         m_deformerDisplayNames = *m_opt.deformerDisplayNames;
         return true;
     }
-    const auto extension = root.constFind(QStringLiteral("Live2DToolsDeformerNames"));
-    if (extension != root.constEnd()) {
-        const auto object = extension->toObject();
-        if (!extension->isObject() || object.value(QStringLiteral("Version")).toDouble(-1) != 1 ||
-            !object.value(QStringLiteral("Names")).isObject()) {
-            if (error) *error = QStringLiteral("cmo3 变形器显示名称扩展无效");
-            return false;
-        }
-        return CDeformerDisplayNames::FromJson(object.value(QStringLiteral("Names")).toObject(), m_deformerDisplayNames, error);
+    if (metadata.deformerNames) {
+        if (!validateNameTargets(*metadata.deformerNames, m_table.deformers, false, error)) return false;
+        m_deformerDisplayNames = *metadata.deformerNames;
+        return true;
     }
     readNames(QStringLiteral("Deformers"), m_deformerDisplayNames);
-    return true;
+    return validateNameTargets(m_deformerDisplayNames, m_table.deformers, true, error);
 }
 
 SBindingChain Generator::chainFor(int keyformBindingSourceIndex) const
@@ -1027,7 +1061,7 @@ void Generator::writeArtMeshEntities()
         // CArtMeshSource
         m_xml.BeginObject(QStringLiteral("CArtMeshSource"), QString(), m_meshSourceIds[i]);
         m_xml.BeginObject(QStringLiteral("ACDrawableSource"), QStringLiteral("super"));
-        writeControllableHeader(mesh->ids, objectVisible(QStringLiteral("artmesh"), mesh->ids, mesh->is_visible),
+        writeControllableHeader(artMeshDisplayName(mesh->ids), objectVisible(QStringLiteral("artmesh"), mesh->ids, mesh->is_visible),
                                 objectPartIndex(mesh->parent_part_indices) >= 0
                                     ? m_partIds[objectPartIndex(mesh->parent_part_indices)].guid : m_rootPartGuidId,
                                 gridId, 1);
@@ -1926,7 +1960,16 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
     opt.cdiPath = owned(options.cdiPath);
     opt.physicsPath = owned(options.physicsPath);
     opt.userDataPath = owned(options.userDataPath);
-    if (options.deformerDisplayNames) {
+    if (options.displayNames) {
+        if (!CModelDisplayNames::Validate(*options.displayNames, outError)) return false;
+        opt.displayNames.emplace();
+        const auto copy = [&](const auto& source, auto& target) {
+            for (auto item = source.cbegin(); item != source.cend(); ++item) target.insert(owned(item.key()), owned(item.value()));
+        };
+        copy(options.displayNames->parts, opt.displayNames->parts);
+        copy(options.displayNames->artMeshes, opt.displayNames->artMeshes);
+        copy(options.displayNames->deformers, opt.displayNames->deformers);
+    } else if (options.deformerDisplayNames) {
         if (!CDeformerDisplayNames::Validate(*options.deformerDisplayNames, outError)) return false;
         QMap<QString, QString> names;
         for (auto item = options.deformerDisplayNames->cbegin(); item != options.deformerDisplayNames->cend(); ++item)
@@ -1952,15 +1995,15 @@ bool CCmo3Builder::Build(const Options& options, QString* outError)
 
     if (!validateDeformerSources(table, outError) || !validateParameterOptions(table, opt, outError) ||
         !validateMaskOptions(table, opt, outError)) return false;
-    if (opt.deformerDisplayNames) {
-        QSet<QString> ids;
-        for (const auto* deformer : table.deformers) ids.insert(deformer->ids);
-        for (auto name = opt.deformerDisplayNames->cbegin(); name != opt.deformerDisplayNames->cend(); ++name) {
-            if (!ids.contains(name.key())) {
-                if (outError) *outError = QStringLiteral("cmo3 显示名称引用了未知变形器：%1").arg(name.key());
-                return false;
-            }
-        }
+    if (opt.displayNames) {
+        if (!validateDisplayNames(*opt.displayNames, table, outError)) return false;
+        CModelDisplayNames::State names;
+        if (!CModelDisplayNames::Normalize(*opt.displayNames, names, outError)) return false;
+        opt.displayNames = std::move(names);
+    } else if (opt.deformerDisplayNames) {
+        CModelDisplayNames::State selected;
+        selected.deformers = *opt.deformerDisplayNames;
+        if (!validateDisplayNames(selected, table, outError)) return false;
         CDeformerDisplayNames::State names;
         if (!CDeformerDisplayNames::Normalize(*opt.deformerDisplayNames, names, outError)) return false;
         opt.deformerDisplayNames = std::move(names);
