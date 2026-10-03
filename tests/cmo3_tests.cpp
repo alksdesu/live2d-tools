@@ -1355,6 +1355,28 @@ private slots:
         QVERIFY(block.contains("_constraints\" count=\"56\""));
         QVERIFY(block.contains(cmo3::CXsXmlWriter::FormatFloat(changed[0]).toUtf8()));
     }
+
+    void generatedCmo3HasNoEmptyDrawableReferences()
+    {
+        const QString mocPath = qEnvironmentVariable("LIVE2D_TEST_BUILDER_MOC");
+        if (mocPath.isEmpty()) QSKIP("Set LIVE2D_TEST_BUILDER_MOC");
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.outPath = temporary.filePath(QStringLiteral("generated.cmo3"));
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(main);
+        QVERIFY(!main->content.contains("xs.ref=\"\""));
+        cmo3::CCmo3Project project;
+        QVERIFY2(cmo3::CCmo3Project::OpenFile(options.outPath, project, &error), qPrintable(error));
+        QVERIFY(project.Names());
+        QVERIFY(project.Materials());
+    }
 };
 
 QTEST_GUILESS_MAIN(Cmo3Tests)

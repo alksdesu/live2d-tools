@@ -1315,7 +1315,7 @@ void Generator::writeArtMeshEntities()
                         static_cast<int>(m_table.position_indices->indices.size())) || !keyformPositionsValid) {
             continue;
         }
-        bool rawIndicesValid = mesh->position_index_sources_counts >= 3 &&
+        bool rawIndicesValid = mesh->position_index_sources_counts >= 0 &&
             mesh->position_index_sources_counts % 3 == 0;
         if (rawIndicesValid) {
             for (int t = 0; t < mesh->position_index_sources_counts; ++t) {
@@ -2068,9 +2068,11 @@ void Generator::writeMain()
 
     // drawable 集
     m_xml.BeginObject(QStringLiteral("CDrawableSourceSet"), QStringLiteral("drawableSourceSet"));
-    m_xml.BeginCArrayList(QStringLiteral("_sources"), m_meshSourceIds.size());
+    int drawableSourceCount = 0;
+    for (const QString& id : m_meshSourceIds) if (!id.isEmpty()) ++drawableSourceCount;
+    m_xml.BeginCArrayList(QStringLiteral("_sources"), drawableSourceCount);
     for (const QString& id : m_meshSourceIds) {
-        m_xml.Ref(QStringLiteral("CArtMeshSource"), QString(), id);
+        if (!id.isEmpty()) m_xml.Ref(QStringLiteral("CArtMeshSource"), QString(), id);
     }
     m_xml.EndList();
     m_xml.EndObject();
@@ -2095,7 +2097,9 @@ void Generator::writeMain()
 
     // affecter 集（glue）
     m_xml.BeginObject(QStringLiteral("CAffecterSourceSet"), QStringLiteral("affecterSourceSet"));
-    m_xml.BeginCArrayList(QStringLiteral("_sources"), m_glueSourceIds.size());
+    int glueSourceCount = 0;
+    for (const QString& id : m_glueSourceIds) if (!id.isEmpty()) ++glueSourceCount;
+    m_xml.BeginCArrayList(QStringLiteral("_sources"), glueSourceCount);
     for (const QString& id : m_glueSourceIds) {
         if (!id.isEmpty()) m_xml.Ref(QStringLiteral("CGlueSource"), QString(), id);
     }
@@ -2267,7 +2271,7 @@ bool Generator::Run(QString* outError)
             }
         }
         for (int i = 0; i < m_table.art_meshes.size(); ++i) {
-            if (objectPartIndex(m_table.art_meshes[i]->parent_part_indices) < 0) {
+            if (objectPartIndex(m_table.art_meshes[i]->parent_part_indices) < 0 && !m_meshSourceIds[i].isEmpty()) {
                 rootChildRefs.append(m_meshGuidIds[i]);
                 rootChildTags.append(QStringLiteral("CDrawableGuid"));
             }
