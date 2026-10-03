@@ -49,6 +49,7 @@ target_link_libraries(texture_data PUBLIC Qt6::Core Qt6::Gui)
 
 add_library(model_data STATIC
     live2dstruct/cmocblendshapegeometrybuilder.cpp
+    live2dstruct/cblendshapeposeevaluator.cpp
     live2dstruct/cparentgraph.cpp
     live2dstruct/cblendshaperelations.cpp
     live2d/cdeformerdrag.cpp

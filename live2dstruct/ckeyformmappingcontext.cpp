@@ -1,6 +1,7 @@
 #include "ckeyformmappingcontext.h"
 #include "cmodeldocument.h"
 #include "ckeyformbindinggrid.h"
+#include "cblendshapeposeevaluator.h"
 #include "csectiontable.h"
 #include "tree/c2dtree.h"
 
@@ -122,7 +123,13 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         return fail(error, QStringLiteral("关键形映射需要已加载的模型快照"));
     try {
         QMap<QString, float> corner;
-        if (!document.KeyformParameterValues(artMeshId, QStringLiteral("artmesh"), keyformIndex, corner, error)) return false;
+        {
+            auto sourceReader = CReader::FromBytes(document.SourceBytes());
+            CSectionTable sourceTable(sourceReader);
+            CKeyformBindingGrid sourceBindings;
+            if (!sourceBindings.Build(sourceTable, error, true) ||
+                !sourceBindings.Pose(CKeyformBindingGrid::ArtMesh, artMeshId, keyformIndex, corner, error)) return false;
+        }
         if (fullPose.size() != document.Parameters().size())
             return fail(error, QStringLiteral("编辑姿态必须包含模型的全部参数"));
         QSet<QString> parameterIds;
@@ -145,7 +152,10 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         if (!candidate->section.IsValid()) return fail(error, candidate->reader.Error());
         const auto& table = candidate->section;
         CKeyformBindingGrid bindings;
-        if (!bindings.Build(table, error)) return false;
+        if (!bindings.Build(table, error, true)) return false;
+        CBlendShapePoseEvaluator::Overrides poseOverrides;
+        CBlendShapePoseEvaluator evaluator;
+        if (!evaluator.Build(table, fullPose, poseOverrides, error)) return false;
         QMap<QString, float> patchedCorner;
         if (!bindings.Pose(CKeyformBindingGrid::ArtMesh, artMeshId, keyformIndex, patchedCorner, error)) return false;
         if (patchedCorner != corner)
@@ -207,6 +217,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             !sameSlice(table.keyform_positions->xys, table.art_mesh_keyforms[row]->keyform_position_sources_begin_indices, local))
             return fail(error, QStringLiteral("目标关键形坐标与预览补丁不一致：%1").arg(artMeshId));
         candidate->tree = std::make_unique<C2DTree>(table);
+        candidate->tree->SetPoseOverrides(poseOverrides);
         QSet<QString> assigned;
         for (auto* node : candidate->tree->getParametersTree()) {
             auto* parameter = dynamic_cast<CParameterNode*>(node);

@@ -31,6 +31,35 @@ void C2DTree::OnUpdate()
         if (!node || visited.contains(node)) continue;
         visited.insert(node);
         bool valid = entry.valid && CLinearInterpolation::SetCKeyFormObject(node);
+        if (valid) {
+            if (auto* mesh = dynamic_cast<CArtMeshNode*>(node)) {
+                const auto found = m_poseOverrides.artMeshPositions.constFind(node->getName());
+                if (found != m_poseOverrides.artMeshPositions.cend() &&
+                    found->size() == mesh->GetCurKeyForm().GetPosition().size()) {
+                    auto position = mesh->GetCurKeyForm().GetPosition();
+                    for (int index = 0; index < position.size(); ++index) position[index] += found->at(index);
+                    mesh->GetCurKeyForm().SetPosition(position);
+                }
+            } else if (auto* warp = dynamic_cast<CWarpNode*>(node)) {
+                const auto found = m_poseOverrides.warpPositions.constFind(node->getName());
+                if (found != m_poseOverrides.warpPositions.cend() &&
+                    found->size() == warp->GetCurKeyForm().GetPosition().size()) {
+                    auto position = warp->GetCurKeyForm().GetPosition();
+                    for (int index = 0; index < position.size(); ++index) position[index] += found->at(index);
+                    warp->GetCurKeyForm().SetPosition(position);
+                }
+            } else if (auto* rotation = dynamic_cast<CRotationNode*>(node)) {
+                const auto found = m_poseOverrides.rotations.constFind(node->getName());
+                if (found != m_poseOverrides.rotations.cend() && !found->reflectionConflict) {
+                    auto& key = rotation->GetCurKeyForm();
+                    key.Setopacities(key.Getopacities() + found->opacity);
+                    key.Setangles(key.Getangles() + found->angle);
+                    key.Setorigin_x(key.Getorigin_x() + found->originX);
+                    key.Setorigin_y(key.Getorigin_y() + found->originY);
+                    key.Setscales(key.Getscales() + found->scale);
+                }
+            }
+        }
         node->SetParentFrame(entry.parent, valid);
         if (!valid) node->UpdateCanvasPositions({});
         std::shared_ptr<const CCoordinateFrame> childFrame = entry.parent;

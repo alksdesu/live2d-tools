@@ -22,7 +22,7 @@ bool fail(QString* error, const QString& message)
 
 namespace live2dstruct {
 
-bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
+bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error, bool allowBlendShapePose)
 {
     if (!table.IsValid()) return fail(error, QStringLiteral("关键形绑定：源区段表无效"));
 
@@ -175,7 +175,7 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
         }
         if (!grid.error.isEmpty()) return grid;
         grid.structureValid = true;
-        if (unsupportedReferences[end] != unsupportedReferences[first])
+        if (!allowBlendShapePose && unsupportedReferences[end] != unsupportedReferences[first])
             grid.error = bindings[references[firstMarked(unsupportedReferences, first, end)]].error;
         return grid;
     };
@@ -206,7 +206,7 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
         if (!source) continue;
         Grid grid = buildGrid(source->keyform_binding_sources_indices, source->keyform_sources_begin_indices,
                               source->keyform_sources_counts, table.art_mesh_keyforms.size());
-        if (blendMeshes.contains(static_cast<int>(index)) && grid.error.isEmpty())
+        if (!allowBlendShapePose && blendMeshes.contains(static_cast<int>(index)) && grid.error.isEmpty())
             grid.error = QStringLiteral("对象包含尚不支持姿态反解的 BlendShape");
         insert(ArtMesh, source->ids, std::move(grid));
     }
@@ -219,7 +219,7 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error)
                 const CWarp_deformers* warp = table.warp_deformers[specific];
                 grid = buildGrid(source->keyform_binding_sources_indices, warp->keyform_sources_begin_indices,
                                  warp->keyform_sources_counts, table.warp_deformer_keyforms.size());
-                if (blendWarps.contains(specific) && grid.error.isEmpty())
+                if (!allowBlendShapePose && blendWarps.contains(specific) && grid.error.isEmpty())
                     grid.error = QStringLiteral("对象包含尚不支持姿态反解的 BlendShape");
             } else grid.error = QStringLiteral("Warp 专用源索引无效");
             insert(Warp, source->ids, std::move(grid));

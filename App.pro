@@ -50,6 +50,7 @@ SOURCES += \
     live2dstruct/ctextureeditcontroller.cpp \
     live2dstruct/cparentgraph.cpp \
     live2dstruct/cmocblendshapegeometrybuilder.cpp \
+    live2dstruct/cblendshapeposeevaluator.cpp \
     live2dstruct/cblendshaperelations.cpp \
     ui/cmodelhierarchymodel.cpp \
     ui/cmodelhierarchyview.cpp \

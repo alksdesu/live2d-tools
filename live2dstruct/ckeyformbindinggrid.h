@@ -32,7 +32,7 @@ public:
         QString diagnostic;
     };
 
-    bool Build(const CSectionTable& table, QString* error = nullptr);
+    bool Build(const CSectionTable& table, QString* error = nullptr, bool allowBlendShapePose = false);
     bool Pose(ObjectType type, const QString& id, int keyformIndex,
               QMap<QString, float>& values, QString* error = nullptr) const;
     QVector<Axis> Axes(ObjectType type, const QString& id) const;

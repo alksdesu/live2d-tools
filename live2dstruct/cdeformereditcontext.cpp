@@ -1,5 +1,6 @@
 #include "cdeformereditcontext.h"
 #include "ckeyformbindinggrid.h"
+#include "cblendshapeposeevaluator.h"
 #include "ckeyformmappingcontext.h"
 #include "cmodeldocument.h"
 #include "csectiontable.h"
@@ -129,7 +130,15 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         return fail(error, QStringLiteral("变形器编辑类型无效：%1").arg(type));
     try {
         QMap<QString, float> corner;
-        if (!document.KeyformParameterValues(id, type, keyform, corner, error)) return false;
+        {
+            auto sourceReader = CReader::FromBytes(document.SourceBytes());
+            CSectionTable sourceTable(sourceReader);
+            CKeyformBindingGrid sourceBindings;
+            const auto sourceType = type == QStringLiteral("warp") ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
+            const bool allowBlendShapePose = type == QStringLiteral("warp");
+            if (!sourceBindings.Build(sourceTable, error, allowBlendShapePose) ||
+                !sourceBindings.Pose(sourceType, id, keyform, corner, error)) return false;
+        }
         if (fullPose.size() != document.Parameters().size())
             return fail(error, QStringLiteral("变形器编辑姿态必须包含全部参数"));
         QSet<QString> parameters;
@@ -152,7 +161,11 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         const auto& table = candidate->table;
         if (!table.IsValid()) return fail(error, candidate->reader.Error());
         CKeyformBindingGrid bindings;
-        if (!bindings.Build(table, error)) return false;
+        const bool allowBlendShapePose = type == QStringLiteral("warp");
+        if (!bindings.Build(table, error, allowBlendShapePose)) return false;
+        CBlendShapePoseEvaluator::Overrides poseOverrides;
+        CBlendShapePoseEvaluator evaluator;
+        if (!evaluator.Build(table, fullPose, poseOverrides, error)) return false;
         const auto targetType = type == QStringLiteral("warp") ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
         QMap<QString, float> patchedCorner;
         if (!bindings.Pose(targetType, id, keyform, patchedCorner, error)) return false;
@@ -169,8 +182,7 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         if (targetIndex < 0) return fail(error, QStringLiteral("预览快照缺少目标变形器：%1").arg(id));
         if (table.deformers[targetIndex]->types != (targetType == CKeyformBindingGrid::Warp ? 0 : 1))
             return fail(error, QStringLiteral("目标变形器类型与预览快照不一致：%1").arg(id));
-        QSet<int> blendWarps, blendRotations;
-        for (const auto* shape : table.blend_shapes_warp_deformers) if (shape) blendWarps.insert(shape->target_indices);
+        QSet<int> blendRotations;
         for (const auto* shape : table.blend_shapes_rotation_deformers) if (shape) blendRotations.insert(shape->target_indices);
         QSet<int> chain;
         for (int index = targetIndex; index != -1; index = table.deformers[index]->parent_deformer_indices) {
@@ -181,7 +193,7 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
             if (deformer->ids.isEmpty() || idCounts.value(deformer->ids) != 1 || index >= document.Deformers().size() ||
                 document.Deformers()[index].id != deformer->ids || (deformer->types != 0 && deformer->types != 1))
                 return fail(error, QStringLiteral("变形器标识、类型或所属源不一致：%1").arg(deformer->ids));
-            if ((deformer->types == 0 ? blendWarps : blendRotations).contains(deformer->specific_sources_indices))
+            if (deformer->types == 1 && blendRotations.contains(deformer->specific_sources_indices))
                 return fail(error, QStringLiteral("目标或父变形器包含尚不支持编辑映射的 BlendShape：%1").arg(deformer->ids));
             const auto gridType = deformer->types == 0 ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
             const QString diagnostic = bindings.Diagnostic(gridType, deformer->ids);
@@ -205,6 +217,7 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         }
         if (local.isEmpty()) return fail(error, QStringLiteral("目标变形器没有可编辑坐标"));
         candidate->tree = std::make_unique<C2DTree>(table);
+        candidate->tree->SetPoseOverrides(poseOverrides);
         for (auto* node : candidate->tree->getParametersTree())
             if (auto* parameter = dynamic_cast<CParameterNode*>(node)) parameter->SetCurValue(fullPose.value(parameter->getName()));
         const auto nodes = candidate->tree->GetWarpKeys();

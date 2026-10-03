@@ -13,6 +13,7 @@
 #include <QDebug>
 #include "live2dstruct/coor/cwarpcoortype.h"
 #include "live2dstruct/coor/crotationcoortype.h"
+#include "live2dstruct/cblendshapeposeevaluator.h"
 namespace live2dstruct {
 class C2DTree
 {
@@ -50,6 +51,7 @@ public:
     void static Test();
     std::vector<C2DTreeNode*> GetWarpKeys();
     void SetParaValue(const QString& name,float value);
+    void SetPoseOverrides(const CBlendShapePoseEvaluator::Overrides& overrides) { m_poseOverrides = overrides; }
 
 private:
     void OnUpdate();
@@ -62,6 +64,7 @@ private:
         return node;
     }
     std::vector<std::unique_ptr<C2DTreeNode>> m_nodes;
+    CBlendShapePoseEvaluator::Overrides m_poseOverrides;
     std::vector<C2DTreeNode*> m_displayDeformers;
     QList<C2DTreeNode*> deformRoot;//树结构
     QList<C2DTreeNode*> partRoot;//表示一体,一起移动,一起

@@ -175,7 +175,10 @@ QMap<QString, float> poseFor(const CModelDocument& document, const QString& id, 
 {
     QMap<QString, float> result, corner;
     for (const auto& parameter : document.Parameters()) result.insert(parameter.id, parameter.defaultValue);
-    if (!document.KeyformParameterValues(id, "artmesh", keyform, corner)) return {};
+    auto reader = CReader::FromBytes(document.SourceBytes());
+    CSectionTable table(reader);
+    CKeyformBindingGrid bindings;
+    if (!bindings.Build(table, nullptr, true) || !bindings.Pose(CKeyformBindingGrid::ArtMesh, id, keyform, corner)) return {};
     for (auto value = corner.cbegin(); value != corner.cend(); ++value) result[value.key()] = value.value();
     return result;
 }
