@@ -1,9 +1,12 @@
 #include "cmo3/ccaffarchive.h"
 #include "cmo3_userdata.h"
+#include "cmo3/ccmo3project.h"
 #include "live2dstruct/cmodeluserdata.h"
 #include "cmo3/ccmo3builder.h"
 #include "cmo3/cxsxmlwriter.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cblendshaperelations.h"
+#include "live2dstruct/cmocblendshapegeometrybuilder.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/util/cfilereader.h"
 #include "opengl/ctextureextractor.h"
@@ -14,6 +17,7 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QXmlStreamReader>
+#include <QRegularExpression>
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
@@ -957,6 +961,9 @@ private slots:
         QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
         cmo3::CCaffArchive archive;
         QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        cmo3::CCmo3Project project;
+        QVERIFY2(cmo3::CCmo3Project::OpenFile(options.outPath, project, &error), qPrintable(error));
+        QVERIFY(project.IsValid());
         const auto* main = archive.FindByPath(QStringLiteral("main.xml"));
         QVERIFY(main);
         const auto flags = partDrawOrderFlags(main->content, &error);
@@ -1265,6 +1272,88 @@ private slots:
         options.deformerParentOverrides = document.DeformerParentOverrides();
         QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
         QVERIFY(QFileInfo::exists(options.outPath));
+    }
+
+    void exportsOfficialArtMeshMorphTargets()
+    {
+        const QString mocPath = qEnvironmentVariable("LIVE2D_TEST_BLEND_MOC");
+        const QString texturePath = qEnvironmentVariable("LIVE2D_TEST_BLEND_TEXTURE");
+        if (mocPath.isEmpty() || texturePath.isEmpty()) QSKIP("Set LIVE2D_TEST_BLEND_MOC and LIVE2D_TEST_BLEND_TEXTURE");
+        QFile texture(texturePath);
+        QVERIFY2(texture.open(QIODevice::ReadOnly), qPrintable(texture.errorString()));
+        const QByteArray textureBytes = texture.readAll();
+        QVERIFY(!textureBytes.isEmpty());
+        QFile modelFile(mocPath);
+        QVERIFY2(modelFile.open(QIODevice::ReadOnly), qPrintable(modelFile.errorString()));
+        const QByteArray original = modelFile.readAll();
+        QVERIFY(!original.isEmpty());
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.LoadBytes(original, mocPath, &error), qPrintable(error));
+        auto reader = live2dstruct::CReader::FromBytes(original);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        live2dstruct::CBlendShapeRelations relations;
+        QVERIFY2(relations.Build(table, &error), qPrintable(error));
+        live2dstruct::CMocBlendShapeGeometryBuilder::Key selected;
+        live2dstruct::CMocBlendShapeGeometryBuilder::Frame frame;
+        bool selectedEndpoint = false;
+        for (int shapeIndex = 0; shapeIndex < table.blend_shapes_art_meshes.size() && !selectedEndpoint; ++shapeIndex) {
+            const auto* shape = table.blend_shapes_art_meshes[shapeIndex];
+            if (!shape || shape->target_indices < 0 || shape->target_indices >= table.art_meshes.size() ||
+                table.art_meshes[shape->target_indices]->ids != QStringLiteral("ArtMesh271")) continue;
+            for (int binding = 0; binding < shape->blend_shape_keyform_binding_sources_counts && !selectedEndpoint; ++binding) {
+                const int bindingIndex = shape->blend_shape_keyform_binding_sources_begin_indices + binding;
+                const auto relation = relations.Bindings().value(bindingIndex);
+                if (!relation.valid) continue;
+                const auto parameterBinding = relations.ParameterBindings().value(relation.parameterBindingIndex);
+                for (int keyform = 0; keyform < relation.keyforms.count && !selectedEndpoint; ++keyform) {
+                    if (keyform == parameterBinding.baseKeyIndex) continue;
+                    selected = {QStringLiteral("ArtMesh271"), shapeIndex, binding, keyform};
+                    if (live2dstruct::CMocBlendShapeGeometryBuilder::Capture(original, selected, frame, &error))
+                        selectedEndpoint = true;
+                }
+            }
+        }
+        QVERIFY2(selectedEndpoint, qPrintable(error));
+        live2dstruct::CModelBlendShapeGeometryEntry entry;
+        QVERIFY2(document.CaptureBlendShapeGeometry(selected, entry, &error), qPrintable(error));
+        QVERIFY(!entry.deltas.isEmpty());
+        auto changed = entry.deltas;
+        changed[0] += 0.125f;
+        live2dstruct::CModelEdit edit;
+        QVERIFY2(document.MakeBlendShapeGeometryEdit(entry, changed, edit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(edit));
+        QByteArray preview;
+        QVERIFY2(document.BuildPreviewMoc(preview, &error), qPrintable(error));
+        QTemporaryDir temporary;
+        QVERIFY(temporary.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.mocBytes = preview;
+        options.outPath = temporary.filePath(QStringLiteral("morph-targets.cmo3"));
+        options.texturePngs = QMap<int, QByteArray>{{0, textureBytes}};
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(main);
+        const QByteArray xml = main->content;
+        QVERIFY(xml.contains("KeyFormMorphTargetSet"));
+        QVERIFY(xml.contains("MorphTargetBlendWeightConstraint"));
+        QVERIFY(QRegularExpression(QStringLiteral("_morphTargets\\\" count=\\\"[1-9][0-9]*\\\""))
+                    .match(QString::fromUtf8(xml)).hasMatch());
+        const int mesh = xml.indexOf("<CDrawableId xs.n=\"id\" idstr=\"ArtMesh271\"");
+        QVERIFY(mesh >= 0);
+        const int source = xml.lastIndexOf("<CArtMeshSource xs.id=", mesh);
+        const int end = xml.indexOf("</CArtMeshSource>", mesh);
+        QVERIFY(source >= 0 && end > mesh);
+        const QByteArray block = xml.mid(source, end + int(strlen("</CArtMeshSource>")) - source);
+        QVERIFY(block.contains("keyformMorphTargetSet"));
+        QVERIFY(block.contains("keyforms\" count=\"9\""));
+        QVERIFY(block.contains("MorphTarget:"));
+        QVERIFY(block.contains("_constraints\" count=\"56\""));
+        QVERIFY(block.contains(cmo3::CXsXmlWriter::FormatFloat(changed[0]).toUtf8()));
     }
 };
 

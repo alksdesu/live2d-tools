@@ -363,6 +363,19 @@ struct SDeformerIds {
     QString guid;                   // CDeformerGuid xs.id
 };
 
+struct SMorphTargetForm {
+    int parameterIndex = -1;
+    float keyValue = 0.0f;
+    int keyformIndex = -1;
+};
+
+struct SMorphTargetConstraint {
+    int morphParameterIndex = -1;
+    int constraintParameterIndex = -1;
+    float parameterValue = 0.0f;
+    float weight = 0.0f;
+};
+
 class Generator
 {
 public:
@@ -391,6 +404,15 @@ private:
     void writeRotationDeformerEntities();
     bool rawCanvasToPixels(const QString& owner, float x, float y, float& pixelX, float& pixelY);
     void writeGlueEntities();
+    bool collectArtMeshMorphTargets(int meshIndex, QVector<SMorphTargetForm>& forms,
+                                    QVector<SMorphTargetConstraint>& constraints, QString* error) const;
+    bool collectDeformerMorphTargets(int targetType, int targetIndex, int keyformCount,
+                                     QVector<SMorphTargetForm>& forms,
+                                     QVector<SMorphTargetConstraint>& constraints, QString* error) const;
+    void writeMorphTargetSet(const QString& ownerType, const QString& ownerId,
+                             const QVector<QString>& formGuidIds,
+                             const QVector<SMorphTargetForm>& forms,
+                             const QVector<SMorphTargetConstraint>& constraints);
 
     // ---- 复用块 ----
     // KeyformGridSource + KeyformBindingSource 族；返回 gridSource 的 xs.id
@@ -1010,6 +1032,253 @@ void Generator::writePartEntities()
     }
 }
 
+bool Generator::collectArtMeshMorphTargets(int meshIndex, QVector<SMorphTargetForm>& forms,
+                                            QVector<SMorphTargetConstraint>& constraints,
+                                            QString* error) const
+{
+    forms.clear();
+    constraints.clear();
+    if (meshIndex < 0 || meshIndex >= m_table.art_meshes.size()) return true;
+    const CArt_meshes* mesh = m_table.art_meshes[meshIndex];
+    if (!mesh) return false;
+    QSet<QString> formKeys;
+    QSet<QString> constraintKeys;
+    const auto fail = [&](const QString& reason) {
+        if (error) *error = reason;
+        return false;
+    };
+    const auto parameterForBinding = [&](int bindingIndex) {
+        for (int parameter = 0; parameter < m_table.parameters.size(); ++parameter) {
+            const CParameters* source = m_table.parameters[parameter];
+            if (!source || source->parameter_types != 1) continue;
+            if (bindingIndex >= source->blend_shape_parameter_binding_sources_begin_indices &&
+                bindingIndex < source->blend_shape_parameter_binding_sources_begin_indices +
+                                   source->blend_shape_parameter_binding_sources_counts)
+                return parameter;
+        }
+        return -1;
+    };
+    for (const auto* shape : m_table.blend_shapes_art_meshes) {
+        if (!shape || shape->target_indices != meshIndex) continue;
+        if (!validSlice(shape->blend_shape_keyform_binding_sources_begin_indices,
+                        shape->blend_shape_keyform_binding_sources_counts,
+                        m_table.blend_shape_keyform_bindings.size()))
+            return fail(QStringLiteral("ArtMesh %1 的 BlendShape 绑定范围无效").arg(mesh->ids));
+        for (int offset = 0; offset < shape->blend_shape_keyform_binding_sources_counts; ++offset) {
+            const int bindingIndex = shape->blend_shape_keyform_binding_sources_begin_indices + offset;
+            const CBlend_shape_keyform_bindings* binding = m_table.blend_shape_keyform_bindings[bindingIndex];
+            if (!binding) return fail(QStringLiteral("ArtMesh %1 的 BlendShape 绑定为空").arg(mesh->ids));
+            const int parameterIndex = parameterForBinding(binding->parameter_binding_sources_indices);
+            if (parameterIndex < 0) return fail(QStringLiteral("ArtMesh %1 的 BlendShape 参数绑定无效").arg(mesh->ids));
+            if (!validSlice(binding->keyform_sources_blend_shape_indices,
+                            binding->keyform_sources_blend_shape_counts,
+                            m_table.art_mesh_keyforms.size()))
+                return fail(QStringLiteral("ArtMesh %1 的 BlendShape 关键形范围无效").arg(mesh->ids));
+            if (binding->parameter_binding_sources_indices < 0 ||
+                binding->parameter_binding_sources_indices >= m_table.blend_shape_parameter_bindings.size())
+                return fail(QStringLiteral("ArtMesh %1 的 BlendShape 参数行无效").arg(mesh->ids));
+            const CBlend_shape_parameter_bindings* parameterBinding =
+                m_table.blend_shape_parameter_bindings[binding->parameter_binding_sources_indices];
+            if (!parameterBinding ||
+                !validSlice(parameterBinding->keys_sources_begin_indices, parameterBinding->keys_sources_counts,
+                            m_table.keys ? m_table.keys->values.size() : 0) ||
+                parameterBinding->keys_sources_counts != binding->keyform_sources_blend_shape_counts ||
+                parameterBinding->base_key_indices < 0 ||
+                parameterBinding->base_key_indices >= parameterBinding->keys_sources_counts)
+                return fail(QStringLiteral("ArtMesh %1 的 BlendShape 参数关键值与形状数量不一致").arg(mesh->ids));
+            for (int local = 0; local < binding->keyform_sources_blend_shape_counts; ++local) {
+                if (local == parameterBinding->base_key_indices) continue;
+                const int keyformIndex = binding->keyform_sources_blend_shape_indices + local;
+                const CArt_mesh_keyforms* keyform = m_table.art_mesh_keyforms[keyformIndex];
+                if (!keyform || !validSlice(keyform->keyform_position_sources_begin_indices,
+                                            mesh->vertex_counts * 2,
+                                            m_table.keyform_positions ? m_table.keyform_positions->xys.size() : 0))
+                    return fail(QStringLiteral("ArtMesh %1 的 BlendShape 位置行无效").arg(mesh->ids));
+                const float keyValue = m_table.keys->GetData(parameterBinding->keys_sources_begin_indices + local);
+                if (!std::isfinite(keyValue)) return fail(QStringLiteral("ArtMesh %1 的 BlendShape 关键值无效").arg(mesh->ids));
+                const QString formKey = QStringLiteral("%1/%2").arg(parameterIndex).arg(keyformIndex);
+                if (!formKeys.contains(formKey)) {
+                    formKeys.insert(formKey);
+                    forms.append({parameterIndex, keyValue, keyformIndex});
+                }
+            }
+            if (!validSlice(binding->blend_shape_constraint_index_sources_begin_indices,
+                            binding->blend_shape_constraint_index_sources_counts,
+                            m_table.blend_shape_constraint_indices.size()))
+                return fail(QStringLiteral("ArtMesh %1 的 BlendShape 限制器范围无效").arg(mesh->ids));
+            for (int index = 0; index < binding->blend_shape_constraint_index_sources_counts; ++index) {
+                const CBlend_shape_constraint_indices* reference =
+                    m_table.blend_shape_constraint_indices[binding->blend_shape_constraint_index_sources_begin_indices + index];
+                if (!reference || reference->blend_shape_constraint_sources_indices < 0 ||
+                    reference->blend_shape_constraint_sources_indices >= m_table.blend_shape_constraints.size())
+                    return fail(QStringLiteral("ArtMesh %1 的 BlendShape 限制器索引无效").arg(mesh->ids));
+                const CBlend_shape_constraints* constraint =
+                    m_table.blend_shape_constraints[reference->blend_shape_constraint_sources_indices];
+                if (!constraint || !validSlice(constraint->blend_shape_constraint_value_sources_begin_indices,
+                                                constraint->blend_shape_constraint_value_sources_counts,
+                                                m_table.blend_shape_constraint_values.size()) ||
+                    constraint->parameter_indices < 0 || constraint->parameter_indices >= m_table.parameters.size())
+                    return fail(QStringLiteral("ArtMesh %1 的 BlendShape 限制器数据无效").arg(mesh->ids));
+                for (int valueIndex = 0; valueIndex < constraint->blend_shape_constraint_value_sources_counts; ++valueIndex) {
+                    const CBlend_shape_constraint_values* value = m_table.blend_shape_constraint_values[
+                        constraint->blend_shape_constraint_value_sources_begin_indices + valueIndex];
+                    if (!value || !std::isfinite(value->keys) || !std::isfinite(value->weights))
+                        return fail(QStringLiteral("ArtMesh %1 的 BlendShape 限制器曲线无效").arg(mesh->ids));
+                    const QString constraintKey = QStringLiteral("%1/%2/%3/%4")
+                        .arg(parameterIndex).arg(constraint->parameter_indices)
+                        .arg(CXsXmlWriter::FormatFloat(value->keys)).arg(CXsXmlWriter::FormatFloat(value->weights));
+                    if (constraintKeys.contains(constraintKey)) continue;
+                    constraintKeys.insert(constraintKey);
+                    constraints.append({parameterIndex, constraint->parameter_indices, value->keys, value->weights});
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool Generator::collectDeformerMorphTargets(int targetType, int targetIndex, int keyformCount,
+                                            QVector<SMorphTargetForm>& forms,
+                                            QVector<SMorphTargetConstraint>& constraints,
+                                            QString* error) const
+{
+    forms.clear();
+    constraints.clear();
+    QVector<QPair<int, int>> slices;
+    const auto addShape = [&](const auto& sources) {
+        for (const auto* shape : sources) {
+            if (!shape || shape->target_indices != targetIndex) continue;
+            slices.append({shape->blend_shape_keyform_binding_sources_begin_indices,
+                           shape->blend_shape_keyform_binding_sources_counts});
+        }
+    };
+    if (targetType == 0) addShape(m_table.blend_shapes_warp_deformers);
+    else if (targetType == 1) addShape(m_table.blend_shapes_rotation_deformers);
+    else addShape(m_table.blend_shapes_parts);
+    if (slices.isEmpty()) return true;
+    QSet<QString> formKeys;
+    QSet<QString> constraintKeys;
+    const auto fail = [&](const QString& reason) {
+        if (error) *error = reason;
+        return false;
+    };
+    const auto parameterForBinding = [&](int bindingIndex) {
+        for (int parameter = 0; parameter < m_table.parameters.size(); ++parameter) {
+            const CParameters* source = m_table.parameters[parameter];
+            if (!source || source->parameter_types != 1) continue;
+            if (bindingIndex >= source->blend_shape_parameter_binding_sources_begin_indices &&
+                bindingIndex < source->blend_shape_parameter_binding_sources_begin_indices +
+                                   source->blend_shape_parameter_binding_sources_counts)
+                return parameter;
+        }
+        return -1;
+    };
+    for (const auto& slice : slices) {
+        if (!validSlice(slice.first, slice.second, m_table.blend_shape_keyform_bindings.size()))
+            return fail(QStringLiteral("变形器/部件的 BlendShape 绑定范围无效"));
+        for (int offset = 0; offset < slice.second; ++offset) {
+            const int bindingIndex = slice.first + offset;
+            const auto* binding = m_table.blend_shape_keyform_bindings[bindingIndex];
+            if (!binding) return fail(QStringLiteral("变形器/部件的 BlendShape 绑定为空"));
+            const int parameterIndex = parameterForBinding(binding->parameter_binding_sources_indices);
+            if (parameterIndex < 0) return fail(QStringLiteral("变形器/部件的 BlendShape 参数绑定无效"));
+            if (!validSlice(binding->keyform_sources_blend_shape_indices,
+                            binding->keyform_sources_blend_shape_counts, keyformCount) ||
+                binding->parameter_binding_sources_indices < 0 ||
+                binding->parameter_binding_sources_indices >= m_table.blend_shape_parameter_bindings.size())
+                return fail(QStringLiteral("变形器/部件的 BlendShape 关键形范围无效"));
+            const auto* parameterBinding = m_table.blend_shape_parameter_bindings[
+                binding->parameter_binding_sources_indices];
+            if (!parameterBinding ||
+                !validSlice(parameterBinding->keys_sources_begin_indices, parameterBinding->keys_sources_counts,
+                            m_table.keys ? m_table.keys->values.size() : 0) ||
+                parameterBinding->keys_sources_counts != binding->keyform_sources_blend_shape_counts ||
+                parameterBinding->base_key_indices < 0 ||
+                parameterBinding->base_key_indices >= parameterBinding->keys_sources_counts)
+                return fail(QStringLiteral("变形器/部件的 BlendShape 参数关键值与形状数量不一致"));
+            for (int local = 0; local < binding->keyform_sources_blend_shape_counts; ++local) {
+                if (local == parameterBinding->base_key_indices) continue;
+                const int keyformIndex = binding->keyform_sources_blend_shape_indices + local;
+                const float keyValue = m_table.keys->GetData(parameterBinding->keys_sources_begin_indices + local);
+                if (!std::isfinite(keyValue)) return fail(QStringLiteral("变形器/部件的 BlendShape 关键值无效"));
+                const QString formKey = QStringLiteral("%1/%2").arg(parameterIndex).arg(keyformIndex);
+                if (!formKeys.contains(formKey)) {
+                    formKeys.insert(formKey);
+                    forms.append({parameterIndex, keyValue, keyformIndex});
+                }
+            }
+            if (!validSlice(binding->blend_shape_constraint_index_sources_begin_indices,
+                            binding->blend_shape_constraint_index_sources_counts,
+                            m_table.blend_shape_constraint_indices.size()))
+                return fail(QStringLiteral("变形器/部件的 BlendShape 限制器范围无效"));
+            for (int index = 0; index < binding->blend_shape_constraint_index_sources_counts; ++index) {
+                const auto* reference = m_table.blend_shape_constraint_indices[
+                    binding->blend_shape_constraint_index_sources_begin_indices + index];
+                if (!reference || reference->blend_shape_constraint_sources_indices < 0 ||
+                    reference->blend_shape_constraint_sources_indices >= m_table.blend_shape_constraints.size())
+                    return fail(QStringLiteral("变形器/部件的 BlendShape 限制器索引无效"));
+                const auto* constraint = m_table.blend_shape_constraints[
+                    reference->blend_shape_constraint_sources_indices];
+                if (!constraint || !validSlice(constraint->blend_shape_constraint_value_sources_begin_indices,
+                                                constraint->blend_shape_constraint_value_sources_counts,
+                                                m_table.blend_shape_constraint_values.size()) ||
+                    constraint->parameter_indices < 0 || constraint->parameter_indices >= m_table.parameters.size())
+                    return fail(QStringLiteral("变形器/部件的 BlendShape 限制器数据无效"));
+                for (int valueIndex = 0; valueIndex < constraint->blend_shape_constraint_value_sources_counts; ++valueIndex) {
+                    const auto* value = m_table.blend_shape_constraint_values[
+                        constraint->blend_shape_constraint_value_sources_begin_indices + valueIndex];
+                    if (!value || !std::isfinite(value->keys) || !std::isfinite(value->weights))
+                        return fail(QStringLiteral("变形器/部件的 BlendShape 限制器曲线无效"));
+                    const QString constraintKey = QStringLiteral("%1/%2/%3/%4")
+                        .arg(parameterIndex).arg(constraint->parameter_indices)
+                        .arg(CXsXmlWriter::FormatFloat(value->keys)).arg(CXsXmlWriter::FormatFloat(value->weights));
+                    if (constraintKeys.contains(constraintKey)) continue;
+                    constraintKeys.insert(constraintKey);
+                    constraints.append({parameterIndex, constraint->parameter_indices, value->keys, value->weights});
+                }
+            }
+        }
+    }
+    return true;
+}
+
+void Generator::writeMorphTargetSet(const QString& ownerType, const QString& ownerId,
+                                     const QVector<QString>& formGuidIds,
+                                     const QVector<SMorphTargetForm>& forms,
+                                     const QVector<SMorphTargetConstraint>& constraints)
+{
+    m_xml.BeginObject(QStringLiteral("KeyFormMorphTargetSet"), QStringLiteral("keyformMorphTargetSet"));
+    m_xml.BeginCArrayList(QStringLiteral("_morphTargets"), forms.size());
+    for (int index = 0; index < forms.size(); ++index) {
+        const auto& form = forms[index];
+        m_xml.BeginObject(QStringLiteral("KeyFormMorphTarget"));
+        m_xml.Ref(QStringLiteral("CParameterGuid"), QStringLiteral("parameterGuid"), m_paramIds[form.parameterIndex].guid);
+        m_xml.F(QStringLiteral("keyValue"), form.keyValue);
+        m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("keyformGuid"), formGuidIds[index]);
+        m_xml.Ref(ownerType, QStringLiteral("owner"), ownerId);
+        m_xml.BeginObject(QStringLiteral("MorphTargetEditBaseParameterMap"), QStringLiteral("editBaseParameterMap"));
+        m_xml.Null(QStringLiteral("baseParameterMap"));
+        m_xml.EndObject();
+        m_xml.EndObject();
+    }
+    m_xml.EndList();
+    m_xml.BeginObject(QStringLiteral("MorphTargetBlendWeightConstraintSet"), QStringLiteral("blendWeightConstraintSet"));
+    m_xml.BeginCArrayList(QStringLiteral("_constraints"), constraints.size());
+    for (const auto& constraint : constraints) {
+        m_xml.BeginObject(QStringLiteral("MorphTargetBlendWeightConstraint"));
+        m_xml.Ref(QStringLiteral("CParameterGuid"), QStringLiteral("morphTargetParameterGuid"),
+                  m_paramIds[constraint.morphParameterIndex].guid);
+        m_xml.Ref(QStringLiteral("CParameterGuid"), QStringLiteral("constraintParameterGuid"),
+                  m_paramIds[constraint.constraintParameterIndex].guid);
+        m_xml.F(QStringLiteral("constraintParameterValue"), constraint.parameterValue);
+        m_xml.F(QStringLiteral("blendWeight"), constraint.weight);
+        m_xml.EndObject();
+    }
+    m_xml.EndList();
+    m_xml.EndObject();
+    m_xml.EndObject();
+}
+
 void Generator::writeArtMeshEntities()
 {
     m_meshGuidIds.resize(m_table.art_meshes.size());
@@ -1059,6 +1328,14 @@ void Generator::writeArtMeshEntities()
         }
         if (!rawIndicesValid) continue;
 
+        QVector<SMorphTargetForm> morphTargets;
+        QVector<SMorphTargetConstraint> morphConstraints;
+        QString morphError;
+        if (!collectArtMeshMorphTargets(i, morphTargets, morphConstraints, &morphError)) {
+            if (m_geometryError.isEmpty()) m_geometryError = morphError;
+            return;
+        }
+
         // keyform form guid 池
         QVector<QString> formGuidIds;
         formGuidIds.reserve(keyformCount);
@@ -1066,6 +1343,13 @@ void Generator::writeArtMeshEntities()
             const QString id = m_xml.AllocId();
             m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
             formGuidIds.append(id);
+        }
+        QVector<QString> morphFormGuidIds;
+        morphFormGuidIds.reserve(morphTargets.size());
+        for (int k = 0; k < morphTargets.size(); ++k) {
+            const QString id = m_xml.AllocId();
+            m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
+            morphFormGuidIds.append(id);
         }
 
         const SBindingChain chain = chainFor(mesh->keyform_binding_sources_indices);
@@ -1116,10 +1400,19 @@ void Generator::writeArtMeshEntities()
         // CArtMeshSource
         m_xml.BeginObject(QStringLiteral("CArtMeshSource"), QString(), m_meshSourceIds[i]);
         m_xml.BeginObject(QStringLiteral("ACDrawableSource"), QStringLiteral("super"));
-        writeControllableHeader(artMeshDisplayName(mesh->ids), objectVisible(QStringLiteral("artmesh"), mesh->ids, mesh->is_visible),
-                                objectPartIndex(mesh->parent_part_indices) >= 0
-                                    ? m_partIds[objectPartIndex(mesh->parent_part_indices)].guid : m_rootPartGuidId,
-                                gridId, 1);
+        m_xml.BeginObject(QStringLiteral("ACParameterControllableSource"), QStringLiteral("super"));
+        m_xml.S(QStringLiteral("localName"), artMeshDisplayName(mesh->ids));
+        m_xml.B(QStringLiteral("isVisible"), objectVisible(QStringLiteral("artmesh"), mesh->ids, mesh->is_visible));
+        m_xml.B(QStringLiteral("isLocked"), false);
+        const int parentPartIndex = objectPartIndex(mesh->parent_part_indices);
+        if (parentPartIndex >= 0 && parentPartIndex < m_partIds.size())
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_partIds[parentPartIndex].guid);
+        else
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_rootPartGuidId);
+        m_xml.Ref(QStringLiteral("KeyformGridSource"), QStringLiteral("keyformGridSource"), gridId);
+        writeMorphTargetSet(QStringLiteral("CArtMeshSource"), m_meshSourceIds[i], morphFormGuidIds,
+                             morphTargets, morphConstraints);
+        m_xml.BeginCArrayList(QStringLiteral("_extensions"), 1);
         m_xml.Ref(QStringLiteral("CTextureInputExtension"), QString(), texExtId);
         m_xml.EndList();   // _extensions
         m_xml.EndObject(); // ACParameterControllableSource
@@ -1172,7 +1465,7 @@ void Generator::writeArtMeshEntities()
         m_xml.IntArray(QStringLiteral("indices"), indices);
 
         // keyforms
-        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
+        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount + morphTargets.size());
         for (int k = 0; k < keyformCount; ++k) {
             const CArt_mesh_keyforms* kf = m_table.art_mesh_keyforms[
                 mesh->keyform_sources_begin_indices + k];
@@ -1212,6 +1505,43 @@ void Generator::writeArtMeshEntities()
             m_xml.EndObject(); // CArtMeshForm
         }
         m_xml.EndList();
+
+        for (int morphIndex = 0; morphIndex < morphTargets.size(); ++morphIndex) {
+            const auto& morph = morphTargets[morphIndex];
+            const CArt_mesh_keyforms* keyform = m_table.art_mesh_keyforms[morph.keyformIndex];
+            m_xml.BeginObject(QStringLiteral("CArtMeshForm"));
+            m_xml.BeginObject(QStringLiteral("ACDrawableForm"), QStringLiteral("super"));
+            m_xml.BeginObject(QStringLiteral("ACForm"), QStringLiteral("super"));
+            m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("guid"), morphFormGuidIds[morphIndex]);
+            m_xml.B(QStringLiteral("isAnimatedForm"), false);
+            m_xml.B(QStringLiteral("isLocalAnimatedForm"), false);
+            m_xml.Ref(QStringLiteral("CArtMeshSource"), QStringLiteral("_source"), m_meshSourceIds[i]);
+            const QString morphName = QStringLiteral("MorphTarget: ") + parameterDisplayName(m_table.parameters[morph.parameterIndex]->ids);
+            m_xml.S(QStringLiteral("name"), morphName);
+            m_xml.S(QStringLiteral("notes"), morphName);
+            m_xml.EndObject();
+            m_xml.I(QStringLiteral("drawOrder"), qRound(keyform->draw_orders));
+            m_xml.F(QStringLiteral("opacity"), keyform->opacities);
+            m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
+            m_xml.EndObject();
+            QVector<float> positions;
+            positions.reserve(vertexCount * 2);
+            for (int v = 0; v < vertexCount; ++v) {
+                const float mx = m_table.keyform_positions->GetData(keyform->keyform_position_sources_begin_indices + v * 2);
+                const float my = m_table.keyform_positions->GetData(keyform->keyform_position_sources_begin_indices + v * 2 + 1);
+                if (mesh->parent_deformer_indices < 0) {
+                    float px, py;
+                    if (!rawCanvasToPixels(mesh->ids, mx, my, px, py)) return;
+                    positions.append(px);
+                    positions.append(py);
+                } else {
+                    positions.append(mx);
+                    positions.append(my);
+                }
+            }
+            m_xml.FloatArray(QStringLiteral("positions"), positions);
+            m_xml.EndObject();
+        }
 
         m_xml.FloatArray(QStringLiteral("positions"), m_materialPositions[i]);
         m_xml.FloatArray(QStringLiteral("uvs"), m_materialUvs[i]);
@@ -1287,11 +1617,27 @@ void Generator::writeWarpDeformerEntities()
             }
             if (keyforms.size() != keyformCount) continue;
         }
+        QVector<SMorphTargetForm> morphTargets;
+        QVector<SMorphTargetConstraint> morphConstraints;
+        QString morphError;
+        if (!collectDeformerMorphTargets(0, deformer->specific_sources_indices,
+                                         m_table.warp_deformer_keyforms.size(), morphTargets,
+                                         morphConstraints, &morphError)) {
+            if (m_geometryError.isEmpty()) m_geometryError = morphError;
+            return;
+        }
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
             m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
             formGuidIds.append(id);
+        }
+        QVector<QString> morphFormGuidIds;
+        morphFormGuidIds.reserve(morphTargets.size());
+        for (int k = 0; k < morphTargets.size(); ++k) {
+            const QString id = m_xml.AllocId();
+            m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
+            morphFormGuidIds.append(id);
         }
         const SBindingChain chain = chainFor(deformer->keyform_binding_sources_indices);
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
@@ -1301,10 +1647,19 @@ void Generator::writeWarpDeformerEntities()
         m_deformerSourceIds[d] = m_xml.AllocId();
         m_xml.BeginObject(QStringLiteral("CWarpDeformerSource"), QString(), m_deformerSourceIds[d]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
-        writeControllableHeader(deformerDisplayName(deformer->ids), objectVisible(QStringLiteral("warp"), deformer->ids, deformer->is_visible),
-                                objectPartIndex(deformer->parent_part_indices) >= 0
-                                    ? m_partIds[objectPartIndex(deformer->parent_part_indices)].guid : m_rootPartGuidId,
-                                gridId, 0);
+        m_xml.BeginObject(QStringLiteral("ACParameterControllableSource"), QStringLiteral("super"));
+        m_xml.S(QStringLiteral("localName"), deformerDisplayName(deformer->ids));
+        m_xml.B(QStringLiteral("isVisible"), objectVisible(QStringLiteral("warp"), deformer->ids, deformer->is_visible));
+        m_xml.B(QStringLiteral("isLocked"), false);
+        const int parentPartIndex = objectPartIndex(deformer->parent_part_indices);
+        if (parentPartIndex >= 0 && parentPartIndex < m_partIds.size())
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_partIds[parentPartIndex].guid);
+        else
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_rootPartGuidId);
+        m_xml.Ref(QStringLiteral("KeyformGridSource"), QStringLiteral("keyformGridSource"), gridId);
+        writeMorphTargetSet(QStringLiteral("CWarpDeformerSource"), m_deformerSourceIds[d], morphFormGuidIds,
+                             morphTargets, morphConstraints);
+        m_xml.BeginCArrayList(QStringLiteral("_extensions"), 0);
         m_xml.EndList();   // _extensions
         m_xml.EndObject(); // ACParameterControllableSource
         m_xml.Ref(QStringLiteral("CDeformerGuid"), QStringLiteral("guid"), m_deformerIds[d].guid);
@@ -1319,7 +1674,7 @@ void Generator::writeWarpDeformerEntities()
         m_xml.I(QStringLiteral("row"), warp->rows);
         m_xml.B(QStringLiteral("isQuadTransform"), warp->is_quad_source);
 
-        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
+        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount + morphTargets.size());
         for (int k = 0; k < keyformCount; ++k) {
             const auto& kf = keyforms[k];
             m_xml.BeginObject(QStringLiteral("CWarpDeformerForm"));
@@ -1356,6 +1711,41 @@ void Generator::writeWarpDeformerEntities()
             m_xml.EndObject(); // CWarpDeformerForm
         }
         m_xml.EndList();
+        for (int morphIndex = 0; morphIndex < morphTargets.size(); ++morphIndex) {
+            const auto& morph = morphTargets[morphIndex];
+            const auto* keyform = m_table.warp_deformer_keyforms[morph.keyformIndex];
+            m_xml.BeginObject(QStringLiteral("CWarpDeformerForm"));
+            m_xml.BeginObject(QStringLiteral("ACDeformerForm"), QStringLiteral("super"));
+            m_xml.BeginObject(QStringLiteral("ACForm"), QStringLiteral("super"));
+            m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("guid"), morphFormGuidIds[morphIndex]);
+            m_xml.B(QStringLiteral("isAnimatedForm"), false);
+            m_xml.B(QStringLiteral("isLocalAnimatedForm"), false);
+            m_xml.Ref(QStringLiteral("CWarpDeformerSource"), QStringLiteral("_source"), m_deformerSourceIds[d]);
+            const QString morphName = QStringLiteral("MorphTarget: ") + parameterDisplayName(m_table.parameters[morph.parameterIndex]->ids);
+            m_xml.S(QStringLiteral("name"), morphName);
+            m_xml.S(QStringLiteral("notes"), morphName);
+            m_xml.EndObject();
+            m_xml.F(QStringLiteral("opacity"), keyform->opacities);
+            m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
+            m_xml.EndObject();
+            QVector<float> positions;
+            positions.reserve(gridVerts * 2);
+            for (int v = 0; v < gridVerts; ++v) {
+                const float mx = m_table.keyform_positions->GetData(keyform->keyform_position_sources_begin_indices + v * 2);
+                const float my = m_table.keyform_positions->GetData(keyform->keyform_position_sources_begin_indices + v * 2 + 1);
+                if (parentDeformer < 0) {
+                    float px, py;
+                    if (!rawCanvasToPixels(deformer->ids, mx, my, px, py)) return;
+                    positions.append(px);
+                    positions.append(py);
+                } else {
+                    positions.append(mx);
+                    positions.append(my);
+                }
+            }
+            m_xml.FloatArray(QStringLiteral("positions"), positions);
+            m_xml.EndObject();
+        }
         m_xml.EndObject(); // CWarpDeformerSource
 
         const int parentPart = objectPartIndex(deformer->parent_part_indices);
@@ -1396,11 +1786,27 @@ void Generator::writeRotationDeformerEntities()
             }
         }
         const int keyformCount = keyforms.size();
+        QVector<SMorphTargetForm> morphTargets;
+        QVector<SMorphTargetConstraint> morphConstraints;
+        QString morphError;
+        if (!collectDeformerMorphTargets(1, deformer->specific_sources_indices,
+                                         m_table.rotation_deformer_keyforms.size(), morphTargets,
+                                         morphConstraints, &morphError)) {
+            if (m_geometryError.isEmpty()) m_geometryError = morphError;
+            return;
+        }
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
             m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
             formGuidIds.append(id);
+        }
+        QVector<QString> morphFormGuidIds;
+        morphFormGuidIds.reserve(morphTargets.size());
+        for (int k = 0; k < morphTargets.size(); ++k) {
+            const QString id = m_xml.AllocId();
+            m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
+            morphFormGuidIds.append(id);
         }
         const SBindingChain chain = chainFor(deformer->keyform_binding_sources_indices);
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
@@ -1410,10 +1816,19 @@ void Generator::writeRotationDeformerEntities()
         m_deformerSourceIds[d] = m_xml.AllocId();
         m_xml.BeginObject(QStringLiteral("CRotationDeformerSource"), QString(), m_deformerSourceIds[d]);
         m_xml.BeginObject(QStringLiteral("ACDeformerSource"), QStringLiteral("super"));
-        writeControllableHeader(deformerDisplayName(deformer->ids), objectVisible(QStringLiteral("rotation"), deformer->ids, deformer->is_visible),
-                                objectPartIndex(deformer->parent_part_indices) >= 0
-                                    ? m_partIds[objectPartIndex(deformer->parent_part_indices)].guid : m_rootPartGuidId,
-                                gridId, 0);
+        m_xml.BeginObject(QStringLiteral("ACParameterControllableSource"), QStringLiteral("super"));
+        m_xml.S(QStringLiteral("localName"), deformerDisplayName(deformer->ids));
+        m_xml.B(QStringLiteral("isVisible"), objectVisible(QStringLiteral("rotation"), deformer->ids, deformer->is_visible));
+        m_xml.B(QStringLiteral("isLocked"), false);
+        const int parentPartIndex = objectPartIndex(deformer->parent_part_indices);
+        if (parentPartIndex >= 0 && parentPartIndex < m_partIds.size())
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_partIds[parentPartIndex].guid);
+        else
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_rootPartGuidId);
+        m_xml.Ref(QStringLiteral("KeyformGridSource"), QStringLiteral("keyformGridSource"), gridId);
+        writeMorphTargetSet(QStringLiteral("CRotationDeformerSource"), m_deformerSourceIds[d], morphFormGuidIds,
+                             morphTargets, morphConstraints);
+        m_xml.BeginCArrayList(QStringLiteral("_extensions"), 0);
         m_xml.EndList();
         m_xml.EndObject();
         m_xml.Ref(QStringLiteral("CDeformerGuid"), QStringLiteral("guid"), m_deformerIds[d].guid);
@@ -1425,7 +1840,7 @@ void Generator::writeRotationDeformerEntities()
         m_xml.EndObject(); // ACDeformerSource
 
         m_xml.B(QStringLiteral("useBoneUi_testImpl"), true);
-        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
+        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount + morphTargets.size());
         for (int k = 0; k < keyformCount; ++k) {
             const auto& kf = keyforms[k];
             const bool onCanvas = (parentDeformer < 0);
@@ -1464,6 +1879,40 @@ void Generator::writeRotationDeformerEntities()
             m_xml.EndObject(); // CRotationDeformerForm
         }
         m_xml.EndList();
+        for (int morphIndex = 0; morphIndex < morphTargets.size(); ++morphIndex) {
+            const auto& morph = morphTargets[morphIndex];
+            const auto* keyform = m_table.rotation_deformer_keyforms[morph.keyformIndex];
+            const bool onCanvas = (parentDeformer < 0);
+            float px = keyform->origin_x;
+            float py = keyform->origin_y;
+            if (onCanvas && !rawCanvasToPixels(deformer->ids, keyform->origin_x, keyform->origin_y, px, py)) return;
+            const double scale = double(keyform->scales) * (m_hasRotationAncestor[d] ? 1.0 : double(m_table.canvas_info->pixels_per_unit));
+            if (!std::isfinite(scale) || std::abs(scale) > std::numeric_limits<float>::max()) {
+                m_geometryError = QStringLiteral("旋转变形器的 BlendShape 缩放超出 float 范围：%1").arg(deformer->ids);
+                return;
+            }
+            m_xml.BeginObject(QStringLiteral("CRotationDeformerForm"));
+            m_xml.FloatAttribute(QStringLiteral("angle"), keyform->angles);
+            m_xml.FloatAttribute(QStringLiteral("originX"), px);
+            m_xml.FloatAttribute(QStringLiteral("originY"), py);
+            m_xml.FloatAttribute(QStringLiteral("scale"), static_cast<float>(scale));
+            m_xml.Attribute(QStringLiteral("isReflectX"), keyform->is_reflect_x ? QStringLiteral("true") : QStringLiteral("false"));
+            m_xml.Attribute(QStringLiteral("isReflectY"), keyform->is_reflect_y ? QStringLiteral("true") : QStringLiteral("false"));
+            m_xml.BeginObject(QStringLiteral("ACDeformerForm"), QStringLiteral("super"));
+            m_xml.BeginObject(QStringLiteral("ACForm"), QStringLiteral("super"));
+            m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("guid"), morphFormGuidIds[morphIndex]);
+            m_xml.B(QStringLiteral("isAnimatedForm"), false);
+            m_xml.B(QStringLiteral("isLocalAnimatedForm"), false);
+            m_xml.Ref(QStringLiteral("CRotationDeformerSource"), QStringLiteral("_source"), m_deformerSourceIds[d]);
+            const QString morphName = QStringLiteral("MorphTarget: ") + parameterDisplayName(m_table.parameters[morph.parameterIndex]->ids);
+            m_xml.S(QStringLiteral("name"), morphName);
+            m_xml.S(QStringLiteral("notes"), morphName);
+            m_xml.EndObject();
+            m_xml.F(QStringLiteral("opacity"), keyform->opacities);
+            m_xml.Ref(QStringLiteral("CoordType"), QStringLiteral("coordType"), coordTypeId);
+            m_xml.EndObject();
+            m_xml.EndObject();
+        }
         m_xml.F(QStringLiteral("handleLengthOnCanvas"), 512.0f);
         m_xml.F(QStringLiteral("circleRadiusOnCanvas"), 140.0f);
         m_xml.F(QStringLiteral("baseAngle"), rot->base_angles);
@@ -1763,6 +2212,11 @@ bool Generator::Run(QString* outError)
         QStringLiteral("com.live2d.cubism.doc.model.interpolator.KeyformGridAccessKey"),
         QStringLiteral("com.live2d.cubism.doc.model.interpolator.KeyformGridSource"),
         QStringLiteral("com.live2d.cubism.doc.model.interpolator.KeyformOnGrid"),
+        QStringLiteral("com.live2d.cubism.doc.model.morphTarget.KeyFormMorphTarget"),
+        QStringLiteral("com.live2d.cubism.doc.model.morphTarget.KeyFormMorphTargetSet"),
+        QStringLiteral("com.live2d.cubism.doc.model.morphTarget.MorphTargetBlendWeightConstraint"),
+        QStringLiteral("com.live2d.cubism.doc.model.morphTarget.MorphTargetBlendWeightConstraintSet"),
+        QStringLiteral("com.live2d.cubism.doc.model.morphTarget.MorphTargetEditBaseParameterMap"),
         QStringLiteral("com.live2d.cubism.doc.model.param.CParameterSource"),
         QStringLiteral("com.live2d.cubism.doc.model.param.CParameterSource$Type"),
         QStringLiteral("com.live2d.cubism.doc.model.param.CParameterSourceSet"),
@@ -1886,20 +2340,44 @@ bool Generator::Run(QString* outError)
             validSlice(part->keyform_sources_begin_indices, part->keyform_sources_counts,
                        m_table.part_keyforms.size());
         const int keyformCount = hasPartKeyforms ? part->keyform_sources_counts : 1;
+        QVector<SMorphTargetForm> morphTargets;
+        QVector<SMorphTargetConstraint> morphConstraints;
+        QString morphError;
+        if (!collectDeformerMorphTargets(3, i, m_table.part_keyforms.size(), morphTargets,
+                                         morphConstraints, &morphError)) {
+            if (outError) *outError = morphError;
+            return false;
+        }
         QVector<QString> formGuidIds;
         for (int k = 0; k < keyformCount; ++k) {
             const QString id = m_xml.AllocId();
             m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
             formGuidIds.append(id);
         }
+        QVector<QString> morphFormGuidIds;
+        morphFormGuidIds.reserve(morphTargets.size());
+        for (int k = 0; k < morphTargets.size(); ++k) {
+            const QString id = m_xml.AllocId();
+            m_xml.GuidObject(QStringLiteral("CFormGuid"), NewGuid(), id);
+            morphFormGuidIds.append(id);
+        }
         const SBindingChain chain = chainFor(part->keyform_binding_sources_indices);
         const QString gridId = writeKeyformGrid(chain, formGuidIds);
 
         m_xml.BeginObject(QStringLiteral("CPartSource"), QString(), m_partIds[i].source);
-        writeControllableHeader(partDisplayName(part->ids), objectVisible(QStringLiteral("part"), part->ids, part->is_visible),
-                                partParentIndex(i) >= 0
-                                    ? m_partIds[partParentIndex(i)].guid : m_rootPartGuidId,
-                                gridId, 0);
+        m_xml.BeginObject(QStringLiteral("ACParameterControllableSource"), QStringLiteral("super"));
+        m_xml.S(QStringLiteral("localName"), partDisplayName(part->ids));
+        m_xml.B(QStringLiteral("isVisible"), objectVisible(QStringLiteral("part"), part->ids, part->is_visible));
+        m_xml.B(QStringLiteral("isLocked"), false);
+        const int parentPartIndex = partParentIndex(i);
+        if (parentPartIndex >= 0 && parentPartIndex < m_partIds.size())
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_partIds[parentPartIndex].guid);
+        else
+            m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("parentGuid"), m_rootPartGuidId);
+        m_xml.Ref(QStringLiteral("KeyformGridSource"), QStringLiteral("keyformGridSource"), gridId);
+        writeMorphTargetSet(QStringLiteral("CPartSource"), m_partIds[i].source, morphFormGuidIds,
+                             morphTargets, morphConstraints);
+        m_xml.BeginCArrayList(QStringLiteral("_extensions"), 0);
         m_xml.EndList();
         m_xml.EndObject(); // ACParameterControllableSource
         m_xml.Ref(QStringLiteral("CPartGuid"), QStringLiteral("guid"), m_partIds[i].guid);
@@ -1918,7 +2396,7 @@ bool Generator::Run(QString* outError)
         m_xml.EndList();
         m_xml.Ref(QStringLiteral("CDeformerGuid"), QStringLiteral("targetDeformerGuid"),
                   m_deformerRootGuidId);
-        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount);
+        m_xml.BeginCArrayList(QStringLiteral("keyforms"), keyformCount + morphTargets.size());
         for (int k = 0; k < keyformCount; ++k) {
             int drawOrder = 500;
             if (hasPartKeyforms) {
@@ -1935,6 +2413,22 @@ bool Generator::Run(QString* outError)
             m_xml.S(QStringLiteral("notes"), QString());
             m_xml.EndObject();
             m_xml.I(QStringLiteral("drawOrder"), drawOrder);
+            m_xml.EndObject();
+        }
+        for (int morphIndex = 0; morphIndex < morphTargets.size(); ++morphIndex) {
+            const auto& morph = morphTargets[morphIndex];
+            const auto* keyform = m_table.part_keyforms[morph.keyformIndex];
+            m_xml.BeginObject(QStringLiteral("CPartForm"));
+            m_xml.BeginObject(QStringLiteral("ACForm"), QStringLiteral("super"));
+            m_xml.Ref(QStringLiteral("CFormGuid"), QStringLiteral("guid"), morphFormGuidIds[morphIndex]);
+            m_xml.B(QStringLiteral("isAnimatedForm"), false);
+            m_xml.B(QStringLiteral("isLocalAnimatedForm"), false);
+            m_xml.Ref(QStringLiteral("CPartSource"), QStringLiteral("_source"), m_partIds[i].source);
+            const QString morphName = QStringLiteral("MorphTarget: ") + parameterDisplayName(m_table.parameters[morph.parameterIndex]->ids);
+            m_xml.S(QStringLiteral("name"), morphName);
+            m_xml.S(QStringLiteral("notes"), morphName);
+            m_xml.EndObject();
+            m_xml.I(QStringLiteral("drawOrder"), qRound(keyform->draw_orders));
             m_xml.EndObject();
         }
         m_xml.EndList();
