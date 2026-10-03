@@ -45,6 +45,7 @@ struct CBlendShapeRelations::State
     std::array<QHash<int, QVector<int>>, TargetTypeCount> parameterRows;
     std::array<QVector<quint8>, TargetTypeCount> usableRows;
     std::array<int, TargetTypeCount> objectCounts{};
+    std::array<int, TargetTypeCount> keyformCounts{};
 
     void report(const QString& code, const QString& table, int row, const QString& message)
     {
@@ -163,6 +164,7 @@ struct CBlendShapeRelations::State
 
         const std::array<int, TargetTypeCount> keyformCounts{int(table.art_mesh_keyforms.size()),
             int(table.warp_deformer_keyforms.size()), int(table.rotation_deformer_keyforms.size()), int(table.part_keyforms.size())};
+        this->keyformCounts = keyformCounts;
         std::array<QVector<int>, TargetTypeCount> badRows;
         for (auto& rows : badRows) rows.resize(table.blend_shape_keyform_bindings.size() + 1);
         for (int index = 0; index < table.blend_shape_keyform_bindings.size(); ++index) {
@@ -345,6 +347,45 @@ QVector<int> CBlendShapeRelations::BindingsForTarget(TargetType type, const QStr
         for (int row = std::max(visited, slice.begin); row < end; ++row)
             if (m_state->usableRows[type][row]) result.append(row);
         visited = std::max(visited, end);
+    }
+    return result;
+}
+
+QVector<CBlendShapeRelations::GeometryBinding> CBlendShapeRelations::GeometryBindings(TargetType type, const QString& id) const
+{
+    QVector<GeometryBinding> result;
+    if (!m_state || type < ArtMesh || type > Part || id.isEmpty()) return result;
+    int sourceIndex = -1;
+    for (const auto& target : m_state->targets) {
+        if (target.type != type || target.id != id || !target.selectable) continue;
+        if (sourceIndex >= 0) return {};
+        sourceIndex = target.sourceIndex;
+    }
+    if (sourceIndex < 0) return result;
+    QSet<QPair<int, int>> seen;
+    for (const auto& shape : m_state->shapes) {
+        if (!shape.valid || shape.type != type || shape.sourceIndex != sourceIndex ||
+            !validSlice(shape.bindings, m_state->bindings.size())) continue;
+        for (int offset = 0; offset < shape.bindings.count; ++offset) {
+            const int bindingIndex = shape.bindings.begin + offset;
+            const auto& binding = m_state->bindings[bindingIndex];
+            if (!binding.valid || !validSlice(binding.keyforms, m_state->keyformCounts[type]) ||
+                binding.parameterIndex < 0 || binding.parameterIndex >= m_state->parameters.size() ||
+                binding.parameterBindingIndex < 0 || binding.parameterBindingIndex >= m_state->parameterBindings.size()) continue;
+            const auto& parameter = m_state->parameters[binding.parameterIndex];
+            const auto& parameterBinding = m_state->parameterBindings[binding.parameterBindingIndex];
+            if (!parameter.selectable || !parameterBinding.valid || !validSlice(parameterBinding.keys, m_state->keys.size())) continue;
+            QVector<float> keys;
+            for (int key = 0; key < parameterBinding.keys.count; ++key)
+                keys.append(m_state->keys[parameterBinding.keys.begin + key]);
+            for (int keyform = 0; keyform < binding.keyforms.count; ++keyform) {
+                const int sourceKeyform = binding.keyforms.begin + keyform;
+                if (!seen.contains({bindingIndex, sourceKeyform})) {
+                    result.append({id, parameter.id, keys, bindingIndex, sourceKeyform, -1});
+                    seen.insert({bindingIndex, sourceKeyform});
+                }
+            }
+        }
     }
     return result;
 }

@@ -135,6 +135,25 @@ private slots:
         QVERIFY(relations.BindingsForTarget(static_cast<Relations::TargetType>(99), "Shared").isEmpty());
     }
 
+    void geometryBindingsExposeLocalArtMeshKeyforms()
+    {
+        const QString path = qEnvironmentVariable("LIVE2D_REAL_CORE_EXTRA_MOC");
+        if (path.isEmpty()) QSKIP("Set LIVE2D_REAL_CORE_EXTRA_MOC to the official Mao MOC");
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto raw = file.readAll();
+        Relations relations; QString error;
+        QVERIFY2(build(raw, relations, &error), qPrintable(error));
+        const auto bindings = relations.GeometryBindings(Relations::ArtMesh, QStringLiteral("ArtMesh271"));
+        QVERIFY(!bindings.isEmpty());
+        for (const auto& binding : bindings) {
+            QCOMPARE(binding.targetId, QStringLiteral("ArtMesh271"));
+            QVERIFY(!binding.parameterId.isEmpty());
+            QVERIFY(binding.bindingIndex >= 0);
+            QVERIFY(binding.sourceKeyformIndex >= 0);
+            QVERIFY(!binding.parameterKeys.isEmpty());
+        }
+    }
+
     void versionFiveMalformedTargetDoesNotHideOtherTypes_data()
     {
         QTest::addColumn<int>("slot");

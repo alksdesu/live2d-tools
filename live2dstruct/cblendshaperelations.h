@@ -34,6 +34,13 @@ public:
         Slice constraints;
         bool valid = false;
     };
+    struct GeometryBinding {
+        QString targetId, parameterId;
+        QVector<float> parameterKeys;
+        int bindingIndex = -1;
+        int sourceKeyformIndex = -1;
+        int localKeyformIndex = -1;
+    };
     struct Target {
         TargetType type = ArtMesh;
         int objectIndex = -1;
@@ -77,6 +84,7 @@ public:
     QVector<Target> TargetsForParameter(const QString& id) const;
     QVector<int> ParametersForTarget(TargetType type, const QString& id) const;
     QVector<int> BindingsForTarget(TargetType type, const QString& id) const;
+    QVector<GeometryBinding> GeometryBindings(TargetType type, const QString& id) const;
     QVector<Limiter> LimitersForBinding(int bindingIndex) const;
 
 private:
