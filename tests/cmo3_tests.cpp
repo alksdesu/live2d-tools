@@ -86,6 +86,33 @@ QMap<QString, QString> objectDisplayNames(const QByteArray& bytes, QString* erro
     if (error) *error = xml.hasError() ? xml.errorString() : QString();
     return names;
 }
+
+QMap<QString, bool> partDrawOrderFlags(const QByteArray& bytes, QString* error)
+{
+    QXmlStreamReader xml(bytes);
+    xml.setNamespaceProcessing(false);
+    QMap<QString, bool> result;
+    int depth = 0;
+    QString id;
+    bool enabled = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            if (!depth) {
+                if (xml.name() != QLatin1String("CPartSource") || !xml.attributes().hasAttribute("xs.id")) continue;
+                id.clear(); enabled = false; depth = 1; continue;
+            }
+            ++depth;
+            if (xml.name() == QLatin1String("CPartId")) id = xml.attributes().value("idstr").toString();
+            else if (xml.name() == QLatin1String("b") && xml.attributes().value("xs.n") == QLatin1String("enableDrawOrderGroup")) {
+                enabled = xml.readElementText() == QLatin1String("true");
+                --depth;
+            }
+        } else if (xml.isEndElement() && depth && --depth == 0 && !id.isEmpty()) result.insert(id, enabled);
+    }
+    if (error) *error = xml.hasError() ? xml.errorString() : QString();
+    return result;
+}
 }
 
 class Cmo3Tests : public QObject
@@ -906,6 +933,99 @@ private slots:
         int pngCount = 0;
         for (const auto& entry : archive.Entries()) if (entry.path.endsWith(QStringLiteral(".png"))) ++pngCount;
         QVERIFY(pngCount > 0);
+    }
+
+    void preservesPartDrawOrderGroupFlags_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QStringList>("enabled");
+        QTest::newRow("mark") << QStringLiteral("Mark") << QStringList{};
+        QTest::newRow("rice") << QStringLiteral("Rice") << QStringList{QStringLiteral("PartWaveSave")};
+        QTest::newRow("natori") << QStringLiteral("Natori") << QStringList{QStringLiteral("PartArmARFore"), QStringLiteral("PartArmALFore")};
+    }
+
+    void preservesPartDrawOrderGroupFlags()
+    {
+        QFETCH(QString, name);
+        QFETCH(QStringList, enabled);
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = QString(TEST_RESOURCES) + '/' + name + '/' + name + QStringLiteral(".moc3");
+        options.outPath = temp.filePath(name + QStringLiteral(".cmo3"));
+        QString error;
+        QVERIFY2(cmo3::CCmo3Builder::Build(options, &error), qPrintable(error));
+        cmo3::CCaffArchive archive;
+        QVERIFY2(archive.Load(options.outPath, &error), qPrintable(error));
+        const auto* main = archive.FindByPath(QStringLiteral("main.xml"));
+        QVERIFY(main);
+        const auto flags = partDrawOrderFlags(main->content, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        for (const auto& id : enabled) QCOMPARE(flags.value(id, false), true);
+        for (auto it = flags.cbegin(); it != flags.cend(); ++it)
+            if (!enabled.contains(it.key())) QCOMPARE(it.value(), false);
+        QCOMPARE(flags.value(QStringLiteral("__RootPart__"), false), false);
+    }
+
+    void invalidDrawOrderGroupPreservesDestination_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("mutation");
+        QTest::newRow("bad-artmesh") << QStringLiteral("Rice") << QStringLiteral("bad-artmesh");
+        QTest::newRow("cycle") << QStringLiteral("Natori") << QStringLiteral("cycle");
+        QTest::newRow("duplicate-mesh") << QStringLiteral("Mark") << QStringLiteral("duplicate-mesh");
+    }
+
+    void invalidDrawOrderGroupPreservesDestination()
+    {
+        QFETCH(QString, name);
+        QFETCH(QString, mutation);
+        const QString mocPath = QString(TEST_RESOURCES) + '/' + name + '/' + name + QStringLiteral(".moc3");
+        QFile input(mocPath);
+        QVERIFY(input.open(QIODevice::ReadOnly));
+        const QByteArray original = input.readAll();
+        live2dstruct::CReader reader = live2dstruct::CReader::FromBytes(original);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        QByteArray mutated = original;
+        const auto write = [&](int offset, int value) { qToLittleEndian(qint32(value), mutated.data() + offset); };
+        const auto* group = table.draw_order_groups.first();
+        QVERIFY(group->object_sources_counts > 0);
+        const int row = group->object_sources_begin_indices;
+        const auto* object = table.draw_order_group_objects[row];
+        if (mutation == QLatin1String("bad-artmesh")) {
+            QVERIFY(object->types == 0);
+            write(table.sectionOffsetTable->draw_order_group_objects->indices + row * 4,
+                  table.art_meshes.size() + 1);
+        } else if (mutation == QLatin1String("duplicate-mesh")) {
+            QVERIFY(object->types == 0);
+            QVERIFY(group->object_sources_counts > 1);
+            const auto* next = table.draw_order_group_objects[row + 1];
+            QVERIFY(next->types == 0);
+            write(table.sectionOffsetTable->draw_order_group_objects->indices + (row + 1) * 4, object->indices);
+        } else {
+            int partRow = -1;
+            for (int at = group->object_sources_begin_indices;
+                 at < group->object_sources_begin_indices + group->object_sources_counts; ++at)
+                if (table.draw_order_group_objects[at]->types == 1) { partRow = at; break; }
+            QVERIFY(partRow >= 0);
+            write(table.sectionOffsetTable->draw_order_group_objects->self_indices + partRow * 4, 0);
+        }
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        cmo3::CCmo3Builder::Options options;
+        options.mocPath = mocPath;
+        options.mocBytes = mutated;
+        options.outPath = temp.filePath(QStringLiteral("invalid.cmo3"));
+        QFile output(options.outPath);
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        QCOMPARE(output.write("existing artifact"), 17);
+        output.close();
+        QString error;
+        QVERIFY(!cmo3::CCmo3Builder::Build(options, &error));
+        QVERIFY(error.contains(QStringLiteral("绘制顺序组")));
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        QCOMPARE(output.readAll(), QByteArray("existing artifact"));
     }
 
     void buildUsesKeyformOverride()

@@ -242,6 +242,60 @@ bool validateDeformerSources(const CSectionTable& table, QString* error)
     return true;
 }
 
+bool collectDrawOrderGroupParts(const CSectionTable& table, QSet<int>& result, QString* error)
+{
+    result.clear();
+    QVector<int> parents(table.draw_order_groups.size(), -1);
+    QSet<int> meshes;
+    QSet<int> parts;
+    for (int group = 0; group < table.draw_order_groups.size(); ++group) {
+        const auto* definition = table.draw_order_groups[group];
+        if (!definition || !validSlice(definition->object_sources_begin_indices,
+                                       definition->object_sources_counts,
+                                       table.draw_order_group_objects.size()) ||
+            !validSlice(definition->object_sources_begin_indices,
+                        definition->object_sources_total_counts,
+                        table.draw_order_group_objects.size()) ||
+            definition->minimum_draw_orders > definition->maximum_draw_orders) {
+            if (error) *error = QStringLiteral("cmo3 绘制顺序组定义无效：%1").arg(group);
+            return false;
+        }
+        for (int row = definition->object_sources_begin_indices;
+             row < definition->object_sources_begin_indices + definition->object_sources_counts; ++row) {
+            const auto* object = table.draw_order_group_objects[row];
+            if (!object) {
+                if (error) *error = QStringLiteral("cmo3 绘制顺序组对象为空：%1").arg(row);
+                return false;
+            }
+            if (object->types == 0) {
+                if (!validSlice(object->indices, 1, table.art_meshes.size()) || meshes.contains(object->indices)) {
+                    if (error) *error = QStringLiteral("cmo3 绘制顺序组 ArtMesh 引用无效或重复：%1").arg(object->indices);
+                    return false;
+                }
+                meshes.insert(object->indices);
+            } else if (object->types == 1) {
+                if (!validSlice(object->indices, 1, table.parts.size()) ||
+                    !validSlice(object->self_indices, 1, table.draw_order_groups.size()) ||
+                    parts.contains(object->indices) || parents[object->self_indices] != -1) {
+                    if (error) *error = QStringLiteral("cmo3 绘制顺序组 Part 引用无效或重复：%1").arg(object->indices);
+                    return false;
+                }
+                parts.insert(object->indices);
+                parents[object->self_indices] = group;
+                result.insert(object->indices);
+            } else {
+                if (error) *error = QStringLiteral("cmo3 绘制顺序组对象类型无效：%1").arg(object->types);
+                return false;
+            }
+        }
+    }
+    if (!CParentGraph(parents).IsValid()) {
+        if (error) *error = QStringLiteral("cmo3 绘制顺序组包含循环");
+        return false;
+    }
+    return true;
+}
+
 bool loadModelTextures(const QDir& directory, const QString& mocPath, QVector<QString>* paths)
 {
     const QStringList jsons = directory.entryList({QStringLiteral("*.model3.json")}, QDir::Files, QDir::Name);
@@ -420,6 +474,7 @@ private:
     QMap<QString, QString> m_deformerDisplayNames;
     QMap<QString, QString> m_artMeshDisplayNames;
     QHash<QString, QString> m_parameterDisplayNames;
+    QSet<int> m_drawOrderGroupParts;
     QHash<QString, int> m_paramIndexById;       // 参数 idstr → parameters 表下标
     int m_canvasW = 0;
     int m_canvasH = 0;
@@ -1635,6 +1690,7 @@ void Generator::writeMain()
 
 bool Generator::Run(QString* outError)
 {
+    if (!collectDrawOrderGroupParts(m_table, m_drawOrderGroupParts, outError)) return false;
     const QSize canvasSize = CCanvasGeometry::PixelSize(m_table.canvas_info->width, m_table.canvas_info->height);
     if (canvasSize.isEmpty()) {
         if (outError) *outError = QStringLiteral("cmo3 画布像素尺寸无效");
@@ -1850,7 +1906,7 @@ bool Generator::Run(QString* outError)
         m_xml.BeginObject(QStringLiteral("CPartId"), QStringLiteral("id"));
         m_xml.Attribute(QStringLiteral("idstr"), part->ids);
         m_xml.EndObject();
-        m_xml.B(QStringLiteral("enableDrawOrderGroup"), false);
+        m_xml.B(QStringLiteral("enableDrawOrderGroup"), m_drawOrderGroupParts.contains(i));
         m_xml.I(QStringLiteral("defaultOrder_forEditor"), 500);
         m_xml.B(QStringLiteral("isSketch"), false);
         m_xml.BeginObject(QStringLiteral("CColor"), QStringLiteral("partsEditColor"));
