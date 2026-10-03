@@ -39,6 +39,8 @@ constexpr int TypeRole = Qt::UserRole + 2;
 constexpr int IndexRole = Qt::UserRole + 3;
 constexpr int LoadedRole = Qt::UserRole + 4;
 constexpr int SelectableRole = Qt::UserRole + 5;
+constexpr int TargetTypeRole = Qt::UserRole + 6;
+constexpr int TargetIdRole = Qt::UserRole + 7;
 
 class CBlendRelationTree : public QTreeWidget
 {
@@ -681,9 +683,30 @@ void CBlendShapePanel::ExpandDetails(QTreeWidgetItem* item)
             child->setData(0, Qt::UserRole, parameter.id);
             child->setData(0, KindRole, QStringLiteral("binding"));
             child->setData(0, IndexRole, index);
+            child->setData(0, TargetTypeRole, item->data(0, IndexRole));
+            child->setData(0, TargetIdRole, item->data(0, Qt::UserRole));
             child->setData(0, SelectableRole, parameter.selectable);
             child->setToolTip(0, parameter.id);
             const auto& source = m_state->relations.ParameterBindings()[binding.parameterBindingIndex];
+            QStringList geometryRows;
+            const auto targetTypeValue = child->data(0, TargetTypeRole).toInt();
+            const auto targetId = child->data(0, TargetIdRole).toString();
+            if (targetTypeValue >= Relations::ArtMesh && targetTypeValue <= Relations::Part) {
+                const auto geometry = m_state->relations.GeometryBindings(Relations::TargetType(targetTypeValue), targetId);
+                QStringList keys;
+                for (const auto& entry : geometry) {
+                    if (entry.bindingIndex != index) continue;
+                    geometryRows.append(QString::number(entry.sourceKeyformIndex));
+                    if (keys.isEmpty()) for (float key : entry.parameterKeys) keys.append(parameterText(key));
+                }
+                geometryRows.removeDuplicates();
+                if (!geometryRows.isEmpty()) {
+                    child->setText(1, QStringLiteral("%1 个关键形 · 全局行 [%2] · 参数关键值 [%3]")
+                        .arg(binding.keyforms.count)
+                        .arg(geometryRows.join(QStringLiteral(", ")))
+                        .arg(keys.join(QStringLiteral(", "))));
+                }
+            }
             child->setToolTip(1, QStringLiteral("源关键值 %1 项 · 基准索引 %2").arg(source.keys.count).arg(source.baseKeyIndex));
             if (binding.constraints.count) child->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
         }

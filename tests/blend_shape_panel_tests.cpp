@@ -871,6 +871,22 @@ private slots:
         QCOMPARE(row(panel, "Driver")->findChild<QSlider*>()->value(), 500);
     }
 
+    void artMeshDetailsExposeGlobalBlendShapeRows()
+    {
+        CBlendShapePanel panel;
+        QVERIFY(panel.BuildBlendShapesBytes(blendBytes(), nullptr));
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        parameters->setCurrentItem(findItem(parameters, "parameter", "Driver"));
+        auto* target = findItem(details, "target", "Shared", "artmesh");
+        QVERIFY(target);
+        target->setExpanded(true);
+        QCOMPARE(target->childCount(), 1);
+        const auto* binding = target->child(0);
+        QVERIFY(binding->text(1).contains(QStringLiteral("全局行")));
+        QVERIFY(binding->text(1).contains(QStringLiteral("参数关键值")));
+    }
+
     void malformedRelationsHaveDiagnosticsAndCannotNavigateAmbiguousTargets_data()
     {
         QTest::addColumn<bool>("duplicate");
