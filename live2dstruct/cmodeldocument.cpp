@@ -325,6 +325,25 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         CMocMaterialBuilder::Build(preview, m_drawableMaterialOverrides, bytes, error);
 }
 
+bool CModelDocument::BuildBlendShapeGeometryPreview(const CMocBlendShapeGeometryBuilder::Key& key,
+                                                    const QVector<float>& deltas, QByteArray& bytes,
+                                                    QString* error) const
+{
+    if (error) error->clear();
+    if (!m_loaded) {
+        setError(error, QStringLiteral("尚未加载模型快照"));
+        return false;
+    }
+    QByteArray base;
+    if (!BuildPreviewMoc(base, error)) return false;
+    CMocBlendShapeGeometryBuilder::Frame frame;
+    if (!CMocBlendShapeGeometryBuilder::Capture(base, key, frame, error)) return false;
+    CMocBlendShapeGeometryBuilder::Result result;
+    if (!CMocBlendShapeGeometryBuilder::Build(base, {frame, deltas}, result, error)) return false;
+    bytes = std::move(result.bytes);
+    return true;
+}
+
 bool CModelDocument::BuildRuntimeMoc(QByteArray& bytes, QString* error) const
 {
     QByteArray authoring;

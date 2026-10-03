@@ -1,4 +1,5 @@
 #include "live2dstruct/cmocblendshapegeometrybuilder.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmocparameterstructurebuilder.h"
 #include "live2dstruct/cblendshaperelations.h"
 #include "live2dstruct/csectiontable.h"
@@ -105,6 +106,26 @@ private slots:
             }
         }
         Builder::Frame reopened; QVERIFY(Builder::Capture(result.bytes, m_frame.key, reopened, &error));
+        QCOMPARE(reopened.deltas, edit.deltas);
+    }
+    void documentPreviewUsesRawBlendShapePath()
+    {
+        CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        const auto edit = request(); QByteArray preview;
+        QVERIFY2(document.BuildBlendShapeGeometryPreview(m_frame.key, edit.deltas, preview, &error), qPrintable(error));
+        CoreModel before, after; QVERIFY(before.load(m_bytes)); QVERIFY(after.load(preview));
+        auto defaults = QVector<float>(csmGetParameterDefaultValues(before.value), csmGetParameterDefaultValues(before.value) + csmGetParameterCount(before.value));
+        before.pose(defaults); after.pose(defaults);
+        QCOMPARE(frame(before.value).definition, frame(after.value).definition);
+        QVERIFY(changed(frame(before.value), frame(after.value)).isEmpty());
+        for (float value : m_keys) {
+            auto pose = defaults; pose[m_parameter] = value; before.pose(pose); after.pose(pose);
+            QCOMPARE(frame(before.value).definition, frame(after.value).definition);
+            for (int mesh = 0; mesh < frame(before.value).values.size(); ++mesh) if (mesh != m_mesh)
+                QCOMPARE(frame(before.value).values[mesh], frame(after.value).values[mesh]);
+        }
+        Builder::Frame reopened; QVERIFY(Builder::Capture(preview, m_frame.key, reopened, &error));
         QCOMPARE(reopened.deltas, edit.deltas);
     }
     void coreNeutralAndSiblingEvaluationAreUnchanged()

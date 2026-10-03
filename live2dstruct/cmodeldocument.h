@@ -18,6 +18,7 @@
 #include "ckeyformgridsnapshot.h"
 #include "cparameterorganization.h"
 #include "cmodelgeometryedit.h"
+#include "cmocblendshapegeometrybuilder.h"
 #include "cmodelmaterialedit.h"
 #include "cmodelatlasedit.h"
 #include "cgeometryobjectpairs.h"
@@ -229,6 +230,9 @@ public:
     bool DescribeKeyformGrid(const QString& id, const QString& type, CKeyformGridSnapshot& snapshot,
                              QString* error = nullptr) const;
     bool BuildPreviewMoc(QByteArray& bytes, QString* error = nullptr) const;
+    bool BuildBlendShapeGeometryPreview(const CMocBlendShapeGeometryBuilder::Key& key,
+                                        const QVector<float>& deltas, QByteArray& bytes,
+                                        QString* error = nullptr) const;
     bool BuildRuntimeMoc(QByteArray& bytes, QString* error = nullptr) const;
     const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }
     const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
