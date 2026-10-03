@@ -48,6 +48,7 @@ struct CModelSession
     QHash<QString, float> drawableOpacity;
     QHash<QString, int> drawableDrawOrder;
     QHash<QString, QVector<QVector<float>>> drawableKeyformPositions;
+    CModelBlendShapeGeometryState blendShapeGeometry;
     QHash<QString, QVector<quint16>> drawableIndices;
     QHash<QString, QVector<int>> drawableMaskIndices;
     QHash<QString, int> deformerParentIndices;

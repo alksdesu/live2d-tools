@@ -101,6 +101,22 @@ private:
     }
 
 private slots:
+    void blendShapeGeometryStateRoundTripsWithoutDocumentMutation()
+    {
+        CModelSession session; session.version = 1; session.sourceMoc = loaded.SourcePath(); session.sourceDigest = loaded.SourceDigest();
+        session.objectDisplayNames = loaded.DisplayNames();
+        CModelBlendShapeGeometryEntry entry; entry.meshId = QStringLiteral("ArtMesh271"); entry.shapeIndex = 7;
+        entry.bindingOffset = 0; entry.keyformOffset = 1; entry.sourceKeyformIndex = 1127;
+        entry.sourceDigest = session.sourceDigest; entry.deltas = {1.0f, -2.0f, 3.5f, 4.0f}; session.blendShapeGeometry = {entry};
+        const auto bytes = session.ToJson(); QVERIFY(!bytes.isEmpty());
+        QCOMPARE(QJsonDocument::fromJson(bytes).object()[QStringLiteral("version")].toInt(), 16);
+        CModelSession decoded; QString error; QVERIFY2(CModelSession::FromJson(bytes, &decoded, &error), qPrintable(error));
+        QCOMPARE(decoded.blendShapeGeometry, session.blendShapeGeometry);
+        auto root = QJsonDocument::fromJson(bytes).object(); auto rows = root[QStringLiteral("blendShapeGeometry")].toArray();
+        auto row = rows.first().toObject(); row[QStringLiteral("sourceKeyformIndex")] = -1; rows[0] = row; root[QStringLiteral("blendShapeGeometry")] = rows;
+        QVERIFY(!CModelSession::FromJson(QJsonDocument(root).toJson(), &decoded, &error)); QVERIFY(!error.isEmpty());
+    }
+
     void initTestCase()
     {
         QString error;
@@ -255,7 +271,7 @@ private slots:
     void invalidNewDraftCannotOverwriteFilesOrDocumentHistory_data()
     {
         QTest::addColumn<QString>("field");
-        for (const char* field : {"source", "nul-source", "digest", "short-digest", "long-digest", "nul-path", "document", "version"})
+        for (const char* field : {"source", "nul-source", "digest", "short-digest", "long-digest", "nul-path", "document"})
             QTest::newRow(field) << QString::fromLatin1(field);
     }
 
@@ -271,14 +287,12 @@ private slots:
         else if (field == "long-digest") session.sourceDigest = QByteArray(33, 'x');
         else if (field == "nul-path") session.physicsDraft->sourcePath = QString("rig") + QChar::Null;
         else if (field == "document") session.physicsDraft->document = {};
-        else session.version = 16;
         QVERIFY(session.ToJson().isEmpty());
         QTemporaryDir directory; const auto path = directory.filePath("existing.json"); QVERIFY(write(path, "unchanged")); QString error;
         QVERIFY(!session.Save(path, &error)); QVERIFY(!error.isEmpty());
         QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("unchanged"));
         const auto fresh = directory.filePath("new.json"); QVERIFY(!session.Save(fresh, &error)); QVERIFY(!QFileInfo::exists(fresh));
-        const QString expected = field == "version" ? QStringLiteral("version")
-            : field == "document" || field == "nul-path" ? QStringLiteral("物理草稿") : QStringLiteral("physicsDraft");
+        const QString expected = field == "document" || field == "nul-path" ? QStringLiteral("物理草稿") : QStringLiteral("physicsDraft");
         rejectsWithoutMutation(session, expected);
     }
 
