@@ -48,6 +48,7 @@ target_include_directories(texture_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(texture_data PUBLIC Qt6::Core Qt6::Gui)
 
 add_library(model_data STATIC
+    live2dstruct/cmocblendshapegeometrybuilder.cpp
     live2dstruct/cparentgraph.cpp
     live2dstruct/cblendshaperelations.cpp
     live2d/cdeformerdrag.cpp
@@ -354,6 +355,10 @@ if(BUILD_TESTING)
         target_link_libraries(parameter_delete_core_tests PRIVATE model_data live2d_core Qt6::Test)
         target_compile_definitions(parameter_delete_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME parameter_delete_core COMMAND parameter_delete_core_tests)
+        add_executable(blendshape_geometry_core_tests tests/blendshape_geometry_core_tests.cpp)
+        target_link_libraries(blendshape_geometry_core_tests PRIVATE model_data live2d_core Qt6::Test)
+        target_compile_definitions(blendshape_geometry_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+        add_test(NAME blendshape_geometry_core COMMAND blendshape_geometry_core_tests)
     endif()
     add_executable(physics_bake_dialog_tests tests/physics_bake_dialog_tests.cpp ui/cphysicsbakedialog.cpp)
     target_link_libraries(physics_bake_dialog_tests PRIVATE model_data Qt6::Widgets Qt6::Test)

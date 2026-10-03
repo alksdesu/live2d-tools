@@ -49,6 +49,7 @@ SOURCES += \
     live2dstruct/ctextureassets.cpp \
     live2dstruct/ctextureeditcontroller.cpp \
     live2dstruct/cparentgraph.cpp \
+    live2dstruct/cmocblendshapegeometrybuilder.cpp \
     live2dstruct/cblendshaperelations.cpp \
     ui/cmodelhierarchymodel.cpp \
     ui/cmodelhierarchyview.cpp \
@@ -343,6 +344,7 @@ HEADERS += \
     std/cmacosqtcompat.h \
     live2dstruct/cparentgraph.h \
     live2dstruct/cblendshaperelations.h \
+    live2dstruct/cmocblendshapegeometrybuilder.h \
     ui/cmodelhierarchymodel.h \
     ui/cmodelhierarchyview.h \
     live2d/cdeformerdrag.h \
