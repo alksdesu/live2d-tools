@@ -1979,6 +1979,37 @@ QVector<CModelDiagnostic> CModelDocument::Validate() const
                                  QStringLiteral("artmesh"), invertIt.key()});
         }
     }
+    const QByteArray blendShapeDigest = QCryptographicHash::hash(m_workingBaseBytes, QCryptographicHash::Sha256);
+    QSet<QString> blendShapeEndpoints;
+    for (const auto& entry : m_blendShapeGeometry) {
+        const QString endpoint = QStringLiteral("%1|%2|%3|%4").arg(entry.meshId).arg(entry.shapeIndex)
+            .arg(entry.bindingOffset).arg(entry.keyformOffset);
+        if (blendShapeEndpoints.contains(endpoint))
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("blendshape_duplicate"),
+                                QStringLiteral("融合几何端点重复：%1").arg(endpoint), -1});
+        blendShapeEndpoints.insert(endpoint);
+        if (entry.sourceDigest != blendShapeDigest)
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("blendshape_source_digest"),
+                                QStringLiteral("融合几何来源指纹与工作基线不一致：%1").arg(entry.meshId), -1});
+        if (entry.deltas.isEmpty() || (entry.deltas.size() & 1) ||
+            std::any_of(entry.deltas.cbegin(), entry.deltas.cend(), [](float value) { return !std::isfinite(value); }))
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("blendshape_delta"),
+                                QStringLiteral("融合几何位移包含无效坐标：%1").arg(entry.meshId), -1});
+        CMocBlendShapeGeometryBuilder::Frame frame;
+        QString error;
+        if (!CMocBlendShapeGeometryBuilder::Capture(m_workingBaseBytes,
+                {entry.meshId, entry.shapeIndex, entry.bindingOffset, entry.keyformOffset}, frame, &error)) {
+            diagnostics.append({CModelDiagnostic::Error, QStringLiteral("blendshape_endpoint"),
+                                QStringLiteral("融合几何端点无效：%1：%2").arg(entry.meshId, error), -1});
+        } else {
+            if (frame.sourceKeyformIndex != entry.sourceKeyformIndex)
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("blendshape_source_row"),
+                                    QStringLiteral("融合几何来源行已改变：%1").arg(entry.meshId), -1});
+            if (frame.deltas.size() != entry.deltas.size())
+                diagnostics.append({CModelDiagnostic::Error, QStringLiteral("blendshape_delta_count"),
+                                    QStringLiteral("融合几何位移数量与来源不一致：%1").arg(entry.meshId), -1});
+        }
+    }
     for (const QString& key : m_lockedKeys) {
         const int separator = key.indexOf(QLatin1Char('|'));
         if (separator <= 0 || separator >= key.size() - 1) {

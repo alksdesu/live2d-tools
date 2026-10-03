@@ -146,6 +146,9 @@ private slots:
         QCOMPARE(document.BlendShapeGeometry().size(), 1);
         const auto changedBytes = preview(document);
         QVERIFY(changedBytes != baseline);
+        const auto diagnostics = document.Validate();
+        for (const auto& diagnostic : diagnostics)
+            QVERIFY2(!diagnostic.code.startsWith(QStringLiteral("blendshape_")), qPrintable(diagnostic.message));
         QCOMPARE(document.WorkingBaseBytes(), m_bytes);
         QFile unchanged(sourcePath); QVERIFY(unchanged.open(QIODevice::ReadOnly));
         QCOMPARE(unchanged.readAll(), m_bytes);
