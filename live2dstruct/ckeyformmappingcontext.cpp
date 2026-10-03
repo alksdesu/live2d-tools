@@ -123,18 +123,37 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         return fail(error, QStringLiteral("关键形映射需要已加载的模型快照"));
     try {
         QMap<QString, float> corner;
+        auto sourceReader = CReader::FromBytes(document.SourceBytes());
+        CSectionTable sourceTable(sourceReader);
         {
-            auto sourceReader = CReader::FromBytes(document.SourceBytes());
-            CSectionTable sourceTable(sourceReader);
             CKeyformBindingGrid sourceBindings;
             if (!sourceBindings.Build(sourceTable, error, true) ||
                 !sourceBindings.Pose(CKeyformBindingGrid::ArtMesh, artMeshId, keyformIndex, corner, error)) return false;
         }
-        if (fullPose.size() != document.Parameters().size())
+        QMap<QString, float> evaluationPose = fullPose;
+        for (int index = 0; index < sourceTable.parameters.size(); ++index) {
+            const auto* parameter = sourceTable.parameters[index];
+            if (!parameter || parameter->parameter_types != 1 || parameter->blend_shape_parameter_binding_sources_counts <= 0 ||
+                parameter->blend_shape_parameter_binding_sources_begin_indices < 0 ||
+                parameter->blend_shape_parameter_binding_sources_begin_indices >= sourceTable.blend_shape_parameter_bindings.size()) continue;
+            const auto* binding = sourceTable.blend_shape_parameter_bindings[
+                parameter->blend_shape_parameter_binding_sources_begin_indices];
+            if (!binding || binding->base_key_indices < 0 || binding->base_key_indices >= binding->keys_sources_counts ||
+                binding->keys_sources_begin_indices < 0 ||
+                binding->keys_sources_begin_indices + binding->base_key_indices >= sourceTable.keys->values.size()) continue;
+            evaluationPose.insert(parameter->ids,
+                                  sourceTable.keys->GetData(binding->keys_sources_begin_indices + binding->base_key_indices));
+        }
+        for (const auto& parameter : document.Parameters()) {
+            if (parameter.type == 1) {
+                corner.remove(parameter.id);
+            }
+        }
+        if (evaluationPose.size() != document.Parameters().size())
             return fail(error, QStringLiteral("编辑姿态必须包含模型的全部参数"));
         QSet<QString> parameterIds;
         for (const auto& parameter : document.Parameters()) {
-            const auto value = fullPose.constFind(parameter.id);
+            const auto value = evaluationPose.constFind(parameter.id);
             const auto metadata = document.ParameterMetadata(parameter.id);
             if (parameter.id.isEmpty() || parameterIds.contains(parameter.id) || value == fullPose.cend() ||
                 !std::isfinite(value.value()) || !std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
@@ -143,7 +162,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             parameterIds.insert(parameter.id);
         }
         for (auto value = corner.cbegin(); value != corner.cend(); ++value)
-            if (fullPose.value(value.key()) != value.value())
+            if (evaluationPose.value(value.key()) != value.value())
                 return fail(error, QStringLiteral("编辑姿态未处于关键形角点：%1").arg(value.key()));
 
         QByteArray previewBytes;
@@ -155,9 +174,10 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         if (!bindings.Build(table, error, true)) return false;
         CBlendShapePoseEvaluator::Overrides poseOverrides;
         CBlendShapePoseEvaluator evaluator;
-        if (!evaluator.Build(table, fullPose, poseOverrides, error)) return false;
+        if (!evaluator.Build(table, evaluationPose, poseOverrides, error)) return false;
         QMap<QString, float> patchedCorner;
         if (!bindings.Pose(CKeyformBindingGrid::ArtMesh, artMeshId, keyformIndex, patchedCorner, error)) return false;
+        for (const auto& parameter : document.Parameters()) if (parameter.type == 1) patchedCorner.remove(parameter.id);
         if (patchedCorner != corner)
             return fail(error, QStringLiteral("预览补丁改变了目标关键形的参数绑定"));
         int meshIndex = -1;
@@ -222,7 +242,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         for (auto* node : candidate->tree->getParametersTree()) {
             auto* parameter = dynamic_cast<CParameterNode*>(node);
             if (!parameter || assigned.contains(parameter->getName())) continue;
-            parameter->SetCurValue(fullPose.value(parameter->getName()));
+            parameter->SetCurValue(evaluationPose.value(parameter->getName()));
             assigned.insert(parameter->getName());
         }
         candidate->tree->GetWarpKeys();

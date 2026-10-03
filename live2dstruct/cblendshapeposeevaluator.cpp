@@ -201,8 +201,36 @@ bool CBlendShapePoseEvaluator::Build(const CSectionTable& table, const QMap<QStr
         }
         Q_UNUSED(parameter);
     };
+    const auto applyRotation = [&](int, int target, int row, int parameter, float weight) {
+        if (target < 0 || target >= table.rotation_deformers.size() || row < 0 ||
+            row >= table.rotation_deformer_keyforms.size()) return;
+        const auto* rotation = table.rotation_deformers[target];
+        if (!rotation || rotation->keyform_sources_begin_indices < 0 ||
+            rotation->keyform_sources_begin_indices >= table.rotation_deformer_keyforms.size()) return;
+        const auto* base = table.rotation_deformer_keyforms[rotation->keyform_sources_begin_indices];
+        const auto* morph = table.rotation_deformer_keyforms[row];
+        if (!base || !morph) return;
+        QString id;
+        for (const auto* deformer : table.deformers)
+            if (deformer && deformer->types == 1 && deformer->specific_sources_indices == target) { id = deformer->ids; break; }
+        if (id.isEmpty()) return;
+        auto& delta = result.rotations[id];
+        if (base->is_reflect_x != morph->is_reflect_x || base->is_reflect_y != morph->is_reflect_y) {
+            delta.reflectionConflict = true;
+            result.reflectionConflicts.insert(id);
+            Q_UNUSED(parameter);
+            return;
+        }
+        delta.opacity += (morph->opacities - base->opacities) * weight;
+        delta.angle += (morph->angles - base->angles) * weight;
+        delta.originX += (morph->origin_x - base->origin_x) * weight;
+        delta.originY += (morph->origin_y - base->origin_y) * weight;
+        delta.scale += (morph->scales - base->scales) * weight;
+        Q_UNUSED(parameter);
+    };
     if (!evaluateShapes(table.blend_shapes_art_meshes, CBlendShapeRelations::ArtMesh, applyPosition) ||
-        !evaluateShapes(table.blend_shapes_warp_deformers, CBlendShapeRelations::Warp, applyPosition))
+        !evaluateShapes(table.blend_shapes_warp_deformers, CBlendShapeRelations::Warp, applyPosition) ||
+        !evaluateShapes(table.blend_shapes_rotation_deformers, CBlendShapeRelations::Rotation, applyRotation))
         return fail(error, QStringLiteral("BlendShape 绑定或限制器数据无效"));
     if (error) error->clear();
     return true;
