@@ -35,9 +35,6 @@ bool capture(const CSectionTable& table, const Builder::Key& key, Selection& sel
         selection.mesh = index;
     }
     if (selection.mesh < 0) return fail(error, QStringLiteral("融合目标网格不存在"));
-    for (const auto* glue : table.glue)
-        if (glue && (glue->art_mesh_indices_a == selection.mesh || glue->art_mesh_indices_b == selection.mesh))
-            return fail(error, QStringLiteral("Glue 目标暂不支持独立融合几何写回"));
     const auto* shape = table.blend_shapes_art_meshes[key.shapeIndex];
     if (shape->target_indices != selection.mesh) return fail(error, QStringLiteral("融合形不属于指定网格"));
     selection.bindingsBegin = shape->blend_shape_keyform_binding_sources_begin_indices;

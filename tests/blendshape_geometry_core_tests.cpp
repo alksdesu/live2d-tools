@@ -425,7 +425,7 @@ private slots:
         Builder::Result result; QString error; QVERIFY2(Builder::Build(shared, {current, changedDeltas}, result, &error), qPrintable(error));
         Builder::Frame untouched; QVERIFY(Builder::Capture(result.bytes, key, untouched)); QCOMPARE(untouched.deltas, other.deltas);
     }
-    void gluedTargetsAreRejected()
+    void gluedTargetsRemainCoreCompatible()
     {
         auto reader = CReader::FromBytes(m_bytes); CSectionTable table(reader);
         QSet<int> glued;
@@ -437,10 +437,44 @@ private slots:
             const auto* source = table.blend_shapes_art_meshes[shape];
             if (!glued.contains(source->target_indices)) continue;
             const auto* mesh = table.art_meshes[source->target_indices];
-            Builder::Frame output = m_frame; QString error;
-            QVERIFY(!Builder::Capture(m_bytes, {mesh->ids, shape, 0, 0}, output, &error));
-            QVERIFY(error.contains(QStringLiteral("Glue")));
-            QCOMPARE(output.deltas, m_frame.deltas);
+            Builder::Frame captured; QString error; bool verified = false;
+            for (int binding = 0; binding < source->blend_shape_keyform_binding_sources_counts && !verified; ++binding)
+                for (int keyform = 0; keyform < 16 && !verified; ++keyform) {
+                    const Builder::Key key{mesh->ids, shape, binding, keyform};
+                    if (!Builder::Capture(m_bytes, key, captured, &error)) continue;
+                    auto deltas = captured.deltas;
+                    if (deltas.isEmpty()) continue;
+                    deltas[0] += 0.125f;
+                    Builder::Result result;
+                    QVERIFY2(Builder::Build(m_bytes, {captured, deltas}, result, &error), qPrintable(error));
+                    QCOMPARE(result.frame.deltas, deltas);
+                    CModelDocument document; QVERIFY2(document.LoadBytes(m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+                    CModelBlendShapeGeometryEntry documentEntry;
+                    QVERIFY2(document.CaptureBlendShapeGeometry(key, documentEntry, &error), qPrintable(error));
+                    documentEntry.deltas = deltas;
+                    QVERIFY2(document.SetBlendShapeGeometry({documentEntry}, &error), qPrintable(error));
+                    QByteArray documentPreview; QVERIFY2(document.BuildPreviewMoc(documentPreview, &error), qPrintable(error));
+                    QCOMPARE(documentPreview, result.bytes);
+                    CoreModel before, after; QVERIFY(before.load(m_bytes)); QVERIFY(after.load(result.bytes));
+                    const int parameterCount = csmGetParameterCount(before.value);
+                    const auto defaults = QVector<float>(csmGetParameterDefaultValues(before.value),
+                                                         csmGetParameterDefaultValues(before.value) + parameterCount);
+                    QVector<QVector<float>> probes{defaults};
+                    for (const auto* limits : {csmGetParameterMinimumValues(before.value), csmGetParameterMaximumValues(before.value)}) {
+                        probes.append(QVector<float>(limits, limits + parameterCount));
+                        for (int parameter = 0; parameter < parameterCount; ++parameter) {
+                            auto pose = defaults; pose[parameter] = limits[parameter]; probes.append(std::move(pose));
+                        }
+                    }
+                    for (const auto& values : probes) {
+                        before.pose(values); after.pose(values);
+                        QCOMPARE(frame(before.value).definition, frame(after.value).definition);
+                        for (const auto& drawable : frame(after.value).values)
+                            for (float value : drawable) QVERIFY(std::isfinite(value));
+                    }
+                    verified = true;
+                }
+            QVERIFY2(verified, qPrintable(error));
             return;
         }
         QSKIP("Official Mao fixture has no BlendShape target participating in Glue");
