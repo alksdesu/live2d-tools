@@ -8,6 +8,7 @@
 #include <QtEndian>
 #include <algorithm>
 #include <functional>
+#include <cmath>
 #include <limits>
 
 using namespace live2dstruct;
@@ -35,6 +36,7 @@ CModelSession state(const CModelDocument& document)
     session.drawableOpacity = document.DrawableOpacityOverrides();
     session.drawableDrawOrder = document.DrawableDrawOrderOverrides();
     session.drawableKeyformPositions = document.DrawableKeyformPositionOverrides();
+    session.blendShapeGeometry = document.BlendShapeGeometry();
     session.drawableIndices = document.DrawableIndexOverrides();
     session.drawableMaskIndices = document.DrawableMaskIndexOverrides();
     session.drawableMaskInverted = document.DrawableMaskInvertedOverrides();
@@ -63,6 +65,25 @@ private:
     int warpIndex = -1;
     int childIndex = -1;
     int parentIndex = -1;
+
+    CModelSession blendShapeSession() const
+    {
+        CModelSession session;
+        session.version = 16;
+        session.sourceMoc = loaded.SourcePath();
+        session.sourceDigest = loaded.SourceDigest();
+        session.objectDisplayNames = loaded.DisplayNames();
+        CModelBlendShapeGeometryEntry entry;
+        entry.meshId = QStringLiteral("ArtMesh271");
+        entry.shapeIndex = 7;
+        entry.bindingOffset = 0;
+        entry.keyformOffset = 1;
+        entry.sourceKeyformIndex = 1127;
+        entry.sourceDigest = QByteArray(32, 'x');
+        entry.deltas = {1.0f, -2.0f, 3.5f, 4.0f};
+        session.blendShapeGeometry = {entry};
+        return session;
+    }
 
     const CModelDrawable& mesh() const { return loaded.Drawables()[meshIndex]; }
     const CModelDeformer& rotation() const { return loaded.Deformers()[rotationIndex]; }
@@ -103,18 +124,162 @@ private:
 private slots:
     void blendShapeGeometryStateRoundTripsWithoutDocumentMutation()
     {
-        CModelSession session; session.version = 1; session.sourceMoc = loaded.SourcePath(); session.sourceDigest = loaded.SourceDigest();
-        session.objectDisplayNames = loaded.DisplayNames();
-        CModelBlendShapeGeometryEntry entry; entry.meshId = QStringLiteral("ArtMesh271"); entry.shapeIndex = 7;
-        entry.bindingOffset = 0; entry.keyformOffset = 1; entry.sourceKeyformIndex = 1127;
-        entry.sourceDigest = session.sourceDigest; entry.deltas = {1.0f, -2.0f, 3.5f, 4.0f}; session.blendShapeGeometry = {entry};
-        const auto bytes = session.ToJson(); QVERIFY(!bytes.isEmpty());
+        auto session = blendShapeSession();
+        session.version = 1;
+        session.blendShapeGeometry[0].meshId = QString(21, QChar(0x773c));
+        session.blendShapeGeometry[0].deltas = {0.0f, -0.0f, std::numeric_limits<float>::denorm_min(),
+                                             -std::numeric_limits<float>::max()};
+        const auto before = state(loaded).ToJson();
+        const auto bytes = session.ToJson();
+        QVERIFY(!bytes.isEmpty());
         QCOMPARE(QJsonDocument::fromJson(bytes).object()[QStringLiteral("version")].toInt(), 16);
-        CModelSession decoded; QString error; QVERIFY2(CModelSession::FromJson(bytes, &decoded, &error), qPrintable(error));
+        CModelSession decoded;
+        QString error;
+        QVERIFY2(CModelSession::FromJson(bytes, &decoded, &error), qPrintable(error));
         QCOMPARE(decoded.blendShapeGeometry, session.blendShapeGeometry);
-        auto root = QJsonDocument::fromJson(bytes).object(); auto rows = root[QStringLiteral("blendShapeGeometry")].toArray();
-        auto row = rows.first().toObject(); row[QStringLiteral("sourceKeyformIndex")] = -1; rows[0] = row; root[QStringLiteral("blendShapeGeometry")] = rows;
-        QVERIFY(!CModelSession::FromJson(QJsonDocument(root).toJson(), &decoded, &error)); QVERIFY(!error.isEmpty());
+        QVERIFY(!std::signbit(decoded.blendShapeGeometry[0].deltas[0]));
+        QVERIFY(std::signbit(decoded.blendShapeGeometry[0].deltas[1]));
+        QCOMPARE(decoded.ToJson(), bytes);
+        QCOMPARE(state(loaded).ToJson(), before);
+        QVERIFY(decoded.blendShapeGeometry[0].sourceDigest != decoded.sourceDigest);
+    }
+
+    void invalidBlendShapeStateCannotSerialize_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const char* field : {"duplicate", "empty-id", "nul-id", "long-id", "long-utf8-id", "invalid-utf16-id",
+             "shape-index", "binding-offset", "keyform-offset", "source-row", "short-digest", "long-digest",
+             "empty-deltas", "odd-deltas", "nan", "infinity", "entry-budget", "total-budget", "entry-count",
+             "source", "nul-source", "source-digest", "version"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+
+    void invalidBlendShapeStateCannotSerialize()
+    {
+        QFETCH(QString, field);
+        auto session = blendShapeSession();
+        auto& entry = session.blendShapeGeometry[0];
+        if (field == "duplicate") session.blendShapeGeometry.append(entry);
+        else if (field == "empty-id") entry.meshId.clear();
+        else if (field == "nul-id") entry.meshId.append(QChar::Null);
+        else if (field == "long-id") entry.meshId = QString(64, QLatin1Char('a'));
+        else if (field == "long-utf8-id") entry.meshId = QString(22, QChar(0x773c));
+        else if (field == "invalid-utf16-id") entry.meshId = QString(QChar(0xd800));
+        else if (field == "shape-index") entry.shapeIndex = -1;
+        else if (field == "binding-offset") entry.bindingOffset = -1;
+        else if (field == "keyform-offset") entry.keyformOffset = -1;
+        else if (field == "source-row") entry.sourceKeyformIndex = -1;
+        else if (field == "short-digest") entry.sourceDigest.chop(1);
+        else if (field == "long-digest") entry.sourceDigest.append('x');
+        else if (field == "empty-deltas") entry.deltas.clear();
+        else if (field == "odd-deltas") entry.deltas.append(0);
+        else if (field == "nan") entry.deltas[0] = std::numeric_limits<float>::quiet_NaN();
+        else if (field == "infinity") entry.deltas[0] = std::numeric_limits<float>::infinity();
+        else if (field == "entry-budget") entry.deltas.fill(0, 2000002);
+        else if (field == "total-budget") {
+            entry.deltas.fill(0, 1000002);
+            auto second = entry;
+            second.keyformOffset++;
+            session.blendShapeGeometry.append(second);
+        } else if (field == "entry-count") session.blendShapeGeometry.fill(entry, 100001);
+        else if (field == "source") session.sourceMoc.clear();
+        else if (field == "nul-source") session.sourceMoc.append(QChar::Null);
+        else if (field == "source-digest") session.sourceDigest.clear();
+        else if (field == "version") session.version = 17;
+        QVERIFY(session.ToJson().isEmpty());
+        QTemporaryDir directory;
+        const auto path = directory.filePath("existing.json");
+        QVERIFY(write(path, "unchanged"));
+        QString error;
+        QVERIFY(!session.Save(path, &error));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), QByteArray("unchanged"));
+    }
+
+    void invalidBlendShapeJsonPreservesDestination_data()
+    {
+        QTest::addColumn<QString>("field");
+        for (const char* field : {"duplicate", "empty-id", "nul-id", "long-id", "long-utf8-id", "invalid-utf16-id",
+             "shape-index", "fractional-index", "huge-index", "index-type", "short-digest", "long-digest",
+             "invalid-hex", "padded-hex", "unicode-hex", "digest-type", "empty-deltas", "odd-deltas",
+             "null-delta", "string-delta", "bool-delta", "overflow-delta", "total-budget", "source",
+             "source-digest", "old-version", "future-version", "missing-array", "wrong-array"})
+            QTest::newRow(field) << QString::fromLatin1(field);
+    }
+
+    void invalidBlendShapeJsonPreservesDestination()
+    {
+        QFETCH(QString, field);
+        auto root = QJsonDocument::fromJson(blendShapeSession().ToJson()).object();
+        auto rows = root["blendShapeGeometry"].toArray();
+        auto entry = rows[0].toObject();
+        if (field == "empty-id") entry["meshId"] = "";
+        else if (field == "nul-id") entry["meshId"] = QString("mesh") + QChar::Null;
+        else if (field == "long-id") entry["meshId"] = QString(64, QLatin1Char('a'));
+        else if (field == "long-utf8-id") entry["meshId"] = QString(22, QChar(0x773c));
+        else if (field == "invalid-utf16-id") entry["meshId"] = QString(QChar(0xd800));
+        else if (field == "shape-index") entry["shapeIndex"] = -1;
+        else if (field == "fractional-index") entry["bindingOffset"] = 0.5;
+        else if (field == "huge-index") entry["sourceKeyformIndex"] = double(std::numeric_limits<int>::max()) + 1;
+        else if (field == "index-type") entry["keyformOffset"] = "1";
+        else if (field == "short-digest") entry["sourceDigest"] = QString(62, QLatin1Char('a'));
+        else if (field == "long-digest") entry["sourceDigest"] = QString(66, QLatin1Char('a'));
+        else if (field == "invalid-hex") entry["sourceDigest"] = QString(63, QLatin1Char('a')) + 'g';
+        else if (field == "padded-hex") entry["sourceDigest"] = ' ' + entry["sourceDigest"].toString() + ' ';
+        else if (field == "unicode-hex") entry["sourceDigest"] = QString(64, QChar(0xff41));
+        else if (field == "digest-type") entry["sourceDigest"] = 1;
+        else if (field == "empty-deltas") entry["deltas"] = QJsonArray{};
+        else if (field == "odd-deltas") entry["deltas"] = QJsonArray{0};
+        else if (field == "null-delta") entry["deltas"] = QJsonArray{QJsonValue(QJsonValue::Null), 0};
+        else if (field == "string-delta") entry["deltas"] = QJsonArray{"0", 0};
+        else if (field == "bool-delta") entry["deltas"] = QJsonArray{true, 0};
+        else if (field == "overflow-delta") entry["deltas"] = QJsonArray{1e100, 0};
+        else if (field == "total-budget") {
+            QJsonArray deltas;
+            for (int i = 0; i < 1000002; ++i) deltas.append(0);
+            entry["deltas"] = deltas;
+            auto second = entry;
+            second["keyformOffset"] = 2;
+            rows.append(second);
+        }
+        rows[0] = entry;
+        if (field == "duplicate") rows.append(entry);
+        root["blendShapeGeometry"] = rows;
+        if (field == "source") root["sourceMoc"] = "";
+        else if (field == "source-digest") root.remove("sourceDigest");
+        else if (field == "old-version") root["version"] = 15;
+        else if (field == "future-version") root["version"] = 17;
+        else if (field == "missing-array") root.remove("blendShapeGeometry");
+        else if (field == "wrong-array") root["blendShapeGeometry"] = QJsonObject{};
+        auto destination = blendShapeSession();
+        const auto before = destination.ToJson();
+        QString error;
+        QVERIFY(!CModelSession::FromJson(QJsonDocument(root).toJson(), &destination, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(destination.ToJson(), before);
+    }
+
+    void blendShapeRestoreDoesNotSilentlyDiscardUnresolvedState()
+    {
+        rejectsWithoutMutation(blendShapeSession(), QStringLiteral("BlendShape"));
+    }
+
+    void legacySessionWithoutBlendShapeRemainsReadable()
+    {
+        for (int version : {1, 15, 16}) {
+            auto session = blendShapeSession();
+            session.blendShapeGeometry.clear();
+            session.version = version;
+            if (version == 1) session.objectDisplayNames.reset();
+            CModelSession decoded;
+            QString error;
+            QVERIFY2(CModelSession::FromJson(session.ToJson(), &decoded, &error), qPrintable(error));
+            QVERIFY(decoded.blendShapeGeometry.isEmpty());
+            CModelDocument restored;
+            QVERIFY2(decoded.RestoreDocument(loaded, restored, &error), qPrintable(error));
+            QVERIFY(restored.BlendShapeGeometry().isEmpty());
+        }
     }
 
     void initTestCase()
@@ -271,7 +436,7 @@ private slots:
     void invalidNewDraftCannotOverwriteFilesOrDocumentHistory_data()
     {
         QTest::addColumn<QString>("field");
-        for (const char* field : {"source", "nul-source", "digest", "short-digest", "long-digest", "nul-path", "document"})
+        for (const char* field : {"source", "nul-source", "digest", "short-digest", "long-digest", "nul-path", "document", "version"})
             QTest::newRow(field) << QString::fromLatin1(field);
     }
 
@@ -287,12 +452,14 @@ private slots:
         else if (field == "long-digest") session.sourceDigest = QByteArray(33, 'x');
         else if (field == "nul-path") session.physicsDraft->sourcePath = QString("rig") + QChar::Null;
         else if (field == "document") session.physicsDraft->document = {};
+        else session.version = 17;
         QVERIFY(session.ToJson().isEmpty());
         QTemporaryDir directory; const auto path = directory.filePath("existing.json"); QVERIFY(write(path, "unchanged")); QString error;
         QVERIFY(!session.Save(path, &error)); QVERIFY(!error.isEmpty());
         QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("unchanged"));
         const auto fresh = directory.filePath("new.json"); QVERIFY(!session.Save(fresh, &error)); QVERIFY(!QFileInfo::exists(fresh));
-        const QString expected = field == "document" || field == "nul-path" ? QStringLiteral("物理草稿") : QStringLiteral("physicsDraft");
+        const QString expected = field == "version" ? QStringLiteral("version")
+            : field == "document" || field == "nul-path" ? QStringLiteral("物理草稿") : QStringLiteral("physicsDraft");
         rejectsWithoutMutation(session, expected);
     }
 

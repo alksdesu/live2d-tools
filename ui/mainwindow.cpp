@@ -810,7 +810,7 @@ bool MainWindow::SaveSession()
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
     }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
-    session.version = 15;
+    session.version = 16;
     session.objectDisplayNames = m_document.DisplayNames();
     session.parameterOrganization = m_document.ParameterOrganization();
     session.geometryObjectPairs = m_document.GeometryObjectPairs();
@@ -821,6 +821,7 @@ bool MainWindow::SaveSession()
     session.drawableOpacity = m_document.DrawableOpacityOverrides();
     session.drawableDrawOrder = m_document.DrawableDrawOrderOverrides();
     session.drawableKeyformPositions = m_document.DrawableKeyformPositionOverrides();
+    session.blendShapeGeometry = m_document.BlendShapeGeometry();
     session.drawableIndices = m_document.DrawableIndexOverrides();
     session.drawableMaskIndices = m_document.DrawableMaskIndexOverrides();
     session.deformerParentIndices = m_document.DeformerParentOverrides();
@@ -1963,7 +1964,8 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::DrawOrder) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
-    } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions || edit.field == live2dstruct::CModelEdit::GeometryKeyforms) {
+    } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions || edit.field == live2dstruct::CModelEdit::GeometryKeyforms ||
+               edit.field == live2dstruct::CModelEdit::BlendShapeGeometry) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
@@ -3409,7 +3411,8 @@ void MainWindow::RestDock(const QString &name)
         if (edit.field == live2dstruct::CModelEdit::ParameterValue ||
             edit.field == live2dstruct::CModelEdit::ParameterValues ||
             edit.field == live2dstruct::CModelEdit::ParameterMetadata ||
-            edit.field == live2dstruct::CModelEdit::ParameterStructure || edit.field == live2dstruct::CModelEdit::MeshStructure)
+            edit.field == live2dstruct::CModelEdit::ParameterStructure || edit.field == live2dstruct::CModelEdit::MeshStructure ||
+            edit.field == live2dstruct::CModelEdit::BlendShapeGeometry)
             ApplyDocumentEditToUi(edit, !undo);
         return true;
     });

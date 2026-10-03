@@ -265,7 +265,8 @@ bool CKeyformEditController::Handles(const CModelEdit& edit)
            edit.field == CModelEdit::RotationKeyforms || edit.field == CModelEdit::DeformerParent ||
            edit.field == CModelEdit::MaskIndices || edit.field == CModelEdit::MaskInverted ||
            edit.field == CModelEdit::ParameterMetadata || edit.field == CModelEdit::ParameterStructure ||
-           edit.field == CModelEdit::MeshStructure || edit.field == CModelEdit::DeformerStructure;
+           edit.field == CModelEdit::MeshStructure || edit.field == CModelEdit::DeformerStructure ||
+           edit.field == CModelEdit::BlendShapeGeometry;
 }
 
 bool CKeyformEditController::CanEdit(const QString& id, int keyform, QString* error) const
@@ -431,6 +432,17 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
                                    int previewKeyform, QString* error)
 {
     if (!Handles(edit)) return fail(error, QStringLiteral("当前修改不属于模型预览编辑"));
+    if (edit.field == CModelEdit::BlendShapeGeometry) {
+        if (!Ready(error)) return false;
+        if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));
+        if (edit.before.metaType() != QMetaType::fromType<CModelBlendShapeGeometryState>() ||
+            edit.after.metaType() != QMetaType::fromType<CModelBlendShapeGeometryState>() ||
+            edit.before.value<CModelBlendShapeGeometryState>() != m_document->BlendShapeGeometry())
+            return fail(error, QStringLiteral("融合几何数据在操作期间已改变，请重新操作"));
+        CModelDocument candidate = *m_document;
+        if (!candidate.ExecuteEdit(edit)) return fail(error, QStringLiteral("融合几何修改无效或没有变化"));
+        return Publish(std::move(candidate), m_pose, IsActive(), error);
+    }
     if (edit.field == CModelEdit::GeometryKeyforms) {
         if (!Ready(error)) return false;
         if (IsDragging()) return fail(error, QStringLiteral("请先结束当前画布拖拽"));

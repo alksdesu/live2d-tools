@@ -295,6 +295,9 @@ QByteArray numericBits(const QVariantMap& state)
             bits(output, form.opacity);
         }
     });
+    for (const auto& entry : state.value("blendShapeGeometry").value<CModelBlendShapeGeometryState>()) {
+        bits(output, entry.deltas);
+    }
     for (const auto& pair : state.value("geometryObjectPairs").value<CGeometryObjectPairs::State>().pairs)
         for (const auto& point : { pair.linePoint, pair.lineDirection, pair.rotationLocalX, pair.rotationLocalY }) {
             bits(output, point.x());
@@ -472,6 +475,7 @@ try {
     candidate.m_deformerRotationKeyformOverrides = session.deformerRotationKeyforms;
     candidate.m_deformerWarpKeyformOverrides = session.deformerWarpKeyforms;
     candidate.m_drawableMaskInvertedOverrides = session.drawableMaskInverted;
+    candidate.m_blendShapeGeometry = session.blendShapeGeometry;
     candidate.m_textureWorkspace = state.value("textureWorkspace").value<CTextureWorkspace::State>();
     candidate.m_artwork = session.artwork;
     candidate.m_sourceDeformerIds = freezer.owned(candidate.m_sourceDeformerIds);

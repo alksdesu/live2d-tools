@@ -202,14 +202,18 @@ bool validBlendShapeGeometry(const CModelSession& session, int version, QString*
         setError(error, QStringLiteral("BlendShape 几何条目数量超出限制")); return false;
     }
     QSet<QString> endpoints;
+    qsizetype deltaCount = 0;
     for (const auto& entry : session.blendShapeGeometry) {
-        if (entry.meshId.isEmpty() || entry.meshId.contains(QChar::Null) || entry.meshId.size() > 1024 ||
+        const auto id = entry.meshId.toUtf8();
+        if (id.isEmpty() || id.size() >= 64 || id.contains('\0') || QString::fromUtf8(id) != entry.meshId ||
             entry.shapeIndex < 0 || entry.bindingOffset < 0 || entry.keyformOffset < 0 || entry.sourceKeyformIndex < 0 ||
-            entry.sourceDigest != session.sourceDigest || entry.deltas.isEmpty() ||
-            entry.deltas.size() > MaximumBlendShapeGeometryDeltas ||
+            entry.sourceDigest.size() != QCryptographicHash::hashLength(QCryptographicHash::Sha256) ||
+            entry.deltas.isEmpty() || entry.deltas.size() % 2 ||
+            entry.deltas.size() > MaximumBlendShapeGeometryDeltas - deltaCount ||
             std::any_of(entry.deltas.cbegin(), entry.deltas.cend(), [](float value) { return !std::isfinite(value); })) {
             setError(error, QStringLiteral("BlendShape 几何状态条目无效")); return false;
         }
+        deltaCount += entry.deltas.size();
         const QString endpoint = QStringLiteral("%1|%2|%3|%4").arg(entry.meshId).arg(entry.shapeIndex)
             .arg(entry.bindingOffset).arg(entry.keyformOffset);
         if (endpoints.contains(endpoint)) {
@@ -413,7 +417,9 @@ QByteArray CModelSession::ToJson() const
     QJsonArray blendShapeGeometry;
     for (const auto& entry : this->blendShapeGeometry) {
         QJsonArray deltas;
-        for (float value : entry.deltas) deltas.append(static_cast<double>(value));
+        for (float value : entry.deltas)
+            deltas.append(value == 0.0f && std::signbit(value) ? QJsonValue(QStringLiteral("-0"))
+                                                           : QJsonValue(static_cast<double>(value)));
         blendShapeGeometry.append(QJsonObject{{QStringLiteral("meshId"), entry.meshId},
             {QStringLiteral("shapeIndex"), entry.shapeIndex}, {QStringLiteral("bindingOffset"), entry.bindingOffset},
             {QStringLiteral("keyformOffset"), entry.keyformOffset}, {QStringLiteral("sourceKeyformIndex"), entry.sourceKeyformIndex},
@@ -525,6 +531,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     if (parsedVersion >= 16) {
         const auto values = blendShapeGeometry.toArray();
         if (values.size() > MaximumBlendShapeGeometryEntries) { setError(error, QStringLiteral("BlendShape 几何条目数量超出限制")); return false; }
+        qsizetype deltaCount = 0;
         for (const auto& value : values) {
             if (!value.isObject()) { setError(error, QStringLiteral("BlendShape 几何条目类型无效")); return false; }
             const auto object = value.toObject(); CModelBlendShapeGeometryEntry entry;
@@ -538,10 +545,28 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
             if (!readInt(QStringLiteral("shapeIndex"), entry.shapeIndex) || !readInt(QStringLiteral("bindingOffset"), entry.bindingOffset) ||
                 !readInt(QStringLiteral("keyformOffset"), entry.keyformOffset) || !readInt(QStringLiteral("sourceKeyformIndex"), entry.sourceKeyformIndex) ||
                 !object.value(QStringLiteral("sourceDigest")).isString()) { setError(error, QStringLiteral("BlendShape 几何索引无效")); return false; }
-            entry.sourceDigest = QByteArray::fromHex(object.value(QStringLiteral("sourceDigest")).toString().toLatin1());
+            const QString encodedDigest = object.value(QStringLiteral("sourceDigest")).toString();
+            entry.sourceDigest = QByteArray::fromHex(encodedDigest.toLatin1());
+            if (encodedDigest.size() != 64 || entry.sourceDigest.size() != 32 ||
+                QString::fromLatin1(entry.sourceDigest.toHex()).compare(encodedDigest, Qt::CaseInsensitive) != 0) {
+                setError(error, QStringLiteral("BlendShape 几何来源指纹无效")); return false;
+            }
             const auto deltas = object.value(QStringLiteral("deltas"));
-            if (!deltas.isArray() || deltas.toArray().size() > MaximumBlendShapeGeometryDeltas) { setError(error, QStringLiteral("BlendShape 几何坐标数组无效")); return false; }
-            for (const auto& delta : deltas.toArray()) { float number = 0; if (!readFloat(delta, &number)) { setError(error, QStringLiteral("BlendShape 几何坐标不是有限数")); return false; } entry.deltas.append(number); }
+            if (!deltas.isArray() || deltas.toArray().isEmpty() || deltas.toArray().size() % 2 ||
+                deltas.toArray().size() > MaximumBlendShapeGeometryDeltas - deltaCount) {
+                setError(error, QStringLiteral("BlendShape 几何坐标数组无效")); return false;
+            }
+            const auto coordinates = deltas.toArray();
+            deltaCount += coordinates.size();
+            entry.deltas.reserve(coordinates.size());
+            for (const auto& delta : coordinates) {
+                float number = 0;
+                if (delta.isString() && delta.toString() == QStringLiteral("-0")) number = -0.0f;
+                else if (!readFloat(delta, &number)) {
+                    setError(error, QStringLiteral("BlendShape 几何坐标不是有限数")); return false;
+                }
+                entry.deltas.append(number);
+            }
             result.blendShapeGeometry.append(std::move(entry));
         }
     }
@@ -667,7 +692,8 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         }
         result.sourceDigest = decoded;
     }
-    if (!validDisplayNames(result, parsedVersion, error)) return false;
+    if (!validDisplayNames(result, parsedVersion, error) ||
+        !validBlendShapeGeometry(result, parsedVersion, error)) return false;
     if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
         setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
         return false;
@@ -1235,6 +1261,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         if (!candidate.SetDeformerWarpKeyforms(it.key(), it.value()))
             return fail(QStringLiteral("deformerWarpKeyforms"), it.key());
     }
+    if (!candidate.SetBlendShapeGeometry(blendShapeGeometry, error)) return false;
     if (!candidate.SetGeometryObjectPairs(normalizedPairs, error)) return false;
     for (auto it = locked.cbegin(); it != locked.cend(); ++it) {
         if (!objectKeys.contains(it.key())) return fail(QStringLiteral("locked"), it.key());

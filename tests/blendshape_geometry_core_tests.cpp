@@ -2,10 +2,14 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmocparameterstructurebuilder.h"
 #include "live2dstruct/cblendshaperelations.h"
+#include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/csectionvalidation.h"
 #include "real_core_model_fixture.h"
 #include <QCryptographicHash>
+#include <QFile>
+#include <QTemporaryDir>
+#include <algorithm>
 #include <QtEndian>
 #include <limits>
 
@@ -17,6 +21,8 @@ class BlendShapeGeometryCoreTests : public QObject
     Q_OBJECT
     QByteArray m_bytes;
     Builder::Frame m_frame;
+    Builder::Frame m_secondFrame;
+    bool m_hasSecondFrame = false;
     int m_mesh = -1, m_parameter = -1;
     QVector<float> m_keys;
     int m_baseKey = -1;
@@ -43,6 +49,23 @@ class BlendShapeGeometryCoreTests : public QObject
         auto deltas = m_frame.deltas;
         for (int index = 0; index < deltas.size(); index += 2) deltas[index] += 10.f;
         return {m_frame, deltas};
+    }
+    static QVector<float> changedDeltas(const QVector<float>& source, float amount = 10.0f)
+    {
+        auto result = source;
+        for (int index = 0; index < result.size(); index += 2) result[index] += amount;
+        return result;
+    }
+    static bool loadDocument(CModelDocument& document, const QByteArray& bytes, const QString& path,
+                             QString* error = nullptr)
+    {
+        return document.LoadBytes(bytes, path, error);
+    }
+    static QByteArray preview(const CModelDocument& document)
+    {
+        QByteArray bytes; QString error;
+        if (!document.BuildPreviewMoc(bytes, &error)) qFatal("%s", qPrintable(error));
+        return bytes;
     }
 private slots:
     void initTestCase()
@@ -74,11 +97,218 @@ private slots:
             }
         }
         QVERIFY(m_mesh >= 0); QVERIFY(m_parameter >= 0); QVERIFY(!m_keys.isEmpty());
+        const auto* selectedShape = table.blend_shapes_art_meshes[m_frame.key.shapeIndex];
+        for (int binding = 0; binding < selectedShape->blend_shape_keyform_binding_sources_counts && !m_hasSecondFrame; ++binding) {
+            const int row = selectedShape->blend_shape_keyform_binding_sources_begin_indices + binding;
+            const auto& bindingInfo = relations.Bindings()[row];
+            if (!bindingInfo.valid || bindingInfo.constraints.count || bindingInfo.keyforms.count < 2) continue;
+            const auto& parameter = relations.ParameterBindings()[bindingInfo.parameterBindingIndex];
+            for (int offset = 0; offset < bindingInfo.keyforms.count && !m_hasSecondFrame; ++offset) {
+                if (binding == m_frame.key.bindingOffset && offset == m_frame.key.keyformOffset) continue;
+                if (offset == parameter.baseKeyIndex) continue;
+                QString captureError;
+                if (Builder::Capture(m_bytes, {m_frame.key.meshId, m_frame.key.shapeIndex, binding, offset}, m_secondFrame, &captureError))
+                    m_hasSecondFrame = true;
+            }
+        }
         qInfo() << "target" << m_frame.key.meshId << "global" << m_frame.sourceKeyformIndex
                 << "keyformOffset" << m_frame.key.keyformOffset
                 << "ordinary" << table.art_meshes[m_mesh]->keyform_sources_begin_indices
                 << table.art_meshes[m_mesh]->keyform_sources_counts << "keys" << m_keys << "base" << m_baseKey;
         qInfo() << "parameter index" << m_parameter << "type" << table.parameters[m_parameter]->parameter_types;
+    }
+    void documentCaptureAndEditRoundTrip()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString sourcePath = directory.filePath(QStringLiteral("mao.moc3"));
+        QFile sourceFile(sourcePath); QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+        QCOMPARE(sourceFile.write(m_bytes), qint64(m_bytes.size())); sourceFile.close();
+        const auto sourceHash = QCryptographicHash::hash(m_bytes, QCryptographicHash::Sha256);
+
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, sourcePath, &error), qPrintable(error));
+        QCOMPARE(document.WorkingBaseBytes(), m_bytes);
+        QCOMPARE(document.SourceDigest(), sourceHash);
+        const auto baseline = preview(document);
+        CModelBlendShapeGeometryEntry entry;
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, entry, &error), qPrintable(error));
+        QCOMPARE(entry.meshId, m_frame.key.meshId);
+        QCOMPARE(entry.shapeIndex, m_frame.key.shapeIndex);
+        QCOMPARE(entry.bindingOffset, m_frame.key.bindingOffset);
+        QCOMPARE(entry.keyformOffset, m_frame.key.keyformOffset);
+        QCOMPARE(entry.sourceKeyformIndex, m_frame.sourceKeyformIndex);
+        QCOMPARE(entry.sourceDigest, sourceHash);
+        QCOMPARE(entry.deltas, m_frame.deltas);
+
+        const auto deltas = changedDeltas(entry.deltas);
+        CModelEdit edit; QVERIFY2(document.MakeBlendShapeGeometryEdit(entry, deltas, edit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(edit));
+        QCOMPARE(document.BlendShapeGeometry().size(), 1);
+        const auto changedBytes = preview(document);
+        QVERIFY(changedBytes != baseline);
+        QCOMPARE(document.WorkingBaseBytes(), m_bytes);
+        QFile unchanged(sourcePath); QVERIFY(unchanged.open(QIODevice::ReadOnly));
+        QCOMPARE(unchanged.readAll(), m_bytes);
+
+        CoreModel beforeCore, afterCore; QVERIFY(beforeCore.load(baseline)); QVERIFY(afterCore.load(changedBytes));
+        const auto defaults = QVector<float>(csmGetParameterDefaultValues(beforeCore.value),
+                                             csmGetParameterDefaultValues(beforeCore.value) + csmGetParameterCount(beforeCore.value));
+        beforeCore.pose(defaults); afterCore.pose(defaults);
+        QCOMPARE(frame(beforeCore.value).definition, frame(afterCore.value).definition);
+        bool targetChanged = false;
+        for (float value : m_keys) {
+            auto pose = defaults; pose[m_parameter] = value;
+            beforeCore.pose(pose); afterCore.pose(pose);
+            const auto beforeFrame = frame(beforeCore.value), afterFrame = frame(afterCore.value);
+            QCOMPARE(beforeFrame.definition, afterFrame.definition);
+            for (int mesh = 0; mesh < beforeFrame.values.size(); ++mesh) if (mesh != m_mesh)
+                QCOMPARE(beforeFrame.values[mesh], afterFrame.values[mesh]);
+            targetChanged |= beforeFrame.values[m_mesh] != afterFrame.values[m_mesh];
+        }
+        QVERIFY(targetChanged);
+
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(preview(document), baseline);
+        QCOMPARE(document.BlendShapeGeometry().size(), 0);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(preview(document), changedBytes);
+        QCOMPARE(document.BlendShapeGeometry().size(), 1);
+        QCOMPARE(document.WorkingBaseBytes(), m_bytes);
+    }
+
+    void documentBlendShapeStateIsBoundedAcrossEdits()
+    {
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        const auto baseline = preview(document);
+        QVector<int> sizes;
+        for (int iteration = 1; iteration <= 5; ++iteration) {
+            CModelBlendShapeGeometryEntry entry;
+            QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, entry, &error), qPrintable(error));
+            CModelEdit edit;
+            QVERIFY2(document.MakeBlendShapeGeometryEdit(entry, changedDeltas(entry.deltas, float(iteration)), edit, &error), qPrintable(error));
+            QVERIFY(document.ExecuteEdit(edit));
+            QCOMPARE(document.BlendShapeGeometry().size(), 1);
+            const auto bytes = preview(document); sizes.append(bytes.size());
+            QVERIFY(bytes != baseline);
+        }
+        QVERIFY(std::all_of(sizes.cbegin(), sizes.cend(), [first = sizes.first()](int size) { return size == first; }));
+        for (int iteration = 0; iteration < 5; ++iteration) QVERIFY(document.UndoEdit());
+        QCOMPARE(preview(document), baseline);
+        QCOMPARE(document.BlendShapeGeometry().size(), 0);
+        QVERIFY(!document.CanUndoEdit());
+        for (int iteration = 0; iteration < 5; ++iteration) QVERIFY(document.RedoEdit());
+        QCOMPARE(document.BlendShapeGeometry().size(), 1);
+        QCOMPARE(preview(document).size(), sizes.last());
+    }
+
+    void documentComposesMultipleBlendShapeEndpoints()
+    {
+        if (!m_hasSecondFrame) QSKIP("Official Mao fixture has one editable endpoint for the selected shape");
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        CModelBlendShapeGeometryEntry first, second;
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, first, &error), qPrintable(error));
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_secondFrame.key, second, &error), qPrintable(error));
+        first.deltas = changedDeltas(first.deltas, 2.0f);
+        second.deltas = changedDeltas(second.deltas, -3.0f);
+        QVERIFY2(document.SetBlendShapeGeometry({first, second}, &error), qPrintable(error));
+        QCOMPARE(document.BlendShapeGeometry().size(), 2);
+        QVERIFY(preview(document) != m_bytes);
+    }
+
+    void documentSetBlendShapeGeometryValidatesAndRebuilds()
+    {
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        const auto baseline = preview(document);
+        CModelBlendShapeGeometryEntry entry;
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, entry, &error), qPrintable(error));
+        entry.deltas = changedDeltas(entry.deltas);
+        QVERIFY2(document.SetBlendShapeGeometry({entry}, &error), qPrintable(error));
+        QCOMPARE(document.BlendShapeGeometry(), CModelBlendShapeGeometryState{entry});
+        QVERIFY(preview(document) != baseline);
+        auto invalid = entry; invalid.sourceDigest[0] ^= 1;
+        const auto state = document.BlendShapeGeometry(); const auto revision = document.Revision();
+        QVERIFY(!document.SetBlendShapeGeometry({entry, invalid}, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(document.BlendShapeGeometry(), state); QCOMPARE(document.Revision(), revision);
+        QVERIFY(document.SetBlendShapeGeometry({}, &error));
+        QCOMPARE(preview(document), baseline);
+        QCOMPARE(document.WorkingBaseBytes(), m_bytes);
+    }
+
+    void documentRejectsStaleBlendShapeEditsAtomically_data()
+    {
+        QTest::addColumn<int>("failure");
+        for (int index = 0; index < 6; ++index) QTest::newRow(qPrintable(QString::number(index))) << index;
+    }
+    void documentRejectsStaleBlendShapeEditsAtomically()
+    {
+        QFETCH(int, failure);
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        CModelBlendShapeGeometryEntry entry;
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, entry, &error), qPrintable(error));
+        auto stale = entry; auto deltas = changedDeltas(entry.deltas);
+        if (failure == 0) stale.sourceKeyformIndex++;
+        if (failure == 1) stale.sourceDigest[0] ^= 0x1;
+        if (failure == 2) stale.meshId = QStringLiteral("missing");
+        if (failure == 3) stale.keyformOffset = -1;
+        if (failure == 4) deltas[0] = std::numeric_limits<float>::quiet_NaN();
+        if (failure == 5) deltas[0] = std::numeric_limits<float>::infinity();
+        const auto state = document.BlendShapeGeometry(); const auto revision = document.Revision();
+        const auto baseline = preview(document);
+        CModelEdit output; output.name = QStringLiteral("sentinel"); output.field = CModelEdit::Opacity;
+        QVERIFY(!document.MakeBlendShapeGeometryEdit(stale, deltas, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output.name, QStringLiteral("sentinel"));
+        QCOMPARE(document.BlendShapeGeometry(), state); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(preview(document), baseline); QCOMPARE(document.WorkingBaseBytes(), m_bytes);
+        CModelBlendShapeGeometryEntry captured = entry;
+        auto badKey = m_frame.key; badKey.keyformOffset = -1;
+        QVERIFY(!document.CaptureBlendShapeGeometry(badKey, captured, &error));
+        QCOMPARE(captured, entry);
+    }
+
+    void documentSessionRestoresBlendShapeAndOrdinaryGeometry()
+    {
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        CModelBlendShapeGeometryEntry entry;
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, entry, &error), qPrintable(error));
+        CModelEdit blendEdit;
+        QVERIFY2(document.MakeBlendShapeGeometryEdit(entry, changedDeltas(entry.deltas), blendEdit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(blendEdit));
+        CModelGeometryKeyform ordinaryBefore;
+        QVERIFY(document.CaptureGeometryKeyform(CModelGeometryKeyform::ArtMesh, m_frame.key.meshId, 0, ordinaryBefore));
+        auto ordinaryAfter = ordinaryBefore;
+        auto& ordinaryPoints = std::get<QVector<float>>(ordinaryAfter.value);
+        ordinaryPoints[0] += 0.25f;
+        CModelEdit ordinaryEdit;
+        QVERIFY2(document.MakeGeometryEdit({ordinaryBefore}, {ordinaryAfter}, ordinaryBefore, ordinaryEdit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(ordinaryEdit));
+        QCOMPARE(document.BlendShapeGeometry().size(), 1);
+        const auto expected = preview(document);
+
+        CModelSession session;
+        session.version = 16; session.sourceMoc = document.SourcePath(); session.sourceDigest = document.SourceDigest();
+        session.objectDisplayNames = document.DisplayNames();
+        session.blendShapeGeometry = document.BlendShapeGeometry();
+        session.drawableKeyformPositions = document.DrawableKeyformPositionOverrides();
+        const auto json = session.ToJson(); QVERIFY(!json.isEmpty());
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString sessionPath = directory.filePath(QStringLiteral("session.json"));
+        QVERIFY2(session.Save(sessionPath, &error), qPrintable(error));
+        CModelSession loadedSession; QVERIFY2(CModelSession::Load(sessionPath, &loadedSession, &error), qPrintable(error));
+        CModelDocument source; QVERIFY2(loadDocument(source, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        CModelDocument restored; QVERIFY2(loadedSession.RestoreDocument(source, restored, &error), qPrintable(error));
+        QCOMPARE(restored.BlendShapeGeometry(), document.BlendShapeGeometry());
+        QCOMPARE(preview(restored), expected);
+        CModelGeometryKeyform restoredOrdinary;
+        QVERIFY(restored.CaptureGeometryKeyform(CModelGeometryKeyform::ArtMesh, m_frame.key.meshId, 0, restoredOrdinary));
+        QCOMPARE(restoredOrdinary, ordinaryAfter);
+        QVERIFY(restored.WorkingBaseBytes() == m_bytes);
+        QVERIFY(!restored.CanUndoEdit());
+        QVERIFY(CModelSession::FromJson(json, &loadedSession, &error));
     }
     void sourceRowsAndUnrelatedColumnsArePreserved()
     {

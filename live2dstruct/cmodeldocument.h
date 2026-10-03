@@ -187,7 +187,7 @@ private:
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName, DisplayNames };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName, DisplayNames, BlendShapeGeometry };
     QString name;
     QString type;
     Field field = Visibility;
@@ -233,6 +233,13 @@ public:
     bool BuildBlendShapeGeometryPreview(const CMocBlendShapeGeometryBuilder::Key& key,
                                         const QVector<float>& deltas, QByteArray& bytes,
                                         QString* error = nullptr) const;
+    const CModelBlendShapeGeometryState& BlendShapeGeometry() const { return m_blendShapeGeometry; }
+    bool SetBlendShapeGeometry(const CModelBlendShapeGeometryState& state, QString* error = nullptr);
+    bool CaptureBlendShapeGeometry(const CMocBlendShapeGeometryBuilder::Key& key,
+                                   CModelBlendShapeGeometryEntry& result, QString* error = nullptr) const;
+    bool MakeBlendShapeGeometryEdit(const CModelBlendShapeGeometryEntry& before,
+                                    const QVector<float>& deltas, CModelEdit& edit,
+                                    QString* error = nullptr) const;
     bool BuildRuntimeMoc(QByteArray& bytes, QString* error = nullptr) const;
     const QByteArray& WorkingBaseBytes() const { return m_workingBaseBytes; }
     const CMocParameterStructureBuilder::ColumnState& ParameterStructure() const { return m_structure; }
@@ -460,6 +467,7 @@ private:
     QHash<QString, QVector<CModelRotationKeyform>> m_deformerRotationKeyformOverrides;
     QHash<QString, QVector<CModelWarpKeyform>> m_deformerWarpKeyformOverrides;
     QHash<QString, bool> m_drawableMaskInvertedOverrides;
+    CModelBlendShapeGeometryState m_blendShapeGeometry;
     QSet<QString> m_lockedKeys;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;

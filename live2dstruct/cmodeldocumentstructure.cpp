@@ -14,6 +14,7 @@
 #include <QIODevice>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 
@@ -400,6 +401,9 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
         state.insert("geometryFingerprint", GeometryEditStorageFingerprint(edit));
         break;
     }
+    case CModelEdit::BlendShapeGeometry:
+        state.insert("blendShapeGeometry", QVariant::fromValue(m_blendShapeGeometry));
+        break;
     case CModelEdit::ParameterValues:
         ids.clear();
         for (const auto& value : {edit.before, edit.after}) {
@@ -460,6 +464,11 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         restoreEntries(state, "rotation", m_deformerRotationKeyformOverrides) &&
         restoreEntries(state, "deformerNames", m_displayNames.deformers) &&
         restoreEntries(state, "materials", m_drawableMaterialOverrides))) return false;
+    if (state.contains("blendShapeGeometry")) {
+        const auto value = state.value("blendShapeGeometry");
+        if (value.metaType() != QMetaType::fromType<CModelBlendShapeGeometryState>() ||
+            !SetBlendShapeGeometry(value.value<CModelBlendShapeGeometryState>())) return false;
+    }
     if (state.contains("geometryObjectPairs")) {
         const auto value = state.value("geometryObjectPairs");
         if (value.metaType() != QMetaType::fromType<CGeometryObjectPairs::State>() ||
@@ -489,6 +498,8 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
         return ValidateMaterialEditStorage(edit) && ValidateArtworkReferences(m_artwork);
     case CModelEdit::GeometryKeyforms:
         return ValidateGeometryEditStorage(edit);
+    case CModelEdit::BlendShapeGeometry:
+        return EditStorage(edit).value("blendShapeGeometry").value<CModelBlendShapeGeometryState>() == m_blendShapeGeometry;
     case CModelEdit::ParameterMetadata:
         if (m_parameterMetadataOverrides.contains(id) && !check.SetParameterMetadata(id, m_parameterMetadataOverrides.value(id))) return false;
         [[fallthrough]];
@@ -550,7 +561,8 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"drawOrder", QVariant::fromValue(m_drawableDrawOrderOverrides)}, {"positions", QVariant::fromValue(m_drawableKeyformPositionOverrides)},
         {"indices", QVariant::fromValue(m_drawableIndexOverrides)}, {"masks", QVariant::fromValue(m_drawableMaskIndexOverrides)},
         {"parents", QVariant::fromValue(m_deformerParentOverrides)}, {"rotation", QVariant::fromValue(m_deformerRotationKeyformOverrides)},
-        {"warp", QVariant::fromValue(m_deformerWarpKeyformOverrides)}, {"inverted", QVariant::fromValue(m_drawableMaskInvertedOverrides)}
+        {"warp", QVariant::fromValue(m_deformerWarpKeyformOverrides)}, {"inverted", QVariant::fromValue(m_drawableMaskInvertedOverrides)},
+        {"blendShapeGeometry", QVariant::fromValue(m_blendShapeGeometry)}
     };
     QByteArray exact;
     QDataStream stream(&exact, QIODevice::WriteOnly);
@@ -573,6 +585,13 @@ QVariantMap CModelDocument::AuthoringStructureState() const
     for (auto it = warps.cbegin(); it != warps.cend(); ++it) {
         stream << it.key() << qint64(it->size());
         for (const auto& form : *it) stream << form.positions << form.opacity;
+    }
+    for (const auto& entry : m_blendShapeGeometry) {
+        stream << entry.meshId << entry.shapeIndex << entry.bindingOffset << entry.keyformOffset << entry.sourceKeyformIndex
+               << entry.sourceDigest << qint64(entry.deltas.size());
+        for (float value : entry.deltas) {
+            quint32 bits = 0; std::memcpy(&bits, &value, sizeof(bits)); stream << bits;
+        }
     }
     state.insert(QStringLiteral("fingerprint"), QCryptographicHash::hash(exact, QCryptographicHash::Sha256));
     return state;
@@ -603,6 +622,8 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
     QByteArray working;
     if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
+    if (!m_blendShapeGeometry.isEmpty() && working != m_workingBaseBytes)
+        return fail(error, QStringLiteral("存在融合几何编辑，结构变化前必须先提交或清除融合几何状态"));
     {
         auto sourceReader = CReader::FromBytes(m_sourceBytes), workingReader = CReader::FromBytes(working);
         CSectionTable sourceTable(sourceReader), workingTable(workingReader);
@@ -612,6 +633,7 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     }
     CModelDocument original, next;
     if (!original.LoadBytes(m_sourceBytes, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
+    next.m_blendShapeGeometry = m_blendShapeGeometry;
     next.m_maskSource = m_maskSource;
     if (!next.ValidateStructureMasks(error)) return false;
     if (!next.m_previewBuilder || next.m_parts.size() != original.m_parts.size() ||
@@ -881,7 +903,8 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
         !read(state, "positions", session.drawableKeyformPositions) || !read(state, "indices", session.drawableIndices) ||
         !read(state, "masks", session.drawableMaskIndices) || !read(state, "parents", session.deformerParentIndices) ||
         !read(state, "rotation", session.deformerRotationKeyforms) || !read(state, "warp", session.deformerWarpKeyforms) ||
-        !read(state, "inverted", session.drawableMaskInverted))
+        !read(state, "inverted", session.drawableMaskInverted) ||
+        !read(state, "blendShapeGeometry", session.blendShapeGeometry))
         return fail(error, QStringLiteral("参数结构状态类型无效"));
     session.parameters = ordered(parameters);
     session.objectDisplayNames = std::move(names);
@@ -902,7 +925,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
-    session.version = 15;
+    session.version = 16;
     return true;
 }
 

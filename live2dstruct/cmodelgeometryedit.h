@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QString>
 #include <QVector>
+#include <cstring>
 #include <variant>
 
 namespace live2dstruct {
@@ -51,7 +52,9 @@ struct CModelBlendShapeGeometryEntry
     {
         return meshId == other.meshId && shapeIndex == other.shapeIndex && bindingOffset == other.bindingOffset &&
             keyformOffset == other.keyformOffset && sourceKeyformIndex == other.sourceKeyformIndex &&
-            sourceDigest == other.sourceDigest && deltas == other.deltas;
+            sourceDigest == other.sourceDigest && deltas.size() == other.deltas.size() &&
+            (deltas.isEmpty() || std::memcmp(deltas.constData(), other.deltas.constData(),
+                                              size_t(deltas.size()) * sizeof(float)) == 0);
     }
 };
 

@@ -16,6 +16,7 @@
 #include <QSet>
 #include <QtGlobal>
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <exception>
 #include <type_traits>
@@ -157,6 +158,7 @@ void CModelDocument::Clear()
     m_deformerRotationKeyformOverrides.clear();
     m_deformerWarpKeyformOverrides.clear();
     m_drawableMaskInvertedOverrides.clear();
+    m_blendShapeGeometry.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
 }
@@ -305,24 +307,142 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
     if (m_drawableKeyformPositionOverrides.isEmpty() && m_deformerWarpKeyformOverrides.isEmpty() &&
         m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty() &&
         m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty() &&
-        m_parameterMetadataOverrides.isEmpty()) {
-        return CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, bytes, error);
+        m_parameterMetadataOverrides.isEmpty())
+        {
+            if (!CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, bytes, error)) return false;
+        } else {
+            if (!m_previewBuilder) {
+                setError(error, m_previewError);
+                return false;
+            }
+            CMocPreviewBuilder::Overrides overrides;
+            overrides.artMeshPositions = m_drawableKeyformPositionOverrides;
+            overrides.warpKeyforms = m_deformerWarpKeyformOverrides;
+            overrides.rotationKeyforms = m_deformerRotationKeyformOverrides;
+            overrides.deformerParents = m_deformerParentOverrides;
+            overrides.drawableMasks = m_drawableMaskIndexOverrides;
+            overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
+            overrides.parameterMetadata = m_parameterMetadataOverrides;
+            QByteArray preview;
+            if (!m_previewBuilder->BuildOverrides(overrides, preview, error) ||
+                !CMocMaterialBuilder::Build(preview, m_drawableMaterialOverrides, bytes, error)) return false;
+        }
+    if (m_blendShapeGeometry.isEmpty()) return true;
+    for (const auto& entry : m_blendShapeGeometry) {
+        CMocBlendShapeGeometryBuilder::Key key{entry.meshId, entry.shapeIndex, entry.bindingOffset, entry.keyformOffset};
+        CMocBlendShapeGeometryBuilder::Frame current;
+        if (!CMocBlendShapeGeometryBuilder::Capture(bytes, key, current, error)) return false;
+        if (current.deltas.size() != entry.deltas.size()) {
+            setError(error, QStringLiteral("融合几何状态与当前模型结构不匹配"));
+            return false;
+        }
+        if (current.deltas.size() == entry.deltas.size() &&
+            (current.deltas.isEmpty() || std::memcmp(current.deltas.constData(), entry.deltas.constData(),
+                                                      size_t(entry.deltas.size()) * sizeof(float)) == 0)) continue;
+        CMocBlendShapeGeometryBuilder::Result result;
+        if (!CMocBlendShapeGeometryBuilder::Build(bytes, {current, entry.deltas}, result, error)) return false;
+        bytes = std::move(result.bytes);
     }
-    if (!m_previewBuilder) {
-        setError(error, m_previewError);
+    return true;
+}
+
+bool CModelDocument::SetBlendShapeGeometry(const CModelBlendShapeGeometryState& state, QString* error)
+{
+    if (error) error->clear();
+    if (!m_loaded) return setError(error, QStringLiteral("尚未加载模型快照")), false;
+    if (state.size() > 100000) return setError(error, QStringLiteral("融合几何条目数量超出限制")), false;
+    const QByteArray digest = QCryptographicHash::hash(m_workingBaseBytes, QCryptographicHash::Sha256);
+    qint64 total = 0;
+    QSet<QString> endpoints;
+    for (const auto& entry : state) {
+        const QByteArray id = entry.meshId.toUtf8();
+        if (id.isEmpty() || id.size() >= 64 || id.contains('\0') || QString::fromUtf8(id) != entry.meshId ||
+            entry.sourceDigest != digest || entry.shapeIndex < 0 || entry.bindingOffset < 0 || entry.keyformOffset < 0 ||
+            entry.sourceKeyformIndex < 0 || entry.deltas.isEmpty() || (entry.deltas.size() & 1) ||
+            std::any_of(entry.deltas.cbegin(), entry.deltas.cend(), [](float value) { return !std::isfinite(value); }))
+            return setError(error, QStringLiteral("BlendShape 几何状态条目无效")), false;
+        total += entry.deltas.size();
+        if (total > 2000000) return setError(error, QStringLiteral("融合几何坐标总量超出限制")), false;
+        const QString endpoint = QStringLiteral("%1|%2|%3|%4").arg(entry.meshId).arg(entry.shapeIndex).arg(entry.bindingOffset).arg(entry.keyformOffset);
+        if (endpoints.contains(endpoint)) return setError(error, QStringLiteral("融合几何状态包含重复端点")), false;
+        endpoints.insert(endpoint);
+        CMocBlendShapeGeometryBuilder::Frame frame;
+        if (!CMocBlendShapeGeometryBuilder::Capture(m_workingBaseBytes,
+                {entry.meshId, entry.shapeIndex, entry.bindingOffset, entry.keyformOffset}, frame, error) ||
+            frame.sourceKeyformIndex != entry.sourceKeyformIndex || frame.deltas.size() != entry.deltas.size()) return false;
+    }
+    CModelDocument candidate = *this;
+    candidate.m_blendShapeGeometry = state;
+    QByteArray preview;
+    if (!candidate.BuildPreviewMoc(preview, error)) return false;
+    if (candidate.m_blendShapeGeometry == m_blendShapeGeometry) return true;
+    m_blendShapeGeometry = state;
+    ++m_revision;
+    return true;
+}
+
+bool CModelDocument::CaptureBlendShapeGeometry(const CMocBlendShapeGeometryBuilder::Key& key,
+                                               CModelBlendShapeGeometryEntry& result, QString* error) const
+{
+    if (error) error->clear();
+    if (!m_loaded) return setError(error, QStringLiteral("尚未加载模型快照")), false;
+    CMocBlendShapeGeometryBuilder::Frame frame;
+    if (!CMocBlendShapeGeometryBuilder::Capture(m_workingBaseBytes, key, frame, error)) return false;
+    for (const auto& entry : m_blendShapeGeometry)
+        if (entry.meshId == key.meshId && entry.shapeIndex == key.shapeIndex &&
+            entry.bindingOffset == key.bindingOffset && entry.keyformOffset == key.keyformOffset) {
+            if (entry.sourceDigest != frame.sourceDigest || entry.sourceKeyformIndex != frame.sourceKeyformIndex ||
+                entry.deltas.size() != frame.deltas.size()) {
+                setError(error, QStringLiteral("融合几何状态来源已失效"));
+                return false;
+            }
+            result = entry;
+            return true;
+        }
+    result = {key.meshId, key.shapeIndex, key.bindingOffset, key.keyformOffset,
+              frame.sourceKeyformIndex, frame.sourceDigest, frame.deltas};
+    return true;
+}
+
+bool CModelDocument::MakeBlendShapeGeometryEdit(const CModelBlendShapeGeometryEntry& before,
+                                                const QVector<float>& deltas, CModelEdit& edit,
+                                                QString* error) const
+{
+    if (error) error->clear();
+    CModelBlendShapeGeometryEntry current;
+    if (!CaptureBlendShapeGeometry({before.meshId, before.shapeIndex, before.bindingOffset, before.keyformOffset}, current, error) ||
+        !(current == before) || deltas.size() != before.deltas.size() || deltas.isEmpty() ||
+        std::any_of(deltas.cbegin(), deltas.cend(), [](float value) { return !std::isfinite(value); })) {
+        setError(error, QStringLiteral("融合几何来源已改变或坐标无效"));
         return false;
     }
-    CMocPreviewBuilder::Overrides overrides;
-    overrides.artMeshPositions = m_drawableKeyformPositionOverrides;
-    overrides.warpKeyforms = m_deformerWarpKeyformOverrides;
-    overrides.rotationKeyforms = m_deformerRotationKeyformOverrides;
-    overrides.deformerParents = m_deformerParentOverrides;
-    overrides.drawableMasks = m_drawableMaskIndexOverrides;
-    overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
-    overrides.parameterMetadata = m_parameterMetadataOverrides;
-    QByteArray preview;
-    return m_previewBuilder->BuildOverrides(overrides, preview, error) &&
-        CMocMaterialBuilder::Build(preview, m_drawableMaterialOverrides, bytes, error);
+    CModelBlendShapeGeometryState next = m_blendShapeGeometry;
+    CMocBlendShapeGeometryBuilder::Frame base;
+    if (!CMocBlendShapeGeometryBuilder::Capture(m_workingBaseBytes,
+            {before.meshId, before.shapeIndex, before.bindingOffset, before.keyformOffset}, base, error)) return false;
+    const auto same = [&deltas](const QVector<float>& values) {
+        return values.size() == deltas.size() &&
+            (values.isEmpty() || std::memcmp(values.constData(), deltas.constData(), size_t(values.size()) * sizeof(float)) == 0);
+    };
+    const auto match = std::find_if(next.begin(), next.end(), [&](const auto& value) {
+        return value.meshId == before.meshId && value.shapeIndex == before.shapeIndex &&
+            value.bindingOffset == before.bindingOffset && value.keyformOffset == before.keyformOffset;
+    });
+    if (same(base.deltas)) {
+        if (match != next.end()) next.erase(match);
+    } else {
+        CModelBlendShapeGeometryEntry updated = before;
+        updated.sourceDigest = base.sourceDigest;
+        updated.sourceKeyformIndex = base.sourceKeyformIndex;
+        updated.deltas = deltas;
+        if (match == next.end()) next.append(std::move(updated)); else *match = std::move(updated);
+    }
+    if (next == m_blendShapeGeometry) return setError(error, QStringLiteral("融合几何没有变化")), false;
+    CModelDocument candidate = *this;
+    if (!candidate.SetBlendShapeGeometry(next, error)) return false;
+    edit = {QStringLiteral("blendShapeGeometry"), QStringLiteral("blendshape"), CModelEdit::BlendShapeGeometry,
+            QVariant::fromValue(m_blendShapeGeometry), QVariant::fromValue(next), -1, false};
+    return true;
 }
 
 bool CModelDocument::BuildBlendShapeGeometryPreview(const CMocBlendShapeGeometryBuilder::Key& key,
@@ -1130,6 +1250,15 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
 bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
 {
     if (!edit.meshVerification.IsEmpty() && edit.field != CModelEdit::MeshStructure) return false;
+    if (edit.field == CModelEdit::BlendShapeGeometry) {
+        const auto type = QMetaType::fromType<CModelBlendShapeGeometryState>();
+        if (edit.name != QLatin1String("blendShapeGeometry") || edit.type != QLatin1String("blendshape") ||
+            edit.index != -1 || edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None ||
+            edit.freezeValue || edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.deformerRequest ||
+            edit.before.metaType() != type || edit.after.metaType() != type ||
+            m_blendShapeGeometry != (forward ? edit.before : edit.after).value<CModelBlendShapeGeometryState>()) return false;
+        return SetBlendShapeGeometry((forward ? edit.after : edit.before).value<CModelBlendShapeGeometryState>());
+    }
     if (edit.field == CModelEdit::AtlasLayout) return ApplyAtlasEdit(edit, forward);
     if (edit.field == CModelEdit::DrawableMaterials) return ApplyMaterialEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryKeyforms) return ApplyGeometryEdit(edit, forward);
