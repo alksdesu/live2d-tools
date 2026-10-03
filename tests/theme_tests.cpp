@@ -213,6 +213,23 @@ private slots:
         qApp->setStyleSheet({});
     }
 
+    void chromeMetricsFollowFontAndScreenBounds()
+    {
+        const auto normal = Theme::metrics();
+        QVERIFY(normal.titleBarHeight >= 26);
+        QVERIFY(normal.iconSize.width() >= 20);
+        QVERIFY(normal.windowButton.width() >= 36);
+        QVERIFY(normal.windowButton.height() >= 24);
+        const auto compact = Theme::defaultWindowSize(nullptr);
+        QVERIFY(compact.width() >= 960 && compact.width() <= 1400);
+        QVERIFY(compact.height() >= 640 && compact.height() <= 900);
+        QFont larger = qApp->font(); larger.setPointSizeF(larger.pointSizeF() + 4.0);
+        QWidget probe; probe.setFont(larger);
+        const auto enlarged = Theme::metrics(&probe);
+        QVERIFY(enlarged.titleBarHeight >= normal.titleBarHeight);
+        QVERIFY(enlarged.windowButton.height() >= normal.windowButton.height());
+    }
+
     void selectedItemsTabsAndButtonsHaveReadableRenderedText_data() { styleRows(); }
 
     void selectedItemsTabsAndButtonsHaveReadableRenderedText()

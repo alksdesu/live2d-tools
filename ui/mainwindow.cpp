@@ -163,7 +163,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
     this->setAcceptDrops(true);
-    this->resize(1400, 900);
+    this->resize(Theme::defaultWindowSize());
     this->setWindowTitle("live2d2psd");
     QSettings settings(QStringLiteral("live2d2psd"), QStringLiteral("live2d2psd"));
     m_highPrecisionMasks = settings.value(QStringLiteral("highPrecisionMasks"), false).toBool();
@@ -4128,11 +4128,12 @@ void MainWindow::setupUI()
     m_titleBar->setMovable(false);
     m_titleBar->setFloatable(false);
     m_titleBar->setObjectName("titleBar");
-    m_titleBar->setFixedHeight(32);
+    const auto chrome = Theme::metrics(this);
+    m_titleBar->setFixedHeight(chrome.titleBarHeight);
 
     QLabel* iconLabel = new QLabel(this);
-    iconLabel->setPixmap(QPixmap(":/logo.ico").scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    iconLabel->setFixedSize(24, 24);
+    iconLabel->setPixmap(QPixmap(":/logo.ico").scaled(chrome.iconSize - QSize(6, 6), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    iconLabel->setFixedSize(chrome.iconSize);
     iconLabel->setAlignment(Qt::AlignCenter);
     m_titleBar->addWidget(iconLabel);
 
@@ -4150,9 +4151,9 @@ void MainWindow::setupUI()
     m_btnMin->setObjectName("winBtnMin");
     m_btnMax->setObjectName("winBtnMax");
     m_btnClose->setObjectName("winBtnClose");
-    m_btnMin->setFixedSize(40, 28);
-    m_btnMax->setFixedSize(40, 28);
-    m_btnClose->setFixedSize(40, 28);
+    m_btnMin->setFixedSize(chrome.windowButton);
+    m_btnMax->setFixedSize(chrome.windowButton);
+    m_btnClose->setFixedSize(chrome.windowButton);
     m_titleBar->addWidget(m_btnMin);
     m_titleBar->addWidget(m_btnMax);
     m_titleBar->addWidget(m_btnClose);

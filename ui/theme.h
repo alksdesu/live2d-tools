@@ -2,11 +2,40 @@
 #define THEME_H
 
 #include <QMap>
+#include <QApplication>
+#include <QFontMetrics>
+#include <QScreen>
+#include <QSize>
 #include <QString>
 #include <QTabBar>
 #include <QTabWidget>
 
 namespace Theme {
+
+struct Metrics {
+    int titleBarHeight = 32;
+    QSize iconSize{24, 24};
+    QSize windowButton{40, 28};
+};
+
+inline Metrics metrics(const QWidget* widget = nullptr)
+{
+    const QFontMetrics font(widget ? widget->font() : qApp->font());
+    const int height = qMax(12, font.height());
+    Metrics result;
+    result.titleBarHeight = height + 14;
+    result.iconSize = QSize(height + 9, height + 9);
+    result.windowButton = QSize(qMax(36, height * 8 / 3), height + 13);
+    return result;
+}
+
+inline QSize defaultWindowSize(const QScreen* screen = nullptr)
+{
+    const auto* target = screen ? screen : QGuiApplication::primaryScreen();
+    const QSize available = target ? target->availableGeometry().size() : QSize(1400, 900);
+    return QSize(qBound(960, qRound(available.width() * 0.86), 1400),
+                 qBound(640, qRound(available.height() * 0.86), 900));
+}
 
 inline void setDocumentMode(QTabWidget& tabs, bool enabled = true)
 {
