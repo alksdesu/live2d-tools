@@ -169,6 +169,21 @@ public:
         }
         return result;
     }
+    CModelBlendShapeGeometryEntry owned(const CModelBlendShapeGeometryEntry& value)
+    {
+        auto result = value;
+        result.meshId = owned(value.meshId);
+        result.sourceDigest = owned(value.sourceDigest);
+        result.deltas = owned(value.deltas);
+        return result;
+    }
+    CModelBlendShapeGeometryState owned(const CModelBlendShapeGeometryState& value)
+    {
+        CModelBlendShapeGeometryState result;
+        result.reserve(value.size());
+        for (const auto& entry : value) result.append(owned(entry));
+        return result;
+    }
     CTextureWorkspace::State owned(const CTextureWorkspace::State& value)
     {
         retain(qint64(value.atlases.size()) * 256);
@@ -218,6 +233,7 @@ public:
         OWNED_VALUE(CModelMaterialOverrides)
         OWNED_VALUE(CParameterOrganization::State)
         OWNED_VALUE(CGeometryObjectPairs::State)
+        OWNED_VALUE(CModelBlendShapeGeometryState)
         OWNED_VALUE(CTextureWorkspace::State)
 #undef OWNED_VALUE
         if (type == QMetaType::fromType<CModelArtwork::State>()) {
