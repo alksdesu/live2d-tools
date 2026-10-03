@@ -135,8 +135,7 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
             CSectionTable sourceTable(sourceReader);
             CKeyformBindingGrid sourceBindings;
             const auto sourceType = type == QStringLiteral("warp") ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
-            const bool allowBlendShapePose = type == QStringLiteral("warp");
-            if (!sourceBindings.Build(sourceTable, error, allowBlendShapePose) ||
+            if (!sourceBindings.Build(sourceTable, error) ||
                 !sourceBindings.Pose(sourceType, id, keyform, corner, error)) return false;
         }
         if (fullPose.size() != document.Parameters().size())
@@ -161,8 +160,7 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         const auto& table = candidate->table;
         if (!table.IsValid()) return fail(error, candidate->reader.Error());
         CKeyformBindingGrid bindings;
-        const bool allowBlendShapePose = type == QStringLiteral("warp");
-        if (!bindings.Build(table, error, allowBlendShapePose)) return false;
+        if (!bindings.Build(table, error)) return false;
         CBlendShapePoseEvaluator::Overrides poseOverrides;
         CBlendShapePoseEvaluator evaluator;
         if (!evaluator.Build(table, fullPose, poseOverrides, error)) return false;
@@ -182,7 +180,9 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         if (targetIndex < 0) return fail(error, QStringLiteral("预览快照缺少目标变形器：%1").arg(id));
         if (table.deformers[targetIndex]->types != (targetType == CKeyformBindingGrid::Warp ? 0 : 1))
             return fail(error, QStringLiteral("目标变形器类型与预览快照不一致：%1").arg(id));
-        QSet<int> blendRotations;
+        QSet<int> blendWarps, blendRotations;
+        for (const auto* shape : table.blend_shapes_warp_deformers) if (shape) blendWarps.insert(shape->target_indices);
+        for (const auto* shape : table.blend_shapes_rotation_deformers) if (shape) blendRotations.insert(shape->target_indices);
         for (const auto* shape : table.blend_shapes_rotation_deformers) if (shape) blendRotations.insert(shape->target_indices);
         QSet<int> chain;
         for (int index = targetIndex; index != -1; index = table.deformers[index]->parent_deformer_indices) {
@@ -193,7 +193,7 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
             if (deformer->ids.isEmpty() || idCounts.value(deformer->ids) != 1 || index >= document.Deformers().size() ||
                 document.Deformers()[index].id != deformer->ids || (deformer->types != 0 && deformer->types != 1))
                 return fail(error, QStringLiteral("变形器标识、类型或所属源不一致：%1").arg(deformer->ids));
-            if (deformer->types == 1 && blendRotations.contains(deformer->specific_sources_indices))
+            if ((deformer->types == 0 ? blendWarps : blendRotations).contains(deformer->specific_sources_indices))
                 return fail(error, QStringLiteral("目标或父变形器包含尚不支持编辑映射的 BlendShape：%1").arg(deformer->ids));
             const auto gridType = deformer->types == 0 ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
             const QString diagnostic = bindings.Diagnostic(gridType, deformer->ids);
