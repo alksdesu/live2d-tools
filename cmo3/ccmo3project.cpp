@@ -333,7 +333,24 @@ private:
         const bool known = knownFields(node, {"guid", "name", "inputFilter", "inputFilterEnv", "_filteredImage", "icon16", "icon64",
             "_materialLocalToCanvasTransform", "_group", "cachedImageManager", "requiredMipmapLevel", "linkedRawImageGuids"}, result.diagnostics);
         require(xml.field(node, "_group") == group, QStringLiteral("CMO 模型图像所属组不一致"));
-        result.materialLocalToCanvas = transform(xml.field(node, "_materialLocalToCanvasTransform"));
+        const int materialTransform = xml.field(node, "_materialLocalToCanvasTransform");
+        if (xml.nodes[materialTransform].type == QStringLiteral("null")) {
+            for (auto it = xml.nodes[materialTransform].attributes.cbegin(); it != xml.nodes[materialTransform].attributes.cend(); ++it) {
+                if (it.key() == QStringLiteral("xs.n") || it.key() == QStringLiteral("xs.id")) continue;
+                if (it.key() == QStringLiteral("xs.idx")) {
+                    bool valid = false; const auto index = it.value().toLongLong(&valid);
+                    require(valid && index >= 0, QStringLiteral("CMO 空素材变换索引无效")); continue;
+                }
+                require(false, QStringLiteral("CMO 空素材变换包含未解释属性"));
+            }
+            require(xml.nodes[materialTransform].children.isEmpty() && xml.nodes[materialTransform].value.trimmed().isEmpty(),
+                    QStringLiteral("CMO 空素材变换包含未解释内容"));
+            result.materialLocalToCanvas = QTransform();
+            result.diagnostics.append(QStringLiteral("素材到画布变换未保存，按单位变换读取；不能单凭此证明原画关联"));
+        } else {
+            result.materialLocalToCanvas = transform(materialTransform);
+            result.materialTransformPresent = true;
+        }
         const int filtered = xml.field(node, "_filteredImage");
         if (xml.nodes[filtered].type != QStringLiteral("null")) {
             const auto value = image(filtered);
@@ -385,7 +402,8 @@ private:
                     source.image >= 0 && xml.nodes[source.image].type == QStringLiteral("CImageResource") &&
                     result.imageSize == source.bounds.size() && result.materialLocalToCanvas == QTransform::fromTranslate(source.bounds.x(), source.bounds.y())) {
                     const auto original = image(source.image);
-                    result.directRaster = filter && known && !inherited && candidate.layers.first().diagnostics.isEmpty() && original.digest == result.imageDigest;
+                    result.directRaster = result.materialTransformPresent && filter && known && !inherited &&
+                        candidate.layers.first().diagnostics.isEmpty() && original.digest == result.imageDigest;
                 }
             }
             if (candidate.current && candidate.layers.size() != 1) result.directRaster = false;

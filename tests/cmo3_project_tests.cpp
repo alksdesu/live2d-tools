@@ -405,6 +405,48 @@ private slots:
         QStringList expected {QStringLiteral("ハイライト"), QStringLiteral("唇")}; expected.sort();
         QCOMPARE(unmeshed, expected);
     }
+    void officialMaoNullMaterialTransformsRemainDiagnosed()
+    {
+        const QString path = qEnvironmentVariable("LIVE2D_TEST_MAO_CMO");
+        if (path.isEmpty()) QSKIP("LIVE2D_TEST_MAO_CMO is not configured");
+        cmo3::CCmo3Project project; QString error;
+        QVERIFY2(cmo3::CCmo3Project::OpenFile(path, project, &error), qPrintable(error));
+        QVERIFY2(project.Materials(), qPrintable(project.MaterialsError()));
+        QCOMPARE(project.Materials()->images.size(), 187);
+        QCOMPARE(project.Materials()->meshes.size(), 261);
+        int missing = 0, direct = 0;
+        for (const auto& image : project.Materials()->images) {
+            if (!image.materialTransformPresent) {
+                ++missing;
+                QVERIFY(!image.directRaster);
+                QVERIFY(image.diagnostics.join('\n').contains(QStringLiteral("按单位变换读取")));
+            }
+            if (image.directRaster) ++direct;
+        }
+        QCOMPARE(missing, 13);
+        QCOMPARE(direct, 173);
+    }
+    void malformedMaterialTransformDoesNotBecomeAnIdentity_data()
+    {
+        QTest::addColumn<QString>("replacement");
+        QTest::newRow("attribute") << QStringLiteral("<null xs.n=\"_materialLocalToCanvasTransform\" effect=\"enabled\"/>");
+        QTest::newRow("text") << QStringLiteral("<null xs.n=\"_materialLocalToCanvasTransform\">payload</null>");
+        QTest::newRow("child") << QStringLiteral("<null xs.n=\"_materialLocalToCanvasTransform\"><null/></null>");
+    }
+    void malformedMaterialTransformDoesNotBecomeAnIdentity()
+    {
+        QFETCH(QString, replacement);
+        const auto bytes = replaceXml(m_generated, [&](QByteArray& xml) {
+            auto text = QString::fromUtf8(xml);
+            const QRegularExpression pattern(QStringLiteral("<CAffine[^>]*xs.n=\"_materialLocalToCanvasTransform\"[^>]*/>"));
+            const auto match = pattern.match(text); QVERIFY(match.hasMatch());
+            text.replace(match.capturedStart(), match.capturedLength(), replacement); xml = text.toUtf8();
+        });
+        cmo3::CCmo3Project project; QString error;
+        QVERIFY2(cmo3::CCmo3Project::OpenBytes(bytes, {}, project, &error), qPrintable(error));
+        QVERIFY(project.Artwork()); QVERIFY(project.Names()); QVERIFY(!project.Materials());
+        QVERIFY(!project.MaterialsError().isEmpty());
+    }
 };
 QTEST_APPLESS_MAIN(Cmo3ProjectTests)
 #include "cmo3_project_tests.moc"

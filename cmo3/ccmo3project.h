@@ -32,6 +32,7 @@ struct CCmo3MaterialGraph
         QString imageResourcePath;
         QSize imageSize;
         QByteArray imageDigest;
+        bool materialTransformPresent = false;
         bool directRaster = false;
         QStringList diagnostics;
     };
