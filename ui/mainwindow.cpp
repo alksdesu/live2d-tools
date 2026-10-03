@@ -4128,6 +4128,7 @@ void MainWindow::setupUI()
     m_titleBar->setMovable(false);
     m_titleBar->setFloatable(false);
     m_titleBar->setObjectName("titleBar");
+    m_titleBar->setAccessibleName(QStringLiteral("窗口标题栏"));
     const auto chrome = Theme::metrics(this);
     m_titleBar->setFixedHeight(chrome.titleBarHeight);
 
@@ -4151,6 +4152,9 @@ void MainWindow::setupUI()
     m_btnMin->setObjectName("winBtnMin");
     m_btnMax->setObjectName("winBtnMax");
     m_btnClose->setObjectName("winBtnClose");
+    m_btnMin->setAccessibleName(QStringLiteral("最小化窗口"));
+    m_btnMax->setAccessibleName(QStringLiteral("最大化或还原窗口"));
+    m_btnClose->setAccessibleName(QStringLiteral("关闭窗口"));
     m_btnMin->setFixedSize(chrome.windowButton);
     m_btnMax->setFixedSize(chrome.windowButton);
     m_btnClose->setFixedSize(chrome.windowButton);
