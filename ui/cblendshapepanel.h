@@ -39,6 +39,8 @@ signals:
     void ParameterGestureCanceled();
     void ParameterSelected(const QString& id);
     void ObjectSelected(const QString& id, const QString& type);
+    void GeometryEditRequested(const QString& meshId, int shapeIndex, int bindingOffset, int keyformOffset);
+    void GeometryEditRejected(const QString& reason);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -49,7 +51,10 @@ private:
     void ConnectState();
     void ShowParameterDetails(const QString& id);
     void ExpandDetails(QTreeWidgetItem* item);
+    void AppendGeometryRows(QTreeWidgetItem* item);
     void ActivateItem(QTreeWidgetItem* item);
+    void UpdateGeometryAction();
+    bool GeometrySourceMatches() const;
     void FilterParameters();
     void ScheduleLayout();
     void UpdateSplitterLayout();

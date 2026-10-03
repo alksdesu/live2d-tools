@@ -484,6 +484,7 @@ private:
     bool ApplyAtlasEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateAtlasEditStorage(const CModelEdit& edit) const;
     bool ValidateAtlasHistory(const CModelEdit& edit, QString* error) const;
+    bool CanEditBlendShapeGeometry(const QString& meshId, QString* error = nullptr) const;
     bool ApplyGeometryEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateGeometryEditStorage(const CModelEdit& edit) const;
     QByteArray GeometryEditStorageFingerprint(const CModelEdit& edit) const;

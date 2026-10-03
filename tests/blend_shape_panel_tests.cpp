@@ -2,6 +2,10 @@
 #include "ui/theme.h"
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cblendshaperelations.h"
+#include "live2dstruct/cmocblendshapegeometrybuilder.h"
+#include "live2dstruct/csectiontable.h"
+#include "live2dstruct/util/cfilereader.h"
 #include "blend_shape_v5_fixture.h"
 
 #include <QtTest>
@@ -19,6 +23,7 @@
 #include <QStyleFactory>
 #include <QStyleOption>
 #include <QLabel>
+#include <QPushButton>
 #include <QLineEdit>
 #include <QSlider>
 #include <QTemporaryDir>
@@ -33,6 +38,10 @@
 #include <utility>
 
 namespace {
+constexpr int PanelIndexRole = Qt::UserRole + 3;
+constexpr int PanelShapeRole = Qt::UserRole + 8;
+constexpr int PanelBindingOffsetRole = Qt::UserRole + 9;
+constexpr int PanelKeyformOffsetRole = Qt::UserRole + 10;
 bool save(const QString& path, const QByteArray& bytes)
 {
     QFile file(path);
@@ -885,6 +894,107 @@ private slots:
         const auto* binding = target->child(0);
         QVERIFY(binding->text(1).contains(QStringLiteral("全局行")));
         QVERIFY(binding->text(1).contains(QStringLiteral("参数关键值")));
+    }
+
+    void geometryRowsEmitStableEndpointAndRejectStaleSource()
+    {
+        const auto path = qEnvironmentVariable("LIVE2D_REAL_CORE_EXTRA_MOC");
+        if (path.isEmpty()) QSKIP("Set LIVE2D_REAL_CORE_EXTRA_MOC to an official model with an ArtMesh blend shape");
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto bytes = file.readAll();
+        auto reader = live2dstruct::CReader::FromBytes(bytes);
+        live2dstruct::CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        live2dstruct::CBlendShapeRelations relations;
+        QVERIFY(relations.Build(table));
+        live2dstruct::CMocBlendShapeGeometryBuilder::Key expected;
+        QString parameterId;
+        bool found = false;
+        for (const auto& shape : relations.Shapes()) {
+            if (!shape.valid || shape.type != live2dstruct::CBlendShapeRelations::ArtMesh) continue;
+            const auto& target = relations.Targets()[shape.sourceIndex];
+            if (!target.selectable) continue;
+            for (int bindingOffset = 0; bindingOffset < shape.bindings.count && !found; ++bindingOffset) {
+                const int bindingIndex = shape.bindings.begin + bindingOffset;
+                const auto& binding = relations.Bindings()[bindingIndex];
+                if (!binding.valid || !binding.keyforms.count) continue;
+                const auto& owner = relations.Parameters()[binding.parameterIndex];
+                for (int keyformOffset = 0; keyformOffset < binding.keyforms.count; ++keyformOffset) {
+                    QString error;
+                    live2dstruct::CMocBlendShapeGeometryBuilder::Frame frame;
+                    if (!live2dstruct::CMocBlendShapeGeometryBuilder::Capture(bytes,
+                            {target.id, shape.index, bindingOffset, keyformOffset}, frame, &error)) continue;
+                    expected = {target.id, shape.index, bindingOffset, keyformOffset};
+                    parameterId = owner.id;
+                    found = true;
+                }
+            }
+        }
+        if (!found) QSKIP("The selected model has no independently editable ArtMesh blend-shape row");
+
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.LoadBytes(bytes, path, &error), qPrintable(error));
+        CBlendShapePanel panel;
+        QVERIFY2(panel.BuildBlendShapesBytes(bytes, nullptr, &error), qPrintable(error));
+        panel.SetDocument(&document);
+        auto* parameters = panel.findChild<QTreeWidget*>("blendParameterTree");
+        auto* details = panel.findChild<QTreeWidget*>("blendRelationTree");
+        auto* parameter = findItem(parameters, "parameter", parameterId);
+        QVERIFY(parameter);
+        parameters->setCurrentItem(parameter);
+        auto* target = findItem(details, "target", expected.meshId, "artmesh");
+        QVERIFY(target);
+        target->setExpanded(true);
+        QTreeWidgetItem* binding = nullptr;
+        for (int row = 0; row < target->childCount(); ++row)
+            if (target->child(row)->data(0, PanelIndexRole).toInt() == expected.bindingOffset +
+                    relations.Shapes()[expected.shapeIndex].bindings.begin) binding = target->child(row);
+        QVERIFY(binding);
+        binding->setExpanded(true);
+        QTreeWidgetItem* geometry = nullptr;
+        for (int row = 0; row < binding->childCount(); ++row)
+            if (binding->child(row)->data(0, PanelShapeRole).toInt() == expected.shapeIndex &&
+                binding->child(row)->data(0, PanelBindingOffsetRole).toInt() == expected.bindingOffset &&
+                binding->child(row)->data(0, PanelKeyformOffsetRole).toInt() == expected.keyformOffset) geometry = binding->child(row);
+        QVERIFY(geometry);
+        QSignalSpy request(&panel, &CBlendShapePanel::GeometryEditRequested);
+        QSignalSpy rejected(&panel, &CBlendShapePanel::GeometryEditRejected);
+        details->setCurrentItem(geometry);
+        QVERIFY(panel.findChild<QPushButton*>("editBlendShapeGeometry")->isEnabled());
+        QVERIFY(QMetaObject::invokeMethod(details, "itemActivated", Q_ARG(QTreeWidgetItem*, geometry), Q_ARG(int, 0)));
+        QCOMPARE(request.count(), 1);
+        QCOMPARE(request.takeFirst(), (QList<QVariant>{expected.meshId, expected.shapeIndex,
+            expected.bindingOffset, expected.keyformOffset}));
+        QVERIFY(rejected.isEmpty());
+
+        CBlendShapePanel stale;
+        QVERIFY(stale.BuildBlendShapesBytes(bytes, nullptr, &error, QByteArray(32, '\0')));
+        stale.SetDocument(&document);
+        auto* staleDetails = stale.findChild<QTreeWidget*>("blendRelationTree");
+        auto* staleParameters = stale.findChild<QTreeWidget*>("blendParameterTree");
+        staleParameters->setCurrentItem(findItem(staleParameters, "parameter", parameterId));
+        auto* staleTarget = findItem(staleDetails, "target", expected.meshId, "artmesh");
+        QVERIFY(staleTarget);
+        staleTarget->setExpanded(true);
+        QTreeWidgetItem* staleBinding = nullptr;
+        for (int row = 0; row < staleTarget->childCount(); ++row)
+            if (staleTarget->child(row)->data(0, PanelIndexRole).toInt() == expected.bindingOffset +
+                    relations.Shapes()[expected.shapeIndex].bindings.begin) staleBinding = staleTarget->child(row);
+        QVERIFY(staleBinding);
+        staleBinding->setExpanded(true);
+        QTreeWidgetItem* staleGeometry = nullptr;
+        for (int row = 0; row < staleBinding->childCount(); ++row)
+            if (staleBinding->child(row)->data(0, PanelShapeRole).toInt() == expected.shapeIndex &&
+                staleBinding->child(row)->data(0, PanelKeyformOffsetRole).toInt() == expected.keyformOffset) staleGeometry = staleBinding->child(row);
+        QVERIFY(staleGeometry);
+        QSignalSpy staleRequest(&stale, &CBlendShapePanel::GeometryEditRequested);
+        QSignalSpy staleRejected(&stale, &CBlendShapePanel::GeometryEditRejected);
+        QVERIFY(QMetaObject::invokeMethod(staleDetails, "itemActivated", Q_ARG(QTreeWidgetItem*, staleGeometry), Q_ARG(int, 0)));
+        QVERIFY(staleRequest.isEmpty());
+        QCOMPARE(staleRejected.size(), 1);
+        QVERIFY(!stale.findChild<QPushButton*>("editBlendShapeGeometry")->isEnabled());
     }
 
     void malformedRelationsHaveDiagnosticsAndCannotNavigateAmbiguousTargets_data()

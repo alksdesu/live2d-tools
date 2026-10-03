@@ -269,6 +269,26 @@ private slots:
         QCOMPARE(captured, entry);
     }
 
+    void documentBlendShapeLocksRejectForwardAndAllowUndo()
+    {
+        CModelDocument document; QString error;
+        QVERIFY2(loadDocument(document, m_bytes, QStringLiteral("mao.moc3"), &error), qPrintable(error));
+        CModelBlendShapeGeometryEntry entry;
+        QVERIFY2(document.CaptureBlendShapeGeometry(m_frame.key, entry, &error), qPrintable(error));
+        CModelEdit edit;
+        QVERIFY2(document.MakeBlendShapeGeometryEdit(entry, changedDeltas(entry.deltas), edit, &error), qPrintable(error));
+        document.SetLocked(QStringLiteral("artmesh"), m_frame.key.meshId, true);
+        QVERIFY(!document.ExecuteEdit(edit));
+        QCOMPARE(document.BlendShapeGeometry().size(), 0);
+        document.SetLocked(QStringLiteral("artmesh"), m_frame.key.meshId, false);
+        QVERIFY(document.ExecuteEdit(edit));
+        document.SetLocked(QStringLiteral("artmesh"), m_frame.key.meshId, true);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.BlendShapeGeometry().size(), 0);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.BlendShapeGeometry().size(), 1);
+    }
+
     void documentSessionRestoresBlendShapeAndOrdinaryGeometry()
     {
         CModelDocument document; QString error;

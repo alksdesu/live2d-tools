@@ -31,6 +31,32 @@ void setError(QString* error, const QString& value)
     if (error) *error = value;
 }
 
+bool sameBlendShapeEndpoint(const CModelBlendShapeGeometryEntry& a, const CModelBlendShapeGeometryEntry& b)
+{
+    return a.meshId == b.meshId && a.shapeIndex == b.shapeIndex &&
+        a.bindingOffset == b.bindingOffset && a.keyformOffset == b.keyformOffset;
+}
+
+bool samePositions(const QVector<float>& a, const QVector<float>& b)
+{
+    return a.size() == b.size() && (a.isEmpty() ||
+        std::memcmp(a.constData(), b.constData(), size_t(a.size()) * sizeof(float)) == 0);
+}
+
+CModelBlendShapeGeometryState freezeBlendShapeGeometry(const CModelBlendShapeGeometryState& state)
+{
+    CModelBlendShapeGeometryState result;
+    result.reserve(state.size());
+    for (const auto& entry : state) {
+        auto copy = entry;
+        copy.meshId = QString(entry.meshId.constData(), entry.meshId.size());
+        copy.sourceDigest = QByteArray(entry.sourceDigest.constData(), entry.sourceDigest.size());
+        copy.deltas = QVector<float>(entry.deltas.cbegin(), entry.deltas.cend());
+        result.append(std::move(copy));
+    }
+    return result;
+}
+
 bool inRange(int value, int size)
 {
     return value >= 0 && value < size;
@@ -304,45 +330,43 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         setError(error, QStringLiteral("尚未加载模型快照"));
         return false;
     }
+    QByteArray candidate;
     if (m_drawableKeyformPositionOverrides.isEmpty() && m_deformerWarpKeyformOverrides.isEmpty() &&
         m_deformerRotationKeyformOverrides.isEmpty() && m_deformerParentOverrides.isEmpty() &&
         m_drawableMaskIndexOverrides.isEmpty() && m_drawableMaskInvertedOverrides.isEmpty() &&
-        m_parameterMetadataOverrides.isEmpty())
-        {
-            if (!CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, bytes, error)) return false;
-        } else {
-            if (!m_previewBuilder) {
-                setError(error, m_previewError);
-                return false;
-            }
-            CMocPreviewBuilder::Overrides overrides;
-            overrides.artMeshPositions = m_drawableKeyformPositionOverrides;
-            overrides.warpKeyforms = m_deformerWarpKeyformOverrides;
-            overrides.rotationKeyforms = m_deformerRotationKeyformOverrides;
-            overrides.deformerParents = m_deformerParentOverrides;
-            overrides.drawableMasks = m_drawableMaskIndexOverrides;
-            overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
-            overrides.parameterMetadata = m_parameterMetadataOverrides;
-            QByteArray preview;
-            if (!m_previewBuilder->BuildOverrides(overrides, preview, error) ||
-                !CMocMaterialBuilder::Build(preview, m_drawableMaterialOverrides, bytes, error)) return false;
+        m_parameterMetadataOverrides.isEmpty()) {
+        if (!CMocMaterialBuilder::Build(m_workingBaseBytes, m_drawableMaterialOverrides, candidate, error)) return false;
+    } else {
+        if (!m_previewBuilder) {
+            setError(error, m_previewError);
+            return false;
         }
-    if (m_blendShapeGeometry.isEmpty()) return true;
+        CMocPreviewBuilder::Overrides overrides;
+        overrides.artMeshPositions = m_drawableKeyformPositionOverrides;
+        overrides.warpKeyforms = m_deformerWarpKeyformOverrides;
+        overrides.rotationKeyforms = m_deformerRotationKeyformOverrides;
+        overrides.deformerParents = m_deformerParentOverrides;
+        overrides.drawableMasks = m_drawableMaskIndexOverrides;
+        overrides.drawableMaskInverted = m_drawableMaskInvertedOverrides;
+        overrides.parameterMetadata = m_parameterMetadataOverrides;
+        QByteArray preview;
+        if (!m_previewBuilder->BuildOverrides(overrides, preview, error) ||
+            !CMocMaterialBuilder::Build(preview, m_drawableMaterialOverrides, candidate, error)) return false;
+    }
     for (const auto& entry : m_blendShapeGeometry) {
         CMocBlendShapeGeometryBuilder::Key key{entry.meshId, entry.shapeIndex, entry.bindingOffset, entry.keyformOffset};
         CMocBlendShapeGeometryBuilder::Frame current;
-        if (!CMocBlendShapeGeometryBuilder::Capture(bytes, key, current, error)) return false;
+        if (!CMocBlendShapeGeometryBuilder::Capture(candidate, key, current, error)) return false;
         if (current.deltas.size() != entry.deltas.size()) {
             setError(error, QStringLiteral("融合几何状态与当前模型结构不匹配"));
             return false;
         }
-        if (current.deltas.size() == entry.deltas.size() &&
-            (current.deltas.isEmpty() || std::memcmp(current.deltas.constData(), entry.deltas.constData(),
-                                                      size_t(entry.deltas.size()) * sizeof(float)) == 0)) continue;
+        if (samePositions(current.deltas, entry.deltas)) continue;
         CMocBlendShapeGeometryBuilder::Result result;
-        if (!CMocBlendShapeGeometryBuilder::Build(bytes, {current, entry.deltas}, result, error)) return false;
-        bytes = std::move(result.bytes);
+        if (!CMocBlendShapeGeometryBuilder::Build(candidate, {current, entry.deltas}, result, error)) return false;
+        candidate = std::move(result.bytes);
     }
+    bytes = std::move(candidate);
     return true;
 }
 
@@ -372,11 +396,11 @@ bool CModelDocument::SetBlendShapeGeometry(const CModelBlendShapeGeometryState& 
             frame.sourceKeyformIndex != entry.sourceKeyformIndex || frame.deltas.size() != entry.deltas.size()) return false;
     }
     CModelDocument candidate = *this;
-    candidate.m_blendShapeGeometry = state;
+    candidate.m_blendShapeGeometry = freezeBlendShapeGeometry(state);
     QByteArray preview;
     if (!candidate.BuildPreviewMoc(preview, error)) return false;
     if (candidate.m_blendShapeGeometry == m_blendShapeGeometry) return true;
-    m_blendShapeGeometry = state;
+    m_blendShapeGeometry = std::move(candidate.m_blendShapeGeometry);
     ++m_revision;
     return true;
 }
@@ -399,7 +423,7 @@ bool CModelDocument::CaptureBlendShapeGeometry(const CMocBlendShapeGeometryBuild
             result = entry;
             return true;
         }
-    result = {key.meshId, key.shapeIndex, key.bindingOffset, key.keyformOffset,
+    result = {QString(key.meshId.constData(), key.meshId.size()), key.shapeIndex, key.bindingOffset, key.keyformOffset,
               frame.sourceKeyformIndex, frame.sourceDigest, frame.deltas};
     return true;
 }
@@ -416,19 +440,15 @@ bool CModelDocument::MakeBlendShapeGeometryEdit(const CModelBlendShapeGeometryEn
         setError(error, QStringLiteral("融合几何来源已改变或坐标无效"));
         return false;
     }
+    if (!CanEditBlendShapeGeometry(before.meshId, error)) return false;
     CModelBlendShapeGeometryState next = m_blendShapeGeometry;
     CMocBlendShapeGeometryBuilder::Frame base;
     if (!CMocBlendShapeGeometryBuilder::Capture(m_workingBaseBytes,
             {before.meshId, before.shapeIndex, before.bindingOffset, before.keyformOffset}, base, error)) return false;
-    const auto same = [&deltas](const QVector<float>& values) {
-        return values.size() == deltas.size() &&
-            (values.isEmpty() || std::memcmp(values.constData(), deltas.constData(), size_t(values.size()) * sizeof(float)) == 0);
-    };
     const auto match = std::find_if(next.begin(), next.end(), [&](const auto& value) {
-        return value.meshId == before.meshId && value.shapeIndex == before.shapeIndex &&
-            value.bindingOffset == before.bindingOffset && value.keyformOffset == before.keyformOffset;
+        return sameBlendShapeEndpoint(value, before);
     });
-    if (same(base.deltas)) {
+    if (samePositions(base.deltas, deltas)) {
         if (match != next.end()) next.erase(match);
     } else {
         CModelBlendShapeGeometryEntry updated = before;
@@ -441,7 +461,7 @@ bool CModelDocument::MakeBlendShapeGeometryEdit(const CModelBlendShapeGeometryEn
     CModelDocument candidate = *this;
     if (!candidate.SetBlendShapeGeometry(next, error)) return false;
     edit = {QStringLiteral("blendShapeGeometry"), QStringLiteral("blendshape"), CModelEdit::BlendShapeGeometry,
-            QVariant::fromValue(m_blendShapeGeometry), QVariant::fromValue(next), -1, false};
+            QVariant::fromValue(m_blendShapeGeometry), QVariant::fromValue(candidate.m_blendShapeGeometry), -1, false};
     return true;
 }
 
@@ -449,19 +469,22 @@ bool CModelDocument::BuildBlendShapeGeometryPreview(const CMocBlendShapeGeometry
                                                     const QVector<float>& deltas, QByteArray& bytes,
                                                     QString* error) const
 {
-    if (error) error->clear();
-    if (!m_loaded) {
-        setError(error, QStringLiteral("尚未加载模型快照"));
-        return false;
+    CModelBlendShapeGeometryEntry entry;
+    if (!CaptureBlendShapeGeometry(key, entry, error)) return false;
+    CMocBlendShapeGeometryBuilder::Frame base;
+    if (!CMocBlendShapeGeometryBuilder::Capture(m_workingBaseBytes, key, base, error)) return false;
+    auto state = m_blendShapeGeometry;
+    const auto match = std::find_if(state.begin(), state.end(), [&](const auto& value) {
+        return sameBlendShapeEndpoint(value, entry);
+    });
+    if (samePositions(base.deltas, deltas)) {
+        if (match != state.end()) state.erase(match);
+    } else {
+        entry.deltas = deltas;
+        if (match == state.end()) state.append(std::move(entry)); else *match = std::move(entry);
     }
-    QByteArray base;
-    if (!BuildPreviewMoc(base, error)) return false;
-    CMocBlendShapeGeometryBuilder::Frame frame;
-    if (!CMocBlendShapeGeometryBuilder::Capture(base, key, frame, error)) return false;
-    CMocBlendShapeGeometryBuilder::Result result;
-    if (!CMocBlendShapeGeometryBuilder::Build(base, {frame, deltas}, result, error)) return false;
-    bytes = std::move(result.bytes);
-    return true;
+    CModelDocument candidate = *this;
+    return candidate.SetBlendShapeGeometry(state, error) && candidate.BuildPreviewMoc(bytes, error);
 }
 
 bool CModelDocument::BuildRuntimeMoc(QByteArray& bytes, QString* error) const
@@ -1257,7 +1280,17 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
             edit.freezeValue || edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.deformerRequest ||
             edit.before.metaType() != type || edit.after.metaType() != type ||
             m_blendShapeGeometry != (forward ? edit.before : edit.after).value<CModelBlendShapeGeometryState>()) return false;
-        return SetBlendShapeGeometry((forward ? edit.after : edit.before).value<CModelBlendShapeGeometryState>());
+        const auto next = (forward ? edit.after : edit.before).value<CModelBlendShapeGeometryState>();
+        if (forward) {
+            QSet<QString> changed;
+            for (const auto& entry : m_blendShapeGeometry)
+                if (!next.contains(entry)) changed.insert(entry.meshId);
+            for (const auto& entry : next)
+                if (!m_blendShapeGeometry.contains(entry)) changed.insert(entry.meshId);
+            for (const auto& id : changed)
+                if (!CanEditBlendShapeGeometry(id)) return false;
+        }
+        return SetBlendShapeGeometry(next);
     }
     if (edit.field == CModelEdit::AtlasLayout) return ApplyAtlasEdit(edit, forward);
     if (edit.field == CModelEdit::DrawableMaterials) return ApplyMaterialEdit(edit, forward);
@@ -1477,6 +1510,12 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             } else command.before = current;
             if (command.before == command.after) return false;
         }
+        if (command.field == CModelEdit::BlendShapeGeometry &&
+            command.before.metaType() == QMetaType::fromType<CModelBlendShapeGeometryState>() &&
+            command.after.metaType() == QMetaType::fromType<CModelBlendShapeGeometryState>()) {
+            command.before = QVariant::fromValue(freezeBlendShapeGeometry(command.before.value<CModelBlendShapeGeometryState>()));
+            command.after = QVariant::fromValue(freezeBlendShapeGeometry(command.after.value<CModelBlendShapeGeometryState>()));
+        }
         CModelDocument candidate = *this;
         std::shared_ptr<CModelEditStorageState> storage;
         if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure && command.field != CModelEdit::DeformerStructure) {
@@ -1484,6 +1523,12 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             storage->before = EditStorage(command);
         }
         if (!candidate.ApplyEdit(command, true)) return false;
+        if (command.field == CModelEdit::BlendShapeGeometry) {
+            command.name = QStringLiteral("blendShapeGeometry");
+            command.type = QStringLiteral("blendshape");
+            command.before = QVariant::fromValue(m_blendShapeGeometry);
+            command.after = QVariant::fromValue(candidate.m_blendShapeGeometry);
+        }
         if (!command.meshVerification.IsEmpty()) FreezeVerifiedMeshCommand(command);
         if (command.parameterChange != CModelEdit::ParameterChange::None) {
             QStringList beforeIds, afterIds;

@@ -31,6 +31,7 @@ class CParamPanel;
 class CMotionPanel;
 class CPhysicsPanel;
 class CBlendShapePanel;
+class CBlendShapeGeometryDialog;
 class CTexturePanel;
 class CUvEditDialog;
 class CAtlasEditDialog;
@@ -197,6 +198,7 @@ private:
     void ResizeWarpGrid(const QString& id);
     bool InitializeDeformerDisplayNames(live2dstruct::CModelDocument& document, QString* error) const;
     void RefreshDeformerDisplayNames();
+    void EditBlendShapeGeometry(const QString& meshId, int shapeIndex, int bindingOffset, int keyformOffset);
     bool CancelDeformerDialogs();
     void RefreshDeformerActions();
     void RefreshDeformerStructureUi(const live2dstruct::CModelEdit& command, bool forward);
@@ -207,6 +209,7 @@ private:
     bool m_closeAfterNameImport = false;
     QPointer<CDeformerRenameDialog> m_deformerRenameDialog;
     QPointer<CDeformerGridDialog> m_deformerGridDialog;
+    QPointer<CBlendShapeGeometryDialog> m_blendShapeGeometryDialog;
     void InitializeMeshTools(QVBoxLayout* layout);
     void RefreshMeshTools();
     void RefreshVertexSelectionTools();

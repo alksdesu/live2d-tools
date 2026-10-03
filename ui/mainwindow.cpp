@@ -28,6 +28,7 @@
 #include "ui/cmotionpanel.h"
 #include "ui/cphysicspanel.h"
 #include "ui/cblendshapepanel.h"
+#include "ui/cblendshapegeometrydialog.h"
 #include "ui/ctexturepanel.h"
 #include "ui/cinspectorpanel.h"
 #include "ui/cmodeldiagnosticspanel.h"
@@ -1414,7 +1415,7 @@ void MainWindow::RefreshParameterStructureUi()
     QByteArray bytes;
     QString error;
     if (!m_document.BuildPreviewMoc(bytes, &error)) { statusBar()->showMessage(error, 8000); return; }
-    if (m_blendShapePanel && !m_blendShapePanel->BuildBlendShapesBytes(bytes, m_cidJson, &error, m_document.SourceDigest()))
+    if (m_blendShapePanel && !m_blendShapePanel->BuildBlendShapesBytes(m_document.WorkingBaseBytes(), m_cidJson, &error, m_document.SourceDigest()))
         statusBar()->showMessage(error, 8000);
     const QSet<QString>* blendShapes = m_blendShapePanel ? &m_blendShapePanel->getBlendShapeParamIds() : nullptr;
     if (m_paramPanel) m_paramPanel->ReconcileParameters(m_cidJson, blendShapes);
@@ -1742,6 +1743,46 @@ void MainWindow::RefreshKeyformUi(bool changed, bool markSession, bool syncParam
     m_historySource = HistorySource::Inspector;
     if (m_diagnosticsPanel) m_diagnosticsPanel->Refresh();
     RefreshUndoActions();
+}
+
+void MainWindow::EditBlendShapeGeometry(const QString& meshId, int shapeIndex, int bindingOffset, int keyformOffset)
+{
+    if (m_blendShapeGeometryDialog) { m_blendShapeGeometryDialog->raise(); return; }
+    QString error;
+    if (!AuthoringReady(&error) || !FinishParameterValueEditing(&error) || m_batchExporting || m_psdBatch ||
+        m_previewExport.IsBusy()) {
+        if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
+        return;
+    }
+    if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, &error)) {
+        statusBar()->showMessage(error, 8000);
+        return;
+    }
+    const auto source = m_document.SourceDigest();
+    const auto path = m_document.SourcePath();
+    const auto revision = m_document.Revision();
+    const live2dstruct::CMocBlendShapeGeometryBuilder::Key key{meshId, shapeIndex, bindingOffset, keyformOffset};
+    live2dstruct::CModelBlendShapeGeometryEntry before;
+    if (!m_document.CaptureBlendShapeGeometry(key, before, &error)) {
+        statusBar()->showMessage(error, 8000);
+        return;
+    }
+    auto* dialog = new CBlendShapeGeometryDialog(before, this);
+    m_blendShapeGeometryDialog = dialog;
+    const QPointer<MainWindow> alive(this);
+    const QPointer<CBlendShapeGeometryDialog> child(dialog);
+    const auto cleanup = qScopeGuard([child] { if (child) delete child; });
+    dialog->SetSubmissionHandler([alive, key, before, source, path, revision](const QVector<float>& deltas, QString* detail) {
+        if (!alive || !alive->AuthoringReady(detail) || alive->m_document.SourceDigest() != source ||
+            alive->m_document.SourcePath() != path || alive->m_document.Revision() != revision) {
+            if (detail) *detail = QStringLiteral("模型已改变，请重新打开融合几何编辑器");
+            return false;
+        }
+        live2dstruct::CModelEdit edit;
+        if (!alive->m_document.MakeBlendShapeGeometryEdit(before, deltas, edit, detail)) return false;
+        return alive->SubmitInspectorEdit(edit, detail);
+    });
+    dialog->exec();
 }
 
 void MainWindow::RefreshModelTree()
@@ -2879,6 +2920,7 @@ bool MainWindow::CloseModel()
         return false;
     }
     if (!CancelDeformerDialogs()) return false;
+    if (m_blendShapeGeometryDialog) m_blendShapeGeometryDialog->reject();
     if (!CancelAutomaticMesh()) return false;
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     if (m_nameImportControl) m_nameImportControl->Cancel();
@@ -3392,6 +3434,10 @@ void MainWindow::RestDock(const QString &name)
         if (!m_paramPanel->FocusParameter(id)) statusBar()->showMessage(QStringLiteral("当前模型中没有该参数"), 5000);
     });
     connect(m_blendShapePanel, &CBlendShapePanel::ObjectSelected, m_treePanel, &CModelTreePanel::HighlightObject);
+    connect(m_blendShapePanel, &CBlendShapePanel::GeometryEditRequested, this, &MainWindow::EditBlendShapeGeometry);
+    connect(m_blendShapePanel, &CBlendShapePanel::GeometryEditRejected, this, [this](const QString& reason) {
+        if (!reason.isEmpty()) statusBar()->showMessage(reason, 8000);
+    });
 
     m_texturePanel = new CTexturePanel(this);
     m_texturePanel->SetArtworkActions({m_importPsdAction, m_importCmoAction, m_reimportPsdAction, m_manageArtworkAction, m_savedPsdRecoveryAction});
@@ -3505,7 +3551,7 @@ void MainWindow::RestDock(const QString &name)
     // 加载融合变形信息（立即，不需要 GL）
     if(m_blendShapePanel){
         QString relationError;
-        if (!m_blendShapePanel->BuildBlendShapesBytes(m_document.SourceBytes(), m_cidJson, &relationError))
+        if (!m_blendShapePanel->BuildBlendShapesBytes(m_document.WorkingBaseBytes(), m_cidJson, &relationError))
             statusBar()->showMessage(relationError, 8000);
     }
 

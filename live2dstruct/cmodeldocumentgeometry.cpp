@@ -169,6 +169,14 @@ bool readStates(const CModelEdit& edit, CModelGeometryState& before, CModelGeome
 }
 }
 
+bool CModelDocument::CanEditBlendShapeGeometry(const QString& meshId, QString* error) const
+{
+    const GeometryDirectory directory(*this);
+    if (!IsLoaded() || directory.meshes.value(meshId, -1) < 0)
+        return fail(error, QStringLiteral("融合目标网格不存在或 ID 重复：%1").arg(meshId));
+    return editable(*this, directory, {CModelGeometryKeyform::ArtMesh, meshId, -1, {}}, error);
+}
+
 bool CModelDocument::CaptureGeometryKeyform(CModelGeometryKeyform::Type type, const QString& id, int keyform,
                                            CModelGeometryKeyform& result, QString* error) const
 {

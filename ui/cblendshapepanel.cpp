@@ -2,6 +2,7 @@
 #include "ui/para/ccidjson.h"
 #include "live2dstruct/cblendshaperelations.h"
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmocblendshapegeometrybuilder.h"
 #include "live2dstruct/csectiontable.h"
 #include <QCryptographicHash>
 #include <QFile>
@@ -15,6 +16,7 @@
 #include <QMouseEvent>
 #include <QPointer>
 #include <QPersistentModelIndex>
+#include <QPushButton>
 #include <QLineEdit>
 #include <QScopedValueRollback>
 #include <QScrollBar>
@@ -41,6 +43,9 @@ constexpr int LoadedRole = Qt::UserRole + 4;
 constexpr int SelectableRole = Qt::UserRole + 5;
 constexpr int TargetTypeRole = Qt::UserRole + 6;
 constexpr int TargetIdRole = Qt::UserRole + 7;
+constexpr int ShapeRole = Qt::UserRole + 8;
+constexpr int BindingOffsetRole = Qt::UserRole + 9;
+constexpr int KeyformOffsetRole = Qt::UserRole + 10;
 
 class CBlendRelationTree : public QTreeWidget
 {
@@ -155,6 +160,7 @@ struct CBlendShapePanel::State
     struct Range { float minimum, maximum, defaultValue; };
     Relations relations;
     QByteArray digest;
+    QByteArray workingDigest;
     QSet<QString> blendIds;
     QHash<QString, QVector<Control>> controls;
     QHash<QString, Range> ranges;
@@ -171,6 +177,7 @@ struct CBlendShapePanel::State
     QTreeWidget* details = nullptr;
     QLineEdit* search = nullptr;
     QLabel* summary = nullptr;
+    QPushButton* editGeometry = nullptr;
     std::unique_ptr<QWidget> wrapper;
 };
 
@@ -219,6 +226,11 @@ std::unique_ptr<CBlendShapePanel::State> CBlendShapePanel::CreateState()
     layout->addWidget(result->search);
     layout->addWidget(result->summary);
     layout->addWidget(splitter, 1);
+    result->editGeometry = new QPushButton(QStringLiteral("编辑融合几何"), result->wrapper.get());
+    result->editGeometry->setObjectName(QStringLiteral("editBlendShapeGeometry"));
+    result->editGeometry->setEnabled(false);
+    result->editGeometry->setToolTip(QStringLiteral("展开 ArtMesh 绑定，选择一个融合关键形"));
+    layout->addWidget(result->editGeometry);
     return result;
 }
 
@@ -244,6 +256,8 @@ void CBlendShapePanel::ConnectState()
     for (auto* tree : {static_cast<QTreeWidget*>(m_state->parameters), m_state->details})
         connect(tree, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item) { ActivateItem(item); });
     connect(m_state->details, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) { ExpandDetails(item); });
+    connect(m_state->details, &QTreeWidget::currentItemChanged, this, [this] { UpdateGeometryAction(); });
+    connect(m_state->editGeometry, &QPushButton::clicked, this, [this] { ActivateItem(m_state->details->currentItem()); });
     for (auto controls = m_state->controls.cbegin(); controls != m_state->controls.cend(); ++controls) {
         const QString id = controls.key();
         for (const auto& control : controls.value()) {
@@ -325,7 +339,8 @@ bool CBlendShapePanel::BuildBlendShapesBytes(const QByteArray& bytes, CCidJson* 
         if (!table.IsValid()) { if (error) *error = reader.Error(); return false; }
         candidate = CreateState();
         if (!candidate->relations.Build(table, error)) return false;
-        candidate->digest = sourceDigest.isEmpty() ? QCryptographicHash::hash(bytes, QCryptographicHash::Sha256) : sourceDigest;
+        candidate->workingDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+        candidate->digest = sourceDigest.isEmpty() ? candidate->workingDigest : sourceDigest;
         for (const auto& parameter : candidate->relations.Parameters()) {
             if (candidate->digest == m_state->digest && m_state->recentValues.contains(parameter.id))
                 candidate->recentValues.insert(parameter.id, m_state->recentValues.value(parameter.id));
@@ -545,6 +560,7 @@ void CBlendShapePanel::SetDocument(const CModelDocument* document)
     m_document = document;
     RefreshParameterMetadata();
     RefreshDeformerDisplayNames();
+    UpdateGeometryAction();
 }
 
 const QSet<QString>& CBlendShapePanel::getBlendShapeParamIds() const { return m_state->blendIds; }
@@ -597,6 +613,7 @@ void CBlendShapePanel::RefreshParameterMetadata()
         else if (kind == QLatin1String("limiter")) (*item)->setText(0, QStringLiteral("限制参数 · %1").arg(ParameterName(id)));
     }
     FilterParameters();
+    UpdateGeometryAction();
 }
 
 void CBlendShapePanel::SyncParameterValue(const QString& paramId, float value)
@@ -665,6 +682,7 @@ void CBlendShapePanel::ShowParameterDetails(const QString& id)
         item->setData(0, KindRole, QStringLiteral("diagnostics"));
         item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     }
+    UpdateGeometryAction();
 }
 
 void CBlendShapePanel::ExpandDetails(QTreeWidgetItem* item)
@@ -708,7 +726,8 @@ void CBlendShapePanel::ExpandDetails(QTreeWidgetItem* item)
                 }
             }
             child->setToolTip(1, QStringLiteral("源关键值 %1 项 · 基准索引 %2").arg(source.keys.count).arg(source.baseKeyIndex));
-            if (binding.constraints.count) child->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+            if (binding.constraints.count || (type == Relations::ArtMesh && binding.keyforms.count))
+                child->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
         }
         if (bindings.isEmpty()) new QTreeWidgetItem(item, {QStringLiteral("没有有效绑定")});
     } else if (kind == QLatin1String("binding")) {
@@ -723,6 +742,7 @@ void CBlendShapePanel::ExpandDetails(QTreeWidgetItem* item)
             child->setToolTip(0, parameter.id);
             if (limiter.values.count) child->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
         }
+        AppendGeometryRows(item);
         if (!item->childCount()) new QTreeWidgetItem(item, {QStringLiteral("没有有效权重限制")});
     } else if (kind == QLatin1String("limiter")) {
         const int begin = item->data(0, IndexRole).toInt(), count = item->data(1, IndexRole).toInt();
@@ -737,12 +757,81 @@ void CBlendShapePanel::ExpandDetails(QTreeWidgetItem* item)
     }
 }
 
+void CBlendShapePanel::AppendGeometryRows(QTreeWidgetItem* item)
+{
+    if (item->data(0, TargetTypeRole).toInt() != Relations::ArtMesh) return;
+    const QString id = item->data(0, TargetIdRole).toString();
+    const int bindingIndex = item->data(0, IndexRole).toInt();
+    const auto& relations = m_state->relations;
+    if (bindingIndex < 0 || bindingIndex >= relations.Bindings().size()) return;
+    const auto& binding = relations.Bindings()[bindingIndex];
+    int sourceIndex = -1;
+    for (const auto& target : relations.Targets())
+        if (target.type == Relations::ArtMesh && target.id == id && target.selectable) sourceIndex = target.sourceIndex;
+    if (sourceIndex < 0) return;
+    const auto geometry = relations.GeometryBindings(Relations::ArtMesh, id);
+    for (const auto& shape : relations.Shapes()) {
+        if (!shape.valid || shape.type != Relations::ArtMesh || shape.sourceIndex != sourceIndex ||
+            bindingIndex < shape.bindings.begin || bindingIndex - shape.bindings.begin >= shape.bindings.count) continue;
+        for (const auto& entry : geometry) {
+            if (entry.bindingIndex != bindingIndex) continue;
+            const int offset = entry.localKeyformIndex >= 0 ? entry.localKeyformIndex :
+                entry.sourceKeyformIndex - binding.keyforms.begin;
+            const bool mapped = offset >= 0 && offset < entry.parameterKeys.size() &&
+                binding.keyforms.count == entry.parameterKeys.size();
+            const auto key = mapped ? parameterText(entry.parameterKeys[offset]) : QStringLiteral("映射不可确定");
+            auto* child = new QTreeWidgetItem(item, {QStringLiteral("融合形 %1 · 关键值 %2").arg(shape.index).arg(key),
+                QStringLiteral("全局行 %1 · 独立融合位移").arg(entry.sourceKeyformIndex)});
+            child->setData(0, KindRole, QStringLiteral("geometry"));
+            child->setData(0, Qt::UserRole, id);
+            child->setData(0, SelectableRole, mapped);
+            child->setData(0, ShapeRole, shape.index);
+            child->setData(0, BindingOffsetRole, bindingIndex - shape.bindings.begin);
+            child->setData(0, KeyformOffsetRole, offset);
+            child->setToolTip(0, QStringLiteral("%1 · %2\n不修改普通关键形；回车或点击按钮编辑").arg(id, entry.parameterId));
+        }
+    }
+}
+
+bool CBlendShapePanel::GeometrySourceMatches() const
+{
+    return m_state && m_document && m_document->IsLoaded() && m_document->SourceDigest() == m_state->digest &&
+        QCryptographicHash::hash(m_document->WorkingBaseBytes(), QCryptographicHash::Sha256) == m_state->workingDigest;
+}
+
+void CBlendShapePanel::UpdateGeometryAction()
+{
+    if (!m_state) return;
+    const auto* item = m_state->details->currentItem();
+    const bool geometry = item && item->data(0, KindRole) == QLatin1String("geometry") &&
+        item->data(0, SelectableRole).toBool();
+    const bool matching = geometry && GeometrySourceMatches();
+    m_state->editGeometry->setEnabled(matching);
+    m_state->editGeometry->setToolTip(!geometry ? QStringLiteral("展开 ArtMesh 绑定，选择一个融合关键形") :
+        matching ? QStringLiteral("编辑此关键值的独立融合位移，支持撤销和重做") : QStringLiteral("模型快照已改变，请刷新融合关系后再编辑"));
+}
+
 void CBlendShapePanel::ActivateItem(QTreeWidgetItem* item)
 {
     if (m_rebuilding || !item || !item->data(0, SelectableRole).toBool()) return;
     const QString id = item->data(0, Qt::UserRole).toString();
     const auto kind = item->data(0, KindRole).toString();
-    if (kind == QLatin1String("target")) emit ObjectSelected(id, item->data(0, TypeRole).toString());
+    if (kind == QLatin1String("geometry")) {
+        if (!GeometrySourceMatches()) {
+            UpdateGeometryAction();
+            emit GeometryEditRejected(QStringLiteral("模型快照已改变，请刷新融合关系后再编辑"));
+            return;
+        }
+        const CMocBlendShapeGeometryBuilder::Key key{id, item->data(0, ShapeRole).toInt(),
+            item->data(0, BindingOffsetRole).toInt(), item->data(0, KeyformOffsetRole).toInt()};
+        CModelBlendShapeGeometryEntry entry;
+        QString error;
+        if (!m_document->CaptureBlendShapeGeometry(key, entry, &error)) {
+            emit GeometryEditRejected(error);
+            return;
+        }
+        emit GeometryEditRequested(key.meshId, key.shapeIndex, key.bindingOffset, key.keyformOffset);
+    } else if (kind == QLatin1String("target")) emit ObjectSelected(id, item->data(0, TypeRole).toString());
     else if (m_state->relations.ParameterIndex(id) >= 0) emit ParameterSelected(id);
 }
 

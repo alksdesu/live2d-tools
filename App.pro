@@ -169,6 +169,7 @@ SOURCES += \
     ui/cphysicspanel.cpp \
     ui/cphysicsgraph.cpp \
     ui/cblendshapepanel.cpp \
+    ui/cblendshapegeometrydialog.cpp \
     ui/ctexturepanel.cpp \
     live2dstruct/tree/c2dtree.cpp \
     live2dstruct/tree/c2dtreenode.cpp \
@@ -464,6 +465,7 @@ HEADERS += \
     ui/cphysicsgraph.h \
     ui/cphysicspanel.h \
     ui/cblendshapepanel.h \
+    ui/cblendshapegeometrydialog.h \
     ui/ctexturepanel.h \
     live2dstruct/tree/c2dtree.h \
     live2dstruct/tree/c2dtreenode.h \
