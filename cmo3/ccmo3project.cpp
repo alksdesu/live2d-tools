@@ -154,6 +154,16 @@ private:
         }
         return QTransform(values[0], values[3], values[1], values[4], values[2], values[5]);
     }
+    QTransform optionalTransform(int node) const
+    {
+        node = xml.resolve(node);
+        if (xml.nodes[node].type == QStringLiteral("null")) {
+            require(xml.empty(node),
+                    QStringLiteral("CMO 可选素材变换为空节点但包含内容"));
+            return QTransform();
+        }
+        return transform(node);
+    }
     QVector<double> values(int node)
     {
         node = xml.resolve(node);
@@ -454,7 +464,10 @@ private:
                 entry.current = input == current;
                 const int base = xml.typed(xml.field(input, "super"), "ACTextureInput");
                 require(xml.field(base, "_owner") == extension, QStringLiteral("CMO 素材纹理输入所属扩展不一致"));
-                entry.optionalTransformOnCanvas = transform(xml.field(base, "optionalTransformOnCanvas"));
+                const int optionalTransformNode = xml.resolve(xml.field(base, "optionalTransformOnCanvas"));
+                entry.optionalTransformOnCanvas = optionalTransform(optionalTransformNode);
+                if (xml.nodes[optionalTransformNode].type == QStringLiteral("null"))
+                    entry.diagnostics.append(QStringLiteral("画布变换未保存，按单位变换读取"));
                 if (!entry.optionalTransformOnCanvas.isIdentity()) entry.diagnostics.append(QStringLiteral("保留非恒等画布变换，尚未验证其组合顺序"));
                 if (entry.type == QStringLiteral("CTextureInput_ModelImage")) {
                     knownFields(input, {"super", "_modelImageGuid", "cached_modelImageVersion"}, entry.diagnostics);

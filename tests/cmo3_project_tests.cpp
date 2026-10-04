@@ -356,6 +356,31 @@ private slots:
         }
         QCOMPARE(changed, 1);
     }
+    void missingOptionalCanvasTransformUsesIdentity()
+    {
+        const auto bytes = replaceXml(m_generated, [](QByteArray& xml) {
+            QString text = QString::fromUtf8(xml);
+            const QRegularExpression pattern(QStringLiteral("<CAffine xs.n=\"optionalTransformOnCanvas\"[^>]*/>"));
+            const auto match = pattern.match(text);
+            QVERIFY(match.hasMatch());
+            text.replace(match.capturedStart(), match.capturedLength(),
+                         QStringLiteral("<null xs.n=\"optionalTransformOnCanvas\"/>"));
+            xml = text.toUtf8();
+        });
+        cmo3::CCmo3Project project; QString error;
+        QVERIFY2(cmo3::CCmo3Project::OpenBytes(bytes, {}, project, &error), qPrintable(error));
+        QVERIFY2(project.Materials(), qPrintable(project.MaterialsError()));
+        int missing = 0;
+        for (const auto& mesh : project.Materials()->meshes) {
+            for (const auto& input : mesh.inputs) {
+                if (input.diagnostics.join('\n').contains(QStringLiteral("画布变换未保存"))) {
+                    ++missing;
+                    QVERIFY(input.optionalTransformOnCanvas.isIdentity());
+                }
+            }
+        }
+        QCOMPARE(missing, 1);
+    }
     void nativeFileCapabilityEvidence()
     {
         const QString path = qEnvironmentVariable("LIVE2D_TEST_NATIVE_CMO");
