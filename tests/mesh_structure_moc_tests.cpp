@@ -724,8 +724,10 @@ private slots:
         const int row = glue->glue_info_sources_begin_indices;
         const float original = before.glue_info[row]->weights;
         const float replacement = original == .25f ? .75f : .25f;
+        const float replacementB = before.glue_info[row + 1]->weights == .25f ? .5f : .25f;
         Builder::Request request;
         request.glueWeights.append({0, 0, Builder::GlueRetarget::A, replacement});
+        request.glueWeights.append({0, 0, Builder::GlueRetarget::B, replacementB});
         Builder::Result result; QString error;
         QVERIFY2(Builder::Build(bytes, request, result, &error), qPrintable(error));
         QCOMPARE(bytes, source("Rice"));
@@ -736,6 +738,7 @@ private slots:
         QCOMPARE(after.glue_info[after.glue.first()->glue_info_sources_begin_indices]->position_indices,
                  before.glue_info[row]->position_indices);
         QCOMPARE(after.glue_info[after.glue.first()->glue_info_sources_begin_indices]->weights, replacement);
+        QCOMPARE(after.glue_info[after.glue.first()->glue_info_sources_begin_indices + 1]->weights, replacementB);
         QByteArray rebuilt;
         QVERIFY2(CMocParameterStructureBuilder::BuildColumnState(bytes, result.state, rebuilt, &error), qPrintable(error));
         QCOMPARE(rebuilt, result.bytes);
@@ -744,6 +747,13 @@ private slots:
         Builder::Result rejected; rejected.bytes = "sentinel";
         QVERIFY(!Builder::Build(bytes, duplicate, rejected, &error));
         QCOMPARE(rejected.bytes, QByteArray("sentinel"));
+        for (float weight : {-0.1f, 1.1f, std::numeric_limits<float>::quiet_NaN()}) {
+            Builder::Request invalid;
+            invalid.glueWeights.append({0, 0, Builder::GlueRetarget::A, weight});
+            rejected.bytes = "sentinel";
+            QVERIFY(!Builder::Build(bytes, invalid, rejected, &error));
+            QCOMPARE(rejected.bytes, QByteArray("sentinel"));
+        }
     }
 };
 QTEST_GUILESS_MAIN(MocMeshStructureTests)
