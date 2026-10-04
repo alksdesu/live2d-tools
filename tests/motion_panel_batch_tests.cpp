@@ -251,6 +251,7 @@ private slots:
             dialog->findChild<QDoubleSpinBox*>("motionTimeOffset")->setValue(2);
             dialog->findChild<QDoubleSpinBox*>("motionTimeScale")->setValue(3);
             dialog->findChild<QDoubleSpinBox*>("motionValueOffset")->setValue(-1);
+            dialog->findChild<QDoubleSpinBox*>("motionValueScale")->setValue(2);
             dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
             if (dialog->isVisible()) dialog->reject();
         });
@@ -262,11 +263,12 @@ private slots:
             dialog->findChild<QDoubleSpinBox*>("motionTimeOffset")->setValue(3);
             dialog->findChild<QDoubleSpinBox*>("motionTimeScale")->setValue(2);
             dialog->findChild<QDoubleSpinBox*>("motionValueOffset")->setValue(-1);
+            dialog->findChild<QDoubleSpinBox*>("motionValueScale")->setValue(2);
             dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
         });
         panel.findChild<QAction*>("transformMotionKeys")->trigger();
-        QCOMPARE(panel.Timeline().Tracks().value(parameter("A"))[1], QPointF(6, 1));
-        QCOMPARE(panel.Timeline().Tracks().value(parameter("B"))[1], QPointF(4, 9));
+        QCOMPARE(panel.Timeline().Tracks().value(parameter("A"))[1], QPointF(6, 3));
+        QCOMPARE(panel.Timeline().Tracks().value(parameter("B"))[1], QPointF(4, 19));
         QCOMPARE(panel.Timeline().Events(), before.Events()); QCOMPARE(panel.Timeline().Timing().fps, before.Timing().fps);
         QCOMPARE(panel.findChild<QUndoStack*>()->count(), 1);
         panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(before));

@@ -716,6 +716,7 @@ void CMotionPanel::TransformKeyframes()
     auto* offset = field(QStringLiteral("motionTimeOffset"), -std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0);
     auto* scale = field(QStringLiteral("motionTimeScale"), 0.000000001, std::numeric_limits<float>::max(), 1);
     auto* value = field(QStringLiteral("motionValueOffset"), -std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0);
+    auto* valueScale = field(QStringLiteral("motionValueScale"), -std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 1);
     auto* status = new QLabel(QStringLiteral("以最早选中时间 %1 秒为缩放中心").arg(pivot, 0, 'g', 9), dialog.data());
     status->setTextFormat(Qt::PlainText);
     status->setWordWrap(true);
@@ -723,6 +724,7 @@ void CMotionPanel::TransformKeyframes()
     layout->addRow(QStringLiteral("时间偏移（秒）"), offset);
     layout->addRow(QStringLiteral("时间倍率"), scale);
     layout->addRow(QStringLiteral("数值偏移"), value);
+    layout->addRow(QStringLiteral("数值倍率（以 0 为中心）"), valueScale);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog.data());
     layout->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog.data(), &QDialog::reject);
@@ -731,7 +733,7 @@ void CMotionPanel::TransformKeyframes()
             status->setText(QStringLiteral("时间轴或选区已改变，请取消后重新打开")); return;
         }
         CMotionTimeline::BatchEdit edit;
-        edit.transform = CMotionTimeline::PointTransform{selection, {pivot, 0}, {offset->value(), value->value()}, scale->value(), 1};
+        edit.transform = CMotionTimeline::PointTransform{selection, {pivot, 0}, {offset->value(), value->value()}, scale->value(), valueScale->value()};
         QString error;
         if (!ApplyKeyframeBatch(edit, QStringLiteral("平移 / 缩放关键帧"), &error)) {
             if (alive && dialog) status->setText(error);
