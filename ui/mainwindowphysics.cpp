@@ -364,7 +364,8 @@ void MainWindow::BakePhysicsAnimation()
         report(QStringLiteral("动画效果分组已改变，结果未写入动画")); return;
     }
     if (!control->BeginCommit()) { report(QStringLiteral("已取消烘焙，动画保持不变")); return; }
-    const bool applied = motion && motion->ApplyBakedParameterSamples(timeline, revision, result->curves, options.newAnimation, result->fps, &error);
+    const bool applied = motion && motion->ApplyBakedParameterSamples(timeline, revision, result->curves,
+        options.newAnimation, result->fps, &error, options.copyScene);
     control->CommitFinished(applied, error);
     if (!applied) { report(error); return; }
     m_batchExporting = false;

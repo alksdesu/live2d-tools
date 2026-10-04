@@ -27,6 +27,7 @@ public:
         double duration = 1.0;
         int warmupCycles = 1;
         bool newAnimation = false;
+        bool copyScene = false;
     };
     explicit CPhysicsBakeDialog(QMap<QString, QString> outputNames, const CMotionTimeline& timeline,
                                 QWidget* parent = nullptr, double physicsFps = 0.0);
@@ -45,6 +46,7 @@ private:
     QString Validate(Options& options, qint64& pointsPerOutput, qint64& retainedPoints, double& endTime) const;
     QListWidget* m_outputs = nullptr;
     QCheckBox* m_newAnimation = nullptr;
+    QCheckBox* m_copyScene = nullptr;
     QComboBox* m_fpsSource = nullptr;
     QLabel* m_destinationHint = nullptr;
     QSet<QString> m_conflictingOutputs;

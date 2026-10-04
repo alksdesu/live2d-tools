@@ -143,6 +143,22 @@ private slots:
         QVERIFY(source.HasSameContent(before));
     }
 
+    void copySceneModeIsDistinctFromIndependentAnimation()
+    {
+        CPhysicsBakeDialog dialog({{"Hair", "头发"}}, timeline());
+        auto* independent = widget<QCheckBox>(dialog, "physicsBakeNewAnimation");
+        auto* copy = widget<QCheckBox>(dialog, "physicsBakeCopyScene");
+        auto* hint = widget<QLabel>(dialog, "physicsBakeDestinationHint");
+        copy->setChecked(true);
+        QVERIFY(dialog.Selection().copyScene);
+        QVERIFY(!dialog.Selection().newAnimation);
+        QVERIFY(hint->text().contains(QStringLiteral("复制当前动画")));
+        independent->setChecked(true);
+        QVERIFY(dialog.Selection().newAnimation);
+        QVERIFY(!dialog.Selection().copyScene);
+        QVERIFY(hint->text().contains(QStringLiteral("新动画")));
+    }
+
     void globalEffectConflictsRequireSeparateAnimationOrDeselection()
     {
         const auto source = timeline();

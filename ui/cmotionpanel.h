@@ -107,7 +107,7 @@ public:
     bool CaptureBakeTimeline(CMotionTimeline& result, quint64& revision, QString* error = nullptr) const;
     bool ApplyBakedParameterSamples(const CMotionTimeline& expected, quint64 expectedRevision,
                                    const QMap<QString, QVector<QPointF>>& samples, bool newAnimation,
-                                   double fps, QString* error = nullptr);
+                                   double fps, QString* error = nullptr, bool copyScene = false);
     bool RestoreTimelineState(const QJsonObject& state, QString* error = nullptr);
     bool HasUnsavedTimelineChanges() const;
     void MarkTimelineSaved();

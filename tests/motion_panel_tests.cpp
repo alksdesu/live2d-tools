@@ -166,6 +166,22 @@ private slots:
         QVERIFY(panel.ApplyBakedParameterSamples(again, againRevision, samples, false, 24)); QCOMPARE(history->count(), oldCount + 1);
     }
 
+    void bakedSamplesCopySceneKeepsEventsAndNonPhysicalTracks()
+    {
+        CMotionPanel panel; QVERIFY(panel.RestoreTimelineState(settingsState()));
+        panel.SetParameterIds({"Opacity", "B"});
+        CMotionTimeline expected; quint64 revision; QVERIFY(panel.CaptureBakeTimeline(expected, revision));
+        const QMap<QString, QVector<QPointF>> samples{{"Opacity", {{0, .2}, {.5, .8}, {1, .4}}}};
+        QString error;
+        QVERIFY2(panel.ApplyBakedParameterSamples(expected, revision, samples, false, 120, &error, true), qPrintable(error));
+        QCOMPARE(panel.Timeline().Timing().fps, 120.0);
+        QCOMPARE(panel.Timeline().Events(), expected.Events());
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "B"}), expected.Tracks().value({CMotionTarget::Parameter, "B"}));
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Model, "Opacity"}), expected.Tracks().value({CMotionTarget::Model, "Opacity"}));
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}), samples["Opacity"]);
+        panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(expected));
+    }
+
     void bakedSamplesRejectStaleIdsAndInvalidDataWithoutLosingRedo()
     {
         CMotionPanel panel; panel.SetParameterIds({"A"}); QVERIFY(panel.AddTimelinePoint({CMotionTarget::Parameter, "A"}, 0, 0));

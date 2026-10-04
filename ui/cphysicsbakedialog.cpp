@@ -115,6 +115,10 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     m_newAnimation->setObjectName(QStringLiteral("physicsBakeNewAnimation"));
     m_newAnimation->setFocusPolicy(Qt::StrongFocus);
     body->addWidget(m_newAnimation);
+    m_copyScene = new QCheckBox(QStringLiteral("复制当前场景并应用"), content);
+    m_copyScene->setObjectName(QStringLiteral("physicsBakeCopyScene"));
+    m_copyScene->setFocusPolicy(Qt::StrongFocus);
+    body->addWidget(m_copyScene);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -186,7 +190,20 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     connect(m_buttons, &QDialogButtonBox::accepted, this, &CPhysicsBakeDialog::accept);
     connect(m_buttons, &QDialogButtonBox::rejected, this, &CPhysicsBakeDialog::reject);
     connect(m_outputs, &QListWidget::itemChanged, this, [this]() { RefreshValidation(); });
-    connect(m_newAnimation, &QCheckBox::toggled, this, [this]() { RefreshValidation(); });
+    connect(m_newAnimation, &QCheckBox::toggled, this, [this](bool checked) {
+        if (checked) {
+            const QSignalBlocker blocker(m_copyScene);
+            m_copyScene->setChecked(false);
+        }
+        RefreshValidation();
+    });
+    connect(m_copyScene, &QCheckBox::toggled, this, [this](bool checked) {
+        if (checked) {
+            const QSignalBlocker blocker(m_newAnimation);
+            m_newAnimation->setChecked(false);
+        }
+        RefreshValidation();
+    });
     connect(m_fps, &QDoubleSpinBox::valueChanged, this, [this]() {
         if (m_fpsSource && m_fpsSource->currentData().toInt() != int(Options::FpsSource::Custom)) {
             const QSignalBlocker blocker(m_fpsSource);
@@ -210,7 +227,8 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     setTabOrder(m_outputs, selectAll);
     setTabOrder(selectAll, clear);
     setTabOrder(clear, m_newAnimation);
-    setTabOrder(m_newAnimation, m_fpsSource);
+    setTabOrder(m_newAnimation, m_copyScene);
+    setTabOrder(m_copyScene, m_fpsSource);
     setTabOrder(m_fpsSource, m_fps);
     setTabOrder(m_fps, m_duration);
     setTabOrder(m_duration, m_warmup);
@@ -233,6 +251,7 @@ CPhysicsBakeDialog::Options CPhysicsBakeDialog::Selection() const
     options.duration = m_durationChanged ? m_duration->value() : m_initialDuration;
     options.warmupCycles = m_warmup->value();
     options.newAnimation = m_newAnimation->isChecked();
+    options.copyScene = m_copyScene->isChecked();
     return options;
 }
 
@@ -277,6 +296,8 @@ void CPhysicsBakeDialog::RefreshValidation()
     const QString error = Validate(options, points, retained, end);
     m_destinationHint->setText(options.newAnimation
         ? QStringLiteral("只将所选输出写入新动画，不复制原动画的其它轨道与事件。原动画仍作为本次计算输入，完成后可撤销恢复。")
+        : options.copyScene
+        ? QStringLiteral("复制当前动画的其它轨道、事件和元数据，再替换所选物理输出。原动画保持不变，完成后可撤销。")
         : QStringLiteral("将替换所选输出参数的整条曲线，其它轨道和事件保留。完成后可以撤销。"));
     if (points) {
         const qint64 generated = points * options.outputIds.size();

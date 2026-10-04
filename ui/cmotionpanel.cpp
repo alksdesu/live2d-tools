@@ -1775,7 +1775,7 @@ bool CMotionPanel::CaptureBakeTimeline(CMotionTimeline& result, quint64& revisio
 
 bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, quint64 expectedRevision,
                                              const QMap<QString, QVector<QPointF>>& samples, bool newAnimation,
-                                             double fps, QString* error)
+                                             double fps, QString* error, bool copyScene)
 {
     if (!CheckParameterEditGuard(error)) return false;
     const ScopedFlag parameterEdit(this, m_parameterEditApproved, true);
@@ -1794,6 +1794,7 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
             if (!ids.contains(it.key())) return fail(QStringLiteral("烘焙输出参数已不存在：%1").arg(it.key()));
         CMotionTimeline candidate = newAnimation ? CMotionTimeline() : current;
         if (newAnimation && !candidate.SetTiming(fps, 0, error)) return false;
+        if (!newAnimation && copyScene && !candidate.SetTiming(fps, candidate.Timing().duration, error)) return false;
         if (!candidate.ReplaceParameterSamples(samples, error, true)) return false;
         const auto before = CurrentTimelineSnapshot();
         TimelineSnapshot after{candidate, newAnimation ? false : before.loop, newAnimation ? 0.0 : before.playhead};
