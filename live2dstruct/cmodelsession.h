@@ -3,6 +3,7 @@
 
 #include <QMap>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QHash>
 #include <QByteArray>
 #include <QPointF>
@@ -24,6 +25,8 @@ struct CModelSession
     };
     int version = 1;
     QJsonObject animation;
+    QJsonArray animationScenes;
+    QString activeAnimationScene;
     QString sourceMoc;
     QByteArray sourceDigest;
     CMocParameterStructureBuilder::ColumnState structure;

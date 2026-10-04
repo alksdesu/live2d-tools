@@ -838,6 +838,14 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     auto* timelineBox = new QGroupBox(QStringLiteral("动画时间轴"), wrapper);
     m_timelineBox = timelineBox;
     auto* timelineLayout = new QVBoxLayout(timelineBox);
+    auto* sceneLayout = new QHBoxLayout();
+    sceneLayout->addWidget(new QLabel(QStringLiteral("场景"), timelineBox));
+    m_animationSceneSelector = new QComboBox(timelineBox);
+    m_animationSceneSelector->setObjectName(QStringLiteral("animationSceneSelector"));
+    m_animationSceneSelector->setAccessibleName(QStringLiteral("动画场景"));
+    m_animationSceneSelector->setToolTip(QStringLiteral("切换已保存的动画场景"));
+    sceneLayout->addWidget(m_animationSceneSelector, 1);
+    timelineLayout->addLayout(sceneLayout);
     auto* timelineTools = new QHBoxLayout();
     m_recordTimelineCb = new QCheckBox(QStringLiteral("录制"), timelineBox);
     m_recordTimelineCb->setObjectName(QStringLiteral("recordTimeline"));
@@ -962,6 +970,29 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_curveSplitter->setStretchFactor(0, 1);
     m_curveSplitter->setStretchFactor(1, 1);
     timelineLayout->addWidget(m_curveSplitter, 1);
+    m_animationScenes.insert(m_activeAnimationScene, QJsonObject{{QStringLiteral("name"), QStringLiteral("主场景")}});
+    RefreshAnimationSceneSelector();
+    connect(m_animationSceneSelector, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        if (index < 0 || m_restoringTimeline || !m_animationSceneSelector) return;
+        const QString target = m_animationSceneSelector->itemData(index).toString();
+        if (target.isEmpty() || target == m_activeAnimationScene) return;
+        const auto savedScenes = m_savedAnimationScenes;
+        QJsonObject current;
+        QString error;
+        if (!CaptureActiveAnimationScene(&current, &error)) {
+            RefreshAnimationSceneSelector();
+            return;
+        }
+        const auto entry = m_animationScenes.value(target);
+        if (!entry.value(QStringLiteral("state")).isObject() || !RestoreTimelineState(entry.value(QStringLiteral("state")).toObject(), &error)) {
+            RefreshAnimationSceneSelector();
+            return;
+        }
+        m_activeAnimationScene = target;
+        m_savedAnimationScenes = savedScenes;
+        RefreshAnimationSceneSelector();
+        m_timelineStatus->setText(QStringLiteral("已切换到场景：%1").arg(entry.value(QStringLiteral("name")).toString()));
+    });
     connect(m_targetFilter, &QComboBox::currentIndexChanged, this, [this](){
         if (IsPreviewTransportSuspended()) return;
         if (!TryCommitTimelineCells()) {
@@ -1151,6 +1182,11 @@ CMotionPanel::CMotionPanel(QWidget *parent)
     m_loopCb->setObjectName(QStringLiteral("motionLoop"));
     connect(m_timelineHistory, &QUndoStack::indexChanged, this, &CMotionPanel::RefreshTimelineHistory);
     connect(m_timelineHistory, &QUndoStack::cleanChanged, this, &CMotionPanel::RefreshTimelineHistory);
+    QJsonObject initialSceneState;
+    m_timeline.SaveState(&initialSceneState, m_loopCb->isChecked(), m_timelineTime, nullptr);
+    m_animationScenes[m_activeAnimationScene].insert(QStringLiteral("state"), initialSceneState);
+    m_savedAnimationScenes = m_animationScenes;
+    m_savedActiveAnimationScene = m_activeAnimationScene;
     m_savedTimelineContent = CurrentTimelineSnapshot();
     RefreshTimelineHistory();
     workspaceScroll->setWidget(wrapper);
@@ -1706,8 +1742,22 @@ void CMotionPanel::ClearTimeline()
 
 bool CMotionPanel::HasUnsavedTimelineChanges() const
 {
-    return (m_savedTimelineContent && !m_savedTimelineContent->SameContent(CurrentTimelineSnapshot())) ||
-        PendingTimelineEdit() || HasPendingTimelineCells();
+    if ((m_savedTimelineContent && !m_savedTimelineContent->SameContent(CurrentTimelineSnapshot())) ||
+        PendingTimelineEdit() || HasPendingTimelineCells()) return true;
+    if (m_savedActiveAnimationScene != m_activeAnimationScene) return true;
+    QJsonObject current;
+    if (!m_timeline.SaveState(&current, m_loopCb->isChecked(), m_timelineTime, nullptr)) return true;
+    auto scenes = m_animationScenes;
+    scenes[m_activeAnimationScene].insert(QStringLiteral("state"), current);
+    const auto comparable = [](QMap<QString, QJsonObject> values) {
+        for (auto it = values.begin(); it != values.end(); ++it) {
+            auto state = it.value().value(QStringLiteral("state")).toObject();
+            state.remove(QStringLiteral("playhead"));
+            it.value().insert(QStringLiteral("state"), state);
+        }
+        return values;
+    };
+    return comparable(scenes) != comparable(m_savedAnimationScenes);
 }
 
 void CMotionPanel::SetTimelineDirty(bool dirty)
@@ -1730,11 +1780,30 @@ void CMotionPanel::MarkTimelineSaved()
     FlushTimelineEditGroup();
     if (!alive) return;
     m_savedTimelineContent = CurrentTimelineSnapshot();
+    QJsonObject current;
+    if (m_timeline.SaveState(&current, m_loopCb->isChecked(), m_timelineTime, nullptr)) {
+        auto entry = m_animationScenes.value(m_activeAnimationScene);
+        if (entry.value(QStringLiteral("name")).toString().isEmpty())
+            entry.insert(QStringLiteral("name"), m_activeAnimationScene == QStringLiteral("main") ? QStringLiteral("主场景") : m_activeAnimationScene);
+        entry.insert(QStringLiteral("state"), current);
+        m_animationScenes.insert(m_activeAnimationScene, entry);
+        m_savedAnimationScenes.insert(m_activeAnimationScene, entry);
+    }
     {
         const ScopedFlag dispatching(this, m_dispatchingTimelineHistory, true);
         m_timelineHistory->setClean();
     }
     if (alive) RefreshTimelineHistory();
+}
+
+void CMotionPanel::MarkAnimationScenesSaved()
+{
+    QJsonObject current;
+    if (!CaptureActiveAnimationScene(&current, nullptr)) return;
+    m_savedAnimationScenes = m_animationScenes;
+    m_savedActiveAnimationScene = m_activeAnimationScene;
+    m_savedTimelineContent = CurrentTimelineSnapshot();
+    RefreshTimelineHistory();
 }
 
 bool CMotionPanel::CaptureTimelineBytes(QByteArray& bytes, QString* error) const
@@ -1789,17 +1858,50 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
         m_snapshotSerial > std::numeric_limits<quint64>::max() - 2 || m_registryRevision > std::numeric_limits<quint64>::max() - 2)
         return fail(QStringLiteral("时间轴历史版本计数已耗尽"));
     try {
+        if (newAnimation && copyScene) return fail(QStringLiteral("新建动画不能同时复制当前场景"));
         const QSet<QString> ids(m_parameterIds.cbegin(), m_parameterIds.cend());
         for (auto it = samples.cbegin(); it != samples.cend(); ++it)
             if (!ids.contains(it.key())) return fail(QStringLiteral("烘焙输出参数已不存在：%1").arg(it.key()));
         CMotionTimeline candidate = newAnimation ? CMotionTimeline() : current;
         if (newAnimation && !candidate.SetTiming(fps, 0, error)) return false;
-        if (!newAnimation && copyScene && !candidate.SetTiming(fps, candidate.Timing().duration, error)) return false;
         if (!candidate.ReplaceParameterSamples(samples, error, true)) return false;
         const auto before = CurrentTimelineSnapshot();
         TimelineSnapshot after{candidate, newAnimation ? false : before.loop, newAnimation ? 0.0 : before.playhead};
         after.playhead = qBound(0.0, after.playhead, candidate.Timing().duration);
-        if (before.SameContent(after)) return true;
+        if (before.SameContent(after) && !copyScene) return true;
+        QJsonObject beforeState, afterState;
+        if (!current.SaveState(&beforeState, before.loop, before.playhead, error) ||
+            !candidate.SaveState(&afterState, after.loop, after.playhead, error)) return false;
+        auto sceneStatesBefore = m_animationScenes;
+        auto sceneStatesAfter = sceneStatesBefore;
+        const QString activeBefore = m_activeAnimationScene;
+        QString activeAfter = activeBefore;
+        auto originalEntry = sceneStatesBefore.value(activeBefore);
+        if (originalEntry.value(QStringLiteral("name")).toString().isEmpty())
+            originalEntry.insert(QStringLiteral("name"), activeBefore == QStringLiteral("main") ? QStringLiteral("主场景") : activeBefore);
+        originalEntry.insert(QStringLiteral("state"), beforeState);
+        sceneStatesBefore.insert(activeBefore, originalEntry);
+        sceneStatesAfter = sceneStatesBefore;
+        if (newAnimation) {
+            if (sceneStatesAfter.size() >= 128) return fail(QStringLiteral("动画场景数量已达到 128 个上限"));
+            QString newId = activeBefore + QStringLiteral("_NEW");
+            int suffix = 2;
+            while (sceneStatesAfter.contains(newId)) newId = activeBefore + QStringLiteral("_NEW") + QString::number(suffix++);
+            sceneStatesAfter.insert(newId, QJsonObject{{QStringLiteral("name"), QStringLiteral("独立动画")}, {QStringLiteral("state"), afterState}});
+            activeAfter = newId;
+        } else if (copyScene) {
+            if (sceneStatesAfter.size() >= 128) return fail(QStringLiteral("动画场景数量已达到 128 个上限"));
+            QString copyId = activeBefore + QStringLiteral("_COPY");
+            int suffix = 2;
+            while (sceneStatesAfter.contains(copyId)) copyId = activeBefore + QStringLiteral("_COPY") + QString::number(suffix++);
+            const QString copyName = originalEntry.value(QStringLiteral("name")).toString() + QStringLiteral("_COPY");
+            sceneStatesAfter.insert(copyId, QJsonObject{{QStringLiteral("name"), copyName}, {QStringLiteral("state"), afterState}});
+            activeAfter = copyId;
+        } else {
+            auto updatedEntry = originalEntry;
+            updatedEntry.insert(QStringLiteral("state"), afterState);
+            sceneStatesAfter.insert(activeBefore, updatedEntry);
+        }
         auto archives = m_parameterTrackArchives;
         auto origins = m_currentTrackOrigins;
         for (auto it = archives.begin(); it != archives.end();)
@@ -1813,11 +1915,15 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
         previous->serial = m_snapshotSerial + 1; previous->value = before; previous->origins = origins;
         next->serial = m_snapshotSerial + 2; next->value = std::move(after); next->origins = origins;
         registrySlots.append(previous); registrySlots.append(next);
-        auto command = std::make_unique<CTimelineEdit>(QStringLiteral("烘焙物理"), [owner = QPointer<CMotionPanel>(this), previous, next](bool forward) {
+        auto command = std::make_unique<CTimelineEdit>(QStringLiteral("烘焙物理"), [owner = QPointer<CMotionPanel>(this), previous, next,
+                                                                                     sceneStatesBefore, sceneStatesAfter, activeBefore, activeAfter](bool forward) {
             if (!owner) return;
             const auto& selected = forward ? next : previous;
             owner->m_currentTrackOrigins = selected->origins;
+            owner->m_animationScenes = forward ? sceneStatesAfter : sceneStatesBefore;
+            owner->m_activeAnimationScene = forward ? activeAfter : activeBefore;
             owner->ApplyTimelineSnapshot(selected->value);
+            owner->RefreshAnimationSceneSelector();
         });
         {
             const ScopedFlag mutation(this, m_timelineMutation, true);
@@ -1825,6 +1931,8 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
             m_timelineHistory->push(command.release());
             m_timeline.SwapContent(candidate);
             m_parameterTrackArchives.swap(archives); m_currentTrackOrigins.swap(origins); m_timelineSnapshots.swap(registrySlots);
+            m_animationScenes = std::move(sceneStatesAfter);
+            m_activeAnimationScene = activeAfter;
             m_snapshotSerial += 2; m_registryRevision += 2;
             m_timelineTime = next->value.playhead;
             m_loopCb->setChecked(next->value.loop);
@@ -1839,6 +1947,7 @@ bool CMotionPanel::ApplyBakedParameterSamples(const CMotionTimeline& expected, q
     RefreshTimelineTable();
     if (!alive) return false;
     m_timelineStatus->setText(QStringLiteral("%1 个关键帧").arg(m_timeline.TotalPointCount()));
+    RefreshAnimationSceneSelector();
     emit TimelineActivated();
     if (alive) emit MotionTimelineChanged();
     return true;
@@ -1854,6 +1963,107 @@ bool CMotionPanel::CaptureTimelineState(QJsonObject* state, QString* error)
     m_curveView->FinishDrag();
     if (!alive) return false;
     return m_timeline.SaveState(state, m_loopCb->isChecked(), m_timelineTime, error);
+}
+
+bool CMotionPanel::CaptureActiveAnimationScene(QJsonObject* state, QString* error)
+{
+    if (!state || !CaptureTimelineState(state, error)) return false;
+    auto entry = m_animationScenes.value(m_activeAnimationScene);
+    if (entry.value(QStringLiteral("name")).toString().isEmpty())
+        entry.insert(QStringLiteral("name"), m_activeAnimationScene == QStringLiteral("main") ? QStringLiteral("主场景") : m_activeAnimationScene);
+    entry.insert(QStringLiteral("state"), *state);
+    m_animationScenes.insert(m_activeAnimationScene, entry);
+    return true;
+}
+
+void CMotionPanel::RefreshAnimationSceneSelector()
+{
+    if (!m_animationSceneSelector) return;
+    const QSignalBlocker blocker(m_animationSceneSelector);
+    const QString active = m_activeAnimationScene;
+    m_animationSceneSelector->clear();
+    for (auto it = m_animationScenes.cbegin(); it != m_animationScenes.cend(); ++it) {
+        const QString name = it.value().value(QStringLiteral("name")).toString();
+        m_animationSceneSelector->addItem(name.isEmpty() ? it.key() : name, it.key());
+    }
+    const int index = m_animationSceneSelector->findData(active);
+    if (index >= 0) m_animationSceneSelector->setCurrentIndex(index);
+}
+
+bool CMotionPanel::CaptureAnimationScenes(QJsonArray* scenes, QString* activeId, QString* error)
+{
+    if (!scenes || !activeId) {
+        if (error) *error = QStringLiteral("动画场景输出为空");
+        return false;
+    }
+    QJsonObject activeState;
+    if (!CaptureActiveAnimationScene(&activeState, error)) return false;
+    if (m_animationScenes.size() > 128) {
+        if (error) *error = QStringLiteral("动画场景数量已达到 128 个上限");
+        return false;
+    }
+    QJsonArray captured;
+    for (auto it = m_animationScenes.cbegin(); it != m_animationScenes.cend(); ++it) {
+        const auto state = it.value().value(QStringLiteral("state"));
+        if (!state.isObject()) {
+            if (error) *error = QStringLiteral("场景尚未生成有效时间轴：%1").arg(it.key());
+            return false;
+        }
+        captured.append(QJsonObject{{QStringLiteral("id"), it.key()},
+                                    {QStringLiteral("name"), it.value().value(QStringLiteral("name")).toString()},
+                                    {QStringLiteral("state"), state}});
+    }
+    *scenes = std::move(captured);
+    *activeId = m_activeAnimationScene;
+    return true;
+}
+
+bool CMotionPanel::RestoreAnimationScenes(const QJsonArray& scenes, const QString& activeId, QString* error)
+{
+    if (scenes.isEmpty() || scenes.size() > 128 || activeId.isEmpty()) {
+        if (error) *error = QStringLiteral("动画场景集合为空或超出限制");
+        return false;
+    }
+    QMap<QString, QJsonObject> candidate;
+    for (const auto& value : scenes) {
+        if (!value.isObject()) { if (error) *error = QStringLiteral("动画场景条目无效"); return false; }
+        const auto entry = value.toObject();
+        const QString id = entry.value(QStringLiteral("id")).toString();
+        const QString name = entry.value(QStringLiteral("name")).toString();
+        const auto state = entry.value(QStringLiteral("state"));
+        if (id.isEmpty() || id.toUtf8().size() > 128 || name.isEmpty() || !state.isObject() || candidate.contains(id)) {
+            if (error) *error = QStringLiteral("动画场景身份或状态无效");
+            return false;
+        }
+        CMotionTimeline timeline;
+        if (!timeline.RestoreState(state.toObject(), nullptr, error)) return false;
+        candidate.insert(id, QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("state"), state}});
+    }
+    if (!candidate.contains(activeId)) {
+        if (error) *error = QStringLiteral("活动动画场景不存在");
+        return false;
+    }
+    const auto activeState = candidate.value(activeId).value(QStringLiteral("state")).toObject();
+    if (!RestoreTimelineState(activeState, error)) return false;
+    m_animationScenes = std::move(candidate);
+    m_activeAnimationScene = activeId;
+    m_savedAnimationScenes = m_animationScenes;
+    m_savedActiveAnimationScene = m_activeAnimationScene;
+    RefreshAnimationSceneSelector();
+    return true;
+}
+
+bool CMotionPanel::RestoreLegacyAnimationScene(const QJsonObject& state, QString* error)
+{
+    if (!RestoreTimelineState(state, error)) return false;
+    m_animationScenes.clear();
+    m_activeAnimationScene = QStringLiteral("main");
+    m_animationScenes.insert(m_activeAnimationScene, QJsonObject{{QStringLiteral("name"), QStringLiteral("主场景")},
+                                                                   {QStringLiteral("state"), state}});
+    m_savedAnimationScenes = m_animationScenes;
+    m_savedActiveAnimationScene = m_activeAnimationScene;
+    RefreshAnimationSceneSelector();
+    return true;
 }
 
 bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error)
@@ -1902,6 +2112,15 @@ bool CMotionPanel::RestoreTimelineState(const QJsonObject& state, QString* error
     emit MotionTimelineChanged();
     if (!alive) return false;
     MarkTimelineSaved();
+    QJsonObject restoredState;
+    if (m_timeline.SaveState(&restoredState, m_loopCb->isChecked(), m_timelineTime, nullptr)) {
+        auto entry = m_animationScenes.value(m_activeAnimationScene);
+        if (entry.value(QStringLiteral("name")).toString().isEmpty())
+            entry.insert(QStringLiteral("name"), m_activeAnimationScene == QStringLiteral("main") ? QStringLiteral("主场景") : m_activeAnimationScene);
+        entry.insert(QStringLiteral("state"), restoredState);
+        m_animationScenes.insert(m_activeAnimationScene, entry);
+        m_savedAnimationScenes.insert(m_activeAnimationScene, entry);
+    }
     return true;
 }
 

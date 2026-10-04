@@ -768,9 +768,15 @@ bool MainWindow::SaveSession()
 
     live2dstruct::CModelSession session;
     QString animationError;
-    if (m_motionPanel && !m_motionPanel->CaptureTimelineState(&session.animation, &animationError)) {
-        QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
-        return false;
+    if (m_motionPanel) {
+        if (!m_motionPanel->CaptureTimelineState(&session.animation, &animationError)) {
+            QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
+            return false;
+        }
+        if (!m_motionPanel->CaptureAnimationScenes(&session.animationScenes, &session.activeAnimationScene, &animationError)) {
+            QMessageBox::warning(this, QStringLiteral("保存会话失败"), animationError);
+            return false;
+        }
     }
     session.sourceMoc = QFileInfo(m_currentMoc).absoluteFilePath();
     session.sourceDigest = m_document.SourceDigest();
@@ -811,7 +817,7 @@ bool MainWindow::SaveSession()
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
     }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
-    session.version = 16;
+    session.version = session.animationScenes.isEmpty() ? 16 : 17;
     session.objectDisplayNames = m_document.DisplayNames();
     session.parameterOrganization = m_document.ParameterOrganization();
     session.geometryObjectPairs = m_document.GeometryObjectPairs();
@@ -845,7 +851,10 @@ bool MainWindow::SaveSession()
     if (m_physicsPanel) m_physicsPanel->MarkSessionSaved();
     MarkDocumentSaved();
     if (m_exportState && m_motionPanel && m_motionPanel->IsPreviewTransportSuspended()) m_exportState->timelineSaved = true;
-    if (m_motionPanel) m_motionPanel->MarkTimelineSaved();
+    if (m_motionPanel) {
+        m_motionPanel->MarkTimelineSaved();
+        m_motionPanel->MarkAnimationScenesSaved();
+    }
     RefreshWindowTitle();
     statusBar()->showMessage(QStringLiteral("会话已保存：%1").arg(path), 5000);
     return !m_motionPanel || m_motionPanel->IsPreviewTransportSuspended() || !m_motionPanel->HasUnsavedTimelineChanges();
@@ -913,7 +922,10 @@ void MainWindow::on_actionLoadSession_triggered()
     m_keyformBaseValues.clear();
     ClearTimelinePreview();
     RefreshKeyformUi();
-    if (!m_motionPanel->RestoreTimelineState(session.animation, &loadError)) {
+    const bool restoredAnimation = !session.animationScenes.isEmpty()
+        ? m_motionPanel->RestoreAnimationScenes(session.animationScenes, session.activeAnimationScene, &loadError)
+        : m_motionPanel->RestoreLegacyAnimationScene(session.animation, &loadError);
+    if (!restoredAnimation) {
         QMessageBox::warning(this, QStringLiteral("载入会话失败"), loadError);
         return;
     }

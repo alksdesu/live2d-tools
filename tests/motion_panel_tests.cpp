@@ -174,12 +174,30 @@ private slots:
         const QMap<QString, QVector<QPointF>> samples{{"Opacity", {{0, .2}, {.5, .8}, {1, .4}}}};
         QString error;
         QVERIFY2(panel.ApplyBakedParameterSamples(expected, revision, samples, false, 120, &error, true), qPrintable(error));
-        QCOMPARE(panel.Timeline().Timing().fps, 120.0);
+        QCOMPARE(panel.Timeline().Timing().fps, expected.Timing().fps);
         QCOMPARE(panel.Timeline().Events(), expected.Events());
         QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "B"}), expected.Tracks().value({CMotionTarget::Parameter, "B"}));
         QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Model, "Opacity"}), expected.Tracks().value({CMotionTarget::Model, "Opacity"}));
         QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}), samples["Opacity"]);
+        QJsonArray scenes; QString active;
+        QVERIFY(panel.CaptureAnimationScenes(&scenes, &active, &error));
+        QCOMPARE(scenes.size(), 2);
+        QCOMPARE(active, QStringLiteral("main_COPY"));
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}), samples["Opacity"]);
         panel.UndoTimeline(); QVERIFY(panel.Timeline().HasSameContent(expected));
+        QVERIFY(panel.CaptureAnimationScenes(&scenes, &active, &error));
+        QCOMPARE(scenes.size(), 1);
+        QCOMPARE(active, QStringLiteral("main"));
+        panel.RedoTimeline();
+        QCOMPARE(panel.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}), samples["Opacity"]);
+        QVERIFY(panel.CaptureAnimationScenes(&scenes, &active, &error));
+        QCOMPARE(scenes.size(), 2);
+        QCOMPARE(active, QStringLiteral("main_COPY"));
+
+        CMotionPanel restored;
+        QVERIFY2(restored.RestoreAnimationScenes(scenes, active, &error), qPrintable(error));
+        QCOMPARE(restored.Timeline().Timing().fps, expected.Timing().fps);
+        QCOMPARE(restored.Timeline().Tracks().value({CMotionTarget::Parameter, "Opacity"}), samples["Opacity"]);
     }
 
     void bakedSamplesRejectStaleIdsAndInvalidDataWithoutLosingRedo()

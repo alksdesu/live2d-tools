@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 #include <QLineEdit>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QMap>
 #include <QSet>
 #include <QPointer>
@@ -103,14 +104,18 @@ public:
     ~CMotionPanel() override;
     bool BuildLists(const QString& modelJsonPath, const QStringList& partIds, QString* error = nullptr);
     bool CaptureTimelineState(QJsonObject* state, QString* error = nullptr);
+    bool CaptureAnimationScenes(QJsonArray* scenes, QString* activeId, QString* error = nullptr);
     bool CaptureTimelineBytes(QByteArray& bytes, QString* error = nullptr) const;
     bool CaptureBakeTimeline(CMotionTimeline& result, quint64& revision, QString* error = nullptr) const;
     bool ApplyBakedParameterSamples(const CMotionTimeline& expected, quint64 expectedRevision,
                                    const QMap<QString, QVector<QPointF>>& samples, bool newAnimation,
                                    double fps, QString* error = nullptr, bool copyScene = false);
     bool RestoreTimelineState(const QJsonObject& state, QString* error = nullptr);
+    bool RestoreLegacyAnimationScene(const QJsonObject& state, QString* error = nullptr);
+    bool RestoreAnimationScenes(const QJsonArray& scenes, const QString& activeId, QString* error = nullptr);
     bool HasUnsavedTimelineChanges() const;
     void MarkTimelineSaved();
+    void MarkAnimationScenesSaved();
     void UndoTimeline();
     void RedoTimeline();
     bool CanUndoTimeline() const;
@@ -254,6 +259,11 @@ private:
     int m_activePoseGroup = -1;
     bool m_poseDirty = false;
     CMotionTimeline m_timeline;
+    QMap<QString, QJsonObject> m_animationScenes;
+    QMap<QString, QJsonObject> m_savedAnimationScenes;
+    QString m_savedActiveAnimationScene;
+    QString m_activeAnimationScene = QStringLiteral("main");
+    QComboBox* m_animationSceneSelector = nullptr;
     QStringList m_parameterIds;
     QComboBox* m_targetFilter = nullptr;
     QPushButton* m_endPreviewButton = nullptr;
@@ -358,6 +368,8 @@ private:
     void RefreshTangentActions();
     void ScheduleOnionRequest(bool contentChanged = false);
     void ConfigureOnionUi(QWidget* parent, QToolBar* tools);
+    void RefreshAnimationSceneSelector();
+    bool CaptureActiveAnimationScene(QJsonObject* state, QString* error = nullptr);
     void RefreshOnionSettings();
     live2dstruct::COnionSkin::Settings OnionSettings() const;
     void FinishCurveGesture();

@@ -22,6 +22,9 @@ namespace {
 constexpr int StructureCountFields = 34;
 constexpr int MaximumBlendShapeGeometryEntries = 100000;
 constexpr int MaximumBlendShapeGeometryDeltas = 2000000;
+constexpr int MaximumAnimationScenes = 128;
+constexpr int MaximumAnimationSceneIdBytes = 128;
+constexpr qint64 MaximumAnimationSceneBytes = 64 * 1024 * 1024;
 
 void setError(QString* error, const QString& value)
 {
@@ -224,6 +227,59 @@ bool validBlendShapeGeometry(const CModelSession& session, int version, QString*
     return true;
 }
 
+bool validAnimationScenes(const CModelSession& session, int version, QString* error)
+{
+    if (version < 17 && (!session.animationScenes.isEmpty() || !session.activeAnimationScene.isEmpty())) {
+        setError(error, QStringLiteral("动画场景需要版本 17"));
+        return false;
+    }
+    if (session.animationScenes.isEmpty()) {
+        if (version >= 17) {
+            setError(error, QStringLiteral("版本 17 会话缺少动画场景"));
+            return false;
+        }
+        return true;
+    }
+    if (session.animationScenes.size() > MaximumAnimationScenes || session.activeAnimationScene.isEmpty()) {
+        setError(error, QStringLiteral("动画场景数量或活动场景无效"));
+        return false;
+    }
+    QSet<QString> ids;
+    qint64 totalBytes = 0;
+    bool activeFound = false;
+    for (const auto& value : session.animationScenes) {
+        if (!value.isObject()) {
+            setError(error, QStringLiteral("动画场景条目必须是对象"));
+            return false;
+        }
+        const auto object = value.toObject();
+        const QString id = object.value(QStringLiteral("id")).toString();
+        const QString name = object.value(QStringLiteral("name")).toString();
+        const auto state = object.value(QStringLiteral("state"));
+        const auto idBytes = id.toUtf8();
+        if (id.isEmpty() || idBytes.size() > MaximumAnimationSceneIdBytes || id.contains(QChar::Null) ||
+            name.isEmpty() || name.toUtf8().size() > MaximumAnimationSceneIdBytes || name.contains(QChar::Null) ||
+            !state.isObject() || ids.contains(id)) {
+            setError(error, QStringLiteral("动画场景身份或状态无效"));
+            return false;
+        }
+        CMotionTimeline timeline;
+        if (!timeline.RestoreState(state.toObject(), nullptr, error)) return false;
+        totalBytes += QJsonDocument(object).toJson(QJsonDocument::Compact).size();
+        if (totalBytes > MaximumAnimationSceneBytes) {
+            setError(error, QStringLiteral("动画场景数据总量超出限制"));
+            return false;
+        }
+        ids.insert(id);
+        activeFound |= id == session.activeAnimationScene;
+    }
+    if (!activeFound) {
+        setError(error, QStringLiteral("活动动画场景不存在"));
+        return false;
+    }
+    return true;
+}
+
 bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::ColumnState& state, QString* error)
 {
     QJsonObject object, columns, counts;
@@ -286,7 +342,7 @@ bool CModelSession::HasMaskMultiplicityOverrides() const
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 16) return {};
+    if (version < 1 || version > 17) return {};
     if (drawableMaskIndices.size() > 100000) return {};
     for (const auto& values : drawableMaskIndices) {
         if (values.size() > CMaskEditPolicy::MaximumOverrideReferences || std::any_of(values.cbegin(), values.cend(), [](int index) { return index < 0; })) return {};
@@ -310,7 +366,9 @@ QByteArray CModelSession::ToJson() const
     if (HasMaskMultiplicityOverrides() && storedVersion < 14) storedVersion = 14;
     if (objectDisplayNames && storedVersion < 15) storedVersion = 15;
     if (!blendShapeGeometry.isEmpty() && storedVersion < 16) storedVersion = 16;
-    if (!validDisplayNames(*this, storedVersion, nullptr) || !validBlendShapeGeometry(*this, storedVersion, nullptr)) return {};
+    if (!animationScenes.isEmpty() || !activeAnimationScene.isEmpty()) storedVersion = std::max(storedVersion, 17);
+    if (!validDisplayNames(*this, storedVersion, nullptr) || !validBlendShapeGeometry(*this, storedVersion, nullptr) ||
+        !validAnimationScenes(*this, storedVersion, nullptr)) return {};
     if (storedVersion >= 15) {
         QJsonObject names;
         if (!CModelDisplayNames::ToJson(*objectDisplayNames, names)) return {};
@@ -373,7 +431,21 @@ QByteArray CModelSession::ToJson() const
             counts.insert(QString::number(it.key()), it.value());
         root.insert(QStringLiteral("structure"), QJsonObject{{QStringLiteral("columns"), columns}, {QStringLiteral("counts"), counts}});
     }
-    root.insert(QStringLiteral("animation"), animation);
+    QJsonObject animationAlias = animation;
+    if (storedVersion >= 17) {
+        for (const auto& value : animationScenes) {
+            const auto scene = value.toObject();
+            if (scene.value(QStringLiteral("id")).toString() == activeAnimationScene) {
+                animationAlias = scene.value(QStringLiteral("state")).toObject();
+                break;
+            }
+        }
+    }
+    root.insert(QStringLiteral("animation"), animationAlias);
+    if (storedVersion >= 17) {
+        root.insert(QStringLiteral("animationScenes"), animationScenes);
+        root.insert(QStringLiteral("activeAnimationScene"), activeAnimationScene);
+    }
     root.insert(QStringLiteral("sourceMoc"), sourceMoc);
     if (!sourceDigest.isEmpty()) root.insert(QStringLiteral("sourceDigest"), QString::fromLatin1(sourceDigest.toHex()));
     QJsonObject parameterObject;
@@ -516,7 +588,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 16) {
+    if (parsedVersion < 1 || parsedVersion > 17) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
@@ -675,6 +747,26 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
     if (!readObject(root, QStringLiteral("animation"), &result.animation, error)) return false;
     CMotionTimeline timeline;
     if (!timeline.RestoreState(result.animation, nullptr, error)) return false;
+    const auto animationScenes = root.value(QStringLiteral("animationScenes"));
+    const auto activeAnimationScene = root.value(QStringLiteral("activeAnimationScene"));
+    if ((parsedVersion < 17 && (!animationScenes.isUndefined() || !activeAnimationScene.isUndefined())) ||
+        (parsedVersion >= 17 && (!animationScenes.isArray() || !activeAnimationScene.isString()))) {
+        setError(error, QStringLiteral("动画场景需要版本 17 及有效数组和活动身份"));
+        return false;
+    }
+    if (parsedVersion >= 17) {
+        result.animationScenes = animationScenes.toArray();
+        result.activeAnimationScene = activeAnimationScene.toString();
+        if (!validAnimationScenes(result, parsedVersion, error)) return false;
+        for (const auto& value : result.animationScenes) {
+            const auto scene = value.toObject();
+            if (scene.value(QStringLiteral("id")).toString() == result.activeAnimationScene &&
+                scene.value(QStringLiteral("state")).toObject() != result.animation) {
+                setError(error, QStringLiteral("活动动画场景与兼容 animation 字段不一致"));
+                return false;
+            }
+        }
+    }
     const QJsonValue sourceMoc = root.value(QStringLiteral("sourceMoc"));
     if (!sourceMoc.isUndefined() && !sourceMoc.isString()) {
         setError(error, QStringLiteral("会话字段类型错误：sourceMoc"));
@@ -1039,7 +1131,7 @@ bool CModelSession::RestorePreparedDocument(const CModelDocument& loaded, const 
         || (deformerStructure ? prepared.SourceDeformerIds() : QSet<QString> {}) != sourceDeformerIds
         || prepared.HasTextureWorkspace() != loaded.HasTextureWorkspace()
         || prepared.TextureSources() != loaded.TextureSources() || !textures.isEmpty()
-        || !animation.isEmpty() || !parameterResources.IsEmpty() || physicsDraft) {
+        || !animation.isEmpty() || !animationScenes.isEmpty() || !parameterResources.IsEmpty() || physicsDraft) {
         setError(error, QStringLiteral("已准备的网格结构与会话来源或结构状态不匹配"));
         return false;
     }
@@ -1054,13 +1146,14 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 16) ||
+    if ((version < 1 || version > 17) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
         (version < 9 && geometryObjectPairs != CGeometryObjectPairs::State{}) ||
         (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace) ||
-        (version < 12 && !artwork.IsEmpty()))
+        (version < 12 && !artwork.IsEmpty()) ||
+        !validAnimationScenes(*this, version, error))
         return fail(QStringLiteral("version"));
     if (!validDisplayNames(*this, version, error)) return false;
     CGeometryObjectPairs::State normalizedPairs;
@@ -1083,8 +1176,14 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         setError(error, QStringLiteral("会话 sourceDigest 与模型快照不匹配"));
         return false;
     }
+    QJsonObject effectiveAnimation = animation;
+    for (const auto& value : animationScenes) {
+        const auto scene = value.toObject();
+        if (scene.value(QStringLiteral("id")).toString() == activeAnimationScene)
+            effectiveAnimation = scene.value(QStringLiteral("state")).toObject();
+    }
     CMotionTimeline timeline;
-    if (!timeline.RestoreState(animation, nullptr, error)) return false;
+    if (!timeline.RestoreState(effectiveAnimation, nullptr, error)) return false;
     if (!std::isfinite(viewScale) || viewScale <= 0.0f ||
         !std::isfinite(viewPosition.x()) || !std::isfinite(viewPosition.y()) ||
         std::abs(viewPosition.x()) > std::numeric_limits<float>::max() ||
@@ -1163,9 +1262,19 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
     if (!candidate.SetDrawableMaterials(materialValues, error)) return false;
     if (!candidate.SetParameterOrganization(normalizedOrganization, error)) return false;
     for (const auto& parameter : candidate.Parameters()) removedParameters.remove(parameter.id);
-    for (auto track = timeline.Tracks().cbegin(); track != timeline.Tracks().cend(); ++track)
-        if (track.key().target == CMotionTarget::Parameter && removedParameters.contains(track.key().id))
-            return fail(QStringLiteral("animation"), track.key().id);
+    const auto validateTimelineParameters = [&](const CMotionTimeline& candidateTimeline, const QString& field) {
+        for (auto track = candidateTimeline.Tracks().cbegin(); track != candidateTimeline.Tracks().cend(); ++track)
+            if (track.key().target == CMotionTarget::Parameter && removedParameters.contains(track.key().id))
+                return fail(field, track.key().id);
+        return true;
+    };
+    if (!validateTimelineParameters(timeline, QStringLiteral("animation"))) return false;
+    for (const auto& value : animationScenes) {
+        const auto scene = value.toObject();
+        CMotionTimeline sceneTimeline;
+        if (!sceneTimeline.RestoreState(scene.value(QStringLiteral("state")).toObject(), nullptr, error)) return false;
+        if (!validateTimelineParameters(sceneTimeline, QStringLiteral("animationScenes/%1").arg(scene.value(QStringLiteral("id")).toString()))) return false;
+    }
     if (!removedParameters.isEmpty()) {
         const auto validateRemainingReferences = [&](CParameterReferenceEditor::Kind kind, const QByteArray& source,
                                                    const QSet<QString>& suppressed, const QString& field) {

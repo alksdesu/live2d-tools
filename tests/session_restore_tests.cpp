@@ -144,6 +144,45 @@ private slots:
         QVERIFY(decoded.blendShapeGeometry[0].sourceDigest != decoded.sourceDigest);
     }
 
+    void animationScenesRoundTripAndRejectStaleAlias()
+    {
+        CModelSession session;
+        session.version = 17;
+        session.sourceMoc = loaded.SourcePath();
+        session.sourceDigest = loaded.SourceDigest();
+        session.objectDisplayNames = loaded.DisplayNames();
+        CMotionTimeline mainTimeline;
+        QVERIFY(mainTimeline.AddPoint("ParamAngleX", 0, 0));
+        QVERIFY(mainTimeline.AddPoint("ParamAngleX", 1, 1));
+        QJsonObject mainState;
+        QVERIFY(mainTimeline.SaveState(&mainState, false, 0));
+        CMotionTimeline copyTimeline = mainTimeline;
+        QVERIFY(copyTimeline.AddPoint("ParamAngleX", 0.5, 0.5));
+        QJsonObject copyState;
+        QVERIFY(copyTimeline.SaveState(&copyState, true, 0.25));
+        session.animation = copyState;
+        session.animationScenes = QJsonArray{
+            QJsonObject{{"id", "main"}, {"name", "主场景"}, {"state", mainState}},
+            QJsonObject{{"id", "main_COPY"}, {"name", "主场景_COPY"}, {"state", copyState}}};
+        session.activeAnimationScene = QStringLiteral("main_COPY");
+        const auto bytes = session.ToJson();
+        QVERIFY(!bytes.isEmpty());
+        CModelSession decoded;
+        QString error;
+        QVERIFY2(CModelSession::FromJson(bytes, &decoded, &error), qPrintable(error));
+        QCOMPARE(decoded.version, 17);
+        QCOMPARE(decoded.activeAnimationScene, session.activeAnimationScene);
+        QCOMPARE(decoded.animationScenes, session.animationScenes);
+        QCOMPARE(decoded.animation, copyState);
+
+        auto invalid = QJsonDocument::fromJson(bytes).object();
+        invalid[QStringLiteral("animation")] = mainState;
+        CModelSession unchanged = decoded;
+        QVERIFY(!CModelSession::FromJson(QJsonDocument(invalid).toJson(QJsonDocument::Compact), &unchanged, &error));
+        QCOMPARE(unchanged.animationScenes, decoded.animationScenes);
+        QCOMPARE(unchanged.activeAnimationScene, decoded.activeAnimationScene);
+    }
+
     void invalidBlendShapeStateCannotSerialize_data()
     {
         QTest::addColumn<QString>("field");
