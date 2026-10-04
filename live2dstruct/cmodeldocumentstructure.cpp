@@ -1440,9 +1440,10 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
     QByteArray base;
     CMocMeshStructureBuilder::Result replay;
     Builder::ColumnState expected;
+    const QByteArray& expectedBase = origin.m_artMeshClones.isEmpty() ? origin.m_sourceBytes : origin.m_workingBaseBytes;
     if (!origin.BuildMeshBase(*edit.meshRequest, base, error) ||
         !CMocMeshStructureBuilder::Build(base, *edit.meshRequest, replay, error) ||
-        !Builder::CaptureColumnState(m_sourceBytes, replay.bytes, expected, error)) return false;
+        !Builder::CaptureColumnState(expectedBase, replay.bytes, expected, error)) return false;
     if (!(expected == destination.m_structure) || replay.meshes.size() != edit.meshRemaps.size())
         return fail(error, QStringLiteral("网格历史包含请求之外的结构修改"));
     for (int index = 0; index < replay.meshes.size(); ++index) {
