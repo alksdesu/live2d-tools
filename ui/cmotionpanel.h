@@ -361,6 +361,8 @@ private:
     void SetKeyframeInterpolation(int type);
     void BeginCurveGesture(const CMotionPointSelection& selection, bool bezier);
     void TranslateCurveSelection(double time, double value);
+    void BeginEventGesture(int eventIndex, double time);
+    void TranslateEvent(int eventIndex, double time);
     void BeginTangentGesture(CMotionPointRef key, CMotionTimeline::HandleSide side, bool linkForGesture);
     void EditTangentHandle(CMotionPointRef key, CMotionTimeline::HandleSide side, QPointF position);
     void SetTangentMode(CMotionTimeline::TangentMode mode);
@@ -375,12 +377,14 @@ private:
     void FinishCurveGesture();
     void CancelCurveGesture();
     void PublishCurveGesture(CMotionTimeline candidate, const CMotionTimeline::BatchResult& result);
-    enum class CurveGesture { None, Points, Bezier };
+    enum class CurveGesture { None, Points, Bezier, Event };
     CurveGesture m_curveGesture = CurveGesture::None;
     CMotionPointSelection m_gesturePoints;
     std::optional<CMotionTimeline::HandleEdit> m_gestureHandle;
     std::optional<CMotionTimeline::HandleEdit> m_activeHandle;
     QPointF m_activeHandleKeyPoint;
+    int m_eventGestureIndex = -1;
+    double m_eventGestureTime = 0.0;
     QAction* m_tangentAction = nullptr;
     QAction* m_tangentUnrestricted = nullptr;
     QAction* m_tangentNumbers = nullptr;

@@ -408,6 +408,31 @@ private slots:
         QVERIFY(start.pixelColor(170, 70) != middle.pixelColor(170, 70));
     }
 
+    void dragsEventMarkerWithFrameSnappingAndKeepsClickSelection()
+    {
+        CMotionTimeline timeline;
+        QVERIFY(timeline.SetEvents({QJsonObject{{"Time", 1.0}, {"Value", QStringLiteral("cue")}}}));
+        QVERIFY(timeline.SetTiming(10, 4));
+        CMotionCurveView view;
+        view.resize(320, 190); view.SetFrameSnapping(true); view.SetTimeline(&timeline); view.show();
+        QSignalSpy selected(&view, &CMotionCurveView::EventSelected);
+        QSignalSpy started(&view, &CMotionCurveView::EventDragStarted);
+        QSignalSpy dragged(&view, &CMotionCurveView::EventDragged);
+        QSignalSpy finished(&view, &CMotionCurveView::EventDragFinished);
+        const QPoint press(102, 27);
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        movePoint(view, press + QPoint(68, 0));
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, press + QPoint(68, 0));
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(started.size(), 1);
+        QVERIFY(!dragged.isEmpty());
+        QCOMPARE(started.first().at(0).toInt(), 0);
+        QCOMPARE(started.first().at(1).toDouble(), 1.0);
+        QCOMPARE(dragged.last().at(0).toInt(), 0);
+        QCOMPARE(dragged.last().at(1).toDouble(), 2.0);
+        QCOMPARE(finished.size(), 1);
+    }
+
     void eventLaneSurvivesTargetFilterAndExtendsPastLastKey()
     {
         CMotionTimeline timeline;

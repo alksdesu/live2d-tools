@@ -275,13 +275,15 @@ private slots:
         qToLittleEndian(qint32(8), bytes.data() + original.sectionOffsetTable->art_meshes->keyform_sources_counts + target * 4);
         CModelDocument document; QString error; QVERIFY2(document.LoadBytes(bytes, source("Mark"), &error), qPrintable(error));
         CKeyformGridSnapshot grid; QVERIFY(document.DescribeKeyformGrid("EyeL4", "artmesh", grid));
-        QCOMPARE(grid.keyformCount, 8); QCOMPARE(grid.expectedKeyformCount, 9); QVERIFY(grid.axesValid);
+        QCOMPARE(grid.keyformCount, 8); QCOMPARE(grid.expectedKeyformCount, 9);
+        QCOMPARE(grid.missingKeyformCount, qint64(1)); QVERIFY(grid.axesValid);
         CKeyformMatrix matrix; matrix.SetGrid(grid, -1, false);
         auto* model = table(matrix)->model();
         QCOMPARE(model->index(2, 2).data().toString(), QStringLiteral("缺失"));
         QVERIFY(model->index(2, 2).data(Qt::ToolTipRole).toString().contains(QStringLiteral("缺失角点")));
+        QVERIFY(model->index(2, 2).data(Qt::ToolTipRole).toString().contains(QStringLiteral("1 个")));
         QVERIFY(!(model->flags(model->index(2, 2)) & Qt::ItemIsEnabled));
-        QVERIFY(!widget<QLabel>(matrix, "keyformMatrixStatus")->text().isEmpty());
+        QVERIFY(widget<QLabel>(matrix, "keyformMatrixStatus")->text().contains(QStringLiteral("缺失角点：1 个")));
         grid.axesValid = false; grid.diagnostic = QStringLiteral("参数轴引用损坏");
         matrix.SetGrid(grid, -1, false); QCOMPARE(model->rowCount(), 0);
         QVERIFY(widget<QLabel>(matrix, "keyformMatrixStatus")->text().contains(grid.diagnostic));

@@ -301,6 +301,7 @@ bool CModelDocument::DescribeKeyformGrid(const QString& id, const QString& type,
     const auto description = m_keyformBindings->Describe(candidate.m_type, id);
     candidate.keyformCount = description.keyformCount;
     candidate.expectedKeyformCount = description.expectedKeyformCount;
+    candidate.missingKeyformCount = description.missingKeyformCount;
     candidate.axesValid = description.axesValid;
     candidate.diagnostic = description.diagnostic;
     QSet<QString> required;

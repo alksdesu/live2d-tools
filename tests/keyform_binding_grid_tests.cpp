@@ -134,6 +134,7 @@ private slots:
         QVERIFY(description.axesValid);
         QCOMPARE(description.keyformCount, 8);
         QCOMPARE(description.expectedKeyformCount, 9);
+        QCOMPARE(description.missingKeyformCount, qint64(1));
         QCOMPARE(description.axes.size(), 2);
         QCOMPARE(description.axes[0].keys, QVector<float>({-1, 0, 1}));
         QCOMPARE(description.axes[1].keys, QVector<float>({-2, 0, 2}));
@@ -160,6 +161,7 @@ private slots:
         QVERIFY(unbound.axes.isEmpty());
         QCOMPARE(unbound.keyformCount, 1);
         QCOMPARE(unbound.expectedKeyformCount, 1);
+        QCOMPARE(unbound.missingKeyformCount, qint64(0));
         QVERIFY(unbound.diagnostic.isEmpty());
         const auto missing = grid.Describe(CKeyformBindingGrid::ArtMesh, "absent");
         QVERIFY(!missing.axesValid);

@@ -112,6 +112,12 @@ void CMotionCurveView::endGesture(bool canceled)
         if (canceled) changeSelection(gesture.previousSelection);
         return;
     }
+    if (gesture.kind == Gesture::Event) {
+        if (!gesture.eventEditStarted) return;
+        if (canceled) emit EventDragCanceled(); else emit EventDragFinished();
+        if (alive && serial == m_gestureSerial) emit EditFinished();
+        return;
+    }
     if (gesture.kind == Gesture::Points) {
         if (canceled) emit SelectionDragCanceled(); else emit SelectionDragFinished();
     } else {
@@ -473,6 +479,16 @@ void CMotionCurveView::mousePressEvent(QMouseEvent* event)
     if (!alive || m_gesture) return;
     if (const auto* marker = hitEvent(event->position())) {
         const auto entry = m_events.at(marker->firstEvent).toObject();
+        Gesture gesture;
+        gesture.kind = Gesture::Event;
+        gesture.serial = ++m_gestureSerial;
+        gesture.press = gesture.current = event->position();
+        gesture.eventIndex = marker->firstEvent;
+        gesture.eventTime = entry.value(QStringLiteral("Time")).toDouble();
+        gesture.fps = m_timeline ? m_timeline->Timing().fps : 30.0;
+        gesture.projection.plot = plotRect();
+        gesture.projection.duration = m_duration;
+        m_gesture = gesture;
         event->accept();
         emit EventSelected(entry.value(QStringLiteral("Time")).toDouble(), entry.value(QStringLiteral("Value")).toString());
         return;
@@ -579,6 +595,26 @@ void CMotionCurveView::updateDrag(const QPointF& position, Qt::KeyboardModifiers
             std::clamp(gesture.anchor.x() + dt, gesture.segmentStart.x(), gesture.segmentEnd.x()), gesture.moveValue ? gesture.anchor.y() + dv : gesture.anchor.y());
         if (!std::isfinite(candidate.y())) return;
         emit TangentHandleEdited(gesture.point, gesture.side, candidate);
+        return;
+    }
+    if (gesture.kind == Gesture::Event) {
+        const QRectF lane = eventRect();
+        if (lane.width() <= 0.0 || !std::isfinite(gesture.eventTime) || !std::isfinite(frame.duration)) return;
+        if (!gesture.eventEditStarted && qFuzzyIsNull(movement.x())) return;
+        if (!gesture.eventEditStarted) {
+            m_gesture->eventEditStarted = true;
+            const QPointer<CMotionCurveView> alive(this);
+            emit EventDragStarted(gesture.eventIndex, gesture.eventTime);
+            if (!alive || !m_gesture || m_gesture->serial != gesture.serial) return;
+            emit EditStarted();
+            if (!alive || !m_gesture || m_gesture->serial != gesture.serial) return;
+        }
+        double time = gesture.eventTime + movement.x() / lane.width() * frame.duration;
+        if (m_frameSnapping && !(modifiers & Qt::AltModifier) && std::isfinite(gesture.fps) && gesture.fps > 0)
+            time = std::round(time * gesture.fps) / gesture.fps;
+        time = std::clamp(time, 0.0, frame.duration);
+        if (!std::isfinite(time) || time > std::numeric_limits<float>::max()) return;
+        emit EventDragged(gesture.eventIndex, time);
         return;
     }
     emit SelectionTranslated(dt, dv);

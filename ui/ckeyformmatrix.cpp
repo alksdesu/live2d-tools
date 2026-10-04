@@ -91,7 +91,11 @@ public:
     {
         if (grid.expectedKeyformCount < 0) return grid.diagnostic.isEmpty() ? QStringLiteral("关键形组合数量超出范围") : grid.diagnostic;
         if (local < 0 || local > std::numeric_limits<int>::max()) return QStringLiteral("关键形索引超出范围");
-        if (local >= grid.keyformCount) return QStringLiteral("缺失角点：没有对应的关键形");
+        if (local >= grid.keyformCount) {
+            return grid.missingKeyformCount > 0
+                ? QStringLiteral("缺失角点：当前矩阵共缺少 %1 个关键形").arg(grid.missingKeyformCount)
+                : QStringLiteral("缺失角点：没有对应的关键形");
+        }
         if (locked) return QStringLiteral("对象已锁定，解锁后可切换关键形");
         QMap<QString, float> pose; QString error;
         if (!grid.Pose(int(local), pose, &error)) return error;
@@ -415,6 +419,8 @@ void CKeyformMatrix::RefreshStatus()
     if (model->grid.objectId.isEmpty()) text.append(QStringLiteral("选择对象以浏览关键形"));
     else {
         if (!model->grid.diagnostic.isEmpty()) text.append(model->grid.diagnostic);
+        if (model->grid.missingKeyformCount > 0)
+            text.append(QStringLiteral("缺失角点：%1 个；恢复完整矩阵后才能编辑关键值").arg(model->grid.missingKeyformCount));
         if (model->locked) text.append(QStringLiteral("对象已锁定"));
         if (model->active >= 0) text.append(model->activeIndex().isValid()
             ? QStringLiteral("当前形 #%1；方向键只移动光标").arg(model->active)

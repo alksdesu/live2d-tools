@@ -166,6 +166,10 @@ void CMotionPanel::ConnectKeyframeEditing()
     connect(m_curveView, &CMotionCurveView::TangentHandleEdited, this, &CMotionPanel::EditTangentHandle);
     connect(m_curveView, &CMotionCurveView::TangentDragFinished, this, &CMotionPanel::FinishCurveGesture);
     connect(m_curveView, &CMotionCurveView::TangentDragCanceled, this, &CMotionPanel::CancelCurveGesture);
+    connect(m_curveView, &CMotionCurveView::EventDragStarted, this, &CMotionPanel::BeginEventGesture);
+    connect(m_curveView, &CMotionCurveView::EventDragged, this, &CMotionPanel::TranslateEvent);
+    connect(m_curveView, &CMotionCurveView::EventDragFinished, this, &CMotionPanel::FinishCurveGesture);
+    connect(m_curveView, &CMotionCurveView::EventDragCanceled, this, &CMotionPanel::CancelCurveGesture);
 }
 
 bool CMotionPanel::ApplyTimelineCellEdit(const CMotionPointRef& ref, int column, const QString& input, QString* error)
@@ -252,6 +256,46 @@ void CMotionPanel::TranslateCurveSelection(double time, double value)
     PublishCurveGesture(std::move(candidate), result);
 }
 
+void CMotionPanel::BeginEventGesture(int eventIndex, double time)
+{
+    BeginCurveGesture({}, false);
+    if (m_curveGesture != CurveGesture::Points || !m_editGroupBefore) return;
+    const auto events = m_editGroupBefore->value.timeline.Events();
+    if (eventIndex < 0 || eventIndex >= events.size() || !std::isfinite(time)) {
+        m_curveView->CancelDrag();
+        return;
+    }
+    m_curveGesture = CurveGesture::Event;
+    m_eventGestureIndex = eventIndex;
+    m_eventGestureTime = time;
+}
+
+void CMotionPanel::TranslateEvent(int eventIndex, double time)
+{
+    if (m_curveGesture != CurveGesture::Event || !m_editGroupBefore || eventIndex != m_eventGestureIndex ||
+        !std::isfinite(time) || time < 0 || time > std::numeric_limits<float>::max()) return;
+    CMotionTimeline candidate = m_editGroupBefore->value.timeline;
+    auto events = candidate.Events();
+    if (eventIndex < 0 || eventIndex >= events.size()) return;
+    auto event = events.at(eventIndex).toObject();
+    event.insert(QStringLiteral("Time"), time);
+    events[eventIndex] = event;
+    QString error;
+    if (!candidate.SetEvents(events, &error)) {
+        m_timelineStatus->setText(error);
+        return;
+    }
+    if (candidate.HasSameContent(m_timeline)) return;
+    const ScopedFlag mutation(this, m_timelineMutation, true);
+    const QPointer<CMotionPanel> alive(this);
+    m_timeline.SwapContent(candidate);
+    m_eventGestureTime = time;
+    RefreshTimelineTable();
+    if (!alive) return;
+    m_timelineStatus->setText(QStringLiteral("正在移动事件；Esc 取消"));
+    emit MotionTimelineChanged();
+}
+
 void CMotionPanel::BeginTangentGesture(CMotionPointRef key, CMotionTimeline::HandleSide side, bool linkForGesture)
 {
     const QPointer<CMotionPanel> alive(this);
@@ -299,7 +343,7 @@ void CMotionPanel::FinishCurveGesture()
 {
     if (m_curveGesture == CurveGesture::None) return;
     m_curveGesture = CurveGesture::None;
-    m_gesturePoints.clear(); m_gestureHandle.reset();
+    m_gesturePoints.clear(); m_gestureHandle.reset(); m_eventGestureIndex = -1; m_eventGestureTime = 0.0;
     EndTimelineEditGroup();
 }
 
@@ -307,7 +351,7 @@ void CMotionPanel::CancelCurveGesture()
 {
     if (m_curveGesture == CurveGesture::None) return;
     m_curveGesture = CurveGesture::None;
-    m_gesturePoints.clear(); m_gestureHandle.reset();
+    m_gesturePoints.clear(); m_gestureHandle.reset(); m_eventGestureIndex = -1; m_eventGestureTime = 0.0;
     const auto before = m_editGroupBefore;
     const QPointer<CMotionPanel> alive(this);
     m_editGroupActive = false;

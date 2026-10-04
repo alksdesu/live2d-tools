@@ -35,6 +35,10 @@ signals:
     void TangentHandleEdited(CMotionPointRef key, CMotionTimeline::HandleSide side, QPointF position);
     void TangentDragFinished();
     void TangentDragCanceled();
+    void EventDragStarted(int eventIndex, double time);
+    void EventDragged(int eventIndex, double time);
+    void EventDragFinished();
+    void EventDragCanceled();
     void PointSelected(const CMotionTrack& track, int pointIndex);
     void PointEdited(const CMotionTrack& track, int pointIndex, float time, float value);
     void EditStarted();
@@ -70,7 +74,7 @@ private:
         double duration = 0.001, minimum = 0, maximum = 1;
     };
     struct Gesture {
-        enum Kind { Points, Bezier, Marquee } kind = Points;
+        enum Kind { Points, Bezier, Marquee, Event } kind = Points;
         quint64 serial = 0;
         Projection projection;
         QPointF press, current, anchor;
@@ -84,6 +88,9 @@ private:
         bool restricted = false, moveValue = true, linkForGesture = false;
         CMotionTimeline::HandleSide side = CMotionTimeline::HandleSide::Incoming;
         std::optional<double> previousTime, nextTime;
+        int eventIndex = -1;
+        double eventTime = 0;
+        bool eventEditStarted = false;
     };
     std::optional<Gesture> m_gesture;
     quint64 m_gestureSerial = 0;

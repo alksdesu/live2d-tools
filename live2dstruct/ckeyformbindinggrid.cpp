@@ -169,6 +169,7 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error, bool
             product *= keyCount;
         }
         grid.expectedKeyformCount = product;
+        grid.missingKeyformCount = count >= 0 && product >= count ? product - count : -1;
         if (product != count) {
             if (grid.error.isEmpty()) grid.error = QStringLiteral("绑定轴关键值数量的乘积与关键形数量不符");
             return grid;
@@ -310,9 +311,9 @@ QVector<CKeyformBindingGrid::Axis> CKeyformBindingGrid::CollectAxes(const Grid& 
 CKeyformBindingGrid::Description CKeyformBindingGrid::Describe(ObjectType type, const QString& id) const
 {
     const auto* grid = Find(type, id);
-    if (!grid) return {{}, 0, 0, false, QStringLiteral("未找到对象的关键形绑定：%1").arg(id)};
+    if (!grid) return {{}, 0, 0, -1, false, QStringLiteral("未找到对象的关键形绑定：%1").arg(id)};
     return {grid->axesValid ? CollectAxes(*grid) : QVector<Axis>{}, grid->keyformCount,
-            grid->expectedKeyformCount, grid->axesValid, grid->error};
+            grid->expectedKeyformCount, grid->missingKeyformCount, grid->axesValid, grid->error};
 }
 
 QString CKeyformBindingGrid::Diagnostic(ObjectType type, const QString& id) const

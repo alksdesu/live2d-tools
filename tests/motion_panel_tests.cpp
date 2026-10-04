@@ -1484,6 +1484,46 @@ private slots:
         QVERIFY(!panel.HasUnsavedTimelineChanges());
     }
 
+    void eventMarkerDragIsSnappedAndOneUndoTransaction()
+    {
+        CMotionPanel panel;
+        QVERIFY(panel.RestoreTimelineState(eventState({QJsonObject{{"Time", 1.0}, {"Value", "cue"}}}, 4)));
+        panel.resize(740, 520); panel.show(); QCoreApplication::processEvents();
+        auto* view = panel.findChild<CMotionCurveView*>("motionCurveView"); QVERIFY(view);
+        const double laneWidth = view->width() - 48;
+        const int buckets = qMax(1, static_cast<int>(laneWidth / 14));
+        const int bucket = qMin(buckets - 1, static_cast<int>(1.0 / 4.0 * buckets));
+        const int markerX = qRound(34 + (bucket + 0.5) * laneWidth / buckets);
+        const QPoint press(markerX, 27), release(markerX + qRound(laneWidth / 4.0), 27);
+        QTest::mousePress(view, Qt::LeftButton, Qt::NoModifier, press);
+        QTest::mouseMove(view, release, 20);
+        QTest::mouseRelease(view, Qt::LeftButton, Qt::NoModifier, release);
+        QCOMPARE(panel.Timeline().Events().at(0).toObject().value("Time").toDouble(), 2.0);
+        QVERIFY(panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.CanUndoTimeline());
+        panel.UndoTimeline();
+        QCOMPARE(panel.Timeline().Events().at(0).toObject().value("Time").toDouble(), 1.0);
+        QVERIFY(!panel.HasUnsavedTimelineChanges());
+        QVERIFY(panel.CanRedoTimeline());
+        panel.RedoTimeline();
+        QCOMPARE(panel.Timeline().Events().at(0).toObject().value("Time").toDouble(), 2.0);
+
+        CMotionPanel canceled;
+        QVERIFY(canceled.RestoreTimelineState(eventState({QJsonObject{{"Time", 1.0}, {"Value", "cue"}}}, 4)));
+        canceled.resize(740, 520); canceled.show(); QCoreApplication::processEvents();
+        auto* canceledView = canceled.findChild<CMotionCurveView*>("motionCurveView"); QVERIFY(canceledView);
+        const double canceledWidth = canceledView->width() - 48;
+        const int canceledBuckets = qMax(1, static_cast<int>(canceledWidth / 14));
+        const int canceledBucket = qMin(canceledBuckets - 1, static_cast<int>(1.0 / 4.0 * canceledBuckets));
+        const QPoint canceledPress(qRound(34 + (canceledBucket + 0.5) * canceledWidth / canceledBuckets), 27);
+        QTest::mousePress(canceledView, Qt::LeftButton, Qt::NoModifier, canceledPress);
+        QTest::mouseMove(canceledView, canceledPress + QPoint(qRound(canceledWidth / 4.0), 0), 20);
+        QTest::keyClick(canceledView, Qt::Key_Escape);
+        QCOMPARE(canceled.Timeline().Events().at(0).toObject().value("Time").toDouble(), 1.0);
+        QVERIFY(!canceled.HasUnsavedTimelineChanges());
+        QVERIFY(!canceled.CanUndoTimeline());
+    }
+
     void delayedPlaybackDeliversCrossedEventsAndBoundsLoopBatches()
     {
         CMotionPanel panel;

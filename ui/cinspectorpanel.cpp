@@ -1387,6 +1387,8 @@ bool CInspectorPanel::IsLocked(const QString& type, const QString& name) const
 
 void CInspectorPanel::RefreshKeyformMatrix()
 {
+    const auto defaultBindingKeysTip = QStringLiteral("增删或移动当前对象参数轴的关键值，复制或插值生成对应关键形");
+    m_editBindingKeys->setToolTip(defaultBindingKeysTip);
     m_editBindingKeys->setEnabled(false);
     live2dstruct::CKeyformGridSnapshot snapshot;
     if (!m_document || m_selectionName.isEmpty() ||
@@ -1397,6 +1399,8 @@ void CInspectorPanel::RefreshKeyformMatrix()
     }
     const int active = m_selectionType == QLatin1String("artmesh") ? m_activeKeyformIndex : m_activeDeformerKeyform;
     m_keyformMatrix->SetGrid(snapshot, active, IsLocked(m_selectionType, m_selectionName));
+    if (snapshot.missingKeyformCount > 0)
+        m_editBindingKeys->setToolTip(QStringLiteral("关键值编辑已禁用：当前矩阵缺少 %1 个角点，请先恢复完整关键形").arg(snapshot.missingKeyformCount));
     m_editBindingKeys->setEnabled(snapshot.axesValid && snapshot.expectedKeyformCount == snapshot.keyformCount &&
         !IsLocked(m_selectionType, m_selectionName) && std::any_of(snapshot.axes.cbegin(), snapshot.axes.cend(),
             [](const auto& axis) { return axis.parameterType == 0; }));

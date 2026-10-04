@@ -27,6 +27,7 @@ public:
     QVector<Axis> axes;
     int keyformCount = 0;
     qint64 expectedKeyformCount = 0;
+    qint64 missingKeyformCount = -1;
     bool axesValid = false;
     QString diagnostic;
 
