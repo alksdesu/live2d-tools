@@ -436,7 +436,12 @@ bool MainWindow::ApplyMeshTool(OpengGlForm::MeshTool tool, const OpengGlForm::Me
                 return fail(QStringLiteral("当前变形使显示三角形与局部网格不一致，请切换关键形姿态后插点"));
         }
     } else if (tool == OpengGlForm::MeshTool::Delete) {
-        planned = Planner::Delete(input, snapshot.operationVertices, Planner::BoundaryPolicy::ReplaceWithChord, plan, &diagnostic);
+        const bool preserveBoundary = !m_meshTools || m_meshTools->PreservesBoundary();
+        planned = Planner::Delete(input, snapshot.operationVertices,
+            preserveBoundary ? Planner::BoundaryPolicy::PreserveBoundary : Planner::BoundaryPolicy::ReplaceWithChord,
+            plan, &diagnostic);
+        if (!planned && preserveBoundary && diagnostic.code == Planner::Code::BoundaryChange)
+            diagnostic.message += QStringLiteral("；如需改变轮廓，可先取消网格工具中的“锁定轮廓”");
         if (planned) {
             plan.selectedVertices.clear();
             for (int vertex : snapshot.selectedVertices)

@@ -18,7 +18,7 @@
 namespace {
 QAction* action(CMeshToolBar& bar, const char* name) { return bar.findChild<QAction*>(QString::fromLatin1(name)); }
 QToolButton* button(CMeshToolBar& bar, const char* name) { return qobject_cast<QToolButton*>(bar.widgetForAction(action(bar, name))); }
-QStringList names() { return {"meshAutoGenerate", "meshToolsEnabled", "meshSelect", "meshInsert", "meshConnect", "meshDelete", "meshRetriangulate"}; }
+QStringList names() { return {"meshAutoGenerate", "meshToolsEnabled", "meshSelect", "meshInsert", "meshConnect", "meshDelete", "meshPreserveBoundary", "meshRetriangulate"}; }
 double luminance(const QColor& color)
 {
     const auto linear = [](double c) { return c <= .04045 ? c / 12.92 : std::pow((c + .055) / 1.055, 2.4); };
@@ -122,6 +122,26 @@ private slots:
         QVERIFY(!action(bar, "meshAutoGenerate")->isEnabled());
         bar.SetContext("Mesh", 4, 0, true); QVERIFY(action(bar, "meshAutoGenerate")->isEnabled());
     }
+    void boundaryProtectionIsExplicitAndSurvivesContextChanges()
+    {
+        Host host; auto& bar = *host.bar;
+        auto* protection = action(bar, "meshPreserveBoundary"); QVERIFY(protection);
+        QVERIFY(bar.PreservesBoundary()); QVERIFY(protection->isCheckable()); QVERIFY(!protection->isEnabled());
+        bar.SetContext("Hair", 12, 4, true); bar.SetEditing(true);
+        QVERIFY(protection->isEnabled());
+        QSignalSpy tools(&bar, &CMeshToolBar::ToolRequested), editing(&bar, &CMeshToolBar::EditingRequested);
+        QTest::mouseClick(button(bar, "meshPreserveBoundary"), Qt::LeftButton);
+        QVERIFY(!bar.PreservesBoundary()); QCOMPARE(bar.CurrentTool(), CMeshToolBar::Tool::Select);
+        bar.SetContext("Eye", 8, 0, true); bar.SetTool(CMeshToolBar::Tool::Delete);
+        QVERIFY(!bar.PreservesBoundary());
+        bar.SetContext("Eye", 8, 0, false, QStringLiteral("先解除网格锁定")); bar.SetEditing(false);
+        QVERIFY(!protection->isEnabled()); QVERIFY(!bar.PreservesBoundary());
+        QTest::mouseClick(button(bar, "meshPreserveBoundary"), Qt::LeftButton); QVERIFY(!bar.PreservesBoundary());
+        bar.SetContext("Eye", 8, 0, true); bar.SetEditing(true);
+        button(bar, "meshPreserveBoundary")->setFocus(); QTest::keyClick(button(bar, "meshPreserveBoundary"), Qt::Key_Space);
+        QVERIFY(bar.PreservesBoundary()); QCOMPARE(bar.CurrentTool(), CMeshToolBar::Tool::Delete);
+        QCOMPARE(tools.count(), 0); QCOMPARE(editing.count(), 0);
+    }
     void rejectedRequestsRestoreThePreviousToolWithoutAnotherRequest()
     {
         Host host; auto& bar = *host.bar; bar.SetContext("Mesh", 10, 2, true); bar.SetEditing(true); bar.SetTool(CMeshToolBar::Tool::Connect);
@@ -141,6 +161,7 @@ private slots:
             QTest::keyClick(focused ? focused : &host.window, Qt::Key_Tab);
         }
         QVERIFY(visited.contains(button(bar, "meshInsert"))); QVERIFY(visited.contains(button(bar, "meshConnect")));
+        QVERIFY(visited.contains(button(bar, "meshPreserveBoundary")));
         button(bar, "meshInsert")->setFocus(); QTest::keyClick(button(bar, "meshInsert"), Qt::Key_Space);
         QCOMPARE(tools.count(), 1); QCOMPARE(bar.CurrentTool(), CMeshToolBar::Tool::Insert);
     }

@@ -52,6 +52,12 @@ CMeshToolBar::CMeshToolBar(QWidget* parent) : QToolBar(QStringLiteral("网格工
         emit ToolRequested(static_cast<Tool>(action->data().toInt()));
     });
     addSeparator();
+    m_preserveBoundary = addAction(QStringLiteral("锁定轮廓"));
+    m_preserveBoundary->setObjectName(QStringLiteral("meshPreserveBoundary"));
+    m_preserveBoundary->setCheckable(true);
+    m_preserveBoundary->setChecked(true);
+    m_preserveBoundary->setToolTip(QStringLiteral("删点时保留当前姿态的外轮廓与孔洞；仍可删除内部点或共线边界点。取消后允许用直线连接相邻边界点"));
+    m_preserveBoundary->setStatusTip(m_preserveBoundary->toolTip());
     m_optimize = addAction(QStringLiteral("优化网格"));
     m_optimize->setObjectName(QStringLiteral("meshRetriangulate"));
     m_optimize->setToolTip(QStringLiteral("优化选区周围的三角连接；没有选区时处理整个网格，保留轮廓与孔洞"));
@@ -96,6 +102,8 @@ void CMeshToolBar::SetTool(Tool tool)
 
 bool CMeshToolBar::IsEditing() const { return m_edit->isChecked(); }
 
+bool CMeshToolBar::PreservesBoundary() const { return m_preserveBoundary->isChecked(); }
+
 CMeshToolBar::Tool CMeshToolBar::CurrentTool() const
 {
     const auto* action = m_tools->checkedAction();
@@ -111,5 +119,6 @@ void CMeshToolBar::RefreshActions()
     const QString help = m_available ? QStringLiteral("在当前关键形姿态下编辑网格，修改可撤销") : m_reason;
     m_edit->setToolTip(QStringLiteral("<qt>%1</qt>").arg(help.toHtmlEscaped()));
     m_tools->setEnabled(m_available && IsEditing());
+    m_preserveBoundary->setEnabled(m_available && IsEditing());
     m_optimize->setEnabled(m_available && IsEditing());
 }
