@@ -119,6 +119,10 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     m_copyScene->setObjectName(QStringLiteral("physicsBakeCopyScene"));
     m_copyScene->setFocusPolicy(Qt::StrongFocus);
     body->addWidget(m_copyScene);
+    m_optimizeCurves = new QCheckBox(QStringLiteral("自动优化曲线"), content);
+    m_optimizeCurves->setObjectName(QStringLiteral("physicsBakeOptimizeCurves"));
+    m_optimizeCurves->setFocusPolicy(Qt::StrongFocus);
+    body->addWidget(m_optimizeCurves);
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -148,7 +152,15 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     m_warmup->setRange(0, 3);
     m_warmup->setValue(1);
     m_warmup->setSuffix(QStringLiteral(" 圈"));
-    for (QAbstractSpinBox* spin : QList<QAbstractSpinBox*>{m_fps, m_duration, m_warmup}) {
+    m_curveTolerance = new QDoubleSpinBox(content);
+    m_curveTolerance->setObjectName(QStringLiteral("physicsBakeCurveTolerance"));
+    m_curveTolerance->setAccessibleName(QStringLiteral("曲线优化误差"));
+    m_curveTolerance->setDecimals(9);
+    m_curveTolerance->setRange(0, std::numeric_limits<float>::max());
+    m_curveTolerance->setValue(0.001);
+    m_curveTolerance->setSingleStep(0.001);
+    m_curveTolerance->setSuffix(QStringLiteral(" 参数单位"));
+    for (QAbstractSpinBox* spin : QList<QAbstractSpinBox*>{m_fps, m_duration, m_warmup, m_curveTolerance}) {
         spin->installEventFilter(this);
         spin->findChild<QLineEdit*>()->installEventFilter(this);
     }
@@ -156,6 +168,7 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     form->addRow(QStringLiteral("采样帧率"), m_fps);
     form->addRow(QStringLiteral("烘焙时长"), m_duration);
     form->addRow(QStringLiteral("预热"), m_warmup);
+    form->addRow(QStringLiteral("优化误差"), m_curveTolerance);
     body->addLayout(form);
     body->addWidget(label(QStringLiteral("从 0 秒开始，末帧向上对齐采样网格。采样帧率不会改变场景帧率（%1 帧/秒）。").arg(number(sourceFps)), content));
     body->addWidget(label(QStringLiteral("预热会先循环播放完整动画，再记录结果；摆锤状态会影响首帧。空动画按烘焙时长预热，预热帧不写入曲线。"), content));
@@ -204,6 +217,11 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
         }
         RefreshValidation();
     });
+    connect(m_optimizeCurves, &QCheckBox::toggled, this, [this](bool checked) {
+        m_curveTolerance->setEnabled(checked);
+        RefreshValidation();
+    });
+    m_curveTolerance->setEnabled(false);
     connect(m_fps, &QDoubleSpinBox::valueChanged, this, [this]() {
         if (m_fpsSource && m_fpsSource->currentData().toInt() != int(Options::FpsSource::Custom)) {
             const QSignalBlocker blocker(m_fpsSource);
@@ -214,6 +232,7 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     });
     connect(m_duration, &QDoubleSpinBox::valueChanged, this, [this]() { m_durationChanged = true; RefreshValidation(); });
     connect(m_warmup, &QSpinBox::valueChanged, this, [this]() { RefreshValidation(); });
+    connect(m_curveTolerance, &QDoubleSpinBox::valueChanged, this, [this]() { RefreshValidation(); });
     connect(m_fpsSource, &QComboBox::currentIndexChanged, this, [this](int) {
         const auto source = m_fpsSource->currentData().toInt();
         const double value = source == int(Options::FpsSource::Physics) ? m_physicsFps : m_initialFps;
@@ -228,7 +247,8 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     setTabOrder(selectAll, clear);
     setTabOrder(clear, m_newAnimation);
     setTabOrder(m_newAnimation, m_copyScene);
-    setTabOrder(m_copyScene, m_fpsSource);
+    setTabOrder(m_copyScene, m_optimizeCurves);
+    setTabOrder(m_optimizeCurves, m_fpsSource);
     setTabOrder(m_fpsSource, m_fps);
     setTabOrder(m_fps, m_duration);
     setTabOrder(m_duration, m_warmup);
@@ -252,6 +272,8 @@ CPhysicsBakeDialog::Options CPhysicsBakeDialog::Selection() const
     options.warmupCycles = m_warmup->value();
     options.newAnimation = m_newAnimation->isChecked();
     options.copyScene = m_copyScene->isChecked();
+    options.optimizeCurves = m_optimizeCurves->isChecked();
+    options.curveTolerance = m_curveTolerance->value();
     return options;
 }
 
@@ -261,10 +283,13 @@ QString CPhysicsBakeDialog::Validate(Options& options, qint64& pointsPerOutput, 
     if (!m_sourceValid || m_originalPoints < 0 || m_originalPoints > CMotionTimeline::MaximumPointCount)
         return QStringLiteral("当前时间轴或输出参数无效；请先停止录制并检查输入。");
     if (options.outputIds.isEmpty()) return QStringLiteral("请至少选择一个物理输出参数。");
-    if (!m_fps->hasAcceptableInput() || !m_duration->hasAcceptableInput() || !m_warmup->hasAcceptableInput())
-        return QStringLiteral("请填写有效的帧率、时长和预热圈数。");
+    if (!m_fps->hasAcceptableInput() || !m_duration->hasAcceptableInput() || !m_warmup->hasAcceptableInput() ||
+        (options.optimizeCurves && !m_curveTolerance->hasAcceptableInput()))
+        return QStringLiteral("请填写有效的帧率、时长、预热圈数和优化误差。");
     if (!std::isfinite(options.fps) || options.fps < .2 || !std::isfinite(options.duration) || options.duration < 0)
         return QStringLiteral("采样帧率不能低于 0.2，时长不能为负数。");
+    if (options.optimizeCurves && (!std::isfinite(options.curveTolerance) || options.curveTolerance < 0))
+        return QStringLiteral("曲线优化误差不能为负数。");
     const double intervals = std::ceil(options.duration * options.fps);
     if (!std::isfinite(intervals) || intervals >= CMotionTimeline::MaximumPointCount)
         return QStringLiteral("单条曲线超过 100000 个关键点，请降低帧率或缩短时长。");
@@ -326,6 +351,7 @@ void CPhysicsBakeDialog::done(int result)
             if (!m_fps->hasAcceptableInput()) target = m_fps;
             else if (!m_duration->hasAcceptableInput()) target = m_duration;
             else if (!m_warmup->hasAcceptableInput()) target = m_warmup;
+            else if (options.optimizeCurves && !m_curveTolerance->hasAcceptableInput()) target = m_curveTolerance;
             m_scroll->ensureWidgetVisible(target);
             target->setFocus();
             return;

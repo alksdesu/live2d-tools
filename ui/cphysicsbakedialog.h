@@ -28,6 +28,8 @@ public:
         int warmupCycles = 1;
         bool newAnimation = false;
         bool copyScene = false;
+        bool optimizeCurves = false;
+        double curveTolerance = 0.001;
     };
     explicit CPhysicsBakeDialog(QMap<QString, QString> outputNames, const CMotionTimeline& timeline,
                                 QWidget* parent = nullptr, double physicsFps = 0.0);
@@ -47,12 +49,14 @@ private:
     QListWidget* m_outputs = nullptr;
     QCheckBox* m_newAnimation = nullptr;
     QCheckBox* m_copyScene = nullptr;
+    QCheckBox* m_optimizeCurves = nullptr;
     QComboBox* m_fpsSource = nullptr;
     QLabel* m_destinationHint = nullptr;
     QSet<QString> m_conflictingOutputs;
     QDoubleSpinBox* m_fps = nullptr;
     QDoubleSpinBox* m_duration = nullptr;
     QSpinBox* m_warmup = nullptr;
+    QDoubleSpinBox* m_curveTolerance = nullptr;
     QLabel* m_summary = nullptr;
     QLabel* m_error = nullptr;
     QScrollArea* m_scroll = nullptr;

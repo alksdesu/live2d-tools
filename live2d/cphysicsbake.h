@@ -27,6 +27,8 @@ public:
         bool useFades = true;
         bool loop = false;
         bool newAnimation = false;
+        bool optimizeCurves = false;
+        double curveTolerance = 0.001;
         double fps = 30.0;
         double duration = 0.0;
         int warmupCycles = 1;
@@ -43,6 +45,8 @@ public:
         };
         QMap<QString, QVector<QPointF>> curves;
         QMap<QString, OutputDiagnostic> diagnostics;
+        qint64 sourcePointCount = 0;
+        qint64 outputPointCount = 0;
         double endTime = 0.0;
         double fps = 0.0;
     };

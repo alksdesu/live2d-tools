@@ -435,6 +435,26 @@ private slots:
         QVERIFY(recorded);
         QVERIFY(warmup);
     }
+    void optimizedCurvesKeepEndpointsAndReducePoints()
+    {
+        auto request = requestFor("Mark");
+        request.warmupCycles = 0;
+        request.optimizeCurves = true;
+        request.curveTolerance = 100.0;
+        CPhysicsBake bake;
+        QString error;
+        QVERIFY2(bake.Prepare(request, &error), qPrintable(error));
+        QVERIFY2(finish(bake, &error), qPrintable(error));
+        CPhysicsBake::Result result;
+        QVERIFY2(bake.CaptureResult(result, &error), qPrintable(error));
+        QCOMPARE(result.sourcePointCount, qint64(request.outputIds.size() * 14));
+        QVERIFY(result.outputPointCount < result.sourcePointCount);
+        for (const auto& curve : result.curves) {
+            QVERIFY(curve.size() >= 2);
+            QCOMPARE(curve.first().x(), 0.0);
+            QCOMPARE(curve.last().x(), result.endTime);
+        }
+    }
     void cancellationAndFailedPrepareAreAtomic()
     {
         auto request = requestFor();

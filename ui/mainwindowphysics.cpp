@@ -217,6 +217,8 @@ void MainWindow::BakePhysicsAnimation()
         request.useFades = motion->UsesMotionFades();
         request.loop = motion->TimelineLoop();
         request.newAnimation = options.newAnimation;
+        request.optimizeCurves = options.optimizeCurves;
+        request.curveTolerance = options.curveTolerance;
         request.fps = options.fps;
         request.duration = options.duration;
         request.warmupCycles = options.warmupCycles;
@@ -379,5 +381,9 @@ void MainWindow::BakePhysicsAnimation()
     const QString detail = clipped.isEmpty()
         ? QString{}
         : QStringLiteral("；%1发生参数范围裁剪：%2").arg(clipped.size()).arg(clipped.join(QStringLiteral("、")));
-    report(QStringLiteral("已烘焙 %1 条物理曲线，可一次撤销；请保存动画或会话%2").arg(result->curves.size()).arg(detail));
+    const QString optimized = result->outputPointCount < result->sourcePointCount
+        ? QStringLiteral("；关键点 %1→%2").arg(result->sourcePointCount).arg(result->outputPointCount)
+        : QString{};
+    report(QStringLiteral("已烘焙 %1 条物理曲线，可一次撤销；请保存动画或会话%2%3")
+        .arg(result->curves.size()).arg(detail).arg(optimized));
 }

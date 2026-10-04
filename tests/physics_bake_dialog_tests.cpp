@@ -159,6 +159,19 @@ private slots:
         QVERIFY(hint->text().contains(QStringLiteral("新动画")));
     }
 
+    void curveOptimizationUsesExplicitTolerance()
+    {
+        CPhysicsBakeDialog dialog({{"Hair", "Hair"}}, timeline());
+        auto* optimize = widget<QCheckBox>(dialog, "physicsBakeOptimizeCurves");
+        auto* tolerance = widget<QDoubleSpinBox>(dialog, "physicsBakeCurveTolerance");
+        QVERIFY(!dialog.Selection().optimizeCurves);
+        optimize->setChecked(true);
+        tolerance->setValue(.25);
+        QVERIFY(dialog.Selection().optimizeCurves);
+        QCOMPARE(dialog.Selection().curveTolerance, .25);
+        QVERIFY(button(dialog, QDialogButtonBox::Ok)->isEnabled());
+    }
+
     void globalEffectConflictsRequireSeparateAnimationOrDeselection()
     {
         const auto source = timeline();

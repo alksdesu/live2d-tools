@@ -50,6 +50,34 @@ bool intervalsFor(double duration, double fps, qint64& intervals, QString* error
     intervals = qint64(count);
     return true;
 }
+
+QVector<QPointF> simplifyCurve(const QVector<QPointF>& source, double tolerance)
+{
+    if (source.size() <= 2 || tolerance <= 0) return source;
+    QVector<bool> keep(source.size(), false);
+    keep.front() = true; keep.back() = true;
+    QVector<QPair<int, int>> pending{{0, source.size() - 1}};
+    while (!pending.isEmpty()) {
+        const auto segment = pending.takeLast();
+        const auto first = source[segment.first], last = source[segment.second];
+        const double span = last.x() - first.x();
+        int split = -1; double maximum = tolerance;
+        for (int index = segment.first + 1; index < segment.second; ++index) {
+            const double expected = span > 0 ? first.y() + (last.y() - first.y()) * (source[index].x() - first.x()) / span : first.y();
+            const double deviation = std::abs(source[index].y() - expected);
+            if (deviation > maximum) { maximum = deviation; split = index; }
+        }
+        if (split >= 0) {
+            keep[split] = true;
+            pending.append({segment.first, split});
+            pending.append({split, segment.second});
+        }
+    }
+    QVector<QPointF> result;
+    result.reserve(source.size());
+    for (int index = 0; index < source.size(); ++index) if (keep[index]) result.append(source[index]);
+    return result;
+}
 }
 
 struct CPhysicsBake::Impl
@@ -72,6 +100,8 @@ struct CPhysicsBake::Impl
     qint64 completed = 0, total = 0;
     int warmupCycles = 0;
     QMap<QString, quint64> lastClippedEvaluations;
+    bool optimizeCurves = false;
+    double curveTolerance = 0.001;
 
     ~Impl()
     {
@@ -220,7 +250,8 @@ bool CPhysicsBake::Prepare(const Request& request, QString* error)
     if (!validateDigest(request.mocBytes, request.expectedMocDigest, error) ||
         !validateDigest(request.physicsBytes, request.expectedPhysicsDigest, error)) return false;
     if (!finiteFloat(request.fps) || request.fps <= 0 || !finiteFloat(request.duration) || request.duration < 0 ||
-        request.warmupCycles < 0 || request.warmupCycles > 3 || request.outputIds.isEmpty() || request.timeline.IsRecording())
+        request.warmupCycles < 0 || request.warmupCycles > 3 || request.outputIds.isEmpty() || request.timeline.IsRecording() ||
+        !finiteFloat(request.curveTolerance) || request.curveTolerance < 0)
         return fail(error, QStringLiteral("烘焙帧率、时长、预热次数或输出参数无效，录制期间不能烘焙"));
     try {
         auto next = std::make_unique<Impl>();
@@ -231,6 +262,8 @@ bool CPhysicsBake::Prepare(const Request& request, QString* error)
         next->fades = request.useFades;
         next->loop = request.loop;
         next->warmupCycles = request.warmupCycles;
+        next->optimizeCurves = request.optimizeCurves;
+        next->curveTolerance = request.curveTolerance;
         next->result.fps = request.fps;
         next->warmupPeriod = next->timeline.HasAnimation() && next->timeline.Timing().duration > 0
             ? next->timeline.Timing().duration : request.duration;
@@ -360,8 +393,17 @@ bool CPhysicsBake::CaptureResult(Result& result, QString* error) const
     if (!IsFinished()) return fail(error, m_impl && !m_impl->error.isEmpty() ? m_impl->error : QStringLiteral("物理烘焙尚未完成"));
     try {
         Result candidate = m_impl->result;
+        candidate.sourcePointCount = 0;
+        for (const auto& curve : candidate.curves) candidate.sourcePointCount += curve.size();
+        if (m_impl->optimizeCurves)
+            for (auto it = candidate.curves.begin(); it != candidate.curves.end(); ++it)
+                it.value() = simplifyCurve(it.value(), m_impl->curveTolerance);
+        candidate.outputPointCount = 0;
+        for (const auto& curve : candidate.curves) candidate.outputPointCount += curve.size();
         result.curves.swap(candidate.curves);
         result.diagnostics.swap(candidate.diagnostics);
+        result.sourcePointCount = candidate.sourcePointCount;
+        result.outputPointCount = candidate.outputPointCount;
         result.endTime = candidate.endTime;
         result.fps = candidate.fps;
         return true;
