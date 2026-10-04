@@ -1445,7 +1445,6 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         if (!edit.meshVerification.IsEmpty() && edit.field != CModelEdit::MeshStructure) return false;
         if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
             (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) {
-            qWarning() << "execute precondition failed" << edit.name << int(edit.field) << bool(edit.cloneRequest);
             return false;
         }
         CModelEdit command = edit;

@@ -132,6 +132,47 @@ private slots:
         QCOMPARE(document.SourceBytes(), m_original.SourceBytes()); QCOMPARE(document.SourceDigest(), m_original.SourceDigest());
     }
 
+    void emptyWarpAndRotationCreationRemainUndoable()
+    {
+        for (const bool warp : {true, false}) {
+            auto document = m_original;
+            Raw::InsertRequest request;
+            request.id = warp ? QStringLiteral("EmptyWarp") : QStringLiteral("EmptyRotation");
+            request.shape = warp ? std::variant<Raw::Warp, Raw::Rotation>(Raw::Warp{})
+                                 : std::variant<Raw::Warp, Raw::Rotation>(Raw::Rotation{});
+            CModelEdit edit;
+            QString error;
+            const auto before = document.AuthoringStructureState();
+            QVERIFY2(document.MakeDeformerStructureEdit(anchored(document, request), edit, &error), qPrintable(error));
+            QVERIFY(document.ExecuteEdit(edit));
+            QCOMPARE(document.Deformers().size(), m_original.Deformers().size() + 1);
+            const auto after = document.AuthoringStructureState();
+            QVERIFY(after != before);
+            QVERIFY(document.UndoEdit());
+            QCOMPARE(document.AuthoringStructureState(), before);
+            QVERIFY(document.RedoEdit());
+            QCOMPARE(document.AuthoringStructureState(), after);
+        }
+    }
+
+    void deformerCreationAfterArtMeshCloneKeepsCloneDirectory()
+    {
+        auto document = m_original;
+        QString error;
+        CModelEdit clone;
+        const QString source = document.Drawables().first().id;
+        QVERIFY2(document.MakeCloneArtMeshEdit({source, source + QStringLiteral("__deformer"), -2, -2, -2}, clone, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(clone));
+        CModelEdit deformer;
+        QVERIFY2(document.MakeDeformerStructureEdit(anchored(document, insertion(document, false, QStringLiteral("AfterClone"))), deformer, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(deformer));
+        QVERIFY(std::any_of(document.Drawables().cbegin(), document.Drawables().cend(), [&](const auto& mesh) {
+            return mesh.id == source + QStringLiteral("__deformer");
+        }));
+        QVERIFY(document.UndoEdit());
+        QVERIFY(document.RedoEdit());
+    }
+
     void parameterMeshAndScalarEditsShareOneHistory()
     {
         auto document = m_original; QString error;

@@ -620,19 +620,20 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
                                      CModelDocument& candidate, QString* error) const
 {
     if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
+    const QByteArray& authoringBase = m_artMeshClones.isEmpty() ? m_sourceBytes : m_workingBaseBytes;
     QByteArray working;
-    if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
+    if (!Builder::BuildColumnState(authoringBase, structure, working, error)) return false;
     if (!m_blendShapeGeometry.isEmpty() && working != m_workingBaseBytes)
         return fail(error, QStringLiteral("存在融合几何编辑，结构变化前必须先提交或清除融合几何状态"));
     {
-        auto sourceReader = CReader::FromBytes(m_sourceBytes), workingReader = CReader::FromBytes(working);
+        auto sourceReader = CReader::FromBytes(authoringBase), workingReader = CReader::FromBytes(working);
         CSectionTable sourceTable(sourceReader), workingTable(workingReader);
         if (!sourceTable.IsValid() || !workingTable.IsValid()) return fail(error, sourceReader.Error() + workingReader.Error());
         if (!validWarpStructure(workingTable, error)) return false;
-        if (!auxiliaryIdentity(m_sourceBytes, sourceTable, working, workingTable, meshStructure, error)) return false;
+        if (!auxiliaryIdentity(authoringBase, sourceTable, working, workingTable, meshStructure, error)) return false;
     }
     CModelDocument original, next;
-    if (!original.LoadBytes(m_sourceBytes, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
+    if (!original.LoadBytes(authoringBase, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
     next.m_blendShapeGeometry = m_blendShapeGeometry;
     next.m_maskSource = m_maskSource;
     if (!next.ValidateStructureMasks(error)) return false;
@@ -928,12 +929,14 @@ bool CModelDocument::SetSessionAuthoringStructure(const Builder::ColumnState& st
             replay = std::move(result.bytes);
         }
         QByteArray working;
-        if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
+        if (!Builder::BuildColumnState(replay, structure, working, error)) return false;
         CModelDocument replayed, next;
         if (!replayed.LoadBytes(replay, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
-        if (next.m_parts.size() != replayed.m_parts.size() || next.m_deformers.size() != replayed.m_deformers.size() ||
-            next.m_drawables.size() != replayed.m_drawables.size() || next.m_drawOrderGroups.size() != replayed.m_drawOrderGroups.size())
+        if (next.m_parts.size() != replayed.m_parts.size() ||
+            (!deformerStructure && next.m_deformers.size() != replayed.m_deformers.size()) ||
+            next.m_drawables.size() != replayed.m_drawables.size() || next.m_drawOrderGroups.size() != replayed.m_drawOrderGroups.size()) {
             return fail(error, QStringLiteral("会话克隆目录与结构状态不匹配"));
+        }
         for (int index = 0; index < replayed.m_drawables.size(); ++index)
             if (next.m_drawables[index].id != replayed.m_drawables[index].id)
                 return fail(error, QStringLiteral("会话克隆对象顺序不匹配"));
@@ -1083,6 +1086,10 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
     session.version = 16;
+    if (!m_artMeshClones.isEmpty() && !edit.cloneRequest) {
+        session.artMeshClones = m_artMeshClones;
+        session.version = 18;
+    }
     if (edit.cloneRequest) {
         auto clones = m_artMeshClones;
         if (forward) {
@@ -1270,9 +1277,11 @@ bool CModelDocument::MakeDeformerStructureEdit(const CDeformerPreserveRequest& r
             return true;
         }
         Builder::ColumnState structure;
-        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
+        const QByteArray& authoringBase = m_artMeshClones.isEmpty() ? m_sourceBytes : m_workingBaseBytes;
+        if (!Builder::CaptureColumnState(authoringBase, result.bytes, structure, error)) return false;
         CModelDocument candidate;
-        if (!PrepareStructure(structure, m_hasMeshStructure, true, sourceIds, true, m_hasMaterialStructure || !m_drawableMaterialOverrides.isEmpty(), candidate, error) ||
+        if (!PrepareStructure(structure, m_hasMeshStructure, true, sourceIds, true,
+                              m_hasMaterialStructure || !m_drawableMaterialOverrides.isEmpty(), candidate, error) ||
             !PreserveStructureProperties(candidate, error)) return false;
         if (!ReconcileGeometryObjectPairs(candidate, {}, nullptr, nullptr, error)) return false;
         CModelEdit command{impact.structure.id, QStringLiteral("deformer"), CModelEdit::DeformerStructure,
@@ -1510,7 +1519,8 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         if (result.bytes == base && !remapped) return fail(error, QStringLiteral("网格没有发生变化"));
         Builder::ColumnState structure;
         CModelDocument candidate;
-        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
+        const QByteArray& structureBase = m_artMeshClones.isEmpty() ? m_sourceBytes : m_workingBaseBytes;
+        if (!Builder::CaptureColumnState(structureBase, result.bytes, structure, error)) return false;
         if (!m_artMeshClones.isEmpty()) {
             candidate = *this;
             if (!candidate.SetSessionAuthoringStructure(structure, m_artMeshClones, m_hasMaterialStructure,
