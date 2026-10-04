@@ -7,6 +7,7 @@
 #include <QSet>
 
 class QCheckBox;
+class QComboBox;
 class QDialogButtonBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -19,14 +20,16 @@ class CPhysicsBakeDialog : public QDialog
     Q_OBJECT
 public:
     struct Options {
+        enum class FpsSource { Scene, Physics, Custom };
         QSet<QString> outputIds;
         double fps = 30.0;
+        FpsSource fpsSource = FpsSource::Scene;
         double duration = 1.0;
         int warmupCycles = 1;
         bool newAnimation = false;
     };
     explicit CPhysicsBakeDialog(QMap<QString, QString> outputNames, const CMotionTimeline& timeline,
-                                QWidget* parent = nullptr);
+                                QWidget* parent = nullptr, double physicsFps = 0.0);
     Options Selection() const;
     void SetConflictingOutputs(const QSet<QString>& ids);
 
@@ -42,6 +45,7 @@ private:
     QString Validate(Options& options, qint64& pointsPerOutput, qint64& retainedPoints, double& endTime) const;
     QListWidget* m_outputs = nullptr;
     QCheckBox* m_newAnimation = nullptr;
+    QComboBox* m_fpsSource = nullptr;
     QLabel* m_destinationHint = nullptr;
     QSet<QString> m_conflictingOutputs;
     QDoubleSpinBox* m_fps = nullptr;
@@ -55,6 +59,7 @@ private:
     qint64 m_originalPoints = 0;
     double m_sceneDuration = 0;
     double m_initialFps = 30;
+    double m_physicsFps = 0;
     double m_initialDuration = 1;
     bool m_hasAnimation = false;
     bool m_fpsChanged = false;

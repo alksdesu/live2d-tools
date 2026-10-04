@@ -173,7 +173,8 @@ void MainWindow::BakePhysicsAnimation()
     if (outputNames.isEmpty()) { report(QStringLiteral("当前物理配置没有可烘焙的输出参数")); return; }
     QSet<QString> eye, lip;
     model->GetTimelineEffectIds(eye, lip);
-    CPhysicsBakeDialog dialog(outputNames, timeline, this);
+    const double physicsFps = physicsConfiguration.value(QStringLiteral("Meta")).toObject().value(QStringLiteral("Fps")).toDouble();
+    CPhysicsBakeDialog dialog(outputNames, timeline, this, physicsFps);
     dialog.SetConflictingOutputs(conflictingOutputs(timeline, eye, lip));
     if (dialog.exec() != QDialog::Accepted) return;
     const auto options = dialog.Selection();

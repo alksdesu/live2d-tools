@@ -1,6 +1,7 @@
 #include "cphysicsbakedialog.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -33,7 +34,8 @@ bool validId(const QString& id) { return !id.isEmpty() && !id.contains(QChar::Nu
 QString number(double value) { return QString::number(value, 'g', 12); }
 }
 
-CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const CMotionTimeline& timeline, QWidget* parent)
+CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const CMotionTimeline& timeline, QWidget* parent,
+                                       double physicsFps)
     : QDialog(parent), m_originalPoints(timeline.TotalPointCount()), m_sceneDuration(timeline.Timing().duration),
       m_hasAnimation(timeline.HasAnimation())
 {
@@ -45,6 +47,7 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
         if (it.key().target == CMotionTarget::Parameter) m_replacedPointCounts.insert(it.key().id, it.value().size());
     const double sourceFps = timeline.Timing().fps;
     if (std::isfinite(sourceFps) && sourceFps >= .2 && sourceFps <= std::numeric_limits<float>::max()) m_initialFps = sourceFps;
+    if (std::isfinite(physicsFps) && physicsFps >= .2 && physicsFps <= std::numeric_limits<float>::max()) m_physicsFps = physicsFps;
     if (std::isfinite(m_sceneDuration) && m_sceneDuration > 0 && m_sceneDuration <= std::numeric_limits<float>::max())
         m_initialDuration = m_sceneDuration;
 
@@ -122,6 +125,11 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     m_fps->setRange(.2, std::numeric_limits<float>::max());
     m_fps->setValue(m_initialFps);
     m_fps->setSuffix(QStringLiteral(" 帧/秒"));
+    m_fpsSource = new QComboBox(content);
+    m_fpsSource->setObjectName(QStringLiteral("physicsBakeFpsSource"));
+    m_fpsSource->addItem(QStringLiteral("场景帧率"), int(Options::FpsSource::Scene));
+    if (m_physicsFps > 0) m_fpsSource->addItem(QStringLiteral("物理计算帧率"), int(Options::FpsSource::Physics));
+    m_fpsSource->addItem(QStringLiteral("自定义"), int(Options::FpsSource::Custom));
     m_duration = new QDoubleSpinBox(content);
     m_duration->setObjectName(QStringLiteral("physicsBakeDuration"));
     m_duration->setAccessibleName(QStringLiteral("烘焙时长"));
@@ -140,6 +148,7 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
         spin->installEventFilter(this);
         spin->findChild<QLineEdit*>()->installEventFilter(this);
     }
+    form->addRow(QStringLiteral("采样率来源"), m_fpsSource);
     form->addRow(QStringLiteral("采样帧率"), m_fps);
     form->addRow(QStringLiteral("烘焙时长"), m_duration);
     form->addRow(QStringLiteral("预热"), m_warmup);
@@ -178,16 +187,31 @@ CPhysicsBakeDialog::CPhysicsBakeDialog(QMap<QString, QString> outputNames, const
     connect(m_buttons, &QDialogButtonBox::rejected, this, &CPhysicsBakeDialog::reject);
     connect(m_outputs, &QListWidget::itemChanged, this, [this]() { RefreshValidation(); });
     connect(m_newAnimation, &QCheckBox::toggled, this, [this]() { RefreshValidation(); });
-    connect(m_fps, &QDoubleSpinBox::valueChanged, this, [this]() { m_fpsChanged = true; RefreshValidation(); });
+    connect(m_fps, &QDoubleSpinBox::valueChanged, this, [this]() {
+        if (m_fpsSource && m_fpsSource->currentData().toInt() != int(Options::FpsSource::Custom)) {
+            const QSignalBlocker blocker(m_fpsSource);
+            const auto custom = m_fpsSource->findData(int(Options::FpsSource::Custom));
+            if (custom >= 0) m_fpsSource->setCurrentIndex(custom);
+        }
+        m_fpsChanged = true; RefreshValidation();
+    });
     connect(m_duration, &QDoubleSpinBox::valueChanged, this, [this]() { m_durationChanged = true; RefreshValidation(); });
     connect(m_warmup, &QSpinBox::valueChanged, this, [this]() { RefreshValidation(); });
+    connect(m_fpsSource, &QComboBox::currentIndexChanged, this, [this](int) {
+        const auto source = m_fpsSource->currentData().toInt();
+        const double value = source == int(Options::FpsSource::Physics) ? m_physicsFps : m_initialFps;
+        const QSignalBlocker blocker(m_fps);
+        if (source != int(Options::FpsSource::Custom)) m_fps->setValue(value);
+        RefreshValidation();
+    });
     connect(m_fps->findChild<QLineEdit*>(), &QLineEdit::textEdited, this, [this]() { m_fpsChanged = true; RefreshValidation(); });
     connect(m_duration->findChild<QLineEdit*>(), &QLineEdit::textEdited, this, [this]() { m_durationChanged = true; RefreshValidation(); });
     connect(m_warmup->findChild<QLineEdit*>(), &QLineEdit::textEdited, this, [this]() { RefreshValidation(); });
     setTabOrder(m_outputs, selectAll);
     setTabOrder(selectAll, clear);
     setTabOrder(clear, m_newAnimation);
-    setTabOrder(m_newAnimation, m_fps);
+    setTabOrder(m_newAnimation, m_fpsSource);
+    setTabOrder(m_fpsSource, m_fps);
     setTabOrder(m_fps, m_duration);
     setTabOrder(m_duration, m_warmup);
     setTabOrder(m_warmup, start);
@@ -202,7 +226,10 @@ CPhysicsBakeDialog::Options CPhysicsBakeDialog::Selection() const
     Options options;
     for (int i = 0; i < m_outputs->count(); ++i)
         if (m_outputs->item(i)->checkState() == Qt::Checked) options.outputIds.insert(m_outputs->item(i)->data(Qt::UserRole).toString());
-    options.fps = m_fpsChanged ? m_fps->value() : m_initialFps;
+    const auto source = static_cast<Options::FpsSource>(m_fpsSource->currentData().toInt());
+    options.fpsSource = source;
+    options.fps = source == Options::FpsSource::Physics ? m_physicsFps
+        : source == Options::FpsSource::Custom ? m_fps->value() : m_initialFps;
     options.duration = m_durationChanged ? m_duration->value() : m_initialDuration;
     options.warmupCycles = m_warmup->value();
     options.newAnimation = m_newAnimation->isChecked();

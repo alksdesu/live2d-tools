@@ -1,6 +1,7 @@
 #include "ui/cphysicsbakedialog.h"
 #include "ui/theme.h"
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -82,6 +83,23 @@ private slots:
         QCOMPARE(dialog.Selection().duration, 0.0);
         QVERIFY(widget<QLabel>(dialog, "physicsBakeSummary")->text().contains(QStringLiteral("每条 1 点")));
         QVERIFY(button(dialog, QDialogButtonBox::Ok)->isEnabled());
+    }
+
+    void fpsSourceSelectsScenePhysicsAndCustomValues()
+    {
+        auto source = timeline();
+        CPhysicsBakeDialog dialog({{"Hair", "Hair"}}, source, nullptr, 60.0);
+        auto* selector = widget<QComboBox>(dialog, "physicsBakeFpsSource");
+        QVERIFY(selector);
+        QCOMPARE(dialog.Selection().fps, source.Timing().fps);
+        QCOMPARE(dialog.Selection().fpsSource, CPhysicsBakeDialog::Options::FpsSource::Scene);
+        selector->setCurrentIndex(selector->findData(int(CPhysicsBakeDialog::Options::FpsSource::Physics)));
+        QCOMPARE(dialog.Selection().fps, 60.0);
+        QCOMPARE(dialog.Selection().fpsSource, CPhysicsBakeDialog::Options::FpsSource::Physics);
+        selector->setCurrentIndex(selector->findData(int(CPhysicsBakeDialog::Options::FpsSource::Custom)));
+        widget<QDoubleSpinBox>(dialog, "physicsBakeFps")->setValue(24.0);
+        QCOMPARE(dialog.Selection().fps, 24.0);
+        QCOMPARE(dialog.Selection().fpsSource, CPhysicsBakeDialog::Options::FpsSource::Custom);
     }
 
     void selectedOutputsDetermineRetainedBudget()
