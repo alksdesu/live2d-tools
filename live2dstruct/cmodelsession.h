@@ -31,6 +31,7 @@ struct CModelSession
     QByteArray sourceDigest;
     CMocParameterStructureBuilder::ColumnState structure;
     bool meshStructure = false;
+    QVector<CMocMeshStructureBuilder::CloneRequest> artMeshClones;
     bool materialStructure = false;
     CModelMaterialOverrides drawableMaterials;
     bool deformerStructure = false;

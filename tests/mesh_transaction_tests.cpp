@@ -40,11 +40,12 @@ CMocMeshStructureBuilder::Request insertion(const CModelDocument& document)
 CModelSession savedSession(const CModelDocument& document)
 {
     CModelSession session;
-    session.version = 12;
+    session.version = document.ArtMeshClones().isEmpty() ? 12 : 18;
     session.sourceMoc = document.SourcePath();
     session.sourceDigest = document.SourceDigest();
     session.structure = document.ParameterStructure();
     session.meshStructure = document.HasMeshStructure();
+    session.artMeshClones = document.ArtMeshClones();
     session.materialStructure = document.HasMaterialStructure();
     session.drawableMaterials = document.DrawableMaterialOverrides();
     session.deformerStructure = document.HasDeformerStructure();
@@ -68,6 +69,7 @@ CModelSession savedSession(const CModelDocument& document)
     session.deformerRotationKeyforms = document.DeformerRotationKeyformOverrides();
     session.deformerWarpKeyforms = document.DeformerWarpKeyformOverrides();
     session.artwork = document.Artwork();
+    session.objectDisplayNames = document.DisplayNames();
     if (document.HasTextureWorkspace()) {
         CTextureWorkspace::Draft draft;
         if (CTextureWorkspace::CaptureDraft(document.TextureSources(), document.TextureWorkspace(), draft))
@@ -610,6 +612,68 @@ private slots:
         QCOMPARE(document.AuthoringStructureState(), before);
         QVERIFY(document.RedoEdit());
         QCOMPARE(document.AuthoringStructureState(), after);
+    }
+
+    void cloneArtMeshCommitsUndoRedoAndSession()
+    {
+        CModelDocument document;
+        QString error;
+        QVERIFY2(load(document, &error), qPrintable(error));
+        const QString sourceId = document.Drawables().first().id;
+        const QString cloneId = sourceId + QStringLiteral("__document_clone");
+        CModelEdit edit;
+        QVERIFY2(document.MakeCloneArtMeshEdit({sourceId, cloneId, -2, -2, -2}, edit, &error), qPrintable(error));
+        const auto before = document.AuthoringStructureState();
+        const int beforeDrawables = document.Drawables().size();
+        QVERIFY(document.ExecuteEdit(edit));
+        const auto after = document.AuthoringStructureState();
+        QCOMPARE(document.Drawables().size(), beforeDrawables + 1);
+        QVERIFY(std::any_of(document.Drawables().cbegin(), document.Drawables().cend(),
+                            [&](const auto& mesh) { return mesh.id == cloneId; }));
+        QVERIFY(document.CanUndoEdit());
+        CModelSession parsed;
+        QVERIFY2(CModelSession::FromJson(savedSession(document).ToJson(), &parsed, &error), qPrintable(error));
+        CModelDocument restored;
+        QVERIFY2(parsed.RestoreDocument(document, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), after);
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.AuthoringStructureState(), before);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.AuthoringStructureState(), after);
+    }
+
+    void cloneArtMeshComposesAndRejectsForgedState()
+    {
+        CModelDocument document;
+        QString error;
+        QVERIFY2(load(document, &error), qPrintable(error));
+        const QString sourceId = document.Drawables().first().id;
+        const int originalCount = document.Drawables().size();
+        CModelEdit first;
+        QVERIFY2(document.MakeCloneArtMeshEdit({sourceId, sourceId + QStringLiteral("__one"), -2, -2, -2}, first, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(first));
+        CModelEdit second;
+        QVERIFY2(document.MakeCloneArtMeshEdit({sourceId + QStringLiteral("__one"), sourceId + QStringLiteral("__two"), -2, -2, -2}, second, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(second));
+        QCOMPARE(document.Drawables().size(), originalCount + 2);
+        CModelEdit topology;
+        QVERIFY2(document.MakeMeshStructureEdit(insertion(document), topology, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(topology));
+        CModelSession parsed;
+        QVERIFY2(CModelSession::FromJson(savedSession(document).ToJson(), &parsed, &error), qPrintable(error));
+        CModelDocument restored;
+        QVERIFY2(parsed.RestoreDocument(document, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), document.AuthoringStructureState());
+        CModelEdit forged;
+        QVERIFY2(document.MakeCloneArtMeshEdit({sourceId, sourceId + QStringLiteral("__three"), -2, -2, -2}, forged, &error), qPrintable(error));
+        auto forgedState = forged.after.toMap();
+        auto visibility = forgedState.value(QStringLiteral("visibility")).value<QMap<QString, bool>>();
+        visibility[QStringLiteral("artmesh|") + sourceId] = false;
+        forgedState.insert(QStringLiteral("visibility"), QVariant::fromValue(visibility));
+        forged.after = forgedState;
+        const auto before = document.AuthoringStructureState();
+        QVERIFY(!document.ExecuteEdit(forged));
+        QCOMPARE(document.AuthoringStructureState(), before);
     }
 };
 

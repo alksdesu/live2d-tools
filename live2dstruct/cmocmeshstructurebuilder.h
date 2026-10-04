@@ -35,6 +35,13 @@ public:
         GlueEndpointPolicy gluePolicy = GlueEndpointPolicy::Reject;
         QVector<GlueRetarget> glueRetargets;
     };
+    struct CloneRequest {
+        QString sourceArtMeshId;
+        QString newArtMeshId;
+        int parentPartIndex = -2;
+        int parentDeformerIndex = -2;
+        int textureIndex = -2;
+    };
     struct MeshRemap {
         QString artMeshId;
         int oldVertexCount = 0;
@@ -63,6 +70,7 @@ public:
     };
     static bool Analyze(const QByteArray& base, const Request& request, Impact& result, QString* error = nullptr);
     static bool Build(const QByteArray& base, const Request& request, Result& result, QString* error = nullptr);
+    static bool Clone(const QByteArray& base, const CloneRequest& request, Result& result, QString* error = nullptr);
 };
 }
 

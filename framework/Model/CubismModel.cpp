@@ -85,12 +85,57 @@ float boundedRuntimeValue(float value, float minimum, float maximum)
 
 bool uniqueRuntimeIds(const char* const* ids, int count)
 {
+    if (count && !ids) return false;
     QSet<QByteArray> seen;
     for (int index = 0; index < count; ++index) {
+        if (!ids[index] || !ids[index][0]) return false;
         const QByteArray id(ids[index]);
         if (seen.contains(id)) return false;
         seen.insert(id);
     }
+    return true;
+}
+
+struct DrawableIdentityMap
+{
+    QVector<int> candidateToSource;
+    int sourceCount = 0;
+    int candidateCount = 0;
+    bool appended = false;
+};
+
+bool buildDrawableIdentityMap(const CubismModel& candidate, const CubismModel& source,
+                              bool allowAppend, DrawableIdentityMap& result, QString* error)
+{
+    const int candidateCount = candidate.GetDrawableCount();
+    const int sourceCount = source.GetDrawableCount();
+    if (!validRuntimeCount(candidateCount) || !validRuntimeCount(sourceCount) ||
+        (!allowAppend && candidateCount != sourceCount))
+        return runtimeStateError(error, QStringLiteral("Drawable count differs or is invalid"));
+    const auto* candidateIds = Core::csmGetDrawableIds(candidate.GetModel());
+    const auto* sourceIds = Core::csmGetDrawableIds(source.GetModel());
+    if (!uniqueRuntimeIds(candidateIds, candidateCount) || !uniqueRuntimeIds(sourceIds, sourceCount))
+        return runtimeStateError(error, QStringLiteral("Drawable IDs are empty or duplicated"));
+    QHash<QByteArray, int> sourceIndices;
+    for (int index = 0; index < sourceCount; ++index) sourceIndices.insert(QByteArray(sourceIds[index]), index);
+    result.candidateToSource.fill(-1, candidateCount);
+    for (int index = 0; index < candidateCount; ++index) {
+        const auto found = sourceIndices.constFind(QByteArray(candidateIds[index]));
+        if (found != sourceIndices.cend()) result.candidateToSource[index] = *found;
+    }
+    if (allowAppend) {
+        const int sharedCount = std::min(candidateCount, sourceCount);
+        for (int index = 0; index < sharedCount; ++index)
+            if (result.candidateToSource[index] != index)
+                return runtimeStateError(error, QStringLiteral("Existing drawable order or identity changed"));
+    } else {
+        for (int index = 0; index < candidateCount; ++index)
+            if (result.candidateToSource[index] != index)
+                return runtimeStateError(error, QStringLiteral("Ordered drawable IDs differ"));
+    }
+    result.sourceCount = sourceCount;
+    result.candidateCount = candidateCount;
+    result.appended = candidateCount > sourceCount;
     return true;
 }
 
@@ -486,25 +531,27 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     if (!_model || !source._model) return runtimeStateError(error, QStringLiteral("Missing Core model"));
     const bool structureEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterStructureEdits);
     const bool parameterEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowParameterDefinitionEdits);
+    const bool drawableTopology = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableTopologyEdits);
     RuntimeValueSnapshot definition, sourceDefinition;
     if (!readValueDefinition(_model, definition, error) || !readValueDefinition(source._model, sourceDefinition, error)) return false;
     const int parameters = GetParameterCount(), sourceParameters = source.GetParameterCount();
     const int parts = GetPartCount(), drawables = GetDrawableCount();
+    DrawableIdentityMap drawableMap;
     if (!validRuntimeCount(drawables) || (!structureEdits && parameters != sourceParameters) ||
-        parts != source.GetPartCount() || drawables != source.GetDrawableCount())
+        parts != source.GetPartCount())
         return runtimeStateError(error, QStringLiteral("Parameter, part or drawable count differs or is invalid"));
+    if (!buildDrawableIdentityMap(*this, source, drawableTopology, drawableMap, error)) return false;
+    const int sourceDrawables = drawableMap.sourceCount;
+    const int sharedDrawables = std::min(drawables, sourceDrawables);
     if (_parameterIds.GetSize() != parameters || source._parameterIds.GetSize() != sourceParameters ||
         _partIds.GetSize() != parts || source._partIds.GetSize() != parts ||
-        _drawableIds.GetSize() != drawables || source._drawableIds.GetSize() != drawables ||
+        _drawableIds.GetSize() != drawables || source._drawableIds.GetSize() != sourceDrawables ||
         (parameters && !_parameterValues) || (sourceParameters && !source._parameterValues) ||
         (parts && (!_partOpacities || !source._partOpacities)))
         return runtimeStateError(error, QStringLiteral("Model runtime arrays are not initialized"));
     if ((!structureEdits && definition.parameterIds != sourceDefinition.parameterIds) ||
-        definition.partIds != sourceDefinition.partIds ||
-        !equalRuntimeArray(Core::csmGetDrawableIds(_model), Core::csmGetDrawableIds(source._model), drawables))
+        definition.partIds != sourceDefinition.partIds)
         return runtimeStateError(error, QStringLiteral("Ordered parameter, part or drawable IDs differ"));
-    if (!uniqueRuntimeIds(Core::csmGetDrawableIds(_model), drawables))
-        return runtimeStateError(error, QStringLiteral("Duplicate drawable IDs"));
 
     Core::csmVector2 size{}, origin{}, sourceSize{}, sourceOrigin{};
     float ppu = 0, sourcePpu = 0;
@@ -562,16 +609,16 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
     const bool geometryEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableGeometryEdits);
     const bool materialEdits = AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableMaterialEdits);
     const bool topologyEdits = geometryEdits || AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableTopologyEdits);
+    const auto* sourceTextures = Core::csmGetDrawableTextureIndices(source._model);
+    const auto* sourceDrawableParents = Core::csmGetDrawableParentPartIndices(source._model);
     if (!equalRuntimeArray(partParents, Core::csmGetPartParentPartIndices(source._model), parts) ||
-        !equalRuntimeArray(drawableParents, Core::csmGetDrawableParentPartIndices(source._model), drawables) ||
-        (drawables && (!vertices || !sourceVertices)) ||
-        (!geometryEdits && !equalRuntimeArray(vertices, sourceVertices, drawables)) ||
-        (drawables && (!indexCounts || !sourceIndexCounts)) ||
-        (!topologyEdits && !equalRuntimeArray(indexCounts, sourceIndexCounts, drawables)) ||
-        (!clippingEdits && !equalRuntimeArray(maskCounts, sourceMaskCounts, drawables)) ||
-        (drawables && (!textures || !Core::csmGetDrawableTextureIndices(source._model))) ||
-        (!materialEdits && !equalRuntimeArray(textures, Core::csmGetDrawableTextureIndices(source._model), drawables)) ||
-        (drawables && (!flags || !sourceFlags)))
+        (drawables && (!drawableParents || !vertices || !indexCounts || !maskCounts || !textures || !flags)) ||
+        (sourceDrawables && (!sourceDrawableParents || !sourceVertices || !sourceIndexCounts || !sourceMaskCounts || !sourceTextures || !sourceFlags)) ||
+        !equalRuntimeArray(drawableParents, sourceDrawableParents, sharedDrawables) ||
+        (!geometryEdits && !equalRuntimeArray(vertices, sourceVertices, sharedDrawables)) ||
+        (!topologyEdits && !equalRuntimeArray(indexCounts, sourceIndexCounts, sharedDrawables)) ||
+        (!clippingEdits && !equalRuntimeArray(maskCounts, sourceMaskCounts, sharedDrawables)) ||
+        (!materialEdits && !equalRuntimeArray(textures, sourceTextures, sharedDrawables)))
         return runtimeStateError(error, QStringLiteral("Part hierarchy or drawable definition differs or is invalid"));
     if (!HasValidClippingDefinitions(error) || !source.HasValidClippingDefinitions(error)) return false;
     for (int i = 0; i < parts; ++i)
@@ -590,20 +637,26 @@ bool CubismModel::IsCompatibleForKeyformUpdate(const CubismModel& source, Cubism
         return true;
     };
     for (int i = 0; i < drawables; ++i) {
+        const int sourceIndex = drawableMap.candidateToSource.value(i, -1);
         const unsigned int allowedFlags = clippingEdits ? Core::csmIsInvertedMask : 0;
-        if ((flags[i] ^ sourceFlags[i]) & ~allowedFlags)
+        if (sourceIndex >= 0 && (flags[i] ^ sourceFlags[sourceIndex]) & ~allowedFlags)
             return runtimeStateError(error, QStringLiteral("Drawable %1 constant flags differ").arg(i));
-        if (!validRuntimeCount(vertices[i]) || !validRuntimeCount(sourceVertices[i]) ||
+        if (!validRuntimeCount(vertices[i]) || (sourceIndex >= 0 && !validRuntimeCount(sourceVertices[sourceIndex])) ||
             !validRuntimeCount(maskCounts[i], clippingEdits ? MaximumRuntimeIndices : drawables) || textures[i] < 0 ||
-            Core::csmGetDrawableTextureIndices(source._model)[i] < 0 ||
+            (sourceIndex >= 0 && sourceTextures[sourceIndex] < 0) ||
             drawableParents[i] < -1 || drawableParents[i] >= parts ||
-            (vertices[i] && (!uvs || !equalRuntimeArray(uvs[i], uvs[i], vertices[i]))) ||
-            (sourceVertices[i] && (!sourceUvs || !equalRuntimeArray(sourceUvs[i], sourceUvs[i], sourceVertices[i]))) ||
-            (!geometryEdits && !materialEdits && vertices[i] && !equalRuntimeArray(uvs[i], sourceUvs[i], vertices[i])) ||
+            (vertices[i] && (!uvs || !uvs[i] || !equalRuntimeArray(uvs[i], uvs[i], vertices[i]))) ||
+            (sourceIndex >= 0 && sourceVertices[sourceIndex] &&
+             (!sourceUvs || !sourceUvs[sourceIndex] || !equalRuntimeArray(sourceUvs[sourceIndex], sourceUvs[sourceIndex], sourceVertices[sourceIndex]))) ||
+            (sourceIndex >= 0 && !geometryEdits && !materialEdits && vertices[i] &&
+             !equalRuntimeArray(uvs[i], sourceUvs[sourceIndex], vertices[i])) ||
             !validIndices(indices ? indices[i] : nullptr, indexCounts[i], vertices[i]) ||
-            !validIndices(sourceIndices ? sourceIndices[i] : nullptr, sourceIndexCounts[i], sourceVertices[i]) ||
-            (!topologyEdits && indexCounts[i] && !equalRuntimeArray(indices[i], sourceIndices[i], indexCounts[i])) ||
-            (!clippingEdits && maskCounts[i] && (!masks || !sourceMasks || !equalRuntimeArray(masks[i], sourceMasks[i], maskCounts[i]))))
+            (sourceIndex >= 0 && !validIndices(sourceIndices ? sourceIndices[sourceIndex] : nullptr,
+                                                sourceIndexCounts[sourceIndex], sourceVertices[sourceIndex])) ||
+            (sourceIndex >= 0 && !topologyEdits && indexCounts[i] &&
+             !equalRuntimeArray(indices[i], sourceIndices[sourceIndex], indexCounts[i])) ||
+            (sourceIndex >= 0 && !clippingEdits && maskCounts[i] &&
+             (!masks || !sourceMasks || !equalRuntimeArray(masks[i], sourceMasks[sourceIndex], maskCounts[i]))))
             return runtimeStateError(error, QStringLiteral("Drawable %1 UVs, topology or masks differ or are invalid").arg(i));
     }
     return true;
@@ -676,12 +729,16 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
 {
     if (!IsCompatibleForKeyformUpdate(source, policy, error)) return false;
     const int parts = GetPartCount(), drawables = GetDrawableCount();
-    const auto arraysMatch = [parts, drawables](const CubismModel& model) {
-        return model._userMultiplyColors.GetSize() == drawables && model._userScreenColors.GetSize() == drawables &&
-               model._userCullings.GetSize() == drawables && model._userPartMultiplyColors.GetSize() == parts &&
-               model._userPartScreenColors.GetSize() == parts;
+    DrawableIdentityMap drawableMap;
+    if (!buildDrawableIdentityMap(*this, source,
+            AllowsModelUpdate(policy, CubismModelUpdatePolicy::AllowDrawableTopologyEdits), drawableMap, error)) return false;
+    const int sourceDrawables = drawableMap.sourceCount;
+    const auto arraysMatch = [](const CubismModel& model, int expectedDrawables, int expectedParts) {
+        return model._userMultiplyColors.GetSize() == expectedDrawables && model._userScreenColors.GetSize() == expectedDrawables &&
+               model._userCullings.GetSize() == expectedDrawables && model._userPartMultiplyColors.GetSize() == expectedParts &&
+               model._userPartScreenColors.GetSize() == expectedParts;
     };
-    if (!arraysMatch(*this) || !arraysMatch(source) || source._savedParameters.size() > source.GetParameterCount() ||
+    if (!arraysMatch(*this, drawables, parts) || !arraysMatch(source, sourceDrawables, parts) || source._savedParameters.size() > source.GetParameterCount() ||
         !std::isfinite(source._modelOpacity))
         return runtimeStateError(error, QStringLiteral("Runtime override arrays or model opacity are invalid"));
     for (int i = 0; i < source.GetParameterCount(); ++i)
@@ -693,7 +750,7 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
         if (!std::isfinite(source._partOpacities[i]) || !finiteRuntimeColor(source._userPartMultiplyColors[i].Color) ||
             !finiteRuntimeColor(source._userPartScreenColors[i].Color))
             return runtimeStateError(error, QStringLiteral("Part %1 user state is non-finite").arg(i));
-    for (int i = 0; i < drawables; ++i) {
+    for (int i = 0; i < sourceDrawables; ++i) {
         if (!finiteRuntimeColor(source._userMultiplyColors[i].Color) || !finiteRuntimeColor(source._userScreenColors[i].Color))
             return runtimeStateError(error, QStringLiteral("Drawable %1 user color is non-finite").arg(i));
         const auto* indices = source._drawableIndexOverrides.Find(i);
@@ -718,9 +775,11 @@ bool CubismModel::CopyRuntimeStateFrom(const CubismModel& source, CubismModelUpd
         _userPartScreenColors[i] = source._userPartScreenColors[i];
     }
     for (int i = 0; i < drawables; ++i) {
-        _userMultiplyColors[i] = source._userMultiplyColors[i];
-        _userScreenColors[i] = source._userScreenColors[i];
-        _userCullings[i] = source._userCullings[i];
+        const int sourceIndex = drawableMap.candidateToSource.value(i, -1);
+        if (sourceIndex < 0) continue;
+        _userMultiplyColors[i] = source._userMultiplyColors[sourceIndex];
+        _userScreenColors[i] = source._userScreenColors[sourceIndex];
+        _userCullings[i] = source._userCullings[sourceIndex];
     }
     _isOverwrittenModelMultiplyColors = source._isOverwrittenModelMultiplyColors;
     _isOverwrittenModelScreenColors = source._isOverwrittenModelScreenColors;

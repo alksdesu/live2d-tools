@@ -48,7 +48,18 @@ bool CMeshMap::MoveSelected(const QString& name, const QVector2D& delta)
 bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source)
 {
     CMeshEditorSnapshot state;
-    return source.CaptureEditorState(state) && RestoreEditorState(state);
+    if (!source.CaptureEditorState(state)) return false;
+    std::vector<std::pair<CDrawMesh*, CDrawMesh::PreparedEditorState>> prepared;
+    prepared.reserve(size_t(state.size()));
+    for (auto it = state.cbegin(); it != state.cend(); ++it) {
+        auto* mesh = m_vetDrawMesh.value(it.key(), nullptr);
+        if (!mesh) return false;
+        CDrawMesh::PreparedEditorState value;
+        if (!mesh->PrepareEditorState(it.value(), value, nullptr)) return false;
+        prepared.emplace_back(mesh, std::move(value));
+    }
+    for (auto& entry : prepared) entry.first->CommitEditorState(std::move(entry.second));
+    return true;
 }
 
 bool CMeshMap::CaptureEditorState(CMeshEditorSnapshot& state, QString* error) const
@@ -104,7 +115,15 @@ bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source, const CMeshGeometryMi
     try {
         CMeshEditorSnapshot state, target;
         if (!source.CaptureEditorState(state, error) || !CaptureEditorState(target, error)) return false;
-        if (state.keys() != target.keys()) return fail(QStringLiteral("候选网格对象集合发生变化"));
+        CMeshEditorSnapshot effectiveTarget;
+        if (migration.targetState) {
+            for (auto it = target.cbegin(); it != target.cend(); ++it) {
+                const auto archived = migration.targetState->constFind(it.key());
+                if (archived == migration.targetState->cend())
+                    return fail(QStringLiteral("候选网格对象的目标选区集合不一致"));
+                effectiveTarget.insert(it.key(), *archived);
+            }
+        }
         for (auto it = migration.remaps.cbegin(); it != migration.remaps.cend(); ++it) {
             const auto old = state.constFind(it.key());
             const auto next = target.constFind(it.key());
@@ -120,6 +139,7 @@ bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source, const CMeshGeometryMi
             }
         }
         for (auto it = state.begin(); it != state.end(); ++it) {
+            if (!target.contains(it.key())) continue;
             const auto remap = migration.remaps.constFind(it.key());
             const int count = target.value(it.key()).vertexCount;
             if (remap == migration.remaps.cend()) {
@@ -133,7 +153,23 @@ bool CMeshMap::CopyEditorStateFrom(const CMeshMap& source, const CMeshGeometryMi
             it->paintedWeights.swap(selected.painted);
             it->vertexCount = count;
         }
-        return RestoreEditorState(migration.targetState ? *migration.targetState : state, error);
+        CMeshEditorSnapshot fallbackState;
+        if (!migration.targetState) {
+            for (auto it = state.cbegin(); it != state.cend(); ++it)
+                if (target.contains(it.key())) fallbackState.insert(it.key(), it.value());
+        }
+        const CMeshEditorSnapshot& targetState = migration.targetState ? effectiveTarget : fallbackState;
+        std::vector<std::pair<CDrawMesh*, CDrawMesh::PreparedEditorState>> prepared;
+        prepared.reserve(size_t(targetState.size()));
+        for (auto it = targetState.cbegin(); it != targetState.cend(); ++it) {
+            auto* mesh = m_vetDrawMesh.value(it.key(), nullptr);
+            if (!mesh) return fail(QStringLiteral("候选网格对象未知：%1").arg(it.key()));
+            CDrawMesh::PreparedEditorState value;
+            if (!mesh->PrepareEditorState(it.value(), value, error)) return false;
+            prepared.emplace_back(mesh, std::move(value));
+        }
+        for (auto& entry : prepared) entry.first->CommitEditorState(std::move(entry.second));
+        return true;
     } catch (const std::exception&) {
         return fail(QStringLiteral("无法准备顶点选区迁移"));
     }

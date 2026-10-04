@@ -150,6 +150,7 @@ void CModelDocument::Clear()
     m_maskSource.reset();
     m_invalidMaskSlices.clear();
     m_structure = {};
+    m_artMeshClones.clear();
     m_hasMeshStructure = false;
     m_hasMaterialStructure = false;
     m_drawableMaterialOverrides.clear();
@@ -1264,6 +1265,19 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
         return edit.name == std::visit([](const auto& request) { return request.id; }, edit.deformerRequest->operation);
     }
     if (edit.deformerRequest) return false;
+    if (edit.cloneRequest) {
+        const auto& request = *edit.cloneRequest;
+        const auto validId = [](const QString& id) {
+            const auto bytes = id.toUtf8();
+            return !id.isEmpty() && !id.contains(QChar::Null) && bytes.size() < 64 && QString::fromUtf8(bytes) == id;
+        };
+        return edit.field == CModelEdit::MeshStructure && edit.type == QLatin1String("mesh") && edit.index == -1 &&
+            !edit.coalesce && edit.parameterChange == CModelEdit::ParameterChange::None && !edit.freezeValue &&
+            edit.meshRemaps.isEmpty() && !edit.meshRequest && !edit.bindingKeysRequest && !edit.bindingKeysBatchRequest &&
+            !edit.deformerRequest && validId(request.sourceArtMeshId) && validId(request.newArtMeshId) &&
+            request.sourceArtMeshId != request.newArtMeshId && request.parentPartIndex >= -2 && request.parentDeformerIndex >= -2 &&
+            request.textureIndex >= -2;
+    }
     if (edit.bindingKeysRequest && edit.bindingKeysBatchRequest) return false;
     if (!edit.bindingKeysRequest && !edit.bindingKeysBatchRequest) return edit.parameterChange != CModelEdit::ParameterChange::BindingKeys;
     const QString parameterId = edit.bindingKeysRequest ? edit.bindingKeysRequest->parameterId : edit.bindingKeysBatchRequest->parameterId;
@@ -1280,7 +1294,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         const auto type = QMetaType::fromType<CModelBlendShapeGeometryState>();
         if (edit.name != QLatin1String("blendShapeGeometry") || edit.type != QLatin1String("blendshape") ||
             edit.index != -1 || edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None ||
-            edit.freezeValue || edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest ||
+        edit.freezeValue || edit.meshRequest || edit.cloneRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest ||
             edit.before.metaType() != type || edit.after.metaType() != type ||
             m_blendShapeGeometry != (forward ? edit.before : edit.after).value<CModelBlendShapeGeometryState>()) return false;
         const auto next = (forward ? edit.after : edit.before).value<CModelBlendShapeGeometryState>();
@@ -1430,7 +1444,10 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
     try {
         if (!edit.meshVerification.IsEmpty() && edit.field != CModelEdit::MeshStructure) return false;
         if (edit.name.isEmpty() || !HasValidStructureRequests(edit) ||
-            (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) return false;
+            (edit.before == edit.after && edit.field != CModelEdit::MeshStructure)) {
+            qWarning() << "execute precondition failed" << edit.name << int(edit.field) << bool(edit.cloneRequest);
+            return false;
+        }
         CModelEdit command = edit;
         if (command.field == CModelEdit::DisplayNames) {
             if (command.name != QLatin1String("objects") || command.type != QLatin1String("names") || command.index != -1 || command.coalesce ||

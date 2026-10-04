@@ -217,6 +217,7 @@ private:
     bool ApplyMeshTool(OpengGlForm::MeshTool tool, const OpengGlForm::MeshToolSnapshot& snapshot, QString* error);
     void OptimizeSelectedMesh();
     void GenerateSelectedMesh();
+    void CloneSelectedMesh();
     bool CancelAutomaticMesh();
     bool PrepareParameterStructurePose(const live2dstruct::CModelDocument& document, const live2dstruct::CModelEdit& command,
                                        bool forward, QMap<QString, float>& pose, QString* error) const;

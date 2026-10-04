@@ -202,6 +202,7 @@ struct CModelEdit
     std::optional<float> freezeValue;
     QVector<CMocMeshStructureBuilder::MeshRemap> meshRemaps;
     std::shared_ptr<const CMocMeshStructureBuilder::Request> meshRequest;
+    std::shared_ptr<const CMocMeshStructureBuilder::CloneRequest> cloneRequest;
     std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysRequest> bindingKeysRequest;
     std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysBatchRequest> bindingKeysBatchRequest;
     std::shared_ptr<const CDeformerPreserveRequest> deformerRequest;
@@ -269,6 +270,7 @@ public:
     bool SetMaterialStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
                               bool deformerStructure, const QSet<QString>& sourceIds, QString* error = nullptr);
     bool HasMeshStructure() const { return m_hasMeshStructure; }
+    const QVector<CMocMeshStructureBuilder::CloneRequest>& ArtMeshClones() const { return m_artMeshClones; }
     bool HasDeformerStructure() const { return m_hasDeformerStructure; }
     const QSet<QString>& SourceDeformerIds() const { return m_sourceDeformerIds; }
     const CModelDisplayNames::State& DisplayNames() const { return m_displayNames; }
@@ -289,10 +291,17 @@ public:
     bool MakeDeformerStructureEdit(const CDeformerPreserveRequest& request, CModelEdit& edit,
                                    QString* error = nullptr) const;
     bool SetAuthoringStructure(const CMocParameterStructureBuilder::ColumnState& structure, QString* error = nullptr);
+    bool SetSessionAuthoringStructure(const CMocParameterStructureBuilder::ColumnState& structure,
+                                      const QVector<CMocMeshStructureBuilder::CloneRequest>& clones,
+                                      bool materialStructure = false, bool deformerStructure = false,
+                                      const QSet<QString>& sourceDeformerIds = {},
+                                      QString* error = nullptr);
     QVariantMap AuthoringStructureState() const;
     QVariantMap ParameterStructureState() const { return AuthoringStructureState(); }
     bool MakeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request, CModelEdit& edit,
                                QString* error = nullptr) const;
+    bool MakeCloneArtMeshEdit(const CMocMeshStructureBuilder::CloneRequest& request, CModelEdit& edit,
+                              QString* error = nullptr) const;
     bool AnalyzeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request,
                                   CMocMeshStructureBuilder::Impact& impact, QString* error = nullptr) const;
     bool MakeCreateParameterEdit(const CMocParameterStructureBuilder::CreateRequest& request,
@@ -396,6 +405,11 @@ private:
                                    CModelDocument& candidate, QString* error) const;
     bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
                            CModelDocument& candidate, QString* error) const;
+    bool PrepareCloneStructure(const CMocParameterStructureBuilder::ColumnState& structure,
+                               const CMocMeshStructureBuilder::CloneRequest& request,
+                               CModelDocument& candidate, QString* error) const;
+    bool BuildCloneArtMeshCandidate(const CMocMeshStructureBuilder::CloneRequest& request,
+                                    CModelDocument& candidate, QString* error) const;
     bool PrepareStructure(const CMocParameterStructureBuilder::ColumnState& structure, bool meshStructure,
                            bool deformerStructure, const QSet<QString>& sourceIds, bool changeDirectory, bool materialStructure,
                            CModelDocument& candidate, QString* error) const;
@@ -406,8 +420,8 @@ private:
                                     const QString* displayName, bool created, CModelEdit& edit, QString* error,
                                     const CMocParameterStructureBuilder::EditBindingKeysRequest* keys = nullptr,
                                     const CMocParameterStructureBuilder::EditBindingKeysBatchRequest* batchKeys = nullptr) const;
-    bool DecodeStructureState(const QVariantMap& state, const CModelEdit& edit, CModelSession& session,
-                              QString* error) const;
+    bool DecodeStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward,
+                              CModelSession& session, QString* error) const;
     bool FreezeMeshRequest(const CMocMeshStructureBuilder::Request& request,
                            CMocMeshStructureBuilder::Request& frozen, QString* error) const;
     bool SealMeshStructureEdit(CModelEdit& edit, const CModelDocument& prepared, QString* error) const;
@@ -415,6 +429,7 @@ private:
     void FreezeVerifiedMeshCommand(CModelEdit& edit) const;
     bool ApplyStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateMeshTransition(const CModelDocument& candidate, const CModelEdit& edit, bool forward, QString* error) const;
+    bool ValidateCloneTransition(const CModelDocument& candidate, const CModelEdit& edit, bool forward, QString* error) const;
     bool ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,
                                        bool forward, QString* error) const;
     bool PreserveStructureProperties(CModelDocument& candidate, QString* error) const;
@@ -437,6 +452,7 @@ private:
     QByteArray m_sourceDigest;
     QByteArray m_workingBaseBytes;
     CMocParameterStructureBuilder::ColumnState m_structure;
+    QVector<CMocMeshStructureBuilder::CloneRequest> m_artMeshClones;
     bool m_hasMeshStructure = false;
     bool m_hasMaterialStructure = false;
     CModelMaterialOverrides m_drawableMaterialOverrides;

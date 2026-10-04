@@ -783,6 +783,7 @@ bool MainWindow::SaveSession()
     session.sourceDigest = m_document.SourceDigest();
     session.structure = m_document.ParameterStructure();
     session.meshStructure = m_document.HasMeshStructure();
+    session.artMeshClones = m_document.ArtMeshClones();
     session.materialStructure = m_document.HasMaterialStructure();
     session.drawableMaterials = m_document.DrawableMaterialOverrides();
     session.deformerStructure = m_document.HasDeformerStructure();
@@ -818,7 +819,7 @@ bool MainWindow::SaveSession()
         if (model && model->HasTimelinePreview()) session.parameters = model->GetTimelineBaseParameters();
     }
     session.parameterMetadata = m_document.ParameterMetadataOverrides();
-    session.version = session.animationScenes.isEmpty() ? 16 : 17;
+    session.version = session.artMeshClones.isEmpty() ? (session.animationScenes.isEmpty() ? 16 : 17) : 18;
     session.objectDisplayNames = m_document.DisplayNames();
     session.parameterOrganization = m_document.ParameterOrganization();
     session.geometryObjectPairs = m_document.GeometryObjectPairs();
@@ -1563,6 +1564,37 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
         if (error) *error = QStringLiteral("导出正在占用预览，请稍后编辑");
         return false;
     }
+    if (edit.field == live2dstruct::CModelEdit::MeshStructure && edit.cloneRequest) {
+        if (!EndKeyformEditing(error) || !m_openglwindows || !m_openglwindows->IsModelReady()) return false;
+        CMeshEditorSnapshot before;
+        if (!m_openglwindows->CaptureMeshEditorState(before, error)) return false;
+        const auto sourceState = before.constFind(edit.cloneRequest->sourceArtMeshId);
+        if (sourceState == before.cend() || before.contains(edit.cloneRequest->newArtMeshId)) {
+            if (error) *error = QStringLiteral("克隆网格的画布选区状态无效");
+            return false;
+        }
+        auto after = before;
+        auto cloneState = *sourceState;
+        cloneState.selectedVertices.clear();
+        cloneState.paintedWeights.reset();
+        after.insert(edit.cloneRequest->newArtMeshId, std::move(cloneState));
+        auto command = edit;
+        command.runtime = std::make_shared<live2dstruct::CModelEditRuntimeState>();
+        command.runtime->beforeEditor = QVariant::fromValue(before);
+        command.runtime->afterEditor = QVariant::fromValue(after);
+        live2dstruct::CModelDocument candidate = m_document;
+        if (!candidate.ExecuteEdit(command)) {
+            if (error) *error = QStringLiteral("ArtMesh 克隆未通过文档校验");
+            return false;
+        }
+        if (!PublishMeshStructure(candidate, command, true, error)) return false;
+        m_document.CommitCandidate(std::move(candidate));
+        m_historySource = HistorySource::Inspector;
+        RefreshParameterStructureUi();
+        RefreshMeshTools();
+        RefreshUndoActions();
+        return true;
+    }
     if (edit.field == live2dstruct::CModelEdit::DeformerDisplayName || edit.field == live2dstruct::CModelEdit::DisplayNames) {
         if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
         if (!alive) return false;
@@ -1663,6 +1695,17 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
     }
     if (pending.field == live2dstruct::CModelEdit::ParameterValue || pending.field == live2dstruct::CModelEdit::ParameterValues)
         return ApplyParameterValueHistory(undo, edit, error);
+    if (pending.field == live2dstruct::CModelEdit::MeshStructure && pending.cloneRequest) {
+        live2dstruct::CModelDocument candidate = m_document;
+        if (!(undo ? candidate.UndoEdit(&edit) : candidate.RedoEdit(&edit))) return false;
+        if (!PublishMeshStructure(candidate, edit, !undo, error)) return false;
+        m_document.CommitCandidate(std::move(candidate));
+        ApplyDocumentEditToUi(edit, !undo);
+        m_sessionDirty = true;
+        RefreshWindowTitle();
+        RefreshUndoActions();
+        return !alive.isNull();
+    }
     if (pending.field == live2dstruct::CModelEdit::ParameterOrganization ||
         pending.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
         if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;

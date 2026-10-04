@@ -466,7 +466,7 @@ try {
         frozen.meshRemaps.append({ freezer.owned(remap.artMeshId), remap.oldVertexCount, remap.newVertexCount,
             freezer.owned(remap.oldToNew), freezer.owned(remap.newToOld) });
     CModelSession session;
-    if (!DecodeStructureState(frozen.after.toMap(), frozen, session, error))
+    if (!DecodeStructureState(frozen.after.toMap(), frozen, true, session, error))
         return false;
     CModelDocument candidate;
     if (!session.RestorePreparedDocument(*this, prepared, candidate, error)

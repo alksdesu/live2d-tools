@@ -22,6 +22,7 @@ public:
 
 signals:
     void EditingRequested(bool editing);
+    void CloneRequested();
     void ToolRequested(CMeshToolBar::Tool tool);
     void RetriangulateRequested();
     void AutoGenerateRequested();
@@ -32,6 +33,7 @@ private:
     QActionGroup* m_tools = nullptr;
     QAction* m_optimize = nullptr;
     QAction* m_autoGenerate = nullptr;
+    QAction* m_clone = nullptr;
     QAction* m_preserveBoundary = nullptr;
     QLabel* m_context = nullptr;
     bool m_available = false;

@@ -3,6 +3,7 @@
 #include "live2dstruct/csectionvalidation.h"
 #include "wide_mesh_fixture.h"
 #include <QFile>
+#include <QCryptographicHash>
 #include <QtEndian>
 #include <QtTest>
 #include <cmath>
@@ -685,6 +686,33 @@ private slots:
             float(.25 * double(table.uvs->uvs[mesh->uv_sources_begin_indices + axis]) + .75 * double(table.uvs->uvs[mesh->uv_sources_begin_indices + 2 + axis])));
         QByteArray rebuilt; QVERIFY(CMocParameterStructureBuilder::BuildColumnState(bytes, result.state, rebuilt, &error)); QCOMPARE(rebuilt, result.bytes);
         QCOMPARE(source("Mark"), bytes);
+    }
+
+    void cloneArtMeshCopiesPoolsAndLeavesSourceUntouched() {
+        const auto bytes = source("Mark");
+        auto reader = CReader::FromBytes(bytes); CSectionTable before(reader); QVERIFY(before.IsValid());
+        QVERIFY(!before.art_meshes.isEmpty());
+        const auto* sourceMesh = before.art_meshes.first();
+        const QByteArray sourceDigest = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+        Builder::Result result; QString error;
+        QVERIFY2(Builder::Clone(bytes, {sourceMesh->ids, "CloneMesh", -2, -2, -2}, result, &error), qPrintable(error));
+        QCOMPARE(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256), sourceDigest);
+        auto nextReader = CReader::FromBytes(result.bytes); CSectionTable after(nextReader); QVERIFY(after.IsValid());
+        QCOMPARE(after.art_meshes.size(), before.art_meshes.size() + 1);
+        const auto* clone = after.art_meshes.last();
+        QCOMPARE(clone->ids, QStringLiteral("CloneMesh"));
+        QCOMPARE(clone->vertex_counts, sourceMesh->vertex_counts);
+        QCOMPARE(clone->position_index_sources_counts, sourceMesh->position_index_sources_counts);
+        QCOMPARE(clone->keyform_sources_counts, sourceMesh->keyform_sources_counts);
+        QVector<float> actualUvs, sourceUvs;
+        for (int index = 0; index < clone->vertex_counts * 2; ++index) {
+            actualUvs.append(after.uvs->uvs[clone->uv_sources_begin_indices + index]);
+            sourceUvs.append(before.uvs->uvs[sourceMesh->uv_sources_begin_indices + index]);
+        }
+        QCOMPARE(actualUvs, sourceUvs);
+        QByteArray rebuilt;
+        QVERIFY2(CMocParameterStructureBuilder::BuildColumnState(bytes, result.state, rebuilt, &error), qPrintable(error));
+        QCOMPARE(rebuilt, result.bytes);
     }
 };
 QTEST_GUILESS_MAIN(MocMeshStructureTests)

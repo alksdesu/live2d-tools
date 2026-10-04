@@ -4,6 +4,7 @@
 #include "csectiontable.h"
 #include "csectionvalidation.h"
 #include "cartmeshgeometrylayout.h"
+#include "cparentgraph.h"
 #include <QtEndian>
 #include <QSet>
 #include <algorithm>
@@ -57,7 +58,8 @@ public:
     Columns(const QByteArray& source, const CSectionTable& table) : bytes(source)
     {
         const auto schema = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
-        for (const auto& column : schema) {
+        for (auto column : schema) {
+            column.width = CSectionValidation::StorageWidth(column);
             spans.insert(QByteArray(column.name), column);
             counts.insert(column.countIndex, int(column.count));
         }
@@ -102,6 +104,16 @@ public:
         if (found == state.columns.end()) found = state.columns.insert(column.slot, data(name));
         const auto encoded = encodedInt(value);
         std::memcpy(found->data() + qint64(row) * 4, encoded.constData(), 4);
+    }
+    void setString(const QByteArray& name, int row, const QString& value)
+    {
+        const auto& column = span(name);
+        const QByteArray encoded = value.toUtf8();
+        if (column.width <= 0 || encoded.size() >= column.width || row < 0 || row >= counts.value(column.countIndex))
+            throw std::length_error("MOC string field is invalid");
+        auto& next = writable(name);
+        std::memset(next.data() + qint64(row) * column.width, 0, column.width);
+        std::memcpy(next.data() + qint64(row) * column.width, encoded.constData(), encoded.size());
     }
     void write(const QByteArray& name, int first, const QByteArray& payload, int count)
     {
@@ -620,4 +632,174 @@ bool CMocMeshStructureBuilder::Build(const QByteArray& base, const Request& requ
         return true;
     });
 }
+
+bool CMocMeshStructureBuilder::Clone(const QByteArray& base, const CloneRequest& request,
+                                     Result& result, QString* error)
+{
+    return execute(base, error, [&](const CSectionTable& table) {
+        if (request.sourceArtMeshId.isEmpty() || request.newArtMeshId.isEmpty() ||
+            request.sourceArtMeshId == request.newArtMeshId || request.newArtMeshId.contains(QChar::Null))
+            return fail(error, QStringLiteral("ArtMesh 克隆身份无效"));
+        const auto validId = [](const QString& id) {
+            const QByteArray encoded = id.toUtf8();
+            return !id.contains(QChar::Null) && encoded.size() < 64 && QString::fromUtf8(encoded) == id;
+        };
+        if (!validId(request.sourceArtMeshId) || !validId(request.newArtMeshId))
+            return fail(error, QStringLiteral("ArtMesh ID 必须是有效 UTF-8 且不超过 63 字节"));
+        int sourceIndex = -1;
+        for (int index = 0; index < table.art_meshes.size(); ++index) {
+            if (table.art_meshes[index]->ids == request.newArtMeshId)
+                return fail(error, QStringLiteral("ArtMesh ID 已存在：%1").arg(request.newArtMeshId));
+            if (table.art_meshes[index]->ids == request.sourceArtMeshId) {
+                if (sourceIndex >= 0)
+                    return fail(error, QStringLiteral("克隆源 ArtMesh ID 不唯一：%1").arg(request.sourceArtMeshId));
+                sourceIndex = index;
+            }
+        }
+        if (sourceIndex < 0) return fail(error, QStringLiteral("克隆源 ArtMesh 不存在：%1").arg(request.sourceArtMeshId));
+        const auto* source = table.art_meshes[sourceIndex];
+        if (source->vertex_counts < 3 || source->vertex_counts > MaximumVertices)
+            return fail(error, QStringLiteral("克隆源 ArtMesh 顶点数无效：%1").arg(request.sourceArtMeshId));
+        if (!range(source->uv_sources_begin_indices, qint64(source->vertex_counts) * 2, table.uvs->uvs.size()) ||
+            !range(source->position_index_sources_begin_indices, source->position_index_sources_counts,
+                   table.position_indices->indices.size()) ||
+            !range(source->keyform_sources_begin_indices, source->keyform_sources_counts,
+                   table.art_mesh_keyforms.size()) ||
+            !range(source->drawable_mask_sources_begin_indices, source->drawable_mask_sources_counts,
+                   table.drawable_masks.size()))
+            return fail(error, QStringLiteral("克隆源 ArtMesh 几何或蒙版范围无效"));
+        for (int index = source->position_index_sources_begin_indices;
+             index < source->position_index_sources_begin_indices + source->position_index_sources_counts; ++index) {
+            const int vertex = table.position_indices->indices[index];
+            if (vertex < 0 || vertex >= source->vertex_counts)
+                return fail(error, QStringLiteral("克隆源 ArtMesh 含越界三角索引"));
+        }
+        for (int local = 0; local < source->keyform_sources_counts; ++local) {
+            const auto* form = table.art_mesh_keyforms[source->keyform_sources_begin_indices + local];
+            if (!range(form->keyform_position_sources_begin_indices, qint64(source->vertex_counts) * 2,
+                       table.keyform_positions->xys.size()))
+                return fail(error, QStringLiteral("克隆源 ArtMesh 关键形位置范围无效"));
+        }
+        for (int local = 0; local < source->drawable_mask_sources_counts; ++local) {
+            const int mask = table.drawable_masks[source->drawable_mask_sources_begin_indices + local]->art_mesh_sources_indices;
+            if (mask < 0 || mask >= table.art_meshes.size())
+                return fail(error, QStringLiteral("克隆源 ArtMesh 蒙版引用无效"));
+        }
+        for (const auto* shape : table.blend_shapes_art_meshes)
+            if (shape->target_indices == sourceIndex)
+                return fail(error, QStringLiteral("含 BlendShape 的 ArtMesh 暂不能直接克隆：%1").arg(request.sourceArtMeshId));
+        for (const auto* glue : table.glue)
+            if (glue->art_mesh_indices_a == sourceIndex || glue->art_mesh_indices_b == sourceIndex)
+                return fail(error, QStringLiteral("参与 Glue 的 ArtMesh 暂不能直接克隆：%1").arg(request.sourceArtMeshId));
+        if (request.parentPartIndex < -2 || request.parentPartIndex >= table.parts.size() ||
+            request.parentDeformerIndex < -2 || request.parentDeformerIndex >= table.deformers.size() || request.textureIndex < -2)
+            return fail(error, QStringLiteral("克隆 ArtMesh 父级或图集索引无效"));
+        int sourceGroup = -1, sourceObject = -1;
+        for (int group = 0; group < table.draw_order_groups.size(); ++group) {
+            const auto* definition = table.draw_order_groups[group];
+            if (!range(definition->object_sources_begin_indices, definition->object_sources_counts,
+                       table.draw_order_group_objects.size()))
+                return fail(error, QStringLiteral("源 ArtMesh 绘制组范围无效"));
+            for (int row = definition->object_sources_begin_indices;
+                 row < definition->object_sources_begin_indices + definition->object_sources_counts; ++row) {
+                const auto* object = table.draw_order_group_objects[row];
+                if (object->types == 0 && object->indices == sourceIndex) {
+                    if (sourceGroup >= 0)
+                        return fail(error, QStringLiteral("源 ArtMesh 绘制组引用不唯一"));
+                    sourceGroup = group;
+                    sourceObject = row;
+                }
+            }
+        }
+        if (sourceGroup < 0)
+            return fail(error, QStringLiteral("源 ArtMesh 缺少绘制顺序组"));
+        Columns columns(base, table); Storage storage;
+        detail::CMocGeometryPool meshRows(table.art_meshes.size(), QStringLiteral("ArtMesh 行"));
+        detail::CMocGeometryPool maskRows(table.drawable_masks.size(), QStringLiteral("蒙版行"));
+        detail::CMocGeometryPool objectRows(table.draw_order_group_objects.size(), QStringLiteral("绘制组对象行"));
+        const auto prepare = [](detail::CMocGeometryPool& pool, int count) { pool.protect(0, count); pool.prepare(); };
+        prepare(meshRows, table.art_meshes.size());
+        prepare(maskRows, table.drawable_masks.size());
+        prepare(objectRows, table.draw_order_group_objects.size());
+        storage.uvs = PoolSpace(table.uvs->uvs.size(), QStringLiteral("UV")); prepare(storage.uvs, table.uvs->uvs.size());
+        storage.indices = PoolSpace(table.position_indices->indices.size(), QStringLiteral("三角索引")); prepare(storage.indices, table.position_indices->indices.size());
+        storage.positions = PoolSpace(table.keyform_positions->xys.size(), QStringLiteral("关键形位置")); prepare(storage.positions, table.keyform_positions->xys.size());
+        storage.keyforms = PoolSpace(table.art_mesh_keyforms.size(), QStringLiteral("ArtMesh 关键形")); prepare(storage.keyforms, table.art_mesh_keyforms.size());
+        qint64 work = 0;
+        const int meshIndex = columns.copyRows("art_meshes.ids", sourceIndex, 1, meshRows, work);
+        columns.setString("art_meshes.ids", meshIndex, request.newArtMeshId);
+        columns.set("art_meshes.uv_sources_begin_indices", meshIndex,
+                    columns.copyRows("uvs.uvs", source->uv_sources_begin_indices, source->vertex_counts * 2, storage.uvs, work));
+        columns.set("art_meshes.position_index_sources_begin_indices", meshIndex,
+                    columns.copyRows("position_indices.indices", source->position_index_sources_begin_indices,
+                                     source->position_index_sources_counts, storage.indices, work));
+        const int formBegin = columns.copyRows("art_mesh_keyforms.opacities", source->keyform_sources_begin_indices,
+                                               source->keyform_sources_counts, storage.keyforms, work);
+        columns.set("art_meshes.keyform_sources_begin_indices", meshIndex, formBegin);
+        for (int local = 0; local < source->keyform_sources_counts; ++local) {
+            const auto* form = table.art_mesh_keyforms[source->keyform_sources_begin_indices + local];
+            columns.set("art_mesh_keyforms.keyform_position_sources_begin_indices", formBegin + local,
+                        columns.copyRows("keyform_positions.xys", form->keyform_position_sources_begin_indices,
+                                         source->vertex_counts * 2, storage.positions, work));
+        }
+        const int maskBegin = columns.copyRows("drawable_masks.art_mesh_sources_indices",
+                                               source->drawable_mask_sources_begin_indices,
+                                               source->drawable_mask_sources_counts, maskRows, work);
+        columns.set("art_meshes.drawable_mask_sources_begin_indices", meshIndex, maskBegin);
+        columns.set("art_meshes.drawable_mask_sources_counts", meshIndex, source->drawable_mask_sources_counts);
+        const auto* sourceDefinition = table.draw_order_groups[sourceGroup];
+        QVector<int> parents(table.draw_order_groups.size(), -1);
+        for (int group = 0; group < table.draw_order_groups.size(); ++group) {
+            const auto* definition = table.draw_order_groups[group];
+            if (!range(definition->object_sources_begin_indices, definition->object_sources_counts,
+                       table.draw_order_group_objects.size()) ||
+                definition->object_sources_total_counts < definition->object_sources_counts ||
+                definition->minimum_draw_orders > definition->maximum_draw_orders)
+                return fail(error, QStringLiteral("绘制组对象范围或顺序范围无效"));
+            for (int row = definition->object_sources_begin_indices;
+                 row < definition->object_sources_begin_indices + definition->object_sources_counts; ++row) {
+                const auto* object = table.draw_order_group_objects[row];
+                if (object->types == 0) {
+                    if (!range(object->indices, 1, table.art_meshes.size()))
+                        return fail(error, QStringLiteral("绘制组 ArtMesh 引用无效"));
+                } else if (object->types == 1) {
+                    if (!range(object->indices, 1, table.parts.size()) ||
+                        !range(object->self_indices, 1, table.draw_order_groups.size()) ||
+                        (parents[object->self_indices] >= 0 && parents[object->self_indices] != group))
+                        return fail(error, QStringLiteral("绘制组父级引用无效或重复"));
+                    parents[object->self_indices] = group;
+                } else {
+                    return fail(error, QStringLiteral("绘制组对象类型无效"));
+                }
+            }
+        }
+        if (!CParentGraph(parents).IsValid()) return fail(error, QStringLiteral("绘制组层级存在循环"));
+        const int originalCount = sourceDefinition->object_sources_counts;
+        const int sourceObjectBegin = sourceDefinition->object_sources_begin_indices;
+        const int copiedBegin = columns.copyRows("draw_order_group_objects.types", sourceObjectBegin,
+                                                  originalCount, objectRows, work);
+        const int objectIndex = columns.copyRows("draw_order_group_objects.types", sourceObject,
+                                                  1, objectRows, work);
+        columns.set("draw_order_groups.object_sources_begin_indices", sourceGroup, copiedBegin);
+        columns.set("draw_order_groups.object_sources_counts", sourceGroup, originalCount + 1);
+        columns.set("draw_order_groups.object_sources_total_counts", sourceGroup,
+                    sourceDefinition->object_sources_total_counts + 1);
+        columns.set("draw_order_group_objects.types", objectIndex, 0);
+        columns.set("draw_order_group_objects.indices", objectIndex, meshIndex);
+        columns.set("draw_order_group_objects.self_indices", objectIndex,
+                    table.draw_order_group_objects[sourceObject]->self_indices);
+        for (int ancestor = parents[sourceGroup]; ancestor >= 0; ancestor = parents[ancestor])
+            columns.set("draw_order_groups.object_sources_total_counts", ancestor,
+                        table.draw_order_groups[ancestor]->object_sources_total_counts + 1);
+        if (request.parentPartIndex != -2) columns.set("art_meshes.parent_part_indices", meshIndex, request.parentPartIndex);
+        if (request.parentDeformerIndex != -2) columns.set("art_meshes.parent_deformer_indices", meshIndex, request.parentDeformerIndex);
+        if (request.textureIndex != -2) columns.set("art_meshes.texture_nos", meshIndex, request.textureIndex);
+        Result candidate;
+        if (!CMocParameterStructureBuilder::BuildColumnState(base, columns.state, candidate.bytes, error)) return false;
+        candidate.state = std::move(columns.state);
+        result = std::move(candidate);
+        return true;
+    });
+}
+
 }

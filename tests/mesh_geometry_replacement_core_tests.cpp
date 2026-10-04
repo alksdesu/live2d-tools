@@ -6,6 +6,7 @@
 #include "framework/Rendering/CubismRenderer.hpp"
 #include "framework/Id/CubismIdManager.hpp"
 #include "live2dstruct/cmocmeshstructurebuilder.h"
+#include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
 #include "wide_mesh_fixture.h"
 #include <QtTest>
@@ -274,6 +275,54 @@ private slots:
         QCOMPARE(source.model, old);
         QCOMPARE(source.model->GetDrawableVertexCount(0), oldCount);
         QCOMPARE(allocator.aligned.size(), allocationCount);
+    }
+
+    void appendedDrawableCloneMigratesRuntimeIdentity()
+    {
+        const auto sourceBytes = read(QString(TEST_RESOURCES) + "/Mark/Mark.moc3");
+        QVERIFY(!sourceBytes.isEmpty());
+        live2dstruct::CModelDocument document;
+        QString error;
+        QVERIFY2(document.LoadBytes(sourceBytes, QString(TEST_RESOURCES) + "/Mark/Mark.moc3", &error), qPrintable(error));
+        const QString sourceId = document.Drawables().first().id;
+        const QString cloneId = sourceId + QStringLiteral("__runtime_clone");
+        live2dstruct::CModelEdit edit;
+        QVERIFY2(document.MakeCloneArtMeshEdit({sourceId, cloneId, -2, -2, -2}, edit, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(edit));
+        QByteArray candidateBytes;
+        QVERIFY2(document.BuildRuntimeMoc(candidateBytes, &error), qPrintable(error));
+        ModelOwner source;
+        QVERIFY(source.Load(sourceBytes));
+        auto* sourceMesh = source.model->GetMeshMap()->GetDrawMesh(sourceId);
+        QVERIFY(sourceMesh);
+        sourceMesh->SetShow(true);
+        source.model->SetParameterValue(0, source.model->GetParameterMaximumValue(0));
+        source.model->SetModelOpacity(.73f);
+        source.model->Update();
+        CubismModel::RuntimeValueSnapshot before;
+        QVERIFY(source.model->CaptureRuntimeValues(before));
+        CMeshGeometryMigration migration;
+        const auto policy = CubismModelUpdatePolicy::AllowDrawableGeometryEdits |
+            CubismModelUpdatePolicy::AllowDrawableTopologyEdits;
+        CubismModelReplacement replacement;
+        QVERIFY2(replacement.Prepare(reinterpret_cast<const csmByte*>(candidateBytes.constData()), candidateBytes.size(),
+            *source.moc, *source.model, *source.renderer, prepareRenderer(), policy, {}, &error, {}, &migration), qPrintable(error));
+        auto* next = replacement.GetModel();
+        QVERIFY(next);
+        QCOMPARE(next->GetDrawableCount(), source.model->GetDrawableCount() + 1);
+        QVERIFY(next->GetDrawableIndex(CubismFramework::GetIdManager()->GetId(cloneId.toUtf8().constData())) >= 0);
+        CubismModel::RuntimeValueSnapshot after;
+        QVERIFY(next->CaptureRuntimeValues(after));
+        QCOMPARE(after.parameterValues, before.parameterValues);
+        QCOMPARE(after.savedParameters, before.savedParameters);
+        QCOMPARE(after.partOpacities, before.partOpacities);
+        QCOMPARE(after.modelOpacity, before.modelOpacity);
+        auto* nextMesh = next->GetMeshMap()->GetDrawMesh(sourceId);
+        QVERIFY(nextMesh && nextMesh->IsShown());
+        QVERIFY(next->GetMeshMap()->GetDrawMesh(cloneId));
+        const int candidateCount = next->GetDrawableCount();
+        QVERIFY(replacement.Commit(source.moc, source.model, source.renderer));
+        QCOMPARE(source.model->GetDrawableCount(), candidateCount);
     }
 
     void realCandidatesPreserveRuntimeAndVertexIdentity_data() {

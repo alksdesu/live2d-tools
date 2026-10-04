@@ -811,6 +811,163 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     return true;
 }
 
+bool CModelDocument::PrepareCloneStructure(const Builder::ColumnState& structure,
+                                           const CMocMeshStructureBuilder::CloneRequest& request,
+                                           CModelDocument& candidate, QString* error) const
+{
+    if (!m_loaded) return fail(error, QStringLiteral("尚未加载模型"));
+    QByteArray working;
+    if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
+    CModelDocument next;
+    if (!next.LoadBytes(working, m_sourcePath, error)) return false;
+    if (next.m_parts.size() != m_parts.size() || next.m_deformers.size() != m_deformers.size() ||
+        next.m_drawables.size() != m_drawables.size() + 1 || next.m_drawOrderGroups.size() != m_drawOrderGroups.size() ||
+        next.m_drawables.last().id != request.newArtMeshId)
+        return fail(error, QStringLiteral("ArtMesh 克隆改变了非目标对象目录"));
+    for (int index = 0; index < m_parts.size(); ++index) {
+        const auto& before = m_parts[index];
+        const auto& after = next.m_parts[index];
+        if (before.id != after.id || before.parentIndex != after.parentIndex || before.visible != after.visible || before.enabled != after.enabled)
+            return fail(error, QStringLiteral("ArtMesh 克隆改变了 Part 目录"));
+    }
+    for (int index = 0; index < m_deformers.size(); ++index) {
+        const auto& before = m_deformers[index];
+        const auto& after = next.m_deformers[index];
+        if (before.id != after.id || before.type != after.type || before.parentPartIndex != after.parentPartIndex ||
+            before.parentDeformerIndex != after.parentDeformerIndex || before.rows != after.rows || before.columns != after.columns)
+            return fail(error, QStringLiteral("ArtMesh 克隆改变了变形器目录"));
+    }
+    for (int index = 0; index < m_drawables.size(); ++index) {
+        const auto& before = m_drawables[index];
+        const auto& after = next.m_drawables[index];
+        if (before.id != after.id || before.parentPartIndex != after.parentPartIndex ||
+            before.parentDeformerIndex != after.parentDeformerIndex || before.textureIndex != after.textureIndex ||
+            before.flags != after.flags || before.vertexCount != after.vertexCount || before.uvs != after.uvs ||
+            before.indices != after.indices || before.maskIndices != after.maskIndices)
+            return fail(error, QStringLiteral("ArtMesh 克隆改变了源网格：%1").arg(before.id));
+    }
+    int sourceGroup = -1;
+    int sourceIndex = -1;
+    for (int index = 0; index < m_drawables.size(); ++index)
+        if (m_drawables[index].id == request.sourceArtMeshId) sourceIndex = index;
+    if (sourceIndex < 0) return fail(error, QStringLiteral("源 ArtMesh 不存在：%1").arg(request.sourceArtMeshId));
+    for (int group = 0; group < m_drawOrderGroups.size(); ++group)
+        for (const auto& object : m_drawOrderGroups[group].objects)
+            if (object.type == 0 && object.index == sourceIndex)
+                sourceGroup = sourceGroup < 0 ? group : -2;
+    if (sourceGroup < 0) return fail(error, QStringLiteral("源 ArtMesh 绘制组不存在：%1").arg(request.sourceArtMeshId));
+    QSet<int> changedGroups{sourceGroup};
+    for (int child = sourceGroup; child >= 0;) {
+        int parent = -1;
+        for (int group = 0; group < m_drawOrderGroups.size(); ++group)
+            for (const auto& object : m_drawOrderGroups[group].objects)
+                if (object.type == 1 && object.selfIndex == child)
+                    parent = parent < 0 ? group : -2;
+        if (parent < 0) break;
+        changedGroups.insert(parent);
+        child = parent;
+    }
+    for (int index = 0; index < m_drawOrderGroups.size(); ++index) {
+        const auto& before = m_drawOrderGroups[index];
+        const auto& after = next.m_drawOrderGroups[index];
+        const bool source = index == sourceGroup;
+        const bool totalChanged = changedGroups.contains(index);
+        if (before.minimumDrawOrder != after.minimumDrawOrder || before.maximumDrawOrder != after.maximumDrawOrder ||
+            after.objectCount != before.objectCount + (source ? 1 : 0) ||
+            after.totalObjectCount != before.totalObjectCount + (totalChanged ? 1 : 0) ||
+            before.objectsValid != after.objectsValid || after.objects.size() != before.objects.size() + (source ? 1 : 0))
+            return fail(error, QStringLiteral("ArtMesh 克隆改变了已有绘制组"));
+        for (int object = 0; object < before.objects.size(); ++object)
+            if (before.objects[object].type != after.objects[object].type || before.objects[object].index != after.objects[object].index ||
+                before.objects[object].selfIndex != after.objects[object].selfIndex)
+                return fail(error, QStringLiteral("ArtMesh 克隆改变了已有绘制组成员"));
+        if (source && (after.objects.last().type != 0 || after.objects.last().index != next.m_drawables.size() - 1))
+            return fail(error, QStringLiteral("ArtMesh 克隆未追加到源绘制组"));
+    }
+    next.m_maskSource = m_maskSource;
+    if (!next.ValidateStructureMasks(error)) return false;
+    next.m_sourceBytes = m_sourceBytes;
+    next.m_sourcePath = m_sourcePath;
+    next.m_sourceDigest = m_sourceDigest;
+    next.m_workingBaseBytes = working;
+    next.m_textureSources = m_textureSources;
+    next.m_textureWorkspace = m_textureWorkspace;
+    next.m_textureWorkspaceFingerprint = m_textureWorkspaceFingerprint;
+    next.m_artwork = m_artwork;
+    next.m_artworkFingerprint = m_artworkFingerprint;
+    next.m_structure = structure;
+    next.m_hasMeshStructure = true;
+    next.m_hasMaterialStructure = m_hasMaterialStructure;
+    next.m_hasDeformerStructure = m_hasDeformerStructure;
+    next.m_sourceDeformerIds = m_sourceDeformerIds;
+    next.m_sourceDeformerParents = m_sourceDeformerParents;
+    next.m_parameterOrganization = m_parameterOrganization;
+    next.m_artMeshClones = m_artMeshClones;
+    next.m_artMeshClones.append(request);
+    auto preview = std::make_shared<CMocPreviewBuilder>();
+    if (!preview->Initialize(working, next.m_sourceDeformerParents, error)) return false;
+    next.m_previewBuilder = std::move(preview);
+    next.m_previewError.clear();
+    if (!next.SetDisplayNames(m_displayNames, error) || !PreserveStructureProperties(next, error)) return false;
+    candidate = std::move(next);
+    return true;
+}
+
+bool CModelDocument::SetSessionAuthoringStructure(const Builder::ColumnState& structure,
+                                                  const QVector<CMocMeshStructureBuilder::CloneRequest>& clones,
+                                                  bool materialStructure, bool deformerStructure,
+                                                  const QSet<QString>& sourceDeformerIds,
+                                                  QString* error)
+{
+    if (clones.isEmpty()) return SetAuthoringStructure(structure, error);
+    try {
+        QByteArray replay = m_sourceBytes;
+        for (const auto& request : clones) {
+            CMocMeshStructureBuilder::Result result;
+            if (!CMocMeshStructureBuilder::Clone(replay, request, result, error)) return false;
+            replay = std::move(result.bytes);
+        }
+        QByteArray working;
+        if (!Builder::BuildColumnState(m_sourceBytes, structure, working, error)) return false;
+        CModelDocument replayed, next;
+        if (!replayed.LoadBytes(replay, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
+        if (next.m_parts.size() != replayed.m_parts.size() || next.m_deformers.size() != replayed.m_deformers.size() ||
+            next.m_drawables.size() != replayed.m_drawables.size() || next.m_drawOrderGroups.size() != replayed.m_drawOrderGroups.size())
+            return fail(error, QStringLiteral("会话克隆目录与结构状态不匹配"));
+        for (int index = 0; index < replayed.m_drawables.size(); ++index)
+            if (next.m_drawables[index].id != replayed.m_drawables[index].id)
+                return fail(error, QStringLiteral("会话克隆对象顺序不匹配"));
+        next.m_maskSource = m_maskSource;
+        if (!next.ValidateStructureMasks(error)) return false;
+        next.m_sourceBytes = m_sourceBytes;
+        next.m_sourcePath = m_sourcePath;
+        next.m_sourceDigest = m_sourceDigest;
+        next.m_workingBaseBytes = working;
+        next.m_textureSources = m_textureSources;
+        next.m_textureWorkspace = m_textureWorkspace;
+        next.m_textureWorkspaceFingerprint = m_textureWorkspaceFingerprint;
+        next.m_artwork = m_artwork;
+        next.m_artworkFingerprint = m_artworkFingerprint;
+        next.m_structure = structure;
+        next.m_hasMeshStructure = true;
+        next.m_hasMaterialStructure = materialStructure;
+        next.m_hasDeformerStructure = deformerStructure;
+        next.m_sourceDeformerIds = deformerStructure ? sourceDeformerIds : m_sourceDeformerIds;
+        next.m_sourceDeformerParents = m_sourceDeformerParents;
+        next.m_parameterOrganization = m_parameterOrganization;
+        next.m_artMeshClones = clones;
+        auto preview = std::make_shared<CMocPreviewBuilder>();
+        if (!preview->Initialize(working, next.m_sourceDeformerParents, error)) return false;
+        next.m_previewBuilder = std::move(preview);
+        next.m_previewError.clear();
+        if (!next.SetDisplayNames(m_displayNames, error) || !PreserveStructureProperties(next, error)) return false;
+        CommitCandidate(std::move(next));
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("无法恢复会话网格克隆结构"));
+    }
+}
+
 bool CModelDocument::SetMaterialStructure(const Builder::ColumnState& structure, bool meshStructure,
                                          bool deformerStructure, const QSet<QString>& sourceIds, QString* error)
 {
@@ -878,7 +1035,7 @@ bool CModelDocument::SameDeformerDirectory(const CModelDocument& candidate, QStr
     return true;
 }
 
-bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModelEdit& edit,
+bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModelEdit& edit, bool forward,
                                            CModelSession& session, QString* error) const
 {
     if (!HasValidStructureRequests(edit)) return fail(error, QStringLiteral("绑定关键值请求与结构命令不匹配"));
@@ -926,6 +1083,18 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
     session.version = 16;
+    if (edit.cloneRequest) {
+        auto clones = m_artMeshClones;
+        if (forward) {
+            clones.append(*edit.cloneRequest);
+        } else if (!clones.isEmpty() && clones.last().newArtMeshId == edit.cloneRequest->newArtMeshId) {
+            clones.removeLast();
+        } else {
+            return fail(error, QStringLiteral("ArtMesh 克隆历史顺序无效"));
+        }
+        session.artMeshClones = std::move(clones);
+        session.version = 18;
+    }
     return true;
 }
 
@@ -933,14 +1102,16 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
 {
     try {
         CModelSession session;
-        if (!DecodeStructureState(state, edit, session, error)) return false;
+        if (!DecodeStructureState(state, edit, forward, session, error)) return false;
         CModelDocument candidate;
         if (!session.RestoreDocument(*this, candidate, error)) return false;
         if (candidate.ParameterStructureState() != state) return fail(error, QStringLiteral("参数结构状态内容无效或发生归一化"));
-        if (edit.field != CModelEdit::DeformerStructure && candidate.m_displayNames != m_displayNames)
+        if (!edit.cloneRequest && edit.field != CModelEdit::DeformerStructure && candidate.m_displayNames != m_displayNames)
             return fail(error, QStringLiteral("参数或网格结构编辑不能附带对象名称修改"));
         if (edit.field == CModelEdit::DeformerStructure) {
             if (!ValidateDeformerTransition(candidate, edit, forward, error)) return false;
+        } else if (edit.cloneRequest) {
+            if (!ValidateCloneTransition(candidate, edit, forward, error)) return false;
         } else if (!SameDeformerDirectory(candidate, error)) return false;
         else if (edit.field == CModelEdit::MeshStructure) {
             if (!ValidateMeshTransition(candidate, edit, forward, error)) return false;
@@ -1125,6 +1296,28 @@ bool CModelDocument::ValidateDeformerTransition(const CModelDocument& candidate,
     if (!origin.MakeDeformerStructureEdit(*edit.deformerRequest, expected, error)) return false;
     if (expected.after.toMap() != destination.AuthoringStructureState())
         return fail(error, QStringLiteral("变形器编辑结果超出请求范围或已发生改变"));
+    return true;
+}
+
+bool CModelDocument::ValidateCloneTransition(const CModelDocument& candidate, const CModelEdit& edit,
+                                             bool forward, QString* error) const
+{
+    if (!edit.cloneRequest || edit.field != CModelEdit::MeshStructure || edit.meshRequest || !edit.meshRemaps.isEmpty())
+        return fail(error, QStringLiteral("ArtMesh 克隆命令缺少有效请求"));
+    const auto& request = *edit.cloneRequest;
+    if (!forward) {
+        if (m_drawables.size() != candidate.m_drawables.size() + 1 || m_drawables.last().id != request.newArtMeshId ||
+            m_drawOrderGroups.size() != candidate.m_drawOrderGroups.size())
+            return fail(error, QStringLiteral("ArtMesh 克隆撤销目录不匹配"));
+        return true;
+    }
+    if (candidate.m_drawables.size() != m_drawables.size() + 1 || candidate.m_drawables.last().id != request.newArtMeshId ||
+        candidate.m_drawOrderGroups.size() != m_drawOrderGroups.size())
+        return fail(error, QStringLiteral("ArtMesh 克隆结果目录不匹配"));
+    CModelDocument expected;
+    if (!BuildCloneArtMeshCandidate(request, expected, error) ||
+        expected.AuthoringStructureState() != candidate.AuthoringStructureState())
+        return fail(error, QStringLiteral("ArtMesh 克隆历史包含请求之外的结构或覆盖修改"));
     return true;
 }
 
@@ -1317,8 +1510,12 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         if (result.bytes == base && !remapped) return fail(error, QStringLiteral("网格没有发生变化"));
         Builder::ColumnState structure;
         CModelDocument candidate;
-        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error) ||
-            !PrepareStructure(structure, true, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
+        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
+        if (!m_artMeshClones.isEmpty()) {
+            candidate = *this;
+            if (!candidate.SetSessionAuthoringStructure(structure, m_artMeshClones, m_hasMaterialStructure,
+                                                        m_hasDeformerStructure, m_sourceDeformerIds, error)) return false;
+        } else if (!PrepareStructure(structure, true, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
         for (const auto& mesh : result.meshes) candidate.m_drawableIndexOverrides.remove(mesh.artMeshId);
         auto artwork = m_artwork;
         for (const auto& mesh : request.meshes) {
@@ -1343,6 +1540,79 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         if (error) error->clear();
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法构建网格结构编辑")); }
+}
+
+bool CModelDocument::BuildCloneArtMeshCandidate(const CMocMeshStructureBuilder::CloneRequest& sourceRequest,
+                                                CModelDocument& candidate, QString* error) const
+{
+    try {
+        if (sourceRequest.sourceArtMeshId.isEmpty() || sourceRequest.newArtMeshId.isEmpty() ||
+            sourceRequest.sourceArtMeshId == sourceRequest.newArtMeshId)
+            return fail(error, QStringLiteral("ArtMesh 克隆身份无效"));
+        if (IsLocked(QStringLiteral("artmesh"), sourceRequest.sourceArtMeshId))
+            return fail(error, QStringLiteral("源 ArtMesh 已锁定：%1").arg(sourceRequest.sourceArtMeshId));
+        if (std::none_of(m_drawables.cbegin(), m_drawables.cend(), [&](const auto& mesh) {
+                return mesh.id == sourceRequest.sourceArtMeshId;
+            }))
+            return fail(error, QStringLiteral("未知 ArtMesh：%1").arg(sourceRequest.sourceArtMeshId));
+        QByteArray base;
+        CMocMeshStructureBuilder::Result result;
+        if (!BuildPreviewMoc(base, error) || !CMocMeshStructureBuilder::Clone(base, sourceRequest, result, error)) return false;
+        Builder::ColumnState structure;
+        if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
+        if (!PrepareCloneStructure(structure, sourceRequest, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
+        const auto duplicate = [&](auto& values) {
+            const auto found = values.constFind(sourceRequest.sourceArtMeshId);
+            if (found != values.cend()) values.insert(sourceRequest.newArtMeshId, *found);
+        };
+        duplicate(candidate.m_drawableOpacityOverrides);
+        duplicate(candidate.m_drawableDrawOrderOverrides);
+        duplicate(candidate.m_drawableKeyformPositionOverrides);
+        duplicate(candidate.m_drawableIndexOverrides);
+        duplicate(candidate.m_drawableMaskIndexOverrides);
+        duplicate(candidate.m_drawableMaskInvertedOverrides);
+        if (const auto found = m_drawableMaterialOverrides.constFind(sourceRequest.sourceArtMeshId);
+            found != m_drawableMaterialOverrides.cend()) {
+            auto material = *found;
+            material.id = sourceRequest.newArtMeshId;
+            candidate.m_drawableMaterialOverrides.insert(sourceRequest.newArtMeshId, std::move(material));
+        }
+        if (const auto found = m_artwork.bindings.constFind(sourceRequest.sourceArtMeshId);
+            found != m_artwork.bindings.cend()) {
+            auto artwork = candidate.m_artwork;
+            auto clone = *found;
+            clone.meshId = sourceRequest.newArtMeshId;
+            clone.sampledMaterial.id = sourceRequest.newArtMeshId;
+            artwork.bindings.insert(sourceRequest.newArtMeshId, std::move(clone));
+            if (!candidate.SetArtwork(artwork, error)) return false;
+        }
+        auto names = m_displayNames;
+        names.artMeshes.insert(sourceRequest.newArtMeshId,
+                               m_displayNames.artMeshes.value(sourceRequest.sourceArtMeshId,
+                                                               sourceRequest.sourceArtMeshId) + QStringLiteral(" Copy"));
+        if (!candidate.SetDisplayNames(names, error) || !ReconcileGeometryObjectPairs(candidate, {}, nullptr, nullptr, error)) return false;
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("无法构建 ArtMesh 克隆候选"));
+    }
+}
+
+bool CModelDocument::MakeCloneArtMeshEdit(const CMocMeshStructureBuilder::CloneRequest& sourceRequest,
+                                          CModelEdit& edit, QString* error) const
+{
+    try {
+        CModelDocument candidate;
+        if (!BuildCloneArtMeshCandidate(sourceRequest, candidate, error)) return false;
+        CModelEdit command{sourceRequest.newArtMeshId, QStringLiteral("mesh"), CModelEdit::MeshStructure,
+                           AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
+        command.cloneRequest = std::make_shared<const CMocMeshStructureBuilder::CloneRequest>(sourceRequest);
+        if (!ValidateCloneTransition(candidate, command, true, error)) return false;
+        edit = std::move(command);
+        if (error) error->clear();
+        return true;
+    } catch (const std::exception&) {
+        return fail(error, QStringLiteral("无法构建 ArtMesh 克隆编辑"));
+    }
 }
 
 bool CModelDocument::AnalyzeMeshStructureEdit(const CMocMeshStructureBuilder::Request& request,

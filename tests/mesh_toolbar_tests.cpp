@@ -18,7 +18,7 @@
 namespace {
 QAction* action(CMeshToolBar& bar, const char* name) { return bar.findChild<QAction*>(QString::fromLatin1(name)); }
 QToolButton* button(CMeshToolBar& bar, const char* name) { return qobject_cast<QToolButton*>(bar.widgetForAction(action(bar, name))); }
-QStringList names() { return {"meshAutoGenerate", "meshToolsEnabled", "meshSelect", "meshInsert", "meshConnect", "meshDelete", "meshPreserveBoundary", "meshRetriangulate"}; }
+QStringList names() { return {"meshAutoGenerate", "meshClone", "meshToolsEnabled", "meshSelect", "meshInsert", "meshConnect", "meshDelete", "meshPreserveBoundary", "meshRetriangulate"}; }
 double luminance(const QColor& color)
 {
     const auto linear = [](double c) { return c <= .04045 ? c / 12.92 : std::pow((c + .055) / 1.055, 2.4); };
@@ -82,7 +82,7 @@ private slots:
     void defaultsAndAuthoritativeUpdatesDoNotEmitRequests()
     {
         Host host; auto& bar = *host.bar;
-        QSignalSpy editing(&bar, &CMeshToolBar::EditingRequested), tools(&bar, &CMeshToolBar::ToolRequested), optimize(&bar, &CMeshToolBar::RetriangulateRequested);
+        QSignalSpy editing(&bar, &CMeshToolBar::EditingRequested), tools(&bar, &CMeshToolBar::ToolRequested), optimize(&bar, &CMeshToolBar::RetriangulateRequested), clone(&bar, &CMeshToolBar::CloneRequested);
         QCOMPARE(bar.CurrentTool(), CMeshToolBar::Tool::Select); QVERIFY(!bar.IsEditing());
         for (const auto& name : names()) QVERIFY(!action(bar, qPrintable(name))->isEnabled());
         auto* context = bar.findChild<QLabel*>("meshToolContext"); QVERIFY(context); QCOMPARE(context->text(), QStringLiteral("尚未选择网格"));
@@ -97,17 +97,18 @@ private slots:
         }
         bar.SetTool(CMeshToolBar::Tool(99)); QCOMPARE(bar.CurrentTool(), CMeshToolBar::Tool::Delete);
         bar.SetEditing(false); QVERIFY(!bar.IsEditing()); QVERIFY(!action(bar, "meshRetriangulate")->isEnabled());
-        QCOMPARE(editing.count(), 0); QCOMPARE(tools.count(), 0); QCOMPARE(optimize.count(), 0);
+        QCOMPARE(editing.count(), 0); QCOMPARE(tools.count(), 0); QCOMPARE(optimize.count(), 0); QCOMPARE(clone.count(), 0);
     }
     void actualClicksHaveOneRequestAndSynchronousStateFeedbackDoesNotRecurse()
     {
         Host host; auto& bar = *host.bar; bar.SetContext("Mesh", 10, 0, true);
-        QSignalSpy editing(&bar, &CMeshToolBar::EditingRequested), tools(&bar, &CMeshToolBar::ToolRequested), optimize(&bar, &CMeshToolBar::RetriangulateRequested);
+        QSignalSpy editing(&bar, &CMeshToolBar::EditingRequested), tools(&bar, &CMeshToolBar::ToolRequested), optimize(&bar, &CMeshToolBar::RetriangulateRequested), clone(&bar, &CMeshToolBar::CloneRequested);
         connect(&bar, &CMeshToolBar::EditingRequested, &bar, [&bar](bool value) { bar.SetEditing(value); });
         connect(&bar, &CMeshToolBar::ToolRequested, &bar, [&bar](auto tool) { bar.SetTool(tool); });
         QTest::mouseClick(button(bar, "meshToolsEnabled"), Qt::LeftButton); QCOMPARE(editing.count(), 1); QCOMPARE(editing.first().first().toBool(), true); QVERIFY(bar.IsEditing());
         QTest::mouseClick(button(bar, "meshInsert"), Qt::LeftButton); QCOMPARE(tools.count(), 1); QCOMPARE(bar.CurrentTool(), CMeshToolBar::Tool::Insert);
         QTest::mouseClick(button(bar, "meshRetriangulate"), Qt::LeftButton); QCOMPARE(optimize.count(), 1);
+        QTest::mouseClick(button(bar, "meshClone"), Qt::LeftButton); QCOMPARE(clone.count(), 1);
         QTest::mouseClick(button(bar, "meshToolsEnabled"), Qt::LeftButton); QCOMPARE(editing.count(), 2); QVERIFY(!bar.IsEditing());
         QTest::mouseClick(button(bar, "meshDelete"), Qt::LeftButton); QCOMPARE(tools.count(), 1);
     }

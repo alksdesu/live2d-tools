@@ -35,7 +35,8 @@ bool LAppModel::ApplyMeshGeometryPreview(const QByteArray& bytes, const QByteArr
             return !preparePreview || preparePreview(*candidate, detail);
         };
         return ApplyPreviewTransaction(ownedBytes, sourceDigest, prepare, error,
-            CubismModelUpdatePolicy::AllowDrawableGeometryEdits, {}, nullptr, nullptr, &migration);
+            CubismModelUpdatePolicy::AllowDrawableGeometryEdits |
+                CubismModelUpdatePolicy::AllowDrawableTopologyEdits, {}, nullptr, nullptr, &migration);
     } catch (const std::exception&) {
         if (error) *error = QStringLiteral("无法准备网格几何预览，原模型保持不变");
         return false;

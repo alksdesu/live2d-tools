@@ -4,6 +4,7 @@
 #include "framework/Rendering/CubismRenderer.hpp"
 
 #include <QSet>
+#include <algorithm>
 #include <exception>
 #include <cmath>
 #include <limits>
@@ -94,6 +95,8 @@ bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
         if (!candidate._moc) return fail(error, QStringLiteral("Cubism Core 未接受预览 MOC 数据"));
         candidate._model = candidate._moc->CreateModel();
         if (!candidate._model) return fail(error, QStringLiteral("无法创建预览模型"));
+        if (candidate._model->GetDrawableCount() != source.GetDrawableCount() && !geometry)
+            return fail(error, QStringLiteral("Drawable 数量变化必须提供显式几何迁移"));
         if (!candidate._model->CopyRuntimeStateFrom(source, policy, seeds, error)) return false;
         if (prepareModel && !prepareModel(candidate._model, error)) {
             if (error && error->isEmpty()) *error = QStringLiteral("预览模型姿态准备失败");
@@ -104,7 +107,8 @@ bool CubismModelReplacement::Prepare(const csmByte* bytes, csmSizeInt size,
         if (geometry && geometry->expectation && !verifyGeometry(*candidate._model, *geometry->expectation, error)) return false;
         candidate._model->InitMesh();
         if (geometry) {
-            for (int index = 0; index < source.GetDrawableCount(); ++index) {
+            const int sharedDrawables = std::min(source.GetDrawableCount(), candidate._model->GetDrawableCount());
+            for (int index = 0; index < sharedDrawables; ++index) {
                 const int count = candidate._model->GetDrawableVertexCount(index);
                 bool changed = count != source.GetDrawableVertexCount(index);
                 if (!changed) {

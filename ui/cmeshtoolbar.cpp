@@ -24,6 +24,11 @@ CMeshToolBar::CMeshToolBar(QWidget* parent) : QToolBar(QStringLiteral("网格工
     m_autoGenerate->setObjectName(QStringLiteral("meshAutoGenerate"));
     m_autoGenerate->setToolTip(QStringLiteral("按素材透明轮廓预览并生成网格，同步保留全部关键形和 UV"));
     connect(m_autoGenerate, &QAction::triggered, this, &CMeshToolBar::AutoGenerateRequested);
+    m_clone = addAction(QStringLiteral("克隆 ArtMesh…"));
+    m_clone->setObjectName(QStringLiteral("meshClone"));
+    m_clone->setToolTip(QStringLiteral("复制当前 ArtMesh 的几何、关键形、蒙版和绘制组，生成独立可编辑对象"));
+    m_clone->setStatusTip(m_clone->toolTip());
+    connect(m_clone, &QAction::triggered, this, &CMeshToolBar::CloneRequested);
     addSeparator();
     m_edit = addAction(QStringLiteral("网格工具"));
     m_edit->setObjectName(QStringLiteral("meshToolsEnabled"));
@@ -113,6 +118,7 @@ CMeshToolBar::Tool CMeshToolBar::CurrentTool() const
 void CMeshToolBar::RefreshActions()
 {
     m_autoGenerate->setEnabled(m_available);
+    m_clone->setEnabled(m_available);
     const QString automaticHelp = m_available ? QStringLiteral("按素材透明轮廓预览并生成网格，同步保留全部关键形和 UV") : m_reason;
     m_autoGenerate->setToolTip(QStringLiteral("<qt>%1</qt>").arg(automaticHelp.toHtmlEscaped()));
     m_edit->setEnabled(m_available);

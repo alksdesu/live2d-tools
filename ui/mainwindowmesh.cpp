@@ -15,6 +15,7 @@
 #include "std/cexportcontrol.h"
 #include <QCryptographicHash>
 #include <QProgressDialog>
+#include <QInputDialog>
 #include <QJsonDocument>
 #include <QSettings>
 #include <QScopeGuard>
@@ -137,8 +138,44 @@ void MainWindow::InitializeMeshTools(QVBoxLayout* layout)
     });
     connect(m_meshTools, &CMeshToolBar::RetriangulateRequested, this, &MainWindow::OptimizeSelectedMesh);
     connect(m_meshTools, &CMeshToolBar::AutoGenerateRequested, this, &MainWindow::GenerateSelectedMesh);
+    connect(m_meshTools, &CMeshToolBar::CloneRequested, this, &MainWindow::CloneSelectedMesh);
     connect(m_openglwindows, &OpengGlForm::MeshToolChanged, this, [this] { RefreshMeshTools(); });
     connect(m_openglwindows, &OpengGlForm::MeshSelectionChanged, this, [this] { RefreshMeshTools(); });
+    RefreshMeshTools();
+}
+
+void MainWindow::CloneSelectedMesh()
+{
+    QString error;
+    if (!AuthoringReady(&error) || m_selectedObjectIds.size() != 1 || m_selectedObjectTypes.value(0) != QLatin1String("artmesh")) {
+        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("先选择一个 ArtMesh") : error, 8000);
+        return;
+    }
+    const QString sourceId = m_selectedObjectIds.first();
+    if (m_document.IsLocked(QStringLiteral("artmesh"), sourceId)) {
+        statusBar()->showMessage(QStringLiteral("先解除网格锁定"), 8000);
+        return;
+    }
+    const QString suggested = sourceId + QStringLiteral("_copy");
+    bool accepted = false;
+    const QString cloneId = QInputDialog::getText(this, QStringLiteral("克隆 ArtMesh"),
+                                                  QStringLiteral("新 ArtMesh ID："), QLineEdit::Normal,
+                                                  suggested, &accepted);
+    if (!accepted) return;
+    if (!FinishParameterValueEditing(&error) || !m_openglwindows ||
+        !m_openglwindows->FinishMeshDrag(false, &error) || !RuntimeMatchesDocument(&error)) {
+        statusBar()->showMessage(error, 8000);
+        return;
+    }
+    CModelEdit command;
+    if (!m_document.MakeCloneArtMeshEdit({sourceId, cloneId, -2, -2, -2}, command, &error) ||
+        !SubmitInspectorEdit(command, &error)) {
+        statusBar()->showMessage(error.isEmpty() ? QStringLiteral("ArtMesh 克隆失败") : error, 10000);
+        return;
+    }
+    ApplyDocumentEditToUi(command, true);
+    SelectModelObjects({cloneId}, {QStringLiteral("artmesh")});
+    statusBar()->showMessage(QStringLiteral("已克隆 ArtMesh %1，可撤销").arg(cloneId), 5000);
     RefreshMeshTools();
 }
 

@@ -90,6 +90,33 @@ bool validMeshStructure(const CModelSession& session, int version, QString* erro
     return true;
 }
 
+bool validArtMeshClones(const CModelSession& session, int version, QString* error)
+{
+    if (session.artMeshClones.isEmpty()) return true;
+    if (version < 18 || !session.meshStructure || session.sourceMoc.isEmpty() || session.sourceMoc.contains(QChar::Null) ||
+        session.sourceDigest.size() != 32) {
+        setError(error, QStringLiteral("ArtMesh 克隆目录需要版本 18、网格结构和有效模型来源"));
+        return false;
+    }
+    if (session.artMeshClones.size() > 1000000) {
+        setError(error, QStringLiteral("ArtMesh 克隆数量超出限制"));
+        return false;
+    }
+    QSet<QString> created;
+    for (const auto& clone : session.artMeshClones) {
+        const auto source = clone.sourceArtMeshId.toUtf8(), target = clone.newArtMeshId.toUtf8();
+        if (source.isEmpty() || target.isEmpty() || source.size() >= 64 || target.size() >= 64 || source.contains('\0') || target.contains('\0') ||
+            QString::fromUtf8(source) != clone.sourceArtMeshId || QString::fromUtf8(target) != clone.newArtMeshId ||
+            clone.sourceArtMeshId == clone.newArtMeshId || created.contains(clone.newArtMeshId) ||
+            clone.parentPartIndex < -2 || clone.parentDeformerIndex < -2 || clone.textureIndex < -2) {
+            setError(error, QStringLiteral("ArtMesh 克隆目录包含无效或重复身份"));
+            return false;
+        }
+        created.insert(clone.newArtMeshId);
+    }
+    return true;
+}
+
 bool validDeformerStructure(const CModelSession& session, int version, QString* error)
 {
     if (!session.deformerStructure) {
@@ -234,6 +261,7 @@ bool validAnimationScenes(const CModelSession& session, int version, QString* er
         return false;
     }
     if (session.animationScenes.isEmpty()) {
+        if (version == 18 && session.animation.isEmpty()) return true;
         if (version >= 17) {
             setError(error, QStringLiteral("版本 17 会话缺少动画场景"));
             return false;
@@ -342,7 +370,7 @@ bool CModelSession::HasMaskMultiplicityOverrides() const
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 17) return {};
+    if (version < 1 || version > 18) return {};
     if (drawableMaskIndices.size() > 100000) return {};
     for (const auto& values : drawableMaskIndices) {
         if (values.size() > CMaskEditPolicy::MaximumOverrideReferences || std::any_of(values.cbegin(), values.cend(), [](int index) { return index < 0; })) return {};
@@ -367,8 +395,9 @@ QByteArray CModelSession::ToJson() const
     if (objectDisplayNames && storedVersion < 15) storedVersion = 15;
     if (!blendShapeGeometry.isEmpty() && storedVersion < 16) storedVersion = 16;
     if (!animationScenes.isEmpty() || !activeAnimationScene.isEmpty()) storedVersion = std::max(storedVersion, 17);
+    if (!artMeshClones.isEmpty()) storedVersion = std::max(storedVersion, 18);
     if (!validDisplayNames(*this, storedVersion, nullptr) || !validBlendShapeGeometry(*this, storedVersion, nullptr) ||
-        !validAnimationScenes(*this, storedVersion, nullptr)) return {};
+        !validAnimationScenes(*this, storedVersion, nullptr) || !validArtMeshClones(*this, storedVersion, nullptr)) return {};
     if (storedVersion >= 15) {
         QJsonObject names;
         if (!CModelDisplayNames::ToJson(*objectDisplayNames, names)) return {};
@@ -413,6 +442,16 @@ QByteArray CModelSession::ToJson() const
     if (storedVersion >= 7) root.insert(QStringLiteral("textures"), textureRows);
     root.insert(QStringLiteral("version"), storedVersion);
     if (storedVersion >= 5) root.insert(QStringLiteral("meshStructure"), meshStructure);
+    if (storedVersion >= 18) {
+        QJsonArray clones;
+        for (const auto& clone : artMeshClones)
+            clones.append(QJsonObject{{QStringLiteral("sourceId"), clone.sourceArtMeshId},
+                                      {QStringLiteral("newId"), clone.newArtMeshId},
+                                      {QStringLiteral("parentPartIndex"), clone.parentPartIndex},
+                                      {QStringLiteral("parentDeformerIndex"), clone.parentDeformerIndex},
+                                      {QStringLiteral("textureIndex"), clone.textureIndex}});
+        root.insert(QStringLiteral("artMeshClones"), clones);
+    }
     if (storedVersion >= 6) {
         root.insert(QStringLiteral("deformerStructure"), deformerStructure);
         QStringList ids(sourceDeformerIds.cbegin(), sourceDeformerIds.cend());
@@ -588,7 +627,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 17) {
+    if (parsedVersion < 1 || parsedVersion > 18) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
@@ -701,6 +740,42 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     result.meshStructure = root.value(QStringLiteral("meshStructure")).toBool(false);
+    const auto cloneValue = root.value(QStringLiteral("artMeshClones"));
+    if ((parsedVersion < 18 && !cloneValue.isUndefined()) || (parsedVersion >= 18 && !cloneValue.isArray())) {
+        setError(error, QStringLiteral("ArtMesh 克隆目录需要版本 18 及有效数组"));
+        return false;
+    }
+    if (parsedVersion >= 18) {
+        const auto clones = cloneValue.toArray();
+        if (clones.size() > 1000000) {
+            setError(error, QStringLiteral("ArtMesh 克隆数量超出限制"));
+            return false;
+        }
+        for (const auto& value : clones) {
+            if (!value.isObject()) {
+                setError(error, QStringLiteral("ArtMesh 克隆条目必须是对象"));
+                return false;
+            }
+            const auto object = value.toObject();
+            const auto readInteger = [](const QJsonValue& value, int* result) {
+                double number = 0.0;
+                if (!readNumber(value, &number) || std::floor(number) != number ||
+                    number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max()) return false;
+                *result = static_cast<int>(number);
+                return true;
+            };
+            int parentPart = -2, parentDeformer = -2, texture = -2;
+            if (!object.value(QStringLiteral("sourceId")).isString() || !object.value(QStringLiteral("newId")).isString() ||
+                !readInteger(object.value(QStringLiteral("parentPartIndex")), &parentPart) ||
+                !readInteger(object.value(QStringLiteral("parentDeformerIndex")), &parentDeformer) ||
+                !readInteger(object.value(QStringLiteral("textureIndex")), &texture)) {
+                setError(error, QStringLiteral("ArtMesh 克隆条目字段类型无效"));
+                return false;
+            }
+            result.artMeshClones.append({object.value(QStringLiteral("sourceId")).toString(),
+                                         object.value(QStringLiteral("newId")).toString(), parentPart, parentDeformer, texture});
+        }
+    }
     if ((parsedVersion < 6 && (root.contains(QStringLiteral("deformerStructure")) || root.contains(QStringLiteral("sourceDeformerIds")))) ||
         (parsedVersion >= 6 && (!root.value(QStringLiteral("deformerStructure")).isBool() || !root.value(QStringLiteral("sourceDeformerIds")).isArray()))) {
         setError(error, QStringLiteral("变形器结构字段需要版本 6 及有效的能力与身份列表"));
@@ -785,7 +860,8 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         result.sourceDigest = decoded;
     }
     if (!validDisplayNames(result, parsedVersion, error) ||
-        !validBlendShapeGeometry(result, parsedVersion, error)) return false;
+        !validBlendShapeGeometry(result, parsedVersion, error) ||
+        !validArtMeshClones(result, parsedVersion, error)) return false;
     if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
         setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
         return false;
@@ -1146,13 +1222,13 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 17) ||
+    if ((version < 1 || version > 18) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
         (version < 9 && geometryObjectPairs != CGeometryObjectPairs::State{}) ||
         (version < 10 && (materialStructure || !drawableMaterials.isEmpty())) || (version < 11 && textureWorkspace) ||
-        (version < 12 && !artwork.IsEmpty()) ||
+        (version < 12 && !artwork.IsEmpty()) || (version < 18 && !artMeshClones.isEmpty()) ||
         !validAnimationScenes(*this, version, error))
         return fail(QStringLiteral("version"));
     if (!validDisplayNames(*this, version, error)) return false;
@@ -1164,7 +1240,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
     if (!CParameterOrganization::Normalize(parameterOrganization, normalizedOrganization, error) ||
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
     if (!validArtwork(*this, version, error) || !validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
-        !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validDeformerStructure(*this, version, error) ||
+        !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validArtMeshClones(*this, version, error) || !validDeformerStructure(*this, version, error) ||
         !validBlendShapeGeometry(*this, version, error)) return false;
     if (!CTextureAssets::ValidateDraft(textures, error)) return false;
     if (!textures.isEmpty() && (sourceMoc.isEmpty() || sourceMoc.contains(QChar::Null) || sourceDigest.size() != 32)) return fail(QStringLiteral("textures"));
@@ -1228,7 +1304,10 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
             }
         }
         for (const auto& parameter : candidate.Parameters()) removedParameters.insert(parameter.id);
-        if (materialStructure) {
+        if (meshStructure && !artMeshClones.isEmpty()) {
+            if (!candidate.SetSessionAuthoringStructure(structure, artMeshClones, materialStructure, deformerStructure,
+                                                        sourceDeformerIds, error)) return false;
+        } else if (materialStructure) {
             if (!candidate.SetMaterialStructure(structure, meshStructure, deformerStructure, sourceDeformerIds, error)) return false;
         } else if (deformerStructure) {
             if (!candidate.SetDeformerStructure(structure, meshStructure, sourceDeformerIds, error)) return false;
