@@ -378,6 +378,7 @@ private:
 
 private:
     QToolBar* m_titleBar = nullptr;
+    QLabel* m_titleLabel = nullptr;
     QPushButton* m_btnMin = nullptr;
     QPushButton* m_btnMax = nullptr;
     QPushButton* m_btnClose = nullptr;
@@ -387,6 +388,7 @@ protected:
     virtual void dropEvent(QDropEvent *event) override;
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
     bool eventFilter(QObject* obj, QEvent* event) override;
+    void changeEvent(QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
 };
 #endif // MAINWINDOW_H

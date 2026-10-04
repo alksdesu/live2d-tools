@@ -65,6 +65,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
+#include <QWindow>
 #include <QScopedValueRollback>
 #include <QJsonArray>
 #include <QFile>
@@ -2139,7 +2140,13 @@ void MainWindow::RefreshWindowTitle()
     const bool dirty = HasSessionChanges() || m_poseDirty || HasUnsavedPhysicsChanges() ||
         (m_motionPanel && (m_motionPanel->HasUnsavedTimelineChanges() || m_motionPanel->HasUnsavedPoseChanges())) ||
         (m_userDataPanel && m_userDataPanel->HasUnsavedChanges());
-    setWindowTitle(dirty ? QStringLiteral("live2d2psd · 未保存") : QStringLiteral("live2d2psd"));
+    const QString model = m_currentMoc.isEmpty() ? QStringLiteral("live2d2psd") : QFileInfo(m_currentMoc).completeBaseName();
+    const QString title = dirty ? model + QStringLiteral(" · 未保存") : model;
+    setWindowTitle(title);
+    if (m_titleLabel) {
+        m_titleLabel->setText(title);
+        m_titleLabel->setToolTip(m_currentMoc.isEmpty() ? QString() : QFileInfo(m_currentMoc).absoluteFilePath());
+    }
 }
 
 void MainWindow::RefreshUndoActions()
@@ -3029,6 +3036,7 @@ bool MainWindow::CloseModel()
     if (m_runtimeExportAction) m_runtimeExportAction->setEnabled(false);
     m_currentMoc.clear();
     m_currentModelDir.clear();
+    RefreshWindowTitle();
 
     // 释放 MOC3 解析树
     CTreeManage::ReleaseInstance();
@@ -4199,9 +4207,9 @@ void MainWindow::setupUI()
     iconLabel->setAlignment(Qt::AlignCenter);
     m_titleBar->addWidget(iconLabel);
 
-    QLabel* titleLabel = new QLabel("live2d2psd", this);
-    titleLabel->setObjectName("titleLabel");
-    m_titleBar->addWidget(titleLabel);
+    m_titleLabel = new QLabel("live2d2psd", this);
+    m_titleLabel->setObjectName("titleLabel");
+    m_titleBar->addWidget(m_titleLabel);
 
     QWidget* spacer = new QWidget(this);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -4416,6 +4424,8 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
 #ifdef Q_OS_WIN
                 ReleaseCapture();
                 SendMessage((HWND)winId(), WM_NCLBUTTONDOWN, HTCAPTION, 0);
+#else
+                if (auto* handle = windowHandle(); handle && handle->startSystemMove()) return true;
 #endif
                 return true;
             }
@@ -4438,4 +4448,11 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         }
     }
     return QMainWindow::eventFilter(obj, event);
+}
+
+void MainWindow::changeEvent(QEvent* event)
+{
+    QMainWindow::changeEvent(event);
+    if (event && event->type() == QEvent::WindowStateChange && m_btnMax)
+        m_btnMax->setText(isMaximized() ? QStringLiteral("❐") : QStringLiteral("□"));
 }
