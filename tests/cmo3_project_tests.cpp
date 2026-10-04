@@ -381,6 +381,21 @@ private slots:
         }
         QCOMPARE(missing, 1);
     }
+    void externalLayerCandidatesRemainReadable()
+    {
+        const QString path = qEnvironmentVariable("LIVE2D_TEST_EXTERNAL_ASSOCIATION_CMO");
+        if (path.isEmpty()) QSKIP("LIVE2D_TEST_EXTERNAL_ASSOCIATION_CMO is not configured");
+        cmo3::CCmo3Project project; QString error;
+        QVERIFY2(cmo3::CCmo3Project::OpenFile(path, project, &error), qPrintable(error));
+        QVERIFY2(project.Artwork(), qPrintable(project.ArtworkError()));
+        QVERIFY2(project.Materials(), qPrintable(project.MaterialsError()));
+        int preserved = 0;
+        for (const auto& image : project.Materials()->images)
+            for (const auto& candidate : image.candidates)
+                for (const auto& layer : candidate.layers)
+                    preserved += layer.diagnostics.join('\n').contains(QStringLiteral("不在活动文档目录"));
+        QVERIFY(preserved > 0);
+    }
     void nativeFileCapabilityEvidence()
     {
         const QString path = qEnvironmentVariable("LIVE2D_TEST_NATIVE_CMO");

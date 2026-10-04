@@ -395,23 +395,42 @@ private:
             for (int input : xml.array(it.value())) {
                 edge(); input = xml.typed(input, "CLayerInputData");
                 const int layer = xml.field(input, "layer");
-                require(layers.contains(layer) && layers.value(layer).documentGuid == it.key(), QStringLiteral("CMO 图层输入引用其他文档或非活动图层"));
-                const auto& source = layers[layer];
                 Graph::LayerInput entry;
-                entry.documentGuid = source.documentGuid; entry.layerGuid = source.guid; entry.layerName = source.name;
-                entry.sourceIndex = source.index; entry.group = source.group;
                 knownFields(input, {"layer", "affine", "clippingOnTexturePx"}, entry.diagnostics);
                 entry.affine = transform(xml.field(input, "affine"));
                 const int clipping = xml.field(input, "clippingOnTexturePx", false);
                 entry.clippingType = clipping < 0 ? QString() : xml.nodes[clipping].type;
+                const auto sourceIt = layers.constFind(layer);
+                if (sourceIt == layers.cend()) {
+                    const int resolvedLayer = xml.resolve(layer);
+                    const bool group = xml.nodes[resolvedLayer].type == QStringLiteral("CLayerGroup");
+                    require(group || xml.nodes[resolvedLayer].type == QStringLiteral("CLayer"),
+                            QStringLiteral("CMO 图层输入引用未知图层类型"));
+                    const int super = xml.typed(xml.field(resolvedLayer, "super"),
+                                                group ? "ACLayerGroup" : "ACImageLayer");
+                    const int common = xml.typed(xml.field(super, "super"), "ACLayerEntry");
+                    entry.documentGuid = it.key();
+                    entry.layerGuid = guid(xml.field(common, "guid"), "CLayerGuid");
+                    entry.layerName = xml.text(xml.field(common, "name"));
+                    entry.sourceIndex = -1;
+                    entry.group = group;
+                    entry.diagnostics.append(QStringLiteral("来源图层不在活动文档目录中，保留候选关系但不自动采样"));
+                } else {
+                    require(sourceIt->documentGuid == it.key(), QStringLiteral("CMO 图层输入引用其他文档或非活动图层"));
+                    const auto& source = sourceIt.value();
+                    entry.documentGuid = source.documentGuid; entry.layerGuid = source.guid; entry.layerName = source.name;
+                    entry.sourceIndex = source.index; entry.group = source.group;
+                }
                 if (entry.group) entry.diagnostics.append(QStringLiteral("来源为图层组，需要独立处理合成语义"));
                 if (!entry.affine.isIdentity()) entry.diagnostics.append(QStringLiteral("保留非恒等图层输入变换，尚未验证其组合顺序"));
                 if (clipping >= 0 && !xml.empty(clipping)) entry.diagnostics.append(QStringLiteral("图层输入包含局部裁剪，尚未执行"));
+                const bool directCandidate = !entry.group && !result.imageDigest.isEmpty();
+                const Layer* source = sourceIt == layers.cend() ? nullptr : &sourceIt.value();
                 candidate.layers.append(std::move(entry));
-                if (candidate.current && candidate.layers.size() == 1 && !source.group && !result.imageDigest.isEmpty() &&
-                    source.image >= 0 && xml.nodes[source.image].type == QStringLiteral("CImageResource") &&
-                    result.imageSize == source.bounds.size() && result.materialLocalToCanvas == QTransform::fromTranslate(source.bounds.x(), source.bounds.y())) {
-                    const auto original = image(source.image);
+                if (candidate.current && candidate.layers.size() == 1 && directCandidate && source &&
+                    source->image >= 0 && xml.nodes[source->image].type == QStringLiteral("CImageResource") &&
+                    result.imageSize == source->bounds.size() && result.materialLocalToCanvas == QTransform::fromTranslate(source->bounds.x(), source->bounds.y())) {
+                    const auto original = image(source->image);
                     result.directRaster = result.materialTransformPresent && filter && known && !inherited &&
                         candidate.layers.first().diagnostics.isEmpty() && original.digest == result.imageDigest;
                 }
