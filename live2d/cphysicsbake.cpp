@@ -54,6 +54,8 @@ bool intervalsFor(double duration, double fps, qint64& intervals, QString* error
 QVector<QPointF> simplifyCurve(const QVector<QPointF>& source, double tolerance)
 {
     if (source.size() <= 2 || tolerance <= 0) return source;
+    const qint64 comparisonBudget = std::max<qint64>(4096, qint64(source.size()) * 64);
+    qint64 comparisons = 0;
     QVector<bool> keep(source.size(), false);
     keep.front() = true; keep.back() = true;
     QVector<QPair<int, int>> pending{{0, source.size() - 1}};
@@ -63,6 +65,7 @@ QVector<QPointF> simplifyCurve(const QVector<QPointF>& source, double tolerance)
         const double span = last.x() - first.x();
         int split = -1; double maximum = tolerance;
         for (int index = segment.first + 1; index < segment.second; ++index) {
+            if (++comparisons > comparisonBudget) return source;
             const double expected = span > 0 ? first.y() + (last.y() - first.y()) * (source[index].x() - first.x()) / span : first.y();
             const double deviation = std::abs(source[index].y() - expected);
             if (deviation > maximum) { maximum = deviation; split = index; }

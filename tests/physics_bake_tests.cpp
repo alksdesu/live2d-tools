@@ -206,6 +206,23 @@ bool finish(CPhysicsBake& bake, QString* error, int batch = 7)
     while (!bake.IsFinished()) if (!bake.Step(batch, error)) return false;
     return true;
 }
+
+double sampleLinear(const QVector<QPointF>& curve, double time)
+{
+    if (curve.isEmpty()) return std::numeric_limits<double>::quiet_NaN();
+    if (time <= curve.first().x()) return curve.first().y();
+    if (time >= curve.last().x()) return curve.last().y();
+    for (int index = 1; index < curve.size(); ++index) {
+        if (time > curve[index].x()) continue;
+        const auto& previous = curve[index - 1];
+        const auto& current = curve[index];
+        const double span = current.x() - previous.x();
+        if (span <= 0) return current.y();
+        const double ratio = (time - previous.x()) / span;
+        return previous.y() + (current.y() - previous.y()) * ratio;
+    }
+    return curve.last().y();
+}
 }
 
 class PhysicsBakeTests : public QObject
@@ -454,6 +471,55 @@ private slots:
             QCOMPARE(curve.first().x(), 0.0);
             QCOMPARE(curve.last().x(), result.endTime);
         }
+    }
+    void optimizedCurvesRespectSampledErrorAndCaptureIsStable()
+    {
+        auto sourceRequest = requestFor("Mark");
+        sourceRequest.warmupCycles = 0;
+        CPhysicsBake sourceBake;
+        QString error;
+        QVERIFY2(sourceBake.Prepare(sourceRequest, &error), qPrintable(error));
+        QVERIFY2(finish(sourceBake, &error), qPrintable(error));
+        CPhysicsBake::Result source;
+        QVERIFY2(sourceBake.CaptureResult(source, &error), qPrintable(error));
+
+        auto optimizedRequest = sourceRequest;
+        optimizedRequest.optimizeCurves = true;
+        optimizedRequest.curveTolerance = 0.5;
+        CPhysicsBake optimizedBake;
+        QVERIFY2(optimizedBake.Prepare(optimizedRequest, &error), qPrintable(error));
+        QVERIFY2(finish(optimizedBake, &error), qPrintable(error));
+        CPhysicsBake::Result optimized;
+        QVERIFY2(optimizedBake.CaptureResult(optimized, &error), qPrintable(error));
+        QCOMPARE(optimized.sourcePointCount, source.sourcePointCount);
+        QVERIFY(optimized.outputPointCount <= optimized.sourcePointCount);
+        for (auto it = source.curves.cbegin(); it != source.curves.cend(); ++it) {
+            const auto reduced = optimized.curves.value(it.key());
+            QVERIFY(!reduced.isEmpty());
+            for (const auto& sample : it.value())
+                QVERIFY(std::abs(sample.y() - sampleLinear(reduced, sample.x())) <= optimizedRequest.curveTolerance + 1e-6);
+        }
+        CPhysicsBake::Result repeated;
+        QVERIFY2(optimizedBake.CaptureResult(repeated, &error), qPrintable(error));
+        QCOMPARE(repeated.curves, optimized.curves);
+        QCOMPARE(repeated.sourcePointCount, optimized.sourcePointCount);
+        QCOMPARE(repeated.outputPointCount, optimized.outputPointCount);
+    }
+    void zeroCurveTolerancePreservesSamples()
+    {
+        auto request = requestFor("Mark");
+        request.warmupCycles = 0;
+        request.optimizeCurves = true;
+        request.curveTolerance = 0;
+        const auto expected = reference(request);
+        CPhysicsBake bake;
+        QString error;
+        QVERIFY2(bake.Prepare(request, &error), qPrintable(error));
+        QVERIFY2(finish(bake, &error), qPrintable(error));
+        CPhysicsBake::Result result;
+        QVERIFY2(bake.CaptureResult(result, &error), qPrintable(error));
+        QCOMPARE(result.curves, expected);
+        QCOMPARE(result.sourcePointCount, result.outputPointCount);
     }
     void cancellationAndFailedPrepareAreAtomic()
     {
