@@ -22,6 +22,14 @@ struct PhysicsOutputObservation : PhysicsInputObservation
     bool clipped = false;
 };
 
+struct PhysicsOutputDiagnostic
+{
+    QString id;
+    bool active = false, hasSample = false;
+    quint64 clippedEvaluations = 0;
+    float rawMinimum = 0, rawMaximum = 0;
+};
+
 struct PhysicsObservation
 {
     int groupIndex = -1;

@@ -47,6 +47,8 @@ const csmFloat32 MovementThreshold = 0.001f;
 
 /// Constant of maximum allowed delta time
 const csmFloat32 MaxDeltaTime = 5.0f;
+const csmFloat32 NoLowerRawSample = std::numeric_limits<csmFloat32>::max();
+const csmFloat32 NoUpperRawSample = std::numeric_limits<csmFloat32>::lowest();
 
 bool PhysicsError(QString* error, const QString& message)
 {
@@ -388,10 +390,19 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
     outputScale = output->GetScale(output->TranslationScale, output->AngleScale);
 
     value = translation * outputScale;
+    if (!output->HasRawSample) {
+        output->RawMinimum = value;
+        output->RawMaximum = value;
+        output->HasRawSample = true;
+    } else {
+        output->RawMinimum = std::min(output->RawMinimum, value);
+        output->RawMaximum = std::max(output->RawMaximum, value);
+    }
     if (observation) { observation->rawValue = value; observation->clipped = false; }
 
     if (value < parameterValueMinimum)
     {
+        ++output->ClippedEvaluations;
         if (observation) observation->clipped = true;
         if (value < output->ValueBelowMinimum)
         {
@@ -402,6 +413,7 @@ void UpdateOutputParameterValue(csmFloat32* parameterValue, csmFloat32 parameter
     }
     else if (value > parameterValueMaximum)
     {
+        ++output->ClippedEvaluations;
         if (observation) observation->clipped = true;
         if (value > output->ValueExceededMaximum)
         {
@@ -686,6 +698,34 @@ bool CubismPhysics::CaptureObservation(const CubismModel& model, PhysicsObservat
     catch (...) { return PhysicsError(error, QStringLiteral("无法读取物理观察样本")); }
 }
 
+bool CubismPhysics::CaptureOutputDiagnostics(QVector<PhysicsOutputDiagnostic>& result, QString* error) const
+{
+    if (error) error->clear();
+    try
+    {
+        if (!_physicsRig || _activeOutputs.size() != _physicsRig->Outputs.GetSize())
+            return PhysicsError(error, QStringLiteral("物理输出诊断与当前配置不匹配"));
+        QVector<PhysicsOutputDiagnostic> candidate;
+        candidate.reserve(_physicsRig->Outputs.GetSize());
+        for (int index = 0; index < _physicsRig->Outputs.GetSize(); ++index) {
+            const auto& output = _physicsRig->Outputs[index];
+            PhysicsOutputDiagnostic diagnostic;
+            diagnostic.id = output.Destination.Id ? QString::fromUtf8(output.Destination.Id->GetString().GetRawString()) : QString{};
+            diagnostic.active = _activeOutputs[index];
+            diagnostic.hasSample = output.HasRawSample;
+            diagnostic.clippedEvaluations = output.ClippedEvaluations;
+            if (diagnostic.hasSample) {
+                diagnostic.rawMinimum = output.RawMinimum;
+                diagnostic.rawMaximum = output.RawMaximum;
+            }
+            candidate.append(std::move(diagnostic));
+        }
+        result = std::move(candidate);
+        return true;
+    }
+    catch (...) { return PhysicsError(error, QStringLiteral("无法读取物理输出诊断")); }
+}
+
 bool CubismPhysics::BeginObservation(const CubismModel& model, csmFloat32 deltaTime, PhysicsObservation& result) noexcept
 {
     if (_observationGroup < 0 || _observationSequence == std::numeric_limits<quint64>::max()) return false;
@@ -780,7 +820,9 @@ bool CubismPhysics::HasFiniteRuntimeState(QString* error) const
                 return PhysicsError(error, QStringLiteral("物理输出缓存含非有限值"));
     }
     for (int i = 0; i < _physicsRig->Outputs.GetSize(); ++i)
-        if (!std::isfinite(_physicsRig->Outputs[i].ValueBelowMinimum) || !std::isfinite(_physicsRig->Outputs[i].ValueExceededMaximum))
+        if (!std::isfinite(_physicsRig->Outputs[i].ValueBelowMinimum) || !std::isfinite(_physicsRig->Outputs[i].ValueExceededMaximum) ||
+            (_physicsRig->Outputs[i].HasRawSample && (!std::isfinite(_physicsRig->Outputs[i].RawMinimum) ||
+                                                       !std::isfinite(_physicsRig->Outputs[i].RawMaximum))))
             return PhysicsError(error, QStringLiteral("物理输出统计含非有限值"));
     return true;
 }
@@ -808,6 +850,10 @@ void CubismPhysics::CopyDynamicStateFrom(const CubismPhysics& previous)
     {
         _physicsRig->Outputs[i].ValueBelowMinimum = previous._physicsRig->Outputs[i].ValueBelowMinimum;
         _physicsRig->Outputs[i].ValueExceededMaximum = previous._physicsRig->Outputs[i].ValueExceededMaximum;
+        _physicsRig->Outputs[i].ClippedEvaluations = previous._physicsRig->Outputs[i].ClippedEvaluations;
+        _physicsRig->Outputs[i].HasRawSample = previous._physicsRig->Outputs[i].HasRawSample;
+        _physicsRig->Outputs[i].RawMinimum = previous._physicsRig->Outputs[i].RawMinimum;
+        _physicsRig->Outputs[i].RawMaximum = previous._physicsRig->Outputs[i].RawMaximum;
     }
 }
 
@@ -1059,6 +1105,16 @@ void CubismPhysics::Initialize()
     CubismPhysicsSubRig* currentSetting;
     csmInt32 i, settingIndex;
     CubismVector2 radius;
+
+    for (int index = 0; index < _physicsRig->Outputs.GetSize(); ++index) {
+        auto& output = _physicsRig->Outputs[index];
+        output.ValueBelowMinimum = NoLowerRawSample;
+        output.ValueExceededMaximum = NoUpperRawSample;
+        output.ClippedEvaluations = 0;
+        output.HasRawSample = false;
+        output.RawMinimum = 0;
+        output.RawMaximum = 0;
+    }
 
     for (settingIndex = 0; settingIndex < _physicsRig->SubRigCount; ++settingIndex)
     {

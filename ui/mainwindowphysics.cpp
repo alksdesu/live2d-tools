@@ -24,6 +24,7 @@
 #include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTimer>
 #include <exception>
 
@@ -369,5 +370,12 @@ void MainWindow::BakePhysicsAnimation()
     SetWorkspaceMode(1);
     m_motionPanel->show();
     m_motionPanel->raise();
-    report(QStringLiteral("已烘焙 %1 条物理曲线，可一次撤销；请保存动画或会话").arg(result->curves.size()));
+    QStringList clipped;
+    for (auto it = result->diagnostics.cbegin(); it != result->diagnostics.cend(); ++it)
+        if (it.value().recordedClippedSteps > 0)
+            clipped.append(QStringLiteral("%1（%2步）").arg(it.key()).arg(it.value().recordedClippedSteps));
+    const QString detail = clipped.isEmpty()
+        ? QString{}
+        : QStringLiteral("；%1发生参数范围裁剪：%2").arg(clipped.size()).arg(clipped.join(QStringLiteral("、")));
+    report(QStringLiteral("已烘焙 %1 条物理曲线，可一次撤销；请保存动画或会话%2").arg(result->curves.size()).arg(detail));
 }

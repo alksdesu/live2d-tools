@@ -195,6 +195,10 @@ struct CubismPhysicsOutput
     csmFloat32 ValueExceededMaximum;            ///< 最大値をこえた時の値
     PhysicsValueGetter GetValue;                ///< 物理演算の値の取得関数
     PhysicsScaleGetter GetScale;                ///< 物理演算のスケール値の取得関数
+    csmUint64 ClippedEvaluations = 0;
+    bool HasRawSample = false;
+    csmFloat32 RawMinimum = 0;
+    csmFloat32 RawMaximum = 0;
 };
 
 /**

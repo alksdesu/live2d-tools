@@ -71,6 +71,7 @@ struct CPhysicsBake::Impl
     qint64 intervals = 0, warmupIntervals = 0;
     qint64 completed = 0, total = 0;
     int warmupCycles = 0;
+    QMap<QString, quint64> lastClippedEvaluations;
 
     ~Impl()
     {
@@ -129,6 +130,54 @@ struct CPhysicsBake::Impl
             result.curves[it.key()].append(QPointF(time, model->GetParameterValue(it.value())));
     }
 
+    bool CollectDiagnostics(bool recording, double time)
+    {
+        QVector<PhysicsOutputDiagnostic> rows;
+        if (!physics->CaptureOutputDiagnostics(rows, &error)) return false;
+        QMap<QString, quint64> clipped;
+        QMap<QString, QPair<float, float>> ranges;
+        QSet<QString> sampled;
+        for (const auto& row : rows) {
+            if (!row.active || !outputs.contains(row.id)) continue;
+            clipped[row.id] += row.clippedEvaluations;
+            if (row.hasSample) {
+                sampled.insert(row.id);
+                auto found = ranges.find(row.id);
+                if (found == ranges.end()) ranges.insert(row.id, {row.rawMinimum, row.rawMaximum});
+                else {
+                    auto& range = found.value();
+                    range.first = std::min(range.first, row.rawMinimum);
+                    range.second = std::max(range.second, row.rawMaximum);
+                }
+            }
+        }
+        for (const auto& id : outputs.keys()) {
+            auto& diagnostic = result.diagnostics[id];
+            if (sampled.contains(id)) {
+                const auto range = ranges.value(id);
+                if (!diagnostic.hasRawSample) {
+                    diagnostic.rawMinimum = range.first;
+                    diagnostic.rawMaximum = range.second;
+                    diagnostic.hasRawSample = true;
+                } else {
+                    diagnostic.rawMinimum = std::min(diagnostic.rawMinimum, range.first);
+                    diagnostic.rawMaximum = std::max(diagnostic.rawMaximum, range.second);
+                }
+            }
+            const quint64 previous = lastClippedEvaluations.value(id);
+            const quint64 current = clipped.value(id);
+            if (current > previous) {
+                if (recording) {
+                    ++diagnostic.recordedClippedSteps;
+                    if (diagnostic.firstRecordedClipTime < 0) diagnostic.firstRecordedClipTime = time;
+                    diagnostic.lastRecordedClipTime = time;
+                } else ++diagnostic.warmupClippedSteps;
+            }
+            lastClippedEvaluations[id] = current;
+        }
+        return true;
+    }
+
     bool Next()
     {
         if (completed == 0) {
@@ -136,16 +185,19 @@ struct CPhysicsBake::Impl
             physics->Stabilization(model);
             if (!CheckValues()) return false;
             model->Update();
+            if (!CollectDiagnostics(false, 0)) return false;
         } else if (completed <= warmupIntervals * warmupCycles) {
             const qint64 step = (completed - 1) % warmupIntervals + 1;
             const double previous = double(step - 1) / result.fps;
             const double time = step == warmupIntervals ? warmupPeriod : double(step) / result.fps;
             if (!Advance(step == warmupIntervals ? 0.0 : time, time - previous, true)) return false;
+            if (!CollectDiagnostics(false, time)) return false;
         } else {
             const qint64 frame = completed - 1 - warmupIntervals * warmupCycles;
             const double time = double(frame) / result.fps;
             if (frame && !Advance(time, 1.0 / result.fps, loop)) return false;
             Record(time);
+            if (!CollectDiagnostics(true, time)) return false;
         }
         ++completed;
         if (completed == total) state = State::Finished;
@@ -309,6 +361,7 @@ bool CPhysicsBake::CaptureResult(Result& result, QString* error) const
     try {
         Result candidate = m_impl->result;
         result.curves.swap(candidate.curves);
+        result.diagnostics.swap(candidate.diagnostics);
         result.endTime = candidate.endTime;
         result.fps = candidate.fps;
         return true;

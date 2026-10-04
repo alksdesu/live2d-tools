@@ -138,6 +138,25 @@ QByteArray withFps(const QByteArray& bytes, double fps)
     return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 
+QByteArray withOutputScale(const QByteArray& bytes, double scale)
+{
+    auto object = QJsonDocument::fromJson(bytes).object();
+    auto groups = object.value("PhysicsSettings").toArray();
+    for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+        auto group = groups[groupIndex].toObject();
+        auto outputs = group.value("Output").toArray();
+        for (int outputIndex = 0; outputIndex < outputs.size(); ++outputIndex) {
+            auto output = outputs[outputIndex].toObject();
+            output.insert("Scale", scale);
+            outputs[outputIndex] = output;
+        }
+        group.insert("Output", outputs);
+        groups[groupIndex] = group;
+    }
+    object.insert("PhysicsSettings", groups);
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+
 QMap<QString, QVector<QPointF>> reference(const CPhysicsBake::Request& request)
 {
     Simulation simulation;
@@ -391,6 +410,30 @@ private slots:
             QCOMPARE(curve.first().x(), 0.0);
             QCOMPARE(curve.last().x(), result.endTime);
         }
+    }
+    void outputDiagnosticsSeparateWarmupAndRecordedClipping()
+    {
+        auto request = requestFor("Mark");
+        request.physicsBytes = withOutputScale(request.physicsBytes, 10000.0);
+        request.warmupCycles = 1;
+        CPhysicsBake bake;
+        QString error;
+        QVERIFY2(bake.Prepare(request, &error), qPrintable(error));
+        QVERIFY2(finish(bake, &error), qPrintable(error));
+        CPhysicsBake::Result result;
+        QVERIFY2(bake.CaptureResult(result, &error), qPrintable(error));
+        QVERIFY(!result.diagnostics.isEmpty());
+        bool recorded = false, warmup = false;
+        for (auto it = result.diagnostics.cbegin(); it != result.diagnostics.cend(); ++it) {
+            const auto& diagnostic = it.value();
+            QVERIFY(diagnostic.hasRawSample);
+            QVERIFY(std::isfinite(diagnostic.rawMinimum));
+            QVERIFY(std::isfinite(diagnostic.rawMaximum));
+            recorded |= diagnostic.recordedClippedSteps > 0;
+            warmup |= diagnostic.warmupClippedSteps > 0;
+        }
+        QVERIFY(recorded);
+        QVERIFY(warmup);
     }
     void cancellationAndFailedPrepareAreAtomic()
     {

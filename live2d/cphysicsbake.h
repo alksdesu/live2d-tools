@@ -2,6 +2,7 @@
 #define CPHYSICSBAKE_H
 
 #include "live2dstruct/cmotiontimeline.h"
+#include "framework/Physics/CubismPhysicsObservation.hpp"
 #include <QByteArray>
 #include <QMap>
 #include <QPointF>
@@ -31,7 +32,17 @@ public:
         int warmupCycles = 1;
     };
     struct Result {
+        struct OutputDiagnostic {
+            quint64 warmupClippedSteps = 0;
+            quint64 recordedClippedSteps = 0;
+            double firstRecordedClipTime = -1;
+            double lastRecordedClipTime = -1;
+            float rawMinimum = 0;
+            float rawMaximum = 0;
+            bool hasRawSample = false;
+        };
         QMap<QString, QVector<QPointF>> curves;
+        QMap<QString, OutputDiagnostic> diagnostics;
         double endTime = 0.0;
         double fps = 0.0;
     };
