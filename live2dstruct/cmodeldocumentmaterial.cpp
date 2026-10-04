@@ -39,7 +39,7 @@ bool states(const CModelEdit& edit, CModelMaterialState& before, CModelMaterialS
 {
     if (edit.field != CModelEdit::DrawableMaterials || edit.type != QLatin1String("materials") || edit.name != QLatin1String("drawables") ||
         edit.index != -1 || edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None || edit.freezeValue ||
-        edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.deformerRequest ||
+        edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest ||
         edit.before.metaType() != QMetaType::fromType<CModelMaterialState>() || edit.after.metaType() != QMetaType::fromType<CModelMaterialState>())
         return fail(error, QStringLiteral("材质编辑命令格式无效"));
     before = edit.before.value<CModelMaterialState>(); after = edit.after.value<CModelMaterialState>();

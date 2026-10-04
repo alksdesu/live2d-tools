@@ -15,6 +15,8 @@ public:
     ~CBindingKeysDialog() override;
     bool BuildRequest(live2dstruct::CMocParameterStructureBuilder::EditBindingKeysRequest& request,
                       QString* error = nullptr) const;
+    bool BuildBatchRequest(live2dstruct::CMocParameterStructureBuilder::EditBindingKeysBatchRequest& request,
+                           QString* error = nullptr) const;
     int SelectedAxis() const;
     void SetError(const QString& error);
 

@@ -467,6 +467,58 @@ private slots:
         compare(m_fixtures.value(0), {owner(0), 1, axisId(1), {-1, 0, 1}, op.keys}, op, false);
     }
 
+    void batchAxisChangesComposeCartesianRemap()
+    {
+        const auto source = m_fixtures.value(0);
+        Builder::EditBindingKeysBatchRequest request;
+        request.owner = owner(0); request.parameterId = axisId(0);
+        request.axes = {
+            {0, axisId(0), {-1, 0, 1}, {retained(-1, 0), inserted(-.5f), retained(0, 1), retained(1, 2)}},
+            {1, axisId(1), {-1, 0, 1}, {retained(-1, 0), retained(.25f, 1), retained(1, 2)}}
+        };
+        Builder::Result batch, first, sequential; QString error;
+        QVERIFY2(Builder::EditBindingKeys(source, {request.owner, 0, axisId(0), request.axes[0].expectedKeys, request.axes[0].keys}, first, &error), qPrintable(error));
+        QVERIFY2(Builder::EditBindingKeys(first.bytes, {request.owner, 1, axisId(1), request.axes[1].expectedKeys, request.axes[1].keys}, sequential, &error), qPrintable(error));
+        QVERIFY2(Builder::EditBindingKeysBatch(source, request, batch, &error), qPrintable(error));
+        QCOMPARE(batch.bytes, sequential.bytes);
+        QCOMPARE(batch.keyforms.size(), 1);
+        const auto& remap = batch.keyforms.first();
+        QCOMPARE(remap.oldKeyformCount, 27); QCOMPARE(remap.newKeyformCount, 36);
+        QCOMPARE(remap.newLocalToOldLocal.size(), 36); QCOMPARE(remap.newLocalSources.size(), 36);
+        for (int local = 0; local < 36; ++local) {
+            const int digit = local % 4;
+            const int base = ((local / 4) % 3) * 3 + (local / 12) * 9;
+            const auto& terms = remap.newLocalSources[local];
+            QCOMPARE(terms.size(), digit == 1 ? 2 : 1);
+            if (digit == 1) {
+                QCOMPARE(remap.newLocalToOldLocal[local], -1);
+                QCOMPARE(terms[0].oldLocal, base); QCOMPARE(terms[0].weight, .5);
+                QCOMPARE(terms[1].oldLocal, base + 1); QCOMPARE(terms[1].weight, .5);
+            } else {
+                const int original = base + (digit > 1 ? digit - 1 : digit);
+                QCOMPARE(remap.newLocalToOldLocal[local], original);
+                QCOMPARE(terms[0].oldLocal, original); QCOMPARE(terms[0].weight, 1.0);
+            }
+        }
+        auto reversed = request; std::reverse(reversed.axes.begin(), reversed.axes.end());
+        Builder::Result reordered;
+        QVERIFY2(Builder::EditBindingKeysBatch(source, reversed, reordered, &error), qPrintable(error));
+        QCOMPARE(reordered.bytes, batch.bytes);
+        QCOMPARE(reordered.keyforms.first().newLocalToOldLocal, remap.newLocalToOldLocal);
+        const auto digest = QCryptographicHash::hash(source, QCryptographicHash::Sha256);
+        for (int failure = 0; failure < 3; ++failure) {
+            auto invalid = request;
+            if (failure == 0) invalid.axes[1].expectedKeys[0] = -2;
+            if (failure == 1) invalid.axes.append(invalid.axes.first());
+            if (failure == 2) invalid.parameterId = QStringLiteral("WrongAnchor");
+            Builder::Result untouched; untouched.bytes = QByteArrayLiteral("sentinel");
+            untouched.oldParameterToNew = {91};
+            QVERIFY(!Builder::EditBindingKeysBatch(source, invalid, untouched, &error)); QVERIFY(!error.isEmpty());
+            QCOMPARE(untouched.bytes, QByteArrayLiteral("sentinel")); QCOMPARE(untouched.oldParameterToNew, QVector<int>({91}));
+        }
+        QCOMPARE(QCryptographicHash::hash(source, QCryptographicHash::Sha256), digest);
+    }
+
     void maoOrdinaryAxisPreservesBlendShapesAndColors()
     {
         const QString path = qEnvironmentVariable("LIVE2D_REAL_CORE_EXTRA_MOC");

@@ -537,7 +537,7 @@ try {
         || m_textureSources != verified->sources || edit.name != expected.name || edit.type != expected.type
         || edit.field != expected.field || edit.index != expected.index || edit.coalesce != expected.coalesce
         || edit.parameterChange != expected.parameterChange || edit.freezeValue != expected.freezeValue || edit.storage
-        || edit.bindingKeysRequest || edit.deformerRequest || !edit.meshRequest
+        || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest || !edit.meshRequest
         || !sameRequest(*edit.meshRequest, *expected.meshRequest) || !sameRemaps(edit.meshRemaps, expected.meshRemaps)
         || edit.before.metaType() != QMetaType::fromType<QVariantMap>()
         || edit.after.metaType() != QMetaType::fromType<QVariantMap>()

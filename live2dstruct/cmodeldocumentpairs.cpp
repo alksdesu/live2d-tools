@@ -74,7 +74,9 @@ catch (const std::exception&) { return fail(error, QStringLiteral("无法准备�
 
 bool CModelDocument::ReconcileGeometryObjectPairs(CModelDocument& candidate, const QVector<Pairs::VertexRemap>& vertices,
                                                  const Builder::Result* parameters,
-                                                 const Builder::EditBindingKeysRequest* keys, QString* error) const
+                                                 const Builder::EditBindingKeysRequest* keys,
+                                                 QString* error,
+                                                 const Builder::EditBindingKeysBatchRequest* batchKeys) const
 {
     QSet<QPair<int, QString>> paired;
     for (const auto& pair : m_geometryObjectPairs.pairs) {
@@ -112,9 +114,18 @@ bool CModelDocument::ReconcileGeometryObjectPairs(CModelDocument& candidate, con
             for (int index = 0; index < newAxis; ++index) newStride *= after.axes[index].keys.size();
             QVector<int> mapping(previous.keys.size(), -1);
             bool explicitIdentity = newAxis == -1;
-            if (newAxis >= 0 && keys && object(keys->owner) == target && keys->axisIndex == oldAxis) {
-                for (int index = 0; index < keys->keys.size(); ++index) {
-                    const int previousIndex = keys->keys[index].oldKeyIndex;
+            const QVector<Builder::BindingKey>* explicitKeys = nullptr;
+            if (newAxis >= 0 && keys && object(keys->owner) == target && keys->axisIndex == oldAxis)
+                explicitKeys = &keys->keys;
+            if (newAxis >= 0 && !explicitKeys && batchKeys && object(batchKeys->owner) == target) {
+                for (const auto& axis : batchKeys->axes)
+                    if (axis.axisIndex == oldAxis && (axis.parameterId.isEmpty() || axis.parameterId == previous.parameterId)) {
+                        explicitKeys = &axis.keys; break;
+                    }
+            }
+            if (newAxis >= 0 && explicitKeys) {
+                for (int index = 0; index < explicitKeys->size(); ++index) {
+                    const int previousIndex = explicitKeys->at(index).oldKeyIndex;
                     if (previousIndex < 0) continue;
                     if (previousIndex >= mapping.size() || mapping[previousIndex] != -1 || index >= after.axes[newAxis].keys.size())
                         return fail(error, QStringLiteral("配对关键值的迁移身份无效"));

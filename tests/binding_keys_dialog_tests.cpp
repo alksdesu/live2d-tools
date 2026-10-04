@@ -167,6 +167,109 @@ private slots:
         QCOMPARE(request.keys.size(), 2); QCOMPARE(request.keys.last().value, .8f);
     }
 
+    void batchRequestKeepsEveryAxisDraftAndIdentity()
+    {
+        const auto snapshot = grid(); QCOMPARE(snapshot.axes.size(), 2);
+        CBindingKeysDialog dialog(snapshot, 4);
+        auto* axes = control<QComboBox>(dialog, "bindingKeysAxis");
+        QVERIFY(edit(dialog, 0, "-0.75"));
+        addValue(dialog)->setText("-0.5"); add(dialog)->click();
+        axes->setCurrentIndex(1);
+        QVERIFY(edit(dialog, 2, "0.75"));
+        addValue(dialog)->setText("0.5"); add(dialog)->click();
+        for (int current : {0, 1}) {
+            axes->setCurrentIndex(current);
+            Builder::EditBindingKeysBatchRequest request; QString error;
+            QVERIFY2(dialog.BuildBatchRequest(request, &error), qPrintable(error));
+            QCOMPARE(request.owner.id, snapshot.objectId); QCOMPARE(request.owner.type, Builder::Owner::ArtMesh);
+            QCOMPARE(request.parameterId, snapshot.axes[current].parameterId); QCOMPARE(request.axes.size(), 2);
+            for (int index = 0; index < request.axes.size(); ++index) {
+                QCOMPARE(request.axes[index].axisIndex, index);
+                QCOMPARE(request.axes[index].parameterId, snapshot.axes[index].parameterId);
+                QCOMPARE(request.axes[index].expectedKeys, snapshot.axes[index].keys);
+                QCOMPARE(request.axes[index].keys.size(), 4);
+            }
+            QCOMPARE(request.axes[0].keys[0].value, -.75f); QCOMPARE(request.axes[0].keys[0].oldKeyIndex, 0);
+            QCOMPARE(request.axes[0].keys[1].value, -.5f); QCOMPARE(request.axes[0].keys[1].oldKeyIndex, -1);
+            QCOMPARE(request.axes[0].keys[1].source, Builder::BindingKey::InterpolateOldAxis);
+            QCOMPARE(request.axes[1].keys[2].value, .5f); QCOMPARE(request.axes[1].keys[2].oldKeyIndex, -1);
+            QCOMPARE(request.axes[1].keys[3].value, .75f); QCOMPARE(request.axes[1].keys[3].oldKeyIndex, 2);
+            QVERIFY(apply(dialog)->isEnabled());
+            QVERIFY(control<QLabel>(dialog, "bindingKeysSummary")->text().contains(QStringLiteral("9 → 16")));
+        }
+    }
+
+    void hiddenAxisFailureBlocksBatchAndPreservesOutput_data()
+    {
+        QTest::addColumn<int>("hiddenAxis"); QTest::addColumn<bool>("pending");
+        for (int axis : {0, 1}) {
+            QTest::newRow(qPrintable(QStringLiteral("axis-%1-invalid").arg(axis))) << axis << false;
+            QTest::newRow(qPrintable(QStringLiteral("axis-%1-pending").arg(axis))) << axis << true;
+        }
+    }
+    void hiddenAxisFailureBlocksBatchAndPreservesOutput()
+    {
+        QFETCH(int, hiddenAxis); QFETCH(bool, pending);
+        CBindingKeysDialog dialog(grid(), 4); auto* axes = control<QComboBox>(dialog, "bindingKeysAxis");
+        axes->setCurrentIndex(hiddenAxis);
+        if (pending) addValue(dialog)->setText("0.25"); else QVERIFY(edit(dialog, 1, "nan"));
+        axes->setCurrentIndex(1 - hiddenAxis); QVERIFY(edit(dialog, 1, "0.25"));
+        Builder::EditBindingKeysBatchRequest request;
+        request.owner = {Builder::Owner::Rotation, "sentinel-owner"}; request.parameterId = "sentinel-parameter";
+        request.axes = {{7, "sentinel-axis", {12}, {{13, -1, Builder::BindingKey::CopyOldSlice, 9}}}};
+        QString error;
+        QVERIFY(!dialog.BuildBatchRequest(request, &error)); QVERIFY(error.contains(QStringLiteral("轴 %1：").arg(hiddenAxis)));
+        QVERIFY(error.contains(pending ? QStringLiteral("未加入") : QStringLiteral("有限数值")));
+        QCOMPARE(request.owner.type, Builder::Owner::Rotation); QCOMPARE(request.owner.id, QStringLiteral("sentinel-owner"));
+        QCOMPARE(request.parameterId, QStringLiteral("sentinel-parameter")); QCOMPARE(request.axes.size(), 1);
+        QCOMPARE(request.axes[0].axisIndex, 7); QCOMPARE(request.axes[0].parameterId, QStringLiteral("sentinel-axis"));
+        QCOMPARE(request.axes[0].expectedKeys, QVector<float>{12}); QCOMPARE(request.axes[0].keys.size(), 1);
+        QCOMPARE(request.axes[0].keys[0].value, 13.f); QCOMPARE(request.axes[0].keys[0].oldKeyIndex, -1);
+        QCOMPARE(request.axes[0].keys[0].source, Builder::BindingKey::CopyOldSlice);
+        QCOMPARE(request.axes[0].keys[0].copyOldKeyIndex, 9);
+        QVERIFY(!apply(dialog)->isEnabled()); QSignalSpy submitted(&dialog, &CBindingKeysDialog::ApplyRequested);
+        apply(dialog)->click(); QTest::keyClick(table(dialog), Qt::Key_Return); QCOMPARE(submitted.count(), 0);
+        axes->setCurrentIndex(hiddenAxis);
+        if (pending) addValue(dialog)->clear(); else QVERIFY(edit(dialog, 1, "0"));
+        QVERIFY2(dialog.BuildBatchRequest(request, &error), qPrintable(error)); QVERIFY(apply(dialog)->isEnabled());
+    }
+
+    void batchSummaryIncludesUneditedBlendShapeAxes()
+    {
+        auto snapshot = grid(); auto blend = snapshot.axes.first();
+        blend.parameterId = QStringLiteral("blend"); blend.parameterType = 1;
+        snapshot.axes.append(blend); snapshot.keyformCount = snapshot.expectedKeyformCount = 27;
+        CBindingKeysDialog dialog(snapshot, 4); auto* axes = control<QComboBox>(dialog, "bindingKeysAxis");
+        addValue(dialog)->setText("-.5"); add(dialog)->click();
+        axes->setCurrentIndex(1); addValue(dialog)->setText(".5"); add(dialog)->click();
+        Builder::EditBindingKeysBatchRequest request; QString error;
+        QVERIFY2(dialog.BuildBatchRequest(request, &error), qPrintable(error)); QCOMPARE(request.axes.size(), 2);
+        QVERIFY(control<QLabel>(dialog, "bindingKeysSummary")->text().contains(QStringLiteral("27 → 48")));
+        axes->setCurrentIndex(0);
+        QVERIFY(control<QLabel>(dialog, "bindingKeysSummary")->text().contains(QStringLiteral("27 → 48")));
+        axes->setCurrentIndex(2); QVERIFY(!apply(dialog)->isEnabled());
+        QVERIFY(!dialog.BuildBatchRequest(request, &error)); QVERIFY(error.contains(QStringLiteral("普通参数")));
+    }
+
+    void batchProductLimitIncludesUneditedBlendShapeAxes()
+    {
+        auto snapshot = grid(); auto prototype = snapshot.axes.first(); snapshot.axes.clear();
+        prototype.keys = {-1, 1};
+        for (int index = 0; index < 30; ++index) {
+            auto axis = prototype; axis.parameterId = QStringLiteral("axis-%1").arg(index);
+            axis.parameterType = index < 2 ? 0 : 1; snapshot.axes.append(axis);
+        }
+        snapshot.keyformCount = snapshot.expectedKeyformCount = 1 << 30;
+        CBindingKeysDialog dialog(snapshot, -1); auto* axes = control<QComboBox>(dialog, "bindingKeysAxis");
+        addValue(dialog)->setText("0"); add(dialog)->click();
+        Builder::EditBindingKeysBatchRequest request; QString error;
+        QVERIFY2(dialog.BuildBatchRequest(request, &error), qPrintable(error));
+        axes->setCurrentIndex(1); addValue(dialog)->setText("0"); add(dialog)->click();
+        QVERIFY(!dialog.BuildBatchRequest(request, &error)); QVERIFY(error.contains(QStringLiteral("关键形总数")));
+        QVERIFY(!apply(dialog)->isEnabled());
+        QVERIFY(control<QLabel>(dialog, "bindingKeysSummary")->text().contains(QStringLiteral("超出支持范围")));
+    }
+
     void invalidTextIsKeptAndOutputIsAtomic_data()
     {
         QTest::addColumn<QString>("value");

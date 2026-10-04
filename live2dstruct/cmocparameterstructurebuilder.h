@@ -61,6 +61,21 @@ public:
         QVector<BindingKey> keys;
     };
 
+    struct EditBindingKeysBatchAxis
+    {
+        int axisIndex = -1;
+        QString parameterId;
+        QVector<float> expectedKeys;
+        QVector<BindingKey> keys;
+    };
+
+    struct EditBindingKeysBatchRequest
+    {
+        Owner owner;
+        QString parameterId;
+        QVector<EditBindingKeysBatchAxis> axes;
+    };
+
     struct DeleteRequest
     {
         QString id;
@@ -132,6 +147,8 @@ public:
                                       Result& result, QString* error = nullptr);
     static bool EditBindingKeys(const QByteArray& base, const EditBindingKeysRequest& request,
                                 Result& result, QString* error = nullptr);
+    static bool EditBindingKeysBatch(const QByteArray& base, const EditBindingKeysBatchRequest& request,
+                                      Result& result, QString* error = nullptr);
     static bool AnalyzeDelete(const QByteArray& base, const QString& parameterId,
                               QVector<Reference>& references, QString* error = nullptr);
     static bool AnalyzeDelete(const QByteArray& base, const DeleteRequest& request,

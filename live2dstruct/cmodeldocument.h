@@ -203,6 +203,7 @@ struct CModelEdit
     QVector<CMocMeshStructureBuilder::MeshRemap> meshRemaps;
     std::shared_ptr<const CMocMeshStructureBuilder::Request> meshRequest;
     std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysRequest> bindingKeysRequest;
+    std::shared_ptr<const CMocParameterStructureBuilder::EditBindingKeysBatchRequest> bindingKeysBatchRequest;
     std::shared_ptr<const CDeformerPreserveRequest> deformerRequest;
     CModelMeshEditVerification meshVerification;
 };
@@ -300,6 +301,8 @@ public:
                                CModelEdit& edit, QString* error = nullptr) const;
     bool MakeBindingKeysEdit(const CMocParameterStructureBuilder::EditBindingKeysRequest& request,
                              CModelEdit& edit, QString* error = nullptr) const;
+    bool MakeBindingKeysBatchEdit(const CMocParameterStructureBuilder::EditBindingKeysBatchRequest& request,
+                                  CModelEdit& edit, QString* error = nullptr) const;
     bool MakeDeleteParameterEdit(const QString& id, CModelEdit& edit, QString* error = nullptr) const;
     bool MakeDeleteParameterEdit(const CMocParameterStructureBuilder::DeleteRequest& request,
                                  CModelEdit& edit, QString* error = nullptr) const;
@@ -401,7 +404,8 @@ private:
     bool SameDeformerDirectory(const CModelDocument& candidate, QString* error) const;
     bool MakeParameterStructureEdit(const CMocParameterStructureBuilder::Result& result, const QString& id,
                                     const QString* displayName, bool created, CModelEdit& edit, QString* error,
-                                    const CMocParameterStructureBuilder::EditBindingKeysRequest* keys = nullptr) const;
+                                    const CMocParameterStructureBuilder::EditBindingKeysRequest* keys = nullptr,
+                                    const CMocParameterStructureBuilder::EditBindingKeysBatchRequest* batchKeys = nullptr) const;
     bool DecodeStructureState(const QVariantMap& state, const CModelEdit& edit, CModelSession& session,
                               QString* error) const;
     bool FreezeMeshRequest(const CMocMeshStructureBuilder::Request& request,
@@ -475,7 +479,8 @@ private:
     bool ReconcileGeometryObjectPairs(CModelDocument& candidate, const QVector<CGeometryObjectPairs::VertexRemap>& vertices,
                                        const CMocParameterStructureBuilder::Result* parameters,
                                        const CMocParameterStructureBuilder::EditBindingKeysRequest* keys,
-                                       QString* error) const;
+                                       QString* error,
+                                       const CMocParameterStructureBuilder::EditBindingKeysBatchRequest* batchKeys = nullptr) const;
     bool ApplyEdit(const CModelEdit& edit, bool forward);
     bool ApplyMaterialEdit(const CModelEdit& edit, bool forward, QString* error = nullptr, bool updateArtwork = true);
     bool ApplyDrawableMaterials(const CModelMaterialState& state, bool updateArtwork, QString* error);

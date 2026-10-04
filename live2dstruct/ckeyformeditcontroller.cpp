@@ -116,6 +116,58 @@ int remapBindingKeyform(const CKeyformGridSnapshot& before, const CKeyformGridSn
     for (auto value = corner.cbegin(); value != corner.cend(); ++value) pose[value.key()] = value.value();
     return int(mapped);
 }
+
+int remapBindingKeyform(const CKeyformGridSnapshot& before, const CKeyformGridSnapshot& after,
+                       const CMocParameterStructureBuilder::EditBindingKeysBatchRequest& request,
+                       bool forward, int local, QMap<QString, float>& pose)
+{
+    using Builder = CMocParameterStructureBuilder;
+    if (local < 0 || local >= (forward ? before.keyformCount : after.keyformCount) ||
+        before.axes.size() != after.axes.size() || request.axes.isEmpty()) return -1;
+    QVector<const Builder::EditBindingKeysBatchAxis*> changed(before.axes.size(), nullptr);
+    for (const auto& axis : request.axes) {
+        if (axis.axisIndex < 0 || axis.axisIndex >= before.axes.size() || changed[axis.axisIndex] ||
+            (!axis.parameterId.isEmpty() && axis.parameterId != before.axes[axis.axisIndex].parameterId)) return -1;
+        changed[axis.axisIndex] = &axis;
+    }
+    QVector<int> oldCounts, newCounts, digits(before.axes.size(), -1), mappedDigits(before.axes.size(), -1);
+    oldCounts.reserve(before.axes.size()); newCounts.reserve(after.axes.size());
+    qint64 oldStride = 1, newStride = 1;
+    for (int axis = 0; axis < before.axes.size(); ++axis) {
+        const auto& oldKeys = before.axes[axis].keys; const auto& newKeys = after.axes[axis].keys;
+        if (oldKeys.isEmpty() || newKeys.isEmpty() || before.axes[axis].parameterId != after.axes[axis].parameterId) return -1;
+        oldCounts.append(oldKeys.size()); newCounts.append(newKeys.size());
+        const int count = forward ? oldKeys.size() : newKeys.size();
+        if (count <= 0 || local < 0) return -1;
+        digits[axis] = (local / (forward ? oldStride : newStride)) % count;
+        if (forward) oldStride *= oldKeys.size(); else newStride *= newKeys.size();
+    }
+    for (int axis = 0; axis < before.axes.size(); ++axis) {
+        const auto* edit = changed[axis];
+        if (!edit) {
+            if (before.axes[axis].keys != after.axes[axis].keys) return -1;
+            mappedDigits[axis] = digits[axis];
+            continue;
+        }
+        if (forward) {
+            const int oldDigit = digits[axis];
+            for (int index = 0; index < edit->keys.size(); ++index)
+                if (edit->keys[index].oldKeyIndex == oldDigit) { mappedDigits[axis] = index; break; }
+        } else {
+            const int newDigit = digits[axis];
+            if (newDigit >= 0 && newDigit < edit->keys.size()) mappedDigits[axis] = edit->keys[newDigit].oldKeyIndex;
+        }
+        if (mappedDigits[axis] < 0 || mappedDigits[axis] >= (forward ? newCounts[axis] : oldCounts[axis])) return -1;
+    }
+    qint64 mapped = 0, stride = 1;
+    for (int axis = 0; axis < mappedDigits.size(); ++axis) {
+        mapped += stride * mappedDigits[axis];
+        stride *= forward ? newCounts[axis] : oldCounts[axis];
+    }
+    const auto& destination = forward ? after : before;
+    if (mapped < 0 || mapped >= destination.keyformCount || !destination.Pose(int(mapped), pose)) return -1;
+    return int(mapped);
+}
 }
 
 void CKeyformEditController::SetDocument(CModelDocument* document)
@@ -864,12 +916,19 @@ bool CKeyformEditController::PublishStructure(CModelDocument candidate, const CM
             }
             CKeyformGridSnapshot grid;
             if (candidate.DescribeKeyformGrid(nextTarget, nextType, grid)) {
-                if (!restoringSelection && command.bindingKeysRequest &&
-                    editsBindingOwner(*command.bindingKeysRequest, nextTarget, nextType)) {
+                const bool singleBindingOwner = command.bindingKeysRequest &&
+                    editsBindingOwner(*command.bindingKeysRequest, nextTarget, nextType);
+                const bool batchBindingOwner = command.bindingKeysBatchRequest &&
+                    ((command.bindingKeysBatchRequest->owner.type == CMocParameterStructureBuilder::Owner::ArtMesh && nextType == QLatin1String("artmesh")) ||
+                     (command.bindingKeysBatchRequest->owner.type == CMocParameterStructureBuilder::Owner::Warp && nextType == QLatin1String("warp")) ||
+                     (command.bindingKeysBatchRequest->owner.type == CMocParameterStructureBuilder::Owner::Rotation && nextType == QLatin1String("rotation"))) &&
+                    command.bindingKeysBatchRequest->owner.id == nextTarget;
+                if (!restoringSelection && (singleBindingOwner || batchBindingOwner)) {
                     CKeyformGridSnapshot previous;
                     if (m_document->DescribeKeyformGrid(nextTarget, nextType, previous))
-                        nextKeyform = remapBindingKeyform(previous, grid, *command.bindingKeysRequest,
-                                                        forward, m_keyform, pose);
+                        nextKeyform = command.bindingKeysRequest
+                            ? remapBindingKeyform(previous, grid, *command.bindingKeysRequest, forward, m_keyform, pose)
+                            : remapBindingKeyform(previous, grid, *command.bindingKeysBatchRequest, forward, m_keyform, pose);
                 } else nextKeyform = keyformAtPose(grid, pose);
             }
             if (nextKeyform >= 0 && !CanEditIn(candidate, nextTarget, nextType, nextKeyform, error)) return false;

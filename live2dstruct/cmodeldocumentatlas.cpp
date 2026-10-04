@@ -22,7 +22,7 @@ bool states(const CModelEdit& edit, CModelAtlasState& before, CModelAtlasState& 
 {
     if (edit.field != CModelEdit::AtlasLayout || edit.type != QLatin1String("textures") || edit.name != QLatin1String("atlases") ||
         edit.index != -1 || edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None || edit.freezeValue ||
-        edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.deformerRequest ||
+        edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest ||
         edit.before.metaType() != QMetaType::fromType<CModelAtlasState>() || edit.after.metaType() != QMetaType::fromType<CModelAtlasState>())
         return fail(error, QStringLiteral("图集编辑命令格式无效"));
     before = edit.before.value<CModelAtlasState>(); after = edit.after.value<CModelAtlasState>();

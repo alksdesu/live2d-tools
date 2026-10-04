@@ -1260,13 +1260,16 @@ bool CModelDocument::HasValidStructureRequests(const CModelEdit& edit)
     if (edit.field == CModelEdit::DeformerStructure) {
         if (!edit.deformerRequest || edit.deformerRequest->operation.valueless_by_exception() ||
             edit.type != QLatin1String("deformer") || edit.parameterChange != CModelEdit::ParameterChange::None ||
-            edit.freezeValue || edit.bindingKeysRequest || edit.meshRequest || !edit.meshRemaps.isEmpty()) return false;
+            edit.freezeValue || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.meshRequest || !edit.meshRemaps.isEmpty()) return false;
         return edit.name == std::visit([](const auto& request) { return request.id; }, edit.deformerRequest->operation);
     }
     if (edit.deformerRequest) return false;
-    if (!edit.bindingKeysRequest) return edit.parameterChange != CModelEdit::ParameterChange::BindingKeys;
+    if (edit.bindingKeysRequest && edit.bindingKeysBatchRequest) return false;
+    if (!edit.bindingKeysRequest && !edit.bindingKeysBatchRequest) return edit.parameterChange != CModelEdit::ParameterChange::BindingKeys;
+    const QString parameterId = edit.bindingKeysRequest ? edit.bindingKeysRequest->parameterId : edit.bindingKeysBatchRequest->parameterId;
+    if (parameterId.isEmpty() || (edit.bindingKeysBatchRequest && edit.bindingKeysBatchRequest->axes.isEmpty())) return false;
     return edit.parameterChange == CModelEdit::ParameterChange::BindingKeys && edit.field == CModelEdit::ParameterStructure &&
-        edit.type == QLatin1String("parameter") && edit.name == edit.bindingKeysRequest->parameterId &&
+        edit.type == QLatin1String("parameter") && edit.name == parameterId &&
         !edit.freezeValue && edit.meshRemaps.isEmpty() && !edit.meshRequest;
 }
 
@@ -1277,7 +1280,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
         const auto type = QMetaType::fromType<CModelBlendShapeGeometryState>();
         if (edit.name != QLatin1String("blendShapeGeometry") || edit.type != QLatin1String("blendshape") ||
             edit.index != -1 || edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None ||
-            edit.freezeValue || edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.deformerRequest ||
+            edit.freezeValue || edit.meshRequest || !edit.meshRemaps.isEmpty() || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest ||
             edit.before.metaType() != type || edit.after.metaType() != type ||
             m_blendShapeGeometry != (forward ? edit.before : edit.after).value<CModelBlendShapeGeometryState>()) return false;
         const auto next = (forward ? edit.after : edit.before).value<CModelBlendShapeGeometryState>();
@@ -1432,7 +1435,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         if (command.field == CModelEdit::DisplayNames) {
             if (command.name != QLatin1String("objects") || command.type != QLatin1String("names") || command.index != -1 || command.coalesce ||
                 command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue || command.meshRequest ||
-                !command.meshRemaps.isEmpty() || command.bindingKeysRequest || command.deformerRequest ||
+                !command.meshRemaps.isEmpty() || command.bindingKeysRequest || command.bindingKeysBatchRequest || command.deformerRequest ||
                 command.before.metaType() != QMetaType::fromType<CModelDisplayNames::State>() ||
                 command.after.metaType() != QMetaType::fromType<CModelDisplayNames::State>() ||
                 command.before.value<CModelDisplayNames::State>() != m_displayNames) return false;
@@ -1451,7 +1454,7 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
         if (command.field == CModelEdit::AtlasLayout) {
             if (command.type != QLatin1String("textures") || command.name != QLatin1String("atlases") || command.index != -1 ||
                 command.coalesce || command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue ||
-                command.meshRequest || !command.meshRemaps.isEmpty() || command.bindingKeysRequest || command.deformerRequest) return false;
+                command.meshRequest || !command.meshRemaps.isEmpty() || command.bindingKeysRequest || command.bindingKeysBatchRequest || command.deformerRequest) return false;
             CModelEdit frozen;
             if (command.before.metaType() != QMetaType::fromType<CModelAtlasState>() ||
                 command.after.metaType() != QMetaType::fromType<CModelAtlasState>() ||

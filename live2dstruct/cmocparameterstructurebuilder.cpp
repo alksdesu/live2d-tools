@@ -961,6 +961,81 @@ bool analyze(const Layout& layout, int parameter, QVector<Builder::Reference>& r
 }
 }
 
+bool CMocParameterStructureBuilder::EditBindingKeysBatch(const QByteArray& base,
+                                                         const EditBindingKeysBatchRequest& request,
+                                                         Result& result, QString* error)
+{
+    return guarded(error, [&] {
+        if (request.parameterId.isEmpty() || request.axes.isEmpty()) return fail(error, QStringLiteral("批量绑定轴编辑缺少参数或轴"));
+        QVector<EditBindingKeysBatchAxis> axes = request.axes;
+        std::sort(axes.begin(), axes.end(), [](const auto& first, const auto& second) { return first.axisIndex < second.axisIndex; });
+        bool hasAnchor = false;
+        for (const auto& axis : axes)
+            hasAnchor = hasAnchor || (axis.parameterId.isEmpty() ? request.parameterId : axis.parameterId) == request.parameterId;
+        if (!hasAnchor) return fail(error, QStringLiteral("批量绑定轴主参数必须来自编辑轴"));
+        QSet<int> seen;
+        QByteArray working = base;
+        Result aggregate;
+        const auto mergeRemap = [&](const KeyformRemap& next) {
+            for (auto& previous : aggregate.keyforms) {
+                if (!(previous.owner == next.owner)) continue;
+                if (previous.newKeyformCount != next.oldKeyformCount ||
+                    previous.newLocalSources.size() != next.oldKeyformCount ||
+                    next.newLocalSources.size() != next.newKeyformCount)
+                    return false;
+                KeyformRemap composed;
+                composed.owner = previous.owner;
+                composed.oldKeyformCount = previous.oldKeyformCount;
+                composed.newKeyformCount = next.newKeyformCount;
+                composed.newAxisKeyCount = next.newAxisKeyCount;
+                composed.newLocalToOldLocal.resize(next.newKeyformCount, -1);
+                composed.newLocalSources.resize(next.newKeyformCount);
+                for (int local = 0; local < next.newKeyformCount; ++local) {
+                    QMap<int, double> terms;
+                    for (const auto& middle : next.newLocalSources[local]) {
+                        if (middle.oldLocal < 0 || middle.oldLocal >= previous.newLocalSources.size() || !std::isfinite(middle.weight)) return false;
+                        for (const auto& source : previous.newLocalSources[middle.oldLocal]) {
+                            if (source.oldLocal < 0 || source.oldLocal >= previous.oldKeyformCount || !std::isfinite(source.weight)) return false;
+                            terms[source.oldLocal] += middle.weight * source.weight;
+                        }
+                    }
+                    for (auto term = terms.cbegin(); term != terms.cend(); ++term)
+                        if (term.value() != 0) composed.newLocalSources[local].append({term.key(), term.value()});
+                    if (composed.newLocalSources[local].size() == 1)
+                        composed.newLocalToOldLocal[local] = composed.newLocalSources[local].first().oldLocal;
+                }
+                previous = std::move(composed);
+                return true;
+            }
+            aggregate.keyforms.append(next);
+            return true;
+        };
+        for (const auto& axis : axes) {
+            if (axis.axisIndex < 0 || seen.contains(axis.axisIndex)) return fail(error, QStringLiteral("批量绑定轴重复或无效"));
+            seen.insert(axis.axisIndex);
+            EditBindingKeysRequest single;
+            single.owner = request.owner; single.axisIndex = axis.axisIndex;
+            single.parameterId = axis.parameterId.isEmpty() ? request.parameterId : axis.parameterId;
+            if (single.parameterId.isEmpty()) return fail(error, QStringLiteral("批量绑定轴缺少参数"));
+            single.expectedKeys = axis.expectedKeys; single.keys = axis.keys;
+            Result next;
+            if (!EditBindingKeys(working, single, next, error)) return false;
+            working = next.bytes;
+            if (aggregate.oldParameterToNew.isEmpty()) aggregate.oldParameterToNew = next.oldParameterToNew;
+            for (const auto& remap : next.keyforms)
+                if (!mergeRemap(remap)) return fail(error, QStringLiteral("批量绑定轴关键形映射无法组合"));
+            for (const auto& target : next.affectedTargets) {
+                if (std::none_of(aggregate.affectedTargets.cbegin(), aggregate.affectedTargets.cend(),
+                                 [&](const auto& existing) { return existing.type == target.type && existing.id == target.id; }))
+                    aggregate.affectedTargets.append(target);
+            }
+        }
+        aggregate.bytes = working;
+        result = std::move(aggregate);
+        return true;
+    });
+}
+
 bool CMocParameterStructureBuilder::AnalyzeDelete(const QByteArray& base, const QString& parameterId,
                                                  QVector<Reference>& references, QString* error)
 {

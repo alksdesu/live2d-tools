@@ -1425,10 +1425,40 @@ void CInspectorPanel::EditBindingKeys()
             pending->SetError(QStringLiteral("编辑期间模型、关键形或选区已改变，请关闭后重新打开"));
             return;
         }
-        live2dstruct::CMocParameterStructureBuilder::EditBindingKeysRequest request;
+        live2dstruct::CMocParameterStructureBuilder::EditBindingKeysBatchRequest batchRequest;
         live2dstruct::CModelEdit edit;
         QString error;
-        if (!pending->BuildRequest(request, &error) || !m_document->MakeBindingKeysEdit(request, edit, &error)) {
+        if (!pending->BuildBatchRequest(batchRequest, &error)) {
+            pending->SetError(error);
+            emit EditRejected(error);
+            return;
+        }
+        int changedAxis = -1, changedCount = 0;
+        for (int axis = 0; axis < batchRequest.axes.size(); ++axis) {
+            const auto& candidate = batchRequest.axes[axis];
+            bool unchanged = candidate.keys.size() == candidate.expectedKeys.size();
+            for (int key = 0; unchanged && key < candidate.keys.size(); ++key) {
+                const auto& value = candidate.keys[key];
+                unchanged = value.value == candidate.expectedKeys[key] &&
+                    ((value.oldKeyIndex >= 0 && value.oldKeyIndex == key) ||
+                     (value.oldKeyIndex < 0 && value.source == live2dstruct::CMocParameterStructureBuilder::BindingKey::CopyOldSlice &&
+                      value.copyOldKeyIndex == key) ||
+                     (value.oldKeyIndex < 0 && value.source != live2dstruct::CMocParameterStructureBuilder::BindingKey::CopyOldSlice));
+            }
+            if (!unchanged) { changedAxis = axis; ++changedCount; }
+        }
+        bool accepted = false;
+        if (changedCount == 1) {
+            const auto& candidate = batchRequest.axes[changedAxis];
+            live2dstruct::CMocParameterStructureBuilder::EditBindingKeysRequest single;
+            single.owner = batchRequest.owner; single.axisIndex = candidate.axisIndex;
+            single.parameterId = candidate.parameterId.isEmpty() ? batchRequest.parameterId : candidate.parameterId;
+            single.expectedKeys = candidate.expectedKeys; single.keys = candidate.keys;
+            accepted = m_document->MakeBindingKeysEdit(single, edit, &error);
+        } else {
+            accepted = m_document->MakeBindingKeysBatchEdit(batchRequest, edit, &error);
+        }
+        if (!accepted) {
             pending->SetError(error);
             emit EditRejected(error);
             return;

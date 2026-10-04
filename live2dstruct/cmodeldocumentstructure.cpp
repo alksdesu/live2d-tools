@@ -973,7 +973,7 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
         if (edit.field != CModelEdit::DeformerStructure) for (const auto& deformer : m_deformers)
             examine(deformer.type == CModelDeformer::Warp ? Builder::Owner::Warp : Builder::Owner::Rotation, deformer.id);
         if (!canBind(*this, changed, error)) return false;
-        if (edit.field == CModelEdit::ParameterStructure && !edit.bindingKeysRequest) {
+        if (edit.field == CModelEdit::ParameterStructure && !edit.bindingKeysRequest && !edit.bindingKeysBatchRequest) {
             const auto& origin = forward ? *this : candidate;
             const auto& destination = forward ? candidate : *this;
             auto paired = destination;
@@ -991,13 +991,14 @@ bool CModelDocument::ApplyStructureState(const QVariantMap& state, const CModelE
 
 bool CModelDocument::MakeParameterStructureEdit(const Builder::Result& result, const QString& id,
                                                const QString* displayName, bool created, CModelEdit& edit, QString* error,
-                                               const Builder::EditBindingKeysRequest* keys) const
+                                               const Builder::EditBindingKeysRequest* keys,
+                                               const Builder::EditBindingKeysBatchRequest* batchKeys) const
 {
     Builder::ColumnState structure;
     if (!Builder::CaptureColumnState(m_sourceBytes, result.bytes, structure, error)) return false;
     CModelDocument candidate;
     if (!PrepareStructure(structure, m_hasMeshStructure, candidate, error) || !PreserveStructureProperties(candidate, error)) return false;
-    if (!ReconcileGeometryObjectPairs(candidate, {}, &result, keys, error)) return false;
+    if (!ReconcileGeometryObjectPairs(candidate, {}, &result, keys, error, batchKeys)) return false;
     if (created) {
         if (candidate.ParameterMetadataState(id).isEmpty()) return fail(error, QStringLiteral("创建结果缺少唯一参数：%1").arg(id));
         if (displayName && displayName->contains(QChar::Null)) return fail(error, QStringLiteral("显示名包含空字符"));
@@ -1260,20 +1261,24 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
 bool CModelDocument::ValidateBindingKeysTransition(const CModelDocument& candidate, const CModelEdit& edit,
                                                   bool forward, QString* error) const
 {
-    if (!HasValidStructureRequests(edit) || !edit.bindingKeysRequest ||
+    if (!HasValidStructureRequests(edit) || (!edit.bindingKeysRequest && !edit.bindingKeysBatchRequest) ||
         candidate.m_sourceBytes != m_sourceBytes || candidate.m_sourceDigest != m_sourceDigest ||
         candidate.m_sourcePath != m_sourcePath)
         return fail(error, QStringLiteral("绑定关键值历史的请求或模型来源无效"));
-    if (!canBind(*this, {{edit.bindingKeysRequest->owner, {}}}, error)) return false;
+    const auto owner = edit.bindingKeysRequest ? edit.bindingKeysRequest->owner : edit.bindingKeysBatchRequest->owner;
+    if (!canBind(*this, {{owner, {}}}, error)) return false;
     const auto& origin = forward ? *this : candidate;
     const auto& destination = forward ? candidate : *this;
     QByteArray base;
     Builder::Result result;
     CModelEdit expected;
-    if (!origin.BuildPreviewMoc(base, error) ||
-        !Builder::EditBindingKeys(base, *edit.bindingKeysRequest, result, error)) return false;
+    if (!origin.BuildPreviewMoc(base, error)) return false;
+    if (edit.bindingKeysRequest) {
+        if (!Builder::EditBindingKeys(base, *edit.bindingKeysRequest, result, error)) return false;
+    } else if (!Builder::EditBindingKeysBatch(base, *edit.bindingKeysBatchRequest, result, error)) return false;
     if (result.bytes == base) return fail(error, QStringLiteral("绑定关键值请求没有改变模型"));
-    if (!origin.MakeParameterStructureEdit(result, edit.name, nullptr, false, expected, error, edit.bindingKeysRequest.get())) return false;
+    if (!origin.MakeParameterStructureEdit(result, edit.name, nullptr, false, expected, error,
+                                           edit.bindingKeysRequest.get(), edit.bindingKeysBatchRequest.get())) return false;
     if (expected.after.toMap() != destination.AuthoringStructureState())
         return fail(error, QStringLiteral("绑定关键值历史包含请求之外的结构或属性修改"));
     return true;
@@ -1396,6 +1401,24 @@ bool CModelDocument::MakeBindingKeysEdit(const Builder::EditBindingKeysRequest& 
         if (!MakeParameterStructureEdit(result, request.parameterId, nullptr, false, command, error, &request)) return false;
         command.parameterChange = CModelEdit::ParameterChange::BindingKeys;
         command.bindingKeysRequest = std::make_shared<const Builder::EditBindingKeysRequest>(request);
+        edit = std::move(command);
+        return true;
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法编辑绑定轴关键值")); }
+}
+
+bool CModelDocument::MakeBindingKeysBatchEdit(const Builder::EditBindingKeysBatchRequest& request,
+                                             CModelEdit& edit, QString* error) const
+{
+    try {
+        if (!canBind(*this, {{request.owner, {}}}, error)) return false;
+        QByteArray base;
+        Builder::Result result;
+        if (!BuildPreviewMoc(base, error) || !Builder::EditBindingKeysBatch(base, request, result, error)) return false;
+        if (result.bytes == base) return fail(error, QStringLiteral("绑定轴关键值没有变化"));
+        CModelEdit command;
+        if (!MakeParameterStructureEdit(result, request.parameterId, nullptr, false, command, error, nullptr, &request)) return false;
+        command.parameterChange = CModelEdit::ParameterChange::BindingKeys;
+        command.bindingKeysBatchRequest = std::make_shared<const Builder::EditBindingKeysBatchRequest>(request);
         edit = std::move(command);
         return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法编辑绑定轴关键值")); }

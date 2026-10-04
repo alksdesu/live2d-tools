@@ -138,25 +138,29 @@ public:
 
     Draft& current() { return drafts[axis]; }
     const Draft& current() const { return drafts[axis]; }
+    void ensure(int index, int activeKeyform)
+    {
+        if (index < 0 || index >= drafts.size() || drafts[index].initialized) return;
+        auto& draft = drafts[index];
+        const auto& keys = snapshot.axes[index].keys;
+        draft.rows.reserve(keys.size());
+        for (int key = 0; key < keys.size(); ++key)
+            draft.rows.append(Entry{{keys[key], key, Builder::BindingKey::InterpolateOldAxis, -1}, {}});
+        int remainder = activeKeyform >= 0 && activeKeyform < snapshot.keyformCount ? activeKeyform : 0;
+        for (int previous = 0; previous < index; ++previous) {
+            if (snapshot.axes[previous].keys.isEmpty()) { remainder = 0; break; }
+            remainder /= snapshot.axes[previous].keys.size();
+        }
+        draft.copy = keys.isEmpty() ? 0 : remainder % keys.size();
+        draft.mode = keys.size() == 1 ? 1 : 0;
+        draft.initialized = true;
+    }
     int rowCount(const QModelIndex& parent = {}) const override { return parent.isValid() || axis < 0 ? 0 : int(current().rows.size()); }
     int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 2; }
     void select(int index, int activeKeyform)
     {
         beginResetModel(); axis = index;
-        if (axis >= 0 && !current().initialized) {
-            auto& draft = current();
-            const auto& keys = snapshot.axes[axis].keys;
-            draft.rows.reserve(keys.size());
-            for (int key = 0; key < keys.size(); ++key) draft.rows.append(Entry{{keys[key], key, Builder::BindingKey::InterpolateOldAxis, -1}, {}});
-            int remainder = activeKeyform >= 0 && activeKeyform < snapshot.keyformCount ? activeKeyform : 0;
-            for (int previous = 0; previous < axis; ++previous) {
-                if (snapshot.axes[previous].keys.isEmpty()) { remainder = 0; break; }
-                remainder /= snapshot.axes[previous].keys.size();
-            }
-            draft.copy = keys.isEmpty() ? 0 : remainder % keys.size();
-            draft.mode = keys.size() == 1 ? 1 : 0;
-            draft.initialized = true;
-        }
+        ensure(axis, activeKeyform);
         endResetModel();
     }
     QVariant data(const QModelIndex& index, int role) const override
@@ -268,30 +272,35 @@ QString sourceError(const CKeyformGridSnapshot& snapshot)
     return {};
 }
 
-QString axisError(const DraftModel& model)
+QString axisError(const DraftModel& model, int axisIndex)
 {
-    if (model.axis < 0 || model.axis >= model.snapshot.axes.size()) return QStringLiteral("请选择参数轴");
-    const auto& axis = model.snapshot.axes[model.axis];
+    if (axisIndex < 0 || axisIndex >= model.snapshot.axes.size()) return QStringLiteral("请选择参数轴");
+    const auto& axis = model.snapshot.axes[axisIndex];
     if (axis.parameterType != 0) return QStringLiteral("当前轴不是普通参数，暂不支持编辑融合参数轴");
     if (!std::isfinite(axis.minimum) || !std::isfinite(axis.maximum) || axis.minimum > axis.maximum)
         return QStringLiteral("参数有效范围无效");
     return {};
 }
 
-QString collect(const DraftModel& model, Builder::EditBindingKeysRequest& request, bool allowPending = false)
+QString axisError(const DraftModel& model)
 {
-    const auto problem = axisError(model);
+    return axisError(model, model.axis);
+}
+
+QString collectAxis(const DraftModel& model, int axisIndex,
+                    Builder::EditBindingKeysBatchAxis& request, bool allowPending = false)
+{
+    const auto problem = axisError(model, axisIndex);
     if (!problem.isEmpty()) return problem;
-    const auto& draft = model.current(); const auto& axis = model.snapshot.axes[model.axis];
+    if (axisIndex >= model.drafts.size() || !model.drafts[axisIndex].initialized)
+        return QStringLiteral("参数轴草稿尚未初始化");
+    const auto& draft = model.drafts[axisIndex]; const auto& axis = model.snapshot.axes[axisIndex];
     if (!allowPending && !draft.addText.trimmed().isEmpty()) return QStringLiteral("添加区域有未加入的值，请先点击添加或清空输入");
     if (draft.rows.isEmpty()) return QStringLiteral("至少保留一个关键值");
     if (qint64(model.snapshot.keyformCount / axis.keys.size()) * draft.rows.size() > std::numeric_limits<int>::max())
         return QStringLiteral("关键形总数超出支持的范围");
-    Builder::EditBindingKeysRequest candidate;
-    candidate.owner = {model.snapshot.objectType == "artmesh" ? Builder::Owner::ArtMesh
-        : model.snapshot.objectType == "warp" ? Builder::Owner::Warp : Builder::Owner::Rotation, model.snapshot.objectId};
-    candidate.axisIndex = model.axis; candidate.parameterId = axis.parameterId; candidate.expectedKeys = axis.keys;
-    candidate.keys.reserve(draft.rows.size());
+    request.axisIndex = axisIndex; request.expectedKeys = axis.keys;
+    request.keys.reserve(draft.rows.size());
     QSet<int> retained;
     for (int index = 0; index < draft.rows.size(); ++index) {
         const auto& row = draft.rows[index]; auto key = row.key;
@@ -310,16 +319,69 @@ QString collect(const DraftModel& model, Builder::EditBindingKeysRequest& reques
             return QStringLiteral("旧轴区间 [%1, %2] 外不能插值，请明确选择复制旧形").arg(text(axis.keys.first()), text(axis.keys.last()));
         if (key.oldKeyIndex < 0 && key.source == Builder::BindingKey::CopyOldSlice
             && (key.copyOldKeyIndex < 0 || key.copyOldKeyIndex >= axis.keys.size())) return QStringLiteral("请选择有效的旧形复制来源");
-        candidate.keys.append(key);
+        request.keys.append(key);
     }
-    std::stable_sort(candidate.keys.begin(), candidate.keys.end(), [](const auto& a, const auto& b) { return a.value < b.value; });
-    for (int index = 1; index < candidate.keys.size(); ++index)
-        if (candidate.keys[index].value <= candidate.keys[index - 1].value) return QStringLiteral("关键值重复；每个数值只能保留一项");
-    request = std::move(candidate);
+    std::stable_sort(request.keys.begin(), request.keys.end(), [](const auto& a, const auto& b) { return a.value < b.value; });
+    for (int index = 1; index < request.keys.size(); ++index)
+        if (request.keys[index].value <= request.keys[index - 1].value) return QStringLiteral("关键值重复；每个数值只能保留一项");
     return {};
 }
 
-bool unchanged(const Builder::EditBindingKeysRequest& request)
+QString collect(const DraftModel& model, Builder::EditBindingKeysRequest& request, bool allowPending = false)
+{
+    Builder::EditBindingKeysBatchAxis candidate;
+    const auto problem = collectAxis(model, model.axis, candidate, allowPending);
+    if (!problem.isEmpty()) return problem;
+    request.owner = {model.snapshot.objectType == "artmesh" ? Builder::Owner::ArtMesh
+        : model.snapshot.objectType == "warp" ? Builder::Owner::Warp : Builder::Owner::Rotation, model.snapshot.objectId};
+    request.axisIndex = candidate.axisIndex;
+    request.parameterId = model.snapshot.axes[candidate.axisIndex].parameterId;
+    request.expectedKeys = std::move(candidate.expectedKeys);
+    request.keys = std::move(candidate.keys);
+    return {};
+}
+
+qint64 draftKeyformCount(const DraftModel& model)
+{
+    qint64 total = 1;
+    for (int index = 0; index < model.snapshot.axes.size(); ++index) {
+        const auto& axis = model.snapshot.axes[index];
+        const auto& draft = model.drafts[index];
+        const qsizetype count = axis.parameterType == 0 && draft.initialized ? draft.rows.size() : axis.keys.size();
+        if (count <= 0) return 0;
+        if (total > std::numeric_limits<int>::max() / count) return qint64(std::numeric_limits<int>::max()) + 1;
+        total *= count;
+    }
+    return total;
+}
+
+QString collectBatch(const DraftModel& model, int activeAxis,
+                     Builder::EditBindingKeysBatchRequest& request)
+{
+    if (model.snapshot.axes.isEmpty()) return QStringLiteral("对象尚未绑定参数轴");
+    request.owner = {model.snapshot.objectType == "artmesh" ? Builder::Owner::ArtMesh
+        : model.snapshot.objectType == "warp" ? Builder::Owner::Warp : Builder::Owner::Rotation, model.snapshot.objectId};
+    request.axes.clear(); request.axes.reserve(model.snapshot.axes.size());
+    request.parameterId.clear();
+    for (int axis = 0; axis < model.snapshot.axes.size(); ++axis) {
+        if (!model.drafts[axis].initialized) return QStringLiteral("参数轴草稿尚未初始化");
+        if (model.snapshot.axes[axis].parameterType != 0) {
+            if (axis == activeAxis) return axisError(model, axis);
+            continue;
+        }
+        Builder::EditBindingKeysBatchAxis candidate;
+        const auto problem = collectAxis(model, axis, candidate);
+        if (!problem.isEmpty()) return QStringLiteral("轴 %1：%2").arg(axis).arg(problem);
+        candidate.parameterId = model.snapshot.axes[axis].parameterId;
+        if (request.parameterId.isEmpty() || axis == activeAxis) request.parameterId = candidate.parameterId;
+        request.axes.append(std::move(candidate));
+    }
+    if (request.parameterId.isEmpty()) request.parameterId = model.snapshot.axes.first().parameterId;
+    if (draftKeyformCount(model) > std::numeric_limits<int>::max()) return QStringLiteral("关键形总数超出支持的范围");
+    return {};
+}
+
+bool unchanged(const Builder::EditBindingKeysBatchAxis& request)
 {
     if (request.keys.size() != request.expectedKeys.size()) return false;
     for (int index = 0; index < request.keys.size(); ++index) {
@@ -329,6 +391,12 @@ bool unchanged(const Builder::EditBindingKeysRequest& request)
         else if (key.source == Builder::BindingKey::CopyOldSlice && key.copyOldKeyIndex != index) return false;
     }
     return true;
+}
+
+bool unchanged(const Builder::EditBindingKeysBatchRequest& request)
+{
+    if (request.axes.isEmpty()) return true;
+    return std::all_of(request.axes.cbegin(), request.axes.cend(), [](const auto& axis) { return unchanged(axis); });
 }
 }
 
@@ -360,7 +428,7 @@ CBindingKeysDialog::CBindingKeysDialog(const CKeyformGridSnapshot& snapshot, int
     m_state->scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto* content = new QWidget(m_state->scroll); auto* body = new QVBoxLayout(content);
     body->addWidget(label(content, QStringLiteral("对象：%1").arg(snapshot.objectId)));
-    body->addWidget(label(content, QStringLiteral("仅应用当前轴；关闭后其他轴草稿不写入。形状随原关键值移动，修改可撤销。")));
+    body->addWidget(label(content, QStringLiteral("可编辑多个参数轴；形状随原关键值移动，修改可撤销。")));
     auto* axes = new QFormLayout; axes->setRowWrapPolicy(QFormLayout::WrapLongRows);
     axes->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_state->axis = combo(content, "bindingKeysAxis");
@@ -377,6 +445,7 @@ CBindingKeysDialog::CBindingKeysDialog(const CKeyformGridSnapshot& snapshot, int
     m_state->table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_state->table->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_state->model = new DraftModel(snapshot, m_state->table); m_state->table->setModel(m_state->model);
+    for (int axis = 0; axis < snapshot.axes.size(); ++axis) m_state->model->ensure(axis, activeKeyform);
     m_state->table->setItemDelegate(new ValueDelegate(m_state->model, m_state->table));
     m_state->table->installEventFilter(this); body->addWidget(m_state->table);
     body->addWidget(label(content, QStringLiteral("双击数值或按 F2 编辑；支持 1e-8 等写法。应用时自动排序。")));
@@ -464,6 +533,16 @@ bool CBindingKeysDialog::BuildRequest(Builder::EditBindingKeysRequest& request, 
     return problem.isEmpty();
 }
 
+bool CBindingKeysDialog::BuildBatchRequest(Builder::EditBindingKeysBatchRequest& request, QString* error) const
+{
+    Builder::EditBindingKeysBatchRequest candidate;
+    const auto problem = m_state->structuralError.isEmpty()
+        ? collectBatch(*m_state->model, m_state->model->axis, candidate) : m_state->structuralError;
+    if (error) *error = problem;
+    if (problem.isEmpty()) request = std::move(candidate);
+    return problem.isEmpty();
+}
+
 int CBindingKeysDialog::SelectedAxis() const { return m_state->axis->currentIndex(); }
 void CBindingKeysDialog::SetError(const QString& error) { m_state->externalError = error; Refresh(); }
 
@@ -510,17 +589,18 @@ void CBindingKeysDialog::Refresh()
     m_state->remove->setEnabled(enabled && model->rowCount() > 1 && !m_state->table->selectionModel()->selectedRows().isEmpty());
     m_state->addForm->setRowVisible(m_state->copy, m_state->source->currentIndex() == 1);
     for (auto* combo : {m_state->axis, m_state->source, m_state->copy}) combo->setToolTip(tooltip(combo->currentText()));
-    Builder::EditBindingKeysRequest request; QString error;
-    const bool valid = BuildRequest(request, &error);
+    Builder::EditBindingKeysBatchRequest request; QString error;
+    const bool valid = BuildBatchRequest(request, &error);
     const bool changed = valid && !unchanged(request);
     m_state->apply->setEnabled(changed && !m_state->applying);
     if (model->axis >= 0) {
         const auto& axis = model->snapshot.axes[model->axis];
         m_state->range->setText(QStringLiteral("可移动/新增范围：[%1, %2]\n旧轴区间：[%3, %4]；超范围旧值可原样保留。")
             .arg(text(axis.minimum), text(axis.maximum), text(axis.keys.first()), text(axis.keys.last())));
-        const qint64 total = qint64(model->snapshot.keyformCount / axis.keys.size()) * model->rowCount();
+        const qint64 total = draftKeyformCount(*model);
+        const QString totalText = total > std::numeric_limits<int>::max() ? QStringLiteral("超出支持范围") : QString::number(total);
         m_state->summary->setText(QStringLiteral("关键值：%1 → %2　总关键形：%3 → %4%5")
-            .arg(axis.keys.size()).arg(model->rowCount()).arg(model->snapshot.keyformCount).arg(total)
+            .arg(axis.keys.size()).arg(model->rowCount()).arg(model->snapshot.keyformCount).arg(totalText)
             .arg(valid && !changed ? QStringLiteral("\n关键值未改变") : QString()));
     } else { m_state->range->clear(); m_state->summary->clear(); }
     m_state->error->setText(!m_state->externalError.isEmpty() ? m_state->externalError : error);
@@ -535,8 +615,8 @@ void CBindingKeysDialog::Refresh()
 void CBindingKeysDialog::Apply()
 {
     if (m_state->applying) return;
-    Builder::EditBindingKeysRequest request; QString error;
-    if (!BuildRequest(request, &error)) { SetError(error); return; }
+    Builder::EditBindingKeysBatchRequest request; QString error;
+    if (!BuildBatchRequest(request, &error)) { SetError(error); return; }
     if (unchanged(request)) { SetError(QStringLiteral("关键值未改变")); return; }
     m_state->applying = true; Refresh();
     const QPointer<CBindingKeysDialog> guard(this);

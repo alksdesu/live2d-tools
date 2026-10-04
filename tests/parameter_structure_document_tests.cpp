@@ -233,6 +233,69 @@ private slots:
         for (const char* failure : {"noop", "stale-keys", "missing-owner", "missing-parameter", "outside", "target-locked", "ancestor-locked"})
             QTest::newRow(failure) << QString::fromLatin1(failure);
     }
+    void bindingKeysBatchHistoryAndSessionAreAtomic_data()
+    {
+        QTest::addColumn<int>("type");
+        for (int type = 0; type < 3; ++type) QTest::newRow(qPrintable(QString::number(type))) << type;
+    }
+    void bindingKeysBatchHistoryAndSessionAreAtomic()
+    {
+        QFETCH(int, type);
+        CModelDocument document; QString error;
+        QVERIFY2(bindingDocument(type, false, document, &error), qPrintable(error));
+        auto second = request("Q"); second.bindings.append({bindingOwner(type), {-1, 1}});
+        CModelEdit create;
+        QVERIFY2(document.MakeCreateParameterEdit(second, "Second axis", create, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(create)); document.ClearEditHistory();
+        const auto source = document.SourceBytes(), digest = document.SourceDigest();
+        const auto sourcePath = document.SourcePath();
+        const auto before = document.AuthoringStructureState(); const auto revision = document.Revision();
+        Builder::EditBindingKeysBatchRequest batch;
+        batch.owner = bindingOwner(type); batch.parameterId = "P";
+        batch.axes = {{0, "P", {0, 1}, {{0, 0}, {.5f, -1}, {1, 1}}},
+                      {1, "Q", {-1, 1}, {{-.75f, 0}, {0, -1}, {.75f, 1}}}};
+        auto stale = batch; stale.axes[1].expectedKeys[0] = -.5f;
+        CModelEdit untouched{"sentinel", "original", CModelEdit::DrawOrder, 2, 3, 7, true};
+        QVERIFY(!document.MakeBindingKeysBatchEdit(stale, untouched, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(untouched.name, QString("sentinel")); QCOMPARE(untouched.field, CModelEdit::DrawOrder);
+        QCOMPARE(untouched.before.toInt(), 2); QCOMPARE(untouched.after.toInt(), 3); QCOMPARE(untouched.index, 7);
+        QVERIFY(!untouched.bindingKeysRequest); QVERIFY(!untouched.bindingKeysBatchRequest);
+        QCOMPARE(document.AuthoringStructureState(), before); QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+        CModelEdit edit;
+        QVERIFY2(document.MakeBindingKeysBatchEdit(batch, edit, &error), qPrintable(error));
+        QVERIFY(edit.bindingKeysBatchRequest); QVERIFY(!edit.bindingKeysRequest);
+        QCOMPARE(edit.field, CModelEdit::ParameterStructure);
+        QCOMPARE(edit.parameterChange, CModelEdit::ParameterChange::BindingKeys);
+        auto conflicting = edit;
+        conflicting.bindingKeysRequest = std::make_shared<const Builder::EditBindingKeysRequest>(bindingRequest(type));
+        QVERIFY(!document.ExecuteEdit(conflicting));
+        QCOMPARE(document.AuthoringStructureState(), before); QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+        batch.axes[1].keys[0].value = -.5f;
+        QCOMPARE(edit.bindingKeysBatchRequest->axes[1].keys[0].value, -.75f);
+        QVERIFY(document.ExecuteEdit(edit)); QCOMPARE(document.Revision(), revision + 1);
+        const QString typeName = type == 0 ? "artmesh" : type == 1 ? "warp" : "rotation";
+        CKeyformGridSnapshot grid;
+        QVERIFY2(document.DescribeKeyformGrid(bindingOwner(type).id, typeName, grid, &error), qPrintable(error));
+        QCOMPARE(grid.axes.size(), 2); QCOMPARE(grid.axes[0].keys, QVector<float>({0, .5f, 1}));
+        QCOMPARE(grid.axes[1].keys, QVector<float>({-.75f, 0, .75f})); QCOMPARE(grid.keyformCount, 9);
+        const auto after = document.AuthoringStructureState();
+        CModelEdit stored; QVERIFY(document.PeekUndoEdit(&stored)); QVERIFY(stored.bindingKeysBatchRequest);
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.AuthoringStructureState(), before);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.AuthoringStructureState(), after);
+        QVERIFY(document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(document.SourceBytes(), source); QCOMPARE(document.SourceDigest(), digest);
+        const auto encoded = session(document).ToJson(); QVERIFY(!encoded.isEmpty());
+        QVERIFY(!encoded.contains("bindingKeysBatchRequest"));
+        CModelSession saved; QVERIFY2(CModelSession::FromJson(encoded, &saved, &error), qPrintable(error));
+        CModelDocument pristine, restored;
+        QVERIFY2(pristine.LoadBytes(source, sourcePath, &error), qPrintable(error));
+        QVERIFY2(saved.RestoreDocument(pristine, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), after); QCOMPARE(restored.SourceBytes(), source);
+        QVERIFY(!restored.CanUndoEdit()); QVERIFY(!restored.CanRedoEdit());
+    }
     void bindingKeysFailuresPreserveOutputAndExistingHistory()
     {
         QFETCH(QString, failure); CModelDocument document; QString error;

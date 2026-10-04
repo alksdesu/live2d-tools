@@ -144,7 +144,7 @@ bool readStates(const CModelEdit& edit, CModelGeometryState& before, CModelGeome
     const auto stateType = QMetaType::fromType<CModelGeometryState>();
     if (edit.field != CModelEdit::GeometryKeyforms || edit.before.metaType() != stateType ||
         edit.after.metaType() != stateType || edit.coalesce || edit.parameterChange != CModelEdit::ParameterChange::None ||
-        edit.freezeValue || edit.meshRequest || edit.bindingKeysRequest || edit.deformerRequest || !edit.meshRemaps.isEmpty())
+        edit.freezeValue || edit.meshRequest || edit.bindingKeysRequest || edit.bindingKeysBatchRequest || edit.deformerRequest || !edit.meshRemaps.isEmpty())
         return fail(error, QStringLiteral("几何批量命令格式无效"));
     before = edit.before.value<CModelGeometryState>();
     after = edit.after.value<CModelGeometryState>();
