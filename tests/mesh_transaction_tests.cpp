@@ -1,6 +1,7 @@
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/cmesheditplanner.h"
 #include "live2dstruct/cmodelsession.h"
+#include "live2dstruct/csectiontable.h"
 #include "wide_mesh_fixture.h"
 #include <QBuffer>
 #include <QCryptographicHash>
@@ -612,6 +613,51 @@ private slots:
         QCOMPARE(document.AuthoringStructureState(), before);
         QVERIFY(document.RedoEdit());
         QCOMPARE(document.AuthoringStructureState(), after);
+    }
+
+    void glueWeightEditCommitsUndoRedoAndSession()
+    {
+        const QString path = QString(TEST_RESOURCES) + "/Rice/Rice.moc3";
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        CModelDocument loaded; QString error;
+        QVERIFY2(loaded.LoadBytes(file.readAll(), path, &error), qPrintable(error));
+        CModelDocument document = loaded;
+        auto reader = CReader::FromBytes(document.SourceBytes()); CSectionTable table(reader); QVERIFY(table.IsValid());
+        QVERIFY(!table.glue.isEmpty());
+        const int row = table.glue.first()->glue_info_sources_begin_indices;
+        const float original = table.glue_info[row]->weights;
+        const float replacement = original == .25f ? .75f : .25f;
+        CMocMeshStructureBuilder::Request request;
+        request.glueWeights.append({0, 0, CMocMeshStructureBuilder::GlueRetarget::A, replacement});
+        CModelEdit edit;
+        QVERIFY2(document.MakeMeshStructureEdit(request, edit, &error), qPrintable(error));
+        const auto before = document.AuthoringStructureState();
+        QVERIFY(document.ExecuteEdit(edit));
+        const auto after = document.AuthoringStructureState();
+        auto changedReader = CReader::FromBytes(document.WorkingBaseBytes()); CSectionTable changed(changedReader); QVERIFY(changed.IsValid());
+        QCOMPARE(changed.glue_info[changed.glue.first()->glue_info_sources_begin_indices]->weights, replacement);
+        QVERIFY(document.CanUndoEdit());
+        QVERIFY(document.UndoEdit());
+        QCOMPARE(document.AuthoringStructureState(), before);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.AuthoringStructureState(), after);
+        CModelSession parsed;
+        QVERIFY2(CModelSession::FromJson(savedSession(document).ToJson(), &parsed, &error), qPrintable(error));
+        CModelDocument restored;
+        QVERIFY2(parsed.RestoreDocument(loaded, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), after);
+        CModelEdit forged;
+        auto forgedRequest = request;
+        forgedRequest.glueWeights[0].weight = 0.5f;
+        QVERIFY2(document.MakeMeshStructureEdit(forgedRequest, forged, &error), qPrintable(error));
+        auto forgedState = forged.after.toMap();
+        auto visibility = forgedState.value(QStringLiteral("visibility")).value<QMap<QString, bool>>();
+        visibility[QStringLiteral("artmesh|") + document.Drawables().first().id] = false;
+        forgedState.insert(QStringLiteral("visibility"), QVariant::fromValue(visibility));
+        forged.after = forgedState;
+        const auto stable = document.AuthoringStructureState();
+        QVERIFY(!document.ExecuteEdit(forged));
+        QCOMPARE(document.AuthoringStructureState(), stable);
     }
 
     void cloneArtMeshCommitsUndoRedoAndSession()

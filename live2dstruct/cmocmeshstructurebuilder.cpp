@@ -278,6 +278,7 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
     if (request.gluePolicy != Builder::GlueEndpointPolicy::Reject && request.gluePolicy != Builder::GlueEndpointPolicy::DropPair &&
         request.gluePolicy != Builder::GlueEndpointPolicy::Retarget) return fail(error, QStringLiteral("Glue 删除策略无效"));
     if (request.meshes.size() > table.art_meshes.size() || request.glueRetargets.size() > MaximumCount ||
+        request.glueWeights.size() > MaximumCount ||
         (request.gluePolicy != Builder::GlueEndpointPolicy::Retarget && !request.glueRetargets.isEmpty()))
         return fail(error, QStringLiteral("网格修改或 Glue 重定向请求无效"));
     qint64 totalReferences = 0;
@@ -318,6 +319,20 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
         retargets.insert(key, index);
     }
     QSet<quint64> usedRetargets;
+    QMap<quint64, int> weightEdits;
+    QSet<int> weightGlueIndices;
+    for (int index = 0; index < request.glueWeights.size(); ++index) {
+        const auto& edit = request.glueWeights[index];
+        if (edit.glueIndex < 0 || edit.glueIndex >= table.glue.size() || edit.pairIndex < 0 ||
+            (edit.side != Builder::GlueRetarget::A && edit.side != Builder::GlueRetarget::B) ||
+            !std::isfinite(edit.weight) || edit.weight < 0.0f || edit.weight > 1.0f)
+            return fail(error, QStringLiteral("Glue 端点权重编辑无效"));
+        const quint64 key = endpointKey(edit.glueIndex, edit.pairIndex, edit.side);
+        if (weightEdits.contains(key)) return fail(error, QStringLiteral("Glue 端点权重编辑重复"));
+        weightEdits.insert(key, index);
+        weightGlueIndices.insert(edit.glueIndex);
+    }
+    QSet<quint64> usedWeightEdits;
     qint64 traversedGlueRows = 0;
     for (int index = 0; index < table.glue.size(); ++index) {
         const auto* glue = table.glue[index];
@@ -327,20 +342,31 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
             return fail(error, QStringLiteral("Glue 配对端点或范围无效：%1").arg(glue->ids));
         const bool changesA = edits.contains(a) && result.meshes[edits.value(a)].remapsVertices;
         const bool changesB = edits.contains(b) && result.meshes[edits.value(b)].remapsVertices;
-        if (!changesA && !changesB) continue;
+        const bool hasWeightEdits = weightGlueIndices.contains(index);
+        if (!changesA && !changesB && !hasWeightEdits) continue;
         if (glue->glue_info_sources_counts > MaximumCount - traversedGlueRows)
             return fail(error, QStringLiteral("Glue 配对检查的引用总数超过 1000000"));
         traversedGlueRows += glue->glue_info_sources_counts;
-        GluePlan plan; plan.change = {index, glue->ids, glue->glue_info_sources_counts / 2, glue->glue_info_sources_counts / 2, {}, {}};
+        GluePlan plan; plan.change = {index, glue->ids, glue->glue_info_sources_counts / 2, glue->glue_info_sources_counts / 2, {}, {}, {}};
         bool changed = false;
         for (int pair = 0; pair < plan.change.oldPairCount; ++pair) {
             int next[2]; const CGlue_info* info[2]; bool removed = false;
+            float nextWeight[2] = {0.0f, 0.0f};
             for (int side = 0; side < 2; ++side) {
                 const int mesh = side ? b : a;
                 info[side] = table.glue_info[glue->glue_info_sources_begin_indices + pair * 2 + side];
                 const int old = info[side]->position_indices;
                 if (old < 0 || old >= table.art_meshes[mesh]->vertex_counts || !std::isfinite(info[side]->weights))
                     return fail(error, QStringLiteral("Glue 顶点索引或权重无效：%1[%2]").arg(glue->ids).arg(pair));
+                nextWeight[side] = info[side]->weights;
+                const quint64 weightKey = endpointKey(index, pair, side);
+                const auto weight = weightEdits.constFind(weightKey);
+                if (weight != weightEdits.cend()) {
+                    nextWeight[side] = request.glueWeights[*weight].weight;
+                    usedWeightEdits.insert(weightKey);
+                    plan.change.weightEdits.append(request.glueWeights[*weight]);
+                    changed = changed || nextWeight[side] != info[side]->weights;
+                }
                 next[side] = edits.contains(mesh) ? result.meshes[edits.value(mesh)].remap.oldToNew[old] : old;
                 if (next[side] >= 0) { changed = changed || next[side] != old; continue; }
                 changed = true; removed = true;
@@ -360,13 +386,14 @@ bool makePlan(const CSectionTable& table, const Builder::Request& request, Plan&
                 }
             }
             if (removed && request.gluePolicy == Builder::GlueEndpointPolicy::DropPair) { plan.change.droppedPairs.append(pair); --plan.change.newPairCount; continue; }
-            for (int side = 0; side < 2; ++side) { appendIndex(plan.indices, std::max(0, next[side])); appendFloat(plan.weights, info[side]->weights); }
+            for (int side = 0; side < 2; ++side) { appendIndex(plan.indices, std::max(0, next[side])); appendFloat(plan.weights, nextWeight[side]); }
         }
         if (changed) {
             result.impact.glues.append(plan.change); result.glues.append(std::move(plan));
         }
     }
     if (usedRetargets.size() != retargets.size()) return fail(error, QStringLiteral("Glue 重定向没有对应待删除端点"));
+    if (usedWeightEdits.size() != weightEdits.size()) return fail(error, QStringLiteral("Glue 端点权重编辑没有对应存活端点"));
     return true;
 }
 

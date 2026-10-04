@@ -333,7 +333,7 @@ bool exactState(const QVariantMap& a, const QVariantMap& b)
 bool sameRequest(const CMocMeshStructureBuilder::Request& a, const CMocMeshStructureBuilder::Request& b)
 {
     if (a.meshes.size() != b.meshes.size() || a.gluePolicy != b.gluePolicy
-        || a.glueRetargets.size() != b.glueRetargets.size())
+        || a.glueRetargets.size() != b.glueRetargets.size() || a.glueWeights.size() != b.glueWeights.size())
         return false;
     for (int i = 0; i < a.meshes.size(); ++i) {
         const auto& x = a.meshes[i];
@@ -356,6 +356,13 @@ bool sameRequest(const CMocMeshStructureBuilder::Request& a, const CMocMeshStruc
         if (x.glueIndex != y.glueIndex || x.pairIndex != y.pairIndex || x.side != y.side || x.newVertex != y.newVertex)
             return false;
     }
+    for (int i = 0; i < a.glueWeights.size(); ++i) {
+        const auto& x = a.glueWeights[i];
+        const auto& y = b.glueWeights[i];
+        if (x.glueIndex != y.glueIndex || x.pairIndex != y.pairIndex || x.side != y.side ||
+            std::memcmp(&x.weight, &y.weight, sizeof(x.weight)) != 0)
+            return false;
+    }
     return true;
 }
 bool sameRemaps(
@@ -375,7 +382,8 @@ bool sameRemaps(
 bool CModelDocument::FreezeMeshRequest(
     const CMocMeshStructureBuilder::Request& request, CMocMeshStructureBuilder::Request& result, QString* error) const
 try {
-    if (request.meshes.isEmpty() || request.meshes.size() > m_drawables.size() || request.glueRetargets.size() > 1000000
+    if ((request.meshes.isEmpty() && request.glueWeights.isEmpty()) || request.meshes.size() > m_drawables.size() ||
+        request.glueRetargets.size() > 1000000 || request.glueWeights.size() > 1000000
         || (request.gluePolicy != CMocMeshStructureBuilder::GlueEndpointPolicy::Reject
             && request.gluePolicy != CMocMeshStructureBuilder::GlueEndpointPolicy::DropPair
             && request.gluePolicy != CMocMeshStructureBuilder::GlueEndpointPolicy::Retarget)
@@ -437,6 +445,13 @@ try {
     }
     for (const auto& redirect : request.glueRetargets)
         frozen.glueRetargets.append(redirect);
+    for (const auto& weight : request.glueWeights) {
+        if (weight.glueIndex < 0 || weight.pairIndex < 0 ||
+            (weight.side != CMocMeshStructureBuilder::GlueRetarget::A && weight.side != CMocMeshStructureBuilder::GlueRetarget::B) ||
+            !std::isfinite(weight.weight) || weight.weight < 0.0f || weight.weight > 1.0f)
+            return fail(error, QStringLiteral("Glue 端点权重编辑无效"));
+        frozen.glueWeights.append(weight);
+    }
     result = std::move(frozen);
     return true;
 } catch (const std::exception&) {

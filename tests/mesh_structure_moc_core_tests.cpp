@@ -3,6 +3,7 @@
 #include "live2dstruct/csectionvalidation.h"
 #include "real_core_model_fixture.h"
 #include <QtEndian>
+#include <cstring>
 using namespace live2dstruct;
 using Builder = CMocMeshStructureBuilder;
 namespace {
@@ -508,6 +509,29 @@ private slots:
             }
         }
         QVERIFY(before.intact()); QVERIFY(after.intact());
+    }
+
+    void glueWeightEditsMatchIndependentCoreBuild() {
+        const auto bytes = read(QString(TEST_RESOURCES) + "/Rice/Rice.moc3");
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        QVERIFY(!table.glue.isEmpty());
+        const int row = table.glue.first()->glue_info_sources_begin_indices;
+        const float replacement = table.glue_info[row]->weights == .25f ? .75f : .25f;
+        Builder::Request request;
+        request.glueWeights.append({0, 0, Builder::GlueRetarget::A, replacement});
+        Builder::Result result; QString error;
+        QVERIFY2(Builder::Build(bytes, request, result, &error), qPrintable(error));
+        auto oracle = bytes;
+        quint32 bits; std::memcpy(&bits, &replacement, sizeof(bits));
+        qToLittleEndian(bits, oracle.data() + table.sectionOffsetTable->glue_info->weights + row * 4);
+        CoreModel expected, actual;
+        QVERIFY(expected.load(oracle)); QVERIFY(actual.load(result.bytes));
+        for (const auto& pose : poses(expected.value)) {
+            expected.pose(pose); actual.pose(pose);
+            QVERIFY2(changed(frame(expected.value), frame(actual.value)).isEmpty(),
+                     qPrintable(difference(frame(expected.value), frame(actual.value))));
+        }
+        QVERIFY(expected.intact()); QVERIFY(actual.intact());
     }
 };
 QTEST_GUILESS_MAIN(MocMeshStructureCoreTests)

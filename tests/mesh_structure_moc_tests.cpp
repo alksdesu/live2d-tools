@@ -714,6 +714,37 @@ private slots:
         QVERIFY2(CMocParameterStructureBuilder::BuildColumnState(bytes, result.state, rebuilt, &error), qPrintable(error));
         QCOMPARE(rebuilt, result.bytes);
     }
+
+    void glueWeightEditsAreAtomicAndPreserveTopology() {
+        const auto bytes = source("Rice");
+        auto reader = CReader::FromBytes(bytes); CSectionTable before(reader); QVERIFY(before.IsValid());
+        QVERIFY(!before.glue.isEmpty());
+        const auto* glue = before.glue.first();
+        QVERIFY(glue->glue_info_sources_counts >= 2);
+        const int row = glue->glue_info_sources_begin_indices;
+        const float original = before.glue_info[row]->weights;
+        const float replacement = original == .25f ? .75f : .25f;
+        Builder::Request request;
+        request.glueWeights.append({0, 0, Builder::GlueRetarget::A, replacement});
+        Builder::Result result; QString error;
+        QVERIFY2(Builder::Build(bytes, request, result, &error), qPrintable(error));
+        QCOMPARE(bytes, source("Rice"));
+        auto afterReader = CReader::FromBytes(result.bytes); CSectionTable after(afterReader); QVERIFY(after.IsValid());
+        QCOMPARE(after.art_meshes.size(), before.art_meshes.size());
+        QCOMPARE(after.art_meshes.first()->vertex_counts, before.art_meshes.first()->vertex_counts);
+        QCOMPARE(after.glue.first()->glue_info_sources_counts, glue->glue_info_sources_counts);
+        QCOMPARE(after.glue_info[after.glue.first()->glue_info_sources_begin_indices]->position_indices,
+                 before.glue_info[row]->position_indices);
+        QCOMPARE(after.glue_info[after.glue.first()->glue_info_sources_begin_indices]->weights, replacement);
+        QByteArray rebuilt;
+        QVERIFY2(CMocParameterStructureBuilder::BuildColumnState(bytes, result.state, rebuilt, &error), qPrintable(error));
+        QCOMPARE(rebuilt, result.bytes);
+        Builder::Request duplicate = request;
+        duplicate.glueWeights.append({0, 0, Builder::GlueRetarget::A, .5f});
+        Builder::Result rejected; rejected.bytes = "sentinel";
+        QVERIFY(!Builder::Build(bytes, duplicate, rejected, &error));
+        QCOMPARE(rejected.bytes, QByteArray("sentinel"));
+    }
 };
 QTEST_GUILESS_MAIN(MocMeshStructureTests)
 #include "mesh_structure_moc_tests.moc"

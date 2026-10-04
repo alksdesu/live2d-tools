@@ -1335,7 +1335,8 @@ bool CModelDocument::ValidateMeshTransition(const CModelDocument& candidate, con
 {
     if (candidate.m_displayNames != m_displayNames)
         return fail(error, QStringLiteral("网格结构编辑不能附带对象名称修改"));
-    if (!edit.meshRequest || edit.meshRemaps.isEmpty() || !(forward ? candidate.m_hasMeshStructure : m_hasMeshStructure) ||
+    if (!edit.meshRequest || (edit.meshRemaps.isEmpty() && edit.meshRequest->glueWeights.isEmpty()) ||
+        !(forward ? candidate.m_hasMeshStructure : m_hasMeshStructure) ||
         m_parameters.size() != candidate.m_parameters.size() || m_parameterValues != candidate.m_parameterValues ||
         VisibilityState() != candidate.VisibilityState() || m_lockedKeys != candidate.m_lockedKeys ||
         m_drawableOpacityOverrides != candidate.m_drawableOpacityOverrides ||
@@ -1504,7 +1505,7 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
     try {
         CMocMeshStructureBuilder::Request request;
         if (!FreezeMeshRequest(sourceRequest, request, error)) return false;
-        if (request.meshes.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格"));
+        if (request.meshes.isEmpty() && request.glueWeights.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格或 Glue 端点"));
         QVector<Builder::BindingRequest> owners;
         for (const auto& mesh : request.meshes) {
             owners.append(Builder::BindingRequest{{Builder::Owner::ArtMesh, mesh.artMeshId}, {}});
@@ -1541,7 +1542,8 @@ bool CModelDocument::MakeMeshStructureEdit(const CMocMeshStructureBuilder::Reque
         for (const auto& mesh : result.meshes)
             pairRemaps.append({{CModelGeometryKeyform::ArtMesh, mesh.artMeshId}, mesh.oldToNew});
         if (!ReconcileGeometryObjectPairs(candidate, pairRemaps, nullptr, nullptr, error)) return false;
-        CModelEdit command{request.meshes.first().artMeshId, QStringLiteral("mesh"), CModelEdit::MeshStructure,
+        const QString commandName = request.meshes.isEmpty() ? QStringLiteral("Glue") : request.meshes.first().artMeshId;
+        CModelEdit command{commandName, QStringLiteral("mesh"), CModelEdit::MeshStructure,
                            AuthoringStructureState(), candidate.AuthoringStructureState(), -1, false};
         command.meshRemaps = result.meshes;
         command.meshRequest = std::make_shared<const CMocMeshStructureBuilder::Request>(request);
@@ -1630,7 +1632,7 @@ bool CModelDocument::AnalyzeMeshStructureEdit(const CMocMeshStructureBuilder::Re
                                              CMocMeshStructureBuilder::Impact& impact, QString* error) const
 {
     try {
-        if (request.meshes.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格"));
+        if (request.meshes.isEmpty() && request.glueWeights.isEmpty()) return fail(error, QStringLiteral("没有选定编辑网格或 Glue 端点"));
         QVector<Builder::BindingRequest> owners;
         for (const auto& mesh : request.meshes)
             owners.append(Builder::BindingRequest{{Builder::Owner::ArtMesh, mesh.artMeshId}, {}});

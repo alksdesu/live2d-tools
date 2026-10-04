@@ -30,10 +30,17 @@ public:
         Side side = A;
         int newVertex = -1;
     };
+    struct GlueWeightEdit {
+        int glueIndex = -1;
+        int pairIndex = -1;
+        GlueRetarget::Side side = GlueRetarget::A;
+        float weight = 0.0f;
+    };
     struct Request {
         QVector<MeshEdit> meshes;
         GlueEndpointPolicy gluePolicy = GlueEndpointPolicy::Reject;
         QVector<GlueRetarget> glueRetargets;
+        QVector<GlueWeightEdit> glueWeights;
     };
     struct CloneRequest {
         QString sourceArtMeshId;
@@ -56,6 +63,7 @@ public:
         int newPairCount = 0;
         QVector<int> droppedPairs;
         QVector<GlueRetarget> retargetedEndpoints;
+        QVector<GlueWeightEdit> weightEdits;
     };
     struct Impact {
         QVector<MeshRemap> meshes;
