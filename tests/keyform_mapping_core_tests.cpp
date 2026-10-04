@@ -601,6 +601,38 @@ private slots:
             }
         }
     }
+    void maoArtMeshBlendShapeContinuousValuesMatchCore()
+    {
+        const QString path = qEnvironmentVariable("LIVE2D_REAL_CORE_EXTRA_MOC");
+        if (path.isEmpty()) QSKIP("Set LIVE2D_REAL_CORE_EXTRA_MOC");
+        const auto bytes = read(path); CoreModel core(bytes); QVERIFY(core.model);
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        const QString meshId = QStringLiteral("ArtMesh263");
+        const QString parameterId = QStringLiteral("ParamMouthAngryLine");
+        for (const float value : {0.1f, 0.2f, 0.3f, 0.5f, 0.7f, 1.0f}) {
+            QMap<QString, float> pose;
+            for (const auto* parameter : table.parameters) pose.insert(parameter->ids, parameter->default_values);
+            if (!pose.contains(parameterId)) QSKIP("Mao BlendShape fixture is unavailable");
+            pose[parameterId] = value;
+            CBlendShapePoseEvaluator::Overrides overrides; QString error;
+            QVERIFY2(CBlendShapePoseEvaluator().Build(table, pose, overrides, &error), qPrintable(error));
+            C2DTree tree(table); tree.SetPoseOverrides(overrides);
+            for (auto it = pose.cbegin(); it != pose.cend(); ++it) tree.SetParaValue(it.key(), it.value());
+            tree.GetWarpKeys(); core.SetPose(pose);
+            const auto actual = core.Positions(meshId);
+            QVector<float> expected;
+            for (auto* node : tree.getArtTree()) if (node->getName() == meshId)
+                if (auto* mesh = dynamic_cast<CArtMeshNode*>(node)) {
+                    for (const float coordinate : mesh->GetCanvasPositions()) expected.append(coordinate);
+                    for (int index = 1; index < expected.size(); index += 2) expected[index] = -expected[index];
+                }
+            if (actual.isEmpty() || expected.isEmpty()) QSKIP("Mao ArtMesh263 fixture is unavailable");
+            QCOMPARE(expected.size(), actual.size());
+            for (int index = 0; index < actual.size(); ++index)
+                QVERIFY2(std::abs(expected[index] - actual[index]) < 0.0001f,
+                         qPrintable(QStringLiteral("value=%1 vertex=%2").arg(value).arg(index)));
+        }
+    }
     void fullyCollapsedParentDoesNotGuessRotationDirection()
     {
         const auto bytes = rotationFixture("collapsed");

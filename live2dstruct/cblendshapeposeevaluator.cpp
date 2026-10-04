@@ -57,13 +57,50 @@ float curveValue(const QVector<const CBlend_shape_constraint_values*>& values, f
     return values.back()->weights;
 }
 
-float weightFor(float current, float base, float key)
+QVector<float> weightsFor(float current, float base, const QVector<float>& keys, int baseIndex)
 {
-    if (!std::isfinite(current) || !std::isfinite(base) || !std::isfinite(key) || key == base) return 0.0f;
-    const float distance = current - base;
-    const float span = key - base;
-    if (distance == 0.0f || std::signbit(distance) != std::signbit(span)) return 0.0f;
-    return std::clamp(std::abs(distance / span), 0.0f, 1.0f);
+    QVector<float> result(keys.size(), 0.0f);
+    if (!std::isfinite(current) || !std::isfinite(base) || baseIndex < 0 || baseIndex >= keys.size() || current == base)
+        return result;
+    QVector<int> side;
+    const bool positive = current > base;
+    for (int index = 0; index < keys.size(); ++index) {
+        if (index == baseIndex || !std::isfinite(keys[index]) || keys[index] == base) continue;
+        if ((keys[index] > base) == positive) side.append(index);
+    }
+    std::sort(side.begin(), side.end(), [&keys, positive](int left, int right) {
+        return positive ? keys[left] < keys[right] : keys[left] > keys[right];
+    });
+    if (side.isEmpty()) return result;
+    for (const int index : side) {
+        if (current == keys[index]) {
+            result[index] = 1.0f;
+            return result;
+        }
+    }
+    if ((positive && current >= keys[side.back()]) || (!positive && current <= keys[side.back()])) {
+        result[side.back()] = 1.0f;
+        return result;
+    }
+    if ((positive && current <= keys[side.front()]) || (!positive && current >= keys[side.front()])) {
+        const float span = keys[side.front()] - base;
+        if (span != 0.0f) result[side.front()] = std::clamp((current - base) / span, 0.0f, 1.0f);
+        return result;
+    }
+    for (int offset = 1; offset < side.size(); ++offset) {
+        const int near = side[offset - 1], far = side[offset];
+        const float nearKey = keys[near], farKey = keys[far];
+        if ((positive && current > nearKey && current < farKey) || (!positive && current < nearKey && current > farKey)) {
+            const float span = farKey - nearKey;
+            if (span != 0.0f) {
+                const float farWeight = std::clamp((current - nearKey) / span, 0.0f, 1.0f);
+                result[near] = 1.0f - farWeight;
+                result[far] = farWeight;
+            }
+            return result;
+        }
+    }
+    return result;
 }
 
 bool positionRow(const std::vector<float>& values, int begin, int count, QVector<float>& result)
@@ -146,10 +183,15 @@ bool CBlendShapePoseEvaluator::Build(const CSectionTable& table, const QMap<QStr
                 const auto* parameter = table.parameters[parameterIndex];
                 const float current = fullPose.value(parameter->ids);
                 const float base = table.keys->GetData(parameterBinding->keys_sources_begin_indices + parameterBinding->base_key_indices);
+                QVector<float> keys;
+                keys.reserve(parameterBinding->keys_sources_counts);
+                for (int local = 0; local < parameterBinding->keys_sources_counts; ++local)
+                    keys.append(table.keys->GetData(parameterBinding->keys_sources_begin_indices + local));
+                const auto weights = weightsFor(current, base, keys, parameterBinding->base_key_indices);
                 for (int local = 0; local < binding->keyform_sources_blend_shape_counts; ++local) {
                     if (local == parameterBinding->base_key_indices) continue;
-                    const float key = table.keys->GetData(parameterBinding->keys_sources_begin_indices + local);
-                    float weight = weightFor(current, base, key), limited = 0.0f;
+                    const float weight = weights.value(local);
+                    float limited = 0.0f;
                     if (weight == 0.0f) continue;
                     if (!evaluateConstraints(binding, parameterIndex, weight, limited)) return false;
                     if (limited == 0.0f) continue;
