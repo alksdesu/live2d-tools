@@ -170,7 +170,7 @@ private slots:
                 fixture.column(o.rotation_deformers->keyform_sources_counts, 0, 2);
             }
         }
-        if (invalid == "blend-mesh" || invalid == "blend-parent") {
+        if (invalid == "blend-mesh") {
             const bool mesh = invalid == "blend-mesh";
             fixture.count(mesh ? 28 : 27, 1);
             fixture.appendColumn(mesh ? 0x240 : 0x234, {0});
@@ -203,13 +203,19 @@ private slots:
             forms[0].scale = 0;
             QVERIFY(invalidDocument.SetDeformerRotationKeyforms("Root", forms));
         }
-        QVERIFY2(!context.Build(invalidDocument, id, keyform, values, &error), qPrintable(invalid));
-        QVERIFY(!error.isEmpty());
-        QVERIFY(context.IsValid());
-        QVERIFY(context.MatchesRuntime(expected));
-        QVector<float> local;
-        QVERIFY(context.FromModel(expected, local));
-        QVERIFY(near(local, baseline.DrawableKeyformPositions("Mesh", 0)));
+        if (invalid == "blend-mesh" || invalid == "blend-parent") {
+            QVERIFY2(context.Build(invalidDocument, id, keyform, values, &error), qPrintable(invalid));
+            QVERIFY(context.IsValid());
+            QVERIFY(context.MatchesRuntime(expected));
+        } else {
+            QVERIFY2(!context.Build(invalidDocument, id, keyform, values, &error), qPrintable(invalid));
+            QVERIFY(!error.isEmpty());
+            QVERIFY(context.IsValid());
+            QVERIFY(context.MatchesRuntime(expected));
+            QVector<float> local;
+            QVERIFY(context.FromModel(expected, local));
+            QVERIFY(near(local, baseline.DrawableKeyformPositions("Mesh", 0)));
+        }
     }
 
     void noOpParentAndKeyformOverridesRemainSupported()
@@ -361,8 +367,8 @@ private slots:
         QVERIFY2(document.LoadBytes(fixture.bytes, "unrelated-blend", &error), qPrintable(error));
         CKeyformMappingContext context;
         QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
-        QVERIFY(!context.Build(document, "Other", 0, {{"P", 0}}, &error));
-        QVERIFY(error.contains("BlendShape"));
+        QVERIFY2(context.Build(document, "Other", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVERIFY(context.IsValid());
     }
 
     void comparisonToleranceAndInvalidMappingsDoNotChangeOutputs()

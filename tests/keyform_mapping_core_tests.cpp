@@ -1,6 +1,8 @@
 #include "core/Live2DCubismCore.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/ckeyformmappingcontext.h"
+#include "live2dstruct/cblendshapeposeevaluator.h"
+#include "live2dstruct/cblendshaperelations.h"
 #include "live2dstruct/cmocdeformerorder.h"
 #include "live2dstruct/cmocpreviewbuilder.h"
 #include "live2dstruct/cmodelsession.h"
@@ -513,6 +515,91 @@ private slots:
         }
         QVERIFY(checked > 0);
         qInfo() << "real Core corners checked" << checked << "unsupported before Core comparison" << unsupported << unsupportedReasons;
+    }
+
+    void deformerBlendShapeRowsMatchRealCore()
+    {
+        const QString path = qEnvironmentVariable("LIVE2D_REAL_CORE_EXTRA_MOC");
+        if (path.isEmpty()) QSKIP("Set LIVE2D_REAL_CORE_EXTRA_MOC");
+        const auto bytes = read(path);
+        CoreModel core(bytes);
+        QVERIFY(core.model);
+        auto reader = CReader::FromBytes(bytes);
+        CSectionTable table(reader);
+        QVERIFY(table.IsValid());
+        const QStringList targets{"Warp133", "Warp131", "Rotation3", "Rotation64"};
+        for (const auto& target : targets) {
+            int deformerIndex = -1, specific = -1, type = -1;
+            for (int index = 0; index < table.deformers.size(); ++index) {
+                const auto* deformer = table.deformers[index];
+                if (deformer && deformer->ids == target) {
+                    deformerIndex = index; specific = deformer->specific_sources_indices; type = deformer->types; break;
+                }
+            }
+            QVERIFY(deformerIndex >= 0);
+            QString parameterId; float key = 0.0f;
+            const auto choose = [&](const auto& shapes) {
+                for (const auto* shape : shapes) {
+                    if (!shape || shape->target_indices != specific || !shape->blend_shape_keyform_binding_sources_counts) continue;
+                    const auto* binding = table.blend_shape_keyform_bindings[shape->blend_shape_keyform_binding_sources_begin_indices];
+                    if (!binding) continue;
+                    const int parameterBindingIndex = binding->parameter_binding_sources_indices;
+                    const auto* parameterBinding = table.blend_shape_parameter_bindings.value(parameterBindingIndex);
+                    if (!parameterBinding || parameterBinding->keys_sources_counts < 2) continue;
+                    for (const auto* parameter : table.parameters) {
+                        if (!parameter || parameter->parameter_types != 1 ||
+                            parameterBindingIndex < parameter->blend_shape_parameter_binding_sources_begin_indices ||
+                            parameterBindingIndex >= parameter->blend_shape_parameter_binding_sources_begin_indices +
+                                parameter->blend_shape_parameter_binding_sources_counts) continue;
+                        parameterId = parameter->ids;
+                        const int keyIndex = parameterBinding->base_key_indices == 0 ? parameterBinding->keys_sources_counts - 1 : 0;
+                        key = table.keys->GetData(parameterBinding->keys_sources_begin_indices + keyIndex);
+                        return;
+                    }
+                }
+            };
+            if (type == 0) choose(table.blend_shapes_warp_deformers);
+            else choose(table.blend_shapes_rotation_deformers);
+            QVERIFY2(!parameterId.isEmpty(), qPrintable(target));
+
+            QMap<QString, float> pose;
+            for (const auto* parameter : table.parameters) pose.insert(parameter->ids, parameter->default_values);
+            pose[parameterId] = key;
+            CBlendShapePoseEvaluator::Overrides overrides;
+            CBlendShapePoseEvaluator evaluator;
+            QString error;
+            QVERIFY2(evaluator.Build(table, pose, overrides, &error), qPrintable(error));
+            C2DTree tree(table);
+            tree.SetPoseOverrides(overrides);
+            for (auto* node : tree.getParametersTree())
+                if (auto* parameter = dynamic_cast<CParameterNode*>(node)) parameter->SetCurValue(pose.value(parameter->getName()));
+            tree.GetWarpKeys();
+            core.SetPose(pose);
+            for (int meshIndex = 0; meshIndex < table.art_meshes.size(); ++meshIndex) {
+                const auto* mesh = table.art_meshes[meshIndex];
+                int parent = mesh->parent_deformer_indices; bool descendant = false;
+                while (parent >= 0) {
+                    if (parent == deformerIndex) { descendant = true; break; }
+                    parent = table.deformers[parent]->parent_deformer_indices;
+                }
+                if (!descendant) continue;
+                bool glued = false;
+                for (const auto* glue : table.glue)
+                    if (glue && (glue->art_mesh_indices_a == meshIndex || glue->art_mesh_indices_b == meshIndex)) glued = true;
+                if (glued) continue;
+                const auto actual = core.Positions(mesh->ids);
+                QVector<float> expected;
+                for (auto* node : tree.getArtTree()) if (node->getName() == mesh->ids)
+                    if (auto* art = dynamic_cast<CArtMeshNode*>(node)) {
+                        for (float value : art->GetCanvasPositions()) expected.append(value);
+                        for (qsizetype index = 1; index < expected.size(); index += 2) expected[index] = -expected[index];
+                    }
+                QCOMPARE(expected.size(), actual.size());
+                for (int index = 0; index < actual.size(); ++index)
+                    QVERIFY2(std::abs(expected[index] - actual[index]) < 0.0001f,
+                             qPrintable(QStringLiteral("%1/%2/%3").arg(target, mesh->ids).arg(index)));
+            }
+        }
     }
     void fullyCollapsedParentDoesNotGuessRotationDirection()
     {

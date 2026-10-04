@@ -749,6 +749,8 @@ private slots:
         const auto before = capture(document);
         QVERIFY(!controller.BeginDrag({0}, unchangedWorld, &error));
         QVERIFY(error.contains("Glue"));
+        QVERIFY(error.contains(QStringLiteral("↔")));
+        QVERIFY(error.contains(QStringLiteral("端点记录")));
         QVERIFY(!controller.IsDragging());
         unchanged(document, before);
     }

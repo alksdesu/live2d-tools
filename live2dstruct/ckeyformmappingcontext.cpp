@@ -196,8 +196,13 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             if (glue->art_mesh_indices_a < 0 || glue->art_mesh_indices_a >= table.art_meshes.size() ||
                 glue->art_mesh_indices_b < 0 || glue->art_mesh_indices_b >= table.art_meshes.size())
                 return fail(error, QStringLiteral("Glue 引用了无效的 ArtMesh"));
-            if (glue->art_mesh_indices_a == meshIndex || glue->art_mesh_indices_b == meshIndex)
-                return fail(error, QStringLiteral("ArtMesh 受 Glue 影响，尚不支持父链反解：%1").arg(artMeshId));
+            if (glue->art_mesh_indices_a == meshIndex || glue->art_mesh_indices_b == meshIndex) {
+                const QString glueId = glue->ids.isEmpty() ? QStringLiteral("<unnamed>") : glue->ids;
+                const QString meshA = table.art_meshes[glue->art_mesh_indices_a]->ids;
+                const QString meshB = table.art_meshes[glue->art_mesh_indices_b]->ids;
+                return fail(error, QStringLiteral("ArtMesh %1 受 Glue %2 影响（%3 ↔ %4，端点记录 %5），尚不支持父链反解")
+                    .arg(artMeshId, glueId, meshA, meshB).arg(glue->glue_info_sources_counts));
+            }
         }
 
         QHash<QString, int> deformerIdCounts;
@@ -215,6 +220,13 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                 return fail(error, QStringLiteral("父变形器 ID 缺失或重复：%1").arg(deformer->ids));
             if (deformer->types != 0 && deformer->types != 1)
                 return fail(error, QStringLiteral("父链含不支持的变形器类型：%1").arg(deformer->ids));
+            const bool deformerBlendShape = deformer->types == 0
+                ? std::any_of(table.blend_shapes_warp_deformers.cbegin(), table.blend_shapes_warp_deformers.cend(),
+                    [deformer](const auto* shape) { return shape && shape->target_indices == deformer->specific_sources_indices; })
+                : std::any_of(table.blend_shapes_rotation_deformers.cbegin(), table.blend_shapes_rotation_deformers.cend(),
+                    [deformer](const auto* shape) { return shape && shape->target_indices == deformer->specific_sources_indices; });
+            if (deformerBlendShape)
+                return fail(error, QStringLiteral("父链变形器包含尚不支持姿态反解的 BlendShape：%1").arg(deformer->ids));
             const auto type = deformer->types == 0 ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
             const QString diagnostic = bindings.Diagnostic(type, deformer->ids);
             if (!diagnostic.isEmpty()) return fail(error, QStringLiteral("父链 %1：%2").arg(deformer->ids, diagnostic));

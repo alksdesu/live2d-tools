@@ -178,7 +178,7 @@ bool CBlendShapePoseEvaluator::Build(const CSectionTable& table, const QMap<QStr
                              morphForm->keyform_position_sources_begin_indices, count, morph)) return;
             auto& delta = result.artMeshPositions[mesh->ids];
             if (delta.isEmpty()) delta.fill(0.0f, count);
-            for (int index = 0; index < count; ++index) delta[index] += (morph[index] - base[index]) * weight;
+            for (int index = 0; index < count; ++index) delta[index] += morph[index] * weight;
         } else if (type == CBlendShapeRelations::Warp) {
             if (target >= table.warp_deformers.size()) return;
             const auto* warp = table.warp_deformers[target];
@@ -197,7 +197,7 @@ bool CBlendShapePoseEvaluator::Build(const CSectionTable& table, const QMap<QStr
             if (id.isEmpty()) return;
             auto& delta = result.warpPositions[id];
             if (delta.isEmpty()) delta.fill(0.0f, count);
-            for (int index = 0; index < count; ++index) delta[index] += (morph[index] - base[index]) * weight;
+            for (int index = 0; index < count; ++index) delta[index] += morph[index] * weight;
         }
         Q_UNUSED(parameter);
     };
@@ -221,11 +221,11 @@ bool CBlendShapePoseEvaluator::Build(const CSectionTable& table, const QMap<QStr
             Q_UNUSED(parameter);
             return;
         }
-        delta.opacity += (morph->opacities - base->opacities) * weight;
-        delta.angle += (morph->angles - base->angles) * weight;
-        delta.originX += (morph->origin_x - base->origin_x) * weight;
-        delta.originY += (morph->origin_y - base->origin_y) * weight;
-        delta.scale += (morph->scales - base->scales) * weight;
+        delta.opacity += morph->opacities * weight;
+        delta.angle += morph->angles * weight;
+        delta.originX += morph->origin_x * weight;
+        delta.originY += morph->origin_y * weight;
+        delta.scale += morph->scales * weight;
         Q_UNUSED(parameter);
     };
     if (!evaluateShapes(table.blend_shapes_art_meshes, CBlendShapeRelations::ArtMesh, applyPosition) ||
