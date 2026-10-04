@@ -399,7 +399,8 @@ private:
                 knownFields(input, {"layer", "affine", "clippingOnTexturePx"}, entry.diagnostics);
                 entry.affine = transform(xml.field(input, "affine"));
                 const int clipping = xml.field(input, "clippingOnTexturePx", false);
-                entry.clippingType = clipping < 0 ? QString() : xml.nodes[clipping].type;
+                entry.clippingType = clipping < 0 || xml.nodes[clipping].type == QStringLiteral("null")
+                    ? QString() : xml.nodes[clipping].type;
                 const auto sourceIt = layers.constFind(layer);
                 if (sourceIt == layers.cend()) {
                     const int resolvedLayer = xml.resolve(layer);

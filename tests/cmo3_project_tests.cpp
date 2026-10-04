@@ -189,6 +189,20 @@ private slots:
             }
         }
     }
+    void emptyTextureClippingIsNotReportedAsActive()
+    {
+        cmo3::CCmo3Project project; QString error;
+        QVERIFY2(cmo3::CCmo3Project::OpenBytes(m_generated, {}, project, &error), qPrintable(error));
+        QVERIFY2(project.Materials(), qPrintable(project.MaterialsError()));
+        int empty = 0;
+        for (const auto& image : project.Materials()->images)
+            for (const auto& candidate : image.candidates)
+                for (const auto& layer : candidate.layers) {
+                    QVERIFY(layer.clippingType != QStringLiteral("null"));
+                    if (layer.clippingType.isEmpty()) ++empty;
+                }
+        QVERIFY(empty > 0);
+    }
     void emptyContainerMetadataIsStrictlyTyped_data()
     {
         QTest::addColumn<QByteArray>("field"); QTest::addColumn<bool>("empty");
