@@ -1094,6 +1094,24 @@ if(BUILD_TESTING)
     target_link_libraries(psd_cooperative_gl_tests PRIVATE psd_data model_data export_task_runner
         Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test Qt6::Core5Compat)
     add_test(NAME psd_cooperative_gl COMMAND psd_cooperative_gl_tests)
+    if(TARGET live2d_core)
+        add_executable(real_core_renderer_tests tests/real_core_renderer_tests.cpp
+            framework/Model/CubismModel.cpp framework/Rendering/CubismRenderer.cpp
+            framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp
+            framework/Rendering/OpenGL/CubismShader_OpenGLES2.cpp
+            framework/Id/CubismId.cpp framework/Id/CubismIdManager.cpp
+            framework/Type/csmString.cpp framework/Type/csmRectF.cpp
+            framework/Math/CubismMatrix44.cpp framework/Math/CubismMath.cpp
+            framework/Math/CubismVector2.cpp framework/Utils/CubismJson.cpp
+            framework/Utils/CubismString.cpp
+            edit/cmeshmap.cpp edit/cdrawmesh.cpp edit/ctriangl.cpp
+            opengl/ccubismshaderprograms.cpp opengl/cglrenderstate.cpp
+            opengl/cglmeshbuffer.cpp opengl/coffscreenbuffer.cpp opengl/creadopengl.cpp
+            opengl/cpsdwritelist.cpp ui/para/ccidjson.cpp)
+        target_link_libraries(real_core_renderer_tests PRIVATE model_data live2d_core psd_data
+            Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Core5Compat Qt6::Test)
+        add_test(NAME real_core_renderer COMMAND real_core_renderer_tests)
+    endif()
     add_executable(rendered_psd_tests tests/rendered_psd_tests.cpp
         opengl/creadopengl.cpp opengl/coffscreenbuffer.cpp opengl/ccubismshaderprograms.cpp assets/icc.qrc)
     set_target_properties(rendered_psd_tests PROPERTIES AUTORCC ON)

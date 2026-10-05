@@ -19,6 +19,7 @@ class ModelRuntimeStateTests;
 class LAppExportPreviewTests;
 class CubismRendererPreparationTests;
 class PsdCooperativeGlTests;
+class RealCoreRendererTests;
 class PhysicsParameterDefinitionTests;
 
 namespace live2dstruct {
@@ -46,6 +47,7 @@ class CubismModel
     friend class ::LAppExportPreviewTests;
     friend class ::CubismRendererPreparationTests;
     friend class ::PsdCooperativeGlTests;
+    friend class ::RealCoreRendererTests;
     friend class ::PhysicsParameterDefinitionTests;
 public:
 
