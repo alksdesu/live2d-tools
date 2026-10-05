@@ -1623,6 +1623,17 @@ csmInt32 CubismModel::GetOffscreenCount() const
 #endif
 }
 
+const csmInt32* CubismModel::GetOffscreenRenderOrders() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    if (!_model) return nullptr;
+    const auto* orders = Core::csmGetRenderOrders(_model);
+    return orders ? orders + GetDrawableCount() : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 const csmInt32* CubismModel::GetOffscreenBlendModes() const
 {
 #if LIVE2D_CORE_API_VERSION >= 6

@@ -571,6 +571,7 @@ private slots:
         if (!offscreens) QSKIP("The model has no offscreen surfaces");
         const int parts = csmGetPartCount(model);
         const int drawables = csmGetDrawableCount(model);
+        const auto renderOrders = csmGetRenderOrders(model);
         const auto owners = csmGetOffscreenOwnerIndices(model);
         const auto blendModes = csmGetOffscreenBlendModes(model);
         const auto opacities = csmGetOffscreenOpacities(model);
@@ -580,8 +581,15 @@ private slots:
         const auto maskCounts = csmGetOffscreenMaskCounts(model);
         const auto masks = csmGetOffscreenMasks(model);
         const auto partOffscreens = csmGetPartOffscreenIndices(model);
-        QVERIFY(owners && blendModes && opacities && multiply && screen && flags && maskCounts && masks);
+        QVERIFY(renderOrders && owners && blendModes && opacities && multiply && screen && flags && maskCounts && masks);
         QVERIFY(partOffscreens || !parts);
+        const int total = drawables + offscreens;
+        QVector<bool> seen(total, false);
+        for (int index = 0; index < total; ++index) {
+            QVERIFY(renderOrders[index] >= 0 && renderOrders[index] < total);
+            QVERIFY(!seen[renderOrders[index]]);
+            seen[renderOrders[index]] = true;
+        }
         for (int index = 0; index < offscreens; ++index) {
             QVERIFY(owners[index] >= 0 && owners[index] < parts);
             QVERIFY(std::isfinite(opacities[index]));

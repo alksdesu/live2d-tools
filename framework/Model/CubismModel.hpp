@@ -282,6 +282,7 @@ public:
     Rendering::CubismRenderer::CubismBlendMode   GetDrawableBlendMode(csmInt32 drawableIndex) const;
     csmInt32 GetDrawableBlendModeValue(csmInt32 drawableIndex) const;
     csmInt32 GetOffscreenCount() const;
+    const csmInt32* GetOffscreenRenderOrders() const;
     const csmInt32* GetOffscreenBlendModes() const;
     const csmFloat32* GetOffscreenOpacities() const;
     const csmInt32* GetOffscreenOwnerIndices() const;
