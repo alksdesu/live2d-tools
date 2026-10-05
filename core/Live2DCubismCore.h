@@ -1,6 +1,10 @@
 ﻿#ifndef LIVE2D_CUBISM_CORE_H
 #define LIVE2D_CUBISM_CORE_H
 
+#ifndef LIVE2D_CORE_API_VERSION
+#define LIVE2D_CORE_API_VERSION 5
+#endif
+
 #if defined(__cplusplus)
 extern "C"
 {
@@ -90,7 +94,11 @@ extern "C"
         /** moc3 file version 4.2.00 - 4.2.04 */
         csmMocVersion_42 = 4,
         /** moc3 file version 5.0.00 - */
-        csmMocVersion_50 = 5
+        csmMocVersion_50 = 5,
+#if LIVE2D_CORE_API_VERSION >= 6
+        /** moc3 file version 5.3.00 - */
+        csmMocVersion_53 = 6
+#endif
     };
 
     /** moc3 version identifier. */
@@ -468,7 +476,12 @@ extern "C"
      *
      * @return  Valid pointer on success; '0'otherwise.
      */
+#if LIVE2D_CORE_API_VERSION >= 6
+    csmApi const int* csmCallingConvention csmGetRenderOrders(const csmModel* model);
+#define csmGetDrawableRenderOrders csmGetRenderOrders
+#else
     csmApi const int* csmCallingConvention csmGetDrawableRenderOrders(const csmModel* model);
+#endif
 
     /**
      * Gets drawable opacities.

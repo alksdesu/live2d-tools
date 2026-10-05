@@ -5,6 +5,11 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
+isEmpty(LIVE2D_CORE_API_VERSION): LIVE2D_CORE_API_VERSION = $$(LIVE2D_CORE_API_VERSION)
+isEmpty(LIVE2D_CORE_API_VERSION): LIVE2D_CORE_API_VERSION = 5
+contains(LIVE2D_CORE_API_VERSION, 5|6): DEFINES += LIVE2D_CORE_API_VERSION=$$LIVE2D_CORE_API_VERSION
+else: error("LIVE2D_CORE_API_VERSION must be 5 or 6")
+
 macx {
     QMAKE_CXXFLAGS += -include $$quote($$PWD/std/cmacosqtcompat.h)
     contains(QT_CONFIG, shared):!isEmpty(QMAKE_MAC_SDK_PATH):!exists($$QMAKE_MAC_SDK_PATH/System/Library/Frameworks/AGL.framework) {
