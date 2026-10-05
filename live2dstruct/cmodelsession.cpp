@@ -19,6 +19,7 @@
 namespace live2dstruct {
 
 namespace {
+constexpr int LegacyStructureCountFields = 34;
 constexpr int StructureCountFields = 64;
 constexpr int MaximumBlendShapeGeometryEntries = 100000;
 constexpr int MaximumBlendShapeGeometryDeltas = 2000000;
@@ -198,10 +199,16 @@ bool validDisplayNames(const CModelSession& session, int version, QString* error
     return CDeformerDisplayNames::Validate(*session.deformerDisplayNames, error);
 }
 
-bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QString* error)
+int structureCountFields(int version)
 {
+    return version >= 5 ? StructureCountFields : LegacyStructureCountFields;
+}
+
+bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, int version, QString* error)
+{
+    const int countFields = structureCountFields(version);
     qint64 bytes = 0;
-    if (state.columns.size() > 1000000 || state.counts.size() > StructureCountFields) {
+    if (state.columns.size() > 1000000 || state.counts.size() > countFields) {
         setError(error, QStringLiteral("会话参数结构字段数量超出范围"));
         return false;
     }
@@ -214,7 +221,7 @@ bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QSt
         bytes += it->size();
     }
     for (auto it = state.counts.cbegin(); it != state.counts.cend(); ++it)
-        if (it.key() < 0 || it.key() >= StructureCountFields || it.value() < 0 || it.value() > 1000000) {
+        if (it.key() < 0 || it.key() >= countFields || it.value() < 0 || it.value() > 1000000) {
             setError(error, QStringLiteral("会话参数结构计数无效"));
             return false;
         }
@@ -341,14 +348,15 @@ bool validAnimationScenes(const CModelSession& session, int version, QString* er
     return true;
 }
 
-bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::ColumnState& state, QString* error)
+bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::ColumnState& state, int version, QString* error)
 {
+    const int countFields = structureCountFields(version);
     QJsonObject object, columns, counts;
     if (!readObject(root, QStringLiteral("structure"), &object, error)) return false;
     if (object.isEmpty()) return true;
     if (object.size() != 2 || !object.contains(QStringLiteral("columns")) || !object.contains(QStringLiteral("counts")) ||
         !readObject(object, QStringLiteral("columns"), &columns, error) ||
-        !readObject(object, QStringLiteral("counts"), &counts, error) || columns.size() > 1000000 || counts.size() > StructureCountFields) {
+        !readObject(object, QStringLiteral("counts"), &counts, error) || columns.size() > 1000000 || counts.size() > countFields) {
         setError(error, QStringLiteral("会话参数结构格式无效"));
         return false;
     }
@@ -378,14 +386,14 @@ bool readStructure(const QJsonObject& root, CMocParameterStructureBuilder::Colum
         bool converted = false;
         const int index = it.key().toInt(&converted);
         double value = 0;
-        if (!converted || QString::number(index) != it.key() || index < 0 || index >= StructureCountFields ||
+        if (!converted || QString::number(index) != it.key() || index < 0 || index >= countFields ||
             !readNumber(it.value(), &value) || value < 0 || value > 1000000 || std::floor(value) != value) {
             setError(error, QStringLiteral("会话参数结构计数无效"));
             return false;
         }
         state.counts.insert(index, int(value));
     }
-    return validStructure(state, error);
+    return validStructure(state, version, error);
 }
 }
 
@@ -411,7 +419,6 @@ QByteArray CModelSession::ToJson() const
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
-    if (!validStructure(structure, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources)) return {};
     int storedVersion = hasStructure && version == 1 ? 2 : version;
     if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
     if (physicsDraft && physicsDraft->sourcePath.isEmpty() && storedVersion < 4) storedVersion = 4;
@@ -430,6 +437,7 @@ QByteArray CModelSession::ToJson() const
     if (!animationScenes.isEmpty() || !activeAnimationScene.isEmpty()) storedVersion = std::max(storedVersion, 17);
     if (!artMeshClones.isEmpty()) storedVersion = std::max(storedVersion, 18);
     if (!blendShapeConstraints.isEmpty()) storedVersion = std::max(storedVersion, 19);
+    if (!validStructure(structure, storedVersion, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources)) return {};
     if (!validDisplayNames(*this, storedVersion, nullptr) || !validBlendShapeGeometry(*this, storedVersion, nullptr) ||
         !validBlendShapeConstraints(*this, storedVersion, nullptr) ||
         !validAnimationScenes(*this, storedVersion, nullptr) || !validArtMeshClones(*this, storedVersion, nullptr)) return {};
@@ -902,7 +910,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         setError(error, QStringLiteral("资源引用或物理草稿需要版本 3 会话"));
         return false;
     }
-    if (!readStructure(root, result.structure, error)) return false;
+    if (!readStructure(root, result.structure, parsedVersion, error)) return false;
     if (parsedVersion == 1 && (!result.structure.columns.isEmpty() || !result.structure.counts.isEmpty())) {
         setError(error, QStringLiteral("版本 1 会话不能包含参数结构"));
         return false;
@@ -1327,7 +1335,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
     CParameterOrganization::State normalizedOrganization;
     if (!CParameterOrganization::Normalize(parameterOrganization, normalizedOrganization, error) ||
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
-    if (!validArtwork(*this, version, error) || !validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
+    if (!validArtwork(*this, version, error) || !validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, version, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
         !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validArtMeshClones(*this, version, error) || !validDeformerStructure(*this, version, error) ||
         !validBlendShapeGeometry(*this, version, error) || !validBlendShapeConstraints(*this, version, error)) return false;
     if (!CTextureAssets::ValidateDraft(textures, error)) return false;

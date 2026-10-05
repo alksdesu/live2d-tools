@@ -882,6 +882,24 @@ private slots:
         QVERIFY(legacy.structure.columns.isEmpty());
     }
 
+    void extendedStructureCountsRequireAuthoringSessionVersion()
+    {
+        CModelSession modern;
+        modern.version = 5;
+        modern.structure.counts.insert(34, 0);
+        const QByteArray encoded = modern.ToJson();
+        QVERIFY(!encoded.isEmpty());
+        CModelSession parsed;
+        QString error;
+        QVERIFY2(CModelSession::FromJson(encoded, &parsed, &error), qPrintable(error));
+        QCOMPARE(parsed.structure.counts.value(34), 0);
+
+        CModelSession legacy;
+        legacy.version = 2;
+        legacy.structure.counts.insert(34, 0);
+        QVERIFY(legacy.ToJson().isEmpty());
+    }
+
     void staleMalformedAndProtectedStatesDoNotCommit()
     {
         CModelDocument document;
