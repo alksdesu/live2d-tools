@@ -1350,6 +1350,7 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
     GLuint maskTexture = 0;
     csmBool maskInvert = false;
     CubismRenderer::CubismTextureColor maskRect(0, 0, 1, 1);
+    CubismRenderer::CubismTextureColor maskChannel(1, 0, 0, 0);
     if (maskCounts[offscreenIndex] > 0) {
         if (offscreenIndex >= _offscreenMaskGroups.size()) return false;
         const int groupIndex = _offscreenMaskGroups[offscreenIndex];
@@ -1360,15 +1361,20 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
             !_effectMaskSurfaces[static_cast<size_t>(layout.bufferIndex)]->IsValid()) return false;
         maskTexture = _effectMaskSurfaces[static_cast<size_t>(layout.bufferIndex)]->GetColorBuffer();
         maskRect = CubismRenderer::CubismTextureColor(layout.x, layout.y, layout.width, layout.height);
+        maskChannel = CubismRenderer::CubismTextureColor(
+            layout.channelIndex == 0 ? 1.0f : 0.0f,
+            layout.channelIndex == 1 ? 1.0f : 0.0f,
+            layout.channelIndex == 2 ? 1.0f : 0.0f,
+            layout.channelIndex == 3 ? 1.0f : 0.0f);
         maskInvert = (maskFlags[offscreenIndex] & Core::csmIsInvertedMask) != 0;
     }
     if (alphaMode != 0 || (colorMode != 0 && colorMode != 1 && colorMode != 2 && colorMode != 3 &&
                            colorMode != 4 && colorMode != 6))
-        return CompositeEffectBackdrop(model, offscreenIndex, maskTexture, maskInvert, maskRect);
+        return CompositeEffectBackdrop(model, offscreenIndex, maskTexture, maskInvert, maskRect, maskChannel);
     auto* shader = CubismShader_OpenGLES2::GetInstance();
     if (!shader->SetupShaderProgramForComposite(this,
         _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(), blend,
-        opacities[offscreenIndex], mul, scr, maskTexture, maskInvert, maskRect)) return false;
+        opacities[offscreenIndex], mul, scr, maskTexture, maskInvert, maskRect, maskChannel)) return false;
     glDisable(GL_CULL_FACE);
     glDisable(GL_SCISSOR_TEST);
     if (!_compositeMesh->Draw(GL_TRIANGLES)) return false;
@@ -1377,7 +1383,8 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
 
 bool CubismRenderer_OpenGLES2::CompositeEffectBackdrop(const CubismModel& model, csmInt32 offscreenIndex,
                                                         GLuint maskTexture, csmBool maskInvert,
-                                                        const CubismRenderer::CubismTextureColor& maskRect)
+                                                        const CubismRenderer::CubismTextureColor& maskRect,
+                                                        const CubismRenderer::CubismTextureColor& maskChannel)
 {
     if (!_backdropSurface || !_backdropSurface->IsValid() ||
         offscreenIndex < 0 || offscreenIndex >= model.GetOffscreenCount()) return false;
@@ -1402,7 +1409,7 @@ bool CubismRenderer_OpenGLES2::CompositeEffectBackdrop(const CubismModel& model,
     if (!CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForBackdropComposite(
             this, _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(),
             _backdropSurface->GetColorBuffer(), colorMode, alphaMode, opacities[offscreenIndex],
-            mul, scr, maskTexture, maskInvert, maskRect)) return false;
+            mul, scr, maskTexture, maskInvert, maskRect, maskChannel)) return false;
     glDisable(GL_CULL_FACE);
     glDisable(GL_SCISSOR_TEST);
     return _compositeMesh && _compositeMesh->Draw(GL_TRIANGLES) && glGetError() == GL_NO_ERROR;

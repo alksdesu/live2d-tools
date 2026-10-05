@@ -27,14 +27,16 @@ public:
                                         const CubismRenderer::CubismTextureColor& multiply,
                                         const CubismRenderer::CubismTextureColor& screen,
                                         GLuint maskTexture = 0, csmBool maskInvert = false,
-                                        const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1));
+                                        const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1),
+                                        const CubismRenderer::CubismTextureColor& maskChannel = CubismRenderer::CubismTextureColor(1, 0, 0, 0));
     bool SetupShaderProgramForBackdropComposite(CubismRenderer_OpenGLES2* renderer, GLuint sourceTexture,
                                                 GLuint backdropTexture, csmInt32 colorMode, csmInt32 alphaMode,
                                                 csmFloat32 opacity,
                                                 const CubismRenderer::CubismTextureColor& multiply,
                                                 const CubismRenderer::CubismTextureColor& screen,
                                                 GLuint maskTexture = 0, csmBool maskInvert = false,
-                                                const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1));
+                                                const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1),
+                                                const CubismRenderer::CubismTextureColor& maskChannel = CubismRenderer::CubismTextureColor(1, 0, 0, 0));
 #ifdef CSM_TARGET_ANDROID_ES2
     static void SetExtShaderMode(csmBool extMode, csmBool extPAMode);
 #endif

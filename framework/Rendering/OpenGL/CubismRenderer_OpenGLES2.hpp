@@ -256,7 +256,8 @@ private:
     bool CompositeEffectSurface(const CubismModel& model, csmInt32 offscreenIndex);
     bool CompositeEffectBackdrop(const CubismModel& model, csmInt32 offscreenIndex,
                                  GLuint maskTexture, csmBool maskInvert,
-                                 const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1));
+                                 const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1),
+                                 const CubismRenderer::CubismTextureColor& maskChannel = CubismRenderer::CubismTextureColor(1, 0, 0, 0));
 
 
 
