@@ -2641,7 +2641,7 @@ bool MainWindow::doExportOne(const QString& modelPath, const QString& outPath, b
             state->position = state->surface->ViewPosition();
             state->warpSelection = state->surface->CaptureWarpSelectionState();
             for (auto* widget : QList<QWidget*>{m_treePanel, m_paramPanel, m_physicsPanel, m_blendShapePanel,
-                    m_texturePanel, m_inspectorPanel, m_diagnosticsPanel, m_userDataPanel, m_openglwindows}) {
+                    m_gluePanel, m_texturePanel, m_inspectorPanel, m_diagnosticsPanel, m_userDataPanel, m_openglwindows}) {
                 if (!widget) continue;
                 state->widgets.append({widget, widget->testAttribute(Qt::WA_ForceDisabled)});
                 state->signalStates.append({widget, widget->signalsBlocked()});
@@ -3963,6 +3963,7 @@ void MainWindow::RestDock(const QString &name)
             return;
         }
         if (m_inspectorPanel) m_inspectorPanel->SetLockedState(m_document.LockedKeys());
+        if (m_gluePanel) m_gluePanel->Refresh();
         if (!m_applyingSession && revision != m_document.Revision()) {
             m_sessionDirty = true;
             RefreshWindowTitle();

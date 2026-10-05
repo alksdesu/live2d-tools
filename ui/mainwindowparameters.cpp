@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "cparampanel.h"
+#include "ui/cgluepanel.h"
 #include "live2dstruct/cmodelsavefingerprint.h"
 #include <exception>
 
@@ -54,4 +55,5 @@ void MainWindow::MarkDocumentSaved()
     } catch (const std::exception&) { m_savedAuthoringFingerprint.clear(); }
     m_sessionDirty = false;
     m_dirtyComparisonReady = false;
+    if (m_gluePanel) m_gluePanel->MarkSaved();
 }

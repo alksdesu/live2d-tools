@@ -42,6 +42,15 @@ bool CGlueEditController::Initialize(const QByteArray& base, QString* error)
     return true;
 }
 
+void CGlueEditController::Reset()
+{
+    if (m_publishing) return;
+    CGlueEditController candidate;
+    candidate.m_publisher = std::move(m_publisher);
+    candidate.m_revision = m_revision + 1;
+    Swap(candidate);
+}
+
 void CGlueEditController::SetPublisher(Publisher publisher)
 {
     if (!m_publishing) m_publisher = std::move(publisher);

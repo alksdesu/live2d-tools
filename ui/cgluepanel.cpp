@@ -60,7 +60,7 @@ CGluePanel::CGluePanel(QWidget* parent) : QDockWidget(QStringLiteral("Glue"), pa
     m_weightA->setObjectName(QStringLiteral("glueWeightA"));
     m_weightB->setObjectName(QStringLiteral("glueWeightB"));
     for (auto* spin : {m_weightA, m_weightB}) {
-        spin->setRange(0, 1); spin->setDecimals(6); spin->setSingleStep(.05);
+        spin->setRange(0, 1); spin->setDecimals(9); spin->setSingleStep(.05);
         spin->setKeyboardTracking(false);
     }
     form->addRow(QStringLiteral("A 端点权重"), m_weightA);
@@ -90,9 +90,14 @@ CGluePanel::CGluePanel(QWidget* parent) : QDockWidget(QStringLiteral("Glue"), pa
 
 void CGluePanel::SetDocument(CModelDocument* document)
 {
-    if (m_editor.IsPublishing()) { m_refreshPending = true; return; }
     m_document = document;
-    if (!m_document) m_initializedDocument = nullptr;
+    if (m_editor.IsPublishing()) {
+        m_initializedDocument = nullptr;
+        m_initializedSourceDigest.clear();
+        m_initializedSourcePath.clear();
+        m_refreshPending = true;
+        return;
+    }
     Refresh();
 }
 
@@ -103,26 +108,40 @@ const CGlueEditController::Snapshot& CGluePanel::CurrentGlues() const { return m
 void CGluePanel::Refresh()
 {
     if (m_editor.IsPublishing()) { m_refreshPending = true; return; }
+    m_refreshPending = false;
     RefreshEditor();
 }
 
 void CGluePanel::RefreshEditor()
 {
-    m_refreshPending = false;
     const QString selection = m_glueSelector->currentData(Qt::UserRole + 1).toString();
     QString error;
     QByteArray bytes;
     if (!m_document || !m_document->IsLoaded()) {
+        m_initializedDocument = nullptr;
+        m_initializedSourceDigest.clear();
+        m_initializedSourcePath.clear();
+        m_editor.Reset();
         m_glueSelector->clear(); m_pairTable->setRowCount(0); m_emptyLabel->show();
         m_glueSelector->setEnabled(false); RefreshWeightControls(); return;
     }
+    const auto sourceDigest = m_document->SourceDigest();
+    const auto sourcePath = m_document->SourcePath();
     if (!m_document->BuildPreviewMoc(bytes, &error) ||
-        ((m_document != m_initializedDocument || bytes != m_editor.CurrentBytes()) &&
+        ((m_document != m_initializedDocument || sourceDigest != m_initializedSourceDigest ||
+          sourcePath != m_initializedSourcePath || bytes != m_editor.CurrentBytes()) &&
          !m_editor.Initialize(bytes, &error))) {
+        m_initializedDocument = nullptr;
+        m_initializedSourceDigest.clear();
+        m_initializedSourcePath.clear();
+        m_editor.Reset();
+        m_glueSelector->clear(); m_pairTable->setRowCount(0); m_emptyLabel->show();
         m_glueSelector->setEnabled(false); m_pairTable->setEnabled(false);
         m_applyButton->setEnabled(false); RejectEdit(error); return;
     }
     m_initializedDocument = m_document;
+    m_initializedSourceDigest = sourceDigest;
+    m_initializedSourcePath = sourcePath;
     m_statusLabel->clear();
     RefreshGlueList(selection);
 }
@@ -204,7 +223,11 @@ void CGluePanel::ApplyWeights()
     QString error;
     const bool accepted = m_editor.Apply(edits, &error);
     if (!alive) return;
-    if (!accepted) { RejectEdit(error); return; }
+    if (!accepted) {
+        if (m_refreshPending) Refresh();
+        RejectEdit(error);
+        return;
+    }
     Refresh();
     emit HistoryChanged(CanUndo(), CanRedo());
 }
@@ -228,7 +251,11 @@ bool CGluePanel::MoveHistory(bool undo, QString* error)
     CModelEdit edit;
     try {
         const auto handler = m_historyHandler;
-        if (!(handler ? handler(undo, edit, error) : undo ? m_document->UndoEdit(&edit) : m_document->RedoEdit(&edit))) return false;
+        const bool accepted = handler ? handler(undo, edit, error) : undo ? m_document->UndoEdit(&edit) : m_document->RedoEdit(&edit);
+        if (!accepted) {
+            if (m_refreshPending) Refresh();
+            return false;
+        }
     } catch (const std::exception&) {
         if (error) *error = QStringLiteral("Glue 历史操作失败，原状态已保留"); return false;
     }

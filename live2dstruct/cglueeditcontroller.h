@@ -17,6 +17,7 @@ public:
     using Publisher = std::function<bool(const QByteArray&, const Request&, const QByteArray&, QString*)>;
 
     bool Initialize(const QByteArray& base, QString* error = nullptr);
+    void Reset();
     void SetPublisher(Publisher publisher);
     bool SetWeight(int glueIndex, int pairIndex, Side side, float weight, QString* error = nullptr);
     bool Apply(const QVector<WeightEdit>& edits, QString* error = nullptr);

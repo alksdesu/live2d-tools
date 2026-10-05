@@ -39,6 +39,8 @@ private slots:
         QVERIFY(selector && table && weightA && apply);
         QVERIFY(selector->count() > 0); QVERIFY(table->rowCount() > 0);
         const float original = panel.CurrentGlues().first().pairs.first().a.weight;
+        apply->click();
+        QVERIFY(!document.CanUndoEdit());
         const double replacement = qFuzzyCompare(double(original) + 1.0, 1.25) ? .5 : .25;
         weightA->setValue(replacement);
         apply->click();
@@ -48,6 +50,8 @@ private slots:
         QCOMPARE(panel.CurrentGlues().first().pairs.first().a.weight, original);
         QVERIFY(panel.Redo(&error));
         QCOMPARE(panel.CurrentGlues().first().pairs.first().a.weight, float(replacement));
+        panel.SetDocument(nullptr);
+        QVERIFY(panel.CurrentGlues().isEmpty());
     }
 
     void switchingDocumentsResetsHistoryEvenWhenBytesMatch()
@@ -60,6 +64,7 @@ private slots:
         QVERIFY2(first.LoadBytes(bytes, QStringLiteral("first.moc3"), &error), qPrintable(error));
         QVERIFY2(second.LoadBytes(bytes, QStringLiteral("second.moc3"), &error), qPrintable(error));
         CModelDocument* active = &first;
+        bool switchDuringPublish = false;
         CGluePanel panel;
         panel.SetPublisher([&](const QByteArray& before, const CGlueEditController::Request& request,
                                const QByteArray&, QString* detail) {
@@ -67,7 +72,9 @@ private slots:
             if (!active->BuildPreviewMoc(current, detail) || current != before) return false;
             CModelEdit edit;
             if (!active->MakeMeshStructureEdit(request, edit, detail)) return false;
-            return active->ExecuteEdit(edit);
+            const bool accepted = active->ExecuteEdit(edit);
+            if (switchDuringPublish) panel.SetDocument(&second);
+            return accepted;
         });
         panel.SetDocument(active);
         auto* weightA = panel.findChild<QDoubleSpinBox*>(QStringLiteral("glueWeightA"));
@@ -80,6 +87,15 @@ private slots:
 
         active = &second;
         panel.SetDocument(active);
+        QVERIFY(!panel.CanUndo());
+        QCOMPARE(panel.CurrentGlues().first().pairs.first().a.weight, original);
+
+        active = &first;
+        panel.SetDocument(active);
+        switchDuringPublish = true;
+        weightA->setValue(original);
+        apply->click();
+        switchDuringPublish = false;
         QVERIFY(!panel.CanUndo());
         QCOMPARE(panel.CurrentGlues().first().pairs.first().a.weight, original);
     }

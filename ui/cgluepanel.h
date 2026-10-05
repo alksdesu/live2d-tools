@@ -53,6 +53,8 @@ private:
 
     live2dstruct::CModelDocument* m_document = nullptr;
     live2dstruct::CModelDocument* m_initializedDocument = nullptr;
+    QByteArray m_initializedSourceDigest;
+    QString m_initializedSourcePath;
     live2dstruct::CGlueEditController m_editor;
     HistoryHandler m_historyHandler;
     QComboBox* m_glueSelector = nullptr;
