@@ -1,4 +1,5 @@
 #include "live2dstruct/ckeyformeditcontroller.h"
+#include "live2dstruct/cglueeditcontroller.h"
 #include "live2dstruct/cmesheditplanner.h"
 #include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/csectiontable.h"
@@ -11,6 +12,7 @@
 #include <QTemporaryDir>
 #include <QtTest>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 
 using namespace live2dstruct;
@@ -658,6 +660,140 @@ private slots:
         const auto stable = document.AuthoringStructureState();
         QVERIFY(!document.ExecuteEdit(forged));
         QCOMPARE(document.AuthoringStructureState(), stable);
+    }
+
+    void glueEditControllerPublishesAndRevertsWeightTransactions()
+    {
+        const QString path = QString(TEST_RESOURCES) + "/Rice/Rice.moc3";
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(file.readAll(), path, &error), qPrintable(error));
+        CGlueEditController editor;
+        QVERIFY2(editor.Initialize(document.SourceBytes(), &error), qPrintable(error));
+        QVERIFY(!editor.CurrentGlues().isEmpty());
+        const float original = editor.CurrentGlues().first().pairs.first().a.weight;
+        const float replacement = original == .25f ? .75f : .25f;
+        int publishes = 0;
+        bool reject = false;
+        editor.SetPublisher([&](const QByteArray& before, const CGlueEditController::Request& request, const QByteArray&, QString* detail) {
+            ++publishes;
+            if (before != editor.CurrentBytes()) return false;
+            if (reject) { if (detail) *detail = QStringLiteral("publisher rejected"); return false; }
+            CModelEdit command;
+            return document.MakeMeshStructureEdit(request, command, detail) && document.ExecuteEdit(command);
+        });
+        QVERIFY2(editor.SetWeight(0, 0, CGlueEditController::Side::A, replacement, &error), qPrintable(error));
+        QCOMPARE(publishes, 1);
+        QCOMPARE(editor.CurrentGlues().first().pairs.first().a.weight, replacement);
+        QVERIFY(document.CanUndoEdit());
+        QVERIFY2(editor.Undo(&error), qPrintable(error));
+        QCOMPARE(publishes, 2);
+        QCOMPARE(editor.CurrentGlues().first().pairs.first().a.weight, original);
+        QVERIFY2(editor.Redo(&error), qPrintable(error));
+        QCOMPARE(publishes, 3);
+        QCOMPARE(editor.CurrentGlues().first().pairs.first().a.weight, replacement);
+
+        const auto stable = editor.CurrentBytes();
+        reject = true;
+        QVERIFY(!editor.SetWeight(0, 0, CGlueEditController::Side::A, original, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(editor.CurrentBytes(), stable);
+        QCOMPARE(editor.CurrentGlues().first().pairs.first().a.weight, replacement);
+        QCOMPARE(publishes, 4);
+        reject = false;
+        QVERIFY(!editor.SetWeight(0, 0, CGlueEditController::Side::A,
+                                  std::numeric_limits<float>::quiet_NaN(), &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(editor.CurrentBytes(), stable);
+        QCOMPARE(publishes, 4);
+    }
+
+    void glueEditControllerRejectsMalformedEditsAndReinitializes()
+    {
+        QFile file(QString(TEST_RESOURCES) + "/Rice/Rice.moc3");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto original = file.readAll();
+        CGlueEditController editor;
+        QString error;
+        QVERIFY2(editor.Initialize(original, &error), qPrintable(error));
+        const auto revision = editor.Revision();
+        int publishes = 0;
+        editor.SetPublisher([&](const auto&, const auto&, const auto&, QString*) { ++publishes; return true; });
+        const auto originalWeight = editor.CurrentGlues().first().pairs.first().a.weight;
+        for (const auto& edit : QVector<CGlueEditController::WeightEdit>{
+                 {-1, 0, CGlueEditController::Side::A, .25f},
+                 {0, -1, CGlueEditController::Side::A, .25f},
+                 {0, 0, static_cast<CGlueEditController::Side>(5), .25f},
+                 {0, 0, CGlueEditController::Side::A, -1.0f},
+                 {0, 0, CGlueEditController::Side::A, 2.0f}}) {
+            QVERIFY(!editor.Apply({edit}, &error));
+            QVERIFY(!error.isEmpty());
+            QCOMPARE(editor.CurrentBytes(), original);
+            QCOMPARE(editor.Revision(), revision);
+        }
+        QVERIFY(!editor.Apply({{0, 0, CGlueEditController::Side::A, .25f},
+                               {0, 0, CGlueEditController::Side::A, .75f}}, &error));
+        QCOMPARE(publishes, 0);
+        const auto replacement = originalWeight == .25f ? .75f : .25f;
+        QVERIFY2(editor.SetWeight(0, 0, CGlueEditController::Side::A, replacement, &error), qPrintable(error));
+        QVERIFY(editor.CanUndo());
+        QVERIFY(editor.IsDirty());
+        QVERIFY2(editor.Initialize(original, &error), qPrintable(error));
+        QCOMPARE(editor.CurrentBytes(), original);
+        QCOMPARE(editor.SourceBytes(), original);
+        QCOMPARE(editor.CurrentGlues().first().pairs.first().a.weight, originalWeight);
+        QVERIFY(!editor.CanUndo());
+        QVERIFY(!editor.CanRedo());
+        QVERIFY(!editor.IsDirty());
+        QCOMPARE(publishes, 1);
+        QVERIFY2(editor.SetWeight(0, 0, CGlueEditController::Side::A, replacement, &error), qPrintable(error));
+        QCOMPARE(publishes, 2);
+    }
+
+    void glueEditControllerRejectsStalePublicationAndReentry()
+    {
+        QFile file(QString(TEST_RESOURCES) + "/Rice/Rice.moc3");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto original = file.readAll();
+        CGlueEditController editor;
+        QString error;
+        QVERIFY2(editor.Initialize(original, &error), qPrintable(error));
+        const auto previous = editor.CurrentGlues().first().pairs.first().a.weight;
+        const auto replacement = previous == .25f ? .75f : .25f;
+        QByteArray published = original;
+        bool nestedInitialize = true, nestedApply = true, nestedUndo = true, nestedRedo = true;
+        int substituted = 0;
+        editor.SetPublisher([&](const QByteArray& before, const auto&, const QByteArray& after, QString* detail) {
+            if (before != published) { if (detail) *detail = QStringLiteral("stale source"); return false; }
+            QString nested;
+            nestedInitialize = editor.Initialize(original, &nested);
+            nestedApply = editor.SetWeight(0, 0, CGlueEditController::Side::A, previous, &nested);
+            nestedUndo = editor.Undo(&nested);
+            nestedRedo = editor.Redo(&nested);
+            editor.MarkSaved();
+            editor.SetPublisher([&](const auto&, const auto&, const auto&, QString*) { ++substituted; return false; });
+            published = after;
+            return true;
+        });
+        QVERIFY2(editor.SetWeight(0, 0, CGlueEditController::Side::A, replacement, &error), qPrintable(error));
+        QVERIFY(!nestedInitialize); QVERIFY(!nestedApply); QVERIFY(!nestedUndo); QVERIFY(!nestedRedo);
+        QVERIFY(editor.IsDirty());
+        QCOMPARE(substituted, 0);
+        const auto stable = editor.CurrentBytes();
+        const auto revision = editor.Revision();
+        published = "external mutation";
+        QVERIFY(!editor.Undo(&error));
+        QCOMPARE(error, QStringLiteral("stale source"));
+        QCOMPARE(editor.CurrentBytes(), stable);
+        QCOMPARE(editor.Revision(), revision);
+        QVERIFY(editor.CanUndo());
+        QVERIFY(!editor.CanRedo());
+        published = stable;
+        QVERIFY2(editor.Undo(&error), qPrintable(error));
+        QCOMPARE(editor.CurrentBytes(), original);
+        QCOMPARE(published, original);
+        QVERIFY(!editor.IsDirty());
+        QCOMPARE(substituted, 0);
     }
 
     void cloneArtMeshCommitsUndoRedoAndSession()

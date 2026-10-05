@@ -56,6 +56,7 @@ target_include_directories(texture_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(texture_data PUBLIC Qt6::Core Qt6::Gui)
 
 add_library(model_data STATIC
+    live2dstruct/cglueeditcontroller.cpp
     live2dstruct/cmocblendshapegeometrybuilder.cpp
     live2dstruct/cmocblendshapeconstraintbuilder.cpp
     live2dstruct/cblendshapeposeevaluator.cpp

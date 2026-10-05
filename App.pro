@@ -51,6 +51,7 @@ DESTDIR = $${PWD}/softwareEnv/physicsV1
 
 SOURCES += \
     std/cpngimage.cpp \
+    live2dstruct/cglueeditcontroller.cpp \
     live2dstruct/ctextureassets.cpp \
     live2dstruct/ctextureeditcontroller.cpp \
     live2dstruct/cparentgraph.cpp \
