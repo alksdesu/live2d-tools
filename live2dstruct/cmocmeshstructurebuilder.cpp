@@ -676,6 +676,8 @@ bool CMocMeshStructureBuilder::CaptureGlues(const QByteArray& base, QVector<Glue
                 return fail(error, QStringLiteral("Glue %1 的身份、网格端点或配对范围无效").arg(index));
             const auto* meshA = table.art_meshes[glue->art_mesh_indices_a];
             const auto* meshB = table.art_meshes[glue->art_mesh_indices_b];
+            if (!meshA || !meshB)
+                return fail(error, QStringLiteral("Glue %1 的 ArtMesh 端点无效").arg(glue->ids));
             GlueSnapshot snapshot{index, glue->ids, glue->art_mesh_indices_a, glue->art_mesh_indices_b,
                                   meshA->ids, meshB->ids, {}};
             snapshot.pairs.reserve(glue->glue_info_sources_counts / 2);
