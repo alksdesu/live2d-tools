@@ -1593,9 +1593,9 @@ csmBool CubismModel::GetDrawableDynamicFlagBlendColorDidChange(csmInt32 drawable
 Rendering::CubismRenderer::CubismBlendMode CubismModel::GetDrawableBlendMode(csmInt32 drawableIndex) const
 {
     const csmInt32 mode = GetDrawableBlendModeValue(drawableIndex);
-    return (mode == 1)
+    return (mode == 1 || mode == 3)
                ? Rendering::CubismRenderer::CubismBlendMode_Additive
-               : (mode == 2)
+               : (mode == 2 || mode == 6)
                ? Rendering::CubismRenderer::CubismBlendMode_Multiplicative
                : Rendering::CubismRenderer::CubismBlendMode_Normal;
 }
@@ -1605,13 +1605,7 @@ csmInt32 CubismModel::GetDrawableBlendModeValue(csmInt32 drawableIndex) const
 #if LIVE2D_CORE_API_VERSION >= 6
     const csmInt32* modes = Core::csmGetDrawableBlendModes(_model);
     if (!modes || drawableIndex < 0 || drawableIndex >= GetDrawableCount()) return 0;
-    switch (modes[drawableIndex]) {
-    case Core::csmColorBlendType_Add:
-    case Core::csmColorBlendType_AddCompatible: return 1;
-    case Core::csmColorBlendType_Multiply:
-    case Core::csmColorBlendType_MultiplyCompatible: return 2;
-    default: return 0;
-    }
+    return modes[drawableIndex];
 #else
     const csmUint8* flags = Core::csmGetDrawableConstantFlags(_model);
     if (!flags || drawableIndex < 0 || drawableIndex >= GetDrawableCount()) return 0;
