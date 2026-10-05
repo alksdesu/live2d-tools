@@ -551,6 +551,51 @@ private slots:
         CoreModel unchanged;
         QVERIFY2(unchanged.Load(output, error), qPrintable(error));
     }
+
+    void core6OffscreenArraysHaveValidOwnershipAndMasks_data() { Models(); }
+    void core6OffscreenArraysHaveValidOwnershipAndMasks()
+    {
+#if LIVE2D_CORE_API_VERSION < 6
+        QSKIP("Core 6 API is not enabled");
+#else
+        QFETCH(QString, path);
+        CoreModel core;
+        QString error;
+        const auto source = Read(path);
+        QVERIFY2(core.Load(source, error), qPrintable(error));
+        auto* model = core.Get();
+        if (csmGetMocVersion(source.constData(), unsigned(source.size())) < csmMocVersion_53)
+            QSKIP("The model does not contain Cubism 5.3 offscreen data");
+        const int offscreens = csmGetOffscreenCount(model);
+        QVERIFY(offscreens >= 0);
+        if (!offscreens) QSKIP("The model has no offscreen surfaces");
+        const int parts = csmGetPartCount(model);
+        const int drawables = csmGetDrawableCount(model);
+        const auto owners = csmGetOffscreenOwnerIndices(model);
+        const auto blendModes = csmGetOffscreenBlendModes(model);
+        const auto opacities = csmGetOffscreenOpacities(model);
+        const auto multiply = csmGetOffscreenMultiplyColors(model);
+        const auto screen = csmGetOffscreenScreenColors(model);
+        const auto flags = csmGetOffscreenConstantFlags(model);
+        const auto maskCounts = csmGetOffscreenMaskCounts(model);
+        const auto masks = csmGetOffscreenMasks(model);
+        const auto partOffscreens = csmGetPartOffscreenIndices(model);
+        QVERIFY(owners && blendModes && opacities && multiply && screen && flags && maskCounts && masks);
+        QVERIFY(partOffscreens || !parts);
+        for (int index = 0; index < offscreens; ++index) {
+            QVERIFY(owners[index] >= 0 && owners[index] < parts);
+            QVERIFY(std::isfinite(opacities[index]));
+            for (const auto* color : {multiply + index, screen + index})
+                for (float channel : {color->X, color->Y, color->Z, color->W}) QVERIFY(std::isfinite(channel));
+            QVERIFY(maskCounts[index] >= 0);
+            if (maskCounts[index]) QVERIFY(masks[index]);
+            for (int mask = 0; mask < maskCounts[index]; ++mask)
+                QVERIFY(masks[index][mask] >= -1 && masks[index][mask] < drawables);
+        }
+        for (int index = 0; index < parts; ++index)
+            QVERIFY(partOffscreens[index] >= -1 && partOffscreens[index] < offscreens);
+#endif
+    }
 };
 
 QTEST_GUILESS_MAIN(RealCorePreviewTests)

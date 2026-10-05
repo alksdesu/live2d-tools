@@ -1650,6 +1650,42 @@ const csmInt32* CubismModel::GetOffscreenOwnerIndices() const
 #endif
 }
 
+const csmInt32* CubismModel::GetPartOffscreenIndices() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetPartOffscreenIndices(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const Core::csmVector4* CubismModel::GetOffscreenMultiplyColors() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenMultiplyColors(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const Core::csmVector4* CubismModel::GetOffscreenScreenColors() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenScreenColors(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const Core::csmFlags* CubismModel::GetOffscreenConstantFlags() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenConstantFlags(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 const csmInt32* CubismModel::GetOffscreenMaskCounts() const
 {
 #if LIVE2D_CORE_API_VERSION >= 6

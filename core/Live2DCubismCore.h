@@ -510,6 +510,8 @@ extern "C"
     csmApi const int* csmCallingConvention csmGetOffscreenOwnerIndices(const csmModel* model);
     csmApi const csmVector4* csmCallingConvention csmGetOffscreenMultiplyColors(const csmModel* model);
     csmApi const csmVector4* csmCallingConvention csmGetOffscreenScreenColors(const csmModel* model);
+    csmApi const csmFlags* csmCallingConvention csmGetOffscreenConstantFlags(const csmModel* model);
+    csmApi const int* csmCallingConvention csmGetPartOffscreenIndices(const csmModel* model);
     csmApi const int* csmCallingConvention csmGetOffscreenMaskCounts(const csmModel* model);
     csmApi const int** csmCallingConvention csmGetOffscreenMasks(const csmModel* model);
 #else

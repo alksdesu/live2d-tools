@@ -285,6 +285,10 @@ public:
     const csmInt32* GetOffscreenBlendModes() const;
     const csmFloat32* GetOffscreenOpacities() const;
     const csmInt32* GetOffscreenOwnerIndices() const;
+    const csmInt32* GetPartOffscreenIndices() const;
+    const Core::csmVector4* GetOffscreenMultiplyColors() const;
+    const Core::csmVector4* GetOffscreenScreenColors() const;
+    const Core::csmFlags* GetOffscreenConstantFlags() const;
     const csmInt32* GetOffscreenMaskCounts() const;
     const csmInt32** GetOffscreenMasks() const;
 
