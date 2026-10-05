@@ -1507,6 +1507,34 @@ private slots:
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
         QVERIFY(target.release());
     }
+
+    void core6ExtendedDrawableBackdropRendersAndRestoresTheParentTarget()
+    {
+        GetterState state;
+        state.drawableCount = 3;
+        state.offscreenCount = 0;
+        state.blendModes[0] = (1 << 8) | 14;
+        state.renderOrders = {0, 1, 2, 3, 4};
+        state.maskCounts = {0, 0, 0};
+        state.dynamicFlags.fill(Core::csmIsVisible);
+        auto model = Model(state);
+        auto renderer = Renderer();
+        auto& glRenderer = Gl(renderer);
+        QVERIFY(glRenderer.setGlOwningContext(&m_context));
+        QVERIFY(glRenderer.Initialize(model.get()));
+        for (int index = 0; index < state.drawableCount; ++index)
+            glRenderer.BindTexture(static_cast<csmUint32>(index), Texture());
+        allowDraw = true;
+        controlledContext = &m_context;
+        const auto restore = qScopeGuard([&] { allowDraw = false; controlledContext = nullptr; });
+        QOpenGLFramebufferObject target(16, 16);
+        QVERIFY(target.isValid() && target.bind());
+        m_gl.glViewport(0, 0, 16, 16);
+        m_gl.glDisable(GL_SCISSOR_TEST);
+        QVERIFY(glRenderer.DrawModel());
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+        QVERIFY(target.release());
+    }
 #endif
 
     void cleanupTestCase()

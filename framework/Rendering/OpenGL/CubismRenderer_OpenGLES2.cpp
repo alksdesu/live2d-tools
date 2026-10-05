@@ -869,6 +869,49 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
         return !offscreen || WritePsdLayer(drawableIndex, drawName, opacityOverride, clipContext != nullptr);
     };
 
+    const auto needsBackdropDrawable = [&](csmInt32 drawableIndex) {
+        const int raw = GetModel()->GetDrawableBlendModeValue(drawableIndex);
+        const int color = raw & 0xff, alpha = (raw >> 8) & 0xff;
+        return alpha != 0 || (color != 0 && color != 1 && color != 2 && color != 3 && color != 4 && color != 6);
+    };
+    const auto drawDrawableWithBlend = [&](csmInt32 drawableIndex, const QString& drawName) {
+        if (offscreen || !needsBackdropDrawable(drawableIndex)) return drawDrawable(drawableIndex, drawName);
+        const auto viewport = _rendererProfile.Viewport();
+        if (!_drawableScratchSurface || !_drawableScratchSurface->IsValid() || !_backdropSurface ||
+            !_backdropSurface->IsValid()) {
+            if (!EnsureEffectResources(viewport[2], viewport[3], std::max(1, GetModel()->GetOffscreenCount()))) return false;
+        }
+        if (!_drawableScratchSurface->BeginDraw() || !_drawableScratchSurface->Clear(0, 0, 0, 0)) return false;
+        bool drawing = true;
+        const auto restore = qScopeGuard([&] {
+            _rawBlendIsolationPass = false;
+            if (drawing) _drawableScratchSurface->EndDraw();
+            glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        });
+        glViewport(0, 0, viewport[2], viewport[3]);
+        _rawBlendIsolationPass = true;
+        if (!drawDrawable(drawableIndex, drawName) || !_drawableScratchSurface->EndDraw()) return false;
+        drawing = false;
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, _backdropSurface->GetColorBuffer());
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, viewport[0], viewport[1], viewport[2], viewport[3]);
+        if (glGetError() != GL_NO_ERROR) return false;
+        const int raw = GetModel()->GetDrawableBlendModeValue(drawableIndex);
+        const int color = raw & 0xff, alpha = (raw >> 8) & 0xff;
+        const csmFloat32 opacityOverride = opacities.value(drawName, -1.0f);
+        const csmFloat32 opacity = opacityOverride >= 0.0f ? opacityOverride :
+            GetModel()->GetDrawableOpacityAll(drawableIndex, includeHidden);
+        const auto multiply = GetModel()->GetMultiplyColor(drawableIndex);
+        const auto screen = GetModel()->GetScreenColor(drawableIndex);
+        if (!CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForBackdropComposite(
+                this, _drawableScratchSurface->GetColorBuffer(), _backdropSurface->GetColorBuffer(),
+                color, alpha, opacity, multiply, screen)) return false;
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        return _compositeMesh && _compositeMesh->Draw(GL_TRIANGLES) && glGetError() == GL_NO_ERROR;
+    };
+
     if (effectRendering) {
         const auto* maskCounts = GetModel()->GetOffscreenMaskCounts();
         for (int offscreenIndex = 0; offscreenIndex < GetModel()->GetOffscreenCount(); ++offscreenIndex)
@@ -956,14 +999,14 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
                 if (!popUntil(GetModel()->GetDrawableParentPartIndex(index))) return false;
                 const QString name(GetModel()->GetDrawableId(index)->GetString().GetRawString());
                 if (!hidden.contains(name) && (includeHidden || GetModel()->GetDrawableDynamicFlagIsVisible(index))) {
-                    if (!drawDrawable(index, name)) return false;
+                    if (!drawDrawableWithBlend(index, name)) return false;
                 }
                 continue;
             }
             const csmInt32 index = _sortedDrawableIndexList[position];
             const QString name(GetModel()->GetDrawableId(index)->GetString().GetRawString());
             if (!hidden.contains(name) && (includeHidden || GetModel()->GetDrawableDynamicFlagIsVisible(index))) {
-                if (!drawDrawable(index, name)) return false;
+                if (!drawDrawableWithBlend(index, name)) return false;
             }
         }
         while (effectRendering && !effectStack.isEmpty()) {
@@ -1024,7 +1067,9 @@ bool CubismRenderer_OpenGLES2::DrawMeshOpenGL(const CubismModel& model, const cs
     } else if (generatingMask) {
         if (!shader->SetupShaderProgramForMask(this, model, index)) return false;
     } else if (!shader->SetupShaderProgramForDraw(this, model, index, IsAll, opacityOverride,
-        (_psdExport || (delegate && delegate->IsOffScreen())) ? CubismShader_OpenGLES2::DrawMode::IsolatedPsdLayer : CubismShader_OpenGLES2::DrawMode::Preview)) {
+        (_rawBlendIsolationPass || _psdExport || (delegate && delegate->IsOffScreen()))
+            ? CubismShader_OpenGLES2::DrawMode::IsolatedPsdLayer
+            : CubismShader_OpenGLES2::DrawMode::Preview)) {
         return false;
     }
     if (!mesh->Draw(GL_TRIANGLES)) return false;
@@ -1076,6 +1121,7 @@ bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 he
         _effectSurfaces.clear();
         _effectMaskSurfaces.clear();
         _backdropSurface.reset();
+        _drawableScratchSurface.reset();
         _compositeMesh.reset();
         return true;
     }
@@ -1119,6 +1165,13 @@ bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 he
             if (!replacement->setGlOwningContext(owningContext()) ||
                 !replacement->CreateOffscreenSurface(width, height)) return false;
             _backdropSurface = std::move(replacement);
+        }
+        if (!_drawableScratchSurface || !_drawableScratchSurface->IsValid() ||
+            _drawableScratchSurface->GetBufferWidth() != width || _drawableScratchSurface->GetBufferHeight() != height) {
+            auto replacement = std::make_unique<CubismOffscreenSurface_OpenGLES2>();
+            if (!replacement->setGlOwningContext(owningContext()) ||
+                !replacement->CreateOffscreenSurface(width, height)) return false;
+            _drawableScratchSurface = std::move(replacement);
         }
         return true;
     } catch (const std::bad_alloc&) {

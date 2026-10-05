@@ -270,7 +270,9 @@ private:
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectMaskSurfaces;
     std::unique_ptr<CGlMeshBuffer> _compositeMesh;
     std::unique_ptr<CubismOffscreenSurface_OpenGLES2> _backdropSurface;
+    std::unique_ptr<CubismOffscreenSurface_OpenGLES2> _drawableScratchSurface;
     bool _effectMaskPass = false;
+    bool _rawBlendIsolationPass = false;
     std::vector<std::unique_ptr<CGlMeshBuffer>> _meshBuffers;
     quint64 _maskIndicesRevision = 0;
     bool _forceMaskRedraw = false;
