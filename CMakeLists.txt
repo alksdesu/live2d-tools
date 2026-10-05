@@ -1094,7 +1094,7 @@ if(BUILD_TESTING)
     target_link_libraries(psd_cooperative_gl_tests PRIVATE psd_data model_data export_task_runner
         Qt6::Core Qt6::Gui Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test Qt6::Core5Compat)
     add_test(NAME psd_cooperative_gl COMMAND psd_cooperative_gl_tests)
-    if(TARGET live2d_core)
+    if(TARGET live2d_core AND LIVE2D_CORE_API_VERSION STREQUAL "6")
         add_executable(real_core_renderer_tests tests/real_core_renderer_tests.cpp
             framework/Model/CubismModel.cpp framework/Rendering/CubismRenderer.cpp
             framework/Rendering/OpenGL/CubismRenderer_OpenGLES2.cpp
