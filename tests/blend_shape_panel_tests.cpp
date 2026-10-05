@@ -844,6 +844,7 @@ private slots:
         QSignalSpy values(&panel, &CBlendShapePanel::ParamChanged);
         QSignalSpy parameterSelection(&panel, &CBlendShapePanel::ParameterSelected);
         QSignalSpy objectSelection(&panel, &CBlendShapePanel::ObjectSelected);
+        QSignalSpy constraintSelection(&panel, &CBlendShapePanel::ConstraintEditRequested);
         parameters->setCurrentItem(driver);
         QVERIFY(parameterSelection.isEmpty());
         parameters->setFocus();
@@ -876,6 +877,8 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(details, "itemActivated", Q_ARG(QTreeWidgetItem*, limiter), Q_ARG(int, 0)));
         QCOMPARE(parameterSelection.size(), 1);
         QCOMPARE(parameterSelection.first()[0].toString(), QStringLiteral("Limiter"));
+        QCOMPARE(constraintSelection.size(), 1);
+        QCOMPARE(constraintSelection.first()[0].toInt(), 0);
         QVERIFY(values.isEmpty());
         QCOMPARE(row(panel, "Driver")->findChild<QSlider*>()->value(), 500);
     }
