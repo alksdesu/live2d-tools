@@ -1609,6 +1609,18 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
         RefreshDisplayNames();
         return !alive.isNull();
     }
+    if (edit.field == live2dstruct::CModelEdit::BlendShapeConstraints) {
+        if (!EndKeyformEditing(error)) return false;
+        if (!m_document.ExecuteEdit(edit)) {
+            if (error) *error = QStringLiteral("融合限制曲线修改未通过模型校验");
+            return false;
+        }
+        m_sessionDirty = true;
+        m_historySource = HistorySource::Inspector;
+        RefreshParameterStructureUi();
+        RefreshWindowTitle();
+        return true;
+    }
     if (edit.field == live2dstruct::CModelEdit::ParameterOrganization ||
         edit.field == live2dstruct::CModelEdit::GeometryObjectPairs) {
         if (m_openglwindows && !m_openglwindows->FinishMeshDrag(false, error)) return false;
@@ -1701,6 +1713,14 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
         if (!(undo ? candidate.UndoEdit(&edit) : candidate.RedoEdit(&edit))) return false;
         if (!PublishMeshStructure(candidate, edit, !undo, error)) return false;
         m_document.CommitCandidate(std::move(candidate));
+        ApplyDocumentEditToUi(edit, !undo);
+        m_sessionDirty = true;
+        RefreshWindowTitle();
+        RefreshUndoActions();
+        return !alive.isNull();
+    }
+    if (pending.field == live2dstruct::CModelEdit::BlendShapeConstraints) {
+        if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
         ApplyDocumentEditToUi(edit, !undo);
         m_sessionDirty = true;
         RefreshWindowTitle();
@@ -2097,6 +2117,9 @@ void MainWindow::ApplyDocumentEditToUi(const live2dstruct::CModelEdit& edit, boo
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::KeyformPositions || edit.field == live2dstruct::CModelEdit::GeometryKeyforms ||
                edit.field == live2dstruct::CModelEdit::BlendShapeGeometry) {
+        if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
+    } else if (edit.field == live2dstruct::CModelEdit::BlendShapeConstraints) {
+        RefreshParameterStructureUi();
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
     } else if (edit.field == live2dstruct::CModelEdit::MeshIndices) {
         if (m_inspectorPanel) m_inspectorPanel->RefreshSelection();
