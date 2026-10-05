@@ -39,15 +39,27 @@ private slots:
     {
         auto values = m_entry.values;
         values[0].weight = values[0].weight < 0.9f ? values[0].weight + 0.05f : values[0].weight - 0.05f;
-        CModelEdit edit; QString error;
+        QByteArray baselineRuntime;
+        QString error;
+        QVERIFY2(m_document.BuildRuntimeMoc(baselineRuntime, &error), qPrintable(error));
+        CModelEdit edit;
         QVERIFY2(m_document.MakeBlendShapeConstraintEdit(m_entry, values, edit, &error), qPrintable(error));
         QVERIFY(edit.field == CModelEdit::BlendShapeConstraints);
         QVERIFY2(m_document.ExecuteEdit(edit), qPrintable(error));
+        QByteArray modifiedRuntime;
+        QVERIFY2(m_document.BuildRuntimeMoc(modifiedRuntime, &error), qPrintable(error));
+        QVERIFY(modifiedRuntime != baselineRuntime);
         QCOMPARE(m_document.BlendShapeConstraints().size(), 1);
         QCOMPARE(m_document.BlendShapeConstraints().first().values, values);
         QVERIFY2(m_document.UndoEdit(), qPrintable(error));
+        QByteArray rollbackRuntime;
+        QVERIFY2(m_document.BuildRuntimeMoc(rollbackRuntime, &error), qPrintable(error));
+        QCOMPARE(rollbackRuntime, baselineRuntime);
         QVERIFY(m_document.BlendShapeConstraints().isEmpty());
         QVERIFY2(m_document.RedoEdit(), qPrintable(error));
+        QByteArray redoRuntime;
+        QVERIFY2(m_document.BuildRuntimeMoc(redoRuntime, &error), qPrintable(error));
+        QCOMPARE(redoRuntime, modifiedRuntime);
         QCOMPARE(m_document.BlendShapeConstraints().first().values, values);
         QByteArray saved;
         CModelSession session;

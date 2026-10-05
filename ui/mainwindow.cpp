@@ -1611,10 +1611,13 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
     }
     if (edit.field == live2dstruct::CModelEdit::BlendShapeConstraints) {
         if (!EndKeyformEditing(error)) return false;
-        if (!m_document.ExecuteEdit(edit)) {
+        live2dstruct::CModelDocument candidate = m_document;
+        if (!candidate.ExecuteEdit(edit)) {
             if (error) *error = QStringLiteral("融合限制曲线修改未通过模型校验");
             return false;
         }
+        if (!PublishKeyformPreview(candidate, {}, false, error)) return false;
+        m_document.CommitCandidate(std::move(candidate));
         m_sessionDirty = true;
         m_historySource = HistorySource::Inspector;
         RefreshParameterStructureUi();
@@ -1720,7 +1723,10 @@ bool MainWindow::ApplyDocumentHistory(bool undo, live2dstruct::CModelEdit& edit,
         return !alive.isNull();
     }
     if (pending.field == live2dstruct::CModelEdit::BlendShapeConstraints) {
-        if (!(undo ? m_document.UndoEdit(&edit) : m_document.RedoEdit(&edit))) return false;
+        live2dstruct::CModelDocument candidate = m_document;
+        if (!(undo ? candidate.UndoEdit(&edit) : candidate.RedoEdit(&edit))) return false;
+        if (!PublishKeyformPreview(candidate, {}, false, error)) return false;
+        m_document.CommitCandidate(std::move(candidate));
         ApplyDocumentEditToUi(edit, !undo);
         m_sessionDirty = true;
         RefreshWindowTitle();
