@@ -32,6 +32,7 @@ class CMotionPanel;
 class CPhysicsPanel;
 class CBlendShapePanel;
 class CBlendShapeGeometryDialog;
+class CBlendShapeConstraintDialog;
 class CTexturePanel;
 class CUvEditDialog;
 class CAtlasEditDialog;
@@ -199,6 +200,7 @@ private:
     bool InitializeDeformerDisplayNames(live2dstruct::CModelDocument& document, QString* error) const;
     void RefreshDeformerDisplayNames();
     void EditBlendShapeGeometry(const QString& meshId, int shapeIndex, int bindingOffset, int keyformOffset);
+    void EditBlendShapeConstraint(int constraintIndex);
     bool CancelDeformerDialogs();
     void RefreshDeformerActions();
     void RefreshDeformerStructureUi(const live2dstruct::CModelEdit& command, bool forward);
@@ -210,6 +212,7 @@ private:
     QPointer<CDeformerRenameDialog> m_deformerRenameDialog;
     QPointer<CDeformerGridDialog> m_deformerGridDialog;
     QPointer<CBlendShapeGeometryDialog> m_blendShapeGeometryDialog;
+    QPointer<CBlendShapeConstraintDialog> m_blendShapeConstraintDialog;
     void InitializeMeshTools(QVBoxLayout* layout);
     void RefreshMeshTools();
     void RefreshVertexSelectionTools();

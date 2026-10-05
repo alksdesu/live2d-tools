@@ -960,6 +960,11 @@ if(BUILD_TESTING)
     set_tests_properties(blend_shape_panel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(blend_shape_geometry_dialog_tests tests/blend_shape_geometry_dialog_tests.cpp
         ui/cblendshapegeometrydialog.cpp)
+    add_executable(blend_shape_constraint_dialog_tests tests/blend_shape_constraint_dialog_tests.cpp
+        ui/cblendshapeconstraintdialog.cpp)
+    target_link_libraries(blend_shape_constraint_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
+    add_test(NAME blend_shape_constraint_dialog COMMAND blend_shape_constraint_dialog_tests)
+    set_tests_properties(blend_shape_constraint_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     target_link_libraries(blend_shape_geometry_dialog_tests PRIVATE model_data Qt6::Test Qt6::Widgets)
     target_compile_definitions(blend_shape_geometry_dialog_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
     add_test(NAME blend_shape_geometry_dialog COMMAND blend_shape_geometry_dialog_tests)

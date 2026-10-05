@@ -46,6 +46,7 @@ constexpr int TargetIdRole = Qt::UserRole + 7;
 constexpr int ShapeRole = Qt::UserRole + 8;
 constexpr int BindingOffsetRole = Qt::UserRole + 9;
 constexpr int KeyformOffsetRole = Qt::UserRole + 10;
+constexpr int ConstraintRole = Qt::UserRole + 11;
 
 class CBlendRelationTree : public QTreeWidget
 {
@@ -738,8 +739,9 @@ void CBlendShapePanel::ExpandDetails(QTreeWidgetItem* item)
             child->setData(0, KindRole, QStringLiteral("limiter"));
             child->setData(0, IndexRole, limiter.values.begin);
             child->setData(1, IndexRole, limiter.values.count);
+            child->setData(0, ConstraintRole, limiter.constraintIndex);
             child->setData(0, SelectableRole, parameter.selectable && limiter.valid);
-            child->setToolTip(0, parameter.id);
+            child->setToolTip(0, QStringLiteral("%1\n回车或双击编辑融合限制曲线").arg(parameter.id));
             if (limiter.values.count) child->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
         }
         AppendGeometryRows(item);
@@ -816,7 +818,12 @@ void CBlendShapePanel::ActivateItem(QTreeWidgetItem* item)
     if (m_rebuilding || !item || !item->data(0, SelectableRole).toBool()) return;
     const QString id = item->data(0, Qt::UserRole).toString();
     const auto kind = item->data(0, KindRole).toString();
-    if (kind == QLatin1String("geometry")) {
+    if (kind == QLatin1String("limiter")) {
+        emit ParameterSelected(id);
+        const int constraintIndex = item->data(0, ConstraintRole).toInt();
+        if (constraintIndex < 0) { emit ConstraintEditRejected(QStringLiteral("融合限制索引无效")); return; }
+        emit ConstraintEditRequested(constraintIndex);
+    } else if (kind == QLatin1String("geometry")) {
         if (!GeometrySourceMatches()) {
             UpdateGeometryAction();
             emit GeometryEditRejected(QStringLiteral("模型快照已改变，请刷新融合关系后再编辑"));

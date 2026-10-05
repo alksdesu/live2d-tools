@@ -41,6 +41,8 @@ signals:
     void ObjectSelected(const QString& id, const QString& type);
     void GeometryEditRequested(const QString& meshId, int shapeIndex, int bindingOffset, int keyformOffset);
     void GeometryEditRejected(const QString& reason);
+    void ConstraintEditRequested(int constraintIndex);
+    void ConstraintEditRejected(const QString& reason);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

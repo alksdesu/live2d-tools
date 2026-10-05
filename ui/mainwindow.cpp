@@ -29,6 +29,7 @@
 #include "ui/cphysicspanel.h"
 #include "ui/cblendshapepanel.h"
 #include "ui/cblendshapegeometrydialog.h"
+#include "ui/cblendshapeconstraintdialog.h"
 #include "ui/ctexturepanel.h"
 #include "ui/cinspectorpanel.h"
 #include "ui/cmodeldiagnosticspanel.h"
@@ -1841,6 +1842,39 @@ void MainWindow::EditBlendShapeGeometry(const QString& meshId, int shapeIndex, i
     dialog->exec();
 }
 
+void MainWindow::EditBlendShapeConstraint(int constraintIndex)
+{
+    if (m_blendShapeConstraintDialog) { m_blendShapeConstraintDialog->raise(); return; }
+    QString error;
+    if (!AuthoringReady(&error) || !FinishParameterValueEditing(&error) || m_batchExporting || m_psdBatch || m_previewExport.IsBusy()) {
+        if (!error.isEmpty()) statusBar()->showMessage(error, 8000);
+        return;
+    }
+    live2dstruct::CModelBlendShapeConstraintEntry before;
+    if (!m_document.CaptureBlendShapeConstraint(constraintIndex, before, &error)) {
+        statusBar()->showMessage(error, 8000); return;
+    }
+    const auto source = m_document.SourceDigest();
+    const auto path = m_document.SourcePath();
+    const auto revision = m_document.Revision();
+    auto* dialog = new CBlendShapeConstraintDialog(before, this);
+    m_blendShapeConstraintDialog = dialog;
+    const QPointer<MainWindow> alive(this);
+    const QPointer<CBlendShapeConstraintDialog> child(dialog);
+    const auto cleanup = qScopeGuard([child] { if (child) delete child; });
+    dialog->SetSubmissionHandler([alive, before, source, path, revision](const QVector<live2dstruct::CMocBlendShapeConstraintBuilder::Value>& values, QString* detail) {
+        if (!alive || !alive->AuthoringReady(detail) || alive->m_document.SourceDigest() != source ||
+            alive->m_document.SourcePath() != path || alive->m_document.Revision() != revision) {
+            if (detail) *detail = QStringLiteral("模型已改变，请重新打开融合限制曲线编辑器");
+            return false;
+        }
+        live2dstruct::CModelEdit edit;
+        if (!alive->m_document.MakeBlendShapeConstraintEdit(before, values, edit, detail)) return false;
+        return alive->SubmitInspectorEdit(edit, detail);
+    });
+    dialog->exec();
+}
+
 void MainWindow::RefreshModelTree()
 {
     if (!m_treePanel) return;
@@ -2983,6 +3017,7 @@ bool MainWindow::CloseModel()
     }
     if (!CancelDeformerDialogs()) return false;
     if (m_blendShapeGeometryDialog) m_blendShapeGeometryDialog->reject();
+    if (m_blendShapeConstraintDialog) m_blendShapeConstraintDialog->reject();
     if (!CancelAutomaticMesh()) return false;
     if (m_artworkLoadControl) m_artworkLoadControl->Cancel();
     if (m_nameImportControl) m_nameImportControl->Cancel();
@@ -3499,6 +3534,10 @@ void MainWindow::RestDock(const QString &name)
     connect(m_blendShapePanel, &CBlendShapePanel::ObjectSelected, m_treePanel, &CModelTreePanel::HighlightObject);
     connect(m_blendShapePanel, &CBlendShapePanel::GeometryEditRequested, this, &MainWindow::EditBlendShapeGeometry);
     connect(m_blendShapePanel, &CBlendShapePanel::GeometryEditRejected, this, [this](const QString& reason) {
+        if (!reason.isEmpty()) statusBar()->showMessage(reason, 8000);
+    });
+    connect(m_blendShapePanel, &CBlendShapePanel::ConstraintEditRequested, this, &MainWindow::EditBlendShapeConstraint);
+    connect(m_blendShapePanel, &CBlendShapePanel::ConstraintEditRejected, this, [this](const QString& reason) {
         if (!reason.isEmpty()) statusBar()->showMessage(reason, 8000);
     });
 
