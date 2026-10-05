@@ -99,13 +99,15 @@ uniform vec4 u_multiplyColor;
 uniform vec4 u_screenColor;
 uniform vec2 u_resolution;
 uniform float u_maskInvert;
+uniform vec4 u_maskRect;
 uniform vec4 u_channelFlag;
 layout(location=0) out vec4 fragColor;
 void main(){
   vec4 t=texture(s_texture0,v_texCoord);
   vec3 c=t.rgb*u_multiplyColor.rgb;
   c=c+u_screenColor.rgb*t.a-c*u_screenColor.rgb;
-  float m=dot(texture(s_texture1,gl_FragCoord.xy/u_resolution),u_channelFlag);
+  vec2 maskUv=u_maskRect.xy+(gl_FragCoord.xy/u_resolution)*u_maskRect.zw;
+  float m=dot(texture(s_texture1,maskUv),u_channelFlag);
   if(u_maskInvert>0.5) m=1.0-m;
   fragColor=vec4(c,t.a)*u_baseColor.a*m;
 }
@@ -127,6 +129,7 @@ uniform int u_colorMode;
 uniform int u_alphaMode;
 uniform float u_useMask;
 uniform float u_maskInvert;
+uniform vec4 u_maskRect;
 uniform vec4 u_channelFlag;
 layout(location=0) out vec4 fragColor;
 float lum(vec3 c){return .30*c.r+.59*c.g+.11*c.b;}
@@ -146,7 +149,7 @@ vec3 pd(float sa,float da){if(u_alphaMode==1)return vec3(sa*da,0.,da*(1.-sa));if
 vec4 straight(vec4 c){return c.a<1e-5?vec4(0):vec4(c.rgb/c.a,c.a);}
 void main(){
  vec4 t=texture(s_texture0,v_texCoord);t.rgb=t.rgb*u_multiplyColor.rgb;t.rgb=t.rgb+u_screenColor.rgb*t.a-t.rgb*u_screenColor.rgb;
- if(u_useMask>.5){float m=dot(texture(s_texture2,gl_FragCoord.xy/u_resolution),u_channelFlag);if(u_maskInvert>.5)m=1.-m;t*=m;}
+ if(u_useMask>.5){vec2 maskUv=u_maskRect.xy+(gl_FragCoord.xy/u_resolution)*u_maskRect.zw;float m=dot(texture(s_texture2,maskUv),u_channelFlag);if(u_maskInvert>.5)m=1.-m;t*=m;}
  vec4 s=straight(t*u_baseColor),d=straight(texture(s_texture1,gl_FragCoord.xy/u_resolution));vec3 p=pd(s.a,d.a),c=blend(s.rgb,d.rgb);fragColor=vec4(c*p.x+s.rgb*p.y+d.rgb*p.z,p.x+p.y+p.z);
 }
 )";
@@ -163,11 +166,11 @@ bool hasRequiredLocations(std::size_t variant, QOpenGLShaderProgram& shader,
         return program.matrix >= 0 && program.channelFlag >= 0;
     if (variant == static_cast<std::size_t>(CCubismShaderPrograms::Variant::CompositeMasked))
         return program.matrix >= 0 && program.sampler1 >= 0 && program.resolution >= 0 &&
-            program.maskInvert >= 0 && program.channelFlag >= 0 && program.multiplyColor >= 0 &&
+            program.maskInvert >= 0 && program.maskRect >= 0 && program.channelFlag >= 0 && program.multiplyColor >= 0 &&
             program.screenColor >= 0;
     if (variant == static_cast<std::size_t>(CCubismShaderPrograms::Variant::BackdropComposite))
         return program.matrix >= 0 && program.sampler1 >= 0 && program.sampler2 >= 0 &&
-            program.resolution >= 0 && program.colorMode >= 0 && program.alphaMode >= 0 &&
+            program.resolution >= 0 && program.maskRect >= 0 && program.colorMode >= 0 && program.alphaMode >= 0 &&
             program.useMask >= 0 && program.maskInvert >= 0 && program.channelFlag >= 0;
     if (program.matrix < 0 || program.multiplyColor < 0 || program.screenColor < 0) return false;
     const bool masked = variant == 2 || variant == 3 || variant == 5 || variant == 6;
@@ -233,6 +236,7 @@ bool CCubismShaderPrograms::Initialize(const QOpenGLContext* context, const Sour
         program.channelFlag = shader->uniformLocation("u_channelFlag");
         program.resolution = shader->uniformLocation("u_resolution");
         program.maskInvert = shader->uniformLocation("u_maskInvert");
+        program.maskRect = shader->uniformLocation("u_maskRect");
         program.colorMode = shader->uniformLocation("u_colorMode");
         program.alphaMode = shader->uniformLocation("u_alphaMode");
         program.useMask = shader->uniformLocation("u_useMask");

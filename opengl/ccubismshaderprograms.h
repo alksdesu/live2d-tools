@@ -27,7 +27,7 @@ public:
         GLuint id = 0;
         GLint matrix = -1, clipMatrix = -1, sampler0 = -1, sampler1 = -1, sampler2 = -1;
         GLint baseColor = -1, multiplyColor = -1, screenColor = -1, channelFlag = -1;
-        GLint resolution = -1, maskInvert = -1, colorMode = -1, alphaMode = -1, useMask = -1;
+        GLint resolution = -1, maskInvert = -1, maskRect = -1, colorMode = -1, alphaMode = -1, useMask = -1;
     };
 
     CCubismShaderPrograms();

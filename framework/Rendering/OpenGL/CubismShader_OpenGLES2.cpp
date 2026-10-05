@@ -158,15 +158,17 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForOffscreenMask(
     gl->glActiveTexture(GL_TEXTURE0);
     gl->glBindTexture(GL_TEXTURE_2D, renderer->GetBindedTextureId(model.GetDrawableTextureIndex(index)));
     gl->glUniform1i(program->sampler0, 0);
-    gl->glUniformMatrix4fv(program->matrix, 1, GL_FALSE, renderer->GetMvpMatrix().GetArray());
-    colorUniform(*gl, program->channelFlag, CubismRenderer::CubismTextureColor(1, 0, 0, 0));
+    gl->glUniformMatrix4fv(program->matrix, 1, GL_FALSE,
+        renderer->_effectMaskMatrixActive ? renderer->_effectMaskMatrix.GetArray() : renderer->GetMvpMatrix().GetArray());
+    colorUniform(*gl, program->channelFlag, renderer->_effectMaskChannel);
     return gl->glGetError() == GL_NO_ERROR;
 }
 
 bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
     CubismRenderer_OpenGLES2* renderer, GLuint texture, CubismRenderer::CubismBlendMode blend,
     csmFloat32 opacity, const CubismRenderer::CubismTextureColor& multiply,
-    const CubismRenderer::CubismTextureColor& screen, GLuint maskTexture, csmBool maskInvert)
+    const CubismRenderer::CubismTextureColor& screen, GLuint maskTexture, csmBool maskInvert,
+    const CubismRenderer::CubismTextureColor& maskRect)
 {
     if (!renderer || !texture || !std::isfinite(opacity) || opacity < 0.0f || opacity > 1.0f)
         return false;
@@ -202,6 +204,7 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
         gl->glUniform1i(program->sampler1, 1);
         gl->glUniform2f(program->resolution, viewport[2], viewport[3]);
         gl->glUniform1f(program->maskInvert, maskInvert ? 1.0f : 0.0f);
+        colorUniform(*gl, program->maskRect, maskRect);
         colorUniform(*gl, program->channelFlag, CubismRenderer::CubismTextureColor(1, 0, 0, 0));
     }
     return gl->glGetError() == GL_NO_ERROR;
@@ -211,7 +214,8 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForBackdropComposite(
     CubismRenderer_OpenGLES2* renderer, GLuint sourceTexture, GLuint backdropTexture,
     csmInt32 colorMode, csmInt32 alphaMode, csmFloat32 opacity,
     const CubismRenderer::CubismTextureColor& multiply,
-    const CubismRenderer::CubismTextureColor& screen, GLuint maskTexture, csmBool maskInvert)
+    const CubismRenderer::CubismTextureColor& screen, GLuint maskTexture, csmBool maskInvert,
+    const CubismRenderer::CubismTextureColor& maskRect)
 {
     if (!renderer || !sourceTexture || !backdropTexture || colorMode < 0 || colorMode > 17 ||
         alphaMode < 0 || alphaMode > 4 || !std::isfinite(opacity) || opacity < 0.0f || opacity > 1.0f)
@@ -246,6 +250,7 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForBackdropComposite(
     gl->glUniform1i(program->alphaMode, alphaMode);
     gl->glUniform1f(program->useMask, maskTexture ? 1.0f : 0.0f);
     gl->glUniform1f(program->maskInvert, maskInvert ? 1.0f : 0.0f);
+    colorUniform(*gl, program->maskRect, maskRect);
     colorUniform(*gl, program->channelFlag, CubismRenderer::CubismTextureColor(1, 0, 0, 0));
     if (maskTexture) {
         gl->glActiveTexture(GL_TEXTURE2);

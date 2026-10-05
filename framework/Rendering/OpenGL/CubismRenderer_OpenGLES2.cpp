@@ -850,6 +850,7 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
                 effectOwners[offscreenIndex] = owner;
             }
             const auto viewport = _rendererProfile.Viewport();
+            if (effectRendering && !PrepareEffectMaskLayouts(*GetModel())) effectRendering = false;
             if (effectRendering && !EnsureEffectResources(viewport[2], viewport[3], effectCount)) effectRendering = false;
         }
     }
@@ -913,9 +914,8 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
     };
 
     if (effectRendering) {
-        const auto* maskCounts = GetModel()->GetOffscreenMaskCounts();
-        for (int offscreenIndex = 0; offscreenIndex < GetModel()->GetOffscreenCount(); ++offscreenIndex)
-            if (maskCounts[offscreenIndex] > 0 && !RenderEffectMask(*GetModel(), offscreenIndex)) return false;
+        for (int maskGroupIndex = 0; maskGroupIndex < _effectMaskLayouts.size(); ++maskGroupIndex)
+            if (!RenderEffectMask(*GetModel(), maskGroupIndex)) return false;
         const auto viewport = _rendererProfile.Viewport();
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     }
@@ -1114,12 +1114,96 @@ bool CubismRenderer_OpenGLES2::MaskSourceAvailable(csmInt32 drawable) const
     return _textureMaskReplay && model->GetDrawableVertexCount(drawable) > 0 && model->GetDrawableVertices(drawable);
 }
 
+bool CubismRenderer_OpenGLES2::PrepareEffectMaskLayouts(const CubismModel& model)
+{
+    _effectMaskLayouts.clear();
+    _offscreenMaskGroups.fill(-1, model.GetOffscreenCount());
+    _effectMaskBufferCleared.clear();
+    _effectMaskBufferCount = 0;
+    const int count = model.GetOffscreenCount();
+    const int* maskCounts = model.GetOffscreenMaskCounts();
+    const int** masks = model.GetOffscreenMasks();
+    if (count <= 0 || !maskCounts || !masks) return count == 0;
+    for (int offscreen = 0; offscreen < count; ++offscreen) {
+        if (maskCounts[offscreen] < 0 || (maskCounts[offscreen] > 0 && !masks[offscreen])) return false;
+        if (maskCounts[offscreen] == 0) continue;
+        int group = -1;
+        for (int candidate = 0; candidate < _effectMaskLayouts.size(); ++candidate) {
+            const auto& existing = _effectMaskLayouts[candidate].masks;
+            if (existing.size() == maskCounts[offscreen] && std::is_permutation(
+                    existing.cbegin(), existing.cend(), masks[offscreen])) {
+                group = candidate;
+                break;
+            }
+        }
+        if (group < 0) {
+            EffectMaskLayout layout;
+            layout.masks.reserve(maskCounts[offscreen]);
+            for (int mask = 0; mask < maskCounts[offscreen]; ++mask) {
+                const int drawable = masks[offscreen][mask];
+                if (drawable < 0 || drawable >= model.GetDrawableCount()) return false;
+                layout.masks.push_back(drawable);
+            }
+            group = _effectMaskLayouts.size();
+            _effectMaskLayouts.push_back(std::move(layout));
+        }
+        _offscreenMaskGroups[offscreen] = group;
+    }
+    const int groups = _effectMaskLayouts.size();
+    if (groups == 0) return true;
+    int buffers = 1;
+    while (groups > (buffers == 1 ? 36 : buffers * 32)) ++buffers;
+    _effectMaskBufferCount = buffers;
+    const int perSheet = (groups + buffers - 1) / buffers;
+    const int reducedSheets = groups % buffers;
+    const int perChannel = perSheet / 4;
+    const int remainder = perSheet % 4;
+    int groupIndex = 0;
+    const auto assign = [&](int buffer, int channel, int layoutCount) {
+        if (layoutCount == 0) return;
+        const auto set = [&](int index, float x, float y, float width, float height) {
+            auto& layout = _effectMaskLayouts[groupIndex++];
+            layout.bufferIndex = buffer;
+            layout.channelIndex = channel;
+            layout.x = x;
+            layout.y = y;
+            layout.width = width;
+            layout.height = height;
+        };
+        if (layoutCount == 1) { set(0, 0.0f, 0.0f, 1.0f, 1.0f); return; }
+        if (layoutCount == 2) {
+            for (int i = 0; i < layoutCount; ++i) set(i, (i % 2) * 0.5f, 0.0f, 0.5f, 1.0f);
+            return;
+        }
+        if (layoutCount <= 4) {
+            for (int i = 0; i < layoutCount; ++i) set(i, (i % 2) * 0.5f, (i / 2) * 0.5f, 0.5f, 0.5f);
+            return;
+        }
+        for (int i = 0; i < layoutCount; ++i)
+            set(i, (i % 3) / 3.0f, (i / 3) / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f);
+    };
+    for (int buffer = 0; buffer < buffers; ++buffer) {
+        for (int channel = 0; channel < 4; ++channel) {
+            int layoutCount = perChannel + (channel < remainder ? 1 : 0);
+            const int checkChannel = remainder + (perChannel < 1 ? -1 : 0);
+            if (channel == checkChannel && reducedSheets > 0)
+                layoutCount -= !(buffer < reducedSheets) ? 1 : 0;
+            assign(buffer, channel, layoutCount);
+        }
+    }
+    return groupIndex == groups;
+}
+
 bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 height, csmInt32 count)
 {
     if (!setGlOwningContext(owningContext()) || width <= 0 || height <= 0 || count < 0) return false;
     if (count == 0) {
         _effectSurfaces.clear();
         _effectMaskSurfaces.clear();
+        _effectMaskLayouts.clear();
+        _offscreenMaskGroups.clear();
+        _effectMaskBufferCleared.clear();
+        _effectMaskBufferCount = 0;
         _backdropSurface.reset();
         _drawableScratchSurface.reset();
         _compositeMesh.reset();
@@ -1139,9 +1223,10 @@ bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 he
             _effectSurfaces.clear();
             _effectSurfaces.resize(static_cast<size_t>(count));
         }
-        if (_effectMaskSurfaces.size() != static_cast<size_t>(count)) {
+        const int maskBufferCount = _effectMaskBufferCount > 0 ? _effectMaskBufferCount : count;
+        if (_effectMaskSurfaces.size() != static_cast<size_t>(maskBufferCount)) {
             _effectMaskSurfaces.clear();
-            _effectMaskSurfaces.resize(static_cast<size_t>(count));
+            _effectMaskSurfaces.resize(static_cast<size_t>(maskBufferCount));
         }
         for (auto& surface : _effectSurfaces) {
             if (surface && surface->IsValid() && surface->GetBufferWidth() == width &&
@@ -1181,27 +1266,43 @@ bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 he
     }
 }
 
-bool CubismRenderer_OpenGLES2::RenderEffectMask(const CubismModel& model, csmInt32 offscreenIndex)
+bool CubismRenderer_OpenGLES2::RenderEffectMask(const CubismModel& model, csmInt32 maskGroupIndex)
 {
-    const int count = model.GetOffscreenCount();
-    if (offscreenIndex < 0 || offscreenIndex >= count ||
-        static_cast<size_t>(offscreenIndex) >= _effectMaskSurfaces.size()) return false;
-    const auto* maskCounts = model.GetOffscreenMaskCounts();
-    const auto* masks = model.GetOffscreenMasks();
-    if (!maskCounts || !masks || maskCounts[offscreenIndex] < 0 ||
-        (maskCounts[offscreenIndex] > 0 && !masks[offscreenIndex])) return false;
-    auto& surface = _effectMaskSurfaces[static_cast<size_t>(offscreenIndex)];
+    if (maskGroupIndex < 0 || maskGroupIndex >= _effectMaskLayouts.size()) return false;
+    const auto& layout = _effectMaskLayouts[maskGroupIndex];
+    if (layout.bufferIndex < 0 || static_cast<size_t>(layout.bufferIndex) >= _effectMaskSurfaces.size()) return false;
+    auto& surface = _effectMaskSurfaces[static_cast<size_t>(layout.bufferIndex)];
     if (!surface || !surface->IsValid()) return false;
-    if (!surface->BeginDraw() || !surface->Clear(0, 0, 0, 0)) return false;
+    if (!surface->BeginDraw()) return false;
     bool drawing = true;
     const auto restore = qScopeGuard([&] { if (drawing) surface->EndDraw(); });
     const auto viewport = _rendererProfile.Viewport();
     glViewport(0, 0, viewport[2], viewport[3]);
+    if (_effectMaskBufferCleared.size() != _effectMaskSurfaces.size())
+        _effectMaskBufferCleared.fill(false, static_cast<int>(_effectMaskSurfaces.size()));
+    if (!_effectMaskBufferCleared[layout.bufferIndex]) {
+        if (!surface->Clear(0, 0, 0, 0)) return false;
+        _effectMaskBufferCleared[layout.bufferIndex] = true;
+    }
     _effectMaskPass = true;
-    const auto resetPass = qScopeGuard([&] { _effectMaskPass = false; });
-    for (int mask = 0; mask < maskCounts[offscreenIndex]; ++mask) {
-        const int drawable = masks[offscreenIndex][mask];
-        if (drawable < 0 || drawable >= model.GetDrawableCount()) return false;
+    _effectMaskMatrixActive = true;
+    const auto resetPass = qScopeGuard([&] { _effectMaskPass = false; _effectMaskMatrixActive = false; });
+    float matrix[16] = {
+        layout.width, 0.0f, 0.0f, 0.0f,
+        0.0f, layout.height, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        2.0f * layout.x + layout.width - 1.0f,
+        2.0f * layout.y + layout.height - 1.0f, 0.0f, 1.0f};
+    CubismMatrix44 tileMatrix;
+    tileMatrix.SetMatrix(matrix);
+    auto modelMatrix = GetMvpMatrix();
+    CubismMatrix44::Multiply(tileMatrix.GetArray(), modelMatrix.GetArray(), _effectMaskMatrix.GetArray());
+    _effectMaskChannel = CubismRenderer::CubismTextureColor(
+        layout.channelIndex == 0 ? 1.0f : 0.0f,
+        layout.channelIndex == 1 ? 1.0f : 0.0f,
+        layout.channelIndex == 2 ? 1.0f : 0.0f,
+        layout.channelIndex == 3 ? 1.0f : 0.0f);
+    for (const int drawable : layout.masks) {
         const auto positions = model.GetDrawableVertices(drawable);
         if (!positions || !UploadDrawableGeometry(model, drawable, positions, _meshBuffers[static_cast<size_t>(drawable)], nullptr))
             return false;
@@ -1248,20 +1349,26 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
         screen[offscreenIndex].Y, screen[offscreenIndex].Z, 0.0f);
     GLuint maskTexture = 0;
     csmBool maskInvert = false;
+    CubismRenderer::CubismTextureColor maskRect(0, 0, 1, 1);
     if (maskCounts[offscreenIndex] > 0) {
-        if (static_cast<size_t>(offscreenIndex) >= _effectMaskSurfaces.size() ||
-            !_effectMaskSurfaces[static_cast<size_t>(offscreenIndex)] ||
-            !_effectMaskSurfaces[static_cast<size_t>(offscreenIndex)]->IsValid()) return false;
-        maskTexture = _effectMaskSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer();
+        if (offscreenIndex >= _offscreenMaskGroups.size()) return false;
+        const int groupIndex = _offscreenMaskGroups[offscreenIndex];
+        if (groupIndex < 0 || groupIndex >= _effectMaskLayouts.size()) return false;
+        const auto& layout = _effectMaskLayouts[groupIndex];
+        if (layout.bufferIndex < 0 || static_cast<size_t>(layout.bufferIndex) >= _effectMaskSurfaces.size() ||
+            !_effectMaskSurfaces[static_cast<size_t>(layout.bufferIndex)] ||
+            !_effectMaskSurfaces[static_cast<size_t>(layout.bufferIndex)]->IsValid()) return false;
+        maskTexture = _effectMaskSurfaces[static_cast<size_t>(layout.bufferIndex)]->GetColorBuffer();
+        maskRect = CubismRenderer::CubismTextureColor(layout.x, layout.y, layout.width, layout.height);
         maskInvert = (maskFlags[offscreenIndex] & Core::csmIsInvertedMask) != 0;
     }
     if (alphaMode != 0 || (colorMode != 0 && colorMode != 1 && colorMode != 2 && colorMode != 3 &&
                            colorMode != 4 && colorMode != 6))
-        return CompositeEffectBackdrop(model, offscreenIndex, maskTexture, maskInvert);
+        return CompositeEffectBackdrop(model, offscreenIndex, maskTexture, maskInvert, maskRect);
     auto* shader = CubismShader_OpenGLES2::GetInstance();
     if (!shader->SetupShaderProgramForComposite(this,
         _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(), blend,
-        opacities[offscreenIndex], mul, scr, maskTexture, maskInvert)) return false;
+        opacities[offscreenIndex], mul, scr, maskTexture, maskInvert, maskRect)) return false;
     glDisable(GL_CULL_FACE);
     glDisable(GL_SCISSOR_TEST);
     if (!_compositeMesh->Draw(GL_TRIANGLES)) return false;
@@ -1269,7 +1376,8 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
 }
 
 bool CubismRenderer_OpenGLES2::CompositeEffectBackdrop(const CubismModel& model, csmInt32 offscreenIndex,
-                                                        GLuint maskTexture, csmBool maskInvert)
+                                                        GLuint maskTexture, csmBool maskInvert,
+                                                        const CubismRenderer::CubismTextureColor& maskRect)
 {
     if (!_backdropSurface || !_backdropSurface->IsValid() ||
         offscreenIndex < 0 || offscreenIndex >= model.GetOffscreenCount()) return false;
@@ -1294,7 +1402,7 @@ bool CubismRenderer_OpenGLES2::CompositeEffectBackdrop(const CubismModel& model,
     if (!CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForBackdropComposite(
             this, _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(),
             _backdropSurface->GetColorBuffer(), colorMode, alphaMode, opacities[offscreenIndex],
-            mul, scr, maskTexture, maskInvert)) return false;
+            mul, scr, maskTexture, maskInvert, maskRect)) return false;
     glDisable(GL_CULL_FACE);
     glDisable(GL_SCISSOR_TEST);
     return _compositeMesh && _compositeMesh->Draw(GL_TRIANGLES) && glGetError() == GL_NO_ERROR;

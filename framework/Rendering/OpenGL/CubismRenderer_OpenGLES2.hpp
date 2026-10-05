@@ -251,10 +251,12 @@ private:
     bool MaskSourceAvailable(csmInt32 drawable) const;
     bool IncludeHiddenForPass() const;
     bool EnsureEffectResources(csmInt32 width, csmInt32 height, csmInt32 count);
-    bool RenderEffectMask(const CubismModel& model, csmInt32 offscreenIndex);
+    bool PrepareEffectMaskLayouts(const CubismModel& model);
+    bool RenderEffectMask(const CubismModel& model, csmInt32 maskGroupIndex);
     bool CompositeEffectSurface(const CubismModel& model, csmInt32 offscreenIndex);
     bool CompositeEffectBackdrop(const CubismModel& model, csmInt32 offscreenIndex,
-                                 GLuint maskTexture, csmBool maskInvert);
+                                 GLuint maskTexture, csmBool maskInvert,
+                                 const CubismRenderer::CubismTextureColor& maskRect = CubismRenderer::CubismTextureColor(0, 0, 1, 1));
 
 
 
@@ -268,6 +270,22 @@ private:
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _offscreenSurfaces;
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectSurfaces;
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectMaskSurfaces;
+    struct EffectMaskLayout {
+        QVector<int> masks;
+        int bufferIndex = -1;
+        int channelIndex = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 1.0f;
+        float height = 1.0f;
+    };
+    QVector<EffectMaskLayout> _effectMaskLayouts;
+    QVector<int> _offscreenMaskGroups;
+    QVector<bool> _effectMaskBufferCleared;
+    int _effectMaskBufferCount = 0;
+    CubismMatrix44 _effectMaskMatrix;
+    CubismRenderer::CubismTextureColor _effectMaskChannel{1, 0, 0, 0};
+    bool _effectMaskMatrixActive = false;
     std::unique_ptr<CGlMeshBuffer> _compositeMesh;
     std::unique_ptr<CubismOffscreenSurface_OpenGLES2> _backdropSurface;
     std::unique_ptr<CubismOffscreenSurface_OpenGLES2> _drawableScratchSurface;

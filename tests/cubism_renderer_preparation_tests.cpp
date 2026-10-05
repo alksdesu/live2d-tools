@@ -788,6 +788,7 @@ private slots:
         QFETCH(bool, premultipliedTexture);
         GetterState state;
         state.drawableCount = 3;
+        state.drawableCount = 3;
         state.maskCounts = {0, 0, mask ? 2 : 0};
         state.flags.fill(Core::csmIsDoubleSided);
         if (blend == 1) state.flags[2] |= Core::csmBlendAdditive;
@@ -1482,6 +1483,46 @@ private slots:
     }
 
 #if LIVE2D_CORE_API_VERSION >= 6
+    void core6OffscreenMasksUseSharedChannelLayouts()
+    {
+        GetterState state;
+        state.drawableCount = 3;
+        state.offscreenCount = 5;
+        state.offscreenMaskCounts = {1, 1, 1, 2, 2, 0, 0, 0};
+        state.offscreenMasks[0] = {0, 0, 0};
+        state.offscreenMasks[1] = {1, 0, 0};
+        state.offscreenMasks[2] = {2, 0, 0};
+        state.offscreenMasks[3] = {0, 1, 0};
+        state.offscreenMasks[4] = {0, 2, 0};
+        auto model = Model(state);
+        auto renderer = Renderer();
+        auto& glRenderer = Gl(renderer);
+        QVERIFY(glRenderer.setGlOwningContext(&m_context));
+        QVERIFY(glRenderer.Initialize(model.get()));
+        QVERIFY(glRenderer.PrepareEffectMaskLayouts(*model));
+        QCOMPARE(glRenderer._effectMaskLayouts.size(), 5);
+        QCOMPARE(glRenderer._effectMaskBufferCount, 1);
+        QCOMPARE(glRenderer._effectMaskLayouts[0].bufferIndex, 0);
+        QCOMPARE(glRenderer._effectMaskLayouts[0].channelIndex, 0);
+        QCOMPARE(glRenderer._effectMaskLayouts[0].x, 0.0f);
+        QCOMPARE(glRenderer._effectMaskLayouts[0].width, 0.5f);
+        QCOMPARE(glRenderer._effectMaskLayouts[1].channelIndex, 0);
+        QCOMPARE(glRenderer._effectMaskLayouts[1].x, 0.5f);
+        QCOMPARE(glRenderer._effectMaskLayouts[1].width, 0.5f);
+        for (int index = 2; index < 5; ++index) {
+            QCOMPARE(glRenderer._effectMaskLayouts[index].bufferIndex, 0);
+            QCOMPARE(glRenderer._effectMaskLayouts[index].width, 1.0f);
+            QCOMPARE(glRenderer._effectMaskLayouts[index].height, 1.0f);
+            QCOMPARE(glRenderer._effectMaskLayouts[index].x, 0.0f);
+            QCOMPARE(glRenderer._effectMaskLayouts[index].y, 0.0f);
+        }
+        QCOMPARE(glRenderer._effectMaskLayouts[2].channelIndex, 1);
+        QCOMPARE(glRenderer._effectMaskLayouts[3].channelIndex, 2);
+        QCOMPARE(glRenderer._effectMaskLayouts[4].channelIndex, 3);
+        QCOMPARE(glRenderer._offscreenMaskGroups[3], 3);
+        QCOMPARE(glRenderer._offscreenMaskGroups[4], 4);
+    }
+
     void core6OffscreenOwnerStackRendersAndRestoresTheParentTarget()
     {
         GetterState state;
