@@ -32,6 +32,7 @@
 #include "ui/cblendshapeconstraintdialog.h"
 #include "ui/ctexturepanel.h"
 #include "ui/cinspectorpanel.h"
+#include "ui/cgluepanel.h"
 #include "ui/cmodeldiagnosticspanel.h"
 #include "ui/cuserdatapanel.h"
 #include "ui/para/ccidjson.h"
@@ -1440,6 +1441,7 @@ void MainWindow::RefreshParameterStructureUi()
         m_motionPanel->SetParameterIds(ids);
     }
     RefreshModelTree();
+    if (m_gluePanel) m_gluePanel->Refresh();
     if (m_inspectorPanel) {
         m_inspectorPanel->SetDocument(&m_document);
         m_inspectorPanel->SetSelections(m_selectedObjectIds, m_selectedObjectTypes);
@@ -1768,6 +1770,7 @@ void MainWindow::RefreshKeyformUi(bool changed, bool markSession, bool syncParam
 {
     const QPointer<MainWindow> alive(this);
     RefreshTextureGeometry();
+    if (m_gluePanel) m_gluePanel->Refresh();
     if (!alive) return;
     if (m_finishKeyformButton) m_finishKeyformButton->setVisible(m_keyformEditor.IsActive());
     if (m_keyformEditor.IsActive()) {
@@ -2201,6 +2204,7 @@ void MainWindow::ApplyDefaultWorkspaceLayout(int mode)
     m_motionPanel->setVisible(mode == 1);
     m_physicsPanel->setVisible(mode == 2);
     m_blendShapePanel->hide();
+    if (m_gluePanel) m_gluePanel->hide();
     m_texturePanel->hide();
     m_diagnosticsPanel->hide();
     m_userDataPanel->hide();
@@ -3119,6 +3123,7 @@ bool MainWindow::CloseModel()
     if(m_blendShapePanel) { removeDockWidget(m_blendShapePanel); delete m_blendShapePanel; m_blendShapePanel = nullptr; }
     if(m_texturePanel) { removeDockWidget(m_texturePanel); delete m_texturePanel; m_texturePanel = nullptr; }
     if(m_inspectorPanel) { removeDockWidget(m_inspectorPanel); delete m_inspectorPanel; m_inspectorPanel = nullptr; }
+    if(m_gluePanel) { removeDockWidget(m_gluePanel); delete m_gluePanel; m_gluePanel = nullptr; }
     if(m_diagnosticsPanel) { removeDockWidget(m_diagnosticsPanel); delete m_diagnosticsPanel; m_diagnosticsPanel = nullptr; }
     if (m_userDataPanel) { removeDockWidget(m_userDataPanel); delete m_userDataPanel; m_userDataPanel = nullptr; }
     if (m_undoAction) m_undoAction->setEnabled(false);
@@ -3135,6 +3140,7 @@ bool MainWindow::CloseModel()
     m_btnToggleBlend->setVisible(false);
     m_btnToggleTexture->setVisible(false);
     m_btnToggleInspector->setVisible(false);
+    m_btnToggleGlue->setVisible(false);
     m_btnToggleDiagnostics->setVisible(false);
     m_btnToggleUserData->setVisible(false);
 
@@ -3235,7 +3241,7 @@ bool MainWindow::SetAuthoringReady(bool ready)
     const QPointer<MainWindow> alive(this);
     m_workspaceReady = ready;
     const QVector<QPointer<QWidget>> editors{m_treePanel, m_inspectorPanel, m_paramPanel, m_motionPanel, m_physicsPanel,
-                                             m_blendShapePanel, m_texturePanel, m_userDataPanel, m_openglwindows};
+                                             m_blendShapePanel, m_gluePanel, m_texturePanel, m_userDataPanel, m_openglwindows};
     for (const auto& editor : editors) {
         if (!alive) return false;
         if (editor) editor->setEnabled(ready);
@@ -3575,6 +3581,32 @@ void MainWindow::RestDock(const QString &name)
     addDockWidget(Qt::BottomDockWidgetArea, m_texturePanel);
     tabifyDockWidget(m_blendShapePanel, m_texturePanel);
 
+    m_gluePanel = new CGluePanel(this);
+    m_gluePanel->SetDocument(&m_document);
+    addDockWidget(Qt::BottomDockWidgetArea, m_gluePanel);
+    tabifyDockWidget(m_blendShapePanel, m_gluePanel);
+    m_gluePanel->SetPublisher([this](const QByteArray& before, const auto& request, const QByteArray&, QString* error) {
+        QByteArray current;
+        if (!m_document.BuildPreviewMoc(current, error)) return false;
+        if (current != before) {
+            if (error) *error = QStringLiteral("模型已改变，请刷新 Glue 面板后重试");
+            return false;
+        }
+        live2dstruct::CModelEdit command;
+        return m_document.MakeMeshStructureEdit(request, command, error) && SubmitInspectorEdit(command, error);
+    });
+    m_gluePanel->SetHistoryHandler([this](bool undo, auto& edit, QString* error) {
+        return ApplyDocumentHistory(undo, edit, error);
+    });
+    connect(m_gluePanel, &CGluePanel::EditRejected, this,
+        [this](const QString& error) { statusBar()->showMessage(error, 8000); });
+    connect(m_gluePanel, &CGluePanel::HistoryChanged, this, [this] {
+        m_historySource = HistorySource::Inspector;
+        m_sessionDirty = true;
+        RefreshUndoActions();
+        RefreshWindowTitle();
+    });
+
     m_inspectorPanel = new CInspectorPanel(this);
     addDockWidget(Qt::RightDockWidgetArea, m_inspectorPanel);
     tabifyDockWidget(m_paramPanel, m_inspectorPanel);
@@ -3724,6 +3756,7 @@ void MainWindow::RestDock(const QString &name)
     m_btnToggleBlend->setVisible(true);
     m_btnToggleTexture->setVisible(true);
     m_btnToggleInspector->setVisible(true);
+    m_btnToggleGlue->setVisible(true);
     m_btnToggleDiagnostics->setVisible(true);
     m_btnToggleUserData->setVisible(true);
 
@@ -3734,6 +3767,7 @@ void MainWindow::RestDock(const QString &name)
     ConnectDockToggle(m_btnToggleBlend, m_blendShapePanel);
     ConnectDockToggle(m_btnToggleTexture, m_texturePanel);
     ConnectDockToggle(m_btnToggleInspector, m_inspectorPanel);
+    ConnectDockToggle(m_btnToggleGlue, m_gluePanel);
     ConnectDockToggle(m_btnToggleDiagnostics, m_diagnosticsPanel);
     ConnectDockToggle(m_btnToggleUserData, m_userDataPanel);
 
@@ -4449,24 +4483,28 @@ void MainWindow::setupUI()
     m_btnToggleBlend = new QPushButton("融合变形", this);
     m_btnToggleTexture = new QPushButton("纹理", this);
     m_btnToggleInspector = new QPushButton("属性", this);
+    m_btnToggleGlue = new QPushButton(QStringLiteral("Glue"), this);
     m_btnToggleDiagnostics = new QPushButton("检查", this);
     m_btnToggleUserData = new QPushButton(QStringLiteral("网格标签"), this);
     m_btnTogglePhysics->setCheckable(true);
     m_btnToggleBlend->setCheckable(true);
     m_btnToggleTexture->setCheckable(true);
     m_btnToggleInspector->setCheckable(true);
+    m_btnToggleGlue->setCheckable(true);
     m_btnToggleDiagnostics->setCheckable(true);
     m_btnToggleUserData->setCheckable(true);
     m_btnTogglePhysics->setChecked(true);
     m_btnToggleBlend->setChecked(true);
     m_btnToggleTexture->setChecked(true);
     m_btnToggleInspector->setChecked(true);
+    m_btnToggleGlue->setChecked(false);
     m_btnToggleDiagnostics->setChecked(false);
     m_btnToggleUserData->setChecked(false);
     m_btnTogglePhysics->setFlat(true);
     m_btnToggleBlend->setFlat(true);
     m_btnToggleTexture->setFlat(true);
     m_btnToggleInspector->setFlat(true);
+    m_btnToggleGlue->setFlat(true);
     m_btnToggleDiagnostics->setFlat(true);
     m_btnToggleUserData->setFlat(true);
 
@@ -4478,6 +4516,7 @@ void MainWindow::setupUI()
     m_btnToggleBlend->setVisible(false);
     m_btnToggleTexture->setVisible(false);
     m_btnToggleInspector->setVisible(false);
+    m_btnToggleGlue->setVisible(false);
     m_btnToggleDiagnostics->setVisible(false);
     m_btnToggleUserData->setVisible(false);
 
@@ -4488,6 +4527,7 @@ void MainWindow::setupUI()
     statusBar()->addPermanentWidget(m_btnToggleBlend);
     statusBar()->addPermanentWidget(m_btnToggleTexture);
     statusBar()->addPermanentWidget(m_btnToggleInspector);
+    statusBar()->addPermanentWidget(m_btnToggleGlue);
     statusBar()->addPermanentWidget(m_btnToggleDiagnostics);
     statusBar()->addPermanentWidget(m_btnToggleUserData);
 }

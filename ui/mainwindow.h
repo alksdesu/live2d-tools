@@ -39,6 +39,7 @@ class CAtlasEditDialog;
 class CPsdImportDialog;
 class CPsdRecoveryDialog;
 class CInspectorPanel;
+class CGluePanel;
 class CModelDiagnosticsPanel;
 class CUserDataPanel;
 class CCidJson;
@@ -358,6 +359,7 @@ private:
     CBlendShapePanel* m_blendShapePanel = nullptr;
     CTexturePanel* m_texturePanel = nullptr;
     CInspectorPanel* m_inspectorPanel = nullptr;
+    CGluePanel* m_gluePanel = nullptr;
     CModelDiagnosticsPanel* m_diagnosticsPanel = nullptr;
     CUserDataPanel* m_userDataPanel = nullptr;
 
@@ -374,6 +376,7 @@ private:
     QPushButton* m_btnToggleBlend = nullptr;
     QPushButton* m_btnToggleTexture = nullptr;
     QPushButton* m_btnToggleInspector = nullptr;
+    QPushButton* m_btnToggleGlue = nullptr;
     QPushButton* m_btnToggleDiagnostics = nullptr;
     QPushButton* m_btnToggleUserData = nullptr;
 

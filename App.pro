@@ -71,6 +71,7 @@ SOURCES += \
     live2dstruct/calphameshplanner.cpp \
     live2dstruct/calphameshsource.cpp \
     ui/cinspectorpanel.cpp \
+    ui/cgluepanel.cpp \
     ui/ckeyformmatrix.cpp \
     ui/cbindingkeysdialog.cpp \
     ui/cdeformercreatedialog.cpp \
@@ -376,6 +377,7 @@ HEADERS += \
     ui/cworkspacelayouts.h \
     live2dstruct/cmeshindexoverrides.h \
     ui/cinspectorpanel.h \
+    ui/cgluepanel.h \
     ui/ckeyformmatrix.h \
     ui/cbindingkeysdialog.h \
     ui/cdeformercreatedialog.h \

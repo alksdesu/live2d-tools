@@ -30,6 +30,7 @@ public:
     const Request& LastRequest() const { return m_lastRequest; }
     bool CanUndo() const { return !m_publishing && m_index > 0; }
     bool CanRedo() const { return !m_publishing && m_index < m_history.size(); }
+    bool IsPublishing() const { return m_publishing; }
     bool IsDirty() const { return m_state != m_saved; }
     quint64 Revision() const { return m_revision; }
 
