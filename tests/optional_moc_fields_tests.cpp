@@ -83,6 +83,14 @@ private slots:
         for (const auto& parameter : document.Parameters()) QCOMPARE(parameter.type, 0);
     }
 
+    void versionSixHeaderIsRecognized()
+    {
+        CReader reader(QString(TEST_RESOURCES) + QStringLiteral("/Mark/Mark.moc3"));
+        QVERIFY(reader.IsValid());
+        reader.m_byte[4] = char(6);
+        QVERIFY(reader.IsMoc3());
+    }
+
     void originalWarpFlagsRespectMissingAndPresentArrays_data()
     {
         originalSamplesDefaultAbsentParameterExtensions_data();

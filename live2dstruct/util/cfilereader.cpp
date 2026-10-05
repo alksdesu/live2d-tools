@@ -56,7 +56,7 @@ bool CReader::IsMoc3() const
 {
     if (m_byte.size() < 8 || m_byte.left(4) != QByteArrayLiteral("MOC3")) return false;
     const quint32 version = quint8(m_byte[4]);
-    return version >= 1 && version <= 5;
+    return version >= 1 && version <= 6;
 }
 
 CReader::~CReader()
