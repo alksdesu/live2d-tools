@@ -210,6 +210,14 @@ private slots:
         } else {
             QVERIFY2(!context.Build(invalidDocument, id, keyform, values, &error), qPrintable(invalid));
             QVERIFY(!error.isEmpty());
+            if (invalid == "glue") {
+                const auto& diagnostics = context.LastDiagnostics();
+                QCOMPARE(diagnostics.targetArtMeshId, QStringLiteral("Mesh"));
+                QVERIFY(diagnostics.glueAffected);
+                QCOMPARE(diagnostics.glueIds, QStringList{QStringLiteral("Glue")});
+                QCOMPARE(diagnostics.gluePairs, QStringList{QStringLiteral("Mesh ↔ Mesh")});
+                QVERIFY(diagnostics.reason.contains(QStringLiteral("Glue")));
+            }
             QVERIFY(context.IsValid());
             QVERIFY(context.MatchesRuntime(expected));
             QVector<float> local;

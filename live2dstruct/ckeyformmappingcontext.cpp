@@ -119,6 +119,8 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                                   const QMap<QString, float>& fullPose, QString* error)
 {
     if (error) error->clear();
+    m_diagnostics = {};
+    m_diagnostics.targetArtMeshId = artMeshId;
     if (!document.IsLoaded() || document.SourceBytes().isEmpty())
         return fail(error, QStringLiteral("关键形映射需要已加载的模型快照"));
     try {
@@ -202,6 +204,11 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                 const QString glueId = glue->ids.isEmpty() ? QStringLiteral("<unnamed>") : glue->ids;
                 const QString meshA = table.art_meshes[glue->art_mesh_indices_a]->ids;
                 const QString meshB = table.art_meshes[glue->art_mesh_indices_b]->ids;
+                m_diagnostics.glueAffected = true;
+                m_diagnostics.glueIds.append(glueId);
+                m_diagnostics.gluePairs.append(QStringLiteral("%1 ↔ %2").arg(meshA, meshB));
+                m_diagnostics.reason = QStringLiteral("ArtMesh %1 受 Glue %2 影响，父链反解被安全阻止")
+                    .arg(artMeshId, glueId);
                 return fail(error, QStringLiteral("ArtMesh %1 受 Glue %2 影响（%3 ↔ %4，端点记录 %5），尚不支持父链反解")
                     .arg(artMeshId, glueId, meshA, meshB).arg(glue->glue_info_sources_counts));
             }
@@ -216,6 +223,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                 return fail(error, QStringLiteral("ArtMesh 父链缺失或形成循环：%1").arg(artMeshId));
             ancestors.insert(parent);
             const auto* deformer = table.deformers[parent];
+            m_diagnostics.parentDeformers.append(deformer->ids);
             if (parent >= document.Deformers().size() || document.Deformers()[parent].id != deformer->ids)
                 return fail(error, QStringLiteral("父变形器索引与文档不一致：%1").arg(deformer->ids));
             if (deformer->ids.isEmpty() || deformerIdCounts.value(deformer->ids) != 1)
