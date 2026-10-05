@@ -404,6 +404,9 @@ QVariantMap CModelDocument::EditStorage(const CModelEdit& edit) const
     case CModelEdit::BlendShapeGeometry:
         state.insert("blendShapeGeometry", QVariant::fromValue(m_blendShapeGeometry));
         break;
+    case CModelEdit::BlendShapeConstraints:
+        state.insert("blendShapeConstraints", QVariant::fromValue(m_blendShapeConstraints));
+        break;
     case CModelEdit::ParameterValues:
         ids.clear();
         for (const auto& value : {edit.before, edit.after}) {
@@ -469,6 +472,11 @@ bool CModelDocument::RestoreEditStorage(const QVariantMap& state)
         if (value.metaType() != QMetaType::fromType<CModelBlendShapeGeometryState>() ||
             !SetBlendShapeGeometry(value.value<CModelBlendShapeGeometryState>())) return false;
     }
+    if (state.contains("blendShapeConstraints")) {
+        const auto value = state.value("blendShapeConstraints");
+        if (value.metaType() != QMetaType::fromType<CModelBlendShapeConstraintState>() ||
+            !SetBlendShapeConstraints(value.value<CModelBlendShapeConstraintState>())) return false;
+    }
     if (state.contains("geometryObjectPairs")) {
         const auto value = state.value("geometryObjectPairs");
         if (value.metaType() != QMetaType::fromType<CGeometryObjectPairs::State>() ||
@@ -500,6 +508,8 @@ bool CModelDocument::ValidateEditStorage(const CModelEdit& edit) const
         return ValidateGeometryEditStorage(edit);
     case CModelEdit::BlendShapeGeometry:
         return EditStorage(edit).value("blendShapeGeometry").value<CModelBlendShapeGeometryState>() == m_blendShapeGeometry;
+    case CModelEdit::BlendShapeConstraints:
+        return check.SetBlendShapeConstraints(m_blendShapeConstraints);
     case CModelEdit::ParameterMetadata:
         if (m_parameterMetadataOverrides.contains(id) && !check.SetParameterMetadata(id, m_parameterMetadataOverrides.value(id))) return false;
         [[fallthrough]];
@@ -562,7 +572,8 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         {"indices", QVariant::fromValue(m_drawableIndexOverrides)}, {"masks", QVariant::fromValue(m_drawableMaskIndexOverrides)},
         {"parents", QVariant::fromValue(m_deformerParentOverrides)}, {"rotation", QVariant::fromValue(m_deformerRotationKeyformOverrides)},
         {"warp", QVariant::fromValue(m_deformerWarpKeyformOverrides)}, {"inverted", QVariant::fromValue(m_drawableMaskInvertedOverrides)},
-        {"blendShapeGeometry", QVariant::fromValue(m_blendShapeGeometry)}
+        {"blendShapeGeometry", QVariant::fromValue(m_blendShapeGeometry)},
+        {"blendShapeConstraints", QVariant::fromValue(m_blendShapeConstraints)}
     };
     QByteArray exact;
     QDataStream stream(&exact, QIODevice::WriteOnly);
@@ -592,6 +603,11 @@ QVariantMap CModelDocument::AuthoringStructureState() const
         for (float value : entry.deltas) {
             quint32 bits = 0; std::memcpy(&bits, &value, sizeof(bits)); stream << bits;
         }
+    }
+    for (const auto& entry : m_blendShapeConstraints) {
+        stream << entry.constraintIndex << entry.sourceDigest << entry.parameterIndex << entry.parameterId
+               << entry.parameterMinimum << entry.parameterMaximum << qint64(entry.values.size());
+        for (const auto& value : entry.values) stream << value.key << value.weight;
     }
     state.insert(QStringLiteral("fingerprint"), QCryptographicHash::hash(exact, QCryptographicHash::Sha256));
     return state;
@@ -623,6 +639,8 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     const QByteArray& authoringBase = m_artMeshClones.isEmpty() ? m_sourceBytes : m_workingBaseBytes;
     QByteArray working;
     if (!Builder::BuildColumnState(authoringBase, structure, working, error)) return false;
+    if (!m_blendShapeConstraints.isEmpty() && working != m_workingBaseBytes)
+        return fail(error, QStringLiteral("存在融合限制曲线编辑，结构变化前必须先提交或清除曲线状态"));
     if (!m_blendShapeGeometry.isEmpty() && working != m_workingBaseBytes)
         return fail(error, QStringLiteral("存在融合几何编辑，结构变化前必须先提交或清除融合几何状态"));
     {
@@ -635,6 +653,7 @@ bool CModelDocument::PrepareStructure(const Builder::ColumnState& structure, boo
     CModelDocument original, next;
     if (!original.LoadBytes(authoringBase, m_sourcePath, error) || !next.LoadBytes(working, m_sourcePath, error)) return false;
     next.m_blendShapeGeometry = m_blendShapeGeometry;
+    next.m_blendShapeConstraints = m_blendShapeConstraints;
     next.m_maskSource = m_maskSource;
     if (!next.ValidateStructureMasks(error)) return false;
     if (!next.m_previewBuilder || next.m_parts.size() != original.m_parts.size() ||
@@ -1064,7 +1083,8 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
         !read(state, "masks", session.drawableMaskIndices) || !read(state, "parents", session.deformerParentIndices) ||
         !read(state, "rotation", session.deformerRotationKeyforms) || !read(state, "warp", session.deformerWarpKeyforms) ||
         !read(state, "inverted", session.drawableMaskInverted) ||
-        !read(state, "blendShapeGeometry", session.blendShapeGeometry))
+        !read(state, "blendShapeGeometry", session.blendShapeGeometry) ||
+        !read(state, "blendShapeConstraints", session.blendShapeConstraints))
         return fail(error, QStringLiteral("参数结构状态类型无效"));
     session.parameters = ordered(parameters);
     session.objectDisplayNames = std::move(names);
@@ -1085,10 +1105,10 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
     session.version = session.materialStructure || !session.drawableMaterials.isEmpty() ? 10 : !session.geometryObjectPairs.sourceDigest.isEmpty() ? 9 : session.parameterOrganization.configured ? 8 : session.deformerStructure ? 6 : session.meshStructure ? 5 : session.structure.columns.isEmpty() && session.structure.counts.isEmpty() ? 1 : 2;
     if (session.textureWorkspace) session.version = 11;
     if (!session.artwork.IsEmpty()) session.version = 12;
-    session.version = 16;
+    session.version = session.blendShapeConstraints.isEmpty() ? 16 : 19;
     if (!m_artMeshClones.isEmpty() && !edit.cloneRequest) {
         session.artMeshClones = m_artMeshClones;
-        session.version = 18;
+        session.version = std::max(session.version, 18);
     }
     if (edit.cloneRequest) {
         auto clones = m_artMeshClones;
@@ -1100,7 +1120,7 @@ bool CModelDocument::DecodeStructureState(const QVariantMap& state, const CModel
             return fail(error, QStringLiteral("ArtMesh 克隆历史顺序无效"));
         }
         session.artMeshClones = std::move(clones);
-        session.version = 18;
+        session.version = std::max(session.version, 18);
     }
     return true;
 }
@@ -1559,6 +1579,8 @@ bool CModelDocument::BuildCloneArtMeshCandidate(const CMocMeshStructureBuilder::
                                                 CModelDocument& candidate, QString* error) const
 {
     try {
+        if (!m_blendShapeConstraints.isEmpty())
+            return fail(error, QStringLiteral("存在融合限制曲线编辑，克隆前必须先提交或清除曲线状态"));
         if (sourceRequest.sourceArtMeshId.isEmpty() || sourceRequest.newArtMeshId.isEmpty() ||
             sourceRequest.sourceArtMeshId == sourceRequest.newArtMeshId)
             return fail(error, QStringLiteral("ArtMesh 克隆身份无效"));

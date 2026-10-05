@@ -184,6 +184,19 @@ public:
         for (const auto& entry : value) result.append(owned(entry));
         return result;
     }
+    CModelBlendShapeConstraintState owned(const CModelBlendShapeConstraintState& value)
+    {
+        CModelBlendShapeConstraintState result;
+        result.reserve(value.size());
+        for (const auto& entry : value) {
+            auto copy = entry;
+            copy.sourceDigest = owned(entry.sourceDigest);
+            copy.parameterId = owned(entry.parameterId);
+            copy.values = QVector<CMocBlendShapeConstraintBuilder::Value>(entry.values.cbegin(), entry.values.cend());
+            result.append(std::move(copy));
+        }
+        return result;
+    }
     CTextureWorkspace::State owned(const CTextureWorkspace::State& value)
     {
         retain(qint64(value.atlases.size()) * 256);
@@ -234,6 +247,7 @@ public:
         OWNED_VALUE(CParameterOrganization::State)
         OWNED_VALUE(CGeometryObjectPairs::State)
         OWNED_VALUE(CModelBlendShapeGeometryState)
+        OWNED_VALUE(CModelBlendShapeConstraintState)
         OWNED_VALUE(CTextureWorkspace::State)
 #undef OWNED_VALUE
         if (type == QMetaType::fromType<CModelArtwork::State>()) {
@@ -507,6 +521,7 @@ try {
     candidate.m_deformerWarpKeyformOverrides = session.deformerWarpKeyforms;
     candidate.m_drawableMaskInvertedOverrides = session.drawableMaskInverted;
     candidate.m_blendShapeGeometry = session.blendShapeGeometry;
+    candidate.m_blendShapeConstraints = session.blendShapeConstraints;
     candidate.m_textureWorkspace = state.value("textureWorkspace").value<CTextureWorkspace::State>();
     candidate.m_artwork = session.artwork;
     candidate.m_sourceDeformerIds = freezer.owned(candidate.m_sourceDeformerIds);

@@ -186,6 +186,7 @@ void CModelDocument::Clear()
     m_deformerWarpKeyformOverrides.clear();
     m_drawableMaskInvertedOverrides.clear();
     m_blendShapeGeometry.clear();
+    m_blendShapeConstraints.clear();
     m_lockedKeys.clear();
     ClearEditHistory();
 }
@@ -366,6 +367,18 @@ bool CModelDocument::BuildPreviewMoc(QByteArray& bytes, QString* error) const
         if (samePositions(current.deltas, entry.deltas)) continue;
         CMocBlendShapeGeometryBuilder::Result result;
         if (!CMocBlendShapeGeometryBuilder::Build(candidate, {current, entry.deltas}, result, error)) return false;
+        candidate = std::move(result.bytes);
+    }
+    for (const auto& entry : m_blendShapeConstraints) {
+        CMocBlendShapeConstraintBuilder::Frame current;
+        if (!CMocBlendShapeConstraintBuilder::Capture(candidate, {entry.constraintIndex}, current, error)) return false;
+        if (current.parameterIndex != entry.parameterIndex || current.parameterId != entry.parameterId) {
+            setError(error, QStringLiteral("融合限制曲线状态与当前模型结构不匹配"));
+            return false;
+        }
+        if (current.values == entry.values) continue;
+        CMocBlendShapeConstraintBuilder::Result result;
+        if (!CMocBlendShapeConstraintBuilder::Build(candidate, {current, entry.values}, result, error)) return false;
         candidate = std::move(result.bytes);
     }
     bytes = std::move(candidate);
@@ -1313,6 +1326,7 @@ bool CModelDocument::ApplyEdit(const CModelEdit& edit, bool forward)
     if (edit.field == CModelEdit::AtlasLayout) return ApplyAtlasEdit(edit, forward);
     if (edit.field == CModelEdit::DrawableMaterials) return ApplyMaterialEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryKeyforms) return ApplyGeometryEdit(edit, forward);
+    if (edit.field == CModelEdit::BlendShapeConstraints) return ApplyBlendShapeConstraintEdit(edit, forward);
     if (edit.field == CModelEdit::GeometryObjectPairs) {
         const auto type = QMetaType::fromType<CGeometryObjectPairs::State>();
         if (edit.type != QLatin1String("objects") || edit.name != QLatin1String("geometryPairs") || edit.index != -1 ||
@@ -1536,6 +1550,12 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             command.before = QVariant::fromValue(freezeBlendShapeGeometry(command.before.value<CModelBlendShapeGeometryState>()));
             command.after = QVariant::fromValue(freezeBlendShapeGeometry(command.after.value<CModelBlendShapeGeometryState>()));
         }
+        if (command.field == CModelEdit::BlendShapeConstraints &&
+            command.before.metaType() == QMetaType::fromType<CModelBlendShapeConstraintState>() &&
+            command.after.metaType() == QMetaType::fromType<CModelBlendShapeConstraintState>()) {
+            command.before = QVariant::fromValue(CModelBlendShapeConstraintState(command.before.value<CModelBlendShapeConstraintState>()));
+            command.after = QVariant::fromValue(CModelBlendShapeConstraintState(command.after.value<CModelBlendShapeConstraintState>()));
+        }
         CModelDocument candidate = *this;
         std::shared_ptr<CModelEditStorageState> storage;
         if (command.field != CModelEdit::ParameterStructure && command.field != CModelEdit::MeshStructure && command.field != CModelEdit::DeformerStructure) {
@@ -1548,6 +1568,12 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             command.type = QStringLiteral("blendshape");
             command.before = QVariant::fromValue(m_blendShapeGeometry);
             command.after = QVariant::fromValue(candidate.m_blendShapeGeometry);
+        }
+        if (command.field == CModelEdit::BlendShapeConstraints) {
+            command.name = QStringLiteral("blendShapeConstraints");
+            command.type = QStringLiteral("blendshape");
+            command.before = QVariant::fromValue(m_blendShapeConstraints);
+            command.after = QVariant::fromValue(candidate.m_blendShapeConstraints);
         }
         if (!command.meshVerification.IsEmpty()) FreezeVerifiedMeshCommand(command);
         if (command.parameterChange != CModelEdit::ParameterChange::None) {

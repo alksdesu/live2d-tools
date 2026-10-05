@@ -1,4 +1,5 @@
 #include "live2dstruct/cblendshaperelations.h"
+#include "live2dstruct/cmocblendshapeconstraintbuilder.h"
 #include "live2dstruct/csectiontable.h"
 #include "blend_shape_v5_fixture.h"
 
@@ -6,6 +7,7 @@
 #include <QFile>
 #include <QtEndian>
 #include <cstring>
+#include <algorithm>
 #include <limits>
 
 using namespace live2dstruct;
@@ -261,6 +263,41 @@ private slots:
         QCOMPARE(relations.ConstraintValues()[other[0].values.begin].weight, 0.5f);
         QVERIFY(relations.LimitersForBinding(2).isEmpty());
         QVERIFY(relations.LimitersForBinding(-1).isEmpty());
+    }
+
+    void constraintCurveBuilderWritesIsolatedSliceAndRejectsInvalidValues()
+    {
+        const auto fixtureBytes = BlendShapeV5Fixture::Extend(fixture(), 1);
+        using Builder = CMocBlendShapeConstraintBuilder;
+        Builder::Frame frame; QString error;
+        QVERIFY2(Builder::Capture(fixtureBytes, {0}, frame, &error), qPrintable(error));
+        QCOMPARE(frame.parameterId, QStringLiteral("Limiter"));
+        QCOMPARE(frame.values.size(), 2);
+        Builder::Result fixtureResult;
+        QVERIFY(!Builder::Build(fixtureBytes, {frame, {{0.5f, 0.2f}, {0.5f, 0.8f}}}, fixtureResult, &error));
+        QVERIFY(!error.isEmpty());
+        const auto path = qEnvironmentVariable("LIVE2D_REAL_CORE_EXTRA_MOC");
+        if (path.isEmpty()) QSKIP("Set LIVE2D_REAL_CORE_EXTRA_MOC to a valid CMO for rewrite coverage");
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto bytes = file.readAll();
+        auto reader = CReader::FromBytes(bytes); CSectionTable table(reader); QVERIFY(table.IsValid());
+        int index = -1;
+        for (int at = 0; at < table.blend_shape_constraints.size(); ++at) {
+            const auto* constraint = table.blend_shape_constraints[at];
+            if (constraint && constraint->blend_shape_constraint_value_sources_counts >= 2) { index = at; break; }
+        }
+        if (index < 0) QSKIP("Official fixture has no multi-point constraint curve");
+        QVERIFY2(Builder::Capture(bytes, {index}, frame, &error), qPrintable(error));
+        auto changed = frame.values;
+        changed[0].weight = std::clamp(changed[0].weight + 0.05f, 0.0f, 1.0f);
+        if (changed[0].weight == frame.values[0].weight) changed[0].weight = std::clamp(changed[0].weight - 0.05f, 0.0f, 1.0f);
+        Builder::Result result;
+        QVERIFY2(Builder::Build(bytes, {frame, changed}, result, &error), qPrintable(error));
+        Builder::Frame after;
+        QVERIFY2(Builder::Capture(result.bytes, {index}, after, &error), qPrintable(error));
+        QCOMPARE(after.values, changed);
+        QVERIFY(!Builder::Build(bytes, {frame, {{frame.values[0].key, -0.1f}, frame.values[1]}}, result, &error));
+        QVERIFY(!Builder::Build(bytes, {frame, {{frame.values[0].key, frame.values[0].weight}, {frame.values[0].key, frame.values[1].weight}}}, result, &error));
     }
 
     void typeOneParametersRemainDiscoverableWithoutShapesOrConstraints()

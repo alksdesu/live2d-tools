@@ -19,6 +19,8 @@
 #include "cparameterorganization.h"
 #include "cmodelgeometryedit.h"
 #include "cmocblendshapegeometrybuilder.h"
+#include "cmocblendshapeconstraintbuilder.h"
+#include "cmodelblendshapeconstraintedit.h"
 #include "cmodelmaterialedit.h"
 #include "cmodelatlasedit.h"
 #include "cgeometryobjectpairs.h"
@@ -187,7 +189,7 @@ private:
 
 struct CModelEdit
 {
-    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName, DisplayNames, BlendShapeGeometry };
+    enum Field { Visibility, Opacity, DrawOrder, ParameterValue, ParameterValues, ParameterMetadata, KeyformPositions, MeshIndices, MaskIndices, MaskInverted, DeformerParent, RotationKeyforms, WarpKeyforms, VisibilityValues, ParameterStructure, MeshStructure, DeformerStructure, ParameterOrganization, GeometryKeyforms, GeometryObjectPairs, DrawableMaterials, AtlasLayout, DeformerDisplayName, DisplayNames, BlendShapeGeometry, BlendShapeConstraints };
     QString name;
     QString type;
     Field field = Visibility;
@@ -236,6 +238,12 @@ public:
                                         const QVector<float>& deltas, QByteArray& bytes,
                                         QString* error = nullptr) const;
     const CModelBlendShapeGeometryState& BlendShapeGeometry() const { return m_blendShapeGeometry; }
+    const CModelBlendShapeConstraintState& BlendShapeConstraints() const { return m_blendShapeConstraints; }
+    bool CaptureBlendShapeConstraint(int constraintIndex, CModelBlendShapeConstraintEntry& result, QString* error = nullptr) const;
+    bool SetBlendShapeConstraints(const CModelBlendShapeConstraintState& state, QString* error = nullptr);
+    bool MakeBlendShapeConstraintEdit(const CModelBlendShapeConstraintEntry& before,
+                                      const QVector<CMocBlendShapeConstraintBuilder::Value>& values,
+                                      CModelEdit& edit, QString* error = nullptr) const;
     bool SetBlendShapeGeometry(const CModelBlendShapeGeometryState& state, QString* error = nullptr);
     bool CaptureBlendShapeGeometry(const CMocBlendShapeGeometryBuilder::Key& key,
                                    CModelBlendShapeGeometryEntry& result, QString* error = nullptr) const;
@@ -488,6 +496,7 @@ private:
     QHash<QString, QVector<CModelWarpKeyform>> m_deformerWarpKeyformOverrides;
     QHash<QString, bool> m_drawableMaskInvertedOverrides;
     CModelBlendShapeGeometryState m_blendShapeGeometry;
+    CModelBlendShapeConstraintState m_blendShapeConstraints;
     QSet<QString> m_lockedKeys;
     QVector<CModelEdit> m_editHistory;
     int m_editIndex = 0;
@@ -506,6 +515,7 @@ private:
     bool ValidateAtlasEditStorage(const CModelEdit& edit) const;
     bool ValidateAtlasHistory(const CModelEdit& edit, QString* error) const;
     bool CanEditBlendShapeGeometry(const QString& meshId, QString* error = nullptr) const;
+    bool ApplyBlendShapeConstraintEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ApplyGeometryEdit(const CModelEdit& edit, bool forward, QString* error = nullptr);
     bool ValidateGeometryEditStorage(const CModelEdit& edit) const;
     QByteArray GeometryEditStorageFingerprint(const CModelEdit& edit) const;

@@ -50,6 +50,7 @@ SOURCES += \
     live2dstruct/ctextureeditcontroller.cpp \
     live2dstruct/cparentgraph.cpp \
     live2dstruct/cmocblendshapegeometrybuilder.cpp \
+    live2dstruct/cmocblendshapeconstraintbuilder.cpp \
     live2dstruct/cblendshapeposeevaluator.cpp \
     live2dstruct/cblendshaperelations.cpp \
     ui/cmodelhierarchymodel.cpp \
@@ -149,6 +150,7 @@ SOURCES += \
     live2dstruct/cmodeldocumentorganization.cpp \
     live2dstruct/cmodelgeometryedit.cpp \
     live2dstruct/cmodeldocumentgeometry.cpp \
+    live2dstruct/cmodeldocumentblendshape.cpp \
     live2dstruct/cgeometryobjectpairs.cpp \
     live2dstruct/cmodeldocumentpairs.cpp \
     live2dstruct/cmodelsavefingerprint.cpp \
@@ -347,6 +349,8 @@ HEADERS += \
     live2dstruct/cparentgraph.h \
     live2dstruct/cblendshaperelations.h \
     live2dstruct/cmocblendshapegeometrybuilder.h \
+    live2dstruct/cmocblendshapeconstraintbuilder.h \
+    live2dstruct/cmodelblendshapeconstraintedit.h \
     ui/cmodelhierarchymodel.h \
     ui/cmodelhierarchyview.h \
     live2d/cdeformerdrag.h \

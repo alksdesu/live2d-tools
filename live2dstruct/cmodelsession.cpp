@@ -221,6 +221,39 @@ bool validStructure(const CMocParameterStructureBuilder::ColumnState& state, QSt
     return true;
 }
 
+bool validBlendShapeConstraints(const CModelSession& session, int version, QString* error)
+{
+    if (session.blendShapeConstraints.isEmpty()) return true;
+    if (version < 19 || session.sourceMoc.isEmpty() || session.sourceMoc.contains(QChar::Null) || session.sourceDigest.size() != 32) {
+        setError(error, QStringLiteral("融合限制曲线需要版本 19 和有效源模型指纹"));
+        return false;
+    }
+    if (session.blendShapeConstraints.size() > 100000) return false;
+    QSet<int> indices;
+    qint64 total = 0;
+    for (const auto& entry : session.blendShapeConstraints) {
+        if (entry.constraintIndex < 0 || indices.contains(entry.constraintIndex) || entry.sourceDigest.size() != 32 ||
+            entry.parameterIndex < 0 || entry.parameterId.isEmpty() || entry.parameterId.contains(QChar::Null) ||
+            entry.parameterId.toUtf8().size() >= 64 || !std::isfinite(entry.parameterMinimum) ||
+            !std::isfinite(entry.parameterMaximum) || entry.parameterMinimum > entry.parameterMaximum ||
+            entry.values.isEmpty() || (total += entry.values.size()) > 1000000) {
+            setError(error, QStringLiteral("融合限制曲线状态条目无效或重复"));
+            return false;
+        }
+        indices.insert(entry.constraintIndex);
+        for (int index = 0; index < entry.values.size(); ++index) {
+            const auto& value = entry.values[index];
+            if (!std::isfinite(value.key) || !std::isfinite(value.weight) || value.key < entry.parameterMinimum ||
+                value.key > entry.parameterMaximum || value.weight < 0 || value.weight > 1 ||
+                (index && value.key <= entry.values[index - 1].key)) {
+                setError(error, QStringLiteral("融合限制曲线数值范围或排序无效"));
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool validBlendShapeGeometry(const CModelSession& session, int version, QString* error)
 {
     if (session.blendShapeGeometry.isEmpty()) return true;
@@ -261,7 +294,7 @@ bool validAnimationScenes(const CModelSession& session, int version, QString* er
         return false;
     }
     if (session.animationScenes.isEmpty()) {
-        if (version == 18 && session.animation.isEmpty()) return true;
+        if ((version == 18 || version >= 19) && session.animation.isEmpty()) return true;
         if (version >= 17) {
             setError(error, QStringLiteral("版本 17 会话缺少动画场景"));
             return false;
@@ -370,7 +403,7 @@ bool CModelSession::HasMaskMultiplicityOverrides() const
 
 QByteArray CModelSession::ToJson() const
 {
-    if (version < 1 || version > 18) return {};
+    if (version < 1 || version > 19) return {};
     if (drawableMaskIndices.size() > 100000) return {};
     for (const auto& values : drawableMaskIndices) {
         if (values.size() > CMaskEditPolicy::MaximumOverrideReferences || std::any_of(values.cbegin(), values.cend(), [](int index) { return index < 0; })) return {};
@@ -396,7 +429,9 @@ QByteArray CModelSession::ToJson() const
     if (!blendShapeGeometry.isEmpty() && storedVersion < 16) storedVersion = 16;
     if (!animationScenes.isEmpty() || !activeAnimationScene.isEmpty()) storedVersion = std::max(storedVersion, 17);
     if (!artMeshClones.isEmpty()) storedVersion = std::max(storedVersion, 18);
+    if (!blendShapeConstraints.isEmpty()) storedVersion = std::max(storedVersion, 19);
     if (!validDisplayNames(*this, storedVersion, nullptr) || !validBlendShapeGeometry(*this, storedVersion, nullptr) ||
+        !validBlendShapeConstraints(*this, storedVersion, nullptr) ||
         !validAnimationScenes(*this, storedVersion, nullptr) || !validArtMeshClones(*this, storedVersion, nullptr)) return {};
     if (storedVersion >= 15) {
         QJsonObject names;
@@ -525,6 +560,18 @@ QByteArray CModelSession::ToJson() const
         keyformObject.insert(meshIt.key(), keyforms);
     }
     root.insert(QStringLiteral("drawableKeyformPositions"), keyformObject);
+    if (storedVersion >= 19) {
+        QJsonArray curves;
+        for (const auto& entry : blendShapeConstraints) {
+            QJsonArray values;
+            for (const auto& value : entry.values) values.append(QJsonArray{double(value.key), double(value.weight)});
+            curves.append(QJsonObject{{"constraintIndex", entry.constraintIndex},
+                {"sourceDigest", QString::fromLatin1(entry.sourceDigest.toHex())}, {"parameterIndex", entry.parameterIndex},
+                {"parameterId", entry.parameterId}, {"parameterMinimum", double(entry.parameterMinimum)},
+                {"parameterMaximum", double(entry.parameterMaximum)}, {"values", values}});
+        }
+        root.insert(QStringLiteral("blendShapeConstraints"), curves);
+    }
     QJsonArray blendShapeGeometry;
     for (const auto& entry : this->blendShapeGeometry) {
         QJsonArray deltas;
@@ -627,12 +674,53 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         return false;
     }
     const int parsedVersion = static_cast<int>(versionValue);
-    if (parsedVersion < 1 || parsedVersion > 18) {
+    if (parsedVersion < 1 || parsedVersion > 19) {
         setError(error, QStringLiteral("不支持的会话版本：%1").arg(parsedVersion));
         return false;
     }
     CModelSession result;
     result.version = parsedVersion;
+
+    const auto curves = root.value(QStringLiteral("blendShapeConstraints"));
+    if ((parsedVersion < 19 && !curves.isUndefined()) || (parsedVersion >= 19 && !curves.isArray())) {
+        setError(error, QStringLiteral("融合限制曲线需要版本 19 及数组"));
+        return false;
+    }
+    if (parsedVersion >= 19) {
+        const auto array = curves.toArray();
+        if (array.size() > 100000) return false;
+        qint64 total = 0;
+        for (const auto& value : array) {
+            if (!value.isObject()) return false;
+            const auto object = value.toObject();
+            CModelBlendShapeConstraintEntry entry;
+            const auto integer = [&](const QString& key, int& out) {
+                double number = 0;
+                if (!readNumber(object.value(key), &number) || number < 0 || number > std::numeric_limits<int>::max() ||
+                    std::floor(number) != number) return false;
+                out = int(number);
+                return true;
+            };
+            if (!integer("constraintIndex", entry.constraintIndex) || !integer("parameterIndex", entry.parameterIndex) ||
+                !object.value("parameterId").isString() || !readFloat(object.value("parameterMinimum"), &entry.parameterMinimum) ||
+                !readFloat(object.value("parameterMaximum"), &entry.parameterMaximum) || !object.value("sourceDigest").isString() ||
+                !object.value("values").isArray()) return false;
+            entry.parameterId = object.value("parameterId").toString();
+            const auto encoded = object.value("sourceDigest").toString();
+            entry.sourceDigest = QByteArray::fromHex(encoded.toLatin1());
+            if (encoded.size() != 64 || entry.sourceDigest.size() != 32 ||
+                QString::fromLatin1(entry.sourceDigest.toHex()).compare(encoded, Qt::CaseInsensitive)) return false;
+            const auto values = object.value("values").toArray();
+            if ((total += values.size()) > 1000000) return false;
+            for (const auto& point : values) {
+                if (!point.isArray() || point.toArray().size() != 2) return false;
+                CMocBlendShapeConstraintBuilder::Value decoded;
+                if (!readFloat(point.toArray()[0], &decoded.key) || !readFloat(point.toArray()[1], &decoded.weight)) return false;
+                entry.values.append(decoded);
+            }
+            result.blendShapeConstraints.append(std::move(entry));
+        }
+    }
 
     const auto blendShapeGeometry = root.value(QStringLiteral("blendShapeGeometry"));
     if ((parsedVersion < 16 && !blendShapeGeometry.isUndefined()) ||
@@ -860,7 +948,7 @@ bool CModelSession::FromJson(const QByteArray& data, CModelSession* session, QSt
         result.sourceDigest = decoded;
     }
     if (!validDisplayNames(result, parsedVersion, error) ||
-        !validBlendShapeGeometry(result, parsedVersion, error) ||
+        !validBlendShapeGeometry(result, parsedVersion, error) || !validBlendShapeConstraints(result, parsedVersion, error) ||
         !validArtMeshClones(result, parsedVersion, error)) return false;
     if (!result.textures.isEmpty() && (result.sourceMoc.isEmpty() || result.sourceMoc.contains(QChar::Null) || result.sourceDigest.size() != 32)) {
         setError(error, QStringLiteral("会话纹理覆盖缺少模型来源"));
@@ -1222,7 +1310,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
                                     : QStringLiteral("会话字段无效：%1 / %2").arg(field, id));
         return false;
     };
-    if ((version < 1 || version > 18) ||
+    if ((version < 1 || version > 19) ||
         (version == 1 && (!structure.columns.isEmpty() || !structure.counts.isEmpty())) ||
         (version < 3 && (!parameterResources.IsEmpty() || physicsDraft)) || (version < 7 && !textures.isEmpty()) ||
         (version < 8 && parameterOrganization.configured) ||
@@ -1241,7 +1329,7 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         (parameterOrganization.configured && (sourceDigest.size() != 32 || sourceMoc.contains(QChar::Null)))) return fail(QStringLiteral("parameterOrganization"));
     if (!validArtwork(*this, version, error) || !validWorkspace(*this, version, error) || !validMaterials(*this, version, error) || !validStructure(structure, error) || !CParameterResourceEdits::Validate(parameterResources, error) ||
         !validPhysicsDraft(*this, version, error) || !validMeshStructure(*this, version, error) || !validArtMeshClones(*this, version, error) || !validDeformerStructure(*this, version, error) ||
-        !validBlendShapeGeometry(*this, version, error)) return false;
+        !validBlendShapeGeometry(*this, version, error) || !validBlendShapeConstraints(*this, version, error)) return false;
     if (!CTextureAssets::ValidateDraft(textures, error)) return false;
     if (!textures.isEmpty() && (sourceMoc.isEmpty() || sourceMoc.contains(QChar::Null) || sourceDigest.size() != 32)) return fail(QStringLiteral("textures"));
     if (!loaded.IsLoaded() || loaded.SourceBytes().isEmpty()) {
@@ -1449,7 +1537,8 @@ bool CModelSession::RestoreDocumentImpl(const CModelDocument& loaded, const CMod
         if (!candidate.SetDeformerWarpKeyforms(it.key(), it.value()))
             return fail(QStringLiteral("deformerWarpKeyforms"), it.key());
     }
-    if (!candidate.SetBlendShapeGeometry(blendShapeGeometry, error)) return false;
+    if (!candidate.SetBlendShapeGeometry(blendShapeGeometry, error) ||
+        !candidate.SetBlendShapeConstraints(blendShapeConstraints, error)) return false;
     if (!candidate.SetGeometryObjectPairs(normalizedPairs, error)) return false;
     for (auto it = locked.cbegin(); it != locked.cend(); ++it) {
         if (!objectKeys.contains(it.key())) return fail(QStringLiteral("locked"), it.key());

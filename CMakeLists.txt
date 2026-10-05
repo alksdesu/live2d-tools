@@ -49,6 +49,7 @@ target_link_libraries(texture_data PUBLIC Qt6::Core Qt6::Gui)
 
 add_library(model_data STATIC
     live2dstruct/cmocblendshapegeometrybuilder.cpp
+    live2dstruct/cmocblendshapeconstraintbuilder.cpp
     live2dstruct/cblendshapeposeevaluator.cpp
     live2dstruct/cparentgraph.cpp
     live2dstruct/cblendshaperelations.cpp
@@ -92,6 +93,7 @@ add_library(model_data STATIC
     live2dstruct/cmodeldocumentorganization.cpp
     live2dstruct/cmodelgeometryedit.cpp
     live2dstruct/cmodeldocumentgeometry.cpp
+    live2dstruct/cmodeldocumentblendshape.cpp
     live2dstruct/cgeometryobjectpairs.cpp
     live2dstruct/cmodeldocumentpairs.cpp
     live2dstruct/cmodelsavefingerprint.cpp
@@ -243,6 +245,10 @@ if(BUILD_TESTING)
         target_compile_definitions(deformer_order_moc_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
         add_test(NAME deformer_order_moc_core COMMAND deformer_order_moc_core_tests)
     endif()
+    add_executable(blendshape_constraint_core_tests tests/blendshape_constraint_core_tests.cpp)
+    target_link_libraries(blendshape_constraint_core_tests PRIVATE model_data Qt6::Test)
+    target_compile_definitions(blendshape_constraint_core_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")
+    add_test(NAME blendshape_constraint_core COMMAND blendshape_constraint_core_tests)
     add_executable(moc_mesh_structure_tests tests/mesh_structure_moc_tests.cpp)
     target_link_libraries(moc_mesh_structure_tests PRIVATE model_data Qt6::Test)
     target_compile_definitions(moc_mesh_structure_tests PRIVATE TEST_RESOURCES="${CMAKE_CURRENT_SOURCE_DIR}/Resources")

@@ -7,6 +7,7 @@
 #include <QVector>
 #include <cstring>
 #include <variant>
+#include "cmodelblendshapeconstraintedit.h"
 
 namespace live2dstruct {
 struct CModelRotationTransform
