@@ -36,6 +36,9 @@ CORE_ARRAY_GETTER(const csmFlags*, csmGetDrawableDynamicFlags, dynamicFlags)
 CORE_ARRAY_GETTER(const int*, csmGetDrawableTextureIndices, textures)
 CORE_ARRAY_GETTER(const int*, csmGetDrawableDrawOrders, drawOrders)
 CORE_ARRAY_GETTER(const int*, csmGetDrawableRenderOrders, renderOrders)
+#if LIVE2D_CORE_API_VERSION >= 6
+CORE_ARRAY_GETTER(const int*, csmGetDrawableBlendModes, blendModes)
+#endif
 CORE_ARRAY_GETTER(const float*, csmGetDrawableOpacities, drawableOpacities)
 CORE_ARRAY_GETTER(const int*, csmGetDrawableMaskCounts, maskCounts)
 CORE_ARRAY_GETTER(const int**, csmGetDrawableMasks, maskPointers)

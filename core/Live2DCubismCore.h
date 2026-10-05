@@ -80,6 +80,30 @@ extern "C"
     /** Bitfield. */
     typedef unsigned char csmFlags;
 
+#if LIVE2D_CORE_API_VERSION >= 6
+    enum
+    {
+        csmColorBlendType_Normal = 0,
+        csmColorBlendType_Add = 3,
+        csmColorBlendType_AddGlow = 4,
+        csmColorBlendType_Darken = 5,
+        csmColorBlendType_Multiply = 6,
+        csmColorBlendType_ColorBurn = 7,
+        csmColorBlendType_LinearBurn = 8,
+        csmColorBlendType_Lighten = 9,
+        csmColorBlendType_Screen = 10,
+        csmColorBlendType_ColorDodge = 11,
+        csmColorBlendType_Overlay = 12,
+        csmColorBlendType_SoftLight = 13,
+        csmColorBlendType_HardLight = 14,
+        csmColorBlendType_LinearLight = 15,
+        csmColorBlendType_Hue = 16,
+        csmColorBlendType_Color = 17,
+        csmColorBlendType_AddCompatible = 1,
+        csmColorBlendType_MultiplyCompatible = 2
+    };
+#endif
+
     /** moc3 file format version. */
     enum
     {
@@ -479,6 +503,15 @@ extern "C"
 #if LIVE2D_CORE_API_VERSION >= 6
     csmApi const int* csmCallingConvention csmGetRenderOrders(const csmModel* model);
 #define csmGetDrawableRenderOrders csmGetRenderOrders
+    csmApi const int* csmCallingConvention csmGetDrawableBlendModes(const csmModel* model);
+    csmApi int csmCallingConvention csmGetOffscreenCount(const csmModel* model);
+    csmApi const int* csmCallingConvention csmGetOffscreenBlendModes(const csmModel* model);
+    csmApi const float* csmCallingConvention csmGetOffscreenOpacities(const csmModel* model);
+    csmApi const int* csmCallingConvention csmGetOffscreenOwnerIndices(const csmModel* model);
+    csmApi const csmVector4* csmCallingConvention csmGetOffscreenMultiplyColors(const csmModel* model);
+    csmApi const csmVector4* csmCallingConvention csmGetOffscreenScreenColors(const csmModel* model);
+    csmApi const int* csmCallingConvention csmGetOffscreenMaskCounts(const csmModel* model);
+    csmApi const int** csmCallingConvention csmGetOffscreenMasks(const csmModel* model);
 #else
     csmApi const int* csmCallingConvention csmGetDrawableRenderOrders(const csmModel* model);
 #endif

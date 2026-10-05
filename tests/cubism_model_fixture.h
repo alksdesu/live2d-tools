@@ -33,6 +33,7 @@ struct GetterState
     std::array<Core::csmFlags, 3> flags{{Core::csmIsDoubleSided, Core::csmBlendMultiplicative | Core::csmIsInvertedMask, 0}};
     std::array<Core::csmFlags, 3> dynamicFlags{{Core::csmIsVisible, Core::csmIsVisible, Core::csmIsVisible}};
     std::array<int, 3> textures{{0, 1, 2}}, drawOrders{{0, 1, 2}}, renderOrders{{0, 1, 2}};
+    std::array<int, 3> blendModes{{0, 2, 1}};
     std::array<int, 3> vertexCounts{{4, 4, 4}}, indexCounts{{6, 6, 6}}, maskCounts{{0, 1, 0}};
     std::array<std::array<unsigned short, 6>, 3> indices{{{{0, 1, 2, 0, 2, 3}}, {{0, 1, 2, 0, 2, 3}}, {{0, 1, 2, 0, 2, 3}}}};
     std::array<const unsigned short*, 3> indexPointers{{indices[0].data(), indices[1].data(), indices[2].data()}};

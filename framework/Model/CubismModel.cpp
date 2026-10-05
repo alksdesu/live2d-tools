@@ -1592,12 +1592,86 @@ csmBool CubismModel::GetDrawableDynamicFlagBlendColorDidChange(csmInt32 drawable
 
 Rendering::CubismRenderer::CubismBlendMode CubismModel::GetDrawableBlendMode(csmInt32 drawableIndex) const
 {
-    const csmUint8* constantFlags = Core::csmGetDrawableConstantFlags(_model);
-    return (IsBitSet(constantFlags[drawableIndex], Core::csmBlendAdditive))
+    const csmInt32 mode = GetDrawableBlendModeValue(drawableIndex);
+    return (mode == 1)
                ? Rendering::CubismRenderer::CubismBlendMode_Additive
-               : (IsBitSet(constantFlags[drawableIndex], Core::csmBlendMultiplicative))
+               : (mode == 2)
                ? Rendering::CubismRenderer::CubismBlendMode_Multiplicative
                : Rendering::CubismRenderer::CubismBlendMode_Normal;
+}
+
+csmInt32 CubismModel::GetDrawableBlendModeValue(csmInt32 drawableIndex) const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    const csmInt32* modes = Core::csmGetDrawableBlendModes(_model);
+    if (!modes || drawableIndex < 0 || drawableIndex >= GetDrawableCount()) return 0;
+    switch (modes[drawableIndex]) {
+    case Core::csmColorBlendType_Add:
+    case Core::csmColorBlendType_AddCompatible: return 1;
+    case Core::csmColorBlendType_Multiply:
+    case Core::csmColorBlendType_MultiplyCompatible: return 2;
+    default: return 0;
+    }
+#else
+    const csmUint8* flags = Core::csmGetDrawableConstantFlags(_model);
+    if (!flags || drawableIndex < 0 || drawableIndex >= GetDrawableCount()) return 0;
+    return IsBitSet(flags[drawableIndex], Core::csmBlendAdditive) ? 1 :
+        IsBitSet(flags[drawableIndex], Core::csmBlendMultiplicative) ? 2 : 0;
+#endif
+}
+
+csmInt32 CubismModel::GetOffscreenCount() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenCount(_model) : 0;
+#else
+    return 0;
+#endif
+}
+
+const csmInt32* CubismModel::GetOffscreenBlendModes() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenBlendModes(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const csmFloat32* CubismModel::GetOffscreenOpacities() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenOpacities(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const csmInt32* CubismModel::GetOffscreenOwnerIndices() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenOwnerIndices(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const csmInt32* CubismModel::GetOffscreenMaskCounts() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenMaskCounts(_model) : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const csmInt32** CubismModel::GetOffscreenMasks() const
+{
+#if LIVE2D_CORE_API_VERSION >= 6
+    return _model ? Core::csmGetOffscreenMasks(_model) : nullptr;
+#else
+    return nullptr;
+#endif
 }
 
 csmBool CubismModel::GetDrawableInvertedMask(csmInt32 drawableIndex) const
