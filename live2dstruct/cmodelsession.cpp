@@ -419,6 +419,7 @@ QByteArray CModelSession::ToJson() const
     QJsonObject root;
     const bool hasStructure = !structure.columns.isEmpty() || !structure.counts.isEmpty();
     QJsonObject resources;
+    if (!CParameterResourceEdits::ToJson(parameterResources, resources)) return {};
     int storedVersion = hasStructure && version == 1 ? 2 : version;
     if ((!resources.isEmpty() || physicsDraft) && storedVersion >= 1 && storedVersion <= 3) storedVersion = 3;
     if (physicsDraft && physicsDraft->sourcePath.isEmpty() && storedVersion < 4) storedVersion = 4;
@@ -437,7 +438,7 @@ QByteArray CModelSession::ToJson() const
     if (!animationScenes.isEmpty() || !activeAnimationScene.isEmpty()) storedVersion = std::max(storedVersion, 17);
     if (!artMeshClones.isEmpty()) storedVersion = std::max(storedVersion, 18);
     if (!blendShapeConstraints.isEmpty()) storedVersion = std::max(storedVersion, 19);
-    if (!validStructure(structure, storedVersion, nullptr) || !CParameterResourceEdits::ToJson(parameterResources, resources)) return {};
+    if (!validStructure(structure, storedVersion, nullptr)) return {};
     if (!validDisplayNames(*this, storedVersion, nullptr) || !validBlendShapeGeometry(*this, storedVersion, nullptr) ||
         !validBlendShapeConstraints(*this, storedVersion, nullptr) ||
         !validAnimationScenes(*this, storedVersion, nullptr) || !validArtMeshClones(*this, storedVersion, nullptr)) return {};
