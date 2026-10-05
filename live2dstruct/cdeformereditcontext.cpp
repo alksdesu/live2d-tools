@@ -130,8 +130,10 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         return fail(error, QStringLiteral("变形器编辑类型无效：%1").arg(type));
     try {
         QMap<QString, float> corner;
+        QByteArray previewBytes;
+        if (!document.BuildPreviewMoc(previewBytes, error)) return false;
         {
-            auto sourceReader = CReader::FromBytes(document.SourceBytes());
+            auto sourceReader = CReader::FromBytes(previewBytes);
             CSectionTable sourceTable(sourceReader);
             CKeyformBindingGrid sourceBindings;
             const auto sourceType = type == QStringLiteral("warp") ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
