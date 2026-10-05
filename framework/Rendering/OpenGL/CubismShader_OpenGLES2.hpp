@@ -27,6 +27,12 @@ public:
                                         const CubismRenderer::CubismTextureColor& multiply,
                                         const CubismRenderer::CubismTextureColor& screen,
                                         GLuint maskTexture = 0, csmBool maskInvert = false);
+    bool SetupShaderProgramForBackdropComposite(CubismRenderer_OpenGLES2* renderer, GLuint sourceTexture,
+                                                GLuint backdropTexture, csmInt32 colorMode, csmInt32 alphaMode,
+                                                csmFloat32 opacity,
+                                                const CubismRenderer::CubismTextureColor& multiply,
+                                                const CubismRenderer::CubismTextureColor& screen,
+                                                GLuint maskTexture = 0, csmBool maskInvert = false);
 #ifdef CSM_TARGET_ANDROID_ES2
     static void SetExtShaderMode(csmBool extMode, csmBool extPAMode);
 #endif

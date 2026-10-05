@@ -206,4 +206,52 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
     }
     return gl->glGetError() == GL_NO_ERROR;
 }
+
+bool CubismShader_OpenGLES2::SetupShaderProgramForBackdropComposite(
+    CubismRenderer_OpenGLES2* renderer, GLuint sourceTexture, GLuint backdropTexture,
+    csmInt32 colorMode, csmInt32 alphaMode, csmFloat32 opacity,
+    const CubismRenderer::CubismTextureColor& multiply,
+    const CubismRenderer::CubismTextureColor& screen, GLuint maskTexture, csmBool maskInvert)
+{
+    if (!renderer || !sourceTexture || !backdropTexture || colorMode < 0 || colorMode > 17 ||
+        alphaMode < 0 || alphaMode > 4 || !std::isfinite(opacity) || opacity < 0.0f || opacity > 1.0f)
+        return false;
+    const auto* context = renderer->owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
+    if (!context || !Initialize(context)) return false;
+    auto* gl = functions(context);
+    const auto* program = m_programs.Get(Variant::BackdropComposite);
+    if (!gl || !program || !m_programs.Bind(Variant::BackdropComposite)) return false;
+    gl->glBlendFuncSeparate(GL_ONE, GL_ZERO, GL_ONE, GL_ZERO);
+    static constexpr csmFloat32 identity[16]{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f};
+    gl->glActiveTexture(GL_TEXTURE0);
+    gl->glBindTexture(GL_TEXTURE_2D, sourceTexture);
+    gl->glUniform1i(program->sampler0, 0);
+    gl->glActiveTexture(GL_TEXTURE1);
+    gl->glBindTexture(GL_TEXTURE_2D, backdropTexture);
+    gl->glUniform1i(program->sampler1, 1);
+    gl->glUniformMatrix4fv(program->matrix, 1, GL_FALSE, identity);
+    const auto modelColor = renderer->GetModelColor();
+    colorUniform(*gl, program->baseColor, CubismRenderer::CubismTextureColor(
+        1.0f, 1.0f, 1.0f, opacity * modelColor.A));
+    colorUniform(*gl, program->multiplyColor, multiply);
+    colorUniform(*gl, program->screenColor, screen);
+    const auto viewport = renderer->_rendererProfile.Viewport();
+    gl->glUniform2f(program->resolution, viewport[2], viewport[3]);
+    gl->glUniform1i(program->colorMode, colorMode);
+    gl->glUniform1i(program->alphaMode, alphaMode);
+    gl->glUniform1f(program->useMask, maskTexture ? 1.0f : 0.0f);
+    gl->glUniform1f(program->maskInvert, maskInvert ? 1.0f : 0.0f);
+    colorUniform(*gl, program->channelFlag, CubismRenderer::CubismTextureColor(1, 0, 0, 0));
+    if (maskTexture) {
+        gl->glActiveTexture(GL_TEXTURE2);
+        gl->glBindTexture(GL_TEXTURE_2D, maskTexture);
+        gl->glUniform1i(program->sampler2, 2);
+    }
+    return gl->glGetError() == GL_NO_ERROR;
+}
 }}}}

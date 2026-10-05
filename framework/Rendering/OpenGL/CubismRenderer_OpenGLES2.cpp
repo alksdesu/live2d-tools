@@ -841,9 +841,8 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
                 const int raw = modes[offscreenIndex];
                 const int colorMode = raw & 0xff;
                 const int alphaMode = (raw >> 8) & 0xff;
-                if (owner < 0 || owner >= partCount || alphaMode != 0 ||
-                    (colorMode != 0 && colorMode != 1 && colorMode != 2 && colorMode != 3 &&
-                     colorMode != 4 && colorMode != 6)) {
+                if (owner < 0 || owner >= partCount || alphaMode < 0 || alphaMode > 4 ||
+                    colorMode < 0 || colorMode > 17) {
                     effectRendering = false;
                     break;
                 }
@@ -1076,6 +1075,7 @@ bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 he
     if (count == 0) {
         _effectSurfaces.clear();
         _effectMaskSurfaces.clear();
+        _backdropSurface.reset();
         _compositeMesh.reset();
         return true;
     }
@@ -1112,6 +1112,13 @@ bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 he
             if (!replacement->setGlOwningContext(owningContext()) ||
                 !replacement->CreateOffscreenSurface(width, height)) return false;
             surface = std::move(replacement);
+        }
+        if (!_backdropSurface || !_backdropSurface->IsValid() || _backdropSurface->GetBufferWidth() != width ||
+            _backdropSurface->GetBufferHeight() != height) {
+            auto replacement = std::make_unique<CubismOffscreenSurface_OpenGLES2>();
+            if (!replacement->setGlOwningContext(owningContext()) ||
+                !replacement->CreateOffscreenSurface(width, height)) return false;
+            _backdropSurface = std::move(replacement);
         }
         return true;
     } catch (const std::bad_alloc&) {
@@ -1176,6 +1183,7 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
         opacities[offscreenIndex] < 0.0f || opacities[offscreenIndex] > 1.0f) return false;
     const int rawMode = modes[offscreenIndex];
     const int colorMode = rawMode & 0xff;
+    const int alphaMode = (rawMode >> 8) & 0xff;
     const auto blend = (colorMode == 1 || colorMode == 3 || colorMode == 4)
         ? CubismRenderer::CubismBlendMode_Additive
         : (colorMode == 2 || colorMode == 6)
@@ -1194,6 +1202,9 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
         maskTexture = _effectMaskSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer();
         maskInvert = (maskFlags[offscreenIndex] & Core::csmIsInvertedMask) != 0;
     }
+    if (alphaMode != 0 || (colorMode != 0 && colorMode != 1 && colorMode != 2 && colorMode != 3 &&
+                           colorMode != 4 && colorMode != 6))
+        return CompositeEffectBackdrop(model, offscreenIndex, maskTexture, maskInvert);
     auto* shader = CubismShader_OpenGLES2::GetInstance();
     if (!shader->SetupShaderProgramForComposite(this,
         _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(), blend,
@@ -1202,6 +1213,38 @@ bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, 
     glDisable(GL_SCISSOR_TEST);
     if (!_compositeMesh->Draw(GL_TRIANGLES)) return false;
     return glGetError() == GL_NO_ERROR;
+}
+
+bool CubismRenderer_OpenGLES2::CompositeEffectBackdrop(const CubismModel& model, csmInt32 offscreenIndex,
+                                                        GLuint maskTexture, csmBool maskInvert)
+{
+    if (!_backdropSurface || !_backdropSurface->IsValid() ||
+        offscreenIndex < 0 || offscreenIndex >= model.GetOffscreenCount()) return false;
+    const auto* opacities = model.GetOffscreenOpacities();
+    const auto* modes = model.GetOffscreenBlendModes();
+    const auto* multiply = model.GetOffscreenMultiplyColors();
+    const auto* screen = model.GetOffscreenScreenColors();
+    if (!opacities || !modes || !multiply || !screen) return false;
+    const int raw = modes[offscreenIndex];
+    const int colorMode = raw & 0xff;
+    const int alphaMode = (raw >> 8) & 0xff;
+    if (colorMode < 0 || colorMode > 17 || alphaMode < 0 || alphaMode > 4) return false;
+    const auto viewport = _rendererProfile.Viewport();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, _backdropSurface->GetColorBuffer());
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, viewport[0], viewport[1], viewport[2], viewport[3]);
+    if (glGetError() != GL_NO_ERROR) return false;
+    const auto mul = CubismRenderer::CubismTextureColor(multiply[offscreenIndex].X,
+        multiply[offscreenIndex].Y, multiply[offscreenIndex].Z, 1.0f);
+    const auto scr = CubismRenderer::CubismTextureColor(screen[offscreenIndex].X,
+        screen[offscreenIndex].Y, screen[offscreenIndex].Z, 0.0f);
+    if (!CubismShader_OpenGLES2::GetInstance()->SetupShaderProgramForBackdropComposite(
+            this, _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(),
+            _backdropSurface->GetColorBuffer(), colorMode, alphaMode, opacities[offscreenIndex],
+            mul, scr, maskTexture, maskInvert)) return false;
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    return _compositeMesh && _compositeMesh->Draw(GL_TRIANGLES) && glGetError() == GL_NO_ERROR;
 }
 
 const csmMap<csmInt32, GLuint>& CubismRenderer_OpenGLES2::GetBindedTextures() const

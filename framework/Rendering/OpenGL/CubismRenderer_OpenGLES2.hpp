@@ -253,6 +253,8 @@ private:
     bool EnsureEffectResources(csmInt32 width, csmInt32 height, csmInt32 count);
     bool RenderEffectMask(const CubismModel& model, csmInt32 offscreenIndex);
     bool CompositeEffectSurface(const CubismModel& model, csmInt32 offscreenIndex);
+    bool CompositeEffectBackdrop(const CubismModel& model, csmInt32 offscreenIndex,
+                                 GLuint maskTexture, csmBool maskInvert);
 
 
 
@@ -267,6 +269,7 @@ private:
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectSurfaces;
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectMaskSurfaces;
     std::unique_ptr<CGlMeshBuffer> _compositeMesh;
+    std::unique_ptr<CubismOffscreenSurface_OpenGLES2> _backdropSurface;
     bool _effectMaskPass = false;
     std::vector<std::unique_ptr<CGlMeshBuffer>> _meshBuffers;
     quint64 _maskIndicesRevision = 0;

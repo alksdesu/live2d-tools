@@ -129,13 +129,25 @@ uniform float u_useMask;
 uniform float u_maskInvert;
 uniform vec4 u_channelFlag;
 layout(location=0) out vec4 fragColor;
+float lum(vec3 c){return .30*c.r+.59*c.g+.11*c.b;}
+vec3 clipc(vec3 c){float l=lum(c),mn=min(c.r,min(c.g,c.b)),mx=max(c.r,max(c.g,c.b));if(mn<0.)c=l+(c-l)*l/(l-mn);if(mx>1.)c=l+(c-l)*(1.-l)/(mx-l);return c;}
+vec3 setl(vec3 c,float l){return clipc(c+(l-lum(c)));}
+vec3 sets(vec3 c,float s){float mx=max(c.r,max(c.g,c.b)),mn=min(c.r,min(c.g,c.b)),md=c.r+c.g+c.b-mx-mn;float a=mn<mx?s:0.,b=mn<mx?(md-mn)*s/(mx-mn):0.;if(c.r==mx)return c.b<c.g?vec3(a,b,0):vec3(a,0,b);if(c.g==mx)return c.r<c.b?vec3(0,a,b):vec3(b,a,0);return c.g<c.r?vec3(b,0,a):vec3(0,b,a);}
+float burn(float s,float d){return d>=.999999?1.:s<1e-6?0.:1.-min(1.,(1.-d)/s);}
+float dodge(float s,float d){return d<=0.?0.:s>=1.?1.:min(1.,d/(1.-s));}
+float ov(float s,float d){return d<.5?2.*s*d:1.-2.*(1.-s)*(1.-d);}
+float sl(float s,float d){float a=d-(1.-2.*s)*d*(1.-d),b=d+(2.*s-1.)*d*((16.*d-12.)*d+3.),c=d+(2.*s-1.)*(sqrt(d)-d);return s<=.5?a:d<=.25?b:c;}
+vec3 blend(vec3 s,vec3 d){
+ if(u_colorMode==1||u_colorMode==3)return min(s+d,1.);if(u_colorMode==4)return s+d;if(u_colorMode==5)return min(s,d);if(u_colorMode==2||u_colorMode==6)return s*d;
+ if(u_colorMode==7)return vec3(burn(s.r,d.r),burn(s.g,d.g),burn(s.b,d.b));if(u_colorMode==8)return max(vec3(0),s+d-1.);if(u_colorMode==9)return max(s,d);if(u_colorMode==10)return s+d-s*d;
+ if(u_colorMode==11)return vec3(dodge(s.r,d.r),dodge(s.g,d.g),dodge(s.b,d.b));if(u_colorMode==12)return vec3(ov(s.r,d.r),ov(s.g,d.g),ov(s.b,d.b));if(u_colorMode==13)return vec3(sl(s.r,d.r),sl(s.g,d.g),sl(s.b,d.b));
+ if(u_colorMode==14)return vec3(ov(s.r,d.r),ov(s.g,d.g),ov(s.b,d.b));if(u_colorMode==15)return 2.*s+d-1.;if(u_colorMode==16)return setl(sets(s,max(d.r,max(d.g,d.b))-min(d.r,min(d.g,d.b))),lum(d));if(u_colorMode==17)return setl(s,lum(d));return s;}
+vec3 pd(float sa,float da){if(u_alphaMode==1)return vec3(sa*da,0.,da*(1.-sa));if(u_alphaMode==2)return vec3(0.,0.,da*(1.-sa));if(u_alphaMode==3)return vec3(min(sa,da),max(sa-da,0.),max(da-sa,0.));if(u_alphaMode==4)return vec3(max(sa+da-1.,0.),min(sa,1.-da),min(da,1.-sa));return vec3(sa*da,sa*(1.-da),da*(1.-sa));}
+vec4 straight(vec4 c){return c.a<1e-5?vec4(0):vec4(c.rgb/c.a,c.a);}
 void main(){
-  vec4 t=texture(s_texture0,v_texCoord), d=texture(s_texture1,gl_FragCoord.xy/u_resolution);
-  vec3 c=t.rgb*u_multiplyColor.rgb;
-  c=c+u_screenColor.rgb*t.a-c*u_screenColor.rgb;
-  if(u_useMask>.5){float m=dot(texture(s_texture2,gl_FragCoord.xy/u_resolution),u_channelFlag);if(u_maskInvert>.5)m=1.-m;c*=m;t.a*=m;}
-  float keep=float(u_colorMode+u_alphaMode)*1e-7;
-  fragColor=mix(vec4(c,t.a)*u_baseColor.a,d,1e-6)+vec4(keep);
+ vec4 t=texture(s_texture0,v_texCoord);t.rgb=t.rgb*u_multiplyColor.rgb;t.rgb=t.rgb+u_screenColor.rgb*t.a-t.rgb*u_screenColor.rgb;
+ if(u_useMask>.5){float m=dot(texture(s_texture2,gl_FragCoord.xy/u_resolution),u_channelFlag);if(u_maskInvert>.5)m=1.-m;t*=m;}
+ vec4 s=straight(t*u_baseColor),d=straight(texture(s_texture1,gl_FragCoord.xy/u_resolution));vec3 p=pd(s.a,d.a),c=blend(s.rgb,d.rgb);fragColor=vec4(c*p.x+s.rgb*p.y+d.rgb*p.z,p.x+p.y+p.z);
 }
 )";
 }

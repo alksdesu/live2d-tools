@@ -1480,7 +1480,7 @@ private slots:
         state.offscreenCount = 1;
         state.partOffscreens = {0, -1};
         state.offscreenOwners[0] = 0;
-        state.offscreenBlendModes[0] = 0;
+        state.offscreenBlendModes[0] = (1 << 8) | 14;
         state.offscreenMaskCounts[0] = 1;
         state.offscreenMasks[0][0] = 0;
         state.renderOrders = {1, 2, 3, 0, 4};
