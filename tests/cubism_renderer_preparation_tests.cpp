@@ -1472,6 +1472,42 @@ private slots:
         QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
     }
 
+#if LIVE2D_CORE_API_VERSION >= 6
+    void core6OffscreenOwnerStackRendersAndRestoresTheParentTarget()
+    {
+        GetterState state;
+        state.drawableCount = 3;
+        state.offscreenCount = 1;
+        state.partOffscreens = {0, -1};
+        state.offscreenOwners[0] = 0;
+        state.offscreenBlendModes[0] = 0;
+        state.offscreenMaskCounts[0] = 0;
+        state.renderOrders = {1, 2, 3, 0, 4};
+        state.maskCounts = {0, 0, 0};
+        state.dynamicFlags.fill(Core::csmIsVisible);
+        auto model = Model(state);
+        auto renderer = Renderer();
+        auto& glRenderer = Gl(renderer);
+        QVERIFY(glRenderer.setGlOwningContext(&m_context));
+        QVERIFY(glRenderer.Initialize(model.get()));
+        for (int index = 0; index < state.drawableCount; ++index)
+            glRenderer.BindTexture(static_cast<csmUint32>(index), Texture());
+        allowDraw = true;
+        controlledContext = &m_context;
+        const auto restore = qScopeGuard([&] {
+            allowDraw = false;
+            controlledContext = nullptr;
+        });
+        QOpenGLFramebufferObject target(16, 16);
+        QVERIFY(target.isValid() && target.bind());
+        m_gl.glViewport(0, 0, 16, 16);
+        m_gl.glDisable(GL_SCISSOR_TEST);
+        QVERIFY(glRenderer.DrawModel());
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+        QVERIFY(target.release());
+    }
+#endif
+
     void cleanupTestCase()
     {
         QVERIFY(m_context.makeCurrent(&m_surface));

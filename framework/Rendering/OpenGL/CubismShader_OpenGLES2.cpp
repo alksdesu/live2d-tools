@@ -11,6 +11,7 @@
 #include "framework/Utils/CubismDebug.hpp"
 #include "live2d/LAppDelegate.hpp"
 #include <QOpenGLVersionFunctionsFactory>
+#include <cmath>
 
 namespace Live2D { namespace Cubism { namespace Framework { namespace Rendering {
 namespace {
@@ -139,6 +140,40 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForMask(CubismRenderer_OpenGLES2*
     const CubismRenderer::CubismTextureColor bounds{
         rect.X * 2.0f - 1.0f, rect.Y * 2.0f - 1.0f, rect.GetRight() * 2.0f - 1.0f, rect.GetBottom() * 2.0f - 1.0f};
     colorUniform(*gl, program->baseColor, bounds);
+    return gl->glGetError() == GL_NO_ERROR;
+}
+
+bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
+    CubismRenderer_OpenGLES2* renderer, GLuint texture, CubismRenderer::CubismBlendMode blend,
+    csmFloat32 opacity, const CubismRenderer::CubismTextureColor& multiply,
+    const CubismRenderer::CubismTextureColor& screen)
+{
+    if (!renderer || !texture || !std::isfinite(opacity) || opacity < 0.0f || opacity > 1.0f)
+        return false;
+    const auto* context = renderer->owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
+    if (!context || !Initialize(context)) return false;
+    auto* gl = functions(context);
+    if (!gl) return false;
+    const Variant variant = renderer->IsPremultipliedAlpha() ? Variant::Premultiplied : Variant::Straight;
+    const auto* program = m_programs.Get(variant);
+    const auto shaderBlend = blend == CubismRenderer::CubismBlendMode_Additive ? BlendMode::Additive :
+        blend == CubismRenderer::CubismBlendMode_Multiplicative ? BlendMode::Multiplicative : BlendMode::Normal;
+    if (!program || !m_programs.Bind(variant, shaderBlend)) return false;
+    static constexpr csmFloat32 identity[16]{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f};
+    gl->glActiveTexture(GL_TEXTURE0);
+    gl->glBindTexture(GL_TEXTURE_2D, texture);
+    gl->glUniform1i(program->sampler0, 0);
+    gl->glUniformMatrix4fv(program->matrix, 1, GL_FALSE, identity);
+    const auto modelColor = renderer->GetModelColor();
+    colorUniform(*gl, program->baseColor, CubismRenderer::CubismTextureColor(1.0f, 1.0f, 1.0f,
+        opacity * modelColor.A));
+    colorUniform(*gl, program->multiplyColor, multiply);
+    colorUniform(*gl, program->screenColor, screen);
     return gl->glGetError() == GL_NO_ERROR;
 }
 }}}}

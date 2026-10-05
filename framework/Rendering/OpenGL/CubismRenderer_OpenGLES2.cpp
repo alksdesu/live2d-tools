@@ -802,6 +802,58 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
                                   Qt::DirectConnection, Q_ARG(QStringList, names));
     }
 
+    QVector<int> effectObjects;
+    QVector<int> effectOwners;
+    bool effectRendering = !offscreen && GetModel()->GetOffscreenCount() > 0;
+    if (effectRendering) {
+        const int effectCount = GetModel()->GetOffscreenCount();
+        const int partCount = GetModel()->GetPartCount();
+        const auto* owners = GetModel()->GetOffscreenOwnerIndices();
+        const auto* partOffscreens = GetModel()->GetPartOffscreenIndices();
+        const auto* partParents = Core::csmGetPartParentPartIndices(GetModel()->GetModel());
+        const auto* modes = GetModel()->GetOffscreenBlendModes();
+        const auto* maskCounts = GetModel()->GetOffscreenMaskCounts();
+        const auto* effectOrders = GetModel()->GetOffscreenRenderOrders();
+        const auto* drawableOrders = GetModel()->GetDrawableRenderOrders();
+        effectRendering = owners && partOffscreens && partParents && modes && maskCounts && effectOrders &&
+            drawableOrders && partCount >= 0 && effectCount > 0 && orderOverrides.isEmpty() &&
+            orderGroups.isEmpty() && groups.isEmpty();
+        if (effectRendering) {
+            const int total = drawableCount + effectCount;
+            effectObjects.fill(-1, total);
+            effectOwners.resize(effectCount);
+            for (int drawableIndex = 0; drawableIndex < drawableCount; ++drawableIndex) {
+                const int order = drawableOrders[drawableIndex];
+                if (order < 0 || order >= total || effectObjects[order] != -1) {
+                    effectRendering = false;
+                    break;
+                }
+                effectObjects[order] = drawableIndex;
+            }
+            for (int offscreenIndex = 0; effectRendering && offscreenIndex < effectCount; ++offscreenIndex) {
+                const int order = effectOrders[offscreenIndex];
+                if (order < 0 || order >= total || effectObjects[order] != -1) {
+                    effectRendering = false;
+                    break;
+                }
+                const int owner = owners[offscreenIndex];
+                const int raw = modes[offscreenIndex];
+                const int colorMode = raw & 0xff;
+                const int alphaMode = (raw >> 8) & 0xff;
+                if (owner < 0 || owner >= partCount || maskCounts[offscreenIndex] != 0 || alphaMode != 0 ||
+                    (colorMode != 0 && colorMode != 1 && colorMode != 2 && colorMode != 3 &&
+                     colorMode != 4 && colorMode != 6)) {
+                    effectRendering = false;
+                    break;
+                }
+                effectObjects[order] = drawableCount + offscreenIndex;
+                effectOwners[offscreenIndex] = owner;
+            }
+            const auto viewport = _rendererProfile.Viewport();
+            if (effectRendering && !EnsureEffectResources(viewport[2], viewport[3], effectCount)) effectRendering = false;
+        }
+    }
+
     const auto drawDrawable = [&](csmInt32 drawableIndex, const QString& drawName) {
         CubismClippingContext_OpenGLES2* clipContext = _clippingManager
             ? (*_clippingManager->GetClippingContextListForDraw())[drawableIndex] : nullptr;
@@ -840,13 +892,77 @@ csmBool CubismRenderer_OpenGLES2::DoDrawModel()
             if (!drawDrawable(index, name)) return false;
         }
     } else {
-        for (csmInt32 i = 0; i < drawableCount; ++i) {
-            const csmInt32 index = _sortedDrawableIndexList[i];
+        QVector<int> effectStack;
+        const auto viewport = _rendererProfile.Viewport();
+        const auto closeEffect = [&](int offscreenIndex) {
+            if (offscreenIndex < 0 || static_cast<size_t>(offscreenIndex) >= _effectSurfaces.size() ||
+                !_effectSurfaces[static_cast<size_t>(offscreenIndex)] ||
+                !_effectSurfaces[static_cast<size_t>(offscreenIndex)]->EndDraw()) return false;
+            glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            return CompositeEffectSurface(*GetModel(), offscreenIndex);
+        };
+        auto cleanupEffects = qScopeGuard([&] {
+            for (auto& surface : _effectSurfaces)
+                if (surface && surface->IsValid()) surface->EndDraw();
+            effectStack.clear();
+            glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        });
+        const auto isDescendant = [&](int part, int ancestor) {
+            QSet<int> visited;
+            while (part >= 0 && part < GetModel()->GetPartCount() && !visited.contains(part)) {
+                if (part == ancestor) return true;
+                visited.insert(part);
+                part = Core::csmGetPartParentPartIndices(GetModel()->GetModel())[part];
+            }
+            return false;
+        };
+        const auto popUntil = [&](int part) {
+            while (!effectStack.isEmpty() && !isDescendant(part, effectOwners[effectStack.last()])) {
+                const int offscreenIndex = effectStack.takeLast();
+                if (!closeEffect(offscreenIndex)) return false;
+            }
+            return true;
+        };
+        const int total = effectRendering ? effectObjects.size() : drawableCount;
+        for (int position = 0; position < total; ++position) {
+            if (effectRendering) {
+                const int object = effectObjects[position];
+                if (object < 0) {
+                    effectStack.clear();
+                    return false;
+                }
+                if (object >= drawableCount) {
+                    const int offscreenIndex = object - drawableCount;
+                    while (!effectStack.isEmpty() &&
+                           !isDescendant(effectOwners[offscreenIndex], effectOwners[effectStack.last()])) {
+                        const int previous = effectStack.takeLast();
+                        if (!closeEffect(previous)) return false;
+                    }
+                    auto& surface = _effectSurfaces[static_cast<size_t>(offscreenIndex)];
+                    if (!surface || !surface->BeginDraw() || !surface->Clear(0, 0, 0, 0)) return false;
+                    glViewport(0, 0, viewport[2], viewport[3]);
+                    effectStack.append(offscreenIndex);
+                    continue;
+                }
+                const int index = object;
+                if (!popUntil(GetModel()->GetDrawableParentPartIndex(index))) return false;
+                const QString name(GetModel()->GetDrawableId(index)->GetString().GetRawString());
+                if (!hidden.contains(name) && (includeHidden || GetModel()->GetDrawableDynamicFlagIsVisible(index))) {
+                    if (!drawDrawable(index, name)) return false;
+                }
+                continue;
+            }
+            const csmInt32 index = _sortedDrawableIndexList[position];
             const QString name(GetModel()->GetDrawableId(index)->GetString().GetRawString());
-            if (hidden.contains(name)) continue;
-            if (!includeHidden && !GetModel()->GetDrawableDynamicFlagIsVisible(index)) continue;
-            if (!drawDrawable(index, name)) return false;
+            if (!hidden.contains(name) && (includeHidden || GetModel()->GetDrawableDynamicFlagIsVisible(index))) {
+                if (!drawDrawable(index, name)) return false;
+            }
         }
+        while (effectRendering && !effectStack.isEmpty()) {
+            const int offscreenIndex = effectStack.takeLast();
+            if (!closeEffect(offscreenIndex)) return false;
+        }
+        cleanupEffects.dismiss();
         if (!offscreen && !_snapshotScene) {
             for (csmInt32 i = 0; i < drawableCount; ++i) {
                 const QString name(GetModel()->GetDrawableId(i)->GetString().GetRawString());
@@ -941,6 +1057,78 @@ bool CubismRenderer_OpenGLES2::MaskSourceAvailable(csmInt32 drawable) const
     if (!model || drawable < 0 || drawable >= model->GetDrawableCount()) return false;
     if (model->GetDrawableDynamicFlagVertexPositionsDidChange(drawable)) return true;
     return _textureMaskReplay && model->GetDrawableVertexCount(drawable) > 0 && model->GetDrawableVertices(drawable);
+}
+
+bool CubismRenderer_OpenGLES2::EnsureEffectResources(csmInt32 width, csmInt32 height, csmInt32 count)
+{
+    if (!setGlOwningContext(owningContext()) || width <= 0 || height <= 0 || count < 0) return false;
+    if (count == 0) {
+        _effectSurfaces.clear();
+        _compositeMesh.reset();
+        return true;
+    }
+    try {
+        if (!_compositeMesh) _compositeMesh = std::make_unique<CGlMeshBuffer>();
+        static constexpr float positions[] = {
+            -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f,
+            -1.0f, -1.0f, 1.0f, 1.0f, 1.0f, -1.0f};
+        static constexpr float uvs[] = {
+            0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f};
+        if (!_compositeMesh->SetContext(owningContext()) ||
+            !_compositeMesh->Upload(positions, 6, uvs, nullptr, 0)) return false;
+        if (_effectSurfaces.size() != static_cast<size_t>(count)) {
+            _effectSurfaces.clear();
+            _effectSurfaces.resize(static_cast<size_t>(count));
+        }
+        for (auto& surface : _effectSurfaces) {
+            if (surface && surface->IsValid() && surface->GetBufferWidth() == width &&
+                surface->GetBufferHeight() == height) continue;
+            auto replacement = std::make_unique<CubismOffscreenSurface_OpenGLES2>();
+            if (!replacement->setGlOwningContext(owningContext()) ||
+                !replacement->CreateOffscreenSurface(width, height)) return false;
+            surface = std::move(replacement);
+        }
+        return true;
+    } catch (const std::bad_alloc&) {
+        return false;
+    } catch (const std::length_error&) {
+        return false;
+    }
+}
+
+bool CubismRenderer_OpenGLES2::CompositeEffectSurface(const CubismModel& model, csmInt32 offscreenIndex)
+{
+    if (offscreenIndex < 0 || offscreenIndex >= model.GetOffscreenCount() ||
+        static_cast<size_t>(offscreenIndex) >= _effectSurfaces.size() ||
+        !_effectSurfaces[static_cast<size_t>(offscreenIndex)] ||
+        !_effectSurfaces[static_cast<size_t>(offscreenIndex)]->IsValid() || !_compositeMesh)
+        return false;
+    const auto* opacities = model.GetOffscreenOpacities();
+    const auto* modes = model.GetOffscreenBlendModes();
+    const auto* multiply = model.GetOffscreenMultiplyColors();
+    const auto* screen = model.GetOffscreenScreenColors();
+    if (!opacities || !modes || !multiply || !screen || !std::isfinite(opacities[offscreenIndex]) ||
+        opacities[offscreenIndex] < 0.0f || opacities[offscreenIndex] > 1.0f) return false;
+    const int rawMode = modes[offscreenIndex];
+    const int colorMode = rawMode & 0xff;
+    const auto blend = (colorMode == 1 || colorMode == 3 || colorMode == 4)
+        ? CubismRenderer::CubismBlendMode_Additive
+        : (colorMode == 2 || colorMode == 6)
+        ? CubismRenderer::CubismBlendMode_Multiplicative
+        : CubismRenderer::CubismBlendMode_Normal;
+    const auto mul = CubismRenderer::CubismTextureColor(multiply[offscreenIndex].X,
+        multiply[offscreenIndex].Y, multiply[offscreenIndex].Z, 1.0f);
+    const auto scr = CubismRenderer::CubismTextureColor(screen[offscreenIndex].X,
+        screen[offscreenIndex].Y, screen[offscreenIndex].Z, 0.0f);
+    auto* shader = CubismShader_OpenGLES2::GetInstance();
+    if (!shader->SetupShaderProgramForComposite(this,
+        _effectSurfaces[static_cast<size_t>(offscreenIndex)]->GetColorBuffer(), blend,
+        opacities[offscreenIndex], mul, scr)) return false;
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    if (!_compositeMesh->Draw(GL_TRIANGLES)) return false;
+    return glGetError() == GL_NO_ERROR;
 }
 
 const csmMap<csmInt32, GLuint>& CubismRenderer_OpenGLES2::GetBindedTextures() const
