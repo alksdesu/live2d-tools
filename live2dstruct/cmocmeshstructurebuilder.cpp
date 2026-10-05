@@ -660,6 +660,46 @@ bool CMocMeshStructureBuilder::Build(const QByteArray& base, const Request& requ
     });
 }
 
+bool CMocMeshStructureBuilder::CaptureGlues(const QByteArray& base, QVector<GlueSnapshot>& result, QString* error)
+{
+    return execute(base, error, [&](const CSectionTable& table) {
+        QVector<GlueSnapshot> candidate;
+        QSet<QString> ids;
+        candidate.reserve(table.glue.size());
+        for (int index = 0; index < table.glue.size(); ++index) {
+            const auto* glue = table.glue[index];
+            if (!glue || glue->ids.isEmpty() || glue->ids.contains(QChar::Null) || ids.contains(glue->ids) ||
+                glue->art_mesh_indices_a < 0 || glue->art_mesh_indices_a >= table.art_meshes.size() ||
+                glue->art_mesh_indices_b < 0 || glue->art_mesh_indices_b >= table.art_meshes.size() ||
+                !range(glue->glue_info_sources_begin_indices, glue->glue_info_sources_counts, table.glue_info.size()) ||
+                glue->glue_info_sources_counts % 2)
+                return fail(error, QStringLiteral("Glue %1 的身份、网格端点或配对范围无效").arg(index));
+            const auto* meshA = table.art_meshes[glue->art_mesh_indices_a];
+            const auto* meshB = table.art_meshes[glue->art_mesh_indices_b];
+            GlueSnapshot snapshot{index, glue->ids, glue->art_mesh_indices_a, glue->art_mesh_indices_b,
+                                  meshA->ids, meshB->ids, {}};
+            snapshot.pairs.reserve(glue->glue_info_sources_counts / 2);
+            for (int pair = 0; pair < glue->glue_info_sources_counts / 2; ++pair) {
+                const auto* endpointA = table.glue_info[glue->glue_info_sources_begin_indices + pair * 2];
+                const auto* endpointB = table.glue_info[glue->glue_info_sources_begin_indices + pair * 2 + 1];
+                if (!endpointA || !endpointB || endpointA->position_indices < 0 ||
+                    endpointA->position_indices >= meshA->vertex_counts || endpointB->position_indices < 0 ||
+                    endpointB->position_indices >= meshB->vertex_counts || !std::isfinite(endpointA->weights) ||
+                    !std::isfinite(endpointB->weights) || endpointA->weights < 0.0f || endpointA->weights > 1.0f ||
+                    endpointB->weights < 0.0f || endpointB->weights > 1.0f)
+                    return fail(error, QStringLiteral("Glue %1 第 %2 对端点无效").arg(glue->ids).arg(pair));
+                snapshot.pairs.append(GluePair{{endpointA->position_indices, endpointA->weights},
+                                                {endpointB->position_indices, endpointB->weights}});
+            }
+            ids.insert(glue->ids);
+            candidate.append(std::move(snapshot));
+        }
+        result.swap(candidate);
+        if (error) error->clear();
+        return true;
+    });
+}
+
 bool CMocMeshStructureBuilder::Clone(const QByteArray& base, const CloneRequest& request,
                                      Result& result, QString* error)
 {

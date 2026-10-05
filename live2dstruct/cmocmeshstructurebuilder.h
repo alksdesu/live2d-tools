@@ -36,6 +36,23 @@ public:
         GlueRetarget::Side side = GlueRetarget::A;
         float weight = 0.0f;
     };
+    struct GlueEndpoint {
+        int vertex = -1;
+        float weight = 0.0f;
+        bool operator==(const GlueEndpoint& other) const { return vertex == other.vertex && weight == other.weight; }
+    };
+    struct GluePair {
+        GlueEndpoint a, b;
+        bool operator==(const GluePair& other) const { return a == other.a && b == other.b; }
+    };
+    struct GlueSnapshot {
+        int index = -1;
+        QString id;
+        int artMeshA = -1;
+        int artMeshB = -1;
+        QString artMeshIdA, artMeshIdB;
+        QVector<GluePair> pairs;
+    };
     struct Request {
         QVector<MeshEdit> meshes;
         GlueEndpointPolicy gluePolicy = GlueEndpointPolicy::Reject;
@@ -78,6 +95,7 @@ public:
     };
     static bool Analyze(const QByteArray& base, const Request& request, Impact& result, QString* error = nullptr);
     static bool Build(const QByteArray& base, const Request& request, Result& result, QString* error = nullptr);
+    static bool CaptureGlues(const QByteArray& base, QVector<GlueSnapshot>& result, QString* error = nullptr);
     static bool Clone(const QByteArray& base, const CloneRequest& request, Result& result, QString* error = nullptr);
 };
 }

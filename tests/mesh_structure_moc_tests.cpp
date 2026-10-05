@@ -111,6 +111,49 @@ class MocMeshStructureTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void capturesGlueTopologyAndRejectsInvalidWeightsAtomically()
+    {
+        const auto original = source("Rice");
+        QVERIFY(!original.isEmpty());
+        auto reader = CReader::FromBytes(original);
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        QVERIFY(!table.glue.isEmpty());
+        QVector<Builder::GlueSnapshot> captured{{-1, QStringLiteral("sentinel"), -1, -1, {}, {}, {}}};
+        QString error;
+        QVERIFY2(Builder::CaptureGlues(original, captured, &error), qPrintable(error));
+        QCOMPARE(captured.size(), table.glue.size());
+        for (int index = 0; index < captured.size(); ++index) {
+            const auto* glue = table.glue[index];
+            QCOMPARE(captured[index].index, index);
+            QCOMPARE(captured[index].id, glue->ids);
+            QCOMPARE(captured[index].artMeshA, glue->art_mesh_indices_a);
+            QCOMPARE(captured[index].artMeshB, glue->art_mesh_indices_b);
+            QCOMPARE(captured[index].artMeshIdA, table.art_meshes[glue->art_mesh_indices_a]->ids);
+            QCOMPARE(captured[index].artMeshIdB, table.art_meshes[glue->art_mesh_indices_b]->ids);
+            QCOMPARE(captured[index].pairs.size(), glue->glue_info_sources_counts / 2);
+            for (int pair = 0; pair < captured[index].pairs.size(); ++pair) {
+                const auto* a = table.glue_info[glue->glue_info_sources_begin_indices + pair * 2];
+                const auto* b = table.glue_info[glue->glue_info_sources_begin_indices + pair * 2 + 1];
+                QCOMPARE(captured[index].pairs[pair].a.vertex, a->position_indices);
+                QCOMPARE(captured[index].pairs[pair].a.weight, a->weights);
+                QCOMPARE(captured[index].pairs[pair].b.vertex, b->position_indices);
+                QCOMPARE(captured[index].pairs[pair].b.weight, b->weights);
+            }
+        }
+
+        QByteArray invalid = original;
+        const auto weightsOffset = table.sectionOffsetTable->glue_info->weights;
+        QVERIFY(weightsOffset >= 0);
+        qToLittleEndian<quint32>(0x7fc00000u, invalid.data() + weightsOffset);
+        const auto before = captured;
+        QVERIFY(!Builder::CaptureGlues(invalid, captured, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(captured.size(), before.size());
+        QCOMPARE(captured.first().id, before.first().id);
+        QCOMPARE(captured.first().pairs, before.first().pairs);
+    }
+
     void repeatedWideEditsReuseEveryPoolWithoutChangingOtherOwners()
     {
         WideMeshData::Fixture fixture;
