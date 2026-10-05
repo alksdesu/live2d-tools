@@ -361,6 +361,9 @@ private slots:
         GetterState state; state.drawableCount = 3; state.flags.fill(Core::csmIsDoubleSided);
         if (blend == 1) state.flags[2] |= Core::csmBlendAdditive;
         if (blend == 2) state.flags[2] |= Core::csmBlendMultiplicative;
+#if LIVE2D_CORE_API_VERSION >= 6
+        state.blendModes[2] = blend;
+#endif
         if (inverted) state.flags[2] |= Core::csmIsInvertedMask;
         state.maskCounts = {0, 0, 1}; state.masks[2] = {0, 0};
         state.dynamicFlags.fill(Core::csmIsVisible); state.drawableOpacities.fill(.9f);
@@ -449,6 +452,9 @@ private slots:
         QFETCH(QString, mode);
         GetterState state; state.drawableCount = 3; state.maskCounts = {0, 0, 0};
         state.flags.fill(Core::csmIsDoubleSided | Core::csmBlendAdditive);
+#if LIVE2D_CORE_API_VERSION >= 6
+        state.blendModes[2] = Core::csmColorBlendType_AddCompatible;
+#endif
         auto model = Model(state); auto renderer = Renderer(); auto& gl = Gl(renderer);
         QVERIFY(gl.setGlOwningContext(&m_context)); QVERIFY(gl.Initialize(model.get()));
         gl.SetModelColor(1, 1, 1, 0.5f);
@@ -777,6 +783,9 @@ private slots:
         state.flags.fill(Core::csmIsDoubleSided);
         if (blend == 1) state.flags[2] |= Core::csmBlendAdditive;
         if (blend == 2) state.flags[2] |= Core::csmBlendMultiplicative;
+#if LIVE2D_CORE_API_VERSION >= 6
+        state.blendModes[2] = blend;
+#endif
         if (mask == 2) state.flags[2] |= Core::csmIsInvertedMask;
         state.positions[1] = state.positions[0];
         state.dynamicFlags.fill(Core::csmIsVisible | Core::csmVertexPositionsDidChange);

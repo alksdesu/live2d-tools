@@ -34,7 +34,7 @@ struct GetterState
     std::array<Core::csmFlags, 3> dynamicFlags{{Core::csmIsVisible, Core::csmIsVisible, Core::csmIsVisible}};
     std::array<int, 3> textures{{0, 1, 2}}, drawOrders{{0, 1, 2}};
     std::array<int, 5> renderOrders{{0, 1, 2, 3, 4}};
-    std::array<int, 3> blendModes{{0, 2, 1}};
+    std::array<int, 3> blendModes{{0, 2, 0}};
     std::array<int, 2> partOffscreens{{-1, -1}}, offscreenOwners{{0, 1}}, offscreenBlendModes{{0, 2}}, offscreenMaskCounts{{0, 1}};
     std::array<float, 2> offscreenOpacities{{1, .5f}};
     std::array<Core::csmFlags, 2> offscreenFlags{{0, Core::csmIsInvertedMask}};
