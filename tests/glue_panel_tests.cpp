@@ -5,6 +5,7 @@
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QIODevice>
+#include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QtTest>
@@ -37,6 +38,8 @@ private slots:
         auto* weightA = panel.findChild<QDoubleSpinBox*>(QStringLiteral("glueWeightA"));
         auto* apply = panel.findChild<QPushButton*>(QStringLiteral("applyGlueWeights"));
         QVERIFY(selector && table && weightA && apply);
+        QCOMPARE(table->accessibleName(), QStringLiteral("Glue 配对列表"));
+        QCOMPARE(panel.findChild<QLabel*>(QStringLiteral("glueStatus"))->accessibleName(), QStringLiteral("Glue 状态"));
         QVERIFY(selector->count() > 0); QVERIFY(table->rowCount() > 0);
         const float original = panel.CurrentGlues().first().pairs.first().a.weight;
         apply->click();

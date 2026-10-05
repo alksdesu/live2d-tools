@@ -42,6 +42,7 @@ CGluePanel::CGluePanel(QWidget* parent) : QDockWidget(QStringLiteral("Glue"), pa
     layout->addWidget(m_glueSelector);
     m_pairTable = new QTableWidget(content);
     m_pairTable->setObjectName(QStringLiteral("gluePairs"));
+    m_pairTable->setAccessibleName(QStringLiteral("Glue 配对列表"));
     m_pairTable->setColumnCount(5);
     m_pairTable->setHorizontalHeaderLabels({QStringLiteral("配对"), QStringLiteral("A 顶点"), QStringLiteral("A 权重"),
                                            QStringLiteral("B 顶点"), QStringLiteral("B 权重")});
@@ -77,6 +78,7 @@ CGluePanel::CGluePanel(QWidget* parent) : QDockWidget(QStringLiteral("Glue"), pa
     layout->addLayout(actions);
     m_statusLabel = new QLabel(content);
     m_statusLabel->setObjectName(QStringLiteral("glueStatus"));
+    m_statusLabel->setAccessibleName(QStringLiteral("Glue 状态"));
     m_statusLabel->setTextFormat(Qt::PlainText); m_statusLabel->setWordWrap(true);
     layout->addWidget(m_statusLabel);
     setWidget(content);
@@ -137,7 +139,7 @@ void CGluePanel::RefreshEditor()
         m_editor.Reset();
         m_glueSelector->clear(); m_pairTable->setRowCount(0); m_emptyLabel->show();
         m_glueSelector->setEnabled(false); m_pairTable->setEnabled(false);
-        m_applyButton->setEnabled(false); RejectEdit(error); return;
+        m_applyButton->setEnabled(false); RefreshWeightControls(); RejectEdit(error); return;
     }
     m_initializedDocument = m_document;
     m_initializedSourceDigest = sourceDigest;
