@@ -23,10 +23,10 @@ void put(QByteArray& bytes, int offset, int value) { qToLittleEndian(qint32(valu
 QByteArray extendedMetadata(QByteArray bytes)
 {
     const int canvas = word(bytes, 0x44), header = word(bytes, 0x40);
-    bytes.insert(canvas, QByteArray(64, '\0'));
+    bytes.insert(canvas, QByteArray(128, '\0'));
     for (int slot = 0x40; slot < header; slot += 4) {
         const int offset = word(bytes, slot);
-        if (offset >= canvas) put(bytes, slot, offset + 64);
+        if (offset >= canvas) put(bytes, slot, offset + 128);
     }
     return bytes;
 }
@@ -315,7 +315,7 @@ private slots:
         CSectionTable table(reader);
         QVERIFY(table.IsValid());
         const auto spans = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
-        QCOMPARE(spans.size(), 147);
+        QCOMPARE(spans.size(), CSectionValidation::KnownOffsetCount(5) - 2);
         QSet<int> indices;
         Builder::ColumnState state;
         state.counts.insert(32, 17);
@@ -326,6 +326,7 @@ private slots:
             QVERIFY(!indices.contains(span.slot));
             indices.insert(span.slot);
             if (span.slot < 0x264) continue;
+            if (!span.count && span.slot >= 0x294) continue;
             QByteArray values(state.counts.value(span.countIndex, span.count) * 4, '\0');
             for (int index = 0; index < values.size() / 4; ++index) put(values, index * 4, span.slot == 0x288 ? 0 : index);
             state.columns.insert(span.slot, values);

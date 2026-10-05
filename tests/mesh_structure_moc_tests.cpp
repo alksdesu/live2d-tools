@@ -79,10 +79,10 @@ QByteArray versionFive(QByteArray bytes)
     if (bytes.size() < 0x840 || bytes[4] != 3)
         return { };
     const int counts = get(0x40), canvas = get(0x44);
-    bytes.insert(canvas, QByteArray(64, '\0'));
+    bytes.insert(canvas, QByteArray(128, '\0'));
     for (int slot = 0x40; slot < counts; slot += 4)
         if (get(slot) >= canvas)
-            put(slot, get(slot) + 64);
+            put(slot, get(slot) + 128);
     bytes[4] = 5;
     put(counts + 32 * 4, 0);
     put(counts + 33 * 4, 0);

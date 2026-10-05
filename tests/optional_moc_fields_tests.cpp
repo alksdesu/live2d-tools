@@ -1,8 +1,10 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
+#include "live2dstruct/csectionvalidation.h"
 
 #include <QtTest>
 #include <QtEndian>
+#include <algorithm>
 #include <array>
 
 using namespace live2dstruct;
@@ -89,6 +91,25 @@ private slots:
         QVERIFY(reader.IsValid());
         reader.m_byte[4] = char(6);
         QVERIFY(reader.IsMoc3());
+    }
+
+    void versionSixSectionsExposeOffscreenColumns()
+    {
+        const QString path = qEnvironmentVariable("LIVE2D_TEST_V6_MOC");
+        if (path.isEmpty()) QSKIP("LIVE2D_TEST_V6_MOC is not configured");
+        CReader reader(path);
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        QCOMPARE(table.sectionOffsetTable->mocVersion, 6);
+        QCOMPARE(table.count_info->blend_shapes_glues, 0);
+        QCOMPARE(table.count_info->offscreens, 24);
+        QCOMPARE(table.count_info->offscreen_keyforms, 27);
+        QCOMPARE(table.count_info->blend_shapes_offscreens, 0);
+        const auto spans = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
+        QCOMPARE(spans.size(), CSectionValidation::KnownOffsetCount(6) - 2);
+        QVERIFY(std::any_of(spans.cbegin(), spans.cend(), [](const auto& span) {
+            return QByteArray(span.name) == QByteArrayLiteral("offscreens.owner_indices");
+        }));
     }
 
     void originalWarpFlagsRespectMissingAndPresentArrays_data()

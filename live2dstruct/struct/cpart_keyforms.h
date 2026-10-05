@@ -10,6 +10,7 @@ public:
     class Offset{
     public:
         int draw_orders;
+        int offscreen_key_indices = 0;
 
         Offset(CReader& bytes) {
             draw_orders = bytes.readInt();

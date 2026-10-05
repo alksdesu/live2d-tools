@@ -43,6 +43,34 @@
 
 
 namespace live2dstruct {
+struct COffscreensOffset
+{
+    int drawable_mask_runtime = 0;
+    int owner_indices = 0;
+    int drawable_flags = 0;
+    int blend_modes = 0;
+    int mask_sources_begin_indices = 0;
+    int mask_sources_counts = 0;
+
+    COffscreensOffset() = default;
+    explicit COffscreensOffset(CReader& bytes)
+        : drawable_mask_runtime(bytes.readInt()), owner_indices(bytes.readInt()),
+          drawable_flags(bytes.readInt()), blend_modes(bytes.readInt()),
+          mask_sources_begin_indices(bytes.readInt()), mask_sources_counts(bytes.readInt()) {}
+};
+
+struct COffscreenKeyformsOffset
+{
+    int opacities = 0;
+    int multiply_color_sources_indices = 0;
+    int screen_color_sources_indices = 0;
+
+    COffscreenKeyformsOffset() = default;
+    explicit COffscreenKeyformsOffset(CReader& bytes)
+        : opacities(bytes.readInt()), multiply_color_sources_indices(bytes.readInt()),
+          screen_color_sources_indices(bytes.readInt()) {}
+};
+
 class CSectionOffsetTable
 {
 public:
@@ -87,6 +115,10 @@ public:
     CBlend_shapes_warp_deformers::Offset* blend_shapes_warp_deformers;
     CBlend_shape_targets::Offset* blend_shapes_parts;
     CBlend_shape_targets::Offset* blend_shapes_rotation_deformers;
+    CBlend_shape_targets::Offset* blend_shapes_glues;
+    COffscreensOffset* offscreens;
+    COffscreenKeyformsOffset* offscreen_keyforms;
+    CBlend_shape_targets::Offset* blend_shapes_offscreens;
     CKeyform_multiply_colors::Offset* keyform_multiply_colors;
     CKeyform_screen_colors::Offset* keyform_screen_colors;
 };

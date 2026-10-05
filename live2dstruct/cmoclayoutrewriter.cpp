@@ -118,6 +118,8 @@ bool CMocLayoutRewriter::Rewrite(const QByteArray& source, const QByteArray& can
             return fail(error, QStringLiteral("MOC 重排缺少已知区段信息"));
         QSet<int> knownSlots, emptyOpaqueMarkers;
         for (const auto& span : sourceSpans) knownSlots.insert(span.slot);
+        for (const auto& span : sourceSpans)
+            if (!span.count && span.offset == source.size()) emptyOpaqueMarkers.insert(span.slot);
         for (const auto& column : columns)
             if (column.slot >= 0x48 && !knownSlots.contains(column.slot) &&
                 column.sourceOffset == source.size() && !relocatedColumnByteSizes.contains(column.slot))

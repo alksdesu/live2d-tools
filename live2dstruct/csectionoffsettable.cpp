@@ -57,9 +57,24 @@ CSectionOffsetTable::CSectionOffsetTable(CReader &bytes)
         art_mesh_keyforms->ReadColorOffsets(bytes);
         blend_shapes_parts = new CBlend_shape_targets::Offset(bytes);
         blend_shapes_rotation_deformers = new CBlend_shape_targets::Offset(bytes);
+        blend_shapes_glues = new CBlend_shape_targets::Offset(bytes);
     } else {
         blend_shapes_parts = new CBlend_shape_targets::Offset();
         blend_shapes_rotation_deformers = new CBlend_shape_targets::Offset();
+        blend_shapes_glues = new CBlend_shape_targets::Offset();
+    }
+
+    if (mocVersion >= 6) {
+        parts->offscreen_indices = bytes.readInt();
+        art_meshes->blend_modes = bytes.readInt();
+        offscreens = new COffscreensOffset(bytes);
+        part_keyforms->offscreen_key_indices = bytes.readInt();
+        offscreen_keyforms = new COffscreenKeyformsOffset(bytes);
+        blend_shapes_offscreens = new CBlend_shape_targets::Offset(bytes);
+    } else {
+        offscreens = new COffscreensOffset();
+        offscreen_keyforms = new COffscreenKeyformsOffset();
+        blend_shapes_offscreens = new CBlend_shape_targets::Offset();
     }
 
 
@@ -101,6 +116,10 @@ CSectionOffsetTable::~CSectionOffsetTable()
     delete blend_shapes_warp_deformers;
     delete blend_shapes_parts;
     delete blend_shapes_rotation_deformers;
+    delete blend_shapes_glues;
+    delete offscreens;
+    delete offscreen_keyforms;
+    delete blend_shapes_offscreens;
     delete keyform_multiply_colors;
     delete keyform_screen_colors;
 

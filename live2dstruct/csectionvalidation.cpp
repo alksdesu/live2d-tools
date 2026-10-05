@@ -18,9 +18,9 @@ struct Count
     const void* offsets;
 };
 
-std::array<Count, 34> arrayCounts(const CSectionOffsetTable& offsets, const CCount_info& info)
+std::array<Count, 38> arrayCounts(const CSectionOffsetTable& offsets, const CCount_info& info)
 {
-    const std::array<Count, 34> counts{{
+    const std::array<Count, 38> counts{{
         {"parts", info.parts, offsets.parts},
         {"deformers", info.deformers, offsets.deformers},
         {"warp_deformers", info.warp_deformers, offsets.warp_deformers},
@@ -55,6 +55,10 @@ std::array<Count, 34> arrayCounts(const CSectionOffsetTable& offsets, const CCou
         {"blend_shape_constraint_values", info.blend_shape_constraint_values, offsets.blend_shape_constraint_values},
         {"blend_shapes_parts", info.blend_shapes_parts, offsets.blend_shapes_parts},
         {"blend_shapes_rotation_deformers", info.blend_shapes_rotation_deformers, offsets.blend_shapes_rotation_deformers},
+        {"blend_shapes_glues", info.blend_shapes_glues, offsets.blend_shapes_glues},
+        {"offscreens", info.offscreens, offsets.offscreens},
+        {"offscreen_keyforms", info.offscreen_keyforms, offsets.offscreen_keyforms},
+        {"blend_shapes_offscreens", info.blend_shapes_offscreens, offsets.blend_shapes_offscreens},
     }};
     return counts;
 }
@@ -249,6 +253,26 @@ QVector<CSectionValidation::ColumnSpan> CSectionValidation::ArraySpans(
         result.append({"blend_shapes_rotation_deformers.target_indices", offsets.blend_shapes_rotation_deformers->target_indices, info.blend_shapes_rotation_deformers, 4, false, 0x288});
         result.append({"blend_shapes_rotation_deformers.blend_shape_keyform_binding_sources_begin_indices", offsets.blend_shapes_rotation_deformers->blend_shape_keyform_binding_sources_begin_indices, info.blend_shapes_rotation_deformers, 4, false, 0x28c});
         result.append({"blend_shapes_rotation_deformers.blend_shape_keyform_binding_sources_counts", offsets.blend_shapes_rotation_deformers->blend_shape_keyform_binding_sources_counts, info.blend_shapes_rotation_deformers, 4, false, 0x290});
+        result.append({"blend_shapes_glues.target_indices", offsets.blend_shapes_glues->target_indices, info.blend_shapes_glues, 4, false, 0x294});
+        result.append({"blend_shapes_glues.blend_shape_keyform_binding_sources_begin_indices", offsets.blend_shapes_glues->blend_shape_keyform_binding_sources_begin_indices, info.blend_shapes_glues, 4, false, 0x298});
+        result.append({"blend_shapes_glues.blend_shape_keyform_binding_sources_counts", offsets.blend_shapes_glues->blend_shape_keyform_binding_sources_counts, info.blend_shapes_glues, 4, false, 0x29c});
+    }
+    if (offsets.mocVersion >= 6) {
+        result.append({"parts.offscreen_indices", offsets.parts->offscreen_indices, info.parts, 4, false, 0x2a0});
+        result.append({"art_meshes.blend_modes", offsets.art_meshes->blend_modes, info.art_meshes, 4, false, 0x2a4});
+        result.append({"offscreens.drawable_mask_runtime", offsets.offscreens->drawable_mask_runtime, info.offscreens, 4, false, 0x2a8});
+        result.append({"offscreens.owner_indices", offsets.offscreens->owner_indices, info.offscreens, 4, false, 0x2ac});
+        result.append({"offscreens.drawable_flags", offsets.offscreens->drawable_flags, info.offscreens, 1, false, 0x2b0});
+        result.append({"offscreens.blend_modes", offsets.offscreens->blend_modes, info.offscreens, 4, false, 0x2b4});
+        result.append({"offscreens.mask_sources_begin_indices", offsets.offscreens->mask_sources_begin_indices, info.offscreens, 4, false, 0x2b8});
+        result.append({"offscreens.mask_sources_counts", offsets.offscreens->mask_sources_counts, info.offscreens, 4, false, 0x2bc});
+        result.append({"part_keyforms.offscreen_key_indices", offsets.part_keyforms->offscreen_key_indices, info.part_keyforms, 4, false, 0x2c0});
+        result.append({"offscreen_keyforms.opacities", offsets.offscreen_keyforms->opacities, info.offscreen_keyforms, 4, false, 0x2c4});
+        result.append({"offscreen_keyforms.multiply_color_sources_indices", offsets.offscreen_keyforms->multiply_color_sources_indices, info.offscreen_keyforms, 4, false, 0x2c8});
+        result.append({"offscreen_keyforms.screen_color_sources_indices", offsets.offscreen_keyforms->screen_color_sources_indices, info.offscreen_keyforms, 4, false, 0x2cc});
+        result.append({"blend_shapes_offscreens.target_indices", offsets.blend_shapes_offscreens->target_indices, info.blend_shapes_offscreens, 4, false, 0x2d0});
+        result.append({"blend_shapes_offscreens.blend_shape_keyform_binding_sources_begin_indices", offsets.blend_shapes_offscreens->blend_shape_keyform_binding_sources_begin_indices, info.blend_shapes_offscreens, 4, false, 0x2d4});
+        result.append({"blend_shapes_offscreens.blend_shape_keyform_binding_sources_counts", offsets.blend_shapes_offscreens->blend_shape_keyform_binding_sources_counts, info.blend_shapes_offscreens, 4, false, 0x2d8});
     }
     const auto counts = arrayCounts(offsets, info);
     for (auto& column : result) {

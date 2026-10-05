@@ -53,6 +53,12 @@ public:
         if (bytes.m_byte.size() > 4 && quint8(bytes.m_byte[4]) >= 5) {
             blend_shapes_parts = bytes.readInt();
             blend_shapes_rotation_deformers = bytes.readInt();
+            blend_shapes_glues = bytes.readInt();
+        }
+        if (bytes.m_byte.size() > 4 && quint8(bytes.m_byte[4]) >= 6) {
+            offscreens = bytes.readInt();
+            offscreen_keyforms = bytes.readInt();
+            blend_shapes_offscreens = bytes.readInt();
         }
     }
 
@@ -93,6 +99,10 @@ public:
     int keyform_screen_colors;
     int blend_shapes_parts = 0;
     int blend_shapes_rotation_deformers = 0;
+    int blend_shapes_glues = 0;
+    int offscreens = 0;
+    int offscreen_keyforms = 0;
+    int blend_shapes_offscreens = 0;
 };
 }
 

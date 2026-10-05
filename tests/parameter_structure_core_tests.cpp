@@ -249,9 +249,9 @@ private slots:
         QVERIFY(table.IsValid());
         const auto spans = CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info);
         if (table.sectionOffsetTable->mocVersion < 5) { QCOMPARE(spans.size(), 135); return; }
-        QCOMPARE(spans.size(), 147);
-        QVERIFY(!table.blend_shapes_parts.empty());
-        QVERIFY(!table.blend_shapes_rotation_deformers.empty());
+        QCOMPARE(spans.size(), CSectionValidation::KnownOffsetCount(table.sectionOffsetTable->mocVersion) - 2);
+        if (table.count_info->blend_shapes_parts > 0) QVERIFY(!table.blend_shapes_parts.empty());
+        if (table.count_info->blend_shapes_rotation_deformers > 0) QVERIFY(!table.blend_shapes_rotation_deformers.empty());
         Builder::ColumnState state;
         for (int countIndex : {32, 33}) {
             for (const auto& span : spans) if (span.countIndex == countIndex) {

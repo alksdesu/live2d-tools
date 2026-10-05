@@ -19,7 +19,7 @@
 namespace live2dstruct {
 
 namespace {
-constexpr int StructureCountFields = 34;
+constexpr int StructureCountFields = 64;
 constexpr int MaximumBlendShapeGeometryEntries = 100000;
 constexpr int MaximumBlendShapeGeometryDeltas = 2000000;
 constexpr int MaximumAnimationScenes = 128;

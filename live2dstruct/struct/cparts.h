@@ -16,6 +16,7 @@ public:
         int is_visible;
         int is_enabled;
         int parent_part_indices;
+        int offscreen_indices = 0;
         Offset(CReader& reader){
             runtime_space_0 =reader.readInt();
             ids=reader.readInt();

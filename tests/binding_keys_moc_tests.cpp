@@ -113,11 +113,11 @@ QByteArray v5(const QByteArray& bytes)
 {
     auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
     if (!table.IsValid()) return {};
-    QByteArray result(0x3c0, '\0');
+    QByteArray result(0x440, '\0');
     result.replace(0, 0x40, bytes.left(0x40)); result[4] = 5;
-    put(result, 0x40, 0x2c0); put(result, 0x44, 0x380);
-    result.replace(0x2c0, 128, bytes.mid(table.sectionOffsetTable->count_info->count_info_offset, 128));
-    result.replace(0x380, 20, bytes.mid(qFromLittleEndian<qint32>(bytes.constData() + 0x44), 20));
+    put(result, 0x40, 0x2c0); put(result, 0x44, 0x3c0);
+    result.replace(0x2c0, 256, bytes.mid(table.sectionOffsetTable->count_info->count_info_offset, 128) + QByteArray(128, '\0'));
+    result.replace(0x3c0, 20, bytes.mid(qFromLittleEndian<qint32>(bytes.constData() + 0x44), 20));
     for (auto span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
         if (!span.offset || !span.count) continue;
         span.width = CSectionValidation::StorageWidth(span);

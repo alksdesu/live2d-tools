@@ -28,6 +28,7 @@ public:
         int position_index_sources_counts;
         int drawable_mask_sources_begin_indices;
         int drawable_mask_sources_counts;
+        int blend_modes = 0;
 
         Offset(CReader& bytes) {
             runtime_space_0 = bytes.readInt();
