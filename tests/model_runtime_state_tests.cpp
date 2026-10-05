@@ -111,6 +111,41 @@ private slots:
         QVERIFY(allocations.empty());
     }
 
+    void offscreenGettersPreserveRuntimeArrays()
+    {
+        auto model = create();
+        auto& state = State(model->GetModel());
+        state.offscreenCount = 2;
+#if LIVE2D_CORE_API_VERSION >= 6
+        QCOMPARE(model->GetOffscreenCount(), state.offscreenCount);
+        QCOMPARE(model->GetOffscreenRenderOrders(), state.renderOrders.data() + state.drawableCount);
+        QCOMPARE(model->GetPartOffscreenIndices(), state.partOffscreens.data());
+        QCOMPARE(model->GetOffscreenOwnerIndices(), state.offscreenOwners.data());
+        QCOMPARE(model->GetOffscreenBlendModes(), state.offscreenBlendModes.data());
+        QCOMPARE(model->GetOffscreenOpacities(), state.offscreenOpacities.data());
+        QCOMPARE(model->GetOffscreenConstantFlags(), state.offscreenFlags.data());
+        QCOMPARE(model->GetOffscreenMaskCounts(), state.offscreenMaskCounts.data());
+        QCOMPARE(model->GetOffscreenMasks(), state.offscreenMaskPointers.data());
+        QCOMPARE(model->GetOffscreenMultiplyColors(), state.offscreenMultiply.data());
+        QCOMPARE(model->GetOffscreenScreenColors(), state.offscreenScreen.data());
+        state.nullGetters = {"csmGetDrawableRenderOrders", "csmGetPartOffscreenIndices", "csmGetOffscreenOwnerIndices",
+            "csmGetOffscreenBlendModes", "csmGetOffscreenOpacities", "csmGetOffscreenConstantFlags",
+            "csmGetOffscreenMaskCounts", "csmGetOffscreenMasks", "csmGetOffscreenMultiplyColors", "csmGetOffscreenScreenColors"};
+#else
+        QCOMPARE(model->GetOffscreenCount(), 0);
+#endif
+        QCOMPARE(model->GetOffscreenRenderOrders(), nullptr);
+        QCOMPARE(model->GetPartOffscreenIndices(), nullptr);
+        QCOMPARE(model->GetOffscreenOwnerIndices(), nullptr);
+        QCOMPARE(model->GetOffscreenBlendModes(), nullptr);
+        QCOMPARE(model->GetOffscreenOpacities(), nullptr);
+        QCOMPARE(model->GetOffscreenConstantFlags(), nullptr);
+        QCOMPARE(model->GetOffscreenMaskCounts(), nullptr);
+        QCOMPARE(model->GetOffscreenMasks(), nullptr);
+        QCOMPARE(model->GetOffscreenMultiplyColors(), nullptr);
+        QCOMPARE(model->GetOffscreenScreenColors(), nullptr);
+    }
+
     void structureReordersValuesAndPreservesSparseSavedState()
     {
         auto source = create();

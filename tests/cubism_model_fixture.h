@@ -17,7 +17,7 @@ struct GetterState
     GetterState(const GetterState&) = delete;
     GetterState& operator=(const GetterState&) = delete;
 
-    int parameterCount = 2, partCount = 2, drawableCount = 2;
+    int parameterCount = 2, partCount = 2, drawableCount = 2, offscreenCount = 0;
     std::array<const char*, 4> parameterIds{{"ParamA", "ParamB", "ParamC", "ParamD"}};
     std::array<const char*, 2> partIds{{"PartA", "PartB"}};
     std::array<const char*, 3> drawableIds{{"MeshA", "MeshB", "MeshC"}};
@@ -32,8 +32,16 @@ struct GetterState
     std::array<float, 3> drawableOpacities{{0.9f, 0.8f, 1}};
     std::array<Core::csmFlags, 3> flags{{Core::csmIsDoubleSided, Core::csmBlendMultiplicative | Core::csmIsInvertedMask, 0}};
     std::array<Core::csmFlags, 3> dynamicFlags{{Core::csmIsVisible, Core::csmIsVisible, Core::csmIsVisible}};
-    std::array<int, 3> textures{{0, 1, 2}}, drawOrders{{0, 1, 2}}, renderOrders{{0, 1, 2}};
+    std::array<int, 3> textures{{0, 1, 2}}, drawOrders{{0, 1, 2}};
+    std::array<int, 5> renderOrders{{0, 1, 2, 3, 4}};
     std::array<int, 3> blendModes{{0, 2, 1}};
+    std::array<int, 2> partOffscreens{{-1, -1}}, offscreenOwners{{0, 1}}, offscreenBlendModes{{0, 2}}, offscreenMaskCounts{{0, 1}};
+    std::array<float, 2> offscreenOpacities{{1, .5f}};
+    std::array<Core::csmFlags, 2> offscreenFlags{{0, Core::csmIsInvertedMask}};
+    std::array<std::array<int, 1>, 2> offscreenMasks{{{{0}}, {{1}}}};
+    std::array<const int*, 2> offscreenMaskPointers{{offscreenMasks[0].data(), offscreenMasks[1].data()}};
+    std::array<Core::csmVector4, 2> offscreenMultiply{{{1, 1, 1, 1}, {.8f, .7f, .6f, 1}}};
+    std::array<Core::csmVector4, 2> offscreenScreen{{{0, 0, 0, 0}, {.1f, .2f, .3f, 0}}};
     std::array<int, 3> vertexCounts{{4, 4, 4}}, indexCounts{{6, 6, 6}}, maskCounts{{0, 1, 0}};
     std::array<std::array<unsigned short, 6>, 3> indices{{{{0, 1, 2, 0, 2, 3}}, {{0, 1, 2, 0, 2, 3}}, {{0, 1, 2, 0, 2, 3}}}};
     std::array<const unsigned short*, 3> indexPointers{{indices[0].data(), indices[1].data(), indices[2].data()}};

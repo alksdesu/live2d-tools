@@ -38,6 +38,15 @@ CORE_ARRAY_GETTER(const int*, csmGetDrawableDrawOrders, drawOrders)
 CORE_ARRAY_GETTER(const int*, csmGetDrawableRenderOrders, renderOrders)
 #if LIVE2D_CORE_API_VERSION >= 6
 CORE_ARRAY_GETTER(const int*, csmGetDrawableBlendModes, blendModes)
+CORE_ARRAY_GETTER(const int*, csmGetPartOffscreenIndices, partOffscreens)
+CORE_ARRAY_GETTER(const int*, csmGetOffscreenOwnerIndices, offscreenOwners)
+CORE_ARRAY_GETTER(const int*, csmGetOffscreenBlendModes, offscreenBlendModes)
+CORE_ARRAY_GETTER(const float*, csmGetOffscreenOpacities, offscreenOpacities)
+CORE_ARRAY_GETTER(const csmFlags*, csmGetOffscreenConstantFlags, offscreenFlags)
+CORE_ARRAY_GETTER(const int*, csmGetOffscreenMaskCounts, offscreenMaskCounts)
+CORE_ARRAY_GETTER(const int**, csmGetOffscreenMasks, offscreenMaskPointers)
+CORE_ARRAY_GETTER(const csmVector4*, csmGetOffscreenMultiplyColors, offscreenMultiply)
+CORE_ARRAY_GETTER(const csmVector4*, csmGetOffscreenScreenColors, offscreenScreen)
 #endif
 CORE_ARRAY_GETTER(const float*, csmGetDrawableOpacities, drawableOpacities)
 CORE_ARRAY_GETTER(const int*, csmGetDrawableMaskCounts, maskCounts)
@@ -53,6 +62,9 @@ CORE_ARRAY_GETTER(const csmVector4*, csmGetDrawableScreenColors, screen)
 int csmCallingConvention csmGetParameterCount(const csmModel* model) { return CubismModelFixture::State(model).parameterCount; }
 int csmCallingConvention csmGetPartCount(const csmModel* model) { return CubismModelFixture::State(model).partCount; }
 int csmCallingConvention csmGetDrawableCount(const csmModel* model) { return CubismModelFixture::State(model).drawableCount; }
+#if LIVE2D_CORE_API_VERSION >= 6
+int csmCallingConvention csmGetOffscreenCount(const csmModel* model) { return CubismModelFixture::State(model).offscreenCount; }
+#endif
 float* csmCallingConvention csmGetParameterValues(csmModel* model) { return CubismModelFixture::State(model).values.data(); }
 float* csmCallingConvention csmGetPartOpacities(csmModel* model) { return CubismModelFixture::State(model).partOpacities.data(); }
 void csmCallingConvention csmReadCanvasInfo(const csmModel* model, csmVector2* size, csmVector2* origin, float* ppu)
