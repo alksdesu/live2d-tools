@@ -73,6 +73,31 @@ QString digest(const QByteArray& bytes)
     return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
 }
 
+int nonTransparentPixels(const QImage& image)
+{
+    const QImage normalized = image.convertToFormat(QImage::Format_RGBA8888);
+    int count = 0;
+    for (int y = 0; y < normalized.height(); ++y)
+        for (int x = 0; x < normalized.width(); ++x)
+            count += qAlpha(normalized.pixel(x, y)) ? 1 : 0;
+    return count;
+}
+
+QVector<int> channelMaximums(const QImage& image)
+{
+    const QImage normalized = image.convertToFormat(QImage::Format_RGBA8888);
+    QVector<int> result(4);
+    for (int y = 0; y < normalized.height(); ++y)
+        for (int x = 0; x < normalized.width(); ++x) {
+            const QRgb pixel = normalized.pixel(x, y);
+            result[0] = std::max(result[0], qRed(pixel));
+            result[1] = std::max(result[1], qGreen(pixel));
+            result[2] = std::max(result[2], qBlue(pixel));
+            result[3] = std::max(result[3], qAlpha(pixel));
+        }
+    return result;
+}
+
 class CoreScene
 {
 public:
@@ -145,10 +170,10 @@ bool matrixFor(Core::csmModel* model, const QSize& size, std::array<float, 16>& 
         return false;
     }
     const std::array<double, 4> values{
-        2.0 * double(pixelsPerUnit) / size.width(),
-        2.0 * double(pixelsPerUnit) / size.height(),
-        2.0 * double(origin.X) / size.width() - 1.0,
-        1.0 - 2.0 * double(origin.Y) / size.height()};
+        2.0 * double(pixelsPerUnit) / double(canvas.X),
+        2.0 * double(pixelsPerUnit) / double(canvas.Y),
+        2.0 * double(origin.X) / double(canvas.X) - 1.0,
+        1.0 - 2.0 * double(origin.Y) / double(canvas.Y)};
     matrix.fill(0.0f);
     matrix[0] = float(values[0]);
     matrix[5] = float(values[1]);
@@ -286,6 +311,13 @@ class RealCoreRendererTests : public QObject
         fixture.model = new CubismModel(fixture.source.value());
         fixture.model->Initialize();
         fixture.model->InitMesh();
+        {
+            Core::csmVector2 canvas{}, origin{};
+            float ppu = 0;
+            Core::csmReadCanvasInfo(fixture.source.value(), &canvas, &origin, &ppu);
+            qInfo() << "Ren canvas" << canvas.X << canvas.Y << "origin" << origin.X << origin.Y << "ppu" << ppu;
+            qInfo() << "Ren MVP" << QVector<float>(fixture.matrix.cbegin(), fixture.matrix.cend());
+        }
         fixture.renderer.reset(static_cast<CubismRenderer_OpenGLES2*>(CubismRenderer::Create()));
         if (!fixture.renderer || !fixture.renderer->setGlOwningContext(context.get()) ||
             !fixture.renderer->Initialize(fixture.model)) {
@@ -395,6 +427,9 @@ private slots:
         QVERIFY2(prepare(fixture, QSize(256, 256), &error), qPrintable(error));
         const QImage first = renderFrame(fixture, &error);
         QVERIFY2(!first.isNull(), qPrintable(error));
+        const int visiblePixels = nonTransparentPixels(first);
+        qInfo() << "Ren frame maxima RGBA:" << channelMaximums(first);
+        QVERIFY(visiblePixels > 0);
         const QString firstHash = digest(first);
         const QImage second = renderFrame(fixture, &error);
         QVERIFY2(!second.isNull(), qPrintable(error));
@@ -402,7 +437,8 @@ private slots:
         QCOMPARE(firstHash, secondHash);
         qInfo().noquote() << "Ren frame SHA-256:" << firstHash
                           << "drawables:" << fixture.model->GetDrawableCount()
-                          << "offscreens:" << fixture.model->GetOffscreenCount();
+                          << "offscreens:" << fixture.model->GetOffscreenCount()
+                          << "nonTransparentPixels:" << visiblePixels;
 
         QString psdPath;
         QVERIFY2(exportPsd(fixture, psdPath, &error), qPrintable(error));
