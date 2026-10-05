@@ -251,6 +251,7 @@ private:
     bool MaskSourceAvailable(csmInt32 drawable) const;
     bool IncludeHiddenForPass() const;
     bool EnsureEffectResources(csmInt32 width, csmInt32 height, csmInt32 count);
+    bool RenderEffectMask(const CubismModel& model, csmInt32 offscreenIndex);
     bool CompositeEffectSurface(const CubismModel& model, csmInt32 offscreenIndex);
 
 
@@ -264,7 +265,9 @@ private:
 
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _offscreenSurfaces;
     std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectSurfaces;
+    std::vector<std::unique_ptr<CubismOffscreenSurface_OpenGLES2>> _effectMaskSurfaces;
     std::unique_ptr<CGlMeshBuffer> _compositeMesh;
+    bool _effectMaskPass = false;
     std::vector<std::unique_ptr<CGlMeshBuffer>> _meshBuffers;
     quint64 _maskIndicesRevision = 0;
     bool _forceMaskRedraw = false;

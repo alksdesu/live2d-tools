@@ -143,10 +143,30 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForMask(CubismRenderer_OpenGLES2*
     return gl->glGetError() == GL_NO_ERROR;
 }
 
+bool CubismShader_OpenGLES2::SetupShaderProgramForOffscreenMask(
+    CubismRenderer_OpenGLES2* renderer, const CubismModel& model, csmInt32 index)
+{
+    if (!renderer || index < 0 || index >= model.GetDrawableCount()) return false;
+    const auto* context = renderer->owningContext();
+    if (!context) context = LAppDelegate::GetInstance()->getGlOwningContext();
+    if (!context || !Initialize(context)) return false;
+    auto* gl = functions(context);
+    const auto* program = m_programs.Get(Variant::OffscreenMask);
+    if (!gl || !program || !m_programs.Bind(Variant::OffscreenMask)) return false;
+    gl->glEnable(GL_BLEND);
+    gl->glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+    gl->glActiveTexture(GL_TEXTURE0);
+    gl->glBindTexture(GL_TEXTURE_2D, renderer->GetBindedTextureId(model.GetDrawableTextureIndex(index)));
+    gl->glUniform1i(program->sampler0, 0);
+    gl->glUniformMatrix4fv(program->matrix, 1, GL_FALSE, renderer->GetMvpMatrix().GetArray());
+    colorUniform(*gl, program->channelFlag, CubismRenderer::CubismTextureColor(1, 0, 0, 0));
+    return gl->glGetError() == GL_NO_ERROR;
+}
+
 bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
     CubismRenderer_OpenGLES2* renderer, GLuint texture, CubismRenderer::CubismBlendMode blend,
     csmFloat32 opacity, const CubismRenderer::CubismTextureColor& multiply,
-    const CubismRenderer::CubismTextureColor& screen)
+    const CubismRenderer::CubismTextureColor& screen, GLuint maskTexture, csmBool maskInvert)
 {
     if (!renderer || !texture || !std::isfinite(opacity) || opacity < 0.0f || opacity > 1.0f)
         return false;
@@ -155,7 +175,8 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
     if (!context || !Initialize(context)) return false;
     auto* gl = functions(context);
     if (!gl) return false;
-    const Variant variant = renderer->IsPremultipliedAlpha() ? Variant::Premultiplied : Variant::Straight;
+    const Variant variant = maskTexture ? Variant::CompositeMasked :
+        (renderer->IsPremultipliedAlpha() ? Variant::Premultiplied : Variant::Straight);
     const auto* program = m_programs.Get(variant);
     const auto shaderBlend = blend == CubismRenderer::CubismBlendMode_Additive ? BlendMode::Additive :
         blend == CubismRenderer::CubismBlendMode_Multiplicative ? BlendMode::Multiplicative : BlendMode::Normal;
@@ -174,6 +195,15 @@ bool CubismShader_OpenGLES2::SetupShaderProgramForComposite(
         opacity * modelColor.A));
     colorUniform(*gl, program->multiplyColor, multiply);
     colorUniform(*gl, program->screenColor, screen);
+    if (maskTexture) {
+        const auto viewport = renderer->_rendererProfile.Viewport();
+        gl->glActiveTexture(GL_TEXTURE1);
+        gl->glBindTexture(GL_TEXTURE_2D, maskTexture);
+        gl->glUniform1i(program->sampler1, 1);
+        gl->glUniform2f(program->resolution, viewport[2], viewport[3]);
+        gl->glUniform1f(program->maskInvert, maskInvert ? 1.0f : 0.0f);
+        colorUniform(*gl, program->channelFlag, CubismRenderer::CubismTextureColor(1, 0, 0, 0));
+    }
     return gl->glGetError() == GL_NO_ERROR;
 }
 }}}}

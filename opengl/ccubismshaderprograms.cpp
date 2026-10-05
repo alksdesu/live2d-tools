@@ -77,12 +77,86 @@ QByteArray fragmentSource(bool setupMask, bool masked, bool inverted, bool premu
     return source;
 }
 
+QByteArray offscreenMaskFragmentSource()
+{
+    return R"(#version 330 core
+in vec2 v_texCoord;
+uniform sampler2D s_texture0;
+uniform vec4 u_channelFlag;
+layout(location=0) out vec4 fragColor;
+void main(){ fragColor=u_channelFlag*texture(s_texture0,v_texCoord).a; }
+)";
+}
+
+QByteArray compositeMaskedFragmentSource()
+{
+    return R"(#version 330 core
+in vec2 v_texCoord;
+uniform sampler2D s_texture0;
+uniform sampler2D s_texture1;
+uniform vec4 u_baseColor;
+uniform vec4 u_multiplyColor;
+uniform vec4 u_screenColor;
+uniform vec2 u_resolution;
+uniform float u_maskInvert;
+uniform vec4 u_channelFlag;
+layout(location=0) out vec4 fragColor;
+void main(){
+  vec4 t=texture(s_texture0,v_texCoord);
+  vec3 c=t.rgb*u_multiplyColor.rgb;
+  c=c+u_screenColor.rgb*t.a-c*u_screenColor.rgb;
+  float m=dot(texture(s_texture1,gl_FragCoord.xy/u_resolution),u_channelFlag);
+  if(u_maskInvert>0.5) m=1.0-m;
+  fragColor=vec4(c,t.a)*u_baseColor.a*m;
+}
+ )";
+}
+
+QByteArray backdropCompositeFragmentSource()
+{
+    return R"(#version 330 core
+in vec2 v_texCoord;
+uniform sampler2D s_texture0;
+uniform sampler2D s_texture1;
+uniform sampler2D s_texture2;
+uniform vec4 u_baseColor;
+uniform vec4 u_multiplyColor;
+uniform vec4 u_screenColor;
+uniform vec2 u_resolution;
+uniform int u_colorMode;
+uniform int u_alphaMode;
+uniform float u_useMask;
+uniform float u_maskInvert;
+uniform vec4 u_channelFlag;
+layout(location=0) out vec4 fragColor;
+void main(){
+  vec4 t=texture(s_texture0,v_texCoord), d=texture(s_texture1,gl_FragCoord.xy/u_resolution);
+  vec3 c=t.rgb*u_multiplyColor.rgb;
+  c=c+u_screenColor.rgb*t.a-c*u_screenColor.rgb;
+  if(u_useMask>.5){float m=dot(texture(s_texture2,gl_FragCoord.xy/u_resolution),u_channelFlag);if(u_maskInvert>.5)m=1.-m;c*=m;t.a*=m;}
+  float keep=float(u_colorMode+u_alphaMode)*1e-7;
+  fragColor=mix(vec4(c,t.a)*u_baseColor.a,d,1e-6)+vec4(keep);
+}
+)";
+}
+
 bool hasRequiredLocations(std::size_t variant, QOpenGLShaderProgram& shader,
                           const CCubismShaderPrograms::Program& program)
 {
+    const bool offscreenMask = variant == static_cast<std::size_t>(CCubismShaderPrograms::Variant::OffscreenMask);
     if (shader.attributeLocation("a_position") != 0 || shader.attributeLocation("a_texCoord") != 1 ||
-        program.sampler0 < 0 || program.baseColor < 0) return false;
+        program.sampler0 < 0 || (!offscreenMask && program.baseColor < 0)) return false;
     if (variant == 0) return program.clipMatrix >= 0 && program.channelFlag >= 0;
+    if (variant == static_cast<std::size_t>(CCubismShaderPrograms::Variant::OffscreenMask))
+        return program.matrix >= 0 && program.channelFlag >= 0;
+    if (variant == static_cast<std::size_t>(CCubismShaderPrograms::Variant::CompositeMasked))
+        return program.matrix >= 0 && program.sampler1 >= 0 && program.resolution >= 0 &&
+            program.maskInvert >= 0 && program.channelFlag >= 0 && program.multiplyColor >= 0 &&
+            program.screenColor >= 0;
+    if (variant == static_cast<std::size_t>(CCubismShaderPrograms::Variant::BackdropComposite))
+        return program.matrix >= 0 && program.sampler1 >= 0 && program.sampler2 >= 0 &&
+            program.resolution >= 0 && program.colorMode >= 0 && program.alphaMode >= 0 &&
+            program.useMask >= 0 && program.maskInvert >= 0 && program.channelFlag >= 0;
     if (program.matrix < 0 || program.multiplyColor < 0 || program.screenColor < 0) return false;
     const bool masked = variant == 2 || variant == 3 || variant == 5 || variant == 6;
     return !masked || (program.clipMatrix >= 0 && program.channelFlag >= 0 && program.sampler1 >= 0);
@@ -101,7 +175,10 @@ const CCubismShaderPrograms::SourceSet& CCubismShaderPrograms::Sources()
         {vertexSource(false, true), fragmentSource(false, true, true, false)},
         {vertexSource(false, false), fragmentSource(false, false, false, true)},
         {vertexSource(false, true), fragmentSource(false, true, false, true)},
-        {vertexSource(false, true), fragmentSource(false, true, true, true)}
+        {vertexSource(false, true), fragmentSource(false, true, true, true)},
+        {vertexSource(false, false), offscreenMaskFragmentSource()},
+        {vertexSource(false, false), compositeMaskedFragmentSource()},
+        {vertexSource(false, false), backdropCompositeFragmentSource()}
     }};
     return sources;
 }
@@ -137,10 +214,16 @@ bool CCubismShaderPrograms::Initialize(const QOpenGLContext* context, const Sour
         program.clipMatrix = shader->uniformLocation("u_clipMatrix");
         program.sampler0 = shader->uniformLocation("s_texture0");
         program.sampler1 = shader->uniformLocation("s_texture1");
+        program.sampler2 = shader->uniformLocation("s_texture2");
         program.baseColor = shader->uniformLocation("u_baseColor");
         program.multiplyColor = shader->uniformLocation("u_multiplyColor");
         program.screenColor = shader->uniformLocation("u_screenColor");
         program.channelFlag = shader->uniformLocation("u_channelFlag");
+        program.resolution = shader->uniformLocation("u_resolution");
+        program.maskInvert = shader->uniformLocation("u_maskInvert");
+        program.colorMode = shader->uniformLocation("u_colorMode");
+        program.alphaMode = shader->uniformLocation("u_alphaMode");
+        program.useMask = shader->uniformLocation("u_useMask");
         if (!program.id || !hasRequiredLocations(index, *shader, program)) {
             m_error = QStringLiteral("Shader %1 does not provide the required inputs.").arg(qulonglong(index));
             return false;

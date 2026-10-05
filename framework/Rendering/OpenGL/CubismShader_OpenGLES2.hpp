@@ -20,10 +20,13 @@ public:
                                    csmInt32 index, bool isAll, csmFloat32 opacityOverride = -1.0f,
                                    DrawMode mode = DrawMode::Preview);
     bool SetupShaderProgramForMask(CubismRenderer_OpenGLES2* renderer, const CubismModel& model, csmInt32 index);
+    bool SetupShaderProgramForOffscreenMask(CubismRenderer_OpenGLES2* renderer, const CubismModel& model,
+                                            csmInt32 index);
     bool SetupShaderProgramForComposite(CubismRenderer_OpenGLES2* renderer, GLuint texture,
                                         CubismRenderer::CubismBlendMode blend, csmFloat32 opacity,
                                         const CubismRenderer::CubismTextureColor& multiply,
-                                        const CubismRenderer::CubismTextureColor& screen);
+                                        const CubismRenderer::CubismTextureColor& screen,
+                                        GLuint maskTexture = 0, csmBool maskInvert = false);
 #ifdef CSM_TARGET_ANDROID_ES2
     static void SetExtShaderMode(csmBool extMode, csmBool extPAMode);
 #endif
