@@ -706,7 +706,7 @@ bool CubismRenderer_OpenGLES2::WritePsdLayer(csmInt32 drawableIndex, const QStri
     const float alpha = effectiveOpacity * GetModelColor().A;
     if (!std::isfinite(alpha)) return false;
     const uint8_t opacity = static_cast<uint8_t>(qBound(0.0f, alpha * 255.0f, 255.0f));
-    const auto blend = CPsdWriteList::CubismBlendModeToPsd(model->GetDrawableBlendMode(drawableIndex));
+    const auto blend = CPsdWriteList::RawBlendModeToPsd(model->GetDrawableBlendModeValue(drawableIndex));
     const quint32 layerId = quint32(drawableIndex) + 1;
     if (rect.isEmpty() || !indexCount) {
         if (!writer->AddEmptyLayer(drawName, opacity, blend, false, layerId)) return false;

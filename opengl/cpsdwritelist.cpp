@@ -2,6 +2,7 @@
 #include "live2dstruct/cdraworder.h"
 #include "std/cexportcontrol.h"
 #include <QScopedValueRollback>
+#include <iterator>
 
 CPsdWriteList::CPsdWriteList() {
     m_list=nullptr;
@@ -43,6 +44,17 @@ uint32_t CPsdWriteList::CubismBlendModeToPsd(Live2D::Cubism::Framework::Renderin
     case Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode_Multiplicative: return 0x6D756C20; // mul
     default: return 0x6E6F726D; // norm
     }
+}
+
+uint32_t CPsdWriteList::RawBlendModeToPsd(csmInt32 rawMode)
+{
+    static constexpr uint32_t keys[] = {
+        0x6E6F726D, 0x6C646467, 0x6D756C20, 0x6C646467, 0x6C646467,
+        0x6461726B, 0x6D756C20, 0x69646976, 0x6C62726E, 0x6C697465,
+        0x7363726E, 0x64697620, 0x6F766572, 0x734C6974, 0x684C6974,
+        0x6C4C6974, 0x68756520, 0x636F6C72};
+    const int color = rawMode & 0xff;
+    return color >= 0 && color < int(std::size(keys)) ? keys[color] : 0x6E6F726D;
 }
 
 bool CPsdWriteList::CreatePsd(const QString &name, int w, int h, bool cubismCompat)

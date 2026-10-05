@@ -23,6 +23,7 @@ public:
     bool CreatePsd(const QString& name,int w,int h,bool cubismCompat = false);
     bool WritePsd(CPsdPreviewKind* preview = nullptr);
     static uint32_t CubismBlendModeToPsd(Live2D::Cubism::Framework::Rendering::CubismRenderer::CubismBlendMode mode);
+    static uint32_t RawBlendModeToPsd(csmInt32 rawMode);
     bool AddLayer(const QString& layerName,const QRect& rect,const QImage& image );
     bool AddLayer(const QString& layerName, const QRect& rect, const QImage& image,
                   uint8_t opacity, uint32_t blendModeKey, bool isClipped,

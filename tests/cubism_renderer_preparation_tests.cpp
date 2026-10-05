@@ -159,6 +159,15 @@ uint32_t CPsdWriteList::CubismBlendModeToPsd(CubismRenderer::CubismBlendMode mod
     capturedBlendMode = mode;
     return 0x12345600u + static_cast<uint32_t>(mode);
 }
+uint32_t CPsdWriteList::RawBlendModeToPsd(csmInt32 rawMode)
+{
+    if (!allowLayerCapture) UnexpectedRuntime();
+    const int color = rawMode & 0xff;
+    const auto mode = color == 1 || color == 3 || color == 4 ? CubismRenderer::CubismBlendMode_Additive :
+        color == 2 || color == 6 ? CubismRenderer::CubismBlendMode_Multiplicative : CubismRenderer::CubismBlendMode_Normal;
+    capturedBlendMode = mode;
+    return 0x12345600u + static_cast<uint32_t>(mode);
+}
 QVector<QPair<int, CPsdWriteList::LayerType>> CPsdWriteList::GetSortDrawableIndexList(const QVector<int>&, CubismModel*)
 { UnexpectedRuntime(); }
 
