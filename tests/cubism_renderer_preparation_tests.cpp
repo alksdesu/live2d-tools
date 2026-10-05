@@ -254,6 +254,20 @@ class CubismRendererPreparationTests : public QObject
         return value;
     }
 
+    std::array<uchar, 4> MaskPixelAt(COffscreenBuffer& mask, int x, int y)
+    {
+        GLint previous = 0, readBuffer = 0;
+        m_gl.glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous);
+        m_gl.glBindFramebuffer(GL_READ_FRAMEBUFFER, mask.GetRenderTexture());
+        m_gl.glGetIntegerv(GL_READ_BUFFER, &readBuffer);
+        m_gl.glReadBuffer(GL_COLOR_ATTACHMENT0);
+        std::array<uchar, 4> value{};
+        m_gl.glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, value.data());
+        m_gl.glReadBuffer(readBuffer);
+        m_gl.glBindFramebuffer(GL_READ_FRAMEBUFFER, previous);
+        return value;
+    }
+
 private slots:
     void clippingGroupsMatchReferenceMultiplicity_data()
     {
@@ -1521,6 +1535,27 @@ private slots:
         QCOMPARE(glRenderer._effectMaskLayouts[4].channelIndex, 3);
         QCOMPARE(glRenderer._offscreenMaskGroups[3], 3);
         QCOMPARE(glRenderer._offscreenMaskGroups[4], 4);
+        for (int index = 0; index < state.drawableCount; ++index)
+            glRenderer.BindTexture(static_cast<csmUint32>(index), Texture());
+        QVERIFY(glRenderer.EnsureEffectResources(16, 24, state.offscreenCount));
+        allowDraw = true;
+        controlledContext = &m_context;
+        const auto restore = qScopeGuard([&] { allowDraw = false; controlledContext = nullptr; });
+        QOpenGLFramebufferObject target(16, 24);
+        QVERIFY(target.isValid() && target.bind());
+        m_gl.glViewport(0, 0, 16, 24);
+        QVERIFY(glRenderer.SaveProfile());
+        for (int group = 0; group < glRenderer._effectMaskLayouts.size(); ++group)
+            QVERIFY(glRenderer.RenderEffectMask(*model, group));
+        auto* packed = glRenderer._effectMaskSurfaces.front().get();
+        QVERIFY(packed && packed->IsValid());
+        QCOMPARE(MaskPixelAt(*packed, 2, 12)[0], uchar(255));
+        QCOMPARE(MaskPixelAt(*packed, 13, 12)[0], uchar(255));
+        QCOMPARE(MaskPixelAt(*packed, 8, 12)[1], uchar(255));
+        QCOMPARE(MaskPixelAt(*packed, 8, 12)[2], uchar(255));
+        QCOMPARE(MaskPixelAt(*packed, 8, 12)[3], uchar(255));
+        QCOMPARE(m_gl.glGetError(), GLenum(GL_NO_ERROR));
+        QVERIFY(target.release());
     }
 
     void core6OffscreenOwnerStackRendersAndRestoresTheParentTarget()
