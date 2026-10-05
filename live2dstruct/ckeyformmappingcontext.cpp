@@ -123,7 +123,9 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         return fail(error, QStringLiteral("关键形映射需要已加载的模型快照"));
     try {
         QMap<QString, float> corner;
-        auto sourceReader = CReader::FromBytes(document.SourceBytes());
+        QByteArray sourcePreview;
+        if (!document.BuildPreviewMoc(sourcePreview, error)) return false;
+        auto sourceReader = CReader::FromBytes(sourcePreview);
         CSectionTable sourceTable(sourceReader);
         {
             CKeyformBindingGrid sourceBindings;
