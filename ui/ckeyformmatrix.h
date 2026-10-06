@@ -14,10 +14,12 @@ public:
     void SetGrid(const live2dstruct::CKeyformGridSnapshot& grid, int activeKeyform, bool locked);
     void SetActiveKeyform(int keyform);
     void Clear();
+    void ClearTransferSource();
     int ActiveKeyform() const;
 
 signals:
     void KeyformRequested(int keyform);
+    void KeyformTransferRequested(int source, int target, double sourceWeight);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -32,6 +34,8 @@ private:
     void RefreshStatus();
     void UpdateMetrics();
     void RequestCurrent();
+    void RefreshTransferControls();
+    void RequestTransfer(double sourceWeight);
 };
 
 #endif

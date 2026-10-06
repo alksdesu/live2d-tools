@@ -867,6 +867,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     scroll->setWidget(content);
     setWidget(scroll);
     connect(m_keyformMatrix, &CKeyformMatrix::KeyformRequested, this, &CInspectorPanel::RequestMatrixKeyform);
+    connect(m_keyformMatrix, &CKeyformMatrix::KeyformTransferRequested, this, &CInspectorPanel::RequestMatrixTransfer);
     connect(m_editBindingKeys, &QPushButton::clicked, this, &CInspectorPanel::EditBindingKeys);
     connect(m_keyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingKeyform) return;
@@ -1113,6 +1114,7 @@ CInspectorPanel::~CInspectorPanel()
 
 void CInspectorPanel::SetDocument(live2dstruct::CModelDocument* document)
 {
+    m_keyformMatrix->ClearTransferSource();
     const bool sameDocument = m_document == document;
     InvalidateProjection();
     m_document = document;
@@ -1496,6 +1498,21 @@ void CInspectorPanel::EditBindingKeys()
     if (alive) m_editingBindingKeys = false;
 }
 
+void CInspectorPanel::RequestMatrixTransfer(int source, int target, double sourceWeight)
+{
+    if (!m_document || !m_matrixSnapshot || m_submitting || m_rebuildingTopology || m_selectionNames.size() != 1 ||
+        IsLocked(m_selectionType, m_selectionName)) return;
+    const auto snapshot = m_matrixSnapshot;
+    if (snapshot->objectId != m_selectionName || snapshot->objectType != m_selectionType ||
+        snapshot->sourceDigest != m_document->SourceDigest() || snapshot->revision != m_document->Revision()) {
+        m_keyformMatrix->ClearTransferSource();
+        RejectEdit(QStringLiteral("关键形数据已改变，请重新选择来源和目标角点")); return;
+    }
+    QMap<QString, float> pose; QString error;
+    if (!snapshot->Pose(source, pose, &error) || !snapshot->Pose(target, pose, &error)) { RejectEdit(error); return; }
+    ApplyKeyformTransfer(source, target, sourceWeight);
+}
+
 void CInspectorPanel::RequestMatrixKeyform(int keyform)
 {
     if (!m_document || !m_matrixSnapshot || m_submitting || m_rebuildingTopology ||
@@ -1755,16 +1772,24 @@ void CInspectorPanel::CopyKeyformToNext() { ApplyNeighborKeyform(false); }
 
 void CInspectorPanel::ApplyNeighborKeyform(bool interpolate)
 {
+    const int active = GetActiveGeometryKeyformIndex();
+    if (active < 0 || (interpolate && active == 0)) return;
+    ApplyKeyformTransfer(interpolate ? active - 1 : active, interpolate ? active : active + 1, interpolate ? .5 : 1);
+}
+
+void CInspectorPanel::ApplyKeyformTransfer(int source, int target, double sourceWeight)
+{
     using namespace live2dstruct;
     if (!m_document || m_submitting || m_rebuildingTopology || m_selectionNames.size() != 1 ||
         m_selectionName.isEmpty() || IsLocked(m_selectionType, m_selectionName)) return;
-    const int active = GetActiveGeometryKeyformIndex();
-    if (active < 0 || (interpolate && active == 0)) return;
-    const int source = interpolate ? active - 1 : active;
-    const int target = interpolate ? active : active + 1;
+    if (!std::isfinite(sourceWeight) || sourceWeight < 0 || sourceWeight > 1 || source < 0 || target < 0) {
+        RejectEdit(QStringLiteral("来源、目标或插值比例无效")); return;
+    }
+    if (source == target || sourceWeight == 0) return;
+    const bool interpolate = sourceWeight != 1;
     const QString id = m_selectionName, type = m_selectionType;
     CModelEdit edit{id, type, CModelEdit::KeyformPositions, {}, {}, target, false};
-    const auto average = [](float first, float second) { return float((double(first) + second) * 0.5); };
+    const auto average = [sourceWeight](float first, float second) { return float(double(first) * sourceWeight + double(second) * (1 - sourceWeight)); };
     const auto blendPositions = [&](const QVector<float>& first, QVector<float>& second) {
         if (first.isEmpty() || first.size() != second.size() || first.size() % 2 != 0) return false;
         for (int index = 0; index < first.size(); ++index) {
@@ -1781,7 +1806,7 @@ void CInspectorPanel::ApplyNeighborKeyform(bool interpolate)
         edit.before = QVariant::fromValue(before); edit.after = QVariant::fromValue(after);
     } else if (type == QLatin1String("warp")) {
         const auto before = m_document->DeformerWarpKeyforms(id);
-        if (target >= before.size()) return;
+        if (source >= before.size() || target >= before.size()) return;
         auto after = before;
         const auto validOpacity = [](float value) { return std::isfinite(value) && value >= 0 && value <= 1; };
         if (!validOpacity(before[source].opacity) || !validOpacity(before[target].opacity) ||
@@ -1794,12 +1819,12 @@ void CInspectorPanel::ApplyNeighborKeyform(bool interpolate)
         edit.before = QVariant::fromValue(before); edit.after = QVariant::fromValue(after);
     } else if (type == QLatin1String("rotation")) {
         const auto before = m_document->DeformerRotationKeyforms(id);
-        if (target >= before.size()) return;
+        if (source >= before.size() || target >= before.size()) return;
         auto after = before;
         const auto& first = before[source]; auto& second = after[target];
         if (interpolate) {
             if (first.reflectX != second.reflectX || first.reflectY != second.reflectY) {
-                RejectEdit(QStringLiteral("前后关键形反射标记不同，不能进行数值插值")); return;
+                RejectEdit(QStringLiteral("来源与目标关键形反射标记不同，不能进行数值插值")); return;
             }
             second.opacity = average(first.opacity, second.opacity);
             second.angle = average(first.angle, second.angle);

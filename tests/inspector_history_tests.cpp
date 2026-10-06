@@ -180,6 +180,173 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void matrixTransfersCopyAndBlendNonAdjacentKeyforms_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<double>("weight"); QTest::addColumn<bool>("reject");
+        for (const char* type : {"artmesh", "warp", "rotation"}) for (double weight : {.25, 1.0}) for (bool reject : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2-%3").arg(type).arg(weight).arg(reject))) << QString::fromLatin1(type) << weight << reject;
+    }
+
+    void matrixTransfersCopyAndBlendNonAdjacentKeyforms()
+    {
+        QFETCH(QString, type); QFETCH(double, weight); QFETCH(bool, reject); using namespace live2dstruct;
+        const QString model = type == "rotation" ? "Natori" : "Mark";
+        const QString id = type == "rotation" ? "Rotation2" : type == "warp" ? "Warp6" : "EyeL4";
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        auto warp = document.DeformerWarpKeyforms(id); auto rotation = document.DeformerRotationKeyforms(id);
+        auto mesh = document.DrawableKeyformPositions(id, 8);
+        if (type == "warp") {
+            QCOMPARE(warp.size(), 9); warp[0].positions.fill(2); warp[8].positions.fill(10);
+            warp[0].opacity = .25f; warp[8].opacity = .75f; QVERIFY(document.SetDeformerWarpKeyforms(id, warp));
+        } else if (type == "rotation") {
+            QCOMPARE(rotation.size(), 9); rotation[0] = {.25f, 20, 2, 4, -.5f, true, false};
+            rotation[8] = {.75f, 60, 10, 12, -1.5f, true, false}; QVERIFY(document.SetDeformerRotationKeyforms(id, rotation));
+        } else {
+            QVERIFY(!mesh.isEmpty()); mesh.fill(10);
+            QVERIFY(document.SetDrawableKeyformPositions(id, 0, QVector<float>(mesh.size(), 2)));
+            QVERIFY(document.SetDrawableKeyformPositions(id, 8, mesh));
+        }
+        document.ClearEditHistory(); CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type);
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix"); QVERIFY(matrix);
+        auto* table = matrix->findChild<QTableView*>("keyformMatrixTable"); QVERIFY(table);
+        auto* mark = matrix->findChild<QPushButton*>("keyformMatrixUseSource");
+        auto* copy = matrix->findChild<QPushButton*>("keyformMatrixCopy");
+        auto* blend = matrix->findChild<QPushButton*>("keyformMatrixBlend");
+        auto* percent = matrix->findChild<QDoubleSpinBox*>("keyformMatrixWeight");
+        QVERIFY(mark && copy && blend && percent);
+        table->setCurrentIndex(table->model()->index(0, 0)); mark->click();
+        table->setCurrentIndex(table->model()->index(2, 2));
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        int submissions = 0; panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++submissions; if (reject) { *error = "controlled rejection"; return false; }
+            return document.ExecuteEdit(edit);
+        });
+        const auto revision = document.Revision(); percent->setValue(weight * 100);
+        auto* apply = weight == 1 ? copy : blend; QVERIFY(apply->isEnabled()); apply->click(); QCOMPARE(submissions, 1);
+        QCOMPARE(panel.GetActiveGeometryKeyformIndex(), 0);
+        if (reject) {
+            QCOMPARE(document.Revision(), revision); QCOMPARE(rejected.count(), 1); QVERIFY(!document.CanUndoEdit());
+            QCOMPARE(document.DeformerWarpKeyforms(id), warp); QCOMPARE(document.DeformerRotationKeyforms(id), rotation);
+            QCOMPARE(document.DrawableKeyformPositions(id, 8), mesh); return;
+        }
+        const auto mix = [weight](float a, float b) { return float(double(a) * weight + double(b) * (1 - weight)); };
+        if (type == "warp") {
+            auto expected = warp; expected[8].positions.fill(mix(2, 10)); expected[8].opacity = mix(.25f, .75f);
+            QCOMPARE(document.DeformerWarpKeyforms(id), expected);
+        } else if (type == "rotation") {
+            auto expected = rotation; expected[8] = {mix(.25f,.75f), mix(20,60), mix(2,10), mix(4,12), mix(-.5f,-1.5f), true, false};
+            QCOMPARE(document.DeformerRotationKeyforms(id), expected);
+        } else QCOMPARE(document.DrawableKeyformPositions(id, 8), QVector<float>(mesh.size(), mix(2, 10)));
+        const auto modified = document; QCOMPARE(document.Revision(), revision + 1); QVERIFY(!copy->isEnabled());
+        panel.Undo(); QCOMPARE(document.DeformerWarpKeyforms(id), warp); QCOMPARE(document.DeformerRotationKeyforms(id), rotation);
+        QCOMPARE(document.DrawableKeyformPositions(id, 8), mesh); QVERIFY(!document.CanUndoEdit());
+        panel.Redo(); QCOMPARE(document.DeformerWarpKeyforms(id), modified.DeformerWarpKeyforms(id));
+        QCOMPARE(document.DeformerRotationKeyforms(id), modified.DeformerRotationKeyforms(id));
+        QCOMPARE(document.DrawableKeyformPositions(id, 8), modified.DrawableKeyformPositions(id, 8));
+        QVERIFY(!document.CanRedoEdit());
+    }
+
+    void matrixTransferRejectsInvalidOrStaleInputs_data()
+    {
+        QTest::addColumn<QString>("reason");
+        for (const char* reason : {"negative-source", "large-source", "negative-target", "large-target", "nan", "infinity", "negative-weight", "large-weight", "stale", "locked"})
+            QTest::newRow(reason) << QString::fromLatin1(reason);
+    }
+
+    void matrixTransferRejectsInvalidOrStaleInputs()
+    {
+        QFETCH(QString, reason); using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection("Warp6", "warp");
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix"); QVERIFY(matrix);
+        int from = 0, to = 8; double weight = .25;
+        if (reason == "negative-source") from = -1;
+        if (reason == "large-source") from = 9999;
+        if (reason == "negative-target") to = -1;
+        if (reason == "large-target") to = 9999;
+        if (reason == "nan") weight = std::numeric_limits<double>::quiet_NaN();
+        if (reason == "infinity") weight = std::numeric_limits<double>::infinity();
+        if (reason == "negative-weight") weight = -.1;
+        if (reason == "large-weight") weight = 1.1;
+        if (reason == "stale") {
+            auto forms = document.DeformerWarpKeyforms("Warp6"); forms[8].positions[0] += 1;
+            QVERIFY(document.SetDeformerWarpKeyforms("Warp6", forms));
+        }
+        if (reason == "locked") panel.SetLockedState({"warp|Warp6"});
+        const auto before = document.DeformerWarpKeyforms("Warp6"); const auto revision = document.Revision();
+        int calls = 0; panel.SetEditHandler([&](const CModelEdit&, QString*) { ++calls; return true; });
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        matrix->KeyformTransferRequested(from, to, weight);
+        QCOMPARE(document.DeformerWarpKeyforms("Warp6"), before); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(calls, 0); QVERIFY(!document.CanUndoEdit());
+        QCOMPARE(rejected.count(), reason == "locked" ? 0 : 1);
+    }
+
+    void matrixWeightEndpointsPreserveReflectionSemantics()
+    {
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Natori/Natori.moc3"));
+        auto before = document.DeformerRotationKeyforms("Rotation2"); QVERIFY(before.size() == 9);
+        before[0].reflectX = !before[8].reflectX; before[0].angle += 12;
+        QVERIFY(document.SetDeformerRotationKeyforms("Rotation2", before));
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection("Rotation2", "rotation");
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix"); QVERIFY(matrix);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected); const auto revision = document.Revision();
+        matrix->KeyformTransferRequested(0, 8, 0); QCOMPARE(rejected.count(), 0); QCOMPARE(document.Revision(), revision);
+        matrix->KeyformTransferRequested(0, 8, .5); QCOMPARE(rejected.count(), 1); QCOMPARE(document.DeformerRotationKeyforms("Rotation2"), before);
+        matrix->KeyformTransferRequested(0, 8, 1); auto expected = before; expected[8] = before[0];
+        QCOMPARE(document.DeformerRotationKeyforms("Rotation2"), expected); QCOMPARE(document.Revision(), revision + 1);
+    }
+
+    void matrixSourceDoesNotCrossIdenticalDocuments()
+    {
+        using namespace live2dstruct; CModelDocument a,b;
+        const auto path = QString(TEST_RESOURCES) + "/Mark/Mark.moc3"; QVERIFY(a.Load(path)); QVERIFY(b.Load(path));
+        CInspectorPanel panel; panel.SetDocument(&a); panel.SetSelection("EyeL4", "artmesh");
+        auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix");
+        auto* view = matrix->findChild<QTableView*>("keyformMatrixTable");
+        auto* mark = matrix->findChild<QPushButton*>("keyformMatrixUseSource");
+        auto* copy = matrix->findChild<QPushButton*>("keyformMatrixCopy");
+        view->setCurrentIndex(view->model()->index(0,0)); mark->click();
+        view->setCurrentIndex(view->model()->index(2,2)); QVERIFY(copy->isEnabled());
+        panel.SetDocument(&b); QVERIFY(!copy->isEnabled());
+        QVERIFY(!a.CanUndoEdit()); QVERIFY(!b.CanUndoEdit());
+    }
+
+    void matrixNavigationKeepsSourceAndControllerPose_data()
+    {
+        QTest::addColumn<QString>("type");
+        for (const char* type : {"artmesh", "warp", "rotation"}) QTest::newRow(type) << QString::fromLatin1(type);
+    }
+
+    void matrixNavigationKeepsSourceAndControllerPose()
+    {
+        QFETCH(QString,type); using namespace live2dstruct;
+        const QString model = type == "rotation" ? "Natori" : "Mark";
+        const QString id = type == "rotation" ? "Rotation2" : type == "warp" ? "Warp6" : "EyeL4";
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        if (type == "rotation") { auto f = document.DeformerRotationKeyforms(id); f[8].angle = f[0].angle + 20; QVERIFY(document.SetDeformerRotationKeyforms(id,f)); }
+        else if (type == "warp") { auto f = document.DeformerWarpKeyforms(id); f[8].positions[0] = f[0].positions[0] + .1f; QVERIFY(document.SetDeformerWarpKeyforms(id,f)); }
+        else { auto f = document.DrawableKeyformPositions(id,8); f[0] = document.DrawableKeyformPositions(id,0)[0] + .1f; QVERIFY(document.SetDrawableKeyformPositions(id,8,f)); }
+        CKeyformEditController controller; controller.SetDocument(&document);
+        QMap<QString,float> published;
+        controller.SetPublisher([&](const CModelDocument& candidate,const QMap<QString,float>& pose,bool editing,QString* error) {
+            QByteArray bytes; if (!editing || !candidate.BuildPreviewMoc(bytes,error)) return false; published=pose; return true;
+        },[](QString*) { return true; });
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id,type);
+        panel.SetKeyformHandler([&](const QString& name,int key,QString* error) {return controller.Activate(name,key,published,error);});
+        panel.SetDeformerKeyformHandler([&](const QString& name,const QString& kind,int key,QString* error) {return controller.Activate(name,kind,key,published,error);});
+        panel.SetEditHandler([&](const CModelEdit& edit,QString* error) {return controller.Submit(edit,published,panel.PreviewKeyformForEdit(edit),error);});
+        auto* matrix=panel.findChild<CKeyformMatrix*>("keyformMatrix"); auto* view=matrix->findChild<QTableView*>("keyformMatrixTable");
+        view->setCurrentIndex(view->model()->index(0,0));
+        matrix->findChild<QPushButton*>("keyformMatrixUseSource")->click();
+        const auto revision=document.Revision();
+        view->setCurrentIndex(view->model()->index(2,2)); view->clicked(view->currentIndex());
+        QCOMPARE(controller.Keyform(),8); QCOMPARE(panel.GetActiveGeometryKeyformIndex(),8); QCOMPARE(document.Revision(),revision);
+        const auto pose=published; auto* copy=matrix->findChild<QPushButton*>("keyformMatrixCopy"); QVERIFY(copy->isEnabled());
+        copy->click(); QVERIFY(document.CanUndoEdit()); QCOMPARE(controller.Keyform(),8); QCOMPARE(published,pose);
+    }
+
     void deformerNeighborToolsUseAtomicHistory_data()
     {
         QTest::addColumn<QString>("type"); QTest::addColumn<bool>("interpolate"); QTest::addColumn<int>("outcome");

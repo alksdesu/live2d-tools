@@ -87,11 +87,13 @@ private:
     void RebuildKeyformTable();
     void RefreshKeyformMatrix();
     void RequestMatrixKeyform(int keyform);
+    void RequestMatrixTransfer(int source, int target, double sourceWeight);
     void EditBindingKeys();
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
     void RefreshNeighborKeyformTools();
     void ApplyNeighborKeyform(bool interpolate);
+    void ApplyKeyformTransfer(int source, int target, double sourceWeight);
     void InterpolatePreviousKeyform();
     void CopyKeyformToNext();
     void ResetCurrentKeyform();

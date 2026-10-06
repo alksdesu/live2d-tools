@@ -1,6 +1,8 @@
 #include "ckeyformmatrix.h"
 #include <QAbstractTableModel>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QItemSelectionModel>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -14,6 +16,7 @@
 #include <QTableView>
 #include <QVBoxLayout>
 #include <array>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -213,6 +216,10 @@ public:
     QLabel *horizontalLabel = nullptr, *verticalLabel = nullptr, *sliceAxisLabel = nullptr, *sliceKeyLabel = nullptr;
     QLabel* status = nullptr;
     QPushButton* locate = nullptr;
+    int source = -1;
+    QPushButton *useSource = nullptr, *copy = nullptr, *blend = nullptr;
+    QDoubleSpinBox* weight = nullptr;
+    QLabel* transferStatus = nullptr;
     bool requesting = false;
     bool initialized = false;
 };
@@ -311,6 +318,44 @@ CKeyformMatrix::CKeyformMatrix(QWidget* parent) : QWidget(parent), m_state(std::
         m_state->model->fixed[axis] = key;
         RefreshProjection();
     });
+    auto* transfer = new QFormLayout;
+    transfer->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    transfer->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    m_state->useSource = new QPushButton(QStringLiteral("将光标角点设为来源"), this);
+    m_state->useSource->setObjectName(QStringLiteral("keyformMatrixUseSource"));
+    m_state->useSource->setToolTip(QStringLiteral("标记角点；对象或数据改变后须重新选择来源"));
+    transfer->addRow(m_state->useSource);
+    m_state->weight = new QDoubleSpinBox(this);
+    m_state->weight->setObjectName(QStringLiteral("keyformMatrixWeight"));
+    m_state->weight->setAccessibleName(QStringLiteral("来源形比例"));
+    m_state->weight->setRange(0, 100); m_state->weight->setDecimals(1); m_state->weight->setValue(50);
+    m_state->weight->setSuffix(QStringLiteral(" %"));
+    m_state->weight->setToolTip(QStringLiteral("结果 = 来源 × 比例 + 目标 × (1 − 比例)，0% 不修改，100% 等同复制"));
+    transfer->addRow(QStringLiteral("来源比例"), m_state->weight);
+    auto* buttons = new QHBoxLayout;
+    m_state->copy = new QPushButton(QStringLiteral("复制到目标"), this);
+    m_state->copy->setObjectName(QStringLiteral("keyformMatrixCopy"));
+    m_state->blend = new QPushButton(QStringLiteral("插值到目标"), this);
+    m_state->blend->setObjectName(QStringLiteral("keyformMatrixBlend"));
+    for (auto* button : {m_state->copy, m_state->blend}) {
+        button->setToolTip(QStringLiteral("覆盖光标所在角点，不切换当前预览；支持一次撤销。ArtMesh 仅修改顶点，变形器包含透明度与变换；不修改绑定或材质")); buttons->addWidget(button);
+    }
+    transfer->addRow(buttons);
+    m_state->transferStatus = new QLabel(this);
+    m_state->transferStatus->setObjectName(QStringLiteral("keyformMatrixTransferStatus"));
+    m_state->transferStatus->setAccessibleName(QStringLiteral("来源与目标关键形"));
+    m_state->transferStatus->setTextFormat(Qt::PlainText); m_state->transferStatus->setWordWrap(true);
+    m_state->transferStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    transfer->addRow(m_state->transferStatus); layout->addLayout(transfer);
+    connect(m_state->table->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] { RefreshTransferControls(); });
+    connect(m_state->weight, &QDoubleSpinBox::valueChanged, this, [this] { RefreshTransferControls(); });
+    connect(m_state->useSource, &QPushButton::clicked, this, [this] {
+        const qint64 key = m_state->model->localKeyform(m_state->table->currentIndex());
+        if (m_state->requesting || !m_state->model->grid.axesValid || !m_state->model->rejection(key).isEmpty()) return;
+        m_state->source = int(key); RefreshTransferControls();
+    });
+    connect(m_state->copy, &QPushButton::clicked, this, [this] { RequestTransfer(1); });
+    connect(m_state->blend, &QPushButton::clicked, this, [this] { RequestTransfer(m_state->weight->value() / 100); });
     Clear();
     UpdateMetrics();
 }
@@ -321,6 +366,7 @@ void CKeyformMatrix::SetGrid(const CKeyformGridSnapshot& grid, int activeKeyform
 {
     auto* model = m_state->model;
     const bool rebuild = !m_state->initialized || !sameLayout(model->grid, grid);
+    if (rebuild || model->grid.revision != grid.revision) m_state->source = -1;
     m_state->initialized = true;
     model->locked = locked;
     model->updateGrid(grid, rebuild);
@@ -427,6 +473,7 @@ void CKeyformMatrix::RefreshStatus()
             : QStringLiteral("当前形 #%1 位于其它切片").arg(model->active));
         else if (model->grid.axesValid) text.append(QStringLiteral("单击或按 Enter 预览角点"));
     }
+    RefreshTransferControls();
     m_state->status->setText(text.join(QLatin1Char('\n')));
     m_state->locate->setEnabled(model->active >= 0 && model->grid.axesValid && model->grid.expectedKeyformCount >= 0);
     for (auto* combo : {m_state->horizontal, m_state->vertical, m_state->sliceAxis, m_state->sliceKey})
@@ -455,6 +502,43 @@ void CKeyformMatrix::UpdateMetrics()
                                   scrollbar + m_state->table->frameWidth() * 2);
 }
 
+void CKeyformMatrix::ClearTransferSource()
+{
+    m_state->source = -1;
+    RefreshTransferControls();
+}
+
+void CKeyformMatrix::RefreshTransferControls()
+{
+    const auto* model = m_state->model;
+    const qint64 target = model->localKeyform(m_state->table->currentIndex());
+    const bool targetValid = model->grid.axesValid && model->rejection(target).isEmpty();
+    const bool sourceValid = model->grid.axesValid && model->rejection(m_state->source).isEmpty();
+    const bool canTransfer = !m_state->requesting && sourceValid && targetValid && m_state->source != target;
+    m_state->useSource->setEnabled(!m_state->requesting && targetValid);
+    m_state->copy->setEnabled(canTransfer);
+    m_state->blend->setEnabled(canTransfer && m_state->weight->value() > 0);
+    m_state->weight->setEnabled(!m_state->requesting && !model->locked);
+    const auto from = m_state->source < 0 ? QStringLiteral("未指定") : QStringLiteral("#%1").arg(m_state->source);
+    const auto to = targetValid ? QStringLiteral("#%1").arg(target) : QStringLiteral("未选择有效角点");
+    m_state->transferStatus->setText(QStringLiteral("来源 %1 → 目标 %2").arg(from, to));
+}
+
+void CKeyformMatrix::RequestTransfer(double sourceWeight)
+{
+    const auto* model = m_state->model;
+    const qint64 target = model->localKeyform(m_state->table->currentIndex());
+    if (m_state->requesting || !std::isfinite(sourceWeight) || sourceWeight <= 0 || sourceWeight > 1 ||
+        !model->grid.axesValid || !model->rejection(m_state->source).isEmpty() || !model->rejection(target).isEmpty() ||
+        m_state->source == target) return;
+    const int source = m_state->source;
+    m_state->requesting = true;
+    RefreshTransferControls();
+    const QPointer<CKeyformMatrix> alive(this);
+    emit KeyformTransferRequested(source, int(target), sourceWeight);
+    if (alive) { m_state->requesting = false; RefreshTransferControls(); }
+}
+
 void CKeyformMatrix::RequestCurrent()
 {
     auto* model = m_state->model;
@@ -464,7 +548,7 @@ void CKeyformMatrix::RequestCurrent()
     m_state->requesting = true;
     const QPointer<CKeyformMatrix> guard(this);
     emit KeyformRequested(int(local));
-    if (guard) m_state->requesting = false;
+    if (guard) { m_state->requesting = false; RefreshTransferControls(); }
 }
 
 bool CKeyformMatrix::eventFilter(QObject* watched, QEvent* event)

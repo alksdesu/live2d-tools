@@ -3,6 +3,7 @@
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QDir>
 #include <QFile>
 #include <QHeaderView>
@@ -51,6 +52,77 @@ class KeyformMatrixTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void transferControlsAddressNonAdjacentCorners()
+    {
+        CModelDocument document; QVERIFY(document.Load(source("Mark")));
+        CKeyformGridSnapshot grid; QVERIFY(document.DescribeKeyformGrid("EyeL4", "artmesh", grid));
+        CKeyformMatrix matrix; matrix.SetGrid(grid, 4, false);
+        auto* sourceButton = widget<QPushButton>(matrix, "keyformMatrixUseSource");
+        auto* copy = widget<QPushButton>(matrix, "keyformMatrixCopy");
+        auto* blend = widget<QPushButton>(matrix, "keyformMatrixBlend");
+        auto* weight = widget<QDoubleSpinBox>(matrix, "keyformMatrixWeight");
+        QVERIFY(sourceButton && copy && blend && weight);
+        QSignalSpy transfer(&matrix, SIGNAL(KeyformTransferRequested(int,int,double)));
+        QVERIFY(transfer.isValid());
+        auto* view = table(matrix); view->setCurrentIndex(view->model()->index(0, 0));
+        QVERIFY(sourceButton->isEnabled()); sourceButton->click(); QVERIFY(!copy->isEnabled());
+        view->setCurrentIndex(view->model()->index(2, 2));
+        QVERIFY(copy->isEnabled()); copy->click(); QCOMPARE(transfer.count(), 1);
+        QCOMPARE(transfer[0], (QList<QVariant>{0, 8, 1.0})); QCOMPARE(matrix.ActiveKeyform(), 4);
+        weight->setValue(25); blend->click(); QCOMPARE(transfer[1], (QList<QVariant>{0, 8, .25}));
+        weight->setValue(0); QVERIFY(!blend->isEnabled()); blend->clicked(false); QCOMPARE(transfer.count(), 2);
+        matrix.SetGrid(grid, 4, true); QVERIFY(!copy->isEnabled()); copy->clicked(false); QCOMPARE(transfer.count(), 2);
+        matrix.SetGrid(grid, 4, false); ++grid.revision; matrix.SetGrid(grid, 4, false);
+        QVERIFY(!copy->isEnabled());
+        QVERIFY(widget<QLabel>(matrix, "keyformMatrixTransferStatus")->text().contains(QStringLiteral("来源")));
+        view->setCurrentIndex(view->model()->index(0, 0)); sourceButton->click();
+        view->setCurrentIndex(view->model()->index(2, 2)); QVERIFY(copy->isEnabled());
+        grid.objectId = "another"; matrix.SetGrid(grid, 0, false); QVERIFY(!copy->isEnabled());
+        matrix.Clear(); QVERIFY(!sourceButton->isEnabled());
+    }
+
+    void transferSourcesSurviveProjectionButNotReentrantMutation()
+    {
+        CModelDocument document; QVERIFY(document.Load(source("Wanko")));
+        CKeyformGridSnapshot grid; QVERIFY(document.DescribeKeyformGrid("D_EFFECT_05", "artmesh", grid));
+        CKeyformMatrix matrix; matrix.SetGrid(grid, 0, false);
+        auto* sourceButton = widget<QPushButton>(matrix, "keyformMatrixUseSource");
+        auto* copy = widget<QPushButton>(matrix, "keyformMatrixCopy"); QVERIFY(sourceButton && copy);
+        auto* view = table(matrix); view->setCurrentIndex(view->model()->index(0, 0)); sourceButton->click();
+        combo(matrix, "keyformMatrixSliceKey")->setCurrentIndex(1);
+        view->setCurrentIndex(view->model()->index(1, 1));
+        QSignalSpy transfer(&matrix, SIGNAL(KeyformTransferRequested(int,int,double))); QVERIFY(transfer.isValid());
+        QObject::connect(&matrix, SIGNAL(KeyformTransferRequested(int,int,double)), copy, SLOT(click()));
+        copy->click(); QCOMPARE(transfer.count(), 1); QCOMPARE(transfer[0], (QList<QVariant>{0, 7, 1.0}));
+        matrix.Clear(); copy->clicked(false); QCOMPARE(transfer.count(), 1);
+    }
+
+    void transferCallbackCanClearOrDestroyWidget_data()
+    {
+        QTest::addColumn<bool>("destroy"); QTest::newRow("clear") << false; QTest::newRow("destroy") << true;
+    }
+
+    void transferCallbackCanClearOrDestroyWidget()
+    {
+        QFETCH(bool, destroy);
+        CModelDocument document; QVERIFY(document.Load(source("Mark")));
+        CKeyformGridSnapshot grid; QVERIFY(document.DescribeKeyformGrid("EyeL4", "artmesh", grid));
+        QPointer<CKeyformMatrix> matrix = new CKeyformMatrix;
+        matrix->SetGrid(grid, 0, false); auto* view = table(*matrix);
+        view->setCurrentIndex(view->model()->index(0,0));
+        widget<QPushButton>(*matrix, "keyformMatrixUseSource")->click();
+        view->setCurrentIndex(view->model()->index(2,2));
+        auto* copy = widget<QPushButton>(*matrix, "keyformMatrixCopy"); QVERIFY(copy->isEnabled());
+        int calls = 0;
+        connect(matrix, &CKeyformMatrix::KeyformTransferRequested, qApp, [&](int, int, double) {
+            ++calls;
+            if (destroy) delete matrix.data(); else matrix->Clear();
+        });
+        copy->click(); QCOMPARE(calls,1);
+        if (!destroy) { QVERIFY(matrix); QVERIFY(!copy->isEnabled()); delete matrix.data(); }
+        QVERIFY(!matrix);
+    }
+
     void cleanup() { qApp->setStyleSheet({}); }
 
     void floatLabelsRoundTripAndSmallMatricesStayCompact()
@@ -284,6 +356,9 @@ private slots:
         QVERIFY(model->index(2, 2).data(Qt::ToolTipRole).toString().contains(QStringLiteral("1 个")));
         QVERIFY(!(model->flags(model->index(2, 2)) & Qt::ItemIsEnabled));
         QVERIFY(widget<QLabel>(matrix, "keyformMatrixStatus")->text().contains(QStringLiteral("缺失角点：1 个")));
+        table(matrix)->setCurrentIndex(model->index(2,2));
+        QVERIFY(!widget<QPushButton>(matrix, "keyformMatrixUseSource")->isEnabled());
+        QVERIFY(!widget<QPushButton>(matrix, "keyformMatrixCopy")->isEnabled());
         grid.axesValid = false; grid.diagnostic = QStringLiteral("参数轴引用损坏");
         matrix.SetGrid(grid, -1, false); QCOMPARE(model->rowCount(), 0);
         QVERIFY(widget<QLabel>(matrix, "keyformMatrixStatus")->text().contains(grid.diagnostic));
