@@ -649,8 +649,17 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     keyformToolsLayout->setContentsMargins(0, 0, 0, 0);
     m_mirrorHorizontal = new QPushButton(QStringLiteral("水平镜像"), keyformTools);
     m_mirrorVertical = new QPushButton(QStringLiteral("垂直镜像"), keyformTools);
-    m_interpolatePrevious = new QPushButton(QStringLiteral("与前一形插值"), keyformTools);
-    m_copyToNext = new QPushButton(QStringLiteral("复制到后一形"), keyformTools);
+    auto* neighborTools = new QWidget(content);
+    neighborTools->setObjectName(QStringLiteral("keyformNeighborTools"));
+    neighborTools->setProperty("inspectorTypes", QStringList{QStringLiteral("artmesh"), QStringLiteral("warp"), QStringLiteral("rotation")});
+    auto* neighborLayout = new QVBoxLayout(neighborTools);
+    neighborLayout->setContentsMargins(0, 0, 0, 0);
+    m_interpolatePrevious = new QPushButton(QStringLiteral("与前一形插值"), neighborTools);
+    m_copyToNext = new QPushButton(QStringLiteral("复制到后一形"), neighborTools);
+    m_interpolatePrevious->setToolTip(QStringLiteral("与编号前一形取 50% 数值平均；变形器包含透明度，旋转反射标记必须相同"));
+    m_copyToNext->setToolTip(QStringLiteral("覆盖编号后一形；变形器复制完整关键形，保持当前预览"));
+    neighborLayout->addWidget(m_interpolatePrevious);
+    neighborLayout->addWidget(m_copyToNext);
     m_resetKeyform = new QPushButton(QStringLiteral("重置当前形"), keyformTools);
     m_copyKeyform = new QPushButton(QStringLiteral("复制关键形"), keyformTools);
     m_pasteKeyform = new QPushButton(QStringLiteral("粘贴关键形"), keyformTools);
@@ -684,7 +693,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     m_pasteTopology->setEnabled(false);
     ResetMaskControls();
     const QList<QPushButton*> keyformButtons = {
-        m_mirrorHorizontal, m_mirrorVertical, m_interpolatePrevious, m_copyToNext,
+        m_mirrorHorizontal, m_mirrorVertical,
         m_resetKeyform, m_copyKeyform, m_pasteKeyform, m_optimizeTopology, m_autoTriangulate,
         m_copyTopology, m_pasteTopology
     };
@@ -728,6 +737,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
     form->addRow(m_keyformMatrix);
     form->addRow(QStringLiteral("关键值"), m_editBindingKeys);
     form->addRow(QStringLiteral("关键形选择"), m_keyformCombo);
+    form->addRow(QStringLiteral("复制与插值"), neighborTools);
     form->addRow(QStringLiteral("关键形工具"), keyformTools);
     auto* vertexTransformTools = new QWidget(content);
     auto* vertexTransformLayout = new QFormLayout(vertexTransformTools);
@@ -903,6 +913,7 @@ CInspectorPanel::CInspectorPanel(QWidget* parent)
         if (!RequestDeformerKeyform(row)) return;
         m_activeDeformerKeyform = row;
         m_keyformMatrix->SetActiveKeyform(row);
+        RefreshNeighborKeyformTools();
     });
     connect(m_warpKeyformCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index){
         if (m_updatingWarpKeyform) return;
@@ -1370,6 +1381,7 @@ bool CInspectorPanel::SyncActiveKeyform(const QString& id, const QString& type, 
     m_visibilityCheck->setTristate(false);
     m_activeKeyformIndex = type == QLatin1String("artmesh") ? keyform : -1;
     m_activeDeformerKeyform = type == QLatin1String("artmesh") ? -1 : keyform;
+    RefreshNeighborKeyformTools();
     if (refresh) showModelObject(id, type, true);
     return true;
 }
@@ -1528,6 +1540,7 @@ void CInspectorPanel::RequestMatrixKeyform(int keyform)
 
 void CInspectorPanel::RebuildKeyformTable()
 {
+    RefreshNeighborKeyformTools();
     m_updatingKeyform = true;
     const auto reset = qScopeGuard([this] { m_updatingKeyform = false; });
     const auto positions = m_document && m_selectionType == QLatin1String("artmesh") &&
@@ -1540,6 +1553,7 @@ void CInspectorPanel::RebuildKeyformTable()
 
 void CInspectorPanel::RebuildRotationKeyformTable()
 {
+    RefreshNeighborKeyformTools();
     m_updatingRotationKeyform = true;
     const auto reset = qScopeGuard([this] { m_updatingRotationKeyform = false; });
     if (!m_document || m_selectionType != QLatin1String("rotation") || m_selectionName.isEmpty()) {
@@ -1616,6 +1630,7 @@ void CInspectorPanel::ApplyRotationKeyformCellEdit(int row, int column)
 
 void CInspectorPanel::RebuildWarpKeyformTable()
 {
+    RefreshNeighborKeyformTools();
     m_updatingWarpKeyform = true;
     const auto reset = qScopeGuard([this] { m_updatingWarpKeyform = false; });
     const auto keyforms = m_document && m_selectionType == QLatin1String("warp")
@@ -1708,43 +1723,106 @@ void CInspectorPanel::MirrorKeyform(bool horizontal)
     emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
-void CInspectorPanel::InterpolatePreviousKeyform()
+void CInspectorPanel::RefreshNeighborKeyformTools()
 {
-    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
-        IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_activeKeyformIndex;
-    if (keyformIndex <= 0) return;
-    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
-    const QVector<float> previous = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex - 1);
-    if (before.isEmpty() || before.size() != previous.size()) return;
-    QVector<float> after;
-    after.resize(before.size());
-    for (int i = 0; i < before.size(); ++i) after[i] = float((double(before[i]) + previous[i]) * 0.5);
-    if (after == before) return;
-    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
-                                           live2dstruct::CModelEdit::KeyformPositions,
-                                           QVariant::fromValue(before), QVariant::fromValue(after), keyformIndex, false};
-    if (!SubmitEdit(command)) return;
-    RebuildKeyformTable();
-    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex, after);
-    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    int count = 0;
+    const int active = GetActiveGeometryKeyformIndex();
+    if (m_document && m_selectionNames.size() == 1 && !IsLocked(m_selectionType, m_selectionName)) {
+        if (m_selectionType == QLatin1String("artmesh")) {
+            for (const auto& mesh : m_document->Drawables()) if (mesh.id == m_selectionName) { count = mesh.keyforms.size(); break; }
+        } else {
+            for (const auto& deformer : m_document->Deformers()) if (deformer.id == m_selectionName) {
+                if (m_selectionType == QLatin1String("warp")) count = deformer.warpKeyforms.size();
+                else if (m_selectionType == QLatin1String("rotation")) count = deformer.rotationKeyforms.size();
+                break;
+            }
+        }
+    }
+    m_interpolatePrevious->setEnabled(active > 0 && active < count);
+    m_copyToNext->setEnabled(active >= 0 && active + 1 < count);
 }
 
-void CInspectorPanel::CopyKeyformToNext()
+int CInspectorPanel::PreviewKeyformForEdit(const live2dstruct::CModelEdit& edit) const
 {
-    if (!m_document || m_selectionType != QLatin1String("artmesh") || m_selectionName.isEmpty() ||
-        IsLocked(m_selectionType, m_selectionName)) return;
-    const int keyformIndex = m_activeKeyformIndex;
-    const QVector<float> source = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex);
-    const QVector<float> before = m_document->DrawableKeyformPositions(m_selectionName, keyformIndex + 1);
-    if (keyformIndex < 0 || source.isEmpty() || source.size() != before.size()) return;
-    const live2dstruct::CModelEdit command{m_selectionName, QStringLiteral("artmesh"),
-                                           live2dstruct::CModelEdit::KeyformPositions,
-                                           QVariant::fromValue(before), QVariant::fromValue(source), keyformIndex + 1, false};
-    if (!SubmitEdit(command)) return;
-    emit DrawableKeyformPositionsChanged(m_selectionName, keyformIndex + 1, source);
-    emit DrawableKeyformActivated(m_selectionName, keyformIndex);
-    emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
+    using Edit = live2dstruct::CModelEdit;
+    const bool geometry = edit.field == Edit::KeyformPositions || edit.field == Edit::WarpKeyforms || edit.field == Edit::RotationKeyforms;
+    return geometry && m_selectionNames.size() == 1 && m_selectionName == edit.name && m_selectionType == edit.type
+        ? GetActiveGeometryKeyformIndex() : edit.index;
+}
+
+void CInspectorPanel::InterpolatePreviousKeyform() { ApplyNeighborKeyform(true); }
+void CInspectorPanel::CopyKeyformToNext() { ApplyNeighborKeyform(false); }
+
+void CInspectorPanel::ApplyNeighborKeyform(bool interpolate)
+{
+    using namespace live2dstruct;
+    if (!m_document || m_submitting || m_rebuildingTopology || m_selectionNames.size() != 1 ||
+        m_selectionName.isEmpty() || IsLocked(m_selectionType, m_selectionName)) return;
+    const int active = GetActiveGeometryKeyformIndex();
+    if (active < 0 || (interpolate && active == 0)) return;
+    const int source = interpolate ? active - 1 : active;
+    const int target = interpolate ? active : active + 1;
+    const QString id = m_selectionName, type = m_selectionType;
+    CModelEdit edit{id, type, CModelEdit::KeyformPositions, {}, {}, target, false};
+    const auto average = [](float first, float second) { return float((double(first) + second) * 0.5); };
+    const auto blendPositions = [&](const QVector<float>& first, QVector<float>& second) {
+        if (first.isEmpty() || first.size() != second.size() || first.size() % 2 != 0) return false;
+        for (int index = 0; index < first.size(); ++index) {
+            if (!std::isfinite(first[index]) || !std::isfinite(second[index])) return false;
+            second[index] = interpolate ? average(first[index], second[index]) : first[index];
+        }
+        return true;
+    };
+    if (type == QLatin1String("artmesh")) {
+        const auto before = m_document->DrawableKeyformPositions(id, target);
+        auto after = before;
+        if (!blendPositions(m_document->DrawableKeyformPositions(id, source), after)) return;
+        if (after == before) return;
+        edit.before = QVariant::fromValue(before); edit.after = QVariant::fromValue(after);
+    } else if (type == QLatin1String("warp")) {
+        const auto before = m_document->DeformerWarpKeyforms(id);
+        if (target >= before.size()) return;
+        auto after = before;
+        const auto validOpacity = [](float value) { return std::isfinite(value) && value >= 0 && value <= 1; };
+        if (!validOpacity(before[source].opacity) || !validOpacity(before[target].opacity) ||
+            !blendPositions(before[source].positions, after[target].positions)) {
+            RejectEdit(QStringLiteral("关键形顶点数量或数值无效，未执行复制或插值")); return;
+        }
+        after[target].opacity = interpolate ? average(before[source].opacity, before[target].opacity) : before[source].opacity;
+        if (after == before) return;
+        edit.field = CModelEdit::WarpKeyforms;
+        edit.before = QVariant::fromValue(before); edit.after = QVariant::fromValue(after);
+    } else if (type == QLatin1String("rotation")) {
+        const auto before = m_document->DeformerRotationKeyforms(id);
+        if (target >= before.size()) return;
+        auto after = before;
+        const auto& first = before[source]; auto& second = after[target];
+        if (interpolate) {
+            if (first.reflectX != second.reflectX || first.reflectY != second.reflectY) {
+                RejectEdit(QStringLiteral("前后关键形反射标记不同，不能进行数值插值")); return;
+            }
+            second.opacity = average(first.opacity, second.opacity);
+            second.angle = average(first.angle, second.angle);
+            second.originX = average(first.originX, second.originX);
+            second.originY = average(first.originY, second.originY);
+            second.scale = average(first.scale, second.scale);
+        } else second = first;
+        if (!first.IsValid() || !second.IsValid()) { RejectEdit(QStringLiteral("旋转关键形数值无效")); return; }
+        if (after == before) return;
+        edit.field = CModelEdit::RotationKeyforms;
+        edit.before = QVariant::fromValue(before); edit.after = QVariant::fromValue(after);
+    } else return;
+    const QPointer<CInspectorPanel> alive(this);
+    const auto* document = m_document;
+    const auto digest = document->SourceDigest(); const auto path = document->SourcePath();
+    if (!SubmitEdit(edit) || !alive || m_document != document || m_document->SourceDigest() != digest ||
+        m_document->SourcePath() != path || m_selectionName != id || m_selectionType != type) return;
+    if (type == QLatin1String("artmesh")) {
+        emit DrawableKeyformPositionsChanged(id, target, edit.after.value<QVector<float>>());
+        if (!alive || m_document != document) return;
+    }
+    RefreshSelection();
+    if (alive && m_document == document) emit HistoryChanged(m_document->CanUndoEdit(), m_document->CanRedoEdit());
 }
 
 void CInspectorPanel::ResetCurrentKeyform()

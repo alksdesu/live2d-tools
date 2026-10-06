@@ -5,6 +5,7 @@
 #include "wide_mesh_fixture.h"
 #include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
+#include "live2dstruct/cmodelsession.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include "live2dstruct/csectiontable.h"
 #include "live2dstruct/cmesheditplanner.h"
@@ -179,6 +180,197 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void deformerNeighborToolsUseAtomicHistory_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<bool>("interpolate"); QTest::addColumn<int>("outcome");
+        for (const QString type : {QString("warp"), QString("rotation")})
+            for (bool interpolate : {false, true}) for (int outcome : {0, 1, 2})
+                QTest::newRow(qPrintable(QString("%1-%2-%3").arg(type).arg(interpolate).arg(outcome))) << type << interpolate << outcome;
+    }
+
+    void deformerNeighborToolsUseAtomicHistory()
+    {
+        QFETCH(QString, type); QFETCH(bool, interpolate); QFETCH(int, outcome);
+        using namespace live2dstruct;
+        const QString model = type == "warp" ? "Mark" : "Natori";
+        const QString id = type == "warp" ? "Warp6" : "Rotation2";
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        const auto original = document;
+        auto warp = document.DeformerWarpKeyforms(id);
+        auto rotation = document.DeformerRotationKeyforms(id);
+        if (type == "warp") {
+            QVERIFY(warp.size() > 1 && !warp[0].positions.isEmpty());
+            warp[0].opacity = .25f; warp[1].opacity = .75f;
+            warp[0].positions.fill(2); warp[1].positions.fill(6);
+            QVERIFY(document.SetDeformerWarpKeyforms(id, warp));
+        } else {
+            QVERIFY(rotation.size() > 1);
+            rotation[0] = {.25f, 20, 2, 4, .5f, false, false};
+            rotation[1] = {.75f, 60, 6, 8, 1.5f, false, false};
+            QVERIFY(document.SetDeformerRotationKeyforms(id, rotation));
+        }
+        document.ClearEditHistory();
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type);
+        QVERIFY(panel.SyncActiveKeyform(id, type, interpolate ? 1 : 0));
+        auto* button = panel.findChild<QPushButton*>(interpolate ? "interpolatePreviousKeyform" : "copyKeyformToNext");
+        QVERIFY(button && button->isEnabled() && button->isVisibleTo(&panel));
+        QSignalSpy history(&panel, &CInspectorPanel::HistoryChanged), rejected(&panel, &CInspectorPanel::EditRejected);
+        CModelEdit captured; int calls = 0;
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* error) {
+            ++calls; captured = edit;
+            button->clicked(false);
+            if (outcome == 1) { *error = "preview refused"; return false; }
+            if (outcome == 2) throw std::runtime_error("preview failed");
+            return document.ExecuteEdit(edit);
+        });
+        const auto revision = document.Revision();
+        button->click();
+        QCOMPARE(calls, 1); QCOMPARE(captured.name, id); QCOMPARE(captured.type, type);
+        QCOMPARE(captured.index, 1); QVERIFY(!captured.coalesce);
+        if (outcome) {
+            QCOMPARE(document.DeformerWarpKeyforms(id), warp); QCOMPARE(document.DeformerRotationKeyforms(id), rotation);
+            QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit());
+            QCOMPARE(history.count(), 0); QCOMPARE(rejected.count(), 1); return;
+        }
+        if (type == "warp") {
+            auto expected = warp;
+            expected[1] = warp[0];
+            if (interpolate) { expected[1].positions.fill(4); expected[1].opacity = .5f; }
+            QCOMPARE(document.DeformerWarpKeyforms(id), expected);
+            QCOMPARE(captured.field, CModelEdit::WarpKeyforms);
+        } else {
+            auto expected = rotation;
+            expected[1] = interpolate ? CModelRotationKeyform{.5f, 40, 4, 6, 1, false, false} : rotation[0];
+            QCOMPARE(document.DeformerRotationKeyforms(id), expected);
+            QCOMPARE(captured.field, CModelEdit::RotationKeyforms);
+        }
+        const auto after = document; const int active = panel.GetActiveGeometryKeyformIndex();
+        QCOMPARE(document.Revision(), revision + 1); QCOMPARE(history.count(), 1); QCOMPARE(rejected.count(), 0);
+        QByteArray preview; QString error; QVERIFY2(document.BuildPreviewMoc(preview, &error), qPrintable(error));
+        CModelSession session; session.sourceMoc = document.SourcePath(); session.sourceDigest = document.SourceDigest();
+        session.deformerWarpKeyforms = document.DeformerWarpKeyformOverrides();
+        session.deformerRotationKeyforms = document.DeformerRotationKeyformOverrides();
+        CModelSession decoded; QVERIFY2(CModelSession::FromJson(session.ToJson(), &decoded, &error), qPrintable(error));
+        CModelDocument restored; QVERIFY2(decoded.RestoreDocument(original, restored, &error), qPrintable(error));
+        QCOMPARE(restored.DeformerWarpKeyforms(id), after.DeformerWarpKeyforms(id));
+        QCOMPARE(restored.DeformerRotationKeyforms(id), after.DeformerRotationKeyforms(id));
+        panel.Undo(); QCOMPARE(document.DeformerWarpKeyforms(id), warp); QCOMPARE(document.DeformerRotationKeyforms(id), rotation);
+        QVERIFY(!document.CanUndoEdit());
+        panel.Redo(); QCOMPARE(document.DeformerWarpKeyforms(id), after.DeformerWarpKeyforms(id));
+        QCOMPARE(document.DeformerRotationKeyforms(id), after.DeformerRotationKeyforms(id));
+        QCOMPARE(panel.GetActiveGeometryKeyformIndex(), active); QVERIFY(!document.CanRedoEdit());
+        panel.SetLockedState({type + '|' + id}); QVERIFY(!button->isEnabled());
+        const auto lockedRevision = document.Revision(); button->clicked(false); QCOMPARE(document.Revision(), lockedRevision);
+        panel.SetLockedState({});
+        QVERIFY(panel.SyncActiveKeyform(id, type, 0));
+        QVERIFY(!panel.findChild<QPushButton*>("interpolatePreviousKeyform")->isEnabled());
+        const int count = type == "warp" ? warp.size() : rotation.size();
+        QVERIFY(panel.SyncActiveKeyform(id, type, count - 1));
+        QVERIFY(!panel.findChild<QPushButton*>("copyKeyformToNext")->isEnabled());
+        panel.ClearSelection(); QVERIFY(!button->isVisibleTo(&panel));
+    }
+
+    void rotationNeighborInterpolationRejectsReflectionConflicts()
+    {
+        using namespace live2dstruct;
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Natori/Natori.moc3"));
+        auto forms = document.DeformerRotationKeyforms("Rotation2"); QVERIFY(forms.size() > 1);
+        forms[1].reflectX = !forms[0].reflectX;
+        QVERIFY(document.SetDeformerRotationKeyforms("Rotation2", forms)); document.ClearEditHistory();
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection("Rotation2", "rotation");
+        QVERIFY(panel.SyncActiveKeyform("Rotation2", "rotation", 1));
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        auto* button = panel.findChild<QPushButton*>("interpolatePreviousKeyform"); QVERIFY(button->isEnabled());
+        const auto revision = document.Revision(); button->click();
+        QCOMPARE(document.DeformerRotationKeyforms("Rotation2"), forms);
+        QCOMPARE(document.Revision(), revision); QVERIFY(!document.CanUndoEdit()); QCOMPARE(rejected.count(), 1);
+        QVERIFY(rejected.first().first().toString().contains(QStringLiteral("反射")));
+    }
+
+    void neighborCopyKeepsControllerPreview_data()
+    {
+        QTest::addColumn<QString>("type");
+        for (const char* type : {"artmesh", "warp", "rotation"}) QTest::newRow(type) << QString::fromLatin1(type);
+    }
+
+    void neighborCopyKeepsControllerPreview()
+    {
+        QFETCH(QString, type); using namespace live2dstruct;
+        const QString model = type == "rotation" ? "Natori" : "Mark";
+        const QString id = type == "rotation" ? "Rotation2" : type == "warp" ? "Warp6" : "EyeL4";
+        CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3"));
+        if (type == "rotation") {
+            auto forms = document.DeformerRotationKeyforms(id); QVERIFY(forms.size() > 1);
+            forms[1].angle = forms[0].angle + 20; QVERIFY(document.SetDeformerRotationKeyforms(id, forms));
+        } else if (type == "warp") {
+            auto forms = document.DeformerWarpKeyforms(id); QVERIFY(forms.size() > 1);
+            forms[1].positions[0] = forms[0].positions[0] + .125f; QVERIFY(document.SetDeformerWarpKeyforms(id, forms));
+        } else {
+            auto positions = document.DrawableKeyformPositions(id, 1); QVERIFY(!positions.isEmpty());
+            positions[0] = document.DrawableKeyformPositions(id, 0)[0] + .125f; QVERIFY(document.SetDrawableKeyformPositions(id, 1, positions));
+        }
+        document.ClearEditHistory();
+        CKeyformEditController controller; controller.SetDocument(&document);
+        QMap<QString, float> published;
+        controller.SetPublisher([&](const CModelDocument& candidate, const QMap<QString, float>& pose, bool editing, QString* error) {
+            if (!editing) return false;
+            QByteArray bytes; if (!candidate.BuildPreviewMoc(bytes, error)) return false;
+            published = pose; return true;
+        }, [](QString*) { return true; });
+        QString error; QVERIFY2(controller.Activate(id, type, 0, {}, &error), qPrintable(error));
+        const auto beforePose = published;
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type);
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected);
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* reason) {
+            return controller.Submit(edit, published, panel.PreviewKeyformForEdit(edit), reason);
+        });
+        auto* button = panel.findChild<QPushButton*>("copyKeyformToNext"); QVERIFY(button->isEnabled()); button->click();
+        QCOMPARE(rejected.count(), 0); QVERIFY(document.CanUndoEdit());
+        QCOMPARE(controller.Keyform(), 0); QCOMPARE(published, beforePose); QCOMPARE(panel.GetActiveGeometryKeyformIndex(), 0);
+        CModelEdit edit; QVERIFY(document.PeekUndoEdit(&edit)); QCOMPARE(edit.index, 1);
+        auto wrongTarget = edit; wrongTarget.name = "different"; QCOMPARE(panel.PreviewKeyformForEdit(wrongTarget), 1);
+        wrongTarget = edit; wrongTarget.type = "part"; QCOMPARE(panel.PreviewKeyformForEdit(wrongTarget), 1);
+    }
+
+    void neighborToolsStopAfterCallbackContextChanges_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<int>("outcome");
+        for (const char* type : {"artmesh", "warp", "rotation"}) for (int outcome : {0, 1, 2})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(outcome))) << QString::fromLatin1(type) << outcome;
+    }
+
+    void neighborToolsStopAfterCallbackContextChanges()
+    {
+        QFETCH(QString, type); QFETCH(int, outcome); using namespace live2dstruct;
+        const QString model = type == "rotation" ? "Natori" : "Mark";
+        const QString id = type == "rotation" ? "Rotation2" : type == "warp" ? "Warp6" : "EyeL4";
+        CModelDocument document, replacement;
+        const auto path = QString(TEST_RESOURCES) + '/' + model + '/' + model + ".moc3";
+        QVERIFY(document.Load(path)); QVERIFY(replacement.Load(path));
+        if (type == "rotation") {
+            auto forms = document.DeformerRotationKeyforms(id); forms[1].angle = forms[0].angle + 20;
+            QVERIFY(document.SetDeformerRotationKeyforms(id, forms));
+        } else if (type == "warp") {
+            auto forms = document.DeformerWarpKeyforms(id); forms[1].positions[0] = forms[0].positions[0] + .125f;
+            QVERIFY(document.SetDeformerWarpKeyforms(id, forms));
+        } else {
+            auto positions = document.DrawableKeyformPositions(id, 1); positions[0] = document.DrawableKeyformPositions(id, 0)[0] + .125f;
+            QVERIFY(document.SetDrawableKeyformPositions(id, 1, positions));
+        }
+        QPointer<CInspectorPanel> panel = new CInspectorPanel;
+        const auto cleanup = qScopeGuard([&] { if (panel) delete panel.data(); });
+        panel->SetDocument(&document); panel->SetSelection(id, type);
+        QSignalSpy history(panel, &CInspectorPanel::HistoryChanged);
+        panel->SetEditHandler([&](const CModelEdit&, QString*) {
+            if (outcome == 0) delete panel.data();
+            else if (outcome == 1) panel->SetDocument(&replacement);
+            else panel->ClearSelection();
+            return true;
+        });
+        panel->findChild<QPushButton*>("copyKeyformToNext")->click();
+        QCOMPARE(history.count(), 0); QVERIFY(!document.CanUndoEdit()); QVERIFY(!replacement.CanUndoEdit());
+    }
+
     void warpGridEntryUsesWarpIdentityAndAvailabilityFlag()
     {
         live2dstruct::CModelDocument document; QVERIFY(document.Load(QString(TEST_RESOURCES) + "/Mark/Mark.moc3"));

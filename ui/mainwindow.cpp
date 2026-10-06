@@ -1648,9 +1648,7 @@ bool MainWindow::SubmitInspectorEdit(const live2dstruct::CModelEdit& edit, QStri
             auto* model = LAppLive2DManager::GetInstance()->GetModel(0);
             if (model) values = model->GetParameterValues();
         }
-        const int previewKeyform = edit.field == live2dstruct::CModelEdit::KeyformPositions &&
-            m_inspectorPanel && m_inspectorPanel->GetSelectionId() == edit.name
-                ? m_inspectorPanel->GetActiveKeyformIndex() : edit.index;
+        const int previewKeyform = m_inspectorPanel ? m_inspectorPanel->PreviewKeyformForEdit(edit) : edit.index;
         if (!m_keyformEditor.Submit(edit, values, previewKeyform, error)) return false;
         if (edit.field == live2dstruct::CModelEdit::DeformerParent) RefreshModelTree();
         if (edit.field == live2dstruct::CModelEdit::DeformerStructure) {

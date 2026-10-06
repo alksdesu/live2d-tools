@@ -45,6 +45,7 @@ public:
     void SetHistoryHandler(std::function<bool(bool, live2dstruct::CModelEdit&, QString*)> handler);
     void SetKeyformHandler(std::function<bool(const QString&, int, QString*)> handler);
     void SetDeformerKeyformHandler(std::function<bool(const QString&, const QString&, int, QString*)> handler);
+    int PreviewKeyformForEdit(const live2dstruct::CModelEdit& edit) const;
     QString GetSelectionId() const { return m_selectionName; }
     QString GetSelectionType() const { return m_selectionType; }
     int GetActiveKeyformIndex() const { return m_activeKeyformIndex; }
@@ -89,6 +90,8 @@ private:
     void EditBindingKeys();
     void ApplyKeyformCellEdit(int row, int column);
     void MirrorKeyform(bool horizontal);
+    void RefreshNeighborKeyformTools();
+    void ApplyNeighborKeyform(bool interpolate);
     void InterpolatePreviousKeyform();
     void CopyKeyformToNext();
     void ResetCurrentKeyform();
