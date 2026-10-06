@@ -326,7 +326,7 @@ private slots:
         QVERIFY(near(restored, document.DrawableKeyformPositions("Mesh", 0)));
     }
 
-    void editedParentCannotIntroduceAnUnsupportedAncestor()
+    void editedParentBlendShapeChainMapsThroughPoseOverrides()
     {
         Fixture fixture;
         fixture.column(fixture.table.sectionOffsetTable->deformers->parent_deformer_indices, 2, -1);
@@ -342,9 +342,11 @@ private slots:
         QVector<float> oldWorld;
         QVERIFY(context.ToModel(document.DrawableKeyformPositions("Mesh", 0), oldWorld));
         QVERIFY(document.SetDeformerParentIndex("Child", 1));
-        QVERIFY(!context.Build(document, "Mesh", 0, {{"P", 0}}, &error));
-        QVERIFY(!error.isEmpty());
-        QVERIFY(context.MatchesRuntime(oldWorld));
+        QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVector<float> updatedWorld;
+        QVERIFY(context.ToModel(document.DrawableKeyformPositions("Mesh", 0), updatedWorld));
+        QVERIFY(context.MatchesRuntime(updatedWorld));
+        QVERIFY(updatedWorld != oldWorld);
     }
 
     void unrelatedBlendShapeDoesNotDisableTheTargetChain()

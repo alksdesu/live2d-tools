@@ -112,6 +112,7 @@ struct CKeyformMappingContext::State
     CSectionTable section;
     std::unique_ptr<C2DTree> tree;
     const CArtMeshNode* target = nullptr;
+    QVector<float> targetDelta;
     QVector<float> expected;
 };
 
@@ -134,20 +135,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             if (!sourceBindings.Build(sourceTable, error, true) ||
                 !sourceBindings.Pose(CKeyformBindingGrid::ArtMesh, artMeshId, keyformIndex, corner, error)) return false;
         }
-        QMap<QString, float> evaluationPose = fullPose;
-        for (int index = 0; index < sourceTable.parameters.size(); ++index) {
-            const auto* parameter = sourceTable.parameters[index];
-            if (!parameter || parameter->parameter_types != 1 || parameter->blend_shape_parameter_binding_sources_counts <= 0 ||
-                parameter->blend_shape_parameter_binding_sources_begin_indices < 0 ||
-                parameter->blend_shape_parameter_binding_sources_begin_indices >= sourceTable.blend_shape_parameter_bindings.size()) continue;
-            const auto* binding = sourceTable.blend_shape_parameter_bindings[
-                parameter->blend_shape_parameter_binding_sources_begin_indices];
-            if (!binding || binding->base_key_indices < 0 || binding->base_key_indices >= binding->keys_sources_counts ||
-                binding->keys_sources_begin_indices < 0 ||
-                binding->keys_sources_begin_indices + binding->base_key_indices >= sourceTable.keys->values.size()) continue;
-            evaluationPose.insert(parameter->ids,
-                                  sourceTable.keys->GetData(binding->keys_sources_begin_indices + binding->base_key_indices));
-        }
+        const QMap<QString, float> evaluationPose = fullPose;
         for (const auto& parameter : document.Parameters()) {
             if (parameter.type == 1) {
                 corner.remove(parameter.id);
@@ -159,7 +147,7 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         for (const auto& parameter : document.Parameters()) {
             const auto value = evaluationPose.constFind(parameter.id);
             const auto metadata = document.ParameterMetadata(parameter.id);
-            if (parameter.id.isEmpty() || parameterIds.contains(parameter.id) || value == fullPose.cend() ||
+            if (parameter.id.isEmpty() || parameterIds.contains(parameter.id) || value == evaluationPose.cend() ||
                 !std::isfinite(value.value()) || !std::isfinite(metadata.minimum) || !std::isfinite(metadata.maximum) ||
                 value.value() < metadata.minimum || value.value() > metadata.maximum)
                 return fail(error, QStringLiteral("编辑姿态参数缺失、重复或超出范围：%1").arg(parameter.id));
@@ -230,13 +218,6 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
                 return fail(error, QStringLiteral("父变形器 ID 缺失或重复：%1").arg(deformer->ids));
             if (deformer->types != 0 && deformer->types != 1)
                 return fail(error, QStringLiteral("父链含不支持的变形器类型：%1").arg(deformer->ids));
-            const bool deformerBlendShape = deformer->types == 0
-                ? std::any_of(table.blend_shapes_warp_deformers.cbegin(), table.blend_shapes_warp_deformers.cend(),
-                    [deformer](const auto* shape) { return shape && shape->target_indices == deformer->specific_sources_indices; })
-                : std::any_of(table.blend_shapes_rotation_deformers.cbegin(), table.blend_shapes_rotation_deformers.cend(),
-                    [deformer](const auto* shape) { return shape && shape->target_indices == deformer->specific_sources_indices; });
-            if (deformerBlendShape)
-                return fail(error, QStringLiteral("父链变形器包含尚不支持姿态反解的 BlendShape：%1").arg(deformer->ids));
             const auto type = deformer->types == 0 ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
             const QString diagnostic = bindings.Diagnostic(type, deformer->ids);
             if (!diagnostic.isEmpty()) return fail(error, QStringLiteral("父链 %1：%2").arg(deformer->ids, diagnostic));
@@ -254,6 +235,11 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
         const QVector<float> local = document.DrawableKeyformPositions(artMeshId, keyformIndex);
         if (local.isEmpty() || local.size() != qint64(table.art_meshes[meshIndex]->vertex_counts) * 2)
             return fail(error, QStringLiteral("目标关键形顶点数量无效：%1").arg(artMeshId));
+        const QVector<float> targetDelta = poseOverrides.artMeshPositions.value(artMeshId);
+        if (!targetDelta.isEmpty() && targetDelta.size() != local.size())
+            return fail(error, QStringLiteral("BlendShape 目标增量与网格顶点数量不一致：%1").arg(artMeshId));
+        QVector<float> evaluatedLocal = local;
+        for (int index = 0; index < targetDelta.size(); ++index) evaluatedLocal[index] += targetDelta[index];
         const qint64 row = qint64(table.art_meshes[meshIndex]->keyform_sources_begin_indices) + keyformIndex;
         if (row < 0 || row >= table.art_mesh_keyforms.size() ||
             !sameSlice(table.keyform_positions->xys, table.art_mesh_keyforms[row]->keyform_position_sources_begin_indices, local))
@@ -273,14 +259,15 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             auto* mesh = dynamic_cast<CArtMeshNode*>(node);
             if (!mesh || mesh->GetCanvasPositions().empty())
                 return fail(error, QStringLiteral("目标关键形的父链无法求值：%1").arg(artMeshId));
-            if (!sameSlice(mesh->GetCurKeyForm().GetPosition(), 0, local) ||
+            if (!sameSlice(mesh->GetCurKeyForm().GetPosition(), 0, evaluatedLocal) ||
                 mesh->GetCurKeyForm().GetPosition().size() != size_t(local.size()))
                 return fail(error, QStringLiteral("目标关键形的求值坐标与角点不一致：%1").arg(artMeshId));
             candidate->target = mesh;
         }
         if (!candidate->target || candidate->target->GetCanvasPositions().empty())
             return fail(error, QStringLiteral("目标关键形的父链无法求值：%1").arg(artMeshId));
-        if (!map(*candidate->target, local, candidate->expected, false, error)) return false;
+        candidate->targetDelta = targetDelta;
+        if (!map(*candidate->target, evaluatedLocal, candidate->expected, false, error)) return false;
         QVector<float> restored, reprojected;
         if (!map(*candidate->target, candidate->expected, restored, true, error) ||
             !map(*candidate->target, restored, reprojected, false, error) ||
@@ -298,8 +285,12 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
 bool CKeyformMappingContext::ToModel(const QVector<float>& local, QVector<float>& world, QString* error) const
 {
     if (!m_state) return fail(error, QStringLiteral("关键形映射上下文尚未构建"));
+    if (local.size() != m_state->targetDelta.size() && !m_state->targetDelta.isEmpty())
+        return fail(error, QStringLiteral("BlendShape 目标增量与输入顶点数量不一致"));
+    auto evaluatedLocal = local;
+    for (int index = 0; index < m_state->targetDelta.size(); ++index) evaluatedLocal[index] += m_state->targetDelta[index];
     QVector<float> candidate;
-    if (!map(*m_state->target, local, candidate, false, error)) return false;
+    if (!map(*m_state->target, evaluatedLocal, candidate, false, error)) return false;
     for (qsizetype index = 1; index < candidate.size(); index += 2) candidate[index] = -candidate[index];
     world.swap(candidate);
     return true;
@@ -310,7 +301,13 @@ bool CKeyformMappingContext::FromModel(const QVector<float>& world, QVector<floa
     if (!m_state) return fail(error, QStringLiteral("关键形映射上下文尚未构建"));
     auto canvas = world;
     for (qsizetype index = 1; index < canvas.size(); index += 2) canvas[index] = -canvas[index];
-    return map(*m_state->target, canvas, local, true, error);
+    QVector<float> evaluatedLocal;
+    if (!map(*m_state->target, canvas, evaluatedLocal, true, error)) return false;
+    if (evaluatedLocal.size() != m_state->targetDelta.size() && !m_state->targetDelta.isEmpty())
+        return fail(error, QStringLiteral("BlendShape 目标增量与映射结果数量不一致"));
+    for (int index = 0; index < m_state->targetDelta.size(); ++index) evaluatedLocal[index] -= m_state->targetDelta[index];
+    local.swap(evaluatedLocal);
+    return true;
 }
 
 bool CKeyformMappingContext::MatchesRuntime(const QVector<float>& actualModelVertices, QString* error) const
