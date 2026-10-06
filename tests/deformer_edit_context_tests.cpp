@@ -195,7 +195,7 @@ private slots:
         QVector<float> local{7, 9}; QVERIFY(!context.FromModel({1, -1}, local, &error)); QCOMPARE(local, QVector<float>({7, 9}));
         QVERIFY(error.contains(QStringLiteral("唯一")));
     }
-    void unrelatedBlendShapeAndDownstreamGlueDoNotBlockRoot()
+    void nonGlueBlendShapeParentsRemainEditable()
     {
         Fixture fixture; fixture.count(27, 1);
         fixture.appendColumn(0x234, {0}); fixture.appendColumn(0x238, {0}); fixture.appendColumn(0x23c, {0});
@@ -206,13 +206,12 @@ private slots:
         put(fixture.bytes, 0x1a8, offset);
         CModelDocument document; QString error; QVERIFY2(document.LoadBytes(fixture.bytes, "bs", &error), qPrintable(error));
         CDeformerEditContext context; QVERIFY2(context.Build(document, "Root", "rotation", 0, {{"P", 0}}, &error), qPrintable(error));
-        const auto expected = context.ModelPoints();
-        QVERIFY(!context.Build(document, "Warp", "warp", 0, {{"P", 0}}, &error));
-        QVERIFY(error.contains("BlendShape")); QCOMPARE(context.ModelPoints(), expected);
-        QVERIFY(!context.Build(document, "Child", "rotation", 0, {{"P", 0}}, &error));
-        QVERIFY(error.contains("BlendShape"));
+        QVERIFY2(context.Build(document, "Warp", "warp", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVERIFY(!context.ModelPoints().isEmpty());
+        QVERIFY2(context.Build(document, "Child", "rotation", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVERIFY(!context.ModelPoints().isEmpty());
     }
-    void rotationBlendShapeTargetsAndAncestorsAreExplicitlyBlocked()
+    void rotationBlendShapeTargetsAndAncestorsRemainEditable()
     {
         Fixture fixture; QString error;
         CModelDocument childBlend;
@@ -220,15 +219,14 @@ private slots:
         CDeformerEditContext context;
         QVERIFY2(context.Build(childBlend, "Root", "rotation", 0, {{"P", 0}}, &error), qPrintable(error));
         QVERIFY2(context.Build(childBlend, "Warp", "warp", 0, {{"P", 0}}, &error), qPrintable(error));
-        const auto expected = context.ModelPoints();
-        QVERIFY(!context.Build(childBlend, "Child", "rotation", 0, {{"P", 0}}, &error));
-        QVERIFY(error.contains("BlendShape")); QCOMPARE(context.ModelPoints(), expected);
+        QVERIFY2(context.Build(childBlend, "Child", "rotation", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVERIFY(!context.ModelPoints().isEmpty());
         CModelDocument rootBlend;
         QVERIFY2(rootBlend.LoadBytes(rotationBlendFixture(fixture.bytes, 0), "ancestor-bs", &error), qPrintable(error));
-        QVERIFY(!context.Build(rootBlend, "Warp", "warp", 0, {{"P", 0}}, &error));
-        QVERIFY(error.contains("BlendShape")); QCOMPARE(context.ModelPoints(), expected);
-        QVERIFY(!context.Build(rootBlend, "Child", "rotation", 0, {{"P", 0}}, &error));
-        QVERIFY(error.contains("BlendShape"));
+        QVERIFY2(context.Build(rootBlend, "Warp", "warp", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVERIFY(!context.ModelPoints().isEmpty());
+        QVERIFY2(context.Build(rootBlend, "Child", "rotation", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVERIFY(!context.ModelPoints().isEmpty());
     }
     void sharedSpecificSourceKeepsDistinctGenericOwners()
     {

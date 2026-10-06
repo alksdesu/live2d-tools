@@ -103,6 +103,27 @@ void flipY(QVector<float>& points)
 {
     for (qsizetype index = 1; index < points.size(); index += 2) points[index] = -points[index];
 }
+
+QVector<float> withDelta(const QVector<float>& values, const QVector<float>& delta)
+{
+    if (delta.isEmpty()) return values;
+    QVector<float> result = values;
+    if (result.size() != delta.size()) return {};
+    for (int index = 0; index < result.size(); ++index) result[index] += delta[index];
+    return result;
+}
+
+CModelRotationKeyform withDelta(const CModelRotationKeyform& value,
+                                const CBlendShapePoseEvaluator::RotationDelta& delta)
+{
+    auto result = value;
+    if (delta.opacity != 0.0f) result.opacity += delta.opacity;
+    if (delta.angle != 0.0f) result.angle += delta.angle;
+    if (delta.originX != 0.0f) result.originX += delta.originX;
+    if (delta.originY != 0.0f) result.originY += delta.originY;
+    if (delta.scale != 0.0f) result.scale += delta.scale;
+    return result;
+}
 }
 
 struct CDeformerEditContext::State
@@ -116,6 +137,8 @@ struct CDeformerEditContext::State
     QPointF direction;
     std::shared_ptr<const CCoordinateFrame> parentFrame;
     CModelRotationKeyform rotation;
+    QVector<float> targetDelta;
+    CBlendShapePoseEvaluator::RotationDelta rotationDelta;
     float baseAngle = 0;
     bool isRotation = false;
 };
@@ -137,9 +160,11 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
             CSectionTable sourceTable(sourceReader);
             CKeyformBindingGrid sourceBindings;
             const auto sourceType = type == QStringLiteral("warp") ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
-            if (!sourceBindings.Build(sourceTable, error) ||
+            if (!sourceBindings.Build(sourceTable, error, true) ||
                 !sourceBindings.Pose(sourceType, id, keyform, corner, error)) return false;
         }
+        for (const auto& parameter : document.Parameters())
+            if (parameter.type == 1) corner.remove(parameter.id);
         if (fullPose.size() != document.Parameters().size())
             return fail(error, QStringLiteral("变形器编辑姿态必须包含全部参数"));
         QSet<QString> parameters;
@@ -162,13 +187,15 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         const auto& table = candidate->table;
         if (!table.IsValid()) return fail(error, candidate->reader.Error());
         CKeyformBindingGrid bindings;
-        if (!bindings.Build(table, error)) return false;
+        if (!bindings.Build(table, error, true)) return false;
         CBlendShapePoseEvaluator::Overrides poseOverrides;
         CBlendShapePoseEvaluator evaluator;
         if (!evaluator.Build(table, fullPose, poseOverrides, error)) return false;
         const auto targetType = type == QStringLiteral("warp") ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
         QMap<QString, float> patchedCorner;
         if (!bindings.Pose(targetType, id, keyform, patchedCorner, error)) return false;
+        for (const auto& parameter : document.Parameters())
+            if (parameter.type == 1) patchedCorner.remove(parameter.id);
         if (patchedCorner != corner)
             return fail(error, QStringLiteral("预览补丁改变了目标关键形的参数绑定"));
 
@@ -182,10 +209,6 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         if (targetIndex < 0) return fail(error, QStringLiteral("预览快照缺少目标变形器：%1").arg(id));
         if (table.deformers[targetIndex]->types != (targetType == CKeyformBindingGrid::Warp ? 0 : 1))
             return fail(error, QStringLiteral("目标变形器类型与预览快照不一致：%1").arg(id));
-        QSet<int> blendWarps, blendRotations;
-        for (const auto* shape : table.blend_shapes_warp_deformers) if (shape) blendWarps.insert(shape->target_indices);
-        for (const auto* shape : table.blend_shapes_rotation_deformers) if (shape) blendRotations.insert(shape->target_indices);
-        for (const auto* shape : table.blend_shapes_rotation_deformers) if (shape) blendRotations.insert(shape->target_indices);
         QSet<int> chain;
         for (int index = targetIndex; index != -1; index = table.deformers[index]->parent_deformer_indices) {
             if (index < 0 || index >= table.deformers.size() || chain.contains(index))
@@ -195,15 +218,20 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
             if (deformer->ids.isEmpty() || idCounts.value(deformer->ids) != 1 || index >= document.Deformers().size() ||
                 document.Deformers()[index].id != deformer->ids || (deformer->types != 0 && deformer->types != 1))
                 return fail(error, QStringLiteral("变形器标识、类型或所属源不一致：%1").arg(deformer->ids));
-            if ((deformer->types == 0 ? blendWarps : blendRotations).contains(deformer->specific_sources_indices))
-                return fail(error, QStringLiteral("目标或父变形器包含尚不支持编辑映射的 BlendShape：%1").arg(deformer->ids));
+            if (poseOverrides.reflectionConflicts.contains(deformer->ids))
+                return fail(error, QStringLiteral("目标或父变形器的 BlendShape 改变了反射标记：%1").arg(deformer->ids));
             const auto gridType = deformer->types == 0 ? CKeyformBindingGrid::Warp : CKeyformBindingGrid::Rotation;
             const QString diagnostic = bindings.Diagnostic(gridType, deformer->ids);
             if (!diagnostic.isEmpty()) return fail(error, QStringLiteral("变形器 %1：%2").arg(deformer->ids, diagnostic));
             for (const auto& axis : bindings.Axes(gridType, deformer->ids)) {
                 const auto value = fullPose.constFind(axis.parameterId);
-                if (axis.parameterType != 0 || axis.keys.isEmpty() || value == fullPose.cend() ||
-                    value.value() < axis.keys.first() || value.value() > axis.keys.last())
+                const auto parameter = std::find_if(document.Parameters().cbegin(), document.Parameters().cend(),
+                    [&axis](const auto& item) { return item.id == axis.parameterId; });
+                if (parameter == document.Parameters().cend() || axis.parameterType != parameter->type ||
+                    value == fullPose.cend() || !std::isfinite(value.value()) ||
+                    value.value() < parameter->minimum || value.value() > parameter->maximum ||
+                    (axis.parameterType == 0 && (axis.keys.isEmpty() || value.value() < axis.keys.first() ||
+                                                   value.value() > axis.keys.last())))
                     return fail(error, QStringLiteral("变形器 %1 的参数 %2 不在普通轴关键值覆盖范围内")
                                 .arg(deformer->ids, axis.parameterId));
             }
@@ -212,10 +240,21 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
         }
 
         QVector<float> local;
-        if (targetType == CKeyformBindingGrid::Warp) local = document.DeformerWarpKeyforms(id).at(keyform).positions;
+        if (targetType == CKeyformBindingGrid::Warp) {
+            local = document.DeformerWarpKeyforms(id).at(keyform).positions;
+            candidate->targetDelta = poseOverrides.warpPositions.value(id);
+            if (!candidate->targetDelta.isEmpty() && candidate->targetDelta.size() != local.size())
+                return fail(error, QStringLiteral("目标 Warp BlendShape 增量与关键形坐标数量不一致：%1").arg(id));
+            local = withDelta(local, candidate->targetDelta);
+            if (local.isEmpty()) return fail(error, QStringLiteral("目标 Warp BlendShape 增量无效：%1").arg(id));
+        }
         else {
             const auto form = document.DeformerRotationKeyforms(id).at(keyform);
-            local = {form.originX, form.originY};
+            candidate->rotationDelta = poseOverrides.rotations.value(id);
+            if (candidate->rotationDelta.reflectionConflict)
+                return fail(error, QStringLiteral("目标 Rotation BlendShape 改变了反射标记：%1").arg(id));
+            local = {form.originX + candidate->rotationDelta.originX,
+                     form.originY + candidate->rotationDelta.originY};
         }
         if (local.isEmpty()) return fail(error, QStringLiteral("目标变形器没有可编辑坐标"));
         candidate->tree = std::make_unique<C2DTree>(table);
@@ -258,8 +297,16 @@ bool CDeformerEditContext::ToModel(const QVector<float>& local, QVector<float>& 
     if (error) error->clear();
     if (!m_state) return fail(error, QStringLiteral("变形器编辑上下文尚未构建"));
     try {
+        QVector<float> effective = local;
+        if (!m_state->targetDelta.isEmpty()) {
+            effective = withDelta(local, m_state->targetDelta);
+            if (effective.isEmpty()) return fail(error, QStringLiteral("Warp BlendShape 增量与输入坐标数量不一致"));
+        } else if (m_state->isRotation && effective.size() == 2) {
+            effective[0] += m_state->rotationDelta.originX;
+            effective[1] += m_state->rotationDelta.originY;
+        }
         QVector<float> candidate;
-        if (!map(*m_state->target, local, candidate, false, error)) return false;
+        if (!map(*m_state->target, effective, candidate, false, error)) return false;
         flipY(candidate);
         world.swap(candidate);
         return true;
@@ -278,6 +325,14 @@ bool CDeformerEditContext::FromModel(const QVector<float>& world, QVector<float>
         if (!map(*m_state->target, canvas, candidate, true, error) ||
             !map(*m_state->target, candidate, reprojected, false, error) ||
             !roundTripMatches(reprojected, canvas, error)) return false;
+        if (!m_state->targetDelta.isEmpty()) {
+            if (candidate.size() != m_state->targetDelta.size())
+                return fail(error, QStringLiteral("Warp BlendShape 增量与反解坐标数量不一致"));
+            for (int index = 0; index < candidate.size(); ++index) candidate[index] -= m_state->targetDelta[index];
+        } else if (m_state->isRotation && candidate.size() == 2) {
+            candidate[0] -= m_state->rotationDelta.originX;
+            candidate[1] -= m_state->rotationDelta.originY;
+        }
         local.swap(candidate);
         return true;
     } catch (const std::exception&) {
@@ -311,8 +366,9 @@ bool CDeformerEditContext::ResolveRotation(const CModelRotationKeyform& keyform,
         return fail(error, QStringLiteral("当前上下文不是旋转变形器"));
     if (!keyform.IsValid()) return fail(error, QStringLiteral("旋转关键形数值无效"));
     try {
-        CRotationNodeKeyform key(keyform.opacity, keyform.angle, keyform.originX, keyform.originY,
-                                keyform.scale, keyform.reflectX, keyform.reflectY);
+        const auto effective = withDelta(keyform, m_state->rotationDelta);
+        CRotationNodeKeyform key(effective.opacity, effective.angle, effective.originX, effective.originY,
+                                effective.scale, effective.reflectX, effective.reflectY);
         CCoordinateFrame::ResolvedRotation resolved;
         if (!CCoordinateFrame::ResolveRotation(m_state->baseAngle, key, m_state->parentFrame, resolved))
             return fail(error, QStringLiteral("旋转关键形的父方向退化或坐标超出范围"));
@@ -347,9 +403,12 @@ bool CDeformerEditContext::SolveRotation(const CRotationFrameGeometry::Frame& de
             result = reference;
             return true;
         }
+        const auto effectiveReference = withDelta(reference, m_state->rotationDelta);
         CModelRotationKeyform candidate = reference;
         candidate.originX = local[0]; candidate.originY = local[1];
-        CRotationNodeKeyform neutral(reference.opacity, 0, candidate.originX, candidate.originY, 1, false, false);
+        const auto effectiveCandidateOrigin = withDelta(candidate, m_state->rotationDelta);
+        CRotationNodeKeyform neutral(effectiveCandidateOrigin.opacity, 0, effectiveCandidateOrigin.originX,
+                                     effectiveCandidateOrigin.originY, 1, false, false);
         CCoordinateFrame::ResolvedRotation parent;
         if (!CCoordinateFrame::ResolveRotation(m_state->baseAngle, neutral, m_state->parentFrame, parent) ||
             parent.parentSignedScale == 0)
@@ -358,24 +417,28 @@ bool CDeformerEditContext::SolveRotation(const CRotationFrameGeometry::Frame& de
         if (!std::isfinite(magnitude) || magnitude > std::numeric_limits<float>::max() ||
             (magnitude != 0 && float(magnitude) == 0))
             return fail(error, QStringLiteral("目标旋转尺度超出可表示范围"));
-        candidate.scale = float(magnitude) * (std::signbit(reference.scale) ? -1.0f : 1.0f);
+        auto effectiveCandidate = effectiveCandidateOrigin;
+        effectiveCandidate.scale = float(magnitude) * (std::signbit(effectiveReference.scale) ? -1.0f : 1.0f);
         const QPointF x(desired.xAxis.x(), -desired.xAxis.y());
         const QPointF y(desired.yAxis.x(), -desired.yAxis.y());
         const bool negativeParity = x.x() * y.y() - x.y() * y.x() < 0;
-        candidate.reflectY = negativeParity ? !candidate.reflectX : candidate.reflectX;
-        if (reflection == ReflectionPolicy::Preserve && candidate.reflectY != reference.reflectY)
+        effectiveCandidate.reflectY = negativeParity ? !effectiveCandidate.reflectX : effectiveCandidate.reflectX;
+        if (reflection == ReflectionPolicy::Preserve && effectiveCandidate.reflectY != effectiveReference.reflectY)
             return fail(error, QStringLiteral("目标方向需要改变反射标记，请先确认全部关联关键形的反射一致性"));
-        const double totalScale = double(candidate.scale) * parent.parentSignedScale;
+        const double totalScale = double(effectiveCandidate.scale) * parent.parentSignedScale;
         if (desired.scale != 0 && float(totalScale) == 0)
             return fail(error, QStringLiteral("目标旋转总尺度低于可表示精度"));
-        const double sign = (totalScale < 0 ? -1.0 : 1.0) * (candidate.reflectX ? -1.0 : 1.0);
+        const double sign = (totalScale < 0 ? -1.0 : 1.0) * (effectiveCandidate.reflectX ? -1.0 : 1.0);
         const double principal = qRadiansToDegrees(std::atan2(x.y() * sign, x.x() * sign)) -
                                  parent.parentAngle - m_state->baseAngle;
-        const double angle = double(reference.angle) +
-            std::remainder(principal - std::remainder(double(reference.angle), 360.0), 360.0);
+        const double angle = double(effectiveReference.angle) +
+            std::remainder(principal - std::remainder(double(effectiveReference.angle), 360.0), 360.0);
         if (!std::isfinite(angle) || std::abs(angle) > std::numeric_limits<float>::max())
             return fail(error, QStringLiteral("目标旋转角度超出可表示范围"));
-        candidate.angle = float(angle);
+        effectiveCandidate.angle = float(angle);
+        candidate.angle = effectiveCandidate.angle - m_state->rotationDelta.angle;
+        candidate.scale = effectiveCandidate.scale - m_state->rotationDelta.scale;
+        candidate.reflectY = effectiveCandidate.reflectY;
         CRotationFrameGeometry::Frame actual;
         if (!ResolveRotation(candidate, actual, error) || !CRotationFrameGeometry::Matches(actual, desired, error)) return false;
         result = candidate;

@@ -229,7 +229,7 @@ bool CKeyformBindingGrid::Build(const CSectionTable& table, QString* error, bool
                 const CRotation_deformers* rotation = table.rotation_deformers[specific];
                 grid = buildGrid(source->keyform_binding_sources_indices, rotation->keyform_sources_begin_indices,
                                  rotation->keyform_sources_counts, table.rotation_deformer_keyforms.size());
-                if (blendRotations.contains(specific) && grid.error.isEmpty())
+                if (!allowBlendShapePose && blendRotations.contains(specific) && grid.error.isEmpty())
                     grid.error = QStringLiteral("对象包含尚不支持姿态反解的 BlendShape");
             } else grid.error = QStringLiteral("Rotation 专用源索引无效");
             insert(Rotation, source->ids, std::move(grid));
