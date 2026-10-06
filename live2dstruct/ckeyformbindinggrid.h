@@ -36,6 +36,9 @@ public:
     bool Build(const CSectionTable& table, QString* error = nullptr, bool allowBlendShapePose = false);
     bool Pose(ObjectType type, const QString& id, int keyformIndex,
               QMap<QString, float>& values, QString* error = nullptr) const;
+    bool OrdinaryPose(ObjectType type, const QString& id, int keyformIndex,
+                      QMap<QString, float>& values, QString* error = nullptr) const;
+    QString OrdinaryDiagnostic(ObjectType type, const QString& id) const;
     QVector<Axis> Axes(ObjectType type, const QString& id) const;
     QString Diagnostic(ObjectType type, const QString& id) const;
     Description Describe(ObjectType type, const QString& id) const;
@@ -63,6 +66,8 @@ private:
         QString error;
     };
 
+    bool PoseImpl(ObjectType type, const QString& id, int keyformIndex, QMap<QString, float>& values,
+                  bool ordinary, QString* error) const;
     const Grid* Find(ObjectType type, const QString& id) const;
     QVector<Axis> CollectAxes(const Grid& grid) const;
     std::array<QHash<QString, Grid>, 3> m_grids;

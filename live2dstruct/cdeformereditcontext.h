@@ -20,6 +20,10 @@ public:
                int keyform, const QMap<QString, float>& fullPose, QString* error = nullptr);
     bool ToModel(const QVector<float>& local, QVector<float>& world, QString* error = nullptr) const;
     bool FromModel(const QVector<float>& world, QVector<float>& local, QString* error = nullptr) const;
+    bool ToModel(const QVector<float>& local, const QVector<int>& pointIndices,
+                 QVector<float>& world, QString* error = nullptr) const;
+    bool FromModel(const QVector<float>& world, const QVector<int>& pointIndices,
+                   QVector<float>& local, QString* error = nullptr) const;
     const QVector<float>& ModelPoints() const;
     QPointF RotationDirection() const;
     bool CurrentRotationFrame(CRotationFrameGeometry::Frame& result, QString* error = nullptr) const;
@@ -31,6 +35,8 @@ public:
     bool IsValid() const { return bool(m_state); }
 
 private:
+    bool MapPoints(const QVector<float>& input, const QVector<int>* pointIndices,
+                   QVector<float>& output, bool inverse, QString* error) const;
     struct State;
     std::shared_ptr<const State> m_state;
 };

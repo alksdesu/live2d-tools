@@ -258,9 +258,22 @@ const CKeyformBindingGrid::Grid* CKeyformBindingGrid::Find(ObjectType type, cons
 bool CKeyformBindingGrid::Pose(ObjectType type, const QString& id, int keyformIndex,
                              QMap<QString, float>& values, QString* error) const
 {
+    return PoseImpl(type, id, keyformIndex, values, false, error);
+}
+
+bool CKeyformBindingGrid::OrdinaryPose(ObjectType type, const QString& id, int keyformIndex,
+                                     QMap<QString, float>& values, QString* error) const
+{
+    return PoseImpl(type, id, keyformIndex, values, true, error);
+}
+
+bool CKeyformBindingGrid::PoseImpl(ObjectType type, const QString& id, int keyformIndex,
+                                 QMap<QString, float>& values, bool ordinary, QString* error) const
+{
     const Grid* grid = Find(type, id);
     if (!grid) return fail(error, QStringLiteral("未找到对象的关键形绑定：%1").arg(id));
-    if (!grid->error.isEmpty()) return fail(error, grid->error);
+    const QString diagnostic = ordinary ? OrdinaryDiagnostic(type, id) : grid->error;
+    if (!diagnostic.isEmpty()) return fail(error, diagnostic);
     if (keyformIndex < 0 || keyformIndex >= grid->keyformCount)
         return fail(error, QStringLiteral("关键形索引越界：%1").arg(keyformIndex));
     QMap<QString, float> candidate;
@@ -269,6 +282,7 @@ bool CKeyformBindingGrid::Pose(ObjectType type, const QString& id, int keyformIn
         const Binding& binding = m_bindings[m_references[grid->axisBegin + offset]];
         const int keyIndex = remainder % binding.keyCount;
         remainder /= binding.keyCount;
+        if (ordinary && binding.parameterType == 1) continue;
         const float value = m_keys[binding.keyBegin + keyIndex];
         const auto existing = candidate.constFind(binding.parameterId);
         if (existing != candidate.cend() && existing.value() != value)
@@ -314,6 +328,20 @@ CKeyformBindingGrid::Description CKeyformBindingGrid::Describe(ObjectType type, 
     if (!grid) return {{}, 0, 0, -1, false, QStringLiteral("未找到对象的关键形绑定：%1").arg(id)};
     return {grid->axesValid ? CollectAxes(*grid) : QVector<Axis>{}, grid->keyformCount,
             grid->expectedKeyformCount, grid->missingKeyformCount, grid->axesValid, grid->error};
+}
+
+QString CKeyformBindingGrid::OrdinaryDiagnostic(ObjectType type, const QString& id) const
+{
+    const Grid* grid = Find(type, id);
+    if (!grid) return QStringLiteral("未找到对象的关键形绑定：%1").arg(id);
+    if (!grid->structureValid) return grid->error;
+    for (int offset = 0; offset < grid->axisCount; ++offset) {
+        const Binding& binding = m_bindings[m_references[grid->axisBegin + offset]];
+        if (binding.parameterType != 0 && binding.parameterType != 1) return binding.error;
+        if (binding.parameterType == 1 && binding.keyCount > 1)
+            return QStringLiteral("参数 %1 的类型 1 多关键值轴不能定位普通关键形").arg(binding.parameterId);
+    }
+    return {};
 }
 
 QString CKeyformBindingGrid::Diagnostic(ObjectType type, const QString& id) const

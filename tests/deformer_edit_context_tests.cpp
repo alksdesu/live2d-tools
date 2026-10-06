@@ -87,6 +87,216 @@ private slots:
         QVERIFY(context.FromModel(context.ModelPoints().mid(2, 2), selected));
         QCOMPARE(selected, local.mid(2, 2));
     }
+    void indexedWarpMappingPreservesSelectionOrder_data()
+    {
+        QTest::addColumn<bool>("root"); QTest::addColumn<QVector<int>>("indices");
+        for (bool root : {false, true}) {
+            const QByteArray prefix = root ? "root-" : "parented-";
+            QTest::newRow((prefix + "single").constData()) << root << QVector<int>{3};
+            QTest::newRow((prefix + "sparse").constData()) << root << QVector<int>{3, 0};
+            QTest::newRow((prefix + "reverse").constData()) << root << QVector<int>{3, 2, 1, 0};
+        }
+    }
+    void indexedWarpMappingPreservesSelectionOrder()
+    {
+        QFETCH(bool, root); QFETCH(QVector<int>, indices);
+        Fixture fixture;
+        if (root) fixture.column(fixture.table.sectionOffsetTable->deformers->parent_deformer_indices, 1, -1);
+        CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "indexed", &error), qPrintable(error));
+        CDeformerEditContext context;
+        QVERIFY2(context.Build(document, "Warp", "warp", 0, {{"P", 0}}, &error), qPrintable(error));
+        const auto allLocal = document.DeformerWarpKeyforms("Warp")[0].positions;
+        const auto allWorld = context.ModelPoints();
+        QVector<float> local, expectedWorld;
+        for (int index : indices) {
+            local.append(allLocal.mid(index * 2, 2));
+            expectedWorld.append(allWorld.mid(index * 2, 2));
+        }
+        QVector<float> world{7, 9}, restored{7, 9};
+        QVERIFY2(context.ToModel(local, indices, world, &error), qPrintable(error));
+        QVERIFY(near(world, expectedWorld));
+        QVERIFY2(context.FromModel(world, indices, restored, &error), qPrintable(error));
+        QVERIFY(near(restored, local));
+        auto inPlace = local;
+        QVERIFY2(context.ToModel(inPlace, indices, inPlace, &error), qPrintable(error));
+        QVERIFY(near(inPlace, expectedWorld));
+        QVERIFY2(context.FromModel(inPlace, indices, inPlace, &error), qPrintable(error));
+        QVERIFY(near(inPlace, local));
+        auto changedAll = allLocal;
+        for (int row = 0; row < indices.size(); ++row) {
+            local[row * 2] += 0.125f; local[row * 2 + 1] -= 0.05f;
+            changedAll[indices[row] * 2] = local[row * 2];
+            changedAll[indices[row] * 2 + 1] = local[row * 2 + 1];
+        }
+        QVector<float> changedWorld;
+        QVERIFY2(context.ToModel(changedAll, changedWorld, &error), qPrintable(error));
+        expectedWorld.clear();
+        for (int index : indices) expectedWorld.append(changedWorld.mid(index * 2, 2));
+        QVERIFY2(context.ToModel(local, indices, world, &error), qPrintable(error));
+        QVERIFY(near(world, expectedWorld));
+        QVERIFY2(context.FromModel(world, indices, restored, &error), qPrintable(error));
+        QVERIFY(near(restored, local));
+        QCOMPARE(context.ModelPoints(), allWorld);
+        QCOMPARE(document.DeformerWarpKeyforms("Warp")[0].positions, allLocal);
+    }
+    void indexedWarpMappingRejectsInvalidInputAtomically_data()
+    {
+        QTest::addColumn<QVector<float>>("points"); QTest::addColumn<QVector<int>>("indices");
+        QTest::newRow("duplicate") << QVector<float>{0, 0, 1, 1} << QVector<int>{0, 0};
+        QTest::newRow("negative") << QVector<float>{0, 0} << QVector<int>{-1};
+        QTest::newRow("past-end") << QVector<float>{0, 0} << QVector<int>{4};
+        QTest::newRow("integer-limit") << QVector<float>{0, 0} << QVector<int>{std::numeric_limits<int>::max()};
+        QTest::newRow("too-few-indices") << QVector<float>{0, 0, 1, 1} << QVector<int>{0};
+        QTest::newRow("too-many-indices") << QVector<float>{0, 0} << QVector<int>{0, 1};
+        QTest::newRow("odd-points") << QVector<float>{0, 0, 1} << QVector<int>{0};
+        QTest::newRow("empty-indices") << QVector<float>{0, 0} << QVector<int>{};
+        QTest::newRow("empty-points") << QVector<float>{} << QVector<int>{0};
+        QTest::newRow("nan") << QVector<float>{0, std::numeric_limits<float>::quiet_NaN()} << QVector<int>{0};
+        QTest::newRow("positive-inf") << QVector<float>{std::numeric_limits<float>::infinity(), 0} << QVector<int>{0};
+        QTest::newRow("negative-inf") << QVector<float>{0, -std::numeric_limits<float>::infinity()} << QVector<int>{3};
+    }
+    void indexedWarpMappingRejectsInvalidInputAtomically()
+    {
+        QFETCH(QVector<float>, points); QFETCH(QVector<int>, indices);
+        Fixture fixture; CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "invalid-index", &error), qPrintable(error));
+        CDeformerEditContext context;
+        QVERIFY2(context.Build(document, "Warp", "warp", 0, {{"P", 0}}, &error), qPrintable(error));
+        QVector<float> output{7, 9};
+        QVERIFY(!context.ToModel(points, indices, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+        error.clear();
+        QVERIFY(!context.FromModel(points, indices, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+        for (bool inverse : {false, true}) {
+            auto inPlace = points;
+            QVERIFY(!(inverse ? context.FromModel(inPlace, indices, inPlace, &error)
+                              : context.ToModel(inPlace, indices, inPlace, &error)));
+            QCOMPARE(inPlace.size(), points.size());
+            if (!points.isEmpty())
+                QCOMPARE(std::memcmp(inPlace.constData(), points.constData(), size_t(points.size()) * sizeof(float)), 0);
+        }
+    }
+    void indexedMappingRequiresWarpContext()
+    {
+        Fixture fixture; CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "indexed-context", &error), qPrintable(error));
+        CDeformerEditContext context; QVector<float> output{7, 9};
+        QVERIFY(!context.ToModel({0, 0}, {0}, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+        QVERIFY(!context.FromModel({0, 0}, {0}, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+        QVERIFY2(context.Build(document, "Child", "rotation", 0, {{"P", 0}}, &error), qPrintable(error));
+        const auto world = context.ModelPoints();
+        QVector<float> local;
+        QVERIFY2(context.FromModel(world, local, &error), qPrintable(error));
+        QVERIFY(!context.ToModel(local, {0}, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+        QVERIFY(!context.FromModel(world, {0}, output, &error));
+        QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+        auto inPlace = world;
+        QVERIFY(!context.FromModel(inPlace, {0}, inPlace, &error)); QCOMPARE(inPlace, world);
+        inPlace = local;
+        QVERIFY(!context.ToModel(inPlace, {0}, inPlace, &error)); QCOMPARE(inPlace, local);
+        QVERIFY2(context.ToModel(local, output, &error), qPrintable(error)); QVERIFY(near(output, world));
+    }
+    void indexedInverseDoesNotVisitUnselectedFoldedParentPoint()
+    {
+        Fixture fixture; const auto& o = *fixture.table.sectionOffsetTable;
+        fixture.column(o.deformers->parent_deformer_indices, 1, -1);
+        fixture.column(o.deformers->types, 2, 0);
+        fixture.column(o.deformers->specific_sources_indices, 2, 1);
+        fixture.count(2, 2); fixture.count(7, 2); fixture.count(10, 28);
+        fixture.appendColumn(0x8c, {-1, -1}); fixture.appendColumn(0x90, {0, 1});
+        fixture.appendColumn(0x94, {1, 1}); fixture.appendColumn(0x98, {4, 4});
+        fixture.appendColumn(0x9c, {1, 1}); fixture.appendColumn(0xa0, {1, 1});
+        fixture.appendColumn(0x1d4, {1, 1}); fixture.appendColumn(0x12c, {0x3f800000, 0x3f800000});
+        fixture.appendColumn(0x130, {12, 20});
+        QVector<int> positions;
+        for (int index = 0; index < 20; ++index) positions.append(integer(fixture.bytes, o.keyform_positions->xys + index * 4));
+        positions.resize(28); fixture.appendColumn(0x15c, positions);
+        const int offset = integer(fixture.bytes, 0x15c);
+        const QVector<float> parent{0, 0, 1, 0, 0, 1, -1, -1};
+        const QVector<float> child{-4, -4, 0.125f, 0.125f, -5, -4, -4, -5};
+        for (int index = 0; index < 8; ++index) {
+            real(fixture.bytes, offset + (12 + index) * 4, parent[index]);
+            real(fixture.bytes, offset + (20 + index) * 4, child[index]);
+        }
+        CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "indexed-folded", &error), qPrintable(error));
+        CDeformerEditContext context;
+        QVERIFY2(context.Build(document, "Child", "warp", 0, {{"P", 0}}, &error), qPrintable(error));
+        const auto world = context.ModelPoints();
+        QVERIFY(near(world.mid(0, 4), {4.5f, -4.5f, 0.09375f, -0.09375f}));
+        QVector<float> restored{7, 9};
+        QVERIFY(!context.FromModel(world, restored, &error)); QCOMPARE(restored, QVector<float>({7, 9}));
+        QVERIFY(error.contains(QStringLiteral("唯一")));
+        QVERIFY2(context.FromModel(world.mid(0, 2), {0}, restored, &error), qPrintable(error));
+        QVERIFY(near(restored, child.mid(0, 2)));
+        QVector<float> roundTrip;
+        QVERIFY2(context.ToModel(restored, {0}, roundTrip, &error), qPrintable(error));
+        QVERIFY(near(roundTrip, world.mid(0, 2)));
+        restored = {7, 9};
+        QVERIFY(!context.FromModel(world.mid(2, 2), {1}, restored, &error));
+        QVERIFY(error.contains(QStringLiteral("唯一"))); QCOMPARE(restored, QVector<float>({7, 9}));
+        QVERIFY2(context.FromModel({4.75f, -4.5f}, {0}, restored, &error), qPrintable(error));
+        QVERIFY(near(restored, {-4, -4.25f}));
+        QCOMPARE(context.ModelPoints(), world);
+    }
+    void blendShapeInverseRejectsLostPrecisionAndOverflow_data()
+    {
+        QTest::addColumn<float>("delta"); QTest::addColumn<float>("requestedX");
+        QTest::newRow("positive-delta-cancellation") << 1.0e20f << 1.0f;
+        QTest::newRow("negative-delta-cancellation") << -1.0e20f << 1.0f;
+        QTest::newRow("subtraction-overflow") << std::numeric_limits<float>::max() << -std::numeric_limits<float>::max();
+    }
+    void blendShapeInverseRejectsLostPrecisionAndOverflow()
+    {
+        QFETCH(float, delta); QFETCH(float, requestedX);
+        Fixture fixture; const auto& o = *fixture.table.sectionOffsetTable;
+        fixture.column(o.deformers->parent_deformer_indices, 1, -1);
+        fixture.column(o.art_meshes->keyform_binding_sources_indices, 0, -1);
+        fixture.column(o.art_meshes->keyform_sources_counts, 0, 1);
+        fixture.column(o.parameters->parameter_binding_sources_counts, 0, 0);
+        fixture.count(7, 3); fixture.count(10, 36);
+        fixture.count(25, 1); fixture.count(26, 1); fixture.count(27, 1);
+        fixture.appendColumn(0x208, {1}); fixture.appendColumn(0x20c, {0}); fixture.appendColumn(0x210, {1});
+        fixture.appendColumn(0x214, {0}); fixture.appendColumn(0x218, {2}); fixture.appendColumn(0x21c, {0});
+        fixture.appendColumn(0x220, {0}); fixture.appendColumn(0x224, {1}); fixture.appendColumn(0x228, {2});
+        fixture.appendColumn(0x22c, {0}); fixture.appendColumn(0x230, {0});
+        fixture.appendColumn(0x234, {0}); fixture.appendColumn(0x238, {0}); fixture.appendColumn(0x23c, {1});
+        fixture.appendColumn(0x12c, {0x3f800000, 0, 0}); fixture.appendColumn(0x130, {12, 20, 28});
+        QVector<int> positions;
+        for (int index = 0; index < 20; ++index) positions.append(integer(fixture.bytes, o.keyform_positions->xys + index * 4));
+        positions.resize(36); fixture.appendColumn(0x15c, positions);
+        const int offset = integer(fixture.bytes, 0x15c);
+        real(fixture.bytes, offset + 12 * 4, -delta);
+        real(fixture.bytes, offset + 28 * 4, delta);
+        CModelDocument document; QString error;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "finite-delta", &error), qPrintable(error));
+        CDeformerEditContext context;
+        QVERIFY2(context.Build(document, "Warp", "warp", 0, {{"P", 1}}, &error), qPrintable(error));
+        const auto raw = document.DeformerWarpKeyforms("Warp")[0].positions;
+        const auto world = context.ModelPoints();
+        QCOMPARE(raw[0], -delta); QCOMPARE(world[0], 0.0f);
+        QVector<float> restored;
+        QVERIFY2(context.FromModel(world, restored, &error), qPrintable(error)); QVERIFY(near(restored, raw));
+        for (bool indexed : {false, true}) {
+            auto requested = indexed ? world.mid(0, 2) : world;
+            requested[0] = requestedX;
+            QVector<float> output{7, 9};
+            QVERIFY(!(indexed ? context.FromModel(requested, {0}, output, &error)
+                              : context.FromModel(requested, output, &error)));
+            QVERIFY(!error.isEmpty()); QCOMPARE(output, QVector<float>({7, 9}));
+            auto inPlace = requested;
+            QVERIFY(!(indexed ? context.FromModel(inPlace, {0}, inPlace, &error)
+                              : context.FromModel(inPlace, inPlace, &error)));
+            QCOMPARE(inPlace, requested);
+        }
+        QCOMPARE(context.ModelPoints(), world);
+        QCOMPARE(document.DeformerWarpKeyforms("Warp")[0].positions, raw);
+    }
     void ownZeroAndSignedScaleDoNotBlockParentMapping_data()
     {
         QTest::addColumn<float>("scale"); QTest::addColumn<bool>("reflect");

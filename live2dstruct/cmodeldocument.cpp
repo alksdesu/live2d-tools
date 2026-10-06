@@ -255,7 +255,7 @@ bool CModelDocument::KeyformParameterValues(const QString& id, const QString& ty
         return false;
     }
     QMap<QString, float> candidate;
-    if (!m_keyformBindings->Pose(objectType, id, keyformIndex, candidate, error)) return false;
+    if (!m_keyformBindings->OrdinaryPose(objectType, id, keyformIndex, candidate, error)) return false;
     QHash<QString, const CModelParameter*> parameters;
     for (const auto& parameter : m_parameters)
         if (!parameters.contains(parameter.id)) parameters.insert(parameter.id, &parameter);
@@ -304,7 +304,7 @@ bool CModelDocument::DescribeKeyformGrid(const QString& id, const QString& type,
     candidate.expectedKeyformCount = description.expectedKeyformCount;
     candidate.missingKeyformCount = description.missingKeyformCount;
     candidate.axesValid = description.axesValid;
-    candidate.diagnostic = description.diagnostic;
+    candidate.diagnostic = m_keyformBindings->OrdinaryDiagnostic(candidate.m_type, id);
     QSet<QString> required;
     for (const auto& axis : description.axes) required.insert(axis.parameterId);
     QHash<QString, CModelParameterMetadata> metadataById;

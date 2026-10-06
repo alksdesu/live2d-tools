@@ -1,4 +1,6 @@
 #include "live2dstruct/ckeyformmappingcontext.h"
+#include "live2dstruct/cblendshapeposeevaluator.h"
+#include "live2dstruct/csectionvalidation.h"
 #include "deformer_snapshot_fixture.h"
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/csectiontable.h"
@@ -15,6 +17,66 @@
 using namespace live2dstruct;
 
 using namespace DeformerSnapshotData;
+
+namespace {
+QByteArray rotationReflectionBlendFixture(bool ancestor, int reflectionAxis)
+{
+    Fixture fixture;
+    if (!fixture.table.IsValid()) return {};
+    fixture.BindRoot(false);
+    const auto& offsets = *fixture.table.sectionOffsetTable;
+    fixture.column(offsets.deformers->keyform_binding_sources_indices, 0, -1);
+    fixture.column(offsets.rotation_deformers->keyform_sources_counts, 0, 1);
+    if (!ancestor) fixture.column(offsets.deformers->parent_deformer_indices, 1, -1);
+    for (int offset : {offsets.rotation_deformer_keyforms->opacities, offsets.rotation_deformer_keyforms->angles,
+                       offsets.rotation_deformer_keyforms->origin_x, offsets.rotation_deformer_keyforms->origin_y,
+                       offsets.rotation_deformer_keyforms->scales})
+        real(fixture.bytes, offset + 4, 0);
+    fixture.column(reflectionAxis == 0 ? offsets.rotation_deformer_keyforms->is_reflect_x
+                                      : offsets.rotation_deformer_keyforms->is_reflect_y, 1, 1);
+    fixture.count(25, 1);
+    fixture.count(26, 1);
+    fixture.appendColumn(0x208, {1});
+    fixture.appendColumn(0x20c, {0});
+    fixture.appendColumn(0x210, {1});
+    fixture.appendColumn(0x214, {0});
+    fixture.appendColumn(0x218, {2});
+    fixture.appendColumn(0x21c, {0});
+    fixture.appendColumn(0x220, {0});
+    fixture.appendColumn(0x224, {0});
+    fixture.appendColumn(0x228, {2});
+    fixture.appendColumn(0x22c, {0});
+    fixture.appendColumn(0x230, {0});
+
+    auto reader = CReader::FromBytes(fixture.bytes);
+    CSectionTable table(reader);
+    if (!table.IsValid()) return {};
+    QByteArray result(0x440, '\0');
+    result.replace(0, 0x40, fixture.bytes.left(0x40));
+    result[4] = 5;
+    put(result, 0x40, 0x2c0);
+    put(result, 0x44, 0x3c0);
+    result.replace(0x2c0, 256, fixture.bytes.mid(table.sectionOffsetTable->count_info->count_info_offset, 128) +
+                              QByteArray(128, '\0'));
+    result.replace(0x3c0, 20, fixture.bytes.mid(integer(fixture.bytes, 0x44), 20));
+    for (auto span : CSectionValidation::ArraySpans(*table.sectionOffsetTable, *table.count_info)) {
+        if (!span.offset || !span.count) continue;
+        const QByteArray name(span.name);
+        if (name == "parameters.runtime_space_0" || name == "parameters.extension_runtime_space_0") span.width = 8;
+        put(result, span.slot, result.size());
+        result.append(fixture.bytes.mid(span.offset, span.count * span.width));
+        result.append(QByteArray((64 - result.size() % 64) % 64, '\0'));
+    }
+    put(result, 0x2c0 + 33 * 4, 1);
+    for (int slot : {0x288, 0x28c, 0x290}) {
+        const int offset = result.size();
+        put(result, slot, offset);
+        result.append(QByteArray(64, '\0'));
+        put(result, offset, slot == 0x290 ? 1 : 0);
+    }
+    return result;
+}
+}
 
 class KeyformMappingTests : public QObject
 {
@@ -379,6 +441,159 @@ private slots:
         QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
         QVERIFY2(context.Build(document, "Other", 0, {{"P", 0}}, &error), qPrintable(error));
         QVERIFY(context.IsValid());
+    }
+
+    void artMeshBlendShapeInverseRejectsLostPrecisionAndOverflow_data()
+    {
+        QTest::addColumn<float>("delta");
+        QTest::addColumn<float>("requestedX");
+        QTest::newRow("positive-delta-cancellation") << 1.0e20f << 1.0f;
+        QTest::newRow("negative-delta-cancellation") << -1.0e20f << 1.0f;
+        QTest::newRow("subtraction-overflow") << std::numeric_limits<float>::max() << -std::numeric_limits<float>::max();
+    }
+
+    void artMeshBlendShapeInverseRejectsLostPrecisionAndOverflow()
+    {
+        QFETCH(float, delta);
+        QFETCH(float, requestedX);
+        Fixture fixture;
+        const auto& offsets = *fixture.table.sectionOffsetTable;
+        fixture.column(offsets.art_meshes->parent_deformer_indices, 0, -1);
+        fixture.column(offsets.art_meshes->keyform_binding_sources_indices, 0, -1);
+        fixture.column(offsets.art_meshes->keyform_sources_counts, 0, 1);
+        fixture.column(offsets.parameters->parameter_binding_sources_counts, 0, 0);
+        fixture.count(9, 3);
+        fixture.count(10, 32);
+        fixture.count(25, 1);
+        fixture.count(26, 1);
+        fixture.count(28, 1);
+        fixture.appendColumn(0x208, {1});
+        fixture.appendColumn(0x20c, {0});
+        fixture.appendColumn(0x210, {1});
+        fixture.appendColumn(0x214, {0});
+        fixture.appendColumn(0x218, {2});
+        fixture.appendColumn(0x21c, {0});
+        fixture.appendColumn(0x220, {0});
+        fixture.appendColumn(0x224, {1});
+        fixture.appendColumn(0x228, {2});
+        fixture.appendColumn(0x22c, {0});
+        fixture.appendColumn(0x230, {0});
+        fixture.appendColumn(0x240, {0});
+        fixture.appendColumn(0x244, {0});
+        fixture.appendColumn(0x248, {1});
+        fixture.appendColumn(0x150, {0x3f800000, 0, 0});
+        fixture.appendColumn(0x154, {0, 0, 0});
+        fixture.appendColumn(0x158, {0, 20, 26});
+        QVector<int> positions;
+        for (int index = 0; index < 20; ++index)
+            positions.append(integer(fixture.bytes, offsets.keyform_positions->xys + index * 4));
+        positions.resize(32);
+        fixture.appendColumn(0x15c, positions);
+        const int positionOffset = integer(fixture.bytes, 0x15c);
+        real(fixture.bytes, positionOffset, -delta);
+        real(fixture.bytes, positionOffset + 26 * 4, delta);
+        auto reader = CReader::FromBytes(fixture.bytes);
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        CBlendShapePoseEvaluator evaluator;
+        CBlendShapePoseEvaluator::Overrides overrides;
+        QString error;
+        QVERIFY2(evaluator.Build(table, {{"P", 1}}, overrides, &error), qPrintable(error));
+        QCOMPARE(overrides.artMeshPositions.value(QStringLiteral("Mesh")), (QVector<float>{delta, 0, 0, 0, 0, 0}));
+        CModelDocument document;
+        QVERIFY2(document.LoadBytes(fixture.bytes, "artmesh-finite-delta", &error), qPrintable(error));
+        CKeyformMappingContext context;
+        QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 1}}, &error), qPrintable(error));
+        const auto raw = document.DrawableKeyformPositions("Mesh", 0);
+        QVector<float> world, restored;
+        QVERIFY2(context.ToModel(raw, world, &error), qPrintable(error));
+        QCOMPARE(raw[0], -delta);
+        QCOMPARE(world[0], 0.0f);
+        QVERIFY(context.MatchesRuntime(world));
+        QVERIFY2(context.FromModel(world, restored, &error), qPrintable(error));
+        QVERIFY(near(restored, raw));
+        auto requested = world;
+        requested[0] = requestedX;
+        QVector<float> output{7, 9};
+        QVERIFY(!context.FromModel(requested, output, &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(output, (QVector<float>{7, 9}));
+        auto inPlace = requested;
+        QVERIFY(!context.FromModel(inPlace, inPlace, &error));
+        QCOMPARE(inPlace, requested);
+        QVERIFY(context.MatchesRuntime(world));
+        QCOMPARE(document.DrawableKeyformPositions("Mesh", 0), raw);
+        QCOMPARE(document.SourceBytes(), fixture.bytes);
+    }
+
+    void rotationBlendShapeReflectionConflictIsScopedToTheParentChain_data()
+    {
+        QTest::addColumn<bool>("ancestor");
+        QTest::addColumn<int>("axis");
+        QTest::addColumn<float>("weight");
+        for (bool ancestor : {false, true}) {
+            for (int axis : {0, 1}) {
+                for (float weight : {0.25f, 1.0f}) {
+                    const QByteArray name = QByteArray(ancestor ? "ancestor" : "unrelated") +
+                        (axis == 0 ? "-x-" : "-y-") + QByteArray::number(weight);
+                    QTest::newRow(name.constData()) << ancestor << axis << weight;
+                }
+            }
+        }
+    }
+
+    void rotationBlendShapeReflectionConflictIsScopedToTheParentChain()
+    {
+        QFETCH(bool, ancestor);
+        QFETCH(int, axis);
+        QFETCH(float, weight);
+        const auto bytes = rotationReflectionBlendFixture(ancestor, axis);
+        QVERIFY(!bytes.isEmpty());
+        auto reader = CReader::FromBytes(bytes);
+        CSectionTable table(reader);
+        QVERIFY2(table.IsValid(), qPrintable(reader.Error()));
+        QCOMPARE(table.blend_shapes_rotation_deformers.size(), 1);
+        QCOMPARE(table.blend_shape_keyform_bindings.size(), 1);
+        CBlendShapePoseEvaluator evaluator;
+        CBlendShapePoseEvaluator::Overrides overrides;
+        QString error;
+        QVERIFY2(evaluator.Build(table, {{"P", 0}}, overrides, &error), qPrintable(error));
+        QVERIFY(overrides.reflectionConflicts.isEmpty());
+        QVERIFY2(evaluator.Build(table, {{"P", weight}}, overrides, &error), qPrintable(error));
+        QCOMPARE(overrides.reflectionConflicts, QSet<QString>{QStringLiteral("Root")});
+        QVERIFY(overrides.rotations.value(QStringLiteral("Root")).reflectionConflict);
+
+        CModelDocument document;
+        QVERIFY2(document.LoadBytes(bytes, "rotation-reflection-blend", &error), qPrintable(error));
+        CKeyformMappingContext context;
+        QVERIFY2(context.Build(document, "Mesh", 0, {{"P", 0}}, &error), qPrintable(error));
+        const auto local = document.DrawableKeyformPositions("Mesh", 0);
+        QVector<float> expected;
+        QVERIFY2(context.ToModel(local, expected, &error), qPrintable(error));
+        QVERIFY(!expected.isEmpty());
+        const auto savedContext = context;
+
+        if (ancestor) {
+            QVERIFY(!context.Build(document, "Mesh", 0, {{"P", weight}}, &error));
+            QVERIFY2(error.contains(QStringLiteral("Root")), qPrintable(error));
+        } else {
+            QVERIFY2(context.Build(document, "Mesh", 0, {{"P", weight}}, &error), qPrintable(error));
+            QVERIFY(error.isEmpty());
+        }
+        QVERIFY(context.IsValid());
+        QVERIFY(context.MatchesRuntime(expected));
+        QVERIFY(savedContext.MatchesRuntime(expected));
+        QVector<float> world, restored;
+        QVERIFY2(context.ToModel(local, world, &error), qPrintable(error));
+        QVERIFY(near(world, expected));
+        QVERIFY2(context.FromModel(expected, restored, &error), qPrintable(error));
+        QVERIFY(near(restored, local));
+        QVector<float> output{7, 9};
+        QVERIFY(!context.ToModel({1}, output, &error));
+        QCOMPARE(output, (QVector<float>{7, 9}));
+        QVERIFY(!context.FromModel({std::numeric_limits<float>::quiet_NaN(), 0}, output, &error));
+        QCOMPARE(output, (QVector<float>{7, 9}));
+        QCOMPARE(document.SourceBytes(), bytes);
     }
 
     void comparisonToleranceAndInvalidMappingsDoNotChangeOutputs()

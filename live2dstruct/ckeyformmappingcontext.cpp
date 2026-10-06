@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <utility>
 
 namespace live2dstruct {
@@ -212,6 +213,8 @@ bool CKeyformMappingContext::Build(const CModelDocument& document, const QString
             ancestors.insert(parent);
             const auto* deformer = table.deformers[parent];
             m_diagnostics.parentDeformers.append(deformer->ids);
+            if (poseOverrides.reflectionConflicts.contains(deformer->ids))
+                return fail(error, QStringLiteral("父变形器的 BlendShape 改变了反射标记：%1").arg(deformer->ids));
             if (parent >= document.Deformers().size() || document.Deformers()[parent].id != deformer->ids)
                 return fail(error, QStringLiteral("父变形器索引与文档不一致：%1").arg(deformer->ids));
             if (deformer->ids.isEmpty() || deformerIdCounts.value(deformer->ids) != 1)
@@ -305,7 +308,14 @@ bool CKeyformMappingContext::FromModel(const QVector<float>& world, QVector<floa
     if (!map(*m_state->target, canvas, evaluatedLocal, true, error)) return false;
     if (evaluatedLocal.size() != m_state->targetDelta.size() && !m_state->targetDelta.isEmpty())
         return fail(error, QStringLiteral("BlendShape 目标增量与映射结果数量不一致"));
-    for (int index = 0; index < m_state->targetDelta.size(); ++index) evaluatedLocal[index] -= m_state->targetDelta[index];
+    for (int index = 0; index < m_state->targetDelta.size(); ++index) {
+        const double value = double(evaluatedLocal[index]) - m_state->targetDelta[index];
+        if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+            return fail(error, QStringLiteral("移除 BlendShape 增量后的坐标超出范围"));
+        evaluatedLocal[index] = float(value);
+    }
+    QVector<float> reprojected;
+    if (!ToModel(evaluatedLocal, reprojected, error) || !compare(reprojected, world, error)) return false;
     local.swap(evaluatedLocal);
     return true;
 }

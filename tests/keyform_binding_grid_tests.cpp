@@ -433,6 +433,141 @@ private slots:
         QCOMPARE(pose.value("P0"), 1.0f);
     }
 
+    void ordinaryPoseRetainsBlendShapeValuesAndKeyformIndices()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.table.IsValid());
+        fixture.Binding(0, 0, {-1, 1});
+        fixture.Binding(1, 1, {0.5f});
+        fixture.Binding(2, 2, {-2, 2});
+        fixture.table.parameters[1]->parameter_types = 1;
+        fixture.Grid({0, 1, 2}, 4);
+        CKeyformBindingGrid grid;
+        QVERIFY(grid.Build(fixture.table));
+        QVERIFY(!grid.Diagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QVERIFY(grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QCOMPARE(grid.Describe(CKeyformBindingGrid::ArtMesh, "target").axes.size(), 3);
+        for (int keyform = 0; keyform < 4; ++keyform) {
+            QMap<QString, float> corner{{"stale", 9}};
+            QString error = "stale";
+            QVERIFY2(grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", keyform, corner, &error), qPrintable(error));
+            QVERIFY(error.isEmpty());
+            QCOMPARE(corner, (QMap<QString, float>{{"P0", keyform % 2 ? 1.f : -1.f},
+                                                  {"P2", keyform / 2 ? 2.f : -2.f}}));
+            QMap<QString, float> pose{{"P1", 0.35f}};
+            for (auto it = corner.cbegin(); it != corner.cend(); ++it) pose.insert(it.key(), it.value());
+            QCOMPARE(pose.value("P1"), 0.35f);
+            const auto before = corner;
+            QVERIFY(!grid.Pose(CKeyformBindingGrid::ArtMesh, "target", keyform, corner));
+            QCOMPARE(corner, before);
+        }
+    }
+
+    void ordinaryPoseRejectsUnknownTypesAndInvalidGridsAtomically()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.table.IsValid());
+        fixture.Binding(0, 0, {0, 1});
+        fixture.Grid({0}, 2);
+        QMap<QString, float> values{{"retained", 9}};
+        const auto before = values;
+        CKeyformBindingGrid grid;
+        for (int parameterType : {-1, 2, 99}) {
+            fixture.table.parameters[0]->parameter_types = parameterType;
+            for (bool allowBlendShape : {false, true}) {
+                QVERIFY(grid.Build(fixture.table, nullptr, allowBlendShape));
+                QVERIFY(!grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+                QString error;
+                QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", 0, values, &error));
+                QVERIFY(!error.isEmpty());
+                QCOMPARE(values, before);
+            }
+        }
+        fixture.table.parameters[0]->parameter_types = 1;
+        QVERIFY(grid.Build(fixture.table));
+        QVERIFY(!grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", 0, values));
+        QCOMPARE(values, before);
+        fixture.Grid({0}, 1);
+        QVERIFY(grid.Build(fixture.table));
+        QVERIFY(!grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", 0, values));
+        QCOMPARE(values, before);
+        fixture.Grid({0}, 2);
+        fixture.table.parameter_binding_indices[0]->binding_sources_indices = -1;
+        QVERIFY(grid.Build(fixture.table));
+        QVERIFY(!grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", 0, values));
+        QCOMPARE(values, before);
+        fixture.Grid({0}, 2);
+        fixture.table.parameters[0]->parameter_types = 0;
+        QVERIFY(grid.Build(fixture.table));
+        QVERIFY(grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        for (int keyform : {-1, 2, std::numeric_limits<int>::max()}) {
+            QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", keyform, values));
+            QCOMPARE(values, before);
+        }
+        for (const auto type : {CKeyformBindingGrid::Warp, static_cast<CKeyformBindingGrid::ObjectType>(99)}) {
+            QVERIFY(!grid.OrdinaryDiagnostic(type, "target").isEmpty());
+            QVERIFY(!grid.OrdinaryPose(type, "target", 0, values));
+            QCOMPARE(values, before);
+        }
+        QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "absent", 0, values));
+        QCOMPARE(values, before);
+    }
+
+    void ordinaryPoseRetainsRepeatedOrdinaryAxisConstraints()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.table.IsValid());
+        fixture.Binding(0, 0, {0, 1});
+        fixture.Binding(1, 0, {0, 1});
+        fixture.table.parameters[0]->parameter_binding_sources_begin_indices = 0;
+        fixture.table.parameters[0]->parameter_binding_sources_counts = 2;
+        fixture.Grid({0, 1}, 4);
+        CKeyformBindingGrid grid;
+        QVERIFY(grid.Build(fixture.table));
+        QMap<QString, float> values{{"retained", 9}};
+        const auto before = values;
+        for (int keyform : {1, 2}) {
+            QString error;
+            QVERIFY(!grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", keyform, values, &error));
+            QVERIFY(error.contains("不同关键值"));
+            QCOMPARE(values, before);
+        }
+        QVERIFY(grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", 3, values));
+        QCOMPARE(values, (QMap<QString, float>{{"P0", 1}}));
+    }
+
+    void ordinaryPoseSupportsRotationBlendShapeTargets()
+    {
+        Fixture fixture;
+        QVERIFY(fixture.table.IsValid());
+        const auto rotation = std::find_if(fixture.table.deformers.begin(), fixture.table.deformers.end(),
+            [](const CDeformers* source) { return source->types == 1; });
+        QVERIFY(rotation != fixture.table.deformers.end());
+        (*rotation)->keyform_binding_sources_indices = -1;
+        auto* rotationSource = fixture.table.rotation_deformers[(*rotation)->specific_sources_indices];
+        rotationSource->keyform_sources_begin_indices = 0;
+        rotationSource->keyform_sources_counts = 1;
+        const int offset = appendBlendRow(fixture.reader, (*rotation)->specific_sources_indices);
+        CBlend_shape_targets::Offset columns;
+        columns.target_indices = offset;
+        columns.blend_shape_keyform_binding_sources_begin_indices = offset + 4;
+        columns.blend_shape_keyform_binding_sources_counts = offset + 8;
+        fixture.table.blend_shapes_rotation_deformers.append(new CBlend_shape_targets(fixture.reader, columns, 0));
+        CKeyformBindingGrid grid;
+        QVERIFY(grid.Build(fixture.table));
+        QMap<QString, float> values{{"stale", 9}};
+        const auto before = values;
+        QVERIFY(!grid.Pose(CKeyformBindingGrid::Rotation, (*rotation)->ids, 0, values));
+        QCOMPARE(values, before);
+        QVERIFY(!grid.Diagnostic(CKeyformBindingGrid::Rotation, (*rotation)->ids).isEmpty());
+        QVERIFY(grid.OrdinaryDiagnostic(CKeyformBindingGrid::Rotation, (*rotation)->ids).isEmpty());
+        QVERIFY(grid.OrdinaryPose(CKeyformBindingGrid::Rotation, (*rotation)->ids, 0, values));
+        QVERIFY(values.isEmpty());
+    }
+
     void unsupportedParameterTypesRemainReadableButCannotProduceAPose()
     {
         Fixture fixture;
@@ -495,6 +630,13 @@ private slots:
         QCOMPARE(values, before);
         QVERIFY(grid.Diagnostic(CKeyformBindingGrid::ArtMesh, "target").contains("BlendShape"));
         QVERIFY(grid.Diagnostic(CKeyformBindingGrid::Warp, (*warp)->ids).contains("BlendShape"));
+        QVERIFY(grid.OrdinaryDiagnostic(CKeyformBindingGrid::ArtMesh, "target").isEmpty());
+        QVERIFY(grid.OrdinaryPose(CKeyformBindingGrid::ArtMesh, "target", 0, values));
+        QVERIFY(values.isEmpty());
+        QVERIFY(grid.OrdinaryDiagnostic(CKeyformBindingGrid::Warp, (*warp)->ids).isEmpty());
+        values.insert("stale", 9);
+        QVERIFY(grid.OrdinaryPose(CKeyformBindingGrid::Warp, (*warp)->ids, 0, values));
+        QVERIFY(values.isEmpty());
         QVERIFY(grid.Pose(CKeyformBindingGrid::ArtMesh, "unaffected", 0, values));
     }
 

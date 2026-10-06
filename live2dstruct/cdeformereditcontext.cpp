@@ -294,49 +294,82 @@ bool CDeformerEditContext::Build(const CModelDocument& document, const QString& 
 
 bool CDeformerEditContext::ToModel(const QVector<float>& local, QVector<float>& world, QString* error) const
 {
-    if (error) error->clear();
-    if (!m_state) return fail(error, QStringLiteral("变形器编辑上下文尚未构建"));
-    try {
-        QVector<float> effective = local;
-        if (!m_state->targetDelta.isEmpty()) {
-            effective = withDelta(local, m_state->targetDelta);
-            if (effective.isEmpty()) return fail(error, QStringLiteral("Warp BlendShape 增量与输入坐标数量不一致"));
-        } else if (m_state->isRotation && effective.size() == 2) {
-            effective[0] += m_state->rotationDelta.originX;
-            effective[1] += m_state->rotationDelta.originY;
-        }
-        QVector<float> candidate;
-        if (!map(*m_state->target, effective, candidate, false, error)) return false;
-        flipY(candidate);
-        world.swap(candidate);
-        return true;
-    } catch (const std::exception&) {
-        return fail(error, QStringLiteral("变形器坐标映射失败，原输出保持不变"));
-    }
+    return MapPoints(local, nullptr, world, false, error);
 }
 
 bool CDeformerEditContext::FromModel(const QVector<float>& world, QVector<float>& local, QString* error) const
 {
+    return MapPoints(world, nullptr, local, true, error);
+}
+
+bool CDeformerEditContext::ToModel(const QVector<float>& local, const QVector<int>& pointIndices,
+                                  QVector<float>& world, QString* error) const
+{
+    return MapPoints(local, &pointIndices, world, false, error);
+}
+
+bool CDeformerEditContext::FromModel(const QVector<float>& world, const QVector<int>& pointIndices,
+                                    QVector<float>& local, QString* error) const
+{
+    return MapPoints(world, &pointIndices, local, true, error);
+}
+
+bool CDeformerEditContext::MapPoints(const QVector<float>& input, const QVector<int>* pointIndices,
+                                    QVector<float>& output, bool inverse, QString* error) const
+{
     if (error) error->clear();
     if (!m_state) return fail(error, QStringLiteral("变形器编辑上下文尚未构建"));
+    if (input.size() > 2000000 || input.size() % 2 != 0 ||
+        !std::all_of(input.cbegin(), input.cend(), [](float value) { return std::isfinite(value); }))
+        return fail(error, QStringLiteral("变形器映射坐标数量或数值无效"));
     try {
-        QVector<float> canvas = world, candidate, reprojected;
-        flipY(canvas);
-        if (!map(*m_state->target, canvas, candidate, true, error) ||
-            !map(*m_state->target, candidate, reprojected, false, error) ||
-            !roundTripMatches(reprojected, canvas, error)) return false;
-        if (!m_state->targetDelta.isEmpty()) {
-            if (candidate.size() != m_state->targetDelta.size())
-                return fail(error, QStringLiteral("Warp BlendShape 增量与反解坐标数量不一致"));
-            for (int index = 0; index < candidate.size(); ++index) candidate[index] -= m_state->targetDelta[index];
-        } else if (m_state->isRotation && candidate.size() == 2) {
-            candidate[0] -= m_state->rotationDelta.originX;
-            candidate[1] -= m_state->rotationDelta.originY;
+        if (pointIndices) {
+            if (m_state->isRotation || pointIndices->size() != input.size() / 2)
+                return fail(error, QStringLiteral("控制点索引仅适用于数量一致的 Warp 坐标"));
+            QSet<int> visited;
+            for (int index : *pointIndices) {
+                if (index < 0 || index >= m_state->points.size() / 2 || visited.contains(index))
+                    return fail(error, QStringLiteral("Warp 控制点索引重复或超出范围"));
+                visited.insert(index);
+            }
         }
-        local.swap(candidate);
+        if (!m_state->targetDelta.isEmpty() &&
+            m_state->targetDelta.size() != (pointIndices ? m_state->points.size() : input.size()))
+            return fail(error, QStringLiteral("Warp BlendShape 增量与输入坐标数量不一致"));
+        const auto applyDelta = [&](QVector<float>& values, double sign) {
+            if (m_state->targetDelta.isEmpty() && (!m_state->isRotation || values.size() != 2 ||
+                (m_state->rotationDelta.originX == 0 && m_state->rotationDelta.originY == 0))) return true;
+            for (qsizetype index = 0; index < values.size(); ++index) {
+                float delta = 0;
+                if (!m_state->targetDelta.isEmpty()) {
+                    const qsizetype offset = pointIndices ? qsizetype(pointIndices->at(index / 2)) * 2 + index % 2 : index;
+                    delta = m_state->targetDelta[offset];
+                } else if (m_state->isRotation && values.size() == 2) {
+                    delta = index == 0 ? m_state->rotationDelta.originX : m_state->rotationDelta.originY;
+                }
+                const double value = double(values[index]) + sign * delta;
+                if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+                    return fail(error, QStringLiteral("移除或应用 BlendShape 增量后的坐标超出范围"));
+                values[index] = float(value);
+            }
+            return true;
+        };
+        QVector<float> values = input, candidate;
+        if (inverse) {
+            flipY(values);
+            QVector<float> reprojected;
+            if (!map(*m_state->target, values, candidate, true, error) || !applyDelta(candidate, -1)) return false;
+            QVector<float> effective = candidate;
+            if (!applyDelta(effective, 1) || !map(*m_state->target, effective, reprojected, false, error) ||
+                !roundTripMatches(reprojected, values, error)) return false;
+        } else {
+            if (!applyDelta(values, 1) || !map(*m_state->target, values, candidate, false, error)) return false;
+            flipY(candidate);
+        }
+        output.swap(candidate);
         return true;
     } catch (const std::exception&) {
-        return fail(error, QStringLiteral("变形器坐标反解失败，原输出保持不变"));
+        return fail(error, QStringLiteral("变形器坐标映射失败，原输出保持不变"));
     }
 }
 

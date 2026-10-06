@@ -1132,7 +1132,10 @@ bool CKeyformEditController::MoveDeformerDrag(const QPointF& delta, double angle
             for (int index : drag.selected)
                 if (!append(index, drag.weights[index])) return fail(error, QStringLiteral("控制点坐标超出范围"));
         } else if (!append(0, 1)) return fail(error, QStringLiteral("旋转中心坐标超出范围"));
-        if (!drag.mapping.FromModel(points, local, error)) return false;
+        const bool mapped = drag.handle == DeformerHandle::WarpPoints
+            ? drag.mapping.FromModel(points, drag.selected, local, error)
+            : drag.mapping.FromModel(points, local, error);
+        if (!mapped) return false;
     }
     CModelEdit command;
     command.name = m_target; command.type = m_type; command.index = m_keyform; command.coalesce = false;
