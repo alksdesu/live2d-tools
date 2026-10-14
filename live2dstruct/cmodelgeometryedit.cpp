@@ -36,6 +36,7 @@ bool CModelGeometryKeyform::SameEndpoint(const CModelGeometryKeyform& other) con
 
 bool CModelGeometryKeyform::operator==(const CModelGeometryKeyform& other) const
 {
+    if (opacity.has_value() != other.opacity.has_value() || (opacity && !sameFloat(*opacity, *other.opacity))) return false;
     if (!SameEndpoint(other) || value.valueless_by_exception() || other.value.valueless_by_exception() ||
         value.index() != other.value.index()) return false;
     if (const auto* positions = std::get_if<QVector<float>>(&value)) {
@@ -47,4 +48,19 @@ bool CModelGeometryKeyform::operator==(const CModelGeometryKeyform& other) const
     }
     return std::get<CModelRotationTransform>(value) == std::get<CModelRotationTransform>(other.value);
 }
+
+CModelGeometryState FreezeGeometryState(const CModelGeometryState& values)
+{
+    CModelGeometryState result;
+    result.reserve(values.size());
+    for (const auto& frame : values) {
+        auto copy = frame;
+        copy.id = QString(frame.id.constData(), frame.id.size());
+        if (auto* positions = std::get_if<QVector<float>>(&copy.value))
+            *positions = QVector<float>(positions->cbegin(), positions->cend());
+        result.append(std::move(copy));
+    }
+    return result;
+}
+
 }

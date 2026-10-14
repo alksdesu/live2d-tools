@@ -1,5 +1,6 @@
 #include "geometry_pair_planner_fixture.h"
 #include "real_core_model_fixture.h"
+#include "live2dstruct/csectionvalidation.h"
 #include "live2dstruct/cdeformereditcontext.h"
 #include "live2dstruct/ckeyformeditcontroller.h"
 #include <QtTest>
@@ -36,6 +37,199 @@ class GeometryPairPlannerCoreTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void fullFramePairingMatchesIndependentCoreOracle_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("reverse");
+        for (int type : {int(Geometry::Warp), int(Geometry::Rotation)}) for (bool reverse : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(reverse))) << type << reverse;
+    }
+    void fullFramePairingMatchesIndependentCoreOracle()
+    {
+        QFETCH(int, type); QFETCH(bool, reverse);
+        Fixture fixture; QString error;
+        QVERIFY2(make(Geometry::Type(type), fixture, &error, true, true), qPrintable(error));
+        CModelDocument document; QVERIFY2(document.LoadBytes(fixture.bytes, "full-frame-core.moc3", &error), qPrintable(error));
+        QVERIFY2(document.SetGeometryObjectPairs({document.SourceDigest(), {fixture.pair}}, &error), qPrintable(error));
+        const auto source = reverse ? fixture.pair.second : fixture.pair.first;
+        const auto target = reverse ? fixture.pair.first : fixture.pair.second;
+        const int sourceKey = reverse ? 3 : 0, targetKey = reverse ? 0 : 3;
+        const QString sourceWitness = reverse ? fixture.secondWitness : fixture.firstWitness;
+        const QString targetWitness = reverse ? fixture.firstWitness : fixture.secondWitness;
+        const auto original = document;
+        const auto originalState = document.AuthoringStructureState();
+        auto requestedWarp = document.DeformerWarpKeyforms(source.object.id);
+        auto requestedRotation = document.DeformerRotationKeyforms(source.object.id);
+        const auto targetWarp = document.DeformerWarpKeyforms(target.object.id);
+        const auto targetRotation = document.DeformerRotationKeyforms(target.object.id);
+        CModelEdit edit{source.object.id, Pairs::TypeName(source.object.type), CModelEdit::WarpKeyforms, {}, {}, sourceKey, false};
+        if (type == Geometry::Warp) {
+            edit.before = QVariant::fromValue(requestedWarp);
+            for (int index = 0; index < requestedWarp[sourceKey].positions.size(); ++index)
+                requestedWarp[sourceKey].positions[index] += index % 2 ? -.017f : .013f;
+            requestedWarp[sourceKey].opacity = .37f;
+            edit.after = QVariant::fromValue(requestedWarp);
+        } else {
+            edit.field = CModelEdit::RotationKeyforms;
+            edit.before = QVariant::fromValue(requestedRotation);
+            requestedRotation[sourceKey].originX += .013f; requestedRotation[sourceKey].originY -= .017f;
+            requestedRotation[sourceKey].opacity = .37f;
+            edit.after = QVariant::fromValue(requestedRotation);
+        }
+        const auto patchFrame = [&](QByteArray& bytes, const QString& id, int key,
+                                    const QVector<CModelWarpKeyform>& warps,
+                                    const QVector<CModelRotationKeyform>& rotations, bool includeOpacity) {
+            auto reader = CReader::FromBytes(bytes); CSectionTable table(reader);
+            if (!table.IsValid()) return false;
+            const auto& offsets = *table.sectionOffsetTable;
+            const auto number = [&](int offset, float value) {
+                quint32 bits; std::memcpy(&bits, &value, sizeof(bits)); qToLittleEndian(bits, bytes.data() + offset);
+            };
+            const auto integer = [&](int offset, bool value) { qToLittleEndian(qint32(value), bytes.data() + offset); };
+            for (const auto* deformer : table.deformers) if (deformer->ids == id) {
+                const int specific = deformer->specific_sources_indices;
+                if (type == Geometry::Warp) {
+                    if (key >= warps.size() || deformer->types != 0) return false;
+                    const auto* owner = table.warp_deformers[specific];
+                    if (key >= owner->keyform_sources_counts || warps[key].positions.size() != owner->vertex_counts * 2) return false;
+                    DeformerReplayFixture::RawColumns raw(bytes);
+                    const auto span = raw.spans.value("keyform_positions.xys");
+                    if (span.slot < 0 || span.countIndex < 0) return false;
+                    const int oldCount = raw.count("keyform_positions.xys");
+                    QByteArray coordinates = raw.column("keyform_positions.xys");
+                    for (float value : warps[key].positions) {
+                        quint32 bits; std::memcpy(&bits, &value, sizeof(bits));
+                        char encoded[4]; qToLittleEndian(bits, encoded); coordinates.append(encoded, 4);
+                    }
+                    raw.state.columns.insert(span.slot, coordinates);
+                    raw.state.counts.insert(span.countIndex, coordinates.size() / 4);
+                    const int row = owner->keyform_sources_begin_indices + key;
+                    raw.set("warp_deformer_keyforms.keyform_position_sources_begin_indices", row, oldCount);
+                    if (includeOpacity) raw.setFloat("warp_deformer_keyforms.opacities", row, warps[key].opacity);
+                    QString rebuildError; bytes = raw.encode(&rebuildError);
+                    return !bytes.isEmpty() && rebuildError.isEmpty();
+                } else {
+                    if (key >= rotations.size() || deformer->types != 1) return false;
+                    const auto* owner = table.rotation_deformers[specific];
+                    if (key >= owner->keyform_sources_counts) return false;
+                    const int row = owner->keyform_sources_begin_indices + key; const auto& form = rotations[key];
+                    const auto* fields = offsets.rotation_deformer_keyforms;
+                    number(fields->angles + row * 4, form.angle);
+                    number(fields->origin_x + row * 4, form.originX); number(fields->origin_y + row * 4, form.originY);
+                    number(fields->scales + row * 4, form.scale);
+                    integer(fields->is_reflect_x + row * 4, form.reflectX); integer(fields->is_reflect_y + row * 4, form.reflectY);
+                    if (includeOpacity) number(fields->opacities + row * 4, form.opacity);
+                }
+                return true;
+            }
+            return false;
+        };
+        CKeyformEditController controller; controller.SetDocument(&document);
+        QByteArray published; int publications = 0;
+        controller.SetPublisher([&](const CModelDocument& next, const auto&, bool, QString* detail) {
+            ++publications; return next.BuildRuntimeMoc(published, detail);
+        }, [](QString*) { return true; });
+        QVERIFY2(controller.Activate(source.object.id, edit.type, sourceKey, {}, &error), qPrintable(error));
+        const auto sourcePose = controller.Pose();
+        QMap<QString, float> targetPose = sourcePose, corner;
+        QVERIFY(document.KeyformParameterValues(target.object.id, edit.type, targetKey, corner, &error));
+        for (auto it = corner.cbegin(); it != corner.cend(); ++it) targetPose[it.key()] = it.value();
+        CoreModel beforeSource, beforeTarget, requestedSource;
+        QVERIFY(beforeSource.load(fixture.bytes)); setPose(beforeSource, sourcePose);
+        QVERIFY(beforeTarget.load(fixture.bytes)); setPose(beforeTarget, targetPose);
+        const auto sourceBefore = positions(beforeSource, sourceWitness), targetBefore = positions(beforeTarget, targetWitness);
+        QVERIFY(sourceBefore.size() >= 4); QVERIFY(targetBefore.size() >= 4);
+        QByteArray oracle = fixture.bytes;
+        QVERIFY(patchFrame(oracle, source.object.id, sourceKey, requestedWarp, requestedRotation, true));
+        QVERIFY(requestedSource.load(oracle)); setPose(requestedSource, sourcePose);
+        const auto sourceExpected = positions(requestedSource, sourceWitness);
+        const QPointF desiredDelta = mirror(sourceExpected[0] - sourceBefore[0]);
+        QVERIFY(std::hypot(desiredDelta.x(), desiredDelta.y()) > .001);
+        QVector<QPointF> parentAxes;
+        for (int axis = 0; axis < 2; ++axis) {
+            auto warpProbe = targetWarp; auto rotationProbe = targetRotation;
+            if (type == Geometry::Warp) {
+                for (int index = axis; index < warpProbe[targetKey].positions.size(); index += 2)
+                    warpProbe[targetKey].positions[index] += 1;
+            } else if (axis == 0) rotationProbe[targetKey].originX += 1;
+            else rotationProbe[targetKey].originY += 1;
+            QByteArray probe = fixture.bytes;
+            QVERIFY(patchFrame(probe, target.object.id, targetKey, warpProbe, rotationProbe, false));
+            CoreModel core; QVERIFY(core.load(probe)); setPose(core, targetPose);
+            const auto evaluated = positions(core, targetWitness); QCOMPARE(evaluated.size(), targetBefore.size());
+            parentAxes.append(evaluated[0] - targetBefore[0]); QVERIFY(core.intact());
+        }
+        const auto cross = [](QPointF a, QPointF b) { return a.x() * b.y() - a.y() * b.x(); };
+        const double determinant = cross(parentAxes[0], parentAxes[1]); QVERIFY(std::abs(determinant) > .001);
+        const QPointF localDelta(cross(desiredDelta, parentAxes[1]) / determinant,
+                                 cross(parentAxes[0], desiredDelta) / determinant);
+        auto expectedWarp = targetWarp; auto expectedRotation = targetRotation;
+        if (type == Geometry::Warp) {
+            for (int index = 0; index < expectedWarp[targetKey].positions.size(); ++index)
+                expectedWarp[targetKey].positions[index] += float(index % 2 ? localDelta.y() : localDelta.x());
+        } else {
+            expectedRotation[targetKey].originX += float(localDelta.x());
+            expectedRotation[targetKey].originY += float(localDelta.y());
+        }
+        QVERIFY(patchFrame(oracle, target.object.id, targetKey, expectedWarp, expectedRotation, false));
+        const int beforePublications = publications;
+        QVERIFY2(controller.Submit(edit, sourcePose, sourceKey, &error), qPrintable(error));
+        QCOMPARE(publications, beforePublications + 1);
+        if (type == Geometry::Warp) {
+            QCOMPARE(document.DeformerWarpKeyforms(source.object.id), requestedWarp);
+            const auto actual = document.DeformerWarpKeyforms(target.object.id);
+            for (int key = 0; key < actual.size(); ++key) QCOMPARE(actual[key].opacity, targetWarp[key].opacity);
+        } else {
+            QCOMPARE(document.DeformerRotationKeyforms(source.object.id), requestedRotation);
+            const auto actual = document.DeformerRotationKeyforms(target.object.id);
+            for (int key = 0; key < actual.size(); ++key) QCOMPARE(actual[key].opacity, targetRotation[key].opacity);
+        }
+        CoreModel changedSource, changedTarget;
+        QVERIFY(changedSource.load(published)); setPose(changedSource, sourcePose);
+        QVERIFY(changedTarget.load(published)); setPose(changedTarget, targetPose);
+        const auto targetAfter = positions(changedTarget, targetWitness);
+        for (int index = 0; index < targetBefore.size(); ++index)
+            QVERIFY(near(targetAfter[index], targetBefore[index] + desiredDelta));
+        const auto opacity = [](CoreModel& core, const QString& id) {
+            for (int index = 0; index < csmGetDrawableCount(core.value); ++index)
+                if (QString::fromUtf8(csmGetDrawableIds(core.value)[index]) == id) return csmGetDrawableOpacities(core.value)[index];
+            return -1.0f;
+        };
+        QVERIFY(opacity(beforeSource, sourceWitness) > 0);
+        const float priorOpacity = type == Geometry::Warp ? original.DeformerWarpKeyforms(source.object.id)[sourceKey].opacity
+                                                        : original.DeformerRotationKeyforms(source.object.id)[sourceKey].opacity;
+        QVERIFY(priorOpacity > 0);
+        QVERIFY(std::abs(opacity(changedSource, sourceWitness) - opacity(beforeSource, sourceWitness) * (.37f / priorOpacity)) < .00001f);
+        QCOMPARE(opacity(changedTarget, targetWitness), opacity(beforeTarget, targetWitness));
+        const auto parity = [&](const QByteArray& actualBytes, const QByteArray& expectedBytes) {
+            CoreModel actual, expected;
+            if (!actual.load(actualBytes) || !expected.load(expectedBytes)) return false;
+            QVector<QMap<QString, float>> checks{sourcePose, targetPose};
+            for (const auto& endpoint : {source, target}) for (int key = 0; key < endpoint.keyformCount; ++key) {
+                QMap<QString, float> keys, values = sourcePose;
+                if (!original.KeyformParameterValues(endpoint.object.id, edit.type, key, keys, &error)) return false;
+                for (auto it = keys.cbegin(); it != keys.cend(); ++it) values[it.key()] = it.value();
+                checks.append(values);
+            }
+            auto middle = sourcePose; middle["PairPrimary"] = 0; middle["PairShared"] = .25f; checks.append(middle);
+            for (const auto& values : checks) {
+                setPose(actual, values); setPose(expected, values);
+                error = difference(frame(actual.value), frame(expected.value));
+                if (!::changed(frame(actual.value), frame(expected.value)).isEmpty()) return false;
+            }
+            return actual.intact() && expected.intact();
+        };
+        QVERIFY2(parity(published, oracle), qPrintable(error));
+        CModelEdit history;
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), originalState); QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+        QVERIFY2(parity(published, fixture.bytes), qPrintable(error));
+        QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+        QVERIFY2(parity(published, oracle), qPrintable(error));
+        QVERIFY(beforeSource.intact()); QVERIFY(beforeTarget.intact()); QVERIFY(requestedSource.intact());
+        QVERIFY(changedSource.intact()); QVERIFY(changedTarget.intact());
+    }
+
+
     void weightedControllerMatchesCoreDisplacement_data()
     {
         QTest::addColumn<int>("type"); QTest::addColumn<bool>("reverse");

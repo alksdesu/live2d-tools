@@ -29,17 +29,21 @@ bool CKeyformEditController::PreparePairedEdit(const CModelDocument& document, c
     CModelDocument sourceAfter = document;
     if (!sourceAfter.ExecuteEdit(edit)) return fail(error, QStringLiteral("源对象修改无效，配对对象保持不变"));
     int count = 1;
-    bool opacityChanged = false;
+    QMap<int, QPair<float, float>> opacityChanges;
     if (type == Geometry::Warp) {
         const auto before = document.DeformerWarpKeyforms(edit.name), after = sourceAfter.DeformerWarpKeyforms(edit.name);
         if (before.size() != after.size()) return fail(error, QStringLiteral("同步编辑不能改变关键形数量"));
         count = before.size();
-        for (int index = 0; index < count; ++index) opacityChanged = opacityChanged || !sameFloat(before[index].opacity, after[index].opacity);
+        for (int index = 0; index < count; ++index)
+            if (!sameFloat(before[index].opacity, after[index].opacity))
+                opacityChanges.insert(index, {before[index].opacity, after[index].opacity});
     } else if (type == Geometry::Rotation) {
         const auto before = document.DeformerRotationKeyforms(edit.name), after = sourceAfter.DeformerRotationKeyforms(edit.name);
         if (before.size() != after.size()) return fail(error, QStringLiteral("同步编辑不能改变关键形数量"));
         count = before.size();
-        for (int index = 0; index < count; ++index) opacityChanged = opacityChanged || !sameFloat(before[index].opacity, after[index].opacity);
+        for (int index = 0; index < count; ++index)
+            if (!sameFloat(before[index].opacity, after[index].opacity))
+                opacityChanges.insert(index, {before[index].opacity, after[index].opacity});
     }
     CModelGeometryState changedBefore, changedAfter;
     for (int index = 0; index < count; ++index) {
@@ -50,7 +54,6 @@ bool CKeyformEditController::PreparePairedEdit(const CModelDocument& document, c
         if (before != after) { changedBefore.append(std::move(before)); changedAfter.append(std::move(after)); }
     }
     if (changedBefore.isEmpty()) { result = edit; return true; }
-    if (opacityChanged) return fail(error, QStringLiteral("请分别修改透明度和几何形状，几何配对不改变透明度"));
     CModelGeometryState before, after;
     for (int index = 0; index < changedBefore.size(); ++index) {
         CGeometryPairPlanner::Result prepared;
@@ -68,6 +71,16 @@ bool CKeyformEditController::PreparePairedEdit(const CModelDocument& document, c
             }
             if (!duplicate) { before.append(source[point]); after.append(target[point]); }
         }
+    }
+    for (auto opacity = opacityChanges.cbegin(); opacity != opacityChanges.cend(); ++opacity) {
+        Geometry previous, next;
+        if (!document.CaptureGeometryKeyform(type, edit.name, opacity.key(), previous, error) ||
+            !sourceAfter.CaptureGeometryKeyform(type, edit.name, opacity.key(), next, error)) return false;
+        int index = 0;
+        while (index < before.size() && !before[index].SameEndpoint(previous)) ++index;
+        if (index == before.size()) { before.append(std::move(previous)); after.append(std::move(next)); }
+        before[index].opacity = opacity->first;
+        after[index].opacity = opacity->second;
     }
     Geometry driver;
     if (!document.CaptureGeometryKeyform(type, edit.name, driverKeyform, driver, error)) return false;

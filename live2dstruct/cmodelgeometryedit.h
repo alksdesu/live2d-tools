@@ -7,6 +7,7 @@
 #include <QVector>
 #include <cstring>
 #include <variant>
+#include <optional>
 #include "cmodelblendshapeconstraintedit.h"
 
 namespace live2dstruct {
@@ -30,6 +31,7 @@ struct CModelGeometryKeyform
     QString id;
     int keyform = -1;
     std::variant<QVector<float>, CModelRotationTransform> value;
+    std::optional<float> opacity = std::nullopt;
 
     QString TypeName() const;
     bool SameEndpoint(const CModelGeometryKeyform& other) const;
@@ -38,6 +40,7 @@ struct CModelGeometryKeyform
 };
 
 using CModelGeometryState = QVector<CModelGeometryKeyform>;
+CModelGeometryState FreezeGeometryState(const CModelGeometryState& values);
 
 struct CModelBlendShapeGeometryEntry
 {

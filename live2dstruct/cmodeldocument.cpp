@@ -1463,6 +1463,14 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             return false;
         }
         CModelEdit command = edit;
+        if (command.field == CModelEdit::GeometryKeyforms) {
+            if (command.before.metaType() != QMetaType::fromType<CModelGeometryState>() ||
+                command.after.metaType() != QMetaType::fromType<CModelGeometryState>()) return false;
+            command.name = QString(command.name.constData(), command.name.size());
+            command.type = QString(command.type.constData(), command.type.size());
+            command.before = QVariant::fromValue(FreezeGeometryState(command.before.value<CModelGeometryState>()));
+            command.after = QVariant::fromValue(FreezeGeometryState(command.after.value<CModelGeometryState>()));
+        }
         if (command.field == CModelEdit::DisplayNames) {
             if (command.name != QLatin1String("objects") || command.type != QLatin1String("names") || command.index != -1 || command.coalesce ||
                 command.parameterChange != CModelEdit::ParameterChange::None || command.freezeValue || command.meshRequest ||

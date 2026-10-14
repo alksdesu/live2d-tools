@@ -85,6 +85,26 @@ CModelEdit legacy(const CModelDocument& document, const Pairs::Object& object, c
     return edit;
 }
 
+QVariant fullFrames(const CModelDocument& document, const Pairs::Object& object)
+{
+    if (object.type == Geometry::Warp) return QVariant::fromValue(document.DeformerWarpKeyforms(object.id));
+    return QVariant::fromValue(document.DeformerRotationKeyforms(object.id));
+}
+
+CModelEdit completeLegacy(const CModelDocument& document, const Pairs::Object& object,
+                          const QVector<int>& geometryKeys, const QVector<int>& opacityOnlyKeys = {})
+{
+    auto edit = legacy(document, object, geometryKeys);
+    const auto update = [&](auto after) {
+        for (int key : geometryKeys) after[key].opacity = .37f;
+        for (int key : opacityOnlyKeys) after[key].opacity = .61f;
+        return QVariant::fromValue(after);
+    };
+    if (object.type == Geometry::Warp) edit.after = update(edit.after.value<QVector<CModelWarpKeyform>>());
+    else edit.after = update(edit.after.value<QVector<CModelRotationKeyform>>());
+    return edit;
+}
+
 bool begin(CKeyformEditController& controller, const CModelDocument& document, int handle, QString* error)
 {
     if (handle == 0) {
@@ -324,25 +344,164 @@ private slots:
         else { QCOMPARE(preview.calls, 1); CModelEdit edit; QVERIFY(document.PeekUndoEdit(&edit)); QCOMPARE(edit.field, CModelEdit::KeyformPositions); }
     }
 
-    void opacityOnlyStaysLocalAndMixedEditsAreRejected_data() { multipleSourceKeyformsAreMergedIntoOneCommand_data(); }
-    void opacityOnlyStaysLocalAndMixedEditsAreRejected()
+    void opacityOnlyStaysLocal_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("targetLocked");
+        for (int type : {int(Geometry::Warp), int(Geometry::Rotation)}) for (bool locked : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(locked))) << type << locked;
+    }
+    void opacityOnlyStaysLocal()
+    {
+        QFETCH(int, type); QFETCH(bool, targetLocked);
+        auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0];
+        if (targetLocked) document.SetLocked(Pairs::TypeName(pair.second.object.type), pair.second.object.id, true);
+        const auto original = document; const auto edit = legacy(document, pair.first.object, {0, 5}, true);
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller); QString error;
+        QVERIFY2(controller.Submit(edit, {}, 0, &error), qPrintable(error));
+        QCOMPARE(preview.calls, 1); QCOMPARE(geometry(document, pair), geometry(original, pair));
+        QCOMPARE(fullFrames(document, pair.first.object), edit.after);
+        QCOMPARE(fullFrames(document, pair.second.object), fullFrames(original, pair.second.object));
+        QCOMPARE(GeometryBatchData::historyCount(document), 1);
+        CModelEdit history; const auto accepted = document.AuthoringStructureState();
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), original.AuthoringStructureState());
+        QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), accepted);
+    }
+
+    void completeFramesCommitWithPairedGeometry_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("reverse");
+        for (int type : {int(Geometry::Warp), int(Geometry::Rotation)}) for (bool reverse : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(reverse))) << type << reverse;
+    }
+    void completeFramesCommitWithPairedGeometry()
+    {
+        QFETCH(int, type); QFETCH(bool, reverse); auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0];
+        const auto source = reverse ? pair.second.object : pair.first.object;
+        const auto target = reverse ? pair.first.object : pair.second.object;
+        const int sourceKey = reverse ? 3 : 0, targetKey = reverse ? 0 : 3;
+        const auto initial = document; const auto edit = completeLegacy(document, source, {sourceKey});
+        auto geometryOnly = initial; CKeyformEditController expected; expected.SetDocument(&geometryOnly);
+        Preview expectedPreview; expectedPreview.connect(expected); QString error;
+        QVERIFY2(expected.Submit(legacy(geometryOnly, source, {sourceKey}), {}, sourceKey, &error), qPrintable(error));
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller);
+        QVERIFY2(controller.Submit(edit, {}, sourceKey, &error), qPrintable(error));
+        QCOMPARE(preview.calls, 1); QCOMPARE(preview.accepted, 1); QCOMPARE(GeometryBatchData::historyCount(document), 1);
+        QCOMPARE(fullFrames(document, source), edit.after);
+        QCOMPARE(fullFrames(document, target), fullFrames(geometryOnly, target));
+        QVERIFY(frame(document, target, targetKey) != frame(initial, target, targetKey));
+        QCOMPARE(controller.Target(), source.id); QCOMPARE(controller.Keyform(), sourceKey);
+        QCOMPARE(preview.pose, controller.Pose());
+        QByteArray bytes; QVERIFY(document.BuildRuntimeMoc(bytes)); QCOMPARE(preview.bytes, bytes);
+        const auto accepted = document.AuthoringStructureState(); CModelEdit history;
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), initial.AuthoringStructureState()); QVERIFY(!document.CanUndoEdit());
+        QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), accepted); QVERIFY(!document.CanRedoEdit());
+        QCOMPARE(fullFrames(document, source), edit.after); QCOMPARE(preview.calls, 3);
+    }
+
+    void mixedRowsKeepOpacityOnlyChangesInTheSameTransaction_data() { multipleSourceKeyformsAreMergedIntoOneCommand_data(); }
+    void mixedRowsKeepOpacityOnlyChangesInTheSameTransaction()
     {
         QFETCH(int, type); auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0];
-        const auto original = document; CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller); QString error;
-        QVERIFY2(controller.Submit(legacy(document, pair.first.object, {0}, true), {}, 0, &error), qPrintable(error));
-        QCOMPARE(preview.calls, 1); QCOMPARE(geometry(document, pair), geometry(original, pair));
-        if (type == Geometry::Warp) {
-            QCOMPARE(document.DeformerWarpKeyforms(pair.second.object.id), original.DeformerWarpKeyforms(pair.second.object.id));
-            QCOMPARE(document.DeformerWarpKeyforms(pair.first.object.id)[0].opacity, .4f);
-        } else {
-            QCOMPARE(document.DeformerRotationKeyforms(pair.second.object.id), original.DeformerRotationKeyforms(pair.second.object.id));
-            QCOMPARE(document.DeformerRotationKeyforms(pair.first.object.id)[0].opacity, .4f);
-        }
-        auto mixed = legacy(document, pair.first.object);
-        if (type == Geometry::Warp) { auto after = mixed.after.value<QVector<CModelWarpKeyform>>(); after[0].opacity = .8f; mixed.after = QVariant::fromValue(after); }
-        else { auto after = mixed.after.value<QVector<CModelRotationKeyform>>(); after[0].opacity = .8f; mixed.after = QVariant::fromValue(after); }
-        const auto baseline = document.AuthoringStructureState(); QVERIFY(!controller.Submit(mixed, {}, 0, &error));
-        QVERIFY2(error.contains(QStringLiteral("透明度")), qPrintable(error)); QCOMPARE(preview.calls, 1); QCOMPARE(document.AuthoringStructureState(), baseline);
+        const auto initial = document; const auto edit = completeLegacy(document, pair.first.object, {0, 5}, {1});
+        auto geometryOnly = initial; CKeyformEditController expected; expected.SetDocument(&geometryOnly);
+        Preview expectedPreview; expectedPreview.connect(expected); QString error;
+        QVERIFY2(expected.Submit(legacy(geometryOnly, pair.first.object, {0, 5}), {}, 0, &error), qPrintable(error));
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller);
+        QVERIFY2(controller.Submit(edit, {}, 0, &error), qPrintable(error));
+        QCOMPARE(preview.calls, 1); QCOMPARE(GeometryBatchData::historyCount(document), 1);
+        QCOMPARE(fullFrames(document, pair.first.object), edit.after);
+        QCOMPARE(fullFrames(document, pair.second.object), fullFrames(geometryOnly, pair.second.object));
+        for (int key : {1, 2, 3, 4}) QCOMPARE(frame(document, pair.first.object, key), frame(initial, pair.first.object, key));
+        for (int key : {0, 1, 4, 5}) QCOMPARE(frame(document, pair.second.object, key), frame(initial, pair.second.object, key));
+        const auto accepted = document.AuthoringStructureState(); CModelEdit history;
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), initial.AuthoringStructureState());
+        QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+        QCOMPARE(document.AuthoringStructureState(), accepted);
+        CModelSession parsed;
+        QVERIFY2(CModelSession::FromJson(GeometryPairsData::capture(document).ToJson(), &parsed, &error), qPrintable(error));
+        CModelDocument restored; QVERIFY2(parsed.RestoreDocument(initial, restored, &error), qPrintable(error));
+        QCOMPARE(restored.AuthoringStructureState(), accepted); QCOMPARE(restored.GeometryObjectPairs(), initial.GeometryObjectPairs());
+        QCOMPARE(fullFrames(restored, pair.first.object), edit.after);
+        QCOMPARE(fullFrames(restored, pair.second.object), fullFrames(document, pair.second.object));
+        QByteArray actualBytes, restoredBytes; QVERIFY(document.BuildRuntimeMoc(actualBytes)); QVERIFY(restored.BuildRuntimeMoc(restoredBytes));
+        QCOMPARE(actualBytes, restoredBytes);
+    }
+
+    void failedCompleteFramePublisherPreservesBothSidesAndRedo_data()
+    {
+        QTest::addColumn<int>("type"); QTest::addColumn<bool>("throwing");
+        for (int type : {int(Geometry::Warp), int(Geometry::Rotation)}) for (bool throwing : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(type).arg(throwing))) << type << throwing;
+    }
+    void failedCompleteFramePublisherPreservesBothSidesAndRedo()
+    {
+        QFETCH(int, type); QFETCH(bool, throwing); auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0];
+        QVERIFY(seedRedo(document, pair.first.object)); CModelEdit originalRedo; QVERIFY(document.PeekRedoEdit(&originalRedo));
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller); QString error;
+        QVERIFY2(controller.Activate(pair.first.object.id, Pairs::TypeName(pair.first.object.type), 0, {}, &error), qPrintable(error));
+        const auto initial = document; const auto revision = document.Revision(); const auto bytes = preview.bytes;
+        const auto values = controller.Pose(); const auto edit = completeLegacy(document, pair.first.object, {0, 5}, {1});
+        preview.reject = !throwing; preview.throwing = throwing;
+        QVERIFY(!controller.Submit(edit, {}, 0, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(preview.calls, 2); QCOMPARE(preview.accepted, 1); QCOMPARE(preview.bytes, bytes); QCOMPARE(controller.Pose(), values);
+        QCOMPARE(document.AuthoringStructureState(), initial.AuthoringStructureState()); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(fullFrames(document, pair.first.object), fullFrames(initial, pair.first.object));
+        QCOMPARE(fullFrames(document, pair.second.object), fullFrames(initial, pair.second.object));
+        QVERIFY(!document.CanUndoEdit()); CModelEdit redo; QVERIFY(document.PeekRedoEdit(&redo));
+        QCOMPARE(redo.before, originalRedo.before); QCOMPARE(redo.after, originalRedo.after);
+        QCOMPARE(controller.Target(), pair.first.object.id); QCOMPARE(controller.Keyform(), 0);
+        preview.reject = false; preview.throwing = false;
+        QVERIFY2(controller.Submit(edit, {}, 0, &error), qPrintable(error));
+        QCOMPARE(preview.calls, 3); QCOMPARE(fullFrames(document, pair.first.object), edit.after);
+        QCOMPARE(GeometryBatchData::historyCount(document), 1); QVERIFY(!document.CanRedoEdit());
+    }
+
+    void laterCompleteFrameMappingFailureIsAtomic_data() { multipleSourceKeyformsAreMergedIntoOneCommand_data(); }
+    void laterCompleteFrameMappingFailureIsAtomic()
+    {
+        QFETCH(int, type); auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0]; QString error;
+        CModelEdit bind;
+        QVERIFY2(document.MakeBindParameterEdit("PairPrimary", {{{CMocParameterStructureBuilder::Owner::Rotation, "PairParentB"}, {-1, 1}}}, bind, &error), qPrintable(error));
+        QVERIFY(document.ExecuteEdit(bind));
+        auto parent = document.DeformerRotationKeyforms("PairParentB"); QCOMPARE(parent.size(), 2); parent[0].scale = 0;
+        QVERIFY(document.SetDeformerRotationKeyforms("PairParentB", parent)); document.ClearEditHistory();
+        auto firstOnly = document; CKeyformEditController firstController; firstController.SetDocument(&firstOnly);
+        Preview firstPreview; firstPreview.connect(firstController);
+        QVERIFY2(firstController.Submit(completeLegacy(firstOnly, pair.first.object, {0}, {1}), {}, 0, &error), qPrintable(error));
+        QCOMPARE(firstPreview.calls, 1);
+        QVERIFY(seedRedo(document, pair.first.object)); CModelEdit originalRedo; QVERIFY(document.PeekRedoEdit(&originalRedo));
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller);
+        const auto baseline = document.AuthoringStructureState(); const auto revision = document.Revision();
+        QVERIFY(!controller.Submit(completeLegacy(document, pair.first.object, {0, 5}, {1}), {}, 0, &error)); QVERIFY(!error.isEmpty());
+        QCOMPARE(preview.calls, 0); QCOMPARE(document.AuthoringStructureState(), baseline); QCOMPARE(document.Revision(), revision);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(!controller.IsActive());
+        CModelEdit redo; QVERIFY(document.PeekRedoEdit(&redo)); QCOMPARE(redo.before, originalRedo.before); QCOMPARE(redo.after, originalRedo.after);
+    }
+
+    void completeFrameTargetLockPreservesSourceOpacity_data() { multipleSourceKeyformsAreMergedIntoOneCommand_data(); }
+    void completeFrameTargetLockPreservesSourceOpacity()
+    {
+        QFETCH(int, type); auto document = documents[type]; const auto pair = document.GeometryObjectPairs().pairs[0];
+        QVERIFY(seedRedo(document, pair.first.object)); CModelEdit originalRedo; QVERIFY(document.PeekRedoEdit(&originalRedo));
+        document.SetLocked(Pairs::TypeName(pair.second.object.type), pair.second.object.id, true);
+        const auto initial = document; const auto revision = document.Revision();
+        CKeyformEditController controller; controller.SetDocument(&document); Preview preview; preview.connect(controller); QString error;
+        QVERIFY(!controller.Submit(completeLegacy(document, pair.first.object, {0, 5}, {1}), {}, 0, &error));
+        QVERIFY2(error.contains(QStringLiteral("锁定")), qPrintable(error)); QCOMPARE(preview.calls, 0);
+        QCOMPARE(document.AuthoringStructureState(), initial.AuthoringStructureState()); QCOMPARE(document.Revision(), revision);
+        QCOMPARE(fullFrames(document, pair.first.object), fullFrames(initial, pair.first.object));
+        QCOMPARE(fullFrames(document, pair.second.object), fullFrames(initial, pair.second.object));
+        QVERIFY(!document.CanUndoEdit()); CModelEdit redo; QVERIFY(document.PeekRedoEdit(&redo));
+        QCOMPARE(redo.before, originalRedo.before); QCOMPARE(redo.after, originalRedo.after);
+        document.SetLocked(Pairs::TypeName(pair.second.object.type), pair.second.object.id, false);
+        const auto edit = completeLegacy(document, pair.first.object, {0, 5}, {1});
+        QVERIFY2(controller.Submit(edit, {}, 0, &error), qPrintable(error)); QCOMPARE(preview.calls, 1);
+        QCOMPARE(fullFrames(document, pair.first.object), edit.after);
     }
 
     void failedDragDoesNotReplaceLastAcceptedSample_data() { dragUsesFrozenStartAndRestoresRedo_data(); }

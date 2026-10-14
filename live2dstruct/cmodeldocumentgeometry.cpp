@@ -34,12 +34,14 @@ struct GeometryDirectory
 
 bool capture(const CModelDocument& document, const GeometryDirectory& directory,
              CModelGeometryKeyform::Type type, const QString& id, int keyform,
-             CModelGeometryKeyform& result, QString* error)
+             CModelGeometryKeyform& result, QString* error, bool includeOpacity = false)
 {
     using Frame = CModelGeometryKeyform;
     if (!document.IsLoaded() || id.isEmpty() || keyform < 0)
         return fail(error, QStringLiteral("几何对象或关键形无效"));
     Frame candidate{type, id, keyform, {}};
+    if (includeOpacity && type != Frame::Warp && type != Frame::Rotation)
+        return fail(error, QStringLiteral("此几何对象不支持关键形透明度"));
     if (type == Frame::ArtMesh) {
         const int index = directory.meshes.value(id, -1);
         if (index < 0) return fail(error, QStringLiteral("网格不存在或 ID 重复：%1").arg(id));
@@ -60,6 +62,7 @@ bool capture(const CModelDocument& document, const GeometryDirectory& directory,
             if (keyform >= forms.size() || forms.size() != deformer.warpKeyforms.size())
                 return fail(error, QStringLiteral("曲面变形器关键形不存在：%1").arg(id));
             const auto& form = forms[keyform];
+            if (includeOpacity) candidate.opacity = form.opacity;
             const qint64 points = (qint64(deformer.rows) + 1) * (qint64(deformer.columns) + 1);
             if (deformer.rows < 0 || deformer.columns < 0 || points <= 0 || points * 2 != form.positions.size())
                 return fail(error, QStringLiteral("曲面变形器控制点数量无效：%1").arg(id));
@@ -69,6 +72,7 @@ bool capture(const CModelDocument& document, const GeometryDirectory& directory,
             if (keyform >= forms.size() || forms.size() != deformer.rotationKeyforms.size())
                 return fail(error, QStringLiteral("旋转变形器关键形不存在：%1").arg(id));
             const auto& form = forms[keyform];
+            if (includeOpacity) candidate.opacity = form.opacity;
             candidate.value = CModelRotationTransform{form.angle, form.originX, form.originY, form.scale, form.reflectX, form.reflectY};
         }
     } else return fail(error, QStringLiteral("不支持的几何对象类型"));
@@ -78,6 +82,9 @@ bool capture(const CModelDocument& document, const GeometryDirectory& directory,
 
 bool validValue(const CModelGeometryKeyform& frame, const CModelGeometryKeyform& current, QString* error)
 {
+    if (frame.opacity && (frame.type == CModelGeometryKeyform::ArtMesh || !std::isfinite(*frame.opacity) ||
+                          *frame.opacity < 0 || *frame.opacity > 1))
+        return fail(error, QStringLiteral("关键形透明度类型或范围无效：%1").arg(frame.id));
     if (frame.value.valueless_by_exception() || frame.value.index() != current.value.index())
         return fail(error, QStringLiteral("几何数据类型不匹配：%1").arg(frame.id));
     if (const auto* positions = std::get_if<QVector<float>>(&frame.value)) {
@@ -155,7 +162,8 @@ bool readStates(const CModelEdit& edit, CModelGeometryState& before, CModelGeome
     for (qsizetype index = 0; index < before.size(); ++index) {
         const auto& previous = before[index];
         const auto& next = after[index];
-        if (!previous.SameEndpoint(next) || previous.id.isEmpty() || previous.keyform < 0 || previous.TypeName().isEmpty())
+        if (!previous.SameEndpoint(next) || previous.opacity.has_value() != next.opacity.has_value() ||
+            previous.id.isEmpty() || previous.keyform < 0 || previous.TypeName().isEmpty())
             return fail(error, QStringLiteral("几何批量修改前后的关键形不匹配"));
         auto& keys = seen[int(previous.type)][previous.id];
         if (keys.contains(previous.keyform)) return fail(error, QStringLiteral("几何批量修改含重复关键形：%1").arg(previous.id));
@@ -193,8 +201,8 @@ bool CModelDocument::MakeGeometryEdit(const CModelGeometryState& before, const C
                                      const CModelGeometryKeyform& driver, CModelEdit& edit, QString* error) const
 {
     try {
-        CModelEdit command{driver.id, driver.TypeName(), CModelEdit::GeometryKeyforms,
-            QVariant::fromValue(before), QVariant::fromValue(after), driver.keyform, false};
+        CModelEdit command{QString(driver.id.constData(), driver.id.size()), driver.TypeName(), CModelEdit::GeometryKeyforms,
+            QVariant::fromValue(FreezeGeometryState(before)), QVariant::fromValue(FreezeGeometryState(after)), driver.keyform, false};
         CModelDocument candidate = *this;
         if (!candidate.ApplyGeometryEdit(command, true, error)) return false;
         edit = std::move(command);
@@ -212,7 +220,7 @@ bool CModelDocument::ApplyGeometryEdit(const CModelEdit& edit, bool forward, QSt
     for (qsizetype index = 0; index < expected.size(); ++index) {
         const auto& frame = expected[index];
         CModelGeometryKeyform current;
-        if (!capture(*this, directory, frame.type, frame.id, frame.keyform, current, error) ||
+        if (!capture(*this, directory, frame.type, frame.id, frame.keyform, current, error, frame.opacity.has_value()) ||
             !validValue(frame, current, error) || !validValue(next[index], current, error)) return false;
         if (frame != current) return fail(error, QStringLiteral("几何关键形在操作期间已改变：%1").arg(frame.id));
         if (forward && frame != next[index] && !editable(*this, directory, frame, error)) return false;
@@ -226,10 +234,12 @@ bool CModelDocument::ApplyGeometryEdit(const CModelEdit& edit, bool forward, QSt
             auto found = warps.find(frame.id);
             if (found == warps.end()) found = warps.insert(frame.id, DeformerWarpKeyforms(frame.id));
             (*found)[frame.keyform].positions = std::get<QVector<float>>(frame.value);
+            if (frame.opacity) (*found)[frame.keyform].opacity = *frame.opacity;
         } else if (frame.type == CModelGeometryKeyform::Rotation) {
             auto found = rotations.find(frame.id);
             if (found == rotations.end()) found = rotations.insert(frame.id, DeformerRotationKeyforms(frame.id));
             auto& form = (*found)[frame.keyform];
+            if (frame.opacity) form.opacity = *frame.opacity;
             const auto& transform = std::get<CModelRotationTransform>(frame.value);
             form.angle = transform.angle; form.originX = transform.originX; form.originY = transform.originY;
             form.scale = transform.scale; form.reflectX = transform.reflectX; form.reflectY = transform.reflectY;
@@ -257,7 +267,7 @@ bool CModelDocument::ValidateGeometryEditStorage(const CModelEdit& edit) const
     QMap<int, QSet<QString>> seen;
     for (const auto& frame : before) {
         CModelGeometryKeyform value;
-        if (!capture(*this, directory, frame.type, frame.id, frame.keyform, value, nullptr) || !validValue(value, value, nullptr)) return false;
+        if (!capture(*this, directory, frame.type, frame.id, frame.keyform, value, nullptr, frame.opacity.has_value()) || !validValue(value, value, nullptr)) return false;
         current.append(std::move(value));
         if (seen[int(frame.type)].contains(frame.id)) continue;
         seen[int(frame.type)].insert(frame.id);
@@ -271,7 +281,13 @@ bool CModelDocument::ValidateGeometryEditStorage(const CModelEdit& edit) const
         } else if (m_deformerRotationKeyformOverrides.contains(frame.id) &&
             !check.SetDeformerRotationKeyforms(frame.id, m_deformerRotationKeyformOverrides.value(frame.id))) return false;
     }
-    return current == before || current == after;
+    const auto fingerprint = GeometryEditStorageFingerprint(edit);
+    const auto matches = [&](const QVariantMap& storage) {
+        const auto value = storage.value(QStringLiteral("geometryFingerprint"));
+        return value.metaType() == QMetaType::fromType<QByteArray>() && value.toByteArray() == fingerprint;
+    };
+    return (current == before && (!edit.storage || matches(edit.storage->before))) ||
+           (current == after && (!edit.storage || matches(edit.storage->after)));
 }
 QByteArray CModelDocument::GeometryEditStorageFingerprint(const CModelEdit& edit) const
 {

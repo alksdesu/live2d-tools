@@ -3,6 +3,7 @@
 #include "ui/cbindingkeysdialog.h"
 #include "ui/theme.h"
 #include "wide_mesh_fixture.h"
+#include "geometry_pair_planner_fixture.h"
 #include <QScopeGuard>
 #include "live2dstruct/cmodeldocument.h"
 #include "live2dstruct/cmodelsession.h"
@@ -180,6 +181,155 @@ class InspectorHistoryTests : public QObject
 {
     Q_OBJECT
 private slots:
+    void pairedFullFrameToolsUseControllerAndAtomicHistory_data()
+    {
+        QTest::addColumn<QString>("type"); QTest::addColumn<bool>("interpolate");
+        QTest::addColumn<bool>("matrixTransfer"); QTest::addColumn<bool>("reject");
+        for (const char* type : {"warp", "rotation"}) for (bool interpolate : {false, true})
+            for (bool matrix : {false, true}) for (bool reject : {false, true})
+                QTest::newRow(qPrintable(QString("%1-%2-%3-%4").arg(type).arg(interpolate).arg(matrix).arg(reject)))
+                    << QString::fromLatin1(type) << interpolate << matrix << reject;
+    }
+
+    void pairedFullFrameToolsUseControllerAndAtomicHistory()
+    {
+        QFETCH(QString, type); QFETCH(bool, interpolate); QFETCH(bool, matrixTransfer); QFETCH(bool, reject);
+        using namespace live2dstruct;
+        using Geometry = CModelGeometryKeyform;
+        GeometryPairData::Fixture fixture; QString error;
+        const auto kind = type == "warp" ? Geometry::Warp : Geometry::Rotation;
+        QVERIFY2(GeometryPairData::make(kind, fixture, &error, true, true), qPrintable(error));
+        CModelDocument document; QVERIFY2(document.LoadBytes(fixture.bytes, "paired-inspector.moc3", &error), qPrintable(error));
+        QVERIFY2(document.SetGeometryObjectPairs({document.SourceDigest(), {fixture.pair}}, &error), qPrintable(error));
+        const auto pair = document.GeometryObjectPairs().pairs.first();
+        const auto id = pair.first.object.id, partner = pair.second.object.id;
+        const int destination = matrixTransfer ? 5 : 1;
+        const int previewKey = matrixTransfer || interpolate ? destination : 0;
+        const double weight = interpolate ? .5 : 1;
+        auto warp = document.DeformerWarpKeyforms(id), partnerWarp = document.DeformerWarpKeyforms(partner);
+        auto rotation = document.DeformerRotationKeyforms(id), partnerRotation = document.DeformerRotationKeyforms(partner);
+        if (kind == Geometry::Warp) {
+            QCOMPARE(warp.size(), 6); QVERIFY(!warp[0].positions.isEmpty());
+            warp[0].positions[0] += .03125f; warp[0].positions[1] -= .015625f;
+            warp[0].opacity = .25f; warp[destination].opacity = .75f;
+            for (auto& form : partnerWarp) form.opacity = .625f;
+            QVERIFY(document.SetDeformerWarpKeyforms(id, warp)); QVERIFY(document.SetDeformerWarpKeyforms(partner, partnerWarp));
+        } else {
+            QCOMPARE(rotation.size(), 6); rotation[0].angle += 16;
+            rotation[0].originX += .03125f; rotation[0].originY -= .015625f; rotation[0].scale *= 1.25f;
+            rotation[0].opacity = .25f; rotation[destination].opacity = .75f;
+            for (auto& form : partnerRotation) form.opacity = .625f;
+            QVERIFY(document.SetDeformerRotationKeyforms(id, rotation)); QVERIFY(document.SetDeformerRotationKeyforms(partner, partnerRotation));
+        }
+        document.ClearEditHistory(); const auto initial = document;
+        auto expectedWarp = warp; auto expectedRotation = rotation;
+        const auto mix = [weight](float first, float second) { return float(double(first) * weight + double(second) * (1 - weight)); };
+        if (kind == Geometry::Warp) {
+            for (int index = 0; index < warp[0].positions.size(); ++index)
+                expectedWarp[destination].positions[index] = mix(warp[0].positions[index], warp[destination].positions[index]);
+            expectedWarp[destination].opacity = mix(warp[0].opacity, warp[destination].opacity);
+        } else {
+            const auto& source = rotation[0]; const auto& target = rotation[destination];
+            expectedRotation[destination] = {mix(source.opacity, target.opacity), mix(source.angle, target.angle),
+                mix(source.originX, target.originX), mix(source.originY, target.originY), mix(source.scale, target.scale),
+                source.reflectX, source.reflectY};
+        }
+        auto sourceOnly = initial;
+        QVERIFY(kind == Geometry::Warp ? sourceOnly.SetDeformerWarpKeyforms(id, expectedWarp) :
+                                       sourceOnly.SetDeformerRotationKeyforms(id, expectedRotation));
+        Geometry sourceBefore, sourceAfter;
+        QVERIFY(initial.CaptureGeometryKeyform(kind, id, destination, sourceBefore));
+        QVERIFY(sourceOnly.CaptureGeometryKeyform(kind, id, destination, sourceAfter));
+        QVERIFY(sourceAfter != sourceBefore);
+        CGeometryPairPlanner::Result plan;
+        QVERIFY2(CGeometryPairPlanner::PrepareSynchronized(initial, pair, true, sourceBefore, sourceAfter, {}, plan, &error), qPrintable(error));
+        QVERIFY(plan.changed); auto expected = initial; QVERIFY(expected.ExecuteEdit(plan.edit));
+        QVERIFY(kind == Geometry::Warp ? expected.SetDeformerWarpKeyforms(id, expectedWarp) :
+                                       expected.SetDeformerRotationKeyforms(id, expectedRotation));
+        CKeyformEditController controller; controller.SetDocument(&document);
+        int publications = 0, acceptedPublications = 0, submissions = 0, historyCalls = 0;
+        bool failPublication = false; QByteArray publishedBytes; QMap<QString, float> publishedPose;
+        controller.SetPublisher([&](const CModelDocument& candidate, const QMap<QString, float>& pose, bool editing, QString* reason) {
+            ++publications; QByteArray bytes;
+            if (!editing || !candidate.BuildPreviewMoc(bytes, reason)) return false;
+            if (failPublication) { if (reason) *reason = "controlled paired preview rejection"; return false; }
+            ++acceptedPublications; publishedBytes = bytes; publishedPose = pose; return true;
+        }, [](QString*) { return true; });
+        CInspectorPanel panel; panel.SetDocument(&document); panel.SetSelection(id, type);
+        panel.SetDeformerKeyformHandler([&](const QString& name, const QString& shape, int key, QString* reason) {
+            return controller.Activate(name, shape, key, publishedPose, reason);
+        });
+        panel.SetEditHandler([&](const CModelEdit& edit, QString* reason) {
+            ++submissions; return controller.Submit(edit, publishedPose, panel.PreviewKeyformForEdit(edit), reason);
+        });
+        panel.SetHistoryHandler([&](bool undo, CModelEdit& edit, QString* reason) {
+            ++historyCalls; return controller.History(undo, edit, reason);
+        });
+        QVERIFY2(controller.Activate(id, type, previewKey, {}, &error), qPrintable(error));
+        QVERIFY(panel.SyncActiveKeyform(id, type, previewKey));
+        panel.resize(720, 1200); panel.show(); QApplication::processEvents();
+        auto* table = panel.findChild<QTableWidget*>(kind == Geometry::Warp ? "warpKeyformTable" : "rotationKeyformTable");
+        QVERIFY(table && table->isVisibleTo(&panel));
+        const auto displayedValue = [&]() { return table->item(kind == Geometry::Warp ? 0 : previewKey, 1)->text().toDouble(); };
+        QVERIFY(table->item(kind == Geometry::Warp ? 0 : previewKey, 1));
+        const double initialDisplay = displayedValue();
+        QPushButton* button = nullptr;
+        if (matrixTransfer) {
+            auto* matrix = panel.findChild<CKeyformMatrix*>("keyformMatrix"); QVERIFY(matrix);
+            auto* view = matrix->findChild<QTableView*>("keyformMatrixTable"); QVERIFY(view);
+            const auto cellFor = [&](int key) {
+                for (int row = 0; row < view->model()->rowCount(); ++row)
+                    for (int column = 0; column < view->model()->columnCount(); ++column) {
+                        const auto index = view->model()->index(row, column);
+                        if (index.data(Qt::UserRole).toInt() == key) return index;
+                    }
+                return QModelIndex{};
+            };
+            const auto sourceCell = cellFor(0), targetCell = cellFor(destination);
+            QVERIFY(sourceCell.isValid() && targetCell.isValid());
+            auto* mark = matrix->findChild<QPushButton*>("keyformMatrixUseSource");
+            auto* percent = matrix->findChild<QDoubleSpinBox*>("keyformMatrixWeight"); QVERIFY(mark && percent);
+            view->setCurrentIndex(sourceCell); mark->click(); view->setCurrentIndex(targetCell); percent->setValue(weight * 100);
+            button = matrix->findChild<QPushButton*>(interpolate ? "keyformMatrixBlend" : "keyformMatrixCopy");
+        } else button = panel.findChild<QPushButton*>(interpolate ? "interpolatePreviousKeyform" : "copyKeyformToNext");
+        QVERIFY(button && button->isEnabled());
+        QSignalSpy rejected(&panel, &CInspectorPanel::EditRejected), history(&panel, &CInspectorPanel::HistoryChanged);
+        const auto revision = document.Revision(); const auto acceptedBytes = publishedBytes; const auto acceptedPose = publishedPose;
+        const int priorPublications = publications, priorAccepted = acceptedPublications;
+        failPublication = reject; button->click(); QApplication::processEvents();
+        QCOMPARE(submissions, 1); QCOMPARE(publications, priorPublications + 1);
+        QCOMPARE(controller.Target(), id); QCOMPARE(controller.Keyform(), previewKey);
+        QCOMPARE(panel.GetActiveGeometryKeyformIndex(), previewKey); QCOMPARE(publishedPose, acceptedPose);
+        if (reject) {
+            QCOMPARE(document.AuthoringStructureState(), initial.AuthoringStructureState()); QCOMPARE(document.Revision(), revision);
+            QCOMPARE(document.DeformerWarpKeyforms(id), warp); QCOMPARE(document.DeformerRotationKeyforms(id), rotation);
+            QCOMPARE(document.DeformerWarpKeyforms(partner), partnerWarp); QCOMPARE(document.DeformerRotationKeyforms(partner), partnerRotation);
+            QCOMPARE(acceptedPublications, priorAccepted); QCOMPARE(publishedBytes, acceptedBytes); QCOMPARE(displayedValue(), initialDisplay);
+            QCOMPARE(rejected.count(), 1); QCOMPARE(history.count(), 0); QVERIFY(!document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+            return;
+        }
+        QCOMPARE(rejected.count(), 0); QCOMPARE(history.count(), 1); QCOMPARE(acceptedPublications, priorAccepted + 1);
+        QCOMPARE(document.Revision(), revision + 1); QCOMPARE(document.AuthoringStructureState(), expected.AuthoringStructureState());
+        QCOMPARE(document.DeformerWarpKeyforms(id), expectedWarp); QCOMPARE(document.DeformerRotationKeyforms(id), expectedRotation);
+        if (kind == Geometry::Warp) {
+            const auto values = document.DeformerWarpKeyforms(partner); QCOMPARE(values.size(), partnerWarp.size());
+            for (int key = 0; key < values.size(); ++key) QCOMPARE(values[key].opacity, partnerWarp[key].opacity);
+        } else {
+            const auto values = document.DeformerRotationKeyforms(partner); QCOMPARE(values.size(), partnerRotation.size());
+            for (int key = 0; key < values.size(); ++key) QCOMPARE(values[key].opacity, partnerRotation[key].opacity);
+        }
+        const double expectedDisplay = kind == Geometry::Warp ? double(expectedWarp[previewKey].positions[0]) : double(expectedRotation[previewKey].angle);
+        QVERIFY(std::abs(displayedValue() - expectedDisplay) < .00001);
+        QByteArray preview; QVERIFY(document.BuildPreviewMoc(preview)); QCOMPARE(publishedBytes, preview);
+        const auto accepted = document.AuthoringStructureState(); panel.Undo(); QApplication::processEvents();
+        QCOMPARE(historyCalls, 1); QCOMPARE(document.AuthoringStructureState(), initial.AuthoringStructureState());
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit()); QCOMPARE(displayedValue(), initialDisplay);
+        panel.Redo(); QApplication::processEvents();
+        QCOMPARE(historyCalls, 2); QCOMPARE(document.AuthoringStructureState(), accepted);
+        QVERIFY(document.CanUndoEdit()); QVERIFY(!document.CanRedoEdit());
+        QVERIFY(std::abs(displayedValue() - expectedDisplay) < .00001);
+    }
+
     void matrixTransfersCopyAndBlendNonAdjacentKeyforms_data()
     {
         QTest::addColumn<QString>("type"); QTest::addColumn<double>("weight"); QTest::addColumn<bool>("reject");
