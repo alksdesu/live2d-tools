@@ -14,6 +14,62 @@ State fullFrames(const CModelDocument& document)
     }
     return frames;
 }
+
+template <typename T>
+QVector<T> deepCopy(const QVector<T>& source)
+{
+    QVector<T> result;
+    result.reserve(source.size());
+    for (const auto& value : source) result.append(value);
+    return result;
+}
+
+QVector<CModelWarpKeyform> deepWarpCopy(const QVector<CModelWarpKeyform>& source)
+{
+    QVector<CModelWarpKeyform> result;
+    result.reserve(source.size());
+    for (const auto& form : source) {
+        CModelWarpKeyform copy = form;
+        copy.positions = deepCopy(form.positions);
+        result.append(std::move(copy));
+    }
+    return result;
+}
+
+QVector<CModelRotationKeyform> deepRotationCopy(const QVector<CModelRotationKeyform>& source)
+{
+    QVector<CModelRotationKeyform> result;
+    result.reserve(source.size());
+    for (const auto& form : source) result.append(form);
+    return result;
+}
+
+struct Observation {
+    QVariantMap structure;
+    quint64 revision = 0;
+    QByteArray moc;
+    QByteArray session;
+};
+
+bool observe(const CModelDocument& document, Observation& result, QString* error = nullptr)
+{
+    result.structure = document.AuthoringStructureState();
+    result.revision = document.Revision();
+    if (!document.BuildRuntimeMoc(result.moc, error)) return false;
+    result.session = GeometryBatchData::session(document).ToJson();
+    return true;
+}
+
+void compareObservation(const CModelDocument& document, const Observation& expected)
+{
+    QCOMPARE(document.AuthoringStructureState(), expected.structure);
+    QCOMPARE(document.Revision(), expected.revision);
+    QByteArray moc;
+    QString error;
+    QVERIFY2(document.BuildRuntimeMoc(moc, &error), qPrintable(error));
+    QCOMPARE(moc, expected.moc);
+    QCOMPARE(GeometryBatchData::session(document).ToJson(), expected.session);
+}
 }
 
 class GeometryBatchDocumentTests : public QObject
@@ -599,6 +655,351 @@ private slots:
         QVERIFY(!document.CaptureGeometryKeyform(Frame::Rotation, "Warp", 0, output)); QCOMPARE(output, before);
         QVERIFY(!document.CaptureGeometryKeyform(Frame::ArtMesh, "Mesh", 4, output)); QCOMPARE(output, before);
         QVERIFY(!document.CaptureGeometryKeyform(Frame::Type(44), "Mesh", 0, output)); QCOMPARE(output, before);
+    }
+    void directSetterOwnsDrawableCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto positions = document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0);
+        QVERIFY(!positions.isEmpty()); positions[0] += 0.25f;
+        float* caller = positions.data();
+        const QVector<float> expected = deepCopy(positions);
+        QString id = QStringLiteral("Mesh");
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, positions));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0] += 100.0f;
+        QCOMPARE(document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0), expected);
+        compareObservation(document, committed);
+    }
+
+    void directSetterOwnsWarpInnerCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto forms = document.DeformerWarpKeyforms(QStringLiteral("Warp"));
+        QVERIFY(!forms.isEmpty() && !forms[0].positions.isEmpty()); forms[0].positions[0] += 0.25f;
+        float* caller = forms[0].positions.data();
+        const auto expected = deepWarpCopy(forms);
+        QVERIFY(document.SetDeformerWarpKeyforms(QStringLiteral("Warp"), forms));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0] += 100.0f;
+        QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+        compareObservation(document, committed);
+    }
+
+    void directSetterOwnsWarpOuterCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto forms = document.DeformerWarpKeyforms(QStringLiteral("Warp"));
+        QVERIFY(!forms.isEmpty()); forms[0].opacity = 0.625f;
+        CModelWarpKeyform* caller = forms.data();
+        const auto expected = deepWarpCopy(forms);
+        QVERIFY(document.SetDeformerWarpKeyforms(QStringLiteral("Warp"), forms));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0].opacity = 0.125f;
+        QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+        compareObservation(document, committed);
+    }
+
+    void directSetterOwnsRotationOuterCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto forms = document.DeformerRotationKeyforms(QStringLiteral("Root"));
+        QVERIFY(!forms.isEmpty()); forms[0].angle += 2.5f;
+        CModelRotationKeyform* caller = forms.data();
+        const auto expected = deepRotationCopy(forms);
+        QVERIFY(document.SetDeformerRotationKeyforms(QStringLiteral("Root"), forms));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0].angle += 100.0f;
+        QCOMPARE(document.DeformerRotationKeyforms(QStringLiteral("Root")), expected);
+        compareObservation(document, committed);
+    }
+
+    void directSetterCopiesRawIdBeforeMapInsertion()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto positions = document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0);
+        QVERIFY(!positions.isEmpty()); positions[0] += 0.25f;
+        const auto expected = deepCopy(positions);
+        QChar chars[]{'M', 'e', 's', 'h'};
+        const QString id = QString::fromRawData(chars, 4);
+        QVERIFY(document.SetDrawableKeyformPositions(id, 0, positions));
+        Observation committed; QVERIFY(observe(document, committed));
+        chars[0] = 'X';
+        QCOMPARE(document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0), expected);
+        compareObservation(document, committed);
+    }
+
+    void directSetterCopiesRawWarpIdBeforeMapInsertion()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto forms = document.DeformerWarpKeyforms(QStringLiteral("Warp"));
+        QVERIFY(!forms.isEmpty()); forms[0].opacity = 0.625f;
+        const auto expected = deepWarpCopy(forms);
+        QChar chars[]{'W', 'a', 'r', 'p'};
+        const QString id = QString::fromRawData(chars, 4);
+        QVERIFY(document.SetDeformerWarpKeyforms(id, forms));
+        Observation committed; QVERIFY(observe(document, committed));
+        chars[0] = 'X';
+        QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+        compareObservation(document, committed);
+    }
+
+    void directSetterCopiesRawRotationIdBeforeMapInsertion()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        auto forms = document.DeformerRotationKeyforms(QStringLiteral("Root"));
+        QVERIFY(!forms.isEmpty()); forms[0].angle += 2.5f;
+        const auto expected = deepRotationCopy(forms);
+        QChar chars[]{'R', 'o', 'o', 't'};
+        const QString id = QString::fromRawData(chars, 4);
+        QVERIFY(document.SetDeformerRotationKeyforms(id, forms));
+        Observation committed; QVERIFY(observe(document, committed));
+        chars[0] = 'X';
+        QCOMPARE(document.DeformerRotationKeyforms(QStringLiteral("Root")), expected);
+        compareObservation(document, committed);
+    }
+
+    void oldKeyformPositionsCommandOwnsCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        const auto before = document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0);
+        auto after = before; QVERIFY(!after.isEmpty()); after[0] += 0.25f;
+        const auto expected = deepCopy(after);
+        float* caller = after.data();
+        CModelEdit edit{"Mesh", "artmesh", CModelEdit::KeyformPositions,
+                        QVariant::fromValue(before), QVariant::fromValue(after), 0, false};
+        QVERIFY(document.ExecuteEdit(edit));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0] += 100.0f;
+        QCOMPARE(document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0), expected);
+        compareObservation(document, committed);
+        CModelEdit archived; QVERIFY(document.PeekUndoEdit(&archived));
+        QCOMPARE(archived.name, QStringLiteral("Mesh"));
+        QCOMPARE(archived.type, QStringLiteral("artmesh"));
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0), before);
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0), expected);
+    }
+
+    void oldWarpKeyformsCommandOwnsInnerCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        const auto before = document.DeformerWarpKeyforms(QStringLiteral("Warp"));
+        auto after = before; QVERIFY(!after.isEmpty() && !after[0].positions.isEmpty());
+        after[0].positions[0] += 0.25f;
+        const auto expected = deepWarpCopy(after);
+        float* caller = after[0].positions.data();
+        CModelEdit edit{"Warp", "warp", CModelEdit::WarpKeyforms,
+                        QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+        QVERIFY(document.ExecuteEdit(edit));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0] += 100.0f;
+        QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+        compareObservation(document, committed);
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), before);
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+    }
+
+    void oldWarpKeyformsCommandOwnsOuterCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        const auto before = document.DeformerWarpKeyforms(QStringLiteral("Warp"));
+        auto after = before; QVERIFY(!after.isEmpty()); after[0].opacity = 0.625f;
+        const auto expected = deepWarpCopy(after);
+        CModelWarpKeyform* caller = after.data();
+        CModelEdit edit{"Warp", "warp", CModelEdit::WarpKeyforms,
+                        QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+        QVERIFY(document.ExecuteEdit(edit));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0].opacity = 0.125f;
+        QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+        compareObservation(document, committed);
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), before);
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.DeformerWarpKeyforms(QStringLiteral("Warp")), expected);
+    }
+
+    void oldRotationKeyformsCommandOwnsOuterCallerBuffer()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        const auto before = document.DeformerRotationKeyforms(QStringLiteral("Root"));
+        auto after = before; QVERIFY(!after.isEmpty()); after[0].angle += 2.5f;
+        const auto expected = deepRotationCopy(after);
+        CModelRotationKeyform* caller = after.data();
+        CModelEdit edit{"Root", "rotation", CModelEdit::RotationKeyforms,
+                        QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+        QVERIFY(document.ExecuteEdit(edit));
+        Observation committed; QVERIFY(observe(document, committed));
+        caller[0].angle += 100.0f;
+        QCOMPARE(document.DeformerRotationKeyforms(QStringLiteral("Root")), expected);
+        compareObservation(document, committed);
+        QVERIFY(document.UndoEdit()); QCOMPARE(document.DeformerRotationKeyforms(QStringLiteral("Root")), before);
+        QVERIFY(document.RedoEdit()); QCOMPARE(document.DeformerRotationKeyforms(QStringLiteral("Root")), expected);
+    }
+
+    void oldCommandCopiesRawNameAndTypeBeforeHistory()
+    {
+        CModelDocument document; QVERIFY(load(document));
+        const auto before = document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0);
+        auto after = before; QVERIFY(!after.isEmpty()); after[0] += 0.25f;
+        const auto expected = deepCopy(after);
+        QChar nameChars[]{'M', 'e', 's', 'h'};
+        QChar typeChars[]{'a', 'r', 't', 'm', 'e', 's', 'h'};
+        CModelEdit edit{QString::fromRawData(nameChars, 4), QString::fromRawData(typeChars, 7),
+                        CModelEdit::KeyformPositions,
+                        QVariant::fromValue(before), QVariant::fromValue(after), 0, false};
+        QVERIFY(document.ExecuteEdit(edit));
+        nameChars[0] = 'X'; typeChars[0] = 'X';
+        CModelEdit archived; QVERIFY(document.PeekUndoEdit(&archived));
+        QCOMPARE(archived.name, QStringLiteral("Mesh"));
+        QCOMPARE(archived.type, QStringLiteral("artmesh"));
+        QVERIFY(document.UndoEdit());
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(document.DrawableKeyformPositions(QStringLiteral("Mesh"), 0), expected);
+    }
+
+    void legacyCoalescedCommandsOwnCallerBuffers_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::addColumn<int>("buffer");
+        const QStringList kinds{"positions", "warp", "rotation"};
+        const QStringList buffers{"before", "after", "name", "type"};
+        for (int kind = 0; kind < kinds.size(); ++kind)
+            for (int buffer = 0; buffer < buffers.size(); ++buffer)
+                QTest::newRow(qPrintable(kinds[kind] + '-' + buffers[buffer])) << kind << buffer;
+    }
+
+    void legacyCoalescedCommandsOwnCallerBuffers()
+    {
+        QFETCH(int, kind); QFETCH(int, buffer);
+        CModelDocument document; QVERIFY(load(document));
+        const auto initialState = document.AuthoringStructureState();
+        const QString name = kind == 0 ? "Mesh" : kind == 1 ? "Warp" : "Root";
+        const QString type = kind == 0 ? "artmesh" : kind == 1 ? "warp" : "rotation";
+        const CModelEdit::Field fields[]{CModelEdit::KeyformPositions, CModelEdit::WarpKeyforms,
+                                       CModelEdit::RotationKeyforms};
+        auto run = [&](auto read, auto copy, auto raw) {
+            using Forms = decltype(read());
+            auto before = copy(read());
+            const auto expectedInitial = copy(before);
+            auto first = copy(before); *raw(first) += 0.125f;
+            const auto expectedFirst = copy(first);
+            auto secondBefore = copy(first);
+            auto final = copy(first); *raw(final) += 0.25f;
+            const auto expectedFinal = copy(final);
+            float* beforeBuffer = raw(before);
+            float* firstBuffer = raw(first);
+            float* secondBeforeBuffer = raw(secondBefore);
+            float* finalBuffer = raw(final);
+            QString firstName = name, firstType = type, secondName = name, secondType = type;
+            QChar* firstNameBuffer = firstName.data(); QChar* firstTypeBuffer = firstType.data();
+            QChar* secondNameBuffer = secondName.data(); QChar* secondTypeBuffer = secondType.data();
+            CModelEdit firstEdit{QString::fromRawData(firstNameBuffer, firstName.size()),
+                QString::fromRawData(firstTypeBuffer, firstType.size()), fields[kind],
+                QVariant::fromValue(before), QVariant::fromValue(first), kind == 0 ? 0 : -1, true};
+            QVERIFY(document.ExecuteEdit(firstEdit));
+            Observation firstCommitted; QVERIFY(observe(document, firstCommitted));
+            if (buffer == 0) *beforeBuffer += 100.0f;
+            if (buffer == 1) *firstBuffer += 100.0f;
+            if (buffer == 2) firstNameBuffer[0] = 'X';
+            if (buffer == 3) firstTypeBuffer[0] = 'X';
+            CModelEdit archived; QVERIFY(document.PeekUndoEdit(&archived));
+            QCOMPARE(archived.before.value<Forms>(), expectedInitial);
+            QCOMPARE(archived.after.value<Forms>(), expectedFirst);
+            QCOMPARE(archived.name, name); QCOMPARE(archived.type, type);
+            QCOMPARE(read(), expectedFirst);
+            compareObservation(document, firstCommitted);
+            CModelEdit secondEdit{QString::fromRawData(secondNameBuffer, secondName.size()),
+                QString::fromRawData(secondTypeBuffer, secondType.size()), fields[kind],
+                QVariant::fromValue(secondBefore), QVariant::fromValue(final), kind == 0 ? 0 : -1, true};
+            QVERIFY(document.ExecuteEdit(secondEdit));
+            Observation finalCommitted; QVERIFY(observe(document, finalCommitted));
+            if (buffer == 0) *secondBeforeBuffer += 100.0f;
+            if (buffer == 1) *finalBuffer += 100.0f;
+            if (buffer == 2) secondNameBuffer[0] = 'X';
+            if (buffer == 3) secondTypeBuffer[0] = 'X';
+            QVERIFY(document.PeekUndoEdit(&archived));
+            QCOMPARE(archived.before.value<Forms>(), expectedInitial);
+            QCOMPARE(archived.after.value<Forms>(), expectedFinal);
+            QCOMPARE(archived.name, name); QCOMPARE(archived.type, type);
+            QCOMPARE(read(), expectedFinal);
+            compareObservation(document, finalCommitted);
+            QCOMPARE(historyCount(document), 1);
+            QVERIFY(document.UndoEdit());
+            QCOMPARE(document.AuthoringStructureState(), initialState);
+            QCOMPARE(read(), expectedInitial);
+            QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+            QVERIFY(document.RedoEdit());
+            QCOMPARE(read(), expectedFinal);
+            finalCommitted.revision = document.Revision();
+            compareObservation(document, finalCommitted);
+            QCOMPARE(historyCount(document), 1);
+            QVERIFY(!document.CanRedoEdit());
+        };
+        if (kind == 0) run([&] { return document.DrawableKeyformPositions(name, 0); },
+            [](const QVector<float>& values) { return deepCopy(values); },
+            [](QVector<float>& values) { return values.data(); });
+        else if (kind == 1) run([&] { return document.DeformerWarpKeyforms(name); }, deepWarpCopy,
+            [](QVector<CModelWarpKeyform>& values) { return values[0].positions.data(); });
+        else run([&] { return document.DeformerRotationKeyforms(name); }, deepRotationCopy,
+            [](QVector<CModelRotationKeyform>& values) { return &values.data()[0].angle; });
+    }
+
+    void invalidLegacyKeyformCommandIsAtomic_data()
+    {
+        QTest::addColumn<int>("kind");
+        QTest::addColumn<int>("failure");
+        const QStringList kinds{"positions", "warp", "rotation"};
+        const QStringList failures{"before-type", "after-type", "nonfinite", "shape", "missing-id"};
+        for (int kind = 0; kind < kinds.size(); ++kind)
+            for (int failure = 0; failure < failures.size(); ++failure)
+                QTest::newRow(qPrintable(kinds[kind] + '-' + failures[failure])) << kind << failure;
+        QTest::newRow("positions-negative-index") << 0 << 5;
+        QTest::newRow("positions-outside-index") << 0 << 6;
+    }
+
+    void invalidLegacyKeyformCommandIsAtomic()
+    {
+        QFETCH(int, kind); QFETCH(int, failure);
+        CModelDocument document; QVERIFY(load(document));
+        const auto initial = command(document);
+        QVERIFY(document.ExecuteEdit(initial)); QVERIFY(document.UndoEdit());
+        Observation baseline; QVERIFY(observe(document, baseline));
+        CModelEdit pending; QVERIFY(document.PeekRedoEdit(&pending));
+        CModelEdit edit;
+        if (kind == 0) {
+            const auto before = document.DrawableKeyformPositions("Mesh", 0);
+            auto after = deepCopy(before); after[0] += 0.125f;
+            if (failure == 2) after[0] = std::numeric_limits<float>::quiet_NaN();
+            if (failure == 3) after.removeLast();
+            edit = {"Mesh", "artmesh", CModelEdit::KeyformPositions,
+                QVariant::fromValue(before), QVariant::fromValue(after), 0, false};
+        } else if (kind == 1) {
+            const auto before = document.DeformerWarpKeyforms("Warp");
+            auto after = deepWarpCopy(before); after[0].positions[0] += 0.125f;
+            if (failure == 2) after[0].positions[0] = std::numeric_limits<float>::quiet_NaN();
+            if (failure == 3) after.removeLast();
+            edit = {"Warp", "warp", CModelEdit::WarpKeyforms,
+                QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+        } else {
+            const auto before = document.DeformerRotationKeyforms("Root");
+            auto after = deepRotationCopy(before); after[0].angle += 0.125f;
+            if (failure == 2) after[0].angle = std::numeric_limits<float>::quiet_NaN();
+            if (failure == 3) after.removeLast();
+            edit = {"Root", "rotation", CModelEdit::RotationKeyforms,
+                QVariant::fromValue(before), QVariant::fromValue(after), -1, false};
+        }
+        if (failure == 0) edit.before = QVariantMap{};
+        if (failure == 1) edit.after = QVariantMap{};
+        if (failure == 4) edit.name = "missing";
+        if (failure == 5) edit.index = -1;
+        if (failure == 6) edit.index = 1000;
+        QVERIFY(!document.ExecuteEdit(edit));
+        compareObservation(document, baseline);
+        QVERIFY(!document.CanUndoEdit()); QVERIFY(document.CanRedoEdit());
+        CModelEdit stillPending; QVERIFY(document.PeekRedoEdit(&stillPending));
+        QCOMPARE(stillPending.name, pending.name); QCOMPARE(stillPending.type, pending.type);
+        QCOMPARE(stillPending.field, pending.field); QCOMPARE(stillPending.index, pending.index);
+        QCOMPARE(stillPending.before, pending.before); QCOMPARE(stillPending.after, pending.after);
+        QVERIFY(document.RedoEdit());
+        QCOMPARE(all(document), initial.after.value<State>());
     }
 };
 

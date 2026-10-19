@@ -57,6 +57,33 @@ CModelBlendShapeGeometryState freezeBlendShapeGeometry(const CModelBlendShapeGeo
     return result;
 }
 
+QString ownedString(const QString& value)
+{
+    return QString(value.constData(), value.size());
+}
+
+QVector<float> ownedPositions(const QVector<float>& values)
+{
+    return QVector<float>(values.cbegin(), values.cend());
+}
+
+QVector<CModelWarpKeyform> ownedWarpKeyforms(const QVector<CModelWarpKeyform>& values)
+{
+    QVector<CModelWarpKeyform> result;
+    result.reserve(values.size());
+    for (const auto& value : values) {
+        auto copy = value;
+        copy.positions = ownedPositions(value.positions);
+        result.append(std::move(copy));
+    }
+    return result;
+}
+
+QVector<CModelRotationKeyform> ownedRotationKeyforms(const QVector<CModelRotationKeyform>& values)
+{
+    return QVector<CModelRotationKeyform>(values.cbegin(), values.cend());
+}
+
 bool inRange(int value, int size)
 {
     return value >= 0 && value < size;
@@ -896,9 +923,11 @@ bool CModelDocument::SetDrawableKeyformPositions(const QString& id, int keyformI
         if (drawable.id != id || keyformIndex >= drawable.keyforms.size()) continue;
         if (positions.size() != drawable.vertexCount * 2) return false;
         for (float value : positions) if (!std::isfinite(value)) return false;
-        auto& overrides = m_drawableKeyformPositionOverrides[id];
+        const QString key = ownedString(id);
+        auto overrides = m_drawableKeyformPositionOverrides.value(key);
         if (overrides.size() < drawable.keyforms.size()) overrides.resize(drawable.keyforms.size());
-        overrides[keyformIndex] = positions;
+        overrides[keyformIndex] = ownedPositions(positions);
+        m_drawableKeyformPositionOverrides.insert(key, std::move(overrides));
         ++m_revision;
         return true;
     }
@@ -1040,7 +1069,7 @@ bool CModelDocument::SetDeformerRotationKeyforms(const QString& id,
             if (!keyform.IsValid())
                 return false;
         }
-        m_deformerRotationKeyformOverrides.insert(id, keyforms);
+        m_deformerRotationKeyformOverrides.insert(ownedString(id), ownedRotationKeyforms(keyforms));
         ++m_revision;
         return true;
     }
@@ -1076,7 +1105,7 @@ bool CModelDocument::SetDeformerWarpKeyforms(const QString& id,
                 return false;
             for (float position : keyform.positions) if (!std::isfinite(position)) return false;
         }
-        m_deformerWarpKeyformOverrides.insert(id, keyforms);
+        m_deformerWarpKeyformOverrides.insert(ownedString(id), ownedWarpKeyforms(keyforms));
         ++m_revision;
         return true;
     }
@@ -1470,6 +1499,27 @@ bool CModelDocument::ExecuteEdit(const CModelEdit& edit)
             command.type = QString(command.type.constData(), command.type.size());
             command.before = QVariant::fromValue(FreezeGeometryState(command.before.value<CModelGeometryState>()));
             command.after = QVariant::fromValue(FreezeGeometryState(command.after.value<CModelGeometryState>()));
+        }
+        if (command.field == CModelEdit::KeyformPositions ||
+            command.field == CModelEdit::WarpKeyforms || command.field == CModelEdit::RotationKeyforms) {
+            command.name = ownedString(command.name);
+            command.type = ownedString(command.type);
+            if (command.field == CModelEdit::KeyformPositions) {
+                if (command.before.metaType() != QMetaType::fromType<QVector<float>>() ||
+                    command.after.metaType() != QMetaType::fromType<QVector<float>>()) return false;
+                command.before = QVariant::fromValue(ownedPositions(command.before.value<QVector<float>>()));
+                command.after = QVariant::fromValue(ownedPositions(command.after.value<QVector<float>>()));
+            } else if (command.field == CModelEdit::WarpKeyforms) {
+                if (command.before.metaType() != QMetaType::fromType<QVector<CModelWarpKeyform>>() ||
+                    command.after.metaType() != QMetaType::fromType<QVector<CModelWarpKeyform>>()) return false;
+                command.before = QVariant::fromValue(ownedWarpKeyforms(command.before.value<QVector<CModelWarpKeyform>>()));
+                command.after = QVariant::fromValue(ownedWarpKeyforms(command.after.value<QVector<CModelWarpKeyform>>()));
+            } else {
+                if (command.before.metaType() != QMetaType::fromType<QVector<CModelRotationKeyform>>() ||
+                    command.after.metaType() != QMetaType::fromType<QVector<CModelRotationKeyform>>()) return false;
+                command.before = QVariant::fromValue(ownedRotationKeyforms(command.before.value<QVector<CModelRotationKeyform>>()));
+                command.after = QVariant::fromValue(ownedRotationKeyforms(command.after.value<QVector<CModelRotationKeyform>>()));
+            }
         }
         if (command.field == CModelEdit::DisplayNames) {
             if (command.name != QLatin1String("objects") || command.type != QLatin1String("names") || command.index != -1 || command.coalesce ||
