@@ -9,6 +9,24 @@
 
 namespace live2dstruct {
 namespace {
+QString ownedString(const QString& value)
+{
+    return QString(value.constData(), value.size());
+}
+
+QMap<QString, float> ownedPose(const QMap<QString, float>& values)
+{
+    QMap<QString, float> result;
+    for (auto value = values.cbegin(); value != values.cend(); ++value)
+        result.insert(ownedString(value.key()), value.value());
+    return result;
+}
+
+CKeyformEditController::EditorState ownedEditorState(const CKeyformEditController::EditorState& state)
+{
+    return {ownedString(state.target), ownedString(state.type), state.keyform, ownedPose(state.pose)};
+}
+
 bool materialField(CModelEdit::Field field)
 {
     return field == CModelEdit::Visibility || field == CModelEdit::VisibilityValues || field == CModelEdit::Opacity ||
@@ -216,7 +234,7 @@ bool CKeyformEditController::PrepareLogicalState(const LogicalState& state, Prep
         }
         PreparedLogicalState candidate;
         candidate.m_owner = this; candidate.m_document = m_document; candidate.m_revision = m_document->Revision();
-        candidate.m_requested = state;
+        candidate.m_requested = {ownedEditorState(state.editor), QByteArray(state.sourceDigest.constData(), state.sourceDigest.size())};
         if (!CaptureLogicalState(candidate.m_expected, error)) return false;
         result = std::move(candidate); return true;
     } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备关键形逻辑上下文，原结果保持不变")); }
@@ -236,6 +254,7 @@ bool CKeyformEditController::ValidatePreparedLogicalState(const PreparedLogicalS
 
 void CKeyformEditController::AdoptLogicalState(PreparedLogicalState& state) noexcept
 {
+    if (m_publishing) return;
     Q_ASSERT(state.m_owner == this && state.m_document == m_document);
     auto& editor = state.m_requested.editor;
     m_target.swap(editor.target); m_type.swap(editor.type); std::swap(m_keyform, editor.keyform);
@@ -297,7 +316,7 @@ bool CKeyformEditController::ReadDeformerEditorState(const CModelEdit& command, 
                 candidate.type != QLatin1String("rotation")) || candidate.keyform < 0 ||
                !std::all_of(candidate.pose.cbegin(), candidate.pose.cend(), [](float value) { return std::isfinite(value); }))
         return fail(error, QStringLiteral("变形器历史的编辑对象或姿态无效"));
-    state = std::move(candidate);
+    state = ownedEditorState(candidate);
     return true;
 }
 
@@ -441,15 +460,17 @@ bool CKeyformEditController::ActivateState(const QString& id, const QString& typ
     const quint64 revision = m_document->Revision();
     const auto* document = m_document;
     const QScopedValueRollback<bool> publishing(m_publishing, true);
+    QString nextTarget, nextType;
     try {
+        nextTarget = ownedString(id); nextType = ownedString(type);
         if (!m_publish(*m_document, pose, true, error)) return false;
     } catch (const std::exception&) {
         return fail(error, QStringLiteral("编辑姿态准备失败"));
     }
     if (m_document != document || m_document->Revision() != revision || m_document->SourceDigest() != m_source)
         return fail(error, QStringLiteral("提交期间文档已改变，请重新选择关键形"));
-    m_target = id;
-    m_type = type;
+    m_target.swap(nextTarget);
+    m_type.swap(nextType);
     m_keyform = keyform;
     m_pose = std::move(pose);
     return true;
@@ -517,9 +538,10 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
             if (!MakePose(edit.name, edit.type, edit.index, keepTarget ? m_pose : currentValues, pose, error)) return false;
             CModelDocument candidate = *m_document;
             if (!candidate.ExecuteEdit(edit)) return fail(error, QStringLiteral("几何批量修改已改变或格式无效"));
-            QString nextTarget = edit.name, nextType = edit.type;
+            QString nextTarget = ownedString(edit.name), nextType = ownedString(edit.type);
+            const int nextKeyform = edit.index;
             if (!Publish(std::move(candidate), pose, true, error)) return false;
-            m_target.swap(nextTarget); m_type.swap(nextType); m_keyform = edit.index; m_pose.swap(pose);
+            m_target.swap(nextTarget); m_type.swap(nextType); m_keyform = nextKeyform; m_pose.swap(pose);
             return true;
         } catch (const std::exception&) {
             return fail(error, QStringLiteral("无法准备几何批量修改，原文档和预览保持不变"));
@@ -664,9 +686,13 @@ bool CKeyformEditController::Submit(const CModelEdit& edit, const QMap<QString, 
     if (!PreparePairedEdit(*m_document, command, pose, previewKeyform, command, error)) return false;
     if (!candidate.ExecuteEdit(command)) return fail(error, QStringLiteral("编辑数据无效或没有变化"));
     if (parentEdit && !CanEditIn(candidate, edit.name, edit.type, -1, error)) return false;
+    QString nextTarget, nextType;
+    try {
+        if (poseEdit && !keepTarget) { nextTarget = ownedString(edit.name); nextType = ownedString(edit.type); }
+    } catch (const std::exception&) { return fail(error, QStringLiteral("无法准备关键形编辑对象")); }
     if (!Publish(std::move(candidate), pose, poseEdit || IsActive(), error)) return false;
     if (poseEdit) {
-        if (!keepTarget) { m_target = edit.name; m_type = edit.type; m_keyform = previewKeyform; }
+        if (!keepTarget) { m_target.swap(nextTarget); m_type.swap(nextType); m_keyform = previewKeyform; }
         m_pose = std::move(pose);
     }
     return true;
@@ -880,9 +906,9 @@ bool CKeyformEditController::PublishStructure(CModelDocument candidate, const CM
                 state.value(QStringLiteral("type")).metaType() != QMetaType::fromType<QString>() ||
                 state.value(QStringLiteral("pose")).metaType() != QMetaType::fromType<QMap<QString, float>>())
                 return fail(error, QStringLiteral("参数历史的编辑选区内容无效"));
-            nextTarget = state.value(QStringLiteral("target")).toString();
-            nextType = state.value(QStringLiteral("type")).toString();
-            selectedPose = state.value(QStringLiteral("pose")).value<QMap<QString, float>>();
+            nextTarget = ownedString(state.value(QStringLiteral("target")).toString());
+            nextType = ownedString(state.value(QStringLiteral("type")).toString());
+            selectedPose = ownedPose(state.value(QStringLiteral("pose")).value<QMap<QString, float>>());
             if (nextTarget.isEmpty() && (!nextType.isEmpty() || !selectedPose.isEmpty()))
                 return fail(error, QStringLiteral("参数历史的空编辑选区无效"));
             restoringSelection = !nextTarget.isEmpty();

@@ -975,6 +975,176 @@ private slots:
         QCOMPARE(preview.ended, 1);
         unchanged(document, before);
     }
+    void editorIdentityOwnsCallerStorage_data()
+    {
+        QTest::addColumn<int>("route"); QTest::addColumn<bool>("rawData");
+        QTest::addColumn<bool>("duringPublish"); QTest::addColumn<bool>("mutateType");
+        for (int route = 0; route < 4; ++route)
+            for (bool rawData : {false, true}) for (bool duringPublish : {false, true}) for (bool mutateType : {false, true})
+                QTest::newRow(qPrintable(QString("%1-%2-%3-%4").arg(route).arg(rawData).arg(duringPublish).arg(mutateType)))
+                    << route << rawData << duringPublish << mutateType;
+    }
+
+    void editorIdentityOwnsCallerStorage()
+    {
+        QFETCH(int, route); QFETCH(bool, rawData); QFETCH(bool, duringPublish); QFETCH(bool, mutateType);
+        CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+        controller.SetDocument(&document); preview.connect(controller); QString error;
+        const QString expectedId(target.id.constData(), target.id.size());
+        const QString expectedType = QStringLiteral("artmesh");
+        QVector<QChar> idStorage(expectedId.cbegin(), expectedId.cend());
+        QVector<QChar> typeStorage(expectedType.cbegin(), expectedType.cend());
+        QString id = rawData ? QString::fromRawData(idStorage.constData(), idStorage.size()) : QString(expectedId.constData(), expectedId.size());
+        QString type = rawData ? QString::fromRawData(typeStorage.constData(), typeStorage.size()) : QString(expectedType.constData(), expectedType.size());
+        QChar* idBuffer = rawData ? idStorage.data() : id.data();
+        QChar* typeBuffer = rawData ? typeStorage.data() : type.data();
+        auto mutate = [&] { if (mutateType) typeBuffer[0] = QLatin1Char('?'); else idBuffer[0] = QLatin1Char('?'); };
+        CModelEdit command;
+        if (route == 2) command = changed(document, expectedId, 0);
+        if (route == 3) {
+            CModelGeometryKeyform before;
+            QVERIFY(document.CaptureGeometryKeyform(CModelGeometryKeyform::ArtMesh, expectedId, 0, before, &error));
+            auto after = before; std::get<QVector<float>>(after.value)[0] += .01f;
+            QVERIFY2(document.MakeGeometryEdit({before}, {after}, before, command, &error), qPrintable(error));
+        }
+        command.name = id; command.type = type;
+        const auto initial = capture(document);
+        if (duringPublish) preview.onPublish = mutate;
+        const bool accepted = route == 0 ? controller.Activate(id, type, 0, target.pose, &error) :
+            route == 1 ? controller.Preview(id, type, 0, target.pose, &error) : controller.Submit(command, target.pose, 0, &error);
+        QVERIFY2(accepted, qPrintable(error)); preview.onPublish = {};
+        const auto published = preview.publishedBytes;
+        const auto acceptedDocument = capture(document);
+        if (!duringPublish) mutate();
+        QCOMPARE(controller.Target(), expectedId); QCOMPARE(controller.Type(), expectedType); QCOMPARE(controller.Keyform(), 0);
+        QVERIFY(controller.IsActive()); QCOMPARE(controller.Pose(), target.pose); QCOMPARE(preview.pose, target.pose);
+        QCOMPARE(preview.publishedBytes, published); QVERIFY(preview.editing);
+        unchanged(document, acceptedDocument);
+        if (route < 2) unchanged(document, initial);
+        else QVERIFY(content(document) != initial.content);
+        CKeyformEditController::LogicalState logical;
+        QVERIFY2(controller.CaptureLogicalState(logical, &error), qPrintable(error));
+        QCOMPARE(logical.editor.target, expectedId); QCOMPARE(logical.editor.type, expectedType);
+        QVector<float> world;
+        QVERIFY2(mappedVertices(document, controller, world, &error), qPrintable(error));
+        QVERIFY2(controller.BeginDrag({0}, world, &error), qPrintable(error));
+        QVERIFY(controller.IsDragging()); controller.FinishDrag(); QVERIFY(!controller.IsDragging());
+        const auto followup = changed(document, expectedId, 0, .02f);
+        QVERIFY2(controller.Submit(followup, &error), qPrintable(error));
+        const auto finalContent = content(document);
+        CModelEdit history;
+        QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(history.name, expectedId); QCOMPARE(history.type, expectedType);
+        QCOMPARE(content(document), acceptedDocument.content);
+        if (route >= 2) {
+            QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+            QCOMPARE(history.name, expectedId); QCOMPARE(history.type, expectedType); QCOMPARE(content(document), initial.content);
+            QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+            QCOMPARE(content(document), acceptedDocument.content);
+        }
+        QVERIFY2(controller.History(false, history, &error), qPrintable(error));
+        QCOMPARE(content(document), finalContent); QCOMPARE(controller.Target(), expectedId); QCOMPARE(controller.Type(), expectedType);
+        QCOMPARE(controller.Pose(), target.pose); QVERIFY(!document.CanRedoEdit());
+    }
+
+    void rejectedPublicationKeepsEditorIdentity_data()
+    {
+        QTest::addColumn<int>("route"); QTest::addColumn<bool>("exception");
+        for (int route = 0; route < 4; ++route) for (bool exception : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(route).arg(exception))) << route << exception;
+    }
+
+    void rejectedPublicationKeepsEditorIdentity()
+    {
+        QFETCH(int, route); QFETCH(bool, exception);
+        CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+        controller.SetDocument(&document); preview.connect(controller); QString error;
+        QVERIFY2(controller.Activate(target.id, 1, target.pose, &error), qPrintable(error));
+        const auto original = capture(document); const auto poseBefore = controller.Pose();
+        const auto publishedBefore = preview.publishedBytes; const int acceptedBefore = preview.accepted;
+        QString id(target.id.constData(), target.id.size()), type = QString::fromLatin1("artmesh");
+        QChar* idBuffer = id.data(); QChar* typeBuffer = type.data();
+        CModelEdit command;
+        if (route == 2) command = changed(document, target.id, 0);
+        if (route == 3) {
+            CModelGeometryKeyform before;
+            QVERIFY(document.CaptureGeometryKeyform(CModelGeometryKeyform::ArtMesh, target.id, 0, before, &error));
+            auto after = before; std::get<QVector<float>>(after.value)[0] += .01f;
+            QVERIFY2(document.MakeGeometryEdit({before}, {after}, before, command, &error), qPrintable(error));
+        }
+        command.name = id; command.type = type;
+        preview.reject = !exception; preview.throwPublish = exception;
+        preview.onPublish = [&] { idBuffer[0] = QLatin1Char('?'); typeBuffer[0] = QLatin1Char('?'); };
+        const bool accepted = route == 0 ? controller.Activate(id, type, 0, target.pose, &error) :
+            route == 1 ? controller.Preview(id, type, 0, target.pose, &error) : controller.Submit(command, target.pose, 0, &error);
+        QVERIFY(!accepted); QVERIFY(!error.isEmpty()); unchanged(document, original);
+        QCOMPARE(controller.Target(), target.id); QCOMPARE(controller.Type(), QStringLiteral("artmesh")); QCOMPARE(controller.Keyform(), 1);
+        QCOMPARE(controller.Pose(), poseBefore); QCOMPARE(preview.pose, poseBefore); QCOMPARE(preview.publishedBytes, publishedBefore);
+        QCOMPARE(preview.accepted, acceptedBefore); QVERIFY(preview.editing); QVERIFY(controller.IsActive()); QVERIFY(!controller.IsPublishing());
+        preview.onPublish = {}; preview.reject = false; preview.throwPublish = false;
+        QVERIFY2(controller.Submit(changed(document, target.id, 1), &error), qPrintable(error));
+        CModelEdit history; QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(content(document), original.content); QCOMPARE(controller.Target(), target.id); QCOMPARE(controller.Keyform(), 1);
+    }
+
+    void preparedEditorIdentityOwnsCallerStorage_data()
+    {
+        QTest::addColumn<bool>("rawData"); QTest::addColumn<bool>("beforeAdopt"); QTest::addColumn<bool>("mutateType");
+        for (bool rawData : {false, true}) for (bool beforeAdopt : {false, true}) for (bool mutateType : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2-%3").arg(rawData).arg(beforeAdopt).arg(mutateType))) << rawData << beforeAdopt << mutateType;
+    }
+
+    void preparedEditorIdentityOwnsCallerStorage()
+    {
+        QFETCH(bool, rawData); QFETCH(bool, beforeAdopt); QFETCH(bool, mutateType);
+        CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+        start(document, controller, preview); QString error;
+        const QString expectedId(target.id.constData(), target.id.size()), expectedType = QStringLiteral("artmesh");
+        QVector<QChar> idStorage(expectedId.cbegin(), expectedId.cend()), typeStorage(expectedType.cbegin(), expectedType.cend());
+        QString id = rawData ? QString::fromRawData(idStorage.constData(), idStorage.size()) : QString(expectedId.constData(), expectedId.size());
+        QString type = rawData ? QString::fromRawData(typeStorage.constData(), typeStorage.size()) : QString(expectedType.constData(), expectedType.size());
+        QChar* idBuffer = rawData ? idStorage.data() : id.data();
+        QChar* typeBuffer = rawData ? typeStorage.data() : type.data();
+        auto mutate = [&] { if (mutateType) typeBuffer[0] = QLatin1Char('?'); else idBuffer[0] = QLatin1Char('?'); };
+        CKeyformEditController::LogicalState requested;
+        QVERIFY2(controller.CaptureLogicalState(requested, &error), qPrintable(error));
+        requested.editor.target = id; requested.editor.type = type;
+        CKeyformEditController::PreparedLogicalState prepared;
+        QVERIFY2(controller.PrepareLogicalState(requested, prepared, &error), qPrintable(error));
+        const auto original = capture(document); const auto publishedBefore = preview.publishedBytes;
+        if (beforeAdopt) mutate();
+        QVERIFY2(controller.ValidatePreparedLogicalState(prepared, &error), qPrintable(error));
+        controller.AdoptLogicalState(prepared); QVERIFY(!prepared.IsValid());
+        if (!beforeAdopt) mutate();
+        QCOMPARE(controller.Target(), expectedId); QCOMPARE(controller.Type(), expectedType); QCOMPARE(controller.Keyform(), 0);
+        unchanged(document, original); QCOMPARE(preview.publishedBytes, publishedBefore);
+        CKeyformEditController::LogicalState observed;
+        QVERIFY2(controller.CaptureLogicalState(observed, &error), qPrintable(error));
+        QCOMPARE(observed.editor.target, expectedId); QCOMPARE(observed.editor.type, expectedType);
+        QVector<float> world; QVERIFY2(mappedVertices(document, controller, world, &error), qPrintable(error));
+        QVERIFY2(controller.BeginDrag({0}, world, &error), qPrintable(error)); controller.FinishDrag();
+        QVERIFY2(controller.Submit(changed(document, expectedId, 0), &error), qPrintable(error));
+        CModelEdit history; QVERIFY2(controller.History(true, history, &error), qPrintable(error));
+        QCOMPARE(content(document), original.content); QCOMPARE(controller.Target(), expectedId); QCOMPARE(controller.Type(), expectedType);
+    }
+    void geometryPublicationCannotChangeSelectedKeyform()
+    {
+        CModelDocument document = baseline; CKeyformEditController controller; ControlledPreview preview;
+        controller.SetDocument(&document); preview.connect(controller); QString error;
+        CModelGeometryKeyform before;
+        QVERIFY(document.CaptureGeometryKeyform(CModelGeometryKeyform::ArtMesh, target.id, 0, before, &error));
+        auto after = before; std::get<QVector<float>>(after.value)[0] += .01f;
+        CModelEdit edit;
+        QVERIFY(document.MakeGeometryEdit({before}, {after}, before, edit, &error));
+        preview.onPublish = [&] { edit.index = 1; };
+        QVERIFY2(controller.Submit(edit, target.pose, 0, &error), qPrintable(error));
+        QCOMPARE(controller.Keyform(), 0); QCOMPARE(controller.Pose(), target.pose);
+        preview.onPublish = {};
+        CModelEdit archived; QVERIFY(document.PeekUndoEdit(&archived)); QCOMPARE(archived.index, 0);
+        QVERIFY(controller.History(true, archived, &error)); QVERIFY(controller.History(false, archived, &error));
+        QCOMPARE(controller.Keyform(), 0);
+    }
+
 };
 
 QTEST_GUILESS_MAIN(KeyformEditControllerTests)
